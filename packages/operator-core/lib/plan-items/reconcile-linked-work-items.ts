@@ -34,12 +34,19 @@ import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { PLAN_ITEM_KIND, planItemRef } from '../issue-blocks-merge';
 import { IMPLEMENTS_REL } from './convert';
 import { getWorkItem, setWorkItemState, isSettledWorkItemState, type WorkItem } from '../work-items';
+import { getPlanRow } from '../agent-tools/plans/source';
 
 /** One plan item that just transitioned to `done` (or an equivalent terminal
  *  status) — the minimal identity reconciliation needs. */
 export interface CompletedPlanItem {
   planSlug: string;
   itemId: string;
+  /** EI-8970: the harness the triggering `plans:set-status` flip ran under
+   *  (its ctx.harnessSlug) — threads through to the stale-read guard below so
+   *  it re-reads the SAME plan row the flip wrote, rather than guessing the
+   *  operator-home harness for a plan that actually lives in a different one.
+   *  Optional/omitted is safe — the guard degrades to a best-effort resolve. */
+  harnessSlug?: string | null;
 }
 
 export interface ReconcileLinkedWorkItemsResult {
@@ -127,6 +134,29 @@ export async function reconcileLinkedWorkItemsForPlanItem(
     skippedAlreadyTerminal: [],
   };
   try {
+    // EI-8970: this reaction fires fire-and-forget off the triggering
+    // `plans:set-status` event's SNAPSHOT ("this item just went done"). By the
+    // time the sweep actually runs, a peer may already have CORRECTED the
+    // SAME plan item back off `done` (e.g. a premature done, caught and
+    // flipped back to wip moments later). Acting on the stale snapshot would
+    // terminal-flip every linked work-item under a now-false premise — the
+    // exact race observed on cup-lexicon-full-rename-2026-07-09#P-006 /
+    // WI-3463. Re-read the plan item's CURRENT stored status right before
+    // acting and bail the WHOLE sweep (touch nothing) if it is no longer
+    // `done` — the next genuine ->done transition re-fires this rule and
+    // reconciles correctly then. Fails OPEN (proceeds as before) on any read
+    // hiccup or when the row/item can't be resolved — this guard must never
+    // turn a DB blip or a missing derived index into a missed reconcile.
+    const row = await getPlanRow(item.planSlug, {
+      harnessSlug: item.harnessSlug ?? undefined,
+    }).catch(() => null);
+    if (row) {
+      const current = row.items.find((i) => i.id === item.itemId);
+      if (current && current.status !== 'done') {
+        return out;
+      }
+    }
+
     const linked = await findAllLinkedWorkItems(item.planSlug, item.itemId);
     for (const wi of linked) {
       if (isSettledWorkItemState(wi.state)) {

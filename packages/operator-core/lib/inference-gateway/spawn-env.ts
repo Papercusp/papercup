@@ -214,21 +214,38 @@ export async function resolveSpawnGatewayEnv(opts: {
     return env;
   }
   if (provider === 'codex') {
-    if (!accountId) return {};
-    try {
-      const [{ loadAccountPool }, { credentialRefSupportsOpenAiBearer }] = await Promise.all([
-        import('../deployment/account-pool-store'),
-        import('./credential-store'),
-      ]);
-      const { parseCodexCliRef } = await import('./codex-cli-bridge');
-      const pool = await loadAccountPool(opts.workspaceId);
-      const acct = pool.accounts.find((a) => a.id === accountId && a.provider === 'codex');
-      if (!acct) return {};
-      if (!parseCodexCliRef(acct.credentialRef) && !(await credentialRefSupportsOpenAiBearer(acct.credentialRef))) return {};
-    } catch {
-      return {};
+    // WI-3645: `accountId` is undefined for the EXPLICIT-AUTO case (wantAuto, above) — the owner
+    // asked for gateway auto-routing — and also whenever a resolved/validated pin turns out
+    // unusable below. Previously either case fell straight to `return {}`, which skips the
+    // gateway ENTIRELY: the spawned codex CLI then talks direct-to-ChatGPT on its own local
+    // credential, unmetered and invisible to the gateway, even though the owner believed "auto"
+    // meant gateway-routed. Mirror the claude branch above instead: ALWAYS route codex through
+    // the gateway once it's enabled, with a pin when one validates, and WITHOUT one otherwise —
+    // the gateway's own codex handling (gateway.ts `proxyOpenAi`) already falls back correctly
+    // to its CLI-account list / pool.active() when no `x-papercusp-account` header is present, so
+    // an unpinned request is NOT a broken request, just an auto-routed one.
+    if (accountId) {
+      try {
+        const [{ loadAccountPool }, { credentialRefSupportsOpenAiBearer }] = await Promise.all([
+          import('../deployment/account-pool-store'),
+          import('./credential-store'),
+        ]);
+        const { parseCodexCliRef } = await import('./codex-cli-bridge');
+        const pool = await loadAccountPool(opts.workspaceId);
+        const acct = pool.accounts.find((a) => a.id === accountId && a.provider === 'codex');
+        const usable =
+          !!acct && (!!parseCodexCliRef(acct.credentialRef) || (await credentialRefSupportsOpenAiBearer(acct.credentialRef)));
+        if (!usable) accountId = undefined; // unusable pin → fall back to gateway auto-routing, not a full bypass
+      } catch {
+        accountId = undefined;
+      }
     }
-    return { PAPERCUSP_ACCOUNT_ID: accountId };
+    // PAPERCUSP_CODEX_GATEWAY signals "route through the gateway" independent of whether a pin
+    // resolved — writeSignedSpawnCodexHome (spawn-mcp.ts) reads it to decide whether to emit
+    // gateway routing config even with no PAPERCUSP_ACCOUNT_ID.
+    const env: Record<string, string> = { PAPERCUSP_CODEX_GATEWAY: '1' };
+    if (accountId) env.PAPERCUSP_ACCOUNT_ID = accountId;
+    return env;
   }
   // Priority-TIER header (gateway-priority-tiers-2026-06-22): stamp the role only when the tier flag is ON,
   // so flag-OFF emits NO new header (the bee's request stream stays byte-identical to today). The gateway

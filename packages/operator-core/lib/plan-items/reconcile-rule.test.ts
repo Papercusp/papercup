@@ -63,7 +63,11 @@ const done = (slug: string, itemId: string, oldStatus: string | null = 'wip') =>
 
 describe('newlyDonePlanItem — reads the fanned PER-ITEM shape (EI-6960)', () => {
   it('extracts a plan item that NEWLY transitioned wip→done', () => {
-    expect(newlyDonePlanItem(perItemEvent(done('p1', 'P-001')))).toEqual({ planSlug: 'p1', itemId: 'P-001' });
+    expect(newlyDonePlanItem(perItemEvent(done('p1', 'P-001')))).toEqual({
+      planSlug: 'p1',
+      itemId: 'P-001',
+      harnessSlug: 'papercusp',
+    });
   });
 
   it('is null when the item did not go to done (still wip)', () => {
@@ -123,7 +127,7 @@ describe('plan-item-reconcile:done — fires on the REAL fan-out path (EI-6960)'
     const p001 = matchReactions(fanned![0]!).find((a) => a.ruleId === RULE_ID);
     expect(p001).toBeDefined();
     expect(p001!.fire).toBe(PLAN_ITEM_RECONCILE_ACTION);
-    expect(p001!.args.completedItems).toEqual([{ planSlug: 'p1', itemId: 'P-001' }]);
+    expect(p001!.args.completedItems).toEqual([{ planSlug: 'p1', itemId: 'P-001', harnessSlug: 'papercusp' }]);
 
     // the still-wip item does not reconcile.
     expect(matchReactions(fanned![1]!).find((a) => a.ruleId === RULE_ID)).toBeUndefined();
@@ -135,6 +139,6 @@ describe('plan-item-reconcile:done — fires on the REAL fan-out path (EI-6960)'
     expect(fanned!).toHaveLength(1);
     const action = matchReactions(fanned![0]!).find((a) => a.ruleId === RULE_ID);
     expect(action).toBeDefined();
-    expect(action!.args.completedItems).toEqual([{ planSlug: 'p2', itemId: 'P-042' }]);
+    expect(action!.args.completedItems).toEqual([{ planSlug: 'p2', itemId: 'P-042', harnessSlug: 'papercusp' }]);
   });
 });

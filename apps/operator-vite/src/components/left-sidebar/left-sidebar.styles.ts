@@ -6,18 +6,18 @@
  * The rail (left-sidebar-tauri-2026-06-07) is the desktop twin of the pui
  * dock's old main pane: Swarm / Voice / Hives as TABS. DOCKED on the LEFT —
  * it reserves layout space (body.has-left-sidebar padding-left + the
- * --left-sidebar-w var) so the app shifts right, sits AFTER the op-chat
- * sidebar (offset by --op-chat-w), collapses to a thin expand-rail, and is
- * drag-resizable from its RIGHT edge. Everything is prefixed pclsb.
+ * --left-sidebar-w var) so the app shifts right, collapses to a thin
+ * expand-rail, and is drag-resizable from its RIGHT edge. Everything is
+ * prefixed pclsb.
  */
 export const LEFT_SIDEBAR_CSS = `
 .pclsb {
   --pclsb-current-accent: var(--accent, #38bdf8);
   position: fixed;
   top: 0;
-  left: var(--op-chat-w, 0px); /* dock AFTER the op-chat sidebar */
+  left: 0;
   bottom: 0;
-  z-index: 1290; /* just under the op-chat sidebar / dev rail layer */
+  z-index: 1290; /* just under the dev rail layer */
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -50,14 +50,13 @@ export const LEFT_SIDEBAR_CSS = `
   --pclsb-current-accent: var(--warn, #fbbf24);
 }
 
-/* Body reservation — the app shifts right by op-chat + this rail. This rule
-   composes with (and must win over) the op-chat-only reservation; both default
-   missing vars to 0px so the sides stay independent. */
+/* Body reservation — the app shifts right by this rail. Each var defaults to
+   0px so the left and right rails compose independently. */
 body.has-left-sidebar {
-  padding-left: calc(var(--op-chat-w, 0px) + var(--left-sidebar-w, 48px));
+  padding-left: var(--left-sidebar-w, 48px);
 }
 body.has-left-sidebar .pc-header {
-  width: calc(100vw - var(--op-chat-w, 0px) - var(--left-sidebar-w, 0px) - var(--dev-rail-w, 0px));
+  width: calc(100vw - var(--left-sidebar-w, 0px) - var(--dev-rail-w, 0px));
 }
 
 /* Expanded shell — tab strip + active panel. Hidden when collapsed (panels

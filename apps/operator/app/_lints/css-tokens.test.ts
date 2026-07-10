@@ -47,8 +47,6 @@ const SOURCE_EXTENSIONS = ['.tsx', '.ts', '.css'] as const;
 const RUNTIME_TOKENS: ReadonlySet<string> = new Set([
   // Radix Select sets this on its trigger to match listbox to trigger width.
   '--radix-select-trigger-width',
-  // Operator chat sidebar drives a custom width var on body for chrome offset.
-  '--op-chat-w',
   // Layout rails measure themselves in JS and write the current width on <html>.
   '--left-sidebar-w',
   '--dev-rail-w',

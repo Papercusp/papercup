@@ -188,15 +188,12 @@
     </script>
     <!--
       Operator-chat sidebar width reservation: REMOVED (native-terminal-desktop
-      D-011 / P-016 / D-017). The web operator chat is OFF by default behind
-      the TESTING flag (the desktop chat is the terminal-native pui dock), and
-      flags are unknowable pre-paint — the old unconditional body-start
-      bootstrap kept adding `has-op-chat` + `--op-chat-w` with the sidebar
-      never mounting, leaving a permanent blank left column. The sidebar now
-      reserves its own space when it actually mounts (OperatorChatSidebar
-      sets the class/var + carries the padding rules in OP_CHAT_SIDEBAR_CSS);
-      the one-frame layout shift on first paint only ever affects
-      TESTING-flag sessions. Guarded by
+      D-011 / P-016 / D-017). An unconditional body-start bootstrap used to add
+      `has-op-chat` + `--op-chat-w` pre-paint, but the sidebar it reserved for
+      was flag-gated and usually never mounted — leaving a permanent blank left
+      column. The sidebar itself is now RETIRED altogether (the desktop chat is
+      the terminal-native pui dock; see _retired/legacy-web-chats/), so neither
+      the class nor the variable exists anywhere. Guarded by
       src/lib/index-html-no-op-chat-reservation.test.ts — do not re-add.
     -->
   </head>

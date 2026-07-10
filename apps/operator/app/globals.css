@@ -2060,457 +2060,41 @@ p {
 .pc-form-row .placeholder-mask { font-style: italic; }
 
 /* Oracle dock — always-mounted assistant */
-.oracle-fab {
-  position: fixed;
-  right: 20px;
-  bottom: 86px;
-  min-width: 142px;
-  height: 54px;
-  border-radius: 999px;
-  padding: 7px 14px 7px 10px;
-  background: color-mix(in srgb, var(--bg), transparent 16%);
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.22);
-  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255,255,255,0.05);
-  display: flex;
-  gap: 9px;
-  align-items: center;
-  justify-content: center;
-  color: var(--fg);
-  font-weight: 760;
-  z-index: 60;
-  transition: transform 0.14s ease, box-shadow 0.14s ease, border-color 0.14s ease;
-  backdrop-filter: blur(14px) saturate(150%);
-  -webkit-backdrop-filter: blur(14px) saturate(150%);
-}
- .oracle-fab:hover {
-  transform: translateY(-2px);
-  border-color: rgb(from var(--accent-strong) r g b / 0.38);
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.46), 0 0 28px rgb(from var(--accent) r g b / 0.08);
-}
- .oracle-fab span { font-size: 13px; }
 
-.oracle-dock {
-  position: fixed;
-  right: 20px;
-  bottom: 86px;
-  width: 390px;
-  max-width: calc(100vw - 40px);
-  height: min(560px, calc(100vh - 40px));
-  background: color-mix(in srgb, var(--bg-deep), transparent 6%);
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.18);
-  border-radius: 18px;
-  box-shadow: 0 24px 72px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255,255,255,0.04);
-  display: flex;
-  flex-direction: column;
-  z-index: 60;
-  overflow: hidden;
-  backdrop-filter: blur(18px) saturate(150%);
-  -webkit-backdrop-filter: blur(18px) saturate(150%);
-}
- .oracle-dock-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--border);
-  background: rgba(255,255,255,0.025);
-}
-.oracle-header-main {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
+ 
+ 
 
-.oracle-header-badge {
-  width: 30px;
-  height: 30px;
-  flex: 0 0 30px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 999px;
-  background: rgb(from var(--accent-strong) r g b / 0.12);
-  color: var(--accent-cool);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
-}
 
-.oracle-header-icon {
-  width: 16px;
-  height: 16px;
-}
+ 
 
-.oracle-header-copy {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
 
-.oracle-header-copy strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--fg);
-  font-size: 15px;
-  line-height: 1.1;
-}
+ 
+ 
+ 
+ 
 
-.oracle-header-copy span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--fg-mute);
-  font-size: 11px;
-  line-height: 1.2;
-}
 
-.oracle-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
+ 
+ 
+ 
+ 
+ 
 
-.oracle-icon-button {
-  width: 28px;
-  height: 28px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid transparent;
-  border-radius: 9px;
-  background: rgba(255,255,255,0.02);
-  color: var(--fg-mute);
-  text-decoration: none;
-  cursor: pointer;
-  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
-}
-
-.oracle-icon-button:hover {
-  color: var(--fg);
-  border-color: rgb(from var(--accent-strong) r g b / 0.18);
-  background: rgb(from var(--accent-strong) r g b / 0.08);
-}
-
-.oracle-icon-button-close:hover {
-  border-color: rgb(from var(--rose-400) r g b / 0.22);
-  background: rgb(from var(--rose-400) r g b / 0.10);
-  color: #fecdd3;
-}
-
-.oracle-header-action-icon {
-  width: 14px;
-  height: 14px;
-}
- .oracle-link {
-  color: var(--fg-mute);
-  text-decoration: none;
-  font-size: 18px;
-  padding: 2px 6px;
-  border-radius: 8px;
-}
- .oracle-link:hover { color: var(--fg); background: rgba(255,255,255,0.05); }
- .oracle-close {
-  background: transparent;
-  border: 0;
-  color: var(--fg-mute);
-  font-size: 22px;
-  line-height: 1;
-  padding: 0 6px;
-  cursor: pointer;
-}
- .oracle-close:hover { color: var(--fg); }
-
-.oracle-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 14px;
-  font-size: 13px;
-  line-height: 1.55;
-}
- .oracle-msg { margin-bottom: 12px; }
- .oracle-msg-role {
-  font-size: 10px;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0;
-  color: var(--fg-mute);
-  margin-bottom: 4px;
-}
- .oracle-msg-user .oracle-msg-role { color: var(--accent); }
- .oracle-msg-content { white-space: pre-wrap; color: var(--fg); }
- .oracle-error {
-  padding: 10px;
-  background: rgb(from var(--rose-400) r g b / 0.10);
-  border: 1px solid rgb(from var(--rose-400) r g b / 0.32);
-  border-radius: 10px;
-  font-size: 12px;
-  color: #fecdd3;
-  margin-top: 8px;
-}
-
-.oracle-empty-state {
-  min-height: 100%;
-  display: grid;
-  place-items: center;
-  align-content: center;
-  gap: 10px;
-  padding: 26px 18px;
-  text-align: center;
-  color: var(--fg-mute);
-}
-
-.oracle-empty-state-icon {
-  width: 42px;
-  height: 42px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 999px;
-  background: rgb(from var(--accent-strong) r g b / 0.10);
-  color: var(--accent-cool);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
-}
-
-.oracle-empty-state-glyph {
-  width: 18px;
-  height: 18px;
-}
-
-.oracle-empty-state-title {
-  color: var(--fg);
-  font-size: 14px;
-  font-weight: 760;
-  line-height: 1.15;
-}
-
-.oracle-empty-state-text {
-  max-width: 220px;
-  font-size: 12.5px;
-  line-height: 1.45;
-}
 
 /* Tab strip — sits below the dock header. Tabs scroll horizontally if
    they overflow; the "+" stays pinned at the right via flex order. */
-.oracle-tabs {
-  display: flex;
-  align-items: stretch;
-  gap: 2px;
-  padding: 4px 8px 0;
-  border-bottom: 1px solid var(--border);
-  background: rgba(0, 0, 0, 0.18);
-  overflow-x: auto;
-  scrollbar-width: thin;
-}
-.oracle-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 6px 5px 10px;
-  border: 1px solid transparent;
-  border-bottom: none;
-  border-radius: 8px 8px 0 0;
-  font-size: 12px;
-  color: var(--fg-mute);
-  cursor: pointer;
-  user-select: none;
-  white-space: nowrap;
-  position: relative;
-  top: 1px;
-}
 
-.oracle-tab:hover { color: var(--fg); background: rgba(255, 255, 255, 0.04); }
-.oracle-tab.is-active {
-  background: var(--bg-elev, var(--bg-1));
-  border-color: var(--border);
-  color: var(--fg);
-  font-weight: 600;
-}
-
-.oracle-tab-label-wrap {
-  min-width: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.oracle-tab-label {
-  line-height: 1;
-}
-
-.oracle-tab-icon {
-  width: 12px;
-  height: 12px;
-  flex: 0 0 12px;
-  opacity: 0.85;
-}
-
-.oracle-tab-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
-.oracle-tab-dot-busy { background: var(--accent); animation: oracle-thinking-bounce 1.2s infinite ease-in-out both; }
-.oracle-tab-dot-unread { background: var(--good, var(--accent)); }
-.oracle-tab-close {
-  width: 20px;
-  height: 20px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  border: none;
-  color: var(--fg-mute);
-  padding: 0;
-  cursor: pointer;
-  border-radius: 5px;
-}
-
-.oracle-tab-close:hover { background: rgba(255, 90, 90, 0.18); color: #fecdd3; }
-.oracle-tab-close-icon {
-  width: 12px;
-  height: 12px;
-}
-
-.oracle-tab-add {
-  width: 32px;
-  height: 28px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  border: 1px dashed var(--border);
-  border-bottom: none;
-  border-radius: 8px 8px 0 0;
-  color: var(--fg-mute);
-  line-height: 1;
-  cursor: pointer;
-  margin-left: 4px;
-  position: relative;
-  top: 1px;
-}
-
-.oracle-tab-add:hover { color: var(--fg); border-color: var(--border-strong, var(--border)); }
-.oracle-tab-add-icon {
-  width: 14px;
-  height: 14px;
-}
 
 /* Picker popover — opens from the "+" button. */
-.oracle-picker {
-  position: absolute; top: 100%; right: 0; margin-top: 4px;
-  min-width: 200px;
-  background: var(--bg-elev, var(--bg-1));
-  border: 1px solid var(--border); border-radius: 8px; padding: 4px;
-  z-index: 200;
-  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.55);
-  display: flex; flex-direction: column; gap: 1px;
-  max-height: 380px; overflow-y: auto;
-}
-.oracle-picker-section {
-  padding: 6px 10px 4px; font-size: 10px; text-transform: uppercase;
-  letter-spacing: 0; color: var(--fg-mute);
-}
-.oracle-picker-item {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
-  background: transparent; border: none; color: var(--fg);
-  padding: 6px 10px; font-size: 13px; text-align: left;
-  border-radius: 4px; cursor: pointer; font: inherit;
-}
-.oracle-picker-item:hover { background: rgb(from var(--accent) r g b / 0.10); }
-.oracle-picker-hint { font-size: 10px; color: var(--fg-mute); }
+
 
 /* Wide single-pane picker variant. */
-.oracle-picker-wide {
-  min-width: 280px;
-  max-width: 320px;
-  max-height: 480px;
-  padding: 0;
-  gap: 0;
-  display: flex;
-  flex-direction: column;
-}
-.oracle-picker-list {
-  display: flex; flex-direction: column; gap: 1px; padding: 4px;
-  overflow-y: auto; scrollbar-width: thin; min-height: 0; flex: 1;
-}
-.oracle-picker-group { display: flex; flex-direction: column; }
-.oracle-picker-harness-row { display: flex; gap: 8px; }
-.oracle-picker-caret {
-  display: inline-block; width: 10px; opacity: 0.7; font-size: 10px;
-  flex-shrink: 0;
-}
-.oracle-picker-roles {
-  display: flex; flex-direction: column; gap: 1px;
-  padding: 2px 0 4px 22px; border-left: 1px solid var(--border);
-  margin-left: 14px;
-}
-.oracle-picker-role-row { font-size: 12px; padding: 4px 8px; opacity: 0.92; }
-.oracle-picker-search {
-  padding: 8px; border-bottom: 1px solid var(--border); background: rgba(0, 0, 0, 0.18);
-}
-.oracle-picker-search input {
-  width: 100%; background: var(--bg); border: 1px solid var(--border);
-  border-radius: 6px; color: var(--fg); font: inherit; font-size: 12px;
-  padding: 6px 8px; outline: none;
-}
-.oracle-picker-search input:focus { border-color: var(--accent); }
-.oracle-picker-panes { display: flex; min-height: 0; flex: 1; }
-.oracle-picker-col {
-  display: flex; flex-direction: column; gap: 1px; padding: 4px;
-  overflow-y: auto; scrollbar-width: thin;
-}
-.oracle-picker-col-left {
-  flex: 0 0 180px; border-right: 1px solid var(--border); background: rgba(0, 0, 0, 0.10);
-}
-.oracle-picker-col-right { flex: 1; min-width: 0; }
-.oracle-picker-results {
-  display: flex; flex-direction: column; gap: 1px; padding: 4px; overflow-y: auto;
-}
-.oracle-picker-row {
-  display: flex; align-items: center; justify-content: space-between; gap: 6px;
-  background: transparent; border: none; color: var(--fg);
-  padding: 6px 10px; font-size: 13px; text-align: left;
-  border-radius: 4px; cursor: pointer; font: inherit; white-space: nowrap;
-}
-.oracle-picker-row:hover { background: rgb(from var(--accent) r g b / 0.10); }
-.oracle-picker-row.is-active { background: rgb(from var(--accent) r g b / 0.16); color: var(--fg); }
+
 
 /* Inline Chatwoot widget — fills the dock body when Support tab is active. */
-.oracle-chatwoot-frame {
-  flex: 1 1 auto;
-  width: 100%;
-  min-height: 0;
-  border: 0;
-  background: var(--bg-deep);
-  color-scheme: dark;
-  display: block;
-}
 
-.oracle-support-loading {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: grid;
-  place-items: center;
-  padding: 18px;
-  background: var(--bg-deep);
-  color: var(--fg-mute);
-  font-size: 13px;
-}
 
-.oracle-form {
-  display: flex;
-  gap: 8px;
-  padding: 10px;
-  border-top: 1px solid var(--border);
-  background: rgba(0, 0, 0, 0.16);
-}
- .oracle-form input {
-  flex: 1;
-  min-width: 0;
-  padding: 10px 11px;
-  background: rgba(255,255,255,0.025);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  color: var(--fg);
-  font-size: 13px;
-}
+ 
 
 /* Marketplace */
 .pc-marketplace-frame {
@@ -2519,865 +2103,11 @@ p {
 }
 
 
-.oracle-tab-add.is-open {
-  color: var(--fg);
-  border-color: rgb(from var(--accent-strong) r g b / 0.34);
-  background: var(--bg-elev, var(--bg-1));
-}
-
-.oracle-picker-body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  background:
-    radial-gradient(circle at 16% 0%, rgb(from var(--accent) r g b / 0.08), transparent 28%),
-    linear-gradient(180deg, color-mix(in srgb, var(--bg), transparent 2%), color-mix(in srgb, var(--bg-deeper), transparent 2%));
-}
-
-.oracle-picker-search {
-  padding: 10px;
-  border-bottom: 1px solid rgb(from var(--accent-strong) r g b / 0.14);
-  background: rgba(255, 255, 255, 0.025);
-}
-
-.oracle-picker-search input {
-  width: 100%;
-  height: 36px;
-  background: rgba(255,255,255,0.03);
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.18);
-  border-radius: 10px;
-  color: var(--fg);
-  font: inherit;
-  font-size: 13px;
-  padding: 0 11px;
-  outline: none;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
-}
-
-.oracle-picker-search input::placeholder {
-  color: var(--fg-mute);
-}
-
-.oracle-picker-search input:focus {
-  border-color: rgb(from var(--accent-strong) r g b / 0.52);
-  box-shadow: 0 0 0 2px rgb(from var(--accent) r g b / 0.14), inset 0 1px 0 rgba(255,255,255,0.04);
-}
-
-.oracle-picker-panes {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-}
-
-.oracle-picker-col {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  overflow: auto;
-  scrollbar-width: thin;
-}
-
-.oracle-picker-col-left {
-  flex: 0 0 176px;
-  border-right: 1px solid rgb(from var(--accent-strong) r g b / 0.12);
-  background: rgba(255, 255, 255, 0.025);
-}
-
-.oracle-picker-col-right {
-  flex: 1;
-  min-width: 0;
-}
-
-.oracle-picker-section {
-  padding: 10px 12px 6px;
-  font-size: 10px;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0;
-  color: var(--fg-mute);
-}
-
-.oracle-picker-row,
-.oracle-picker-item {
-  width: 100%;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-  background: transparent;
-  border: 1px solid transparent;
-  color: var(--fg);
-  padding: 10px 12px;
-  border-radius: 10px;
-  cursor: pointer;
-  font: inherit;
-  text-align: left;
-  transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
-}
-
-.oracle-picker-row-copy {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.oracle-picker-row-copy strong,
-.oracle-picker-item strong {
-  min-width: 0;
-  color: var(--fg);
-  font-size: 12.5px;
-  font-weight: 740;
-  line-height: 1.2;
-}
-
-.oracle-picker-hint {
-  color: var(--fg-mute);
-  font-size: 11px;
-  line-height: 1.35;
-}
-
-.oracle-picker-row-card:hover,
-.oracle-picker-item:hover {
-  background: rgb(from var(--accent-strong) r g b / 0.075);
-  border-color: rgb(from var(--accent-strong) r g b / 0.24);
-}
-
-.oracle-picker-row-card.is-active {
-  background: rgb(from var(--accent-strong) r g b / 0.10);
-  border-color: rgb(from var(--accent-strong) r g b / 0.34);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
-}
-
-.oracle-picker-current-badge {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  min-height: 20px;
-  padding: 0 8px;
-  border-radius: 999px;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.22);
-  background: rgb(from var(--accent-strong) r g b / 0.08);
-  color: var(--accent-cool);
-  font-size: 10px;
-  font-weight: 760;
-  letter-spacing: 0;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.oracle-picker-role-panel {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  height: 100%;
-}
-
-.oracle-picker-role-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 12px;
-  border-bottom: 1px solid rgb(from var(--accent-strong) r g b / 0.14);
-  background: rgba(255, 255, 255, 0.025);
-}
-
-.oracle-picker-role-grid {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  padding: 12px;
-  overflow: auto;
-  align-content: start;
-}
-
-.oracle-picker-role-card {
-  min-width: 0;
-  min-height: 76px;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  align-items: flex-start;
-  justify-content: flex-start;
-  padding: 10px 12px;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.18);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.035);
-  color: var(--fg);
-  text-align: left;
-  cursor: pointer;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
-  transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
-}
-
-.oracle-picker-role-card:hover {
-  transform: translateY(-1px);
-  border-color: rgb(from var(--accent-strong) r g b / 0.32);
-  background: rgb(from var(--accent-strong) r g b / 0.08);
-}
-
-.oracle-picker-role-card strong {
-  color: var(--fg);
-  font-size: 12px;
-  font-weight: 760;
-  line-height: 1.2;
-}
-
-.oracle-picker-role-card span {
-  color: var(--fg-mute);
-  font-size: 11px;
-  line-height: 1.35;
-}
-
-.oracle-picker-results {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 8px;
-  overflow: auto;
-}
-
-.oracle-picker-result-card {
-  border-color: rgb(from var(--accent-strong) r g b / 0.18);
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.oracle-picker-empty {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  place-items: center;
-  align-content: center;
-  gap: 6px;
-  padding: 20px;
-  text-align: center;
-  color: var(--fg-mute);
-}
-
-.oracle-picker-empty strong {
-  color: var(--fg);
-  font-size: 13px;
-}
-
-.oracle-picker-empty span {
-  max-width: 280px;
-  font-size: 11.5px;
-  line-height: 1.45;
-}
-
-.oracle-picker-empty.compact {
-  min-height: auto;
-  align-content: start;
-  place-items: start;
-  text-align: left;
-  padding: 10px 12px;
-}
-
-.oracle-picker-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 10px 12px;
-  border-top: 1px solid rgb(from var(--accent-strong) r g b / 0.14);
-  background: rgba(255, 255, 255, 0.02);
-  color: var(--fg-mute);
-  font-size: 11px;
-}
-
-.oracle-picker-dismiss {
-  flex: 0 0 auto;
-  min-height: 28px;
-  padding: 0 12px;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.22);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--fg);
-  font: inherit;
-  font-size: 11px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.oracle-picker-dismiss:hover {
-  border-color: rgb(from var(--accent-strong) r g b / 0.38);
-  background: rgb(from var(--accent-strong) r g b / 0.08);
-}
-
-@media (max-width: 640px) {
-  .oracle-picker-panes {
-    flex-direction: column;
-  }
-
-  .oracle-picker-col-left {
-    flex: 0 0 auto;
-    max-height: 154px;
-    border-right: 0;
-    border-bottom: 1px solid rgb(from var(--accent-strong) r g b / 0.12);
-  }
-
-  .oracle-picker-row,
-  .oracle-picker-item {
-    padding: 8px 10px;
-  }
-
-  .oracle-picker-role-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 7px;
-    padding: 10px;
-  }
-
-  .oracle-picker-role-card {
-    min-height: 68px;
-    padding: 9px 10px;
-  }
-
-  .oracle-picker-footer {
-    flex-direction: column;
-    align-items: stretch;
-    padding: 8px 10px;
-  }
-
-  .oracle-picker-dismiss {
-    width: 100%;
-  }
-}
-
-.oracle-picker-simple {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: auto;
-}
-
-.oracle-picker-quick-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  padding: 0 10px 10px;
-}
-
-.oracle-picker-quick-card {
-  min-height: 70px;
-  border-color: rgb(from var(--accent-strong) r g b / 0.18);
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.oracle-picker-harness-select {
-  display: grid;
-  gap: 6px;
-  padding: 0 10px 10px;
-}
-
-.oracle-picker-harness-select select {
-  width: 100%;
-  height: 36px;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.22);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--fg);
-  font: inherit;
-  font-size: 13px;
-  padding: 0 11px;
-  outline: none;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
-}
-
-.oracle-picker-harness-select select:focus {
-  border-color: rgb(from var(--accent-strong) r g b / 0.52);
-  box-shadow: 0 0 0 2px rgb(from var(--accent) r g b / 0.14), inset 0 1px 0 rgba(255,255,255,0.04);
-}
-
-.oracle-picker-current-note {
-  color: var(--accent-cool);
-  font-size: 10px;
-  font-weight: 760;
-  letter-spacing: 0;
-  text-transform: uppercase;
-}
-
-.oracle-picker-role-panel-simple {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.oracle-picker-role-panel-simple .oracle-picker-role-header {
-  padding: 0 10px 10px;
-  border-bottom: 0;
-  background: transparent;
-}
-
-.oracle-picker-role-panel-simple .oracle-picker-role-grid {
-  padding-top: 0;
-}
-
 /* Simpler Oracle new-chat picker: one flow, fewer panels. */
-.oracle-picker-simple-slim {
-  gap: 10px;
-  padding: 10px;
-  overflow-y: auto;
-}
 
-.oracle-picker-top-actions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.oracle-picker-choice-card,
-.oracle-picker-agent-row {
-  width: 100%;
-  min-width: 0;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.16);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.032);
-  color: var(--fg);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);
-  transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
-}
-
-.oracle-picker-choice-card:hover,
-.oracle-picker-agent-row:hover {
-  transform: translateY(-1px);
-  border-color: rgb(from var(--accent-strong) r g b / 0.34);
-  background: rgb(from var(--accent-strong) r g b / 0.08);
-}
-
-.oracle-picker-choice-card {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-height: 58px;
-  padding: 10px 12px;
-}
-
-.oracle-picker-choice-card strong {
-  font-size: 12.5px;
-  font-weight: 760;
-  line-height: 1.2;
-}
-
-.oracle-picker-choice-card span {
-  color: var(--fg-mute);
-  font-size: 11px;
-  line-height: 1.35;
-}
-
-.oracle-picker-harness-control {
-  position: relative;
-  flex: 0 0 auto;
-}
-
-.oracle-picker-harness-control select {
-  width: 100%;
-  height: 38px;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.24);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.045);
-  color: var(--fg);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 700;
-  padding: 0 76px 0 12px;
-  outline: none;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.045);
-}
-
-.oracle-picker-harness-control select:focus {
-  border-color: rgb(from var(--accent-strong) r g b / 0.58);
-  box-shadow: 0 0 0 2px rgb(from var(--accent) r g b / 0.16), inset 0 1px 0 rgba(255,255,255,0.045);
-}
-
-.oracle-picker-harness-control .oracle-picker-current-note {
-  position: absolute;
-  right: 12px;
-  top: 50%;
-  transform: translateY(-50%);
-  pointer-events: none;
-  color: var(--accent-cool);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0;
-  text-transform: uppercase;
-}
-
-.oracle-picker-agent-list {
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-bottom: 2px;
-}
-
-.oracle-picker-agent-row {
-  min-height: 52px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 9px 12px;
-}
-
-.oracle-picker-agent-row > span {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.oracle-picker-agent-row strong {
-  color: var(--fg);
-  font-size: 12.5px;
-  font-weight: 760;
-  line-height: 1.2;
-}
-
-.oracle-picker-agent-row small {
-  color: var(--fg-mute);
-  font-size: 11px;
-  line-height: 1.35;
-}
-
-.oracle-picker-agent-row em {
-  flex: 0 0 auto;
-  max-width: 116px;
-  overflow: hidden;
-  color: rgba(203, 213, 225, 0.58);
-  font-size: 10px;
-  font-style: normal;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.oracle-picker-footer-simple {
-  justify-content: flex-end;
-}
 
 /* Final Oracle picker simplification: choose harness, choose agent, start. */
-.oracle-picker-form {
-  padding: 14px;
-  gap: 12px;
-  justify-content: flex-start;
-}
 
-.oracle-picker-field {
-  display: grid;
-  gap: 6px;
-}
-
-.oracle-picker-field label {
-  color: var(--fg-mute);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0;
-  text-transform: uppercase;
-}
-
-.oracle-picker-field select {
-  width: 100%;
-  height: 40px;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.24);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.045);
-  color: var(--fg);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 700;
-  padding: 0 12px;
-  outline: none;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.045);
-}
-
-.oracle-picker-field select:focus {
-  border-color: rgb(from var(--accent-strong) r g b / 0.58);
-  box-shadow: 0 0 0 2px rgb(from var(--accent) r g b / 0.16), inset 0 1px 0 rgba(255,255,255,0.045);
-}
-
-.oracle-picker-field-hint {
-  color: var(--fg-mute);
-  font-size: 11px;
-  line-height: 1.35;
-}
-
-.oracle-picker-start {
-  width: 100%;
-  height: 42px;
-  margin-top: 2px;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.38);
-  border-radius: 13px;
-  background: linear-gradient(180deg, rgb(from var(--accent-strong) r g b / 0.18), rgb(from var(--accent) r g b / 0.10));
-  color: var(--fg);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 800;
-  cursor: pointer;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 10px 24px rgba(0, 0, 0, 0.18);
-}
-
-.oracle-picker-start:hover:not(:disabled) {
-  border-color: rgb(from var(--accent-strong) r g b / 0.58);
-  background: linear-gradient(180deg, rgb(from var(--accent-strong) r g b / 0.23), rgb(from var(--accent) r g b / 0.14));
-}
-
-.oracle-picker-start:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.oracle-picker-secondary {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  padding-top: 2px;
-}
-
-.oracle-picker-shortcut {
-  height: 42px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  border-radius: 12px;
-  color: var(--fg);
-  font: inherit;
-  font-size: 12.5px;
-  font-weight: 800;
-  cursor: pointer;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 10px 24px rgba(0, 0, 0, 0.16);
-  transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
-}
-
-.oracle-picker-shortcut:hover {
-  transform: translateY(-1px);
-}
-
-.oracle-picker-shortcut-oracle {
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.34);
-  background: linear-gradient(180deg, rgb(from var(--accent) r g b / 0.16), rgba(14, 116, 144, 0.12));
-}
-
-.oracle-picker-shortcut-support {
-  border: 1px solid rgba(129, 140, 248, 0.32);
-  background: linear-gradient(180deg, rgba(99, 102, 241, 0.15), rgba(30, 41, 59, 0.14));
-}
-
-.oracle-picker-shortcut-icon {
-  width: 15px;
-  height: 15px;
-  opacity: 0.95;
-}
-
-.oracle-picker-select-trigger {
-  width: 100%;
-  min-height: 40px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.24);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.045);
-  color: var(--fg);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 760;
-  padding: 0 12px;
-  cursor: pointer;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.045);
-  transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
-}
-
-.oracle-picker-select-trigger:hover:not(:disabled),
-.oracle-picker-select-trigger[aria-expanded="true"] {
-  border-color: rgb(from var(--accent-strong) r g b / 0.44);
-  background: rgb(from var(--accent-strong) r g b / 0.075);
-}
-
-.oracle-picker-select-trigger:focus-visible {
-  outline: none;
-  border-color: rgb(from var(--accent-strong) r g b / 0.58);
-  box-shadow: 0 0 0 2px rgb(from var(--accent) r g b / 0.16), inset 0 1px 0 rgba(255,255,255,0.045);
-}
-
-.oracle-picker-select-trigger:disabled {
-  cursor: not-allowed;
-  opacity: 0.58;
-}
-
-.oracle-picker-select-trigger > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.oracle-picker-select-trigger em {
-  color: var(--fg-mute);
-  font-style: normal;
-  font-size: 12px;
-  line-height: 1;
-}
-
-.oracle-picker-select-trigger[aria-expanded="true"] em {
-  transform: rotate(180deg);
-}
-
-.oracle-picker-trigger-role {
-  min-width: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.oracle-picker-trigger-role-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.oracle-picker-role-icon-wrap {
-  width: 20px;
-  height: 20px;
-  flex: 0 0 20px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 999px;
-  background: rgb(from var(--accent-strong) r g b / 0.12);
-  color: var(--accent-cool);
-}
-
-.oracle-picker-role-icon {
-  width: 12px;
-  height: 12px;
-}
-
-.oracle-picker-field-hint {
-  display: block;
-  margin-top: -1px;
-}
-
-.oracle-picker-menu {
-  max-height: 178px;
-  overflow: auto;
-  scrollbar-width: thin;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-top: 4px;
-  padding: 5px;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.18);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--bg-deep), transparent 2%);
-  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255,255,255,0.04);
-}
-
-.oracle-picker-menu-option {
-  position: relative;
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 3px;
-  border: 1px solid transparent;
-  border-radius: 9px;
-  background: transparent;
-  color: var(--fg);
-  font: inherit;
-  padding: 7px 30px 7px 9px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.oracle-picker-menu-option:hover,
-.oracle-picker-menu-option:focus-visible {
-  outline: none;
-  border-color: rgb(from var(--accent-strong) r g b / 0.22);
-  background: rgb(from var(--accent-strong) r g b / 0.075);
-}
-
-.oracle-picker-menu-option.is-selected {
-  border-color: rgb(from var(--accent-strong) r g b / 0.34);
-  background: rgb(from var(--accent-strong) r g b / 0.12);
-}
-
-.oracle-picker-menu-option.is-selected::after {
-  content: "✓";
-  position: absolute;
-  right: 10px;
-  top: 50%;
-  transform: translateY(-50%);
-  color: var(--accent-cool);
-  font-size: 12px;
-  font-weight: 900;
-}
-
-.oracle-picker-menu-option > span {
-  min-width: 0;
-  max-width: 100%;
-}
-
-.oracle-picker-option-line {
-  min-width: 0;
-  max-width: 100%;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.oracle-picker-option-title {
-  min-width: 0;
-  max-width: 100%;
-  color: var(--fg);
-  font-size: 12.5px;
-  font-weight: 760;
-  line-height: 1.25;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.oracle-picker-menu-option > small {
-  max-width: 100%;
-  color: var(--fg-mute);
-  font-size: 10px;
-  line-height: 1.28;
-  text-align: left;
-  padding-left: 28px;
-}
-
-@media (max-width: 640px) {
-  .oracle-picker-quick-grid {
-    gap: 7px;
-    padding: 0 10px 8px;
-  }
-
-  .oracle-picker-quick-card {
-    min-height: 62px;
-  }
-
-  .oracle-picker-role-panel-simple .oracle-picker-role-header {
-    padding-bottom: 8px;
-  }
-
-  .oracle-picker-menu {
-    max-height: 172px;
-  }
-
-}
 
 .pc-marketplace-frame::before {
   content: "";
@@ -4196,7 +2926,6 @@ p {
   }
 
 
-
   .pc-header-cta {
     margin-left: auto;
     min-height: 34px;
@@ -4396,29 +3125,15 @@ p {
     justify-content: flex-start;
   }
 
-  .oracle-fab {
-    right: 14px;
-    bottom: 78px;
-    min-width: 128px;
-    height: 50px;
-  }
+  
 
-  .oracle-dock {
-    left: 12px;
-    right: 12px;
-    bottom: 78px;
-    width: auto;
-    max-width: none;
-    height: min(560px, calc(100vh - 156px));
-  }
+  
 }
 /* Chromeless mode — for routes embedded in iframes (e.g. /pi loaded by the
    pi-coding plugin's dashboard tab). Strips global header + floating widgets
    so the embedded UI fills the viewport. Toggled by app/pi/layout.tsx. */
 body.papercusp-chromeless .pc-header,
-body.papercusp-chromeless #chatwoot_live_chat_widget,
-body.papercusp-chromeless .oracle-dock,
-body.papercusp-chromeless .oracle-fab {
+body.papercusp-chromeless #chatwoot_live_chat_widget {
   display: none !important;
 }
 body.papercusp-chromeless #papercusp-app > main {
@@ -4427,29 +3142,6 @@ body.papercusp-chromeless #papercusp-app > main {
   height: 100vh;
 }
 
-.oracle-tool-chip {
-  display: inline-block;
-  margin: 4px 6px 4px 0;
-  padding: 3px 9px;
-  max-width: 100%;
-  background: rgb(from var(--accent) r g b / 0.10);
-  border: 1px solid rgb(from var(--accent) r g b / 0.28);
-  border-radius: 999px;
-  font-size: 11px;
-  font-family: ui-monospace, "JetBrains Mono", "Menlo", monospace;
-  color: var(--accent-strong);
-  letter-spacing: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  vertical-align: middle;
-}
-.oracle-tool-chip strong { font-weight: 700; }
-.oracle-tool-chip .oracle-tool-args {
-  margin-left: 4px;
-  color: var(--fg-dim);
-  font-weight: 400;
-}
 
 /* =========================================================================
    Operator desktop overrides
@@ -4468,19 +3160,11 @@ body.h-harness-top-collapsed .pc-header {
    against active harness panels behind it. Force fully-opaque solids
    in the desktop operator. The colours match the original tone, just
    without the alpha. */
-.oracle-dock {
-  background: var(--bg-deep) !important;
-}
-.oracle-dock::before {
-  display: none !important;
-}
+
 
 /* Floating Oracle controls must clear the harness shell, which promotes
    `<main>` to z-index: 70 in compact mode. */
-.oracle-fab,
-.oracle-dock {
-  z-index: 80 !important;
-}
+
 
 /* Chatwoot is available only through OracleDock's integrated Support tab. */
 #cw-bubble-holder,
@@ -4491,336 +3175,13 @@ body.h-harness-top-collapsed .pc-header {
   display: none !important;
   pointer-events: none !important;
 }
-.oracle-body {
-  background: var(--bg-deep) !important;
-}
-.oracle-dock-header {
-  background: var(--bg) !important;
-}
-.oracle-msg-content {
-  background: var(--bg) !important;
-}
-.oracle-msg-user .oracle-msg-content {
-  background: var(--bg-popover) !important;
-}
-.oracle-msg-assistant .oracle-msg-content {
-  background: var(--bg-deep) !important;
-}
-.oracle-form {
-  background: var(--bg-deep) !important;
-}
 
 
 /* Another chat polish pass: clearer bubble hierarchy and calmer composer. */
-.oracle-body {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
 
-.oracle-msg {
-  display: flex;
-  flex-direction: column;
-  max-width: 88%;
-}
-
-.oracle-msg-assistant {
-  align-items: flex-start;
-}
-
-.oracle-msg-user {
-  align-self: flex-end;
-  align-items: flex-end;
-}
-
-.oracle-msg-role {
-  margin-bottom: 5px;
-}
-
-.oracle-msg-content {
-  display: inline-block;
-  padding: 10px 12px;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.10);
-  border-radius: 14px;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
-}
-
-.oracle-msg-assistant .oracle-msg-content {
-  border-top-left-radius: 10px;
-}
-
-.oracle-msg-user .oracle-msg-content {
-  border-top-right-radius: 10px;
-  border-color: rgb(from var(--accent) r g b / 0.20);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 8px 18px color-mix(in srgb, var(--bg-deeper), transparent 86%);
-}
-
-.oracle-thinking-row {
-  align-self: flex-start;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 2px;
-  padding: 7px 10px;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.14);
-  border-radius: 999px;
-  background: rgba(255,255,255,0.025);
-  color: var(--fg-mute);
-  font-size: 12px;
-}
-
-.oracle-load-earlier {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 8px 0 12px;
-  font-size: 11px;
-  color: var(--fg-mute, #888);
-}
-
-.oracle-load-earlier-btn {
-  background: transparent;
-  border: 1px solid var(--border-subtle, rgba(255,255,255,0.10));
-  color: var(--fg-mute, #888);
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 11px;
-  cursor: pointer;
-  transition: background 80ms ease;
-}
-
-.oracle-load-earlier-btn:hover {
-  background: rgba(255,255,255,0.04);
-  color: var(--fg, #ddd);
-}
-
-.oracle-load-earlier-end {
-  opacity: 0.55;
-  letter-spacing: 0;
-  text-transform: uppercase;
-  font-size: 10px;
-}
-
-.oracle-thinking-dots {
-  display: inline-flex;
-  gap: 4px;
-}
-
-.oracle-thinking-dots span {
-  width: 4px;
-  height: 4px;
-  border-radius: 999px;
-  background: currentColor;
-  opacity: 0.65;
-  animation: oracle-thinking-bounce 1.2s infinite ease-in-out both;
-}
-.oracle-thinking-dots span:nth-child(2) { animation-delay: 0.15s; }
-.oracle-thinking-dots span:nth-child(3) { animation-delay: 0.3s; }
-
-.oracle-form {
-  gap: 10px;
-  padding: 12px;
-}
-
-.oracle-form input {
-  min-height: 42px;
-  padding: 0 13px;
-  border-radius: 12px;
-  background: rgba(255,255,255,0.035);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
-  transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
-}
-
-.oracle-form input:focus {
-  outline: none;
-  border-color: rgb(from var(--accent-strong) r g b / 0.44);
-  background: rgba(255,255,255,0.045);
-  box-shadow: 0 0 0 2px rgb(from var(--accent) r g b / 0.12), inset 0 1px 0 rgba(255,255,255,0.03);
-}
-
-.oracle-form .pc-button {
-  min-width: 64px;
-  min-height: 42px;
-  border-radius: 12px;
-  box-shadow: none;
-}
-
-.oracle-form .pc-button:disabled {
-  opacity: 0.6;
-}
-
-.oracle-error {
-  align-self: stretch;
-}
-
-.oracle-support-loading {
-  align-content: center;
-  gap: 8px;
-}
-
-.oracle-chatwoot-frame {
-  border-top: 1px solid rgb(from var(--accent-strong) r g b / 0.10);
-}
-
-.oracle-body > *:last-child {
-  margin-bottom: 0;
-}
-
-.oracle-tool-chip {
-  margin-top: 2px;
-  margin-bottom: 2px;
-}
-
-.oracle-msg-assistant .oracle-tool-chip {
-  background: rgb(from var(--accent-strong) r g b / 0.09);
-  border-color: rgb(from var(--accent-strong) r g b / 0.20);
-}
-
-.oracle-msg-user .oracle-tool-chip {
-  background: rgb(from var(--accent) r g b / 0.12);
-  border-color: rgb(from var(--accent) r g b / 0.24);
-}
-
-.oracle-body::-webkit-scrollbar {
-  width: 10px;
-}
-
-.oracle-body::-webkit-scrollbar-thumb {
-  background: rgb(from var(--accent-strong) r g b / 0.14);
-  border-radius: 999px;
-  border: 2px solid var(--bg-deep);
-}
-
-.oracle-body::-webkit-scrollbar-track {
-  background: transparent;
-}
 
 /* Oracle chat pass: clearer message identity and a simpler composer. */
-.oracle-msg {
-  flex-direction: row;
-  align-items: flex-end;
-  gap: 8px;
-  max-width: 92%;
-}
 
-.oracle-msg-user {
-  flex-direction: row-reverse;
-}
-
-.oracle-msg-stack {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-}
-
-.oracle-msg-user .oracle-msg-stack {
-  align-items: flex-end;
-}
-
-.oracle-msg-avatar {
-  width: 24px;
-  height: 24px;
-  flex: 0 0 24px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  margin-bottom: 2px;
-  border-radius: 999px;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.14);
-  background: rgb(from var(--accent-strong) r g b / 0.08);
-  color: var(--accent-cool);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
-}
-
-.oracle-msg-user .oracle-msg-avatar {
-  border-color: rgb(from var(--accent) r g b / 0.24);
-  background: rgb(from var(--accent) r g b / 0.13);
-  color: #dff7ff;
-}
-
-.oracle-msg-icon {
-  width: 13px;
-  height: 13px;
-}
-
-.oracle-msg-content {
-  max-width: 100%;
-}
-
-.oracle-input-shell {
-  position: relative;
-  flex: 1;
-  min-width: 0;
-  display: flex;
-}
-
-.oracle-input-shell input {
-  width: 100%;
-  padding-left: 38px !important;
-}
-
-.oracle-input-icon {
-  position: absolute;
-  left: 13px;
-  top: 50%;
-  width: 15px;
-  height: 15px;
-  transform: translateY(-50%);
-  color: var(--fg-mute);
-  pointer-events: none;
-  transition: color 140ms ease, opacity 140ms ease;
-}
-
-.oracle-input-shell:focus-within .oracle-input-icon {
-  color: var(--accent-cool);
-}
-
-.oracle-send-button {
-  display: inline-flex !important;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding-inline: 14px;
-}
-
-.oracle-send-icon {
-  width: 14px;
-  height: 14px;
-}
-
-@media (max-width: 640px) {
-  .oracle-msg {
-    max-width: 96%;
-    gap: 7px;
-  }
-
-  .oracle-msg-avatar {
-    width: 22px;
-    height: 22px;
-    flex-basis: 22px;
-  }
-
-  .oracle-msg-icon {
-    width: 12px;
-    height: 12px;
-  }
-
-  .oracle-input-shell input {
-    padding-left: 34px !important;
-  }
-
-  .oracle-input-icon {
-    left: 11px;
-    width: 14px;
-    height: 14px;
-  }
-
-  .oracle-send-button {
-    min-width: 68px;
-    padding-inline: 12px;
-  }
-}
 
 /* Critical header CTAs: dark-metal treatment for Mission Control + Operator. */
 .pc-header .pc-header-cta {
@@ -9574,19 +7935,7 @@ body.h-harness-top-collapsed .pc-header {
 /* When the persistent chat rail is open the available chrome width is much
    smaller than the viewport, so keep the account selector compact instead of
    letting it spill off the right edge. */
-body.has-op-chat:not(.op-chat-collapsed) .pc-header nav {
-  gap: 10px;
-}
 
-body.has-op-chat:not(.op-chat-collapsed) .pc-user-trigger {
-  max-width: 34px;
-  padding: 3px 5px;
-}
-
-body.has-op-chat:not(.op-chat-collapsed) .pc-user-trigger-copy,
-body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
-  display: none;
-}
 
 .pc-settings-nav-link {
   position: relative;
@@ -9713,60 +8062,6 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   transform-origin: top center;
 }
 
-.oracle-fab,
-.oracle-dock,
-.oracle-picker-body {
-  transform-origin: bottom right;
-}
-.oracle-fab {
-  overflow: visible;
-}
-.oracle-fab.has-unread {
-  border-color: color-mix(in oklab, var(--good), var(--accent) 28%);
-  box-shadow:
-    0 18px 46px rgba(0, 0, 0, 0.42),
-    0 0 0 1px rgb(from var(--accent) r g b / 0.12),
-    0 0 26px rgb(from var(--accent) r g b / 0.11);
-}
-.oracle-fab-badge {
-  position: absolute;
-  top: 9px;
-  right: 11px;
-  width: 10px;
-  height: 10px;
-  border-radius: 999px;
-  border: 2px solid var(--bg);
-  background: linear-gradient(180deg, var(--accent-strong), var(--accent));
-  box-shadow: 0 0 0 4px rgb(from var(--accent) r g b / 0.12);
-}
-.oracle-fab.has-unread .oracle-fab-badge {
-  animation: pc-header-cta-pulse 1.6s var(--ease-out) infinite;
-}
-.oracle-tabs {
-  scroll-padding-inline: 10px;
-}
-.oracle-tab,
-.oracle-tab-add {
-  transition:
-    color var(--dur-fast) var(--ease-out),
-    background var(--dur-fast) var(--ease-out),
-    border-color var(--dur-fast) var(--ease-out),
-    transform var(--dur-fast) var(--ease-out),
-    box-shadow var(--dur-fast) var(--ease-out);
-}
-.oracle-tab:hover,
-.oracle-tab.is-active,
-.oracle-tab-add:hover,
-.oracle-tab-add.is-open {
-  transform: translateY(-1px);
-}
-.oracle-tab[data-unread="true"] {
-  border-color: color-mix(in oklab, var(--good), transparent 70%);
-  background: color-mix(in oklab, var(--bg-3), var(--good) 9%);
-}
-.oracle-tab[data-busy="true"] {
-  box-shadow: inset 0 -1px 0 color-mix(in oklab, var(--accent), transparent 30%);
-}
 
 .pc-marketplace-toolbar-copy,
 .pc-marketplace-search,
@@ -9860,10 +8155,6 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   .operator-entry,
   .operator-activity-item,
   .operator-budget-option,
-  .oracle-fab,
-  .oracle-fab-badge,
-  .oracle-tab,
-  .oracle-tab-add,
   .pc-marketplace-toolbar-copy,
   .pc-marketplace-search,
   .pc-marketplace-card,
@@ -9880,7 +8171,6 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   .pc-marketplace-dialog-backdrop,
   .pc-marketplace-dialog,
   .pc-support-faq[open] .pc-support-faq-answer,
-  .oracle-fab.has-unread .oracle-fab-badge,
   .pc-header::after,
   .pc-header-nav-link.is-route-pending::after,
   .pc-header-nav-link[data-route-pending="true"]::after {
@@ -10612,7 +8902,6 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
     transform: none;
   }
 }
-
 
 
 @media (max-width: 900px) {
@@ -12472,92 +10761,6 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   transform: scaleX(1);
 }
 
-.oracle-fab--maximal-hud {
-  overflow: hidden;
-}
-.oracle-fab--maximal-hud::before,
-.oracle-fab--maximal-hud::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-.oracle-fab--maximal-hud::before {
-  background: linear-gradient(120deg, transparent 0 34%, rgba(255,255,255,0.16) 44%, transparent 52%);
-  opacity: 0.8;
-  animation: pc-hud-beam-drift 2.6s linear infinite;
-}
-.oracle-fab--maximal-hud::after {
-  inset: 4px;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.16);
-  clip-path: polygon(10px 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%, 0 10px);
-}
-.oracle-dock--maximal-hud {
-  overflow: hidden;
-  isolation: isolate;
-}
-.oracle-dock--maximal-hud > * {
-  position: relative;
-  z-index: 1;
-}
-.oracle-dock--maximal-hud > .oracle-hud-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-}
-.oracle-hud-overlay {
-  overflow: hidden;
-}
-.oracle-hud-scanline {
-  position: absolute;
-  inset: 0 auto 0 -16%;
-  width: 42%;
-  background: linear-gradient(90deg, transparent, rgb(from var(--accent-strong) r g b / 0.12), rgba(255, 255, 255, 0.24), transparent);
-  opacity: 0.36;
-}
-.oracle-hud-reticle {
-  position: absolute;
-  top: 16px;
-  right: 14px;
-  width: 86px;
-  height: 86px;
-  opacity: 0.72;
-  filter: drop-shadow(0 0 14px rgb(from var(--accent) r g b / 0.18));
-}
-.oracle-hud-frame {
-  inset: 8px;
-}
-.oracle-dock--maximal-hud .oracle-tabs,
-.oracle-dock--maximal-hud .oracle-body,
-.oracle-dock--maximal-hud .oracle-form {
-  backdrop-filter: blur(14px) saturate(140%);
-  -webkit-backdrop-filter: blur(14px) saturate(140%);
-}
-.oracle-dock--maximal-hud .oracle-msg {
-  position: relative;
-  isolation: isolate;
-}
-.oracle-dock--maximal-hud .oracle-msg::before {
-  content: "";
-  position: absolute;
-  inset: -2px -6px;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.06);
-  clip-path: polygon(10px 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%, 0 10px);
-  opacity: 0.6;
-  pointer-events: none;
-}
-.oracle-dock--maximal-hud .oracle-msg-content {
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 10px 22px color-mix(in srgb, var(--bg-deeper), transparent 82%);
-}
-.oracle-dock--maximal-hud .oracle-thinking-row {
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.14);
-  background: linear-gradient(90deg, rgb(from var(--accent) r g b / 0.08), rgba(255,255,255,0.02));
-}
-.oracle-dock--maximal-hud .oracle-tab,
-.oracle-dock--maximal-hud .oracle-tab-add {
-  clip-path: polygon(8px 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%, 0 8px);
-}
 
 .pc-marketplace-list--maximal-hud .pc-marketplace-toolbar-copy,
 .pc-marketplace-list--maximal-hud .pc-marketplace-search,
@@ -12718,8 +10921,6 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   .operator-panel--maximal-hud .operator-panel__metric-card::before,
   .operator-hud-scan-beam,
   .pc-header-hud-line,
-  .oracle-fab--maximal-hud::before,
-  .oracle-hud-scanline,
   .pc-marketplace-list--maximal-hud .pc-marketplace-card::before,
   .pc-marketplace-list--maximal-hud .pc-marketplace-dialog::before,
   .pc-support-shell .pc-support-faq::before {
@@ -12729,10 +10930,7 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
 }
 
 /* Maximal HUD experiment branch: oracle stacking fix */
-.oracle-fab--maximal-hud,
-.oracle-dock--maximal-hud {
-  z-index: 1450 !important;
-}
+
 
 /* Maximal GSAP route jump transitions */
 [data-route-transition-page="true"] {
@@ -13705,10 +11903,7 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
 
 /* Operator clarity refinement v2: keep the work surface unblocked and make
    pending decisions read as "state first, action second" at a glance. */
-body:has(.operator-panel) .oracle-fab--maximal-hud,
-body:has(.operator-panel) .oracle-dock--maximal-hud {
-  z-index: 1100 !important;
-}
+
 
 .operator-panel__feed {
   scroll-padding-bottom: 78px;
@@ -13807,7 +12002,6 @@ body:has(.operator-panel) .oracle-dock--maximal-hud {
     0 0 24px rgb(from var(--rose-400) r g b / 0.10),
     inset 0 1px 0 rgba(255,255,255,0.05);
 }
-
 
 
 /* Operator clarity refinement v3: make controls and secondary actions easier
@@ -19602,10 +17796,7 @@ html[data-visual-effects='minimal'] .pc-header-hud-line,
 html[data-visual-effects='minimal'] .hud-frame-corners,
 html[data-visual-effects='minimal'] .pc-route-loading-overlay,
 html[data-visual-effects='minimal'] .operator-panel__lock-flash,
-html[data-visual-effects='minimal'] .operator-panel__svg-frame,
-html[data-visual-effects='minimal'] .oracle-hud-scanline,
-html[data-visual-effects='minimal'] .oracle-hud-reticle,
-html[data-visual-effects='minimal'] .oracle-hud-frame {
+html[data-visual-effects='minimal'] .operator-panel__svg-frame {
   display: none !important;
 }
 
@@ -19669,7 +17860,6 @@ html[data-visual-effects='minimal'] .pc-marketplace-card:hover,
 html[data-visual-effects='minimal'] .pc-marketplace-card-icon,
 html[data-visual-effects='minimal'] .pc-marketplace-harness-list label:hover,
 html[data-visual-effects='minimal'] .pc-header-cta,
-html[data-visual-effects='minimal'] .oracle-fab,
 html[data-visual-effects='minimal'] .operator-panel,
 html[data-visual-effects='minimal'] .operator-entry,
 html[data-visual-effects='minimal'] .operator-panel__metric-card {
@@ -19680,163 +17870,16 @@ html[data-visual-effects='minimal'] .operator-panel__metric-card {
 /* Oracle chat popup clarity: make the new-chat plus button visible without
    relying on surrounding motion, and move the decorative reticle away from
    the tab-strip add affordance. */
-.oracle-dock--maximal-hud .oracle-tab-add {
-  color: rgba(236, 254, 255, 0.98) !important;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.72) !important;
-  border-bottom: none !important;
-  background:
-    radial-gradient(circle at 50% 38%, rgba(236, 254, 255, 0.28), transparent 48%),
-    linear-gradient(180deg, rgb(from var(--accent) r g b / 0.24), color-mix(in srgb, var(--bg-1), transparent 6%)) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.24),
-    0 0 0 1px color-mix(in srgb, var(--bg-1), transparent 18%),
-    0 0 14px rgb(from var(--accent) r g b / 0.30),
-    0 0 22px rgb(from var(--accent-strong) r g b / 0.13) !important;
-  text-shadow: 0 0 10px rgba(236, 254, 255, 0.42);
-}
 
-.oracle-dock--maximal-hud .oracle-tab-add::after {
-  content: "";
-  position: absolute;
-  inset: 4px;
-  border-radius: 6px 6px 0 0;
-  border: 1px solid rgba(236, 254, 255, 0.20);
-  pointer-events: none;
-}
-
-.oracle-dock--maximal-hud .oracle-tab-add:hover,
-.oracle-dock--maximal-hud .oracle-tab-add.is-open {
-  color: #ffffff !important;
-  border-color: color-mix(in srgb, var(--accent-soft), transparent 6%) !important;
-  background:
-    radial-gradient(circle at 50% 38%, rgba(255, 255, 255, 0.34), transparent 50%),
-    linear-gradient(180deg, rgb(from var(--accent) r g b / 0.34), color-mix(in srgb, var(--bg-popover), transparent 2%)) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.32),
-    0 0 0 1px color-mix(in srgb, var(--bg-1), transparent 12%),
-    0 0 18px rgb(from var(--accent) r g b / 0.44),
-    0 0 30px rgb(from var(--accent-strong) r g b / 0.20) !important;
-}
-
-.oracle-dock--maximal-hud .oracle-tab-add-icon {
-  position: relative;
-  z-index: 1;
-  width: 17px;
-  height: 17px;
-  stroke-width: 2.8px;
-  filter:
-    drop-shadow(0 0 4px rgba(236, 254, 255, 0.88))
-    drop-shadow(0 0 8px rgb(from var(--accent) r g b / 0.46));
-}
-
-.oracle-dock--maximal-hud .oracle-hud-reticle {
-  top: 50%;
-  right: auto;
-  left: 50%;
-  translate: -50% -50%;
-  opacity: 0.36 !important;
-  filter: drop-shadow(0 0 18px rgb(from var(--accent) r g b / 0.12));
-}
 
 /* Oracle chat popup correction: restore the original large HUD reticle,
    preserving its vertical placement while shifting it left of the new-chat
    plus button. */
-.oracle-dock--maximal-hud > .oracle-hud-overlay {
-  z-index: 0;
-}
 
-.oracle-dock--maximal-hud .oracle-hud-reticle {
-  top: 16px;
-  right: 112px;
-  left: auto;
-  width: 86px;
-  height: 86px;
-  translate: 0 0;
-  opacity: 0.72 !important;
-  mix-blend-mode: screen;
-  filter: drop-shadow(0 0 14px rgb(from var(--accent) r g b / 0.18));
-}
 
 /* Oracle chat popup button finish: match the dark metal sheen used by the
    rest of the app chrome while preserving existing sizing/placement. */
-.oracle-dock--maximal-hud .oracle-icon-button,
-.oracle-dock--maximal-hud .oracle-send-button,
-.oracle-dock--maximal-hud .oracle-tab-close,
-.oracle-dock--maximal-hud .oracle-picker-item,
-.oracle-dock--maximal-hud .oracle-picker-menu-option {
-  position: relative;
-  overflow: hidden;
-  border-color: rgba(148, 196, 228, 0.24) !important;
-  color: rgba(232, 251, 255, 0.94) !important;
-  background: radial-gradient(circle at 18% 10%, rgba(255, 255, 255, 0.20), transparent 34%),
-    linear-gradient(110deg, rgba(255, 255, 255, 0.09), transparent 22% 72%, rgba(255, 255, 255, 0.045)),
-    repeating-linear-gradient(100deg, rgba(255, 255, 255, 0.035) 0 1px, transparent 1px 5px),
-    linear-gradient(180deg, color-mix(in srgb, var(--bg-raised-high), transparent 8%) 0%, color-mix(in srgb, var(--bg-popover), transparent 4%) 44%, color-mix(in srgb, var(--bg-deeper), transparent 2%) 100%) !important;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 22%),
-    0 10px 24px rgba(0, 0, 0, 0.32),
-    0 0 18px rgba(8, 145, 178, 0.16),
-    inset 0 -10px 20px rgba(0, 0, 0, 0.24) !important;
-  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.72), 0 0 10px rgb(from var(--accent-strong) r g b / 0.18);
-}
 
-.oracle-dock--maximal-hud .oracle-icon-button::before,
-.oracle-dock--maximal-hud .oracle-send-button::before,
-.oracle-dock--maximal-hud .oracle-tab-close::before,
-.oracle-dock--maximal-hud .oracle-picker-item::before,
-.oracle-dock--maximal-hud .oracle-picker-menu-option::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
-  background: linear-gradient(90deg, transparent 0 14%, rgb(from var(--accent-strong) r g b / 0.20) 44%, transparent 70%);
-  opacity: 0.46;
-  transform: translateX(-30%);
-}
-
-.oracle-dock--maximal-hud .oracle-icon-button > *,
-.oracle-dock--maximal-hud .oracle-send-button > *,
-.oracle-dock--maximal-hud .oracle-tab-close > *,
-.oracle-dock--maximal-hud .oracle-picker-item > *,
-.oracle-dock--maximal-hud .oracle-picker-menu-option > * {
-  position: relative;
-  z-index: 1;
-}
-
-.oracle-dock--maximal-hud .oracle-icon-button:hover,
-.oracle-dock--maximal-hud .oracle-send-button:hover:not(:disabled),
-.oracle-dock--maximal-hud .oracle-tab-close:hover,
-.oracle-dock--maximal-hud .oracle-picker-item:hover,
-.oracle-dock--maximal-hud .oracle-picker-menu-option:hover,
-.oracle-dock--maximal-hud .oracle-picker-menu-option:focus-visible {
-  border-color: rgb(from var(--accent-strong) r g b / 0.42) !important;
-  background: radial-gradient(circle at 18% 10%, rgba(255, 255, 255, 0.24), transparent 36%),
-    linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.16), rgb(from var(--accent-strong) r g b / 0.16)) !important;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 18%),
-    0 12px 28px rgba(0, 0, 0, 0.38),
-    0 0 24px rgb(from var(--accent) r g b / 0.22) !important;
-}
-
-.oracle-dock--maximal-hud .oracle-send-button {
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.34) !important;
-  font-weight: 760;
-}
-
-.oracle-dock--maximal-hud .oracle-send-button:disabled {
-  filter: saturate(0.72);
-  opacity: 0.58;
-}
-
-.oracle-dock--maximal-hud .oracle-icon-button-close:hover,
-.oracle-dock--maximal-hud .oracle-tab-close:hover {
-  border-color: rgb(from var(--rose-400) r g b / 0.38) !important;
-  color: #ffd6dc !important;
-  background: radial-gradient(circle at 18% 10%, rgba(255, 255, 255, 0.18), transparent 34%),
-    linear-gradient(0deg, rgb(from var(--rose-400) r g b / 0.18), rgb(from var(--rose-400) r g b / 0.18)) !important;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-deepest), transparent 16%),
-    0 10px 24px rgba(0, 0, 0, 0.36),
-    0 0 22px rgb(from var(--rose-400) r g b / 0.18) !important;
-}
 
 /* Operator pane scrollbar stability: decorative HUD motion should never make
    page or panel scrollbars appear. Only content panes with real overflow
@@ -24491,41 +22534,6 @@ body:has(.operator-panel) {
 
 /* ── Operator sidebar chat parity + card fixes ───────────────────────── */
 
-.op-chat-sidebar .oracle-body > .oracle-empty-state {
-  min-height: calc(100% - 12px);
-}
-
-.op-chat-sidebar .oracle-msg-role {
-  font-size: 10px;
-  letter-spacing: 0;
-}
-
-.op-chat-sidebar .oracle-thinking-row {
-  margin-left: 38px;
-}
-
-.op-chat-sidebar .oracle-error {
-  margin: 0 2px;
-}
-
-.op-chat-sidebar .ask-choice-card {
-  width: min(100%, 318px);
-  margin-top: 8px;
-  margin-left: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.16);
-  border-radius: 16px;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--bg-1), transparent 2%), color-mix(in srgb, var(--bg-deep), transparent 2%));
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 16px 30px rgba(0,0,0,0.22);
-}
-
-.op-chat-sidebar .oracle-msg-user .ask-choice-card {
-  margin-left: auto;
-}
 
 .ask-choice-head {
   display: flex;
@@ -24742,130 +22750,6 @@ body:has(.operator-panel) {
 
 /* ── Operator chat metallic pass 2 ──────────────────────────────────── */
 
-.op-chat-sidebar .oracle-empty-state {
-  gap: 12px;
-}
-
-.op-chat-sidebar .oracle-empty-state-icon {
-  position: relative;
-  width: 52px;
-  height: 52px;
-  background:
-    radial-gradient(circle at 35% 28%, rgba(255,255,255,0.18), transparent 24%),
-    linear-gradient(180deg, rgb(from var(--accent) r g b / 0.18), rgb(from var(--accent) r g b / 0.07));
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.22);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.06),
-    0 14px 28px color-mix(in srgb, var(--bg-deeper), transparent 80%);
-  animation: op-chat-empty-float 4.8s ease-in-out infinite;
-}
-
-.op-chat-sidebar .oracle-empty-state-icon::after {
-  content: '';
-  position: absolute;
-  inset: -8px;
-  border-radius: 999px;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.08);
-  opacity: 0.7;
-}
-
-.op-chat-sidebar .oracle-empty-state-title {
-  letter-spacing: 0;
-  text-shadow: 0 1px 10px rgb(from var(--accent-strong) r g b / 0.08);
-}
-
-.op-chat-sidebar .oracle-empty-state-text {
-  max-width: 248px;
-  color: rgba(148, 163, 184, 0.88);
-  line-height: 1.5;
-}
-
-.op-chat-empty-panel {
-  width: min(100%, 264px);
-  margin-top: 4px;
-  padding: 12px;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.14);
-  border-radius: 16px;
-  background:
-    radial-gradient(circle at 16% 0%, rgb(from var(--accent-strong) r g b / 0.08), transparent 30%),
-    linear-gradient(180deg, color-mix(in srgb, var(--bg), transparent 5%), color-mix(in srgb, var(--bg-deeper), transparent 2%));
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.04),
-    0 16px 30px color-mix(in srgb, var(--bg-deeper), transparent 84%);
-}
-
-.op-chat-empty-panel-label {
-  margin-bottom: 9px;
-  color: color-mix(in srgb, var(--accent-soft), transparent 28%);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0;
-  text-transform: uppercase;
-}
-
-.op-chat-empty-panel-list {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-
-.op-chat-empty-row {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 8px 10px;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.10);
-  border-radius: 12px;
-  background: rgba(255,255,255,0.02);
-  text-align: left;
-}
-
-.op-chat-empty-row-title {
-  color: #eef7ff;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.op-chat-empty-row-hint {
-  color: rgba(148, 163, 184, 0.82);
-  font-size: 11px;
-  line-height: 1.4;
-}
-
-.op-chat-sidebar .ask-choice-card {
-  position: relative;
-  overflow: hidden;
-  backdrop-filter: blur(8px);
-  background:
-    radial-gradient(circle at 16% 0%, rgb(from var(--accent-strong) r g b / 0.09), transparent 28%),
-    linear-gradient(180deg, color-mix(in srgb, var(--bg-1), transparent 2%), color-mix(in srgb, var(--bg-deep), transparent 2%));
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.05),
-    inset 0 -1px 0 rgba(0,0,0,0.18),
-    0 18px 30px rgba(0,0,0,0.24);
-}
-
-.op-chat-sidebar .ask-choice-card::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: -22%;
-  width: 42%;
-  height: 100%;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
-  transform: skewX(-18deg);
-  animation: op-chat-card-sheen 10s ease-in-out infinite;
-  pointer-events: none;
-}
-
-.op-chat-sidebar .ask-choice-card[data-answered="true"] {
-  border-color: rgb(from var(--accent-strong) r g b / 0.24);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.05),
-    inset 0 -1px 0 rgba(0,0,0,0.18),
-    0 20px 34px rgba(0,0,0,0.26),
-    0 0 0 1px rgb(from var(--accent-strong) r g b / 0.06);
-}
 
 .ask-choice-option {
   position: relative;
@@ -24885,7 +22769,7 @@ body:has(.operator-panel) {
 }
 
 .ask-choice-option:hover:not([data-disabled="true"])::before {
-  animation: op-chat-option-sheen 720ms ease;
+  animation: ask-choice-option-sheen 720ms ease;
 }
 
 .ask-choice-option[data-picked="true"] {
@@ -24898,7 +22782,7 @@ body:has(.operator-panel) {
 }
 
 .ask-choice-card[data-answered="true"] .ask-choice-option[data-picked="true"] {
-  animation: op-chat-card-pick 420ms ease-out;
+  animation: ask-choice-card-pick 420ms ease-out;
 }
 
 .ask-choice-option-icon {
@@ -24913,71 +22797,6 @@ body:has(.operator-panel) {
   opacity: 0.85;
 }
 
-.op-chat-sidebar .oracle-msg-role {
-  margin-bottom: 6px;
-  color: rgba(148, 163, 184, 0.84);
-}
-
-.op-chat-sidebar .oracle-msg-user .oracle-msg-role {
-  color: rgb(from var(--accent-strong) r g b / 0.96);
-}
-
-.op-chat-sidebar .oracle-msg-content {
-  padding: 11px 13px 10px;
-  font-size: 13.5px;
-  line-height: 1.62;
-  letter-spacing: 0;
-}
-
-.op-chat-sidebar .oracle-msg-user .oracle-msg-content {
-  padding: 11px 14px 10px;
-  font-weight: 500;
-  letter-spacing: 0;
-}
-
-.op-chat-sidebar .oracle-thinking-row {
-  position: relative;
-  overflow: hidden;
-  gap: 10px;
-  padding: 8px 12px;
-  border-color: rgb(from var(--accent-strong) r g b / 0.18);
-  background:
-    radial-gradient(circle at 14% 50%, rgb(from var(--accent-strong) r g b / 0.08), transparent 24%),
-    linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.02));
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 10px 20px rgba(0,0,0,0.14);
-  animation: op-chat-thinking-breathe 2.4s ease-in-out infinite;
-}
-
-.op-chat-sidebar .oracle-thinking-row::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.12), transparent);
-  transform: translateX(-150%);
-  animation: op-chat-thinking-sheen 2.8s ease-in-out infinite;
-  pointer-events: none;
-}
-
-.op-chat-sidebar .oracle-thinking-row > span:first-child {
-  position: relative;
-  z-index: 1;
-  color: #d5e9f7;
-  font-size: 12.5px;
-  letter-spacing: 0;
-}
-
-.op-chat-sidebar .oracle-thinking-dots {
-  position: relative;
-  z-index: 1;
-}
-
-.op-chat-sidebar .oracle-thinking-dots span {
-  width: 5px;
-  height: 5px;
-  opacity: 0.75;
-  background: var(--accent-strong);
-  box-shadow: 0 0 8px rgb(from var(--accent-strong) r g b / 0.45);
-}
 
 .ask-choice-submit {
   background: linear-gradient(180deg, rgba(71, 198, 255, 0.22), rgb(from var(--accent) r g b / 0.14));
@@ -24989,184 +22808,26 @@ body:has(.operator-panel) {
   transform: translateY(-1px);
 }
 
-@keyframes op-chat-empty-float {
-  0%, 100% { transform: translateY(0); box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 14px 28px color-mix(in srgb, var(--bg-deeper), transparent 80%); }
-  50% { transform: translateY(-2px); box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 18px 34px color-mix(in srgb, var(--bg-deeper), transparent 76%); }
-}
-
-@keyframes op-chat-card-sheen {
-  0%, 14%, 100% { transform: translateX(-180%) skewX(-18deg); opacity: 0; }
-  20%, 34% { transform: translateX(300%) skewX(-18deg); opacity: 1; }
-  38% { opacity: 0; }
-}
-
-@keyframes op-chat-option-sheen {
+@keyframes ask-choice-option-sheen {
   from { transform: translateX(-160%); }
   to { transform: translateX(160%); }
 }
 
-@keyframes op-chat-card-pick {
+@keyframes ask-choice-card-pick {
   0% { transform: scale(0.985); box-shadow: 0 0 0 rgb(from var(--accent-strong) r g b / 0); }
   55% { transform: scale(1.01); box-shadow: 0 0 0 6px rgb(from var(--accent-strong) r g b / 0.08); }
   100% { transform: scale(1); box-shadow: 0 0 0 0 rgb(from var(--accent-strong) r g b / 0); }
 }
 
-@keyframes op-chat-thinking-breathe {
-  0%, 100% { transform: translateY(0); box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 10px 20px rgba(0,0,0,0.14); }
-  50% { transform: translateY(-1px); box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 14px 24px rgba(0,0,0,0.18); }
-}
-
-@keyframes op-chat-thinking-sheen {
-  0%, 18%, 100% { transform: translateX(-150%); opacity: 0; }
-  28%, 60% { transform: translateX(150%); opacity: 1; }
-  68% { opacity: 0; }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .op-chat-sidebar .oracle-empty-state-icon,
-  .op-chat-sidebar .ask-choice-card::before,
   .ask-choice-option::before,
-  .ask-choice-card[data-answered="true"] .ask-choice-option[data-picked="true"],
-  .op-chat-sidebar .oracle-thinking-row,
-  .op-chat-sidebar .oracle-thinking-row::before {
+  .ask-choice-card[data-answered="true"] .ask-choice-option[data-picked="true"] {
     animation: none !important;
   }
 }
 
 /* ── Oracle/Operator sibling pass: assistant panels + command bar ──── */
 
-.oracle-dock .oracle-msg-content,
-.op-chat-sidebar .oracle-msg-content {
-  position: relative;
-  overflow: hidden;
-}
-
-.oracle-dock .oracle-msg-assistant .oracle-msg-content,
-.op-chat-sidebar .oracle-msg-assistant .oracle-msg-content {
-  border-color: rgb(from var(--accent-strong) r g b / 0.16);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--bg-1), transparent 1.5%), color-mix(in srgb, var(--bg-deep), transparent 0.5%)) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.045),
-    inset 0 -1px 0 rgba(0,0,0,0.18),
-    0 12px 24px rgba(0,0,0,0.18);
-}
-
-.oracle-dock .oracle-msg-assistant .oracle-msg-content::before,
-.op-chat-sidebar .oracle-msg-assistant .oracle-msg-content::before {
-  content: '';
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 1px;
-  background: linear-gradient(180deg, rgb(from var(--accent-strong) r g b / 0), rgb(from var(--accent-strong) r g b / 0.55), rgb(from var(--accent-strong) r g b / 0));
-  opacity: 0.85;
-}
-
-.oracle-dock .oracle-msg-assistant .oracle-msg-content::after,
-.op-chat-sidebar .oracle-msg-assistant .oracle-msg-content::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(180deg, rgba(255,255,255,0.035), transparent 26%);
-  pointer-events: none;
-}
-
-.oracle-dock .oracle-msg-role,
-.op-chat-sidebar .oracle-msg-role {
-  letter-spacing: 0;
-}
-
-.oracle-dock .oracle-msg-user .oracle-msg-content,
-.op-chat-sidebar .oracle-msg-user .oracle-msg-content {
-  font-weight: 500;
-}
-
-.oracle-dock .oracle-form,
-.op-chat-sidebar .oracle-form {
-  align-items: center;
-  gap: 10px;
-}
-
-.oracle-dock .oracle-input-shell,
-.op-chat-sidebar .oracle-input-shell {
-  align-items: center;
-  min-height: 46px;
-  padding-right: 10px;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.14);
-  border-radius: 14px;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.02));
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.045),
-    0 8px 18px rgba(0,0,0,0.12);
-}
-
-.oracle-dock .oracle-input-shell::before,
-.op-chat-sidebar .oracle-input-shell::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  border: 1px solid rgba(255,255,255,0.03);
-  pointer-events: none;
-}
-
-.oracle-dock .oracle-input-shell input,
-.op-chat-sidebar .oracle-input-shell input {
-  padding-right: 62px !important;
-  letter-spacing: 0;
-}
-
-.oracle-input-meta {
-  position: absolute;
-  right: 10px;
-  top: 50%;
-  transform: translateY(-50%);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 38px;
-  height: 22px;
-  padding: 0 8px;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.12);
-  border-radius: 999px;
-  background: rgb(from var(--accent-strong) r g b / 0.06);
-  color: color-mix(in srgb, var(--accent-soft), transparent 30%);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0;
-  text-transform: uppercase;
-  pointer-events: none;
-}
-
-.oracle-input-shell:focus-within .oracle-input-meta {
-  border-color: rgb(from var(--accent-strong) r g b / 0.24);
-  color: color-mix(in srgb, var(--accent-soft), transparent 10%);
-  background: rgb(from var(--accent-strong) r g b / 0.10);
-}
-
-.oracle-dock .oracle-send-button,
-.op-chat-sidebar .oracle-send-button {
-  min-width: 76px;
-  gap: 6px;
-}
-
-.oracle-dock .oracle-send-button .oracle-send-icon,
-.op-chat-sidebar .oracle-send-button .oracle-send-icon {
-  width: 14px;
-  height: 14px;
-}
-
-@media (max-width: 640px) {
-  .oracle-input-meta {
-    display: none;
-  }
-
-  .oracle-dock .oracle-input-shell input,
-  .op-chat-sidebar .oracle-input-shell input {
-    padding-right: 16px !important;
-  }
-}
 
 /* ── Sentinel Cup brand adoption for Operator ───────────────────────── */
 
@@ -25232,43 +22893,9 @@ body:has(.operator-panel) {
     drop-shadow(0 0 1px rgba(255,255,255,0.40));
 }
 
-.op-chat-sidebar .oracle-empty-state-glyph {
-  width: 28px;
-  height: 28px;
-  filter: drop-shadow(0 0 12px rgb(from var(--accent-strong) r g b / 0.20));
-}
 
 /* ── Sentinel Cup rollout: tutorial, onboarding, HUD ───────────────── */
 
-.oracle-link--tutorial {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.oracle-link-icon {
-  width: 16px;
-  height: 16px;
-  filter: drop-shadow(0 0 6px rgb(from var(--accent-strong) r g b / 0.18));
-}
-
-.op-chat-empty-panel-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 9px;
-}
-
-.op-chat-empty-panel-logo {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
-  filter: drop-shadow(0 0 8px rgb(from var(--accent-strong) r g b / 0.18));
-}
-
-.op-chat-empty-panel-label {
-  margin-bottom: 0;
-}
 
 .operator-reactor-core__logo {
   position: relative;
@@ -25330,9 +22957,6 @@ body:has(.operator-panel) {
   text-transform: uppercase;
 }
 
-.op-chat-wordmark-title {
-  font-size: 14px;
-}
 
 .operator-panel__wordmark .operator-wordmark__title {
   font-size: 22px;
@@ -25342,29 +22966,6 @@ body:has(.operator-panel) {
   font-size: 9px;
 }
 
-.op-chat-sidebar .oracle-body {
-  padding-top: 10px;
-}
-
-.op-chat-sidebar .oracle-load-earlier {
-  padding: 2px 0 6px;
-}
-
-.op-chat-sidebar .oracle-load-earlier-end {
-  opacity: 0.42;
-  font-size: 9px;
-}
-
-.oracle-dock .oracle-header-badge,
-.oracle-dock .oracle-input-shell:focus-within .oracle-input-icon {
-  color: #8ae8ff;
-}
-
-.oracle-dock .oracle-header-icon,
-.oracle-dock .oracle-input-icon,
-.oracle-link-icon {
-  filter: drop-shadow(0 0 7px rgb(from var(--accent-strong) r g b / 0.18));
-}
 
 /* ───────────────────────────────────────────────────────────────────
  * Setup Wizard — used by /setup (first-run) and /settings/setup-wizard
@@ -26105,298 +23706,14 @@ body:has(.operator-panel) {
  * cards compact enough for the 360px sidebar, make multi-select controls read
  * like checkboxes, and never allow the transcript/composer to create horizontal
  * scroll. */
-.op-chat-sidebar,
-.op-chat-sidebar * {
-  box-sizing: border-box;
-}
 
-.op-chat-sidebar .oracle-body {
-  overflow-x: hidden !important;
-  padding: 9px 8px 10px !important;
-  gap: 8px !important;
-}
-
-.op-chat-sidebar .oracle-virtual-container,
-.op-chat-sidebar .oracle-msg,
-.op-chat-sidebar .oracle-msg-stack,
-.op-chat-sidebar .oracle-msg-content,
-.op-chat-sidebar .ask-choice-card,
-.op-chat-sidebar .oracle-form,
-.op-chat-sidebar .oracle-input-shell {
-  max-width: 100% !important;
-  min-width: 0 !important;
-}
-
-.op-chat-sidebar .oracle-virtual-container {
-  overflow: visible !important;
-}
-
-.op-chat-sidebar .oracle-msg {
-  overflow: visible !important;
-  padding-inline: 0 !important;
-}
-
-.op-chat-sidebar .oracle-msg-stack {
-  width: calc(100% - 34px);
-}
-
-.op-chat-sidebar .oracle-msg-user .oracle-msg-stack {
-  width: min(86%, 294px);
-}
-
-.op-chat-sidebar .oracle-msg-role,
-.op-chat-sidebar .oracle-msg-user .oracle-msg-role {
-  display: none !important;
-}
-
-.op-chat-sidebar .oracle-msg-content {
-  overflow-wrap: anywhere;
-}
-
-.op-chat-sidebar .ask-choice-card {
-  width: 100% !important;
-  gap: 7px !important;
-  margin-top: 6px !important;
-  padding: 9px !important;
-  border-radius: 13px !important;
-  border-color: rgb(from var(--accent-strong) r g b / 0.14) !important;
-  background: color-mix(in srgb, var(--bg-deep), transparent 4%) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.035),
-    0 8px 18px rgba(0,0,0,0.18) !important;
-}
-
-.op-chat-sidebar .ask-choice-card::before,
-.op-chat-sidebar .ask-choice-option::before {
-  display: none !important;
-}
-
-.op-chat-sidebar .ask-choice-card[data-answered="true"] {
-  border-color: rgb(from var(--accent-strong) r g b / 0.18) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.035),
-    0 7px 16px rgba(0,0,0,0.16) !important;
-}
-
-.op-chat-sidebar .ask-choice-head {
-  gap: 4px;
-}
-
-.op-chat-sidebar .ask-choice-question {
-  color: #f3f8ff;
-  font-size: 12.5px;
-  font-weight: 700;
-  line-height: 1.34;
-  overflow-wrap: anywhere;
-}
-
-.op-chat-sidebar .ask-choice-picked {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  align-items: baseline;
-  margin-top: 1px;
-  color: color-mix(in srgb, var(--accent-soft), transparent 28%);
-  font-size: 9px;
-  letter-spacing: 0;
-}
-
-.op-chat-sidebar .ask-choice-picked span {
-  max-width: 100%;
-  color: #e8f7ff;
-  font-size: 11px;
-  overflow-wrap: anywhere;
-}
-
-.op-chat-sidebar .ask-choice-options {
-  gap: 5px !important;
-}
-
-.op-chat-sidebar .ask-choice-option {
-  min-height: 38px;
-  gap: 8px !important;
-  padding: 7px 8px !important;
-  border-radius: 11px !important;
-  background: rgba(255,255,255,0.018) !important;
-  box-shadow: none !important;
-  transform: none !important;
-}
-
-.op-chat-sidebar .ask-choice-option:hover:not([data-disabled="true"]) {
-  background: rgb(from var(--accent-strong) r g b / 0.07) !important;
-  transform: none !important;
-}
-
-.op-chat-sidebar .ask-choice-option[data-picked="true"] {
-  background: rgb(from var(--accent) r g b / 0.09) !important;
-  border-color: rgb(from var(--accent) r g b / 0.26) !important;
-}
-
-.op-chat-sidebar .ask-choice-option[data-style="primary"][data-picked="true"] {
-  background: rgb(from var(--accent) r g b / 0.12) !important;
-}
-
-.op-chat-sidebar .ask-choice-option[data-style="danger"][data-picked="true"] {
-  background: rgba(248, 113, 113, 0.10) !important;
-}
-
-.op-chat-sidebar .ask-choice-option-icon {
-  width: 24px !important;
-  height: 24px !important;
-  flex-basis: 24px !important;
-  border-radius: 8px !important;
-  background: rgba(255,255,255,0.025) !important;
-  color: color-mix(in srgb, var(--accent-soft), transparent 14%);
-  box-shadow: none !important;
-}
-
-.op-chat-sidebar .ask-choice-card[data-multi="true"] .ask-choice-option-icon {
-  width: 18px !important;
-  height: 18px !important;
-  flex-basis: 18px !important;
-  border-radius: 5px !important;
-  background: color-mix(in srgb, var(--bg-deepest), transparent 58%) !important;
-}
-
-.op-chat-sidebar .ask-choice-card[data-multi="true"] .ask-choice-option[data-picked="true"] .ask-choice-option-icon {
-  background: rgb(from var(--accent) r g b / 0.18) !important;
-  border-color: rgb(from var(--accent-strong) r g b / 0.48) !important;
-}
-
-.op-chat-sidebar .ask-choice-icon {
-  width: 13px !important;
-  height: 13px !important;
-}
-
-.op-chat-sidebar .ask-choice-card[data-multi="true"] .ask-choice-icon {
-  width: 12px !important;
-  height: 12px !important;
-}
-
-.op-chat-sidebar .ask-choice-option-label {
-  color: #f2f8ff;
-  font-size: 12px !important;
-  font-weight: 650;
-  line-height: 1.24;
-  white-space: normal !important;
-  overflow: visible !important;
-  text-overflow: clip !important;
-  overflow-wrap: anywhere;
-}
-
-.op-chat-sidebar .ask-choice-option-hint {
-  color: rgba(148, 163, 184, 0.82);
-  font-size: 10.5px !important;
-  line-height: 1.28;
-  white-space: normal !important;
-  overflow: visible !important;
-  text-overflow: clip !important;
-  overflow-wrap: anywhere;
-}
-
-.op-chat-sidebar .ask-choice-option-chevron {
-  width: 13px !important;
-  height: 13px !important;
-  flex-basis: 13px !important;
-}
-
-.op-chat-sidebar .ask-choice-submit-row {
-  position: sticky;
-  bottom: 0;
-  margin: 1px -2px -2px;
-  padding-top: 6px;
-  gap: 6px;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-deep), transparent 100%), color-mix(in srgb, var(--bg-deep), transparent 2%) 45%);
-}
-
-.op-chat-sidebar .ask-choice-submit-hint {
-  min-width: 0;
-  white-space: nowrap;
-  font-size: 10px;
-  line-height: 1.2;
-}
-
-.op-chat-sidebar .ask-choice-submit {
-  min-height: 30px;
-  padding-inline: 10px;
-  border-radius: 9px;
-  font-size: 11px;
-}
-
-.op-chat-sidebar .oracle-form {
-  overflow-x: hidden !important;
-  padding: 10px 8px !important;
-  gap: 7px !important;
-}
-
-.op-chat-sidebar .oracle-input-shell {
-  flex: 1 1 min(0, 100%);
-  min-width: 0 !important;
-  min-height: 40px !important;
-}
-
-.op-chat-sidebar .oracle-input-shell input {
-  min-width: 0 !important;
-}
-
-.op-chat-sidebar .oracle-send-button {
-  flex: 0 0 auto;
-  min-width: 52px !important;
-  min-height: 40px !important;
-  padding-inline: 10px !important;
-}
 
 /* Compact follow-up: preserve readability without letting long fixture labels
    turn a single chat decision into a full-screen card. */
-.op-chat-sidebar .ask-choice-question {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-  overflow: hidden;
-}
 
-.op-chat-sidebar .ask-choice-option-label,
-.op-chat-sidebar .ask-choice-option-hint {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  overflow: hidden !important;
-  text-overflow: ellipsis !important;
-}
 
-.op-chat-sidebar .ask-choice-option-label {
-  -webkit-line-clamp: 2;
-}
-
-.op-chat-sidebar .ask-choice-option-hint {
-  -webkit-line-clamp: 1;
-}
-
-.op-chat-sidebar .ask-choice-card[data-multi="true"] .ask-choice-option-icon {
-  width: 16px !important;
-  height: 16px !important;
-  flex-basis: 16px !important;
-  border-width: 1.5px;
-  border-radius: 4px !important;
-  color: #e8f7ff;
-}
-
-.op-chat-sidebar .ask-choice-card[data-multi="true"] .ask-choice-option:not([data-picked="true"]) .ask-choice-icon {
-  display: none;
-}
-
-.op-chat-sidebar .ask-choice-card[data-multi="true"] .ask-choice-option[data-picked="true"] .ask-choice-icon {
-  display: block;
-}
 /* Deck panel usability refresh */
-body.has-op-chat:has(.operator-panel) .operator-panel {
-  left: calc(var(--op-chat-w, 360px) + 16px) !important;
-}
 
-body.has-op-chat:not(.op-chat-collapsed):has(.operator-panel) .op-chat-sidebar {
-  opacity: 0.22;
-  filter: saturate(0.45) blur(4px);
-  pointer-events: none;
-}
 
 .pc-header .pc-operator-popdown,
 .pc-header .pc-operator-auto-feed {
@@ -26528,9 +23845,7 @@ body.has-op-chat:not(.op-chat-collapsed):has(.operator-panel) .op-chat-sidebar {
 }
 
 @media (max-width: 960px) {
-  body.has-op-chat:has(.operator-panel) .operator-panel {
-    left: 12px !important;
-  }
+  
 
   .operator-panel__body {
     grid-template-columns: 1fr !important;

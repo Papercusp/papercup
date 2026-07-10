@@ -34,14 +34,36 @@
  * `fetch-failed`) rather than crashing.
  *
  * Registration entry point: `wireHiveGitDial(socket, topic,
- * selfDevicePubkeyBase64)` — called once per connection alongside
+ * selfDevicePubkeyBase64, sign)` — called once per connection alongside
  * `wireHiveGitServe` (swarm.ts's connection handler).
+ *
+ * WI-3641 hardening: the hello used to carry a BARE, UNSIGNED
+ * `{device_pubkey}` claim — any peer able to reach the hive's swarm topic
+ * (DHT topics aren't secret) could open this channel and claim ANY
+ * device_pubkey, including a genuine member's. Nothing downstream could then
+ * trust "this socket is device X" for an authorization decision (exactly the
+ * gap WI-3641 found in serve-wiring.ts's scope-repo refusal). The hello now
+ * carries a `signature` over a fixed, topic-bound context string, produced
+ * with the SAME device Ed25519 keypair bound to the peer's GitHub attestation
+ * (`signWithDeviceKey` / the `announceIdentityOverride.sign` test seam boot.ts
+ * already uses for the announce channel) — so only the actual private-key
+ * holder can produce a hello that verifies, and a signature over `topic`
+ * prevents a captured hello being replayed on a different hive's channel. An
+ * unverified/forged hello is DROPPED (never registered) rather than trusted.
  */
 import { Duplex } from 'node:stream';
 import { appendFileSync } from 'node:fs';
 import Protomux, { type ProtomuxChannel } from 'protomux';
 import c, { type CompactEncoding } from 'compact-encoding';
+import { verifyEd25519 } from '../../identity/ed25519';
 import { openHiveGitFetchDuplex } from './serve-wiring';
+
+/** The fixed, topic-bound context a hello's signature is over — binding the
+ *  signature to THIS hive's topic so a captured hello can't be replayed to
+ *  claim the same device on a different hive's channel. */
+function helloSignContext(topic: Buffer): Buffer {
+  return Buffer.concat([Buffer.from('papercusp/hive-git-hello:v1:'), topic]);
+}
 
 // TEMP debug trace (WI-3583 diagnosis) — writes to a file, NOT console.error,
 // because this repo's vitest setup (vitest-fail-on-console) fails any test
@@ -66,21 +88,30 @@ export const HIVE_GIT_HELLO_PROTOCOL = 'papercusp/hive-git-hello';
 
 interface HelloFrame {
   device_pubkey: string;
+  /** Raw 64-byte Ed25519 signature over `helloSignContext(topic)`, proving
+   *  possession of `device_pubkey`'s private key (WI-3641). */
+  signature: Buffer;
 }
 
 const helloEncoding: CompactEncoding<HelloFrame> = {
   preencode(state, v) {
     c.string.preencode(state, v.device_pubkey);
+    c.buffer.preencode(state, v.signature);
   },
   encode(state, v) {
     c.string.encode(state, v.device_pubkey);
+    c.buffer.encode(state, v.signature);
   },
   decode(state) {
-    return { device_pubkey: c.string.decode(state) };
+    const device_pubkey = c.string.decode(state);
+    const signature = c.buffer.decode(state);
+    return { device_pubkey, signature };
   },
 };
 
 // ─── registry: topicHex -> devicePubkeyBase64 -> live socket ──────────────
+// Only ever populated from a SIGNATURE-VERIFIED hello (see handleHello) —
+// never a bare claim.
 
 const registryByTopic = new Map<string, Map<string, unknown>>();
 
@@ -92,6 +123,13 @@ function registryFor(topicHex: string): Map<string, unknown> {
   }
   return m;
 }
+
+/** Reverse index: socket -> the VERIFIED remote device_pubkey bound to it (one
+ *  per socket — a connection is one peer). Populated/cleared alongside
+ *  `registryByTopic`. This is what `resolveVerifiedDevicePubkeyForSocket`
+ *  (serve-wiring.ts's WI-3641 consumer) reads: "which device, if any, has
+ *  PROVEN it owns this specific live connection". */
+const verifiedDeviceBySocket = new WeakMap<object, string>();
 
 // ─── per-(muxer, topic) channel state ──────────────────────────────────────
 // Mirrors serve-wiring.ts's `ensureChannel`/`resolveMuxStream` pattern
@@ -112,6 +150,11 @@ interface ChannelState {
    *  before this is set, if the channel was materialized early by the lazy
    *  `pair()` notifier below) to send our own hello as soon as both are true. */
   selfDevicePubkeyBase64: string | null;
+  /** Signer for `selfDevicePubkeyBase64`'s private key — set alongside it by
+   *  `wireHiveGitDial`. Null until then (channel materialized early by the
+   *  lazy `pair()` notifier), matching `selfDevicePubkeyBase64`'s own gate in
+   *  `maybeSendHello`. */
+  sign: ((bytes: Buffer) => Promise<Buffer> | Buffer) | null;
   helloSent: boolean;
   remoteDevicePubkey: string | null;
   /** The connection socket THIS side registered with (set by
@@ -146,28 +189,38 @@ function newState(): ChannelState {
     opened: false,
     openedWaiters: [],
     selfDevicePubkeyBase64: null,
+    sign: null,
     helloSent: false,
     remoteDevicePubkey: null,
     localSocket: null,
   };
 }
 
-function maybeSendHello(state: ChannelState): void {
+function maybeSendHello(state: ChannelState, topic: Buffer): void {
   dbg('maybeSendHello', {
     opened: state.opened,
     helloSent: state.helloSent,
     hasSelf: !!state.selfDevicePubkeyBase64,
+    hasSign: !!state.sign,
     hasHello: !!state.hello,
     self: state.selfDevicePubkeyBase64?.slice(0, 8),
   });
-  if (!state.opened || state.helloSent || !state.selfDevicePubkeyBase64 || !state.hello) return;
-  try {
-    state.hello.send({ device_pubkey: state.selfDevicePubkeyBase64 });
-    state.helloSent = true;
-    dbg('hello sent OK', { self: state.selfDevicePubkeyBase64.slice(0, 8) });
-  } catch (e) {
-    dbg('hello send THREW', { err: String(e) });
-  }
+  if (!state.opened || state.helloSent || !state.selfDevicePubkeyBase64 || !state.sign || !state.hello) return;
+  // Mark sent BEFORE the async sign resolves — a second `maybeSendHello` call
+  // racing in (onopen firing while register() is still mid-flight, or vice
+  // versa) must not send two hellos on the same channel.
+  state.helloSent = true;
+  const self = state.selfDevicePubkeyBase64;
+  const sign = state.sign;
+  void (async () => {
+    try {
+      const signature = await sign(helloSignContext(topic));
+      state.hello?.send({ device_pubkey: self, signature });
+      dbg('hello sent OK', { self: self.slice(0, 8) });
+    } catch (e) {
+      dbg('hello send THREW', { err: String(e) });
+    }
+  })();
 }
 
 /** Get-or-create the hello channel + its message slot for (mux, topic).
@@ -189,11 +242,14 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
       state!.opened = true;
       const waiters = state!.openedWaiters.splice(0);
       for (const w of waiters) w();
-      maybeSendHello(state!);
+      maybeSendHello(state!, topic);
     },
     onclose: () => {
       dbg('[HGDEBUG-dial] onclose fired', { topicHex });
       if (state!.remoteDevicePubkey) registryFor(topicHex).delete(state!.remoteDevicePubkey);
+      if (state!.localSocket && typeof state!.localSocket === 'object') {
+        verifiedDeviceBySocket.delete(state!.localSocket as object);
+      }
     },
   });
   dbg('[HGDEBUG-dial] createChannel returned', { topicHex, channel: !!channel });
@@ -208,6 +264,14 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
     encoding: helloEncoding,
     onmessage: (v) => {
       dbg('[HGDEBUG-dial] hello received', { topicHex, from: v.device_pubkey.slice(0, 8), hasLocalSocket: !!state!.localSocket });
+      // WI-3641: verify possession of `v.device_pubkey`'s private key BEFORE
+      // trusting/registering anything — an unsigned or badly-signed hello is
+      // dropped exactly like a not-yet-arrived one (fail soft, never throws;
+      // the registry simply stays "not resolvable" for the claimed device).
+      if (!verifyEd25519(helloSignContext(topic), v.device_pubkey, v.signature)) {
+        dbg('[HGDEBUG-dial] hello signature INVALID — dropping', { topicHex, from: v.device_pubkey.slice(0, 8) });
+        return;
+      }
       state!.remoteDevicePubkey = v.device_pubkey;
       // `localSocket` is set by `wireHiveGitDial`'s register() — normally
       // already populated by the time a peer's hello arrives (both run at
@@ -215,7 +279,12 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
       // fail soft (drop this hello) rather than register a `null` socket;
       // the registry then simply stays "not yet resolvable" for this device,
       // matching every other not-connected-yet case.
-      if (state!.localSocket) registryFor(topicHex).set(v.device_pubkey, state!.localSocket);
+      if (state!.localSocket) {
+        registryFor(topicHex).set(v.device_pubkey, state!.localSocket);
+        if (typeof state!.localSocket === 'object') {
+          verifiedDeviceBySocket.set(state!.localSocket as object, v.device_pubkey);
+        }
+      }
     },
   });
   channel.open();
@@ -274,7 +343,12 @@ function resolveMuxStream(socket: unknown): { mux: Protomux; opened?: Promise<un
  * must never crash the shared swarm connection handler. Call once per
  * connection, alongside `wireHiveGitServe` / `openAnnounceChannel`.
  */
-export function wireHiveGitDial(socket: unknown, topic: Buffer, selfDevicePubkeyBase64: string): void {
+export function wireHiveGitDial(
+  socket: unknown,
+  topic: Buffer,
+  selfDevicePubkeyBase64: string,
+  sign: (bytes: Buffer) => Promise<Buffer> | Buffer,
+): void {
   try {
     dbg('[HGDEBUG-dial] wireHiveGitDial called', { self: selfDevicePubkeyBase64.slice(0, 8) });
     const { mux, opened } = resolveMuxStream(socket);
@@ -284,12 +358,13 @@ export function wireHiveGitDial(socket: unknown, topic: Buffer, selfDevicePubkey
         dbg('[HGDEBUG-dial] register() running');
         const state = ensureChannel(mux, topic);
         state.selfDevicePubkeyBase64 = selfDevicePubkeyBase64;
+        state.sign = sign;
         state.localSocket = socket;
         // `onopen` may already have fired (the channel was materialized
         // early by the lazy `pair()` notifier in `resolveMuxStream`, before
         // this register() ran) — send now if so; otherwise `onopen` itself
         // calls `maybeSendHello` once it fires.
-        maybeSendHello(state);
+        maybeSendHello(state, topic);
         dbg('[HGDEBUG-dial] register() done', { opened: state.opened, helloSent: state.helloSent });
       } catch (e) {
         dbg('[HGDEBUG-dial] register() threw', e);
@@ -310,6 +385,21 @@ export function wireHiveGitDial(socket: unknown, topic: Buffer, selfDevicePubkey
  *  all indistinguishable from "no live dial path right now"). */
 export function resolveHiveGitPeerSocket(topic: Buffer, devicePubkeyBase64: string): unknown | undefined {
   return registryByTopic.get(topic.toString('hex'))?.get(devicePubkeyBase64);
+}
+
+/**
+ * WI-3641: the VERIFIED device_pubkey bound to `socket` (this specific live
+ * connection), or `undefined` if no signature-verified hello has been
+ * received on it yet (not connected via hive-git-hello at all, hello still
+ * in flight, or a forged hello was dropped — all indistinguishable from "not
+ * verified", matching this module's fail-soft contract throughout). This is
+ * the one thing safe to feed an authorization decision (e.g.
+ * serve-wiring.ts's scope-repo gate) — never the wire-level `req` frame's
+ * self-reported `peerGithubUserId`, which nothing here verifies.
+ */
+export function resolveVerifiedDevicePubkeyForSocket(socket: unknown): string | undefined {
+  if (typeof socket !== 'object' || socket === null) return undefined;
+  return verifiedDeviceBySocket.get(socket);
 }
 
 /**

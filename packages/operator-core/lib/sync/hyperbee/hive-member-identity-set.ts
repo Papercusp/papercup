@@ -89,6 +89,34 @@ export async function resolveHiveMemberDeviceSet(
 }
 
 /**
+ * WI-3641: resolve the CURRENT hive member owning `devicePubkey`, or `null` if
+ * no current member's `device_attestations` carries it. Uncached (unlike
+ * {@link resolveHiveMemberDeviceSet}) — this backs an authorization decision
+ * (scope-repo serve gating) that should see a revocation/attestation change
+ * immediately, not up to `MEMBER_SET_TTL_MS` stale; call volume is bounded by
+ * inbound scope-repo fetch requests, not the hot per-op apply path the cached
+ * set exists for.
+ */
+export async function resolveGithubUserIdForDevicePubkey(
+  workspaceId: string,
+  potHomeSlug: string,
+  devicePubkey: string,
+  sql?: Sql,
+  deps: Pick<MemberDeviceSetDeps, 'loadMembers'> = {},
+): Promise<number | null> {
+  const { loadMembers = listHiveMembers } = deps;
+  const members = await loadMembers(workspaceId, potHomeSlug, sql);
+  for (const m of members) {
+    for (const a of m.deviceAttestations ?? []) {
+      if (a && typeof a.device_pubkey === 'string' && a.device_pubkey === devicePubkey) {
+        return m.githubUserId;
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Drop the cached set for a hive. Call this from the onMemberApplied hook on EVERY
  * hive_members projection change (a join/leave) so the next apply re-reads a fresh set.
  * Idempotent + cheap (a Map delete); safe to call on every membership op.

@@ -63,7 +63,14 @@ function toCompletedPlanItems(value: unknown): CompletedPlanItem[] {
       typeof (v as { planSlug?: unknown }).planSlug === "string" &&
       typeof (v as { itemId?: unknown }).itemId === "string"
     ) {
-      out.push({ planSlug: (v as { planSlug: string }).planSlug, itemId: (v as { itemId: string }).itemId });
+      const harnessSlug = typeof (v as { harnessSlug?: unknown }).harnessSlug === "string"
+        ? (v as { harnessSlug: string }).harnessSlug
+        : null;
+      out.push({
+        planSlug: (v as { planSlug: string }).planSlug,
+        itemId: (v as { itemId: string }).itemId,
+        harnessSlug,
+      });
     }
   }
   return out;

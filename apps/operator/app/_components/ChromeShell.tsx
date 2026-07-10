@@ -261,16 +261,6 @@ export default function ChromeShell() {
       <VoiceLeaderBootstrap />
       <AriaLiveRegions />
       <AutoLoginWelcomeToast />
-      {/* Operator chat sidebar — fixed left, full-height, on every
-          non-chromeless page. The sidebar shifts the rest of the app
-          right via body.has-op-chat padding-left (set inside the
-          component). Imported eagerly (not lazy) so it mounts on first
-          paint and appears immediately — the width is already reserved
-          pre-hydration by the op-chat bootstrap script in layout.tsx, so
-          there is no layout shift. Iframe-target routes (CHROMELESS
-          prefixes) skip ChromeShell entirely so the sidebar is absent
-          there too — desired, those routes are embedded inside other
-          pages that already host the sidebar. */}
       {/* The web operator chat sidebar is RETIRED (see the retirement note at
           the top of this file) — the desktop chat is the TERMINAL-NATIVE pui
           chat panes in the zellij dock. */}

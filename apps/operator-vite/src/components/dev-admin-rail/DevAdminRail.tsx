@@ -125,8 +125,7 @@ export default function DevAdminRail() {
   }, []);
 
   // Reserve right-side layout space (or release it on chromeless routes) so the
-  // app shifts left and the rail docks rather than floating over content —
-  // mirrors OperatorChatSidebar's --op-chat-w / body.has-op-chat reservation.
+  // app shifts left and the rail docks rather than floating over content.
   useEffect(() => {
     if (!hydrated) return;
     if (chromeless) {

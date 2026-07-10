@@ -337,19 +337,70 @@ function parseFailedFiles(out) {
 }
 const FRESH_RETRY_MAX_FILES = 15; // a broader red is a real regression, not a flake
 
+// A PACKAGED install ships the whole suite (vitest, the test files, quarantine.txt,
+// its own node at sidecar/bin/node) but has NO npm — by design. This script is
+// reachable there (`node scripts/affected-tests.mjs --all`), so the only thing that
+// made the suite unrunnable on a release build was re-spawning `npm run <script>`
+// per workspace. When npm is absent, invoke the workspace's script directly instead.
+// Every workspace `test`/`test:integration` script in this repo is a plain
+// `vitest run …`, and `npm run` adds exactly two things we can reproduce: cwd =
+// the workspace dir, and node_modules/.bin on PATH. Anything else fails LOUDLY
+// rather than silently skipping — a suite that quietly runs nothing is the worst
+// outcome for a release check.
+const npmAvailable = spawnSync('npm', ['--version'], { stdio: 'ignore' }).status === 0;
+if (!npmAvailable) {
+  console.log("note: npm not found (packaged install?) — running each workspace's script directly.");
+}
+
+/**
+ * Reproduce what `npm run <script> --workspace <dir>` gives a script, without npm:
+ * cwd = the workspace dir, and both the workspace's and the root's node_modules/.bin
+ * on PATH. We also prepend THIS node's own directory, because a packaged install's
+ * node lives at sidecar/bin/node and is not necessarily the `node` on PATH — without
+ * it every `#!/usr/bin/env node` shebang in .bin/ fails to resolve.
+ */
+function spawnSpecFor(t, extraArgs) {
+  if (npmAvailable) {
+    const argv = ['run', t.script, '--workspace', t.ws.dir, ...(extraArgs.length ? ['--', ...extraArgs] : [])];
+    return { cmd: 'npm', argv, cwd: ROOT };
+  }
+  const script = (t.ws.scripts[t.script] ?? '').trim();
+  const [tool, ...rest] = script.split(/\s+/);
+  const wsDir = join(ROOT, t.ws.dir);
+  const binDirs = [join(wsDir, 'node_modules', '.bin'), join(ROOT, 'node_modules', '.bin')];
+  const env = {
+    ...process.env,
+    PATH: [dirname(process.execPath), ...binDirs, process.env.PATH].filter(Boolean).join(':'),
+  };
+  // `node foo.mjs` → run it with the node we are already running under.
+  if (tool === 'node') return { cmd: process.execPath, argv: [...rest, ...extraArgs], cwd: wsDir, env };
+  // Anything else must be a node_modules/.bin entry (vitest, astro, tsx, …).
+  // Spawn the bin itself so its shebang picks the right interpreter; PATH above
+  // makes that resolve. Fail LOUDLY on a missing bin — a release check that
+  // silently runs nothing is worse than one that stops.
+  const bin = binDirs.map((d) => join(d, tool)).find((p) => existsSync(p));
+  if (!bin) {
+    throw new Error(
+      `${t.ws.name} :: "${t.script}" is \`${script}\` — no \`${tool}\` in ${binDirs.join(' or ')}. ` +
+        `Install npm, or add the missing dependency.`,
+    );
+  }
+  return { cmd: bin, argv: [...rest, ...extraArgs], cwd: wsDir, env };
+}
+
 let failed = 0;
 let quarantinedFailed = 0;
 for (const t of tasks) {
   const isQuarantined = quarantined.has(t.ws.name);
-  console.log(`\n>>> ${t.ws.name} :: npm run ${t.script}${isQuarantined ? ' [QUARANTINED]' : ''}`);
+  console.log(`\n>>> ${t.ws.name} :: ${npmAvailable ? 'npm ' : ''}run ${t.script}${isQuarantined ? ' [QUARANTINED]' : ''}`);
   // Under retryFailed we must capture output to learn WHICH files failed; the
   // interactive path keeps stdio:'inherit' for live streaming.
   const run = (extraArgs = []) => {
-    const argv = ['run', t.script, '--workspace', t.ws.dir, ...(extraArgs.length ? ['--', ...extraArgs] : [])];
-    if (!retryFailed) return spawnSync('npm', argv, { cwd: ROOT, stdio: 'inherit' });
+    const { cmd, argv, cwd, env } = spawnSpecFor(t, extraArgs);
+    if (!retryFailed) return spawnSync(cmd, argv, { cwd, env, stdio: 'inherit' });
     // A full vitest suite emits far beyond spawnSync's 1MB default maxBuffer —
     // an ENOBUFS-killed child would read as a failure. 256MB clears any suite.
-    const r = spawnSync('npm', argv, { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+    const r = spawnSync(cmd, argv, { cwd, env, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
     if (r.error) console.error(`>>> ${t.ws.name} spawn error: ${r.error.message}`);
     process.stdout.write(r.stdout ?? '');
     process.stderr.write(r.stderr ?? '');

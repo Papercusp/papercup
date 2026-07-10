@@ -50,6 +50,15 @@ vi.mock('../work-items', async () => {
   };
 });
 
+// EI-8970: the stale-read guard's plan re-read. Defaults to `null` (no row
+// resolvable) for every pre-existing test above — matching the guard's
+// fail-open behaviour and leaving all prior assertions unaffected; only the
+// new "EI-8970" describe block below overrides it per-test.
+const h3 = vi.hoisted(() => ({
+  getPlanRow: vi.fn(async (_slug: string, _opts?: unknown) => null as { items: { id: string; status: string }[] } | null),
+}));
+vi.mock('../agent-tools/plans/source', () => ({ getPlanRow: h3.getPlanRow }));
+
 const { reconcileLinkedWorkItemsForPlanItem } = await import('./reconcile-linked-work-items');
 
 const WS = DEFAULT_COORD_WORKSPACE;
@@ -89,6 +98,8 @@ beforeEach(async () => {
   await rootSql`TRUNCATE harness_shared.coord_links, harness_shared.work_items`;
   h2.items.clear();
   setWorkItemState.mockClear();
+  h3.getPlanRow.mockReset();
+  h3.getPlanRow.mockResolvedValue(null);
 });
 
 async function edge(o: { plan: string; item: string; srcKind?: string; srcRef: string }) {
@@ -187,5 +198,63 @@ describe('reconcileLinkedWorkItemsForPlanItem (PG, EI-5925)', () => {
     const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-006' });
 
     expect(result.reconciled.sort()).toEqual(['WI-dup-1', 'WI-dup-2']);
+  });
+});
+
+describe('reconcileLinkedWorkItemsForPlanItem — stale-read guard (EI-8970)', () => {
+  it('bails the WHOLE sweep, touching nothing, when the plan item is no longer `done` by the time the sweep runs', async () => {
+    stub({ id: 'WI-corrected', state: 'wip', lastProgressAt: null });
+    await edge({ plan: 'p1', item: 'P-007', srcRef: 'WI-corrected' });
+    // A peer corrected the plan item back to `wip` between the `done` event
+    // firing and this sweep actually running — the exact race on
+    // cup-lexicon-full-rename-2026-07-09#P-006 / WI-3463.
+    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-007', status: 'wip' }] });
+
+    const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-007' });
+
+    expect(result).toEqual({
+      planSlug: 'p1',
+      itemId: 'P-007',
+      reconciled: [],
+      skippedInFlight: [],
+      skippedAlreadyTerminal: [],
+    });
+    expect(setWorkItemState).not.toHaveBeenCalled();
+  });
+
+  it('proceeds normally when the re-read CONFIRMS the plan item is still `done`', async () => {
+    stub({ id: 'WI-confirmed', state: 'open', lastProgressAt: null });
+    await edge({ plan: 'p1', item: 'P-008', srcRef: 'WI-confirmed' });
+    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-008', status: 'done' }] });
+
+    const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-008' });
+
+    expect(result.reconciled).toEqual(['WI-confirmed']);
+    expect(setWorkItemState).toHaveBeenCalledWith(
+      'WI-confirmed',
+      'resolved',
+      expect.objectContaining({ by: 'system:plan-item-reconcile' }),
+    );
+  });
+
+  it('fails OPEN (proceeds as before) when the re-read throws — a DB hiccup must never suppress a real reconcile', async () => {
+    stub({ id: 'WI-failopen', state: 'open', lastProgressAt: null });
+    await edge({ plan: 'p1', item: 'P-009', srcRef: 'WI-failopen' });
+    h3.getPlanRow.mockRejectedValue(new Error('connection reset'));
+
+    const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-009' });
+
+    expect(result.reconciled).toEqual(['WI-failopen']);
+  });
+
+  it('fails OPEN when the row resolves but the item id is absent from its derived index', async () => {
+    stub({ id: 'WI-noindex', state: 'open', lastProgressAt: null });
+    await edge({ plan: 'p1', item: 'P-010', srcRef: 'WI-noindex' });
+    // e.g. an un-normalized row (Stage-3 index not yet populated) — items: [].
+    h3.getPlanRow.mockResolvedValue({ items: [] });
+
+    const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-010' });
+
+    expect(result.reconciled).toEqual(['WI-noindex']);
   });
 });

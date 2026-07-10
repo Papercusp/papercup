@@ -40,12 +40,16 @@
  * git-sync-action's per-tick re-consult of the same setting) and resolves the
  * repo path for `(potHomeSlug, repoKey)`. A legacy-mode hive always REFUSEs —
  * no bytes are ever served, so legacy hives are byte-for-byte unchanged. Scope
- * (`scopes/`) repos also refuse for now: authorizeScopeRepoServe needs a
- * roster-VERIFIED peer identity (scope-serve-gate.ts's contract), and no
- * caller here yet threads the announce-verified identity through this
- * transport layer — serving them unauthenticated would be worse than not
- * serving them (a follow-on wires `scopeServeGrant` once that identity binding
- * lands).
+ * (`scopes/`) repos call `authorizeScopeRepoServe` (scope-serve-gate.ts),
+ * which needs a roster-VERIFIED peer identity — never the wire `req` frame's
+ * self-reported `peerGithubUserId` (that field is NOT authenticated by
+ * anything and a hostile peer could set it to any value). WI-3641: the
+ * verified identity comes from `config.resolvePeerDevicePubkey(socket)` — a
+ * caller-supplied resolver (swarm.ts wires `resolveVerifiedDevicePubkeyForSocket`
+ * from peer-dial-registry.ts's SIGNED hello handshake) that answers "which
+ * device, if any, has cryptographically PROVEN it owns this live connection".
+ * No resolver, or no verified device on this socket yet ⇒ refuse — serving
+ * unauthenticated would be worse than not serving at all.
  *
  * CLIENT side ({@link openHiveGitFetchDuplex}): sends `req`, returns a Duplex
  * the caller drives with `fetchOverDuplex` — the SAME `openDuplex: () =>

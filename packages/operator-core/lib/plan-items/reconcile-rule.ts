@@ -51,7 +51,12 @@ export function newlyDonePlanItem(e: ToolInvocationEvent): CompletedPlanItem | n
     typeof r.slug === 'string' &&
     typeof r.itemId === 'string'
   ) {
-    return { planSlug: r.slug, itemId: r.itemId };
+    // EI-8970: thread the triggering call's harness through so the reconcile
+    // sweep's stale-read guard re-reads the SAME plan row this flip wrote,
+    // instead of guessing the operator-home harness for a plan that lives
+    // elsewhere.
+    const harnessSlug = typeof e.ctx?.harnessSlug === 'string' ? e.ctx.harnessSlug : null;
+    return { planSlug: r.slug, itemId: r.itemId, harnessSlug };
   }
   return null;
 }

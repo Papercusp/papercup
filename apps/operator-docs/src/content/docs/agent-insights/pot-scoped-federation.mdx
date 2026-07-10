@@ -1,6 +1,6 @@
 ---
 title: Pot-scoped federation (re-key from harness → Pot identity)
-description: "How a shared project's substrate federates at POT scope, not harness scope — the Ed25519-pubkey topic re-key, per-Pot admission (revoked-pubkey union), Track A coord/presence, and Track B lock authority. Read before touching lib/pot-federation.ts, lib/authority/*, lib/sync/hyperbee/{boot,boot-all,wire-presence}.ts, or anything that resolves a swarm topic / lock authority. Includes the complete P-003 anchor inventory — every capture trigger, PEER_LOG_TAG_TO_TABLE tag, drain-routing site, and lib/authority scope-key. Plan — shared-pot-federation-2026-06-08."
+description: "How a shared project's substrate federates at POT scope, not harness scope — the Ed25519-pubkey topic re-key, per-Pot admission (revoked-pubkey union), Track A coord/presence, and Track B lock authority. Read before touching lib/hive-federation.ts, lib/authority/*, lib/sync/hyperbee/{boot,boot-all,wire-presence}.ts, or anything that resolves a swarm topic / lock authority. Includes the complete P-003 anchor inventory — every capture trigger, PEER_LOG_TAG_TO_TABLE tag, drain-routing site, and lib/authority scope-key. Plan — shared-pot-federation-2026-06-08."
 discovered: 2026-06-08
 status: active
 documents:
@@ -55,12 +55,15 @@ the Pot). When you add federated state, scope it to the Pot topic and keep
 
 ## Where the scope is resolved
 
-- **`lib/pot-federation.ts`** — `resolveHiveSwarmBinding(ws, harnessSlug)` returns
-  `{ kind:'pot', hive_pubkey }` when the harness belongs to a **shared** Pot,
+- **`lib/hive-federation.ts`** (the file is still internally named `hive-*` —
+  only the tool/UX-facing brand vocabulary re-keyed to "Pot"; see the lexicon
+  Aside above) — `resolveHiveSwarmBinding(ws, harnessSlug)` returns
+  `{ kind:'hive', hive_pubkey }` when the harness belongs to a **shared** Pot,
   else `null` (caller falls back to the per-harness gh/local binding).
-  `hiveHomeSlugForHarness(ws, harnessSlug)` answers "which Pot is this harness in"
-  (itself if it's a `kind:'pot'` home, else its registry `hive_slug` member
-  pointer) — shared by the topic re-key AND the admission/presence/authority seams.
+  `potHomeSlugForHarness(ws, harnessSlug)` (renamed from `hiveHomeSlugForHarness`)
+  answers "which Pot is this harness in" (itself if it's a `kind:'hive'` home,
+  else its registry `hive_slug` member pointer) — shared by the topic re-key AND
+  the admission/presence/authority seams.
 - **Gate — only a *shared* Pot federates.** "Shared" = the owner published the
   Pot to the directory as `public`/`invite` (`getOwnedHiveMeta(...).visibility`).
   A `private`/un-published Pot stays local-only and never announces on the DHT, so
@@ -77,7 +80,7 @@ revoked-pubkey set the harness boots with is the **UNION** of
 
 - the harness-scope revocations (`loadRevokedPubkeys`, the base set), and
 - the Pot-scope revocations (`loadRevokedHivePubkeys(ws, hiveHome)` from
-  `lib/pot-membership-store.ts`) when `hiveHomeSlugForHarness` resolves a home —
+  `lib/hive-membership-store.ts`) when `potHomeSlugForHarness` resolves a home —
 
 so a contributor revoked at the **Pot grain is refused on EVERY member harness**.
 The read-admission decider itself is unchanged. The pot lookup is **best-effort /
@@ -91,9 +94,9 @@ trigger** → a federated `del` membership tombstone, so peers' read-merge drops
 departed member (see `shared-pot-join-leave-lifecycle`).
 
 Membership **producers** (set `ProjectEntry.hive_slug`): `addHarnessToHive` /
-`removeHarnessFromHive` (`agent-tools/pot/_add-member.ts`) for an existing
+`removeHarnessFromHive` (`agent-tools/hive/_add-member.ts`) for an existing
 harness, and the `harness:create { pot }` create-time path
-(`agent-tools/harness/create-pot-membership.ts`). Until something sets
+(`agent-tools/harness/create-hive-membership.ts`). Until something sets
 `hive_slug`, a Pot has only its home and no members.
 
 **Boot-storm robustness (2026-07-03, WI-1892/P-059).** `boot-all.ts`'s
@@ -123,7 +126,7 @@ per-Pot admission union (above) runs inside; a zombied boot under a large Pot
   `startPresenceAnnounceLoop`), wired per-harness from `boot-all.ts` after the
   substrate handle returns, **gated on a joined swarm** (a private harness has no
   peers → returns `null`). Each announce is **stamped with the harness's home
-  `hive_slug`** (resolved once via `hiveHomeSlugForHarness`) and projected into
+  `hive_slug`** (resolved once via `potHomeSlugForHarness`) and projected into
   `shared_presence.hive_slug` (mig 187) — which is exactly what the Pot lock
   authority elects over.
   - **2026-07-03 (P-301):** each announced session is now also stamped with
@@ -318,12 +321,19 @@ Legacy plan-item claims still append LWW-advisory to the own log
 
 | Concern | File |
 |---|---|
-| Pot identity (keypair → topic) | `lib/identity/pot-keypair.ts`, `lib/sync/hyperbee/derive-swarm-topic.ts` |
-| Topic re-key / membership resolve | `lib/pot-federation.ts` |
-| Per-Pot admission union | `lib/sync/hyperbee/boot.ts`, `lib/pot-membership-store.ts` |
+| Pot identity (keypair → topic) | `lib/identity/hive-keypair.ts`, `lib/sync/hyperbee/derive-swarm-topic.ts` |
+| Topic re-key / membership resolve | `lib/hive-federation.ts` |
+| Per-Pot admission union | `lib/sync/hyperbee/boot.ts`, `lib/hive-membership-store.ts` |
 | Presence publisher (Track A) | `lib/sync/hyperbee/wire-presence.ts`, `presence-announce.ts` |
 | Lock authority (Track B) | `lib/authority/lock-authority.ts`, `lib/authority/file-lock-routing.ts` |
-| Membership producers | `agent-tools/pot/_add-member.ts`, `agent-tools/harness/create-pot-membership.ts` |
+| Membership producers | `agent-tools/hive/_add-member.ts`, `agent-tools/harness/create-hive-membership.ts` |
+
+> Note (2026-07): the underlying files/functions/types still use the internal
+> `hive-*`/`Hive` naming (`lib/hive-federation.ts`, `SwarmBinding.kind:'hive'`,
+> `lib/identity/hive-keypair.ts`) — only the tool-facing vocabulary re-keyed to
+> "Pot" (`pot:leave`, `pot:dissolve`, `pot:ask`, …) and one resolver was renamed
+> (`hiveHomeSlugForHarness` → `potHomeSlugForHarness`). Don't be surprised to grep
+> "hive" inside a file this doc calls a "Pot" concern.
 
 See also: `substrate-write-side-stack`, `workspace-id-pin-and-harness-membership`,
 `phase1b-federation-limitations`, `vm-federation-separate-machine-proof` (why

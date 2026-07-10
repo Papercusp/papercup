@@ -140,15 +140,13 @@ export const RAIL_CSS = `/*
 }
 
 /* Body reservation — the app shifts left by the rail's width so it docks
-   (pushes content) instead of floating over it, mirroring the op-chat
-   sidebar's left padding. This header-width rule is injected after the
-   op-chat one, so on equal specificity it wins when both sidebars are
-   present; each var defaults to 0px so the two sides compose independently. */
+   (pushes content) instead of floating over it. Each var defaults to 0px so
+   the left rail and this one compose independently. */
 body.has-dev-rail {
   padding-right: var(--dev-rail-w, 48px);
 }
 body.has-dev-rail .pc-header {
-  width: calc(100vw - var(--op-chat-w, 0px) - var(--dev-rail-w, 0px) - var(--left-sidebar-w, 0px));
+  width: calc(100vw - var(--dev-rail-w, 0px) - var(--left-sidebar-w, 0px));
 }
 
 /* Header */

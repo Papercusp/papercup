@@ -79,7 +79,9 @@ describe('resolveSpawnGatewayEnv — the shared spawn-chokepoint routing decisio
     h.selectSpawnAccount.mockResolvedValue('codex-main');
     const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'papercusp', ownerId: 's-1', backend: 'codex' });
 
-    expect(env).toEqual({ PAPERCUSP_ACCOUNT_ID: 'codex-main' });
+    // WI-3645: PAPERCUSP_CODEX_GATEWAY always rides alongside a resolved pin now — it's the
+    // signal writeSignedSpawnCodexHome uses to know the gateway is on at all.
+    expect(env).toEqual({ PAPERCUSP_CODEX_GATEWAY: '1', PAPERCUSP_ACCOUNT_ID: 'codex-main' });
     expect(h.selectSpawnAccount).toHaveBeenCalledWith('ws', 'papercusp', undefined, 'codex');
     expect(h.supportsBearer).toHaveBeenCalledWith('token:/codex');
   });
@@ -91,7 +93,7 @@ describe('resolveSpawnGatewayEnv — the shared spawn-chokepoint routing decisio
     h.supportsBearer.mockResolvedValue(false);
     const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'papercusp', ownerId: 's-1', backend: 'codex' });
 
-    expect(env).toEqual({ PAPERCUSP_ACCOUNT_ID: 'codex-main' });
+    expect(env).toEqual({ PAPERCUSP_CODEX_GATEWAY: '1', PAPERCUSP_ACCOUNT_ID: 'codex-main' });
     expect(h.supportsBearer).not.toHaveBeenCalled();
   });
 
@@ -148,21 +150,44 @@ describe('resolveSpawnGatewayEnv — the shared spawn-chokepoint routing decisio
     expect(env).toEqual({});
   });
 
-  test('Codex backend + multi-account OFF → {} — codex needs an account pin; no Anthropic base URL leaks', async () => {
-    // gateway ON, multi-account OFF: no account is selected, and codex emits ONLY PAPERCUSP_ACCOUNT_ID,
-    // so with no account there is nothing to emit → {} (never an ANTHROPIC_BASE_URL, which is claude-only).
+  // WI-3645: codex used to `return {}` whenever no account resolved — for multi-account-OFF this
+  // silently skipped the gateway ENTIRELY (not just the pin), so a codex spawn talked direct to
+  // ChatGPT on its own local credential, unmetered and invisible to the gateway. It must now still
+  // route through the gateway (PAPERCUSP_CODEX_GATEWAY), just without a pin — the gateway's own
+  // codex handling auto-selects when no x-papercusp-account header is present.
+  test('Codex backend + multi-account OFF → gateway-routed with NO account pin (auto-routing, not a bypass)', async () => {
     h.getFlag.mockImplementation(async (flag: string) => flag === 'inference-gateway');
     const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', backend: 'codex' });
-    expect(env).toEqual({});
+    expect(env).toEqual({ PAPERCUSP_CODEX_GATEWAY: '1' });
+    expect(env).not.toHaveProperty('ANTHROPIC_BASE_URL'); // still no claude-only leakage
     expect(h.selectSpawnAccount).not.toHaveBeenCalled();
   });
 
-  test('Codex backend + multi-account ON but empty pool (select → undefined) → {} (no pin, no leakage)', async () => {
+  test('Codex backend + multi-account ON but empty pool (select → undefined) → gateway-routed with no pin', async () => {
     h.getFlag.mockResolvedValue(true);
     h.selectSpawnAccount.mockResolvedValue(undefined);
     const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', backend: 'codex' });
-    expect(env).toEqual({});
+    expect(env).toEqual({ PAPERCUSP_CODEX_GATEWAY: '1' });
     expect(h.selectSpawnAccount).toHaveBeenCalledWith('ws', 'h', undefined, 'codex');
+  });
+
+  test("Codex backend + account='auto' → gateway-routed with NO account pin (the exact owner-reported bug, WI-3645)", async () => {
+    h.getFlag.mockResolvedValue(true);
+    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', backend: 'codex', account: 'auto' });
+    expect(env).toEqual({ PAPERCUSP_CODEX_GATEWAY: '1' });
+    expect(env).not.toHaveProperty('ANTHROPIC_BASE_URL');
+    // 'auto' bypasses the multi-account selector entirely (mirrors the claude 'auto' path).
+    expect(h.selectSpawnAccount).not.toHaveBeenCalled();
+  });
+
+  test('Codex backend + an account pin that fails bearer/CLI-ref validation → falls back to gateway auto-routing, not a full bypass', async () => {
+    h.getFlag.mockResolvedValue(true);
+    h.selectSpawnAccount.mockResolvedValue('codex-main');
+    // Neither a codex-cli: ref nor a bearer-capable credential → validation fails.
+    h.loadAccountPool.mockResolvedValue({ accounts: [{ id: 'codex-main', provider: 'codex', credentialRef: 'garbage-ref' }] });
+    h.supportsBearer.mockResolvedValue(false);
+    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', backend: 'codex' });
+    expect(env).toEqual({ PAPERCUSP_CODEX_GATEWAY: '1' });
   });
 
   // ── account-routing-3-options (owner, 2026-06-30): the explicit per-spawn `account` override ──
@@ -215,7 +240,7 @@ describe('resolveSpawnGatewayEnv — the shared spawn-chokepoint routing decisio
     h.getFlag.mockResolvedValue(true);
     h.loadAccountPool.mockResolvedValue({ accounts: [{ id: 'codex-main', provider: 'codex', credentialRef: 'token:/codex' }] });
     const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', backend: 'codex', account: 'codex-main' });
-    expect(env).toEqual({ PAPERCUSP_ACCOUNT_ID: 'codex-main' });
+    expect(env).toEqual({ PAPERCUSP_CODEX_GATEWAY: '1', PAPERCUSP_ACCOUNT_ID: 'codex-main' });
     expect(env).not.toHaveProperty('ANTHROPIC_BASE_URL');
     // The explicit id bypasses the selector (trusts the operator-given id like PAPERCUSP_SPAWN_ACCOUNT_PIN).
     expect(h.selectSpawnAccount).not.toHaveBeenCalled();

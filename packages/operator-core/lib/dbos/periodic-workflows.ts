@@ -19,6 +19,7 @@ import { DBOS } from '@dbos-inc/dbos-sdk';
 import { flushTelemetry } from '../telemetry-flush';
 import { runScratchGc } from '../scratch-gc';
 import { runEmbedBackfillOnce } from '../search/embed-backfill';
+import { runEmbedSpaceSelfCheckTick } from '../search/embed-space-self-check';
 import { runDeadWorkflowMonitorOnce } from './dead-workflow-monitor';
 import { runBackupSchedulerTick } from '@papercusp/backup';
 import { gcOldNotifies } from '../agent-tools/coordination/notify-gc';
@@ -124,6 +125,29 @@ const embedBackfillWorkflow = DBOS.registerWorkflow(embedBackfillTick, {
   name: 'embedBackfill', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(embedBackfillWorkflow, { name: 'embedBackfill', crontab: '0 */5 * * * *' });
+
+// Every 15min: embedding-space self-check (EI-8913 detector half, WI-3644).
+// Cheap (one read + at most one embed call) relative to the backfill sweep,
+// so a longer cadence is fine — this only needs to catch a desync well
+// before it silently degrades search, not react to it instantly.
+async function embedSpaceSelfCheckTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    if (shouldShedHeavyTick('embed-space-self-check')) return;
+    try {
+      await runEmbedSpaceSelfCheckTick();
+    } catch (err) {
+      // Same rationale as embedBackfillTick just above: a transient failure
+      // (embedder unavailable, a PG hiccup) must never throw out of the
+      // scheduled step, or DBOS retries it into permanent-dead territory and
+      // silently stops the detector for good.
+      console.warn(`[embed-space-self-check] tick skipped (non-fatal): ${(err as Error).message}`);
+    }
+  }, { name: 'embed-space-self-check' });
+}
+const embedSpaceSelfCheckWorkflow = DBOS.registerWorkflow(embedSpaceSelfCheckTick, {
+  name: 'embedSpaceSelfCheck', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(embedSpaceSelfCheckWorkflow, { name: 'embedSpaceSelfCheck', crontab: '0 */15 * * * *' });
 
 // Every minute: backup cadence tick — fires kopia snapshots for any workspace
 // whose interval cadence is due (per-workspace dueness + in-flight dedup + PG
