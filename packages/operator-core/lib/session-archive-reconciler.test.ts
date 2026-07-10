@@ -220,6 +220,41 @@ describe('runSessionArchiveReconcileOnce', () => {
     expect(stats.diskSkippedFresh).toBe(1);
   });
 
+  it('FAILURE INJECTION: PG dying mid-sweep fails CLOSED — counted, nothing deleted', async () => {
+    const claudeRoot = await tmp('sar-pgdown-');
+    const abs = await claudeOwnerDir(claudeRoot, 'su-dead', SID_DEAD);
+    await ageFile(abs);
+    const store: SessionArchiveStore = {
+      async upsertArchive() {
+        throw new Error('pg down');
+      },
+      async readStamp() {
+        throw new Error('pg down');
+      },
+      async readFiles() {
+        throw new Error('pg down');
+      },
+      async stampAdvSessionArchived() {
+        throw new Error('pg down');
+      },
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const stats = await runSessionArchiveReconcileOnce({
+        db: fakeDb([]),
+        store,
+        dirRoots: [{ root: claudeRoot, keyKind: 'owner', label: 'session-claude' }],
+        ompRoot: await tmp('sar-noomp5-'),
+        protectedIdentity: { ownerIds: new Set(), sessionKeys: new Set() },
+        nowMs: Date.now(),
+      });
+      expect(stats.diskFailed).toBe(1);
+      expect(existsSync(abs)).toBe(true); // no archive commit ⇒ no deletion, ever
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('omp: takes only transcripts past the mtime grace', async () => {
     const ompRoot = await tmp('sar-omp-');
     await mkdir(join(ompRoot, '-repo'), { recursive: true });

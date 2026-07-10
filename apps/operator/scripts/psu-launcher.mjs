@@ -3846,6 +3846,31 @@ async function chooseResumeModel(session, args) {
   return spec ? normalizeModelSpec(spec) : null;
 }
 
+/** WI-3859 F4: the archive-at-death lifecycle DELETES an ended session's
+ *  transcript ~15s after end (it lives on in harness_shared.session_archives).
+ *  The wake-executor rematerializes on ITS resume path, but a direct
+ *  `psu --resume` reads the disk — so on a transcript miss, ask the operator
+ *  to restore the files from the archive, then retry the disk lookup. Returns
+ *  the API result or null; never throws (a miss just falls through to the
+ *  existing not-found error, incl. against an older operator without the
+ *  endpoint). */
+async function tryRematerializeFromArchive(sessionId, sourceKind = null) {
+  if (!sessionId) return null;
+  try {
+    const r = await api('/api/adv/sessions/rematerialize', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId, ...(sourceKind ? { sourceKind } : {}) }),
+    });
+    if (!r?.ok) return null;
+    console.error(
+      `psu: transcript restored from the session archive (${r.sourceKind}, ${r.written} file(s) → ${r.root}).`,
+    );
+    return r;
+  } catch {
+    return null;
+  }
+}
+
 // `psu --resume` (picker) or `psu --resume=<id>` / `psu --resume <id>`
 // (direct): resume a tracked session by adv id, recorded native session id,
 // linked OMP thread id, or Codex rollout UUID under a tracked CODEX_HOME. If
@@ -3866,15 +3891,23 @@ async function resumeFlow(args = {}) {
     if (tracked) {
       // A tracked row alone doesn't prove resumability — a launch that died
       // (or was closed) before its first persisted message has NO transcript,
-      // and the raw `--resume` would fail "No conversation found". Say why
-      // instead of letting the agent CLI fail cryptically.
+      // and the raw `--resume` would fail "No conversation found". But an
+      // ENDED session's transcript may simply be archived (archive-at-death
+      // deletes it from disk ~15s after end) — restore it and retry before
+      // declaring it unresumable.
       if (!sessionHasTranscript(tracked)) {
-        console.error(
-          `psu: session #${tracked.id} (${tracked.agent}${tracked.sessionId ? ` ${tracked.sessionId}` : ''}) ` +
-            `has no persisted transcript — it died or was closed before its first message, so there is no ` +
-            `conversation to resume. Pick a different session with \`psu --resume\`.`,
+        const restored = await tryRematerializeFromArchive(
+          tracked.sessionId || tracked.ompThreadId,
+          tracked.agent,
         );
-        process.exit(1);
+        if (!restored || !sessionHasTranscript(tracked)) {
+          console.error(
+            `psu: session #${tracked.id} (${tracked.agent}${tracked.sessionId ? ` ${tracked.sessionId}` : ''}) ` +
+              `has no persisted transcript — it died or was closed before its first message (and the session ` +
+              `archive holds no copy), so there is no conversation to resume. Pick a different session with \`psu --resume\`.`,
+          );
+          process.exit(1);
+        }
       }
       // Re-pin the gateway account (prompt when interactive / honor --account) —
       // the pin is spawn-env only, so a resume otherwise drops it (option 1).
@@ -3886,13 +3919,19 @@ async function resumeFlow(args = {}) {
       return;
     }
 
-    // 2. Not tracked → search the agents' OWN session stores for the id.
-    const untracked = findUntrackedSession(args.resumeId);
+    // 2. Not tracked → search the agents' OWN session stores for the id. On a
+    //    miss, the transcript may be ARCHIVED (deleted from disk at session
+    //    end) — restore it from the session archive and search again.
+    let untracked = findUntrackedSession(args.resumeId);
+    if (!untracked && (await tryRematerializeFromArchive(args.resumeId))) {
+      untracked = findUntrackedSession(args.resumeId);
+    }
     if (!untracked) {
       const ids = sessions.map((s) => s.id).filter((x) => x != null).join(', ');
       console.error(
         `psu: no session "${args.resumeId}" — not a tracked psu session (ids: ${ids || 'none'}), ` +
-          `and no claude/codex session file with that id under ~/.claude/projects, tracked CODEX_HOME dirs, or ~/.codex/sessions ` +
+          `no claude/codex session file with that id under ~/.claude/projects, per-session config dirs, ` +
+          `tracked CODEX_HOME dirs, or ~/.codex/sessions, and no session-archive copy to restore ` +
           `(omp threads resume by thread name).`,
       );
       process.exit(1);

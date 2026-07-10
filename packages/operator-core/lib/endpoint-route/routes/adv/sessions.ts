@@ -537,6 +537,63 @@ const resumable = defineTool({
 });
 
 /**
+ * POST /api/adv/sessions/rematerialize — restore an ARCHIVED session's files
+ * from harness_shared.session_archives back onto disk (WI-3859 F4). The
+ * archive-at-death lifecycle deletes an ended session's transcript ~15s after
+ * end; the wake-executor rematerializes on ITS resume path, but `psu --resume`
+ * / raw `claude --resume` read the disk directly and would otherwise fail
+ * "no session found" on a session that is safely archived. Body:
+ * `{ sessionId: string, sourceKind?: 'claude'|'codex'|'omp' }` — sourceKind
+ * omitted ⇒ probe all three stamps. Returns the rematerialize result plus the
+ * stamp's owner/cwd/sessionRoot so the caller can rebuild resume identity.
+ */
+const rematerialize = defineTool({
+  method: 'POST',
+  path: '/adv/sessions/rematerialize',
+  auth: 'loopback',
+  async handler(req) {
+    let body: { sessionId?: string; sourceKind?: string } = {};
+    try {
+      const text = await req.text();
+      if (text.trim()) body = JSON.parse(text);
+    } catch { /* validated below */ }
+    const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : '';
+    if (!sessionId) {
+      return new Response(JSON.stringify({ ok: false, error: 'sessionId required' }), {
+        status: 400,
+        headers: JSON_HEADERS,
+      });
+    }
+    const kinds = (['claude', 'codex', 'omp'] as const).filter(
+      (k) => !body.sourceKind || body.sourceKind === k,
+    );
+    if (!kinds.length) {
+      return new Response(JSON.stringify({ ok: false, error: `unknown sourceKind "${body.sourceKind}"` }), {
+        status: 400,
+        headers: JSON_HEADERS,
+      });
+    }
+    // Lazy: session-archive fails LOUD at import when zstd is unavailable —
+    // keep that blast radius off this module's load path.
+    const { pgSessionArchiveStore, rematerializeSession } = await import('../../../session-archive');
+    const store = pgSessionArchiveStore();
+    for (const sourceKind of kinds) {
+      const stamp = await store.readStamp(sourceKind, sessionId);
+      if (!stamp) continue;
+      const r = await rematerializeSession({ sourceKind, sessionId }, store);
+      return new Response(
+        JSON.stringify({ ...r, sourceKind, owner: stamp.owner, cwd: stamp.cwd, sessionRoot: stamp.session_root }),
+        { status: r.ok ? 200 : 409, headers: JSON_HEADERS },
+      );
+    }
+    return new Response(JSON.stringify({ ok: false, reason: 'not_archived', sessionId }), {
+      status: 404,
+      headers: JSON_HEADERS,
+    });
+  },
+});
+
+/**
  * GET /api/adv/roster — the live "who's active, on what" roster (plan
  * adv-sessions-live-roster, P-003). coord_presence is the primary source (every
  * active psu agent heartbeats per tool call), LEFT-joined to adv_sessions on
@@ -688,4 +745,4 @@ const onDesktopWindows = defineTool({
   },
 });
 
-export default [list, focus, alive, state, search, ended, searchTranscripts, resumable, roster, markLaunched, agentDetail, onDesktopWindows];
+export default [list, focus, alive, state, search, ended, searchTranscripts, resumable, rematerialize, roster, markLaunched, agentDetail, onDesktopWindows];
