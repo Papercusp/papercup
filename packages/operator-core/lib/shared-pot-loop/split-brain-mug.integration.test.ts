@@ -13,7 +13,7 @@
  * last, and the losing Mug is never told.
  *
  * ## What closes the gap (mug-guard.ts, D-008)
- *  - `evaluateQueenTurnGate` — the home-swarm assertion: with a recorded
+ *  - `evaluateMugTurnGate` — the home-swarm assertion: with a recorded
  *    mug home, the non-home swarm's Mug turn is REFUSED before it can
  *    steer (unset home fails open — convention-only Hives keep working).
  *  - `detectDoubleSteering` — the detection invariant: two distinct steerers
@@ -22,7 +22,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { bootCompositionRig, type CompositionRig } from './composition-rig';
-import { detectDoubleSteering, evaluateQueenTurnGate, type SteeringEvent } from './mug-guard';
+import { detectDoubleSteering, evaluateMugTurnGate, type SteeringEvent } from './mug-guard';
 
 vi.mock('@papercusp/db-org', async () => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
@@ -106,8 +106,8 @@ describe('P-005 — split-brain Mug: probe the unguarded behavior, then the D-00
       // ── The gate closes the hole: with a recorded mug home (= swarm A),
       //    the non-home Mug turn is refused BEFORE it can steer. ──
       const home = a.electionPubkey;
-      const gateA = evaluateQueenTurnGate({ selfPubkey: a.electionPubkey, queenHomePubkey: home });
-      const gateB = evaluateQueenTurnGate({ selfPubkey: b.electionPubkey, queenHomePubkey: home });
+      const gateA = evaluateMugTurnGate({ selfPubkey: a.electionPubkey, queenHomePubkey: home });
+      const gateB = evaluateMugTurnGate({ selfPubkey: b.electionPubkey, queenHomePubkey: home });
       expect(gateA).toEqual({ ok: true, reason: 'home-swarm' });
       expect(gateB).toEqual({ ok: false, reason: 'not-home-swarm', queenHomePubkey: home });
       // A guarded re-steer: only the home Mug's turn executes …
@@ -123,7 +123,7 @@ describe('P-005 — split-brain Mug: probe the unguarded behavior, then the D-00
         expect(onBG.get(s.id)).toBe(s.priority);
       }
       // Unset home fails open (convention-only Hives keep working).
-      expect(evaluateQueenTurnGate({ selfPubkey: b.electionPubkey, queenHomePubkey: null }).ok).toBe(true);
+      expect(evaluateMugTurnGate({ selfPubkey: b.electionPubkey, queenHomePubkey: null }).ok).toBe(true);
     },
     180_000,
   );

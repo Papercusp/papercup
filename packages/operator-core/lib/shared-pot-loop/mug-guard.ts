@@ -14,7 +14,7 @@
  *
  * Two pure pieces close the gap:
  *
- *  - `evaluateQueenTurnGate` — the HOME-SWARM ASSERTION a Mug turn runs
+ *  - `evaluateMugTurnGate` — the HOME-SWARM ASSERTION a Mug turn runs
  *    before steering: only the swarm whose device pubkey matches the Hive's
  *    recorded mug-home may steer; an unset home FAILS OPEN (today's
  *    behavior, alarmed by the detector) so the gate cannot brick a Hive whose
@@ -41,7 +41,7 @@ export type MugTurnGate =
   | { ok: false; reason: 'not-home-swarm'; queenHomePubkey: string };
 
 /** The home-swarm assertion a Mug turn runs BEFORE steering (D-008). */
-export function evaluateQueenTurnGate(input: MugTurnGateInput): MugTurnGate {
+export function evaluateMugTurnGate(input: MugTurnGateInput): MugTurnGate {
   if (input.queenHomePubkey == null || input.queenHomePubkey === '') {
     // Unset home: today's convention-only world. Fail open (don't brick the
     // Hive) — the detector below is the alarm for this state.

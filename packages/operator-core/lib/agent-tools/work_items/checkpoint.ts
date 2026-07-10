@@ -110,9 +110,8 @@ export default defineTool({
     "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` " +
     'joins instead (EI-9036). ' +
     'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, verified, storedHead, by | error }], counts }. ' +
-    'Writes are verify-read; fails loudly on an invisible write (checkpoint_verify_failed). A plain replace-on-write ' +
-    'that shrinks a substantial checkpoint by more than half gets a non-blocking `shrinkWarning` (EI-9325) — usually ' +
-    'an accidental placeholder/truncated paste, not an intentional rewrite.',
+    'Writes are verify-read; fails loudly on an invisible write (checkpoint_verify_failed). A plain replace shrinking ' +
+    'a substantial checkpoint >50% gets a non-blocking `shrinkWarning` (EI-9325, likely truncation).',
   guidance: {
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your ' +
@@ -123,9 +122,8 @@ export default defineTool({
       'gist. Do not dump file contents or full tool output.',
     chaining:
       'work_items:checkpoint { id, checkpoint } before work_items:complete / on yield. Pass blank to clear a stale note. ' +
-      'Also the fix for EI-6772: a claim held through a long stretch of PURELY-LOCAL tool use (Bash/Read/vitest, zero ' +
-      'papercusp-su calls) can go presence-stale and be reclaimed as dead — a mid-investigation checkpoint is itself a ' +
-      'papercusp-su dispatch, so it doubles as a liveness pulse (there is no separate work_items:heartbeat verb).',
+      'Also fixes EI-6772: a claim held through long PURELY-LOCAL tool use (no papercusp-su calls) can go presence-stale ' +
+      'and be reclaimed — checkpointing doubles as a liveness pulse (no separate heartbeat verb).',
   },
   capability: 'work_items:write',
   requirePrincipal: false,

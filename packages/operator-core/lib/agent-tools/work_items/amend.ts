@@ -56,7 +56,7 @@ export default defineTool({
 
     // Single-writer / propose-dispose: a bee PROPOSES, every steerer (queen / operator /
     // su) DISPOSES. (The home-pubkey refinement — only the HOME queen among many disposes
-    // — rides the existing queen-guard.evaluateQueenTurnGate seam when multi-Queen
+    // — rides the existing queen-guard.evaluateMugTurnGate seam when multi-Queen
     // single-writer is enforced; within one hive there is one steerer, so role suffices.)
     const role = (ctx as { role?: string }).role ?? '';
     const authoritative = role !== 'cup';

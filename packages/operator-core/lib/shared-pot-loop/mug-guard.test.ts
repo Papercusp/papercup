@@ -4,20 +4,20 @@
  * D-008).
  */
 import { describe, expect, it } from 'vitest';
-import { detectDoubleSteering, evaluateQueenTurnGate, type SteeringEvent } from './mug-guard';
+import { detectDoubleSteering, evaluateMugTurnGate, type SteeringEvent } from './mug-guard';
 
 const ev = (item: string, by: string, ts: number): SteeringEvent => ({ workItemId: item, steererPubkey: by, tsMs: ts });
 
-describe('evaluateQueenTurnGate', () => {
+describe('evaluateMugTurnGate', () => {
   it('home swarm may steer', () => {
-    expect(evaluateQueenTurnGate({ selfPubkey: 'pk-a', queenHomePubkey: 'pk-a' })).toEqual({
+    expect(evaluateMugTurnGate({ selfPubkey: 'pk-a', queenHomePubkey: 'pk-a' })).toEqual({
       ok: true,
       reason: 'home-swarm',
     });
   });
 
   it('a non-home swarm is refused, with the recorded home in the verdict', () => {
-    expect(evaluateQueenTurnGate({ selfPubkey: 'pk-b', queenHomePubkey: 'pk-a' })).toEqual({
+    expect(evaluateMugTurnGate({ selfPubkey: 'pk-b', queenHomePubkey: 'pk-a' })).toEqual({
       ok: false,
       reason: 'not-home-swarm',
       queenHomePubkey: 'pk-a',
@@ -25,11 +25,11 @@ describe('evaluateQueenTurnGate', () => {
   });
 
   it('an unset home FAILS OPEN (convention-only Hives keep working; the detector is the alarm)', () => {
-    expect(evaluateQueenTurnGate({ selfPubkey: 'pk-b', queenHomePubkey: null })).toEqual({
+    expect(evaluateMugTurnGate({ selfPubkey: 'pk-b', queenHomePubkey: null })).toEqual({
       ok: true,
       reason: 'fail-open-unset',
     });
-    expect(evaluateQueenTurnGate({ selfPubkey: 'pk-b', queenHomePubkey: '' })).toEqual({
+    expect(evaluateMugTurnGate({ selfPubkey: 'pk-b', queenHomePubkey: '' })).toEqual({
       ok: true,
       reason: 'fail-open-unset',
     });

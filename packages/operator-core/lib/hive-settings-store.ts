@@ -338,7 +338,7 @@ export async function listHiveLocalBlueprintConfig(
 // domain-generic-hive-architecture-2026-06-18 P-021 (I2 / closes queen-guard.ts
 // D-008). The DEVICE PUBKEY of the Swarm that runs this Hive's Queen — recorded at
 // pot:create (the creating node IS the local Queen home) so a steering turn can
-// assert HOME-SWARM before steering (queen-guard.evaluateQueenTurnGate, consulted by
+// assert HOME-SWARM before steering (queen-guard.evaluateMugTurnGate, consulted by
 // steering-lease.checkSteeringLease). It rides `hive_settings` so it federates to
 // every Swarm of the Hive like any other setting. Unset ⇒ the steering lease falls
 // back to the lock-authority election (today's behaviour — the gate fails open, so a

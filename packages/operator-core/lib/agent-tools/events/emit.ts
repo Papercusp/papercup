@@ -25,12 +25,13 @@ import { softText, clampText, LIMITS } from '../limits';
 export default defineTool({
   name: 'events:emit',
   description:
-    'Fire an event key through the await-event primitive: every agent with an events:await on the key is woken (durable delivery — pty-inject / session-resume / inbox ladder); an optional `to` list additionally receives a coord inbox notification (notify policy — never wakes). Use the key your waiter registered (events:await tells them what to wait on). Reports `waiters` — the total ACTIVE await registrations this emit actually matched (woken + notify-policy, excluding any extra `to[]`) — so `waiters:0` with no `to[]` tells you the emit reached no one, distinct from a genuine `woken:0` amid nonzero notifies.',
+    'Fire an event key through the await-event primitive: every agent with an events:await on the key is woken (durable delivery — pty-inject / session-resume / inbox ladder); an optional `to` list also gets a coord inbox notify (never wakes). Use the key your waiter registered. Reports `waiters` — ACTIVE await registrations matched (excludes extra `to[]`) — so `waiters:0` with no `to[]` means the emit reached no one.',
   guidance: {
-    when: 'Announcing that the thing a peer is blocked on has happened: their requested work is done, an artifact landed, a decision resolved. Pair with events:await — the waiter registers the key, you emit it. (To WAKE a parked AGENT — re-invoke its turn — the key is `coord:inbox-wake:<ownerId>`, but prefer the higher-level verbs that hide the key: coord:wake to nudge, coord:dispatch to assign+wake, coord:send {wake:\'required\'} to message+wake.)',
+    when: "Announcing that the thing a peer is blocked on has happened: work is done, an artifact landed, a decision resolved. Pair with events:await — the waiter registers the key, you emit it. (To WAKE a parked AGENT, prefer the higher-level verbs: coord:wake to nudge, coord:dispatch to assign+wake, coord:send {wake:'required'} to message+wake.)",
     notWhen:
-      'General status narration — lifecycle auto-emits + work_items:complete already cover it. Conversation — coord:send. Waking a specific agent — use coord:wake / coord:dispatch (they fire the inbox-wake key for you + report woken/dead). If nobody could plausibly be awaiting the key and you have no `to`, the emit reaches no one (it is not a log).',
-    chaining: 'Machine-derived/catalogued key: peer events:await { event: K } → you do the work → events:emit { event: K, summary } → peer wakes. HAND-MINTED pair key: DECLARE-FIRST — you: events:emit { event: K, announce: true } → peer awaits the RETURNED key (copied, never re-typed: hand-typed drift never rendezvouses, and the declaration LATCHES for late registrants) → you: events:emit the returned key on completion.',
+      'General status narration — lifecycle auto-emits + work_items:complete cover it. Conversation — coord:send. Waking a specific agent — coord:wake / coord:dispatch (report woken/dead). No plausible awaiter and no `to` — the emit reaches no one (not a log).',
+    chaining:
+      'Catalogued key: peer events:await { event: K } → you work → events:emit { event: K, summary } → peer wakes. HAND-MINTED pair key: DECLARE-FIRST — events:emit { event: K, announce: true } → peer awaits the RETURNED key (copied, never re-typed — LATCHES for late registrants) → emit that key on completion.',
     seeAlso: [
       'events:await (a peer waits with this before you emit)',
       'events:status (see pending awaits for the event)',

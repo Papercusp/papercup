@@ -30,7 +30,7 @@
 import type { AuthorityResolution } from './authority/lock-authority';
 import { lockAuthorityForHive } from './authority/lock-authority';
 import { potHomeSlugForHarness } from './hive-federation';
-import { evaluateQueenTurnGate } from './shared-pot-loop/mug-guard';
+import { evaluateMugTurnGate } from './shared-pot-loop/mug-guard';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 
 /** The lease verdict for one steering write. */
@@ -57,7 +57,7 @@ export interface SteeringLeaseDeps {
    * getQueenHomePubkey. When SET it overrides the lock-authority election — the owner
    * deployed the Queen on a specific Swarm, so THAT Swarm steers (others propose),
    * regardless of which holds the lowest pubkey. Unset (every Hive today) ⇒ fall
-   * through to the election (unchanged). The queen-guard's evaluateQueenTurnGate
+   * through to the election (unchanged). The queen-guard's evaluateMugTurnGate
    * makes the home-vs-self decision.
    */
   resolveQueenHome?: (workspaceId: string, potSlug: string) => Promise<string | null>;
@@ -127,7 +127,7 @@ export async function checkSteeringLease(
     if (queenHome) {
       const self = await resolveSelfPubkey();
       if (self) {
-        const gate = evaluateQueenTurnGate({ selfPubkey: self, queenHomePubkey: queenHome });
+        const gate = evaluateMugTurnGate({ selfPubkey: self, queenHomePubkey: queenHome });
         if (gate.ok && gate.reason === 'home-swarm') {
           return { holder: true, reason: 'queen-home', potSlug };
         }

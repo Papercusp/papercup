@@ -137,6 +137,7 @@ describe('search:semantic', () => {
     vi.doMock('@papercusp/search', () => ({ runHybridSearch }));
     vi.doMock('../search/embedder', () => ({
       buildQueryEmbedder: vi.fn(async () => vi.fn()),
+      interactiveEmbedAcquireBudgetMs: vi.fn(() => 4000),
     }));
     vi.doMock('../search/rerank', () => ({
       rerankProseHits: async (_: unknown, r: unknown[]) => r,
@@ -158,6 +159,7 @@ describe('search:semantic', () => {
     vi.doMock('@papercusp/search', () => ({ runHybridSearch }));
     vi.doMock('../search/embedder', () => ({
       buildQueryEmbedder: vi.fn(async () => vi.fn()),
+      interactiveEmbedAcquireBudgetMs: vi.fn(() => 4000),
     }));
     vi.doMock('../search/rerank', () => ({
       rerankProseHits: async (_: unknown, r: unknown[]) => r,
@@ -176,6 +178,7 @@ describe('search:semantic', () => {
     }));
     vi.doMock('../search/embedder', () => ({
       buildQueryEmbedder: vi.fn(async () => vi.fn()),
+      interactiveEmbedAcquireBudgetMs: vi.fn(() => 4000),
     }));
     vi.doMock('../search/rerank', () => ({
       rerankProseHits: async (_: unknown, r: unknown[]) => r,
