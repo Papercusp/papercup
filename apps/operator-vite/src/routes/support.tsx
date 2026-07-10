@@ -146,27 +146,29 @@ function SupportPage() {
       <SupportAgentPanel surface="operator" />
 
       <div className="pc-support-actions" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 40 }}>
-        <SupportChatButton className="pc-button" message="">
-          💬 Start support chat
-        </SupportChatButton>
-        <a
-          href="https://github.com/papercupai/papercusp/issues/new"
-          target="_blank"
-          rel="noreferrer"
-          className="pc-button"
-          style={{ background: 'var(--bg-1)' }}
-        >
-          🐛 Open a GitHub issue
-        </a>
-        <a
-          href="https://papercuspai.com/docs/"
-          target="_blank"
-          rel="noreferrer"
-          className="pc-button"
-          style={{ background: 'var(--bg-1)' }}
-        >
-          📚 Browse the docs
-        </a>
+        <Button asChild size="lg" variant="accent">
+          <SupportChatButton message="">💬 Start support chat</SupportChatButton>
+        </Button>
+        <Button asChild size="lg" variant="accent">
+          <a
+            href="https://github.com/papercupai/papercusp/issues/new"
+            target="_blank"
+            rel="noreferrer"
+            style={{ background: 'var(--bg-1)' }}
+          >
+            🐛 Open a GitHub issue
+          </a>
+        </Button>
+        <Button asChild size="lg" variant="accent">
+          <a
+            href="https://papercuspai.com/docs/"
+            target="_blank"
+            rel="noreferrer"
+            style={{ background: 'var(--bg-1)' }}
+          >
+            📚 Browse the docs
+          </a>
+        </Button>
       </div>
 
       <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 16 }}>Frequently asked</h2>

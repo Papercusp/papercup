@@ -10,6 +10,7 @@
 
 import { useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
+import { Button } from '../../harness/Button';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { InsightsTab, type InsightsTabProps } from '../../harness/insights/InsightsTab';
 import { HarnessClaimHeader } from '../../_components/HarnessClaimHeader';
@@ -49,14 +50,9 @@ export default function AdvInsightsPanel({ params }: PanelComponentProps) {
     return (
       <div className="pc-advpanel__empty pc-advpanel__empty--err">
         Failed to load insights: {error}{' '}
-        <button
-          type="button"
-          className="pc-advpanel__btn"
-          style={{ marginLeft: 8 }}
-          onClick={() => setTick((t) => t + 1)}
-        >
+        <Button style={{ marginLeft: 8 }} onClick={() => setTick((t) => t + 1)}>
           <RefreshCw size={12} aria-hidden /> Retry
-        </button>
+        </Button>
       </div>
     );
   }

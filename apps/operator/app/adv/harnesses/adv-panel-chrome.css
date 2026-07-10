@@ -11,7 +11,8 @@
  *   .pc-advpanel__input   — frost text input, 28px control height
  *   .pc-advpanel__select  — house <Select> trigger sized to match the input
  *   .pc-advpanel__iconbtn — flat 28×28 frost icon button (refresh et al.)
- *   .pc-advpanel__btn     — flat labeled frost button (Retry, …)
+ *   (a labeled button is just <Button> — see app/harness/Button.tsx; the old
+ *    .pc-advpanel__btn re-implemented its neutral look and was folded in, P-015)
  *   .pc-advpanel__chip    — pill filter chip / sub-view tab (aria-pressed
  *                           or aria-selected marks the active one)
  *   .pc-advpanel__empty   — loading / empty / error placeholder text
@@ -103,31 +104,6 @@
   border-color: var(--accent, #38bdf8);
 }
 .pc-advpanel__iconbtn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-/* Flat labeled frost button — same surface as the icon button. */
-.pc-advpanel__btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  min-height: 28px;
-  padding: 0 10px;
-  font-size: 12px;
-  font-weight: 600;
-  font-family: inherit;
-  color: var(--fg-dim, #b9d4e8);
-  background: var(--bg-2, rgba(255, 255, 255, 0.045));
-  border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
-  border-radius: 6px;
-  cursor: pointer;
-}
-.pc-advpanel__btn:hover:not(:disabled) {
-  color: var(--fg, #e7f7ff);
-  border-color: var(--accent, #38bdf8);
-}
-.pc-advpanel__btn:disabled {
   opacity: 0.5;
   cursor: default;
 }

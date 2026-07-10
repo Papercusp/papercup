@@ -2,6 +2,7 @@
 
 import type { CSSProperties } from 'react';
 import RouteLink from './_components/RouteLink';
+import { Button } from './harness/Button';
 import { useLexicon } from '@/lib/useLexicon';
 
 const frostCard: CSSProperties = {
@@ -159,15 +160,15 @@ export default function NotFound() {
             </p>
 
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 26 }}>
-              <RouteLink href="/harness" className="pc-button primary">
-                Return to Mission Control
-              </RouteLink>
-              <RouteLink href="/cupboard" className="pc-button ghost">
-                Browse the {t('cupboard')}
-              </RouteLink>
-              <RouteLink href="/support" className="pc-button ghost">
-                Ask for help
-              </RouteLink>
+              <Button asChild size="lg" variant="primary">
+                <RouteLink href="/harness">Return to Mission Control</RouteLink>
+              </Button>
+              <Button asChild size="lg">
+                <RouteLink href="/cupboard">Browse the {t('cupboard')}</RouteLink>
+              </Button>
+              <Button asChild size="lg">
+                <RouteLink href="/support">Ask for help</RouteLink>
+              </Button>
             </div>
 
             <div

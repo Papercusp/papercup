@@ -274,6 +274,25 @@ export async function collectSessionFiles(ref: SessionArchiveRef): Promise<Colle
   }
 }
 
+/** All rollout session ids present in a codex home (reconciler/backfill
+ *  helper). Same uuid-tail rule as the ingest adapter's meta(). */
+export async function listCodexRolloutSessionIds(sessionRoot: string): Promise<string[]> {
+  const ids = new Set<string>();
+  const sessions = join(sessionRoot, 'sessions');
+  if (!(await isRealDir(sessions))) return [];
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    for (const e of await dirents(dir)) {
+      if (e.isDirectory() && depth < 3) await walk(join(dir, e.name), depth + 1);
+      else if (e.isFile() && e.name.startsWith('rollout-') && e.name.endsWith('.jsonl')) {
+        const m = basename(e.name, '.jsonl').match(/([0-9a-f]{8}-[0-9a-f-]{27,})$/i);
+        if (m) ids.add(m[1]);
+      }
+    }
+  };
+  await walk(sessions, 0);
+  return [...ids];
+}
+
 /** All native session ids present in a claude config dir (reconciler/backfill
  *  helper: one owner dir can hold several uuids across resumes). */
 export async function listClaudeSessionIds(sessionRoot: string): Promise<string[]> {

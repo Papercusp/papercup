@@ -23,7 +23,7 @@
 import { useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
 import { parseAsBoolean, useQueryState } from 'nuqs';
-import { ChevronDown, ChevronRight, Cpu, RotateCcw } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Cpu, RotateCcw, X } from 'lucide-react';
 // type-only (erased at build): a VALUE import of operator-core constants doesn't
 // resolve in the operator-vite vitest env, so the workspace-default tiers come
 // from the sync resolver instead of a client import.
@@ -82,7 +82,15 @@ export default function ModelTiersOverride({
 
   const commit = (name: string) => {
     const spec = drafts[name] ?? effectiveSpec(baseline, override, name);
+    if (!spec.trim()) return;
     onWrite(withTierSpec(baseline, override, name, spec));
+    setDrafts((d) => {
+      const next = { ...d };
+      delete next[name];
+      return next;
+    });
+  };
+  const discardDraft = (name: string) => {
     setDrafts((d) => {
       const next = { ...d };
       delete next[name];
@@ -123,26 +131,61 @@ export default function ModelTiersOverride({
             <ul className="pc-mt">
               {baseline.map((t) => {
                 const over = isOverridden(baseline, override, t.name);
-                const draft = drafts[t.name] ?? effectiveSpec(baseline, override, t.name);
+                const saved = effectiveSpec(baseline, override, t.name);
+                const draft = drafts[t.name] ?? saved;
+                const dirty = draft !== saved;
+                const invalid = dirty && !draft.trim();
                 const inputId = `mug-model-tier-${t.name.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
                 return (
-                  <li key={t.name} className={`pc-mt__row${over ? ' pc-mt__row--on' : ''}`}>
+                  <li key={t.name} className={`pc-mt__row${over ? ' pc-mt__row--on' : ''}${dirty ? ' pc-mt__row--dirty' : ''}`}>
                     <label className="pc-mt__name" htmlFor={inputId}>{t.name}</label>
                     <div className="pc-mt__control">
                       <input
                         id={inputId}
-                        className="pc-mt__spec"
+                        className={`pc-mt__spec${dirty ? ' pc-mt__spec--dirty' : ''}${invalid ? ' pc-mt__spec--invalid' : ''}`}
                         value={draft}
                         disabled={busy}
                         aria-label={`${t.name} model spec`}
+                        aria-invalid={invalid || undefined}
                         placeholder="model[:effort]"
                         onChange={(e) => setDrafts((d) => ({ ...d, [t.name]: e.target.value }))}
-                        onBlur={() => commit(t.name)}
                         onKeyDown={(e) => {
-                          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                          if (e.key === 'Enter' && dirty && !invalid) {
+                            e.preventDefault();
+                            commit(t.name);
+                          }
+                          if (e.key === 'Escape' && dirty) {
+                            e.preventDefault();
+                            discardDraft(t.name);
+                          }
                         }}
                       />
-                      {over && (
+                      {dirty ? (
+                        <span className="pc-mt__actions">
+                          <Tooltip label={`Apply model change for ${t.name}`}>
+                            <button
+                              type="button"
+                              className="pc-mt__action pc-mt__action--apply"
+                              onClick={() => commit(t.name)}
+                              disabled={busy || invalid}
+                              aria-label={`Apply model change for ${t.name}`}
+                            >
+                              <Check size={12} aria-hidden />
+                            </button>
+                          </Tooltip>
+                          <Tooltip label={`Discard model change for ${t.name}`}>
+                            <button
+                              type="button"
+                              className="pc-mt__action pc-mt__action--discard"
+                              onClick={() => discardDraft(t.name)}
+                              disabled={busy}
+                              aria-label={`Discard model change for ${t.name}`}
+                            >
+                              <X size={12} aria-hidden />
+                            </button>
+                          </Tooltip>
+                        </span>
+                      ) : over ? (
                         <Tooltip label={`Use workspace model for ${t.name}`}>
                           <button
                             type="button"
@@ -154,7 +197,7 @@ export default function ModelTiersOverride({
                             <RotateCcw size={11} aria-hidden />
                           </button>
                         </Tooltip>
-                      )}
+                      ) : null}
                     </div>
                   </li>
                 );

@@ -110,15 +110,49 @@ describe('ModelTiersOverride render', () => {
     expect(onWrite).toHaveBeenCalledWith(null);
   });
 
-  it('editing a tier spec + blurring writes the computed override', async () => {
+  it('shows explicit apply and discard actions for an edited tier', async () => {
     const onWrite = vi.fn();
     render(<ModelTiersOverride override={null} onWrite={onWrite} busy={false} />, { wrapper: Wrap });
     await waitFor(() => expect(screen.getByLabelText('std model spec')).toBeTruthy());
     fireEvent.change(screen.getByLabelText('std model spec'), { target: { value: 'opus' } });
     fireEvent.blur(screen.getByLabelText('std model spec'));
+    expect(onWrite).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Apply model change for std' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Discard model change for std' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Apply model change for std' }));
     expect(onWrite).toHaveBeenCalledWith([
       { name: 'fast', spec: 'haiku' },
       { name: 'std', spec: 'opus' },
+    ]);
+  });
+
+  it('discards a draft without writing and restores the saved value', async () => {
+    const onWrite = vi.fn();
+    render(<ModelTiersOverride override={null} onWrite={onWrite} busy={false} />, { wrapper: Wrap });
+    await waitFor(() => expect(screen.getByLabelText('std model spec')).toBeTruthy());
+    fireEvent.change(screen.getByLabelText('std model spec'), { target: { value: 'opus' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Discard model change for std' }));
+    expect((screen.getByLabelText('std model spec') as HTMLInputElement).value).toBe('sonnet');
+    expect(onWrite).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Apply model change for std' })).toBeNull();
+  });
+
+  it('blocks an empty model spec and allows Enter to apply a valid draft', async () => {
+    const onWrite = vi.fn();
+    render(<ModelTiersOverride override={null} onWrite={onWrite} busy={false} />, { wrapper: Wrap });
+    await waitFor(() => expect(screen.getByLabelText('std model spec')).toBeTruthy());
+    const input = screen.getByLabelText('std model spec');
+    fireEvent.change(input, { target: { value: '   ' } });
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect((screen.getByRole('button', { name: 'Apply model change for std' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onWrite).not.toHaveBeenCalled();
+
+    fireEvent.change(input, { target: { value: 'opus:high' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onWrite).toHaveBeenCalledWith([
+      { name: 'fast', spec: 'haiku' },
+      { name: 'std', spec: 'opus:high' },
     ]);
   });
 });

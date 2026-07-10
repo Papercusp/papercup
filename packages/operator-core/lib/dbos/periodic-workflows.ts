@@ -198,6 +198,37 @@ const coordEscalationGcWorkflow = DBOS.registerWorkflow(coordEscalationGcTick, {
 });
 DBOS.registerScheduled(coordEscalationGcWorkflow, { name: 'coordEscalationGc', crontab: '0 15 4 * * *' });
 
+// Hourly at :20 — the session-archive RECONCILER (session-db-archive-retire-dirs
+// -2026-07-10 P-006, owner Q4): the backstop for sessions that ended without the
+// markAdvSessionEnded fast path firing (kill -9 / OOM / host crash — the
+// idle-session-reaper ghost class applied to archival). Bounded batches
+// (50 adv rows + 100 dirs/tick), idempotent, protected-set-guarded (the same
+// EI-311 liveness rule as session-dir-gc). Gated by the same
+// SESSION_ARCHIVE_AT_END kill-switch as the fast path. This sweep is also the
+// engine that drains the pre-plan backlog (P-011). Never throws out of the
+// step (D-016 classification: skip-missed periodic).
+async function sessionArchiveReconcileTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    try {
+      const enabled = await getFlag(FLAGS.SESSION_ARCHIVE_AT_END, 'system').catch(() => false);
+      if (!enabled) return;
+      const { runSessionArchiveReconcileOnce } = await import('../session-archive-reconciler');
+      const s = await runSessionArchiveReconcileOnce();
+      if (s.dbArchived || s.diskSessionsArchived || s.ompFilesArchived || s.dbStampedEmpty || s.dbFailed || s.diskFailed) {
+        console.log(
+          `[session-archive-reconciler] db: ${s.dbArchived} archived / ${s.dbStampedEmpty} stamped-empty / ${s.dbFailed} failed (${s.endedUnarchivedRemaining} remaining); disk: ${s.diskSessionsArchived} archived + ${s.diskLeftoversDeleted} leftovers across ${s.diskDirsScanned} dirs; omp: ${s.ompFilesArchived}`,
+        );
+      }
+    } catch (e) {
+      console.warn(`[session-archive-reconciler] tick failed: ${(e as Error)?.message ?? e}`);
+    }
+  }, { name: 'session-archive-reconcile' });
+}
+const sessionArchiveReconcileWorkflow = DBOS.registerWorkflow(sessionArchiveReconcileTick, {
+  name: 'sessionArchiveReconcile', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(sessionArchiveReconcileWorkflow, { name: 'sessionArchiveReconcile', crontab: '0 20 * * * *' });
+
 // Daily 04:45 (off the 04:00/04:15/04:30 GC stampede): per-plan retention cap for
 // the plan_revisions spine — keep the newest N revisions per plan, delete the older
 // tail. Every plans:* write appends a full content_snapshot, so a hot plan would

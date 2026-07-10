@@ -1,5 +1,6 @@
 import type { CSSProperties } from 'react';
 import { Link } from '@tanstack/react-router';
+import { Button } from '@/app/harness/Button';
 import { useLexicon } from '@/lib/useLexicon';
 
 /**
@@ -180,15 +181,17 @@ export default function NotFound() {
             </p>
 
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 26 }}>
-              <Link to="/adv" search={{ tab: 'harnesses' }} className="pc-button primary">
-                Return to Mission Control
-              </Link>
-              <Link to="/cupboard" className="pc-button ghost">
-                Browse the {t('cupboard')}
-              </Link>
-              <Link to="/support" className="pc-button ghost">
-                Ask for help
-              </Link>
+              <Button asChild size="lg" variant="primary">
+                <Link to="/adv" search={{ tab: 'harnesses' }}>
+                  Return to Mission Control
+                </Link>
+              </Button>
+              <Button asChild size="lg">
+                <Link to="/cupboard">Browse the {t('cupboard')}</Link>
+              </Button>
+              <Button asChild size="lg">
+                <Link to="/support">Ask for help</Link>
+              </Button>
             </div>
 
             <div
