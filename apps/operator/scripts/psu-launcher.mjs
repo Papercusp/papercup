@@ -1247,6 +1247,9 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   // wind-down half of the loop lifecycle — discovery can miss them, so a seeded worker
   // must be able to inspect/stop its own loop without depending on tools:find.
   'work_items:checkpoint', 'loop:arm', 'loop:checkpoint', 'loop:status', 'loop:end',
+  // Event-wait lifecycle (fleet-member-dx-improvements-2026-07-10 P-008): keep the
+  // seeded OMP spine aligned with the canonical event sleep/emit/catalog verbs.
+  'events:await', 'events:emit', 'events:catalog',
   // EI-6770: without this, an agent nearing its compaction limit self-halts instead of
   // compacting cleanly ("no compaction tool available"), losing in-flight work.
   'session:request-compaction',

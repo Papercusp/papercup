@@ -8,7 +8,7 @@
  *   • the compact "all work" vs focused-count header state (anyHiveChecked);
  *   • the illegal-plan alert (illegalCount > 0);
  *   • a HiveNode's meta (all-plans / some / count) + the expanded plan rows;
- *   • the per-hive all/none + the global all/clear chips → callbacks;
+ *   • tri-state pot selection + the global all-work reset → callbacks;
  *   • the unassigned (no-hive) plans section.
  * Radix Collapsible/Checkbox render natively in jsdom; the @/app/harness/Checkbox
  * alias resolves to the operator component.
@@ -155,11 +155,11 @@ describe('<HiveSteeringTree> hive nodes', () => {
         {...makeProps({ tree: tree({ hives: [hive({ plans: [plan()] })] }), onToggleHive })}
       />,
     );
-    fireEvent.click(screen.getByLabelText('Toggle pot hive-a'));
+    fireEvent.click(screen.getByLabelText('Include hive-a in work focus'));
     expect(onToggleHive).toHaveBeenCalledWith('hive-a');
   });
 
-  it('fires onSetHivePlans(slug, false) from the per-hive Remove action', () => {
+  it('uses the indeterminate pot checkbox to select every plan', () => {
     const onSetHivePlans = vi.fn();
     render(
       <HiveSteeringTree
@@ -169,8 +169,24 @@ describe('<HiveSteeringTree> hive nodes', () => {
         })}
       />,
     );
-    fireEvent.click(screen.getByLabelText('Remove hive-a from scope'));
-    expect(onSetHivePlans).toHaveBeenCalledWith('hive-a', false);
+    fireEvent.click(screen.getByLabelText('Select every plan in hive-a'));
+    expect(onSetHivePlans).toHaveBeenCalledWith('hive-a', true);
+    expect(screen.queryByText('All plans')).toBeNull();
+    expect(screen.queryByText('Remove')).toBeNull();
+  });
+
+  it('uses a checked pot checkbox to remove the pot from focus', () => {
+    const onToggleHive = vi.fn();
+    render(
+      <HiveSteeringTree
+        {...makeProps({
+          tree: tree({ hives: [hive({ checked: true, planMode: 'all', plans: [plan({ checked: true })] })] }),
+          onToggleHive,
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText('Remove hive-a from work focus'));
+    expect(onToggleHive).toHaveBeenCalledWith('hive-a');
   });
 });
 

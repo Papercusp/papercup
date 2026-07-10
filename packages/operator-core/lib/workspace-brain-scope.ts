@@ -20,7 +20,7 @@
  * today. Flip ON only after the post-canary verify (D-006).
  */
 import { FLAGS } from '@papercusp/flags';
-import { getFlag } from '@papercusp/flags/server';
+import { getFlag, onFlagChange } from '@papercusp/flags/server';
 import { systemDistinctId } from './flag-distinct-id';
 
 /**
@@ -30,12 +30,39 @@ import { systemDistinctId } from './flag-distinct-id';
  * Mirrors the getFlag(systemDistinctId()) pattern used by the sibling keying
  * flags (configure-per-workspace.ts / coordination/log.ts).
  */
+// Keying mode is a process-wide topology decision, not a request-level feature
+// toggle.  A per-call PostHog timeout can otherwise return FLAG_DEFAULTS (OFF)
+// between two successful reads (ON), making one process write sentinel rows and
+// legacy rows minutes apart.  Keep the first resolved value sticky for this
+// process and invalidate it only when the flag bus reports an intentional flip.
+let workspaceCoordinationOn: boolean | undefined;
+let workspaceCoordinationRead: Promise<boolean> | undefined;
+let workspaceCoordinationEpoch = 0;
+
+onFlagChange((key) => {
+  if (key !== null && key !== FLAGS.WORKSPACE_COORDINATION) return;
+  workspaceCoordinationOn = undefined;
+  workspaceCoordinationRead = undefined;
+  workspaceCoordinationEpoch += 1;
+});
+
 export async function isWorkspaceCoordinationOn(): Promise<boolean> {
-  try {
-    return await getFlag(FLAGS.WORKSPACE_COORDINATION, systemDistinctId());
-  } catch {
-    return false;
-  }
+  if (workspaceCoordinationOn !== undefined) return workspaceCoordinationOn;
+  if (workspaceCoordinationRead) return workspaceCoordinationRead;
+  const epoch = workspaceCoordinationEpoch;
+  workspaceCoordinationRead = (async () => {
+    try {
+      return await getFlag(FLAGS.WORKSPACE_COORDINATION, systemDistinctId());
+    } catch {
+      return false;
+    }
+  })().then((value) => {
+    if (epoch === workspaceCoordinationEpoch) workspaceCoordinationOn = value;
+    return value;
+  }).finally(() => {
+    if (epoch === workspaceCoordinationEpoch) workspaceCoordinationRead = undefined;
+  });
+  return workspaceCoordinationRead;
 }
 
 /**

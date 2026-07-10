@@ -102,6 +102,11 @@ function HiveNode({
   const t = useLexicon();
   const hasPlans = hive.plans.length > 0;
   const eligibleCount = hive.plans.filter((p) => p.checked).length;
+  const groupActionLabel = hive.planMode === 'some'
+    ? `Select every plan in ${hive.slug}`
+    : hive.checked
+      ? `Remove ${hive.slug} from work focus`
+      : `Include ${hive.slug} in work focus`;
   return (
     <li className={`pc-queen__tree-hive${hive.checked ? ' pc-queen__tree-hive--on' : ''}`}>
       <Collapsible.Root open={hasPlans ? expanded : false} onOpenChange={(open) => hasPlans && onOpenChange(open)}>
@@ -121,8 +126,8 @@ function HiveNode({
               checked={hive.checked}
               indeterminate={hive.planMode === 'some'}
               disabled={busy}
-              onChange={() => onToggleHive(hive.slug)}
-              ariaLabel={`Toggle ${t('pot', { lower: true })} ${hive.slug}`}
+              onChange={() => hive.planMode === 'some' ? onSetHivePlans(hive.slug, true) : onToggleHive(hive.slug)}
+              ariaLabel={groupActionLabel}
             />
             <span className="pc-queen__tree-hivename" title={hive.slug}>{hive.label.trim()}</span>
           </label>
@@ -136,12 +141,6 @@ function HiveNode({
         </div>
         {hasPlans && (
           <Collapsible.Content className="pc-queen__tree-branch">
-            {hive.checked && (
-              <div className="pc-queen__tree-hiveactions">
-                <button type="button" className="pc-queen__chip" onClick={() => onSetHivePlans(hive.slug, true)} disabled={busy || hive.planMode === 'all'} aria-label={`Make every plan in ${hive.slug} eligible`}>All plans</button>
-                <button type="button" className="pc-queen__chip" onClick={() => onSetHivePlans(hive.slug, false)} disabled={busy} aria-label={`Remove ${hive.slug} from scope`}>Remove</button>
-              </div>
-            )}
             <ul className={`pc-queen__plans pc-queen__tree-plans${hive.checked ? '' : ' pc-queen__tree-plans--off'}`}>
               {hive.plans.map((p) => (
                 <PlanRow key={p.slug} plan={p} potSlug={hive.slug} busy={busy || !hive.checked} onTogglePlan={onTogglePlan} />
@@ -269,7 +268,7 @@ function TreeStyles() {
         padding: 0; border: none; background: none; cursor: pointer; color: var(--fg-mute, #7f9bb4); flex-shrink: 0;
       }
       .pc-queen__tree-caret:hover:not(:disabled) { color: var(--fg, #e7f7ff); }
-      .pc-queen__tree-caret:focus-visible { outline: 1px solid var(--queen-accent, var(--warn, #fbbf24)); outline-offset: 1px; border-radius: 4px; }
+      .pc-queen__tree-caret:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
       .pc-queen__tree-caret:disabled { cursor: default; opacity: 0.4; }
       .pc-queen__tree-caret-spacer { display: inline-block; width: 13px; }
       .pc-queen__tree-hivelabel { flex: 1; min-width: 0; }
@@ -282,7 +281,6 @@ function TreeStyles() {
         margin: 3px 0 2px 8px; padding: 2px 0 2px 12px;
         border-left: 1px solid color-mix(in srgb, var(--border-strong), transparent 52%);
       }
-      .pc-queen__tree-hiveactions { display: flex; gap: 5px; padding: 2px 0 4px; }
       .pc-queen__tree-plans {
         margin: 0; padding-left: 0; max-height: none; overflow: visible; gap: 3px;
       }

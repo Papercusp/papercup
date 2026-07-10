@@ -85,7 +85,7 @@ const HIVE = 'papercusp';
 beforeEach(() => {
   h.kv.clear();
   h.upserts.length = 0;
-  h.registeredHives = [];
+  h.registeredHives = ['papercusp', 'hive-a', 'hive-b', 'hive-x', 'other-ws'];
   h.isWorkspaceCoordinationOn.mockReset().mockResolvedValue(false);
   delete process.env.PAPERCUSP_POT_HOME_SLUG;
 });
@@ -198,6 +198,21 @@ describe('listStartedWorkspaceLoops — de-duped Queen-liveness loop (P-003)', (
     const loops = await listStartedWorkspaceLoops();
     expect(loops).toHaveLength(2);
     expect(loops.map((l) => l.workspaceId).sort()).toEqual(['other-ws', WS].sort());
+  });
+
+  it('flag ON → validates the env seat and falls back to a registered started hive', async () => {
+    h.isWorkspaceCoordinationOn.mockResolvedValue(true);
+    process.env.PAPERCUSP_POT_HOME_SLUG = 'deleted-home';
+    h.kv.set(`hive_started:${WS}:${WS}`, 'true');
+    h.kv.set(`hive_started:${WS}:hive-b`, 'true');
+    expect(await listStartedWorkspaceLoops()).toEqual([{ workspaceId: WS, installSlug: 'hive-b' }]);
+  });
+
+  it('flag ON → omits a workspace with only an unregistered sentinel row', async () => {
+    h.isWorkspaceCoordinationOn.mockResolvedValue(true);
+    h.registeredHives = [];
+    h.kv.set(`hive_started:${WS}:${WS}`, 'true');
+    expect(await listStartedWorkspaceLoops()).toEqual([]);
   });
 });
 

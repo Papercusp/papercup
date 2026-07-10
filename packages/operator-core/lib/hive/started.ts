@@ -234,15 +234,37 @@ export async function listStartedWorkspaceLoops(): Promise<
   if (!(await isWorkspaceCoordinationOn())) return rows;
   // ON: one loop per workspace, seated at the workspace home hive.
   const { resolvePotHomeSlug } = await import('./wake');
+  // The sentinel row's installSlug is the workspace id, not necessarily a
+  // registered hive.  Never seat a live loop on that synthetic/dead target.
+  // Registry failure is fail-closed here: an unvalidated seat is worse than a
+  // temporarily skipped supervisor, because it creates a durable wake loop no
+  // process can consume.
   const seen = new Set<string>();
   const out: Array<{ workspaceId: string; installSlug: string }> = [];
   for (const r of rows) {
     if (seen.has(r.workspaceId)) continue;
     seen.add(r.workspaceId);
-    // The env home is workspace-agnostic today (single live workspace); fall back
-    // to this row's install when unset so a never-env'd box still resolves a seat.
-    const seatHome = resolvePotHomeSlug(undefined, undefined) ?? r.installSlug;
-    out.push({ workspaceId: r.workspaceId, installSlug: seatHome });
+    let registeredHiveSlugs: Set<string>;
+    try {
+      const { loadHarnessRegistry } = await import('../harness-registry');
+      const registry = await loadHarnessRegistry(r.workspaceId);
+      registeredHiveSlugs = new Set(
+        registry.projects.filter((p) => p.harness_kind === 'hive').map((p) => p.slug),
+      );
+    } catch {
+      continue;
+    }
+    // The env home is workspace-agnostic today (single live workspace), but it
+    // must still be validated. Prefer it, then a real started hive in this
+    // workspace; never return the workspace sentinel as a seat.
+    const envHome = resolvePotHomeSlug(undefined, undefined);
+    const seatHome = [
+      envHome,
+      ...rows
+        .filter((candidate) => candidate.workspaceId === r.workspaceId)
+        .map((candidate) => candidate.installSlug),
+    ].find((candidate) => candidate && registeredHiveSlugs.has(candidate));
+    if (seatHome) out.push({ workspaceId: r.workspaceId, installSlug: seatHome });
   }
   return out;
 }

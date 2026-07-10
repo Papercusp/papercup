@@ -717,6 +717,7 @@ describe('psu-launcher arg parsing', () => {
       fleetRole: null,
       fleetName: null,
       fleetScheme: null,
+      headless: false,
       // fleet-auto-mode (WI-1356): null = no explicit --auto/--no-auto (effective
       // default derived from --fleet by effectiveAutoMode).
       auto: null,
@@ -791,6 +792,7 @@ describe('psu-launcher arg parsing', () => {
       fleetRole: null,
       fleetName: null,
       fleetScheme: null,
+      headless: false,
       auto: null,
       addDir: [],
       passthrough: [],

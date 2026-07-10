@@ -27,6 +27,7 @@ const h = vi.hoisted(() => ({
   kv: new Map<string, string>(),
   upserts: [] as Array<{ key: string; value: string }>,
   bulkUpdates: [] as Array<{ prefix: string; excludedKey: string; value: string }>,
+  registeredHives: [] as string[],
 }));
 
 // A fake tagged-template SQL that reads/writes h.kv by statement text + bound key.
@@ -72,6 +73,11 @@ vi.mock('../workspace-brain-scope', async (importActual) => {
   const actual = await importActual<typeof import('../workspace-brain-scope')>();
   return { ...actual, isWorkspaceCoordinationOn: h.isWorkspaceCoordinationOn };
 });
+vi.mock('../harness-registry', () => ({
+  loadHarnessRegistry: vi.fn(async () => ({
+    projects: h.registeredHives.map((slug) => ({ slug, harness_kind: 'hive' })),
+  })),
+}));
 
 import {
   getOverwatchStarted,
@@ -90,6 +96,7 @@ beforeEach(() => {
   h.kv.clear();
   h.upserts.length = 0;
   h.bulkUpdates.length = 0;
+  h.registeredHives = ['papercusp', 'hive-a', 'hive-b', 'hive-x', 'other-ws'];
   h.isWorkspaceCoordinationOn.mockReset().mockResolvedValue(false);
   delete process.env.PAPERCUSP_POT_HOME_SLUG;
 });
@@ -251,5 +258,20 @@ describe('listStartedWorkspaceOverwatches — de-duped supervisor set (P-004)', 
     const loops = await listStartedWorkspaceOverwatches();
     expect(loops).toHaveLength(2);
     expect(loops.map((l) => l.workspaceId).sort()).toEqual(['other-ws', WS].sort());
+  });
+
+  it('flag ON → rejects a dead env seat and falls back to a registered started hive', async () => {
+    h.isWorkspaceCoordinationOn.mockResolvedValue(true);
+    process.env.PAPERCUSP_POT_HOME_SLUG = 'deleted-home';
+    h.kv.set(`overwatch_started:${WS}:${WS}`, 'true');
+    h.kv.set(`overwatch_started:${WS}:hive-b`, 'true');
+    expect(await listStartedWorkspaceOverwatches()).toEqual([{ workspaceId: WS, installSlug: 'hive-b' }]);
+  });
+
+  it('flag ON → omits a workspace with only an unregistered sentinel row', async () => {
+    h.isWorkspaceCoordinationOn.mockResolvedValue(true);
+    h.registeredHives = [];
+    h.kv.set(`overwatch_started:${WS}:${WS}`, 'true');
+    expect(await listStartedWorkspaceOverwatches()).toEqual([]);
   });
 });

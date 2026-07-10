@@ -226,15 +226,34 @@ export async function listStartedWorkspaceOverwatches(): Promise<
   // import-time side effects (the same lazy-import discipline hive/started.ts
   // uses for its own listStartedWorkspaceLoops).
   const { resolvePotHomeSlug } = await import('../hive/wake');
+  // A workspace-sentinel started row is not an install. Validate the seat
+  // against the live harness registry before returning it to watchdogs; an
+  // unvalidated synthetic slug strands the supervisor on a dead target.
   const seen = new Set<string>();
   const out: Array<{ workspaceId: string; installSlug: string }> = [];
   for (const r of rows) {
     if (seen.has(r.workspaceId)) continue;
     seen.add(r.workspaceId);
-    // The env home is workspace-agnostic today (single live workspace); fall back
-    // to this row's install when unset so a never-env'd box still resolves a seat.
-    const seatHome = resolvePotHomeSlug(undefined, undefined) ?? r.installSlug;
-    out.push({ workspaceId: r.workspaceId, installSlug: seatHome });
+    let registeredHiveSlugs: Set<string>;
+    try {
+      const { loadHarnessRegistry } = await import('../harness-registry');
+      const registry = await loadHarnessRegistry(r.workspaceId);
+      registeredHiveSlugs = new Set(
+        registry.projects.filter((p) => p.harness_kind === 'hive').map((p) => p.slug),
+      );
+    } catch {
+      continue;
+    }
+    // Prefer the configured home only when it exists; otherwise choose a real
+    // started hive in this workspace. Never seat on the workspace sentinel.
+    const envHome = resolvePotHomeSlug(undefined, undefined);
+    const seatHome = [
+      envHome,
+      ...rows
+        .filter((candidate) => candidate.workspaceId === r.workspaceId)
+        .map((candidate) => candidate.installSlug),
+    ].find((candidate) => candidate && registeredHiveSlugs.has(candidate));
+    if (seatHome) out.push({ workspaceId: r.workspaceId, installSlug: seatHome });
   }
   return out;
 }

@@ -99,9 +99,9 @@ describe('MugTab nested steering tree', () => {
   it('renders the pot-and-plan tree in the Work lane (no flat Eligible-hives/plans sections)', async () => {
     render(<MugTab active={true} />, { wrapper: Wrap });
     expect(screen.getByText('pot & plans')).toBeTruthy();
-    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Toggle pot pot-a' })).toBeTruthy());
-    expect(screen.getByRole('checkbox', { name: 'Toggle pot papercup-hive' })).toBeTruthy();
-    expect(screen.queryByRole('checkbox', { name: 'Toggle pot pot-b' })).toBeNull();
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Include pot-a in work focus' })).toBeTruthy());
+    expect(screen.getByRole('checkbox', { name: 'Include papercup-hive in work focus' })).toBeTruthy();
+    expect(screen.queryByRole('checkbox', { name: 'Include pot-b in work focus' })).toBeNull();
     expect(H.fetchMock.mock.calls.some((c) => String((c as unknown[])[0]).includes('/projects/lite'))).toBe(false);
     // The legacy flat section titles are gone.
     expect(screen.queryByText('Eligible hives')).toBeNull();
@@ -116,7 +116,7 @@ describe('MugTab nested steering tree', () => {
       invalidate: vi.fn(),
     };
     render(<MugTab active={true} />, { wrapper: Wrap });
-    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Toggle pot pot-a' })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Select every plan in pot-a' })).toBeTruthy());
 
     fireEvent.click(screen.getByLabelText('Clear work focus'));
 
@@ -128,8 +128,8 @@ describe('MugTab nested steering tree', () => {
 
   it('toggling a hive writes eligibleHives + targets the home hive', async () => {
     render(<MugTab active={true} />, { wrapper: Wrap });
-    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Toggle pot pot-a' })).toBeTruthy());
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Toggle pot pot-a' }));
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Include pot-a in work focus' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Include pot-a in work focus' }));
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     const { name, args } = setSteeringBody();
     expect(name).toBe('pot:set-steering');
@@ -167,7 +167,7 @@ describe('MugTab nested steering tree', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Expand pot' })[1]);
     expect(await screen.findByRole('checkbox', { name: 'Plan A' })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Toggle pot pot-a' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Include pot-a in work focus' }));
 
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     expect(screen.getByRole('button', { name: 'Collapse pot' }).getAttribute('aria-expanded')).toBe('true');
