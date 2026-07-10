@@ -12,8 +12,12 @@ documents:
   - apps/operator/providers/HarnessSyncProvider.tsx
   - libs/generic/sync/src/server/invalidation-bus.ts
   - packages/operator-core/lib/sync-resolver/table-to-query-names.ts
+  - packages/operator-core/lib/endpoint-route/routes/admin/plans.ts
+  - apps/tui/src/client.rs
+  - apps/tui/src/shared_cache.rs
 plans:
   - agent-tool-delta-client-rollout-2026-06-23
+  - fleet-deltas-leader-primitives-2026-07-10
 ---
 
 ## The mistake this prevents
@@ -244,3 +248,54 @@ bare-string full-bust entries in the same table; `plans.get` was never the domin
 this doc tracks. It only corrects the "none do yet" claim, since `resolveBridgeTarget` /
 `shouldFanout`'s scoped-vs-full-bust branch (the `WI-840` fix section above) is now exercised
 in production, not merely a code path with zero live users.
+
+## Re-diagnosed 2026-07-10 (su-9fde7, WI-3776/P-011, plan `fleet-deltas-leader-primitives-2026-07-10` D-008) — SYNC_RESOURCE_DELTA is ON and irrelevant to this traffic; the admin proxy is structurally outside its wire; residual waste is N independent pui processes each full-refetching on the same SSE burst
+
+A sibling plan (D-004 of `fleet-deltas-leader-primitives-2026-07-10`) re-raised this exact
+traffic after noticing `FLAGS.SYNC_RESOURCE_DELTA` reads **ON** yet the ~50GB/wk full-snapshot
+cost (this doc's 2026-07-03 finding) persists — framed as "an enabled delta path that doesn't
+engage." This pass confirms *why*, extending rather than re-measuring the 2026-07-03 route-level
+finding above (`route_invocations` was unreachable live this pass due to unrelated host
+instability, so this is a code-path proof):
+
+- **The admin proxy (`/api/admin/plans/list|attention`, `dispatchRead` in
+  `packages/operator-core/lib/endpoint-route/routes/admin/plans.ts`) dispatches IN-PROCESS via
+  `handleHttpToolRequest` — a code path structurally separate from the `@papercusp/sync`
+  rest-query path that `SYNC_RESOURCE_DELTA`'s client codec (`sync-delta-codec.ts`,
+  `resource-delta-config.ts`) actually wires cursor negotiation into.** There is no code path
+  connecting the two, so the flag being ON can never engage for this caller — D-004's own
+  framing ("verify via the Tauri agent-e2e rig") was built on a mistaken premise inherited from
+  believing the desktop webview was still the source; it was already ruled out on 2026-07-03
+  (line 180 above) and remains ruled out.
+- **`tool_invocations` genuinely cannot discriminate this from the in-process sync-resolver
+  call** (both stamp the same synthetic `pc-admin-plans-ui` client id via the shared
+  `read-dispatch.ts`) — this doc's 2026-07-03 section already established that `route_invocations`
+  is the only telemetry that can, and that conclusion held again here: it's the same `pui`
+  terminal-dock caller as 2026-07-03/EI-7028, not a new one.
+- **The residual waste EI-7028 didn't fully close**: pane-gating (`pane_fetches_plans`) stops an
+  individual pui *process* from fetching panes it can't render, but does nothing about **multiple
+  pui processes on one machine** (Fleet / PlansBoard / Plans / Inbox-pinned panes, …) each
+  independently subscribing to the same operator SSE-invalidate stream and, on one debounced
+  signal, each independently issuing its own full `refetch_all`. Observed live: two `plans:list`
+  calls 11ms apart, identical args — pure same-machine duplicate work, invisible to per-process
+  pane-gating.
+- **Fix**: `apps/tui/src/shared_cache.rs` (new) — a small, protocol-agnostic stand-in for the
+  cursor/ETag negotiation this admin proxy structurally cannot do: a short-lived
+  (3s), on-disk, atomic-write (temp+rename), best-effort cache at `~/.papercusp/cache/<key>.json`
+  shared by every local `pui` process. `client.rs`'s `plans_list()` checks it before issuing the
+  real HTTP GET and writes through after. Collapses an N-process SSE-triggered burst into 1 real
+  fetch + (N-1) free local reads, at the cost of ≤3s extra staleness — well inside the existing
+  250ms SSE debounce + 60s safety-net poll. `attention_typed()` deliberately left untouched
+  (~0 calls/30min live, already Inbox-gated since EI-7028) — a natural next target for the same
+  pattern. 7 new unit tests (`cargo test --bin pui shared_cache`), all green; `cargo build --bin
+  pui` clean.
+- **Not yet re-measured live** (host instability blocked `dev:pg_query` this pass) — re-run this
+  doc's SQL (or the `route_invocations` req/hr query from the 2026-07-03 section) after a local
+  pui dock rebuild+relaunch to confirm the near-simultaneous duplicate-call rate drops.
+- **Reusable lesson**: this is the third time in this doc a delta/optimization mechanism turned
+  out to be inert on its actual dominant caller — TOOL_DELTA_PROTOCOL was ON but nothing sent
+  `_meta.delta` (2026-07-10 morning finding, `fleet-deltas-leader-primitives-2026-07-10` D-003),
+  SYNC_RESOURCE_DELTA was ON but wired to a caller that was never the traffic source (this
+  section). **Before trusting a flag/mechanism state, trace the actual caller's code path to the
+  mechanism — a flag being ON proves the mechanism *exists*, not that the specific traffic in
+  question flows through it.**

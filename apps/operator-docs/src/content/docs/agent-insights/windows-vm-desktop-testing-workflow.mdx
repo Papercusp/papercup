@@ -231,6 +231,34 @@ edge that cost an hour:
     empty+nonzero on the first attempt, terminate, retry once, surface the
     second attempt's real exit code) for scripted/agent use over ssh.
 
+22. **A compound command inlined into `ssh ... 'wsl -d papercup-runtime --
+    bash -lc "..."'` silently mis-parses across FOUR re-splitting layers**
+    (EI-9100, 2026-07-10) — distinct from the `--exec`-vs-`--` issue in §1
+    (that one is wsl.exe's OWN arg handling; this one is everything
+    UPSTREAM of it). The chain is: your local shell → ssh → Windows OpenSSH
+    → **cmd.exe** (the default remote shell) → wsl.exe → bash. Any inline
+    heredoc, pipe, or nested single-quote breaks at one of these boundaries
+    with a confusing, boundary-specific error that never names the real
+    cause:
+    - heredoc content mis-split by cmd.exe before reaching bash: `cat: '#
+      WI-3328...': No such file or directory`
+    - a pipe meant for bash intercepted by cmd.exe instead: `'grep' is not
+      recognized as an internal or external command`
+    - single-quote nesting breaking across the ssh→cmd.exe→wsl→bash
+      boundary: `/bin/bash: -c: line 1: unexpected EOF while looking for
+      matching ''`
+    **The fix is never to inline multi-layer quoting for anything beyond a
+    single bare command.** Instead: (1) write a plain script file locally,
+    (2) `scp` it to the VM using a **Windows-style** destination path
+    (`user@127.0.0.1:C:/Users/User/<file>` — NOT `/mnt/c/Users/User/<file>`,
+    which fails with `scp: dest open "/mnt/c/...": No such file or
+    directory` because the SSH server's sftp-server is native Windows and
+    does not resolve WSL-mount paths as its own root), (3) execute with ONE
+    clean invocation and zero further nested quoting: `ssh ... wsl -d
+    papercup-runtime --exec bash /mnt/c/Users/User/<script>.sh` (or
+    `node ... .mjs`) — note this is where §1's `--exec` (not `--`) still
+    applies, one layer downstream of the fix this item is about.
+
 ## Where the artifacts live
 
 - VM build dirs: `C:\Users\user\papercup-build-*` (su-44446 = the iteration
