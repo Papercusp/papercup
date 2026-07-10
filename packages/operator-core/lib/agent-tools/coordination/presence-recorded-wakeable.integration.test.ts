@@ -51,7 +51,7 @@ describe('launch-wakeability: a recorded-live session ARMED at launch (no coord_
     // 1. bootstrap-su's recordAdvSession (visible as a recorded-live session).
     await recordAdvSession({ workspaceId: WS, mode: 'console', agent: 'claude', coordOwnerId: sid });
     // 2. bootstrap-su's armInboxWake write (the fix) — NO coord_presence row written.
-    await upsertInboxWakeAwait({ subscriberId: sid, eventKey: inboxWakeKey(sid), workspaceId: WS });
+    await upsertInboxWakeAwait({ subscriberId: sid, eventKey: inboxWakeKey(sid) });
 
     const snap = await assemblePresenceSnapshot({ scope: 'workspace', wsId: WS, potId: null });
     const row = findRow(snap, sid);

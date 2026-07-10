@@ -16,6 +16,7 @@
  * backups) follow this exact shape per the P-008 / D-016 classification.
  */
 import { DBOS } from '@dbos-inc/dbos-sdk';
+import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
 import { flushTelemetry } from '../telemetry-flush';
 import { runScratchGc } from '../scratch-gc';
 import { runEmbedBackfillOnce } from '../search/embed-backfill';
@@ -80,9 +81,11 @@ async function telemetryFlushTick(): Promise<void> {
     name: 'flush-telemetry', retriesAllowed: true, maxAttempts: 2, intervalSeconds: 30,
   });
 }
-const telemetryFlushWorkflow = DBOS.registerWorkflow(telemetryFlushTick, {
-  name: 'telemetryFlush', maxRecoveryAttempts: 5,
-});
+const telemetryFlushWorkflow = idempotentRegisterWorkflow('telemetryFlush', () =>
+  DBOS.registerWorkflow(telemetryFlushTick, {
+    name: 'telemetryFlush', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(telemetryFlushWorkflow, { name: 'telemetryFlush', crontab: '0 0 * * * *' });
 
 // Daily 03:00: scratch-storage GC sweep (retention + dead-workspace + quota).
@@ -93,9 +96,11 @@ async function scratchGcTick(): Promise<void> {
     runScratchGc({ workspaceRegistry });
   }, { name: 'scratch-gc' });
 }
-const scratchGcWorkflow = DBOS.registerWorkflow(scratchGcTick, {
-  name: 'scratchGc', maxRecoveryAttempts: 5,
-});
+const scratchGcWorkflow = idempotentRegisterWorkflow('scratchGc', () =>
+  DBOS.registerWorkflow(scratchGcTick, {
+    name: 'scratchGc', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(scratchGcWorkflow, { name: 'scratchGc', crontab: '0 0 3 * * *' });
 
 // (The 6-hourly mem0 ephemeral-TTL sweep was removed — the `ephemeral` kind is
@@ -122,9 +127,11 @@ async function embedBackfillTick(): Promise<void> {
     }
   }, { name: 'embed-backfill' });
 }
-const embedBackfillWorkflow = DBOS.registerWorkflow(embedBackfillTick, {
-  name: 'embedBackfill', maxRecoveryAttempts: 5,
-});
+const embedBackfillWorkflow = idempotentRegisterWorkflow('embedBackfill', () =>
+  DBOS.registerWorkflow(embedBackfillTick, {
+    name: 'embedBackfill', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(embedBackfillWorkflow, { name: 'embedBackfill', crontab: '0 */5 * * * *' });
 
 // Every 15min: embedding-space self-check (EI-8913 detector half, WI-3644).
@@ -145,9 +152,11 @@ async function embedSpaceSelfCheckTick(): Promise<void> {
     }
   }, { name: 'embed-space-self-check' });
 }
-const embedSpaceSelfCheckWorkflow = DBOS.registerWorkflow(embedSpaceSelfCheckTick, {
-  name: 'embedSpaceSelfCheck', maxRecoveryAttempts: 5,
-});
+const embedSpaceSelfCheckWorkflow = idempotentRegisterWorkflow('embedSpaceSelfCheck', () =>
+  DBOS.registerWorkflow(embedSpaceSelfCheckTick, {
+    name: 'embedSpaceSelfCheck', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(embedSpaceSelfCheckWorkflow, { name: 'embedSpaceSelfCheck', crontab: '0 */15 * * * *' });
 
 // Every minute: backup cadence tick — fires kopia snapshots for any workspace
@@ -156,9 +165,11 @@ DBOS.registerScheduled(embedSpaceSelfCheckWorkflow, { name: 'embedSpaceSelfCheck
 async function backupTick(): Promise<void> {
   await DBOS.runStep(() => runBackupSchedulerTick(), { name: 'backup-cadence' });
 }
-const backupWorkflow = DBOS.registerWorkflow(backupTick, {
-  name: 'backupCadence', maxRecoveryAttempts: 5,
-});
+const backupWorkflow = idempotentRegisterWorkflow('backupCadence', () =>
+  DBOS.registerWorkflow(backupTick, {
+    name: 'backupCadence', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(backupWorkflow, { name: 'backupCadence', crontab: '0 * * * * *' });
 
 // Daily 04:00: GC the coord `notify` firehose (D-002 de-noise). Notify is
@@ -167,9 +178,11 @@ DBOS.registerScheduled(backupWorkflow, { name: 'backupCadence', crontab: '0 * * 
 async function coordNotifyGcTick(): Promise<void> {
   await DBOS.runStep(() => gcOldNotifies(3), { name: 'coord-notify-gc' });
 }
-const coordNotifyGcWorkflow = DBOS.registerWorkflow(coordNotifyGcTick, {
-  name: 'coordNotifyGc', maxRecoveryAttempts: 5,
-});
+const coordNotifyGcWorkflow = idempotentRegisterWorkflow('coordNotifyGc', () =>
+  DBOS.registerWorkflow(coordNotifyGcTick, {
+    name: 'coordNotifyGc', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(coordNotifyGcWorkflow, { name: 'coordNotifyGc', crontab: '0 0 4 * * *' });
 
 // Daily 04:05 (after notify-gc, before escalation-gc): physical retention cap
@@ -179,9 +192,11 @@ DBOS.registerScheduled(coordNotifyGcWorkflow, { name: 'coordNotifyGc', crontab: 
 async function coordMessagesGcTick(): Promise<void> {
   await DBOS.runStep(() => gcOldOperatorMessages(), { name: 'coord-messages-gc' });
 }
-const coordMessagesGcWorkflow = DBOS.registerWorkflow(coordMessagesGcTick, {
-  name: 'coordMessagesGc', maxRecoveryAttempts: 5,
-});
+const coordMessagesGcWorkflow = idempotentRegisterWorkflow('coordMessagesGc', () =>
+  DBOS.registerWorkflow(coordMessagesGcTick, {
+    name: 'coordMessagesGc', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(coordMessagesGcWorkflow, { name: 'coordMessagesGc', crontab: '0 5 4 * * *' });
 
 // Daily 04:15 (off the 04:00 notify-gc / 04:30 dbos-gc stampede): physical retention
@@ -193,9 +208,11 @@ DBOS.registerScheduled(coordMessagesGcWorkflow, { name: 'coordMessagesGc', cront
 async function coordEscalationGcTick(): Promise<void> {
   await DBOS.runStep(() => gcResolvedEscalationFamilies(), { name: 'coord-escalation-gc' });
 }
-const coordEscalationGcWorkflow = DBOS.registerWorkflow(coordEscalationGcTick, {
-  name: 'coordEscalationGc', maxRecoveryAttempts: 5,
-});
+const coordEscalationGcWorkflow = idempotentRegisterWorkflow('coordEscalationGc', () =>
+  DBOS.registerWorkflow(coordEscalationGcTick, {
+    name: 'coordEscalationGc', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(coordEscalationGcWorkflow, { name: 'coordEscalationGc', crontab: '0 15 4 * * *' });
 
 // Hourly at :20 — the session-archive RECONCILER (session-db-archive-retire-dirs
@@ -224,9 +241,11 @@ async function sessionArchiveReconcileTick(): Promise<void> {
     }
   }, { name: 'session-archive-reconcile' });
 }
-const sessionArchiveReconcileWorkflow = DBOS.registerWorkflow(sessionArchiveReconcileTick, {
-  name: 'sessionArchiveReconcile', maxRecoveryAttempts: 5,
-});
+const sessionArchiveReconcileWorkflow = idempotentRegisterWorkflow('sessionArchiveReconcile', () =>
+  DBOS.registerWorkflow(sessionArchiveReconcileTick, {
+    name: 'sessionArchiveReconcile', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(sessionArchiveReconcileWorkflow, { name: 'sessionArchiveReconcile', crontab: '0 20 * * * *' });
 
 // Hourly @:50 — the session-dir GC (session-db-archive-retire-dirs P-012). The
@@ -269,9 +288,11 @@ async function sessionDirGcTick(): Promise<void> {
     }
   }, { name: 'session-dir-gc' });
 }
-const sessionDirGcWorkflow = DBOS.registerWorkflow(sessionDirGcTick, {
-  name: 'sessionDirGc', maxRecoveryAttempts: 5,
-});
+const sessionDirGcWorkflow = idempotentRegisterWorkflow('sessionDirGc', () =>
+  DBOS.registerWorkflow(sessionDirGcTick, {
+    name: 'sessionDirGc', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(sessionDirGcWorkflow, { name: 'sessionDirGc', crontab: '0 50 * * * *' });
 
 // Daily 04:45 (off the 04:00/04:15/04:30 GC stampede): per-plan retention cap for
@@ -282,9 +303,11 @@ DBOS.registerScheduled(sessionDirGcWorkflow, { name: 'sessionDirGc', crontab: '0
 async function planRevisionsGcTick(): Promise<void> {
   await DBOS.runStep(() => gcOldPlanRevisions(), { name: 'plan-revisions-gc' });
 }
-const planRevisionsGcWorkflow = DBOS.registerWorkflow(planRevisionsGcTick, {
-  name: 'planRevisionsGc', maxRecoveryAttempts: 5,
-});
+const planRevisionsGcWorkflow = idempotentRegisterWorkflow('planRevisionsGc', () =>
+  DBOS.registerWorkflow(planRevisionsGcTick, {
+    name: 'planRevisionsGc', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(planRevisionsGcWorkflow, { name: 'planRevisionsGc', crontab: '0 45 4 * * *' });
 
 // Daily 04:50 (off the 04:00-04:45 GC stampede): physical retention GC for
@@ -297,9 +320,11 @@ DBOS.registerScheduled(planRevisionsGcWorkflow, { name: 'planRevisionsGc', cront
 async function decisionLedgerGcTick(): Promise<void> {
   await DBOS.runStep(() => gcOldDecisionLedgerRows(), { name: 'decision-ledger-gc' });
 }
-const decisionLedgerGcWorkflow = DBOS.registerWorkflow(decisionLedgerGcTick, {
-  name: 'decisionLedgerGc', maxRecoveryAttempts: 5,
-});
+const decisionLedgerGcWorkflow = idempotentRegisterWorkflow('decisionLedgerGc', () =>
+  DBOS.registerWorkflow(decisionLedgerGcTick, {
+    name: 'decisionLedgerGc', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(decisionLedgerGcWorkflow, { name: 'decisionLedgerGc', crontab: '0 50 4 * * *' });
 
 // Daily 04:55 (off the 04:00-04:50 GC stampede): physical retention GC for
@@ -314,9 +339,11 @@ DBOS.registerScheduled(decisionLedgerGcWorkflow, { name: 'decisionLedgerGc', cro
 async function operatorTurnsGcTick(): Promise<void> {
   await DBOS.runStep(() => gcOldOperatorTurns(), { name: 'operator-turns-gc' });
 }
-const operatorTurnsGcWorkflow = DBOS.registerWorkflow(operatorTurnsGcTick, {
-  name: 'operatorTurnsGc', maxRecoveryAttempts: 5,
-});
+const operatorTurnsGcWorkflow = idempotentRegisterWorkflow('operatorTurnsGc', () =>
+  DBOS.registerWorkflow(operatorTurnsGcTick, {
+    name: 'operatorTurnsGc', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(operatorTurnsGcWorkflow, { name: 'operatorTurnsGc', crontab: '0 55 4 * * *' });
 
 // Every 6h: global substrate_outbox backstop GC — sweeps orphaned/old
@@ -335,9 +362,11 @@ async function outboxBackstopGcTick(): Promise<void> {
     await runSubstrateOutboxBackstopGc({ startedHives: await listStartedHives() });
   }, { name: 'substrate-outbox-backstop-gc' });
 }
-const outboxBackstopGcWorkflow = DBOS.registerWorkflow(outboxBackstopGcTick, {
-  name: 'outboxBackstopGc', maxRecoveryAttempts: 5,
-});
+const outboxBackstopGcWorkflow = idempotentRegisterWorkflow('outboxBackstopGc', () =>
+  DBOS.registerWorkflow(outboxBackstopGcTick, {
+    name: 'outboxBackstopGc', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(outboxBackstopGcWorkflow, { name: 'outboxBackstopGc', crontab: '0 0 */6 * * *' });
 
 // Daily 04:30 (after coordNotifyGc 04:00, off the stampede): prune old TERMINAL
@@ -357,9 +386,11 @@ async function dbosWorkflowGcTick(): Promise<void> {
     }
   }, { name: 'dbos-workflow-gc' });
 }
-const dbosWorkflowGcWorkflow = DBOS.registerWorkflow(dbosWorkflowGcTick, {
-  name: 'dbosWorkflowGc', maxRecoveryAttempts: 5,
-});
+const dbosWorkflowGcWorkflow = idempotentRegisterWorkflow('dbosWorkflowGc', () =>
+  DBOS.registerWorkflow(dbosWorkflowGcTick, {
+    name: 'dbosWorkflowGc', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(dbosWorkflowGcWorkflow, { name: 'dbosWorkflowGc', crontab: '0 30 4 * * *' });
 
 // Hourly (:20, off the :00 stampede): reconcile the attention queue — auto-resolve
@@ -376,9 +407,11 @@ async function attentionReconcileTick(): Promise<void> {
     await reconcileStaleEscalationsOnce();
   }, { name: 'attention-reconcile' });
 }
-const attentionReconcileWorkflow = DBOS.registerWorkflow(attentionReconcileTick, {
-  name: 'attentionReconcile', maxRecoveryAttempts: 5,
-});
+const attentionReconcileWorkflow = idempotentRegisterWorkflow('attentionReconcile', () =>
+  DBOS.registerWorkflow(attentionReconcileTick, {
+    name: 'attentionReconcile', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(attentionReconcileWorkflow, { name: 'attentionReconcile', crontab: '0 20 * * * *' });
 
 // Hourly (:32, off the :20 reconcile tick): expire stale OPEN advisory
@@ -391,9 +424,11 @@ async function advisoryEscalationExpiryTick(): Promise<void> {
     await expireStaleAdvisoryEscalations();
   }, { name: 'advisory-escalation-expiry' });
 }
-const advisoryEscalationExpiryWorkflow = DBOS.registerWorkflow(advisoryEscalationExpiryTick, {
-  name: 'advisoryEscalationExpiry', maxRecoveryAttempts: 5,
-});
+const advisoryEscalationExpiryWorkflow = idempotentRegisterWorkflow('advisoryEscalationExpiry', () =>
+  DBOS.registerWorkflow(advisoryEscalationExpiryTick, {
+    name: 'advisoryEscalationExpiry', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(advisoryEscalationExpiryWorkflow, { name: 'advisoryEscalationExpiry', crontab: '0 32 * * * *' });
 
 // Every 30 min (:26 + :56, off the :00/:20/:23 stampede): the coord-handoff
@@ -430,9 +465,11 @@ async function handoffReconcileTick(): Promise<void> {
     }
   }, { name: 'handoff-reconcile' });
 }
-const handoffReconcileWorkflow = DBOS.registerWorkflow(handoffReconcileTick, {
-  name: 'handoffReconcile', maxRecoveryAttempts: 5,
-});
+const handoffReconcileWorkflow = idempotentRegisterWorkflow('handoffReconcile', () =>
+  DBOS.registerWorkflow(handoffReconcileTick, {
+    name: 'handoffReconcile', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(handoffReconcileWorkflow, { name: 'handoffReconcile', crontab: '0 26,56 * * * *' });
 
 // Every 5 minutes: coord:send { replyDeadlineSec } backstop (EI-8986) — the
@@ -448,9 +485,11 @@ async function replyDeadlineSweepTick(): Promise<void> {
     await runReplyDeadlineSweepOnce();
   }, { name: 'reply-deadline-sweep' });
 }
-const replyDeadlineSweepWorkflow = DBOS.registerWorkflow(replyDeadlineSweepTick, {
-  name: 'replyDeadlineSweep', maxRecoveryAttempts: 5,
-});
+const replyDeadlineSweepWorkflow = idempotentRegisterWorkflow('replyDeadlineSweep', () =>
+  DBOS.registerWorkflow(replyDeadlineSweepTick, {
+    name: 'replyDeadlineSweep', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(replyDeadlineSweepWorkflow, { name: 'replyDeadlineSweep', crontab: '0 */5 * * * *' });
 
 // Hourly (:23, off the stampede): surface silently-dead DBOS workflows
@@ -464,9 +503,11 @@ async function deadWorkflowMonitorTick(): Promise<void> {
     await runDeadWorkflowMonitorOnce();
   }, { name: 'dead-workflow-monitor' });
 }
-const deadWorkflowMonitorWorkflow = DBOS.registerWorkflow(deadWorkflowMonitorTick, {
-  name: 'deadWorkflowMonitor', maxRecoveryAttempts: 5,
-});
+const deadWorkflowMonitorWorkflow = idempotentRegisterWorkflow('deadWorkflowMonitor', () =>
+  DBOS.registerWorkflow(deadWorkflowMonitorTick, {
+    name: 'deadWorkflowMonitor', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(deadWorkflowMonitorWorkflow, { name: 'deadWorkflowMonitor', crontab: '0 23 * * * *' });
 
 // Every 5min: backup orphan-snapshot sweep (consolidation P-002). REVIVES the
@@ -475,9 +516,11 @@ DBOS.registerScheduled(deadWorkflowMonitorWorkflow, { name: 'deadWorkflowMonitor
 async function orphanCleanupTick(): Promise<void> {
   await DBOS.runStep(async () => { await sweepOrphanSnapshots(); }, { name: 'backup-orphan-cleanup' });
 }
-const orphanCleanupWorkflow = DBOS.registerWorkflow(orphanCleanupTick, {
-  name: 'backupOrphanCleanup', maxRecoveryAttempts: 5,
-});
+const orphanCleanupWorkflow = idempotentRegisterWorkflow('backupOrphanCleanup', () =>
+  DBOS.registerWorkflow(orphanCleanupTick, {
+    name: 'backupOrphanCleanup', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(orphanCleanupWorkflow, { name: 'backupOrphanCleanup', crontab: '0 */5 * * * *' });
 
 // Every 30min: refresh APNs/FCM push credentials (consolidation P-003). Replaces
@@ -486,9 +529,11 @@ DBOS.registerScheduled(orphanCleanupWorkflow, { name: 'backupOrphanCleanup', cro
 async function pushCredentialsTick(): Promise<void> {
   await DBOS.runStep(() => refreshPushCredentials(), { name: 'push-credentials-refresh' });
 }
-const pushCredentialsWorkflow = DBOS.registerWorkflow(pushCredentialsTick, {
-  name: 'pushCredentialsRefresh', maxRecoveryAttempts: 5,
-});
+const pushCredentialsWorkflow = idempotentRegisterWorkflow('pushCredentialsRefresh', () =>
+  DBOS.registerWorkflow(pushCredentialsTick, {
+    name: 'pushCredentialsRefresh', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(pushCredentialsWorkflow, { name: 'pushCredentialsRefresh', crontab: '0 */30 * * * *' });
 
 // Daily 04:17 UTC: test_runs retention prune (consolidation P-009). Replaces the
@@ -501,9 +546,11 @@ async function testRunsPruneTick(): Promise<void> {
     await sql`SELECT harness_shared.prune_test_runs(50)`;
   }, { name: 'test-runs-prune' });
 }
-const testRunsPruneWorkflow = DBOS.registerWorkflow(testRunsPruneTick, {
-  name: 'testRunsPrune', maxRecoveryAttempts: 5,
-});
+const testRunsPruneWorkflow = idempotentRegisterWorkflow('testRunsPrune', () =>
+  DBOS.registerWorkflow(testRunsPruneTick, {
+    name: 'testRunsPrune', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(testRunsPruneWorkflow, { name: 'testRunsPrune', crontab: '0 17 4 * * *' });
 
 // Every 6h (:50, off the :00 stampede + after the outbox backstop GC at :00):
@@ -524,9 +571,11 @@ async function storageGrowthAlarmTick(): Promise<void> {
     }
   }, { name: 'storage-growth-alarm' });
 }
-const storageGrowthAlarmWorkflow = DBOS.registerWorkflow(storageGrowthAlarmTick, {
-  name: 'storageGrowthAlarm', maxRecoveryAttempts: 5,
-});
+const storageGrowthAlarmWorkflow = idempotentRegisterWorkflow('storageGrowthAlarm', () =>
+  DBOS.registerWorkflow(storageGrowthAlarmTick, {
+    name: 'storageGrowthAlarm', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(storageGrowthAlarmWorkflow, { name: 'storageGrowthAlarm', crontab: '0 50 */6 * * *' });
 
 // Hourly (:40, off the :00/:50 stampede): replication-slot WAL-retention alarm
@@ -548,9 +597,11 @@ async function replicationSlotAlarmTick(): Promise<void> {
     }
   }, { name: 'replication-slot-alarm' });
 }
-const replicationSlotAlarmWorkflow = DBOS.registerWorkflow(replicationSlotAlarmTick, {
-  name: 'replicationSlotAlarm', maxRecoveryAttempts: 5,
-});
+const replicationSlotAlarmWorkflow = idempotentRegisterWorkflow('replicationSlotAlarm', () =>
+  DBOS.registerWorkflow(replicationSlotAlarmTick, {
+    name: 'replicationSlotAlarm', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(replicationSlotAlarmWorkflow, { name: 'replicationSlotAlarm', crontab: '0 40 * * * *' });
 
 // Every 15min (:07/:22/:37/:52, off the :00 stampede): runaway/leaked TEST-desktop
@@ -574,9 +625,11 @@ async function testDesktopReaperTick(): Promise<void> {
     }
   }, { name: 'test-desktop-reaper' });
 }
-const testDesktopReaperWorkflow = DBOS.registerWorkflow(testDesktopReaperTick, {
-  name: 'testDesktopReaper', maxRecoveryAttempts: 5,
-});
+const testDesktopReaperWorkflow = idempotentRegisterWorkflow('testDesktopReaper', () =>
+  DBOS.registerWorkflow(testDesktopReaperTick, {
+    name: 'testDesktopReaper', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(testDesktopReaperWorkflow, { name: 'testDesktopReaper', crontab: '0 7,22,37,52 * * * *' });
 
 // Every 30min (:13/:43, off the :00 stampede): disk/inode low-free-space tripwire
@@ -598,9 +651,11 @@ async function diskSpaceAlarmTick(): Promise<void> {
     }
   }, { name: 'disk-space-alarm' });
 }
-const diskSpaceAlarmWorkflow = DBOS.registerWorkflow(diskSpaceAlarmTick, {
-  name: 'diskSpaceAlarm', maxRecoveryAttempts: 5,
-});
+const diskSpaceAlarmWorkflow = idempotentRegisterWorkflow('diskSpaceAlarm', () =>
+  DBOS.registerWorkflow(diskSpaceAlarmTick, {
+    name: 'diskSpaceAlarm', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(diskSpaceAlarmWorkflow, { name: 'diskSpaceAlarm', crontab: '0 13,43 * * * *' });
 
 // Daily 05:00 (after the 03:00–04:30 GC/prune cluster, off the :00 stampede): the
@@ -629,9 +684,11 @@ async function memoryAnchorAuditTick(): Promise<void> {
     }
   }, { name: 'memory-anchor-audit' });
 }
-const memoryAnchorAuditWorkflow = DBOS.registerWorkflow(memoryAnchorAuditTick, {
-  name: 'memoryAnchorAudit', maxRecoveryAttempts: 5,
-});
+const memoryAnchorAuditWorkflow = idempotentRegisterWorkflow('memoryAnchorAudit', () =>
+  DBOS.registerWorkflow(memoryAnchorAuditTick, {
+    name: 'memoryAnchorAudit', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(memoryAnchorAuditWorkflow, { name: 'memoryAnchorAudit', crontab: '0 0 5 * * *' });
 
 // Weekly (Sun 05:30 UTC, off the daily 03:00–05:00 GC/prune cluster): code-recipes
@@ -663,9 +720,11 @@ async function recipeHygieneTick(): Promise<void> {
     }
   }, { name: 'recipe-hygiene' });
 }
-const recipeHygieneWorkflow = DBOS.registerWorkflow(recipeHygieneTick, {
-  name: 'recipeHygiene', maxRecoveryAttempts: 5,
-});
+const recipeHygieneWorkflow = idempotentRegisterWorkflow('recipeHygiene', () =>
+  DBOS.registerWorkflow(recipeHygieneTick, {
+    name: 'recipeHygiene', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(recipeHygieneWorkflow, { name: 'recipeHygiene', crontab: '0 30 5 * * 0' });
 
 // Every 2min (offset :30s — off the :00 minute-tick stampede): session-transcript
@@ -695,9 +754,11 @@ async function sessionIngestTick(): Promise<void> {
     }
   }, { name: 'session-ingest' });
 }
-const sessionIngestWorkflow = DBOS.registerWorkflow(sessionIngestTick, {
-  name: 'sessionIngest', maxRecoveryAttempts: 5,
-});
+const sessionIngestWorkflow = idempotentRegisterWorkflow('sessionIngest', () =>
+  DBOS.registerWorkflow(sessionIngestTick, {
+    name: 'sessionIngest', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(sessionIngestWorkflow, { name: 'sessionIngest', crontab: '30 */2 * * * *' });
 
 // Daily 05:20 (after the 03:00–05:00 GC cluster): session_turns retention prune —
@@ -713,9 +774,11 @@ async function sessionTurnsPruneTick(): Promise<void> {
     }
   }, { name: 'session-turns-prune' });
 }
-const sessionTurnsPruneWorkflow = DBOS.registerWorkflow(sessionTurnsPruneTick, {
-  name: 'sessionTurnsPrune', maxRecoveryAttempts: 5,
-});
+const sessionTurnsPruneWorkflow = idempotentRegisterWorkflow('sessionTurnsPrune', () =>
+  DBOS.registerWorkflow(sessionTurnsPruneTick, {
+    name: 'sessionTurnsPrune', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(sessionTurnsPruneWorkflow, { name: 'sessionTurnsPrune', crontab: '0 20 5 * * *' });
 
 // Hourly at :12 (off the daily 03:00-05:00 GC/prune cluster + no collision with any
@@ -743,7 +806,9 @@ async function coordPresenceReaperTick(): Promise<void> {
     }
   }, { name: 'coord-presence-reaper' });
 }
-const coordPresenceReaperWorkflow = DBOS.registerWorkflow(coordPresenceReaperTick, {
-  name: 'coordPresenceReaper', maxRecoveryAttempts: 5,
-});
+const coordPresenceReaperWorkflow = idempotentRegisterWorkflow('coordPresenceReaper', () =>
+  DBOS.registerWorkflow(coordPresenceReaperTick, {
+    name: 'coordPresenceReaper', maxRecoveryAttempts: 5,
+  }),
+);
 DBOS.registerScheduled(coordPresenceReaperWorkflow, { name: 'coordPresenceReaper', crontab: '0 12 * * * *' });

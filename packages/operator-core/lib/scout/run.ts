@@ -33,10 +33,10 @@ import {
   runScoutTick,
   type ScoutCycleLike,
   type ScoutTickDeps,
-  type ScoutTickRecord,
   type ScoutTickResult,
   type QueenFeedbackItem,
 } from './scheduler';
+import type { ScoutTickRecord } from './tick-ledger';
 import type { ScoutCyclePhase } from './cycle';
 import { readHiveIdleRatio, readFrictionSignalCount } from './cadence-signals';
 import type { ScoutCadenceOptions } from './cadence';

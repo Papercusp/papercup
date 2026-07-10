@@ -83,7 +83,7 @@ describe('C3 capstone — N-session concurrency: zero loss / dup / misroute', ()
     await Promise.all(sessions.map((s) => armInboxWake({ ownerId: s.ownerId, minSleepSec: 0, workspaceId: h.ws })));
     await Promise.all(
       sessions.map(async (s) => {
-        const fired = await store.fireAwaitsForKey({ eventKey: inboxWakeKey(s.ownerId), workspaceId: h.ws });
+        const fired = await store.fireAwaitsForKey({ eventKey: inboxWakeKey(s.ownerId) });
         await store.insertDeliveries({ awaits: fired });
       }),
     );

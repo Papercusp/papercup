@@ -282,6 +282,7 @@ import oauthCallback from './oauth/callback';
 import oauthVerifyPaste from './oauth/verify-paste';
 import publishCredentials from './publish-credentials/index';
 import publishCredentialsRotate from './publish-credentials/rotate';
+import miscRuntimeVintageReport from './misc/runtime-vintage-report';
 import miscHealth from './misc/health';
 import miscHealthReady from './misc/health-ready';
 import miscHealthDeep from './misc/health-deep';
@@ -731,6 +732,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(oauthVerifyPaste as AnyRoute),
   ...flatten(publishCredentials as AnyRoute[]),
   ...flatten(publishCredentialsRotate as AnyRoute),
+  ...flatten(miscRuntimeVintageReport as AnyRoute),
   ...flatten(miscHealth as AnyRoute),
   ...flatten(miscHealthReady as AnyRoute),
   ...flatten(miscHealthDeep as AnyRoute),

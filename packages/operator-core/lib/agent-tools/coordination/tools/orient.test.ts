@@ -1,4 +1,4 @@
-import { beforeEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { composeOrient } from './orient';
 import type { InnerCall } from '../../_compound-dispatch';
 
@@ -851,5 +851,68 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
     const cursor = vi.fn(async () => { throw new Error('pg down'); });
     const r = await composeOrient({}, call, 'me', undefined, undefined, undefined, undefined, cursor);
     expect(r.fleetCatchUp).toEqual({ fleet: 'backend', total: 1, recent: CATCHUP_V1 });
+  });
+
+  // WI-3818: fleet:assignments (`me`) and coord:glance (`fleetHealth`) fan out to
+  // presence/assignments/Tier-1 reads with no internal budget — during the
+  // 2026-07-10 host-load storm either could hang orient until the 55s MCP client
+  // timeout. Both legs are now bounded (withBoundedTimeout) and degrade instead
+  // of hanging; these tests exercise the ACTUAL timeout path (not just a thrown
+  // error, already covered above) with fake timers.
+  describe('WI-3818 bounded fleet legs — a hung call degrades instead of hanging orient', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('`me` degrades to a minimal empty-roster shape when fleet:assignments never resolves (BOTH modes affected — this is the one fleet-related call monitor mode makes)', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { call } = fakeCall({
+        ...CORE,
+        'fleet:assignments': () => new Promise(() => {}),
+      });
+      const resultPromise = composeOrient({ mode: 'monitor' }, call, 'me');
+      await vi.advanceTimersByTimeAsync(8_000);
+      const r = await resultPromise;
+      expect(r.ok).toBe(true);
+      expect(r.me).toEqual({ ok: false, degraded: true, agents: [] });
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('`me` degrading never crashes the full-mode delta fold (fingerprintFleet stays try/catch-safe)', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { call } = fakeCall({
+        ...CORE,
+        'fleet:assignments': () => new Promise(() => {}),
+      });
+      const fleetCursor = vi.fn(async () => ({ committed: null, baseline: true }));
+      const resultPromise = composeOrient({}, call, 'me', undefined, undefined, fleetCursor);
+      await vi.advanceTimersByTimeAsync(8_000);
+      const r = await resultPromise;
+      expect(r.ok).toBe(true);
+      expect(r.claimable).toHaveLength(2); // the rest of orient still completes normally
+      warnSpy.mockRestore();
+    });
+
+    it('fleetHealth degrades to null (not a hang) when coord:glance never resolves', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { call } = fakeCall({
+        ...CORE,
+        'coord:whoami': () => ({ fleetSlug: 'backend' }),
+        'coord:catch-up': () => ({ total: 0, rows: [] }),
+        'coord:glance': () => new Promise(() => {}),
+      });
+      const resultPromise = composeOrient({}, call, 'me');
+      await vi.advanceTimersByTimeAsync(8_000);
+      const r = await resultPromise;
+      expect(r.ok).toBe(true);
+      expect(r.fleetHealth).toBeNull();
+      expect(r.claimable).toHaveLength(2);
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
   });
 });

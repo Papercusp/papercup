@@ -25,12 +25,34 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+/**
+ * Repo root, keyed on the root package.json's `workspaces` field rather than `.git`.
+ *
+ * The release source bundle ships WITHOUT a .git dir (stage-source-tree.sh excludes
+ * it), so the old `.git` probe walked to `/`, silently fell back to `__dirname`, and
+ * this test then hunted for the page under
+ * `packages/operator-core/lib/__tests__/apps/operator-docs/...` — a baffling
+ * "not found" that read like the docs page was missing when the root lookup was what
+ * failed. Same class as the `git rev-parse` root derivation in
+ * apps/operator/scripts/endpoint-route-progress.mjs. `workspaces` is present in both a
+ * checkout and the shipped bundle. Never fall back silently: an unresolvable root is a
+ * broken test, not a missing page.
+ */
 function repoRoot(): string {
   let dir = resolve(__dirname);
   while (true) {
-    if (existsSync(join(dir, '.git'))) return dir;
+    const pkg = join(dir, 'package.json');
+    if (existsSync(pkg)) {
+      try {
+        if ((JSON.parse(readFileSync(pkg, 'utf8')) as { workspaces?: unknown }).workspaces) return dir;
+      } catch {
+        /* unreadable/unparseable — keep walking */
+      }
+    }
     const parent = dirname(dir);
-    if (parent === dir) return __dirname;
+    if (parent === dir) {
+      throw new Error(`repo root not found above ${__dirname} (no package.json with "workspaces")`);
+    }
     dir = parent;
   }
 }

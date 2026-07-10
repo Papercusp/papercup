@@ -289,9 +289,32 @@ instability, so this is a code-path proof):
   (~0 calls/30min live, already Inbox-gated since EI-7028) — a natural next target for the same
   pattern. 7 new unit tests (`cargo test --bin pui shared_cache`), all green; `cargo build --bin
   pui` clean.
-- **Not yet re-measured live** (host instability blocked `dev:pg_query` this pass) — re-run this
-  doc's SQL (or the `route_invocations` req/hr query from the 2026-07-03 section) after a local
-  pui dock rebuild+relaunch to confirm the near-simultaneous duplicate-call rate drops.
+- **RE-MEASURED LIVE 2026-07-10 ~15:10Z — it works** (P-011/WI-3776, re-verified independently by
+  the fleet leader rather than taken on the closer's word). The rebuilt sidecar binary
+  (`papercusp-desktop/src-tauri/sidecar/bin/pui`, mtime 09:59:46 EDT — after `shared_cache.rs`)
+  was confirmed to *actually contain* the fix via `strings … | grep plans-list-standard-v1`, and
+  the live `plans-pane` processes relaunched onto it at 10:24:34. On `route_invocations`
+  (`path='/admin/plans/:verb'`), split at that relaunch: near-duplicate rate **16.09% → 0.89%**
+  (\<50ms gap, 48h before-window; the item's own \<1s-gap read: 26.0% → 2.7%). **Crucially, call
+  VOLUME held steady across the split** (19→28→24→38 per 10-min bucket) — that is what rules out
+  the obvious confound, since the WI-3792 host storm was receding at the same moment and, had the
+  docks merely died, the burst rate would have collapsed on its own. Caveat: the post window is
+  ~40min / 112 calls with the host still draining, so the exact magnitude carries a ± from fleet
+  concurrency; EI-9130 (a `deltaServed` marker) exists to make this directly attributable next
+  time.
+- **Reusable lesson #2 — a 7-day rolling telemetry window BACKDATES an already-landed fix into a
+  fresh "opportunity."** `fleet-deltas-leader-primitives-2026-07-10` D-003 (written 2026-07-10
+  ~04:40Z) ranked this traffic as "~50 GB/week of byte-identical re-fetches", and that figure
+  propagated unchecked into the P-011 item text, WI-3776's title, and an owner-facing report.
+  Per-**day** telemetry shows it was already false when written: `plans:attention` collapsed ~4
+  orders of magnitude on **07-04** (19–22 GB/day → 8.7 MB/day) and `plans:list` bytes ~17× on
+  **07-05** (10.1 GB → 582 MB) — i.e. the **2026-07-03** EI-7028 poll-frequency/Inbox-gating fix,
+  the very fix this document describes, had already retired the elephant. The 7d window was simply
+  still carrying the two pre-fix days that held essentially all the volume. Current run-rate is
+  ~0.6 GB/week, making `shared_cache.rs` worth ~150–200 MB/week: a real, well-tested win, roughly
+  two orders of magnitude smaller than advertised. **Rank optimization work by a CURRENT run-rate
+  (last 1h / last 24h), and plot per-day before quoting any multi-day total — otherwise you will
+  measure a corpse and bill it to the future.** (Recorded as D-009 on that plan.)
 - **Reusable lesson**: this is the third time in this doc a delta/optimization mechanism turned
   out to be inert on its actual dominant caller — TOOL_DELTA_PROTOCOL was ON but nothing sent
   `_meta.delta` (2026-07-10 morning finding, `fleet-deltas-leader-primitives-2026-07-10` D-003),

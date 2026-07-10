@@ -21,6 +21,7 @@
  * ctx-building and directly testable.
  */
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
+import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
 import { queueConcurrency } from './queue-concurrency';
 import { parseDecisionFor } from '@papercusp/orchestrator';
 import { deriveNext, loadBuiltinBlueprint, type BlueprintSpine } from '@papercusp/orchestrator/blueprint';
@@ -448,10 +449,19 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
   return `pipeline-complete (last=${lastVerb})`;
 }
 
-export const featurePipelineWorkflow = DBOS.registerWorkflow(featurePipelineImpl, {
-  name: 'featurePipeline',
-  maxRecoveryAttempts: 10,
-});
+// WI-3830 (critical, 2026-07-10): a module-level DBOS.registerWorkflow call that gets
+// evaluated a SECOND time in one process throws DBOSConflictingRegistrationError
+// ("... is already registered") and takes the whole module load down with it — which
+// broke EVERY fresh cup/bee spawn (fleet:place_batch AND plain cup:spawn both import
+// this module), not just this one workflow. idempotentRegisterWorkflow caches the first
+// registration on globalThis so a second load in the same process reuses it instead of
+// re-registering. See idempotent-register-workflow.ts's doc comment for the full story.
+export const featurePipelineWorkflow = idempotentRegisterWorkflow('featurePipeline', () =>
+  DBOS.registerWorkflow(featurePipelineImpl, {
+    name: 'featurePipeline',
+    maxRecoveryAttempts: 10,
+  }),
+);
 
 export const pipelineQueue = new WorkflowQueue('feature-pipeline', { concurrency: queueConcurrency(4) });
 

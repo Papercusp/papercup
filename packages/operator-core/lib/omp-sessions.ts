@@ -26,7 +26,16 @@ import { getOrgPg, generated } from '@papercusp/db-org';
 import { eq } from 'drizzle-orm';
 import { loadHarnessRegistry } from './harness-registry';
 
-const sa = generated.spawnedAgentsInHarnessShared;
+// Lazy (same pattern as sessionsRoot() below): this module must stay side-effect-free at
+// import time — it's transitively reachable from the coordination message-send path
+// (audience-host → fleet-roster → presence-wakeability → inbox-wake → events/await/engine
+// → wake-executor → here), so a test that mocks '@papercusp/db-org' with only { getOrgPg }
+// (never providing `generated`) threw `No "generated" export is defined on the mock` at
+// import time even when it never calls lookupSpawnHints (EI-9152). Deferred to first use.
+let _sa: typeof generated.spawnedAgentsInHarnessShared | null = null;
+function sa(): typeof generated.spawnedAgentsInHarnessShared {
+  return (_sa ??= generated.spawnedAgentsInHarnessShared);
+}
 
 // Lazy: this module is transitively bundled into the operator-vite renderer
 // (via server-side agent-tools / endpoint routes), where `node:os` is a stub
@@ -384,10 +393,11 @@ async function lookupSpawnHints(
   spawnId: string,
 ): Promise<{ startedAtMs: number; harnessSlug: string | null; projectPath: string | null } | null> {
   const { db } = getOrgPg();
+  const saTable = sa();
   const rows = await db
-    .select({ harness_slug: sa.harnessSlug, started_at: sa.startedAt })
-    .from(sa)
-    .where(eq(sa.spawnId, spawnId))
+    .select({ harness_slug: saTable.harnessSlug, started_at: saTable.startedAt })
+    .from(saTable)
+    .where(eq(saTable.spawnId, spawnId))
     .limit(1);
   if (rows.length === 0) return null;
   const startedAtMs = rows[0].started_at ? new Date(rows[0].started_at as any).getTime() : 0;

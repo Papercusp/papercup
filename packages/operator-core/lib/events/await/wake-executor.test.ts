@@ -142,6 +142,14 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     // Hermetic by default: the degrade-to-inbox send is stubbed so a dead-waiter
     // drop path never reaches the real sendMessage (which touches PG/coordLog).
     sendCoordMessage: vi.fn(async () => ({}) as never) as never,
+    // Hermetic by default (P-008 rematerialize-on-miss): the resume leg calls these
+    // before `--resume`. Their real bindings READ PG, and an unsettled PG read HANGS
+    // past the surrounding try/catch rather than throwing — un-stubbed, every resume
+    // test blocks until the suite timeout. collectSessionFiles returns a non-empty
+    // list = the "transcript already on disk" fast path, so rematerialize never fires.
+    collectSessionFiles: vi.fn(async () => [{}]) as never,
+    rematerializeSession: vi.fn(async () => ({ ok: true, written: 0 })) as never,
+    findArchivedSessionIdForAdv: vi.fn(async () => null) as never,
     ...over,
   };
 }

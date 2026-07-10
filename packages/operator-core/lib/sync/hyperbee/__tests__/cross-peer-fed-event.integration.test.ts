@@ -116,9 +116,8 @@ describe('cross-peer coordination on a shared Hive — fed_event surfacing over 
         eventKey: EVENT_KEY,
         policy: 'wake',
         once: true,
-        workspaceId: WORKSPACE_ID,
       });
-      const preFire = await listActiveAwaitsForKey(EVENT_KEY, WORKSPACE_ID);
+      const preFire = await listActiveAwaitsForKey(EVENT_KEY);
       expect(preFire).toHaveLength(1); // sanity: the watch is live before the op crosses the wire
 
       // A "sends" a no-recipient, control-plane fed_event row (the hive-git P-009

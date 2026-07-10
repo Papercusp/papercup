@@ -394,10 +394,49 @@ export async function readOutbox(
  * reply points at via `related_msg_id` — so a peer's reply can wake the original
  * sender. Returns null when no such message exists. Fail-soft at the call site:
  * a lookup miss/error must never block the send.
+ *
+ * WI-3832: previously called `coordLog.getEvent('messages', msgId)` — but
+ * `messages` is a `LineSurface` (append-only, via `appendLine`/`readLines`), not
+ * an `EventSurface` (single-record-per-id upsert, via `putEvent`/`getEvent` —
+ * `handoffs`/`escalations` only). That was a real TS2345 compile error (`npx tsc
+ * --noEmit` in packages/operator-core), AND a genuine runtime gap on the
+ * in-memory/fs test backends (InMemoryCoordLog / FsCoordLog keep `lines` and
+ * `events` as separate stores; nothing ever `putEvent`s a message, so
+ * `getEvent('messages', …)` always returned null there) — only PgCoordLog's
+ * `getEvent` happened to work by accident, since `handoffs`/`escalations`/
+ * `messages` all share the one `coord_event_log` table and its `msg_id` column.
+ * Implemented directly here instead of widening `EventSurface` (which would let
+ * `putEvent`/`putEvents` be miscalled on `messages` too — its ON CONFLICT target
+ * is a partial index scoped to `handoffs`/`escalations` only, so a stray
+ * `putEvent('messages', …)` would silently insert a duplicate row instead of
+ * upserting). PG fast path mirrors readInbox's convention above and rides the
+ * (workspace_id, msg_id) index a peer already landed on this same plan
+ * (migration 543 — WI-3817 — built exactly for this `WHERE workspace_id = $1 AND
+ * msg_id = $2` shape); the readLines fallback covers the test/dev backends
+ * (small in-memory datasets, a scan is fine) and is now also the CORRECT
+ * behavior there, not just the compiling one.
  */
 export async function getMessageById(msgId: string): Promise<CoordEnvelope | null> {
   if (!msgId) return null;
-  return coordLog.getEvent('messages', msgId);
+  if (coordHasPgFastPath()) {
+    try {
+      const sql = coordSql();
+      const rows = await sql<{ body: unknown }[]>`
+        SELECT body
+          FROM harness_shared.coord_event_log
+         WHERE workspace_id = ${coordWorkspaceId()}
+           AND surface = 'messages'
+           AND msg_id = ${msgId}
+         LIMIT 1
+      `;
+      if (rows.length) return (typeof rows[0].body === 'string' ? JSON.parse(rows[0].body) : rows[0].body) as CoordEnvelope;
+      return null;
+    } catch {
+      // Fall through to the authoritative full-surface read below.
+    }
+  }
+  const lines = await coordLog.readLines('messages');
+  return lines.find((l) => l.msg_id === msgId) ?? null;
 }
 
 /**

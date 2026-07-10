@@ -142,7 +142,7 @@ describe('cross-Hive reply → ledger transition + C-4 event + queued wake (real
 
     // The asking Queen registers the documented chain's await on the C-4 key.
     const key = crossHiveReplyEventKey('answer', 'ask-1');
-    await store.registerAwait({ subscriberId: QUEEN, eventKey: key, workspaceId: WS });
+    await store.registerAwait({ subscriberId: QUEEN, eventKey: key });
 
     // The peer Hive answers — through the wire, signature-verified, into the receive path.
     const r = await t.bWiring.reply(t.A.pubkey, {
@@ -155,7 +155,7 @@ describe('cross-Hive reply → ledger transition + C-4 event + queued wake (real
     expect(ledger.get('ask-1')!.replyBody).toBe('yes — queued it');
 
     // (2) The await fired — one-shot consumed by the emit.
-    const active = await store.listActiveAwaitsForKey(key, WS);
+    const active = await store.listActiveAwaitsForKey(key);
     expect(active).toHaveLength(0);
 
     // (3) A durable wake delivery exists for the Queen on the C-4 key, carrying the
@@ -179,7 +179,7 @@ describe('cross-Hive reply → ledger transition + C-4 event + queued wake (real
     ledger.seed(outAsk('ask-2', t.B.pubkey));
 
     const key = crossHiveReplyEventKey('decline', 'ask-2');
-    await store.registerAwait({ subscriberId: QUEEN, eventKey: key, workspaceId: WS });
+    await store.registerAwait({ subscriberId: QUEEN, eventKey: key });
 
     await t.bWiring.reply(t.A.pubkey, { kind: 'decline', subject: 're', body: 'at capacity', correlationId: 'ask-2' });
 
@@ -200,7 +200,7 @@ describe('cross-Hive reply → ledger transition + C-4 event + queued wake (real
     await pgStore.markSent(ask.id);
 
     const key = crossHiveReplyEventKey('answer', 'ask-3');
-    await store.registerAwait({ subscriberId: QUEEN, eventKey: key, workspaceId: WS });
+    await store.registerAwait({ subscriberId: QUEEN, eventKey: key });
 
     await t.bWiring.reply(t.A.pubkey, { kind: 'answer', subject: 're', body: 'for real', correlationId: 'ask-3' });
 
@@ -223,7 +223,7 @@ describe('cross-Hive reply → ledger transition + C-4 event + queued wake (real
     await pgStore.markSent(ask.id);
 
     const key = crossHiveReplyEventKey('answer', 'ask-4');
-    await store.registerAwait({ subscriberId: QUEEN, eventKey: key, workspaceId: WS });
+    await store.registerAwait({ subscriberId: QUEEN, eventKey: key });
 
     // Hive C — validly signed, but NOT the peer hive-a asked.
     const C = hiveIdentity();

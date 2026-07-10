@@ -46,9 +46,9 @@ import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-den
 import { readFleetClaudeToken } from '@papercusp/orchestrator/fleet-claude-token';
 import { getAdvSession } from '../../adv-sessions';
 import {
-  collectSessionFiles,
-  findArchivedSessionIdForAdv,
-  rematerializeSession,
+  collectSessionFiles as defaultCollectSessionFiles,
+  findArchivedSessionIdForAdv as defaultFindArchivedSessionIdForAdv,
+  rematerializeSession as defaultRematerializeSession,
 } from '../../session-archive';
 import { ompSessionsRoot } from '../../omp-sessions';
 import { findPtyByPid, killPty, spawnPty, writePty } from '../../pty-bridge';
@@ -625,6 +625,16 @@ export interface ExecuteWakeDeps {
    *  gate + fresh-bee spawn + stale-claim release). Injected for tests; defaults to
    *  the real bindings (flag OFF ⇒ never fires, legacy `--resume` carry preserved). */
   freshContext?: FreshContextDeps;
+  /** session-db-archive-retire-dirs-2026-07-10 P-008: the rematerialize-on-miss
+   *  seams used by the resume leg. Injected for tests; default to the real
+   *  session-archive bindings, which READ PG. A unit test that leaves these
+   *  un-stubbed does not merely touch the DB — it BLOCKS: the PG read never
+   *  settles, so it hangs *past* the surrounding try/catch (which only catches
+   *  throws) until the suite timeout. That wedged the green gate on 2026-07-10
+   *  (11 wake-executor tests × 180s). Stub them in any hermetic unit test. */
+  collectSessionFiles?: typeof defaultCollectSessionFiles;
+  rematerializeSession?: typeof defaultRematerializeSession;
+  findArchivedSessionIdForAdv?: typeof defaultFindArchivedSessionIdForAdv;
   /** su-cold-auto-mode-2026-07-03 Phase 2 (P-005/P-006/P-007): the cold-auto MASTER
    *  GATE, resolved by the caller (the P-007 flag lands Phase 3). DEFAULT ()=>false ⇒
    *  the psu-host cold fork stays DORMANT — every loop wake injects the warm
@@ -774,6 +784,9 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const injectPsuHost = deps.injectPsuHost ?? injectIntoHost;
   const fireHiveWake = deps.fireHiveWake ?? defaultFireHiveWake;
   const sendCoordMessage = deps.sendCoordMessage ?? sendMessage;
+  const collectSessionFiles = deps.collectSessionFiles ?? defaultCollectSessionFiles;
+  const rematerializeSession = deps.rematerializeSession ?? defaultRematerializeSession;
+  const findArchivedSessionIdForAdv = deps.findArchivedSessionIdForAdv ?? defaultFindArchivedSessionIdForAdv;
 
   try {
     const handle = d.wakeHandle;

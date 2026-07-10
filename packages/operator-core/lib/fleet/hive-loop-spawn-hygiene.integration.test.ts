@@ -176,7 +176,6 @@ describe('spawn-chain concurrency + hygiene (P-005)', () => {
       subscriberId: 'p005-waiter-1',
       eventKey: s3.awaitEvent!,
       policy: 'notify',
-      workspaceId: WS,
     });
     expect(await awaitFired(waiter.id as never)).toBe(false);
 
@@ -257,7 +256,6 @@ describe('spawn-chain concurrency + hygiene (P-005)', () => {
       subscriberId: 'p005-waiter-2',
       eventKey: spawnSlotEventKey(WS),
       policy: 'notify',
-      workspaceId: WS,
     });
 
     // The next spawn attempt reclaims BEFORE counting (P-011): orphans freed,

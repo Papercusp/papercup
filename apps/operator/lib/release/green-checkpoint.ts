@@ -1956,9 +1956,72 @@ export function realCheckpointDeps(cfg: ReleaseConfig, exec: CheckpointExec = ru
           log(`[green-checkpoint] quarantine read failed; preserving red verdict: ${e instanceof Error ? e.message : String(e)}`);
         }
       }
-      return { green, summary, failingTests, ...(flakeSuspects?.length ? { flakeSuspects } : {}) };
+      // Workspace-mapped failures for the stale-candidate re-triage (which file, and the
+      // cwd to re-run it in). Recomputed from the raw output, not `failingTests`, because
+      // the re-triage needs the {workspace,file} pair, not the flat signature.
+      const failingFiles = green ? [] : parseFailingFilesByWorkspace(fullOutput);
+      return {
+        green,
+        summary,
+        failingTests,
+        ...(flakeSuspects?.length ? { flakeSuspects } : {}),
+        ...(failingFiles.length ? { failingFiles } : {}),
+      };
     },
     advance: (candidate) => advanceReady(cfg.integrationRoot, candidate, cfg.releaseRef),
+    // Stale-candidate re-triage seams (P-004). The quiet-cut judges a commit that is
+    // minutes-to-hours old; these let the gate ask "is this red still real at tip?".
+    async resolveTip() {
+      const r = await exec('git', ['-C', cfg.integrationRoot, 'rev-parse', cfg.integrationBranch], { allowNonZero: true });
+      return r.code === 0 ? r.stdout.trim() || null : null;
+    },
+    async runTestsAtRef(ref, files) {
+      // Re-run EXACTLY the originally-failing files, at `ref`, in a throwaway checkout —
+      // never the churning integration tree (a concurrent edit would poison the answer).
+      // Reuse the checkpoint tree the gate already prepared: point it at `ref`, then run
+      // each failing file in its own workspace at single concurrency (the same isolation
+      // the flake path uses, so a load-flake doesn't masquerade as a real red at tip).
+      try {
+        await this.setupTree(ref);
+      } catch (e) {
+        log(`re-triage: could not set up tree at ${ref.slice(0, 8)} (${e instanceof Error ? e.message : e})`);
+        return { pass: false, summary: 'tip tree setup failed' };
+      }
+      const byWorkspace = new Map<string, string[]>();
+      for (const f of files) byWorkspace.set(f.workspace, [...(byWorkspace.get(f.workspace) ?? []), f.file]);
+      const env = buildGreenCheckpointEnv(null);
+      env.VITEST_MAX_FORKS = '1';
+      env.VITEST_MAX_THREADS = '1';
+      const summaries: string[] = [];
+      for (const [workspace, wsFiles] of byWorkspace) {
+        const r = await exec(
+          'npm',
+          ['run', 'test', '--workspace', workspace, '--', '--no-file-parallelism', ...wsFiles],
+          { cwd: cfg.checkpointRoot, env, allowNonZero: true, timeoutMs: ISOLATION_RUN_TIMEOUT_MS },
+        ).catch((e: unknown) => ({ code: 1, stdout: '', stderr: String(e) }));
+        summaries.push(`${workspace}: ${r.code === 0 ? 'pass' : 'FAIL'}`);
+        if (r.code !== 0) return { pass: false, summary: summaries.join('; ') };
+      }
+      return { pass: true, summary: summaries.join('; ') };
+    },
+    // Deploy-staleness alarm seam (P-005): how old is the deployed pin, and how far does
+    // it trail tip? `null` on any git failure ⇒ the alarm simply doesn't fire.
+    async deployStaleness() {
+      try {
+        const pin = await exec('git', ['-C', cfg.integrationRoot, 'rev-parse', cfg.releaseRef], { allowNonZero: true });
+        if (pin.code !== 0) return null;
+        const pinSha = pin.stdout.trim();
+        const ts = await exec('git', ['-C', cfg.integrationRoot, 'show', '-s', '--format=%ct', pinSha], { allowNonZero: true });
+        const behind = await exec('git', ['-C', cfg.integrationRoot, 'rev-list', '--count', `${pinSha}..${cfg.integrationBranch}`], { allowNonZero: true });
+        if (ts.code !== 0 || behind.code !== 0) return null;
+        const pinUnix = Number(ts.stdout.trim());
+        const commitsBehind = Number(behind.stdout.trim());
+        if (!Number.isFinite(pinUnix) || !Number.isFinite(commitsBehind)) return null;
+        return { pinAgeMs: Date.now() - pinUnix * 1000, commitsBehind };
+      } catch {
+        return null;
+      }
+    },
     // P-016 (D-010): the batch commits oldest-first (full shas), from the integration
     // repo's own history — `from..to` excludes `from`, includes `to`.
     async commitsInRange(from, to) {

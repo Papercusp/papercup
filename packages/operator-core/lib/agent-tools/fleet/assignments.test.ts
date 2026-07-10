@@ -457,3 +457,84 @@ describe('shapeFleetAssignments carries unanswered at every tier (P-007 fleet-re
     expect(shaped.agents[0].unanswered).toEqual(data.agents[0].unanswered);
   });
 });
+
+describe('filterActiveCoverage (EI-9015)', () => {
+  const NOW = Date.UTC(2026, 6, 10, 12, 0, 0); // fixed epoch for determinism
+  const DAY = 24 * 3600 * 1000;
+
+  const cov = (
+    ref: string,
+    level: CoverageLevel,
+    lastActivityAt: Date | null,
+  ): PlanItemCoverage => ({
+    ref,
+    links: [],
+    directlyClaimed: false,
+    directHolder: null,
+    directActivity: null,
+    level,
+    workers: [],
+    lastActivityAt,
+  });
+
+  const refs = (entries: PlanItemCoverage[]) => entries.map((c) => c.ref);
+
+  it('drops a long-complete entry (older than the ~7d window) by default', () => {
+    const stale = cov('old-plan#P-1', 'complete', new Date(NOW - 30 * DAY));
+    expect(filterActiveCoverage([stale], { now: NOW })).toEqual([]);
+  });
+
+  it('keeps a recently-completed entry (inside the window)', () => {
+    const recent = cov('warm-plan#P-1', 'complete', new Date(NOW - 2 * DAY));
+    expect(refs(filterActiveCoverage([recent], { now: NOW }))).toEqual(['warm-plan#P-1']);
+  });
+
+  it('keeps a stale-complete entry when its plan is one of the caller lane plans', () => {
+    const stale = cov('my-lane#P-1', 'complete', new Date(NOW - 30 * DAY));
+    const out = filterActiveCoverage([stale], {
+      now: NOW,
+      lanePlans: new Set(['my-lane']),
+    });
+    expect(refs(out)).toEqual(['my-lane#P-1']);
+  });
+
+  it('always keeps non-complete entries however stale (still in motion)', () => {
+    const staleTs = new Date(NOW - 90 * DAY);
+    const entries = [
+      cov('p#P-1', 'full', staleTs),
+      cov('p#P-2', 'partial', staleTs),
+      cov('p#P-3', 'unclaimed', staleTs),
+      cov('p#P-4', 'unclaimed', null),
+    ];
+    expect(refs(filterActiveCoverage(entries, { now: NOW }))).toEqual([
+      'p#P-1',
+      'p#P-2',
+      'p#P-3',
+      'p#P-4',
+    ]);
+  });
+
+  it('drops a complete entry with no lastActivityAt by default (no recency signal)', () => {
+    const noTs = cov('p#P-1', 'complete', null);
+    expect(filterActiveCoverage([noTs], { now: NOW })).toEqual([]);
+  });
+
+  it('fullCoverage:true returns the untrimmed ledger', () => {
+    const stale = cov('old#P-1', 'complete', new Date(NOW - 30 * DAY));
+    const noTs = cov('old#P-2', 'complete', null);
+    const out = filterActiveCoverage([stale, noTs], { now: NOW, fullCoverage: true });
+    expect(refs(out)).toEqual(['old#P-1', 'old#P-2']);
+  });
+
+  it('an explicit {plan} query returns the untrimmed ledger', () => {
+    const stale = cov('old#P-1', 'complete', new Date(NOW - 30 * DAY));
+    const out = filterActiveCoverage([stale], { now: NOW, explicitPlan: 'old' });
+    expect(refs(out)).toEqual(['old#P-1']);
+  });
+
+  it('the window is exactly COVERAGE_ACTIVE_WINDOW_MS (boundary inclusive)', () => {
+    const atEdge = cov('p#P-1', 'complete', new Date(NOW - COVERAGE_ACTIVE_WINDOW_MS));
+    const pastEdge = cov('p#P-2', 'complete', new Date(NOW - COVERAGE_ACTIVE_WINDOW_MS - 1));
+    expect(refs(filterActiveCoverage([atEdge, pastEdge], { now: NOW }))).toEqual(['p#P-1']);
+  });
+});

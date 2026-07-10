@@ -299,9 +299,14 @@ export class PgCoordLog implements CoordEventLog {
   async putEvent(surface: EventSurface, msgId: string, record: CoordEnvelope): Promise<void> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
+    // WI-3826: the FIRST insert stamps `ts` from `record.ts` (same reasoning as
+    // appendLine — column agrees with body by construction). A re-put (ON CONFLICT)
+    // keeps its deliberate `ts = now()` — that path means the event was genuinely
+    // TOUCHED again (e.g. an escalation resolve), and its ts is meant to reflect
+    // that touch, not the original envelope's timestamp.
     await sql`
-      INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body, harness_slug)
-      VALUES (${this.resolveWs()}, ${surface}, NULL, ${msgId}, ${JSON.stringify(record)}::text::jsonb, ${record.harness_slug ?? null})
+      INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body, harness_slug, ts)
+      VALUES (${this.resolveWs()}, ${surface}, NULL, ${msgId}, ${JSON.stringify(record)}::text::jsonb, ${record.harness_slug ?? null}, ${record.ts}::timestamptz)
       ON CONFLICT (workspace_id, surface, msg_id) WHERE surface IN ('handoffs', 'escalations')
       DO UPDATE SET body = EXCLUDED.body, ts = now(), harness_slug = EXCLUDED.harness_slug
     `;
@@ -329,14 +334,17 @@ export class PgCoordLog implements CoordEventLog {
     // must pass distinct msgIds within one batch (a re-put of an existing id
     // upserts; two identical ids in ONE batch would trip the ON CONFLICT
     // "cannot affect row a second time" — escalation resolves use fresh msg_ids).
+    // WI-3826: `ts` travels alongside `body`/`harness_slug` in the same unnest, so the
+    // FIRST insert of each row stamps ts from ITS OWN record.ts (matches putEvent).
     const msgIds = records.map((r) => r.msgId);
     const bodies = records.map((r) => JSON.stringify(r.record));
     const harnessSlugs = records.map((r) => r.record.harness_slug ?? null);
+    const timestamps = records.map((r) => r.record.ts);
     await sql`
-      INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body, harness_slug)
-      SELECT ${ws}, ${surface}, NULL, t.msg_id, t.body::text::jsonb, t.harness_slug
-        FROM unnest(${msgIds}::text[], ${bodies}::text[], ${harnessSlugs}::text[])
-          AS t(msg_id, body, harness_slug)
+      INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body, harness_slug, ts)
+      SELECT ${ws}, ${surface}, NULL, t.msg_id, t.body::text::jsonb, t.harness_slug, t.ts::timestamptz
+        FROM unnest(${msgIds}::text[], ${bodies}::text[], ${harnessSlugs}::text[], ${timestamps}::text[])
+          AS t(msg_id, body, harness_slug, ts)
       ON CONFLICT (workspace_id, surface, msg_id) WHERE surface IN ('handoffs', 'escalations')
       DO UPDATE SET body = EXCLUDED.body, ts = now(), harness_slug = EXCLUDED.harness_slug
     `;

@@ -12,9 +12,17 @@
  * own-log-fork-guard.ts, restarts REPEATEDLY against the SAME corrupted
  * key) — the open-EI title match here is what keeps that from re-filing a
  * fresh EI on every crash-loop iteration.
+ *
+ * EI-9030a: the file/resolve/dedup/VITEST-gate machinery is the shared
+ * `createEpisodicEscalator` seam (escalation/episodic-ei.ts) — this module is
+ * the own-log-fork binding: its topic, title, body, and resolve note.
  */
 
 import type { OwnLogForkEpisode } from './own-log-fork-guard';
+import {
+  createEpisodicEscalator,
+  type EpisodicEiDeps,
+} from '../../escalation/episodic-ei';
 
 export const OWN_LOG_FORK_TOPIC = 'own-log-fork';
 
@@ -33,39 +41,62 @@ export function ownLogForkEiTitle(episode: {
 export const RECOVERY_OWNER = 'system:own-log-fork-guard';
 
 /** DI seam so the dedup+file logic unit-tests without PG. */
-export interface OwnLogForkEiDeps {
-  listOpenByTopic(topic: string): Promise<Array<{ id: string; title: string }>>;
-  create(input: {
-    title: string;
-    body: string;
-    severity: 'critical';
-    source: 'engineer';
-    kind: 'bug';
-    topics: string[];
-    createdBy: string;
-    foundDuring: string;
-  }): Promise<{ id: string }>;
-  resolve(id: string, note: string): Promise<void>;
+export type OwnLogForkEiDeps = EpisodicEiDeps<'critical'>;
+
+/** The (harness, key) identity resolveOwnLogForkEi keys on, plus a note detail. */
+type OwnLogForkRecovery = { harnessSlug: string; keyHex: string; detail: string };
+
+/** The EI body for a to-file own-log-fork episode. */
+function buildOwnLogForkBody(episode: OwnLogForkEpisode): string {
+  return (
+    `Own-log fork guard (P-003 / WI-3535): ${episode.detail}\n\n` +
+    `workspace=${episode.workspaceId} harness=${episode.harnessSlug}\n` +
+    `log_core_key=${episode.keyHex}\n\n` +
+    `Meaning: this harness's OWN writable single-writer log ` +
+    `(packages/operator-core/lib/sync/hyperbee/peer-log.ts openOwnLog) hit ` +
+    `Hypercore's equivocation loop — "[hypercore] conflict detected" — because ` +
+    `two conflicting signatures exist for the same log length. The most likely ` +
+    `cause is the WI-1891 "two live keys at once" class (the own-log keypair did ` +
+    `not persist across a restart / was duplicated onto a second live process, so ` +
+    `two writers signed divergent history under the same key) or a corrupted/rolled-` +
+    `back local corestore. Hypercore has already closed EVERY open session to this ` +
+    `core (SESSION_CLOSED on the next append/get) — local writes made against it are ` +
+    `frozen, and re-booting WITHOUT fixing the on-disk state re-opens the SAME ` +
+    `corrupted core, which re-forks on the next reconnect (the observed boot loop; ` +
+    `old key e06b8704 cost hours before this was ever noticed).\n\n` +
+    `Supported recovery: a PER-HARNESS STORE RESET — stop the harness, delete or move ` +
+    `aside its Corestore directory ` +
+    `(<workspaceRoot>/.papercusp/${episode.harnessSlug}/hyperbee/), then re-boot. ` +
+    `Corestore lazily creates a FRESH keypair (a new own-log key) on first access, so ` +
+    `the harness re-publishes its LOCAL history (PG-mirrored data is unaffected) under a ` +
+    `new identity that no peer has conflicting proof for. This is destructive to the ` +
+    `local hypercore-only log — only do it once the harness's local writes are confirmed ` +
+    `merged into PG (or acceptably lost).\n\n` +
+    `IMPORTANT: \`rekeyHarness\` (boot-all.ts) does NOT fix this — it only re-binds the ` +
+    `swarm TOPIC binding (e.g. for a hive-membership change) and never touches the ` +
+    `own-log Corestore, so calling it against a forked own-log leaves the SAME corrupted ` +
+    `core in place and the boot loop continues.\n\n` +
+    `An auto-recovery sketch exists behind a flag-gated, default-OFF kill-switch ` +
+    `(destructive — see own-log-fork-recovery.ts / FLAGS.OWN_LOG_FORK_AUTO_RECOVERY) — ` +
+    `the owner must ratify it before it runs unattended.\n\n` +
+    `This EI auto-dedupes per (harness, own-log key) while one stays open.`
+  );
 }
 
-async function defaultDeps(): Promise<OwnLogForkEiDeps> {
-  const m = await import('../../issues-engineer');
-  return {
-    listOpenByTopic: (topic) =>
-      m.listIssues({ state: 'open', topic, limit: 100 }),
-    create: (input) => m.createIssue(input),
-    resolve: async (id, note) => {
-      await m.setIssueState(id, 'resolved', RECOVERY_OWNER, note);
-    },
-  };
-}
-
-/** Per-process in-flight/filed guard (second dedup layer under racing passes). */
-const inFlight = new Set<string>();
+const escalator = createEpisodicEscalator<OwnLogForkEpisode, OwnLogForkRecovery, 'critical'>({
+  topic: OWN_LOG_FORK_TOPIC,
+  stableTitle: ownLogForkEiTitle,
+  buildBody: buildOwnLogForkBody,
+  resolveNote: (recovery) => `resolved: own-log store reset — ${recovery.detail}`,
+  severity: 'critical',
+  createdBy: 'system:own-log-fork-guard',
+  foundDuring: 'own-log-fork-guard-detector',
+  recoveryOwner: RECOVERY_OWNER,
+});
 
 /** Test seam. */
 export function _resetOwnLogForkEiForTests(): void {
-  inFlight.clear();
+  escalator._resetForTests();
 }
 
 /**
@@ -74,68 +105,11 @@ export function _resetOwnLogForkEiForTests(): void {
  * deduped or on failure (best-effort — the caller, own-log-fork-guard.ts's
  * reporter, never awaits this).
  */
-export async function fileOwnLogForkEi(
+export function fileOwnLogForkEi(
   episode: OwnLogForkEpisode,
   deps?: OwnLogForkEiDeps,
 ): Promise<string | null> {
-  const title = ownLogForkEiTitle(episode);
-  if (inFlight.has(title)) return null;
-  // Vitest safety gate (mirrors replication-stall-ei.ts's EI-6987 gate): a unit
-  // test exercising the DETECTION edge with a faked conflict signal must never
-  // touch production PG unless it explicitly opts in via `deps`.
-  if (process.env.VITEST && !deps) return null;
-  inFlight.add(title);
-  try {
-    const d = deps ?? (await defaultDeps());
-    const open = await d.listOpenByTopic(OWN_LOG_FORK_TOPIC);
-    if (open.some((i) => i.title === title)) return null; // already escalated
-    const created = await d.create({
-      title,
-      body:
-        `Own-log fork guard (P-003 / WI-3535): ${episode.detail}\n\n` +
-        `workspace=${episode.workspaceId} harness=${episode.harnessSlug}\n` +
-        `log_core_key=${episode.keyHex}\n\n` +
-        `Meaning: this harness's OWN writable single-writer log ` +
-        `(packages/operator-core/lib/sync/hyperbee/peer-log.ts openOwnLog) hit ` +
-        `Hypercore's equivocation loop — "[hypercore] conflict detected" — because ` +
-        `two conflicting signatures exist for the same log length. The most likely ` +
-        `cause is the WI-1891 "two live keys at once" class (the own-log keypair did ` +
-        `not persist across a restart / was duplicated onto a second live process, so ` +
-        `two writers signed divergent history under the same key) or a corrupted/rolled-` +
-        `back local corestore. Hypercore has already closed EVERY open session to this ` +
-        `core (SESSION_CLOSED on the next append/get) — local writes made against it are ` +
-        `frozen, and re-booting WITHOUT fixing the on-disk state re-opens the SAME ` +
-        `corrupted core, which re-forks on the next reconnect (the observed boot loop; ` +
-        `old key e06b8704 cost hours before this was ever noticed).\n\n` +
-        `Supported recovery: a PER-HARNESS STORE RESET — stop the harness, delete or move ` +
-        `aside its Corestore directory ` +
-        `(<workspaceRoot>/.papercusp/${episode.harnessSlug}/hyperbee/), then re-boot. ` +
-        `Corestore lazily creates a FRESH keypair (a new own-log key) on first access, so ` +
-        `the harness re-publishes its LOCAL history (PG-mirrored data is unaffected) under a ` +
-        `new identity that no peer has conflicting proof for. This is destructive to the ` +
-        `local hypercore-only log — only do it once the harness's local writes are confirmed ` +
-        `merged into PG (or acceptably lost).\n\n` +
-        `IMPORTANT: \`rekeyHarness\` (boot-all.ts) does NOT fix this — it only re-binds the ` +
-        `swarm TOPIC binding (e.g. for a hive-membership change) and never touches the ` +
-        `own-log Corestore, so calling it against a forked own-log leaves the SAME corrupted ` +
-        `core in place and the boot loop continues.\n\n` +
-        `An auto-recovery sketch exists behind a flag-gated, default-OFF kill-switch ` +
-        `(destructive — see own-log-fork-recovery.ts / FLAGS.OWN_LOG_FORK_AUTO_RECOVERY) — ` +
-        `the owner must ratify it before it runs unattended.\n\n` +
-        `This EI auto-dedupes per (harness, own-log key) while one stays open.`,
-      severity: 'critical',
-      source: 'engineer',
-      kind: 'bug',
-      topics: [OWN_LOG_FORK_TOPIC, 'federation'],
-      createdBy: 'system:own-log-fork-guard',
-      foundDuring: 'own-log-fork-guard-detector',
-    });
-    return created.id;
-  } catch {
-    return null; // best-effort: the registry state still surfaces the fork
-  } finally {
-    inFlight.delete(title);
-  }
+  return escalator.file(episode, deps);
 }
 
 /**
@@ -148,28 +122,9 @@ export async function fileOwnLogForkEi(
  * resolveReplicationStallEi's EI-6772 multi-match fix for the federated
  * issue ledger). Returns the ids actually resolved; best-effort.
  */
-export async function resolveOwnLogForkEi(
-  recovery: { harnessSlug: string; keyHex: string; detail: string },
+export function resolveOwnLogForkEi(
+  recovery: OwnLogForkRecovery,
   deps?: OwnLogForkEiDeps,
 ): Promise<string[]> {
-  const title = ownLogForkEiTitle(recovery);
-  if (process.env.VITEST && !deps) return [];
-  try {
-    const d = deps ?? (await defaultDeps());
-    const open = await d.listOpenByTopic(OWN_LOG_FORK_TOPIC);
-    const matches = open.filter((i) => i.title === title);
-    if (matches.length === 0) return [];
-    const resolvedIds: string[] = [];
-    for (const match of matches) {
-      try {
-        await d.resolve(match.id, `resolved: own-log store reset — ${recovery.detail}`);
-        resolvedIds.push(match.id);
-      } catch {
-        /* per-EI best-effort: one resolve failure must not strand its siblings */
-      }
-    }
-    return resolvedIds;
-  } catch {
-    return [];
-  }
+  return escalator.resolve(recovery, deps);
 }

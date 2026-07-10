@@ -23,9 +23,19 @@ import {
   PLAN_GIT_HASH_RE,
 } from '../git-history';
 
+/**
+ * WI-3831: `git --version` only proves the binary is on PATH, not that CWD is
+ * inside an actual repository — a release SOURCE BUNDLE ships without `.git`
+ * (papercusp-desktop/bin/stage-source-tree.sh excludes it) but keeps `git` on
+ * PATH there, so the old check let these tests run, shell out to `git log
+ * --follow`, get "not a git repository", and fail `r.ok === true`. Check the
+ * property that actually matters.
+ */
 function gitAvailable(): Promise<boolean> {
   return new Promise((r) => {
-    execFile('git', ['--version'], (err) => r(!err));
+    execFile('git', ['rev-parse', '--is-inside-work-tree'], (err, stdout) => {
+      r(!err && stdout.trim() === 'true');
+    });
   });
 }
 

@@ -130,21 +130,21 @@ describeCoordEventLogConformance(
     await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${TEST_WS}`;
   });
 
-  it('no row anywhere on the live coord_event_log.messages surface drifts >1s from its own body->>\'ts\' (the repaired invariant)', async () => {
-    // A live-data assertion (not scoped to TEST_WS on purpose — the whole point is to
-    // catch drift on REAL traffic, the same query the bug was found with). Soft-skips
-    // when the table is empty (a fresh/CI PG with no live traffic yet).
-    const [{ sampled, mismatch }] = await sql!<{ sampled: string; mismatch: string }[]>`
-      SELECT count(*) AS sampled,
-             count(*) FILTER (
-               WHERE (body ->> 'ts') IS NOT NULL
-                 AND abs(extract(epoch FROM (ts - (body ->> 'ts')::timestamptz))) > 1
-             ) AS mismatch
-      FROM harness_shared.coord_event_log
-      WHERE surface = 'messages'
+  it('putEvent (EVENT surface, e.g. escalations) also stamps ts from the envelope on its FIRST insert', async () => {
+    await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${TEST_WS}`;
+    const log = new PgCoordLog({ getSql: () => sql!, ensureSchema: async () => {}, workspaceId: TEST_WS });
+    const envelopeTs = '2024-03-01T00:00:00.000Z';
+    await log.putEvent('escalations', 'ts-invariant-event-1', {
+      ts: envelopeTs, msg_id: 'ts-invariant-event-1', kind: 'escalation', from: 'agent-ts-check', to: ['human'],
+    });
+    const rows = await sql!<{ ts: string }[]>`
+      SELECT ts FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${TEST_WS} AND msg_id = 'ts-invariant-event-1'
     `;
-    if (Number(sampled) === 0) return; // nothing written yet on this PG — nothing to assert
-    expect(Number(mismatch)).toBe(0);
+    expect(rows).toHaveLength(1);
+    expect(new Date(rows[0].ts).toISOString()).toBe(envelopeTs);
+
+    await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${TEST_WS}`;
   });
 });
 

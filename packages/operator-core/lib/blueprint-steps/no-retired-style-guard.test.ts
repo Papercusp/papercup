@@ -12,10 +12,20 @@
  *     does NOT flag the retired name's legitimate uses (a `createdBy:` provenance
  *     value, a doc mention, a non-migrated loop's own bespoke target).
  */
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
+import { inferWorkspaceRoot } from '@papercusp/testing-shell/glob';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate + scan.
 import * as guard from '../../../../scripts/check-no-retired-style.mjs';
+
+// WI-3831: findOffenders() shells `git ls-files`, which needs an actual `.git`
+// dir — absent by design on a release SOURCE BUNDLE
+// (papercusp-desktop/bin/stage-source-tree.sh excludes it). Every OTHER test
+// here is pure predicate logic and needs no git at all, so only the one
+// tree-scan test below is gated — not the whole suite.
+const IS_GIT_REPO = existsSync(join(inferWorkspaceRoot(), '.git'));
 
 // Type the untyped .mjs surface (no .d.ts) so the suite stays noImplicitAny-clean.
 type MigratedLoop = { loop: string; retiredTarget: string; blueprintId: string };
@@ -99,7 +109,10 @@ describe('no-retired-style guard predicate (P-132)', () => {
     }
   });
 
-  it('the real tree is CLEAN: no migrated loop is currently re-wired bespoke (the gating direction)', () => {
-    expect(findOffenders()).toEqual([]);
-  });
+  it.skipIf(!IS_GIT_REPO)(
+    'the real tree is CLEAN: no migrated loop is currently re-wired bespoke (the gating direction)',
+    () => {
+      expect(findOffenders()).toEqual([]);
+    },
+  );
 });
