@@ -215,6 +215,10 @@ import './facts/list';
 import './probe/emit';
 import './probe/get';
 import './probe/record-hop';
+// fleet-reliability-verification-2026-07-10 P-011 — gates:canary-check: run a
+// self-checking gate canary on demand, bifurcating "still red" into gate-broken
+// (the checker itself can't pass a known-good) vs system-broken (trust the red).
+import './gates/canary-check';
 // learning-packs-2026-06-11 P-009/P-012/P-013 — hive learning-pack management
 // (catalog/install-with-review/uninstall/mute/upgrade/conflict-sweep):
 import './learning_packs/list';
@@ -853,6 +857,12 @@ import './fleet/assignments';
 // fleet (fleet-reliability-verification-2026-07-10 P-007): reuses
 // fleet:assignments' decoration pipeline, filtered + reshaped leader-lean.
 import './fleet/leader-brief';
+// fleet:bench — bench a fleet member as TRACKED STATE
+// (fleet-reliability-verification-2026-07-10 P-006): stage a member's next
+// assignment centrally (captures + registers their wake await FOR them,
+// catching a bench miss at stage time) instead of a hand-written per-member
+// convention; { list: true } queries who's benched, on what key, staged how.
+import './fleet/bench';
 // fleet:place_batch — one-wake BATCH placement (queen-autonomous-execution
 // B-07 / P-001+P-002): ranks task↔bee affinity + fans spawn/warm-inject across
 // the fleet in a single call (the Queen's serial placement loop, collapsed).

@@ -8,6 +8,7 @@
  * a per-(harness, role) dedup-keyed queue.
  */
 import { DBOS } from '@dbos-inc/dbos-sdk';
+import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
 
 async function helloImpl(name: string): Promise<string> {
   const greeting = await DBOS.runStep(async () => `hello, ${name}`, { name: 'greet' });
@@ -17,4 +18,6 @@ async function helloImpl(name: string): Promise<string> {
   return greeting;
 }
 
-export const helloWorkflow = DBOS.registerWorkflow(helloImpl, { name: 'helloWorkflow' });
+export const helloWorkflow = idempotentRegisterWorkflow('helloWorkflow', () =>
+  DBOS.registerWorkflow(helloImpl, { name: 'helloWorkflow' }),
+);

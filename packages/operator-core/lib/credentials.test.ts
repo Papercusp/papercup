@@ -1,7 +1,12 @@
 /**
  * Coverage for credentials: the secret-masking helpers (last-4 form, null when
  * too short) and the read/write round-trip (updated_at stamp). operator-state-pg
- * is mocked.
+ * AND ./backup are mocked — writeCredentials now fires the `secret_change` backup
+ * trigger (settings-audit 2026-07-09), and the real ./backup barrel runs an
+ * `import './configure'` host-seam side-effect + reaches PG/kopia. Un-mocked, the
+ * awaited triggerSnapshotEvent HANGS past its own `.catch` (a never-settling PG
+ * read isn't a rejection), timing the write test out — it wedged the green gate
+ * on 2026-07-10 alongside wake-executor.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -11,6 +16,11 @@ vi.mock('./operator-state-pg', () => ({
   readOperatorState: (...a: unknown[]) => readOperatorState(...a),
   writeOperatorState: (...a: unknown[]) => writeOperatorState(...a),
 }));
+// Hermetic: stub the backup trigger so writeCredentials never loads the real
+// ./backup barrel (host-seam configure + PG/kopia). activeWorkspaceId() is pure
+// (ALS / process-pin read) so ./workspace-registry needs no mock.
+const triggerSnapshotEvent = vi.fn(async () => undefined);
+vi.mock('./backup', () => ({ triggerSnapshotEvent: (...a: unknown[]) => triggerSnapshotEvent(...a) }));
 
 import { readCredentials, writeCredentials, maskSecret, maskCredentials, CREDENTIALS_PATH } from './credentials';
 
@@ -58,6 +68,12 @@ describe('readCredentials / writeCredentials', () => {
     expect(writeOperatorState).toHaveBeenCalledWith(
       'operator_credentials',
       expect.objectContaining({ openai_api_key: 'sk-test', updated_at: expect.any(String) }),
+    );
+    // Fires the secret_change backup trigger with key NAMES only (never values).
+    expect(triggerSnapshotEvent).toHaveBeenCalledWith(
+      expect.any(String),
+      'secret_change',
+      expect.objectContaining({ op: 'credentials_write', keys: ['openai_api_key'] }),
     );
   });
 });

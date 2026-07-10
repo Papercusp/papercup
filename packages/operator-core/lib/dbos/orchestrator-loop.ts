@@ -53,6 +53,7 @@
  */
 import { join } from 'node:path';
 import { DBOS } from '@dbos-inc/dbos-sdk';
+import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
 import postgres from 'postgres';
 import { isLocalDeployment } from '@papercusp/deployment-driver';
 // Side-effect: register the cloud backends so the placement gate knows a
@@ -869,10 +870,12 @@ async function orchestratorTickImpl(): Promise<void> {
   }
 }
 
-export const orchestratorTickWorkflow = DBOS.registerWorkflow(orchestratorTickImpl, {
-  name: 'orchestratorTick',
-  maxRecoveryAttempts: 2,
-});
+export const orchestratorTickWorkflow = idempotentRegisterWorkflow('orchestratorTick', () =>
+  DBOS.registerWorkflow(orchestratorTickImpl, {
+    name: 'orchestratorTick',
+    maxRecoveryAttempts: 2,
+  }),
+);
 
 // Every 30s (6-field crontab with seconds). Skip-missed by default — a closed
 // desktop doesn't stampede a backlog of ticks on reboot.

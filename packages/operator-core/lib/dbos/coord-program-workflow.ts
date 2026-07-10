@@ -20,6 +20,7 @@
  * plumbing and the workflow stays directly testable.
  */
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
+import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
 import { queueConcurrency } from './queue-concurrency';
 import { loadBuiltinBlueprint, type Blueprint } from '@papercusp/orchestrator/blueprint';
 import '../coord-ops/index.js'; // register every coord op
@@ -91,10 +92,12 @@ async function coordProgramImpl(input: CoordProgramInput): Promise<ProgramOutcom
   return { outcome: outcome.outcome, resolved: outcome.resolved, decision: outcome.decision };
 }
 
-export const coordProgramWorkflow = DBOS.registerWorkflow(coordProgramImpl, {
-  name: 'coordProgram',
-  maxRecoveryAttempts: 10,
-});
+export const coordProgramWorkflow = idempotentRegisterWorkflow('coordProgram', () =>
+  DBOS.registerWorkflow(coordProgramImpl, {
+    name: 'coordProgram',
+    maxRecoveryAttempts: 10,
+  }),
+);
 
 export const coordProgramQueue = new WorkflowQueue('coord-program', { concurrency: queueConcurrency(4) });
 

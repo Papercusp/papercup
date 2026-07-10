@@ -64,8 +64,9 @@ vi.mock('@papercusp/flags/server', async () => {
 afterEach(rigAfterEach);
 
 // FAITHFUL to migrations 163 + 175 (once/min_sleep_sec/urgency/coalesced_count) +
-// 387 (source) — the same hand-rolled subset store.integration.test.ts stands up
-// (no RLS/grants; a throwaway test DB has no harness_app/harness_zero roles).
+// 387 (source) + 533 (payload_filter, EI-8998) — the same hand-rolled subset
+// store.integration.test.ts stands up (no RLS/grants; a throwaway test DB has no
+// harness_app/harness_zero roles).
 const EVENT_AWAITS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.event_awaits (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -75,7 +76,8 @@ const EVENT_AWAITS_DDL = `
     timeout_behavior text NOT NULL DEFAULT 'expire' CHECK (timeout_behavior IN ('expire','wake')),
     expires_ts timestamptz, created_at timestamptz NOT NULL DEFAULT now(),
     fired_at timestamptz, fired_reason text, cancelled_at timestamptz,
-    once boolean NOT NULL DEFAULT true, min_sleep_sec integer, urgency boolean NOT NULL DEFAULT false
+    once boolean NOT NULL DEFAULT true, min_sleep_sec integer, urgency boolean NOT NULL DEFAULT false,
+    payload_filter jsonb
   );
   CREATE TABLE IF NOT EXISTS harness_shared.event_wake_deliveries (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

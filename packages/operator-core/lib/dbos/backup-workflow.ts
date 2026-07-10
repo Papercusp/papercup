@@ -30,6 +30,7 @@
  * (P-012, with the user) before a StepRunner buys them resume.
  */
 import { DBOS } from '@dbos-inc/dbos-sdk';
+import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
 import {
   configureBackupStepRunner,
   workspaceBackupFor,
@@ -105,10 +106,12 @@ async function backupSnapshotImpl(input: BackupSnapshotWorkflowInput): Promise<S
   return execute(input.workspaceId, input.reason, input.context);
 }
 
-export const backupSnapshotWorkflow = DBOS.registerWorkflow(backupSnapshotImpl, {
-  name: 'backupSnapshot',
-  maxRecoveryAttempts: 5,
-});
+export const backupSnapshotWorkflow = idempotentRegisterWorkflow('backupSnapshot', () =>
+  DBOS.registerWorkflow(backupSnapshotImpl, {
+    name: 'backupSnapshot',
+    maxRecoveryAttempts: 5,
+  }),
+);
 
 /**
  * Start a snapshot as a durable workflow and await its result, keeping the
@@ -172,7 +175,9 @@ function registerBackupOp<I extends { workspaceId: string }, R>(
 ) {
   let exec: ((input: I) => Promise<R>) | null = null;
   const impl = async (input: I): Promise<R> => (exec ? exec(input) : defaultRun(input));
-  const workflow = DBOS.registerWorkflow(impl, { name, maxRecoveryAttempts: 5 });
+  const workflow = idempotentRegisterWorkflow(name, () =>
+    DBOS.registerWorkflow(impl, { name, maxRecoveryAttempts: 5 }),
+  );
   return {
     setExecutor: (fn: ((input: I) => Promise<R>) | null): void => {
       exec = fn;

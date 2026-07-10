@@ -45,6 +45,7 @@
  * `DBOS.launch()`, like the feature-pipeline + coord-program workflows.
  */
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
+import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { queueConcurrency } from './queue-concurrency';
@@ -810,10 +811,12 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
   if (fireError) throw fireError;
 }
 
-export const durableSpawnFireWorkflow = DBOS.registerWorkflow(durableSpawnFireImpl, {
-  name: 'durableSpawnFire',
-  maxRecoveryAttempts: 5,
-});
+export const durableSpawnFireWorkflow = idempotentRegisterWorkflow('durableSpawnFire', () =>
+  DBOS.registerWorkflow(durableSpawnFireImpl, {
+    name: 'durableSpawnFire',
+    maxRecoveryAttempts: 5,
+  }),
+);
 
 export const durableSpawnQueue = new WorkflowQueue('durable-spawn-fire', { concurrency: queueConcurrency(8) });
 

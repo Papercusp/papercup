@@ -49,9 +49,14 @@ import { resolve } from 'node:path';
 // storage-policy section). Static-parsed, not imported: this file is huge and
 // its module graph pulls in the full drizzle-orm table definitions, which is
 // unnecessary weight for a pure text scan.
+// Read `generated.ts`, NOT `schema.ts`: pull-schema.mjs writes schema.ts (the
+// drizzle-kit output) then copyFileSync's it to generated.ts — byte-identical —
+// but schema.ts is gitignored, so it is ABSENT in a clean checkout (e.g. the
+// release green-checkpoint worktree), where reading it ENOENTs and reds the gate.
+// generated.ts is the TRACKED mirror, so the scan is deterministic everywhere.
 const SCHEMA_PATH = resolve(
   __dirname,
-  '../../../../../libs/papercusp/libs/db/src/schema/schema.ts',
+  '../../../../../libs/papercusp/libs/db/src/schema/generated.ts',
 );
 
 /** table.column keys the scan is allowed to find without failing — see the

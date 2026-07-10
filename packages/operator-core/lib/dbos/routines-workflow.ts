@@ -25,6 +25,7 @@
  * routines unsupervised. Registered only when `bootstrap.ts` imports this module.
  */
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
+import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
 import { queueConcurrency } from './queue-concurrency';
 import { ROUTINES_QUEUE, ROUTINES_CRITICAL_QUEUE, queueForRoutine } from './routines-queue-classification';
 import { getOrgPg, listDueCronRoutines } from '@papercusp/db-org';
@@ -276,10 +277,12 @@ async function routineFireImpl(
   });
 }
 
-export const routineFireWorkflow = DBOS.registerWorkflow(routineFireImpl, {
-  name: 'routineFire',
-  maxRecoveryAttempts: 5,
-});
+export const routineFireWorkflow = idempotentRegisterWorkflow('routineFire', () =>
+  DBOS.registerWorkflow(routineFireImpl, {
+    name: 'routineFire',
+    maxRecoveryAttempts: 5,
+  }),
+);
 
 /** The scheduled tick: list due routines, claim + enqueue a deduped fire for each. */
 async function routinesTickImpl(): Promise<void> {
@@ -628,7 +631,9 @@ async function routinesTickImpl(): Promise<void> {
   );
 }
 
-const routinesTickWorkflow = DBOS.registerWorkflow(routinesTickImpl, { name: 'routinesTick' });
+const routinesTickWorkflow = idempotentRegisterWorkflow('routinesTick', () =>
+  DBOS.registerWorkflow(routinesTickImpl, { name: 'routinesTick' }),
+);
 
 // Scheduled fn must also be a registered workflow. Default skip-missed mode.
 DBOS.registerScheduled(routinesTickWorkflow, { name: 'routinesTick', crontab: TICK_CRONTAB });

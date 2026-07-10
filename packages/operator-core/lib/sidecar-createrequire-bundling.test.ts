@@ -27,7 +27,7 @@
  * red, instead of silently in a packaged boot.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { isBuiltin } from 'node:module';
 
@@ -35,6 +35,11 @@ const LIB_DIR = import.meta.dirname ?? __dirname;
 // operator-core/lib → operator-core → packages → repo root
 const REPO_ROOT = join(LIB_DIR, '..', '..', '..');
 const BUILD_SCRIPT = join(REPO_ROOT, 'papercusp-desktop', 'bin', 'build-desktop-sidecar.sh');
+// WI-3831: a release SOURCE BUNDLE excludes the WHOLE `papercusp-desktop/` dir
+// (papercusp-desktop/bin/stage-source-tree.sh `--exclude='./papercusp-desktop'`
+// — it's the Tauri/Rust shell, not shipped inside its own bundle target). The
+// build script this guard checks against is then genuinely absent — there is
+// nothing to assert about the sidecar bundling on that install.
 
 /** Walk *.ts under operator-core/lib, excluding tests, d.ts, node_modules, fixtures. */
 function collectSourceFiles(dir: string, acc: string[] = []): string[] {
@@ -119,7 +124,7 @@ function copiedPackages(script: string): Set<string> {
   return copied;
 }
 
-describe('desktop sidecar createRequire bundling (EI-1589)', () => {
+describe.skipIf(!existsSync(BUILD_SCRIPT))('desktop sidecar createRequire bundling (EI-1589)', () => {
   const files = collectSourceFiles(LIB_DIR);
   const found = new Map<string, string[]>(); // spec -> source files
   for (const file of files) {

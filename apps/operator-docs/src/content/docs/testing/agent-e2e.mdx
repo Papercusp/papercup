@@ -402,6 +402,50 @@ curl -s -H "x-papercusp-workspace: <fresh-slug>" \
 ```
 </Aside>
 
+### 1.6 Robust navigation, blocked `sleep`, and the token file format (EI-9161)
+
+Three frictions that cost real time driving the operator webview
+headlessly for a visual verification — none was documented anywhere in
+this playbook, all are repeatable for the next agent.
+
+**Prefer `ui:dispatch set_url` over `location.replace` for route changes.**
+Full-reload navigation via
+`tauri-agent-tools eval "location.replace('http://127.0.0.1:<port>/<route>')"`
+is unreliable in the dev shell: it can (a) trip the SPA's "this view hit
+an error / app was rebuilt underneath the page" boundary whenever `vite
+build --watch` rewrote the dist mid-load, and (b) even with Vite idle,
+land one route behind or stick on a prior route — so an audit run
+silently measures the **wrong page**. A
+`tauri-agent-tools wait --eval "location.pathname==='<path>'"` guard does
+**not** reliably catch this. The robust alternative is the sanctioned
+agent→UI surface: `ui:dispatch { client_id, intent:'set_url', args:{
+path:'/route' } }` navigates client-side via nuqs (no reload), so it
+never hits the dist-swap boundary and lands deterministically. Pick the
+target tab with `ui:list_clients` (match your own shell by
+`opened_at`/`url`), then read the DOM through the bridge as usual — same
+webview. Treat `location.replace` full-reload as a fallback only, with
+the dist-swap caveat above; `ui:dispatch set_url` is the primary
+route-change for operator verification.
+
+**Foreground `sleep` is blocked by the Claude Code harness.** A drive
+script with a bare `sleep` between steps hangs the whole command until
+timeout. Use `tauri-agent-tools wait --eval/--selector --timeout` to
+settle instead of sleeping.
+
+**The dev-bridge token file is JSON, not a bare token.**
+`/tmp/tauri-dev-bridge-<pid>.token` contains
+`{"port":N,"token":"...","pid":N}` — not a raw token string. `--port`
+and `--token` are **per-subcommand** options, not global flags. On a box
+with a peer's shell also running, pass your **own** `--port`/`--token`
+(read from your shell's log line `Token file: ...`) explicitly —
+auto-discovery can otherwise attach to the peer's shell instead of yours.
+
+Net: with `ui:dispatch set_url` + `wait` (no `sleep`) + explicit
+port/token, a multi-route drive is deterministic; without them it
+flakes and can produce false-green audits (e.g. "verifying" N routes
+that were all secretly the same page because navigation silently
+no-opped).
+
 ## 2. Reporting format
 
 ```

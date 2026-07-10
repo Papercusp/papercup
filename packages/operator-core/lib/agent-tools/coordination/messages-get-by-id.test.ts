@@ -9,22 +9,24 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const sqlMock = vi.fn();
-let hasPgFastPath = false;
-const readLinesMock = vi.fn(async () => [] as unknown[]);
+const { sqlMock, readLinesMock, fastPathState } = vi.hoisted(() => ({
+  sqlMock: vi.fn(),
+  readLinesMock: vi.fn(async () => [] as unknown[]),
+  fastPathState: { on: false },
+}));
 
 vi.mock('./log', () => ({
-  coordLog: { readLines: (...args: unknown[]) => readLinesMock(...args) },
+  coordLog: { readLines: readLinesMock },
   coordSql: () => sqlMock,
   coordWorkspaceId: () => 'default',
-  coordHasPgFastPath: () => hasPgFastPath,
+  coordHasPgFastPath: () => fastPathState.on,
 }));
 
 import { getMessageById } from './messages';
 
 beforeEach(() => {
   vi.clearAllMocks();
-  hasPgFastPath = false;
+  fastPathState.on = false;
 });
 
 describe('getMessageById (WI-3832)', () => {
@@ -51,7 +53,7 @@ describe('getMessageById (WI-3832)', () => {
   });
 
   it('PG fast path: queries coord_event_log directly and does not fall back to readLines', async () => {
-    hasPgFastPath = true;
+    fastPathState.on = true;
     sqlMock.mockImplementationOnce(async () => [
       { body: { msg_id: 'orig', from: 'a', to: ['b'], kind: 'note', ts: 't', summary: 'hi' } },
     ]);
@@ -62,7 +64,7 @@ describe('getMessageById (WI-3832)', () => {
   });
 
   it('PG fast path: a JSON-string body is parsed', async () => {
-    hasPgFastPath = true;
+    fastPathState.on = true;
     sqlMock.mockImplementationOnce(async () => [
       { body: JSON.stringify({ msg_id: 'orig', from: 'a', to: ['b'], kind: 'note', ts: 't' }) },
     ]);
@@ -71,14 +73,14 @@ describe('getMessageById (WI-3832)', () => {
   });
 
   it('PG fast path: no rows -> null, no fallback scan', async () => {
-    hasPgFastPath = true;
+    fastPathState.on = true;
     sqlMock.mockImplementationOnce(async () => []);
     expect(await getMessageById('nope')).toBeNull();
     expect(readLinesMock).not.toHaveBeenCalled();
   });
 
   it('PG fast path: a query error falls through to the readLines fallback', async () => {
-    hasPgFastPath = true;
+    fastPathState.on = true;
     sqlMock.mockImplementationOnce(async () => {
       throw new Error('boom');
     });

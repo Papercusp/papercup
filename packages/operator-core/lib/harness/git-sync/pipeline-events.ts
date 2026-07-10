@@ -20,6 +20,7 @@ import { hostname } from 'node:os';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { withPgRetry } from '../../pg-transient-retry';
+import { getBuildInfo } from '../../build-info';
 
 export type PipelineEventKind = 'git_sync' | 'merge_resolver' | 'content_fixer' | 'green_checkpoint' | 'deploy' | 'release_fixer';
 
@@ -53,12 +54,39 @@ export interface PipelineEventRow {
   createdAtMs: number;
 }
 
+/**
+ * fleet-reliability-verification-2026-07-10 P-009: read `getBuildInfo()` (the
+ * SAME cached sha/version resolver `/api/health` and the runtime-vintage
+ * boot-report (P-008) already use) once per call — resolved+cached at module
+ * load, so this never re-shells `git rev-parse` per event. Best-effort: a
+ * resolve failure yields `{ sha: null, version: '0.0.0' }` (getBuildInfo's own
+ * contract), never throws, so a vintage-stamp problem can never break the
+ * pipeline event it's stamping.
+ */
+function currentVintageStamp(): { treeSha: string | null; bundleVersion: string } {
+  const info = getBuildInfo();
+  return { treeSha: info.sha, bundleVersion: info.version };
+}
+
 /** Append one pipeline event. Best-effort — never throws (warns on failure). */
 export async function appendPipelineEvent(ev: AppendPipelineEvent, sql?: Sql): Promise<void> {
   try {
     // P-015: stamp every event with the emitting host/process so the Git tab + a
     // post-mortem can tell WHICH operator ran a given tick (desktop vs :3070 vs :3170).
-    const detail = { ...(ev.detail ?? {}), host: hostTag() };
+    //
+    // P-009 (fleet-reliability-verification-2026-07-10): ALSO stamp the emitting
+    // process's OWN build identity (vintage) on every event — every kind this
+    // table carries (git_sync, merge_resolver, content_fixer, green_checkpoint,
+    // deploy, release_fixer) is a gate/verdict-producing step in the SAME
+    // pipeline, and "fix landed but gate still red" was, 2026-07-09/10, a
+    // recurring ~5x manual-ssh diagnosis of "which build actually ran this
+    // check" (root lesson of P-008's runtime-vintage ledger, generalized here to
+    // every event this table logs, not just boot-time self-reports). One stamp
+    // point covers the whole pipeline instead of touching each of the 6 call
+    // sites individually. A caller cross-references `detail.vintage.treeSha`
+    // against `deploys:vintage`'s current commit-lag report — a stale sha there
+    // means "this verdict predates the fix — re-run", not "the fix didn't work".
+    const detail = { ...(ev.detail ?? {}), host: hostTag(), vintage: currentVintageStamp() };
     await db(sql)`
       INSERT INTO harness_shared.pipeline_events (workspace_id, install_slug, kind, status, detail)
       VALUES (${ev.workspaceId || '*'}, ${ev.installSlug}, ${ev.kind}, ${ev.status},

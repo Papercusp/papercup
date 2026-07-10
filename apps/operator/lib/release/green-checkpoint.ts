@@ -1564,7 +1564,7 @@ export async function runGreenCheckpoint(
       const verdict = classifyRedAgainstTip({
         candidate,
         tip,
-        failingTests,
+        failingTests: failingTests ?? [],
         tipRetest: tipRun ? { ran: true, pass: tipRun.pass } : null,
         refireAttempts: opts.refireAttempts ?? 0,
         maxRefires: autoRefireCapFromEnv(),
@@ -1577,7 +1577,7 @@ export async function runGreenCheckpoint(
       // so a genuinely-broken tip still converges to a held gate and a human.
       if (verdict.autoRefire) {
         await deps.broadcast(
-          `🔁 green-checkpoint re-firing on tip ${tip.slice(0, 8)}: red at ${candidate.slice(0, 8)} was STALE (${failingTests.length} file(s) pass at tip)`,
+          `🔁 green-checkpoint re-firing on tip ${tip.slice(0, 8)}: red at ${candidate.slice(0, 8)} was STALE (${failingFiles.length} file(s) pass at tip)`,
         ).catch(() => {});
         return runGreenCheckpoint(cfg, deps, {
           ...opts,

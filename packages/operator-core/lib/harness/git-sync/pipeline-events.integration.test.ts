@@ -118,4 +118,17 @@ describe('pipeline-events runtime — real Postgres', () => {
     // detail tolerates the client's jsonb representation (object or string).
     expect(recent[0].detail).toBeTypeOf('object');
   });
+
+  it('P-009: every appended event is stamped with the emitting process\'s vintage (treeSha/bundleVersion)', async () => {
+    await appendPipelineEvent({ workspaceId: 'ws', installSlug: SLUG, kind: 'green_checkpoint', status: 'not-green' }, db.sql);
+    const [recent] = await recentPipelineEvents(SLUG, 1, db.sql);
+    expect(recent.detail).toHaveProperty('vintage');
+    const vintage = recent.detail.vintage as { treeSha: string | null; bundleVersion: string };
+    // getBuildInfo() is best-effort (sha can be null in an unresolved test checkout) —
+    // pin the SHAPE (both keys present, bundleVersion always a string), not a specific value.
+    expect(vintage).toHaveProperty('treeSha');
+    expect(typeof vintage.bundleVersion).toBe('string');
+    // The existing host stamp (P-015) must still be present alongside it (additive, not replaced).
+    expect(typeof recent.detail.host).toBe('string');
+  });
 });

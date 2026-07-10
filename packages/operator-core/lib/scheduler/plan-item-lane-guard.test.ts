@@ -186,4 +186,44 @@ describe('planItemLaneBlockReason', () => {
     // traces the full unresolvedBlockers path back to the true root cause.
     expect(got?.reason).toMatch(/blocked-by: P-308/);
   });
+
+  // EI-9107: the TWIN incident — the same 2026-07-10 plan (p2p-git-live-activation-
+  // 2026-07-09), but the item scheduler:get_next actually handed out was P-308 itself
+  // (WI-3502), one level DOWN the chain from EI-9108's P-401. P-308's work_item.state was
+  // plain 'todo' (rank 0, set by the mug) so the coarse SQL floors surfaced it as
+  // claimable, while its plan-item is blocked-by an UNRESOLVED multi-blocker set
+  // (P-302..P-306, each still todo pending P-301←P-101←P-003). This pins that the guard
+  // reports P-308 blocked and names the full unresolved-blocker set — not just the deep
+  // P-401 case the EI-9108 test above covers.
+  it('reports blocked for P-308 with its full unresolved-blocker set (EI-9107, real WI-3502 shape)', async () => {
+    getPlanRowMock.mockResolvedValue({
+      items: [
+        planItem({ id: 'P-003', storedStatus: 'wip' }), // true root cause: still in-flight
+        planItem({ id: 'P-101', storedStatus: 'todo', blockedBy: ['P-003'] }),
+        planItem({ id: 'P-205', storedStatus: 'done' }),
+        planItem({ id: 'P-301', storedStatus: 'done', blockedBy: ['P-205', 'P-101'] }),
+        planItem({ id: 'P-302', storedStatus: 'todo', blockedBy: ['P-301'] }),
+        planItem({ id: 'P-303', storedStatus: 'todo', blockedBy: ['P-301'] }),
+        planItem({ id: 'P-304', storedStatus: 'todo', blockedBy: ['P-301'] }),
+        planItem({ id: 'P-305', storedStatus: 'todo', blockedBy: ['P-301'] }),
+        planItem({ id: 'P-306', storedStatus: 'todo', blockedBy: ['P-301'] }),
+        planItem({ id: 'P-307', storedStatus: 'done', blockedBy: ['P-301'] }),
+        planItem({
+          id: 'P-308',
+          storedStatus: 'todo', // the live work-item state that made it scheduler-claimable
+          blockedBy: ['P-302', 'P-303', 'P-304', 'P-305', 'P-306', 'P-307'],
+        }),
+      ],
+    });
+    const got = await planItemLaneBlockReason({
+      payload: { plan_item: { plan_slug: 'p2p-git-live-activation-2026-07-09', item_id: 'P-308' } },
+      harness: 'papercusp',
+    });
+    expect(got).not.toBeNull();
+    expect(got?.effectiveStatus).toBe('blocked');
+    expect(got?.itemId).toBe('P-308');
+    // P-307 is done, so it drops out of the unresolved set; the reason names exactly the
+    // still-open blockers the incident reported (P-302..P-306).
+    expect(got?.reason).toMatch(/blocked-by: P-302, P-303, P-304, P-305, P-306/);
+  });
 });

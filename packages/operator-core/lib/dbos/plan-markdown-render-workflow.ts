@@ -17,6 +17,7 @@
  * back. git-sync commits the rendered files (that's the point — git-visible plans).
  */
 import { DBOS } from '@dbos-inc/dbos-sdk';
+import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
 import { planMarkdownRenderTick, RENDER_CRONTAB } from '../harness/plan-markdown-render';
 
 async function planMarkdownRenderTickWf(): Promise<void> {
@@ -38,10 +39,12 @@ async function planMarkdownRenderTickWf(): Promise<void> {
   );
 }
 
-const planMarkdownRenderWorkflow = DBOS.registerWorkflow(planMarkdownRenderTickWf, {
-  name: 'planMarkdownRender',
-  maxRecoveryAttempts: 5,
-});
+const planMarkdownRenderWorkflow = idempotentRegisterWorkflow('planMarkdownRender', () =>
+  DBOS.registerWorkflow(planMarkdownRenderTickWf, {
+    name: 'planMarkdownRender',
+    maxRecoveryAttempts: 5,
+  }),
+);
 
 // Default skip-missed mode — a long-closed desktop must not backfill a storm of
 // ticks; the next live tick renders whatever changed while it was down.

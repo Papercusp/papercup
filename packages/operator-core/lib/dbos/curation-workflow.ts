@@ -15,6 +15,7 @@
  * hours doesn't backfill a storm of ticks (the autoloop's D-009).
  */
 import { DBOS } from '@dbos-inc/dbos-sdk';
+import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
 import { runWithWorkspace } from '../workspace-als';
 import { orchestratorWorkspaceIds } from './orchestrator-loop';
 import {
@@ -66,7 +67,9 @@ async function curationTickImpl(): Promise<void> {
   }
 }
 
-const curationTickWorkflow = DBOS.registerWorkflow(curationTickImpl, { name: 'curationTick' });
+const curationTickWorkflow = idempotentRegisterWorkflow('curationTick', () =>
+  DBOS.registerWorkflow(curationTickImpl, { name: 'curationTick' }),
+);
 
 // Scheduled fn must also be a registered workflow. Skip-missed (no backfill).
 DBOS.registerScheduled(curationTickWorkflow, { name: 'curationTick', crontab: TICK_CRONTAB });

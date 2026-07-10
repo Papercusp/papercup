@@ -18,6 +18,7 @@
  */
 
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
+import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
 import { queueConcurrency } from './queue-concurrency';
 import { executeDurableReaction, type DurableReactionPayload } from '../events/durable-exec';
 import { setDurableReactionRunner, type DurableReactionInput } from '../events/durable';
@@ -35,10 +36,12 @@ async function reactionImpl(payload: DurableReactionPayload): Promise<void> {
   });
 }
 
-export const eventReactionWorkflow = DBOS.registerWorkflow(reactionImpl, {
-  name: 'eventReaction',
-  maxRecoveryAttempts: 5,
-});
+export const eventReactionWorkflow = idempotentRegisterWorkflow('eventReaction', () =>
+  DBOS.registerWorkflow(reactionImpl, {
+    name: 'eventReaction',
+    maxRecoveryAttempts: 5,
+  }),
+);
 
 export const reactionsQueue = new WorkflowQueue('event-reactions', { concurrency: queueConcurrency(4) });
 
