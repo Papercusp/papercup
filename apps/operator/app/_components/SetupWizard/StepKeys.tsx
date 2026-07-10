@@ -7,9 +7,10 @@ import { useLexicon } from '@/lib/useLexicon';
 // The one required memory choice — defaults to EmbeddingGemma-300m (local, no
 // key), so a user who changes nothing still gets working memory (owner ask
 // 2026-07-10). Each option carries a one-line tradeoff.
-type MemMode = 'gemma' | 'local' | 'openai' | 'disabled';
+type MemMode = 'gemma' | 'harrier' | 'local' | 'openai' | 'disabled';
 const MEMORY_OPTIONS: { value: MemMode; label: string; tradeoff: string }[] = [
   { value: 'gemma', label: 'EmbeddingGemma-300m (recommended)', tradeoff: 'Best quality, fully local & private, no API key. ~1GB RAM.' },
+  { value: 'harrier', label: 'Harrier-OSS-0.6b', tradeoff: 'Best recall (beats Gemma on the internal gold set), local & private; ~4× slower embeds, ~2.5GB RAM.' },
   { value: 'local', label: 'BGE-small', tradeoff: 'Lighter local model (~400MB RAM), no API key; lower quality than Gemma.' },
   { value: 'openai', label: 'OpenAI text-embedding-3-small', tradeoff: 'Cloud embeddings — needs the API key below; memory text leaves your device.' },
   { value: 'disabled', label: 'No persistent memory', tradeoff: 'Turn memory off entirely.' },
@@ -39,7 +40,7 @@ export function StepKeys() {
         if (prefsRes.ok) {
           const body = (await prefsRes.json()) as { memoryEmbedderMode?: string; prefs?: { memoryEmbedderMode?: string } };
           const mode = body.memoryEmbedderMode ?? body.prefs?.memoryEmbedderMode;
-          if (mode === 'gemma' || mode === 'local' || mode === 'openai' || mode === 'disabled') setMemMode(mode);
+          if (mode === 'gemma' || mode === 'harrier' || mode === 'local' || mode === 'openai' || mode === 'disabled') setMemMode(mode);
         }
       } finally {
         setLoaded(true);

@@ -54,7 +54,7 @@ import {
 } from '../authority/rendezvous-authority';
 import type { SelfSwarmIdentity } from '../authority/lock-authority';
 import { fenceValid } from '../authority/authority-hardening';
-import { type ScopeId, formatScopeId } from '../sync/hive-git/scope-repo';
+import { type ScopeId, formatScopeId } from '../sync/pot-git/scope-repo';
 
 /** A federated presence row for one member device (reshaped from `shared_presence`;
  *  same field shape as {@link RendezvousPeerRow} so it feeds the HRW selector

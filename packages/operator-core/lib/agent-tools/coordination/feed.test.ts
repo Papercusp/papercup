@@ -5,36 +5,52 @@
  * union → tag → filter → histogram → sort → page pipeline is exercised deterministically
  * with no PG. Each describe pins one behavior of the read.
  *
- * Surface→reader mapping under test (feed.ts, WI-3869): messages/plan-events ⇒
- * coordLog.readLinesBounded; escalations/handoffs ⇒ coordLog.readEventsBounded — the
- * BOUNDED (ORDER BY id DESC LIMIT n) methods, not the unbounded full-scan readLines/
- * readEvents (WI-3869 replaced those call sites precisely because the unbounded scan
- * degraded coord:presence/fleet:status/coord:orient as the log grows).
+ * Surface→reader mapping under test (feed.ts, WI-3869/WI-3880): messages/plan-events ⇒
+ * coordLog.readLinesBoundedCursor; escalations/handoffs ⇒ coordLog.readEventsBoundedCursor —
+ * the id-CURSOR bounded methods (ORDER BY id DESC LIMIT n, optionally `id < beforeId`), not
+ * the unbounded full-scan readLines/readEvents (WI-3869 replaced those call sites precisely
+ * because the unbounded scan degraded coord:presence/fleet:status/coord:orient as the log
+ * grows) and not the plain (non-cursor) readLinesBounded/readEventsBounded (WI-3880 switched
+ * to the cursor variant so a `before_ts` page can walk deeper than the first window instead
+ * of dead-ending there).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CoordEnvelope, CoordKind } from '@papercusp/coordination/core';
 
 // Mock the coordLog seam — also keeps the real ./log (and its getOrgPg/PG import) out of the test.
 vi.mock('./log', () => ({
-  coordLog: { readLinesBounded: vi.fn(), readEventsBounded: vi.fn() },
+  coordLog: { readLinesBoundedCursor: vi.fn(), readEventsBoundedCursor: vi.fn() },
 }));
 
 import { readCoordFeed, type CoordSurface, DEFAULT_FEED_LIMIT, MAX_FEED_LIMIT } from './feed';
 import { coordLog } from './log';
 
 const mockLog = coordLog as unknown as {
-  readLinesBounded: ReturnType<typeof vi.fn>;
-  readEventsBounded: ReturnType<typeof vi.fn>;
+  readLinesBoundedCursor: ReturnType<typeof vi.fn>;
+  readEventsBoundedCursor: ReturnType<typeof vi.fn>;
 };
 
+/** Wrap a flat envelope array into the `{ rows: [{id, envelope}], exhausted }`
+ *  cursor-page shape a real backend would return for a single-round fetch that
+ *  covers the surface's ENTIRE (test-sized) content — so `exhausted` is always
+ *  `true`, matching a real backend once it has nothing older left. This means
+ *  the WI-3880 deepening loop never fires an extra round against this mock
+ *  (there IS nothing more to fetch), so every existing single-round assertion
+ *  below still holds unchanged. `id` is assigned by ARRAY POSITION (ascending
+ *  1..N) — irrelevant to these tests (none pass `beforeId` against this mock),
+ *  just a value the shape requires. */
+function cursorPage(data: CoordEnvelope[]): { rows: { id: number; envelope: CoordEnvelope }[]; exhausted: boolean } {
+  return { rows: data.map((envelope, i) => ({ id: i + 1, envelope })), exhausted: true };
+}
+
 /** Configure the four surfaces' contents. messages/plan-events resolve via
- *  readLinesBounded, escalations/handoffs via readEventsBounded — a single
- *  per-surface map drives both (the mock ignores the bound options, same as
- *  the old unbounded double did — the pipeline behavior under test is
- *  identical, only the underlying seam call changed per WI-3869). */
+ *  readLinesBoundedCursor, escalations/handoffs via readEventsBoundedCursor — a
+ *  single per-surface map drives both (the mock ignores the bound options,
+ *  same as the old unbounded double did — the pipeline behavior under test is
+ *  identical, only the underlying seam call changed per WI-3869/WI-3880). */
 function setSurfaces(data: Partial<Record<CoordSurface, CoordEnvelope[]>>): void {
-  mockLog.readLinesBounded.mockImplementation(async (s: CoordSurface) => data[s] ?? []);
-  mockLog.readEventsBounded.mockImplementation(async (s: CoordSurface) => data[s] ?? []);
+  mockLog.readLinesBoundedCursor.mockImplementation(async (s: CoordSurface) => cursorPage(data[s] ?? []));
+  mockLog.readEventsBoundedCursor.mockImplementation(async (s: CoordSurface) => cursorPage(data[s] ?? []));
 }
 
 function env(p: Partial<CoordEnvelope> = {}): CoordEnvelope {
@@ -57,12 +73,12 @@ describe('union + surface tagging + broadcast flag', () => {
     expect(total).toBe(4);
     const bySurface = Object.fromEntries(rows.map((r) => [r.msg_id, r.surface]));
     expect(bySurface).toEqual({ a: 'messages', b: 'plan-events', c: 'escalations', d: 'handoffs' });
-    // line surfaces went through readLinesBounded; event surfaces through readEventsBounded
-    expect(mockLog.readLinesBounded.mock.calls.map((c) => c[0]).sort()).toEqual(['messages', 'plan-events']);
-    expect(mockLog.readEventsBounded.mock.calls.map((c) => c[0]).sort()).toEqual(['escalations', 'handoffs']);
+    // line surfaces went through readLinesBoundedCursor; event surfaces through readEventsBoundedCursor
+    expect(mockLog.readLinesBoundedCursor.mock.calls.map((c) => c[0]).sort()).toEqual(['messages', 'plan-events']);
+    expect(mockLog.readEventsBoundedCursor.mock.calls.map((c) => c[0]).sort()).toEqual(['escalations', 'handoffs']);
   });
 
-  it('WI-3869: every raw per-surface read is BOUNDED (never the unbounded full-scan) and pushes down kinds/since_ts/plan_slug', async () => {
+  it('WI-3869/WI-3880: every raw per-surface read is BOUNDED (never the unbounded full-scan) and pushes down kinds/since_ts/plan_slug', async () => {
     setSurfaces({
       messages: [env({ msg_id: 'a' })],
       'plan-events': [env({ msg_id: 'b', kind: 'plan_event' })],
@@ -77,20 +93,20 @@ describe('union + surface tagging + broadcast flag', () => {
     // Every bounded call carries a numeric, non-unbounded limit — this is the
     // regression guard: a caller that reverts to coordLog.readLines/readEvents
     // (no `limit` arg at all) fails this assertion immediately.
-    for (const call of [...mockLog.readLinesBounded.mock.calls, ...mockLog.readEventsBounded.mock.calls]) {
+    for (const call of [...mockLog.readLinesBoundedCursor.mock.calls, ...mockLog.readEventsBoundedCursor.mock.calls]) {
       const [, opts] = call as [CoordSurface, { limit?: number }];
       expect(typeof opts?.limit).toBe('number');
       expect(opts!.limit!).toBeGreaterThan(0);
     }
-    // Line reads push down kinds + sinceTs + planSlug (readLinesBounded supports all three).
-    const lineCall = mockLog.readLinesBounded.mock.calls.find((c) => c[0] === 'messages')!;
+    // Line reads push down kinds + sinceTs + planSlug (readLinesBoundedCursor supports all three).
+    const lineCall = mockLog.readLinesBoundedCursor.mock.calls.find((c) => c[0] === 'messages')!;
     expect(lineCall[1]).toMatchObject({
       kinds: ['message', 'escalation'],
       sinceTs: '2026-06-23T00:00:00.000Z',
       planSlug: 'plan-a',
     });
-    // Event reads push down kinds only (readEventsBounded has no sinceTs/planSlug param).
-    const eventCall = mockLog.readEventsBounded.mock.calls.find((c) => c[0] === 'escalations')!;
+    // Event reads push down kinds only (readEventsBoundedCursor has no sinceTs/planSlug param).
+    const eventCall = mockLog.readEventsBoundedCursor.mock.calls.find((c) => c[0] === 'escalations')!;
     expect(eventCall[1]).toMatchObject({ kinds: ['message', 'escalation'] });
     expect(eventCall[1]).not.toHaveProperty('sinceTs');
     expect(eventCall[1]).not.toHaveProperty('planSlug');
@@ -260,6 +276,85 @@ describe('filters', () => {
       before_ts: '2026-06-23T12:00:00.000Z', // excludes t12
     });
     expect(rows.map((r) => r.msg_id)).toEqual(['t11']);
+  });
+});
+
+describe('WI-3880: before_ts deepening past the first RAW_SURFACE_FETCH_CAP window', () => {
+  /** A stateful mock keyed on (surface, beforeId) — robust to whatever order
+   *  the four surfaces happen to be invoked in within a round (unlike chained
+   *  `mockImplementationOnce`, which is a single FIFO queue shared across every
+   *  surface calling the same mock function). */
+  function statefulLineMock(
+    rounds: Partial<Record<CoordSurface, { rows: { id: number; envelope: CoordEnvelope }[]; exhausted: boolean }[]>>,
+  ) {
+    const callIndex = new Map<CoordSurface, number>();
+    return vi.fn(async (s: CoordSurface) => {
+      const pages = rounds[s] ?? [{ rows: [], exhausted: true }];
+      const i = callIndex.get(s) ?? 0;
+      callIndex.set(s, i + 1);
+      return pages[Math.min(i, pages.length - 1)]!;
+    });
+  }
+
+  it('walks a surface past its first window when the assembled page is still short of limit', async () => {
+    const m3 = env({ msg_id: 'm3', ts: '2026-06-23T12:00:03.000Z' });
+    const m2 = env({ msg_id: 'm2', ts: '2026-06-23T12:00:02.000Z' });
+    const m1 = env({ msg_id: 'm1', ts: '2026-06-23T12:00:01.000Z' });
+    mockLog.readLinesBoundedCursor = statefulLineMock({
+      messages: [
+        { rows: [{ id: 3, envelope: m3 }, { id: 2, envelope: m2 }], exhausted: false }, // round 1: not exhausted
+        { rows: [{ id: 1, envelope: m1 }], exhausted: true }, // round 2 (beforeId=2): exhausted
+      ],
+    });
+    mockLog.readEventsBoundedCursor.mockImplementation(async () => ({ rows: [], exhausted: true }));
+
+    const { rows, total } = await readCoordFeed({ limit: 3, before_ts: '2026-06-24T00:00:00.000Z' });
+
+    expect(rows.map((r) => r.msg_id)).toEqual(['m3', 'm2', 'm1']); // all 3, newest-first
+    expect(total).toBe(3);
+    // messages was fetched TWICE (round 1 + the deepening round); plan-events
+    // (exhausted:true from its very first call) was fetched only once.
+    const messagesCalls = mockLog.readLinesBoundedCursor.mock.calls.filter((c) => c[0] === 'messages');
+    expect(messagesCalls).toHaveLength(2);
+    expect(messagesCalls[0]![1]).not.toHaveProperty('beforeId'); // round 1: no cursor yet
+    expect(messagesCalls[1]![1]).toMatchObject({ beforeId: 2 }); // round 2: walks past round 1's oldest id
+    const planEventsCalls = mockLog.readLinesBoundedCursor.mock.calls.filter((c) => c[0] === 'plan-events');
+    expect(planEventsCalls).toHaveLength(1);
+  });
+
+  it('gives up after MAX_CURSOR_ROUNDS rather than looping forever on a surface that never satisfies the limit', async () => {
+    // Every call returns exactly one row, never exhausted — a pathological
+    // surface that could in principle loop forever chasing `limit`.
+    let nextId = 1000;
+    mockLog.readLinesBoundedCursor = vi.fn(async (s: CoordSurface) => {
+      if (s !== 'messages') return { rows: [], exhausted: true };
+      const id = nextId--;
+      return { rows: [{ id, envelope: env({ msg_id: `m${id}`, ts: '2026-06-23T12:00:00.000Z' }) }], exhausted: false };
+    });
+    mockLog.readEventsBoundedCursor.mockImplementation(async () => ({ rows: [], exhausted: true }));
+
+    const { rows } = await readCoordFeed({ limit: 500, before_ts: '2026-06-24T00:00:00.000Z' });
+
+    // Bounded by MAX_CURSOR_ROUNDS (10): the initial fetchRound() + 9 more
+    // deepening iterations of the for-loop, never an unbounded chase of `limit`.
+    const messagesCalls = mockLog.readLinesBoundedCursor.mock.calls.filter((c) => c[0] === 'messages');
+    expect(messagesCalls).toHaveLength(10);
+    expect(rows).toHaveLength(10);
+  });
+
+  it('never enters the deepening path when before_ts is omitted, even if a surface reports itself unexhausted', async () => {
+    mockLog.readLinesBoundedCursor = vi.fn(async (s: CoordSurface) =>
+      s === 'messages'
+        ? { rows: [{ id: 1, envelope: env({ msg_id: 'only' }) }], exhausted: false }
+        : { rows: [], exhausted: true },
+    );
+    mockLog.readEventsBoundedCursor.mockImplementation(async () => ({ rows: [], exhausted: true }));
+
+    await readCoordFeed({ limit: 500 }); // no before_ts
+
+    // Exactly one round total — the common (no before_ts) path never re-checks
+    // `exhausted` or re-fetches, matching its pre-WI-3880 cost profile.
+    expect(mockLog.readLinesBoundedCursor.mock.calls.filter((c) => c[0] === 'messages')).toHaveLength(1);
   });
 });
 

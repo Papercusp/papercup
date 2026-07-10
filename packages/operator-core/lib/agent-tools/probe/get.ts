@@ -8,8 +8,8 @@
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { deriveProbeVerdict, formatProbeVerdict, PROBE_HOPS } from '../../sync/hive-git/federation-probe';
-import { getProbe, markProbeAcked } from '../../sync/hive-git/federation-probe-store';
+import { deriveProbeVerdict, formatProbeVerdict, PROBE_HOPS } from '../../sync/pot-git/federation-probe';
+import { getProbe, markProbeAcked } from '../../sync/pot-git/federation-probe-store';
 
 export default defineTool({
   name: 'probe:get',

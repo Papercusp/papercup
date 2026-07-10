@@ -15,7 +15,7 @@ vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-x' }))
 const isRegisteredHiveMock = vi.fn(async () => true);
 vi.mock('../../harness-registry', () => ({ isRegisteredHive: (...a: unknown[]) => isRegisteredHiveMock(...a) }));
 const insertProbeMock = vi.fn(async () => ({}));
-vi.mock('../../sync/hive-git/federation-probe-store', () => ({ insertProbe: (...a: unknown[]) => insertProbeMock(...a) }));
+vi.mock('../../sync/pot-git/federation-probe-store', () => ({ insertProbe: (...a: unknown[]) => insertProbeMock(...a) }));
 
 import canaryCheck from './canary-check';
 

@@ -9,7 +9,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import type { FleetLeaderLeaseStore } from './fleet-leader-election-service';
 import type { FleetLeaderLease } from './fleet-leader-election';
-import type { ScopeId } from '../sync/hive-git/scope-repo';
+import type { ScopeId } from '../sync/pot-git/scope-repo';
 import { resolveP2pGrantWorkspace } from './grant-store';
 
 export interface PgFleetLeaderLeaseStoreDeps {

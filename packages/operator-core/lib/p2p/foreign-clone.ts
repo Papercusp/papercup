@@ -18,12 +18,12 @@
  * failure parks the row loudly rather than deleting it (the breadcrumb is the
  * receipt trail, P-004 posture).
  *
- * Pure over hive-git's RunGit + an injectable `register` seam, so the git
+ * Pure over pot-git's RunGit + an injectable `register` seam, so the git
  * mechanics test against temp repos with no PG.
  */
 import { mkdir, stat, readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
-import { type RunGit, defaultRunGit } from '../sync/hive-git/storage';
+import { type RunGit, defaultRunGit } from '../sync/pot-git/storage';
 import {
   type ForeignWorkspace,
   type RegisterResult,

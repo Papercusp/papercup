@@ -41,9 +41,9 @@
 # were incidental *federation*-keyword collateral, never part of WI-3210's
 # actual ~31-red-test set. Dropped from quarantine entirely (the hyperbee
 # federation tests this glob ALSO matched stay quarantined independently via
-# the bare `lib/sync/hyperbee/**` line below). A hive-git-gate-quarantine-
+# the bare `lib/sync/hyperbee/**` line below). A pot-git-gate-quarantine-
 # guard.test.ts recurrence guard (apps/operator/lib/release/) fails loudly if
-# a future edit re-catches any lib/sync/hive-git/** or lib/harness/git-sync/**
+# a future edit re-catches any lib/sync/pot-git/** or lib/harness/git-sync/**
 # test file here.
 @papercusp/operator-core::lib/**/*p2p*.test.ts
 @papercusp/operator-core::lib/**/dogfood-substrate*.test.ts
@@ -53,7 +53,7 @@
 @papercusp/operator-core::lib/*substrate*.test.ts
 @papercusp/operator-core::lib/deployment/p2p-perf-tier3/**
 @papercusp/operator-core::lib/p2p/**
-@papercusp/operator-core::lib/shared-hive-loop/**
+@papercusp/operator-core::lib/shared-pot-loop/**
 @papercusp/operator-core::lib/sync/hyperbee/**
 @papercusp/p2p-voice::src/**
 @papercusp/pubsub-substrate::src/**

@@ -25,7 +25,7 @@
  *      cores to B (replication is unconditional for any topic peer — swarm.ts:329)
  *      and B keeps ADMITTING A's log (B never revoked A), so B keeps READING A's
  *      new content. This test demonstrates that gap at the substrate grain. NB:
- *      `lib/shared-hive-loop/revoked-swarm.integration.test.ts` step 2 already
+ *      `lib/shared-pot-loop/revoked-swarm.integration.test.ts` step 2 already
  *      asserts this same behavior as *intended asymmetry* ("the revoking side's
  *      writes still federate to the revoked peer") — so closing the read path is
  *      a conscious product decision, not a silent bug. See findings-C.md C-001.

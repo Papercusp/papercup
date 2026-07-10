@@ -231,8 +231,8 @@ export default function MemoryPage() {
     }
   }, [refreshMeta, askConfirm]);
 
-  const [reembedBusy, setReembedBusy] = useState<null | `${'openai' | 'local' | 'gemma'}-to-${'openai' | 'local' | 'gemma'}`>(null);
-  const onReembed = useCallback(async (from: 'openai' | 'local' | 'gemma', to: 'openai' | 'local' | 'gemma') => {
+  const [reembedBusy, setReembedBusy] = useState<null | `${'openai' | 'local' | 'gemma' | 'harrier'}-to-${'openai' | 'local' | 'gemma' | 'harrier'}`>(null);
+  const onReembed = useCallback(async (from: 'openai' | 'local' | 'gemma' | 'harrier', to: 'openai' | 'local' | 'gemma' | 'harrier') => {
     const ok = await askConfirm({
       title: `Re-embed memories from "${from}" → "${to}"?`,
       body: `This may take 30s-5min depending on size. Existing "${to}" memories with the same id will be overwritten.`,
@@ -770,6 +770,14 @@ export default function MemoryPage() {
             style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', fontSize: 12, opacity: reembedBusy ? 0.5 : 1 }}
           >
             {reembedBusy === 'openai-to-gemma' ? 'Re-embedding…' : 'openai → gemma'}
+          </button></Tooltip>
+          <Tooltip label="Re-embed EmbeddingGemma memories into the Harrier-OSS-0.6b collection so they're visible after switching your memory system to Harrier (best recall on the internal gold set; ~4× slower embeds)."><button
+            type="button"
+            onClick={() => onReembed('gemma', 'harrier')}
+            disabled={reembedBusy !== null}
+            style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', fontSize: 12, opacity: reembedBusy ? 0.5 : 1 }}
+          >
+            {reembedBusy === 'gemma-to-harrier' ? 'Re-embedding…' : 'gemma → harrier'}
           </button></Tooltip>
           <button
             type="button"

@@ -23,7 +23,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { verifyEd25519 } from '../identity/ed25519';
 import { listHiveMembers, loadRevokedHivePubkeys } from '../hive-membership-store';
-import type { ScopeId } from '../sync/hive-git/scope-repo';
+import type { ScopeId } from '../sync/pot-git/scope-repo';
 import type { FleetDirectory } from './scope-roster';
 import type { PublisherSet } from './offer-authorship';
 import { resolveP2pGrantWorkspace } from './grant-store';

@@ -14,7 +14,7 @@
  * separately (e.g. from a probe backlog sweep via `deriveProbeVerdict`) as
  * this canary's `systemGreen` input to `runGateCanary`.
  */
-import { stampProbe, type StampedProbe } from '../sync/hive-git/federation-probe';
+import { stampProbe, type StampedProbe } from '../sync/pot-git/federation-probe';
 import type { GateCanaryDef } from './canary';
 
 export interface FederationProbeCanaryDeps {

@@ -1,6 +1,6 @@
 /**
  * run-full-loop.ts — the full-autonomous-loop E2E orchestrator
- * (shared-hive-loop-e2e-testing-2026-06-10 P-008/P-009/P-011, brief-12 §1+§2),
+ * (shared-pot-loop-e2e-testing-2026-06-10 P-008/P-009/P-011, brief-12 §1+§2),
  * the loop analog of run-claim-dispatch.ts.
  *
  * Transport-agnostic over a `LoopLauncher` (local children + testnet DHT, or real
@@ -34,7 +34,7 @@ import {
   adoptAll,
   type AdoptionVerdict,
   type CompletionRecord,
-} from '../../shared-hive-loop/lease-steal-semantics';
+} from '../../shared-pot-loop/lease-steal-semantics';
 import type { WorkItemClaim } from '../../work-item-claims';
 import type { ClaimRosterEntry } from './claim-agent';
 import type { LoopAgentConfig, LoopAgentResult, LoopCompletion } from './loop-agent';

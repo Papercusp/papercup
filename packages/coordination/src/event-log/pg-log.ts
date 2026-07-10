@@ -430,4 +430,71 @@ export class PgCoordLog implements CoordEventLog {
     `;
     return rows.length > 0 ? parseBody(rows[0].body) : null;
   }
+
+  /**
+   * WI-3880: the true incremental-pagination sibling of `readEventsBounded`.
+   * `id` is the table's real bigserial PK — a persistent, monotonic
+   * append-order cursor — so `beforeId` (`AND id < $beforeId`) lets a caller
+   * walk arbitrarily deep into history instead of being capped at one
+   * fixed-size window. Fetches `limit + 1` rows to detect `exhausted` (whether
+   * anything OLDER than the returned page remains) without a second
+   * round-trip, then trims the extra row off the returned page.
+   */
+  async readEventsBoundedCursor(
+    surface: EventSurface,
+    opts: { limit: number; kinds?: string[]; beforeId?: number },
+  ): Promise<CoordLogCursorPage> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    const limit = Math.max(1, Math.min(Math.floor(opts.limit) || 1, 1000));
+    const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
+    const beforeId =
+      typeof opts.beforeId === 'number' && Number.isFinite(opts.beforeId) ? Math.floor(opts.beforeId) : null;
+    const rows = await sql<{ id: number; body: unknown }[]>`
+      SELECT id, body FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
+         ${kinds && kinds.length ? sql`AND body->>'kind' = ANY(${kinds}::text[])` : sql``}
+         ${beforeId !== null ? sql`AND id < ${beforeId}` : sql``}
+       ORDER BY id DESC
+       LIMIT ${limit + 1}
+    `;
+    const exhausted = rows.length <= limit;
+    const page = rows.slice(0, limit);
+    return {
+      rows: page.map((r) => ({ id: r.id, envelope: parseBody(r.body) })),
+      exhausted,
+    };
+  }
+
+  /** The line-surface sibling of {@link readEventsBoundedCursor} — same
+   *  `id < beforeId` cursor, plus the existing `sinceTs`/`planSlug` pushdowns. */
+  async readLinesBoundedCursor(
+    surface: LineSurface,
+    opts: { limit: number; sinceTs?: string; planSlug?: string; kinds?: string[]; beforeId?: number },
+  ): Promise<CoordLogCursorPage> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    const limit = Math.max(1, Math.min(Math.floor(opts.limit) || 1, 1000));
+    const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
+    const sinceTs = typeof opts.sinceTs === 'string' && opts.sinceTs ? opts.sinceTs : null;
+    const planSlug = typeof opts.planSlug === 'string' && opts.planSlug ? opts.planSlug : null;
+    const beforeId =
+      typeof opts.beforeId === 'number' && Number.isFinite(opts.beforeId) ? Math.floor(opts.beforeId) : null;
+    const rows = await sql<{ id: number; body: unknown }[]>`
+      SELECT id, body FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
+         ${kinds && kinds.length ? sql`AND body->>'kind' = ANY(${kinds}::text[])` : sql``}
+         ${sinceTs ? sql`AND body->>'ts' > ${sinceTs}` : sql``}
+         ${planSlug ? sql`AND body->>'plan_slug' = ${planSlug}` : sql``}
+         ${beforeId !== null ? sql`AND id < ${beforeId}` : sql``}
+       ORDER BY id DESC
+       LIMIT ${limit + 1}
+    `;
+    const exhausted = rows.length <= limit;
+    const page = rows.slice(0, limit);
+    return {
+      rows: page.map((r) => ({ id: r.id, envelope: parseBody(r.body) })),
+      exhausted,
+    };
+  }
 }

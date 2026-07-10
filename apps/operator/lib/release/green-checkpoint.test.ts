@@ -1012,7 +1012,7 @@ describe('test quarantine filtering (v1 gate scope)', () => {
   const quarantine = parseTestQuarantine([
     '# workspace and file-level forms',
     '@papercusp/operator-core::lib/sync/hyperbee/**',
-    '@papercusp/operator-core::lib/shared-hive-loop/**',
+    '@papercusp/operator-core::lib/shared-pot-loop/**',
     '@papercusp/operator-core::lib/*federation*.test.ts',
     '@papercusp/pubsub-substrate',
   ].join('\n'));

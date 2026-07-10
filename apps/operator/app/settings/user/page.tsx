@@ -143,6 +143,7 @@ const OVERRIDES: readonly OverrideSpec[] = [
     help: 'Which model embeds your memories for search. EmbeddingGemma-300m is the default — best quality, fully local & private. Each system stores vectors in its own space, so switching then running "Re-embed" (on the Memory page) brings old memories forward.',
     options: [
       { value: 'gemma', label: 'EmbeddingGemma-300m (recommended) — best quality, local & private, no API key; ~1GB RAM' },
+      { value: 'harrier', label: 'Harrier-OSS-0.6b — best recall (beats Gemma on the internal gold set), local & private; ~4× slower embeds, ~2.5GB RAM' },
       { value: 'local', label: 'BGE-small — lighter local (~400MB RAM), no API key; lower quality than Gemma' },
       { value: 'openai', label: 'OpenAI text-embedding-3-small — cloud, needs an API key, memory text leaves your device' },
       { value: 'auto', label: 'Auto — OpenAI when a key is set, else BGE-small local' },

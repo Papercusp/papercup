@@ -14,7 +14,7 @@ import {
   type LeadershipAnnouncer,
 } from './fleet-leader-election-service';
 import type { FleetMemberDevice } from './fleet-leader-election';
-import type { ScopeId } from '../sync/hive-git/scope-repo';
+import type { ScopeId } from '../sync/pot-git/scope-repo';
 import type { LeadershipAnnouncement } from './fleet-leader-election';
 import { PgFleetLeaderLeaseStore } from './fleet-leader-lease-store';
 

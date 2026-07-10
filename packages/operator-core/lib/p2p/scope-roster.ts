@@ -36,7 +36,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import type { OrgSql } from '../work-items';
 import { resolveP2pGrantWorkspace } from './grant-store';
-import type { ScopeId } from '../sync/hive-git/scope-repo';
+import type { ScopeId } from '../sync/pot-git/scope-repo';
 import type { IsScopeMember } from '../sync/hyperbee/scope-disclosure';
 
 /**

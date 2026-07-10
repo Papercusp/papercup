@@ -30,7 +30,7 @@
 import type { AuthorityResolution } from './authority/lock-authority';
 import { lockAuthorityForHive } from './authority/lock-authority';
 import { potHomeSlugForHarness } from './hive-federation';
-import { evaluateQueenTurnGate } from './shared-hive-loop/queen-guard';
+import { evaluateQueenTurnGate } from './shared-pot-loop/mug-guard';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 
 /** The lease verdict for one steering write. */

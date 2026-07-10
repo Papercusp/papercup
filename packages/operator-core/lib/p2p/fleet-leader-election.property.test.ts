@@ -13,7 +13,7 @@
 import fc from 'fast-check';
 import { describe, it, expect } from 'vitest';
 import { electFleetLeader, type FleetMemberDevice, type ElectFleetLeaderInput } from './fleet-leader-election';
-import type { ScopeId } from '../sync/hive-git/scope-repo';
+import type { ScopeId } from '../sync/pot-git/scope-repo';
 
 const NOW = 1_800_000_000_000;
 const STALE = 90_000;

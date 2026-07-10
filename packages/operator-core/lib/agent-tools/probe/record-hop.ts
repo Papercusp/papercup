@@ -11,8 +11,8 @@
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { PROBE_HOPS } from '../../sync/hive-git/federation-probe';
-import { recordProbeHop } from '../../sync/hive-git/federation-probe-store';
+import { PROBE_HOPS } from '../../sync/pot-git/federation-probe';
+import { recordProbeHop } from '../../sync/pot-git/federation-probe-store';
 
 const RECORDABLE_HOPS = PROBE_HOPS.filter((h) => h !== 'captured') as Exclude<
   (typeof PROBE_HOPS)[number],

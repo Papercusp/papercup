@@ -143,5 +143,60 @@ export function describeCoordEventLogConformance(
       // Empty surface → [].
       expect(await log.readEventsBounded('handoffs', { limit: 5 })).toEqual([]);
     });
+
+    it('readEventsBoundedCursor: newest-first, id cursor pages deep + exhausted flag (WI-3880)', async () => {
+      await log.putEvent('escalations', 'e1', envelope({ msg_id: 'e1', kind: 'escalation', from: 'A', to: ['human'], ts: '2026-01-01T00:00:01.000Z' }));
+      await log.putEvent('escalations', 'e2', envelope({ msg_id: 'e2', kind: 'escalation', from: 'A', to: ['human'], ts: '2026-01-01T00:00:02.000Z' }));
+      await log.putEvent('escalations', 'e3', envelope({ msg_id: 'e3', kind: 'escalation', from: 'A', to: ['human'], ts: '2026-01-01T00:00:03.000Z' }));
+
+      // Page 1: newest 2, not exhausted (e1 still older).
+      const page1 = await log.readEventsBoundedCursor('escalations', { limit: 2 });
+      expect(page1.rows.map((r) => r.envelope.msg_id)).toEqual(['e3', 'e2']);
+      expect(page1.exhausted).toBe(false);
+      const cursor = page1.rows[page1.rows.length - 1]!.id;
+
+      // Page 2: walk past the first page via beforeId — reaches e1, now exhausted.
+      const page2 = await log.readEventsBoundedCursor('escalations', { limit: 2, beforeId: cursor });
+      expect(page2.rows.map((r) => r.envelope.msg_id)).toEqual(['e1']);
+      expect(page2.exhausted).toBe(true);
+
+      // A re-put keeps the SAME id (upsert, not a new append) — the cursor a
+      // caller already holds still walks past it correctly.
+      const beforePut = (await log.readEventsBoundedCursor('escalations', { limit: 10 })).rows;
+      const e2IdBefore = beforePut.find((r) => r.envelope.msg_id === 'e2')!.id;
+      await log.putEvent('escalations', 'e2', envelope({ msg_id: 'e2', kind: 'escalation', from: 'B', to: ['human'], ts: '2026-01-01T00:00:02.000Z' }));
+      const afterPut = (await log.readEventsBoundedCursor('escalations', { limit: 10 })).rows;
+      expect(afterPut.find((r) => r.envelope.msg_id === 'e2')!.id).toBe(e2IdBefore);
+
+      // Empty surface → no rows, exhausted.
+      const empty = await log.readEventsBoundedCursor('handoffs', { limit: 5 });
+      expect(empty.rows).toEqual([]);
+      expect(empty.exhausted).toBe(true);
+    });
+
+    it('readLinesBoundedCursor: newest-first, id cursor pages deep + exhausted flag (WI-3880)', async () => {
+      const at = (n: number) => `2026-01-0${n}T00:00:00.000Z`;
+      await log.appendLine('plan-events', 'system', envelope({ msg_id: 'q1', kind: 'plan_event', from: 'system', plan_slug: 'alpha', ts: at(1) }));
+      await log.appendLine('plan-events', 'system', envelope({ msg_id: 'q2', kind: 'plan_event', from: 'system', plan_slug: 'beta', ts: at(2) }));
+      await log.appendLine('plan-events', 'system', envelope({ msg_id: 'q3', kind: 'plan_event', from: 'system', plan_slug: 'alpha', ts: at(3) }));
+
+      const page1 = await log.readLinesBoundedCursor('plan-events', { limit: 2 });
+      expect(page1.rows.map((r) => r.envelope.msg_id)).toEqual(['q3', 'q2']);
+      expect(page1.exhausted).toBe(false);
+      const cursor = page1.rows[page1.rows.length - 1]!.id;
+
+      const page2 = await log.readLinesBoundedCursor('plan-events', { limit: 2, beforeId: cursor });
+      expect(page2.rows.map((r) => r.envelope.msg_id)).toEqual(['q1']);
+      expect(page2.exhausted).toBe(true);
+
+      // planSlug pushdown composes with the cursor.
+      const alphaOnly = await log.readLinesBoundedCursor('plan-events', { limit: 10, planSlug: 'alpha' });
+      expect(alphaOnly.rows.map((r) => r.envelope.msg_id)).toEqual(['q3', 'q1']);
+
+      // Empty surface → no rows, exhausted.
+      const empty = await log.readLinesBoundedCursor('messages', { limit: 5 });
+      expect(empty.rows).toEqual([]);
+      expect(empty.exhausted).toBe(true);
+    });
   });
 }

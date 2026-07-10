@@ -13,6 +13,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { useLexicon } from '@/lib/useLexicon';
 import { formatUptime } from './format-uptime';
+import { formatRel } from './format-rel';
 
 type AutoLoopFire = KPIs['autoloop']['recent_fires'][number];
 
@@ -38,14 +39,6 @@ interface KPIs {
     }[];
   };
   system: { uptime_seconds: number };
-}
-
-function formatRel(iso: string): string {
-  const ms = Date.now() - new Date(iso).getTime();
-  if (ms < 60_000) return `${Math.floor(ms / 1000)}s ago`;
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
-  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`;
-  return `${Math.floor(ms / 86_400_000)}d ago`;
 }
 
 function AutoLoopGrid({ fires }: { fires: AutoLoopFire[] }) {

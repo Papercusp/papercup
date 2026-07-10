@@ -265,7 +265,7 @@ function sharedHiveCoreChecks(_ctx: SuiteContext) {
       id: 'shared-hive-suite',
       label: 'Shared Hive federation end-to-end',
       run: async () => {
-        const { buildSharedHiveCoreChecks } = await import('./shared-hive/suite/checks');
+        const { buildSharedHiveCoreChecks } = await import('./shared-pot/suite/checks');
         const checks = buildSharedHiveCoreChecks(runId);
         const counts: Record<AdminTestStatus, number> = { pass: 0, warn: 0, fail: 0, skip: 0 };
         const failures: string[] = [];

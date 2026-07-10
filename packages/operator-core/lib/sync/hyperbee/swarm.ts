@@ -33,8 +33,8 @@ import { getSwarmGuard, type SwarmGuard } from './swarm-guard';
 import { getResourceProfile } from '../../resource-profile';
 import type { SignedAnnounce } from './announce';
 import type { AdmissionResult } from './read-admission';
-import { wireHiveGitServe, type HiveGitServeConfig } from '../hive-git/serve-wiring';
-import { wireHiveGitDial, resolveVerifiedDevicePubkeyForSocket } from '../hive-git/peer-dial-registry';
+import { wireHiveGitServe, type PotGitServeConfig } from '../pot-git/serve-wiring';
+import { wireHiveGitDial, resolveVerifiedDevicePubkeyForSocket } from '../pot-git/peer-dial-registry';
 
 /** Protomux protocol id for the signed-announce exchange (Model B Stage 4b).
  *  Exported for the A-002 multi-hive demonstrator test. */
@@ -199,21 +199,21 @@ export interface JoinHarnessSwarmOpts {
   hasStalledLogs?: () => boolean;
   /**
    * P-201 (p2p-git-live-activation-2026-07-09): register this harness's
-   * connections to SERVE `papercusp/hive-git` fetch requests (a peer member
+   * connections to SERVE `papercusp/pot-git` fetch requests (a peer member
    * fetching our namespace) — omitted for a non-hive harness (the common
    * case), so byte-for-byte unchanged when not set. Actual serving is further
    * mode-gated PER REQUEST inside the wiring (a legacy-mode hive always
    * refuses, re-checked live — no re-seed needed on a mode flip).
    */
-  hiveGitServe?: HiveGitServeConfig;
+  hiveGitServe?: PotGitServeConfig;
   /**
    * WI-3583 (p2p-git-live-activation-2026-07-09 Phase-3 prerequisite):
-   * register this connection on the hive-git dial-hello channel, so a
+   * register this connection on the pot-git dial-hello channel, so a
    * device-pubkey → live-socket registry (`peer-dial-registry.ts`) can
    * resolve "which live connection reaches device X" for a REAL cross-
    * machine `openDuplex` (worktree-bridge-tick.ts / ref-announce-tick.ts's
    * own `openDuplex` seam — currently omitted/local-mirror-only without
-   * this). Omitted for a non-hive-git harness, so byte-for-byte unchanged
+   * this). Omitted for a non-pot-git harness, so byte-for-byte unchanged
    * when not set. Independent of `hiveGitServe` — either can be set alone.
    */
   hiveGitDial?: {
@@ -983,9 +983,9 @@ export async function joinHarnessSwarm(
         buildOurAnnounce: opts.buildOurAnnounce,
         onAnnounce: opts.onAnnounce,
       });
-      // P-201: register the hive-git serve plane on the SAME connection/muxer
+      // P-201: register the pot-git serve plane on the SAME connection/muxer
       // the announce channel just rode — additive, never-throwing, no-op when
-      // `hiveGitServe` is omitted (every non-hive-git harness, unchanged).
+      // `hiveGitServe` is omitted (every non-pot-git harness, unchanged).
       if (opts.hiveGitServe) {
         // WI-3641: default the scope-repo authorization resolver to the
         // signed-hello registry's verified-device lookup unless the caller

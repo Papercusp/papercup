@@ -12,7 +12,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { GrantBackedScopeRoster, type FleetDirectory } from './scope-roster';
-import type { ScopeId } from '../sync/hive-git/scope-repo';
+import type { ScopeId } from '../sync/pot-git/scope-repo';
 
 const SCOPE: ScopeId = { kind: 'fleet', ownerGithubUserId: 42, slug: 'widgets' };
 

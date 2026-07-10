@@ -1295,7 +1295,7 @@ defineTestDomain({
 // claim authority. Files also appear under operator-core (overlap intentional, like `hive`);
 // this is the cohesive subsystem view a reviewer of "Shared Hive" wants in one place.
 defineTestDomain({
-  id: 'shared-hive',
+  id: 'shared-pot',
   label: 'Shared Hive (federation)',
   description:
     'Cross-Hive peer-to-peer federation: the mediated Hive→Hive boundary (capability-grant admission + translation), signed wire + store-and-forward outbox, Hyperswarm transport, the P2P hive directory, per-Hive identity/membership/settings + contributor revocation, and Hive-scoped work-item claim authority.',
@@ -1373,7 +1373,7 @@ defineTestDomain({
       label: 'Tests-tab federation suite (shared-hive-core)',
       description:
         'The shared-hive-core Tests-tab suite (buildSharedHiveCoreChecks) + its CI guard: the live end-to-end federation check composing the shipped modules — the Hive-pubkey topic re-key, Ed25519 hive identity, the per-Hive lock-authority election + file-claim routing (P-009), the instant lock-handover event fold (P-015), the work-item claim/replica seams, and the real shared_presence election + per-Hive admission union (P-006) against a throwaway Postgres. The one automated gate behind the live Tests-tab suite (mirrors memory-core).',
-      globs: ['packages/operator-core/lib/shared-hive/**/*.test.ts'],
+      globs: ['packages/operator-core/lib/shared-pot/**/*.test.ts'],
     },
     {
       id: 'authority',
@@ -1417,8 +1417,8 @@ defineTestDomain({
       id: 'loop-composition',
       label: 'Multi-swarm loop composition (hermetic 2-swarm rig)',
       description:
-        'The shared-hive autonomous LOOP as a system (shared-hive-loop-e2e-testing-2026-06-10): the hermetic 2-swarm composition rig — scripted Queen steering → concurrent cross-swarm claim_next + authority lease → fake pipelines → real CDC convergence — plus the chaos scenarios (partition fail-open + reconcile, kill-authority re-election, lease-steal D-007 adoption, split-brain Queen D-008 gate/detector, outbox write-storm, two-identity redundancy) and the Phase-3 fleet monitors (double-completion scanner, orphaned-taken_by sweep, outbox health, presence ghosts, convergence-lag probe). Brief 12\'s coord verb-lifecycle two-cell suite rides the same rig.',
-      globs: ['packages/operator-core/lib/shared-hive-loop/**/*.test.ts'],
+        'The shared-hive autonomous LOOP as a system (shared-pot-loop-e2e-testing-2026-06-10): the hermetic 2-swarm composition rig — scripted Queen steering → concurrent cross-swarm claim_next + authority lease → fake pipelines → real CDC convergence — plus the chaos scenarios (partition fail-open + reconcile, kill-authority re-election, lease-steal D-007 adoption, split-brain Queen D-008 gate/detector, outbox write-storm, two-identity redundancy) and the Phase-3 fleet monitors (double-completion scanner, orphaned-taken_by sweep, outbox health, presence ghosts, convergence-lag probe). Brief 12\'s coord verb-lifecycle two-cell suite rides the same rig.',
+      globs: ['packages/operator-core/lib/shared-pot-loop/**/*.test.ts'],
     },
     {
       id: 'tools',
@@ -1577,7 +1577,7 @@ const PAPERCUSP_IDS = [
   // The local-hive orchestration loop (Queen/bee) as a cohesive subsystem view.
   'hive',
   // The cross-Hive (shared-hive) federation substrate as a cohesive subsystem view.
-  'shared-hive',
+  'shared-pot',
   // The hyperbee-substrate performance suite (bench runners; files overlap dogfood by design).
   'p2p-perf',
   // The adversarial coordination test suite as a cohesive cross-subsystem view.

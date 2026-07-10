@@ -14,7 +14,7 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { isRegisteredHive } from '../../harness-registry';
-import { insertProbe } from '../../sync/hive-git/federation-probe-store';
+import { insertProbe } from '../../sync/pot-git/federation-probe-store';
 import { buildFederationProbeCanary } from '../../gates/federation-probe-canary';
 import { runGateCanary } from '../../gates/canary';
 

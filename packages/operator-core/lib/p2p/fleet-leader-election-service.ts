@@ -32,7 +32,7 @@ import {
   type FleetLeadershipDecision,
   type LeadershipAnnouncement,
 } from './fleet-leader-election';
-import type { ScopeId } from '../sync/hive-git/scope-repo';
+import type { ScopeId } from '../sync/pot-git/scope-repo';
 import type { SelfSwarmIdentity } from '../authority/lock-authority';
 
 /** Staleness window a device must be seen within to be a candidate (mirrors

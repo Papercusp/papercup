@@ -15,8 +15,8 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { isRegisteredHive } from '../../harness-registry';
-import { buildProbeKey, PROBE_HOPS, stampProbe } from '../../sync/hive-git/federation-probe';
-import { insertProbe, insertRefusedProbe } from '../../sync/hive-git/federation-probe-store';
+import { buildProbeKey, PROBE_HOPS, stampProbe } from '../../sync/pot-git/federation-probe';
+import { insertProbe, insertRefusedProbe } from '../../sync/pot-git/federation-probe-store';
 
 export default defineTool({
   name: 'probe:emit',

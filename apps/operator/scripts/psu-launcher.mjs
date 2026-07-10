@@ -884,6 +884,35 @@ function trackedCodexSessionsRoot(session, home = homedir()) {
 }
 
 /**
+ * WI-3884: scan ALL tracked per-session CODEX_HOMEs
+ * (`~/.papercusp/su-codex-homes/session-<advId>/sessions`) for a rollout uuid.
+ * resolveTrackedResumeSession only scans the homes of the RESUMABLE WINDOW
+ * (/api/adv/sessions/resumable, default 30 rows) — a tracked codex session
+ * older than that window is invisible to it, and findUntrackedSession's codex
+ * branch only searched the SHARED ~/.codex/sessions store (owner-hit live:
+ * psu #11582 / rollout 019f4d46…). The dir name recovers the adv session id,
+ * and the hit's home is REQUIRED for the resume — the rollout is invisible to
+ * codex under any other CODEX_HOME. Returns
+ * `{ advSessionId, codexHome, rollout }` or null. Exported for tests.
+ */
+export function findTrackedCodexHomeRollout(id, { home = homedir() } = {}) {
+  if (!id) return null;
+  const root = join(home, '.papercusp', 'su-codex-homes');
+  for (const d of safeReaddir(root)) {
+    if (!d.isDirectory() || !d.name.startsWith('session-')) continue;
+    const rollout = findCodexRollout(join(root, d.name, 'sessions'), id);
+    if (!rollout) continue;
+    const advSessionId = Number(d.name.slice('session-'.length));
+    return {
+      advSessionId: Number.isFinite(advSessionId) ? advSessionId : null,
+      codexHome: join(root, d.name),
+      rollout,
+    };
+  }
+  return null;
+}
+
+/**
  * Resolve a direct `psu --resume <id>` against tracked adv_sessions rows.
  *
  * Claude records its native UUID at bootstrap, so `sessionId` is enough. OMP
@@ -954,6 +983,27 @@ export function findUntrackedSession(id, { home = homedir(), cwd = process.cwd()
     }
     const codexRollout = findCodexRollout(join(home, '.codex', 'sessions'), id);
     if (codexRollout) return { agent: 'codex', sessionId: id, cwd: cwdFromSessionFile(codexRollout) || cwd, untracked: true };
+    // WI-3884: a psu-TRACKED codex session OLDER than the resumable window
+    // (default 30 rows) falls through to here — its adv row wasn't in the API
+    // slice, so resolveTrackedResumeSession never scanned its home, and the
+    // shared ~/.codex store above doesn't hold tracked rollouts. Scan the
+    // tracked-home store itself: `id` (from the dir name) re-attaches the adv
+    // row (reactivation on resume), `codexHome` points the resume at the ONLY
+    // CODEX_HOME that can see this rollout, and `psuTracked` skips the
+    // "not launched by psu" confirm (it WAS — the home carries the baked
+    // config.toml + AGENTS.md, so nothing is lost on resume).
+    const trackedHome = findTrackedCodexHomeRollout(id, { home });
+    if (trackedHome) {
+      return {
+        agent: 'codex',
+        sessionId: id,
+        cwd: cwdFromSessionFile(trackedHome.rollout) || cwd,
+        untracked: true,
+        psuTracked: true,
+        id: trackedHome.advSessionId,
+        codexHome: trackedHome.codexHome,
+      };
+    }
     return null;
   }
   // Non-UUID → treat as an omp thread name; resume in the current dir.
@@ -3490,8 +3540,12 @@ function launchResume(session, { brain = false, fork = false, passthrough = [], 
   // codex resumes from its per-session CODEX_HOME — derived from the session id
   // (that home still holds the session's history; only re-launching the SAME
   // session rebuilds it). The home's config.toml carries the baked superuser
-  // bearer, so no PAPERCUSP_SU_TOKEN is needed.
-  if (session.agent === 'codex' && session.id != null) {
+  // bearer, so no PAPERCUSP_SU_TOKEN is needed. An explicit `codexHome`
+  // (WI-3884: a tracked home recovered by disk scan, not row id) wins — it is
+  // the home the rollout was actually FOUND in.
+  if (session.agent === 'codex' && session.codexHome && existsSync(session.codexHome)) {
+    env.CODEX_HOME = session.codexHome;
+  } else if (session.agent === 'codex' && session.id != null) {
     env.CODEX_HOME = join(homedir(), '.papercusp', 'su-codex-homes', `session-${session.id}`);
   }
   if (session.agent === 'codex' && accountEnv?.provider === 'codex' && accountEnv?.id && env.CODEX_HOME) {
@@ -3988,7 +4042,17 @@ async function resumeFlow(args = {}) {
 
     // 4. Untracked = NOT launched by psu → its engineer playbook (and, for codex,
     //    the papercusp-su tools) are NOT loaded. Require an explicit confirm.
-    await confirmUntrackedResume(untracked, args);
+    //    EXCEPT a su-codex-homes hit (WI-3884): that session WAS psu-launched —
+    //    only older than the resumable window — and its per-session CODEX_HOME
+    //    carries the baked config, so nothing is lost on resume; no confirm.
+    if (untracked.psuTracked) {
+      console.error(
+        `psu: session ${untracked.sessionId} is tracked psu session #${untracked.id ?? '?'} — ` +
+          `older than the recent-session window; resuming from its per-session CODEX_HOME.`,
+      );
+    } else {
+      await confirmUntrackedResume(untracked, args);
+    }
     // An untracked session has no adv row to seed a tracked fork from — fork it in
     // place (claude mints a random id; resumable only by uuid). launchResume handles it.
     // Account re-pin applies here too (a raw resume can be routed through the gateway).

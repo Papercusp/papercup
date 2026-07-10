@@ -28,6 +28,8 @@ import { compareByTsThenId } from '@papercusp/coordination/core';
 import { coordLog } from './log';
 import { estimateTokens } from './presence-cost';
 
+type CursorSurfaceState = { cursor: number | undefined; exhausted: boolean };
+
 /** The four append-only channels that live in coord_event_log. */
 export type CoordSurface = 'messages' | 'escalations' | 'handoffs' | 'plan-events';
 
@@ -111,16 +113,31 @@ export const MAX_FEED_LIMIT = 500;
 // internally (1000), so this introduces no NEW truncation ceiling, just stops
 // asking for more than the store would ever honor unbounded.
 //
-// Trade-off (disclosed, not silent): `before_ts` pagination and the `total`/
-// `byKind` histogram are now scoped to the most-recent RAW_SURFACE_FETCH_CAP
-// rows per surface, not the surface's entire history. Every realistic caller
-// (coord:feed's default page, coord:orient's fleet-catch-up fold, coord:catch-
-// up's audience backlog) wants recent activity and comfortably fits inside
-// this window (MAX_FEED_LIMIT is 500, well under the 1000/surface raw cap).
-// Deep historical pagination past that window would need a true incremental
-// id-cursor read (a larger follow-up, not required to close the availability
-// regression this fixes) — tracked as WI-3880 if that's ever actually needed.
+// Trade-off (disclosed, not silent): the FIRST fetch per surface is still
+// capped at RAW_SURFACE_FETCH_CAP rows — every realistic caller (coord:feed's
+// default page, coord:orient's fleet-catch-up fold, coord:catch-up's audience
+// backlog) wants recent activity and comfortably fits inside this window
+// (MAX_FEED_LIMIT is 500, well under the 1000/surface raw cap), so the common
+// path pays for exactly one bounded read per surface, same as before.
+//
+// WI-3880 (fast-follow of WI-3869): a caller that passes `before_ts` and pages
+// deeper than that first window no longer dead-ends. `readCoordFeed` reads via
+// the id-CURSOR bounded methods (`read*BoundedCursor`) instead of the plain
+// `read*Bounded` ones; when the assembled filtered page is still short after
+// the first round AND at least one surface isn't exhausted, it fetches
+// additional RAW_SURFACE_FETCH_CAP-sized rounds per surface (walking each
+// surface's own `id` cursor backward), up to MAX_CURSOR_ROUNDS rounds total —
+// bounding the worst case to MAX_CURSOR_ROUNDS × RAW_SURFACE_FETCH_CAP rows
+// per surface instead of an unbounded scan. Deepening only ever triggers on a
+// `before_ts` page past the first window; the no-`before_ts` common case does
+// exactly the one round it always did.
 const RAW_SURFACE_FETCH_CAP = 1000;
+
+// WI-3880: hard cap on additional deepening rounds (see above) — the ceiling
+// on how far a single `before_ts` page will walk before giving up and
+// returning whatever it has (still correct: `nextCursor`/`total`/`byKind`
+// simply reflect the window actually fetched, exactly as they always have).
+const MAX_CURSOR_ROUNDS = 10;
 
 const LINE_SURFACES = ['messages', 'plan-events'] as const;
 const EVENT_SURFACES = ['escalations', 'handoffs'] as const;
@@ -166,11 +183,14 @@ function matchesText(env: CoordEnvelope, needle: string): boolean {
  * `before_ts` to fetch the next (older) page; `null` when the stream is
  * exhausted.
  *
- * (WI-3869) The raw per-surface read behind this is bounded to the most recent
- * RAW_SURFACE_FETCH_CAP rows per surface — `before_ts`/`nextCursor` paginate
- * within that window, not the surface's entire history; `total`/`byKind` are
- * likewise scoped to the fetched window. See the RAW_SURFACE_FETCH_CAP comment
- * above for why, and the sizing rationale.
+ * (WI-3869) The raw per-surface read behind this is bounded to
+ * RAW_SURFACE_FETCH_CAP rows per round, never a full-table scan. (WI-3880) A
+ * `before_ts` page that runs past that first window walks each surface's
+ * `id` cursor for up to MAX_CURSOR_ROUNDS additional rounds instead of
+ * dead-ending there; `total`/`byKind` reflect whatever was actually fetched
+ * (the whole surface once every surface reports `exhausted`, or the capped
+ * window otherwise). See the RAW_SURFACE_FETCH_CAP / MAX_CURSOR_ROUNDS
+ * comments above for the sizing rationale.
  */
 export async function readCoordFeed(
   opts: ReadCoordFeedOpts = {},
@@ -182,35 +202,23 @@ export async function readCoordFeed(
   // Push kinds/since_ts/plan_slug down to the store where the bounded methods
   // support it — fewer rows fetched+held in memory, not just a bounded count.
   const kindsForPushdown = opts.kinds && opts.kinds.length > 0 ? opts.kinds : undefined;
-  const lineReads = LINE_SURFACES.map(async (surface) => {
-    const envs = await coordLog.readLinesBounded(surface, {
-      limit: RAW_SURFACE_FETCH_CAP,
-      ...(kindsForPushdown ? { kinds: kindsForPushdown } : {}),
-      ...(opts.since_ts ? { sinceTs: opts.since_ts } : {}),
-      ...(opts.plan_slug ? { planSlug: opts.plan_slug } : {}),
-    });
-    for (const env of envs) {
-      tagged.push({ ...env, surface, broadcast: isBroadcast(env.to) });
-    }
-  });
-  const eventReads = EVENT_SURFACES.map(async (surface) => {
-    const envs = await coordLog.readEventsBounded(surface, {
-      limit: RAW_SURFACE_FETCH_CAP,
-      ...(kindsForPushdown ? { kinds: kindsForPushdown } : {}),
-    });
-    for (const env of envs) {
-      tagged.push({ ...env, surface, broadcast: isBroadcast(env.to) });
-    }
-  });
-  await Promise.all([...lineReads, ...eventReads]);
 
-  // Filter.
+  // Per-surface id-cursor state (WI-3880) — undefined cursor = read the
+  // newest window; `exhausted` once a surface has nothing older left.
+  const lineState = new Map<(typeof LINE_SURFACES)[number], CursorSurfaceState>(
+    LINE_SURFACES.map((s) => [s, { cursor: undefined, exhausted: false }]),
+  );
+  const eventState = new Map<(typeof EVENT_SURFACES)[number], CursorSurfaceState>(
+    EVENT_SURFACES.map((s) => [s, { cursor: undefined, exhausted: false }]),
+  );
+
+  // Filter predicate — extracted so the deepening loop below can cheaply
+  // check "do we have enough yet?" without duplicating the filter logic.
   const kindSet = opts.kinds && opts.kinds.length > 0 ? new Set<CoordKind>(opts.kinds) : null;
   const needle = opts.q?.trim().toLowerCase();
   const sinceMs = opts.since_ts ? new Date(opts.since_ts).getTime() : null;
   const beforeMs = opts.before_ts ? new Date(opts.before_ts).getTime() : null;
-
-  const filtered = tagged.filter((env) => {
+  const passesFilter = (env: CoordFeedRow): boolean => {
     if (kindSet && !kindSet.has(env.kind)) return false;
     if (opts.owner && !matchesOwner(env, opts.owner)) return false;
     if (opts.from && env.from !== opts.from) return false; // EI-7018: strict sender-only filter
@@ -223,7 +231,63 @@ export async function readCoordFeed(
       if (beforeMs !== null && !(ms < beforeMs)) return false;
     }
     return true;
-  });
+  };
+
+  // One round: fetch each not-yet-exhausted surface's next RAW_SURFACE_FETCH_CAP
+  // window (from its current cursor), tag + accumulate, advance the cursor.
+  const fetchRound = async (): Promise<void> => {
+    const lineReads = LINE_SURFACES.map(async (surface) => {
+      const st = lineState.get(surface)!;
+      if (st.exhausted) return;
+      const page = await coordLog.readLinesBoundedCursor(surface, {
+        limit: RAW_SURFACE_FETCH_CAP,
+        ...(kindsForPushdown ? { kinds: kindsForPushdown } : {}),
+        ...(opts.since_ts ? { sinceTs: opts.since_ts } : {}),
+        ...(opts.plan_slug ? { planSlug: opts.plan_slug } : {}),
+        ...(st.cursor !== undefined ? { beforeId: st.cursor } : {}),
+      });
+      for (const row of page.rows) {
+        tagged.push({ ...row.envelope, surface, broadcast: isBroadcast(row.envelope.to) });
+      }
+      st.exhausted = page.exhausted;
+      if (page.rows.length > 0) st.cursor = page.rows[page.rows.length - 1]!.id;
+    });
+    const eventReads = EVENT_SURFACES.map(async (surface) => {
+      const st = eventState.get(surface)!;
+      if (st.exhausted) return;
+      const page = await coordLog.readEventsBoundedCursor(surface, {
+        limit: RAW_SURFACE_FETCH_CAP,
+        ...(kindsForPushdown ? { kinds: kindsForPushdown } : {}),
+        ...(st.cursor !== undefined ? { beforeId: st.cursor } : {}),
+      });
+      for (const row of page.rows) {
+        tagged.push({ ...row.envelope, surface, broadcast: isBroadcast(row.envelope.to) });
+      }
+      st.exhausted = page.exhausted;
+      if (page.rows.length > 0) st.cursor = page.rows[page.rows.length - 1]!.id;
+    });
+    await Promise.all([...lineReads, ...eventReads]);
+  };
+
+  await fetchRound();
+
+  // WI-3880: only a caller paging DEEPER than the first window pays for more
+  // rounds — the common (no before_ts, or before_ts within the first window)
+  // case never enters this loop. Keep widening while the filtered page is
+  // still short of `limit` AND at least one surface has more history, capped
+  // at MAX_CURSOR_ROUNDS so a query with no realistic match still terminates.
+  if (opts.before_ts) {
+    const allExhausted = () =>
+      [...lineState.values(), ...eventState.values()].every((s) => s.exhausted);
+    for (let round = 1; round < MAX_CURSOR_ROUNDS && !allExhausted(); round += 1) {
+      const filteredSoFar = tagged.filter(passesFilter).length;
+      if (filteredSoFar >= limit) break;
+      await fetchRound();
+    }
+  }
+
+  // Filter.
+  const filtered = tagged.filter(passesFilter);
 
   // Kind histogram over the WHOLE filtered set (the filter-chip counts) —
   // computed before the page cap so the chips reflect everything, not the page.
