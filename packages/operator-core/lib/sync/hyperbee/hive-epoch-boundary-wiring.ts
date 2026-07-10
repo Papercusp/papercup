@@ -58,8 +58,10 @@ export interface BoundaryRekeyResult {
    * the owner box). The grant returns 0 keys with NO throw in all three, so 328af's
    * throw-only rekey_grant_failed event never sees them; the admit call-site reads this to
    * emit a queryable rekey_grant_skipped event so a 0-keys run NAMES the cause.
+   * 'all-members-unwrappable' (WI-3927): every candidate device's wrapKeyToMember threw
+   * (malformed pubkeys — e.g. leaked test-fixture rows) so nothing was granted.
    */
-  reason?: 'flag-disabled' | 'no-fresh-members' | 'no-author' | 'no-gap';
+  reason?: 'flag-disabled' | 'no-fresh-members' | 'no-author' | 'no-gap' | 'all-members-unwrappable';
 }
 
 export interface BoundaryRekeySeams {
@@ -208,24 +210,8 @@ export async function grantEpochKeysToMembers(
   } = {},
 ): Promise<BoundaryRekeyResult> {
   if (!opts.enabled) return { applied: false, reason: 'flag-disabled' };
-  const candidates = [...new Set(opts.newMemberPubkeys.filter((pk) => pk))];
-  if (candidates.length === 0) return { applied: false, reason: 'no-fresh-members' };
-  // WI-3927 guard: a MALFORMED device pubkey (e.g. a leaked test fixture like 'pk-creator' —
-  // 7 chars, not the 43/44-char base64 of a 32-byte key) makes crypto.wrapKeyToMember THROW
-  // below, aborting the WHOLE grant pass — and every caller funnels through here (boundary
-  // rekey, member-add, the WI-887 reconcile sweep), so one bad row starved every well-formed
-  // member hive-wide (epoch-key reconciled=0 + outbox-drain PASS TIMEOUT, 2026-07-10).
-  // Skip + log the bad key(s); keep granting to the rest.
-  const malformed = candidates.filter((pk) => pk.length !== 43 && pk.length !== 44);
-  if (malformed.length > 0) {
-    console.warn(
-      `[pot-epoch-boundary] skipping ${malformed.length} MALFORMED member device pubkey(s) (char length not 43/44): ${malformed
-        .map((pk) => JSON.stringify(pk.length > 20 ? `${pk.slice(0, 17)}…` : pk))
-        .join(', ')} — grant continues for well-formed members (WI-3927)`,
-    );
-  }
-  const fresh = candidates.filter((pk) => pk.length === 43 || pk.length === 44);
-  if (fresh.length === 0) return { applied: false, reason: 'all-members-malformed' };
+  const fresh = [...new Set(opts.newMemberPubkeys.filter((pk) => pk))];
+  if (fresh.length === 0) return { applied: false, reason: 'no-fresh-members' };
   const {
     resolveCrypto = resolveHiveEpochCrypto,
     resolveAuthorPubkey = loadHivePubkey,
@@ -248,15 +234,41 @@ export async function grantEpochKeysToMembers(
   // re-encrypted on advance, so a joiner needs all prior keys to read existing content
   // (c2a63's v1 correctness call). Owner derives each; the member unwraps to read history.
   let distributed = 0;
+  // WI-3927 guard: pubkeys whose wrap THREW — skipped for the remaining epochs too.
+  const skipped = new Set<string>();
   for (let epoch = 0; epoch <= current; epoch++) {
     const key = await crypto.deriveEpochKey(opts.potHomeSlug, epoch);
     const wrapped: WrappedEpochKeyRow[] = [];
     for (const pk of fresh) {
-      wrapped.push({ memberDevicePubkey: pk, wrappedKey: await crypto.wrapKeyToMember(key, pk) });
+      if (skipped.has(pk)) continue;
+      try {
+        wrapped.push({ memberDevicePubkey: pk, wrappedKey: await crypto.wrapKeyToMember(key, pk) });
+      } catch (e) {
+        // WI-3927 (2026-07-10): one MALFORMED device pubkey (e.g. a leaked test-fixture row
+        // like 'pk-creator' — 10 chars, not the 43/44-char base64 of a 32-byte key) made
+        // wrapKeyToMember THROW here, aborting the WHOLE grant pass — and every caller
+        // funnels through this function (member-add, boundary rekey, the WI-887 reconcile
+        // sweep), so one bad row starved every well-formed member hive-wide (epoch-key
+        // reconciled=0 + outbox-drain PASS TIMEOUT). Skip + log the bad device; keep
+        // granting to the rest.
+        skipped.add(pk);
+        console.warn(
+          `[pot-epoch-boundary] wrapKeyToMember threw for member device pubkey ${JSON.stringify(
+            pk.length > 20 ? `${pk.slice(0, 17)}…` : pk,
+          )} (len ${pk.length}) — device skipped, grant continues (WI-3927): ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
     }
     distributed += await persistWrappedKeys(opts.workspaceId, opts.potHomeSlug, epoch, wrapped, author, opts.sql, {
       refederate: opts.refederate,
     });
+  }
+  if (skipped.size === fresh.length) {
+    // Every candidate device failed to wrap — nothing was granted; surface it as a distinct,
+    // queryable reason instead of a hollow applied:true/distributed:0.
+    return { applied: false, reason: 'all-members-unwrappable', distributed };
   }
   return { applied: true, newEpoch: current, distributed };
 }

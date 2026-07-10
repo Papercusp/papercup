@@ -67,21 +67,28 @@ beforeAll(async () => {
   db = await createFreshPgDb('intreq');
   await db.sql.unsafe(stripMeta(readFileSync(MIGRATION, 'utf8')));
   // D-007 pot-rename: mig 441 creates hive_integration_requests.hive_slug (PK incl.
-  // hive_slug); mig 523 adds pot_slug (dual-write) AND swaps the PK to key on pot_slug
-  // instead (table still hive_integration_requests); mig 554 (Slice H Phase 1) renames the
+  // hive_slug); mig 523 adds pot_slug (dual-write), swaps the PK to key on pot_slug, AND
+  // DROPS hive_slug entirely (the contract half); mig 554 (Slice H Phase 1) renames the
   // TABLE itself to pot_integration_requests. Replaying only 441 predates all of that, so
-  // apply 523's column-add + PK-swap + 554's table rename in-place. The PK swap is
-  // load-bearing: the accessor's `ON CONFLICT (workspace_id, pot_slug, repo_key,
-  // device_pubkey, head_sha)` targets a constraint over THAT exact column tuple — an
-  // ADD-COLUMN-only patch (no PK swap) leaves the PK on hive_slug and 554's later `RENAME
-  // CONSTRAINT hive_integration_requests_pkey TO pot_integration_requests_pkey` just
-  // renames the STILL-hive_slug-keyed PK, so ON CONFLICT has no matching constraint to
-  // target (found via WI-3465 integration-test verification 2026-07-10).
+  // apply 523's column-add + backfill + PK-swap + column-drop + 554's table rename
+  // in-place. The PK swap is load-bearing: the accessor's `ON CONFLICT (workspace_id,
+  // pot_slug, repo_key, device_pubkey, head_sha)` targets a constraint over THAT exact
+  // column tuple — an ADD-COLUMN-only patch (no PK swap) leaves the PK on hive_slug and
+  // 554's later `RENAME CONSTRAINT hive_integration_requests_pkey TO
+  // pot_integration_requests_pkey` just renames the STILL-hive_slug-keyed PK, so ON
+  // CONFLICT has no matching constraint to target. The column-drop is EQUALLY
+  // load-bearing: the accessor's INSERT only supplies pot_slug now (556's accessor
+  // rename), so a surviving hive_slug NOT NULL column (with no default) fails every
+  // insert with "null value in column hive_slug violates not-null constraint" even
+  // though the PK is correctly pot_slug-keyed (found via WI-3465 integration-test
+  // verification 2026-07-10 — this is a real gap in migration 523's replay here, NOT a
+  // live-DB bug: the real migration 523 already dropped this column on every real schema).
   await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests ADD COLUMN IF NOT EXISTS pot_slug text`);
   await db.sql.unsafe(`UPDATE harness_shared.hive_integration_requests SET pot_slug = hive_slug WHERE pot_slug IS NULL`);
   await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests ALTER COLUMN pot_slug SET NOT NULL`);
   await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests DROP CONSTRAINT hive_integration_requests_pkey`);
   await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests ADD CONSTRAINT hive_integration_requests_pkey PRIMARY KEY (workspace_id, pot_slug, repo_key, device_pubkey, head_sha)`);
+  await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests DROP COLUMN IF EXISTS hive_slug`);
   await db.sql.unsafe(stripMeta(readFileSync(MIGRATION_554, 'utf8')));
 }, 120_000);
 
@@ -109,7 +116,6 @@ describe('pot_integration_requests (G-5c P-035 — queue, don’t integrate)', (
       nowMs: 1_000,
     });
 
-    if (res.errors.length) console.error('DEBUG res.errors', JSON.stringify(res.errors));
     // steer → integrates (as a namespace-hex MemberHead), nothing queued for it
     expect(res.integrate).toEqual([{ deviceHex: deviceNamespaceKey(trusted), sha: SHA(1) }]);
     // below-steer → queued, NOT integrated

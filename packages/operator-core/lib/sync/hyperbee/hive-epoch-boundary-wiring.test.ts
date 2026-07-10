@@ -210,6 +210,47 @@ describe('grantEpochKeysToMembers (member-add: wrap [0..current])', () => {
     expect(derive).not.toHaveBeenCalled(); // owner-gate short-circuits BEFORE any derive
   });
 
+  it('WI-3927 guard: a MALFORMED pubkey (wrap throws) is SKIPPED + logged — the grant still lands for well-formed members', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const wrapCalls: string[] = [];
+    const seams = {
+      resolveCrypto: async () =>
+        ({
+          deriveEpochKey: async (_h: string, e: number) => `K${e}` as never,
+          wrapKeyToMember: async (_k: unknown, pk: string) => {
+            wrapCalls.push(pk);
+            if (pk === 'pk-creator') throw new Error('invalid public key length');
+            return new Uint8Array([1]);
+          },
+        }) as never,
+      resolveAuthorPubkey: async () => 'owner',
+      getCurrentEpoch: async () => 1,
+      persistWrappedKeys: async (_w: string, _s: string, _e: number, rows: readonly unknown[]) => rows.length,
+    };
+    try {
+      // The 2026-07-10 hive-wide wedge: ONE leaked test-fixture pubkey ('pk-creator') among
+      // well-formed members used to abort the WHOLE pass (reconciled=0). Now: skipped + logged,
+      // the good members still get every epoch key, and the bad key is not retried per epoch.
+      const r = await grantEpochKeysToMembers(
+        { workspaceId: 'w', potHomeSlug: 'h', enabled: true, newMemberPubkeys: ['B', 'pk-creator', 'C'] },
+        seams,
+      );
+      expect(r).toEqual({ applied: true, newEpoch: 1, distributed: 4 }); // 2 epochs × 2 good members; bad one skipped
+      expect(wrapCalls.filter((pk) => pk === 'pk-creator')).toHaveLength(1); // thrown once, then skip-set — not retried per epoch
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain('pk-creator');
+
+      // ALL candidates malformed ⇒ distinct queryable reason, not a hollow applied:true/0.
+      const rAll = await grantEpochKeysToMembers(
+        { workspaceId: 'w', potHomeSlug: 'h', enabled: true, newMemberPubkeys: ['pk-creator'] },
+        seams,
+      );
+      expect(rAll).toEqual({ applied: false, reason: 'all-members-unwrappable', distributed: 0 });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('BUG B: refederate flag is THREADED into persistWrappedKeys (DEFAULT false)', async () => {
     const seenRefederate: Array<boolean | undefined> = [];
     const seams = {

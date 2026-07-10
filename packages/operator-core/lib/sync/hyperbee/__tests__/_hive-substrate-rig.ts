@@ -179,9 +179,20 @@ export async function setupHivePeerSchema(sql: postgres.Sql): Promise<void> {
   ]) {
     await sql.unsafe(stripMeta(readFileSync(resolve(SQL_DIR, m), 'utf8')));
   }
-  // D-001 (mig 314): the fed_hlc ordering column the hive projections now write.
-  await sql.unsafe(`ALTER TABLE harness_shared.hive_members  ADD COLUMN IF NOT EXISTS fed_hlc TEXT`);
-  await sql.unsafe(`ALTER TABLE harness_shared.hive_settings ADD COLUMN IF NOT EXISTS fed_hlc TEXT`);
+  // WI-3953 (mig 557, cup-lexicon phase 3): the live projections now target the
+  // pot_* names. This rig hand-builds its schema from the PRE-rename archive
+  // migrations (184/185/186/189), so rename the tables forward exactly as 557
+  // does in production. RENAME TABLE/COLUMN carries the PK/FK/index/policy AND the
+  // capture triggers along automatically (there is no capture-fn fixup migration
+  // for these two tables — they key off TG_TABLE_NAME, so the trigger follows).
+  await sql.unsafe(`ALTER TABLE harness_shared.hives RENAME TO pots`);
+  await sql.unsafe(`ALTER TABLE harness_shared.pots RENAME COLUMN home_slug TO pot_home_slug`);
+  await sql.unsafe(`ALTER TABLE harness_shared.hive_members RENAME TO pot_members`);
+  await sql.unsafe(`ALTER TABLE harness_shared.pot_members RENAME COLUMN hive_home_slug TO pot_home_slug`);
+  await sql.unsafe(`ALTER TABLE harness_shared.hive_settings RENAME TO pot_settings`);
+  // D-001 (mig 314): the fed_hlc ordering column the pot projections now write.
+  await sql.unsafe(`ALTER TABLE harness_shared.pot_members  ADD COLUMN IF NOT EXISTS fed_hlc TEXT`);
+  await sql.unsafe(`ALTER TABLE harness_shared.pot_settings ADD COLUMN IF NOT EXISTS fed_hlc TEXT`);
   // EI-6983-class gap (mig 495): the drainer's own-log-key attribution column on
   // substrate_outbox, written by outbox-drain.ts's drainOutboxOnce. This rig only
   // applies the archive-102 baseline for that table, which predates mig 495.
@@ -265,17 +276,17 @@ async function bootHivePeer(opts: {
 /** Insert the Hive identity row (FK parent for hive_members) into a peer's DB. */
 export async function seedHive(sql: postgres.Sql, slug = HIVE_SLUG): Promise<void> {
   await sql`
-    INSERT INTO harness_shared.hives (workspace_id, home_slug, public_key, keychain_id, created_at)
+    INSERT INTO harness_shared.pots (workspace_id, pot_home_slug, public_key, keychain_id, created_at)
     VALUES (${WORKSPACE_ID}, ${slug}, ${Buffer.from([0])}, ${'kc-' + slug}, 0)
-    ON CONFLICT (workspace_id, home_slug) DO NOTHING
+    ON CONFLICT (workspace_id, pot_home_slug) DO NOTHING
   `;
 }
 
 /** Read the github_user_ids currently in a peer's hive_members for HIVE_SLUG. */
 export async function memberUserIds(sql: postgres.Sql, slug = HIVE_SLUG): Promise<Set<number>> {
   const rows = await sql<Array<{ github_user_id: number }>>`
-    SELECT github_user_id FROM harness_shared.hive_members
-     WHERE workspace_id = ${WORKSPACE_ID} AND hive_home_slug = ${slug}
+    SELECT github_user_id FROM harness_shared.pot_members
+     WHERE workspace_id = ${WORKSPACE_ID} AND pot_home_slug = ${slug}
   `;
   return new Set(rows.map((r) => Number(r.github_user_id)));
 }
@@ -283,7 +294,7 @@ export async function memberUserIds(sql: postgres.Sql, slug = HIVE_SLUG): Promis
 /** Read the JSON-decoded hive_settings value for a key on a peer (null if unset). */
 export async function settingValue(sql: postgres.Sql, key: string, slug = HIVE_SLUG): Promise<unknown> {
   const rows = await sql<Array<{ value: string | null }>>`
-    SELECT value FROM harness_shared.hive_settings
+    SELECT value FROM harness_shared.pot_settings
      WHERE workspace_id = ${WORKSPACE_ID} AND harness_slug = ${slug} AND setting_key = ${key}
   `;
   const raw = rows[0]?.value;

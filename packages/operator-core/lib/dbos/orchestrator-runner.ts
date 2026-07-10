@@ -1492,7 +1492,15 @@ export async function spawnInvokeOnceWithFallback(
   // host whose main loop the spawn CPU saturates), default-unset everywhere else ⇒
   // byte-identical, instantly reversible (unset + restart). The flag stays registered
   // as a future global control once it is in DARK_FLAGS + the MCP enum.
-  const on = process.env.PAPERCUSP_SPAWNER_SIDECAR === '1';
+  // WI-3793: routed through the shared isSidecarEnabledFromEnv (same guarded
+  // pattern every node-child sidecar's enable-check now shares) instead of a
+  // bare inline env read — closes the same latent self-fire gap host-bootstrap's
+  // pre-warm check had; behavior is unchanged today (this codepath never runs
+  // inside the sidecar's own re-exec'd child).
+  const on = isSidecarEnabledFromEnv({
+    enableVar: 'PAPERCUSP_SPAWNER_SIDECAR',
+    modeVar: 'PAPERCUSP_SPAWNER_SIDECAR_MODE',
+  });
   if (!on) {
     // Env unset (the default): in-process spawn, byte-identical to today.
     return spawnInvokeOnce(projectDir, role, extras, extraEnv, opts);

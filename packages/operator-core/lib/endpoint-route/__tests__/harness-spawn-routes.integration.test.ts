@@ -392,7 +392,7 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
       agent: 'codex',
       role: 'mug',
       cwd: '/proj',
-      label: 'hive · papercup/queen',
+      label: 'pot · papercup/queen',
       mode: 'console',
       sessionId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
       coordOwnerId: expect.stringMatching(/^s-\d+-[0-9a-f]+$/),

@@ -40,6 +40,7 @@ import { runBootAddonPreflight } from '@papercusp/operator-core/lib/native-addon
 import { validateHomeHarnessResolution, homeHarnessValidationFatal } from '@papercusp/operator-core/lib/startup/validate-home-harness';
 import { applyToProcessEnv, readAgentConfig } from '@papercusp/operator-core/lib/agent-config';
 import { reportRuntimeVintageOnBoot } from '@papercusp/operator-core/lib/runtime-vintage';
+import { isSidecarEnabledFromEnv } from '@papercusp/operator-core/lib/process-supervision/sidecar-spawn-shared';
 
 const GUARD_KEY = '__papercuspBootstrapRan__';
 
@@ -993,7 +994,16 @@ export function runBootstrap(): void {
   if (
     backgroundWorkers &&
     !utilityHost &&
-    process.env.PAPERCUSP_SPAWNER_SIDECAR === '1'
+    // WI-3793: shared, defensively-guarded enable-check (also never fires
+    // from inside the sidecar's own re-exec'd child — see
+    // isSidecarEnabledFromEnv in sidecar-spawn-shared.ts) instead of a bare
+    // inline env read; behavior here is unchanged (backgroundWorkers is
+    // already false in the sidecar child today), it just closes the latent
+    // gap for any future caller of this same condition.
+    isSidecarEnabledFromEnv({
+      enableVar: 'PAPERCUSP_SPAWNER_SIDECAR',
+      modeVar: 'PAPERCUSP_SPAWNER_SIDECAR_MODE',
+    })
   ) {
     void (async () => {
       try {

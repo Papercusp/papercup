@@ -887,7 +887,7 @@ describe('hive Queen fresh-per-wake cutover (queen-brief-cache-assembly B-01 / P
   afterEach(() => vi.useRealTimers());
 
   const hiveSession = (over: Record<string, unknown> = {}) =>
-    session({ label: 'hive · papercup/queen', ...over });
+    session({ label: 'pot · papercup/queen', ...over });
 
   it('exited hive operator → FRESH hive launch (never claude --resume), carrying the wake text as kickoff', async () => {
     const fireHiveWake = vi.fn(async () => true);
@@ -951,15 +951,16 @@ describe('hive Queen fresh-per-wake cutover (queen-brief-cache-assembly B-01 / P
 });
 
 describe('hiveInstallSlugFromLabel', () => {
-  it('parses the install slug from a hive-operator adv_sessions label', () => {
-    expect(hiveInstallSlugFromLabel('hive · papercup/queen')).toBe('papercup');
-    expect(hiveInstallSlugFromLabel('hive · my-hive/operator')).toBe('my-hive');
+  it('parses the install slug from a pot-operator adv_sessions label', () => {
+    expect(hiveInstallSlugFromLabel('pot · papercup/queen')).toBe('papercup');
+    expect(hiveInstallSlugFromLabel('pot · my-hive/operator')).toBe('my-hive');
   });
-  it('returns null for a non-hive label (so non-hive sessions resume as before)', () => {
+  it('returns null for a non-pot label (so non-pot sessions resume as before)', () => {
     expect(hiveInstallSlugFromLabel(null)).toBeNull();
     expect(hiveInstallSlugFromLabel('')).toBeNull();
     expect(hiveInstallSlugFromLabel('bee · papercup/worker')).toBeNull();
-    expect(hiveInstallSlugFromLabel('hive · ')).toBeNull(); // no slug
+    expect(hiveInstallSlugFromLabel('hive · papercup/queen')).toBeNull(); // WI-3967: stale prefix, no longer matches
+    expect(hiveInstallSlugFromLabel('pot · ')).toBeNull(); // no slug
   });
 });
 

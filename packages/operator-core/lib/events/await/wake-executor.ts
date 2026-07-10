@@ -471,13 +471,17 @@ async function defaultFireHiveWake(input: { installSlug: string; kickoff: string
   }
 }
 
-/** Parse the install slug out of a hive-operator adv_sessions label
- *  (`hive · <slug>/<role>`, set at spawn.ts on the bpkind=hive invoke). null when
- *  the row is not a hive operator. */
+/** Parse the install slug out of a pot-operator adv_sessions label
+ *  (`pot · <slug>/<role>`, set at spawn.ts on the bpkind=hive invoke). null when
+ *  the row is not a pot operator.
+ *  WI-3967: prefix corrected from the stale 'hive · ' literal to 'pot · ' —
+ *  the hive→pot rename updated spawn.ts's WRITER (see its own comment) but this
+ *  reader was left on the old prefix, so it silently matched ZERO real sessions
+ *  and the "fresh-per-wake, never resumed" cutover below never fired post-rename. */
 export function hiveInstallSlugFromLabel(label: string | null | undefined): string | null {
   const l = (label ?? '').trim();
-  if (!l.startsWith('hive · ')) return null;
-  const slug = l.slice('hive · '.length).split('/')[0]?.trim();
+  if (!l.startsWith('pot · ')) return null;
+  const slug = l.slice('pot · '.length).split('/')[0]?.trim();
   return slug || null;
 }
 

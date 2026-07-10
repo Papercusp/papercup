@@ -347,7 +347,17 @@ const invoke = defineTool({
         role: canonicalRole,
         cwd: project.path,
         mode: 'console',
-        label: `${isOverwatchLaunch ? 'overwatch' : 'hive'} · ${project.slug}/${role}`,
+        // WI-3967: this prefix used to be the literal 'hive' — the hive→pot rename
+        // (2026-07-xx) updated the READERS (resolveMugOwner/resolveMugOwners in
+        // placement-watchdog.ts, pot/watchdog.ts, pot/wake.ts all query for
+        // `'pot · ' + slug + '/%'`) but never the WRITER here, so every session
+        // recorded since has carried a `hive · <slug>/<role>` label that NONE of
+        // those readers can match — resolveMugOwner returns null unconditionally,
+        // silently degrading gatherInbox's @role:mug slot-parked-message drain to a
+        // permanent no-op (the root cause of WI-3967's dead-drop) plus every other
+        // resolveMugOwner/watchdog.ts/pot-wake.ts consumer. 'pot' now matches the
+        // readers; hiveInstallSlugFromLabel (wake-executor.ts) was updated in lockstep.
+        label: `${isOverwatchLaunch ? 'overwatch' : 'pot'} · ${project.slug}/${role}`,
         // WI-1347: forensic reconstruction of this invoke-chokepoint call (no literal
         // CLI invocation exists for a hive/overwatch spawn to record verbatim).
         launchArgv: reconstructHiveLaunchArgv({

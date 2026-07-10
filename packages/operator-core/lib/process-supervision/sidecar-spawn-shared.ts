@@ -79,6 +79,57 @@ export function resolveSidecarSpawnPlan(opts: ResolveSidecarSpawnPlanOpts): Side
   };
 }
 
+// ── per-host sidecar enable-check (WI-3793) ─────────────────────────────────
+// Every node-child sidecar (substrate/spawner/gateway/embed) is switched on by
+// a PER-HOST env opt-in the operator sets on the bg-host systemd unit (e.g.
+// PAPERCUSP_SPAWNER_SIDECAR=1) — distinct from the bundled-reexec DIVERT var
+// above (PAPERCUSP_SPAWNER_SIDECAR_MODE) that only the parent's OWN spawn code
+// sets on the re-exec'd child, telling its entrypoint "boot as the sidecar
+// server, not the normal host". Before this, each caller of the enable-check
+// (run-git-sync.ts's gitSyncSidecarEnabled, host-bootstrap.ts's pre-warm
+// gate, orchestrator-runner.ts's spawnInvokeOnceWithFallback gate) hand-rolled
+// its own `process.env.PAPERCUSP_SPAWNER_SIDECAR === '1'` inline — 3
+// near-duplicated checks, and only git-sync's ALSO guarded against the enable
+// var being inherited into the sidecar's own re-exec'd child (which spreads
+// `...process.env` for the child, per spawnSpawnerSidecar above) and
+// mis-firing there. Today that's masked in practice (every sidecar spawn
+// explicitly clears PAPERCUSP_BACKGROUND_WORKERS for the child, and none of
+// the 2 unguarded call sites currently run inside a sidecar child) — but it's
+// a latent footgun, not a designed invariant. One shared, defensively-guarded
+// implementation now backs every call site instead of 3 divergent ones; see
+// isSidecarEnabledFromEnv below.
+
+export interface SidecarEnabledOpts {
+  /** Per-host opt-in enable var, e.g. 'PAPERCUSP_SPAWNER_SIDECAR'. */
+  enableVar: string;
+  /** Bundled-reexec divert var (see SidecarSpawnPlan), e.g.
+   *  'PAPERCUSP_SPAWNER_SIDECAR_MODE'. Reading '1' here means THIS process IS
+   *  the re-exec'd sidecar child — always resolves disabled, regardless of
+   *  what the (possibly-inherited) enable var reads, so the enable-check can
+   *  never fire recursively inside the sidecar it gates. */
+  modeVar: string;
+  /** Optional explicit per-caller override var (e.g.
+   *  'PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR') checked BEFORE `enableVar` when
+   *  present (non-null) — '1'/'true' forces ON, anything else forces OFF,
+   *  either way short-circuiting `enableVar`. Absent/unset falls through to
+   *  the plain enable-var check. */
+  explicitVar?: string;
+}
+
+/** Pure: is a per-host-gated sidecar enabled for the CURRENT process? Exported
+ *  for unit tests; `env` defaults to `process.env` for callers. */
+export function isSidecarEnabledFromEnv(
+  opts: SidecarEnabledOpts,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (env[opts.modeVar] === '1') return false;
+  if (opts.explicitVar) {
+    const explicit = env[opts.explicitVar];
+    if (explicit != null) return explicit === '1' || explicit === 'true';
+  }
+  return env[opts.enableVar] === '1';
+}
+
 // ── respawn backoff + sliding-window circuit breaker ────────────────────────
 
 /** Backoff before respawn attempt N (1-based) within the window: 1s·2^(N−1),

@@ -198,10 +198,10 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
       -- engineer_issues is the unified ei compat VIEW (created by the helper above); the
       -- backfill's issue block reads it + derives the federation slug from scope (operator
       -- resolves via hives).
-      CREATE TABLE harness_shared.hives (
-        workspace_id TEXT NOT NULL,
-        home_slug    TEXT NOT NULL,
-        PRIMARY KEY (workspace_id, home_slug)
+      CREATE TABLE harness_shared.pots (
+        workspace_id  TEXT NOT NULL,
+        pot_home_slug TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, pot_home_slug)
       );
       CREATE TABLE harness_shared.substrate_outbox (
         id           BIGSERIAL PRIMARY KEY,
@@ -234,10 +234,10 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
     await db.sql`TRUNCATE harness_shared.work_items `;
     await db.sql`TRUNCATE harness_shared.harness_issues_consolidated `;
     await db.sql`TRUNCATE harness_shared.harness_plans `;
-    await db.sql`TRUNCATE harness_shared.hive_settings `;
-    await db.sql`TRUNCATE harness_shared.hive_members `;
+    await db.sql`TRUNCATE harness_shared.pot_settings `;
+    await db.sql`TRUNCATE harness_shared.pot_members `;
     await db.sql`TRUNCATE harness_shared.work_items `;
-    await db.sql`TRUNCATE harness_shared.hives `;
+    await db.sql`TRUNCATE harness_shared.pots `;
     await db.sql`TRUNCATE harness_shared.substrate_outbox  RESTART IDENTITY`;
     await db.sql`TRUNCATE harness_shared.substrate_meta `;
   });
@@ -406,7 +406,7 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
 
     // Now make THIS harness the workspace's single Hive home + clear the marker so a
     // re-backfill picks up the operator-scope row too.
-    await db.sql`INSERT INTO harness_shared.hives (workspace_id, home_slug) VALUES (${WS}, ${SLUG})`;
+    await db.sql`INSERT INTO harness_shared.pots (workspace_id, pot_home_slug) VALUES (${WS}, ${SLUG})`;
     await db.sql`TRUNCATE harness_shared.substrate_outbox  RESTART IDENTITY`;
     await db.sql`DELETE FROM harness_shared.substrate_meta WHERE key = 'backfill_done'`;
 
@@ -426,7 +426,7 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
     await seedHiveMember(db.sql, 11);
     await seedHiveMember(db.sql, 22);
     await seedHiveMember(db.sql, 33, { origin: 'remote' }); // echo-loop guard → NOT enqueued
-    await seedHiveMember(db.sql, 44, { hive_home_slug: 'other-hive' }); // other Hive → NOT enqueued
+    await seedHiveMember(db.sql, 44, { pot_home_slug: 'other-hive' }); // other Pot → NOT enqueued
     // A local feature too, so the marker/loop isn't a single-table run.
     await seedFeature(db.sql, 'F-1');
 
@@ -434,14 +434,14 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
     expect(res.skipped).toBe(false);
 
     const rows = await outboxRows(db.sql);
-    const memberRows = rows.filter((r) => r.table_name === 'hive_members');
+    const memberRows = rows.filter((r) => r.table_name === 'pot_members');
     // Only the 2 local SLUG-scoped members, keyed by github_user_id (the trigger's
-    // TG_ARGV[0]), scoped to the Hive home (outbox harness_slug == hive_home_slug).
+    // TG_ARGV[0]), scoped to the Pot home (outbox harness_slug == pot_home_slug).
     expect(memberRows.map((r) => r.key).sort()).toEqual(['11', '22']);
     for (const r of memberRows) {
       expect(r.harness_slug).toBe(SLUG);
       expect(r.op).toBe('put');
-      expect(r.row?.hive_home_slug).toBe(SLUG);
+      expect(r.row?.pot_home_slug).toBe(SLUG);
     }
   });
 

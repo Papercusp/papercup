@@ -94,13 +94,20 @@ describe('Leg D chain (P-305): integrator-tick → real PG queue receipt → wor
     // hand-applied 441 replay — align column shape + table name in-place. The PK swap
     // (hive_slug -> pot_slug) is load-bearing: the accessor's ON CONFLICT targets a
     // constraint over the pot_slug tuple; an ADD-COLUMN-only patch leaves the PK on
-    // hive_slug and 554's RENAME CONSTRAINT just renames the still-hive_slug-keyed PK
-    // (found via WI-3465 integration-test verification 2026-07-10).
+    // hive_slug and 554's RENAME CONSTRAINT just renames the still-hive_slug-keyed PK.
+    // The column-drop is EQUALLY load-bearing: 523 doesn't just swap the PK, it DROPS
+    // hive_slug entirely — without replaying that, hive_slug survives as a stale NOT
+    // NULL column with no default, and the accessor's INSERT (which only supplies
+    // pot_slug) fails every write with a not-null violation, even though the PK is
+    // already correctly pot_slug-keyed (found via WI-3465 integration-test verification
+    // 2026-07-10 — a gap in this fixture's 523 replay, NOT a live-DB bug: the real
+    // migration 523 already dropped this column on every real schema).
     await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests ADD COLUMN IF NOT EXISTS pot_slug text`);
     await db.sql.unsafe(`UPDATE harness_shared.hive_integration_requests SET pot_slug = hive_slug WHERE pot_slug IS NULL`);
     await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests ALTER COLUMN pot_slug SET NOT NULL`);
     await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests DROP CONSTRAINT hive_integration_requests_pkey`);
     await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests ADD CONSTRAINT hive_integration_requests_pkey PRIMARY KEY (workspace_id, pot_slug, repo_key, device_pubkey, head_sha)`);
+    await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests DROP COLUMN IF EXISTS hive_slug`);
     await db.sql.unsafe(stripMeta(readFileSync(MIGRATION_554, 'utf8')));
 
     root = await mkdtemp(join(tmpdir(), 'legd-'));

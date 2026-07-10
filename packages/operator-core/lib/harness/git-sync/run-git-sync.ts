@@ -78,12 +78,20 @@ export const gitTimeoutMsFor = (args: string[]): number =>
     : envMs('PAPERCUSP_GIT_SYNC_LOCAL_TIMEOUT_MS', 6 * 60_000);
 
 /** Spawn `git <args>` in `cwd`, capturing exit code + output, bounded by `timeoutMs`
- *  (never throws, never hangs). Exported so the hang guard is directly testable. */
+ *  (never throws, never hangs). Exported so the hang guard is directly testable.
+ *  WI-3793: now backed by the shared, defensively-guarded
+ *  `isSidecarEnabledFromEnv` (same enable/mode-var pattern every node-child
+ *  sidecar shares) instead of a hand-rolled inline check — behavior is
+ *  unchanged (this was already the ONE call site with the `_MODE` guard). */
 export function gitSyncSidecarEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  if (env.PAPERCUSP_SPAWNER_SIDECAR_MODE === '1') return false;
-  const explicit = env.PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR;
-  if (explicit != null) return explicit === '1' || explicit === 'true';
-  return env.PAPERCUSP_SPAWNER_SIDECAR === '1';
+  return isSidecarEnabledFromEnv(
+    {
+      enableVar: 'PAPERCUSP_SPAWNER_SIDECAR',
+      modeVar: 'PAPERCUSP_SPAWNER_SIDECAR_MODE',
+      explicitVar: 'PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR',
+    },
+    env,
+  );
 }
 
 async function runGitViaSpawnerSidecar(
