@@ -102,6 +102,17 @@ describe('countLeadingZeroTokenWakes / queenPlacementStalled — Queen placement
   it('does NOT fire when the bee fleet is already full (no capacity)', () => {
     expect(queenPlacementStalled({ consecutiveZeroTokenWakes: 5, frontier: 7, paused: false, beesBusy: 24, beesCap: 24 })).toBe(false);
   });
+  // WI-3597: frontierStuck subtracts long-unplaced/gated items so an all-gated
+  // frontier reads as correct idle, not a placement stall.
+  it('does NOT fire when the ENTIRE frontier is long-stuck/gated (fresh=0)', () => {
+    expect(queenPlacementStalled({ consecutiveZeroTokenWakes: 9, frontier: 7, frontierStuck: 7, paused: false })).toBe(false);
+  });
+  it('STILL fires when some frontier is fresh (fresh>0) despite gated items present', () => {
+    expect(queenPlacementStalled({ consecutiveZeroTokenWakes: 3, frontier: 7, frontierStuck: 5, paused: false })).toBe(true);
+  });
+  it('treats an absent frontierStuck as 0 (fresh=frontier — prior behaviour preserved)', () => {
+    expect(queenPlacementStalled({ consecutiveZeroTokenWakes: 3, frontier: 7, paused: false })).toBe(true);
+  });
 });
 
 describe('tallyPlans — queen-plan-selection signal (hive-loop-supervision 2026-06-21)', () => {

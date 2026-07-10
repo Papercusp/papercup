@@ -96,3 +96,36 @@ export async function fetchGithubRepoMeta(
     return null;
   }
 }
+
+/**
+ * Fetch a repo file's raw text at `path` from the default branch via the GitHub
+ * contents API (`Accept: application/vnd.github.raw`), authenticated with the
+ * local gh-token like `fetchGithubRepoMeta`. Returns null when the file is
+ * absent or unreadable (404, auth, network). Used by the publish-time manifest
+ * gate (publish-manifest-check.ts) to verify a plugin repo is installable
+ * BEFORE it is listed — EI-387 / cupboard-full-dogfood P-005.
+ */
+export async function fetchGithubRepoFile(
+  owner: string,
+  repo: string,
+  path: string,
+): Promise<string | null> {
+  const tokenRes = await getGhAuthToken();
+  const headers: Record<string, string> = {
+    Accept: 'application/vnd.github.raw',
+    'User-Agent': 'papercusp-operator',
+  };
+  if (tokenRes.kind === 'ok') headers.Authorization = `Bearer ${tokenRes.token}`;
+  // Encode each path segment but keep the `/` separators literal.
+  const encPath = path.split('/').map(encodeURIComponent).join('/');
+  try {
+    const res = await fetch(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encPath}`,
+      { headers, signal: AbortSignal.timeout(10_000) },
+    );
+    if (!res.ok) return null;
+    return await res.text();
+  } catch {
+    return null;
+  }
+}

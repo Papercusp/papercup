@@ -234,16 +234,23 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
   // chronic false "Queen drove 0 placements" readings + recurring false HUMAN escalations
   // whenever the dispatcher backlog was non-empty while the frontier was 0 (the Queen had
   // nothing to place) — see EI-2357 / EI-2130 / EI-2238.
-  if (!newWorkPaused && workFeed.frontier > 0 && workFeed.deadRoutines === 0) {
+  // WI-3597: only FRESH frontier (ready AND not aged past the stuck window) is work
+  // the Queen is failing to place. A frontier that is entirely long-stuck/gated
+  // (owner decision / live rig / fixture) is correct idle — nudging "place them!"
+  // there is the exact false "queen-workitem-selection broken" read this fixes.
+  const frontierStuck = workFeed.frontierStuck ?? 0;
+  const freshFrontier = workFeed.frontier - frontierStuck;
+  if (!newWorkPaused && freshFrontier > 0 && workFeed.deadRoutines === 0) {
     out.push({
       kind: 'work-feed-stuck',
       severity: 'warning',
       subject: 'work feed',
-      detail: `${workFeed.frontier} placeable frontier item(s) ready (unblocked todo) but unplaced, with the routines alive.`,
+      detail: `${freshFrontier} placeable frontier item(s) ready (unblocked todo) but unplaced, with the routines alive.` +
+        (frontierStuck > 0 ? ` (${frontierStuck} more are long-stuck/gated — correct idle, excluded.)` : ''),
       suggestedAction: {
         type: 'nudge',
         target: 'mug',
-        message: `Queen — ${workFeed.frontier} frontier item(s) are ready to place; place them.`,
+        message: `Queen — ${freshFrontier} fresh frontier item(s) are ready to place; place them.`,
       },
     });
   }

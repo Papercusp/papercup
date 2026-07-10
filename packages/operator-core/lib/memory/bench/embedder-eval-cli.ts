@@ -41,7 +41,7 @@ import path from 'node:path';
 
 import { buildGemmaEmbedder, buildLocalEmbedder } from '@papercusp/memory';
 import { buildOpenAiEmbedder, resolveOpenAiKey } from '../configure';
-import { loadCorpusFixture } from './corpus';
+import { CORPUS_FIXTURE_VERSION, loadCorpusFixture } from './corpus';
 import { loadGoldSetFixture } from './gold-set';
 
 type EmbedFn = (text: string) => Promise<number[]>;
@@ -212,8 +212,8 @@ async function main(): Promise<void> {
 
   const corpus = loadCorpusFixture();
   const gold = loadGoldSetFixture();
-  const corpusKeys = corpus.entries.map((e) => e.key);
-  const corpusTexts = corpus.entries.map((e) => e.text);
+  const corpusKeys = corpus.map((e) => e.key);
+  const corpusTexts = corpus.map((e) => e.text);
   const queryTexts = gold.queries.map((q) => q.query);
   console.log(`corpus=${corpusKeys.length} queries=${gold.queries.length} legs=${legNames.join(',')}`);
 
@@ -251,7 +251,7 @@ async function main(): Promise<void> {
   fs.writeFileSync(
     outPath,
     JSON.stringify(
-      { generatedAt: new Date().toISOString(), corpusVersion: corpus.version, goldVersion: gold.version, results },
+      { generatedAt: new Date().toISOString(), corpusVersion: CORPUS_FIXTURE_VERSION, goldVersion: gold.version, results },
       null,
       2,
     ),

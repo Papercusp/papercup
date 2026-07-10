@@ -80,8 +80,9 @@ export interface OverwatchWorkFeedHealth {
   /** Of `frontier`, how many have been unplaced past the stuck window (default
    *  3h) — gated work the Queen correctly leaves idle (owner decision / live rig
    *  / fixture), NOT a placement failure (WI-3597). Lets the kettle credit correct
-   *  idle instead of grading queen-workitem-selection "broken" when fresh = 0. */
-  frontierStuck: number;
+   *  idle instead of grading queen-workitem-selection "broken" when fresh = 0.
+   *  Absent ⇒ 0 (every frontier item counts as fresh — prior behaviour). */
+  frontierStuck?: number;
   /** Auto-eligible items stuck unplaced (`attempts:0`, not flowing — the EI-584 dead-feed signature). */
   autoEligibleStuck: number;
   /** Dead work-feed routines (EI-584: the feed stopped pumping). */
@@ -523,7 +524,8 @@ export function renderOverwatchBrief(brief: OverwatchBrief, caps?: Partial<Overw
   const wf = brief.workFeed;
   out.push('');
   out.push('### Work feed');
-  out.push(`- frontier ${wf.frontier} ready${wf.frontierStuck > 0 ? ` (${wf.frontierStuck} long-stuck/gated — correct idle, not a placement stall)` : ''} · ${wf.autoEligibleStuck} auto-eligible stuck · ` + `${wf.deadRoutines} dead routine(s) · ${wf.blockedStranded} stranded (blocked on a resolved constraint)`);
+  const wfStuck = wf.frontierStuck ?? 0;
+  out.push(`- frontier ${wf.frontier} ready${wfStuck > 0 ? ` (${wfStuck} long-stuck/gated — correct idle, not a placement stall)` : ''} · ${wf.autoEligibleStuck} auto-eligible stuck · ` + `${wf.deadRoutines} dead routine(s) · ${wf.blockedStranded} stranded (blocked on a resolved constraint)`);
 
   const t = brief.tokens;
   out.push('');

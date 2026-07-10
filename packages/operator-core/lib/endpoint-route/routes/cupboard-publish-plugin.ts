@@ -31,8 +31,10 @@ import {
   parseGithubRemote,
   gitOriginUrl,
   fetchGithubRepoMeta,
+  fetchGithubRepoFile,
   type RepoCoords,
 } from '../../cupboard/resolve-repo-coords';
+import { assertPluginManifestPublishable, PublishManifestError } from '../../cupboard/publish-manifest-check';
 
 export default defineTool({
   method: 'POST',
@@ -116,10 +118,32 @@ export default defineTool({
     const listingKind = installed?.kind === 'pack' ? ('tool-pack' as const) : ('plugin' as const);
     const providesTools =
       providesToolsOverride ?? (installed ? manifestToolNames(installed) : []);
+    const listingRef =
+      typeof body.listing_ref === 'string' && body.listing_ref.trim() ? body.listing_ref.trim() : slug;
+
+    // Publish-time installability gate (EI-387 / P-005): a kind=plugin listing
+    // must point at a repo the STANDARD install path can resolve — one carrying a
+    // papercusp.json with {name, version} where the installer looks (the
+    // listing_ref subdir, then the root). Refuse (422) a publish that would list
+    // an un-installable repo. Scoped to plugin per P-005 (a tool-pack ships the
+    // same manifest, but keep the gate to the stated kind for now).
+    if (listingKind === 'plugin') {
+      try {
+        await assertPluginManifestPublishable(
+          { owner: coords.github_owner, repo: coords.github_name, listingRef },
+          { fetchRepoFile: fetchGithubRepoFile },
+        );
+      } catch (e) {
+        if (e instanceof PublishManifestError) {
+          return Response.json({ ok: false, error: e.message }, { status: e.status });
+        }
+        throw e;
+      }
+    }
 
     const result = await publishListingToCupboard({
       listing_kind: listingKind,
-      listing_ref: typeof body.listing_ref === 'string' && body.listing_ref.trim() ? body.listing_ref.trim() : slug,
+      listing_ref: listingRef,
       project_ref: typeof body.project_ref === 'string' ? body.project_ref : undefined,
       ...coords,
       title: typeof body.title === 'string' ? body.title : (installed?.name ?? slug),

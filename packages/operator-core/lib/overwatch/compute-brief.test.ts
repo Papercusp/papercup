@@ -226,6 +226,40 @@ test('detectAnomalies — placeable frontier unplaced with routines alive → wo
   assert.match(a.detail, /placeable frontier/);
 });
 
+test('detectAnomalies — a frontier that is ALL long-stuck/gated does NOT nudge the Queen (WI-3597 correct idle)', () => {
+  const b = base();
+  // Every ready item has aged past the stuck window (owner-decision / live-rig /
+  // fixture-gated). fresh = frontier - frontierStuck = 0 → the Queen is correctly
+  // idle, so the false "place them!" nudge that drove the queen-selection "broken"
+  // grade must NOT fire.
+  b.workFeed = {
+    frontier: 5,
+    frontierStuck: 5,
+    autoEligibleStuck: 0,
+    deadRoutines: 0,
+    blockedStranded: 0,
+  };
+  const kinds = detectAnomalies(b).map((a) => a.kind);
+  assert.ok(!kinds.includes('work-feed-stuck'), 'an all-gated frontier is correct idle, not a stuck work-feed');
+});
+
+test('detectAnomalies — a PARTIALLY-stuck frontier still nudges on the FRESH remainder (WI-3597)', () => {
+  const b = base();
+  // 5 ready, 3 long-stuck/gated → 2 fresh placeable items remain: the nudge fires
+  // but reports the fresh count (2), not the raw frontier (5).
+  b.workFeed = {
+    frontier: 5,
+    frontierStuck: 3,
+    autoEligibleStuck: 0,
+    deadRoutines: 0,
+    blockedStranded: 0,
+  };
+  const a = only(detectAnomalies(b), 'work-feed-stuck');
+  assert.equal(a.severity, 'warning');
+  assert.match(a.detail, /^2 placeable frontier/);
+  assert.match(a.detail, /3 more are long-stuck\/gated/);
+});
+
 test('detectAnomalies — owner pause with no eligible plans suppresses new-work nudges (EI-7467)', () => {
   const b = base();
   b.ownerSteering = {
