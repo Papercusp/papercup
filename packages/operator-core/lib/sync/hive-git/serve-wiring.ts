@@ -59,10 +59,11 @@
  * connection handler — same contract as `openAnnounceChannel`.
  */
 import { Duplex } from 'node:stream';
+import { join } from 'node:path';
 import Protomux, { type ProtomuxChannel } from 'protomux';
 import c, { type CompactEncoding, type CompactEncodingState } from 'compact-encoding';
 import { getHiveGitMode, type HiveGitMode } from '../../harness/git-sync/hive-git-mode';
-import { hiveGitRepoPath } from './storage';
+import { hiveGitRepoPath, pathExists } from './storage';
 import { isScopeRepoFamilyPath } from './scope-repo';
 import { HIVE_GIT_PROTOCOL, serveUploadPack } from './fetch-transport';
 
@@ -317,6 +318,20 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
       // §5.3 needs a roster-verified peer identity this transport doesn't yet
       // carry (see module header) — refuse rather than serve unauthenticated.
       return refuse('scope-repo-unsupported');
+    }
+    // EI-8863/WI-3643 finding (su-95401d6d's handoff): an unknown-but-validly
+    // NAMED repoKey (no traversal, no unsafe chars — so hiveGitRepoPath above
+    // never throws) resolves to a path that simply doesn't exist on disk.
+    // Without this check, `serveUploadPack` below spawns a REAL `git
+    // upload-pack --strict <nonexistent path>` — which does not fail fast:
+    // it stalls in the protocol handshake instead of erroring immediately,
+    // so the requester never gets a refuse (or any bytes at all) and just
+    // sits until ITS OWN ceiling timer fires (serve-wiring.integration.test.ts's
+    // "refuses an unknown repoKey" case: ~15s wall time, vs <100ms for every
+    // other refusal path). Check existence up front and refuse loudly —
+    // matches the fail-fast contract every other refusal reason already gets.
+    if (!(await pathExists(join(repoPath, 'HEAD')))) {
+      return refuse('no-such-repo');
     }
     const duplex = new FrameDuplex(
       (chunk) => state.messages?.dataToClient.send({ id: v.id, chunk }),

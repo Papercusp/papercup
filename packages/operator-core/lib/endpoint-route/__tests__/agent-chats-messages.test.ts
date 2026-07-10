@@ -15,6 +15,34 @@ import type { RouteContext, RouteDefinition } from '../define-route';
 
 vi.setConfig({ testTimeout: 15_000, hookTimeout: 15_000 });
 
+// WI-3634: the real route (routes/agent-chats/index.ts) resolves this module
+// via a DYNAMIC `await import(...)` fired at request-handling time (inside the
+// handler body), not a static top-level import. The rest of this file's mocks
+// use `vi.doMock` (per-test, order-dependent — safe because each is re-armed
+// via resetModules() immediately before the SAME test's dynamic route import),
+// but pairing a per-test doMock with a callee-side dynamic import is a known
+// Vitest footgun: doMock's guarantee only holds for imports issued strictly
+// after it runs in the same module graph, which is fragile against a runtime
+// `import()` when this file shares a worker's module cache with a sibling test
+// (e.g. messages-spawn-tracking.test.ts, which targets the SAME dynamic import
+// and already uses the safer hoisted form below). A missed intercept here falls
+// through to the REAL beginChatSpawnTracking, which opens a live org-pool PG
+// connection and inserts a real harness_shared.spawned_agents row (the
+// occasional-leak symptom this WI reported) instead of the fully-mocked
+// vi.fn stub. Hoisting removes the ordering dependency entirely instead of relying
+// on per-test re-arming — this mock now always wins regardless of import
+// timing or worker-level module-cache sharing.
+vi.mock('../../fleet/chat-spawn-tracking', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    beginChatSpawnTracking: vi.fn(async () => ({
+      spawnId: 'agent_chats-test-spawn',
+      finish: vi.fn(async () => {}),
+    })),
+  };
+});
+
 async function drainSse(
   body: ReadableStream<Uint8Array> | null,
   maxMs: number,
@@ -125,20 +153,13 @@ async function agentChatsMessagesHandler(
     readFeatureLockState: vi.fn(async () => null),
     rowToChat: (row: Record<string, unknown>) => row,
   }));
-  // EI-259 nursery tracking is PG-backed — stub it like every other PG seam
-  // here, or this unit test opens a LIVE org-pool connection pre-stream (the
-  // 2026-06-11 15s-timeout flap under fleet load). Its own coverage lives in
-  // fleet/chat-spawn-tracking tests.
-  vi.doMock('../../fleet/chat-spawn-tracking', async () => {
-    const actual = await vi.importActual<Record<string, unknown>>('../../fleet/chat-spawn-tracking');
-    return {
-      ...actual,
-      beginChatSpawnTracking: vi.fn(async () => ({
-        spawnId: 'agent_chats-test-spawn',
-        finish: vi.fn(async () => {}),
-      })),
-    };
-  });
+  // EI-259 nursery tracking is PG-backed — WI-3634 moved its mock to a
+  // hoisted `vi.mock` at the top of this file (see the comment there): a
+  // per-test doMock here raced the route's runtime dynamic `import()` of
+  // this same module and could occasionally fall through to a LIVE org-pool
+  // connection pre-stream (the 2026-06-11 15s-timeout flap under fleet load,
+  // and the occasional harness_shared.spawned_agents row leak this WI
+  // reported). Its own coverage lives in fleet/chat-spawn-tracking tests.
   vi.doMock('@papercusp/db-org', async () => {
     const actual = await vi.importActual<Record<string, unknown>>('@papercusp/db-org');
     return {

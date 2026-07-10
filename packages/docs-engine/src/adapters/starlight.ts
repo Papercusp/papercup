@@ -46,6 +46,20 @@ const MAX_FILE_BYTES = 1024 * 1024;
 
 interface StarlightPage extends DocPage {
   absolutePath: string;
+  /**
+   * Lazily-populated, process-lifetime cache of getContent()'s rendered
+   * markdown body (EI-8965). Rendering runs the full remark/remark-mdx/
+   * remark-gfm pipeline per page; searchDocs calls getContent for EVERY
+   * page on EVERY search (search.ts:79-90), so before this cache a single
+   * search re-rendered the WHOLE corpus from scratch each time. At the
+   * original ~120-page corpus that was fine (search.ts's own comment says
+   * so); the corpus has since grown to 600+ pages and a cold search took
+   * ~18.7s — right up against docs-qa.test.ts's 30s budget, so it started
+   * timing out under any concurrent host load. Same invalidation lifetime
+   * as `pageCache` below (process-lifetime, never invalidated — this
+   * adapter already assumed the on-disk corpus doesn't change mid-process).
+   */
+  renderedBody?: string;
 }
 
 /** Parse YAML-style frontmatter; returns { meta, body } where meta is a flat record. */
@@ -182,15 +196,15 @@ export function starlightContentAdapter(opts: StarlightContentAdapterOptions): D
       const cache = await buildPages();
       const sp = cache.get(page.slug);
       if (!sp) throw new Error(`starlightContentAdapter: page ${page.slug} not found`);
+      if (sp.renderedBody !== undefined) return sp.renderedBody;
       const raw = await readSafe(sp.absolutePath);
       if (raw === null) {
         throw new Error(`starlightContentAdapter: could not read ${sp.absolutePath}`);
       }
       const { body } = parseFrontmatter(raw);
-      if (/\.mdx$/i.test(sp.absolutePath)) {
-        return await renderMdxToMarkdown(body, sp.absolutePath);
-      }
-      return body;
+      const rendered = /\.mdx$/i.test(sp.absolutePath) ? await renderMdxToMarkdown(body, sp.absolutePath) : body;
+      sp.renderedBody = rendered;
+      return rendered;
     },
     async getSectionMeta(sectionSlug: string): Promise<SectionMeta> {
       // Try `<section>/index.mdx` frontmatter (Starlight section-intro convention).

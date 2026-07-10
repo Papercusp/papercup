@@ -112,7 +112,7 @@ export function namespaceRefPath(devicePubkeyBase64: string, ref: string): strin
   return `refs/namespaces/${deviceNamespaceKey(devicePubkeyBase64)}/${ref}`;
 }
 
-async function pathExists(p: string): Promise<boolean> {
+export async function pathExists(p: string): Promise<boolean> {
   try {
     await access(p);
     return true;

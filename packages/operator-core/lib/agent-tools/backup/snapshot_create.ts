@@ -43,6 +43,14 @@ export default defineTool({
     const ws = activeWorkspaceId();
     const note = clampText(args.note, LIMITS.ANNOTATION);
     const context = note ? { note } : undefined;
+    // Deliberately does NOT route through `triggerSnapshotEvent`, so it bypasses the
+    // per-workspace `eventTriggers` gate. That gate answers "should this AUTOMATIC
+    // event snapshot?"; this tool is an EXPLICIT request to snapshot now, and `reason`
+    // is only the label stamped on the record. Routing it through the gate would let a
+    // user who unchecked e.g. "After plugin install" silently turn an agent's direct
+    // backup:snapshot_create into a no-op — an explicit ask must never be swallowed by
+    // a preference about automatic triggers. Reviewed in settings-audit 2026-07-09
+    // while wiring the post_run / plugin_install / secret_change emitters.
     // A/B (dbos-flows P-011): when the backup flag is opted-in AND DBOS actually
     // launched, run the snapshot as a durable workflow (crash-resume via the
     // StepRunner seam); otherwise call snapshot() directly. `getResult` is

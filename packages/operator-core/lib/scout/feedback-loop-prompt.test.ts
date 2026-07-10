@@ -1,6 +1,8 @@
 /**
  * feedback-loop-prompt.test.ts — pins the Mug↔Blender feedback-loop role-prompt
- * guidance (mug-scout-feedback-loop-2026-06-20 P-005 / D-001 / D-002 / D-003).
+ * guidance (queen-scout-feedback-loop-2026-06-20 P-005 / D-001 / D-002 / D-003 —
+ * a HISTORICAL plan slug: the row was minted pre-lexicon-rename and slugs are
+ * identifiers, so it stays queen-* deliberately; do not "fix" it to mug-*).
  *
  * The loop's behaviour lives entirely in PROMPT GUIDANCE (the wiring — Blender's
  * coord-inbox read + the cadence bypass + the deprecate emission — are sibling
@@ -53,7 +55,10 @@ describe('Mug↔Blender feedback-loop prompt guidance (P-005)', () => {
   describe('Mug-side specifics (mug.base.md)', () => {
     it('has the dedicated feedback-loop bullet, plan-tagged', () => {
       expect(mug).toContain("Iterate on Blender's routed drafts");
-      expect(mug).toContain('mug-scout-feedback-loop-2026-06-20');
+      // The plan row exists ONLY under its minted (pre-rename) slug — plans:get
+      // confirms mug-scout-feedback-loop-2026-06-20 is not_found. Prose must
+      // point the live Mug at the REAL slug.
+      expect(mug).toContain('queen-scout-feedback-loop-2026-06-20');
     });
 
     it('frames it as the ITERATION signal, DISTINCT from the 1-5 grade (D-003 #5)', () => {

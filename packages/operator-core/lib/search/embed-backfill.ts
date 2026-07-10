@@ -31,8 +31,17 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { getResourceProfile } from '../resource-profile';
 import { embedAdmission, headersToRecord, retryAfterMs } from '../memory/embed-admission';
+import {
+  resolveEmbedderWith,
+  readEmbedderPreference,
+  resolveOpenAiKey,
+  localAvailable,
+  isOpenAiEmbedInCooldown,
+} from '../memory/configure';
+import type { EmbedFn, ResolvedEmbedder } from '@papercusp/memory';
 
-const EMBEDDER_DIM = 384;
+// Exported for embed-space-self-check.ts (WI-3644): the expected vector width.
+export const EMBEDDER_DIM = 384;
 const OPENAI_EMBEDDER_MODEL = 'text-embedding-3-small';
 const LOCAL_EMBEDDER_MODEL = 'Xenova/bge-small-en-v1.5';
 // F-E5 (app-wide-load-traps § E): hardware-adaptive embed batch — a big host
@@ -49,89 +58,42 @@ interface BackfillStats {
   durationMs: number;
 }
 
-async function resolveEmbedderMode(): Promise<ResolvedMode> {
-  let mode: 'auto' | ResolvedMode = 'auto';
-  try {
-    const { loadVoicePrefs } = await import('../voice-prefs');
-    const prefs = await loadVoicePrefs();
-    const m = prefs.memoryEmbedderMode;
-    if (m === 'auto' || m === 'openai' || m === 'local' || m === 'disabled') mode = m;
-  } catch {
-    /* fall through */
-  }
-  if (mode === 'disabled') return 'disabled';
-
-  // Try openai first (auto + openai both).
-  let key = process.env.OPENAI_API_KEY ?? '';
-  try {
-    const { readCredentials } = await import('../credentials');
-    const creds = await readCredentials();
-    if (creds.openai_api_key) key = creds.openai_api_key;
-  } catch {
-    /* env fallback */
-  }
-  if (key && (mode === 'auto' || mode === 'openai')) return 'openai';
-  if (mode === 'openai') return 'disabled';
-
-  // Try local.
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const dynamicImport = new Function('s', 'return import(s)') as any;
-    await dynamicImport('@huggingface/transformers');
-    return 'local';
-  } catch {
-    return 'disabled';
-  }
+function buildAdmissionGovernedOpenAiEmbedder(key: string): EmbedFn {
+  return async (text: string): Promise<number[]> => {
+    // Route the backfill through the SHARED embed-admission governor (cost-audit-2026-06-29).
+    // This sweep previously fired RAW, UNGOVERNED OpenAI embeds every 5 min — the one embed path
+    // that bypassed the governor, so neither the org-TPM rate cap NOR the daily spend cap applied
+    // to it. Use the 'bench' lane (lowest priority): under rate contention it sheds first, and the
+    // daily-budget cap throws EmbedBudgetExhaustedError → the per-row catch in backfillTable counts
+    // it as an error and skips, so a runaway can't drain the key. A bench-lane SHED (null slot)
+    // likewise skips the row; the next sweep retries.
+    const adm = embedAdmission();
+    const slot = await adm.acquire(text, 'bench'); // throws EmbedBudgetExhaustedError when over the daily cap
+    if (slot === null) throw new Error('openai_embed_admission_shed');
+    try {
+      const r = await fetch('https://api.openai.com/v1/embeddings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+        body: JSON.stringify({
+          model: OPENAI_EMBEDDER_MODEL,
+          input: text,
+          dimensions: EMBEDDER_DIM,
+        }),
+      });
+      adm.recordResponse(headersToRecord(r.headers));
+      if (!r.ok) {
+        if (r.status === 429) adm.penalize({ retryAfterMs: retryAfterMs(headersToRecord(r.headers)) });
+        throw new Error(`openai_embed_${r.status}`);
+      }
+      const j = (await r.json()) as { data: Array<{ embedding: number[] }> };
+      return j.data[0].embedding;
+    } finally {
+      slot.release();
+    }
+  };
 }
 
-async function buildEmbedder(mode: ResolvedMode): Promise<(t: string) => Promise<number[]>> {
-  if (mode === 'disabled') {
-    throw new Error('embedder_disabled');
-  }
-  if (mode === 'openai') {
-    let key = process.env.OPENAI_API_KEY ?? '';
-    try {
-      const { readCredentials } = await import('../credentials');
-      const creds = await readCredentials();
-      if (creds.openai_api_key) key = creds.openai_api_key;
-    } catch {
-      /* env fallback */
-    }
-    if (!key) throw new Error('openai_api_key_missing');
-    return async (text: string): Promise<number[]> => {
-      // Route the backfill through the SHARED embed-admission governor (cost-audit-2026-06-29).
-      // This sweep previously fired RAW, UNGOVERNED OpenAI embeds every 5 min — the one embed path
-      // that bypassed the governor, so neither the org-TPM rate cap NOR the daily spend cap applied
-      // to it. Use the 'bench' lane (lowest priority): under rate contention it sheds first, and the
-      // daily-budget cap throws EmbedBudgetExhaustedError → the per-row catch in backfillTable counts
-      // it as an error and skips, so a runaway can't drain the key. A bench-lane SHED (null slot)
-      // likewise skips the row; the next sweep retries.
-      const adm = embedAdmission();
-      const slot = await adm.acquire(text, 'bench'); // throws EmbedBudgetExhaustedError when over the daily cap
-      if (slot === null) throw new Error('openai_embed_admission_shed');
-      try {
-        const r = await fetch('https://api.openai.com/v1/embeddings', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-          body: JSON.stringify({
-            model: OPENAI_EMBEDDER_MODEL,
-            input: text,
-            dimensions: EMBEDDER_DIM,
-          }),
-        });
-        adm.recordResponse(headersToRecord(r.headers));
-        if (!r.ok) {
-          if (r.status === 429) adm.penalize({ retryAfterMs: retryAfterMs(headersToRecord(r.headers)) });
-          throw new Error(`openai_embed_${r.status}`);
-        }
-        const j = (await r.json()) as { data: Array<{ embedding: number[] }> };
-        return j.data[0].embedding;
-      } finally {
-        slot.release();
-      }
-    };
-  }
-  // local
+async function buildLocalTransformersEmbedder(): Promise<EmbedFn> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const dynamicImport = new Function('s', 'return import(s)') as any;
   const transformers = await dynamicImport('@huggingface/transformers');
@@ -142,7 +104,37 @@ async function buildEmbedder(mode: ResolvedMode): Promise<(t: string) => Promise
   };
 }
 
-interface BackfillTarget {
+/**
+ * Resolve BOTH which embedder to use AND build it, via the SAME cascade
+ * mem0 uses (`memory/configure.ts`'s `resolveEmbedderWith`, EI-8913). This
+ * sweep used to re-derive its own openai/local/disabled decision independently
+ * (no OpenAI post-failure-cooldown awareness) — a desync here silently
+ * strands freshly-backfilled rows in a DIFFERENT embedding space than a
+ * concurrent memory:remember/search would pick, defeating the whole point of
+ * migration 530's per-row mode discriminator. Only the embed-fn BODIES
+ * (admission-governed OpenAI fetch, local-transformers pipeline) stay bespoke
+ * to this backfill sweep.
+ */
+// Exported for embed-space-self-check.ts (WI-3644 / EI-8913 detector half):
+// the self-check must resolve+build the embedder through the EXACT SAME
+// governed cascade (admission-governed OpenAI fetch, cooldown-awareness) as
+// the backfill sweep — duplicating buildAdmissionGovernedOpenAiEmbedder would
+// recreate the ungoverned-OpenAI-call bug class this module's own comments
+// already document being fixed once (cost-audit-2026-06-29).
+export async function resolveBackfillEmbedder(): Promise<ResolvedEmbedder> {
+  return resolveEmbedderWith({
+    readPreference: readEmbedderPreference,
+    resolveKey: resolveOpenAiKey,
+    localInstalled: localAvailable,
+    isOpenAiRecentlyExhausted: isOpenAiEmbedInCooldown,
+    buildOpenAi: buildAdmissionGovernedOpenAiEmbedder,
+    buildLocal: buildLocalTransformersEmbedder,
+  });
+}
+
+// Exported for embed-space-self-check.ts (WI-3644): the self-check picks a
+// row from one of these SAME prose surfaces to re-embed and compare.
+export interface BackfillTarget {
   table: string;
   embedCol: string;
   bodySql: string;
@@ -162,11 +154,14 @@ interface BackfillTarget {
 }
 
 /** The column (migration 530) recording which embedder produced a row's vector. */
-function modeColOf(target: BackfillTarget): string {
+export function modeColOf(target: BackfillTarget): string {
   return `${target.embedCol}_mode`;
 }
 
-const TARGETS: BackfillTarget[] = [
+// Exported for embed-space-self-check.ts (WI-3644): the canonical set of
+// embedded prose surfaces, reused rather than re-listed so the self-check
+// never drifts from what the backfill sweep actually maintains.
+export const TARGETS: BackfillTarget[] = [
   {
     table: 'harness_shared.harness_escalations',
     embedCol: 'body_embedding',
@@ -365,8 +360,8 @@ export async function runBackfillSweep(): Promise<BackfillStats[] | { skipped: s
   if (__sweepState.running) return { skipped: 'already_running' };
   __sweepState.running = true;
   try {
-    const mode = await resolveEmbedderMode();
-    if (mode === 'disabled') {
+    const resolved = await resolveBackfillEmbedder();
+    if (resolved.mode === 'disabled') {
       __sweepState.lastResult = TARGETS.map((t) => ({
         table: t.table,
         scanned: 0,
@@ -376,8 +371,8 @@ export async function runBackfillSweep(): Promise<BackfillStats[] | { skipped: s
       }));
       return __sweepState.lastResult;
     }
-
-    const embed = await buildEmbedder(mode);
+    const mode: ResolvedMode = resolved.mode;
+    const embed = resolved.embed;
     // Shared org pool (audit P-010, EI-119/EI-80): the old shape opened a
     // fresh `pg.Client` per sweep — connection churn every 5 minutes, and the
     // `pg` dependency was the "require is not defined" failure mode that

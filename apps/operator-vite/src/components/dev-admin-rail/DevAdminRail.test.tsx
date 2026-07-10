@@ -9,7 +9,7 @@
 // that every interaction writes the nuqs URL params (?devRail / ?devSec). Panel
 // data behavior is tested separately at the resolver level (dev-glances.test.ts).
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 
@@ -34,6 +34,24 @@ vi.mock('./panels/FleetPanel', () => ({ default: () => <div data-testid="panel-f
 import DevAdminRail from './DevAdminRail';
 
 afterEach(cleanup);
+
+// Isolation guard. The packaged-install suite run (2026-07-09) failed the
+// deep-link test below with TWO <aside data-testid="dev-admin-rail"> nodes in
+// one document: a container from an earlier test outlived afterEach(cleanup)
+// (`retry` is 0, so it was not a retried attempt). A leaked rail carries its
+// own still-mounted NuqsTestingAdapter, and two adapters racing over `devSec`
+// drive the fresh rail back to its default section — so the deep-linked panel
+// never mounts and the failure reads as a missing `panel-deploy` instead of as
+// the leak it is. It has not reproduced in 22 runs (both machines, single-file
+// and full-workspace, CI=1, one fork, saturated CPU, shuffled order), so rather
+// than paper over the symptom with a longer findBy timeout, assert the
+// precondition: if the leak recurs it fails HERE, named.
+beforeEach(() => {
+  expect(
+    document.querySelectorAll('[data-testid="dev-admin-rail"]'),
+    'a previous test leaked a mounted rail — the DOM is not isolated',
+  ).toHaveLength(0);
+});
 
 function renderRail(searchParams = '') {
   const onUrlUpdate = vi.fn();

@@ -36,7 +36,7 @@ import { encodeDeltaCursor, DELTA_SMALL_RESPONSE_BYTES } from '@papercusp/toolde
 
 // PERF (FCP): `js-tiktoken` ships multi-MB BPE rank tables (`o200k_base` ≈ 5.5MB).
 // This module is reachable from the `@papercusp/agent-mcp` barrel, which the
-// operator webview imports (e.g. chat/LocalCardHost) — a STATIC `import` here put
+// operator webview imports — a STATIC `import` here put
 // that 5.5MB into the eager client boot bundle and was the dominant ~2s
 // first-contentful-paint cost (E2E perf sweep 2026-06-23; the tokenizer is
 // eval-only — `tokens`/`evalSnapshotTransition` have no prod caller). Dynamic-import

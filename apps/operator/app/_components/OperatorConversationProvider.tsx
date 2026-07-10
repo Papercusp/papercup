@@ -62,7 +62,7 @@ import {
 import { getVoiceState, speak, subscribeVoiceState } from './voice/voice-mode';
 import { useSyncQuery } from '@papercusp/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
-import type { ChatMessage, ChatToolCall } from './chat/ChatConversation';
+import type { ChatMessage, ChatToolCall } from './chat/chat-types';
 import { useStateSnapshots } from '@/lib/use-state-snapshots';
 import { selectFocusedCard } from '@/lib/chat-cards/select-focused-card';
 import { composeAmbiguityPrompt } from '@papercusp/operator-core/lib/voice-cards/compose-ambiguity-prompt';

@@ -301,6 +301,13 @@ The rubric's per-criterion `method` fields say *what* to check; these are the
   `unknown` (with a one-line why) outranks guessing — but "transcript not scanned"
   is not a valid why for the deterministic criteria; the trace query above makes
   them always scannable.
+- **Link the scorecard to its motivating follow-up at file time** (WI-3594): when a
+  scorecard identifies a concrete improvement to file, pass
+  `observation.linkTo: [{ targetId, rel? }]` in the SAME `improvements:capture` call
+  instead of a separate `work_items:link` round-trip afterward (easy to forget,
+  silently orphaning the scorecard from the work it motivated). Surfaced in the
+  ScorecardDetail UI's `linkedItems`; best-effort — a bad `targetId` is reported,
+  never fails the capture.
 - **Read the aggregate** — `rubrics:trend { rubricRef: 'su-agent-behavior' }`.
   The argument is `rubricRef`, not `rubricId` (invalid-input trap, hit on 07-06).
   Raw rows: `scorecards:list { rubricRef: 'su-agent-behavior' }`. Draw conclusions

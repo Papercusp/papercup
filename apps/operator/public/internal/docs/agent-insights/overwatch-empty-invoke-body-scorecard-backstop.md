@@ -10,7 +10,7 @@ response body. For generic fleet roles, `agentProducedTurn('')` intentionally pr
 legacy behavior and assumes the result is uncertain rather than failed. Do not reuse that
 generic uncertainty rule as the final Overwatch decision.
 
-Overwatch is a monitor. Every wake must either emit a complete `hive-coordination-health`
+Overwatch is a monitor. Every wake must either emit a complete `pot-coordination-health`
 scorecard or run `overwatchScorecardEndCheck` to synthesize the deterministic floor. An
 empty invoke body proves the parent cannot verify that the monitor turn happened, so the
 Overwatch launch path must record a no-turn error and run the scorecard backstop.

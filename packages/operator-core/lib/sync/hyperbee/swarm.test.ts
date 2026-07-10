@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   countLiveConnections,
   parseDhtBootstrap,
@@ -51,13 +51,25 @@ describe('parseDhtBootstrap', () => {
 describe('swarmConstructorOpts', () => {
   const SAVED = {
     bootstrap: process.env.PAPERCUSP_DHT_BOOTSTRAP,
+    bootstrapFile: process.env.PAPERCUSP_DHT_BOOTSTRAP_FILE,
     dhtHost: process.env.PAPERCUSP_DHT_HOST,
     maxPeers: process.env.PAPERCUSP_SWARM_MAX_PEERS,
   };
+  beforeEach(() => {
+    // EI-8893: swarmConstructorOpts now falls back to a marker FILE
+    // (default ~/.papercusp/dht-bootstrap) when PAPERCUSP_DHT_BOOTSTRAP is
+    // unset. Pin the file path at a guaranteed-nonexistent location so these
+    // env-only assertions stay hermetic regardless of the host's real
+    // ~/.papercusp/dht-bootstrap (a packaged install or provisioned rig may
+    // have one).
+    process.env.PAPERCUSP_DHT_BOOTSTRAP_FILE = '/nonexistent/ei8893-swarmopts-guard';
+  });
   afterEach(() => {
     // restore
     if (SAVED.bootstrap === undefined) delete process.env.PAPERCUSP_DHT_BOOTSTRAP;
     else process.env.PAPERCUSP_DHT_BOOTSTRAP = SAVED.bootstrap;
+    if (SAVED.bootstrapFile === undefined) delete process.env.PAPERCUSP_DHT_BOOTSTRAP_FILE;
+    else process.env.PAPERCUSP_DHT_BOOTSTRAP_FILE = SAVED.bootstrapFile;
     if (SAVED.dhtHost === undefined) delete process.env.PAPERCUSP_DHT_HOST;
     else process.env.PAPERCUSP_DHT_HOST = SAVED.dhtHost;
     if (SAVED.maxPeers === undefined) delete process.env.PAPERCUSP_SWARM_MAX_PEERS;

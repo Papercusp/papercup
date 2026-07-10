@@ -42,6 +42,7 @@ interface FakeOpts {
   wmDrop?: number;
   wmMove?: number;
   heldItems?: number;
+  heldWorkItems?: number;
   factsDrop?: number;
   factsMove?: number;
   /** Statements matching this throw (per-surface error isolation). */
@@ -114,6 +115,9 @@ function fakeSql(opts: FakeOpts = {}) {
     if (text.includes('UPDATE harness_shared.engineer_issues')) {
       return Promise.resolve(rows(opts.heldItems, { issue_id: 'WI-1' }));
     }
+    if (text.includes('UPDATE harness_shared.work_items')) {
+      return Promise.resolve(rows(opts.heldWorkItems, { feature_id: 'WI-2' }));
+    }
     if (text.includes('DELETE FROM harness_shared.agent_facts')) {
       return Promise.resolve(rows(opts.factsDrop, { key: 'k' }));
     }
@@ -165,7 +169,7 @@ describe('argument + liveness guards', () => {
       const sql = fakeSql({ presenceBeatMsAgo: opts.presenceBeatMsAgo });
       const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW, force: opts.force });
       expect(res.ok).toBe(true);
-      expect(res.surfaces).toHaveLength(12);
+      expect(res.surfaces).toHaveLength(13);
     }
   });
 
@@ -173,7 +177,7 @@ describe('argument + liveness guards', () => {
     const sql = fakeSql({ failOn: /SELECT heartbeat_at/ });
     const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
     expect(res.ok).toBe(true);
-    expect(res.surfaces).toHaveLength(12);
+    expect(res.surfaces).toHaveLength(13);
   });
 });
 
@@ -296,6 +300,7 @@ describe('remaining re-keys, totals, and error isolation', () => {
       wmDrop: 1,
       wmMove: 1,
       heldItems: 4,
+      heldWorkItems: 5,
       factsDrop: 1,
       factsMove: 2,
     });
@@ -306,8 +311,9 @@ describe('remaining re-keys, totals, and error isolation', () => {
     expect(surfaceOf(res, 'work-claims')).toMatchObject({ moved: 3 });
     expect(surfaceOf(res, 'watermarks')).toMatchObject({ moved: 1, dropped: 1 });
     expect(surfaceOf(res, 'held-items')).toMatchObject({ moved: 4 });
+    expect(surfaceOf(res, 'held-work-items')).toMatchObject({ moved: 5 });
     expect(surfaceOf(res, 'owner-facts')).toMatchObject({ moved: 2, dropped: 1 });
-    expect(res.totalMoved).toBe(16);
+    expect(res.totalMoved).toBe(21);
     expect(res.ok).toBe(true);
   });
 
@@ -318,12 +324,26 @@ describe('remaining re-keys, totals, and error isolation', () => {
     expect(upd!.text).toContain("state NOT IN ('done', 'resolved', 'deprecated', 'closed')");
   });
 
+  it('held-work-items (WI-3642) re-keys work_items.taken_by directly, covering EVERY item_kind, excluding terminal statuses', async () => {
+    const sql = fakeSql({ heldWorkItems: 2 });
+    const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
+    expect(surfaceOf(res, 'held-work-items')).toMatchObject({ moved: 2 });
+    const upd = sql.calls.find((c) => c.text.includes('UPDATE harness_shared.work_items SET taken_by'));
+    expect(upd).toBeTruthy();
+    // No item_kind filter — unlike the engineer_issues view (step 11), this covers
+    // feature/research-task/chunk too, not just bug/change/task.
+    expect(upd!.text).not.toContain('item_kind');
+    expect(upd!.text).toContain('status <> ALL(?::text[])');
+    expect(upd!.vals).toContain(TO);
+    expect(upd!.vals).toContain(FROM);
+  });
+
   it('one exploding surface reports its error and never sinks the others (idempotent re-run finishes it)', async () => {
     const sql = fakeSql({ planClaims: 1, failOn: /UPDATE harness_shared\.agent_fleets/ });
     const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
     expect(res.ok).toBe(false);
     expect(surfaceOf(res, 'fleet-leadership').error).toContain('surface exploded');
-    expect(res.surfaces).toHaveLength(12);
+    expect(res.surfaces).toHaveLength(13);
     expect(surfaceOf(res, 'plan-claims')).toMatchObject({ moved: 1 });
   });
 });

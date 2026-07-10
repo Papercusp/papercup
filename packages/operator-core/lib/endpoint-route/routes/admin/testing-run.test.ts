@@ -10,6 +10,44 @@
 import { describe, it, expect } from 'vitest';
 import { toSpawn, type TestRunner } from './testing-run';
 
+describe('toSpawn — vitest runner (EI-8902 --config resolution)', () => {
+  it('threads --config when a real file resolves to a package-level vitest.config.ts', () => {
+    // This repo's own apps/operator-vite has a real vitest.config.ts, so a real
+    // file inside it exercises the actual resolution against the real fs
+    // (matches the false-positive symptom's exact package) rather than a mock.
+    const r = toSpawn({ kind: 'vitest', filePath: 'apps/operator-vite/src/components/adv/AdvFramesTab.test.tsx' });
+    if ('error' in r) throw new Error(r.error);
+    expect(r.command).toBe('npx');
+    expect(r.args[0]).toBe('vitest');
+    expect(r.args[1]).toBe('run');
+    expect(r.args).toContain('--config');
+    const configIdx = r.args.indexOf('--config');
+    expect(r.args[configIdx + 1]).toMatch(/apps[/\\]operator-vite[/\\]vitest\.config\.(ts|mts|js|mjs|cjs)$/);
+    expect(r.args[r.args.length - 1]).toBe('apps/operator-vite/src/components/adv/AdvFramesTab.test.tsx');
+  });
+
+  it('vitest-multi resolves --config from the first file', () => {
+    const r = toSpawn({
+      kind: 'vitest-multi',
+      filePaths: [
+        'apps/operator-vite/src/components/adv/AdvFramesTab.test.tsx',
+        'apps/operator-vite/src/components/adv/LearningTab.test.tsx',
+      ],
+    });
+    if ('error' in r) throw new Error(r.error);
+    expect(r.args).toContain('--config');
+    expect(r.args).toContain('apps/operator-vite/src/components/adv/AdvFramesTab.test.tsx');
+    expect(r.args).toContain('apps/operator-vite/src/components/adv/LearningTab.test.tsx');
+  });
+
+  it('omits --config for a path with no vitest.config anywhere up to the workspace root', () => {
+    const r = toSpawn({ kind: 'vitest', filePath: 'this/path/does/not/exist.test.ts' });
+    if ('error' in r) throw new Error(r.error);
+    expect(r.args).not.toContain('--config');
+    expect(r.args).toEqual(['vitest', 'run', 'this/path/does/not/exist.test.ts']);
+  });
+});
+
 describe('toSpawn — cargo runner', () => {
   it('without manifestPath: selects the crate via -p from the repo root (unchanged)', () => {
     const r = toSpawn({ kind: 'cargo', crate: 'pui-companion' });

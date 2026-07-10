@@ -14,6 +14,7 @@
 
 import { defineTool } from '@papercusp/agent-mcp';
 import { startRun, type SpawnRequest } from '../../../testing-run-store';
+import { inferWorkspaceRoot, resolveNearestVitestConfig } from '../../../testing-domain-glob';
 
 export type TestRunner =
   | { kind: 'vitest'; filePath: string }
@@ -28,29 +29,49 @@ export type TestRunner =
 
 export function toSpawn(runner: TestRunner): SpawnRequest | { error: string } {
   switch (runner.kind) {
-    case 'vitest':
+    case 'vitest': {
       if (!runner.filePath) return { error: 'vitest requires filePath' };
       // No explicit --reporter flag: vitest CLI's --reporter REPLACES the
       // config-side reporter list, which would drop the admin reporter that
       // writes per-file rows to test_runs (P-014). The merged config already
       // includes `default` via @papercusp/test-config.
+      //
+      // EI-8902: a bare `npx vitest run <file>` with no `--config` runs with
+      // ZERO Vite config whenever there's no root-level vitest.config.ts
+      // (there isn't one — CLAUDE.md EI-7666), so any `@/`-aliased import
+      // false-fails "Failed to resolve import" even though the file/code are
+      // fine — this was silently feeding false-positive reds into
+      // harness_shared.test_runs (the watchdog's red-test source) for every
+      // apps/operator-vite test. Resolve + pass the nearest per-package
+      // config, same as `npm run test:affected` already does.
+      const configPath = resolveNearestVitestConfig(runner.filePath, inferWorkspaceRoot());
       return {
         kind: 'vitest',
         label: `vitest ${runner.filePath}`,
         filePath: runner.filePath,
         command: 'npx',
-        args: ['vitest', 'run', runner.filePath],
+        args: ['vitest', 'run', ...(configPath ? ['--config', configPath] : []), runner.filePath],
       };
-    case 'vitest-multi':
+    }
+    case 'vitest-multi': {
       if (!Array.isArray(runner.filePaths) || runner.filePaths.length === 0) {
         return { error: 'vitest-multi requires non-empty filePaths' };
       }
+      // EI-8902 (see the 'vitest' case above): resolve --config from the
+      // FIRST file. A "Run section"/"Run all" batch is always drawn from one
+      // registered test domain/section, which in practice never spans two
+      // packages with different vitest configs — if that assumption ever
+      // breaks, files outside the first one's package still run (vitest
+      // itself decides whether they're in-scope for that config), just
+      // without per-file config precision.
+      const configPath = resolveNearestVitestConfig(runner.filePaths[0], inferWorkspaceRoot());
       return {
         kind: 'vitest',
         label: runner.label ?? `vitest ${runner.filePaths.length} files`,
         command: 'npx',
-        args: ['vitest', 'run', ...runner.filePaths],
+        args: ['vitest', 'run', ...(configPath ? ['--config', configPath] : []), ...runner.filePaths],
       };
+    }
     case 'playwright':
       if (!runner.filePath) return { error: 'playwright requires filePath' };
       return {

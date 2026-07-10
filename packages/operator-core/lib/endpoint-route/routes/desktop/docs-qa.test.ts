@@ -122,9 +122,16 @@ describe('buildDocsMcpConfig', () => {
 });
 
 describe('retrieveDocsContext — real in-process /internal/docs retrieval', () => {
-  // searchDocs scores the FULL engineering corpus (hundreds of pages) per call —
-  // ~several seconds cold in a test env (warm/OS-cached in the live operator, and
-  // the "Searching the docs…" spinner covers it). Give it room.
+  // searchDocs scores the FULL engineering corpus (600+ pages and growing) per
+  // call. EI-8965: starlightContentAdapter.getContent() now caches each page's
+  // rendered body for the adapter's process lifetime (packages/docs-engine/src/
+  // adapters/starlight.ts), so this is only slow on the FIRST search a process
+  // ever does (~10-20s cold, running the full remark/remark-mdx render pipeline
+  // over every page in parallel) — every later search in the same process is
+  // ~tens of ms. This test is that unavoidable cold call, and the corpus keeps
+  // growing, so give it real margin rather than re-tuning it every time the
+  // corpus crosses another threshold (was 30s — too tight, caused repeat
+  // watchdog timeouts under concurrent host load with no logic bug involved).
   it(
     'returns grounded blocks (slug + real body text + /internal/docs url) for a known topic',
     async () => {
@@ -138,7 +145,7 @@ describe('retrieveDocsContext — real in-process /internal/docs retrieval', () 
         expect(blocks[0].url).toContain('/internal/docs/');
       }
     },
-    30_000,
+    60_000,
   );
 });
 

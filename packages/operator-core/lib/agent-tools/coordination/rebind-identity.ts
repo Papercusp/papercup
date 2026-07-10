@@ -27,6 +27,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { loopRoutineId, loopRoutineName } from '../../harness/routines/loop';
+import { WORK_ITEM_NON_REQUEUE_STATES } from '../../work-items-stale-claims';
 
 /** Presence beats fresher than this mark the from-id as live (refuse sans force). */
 export const REBIND_FROM_LIVE_WINDOW_MS = 180_000;
@@ -310,12 +311,37 @@ export async function rebindIdentity(
 
   // 11. Held work-items — the carry brief's readHeldWorkItems keys on
   //     engineer_issues.assignee; only OPEN items follow the live id (resolved
-  //     history stays attributed to the id that did the work).
+  //     history stays attributed to the id that did the work). NOTE: this view
+  //     is scoped to item_kind IN ('bug','change','task') only (its INSTEAD OF
+  //     trigger writes through to work_items.taken_by for exactly that subset)
+  //     — kept for the narrower engineer_issues-specific fields it still reads
+  //     (state literal), but see step 11b below for the surface that actually
+  //     covers every item_kind.
   await run('held-items', async (r) => {
     const moved = await sql<Array<{ issue_id: string }>>`
       UPDATE harness_shared.engineer_issues SET assignee = ${t}
        WHERE assignee = ${f} AND state NOT IN ('done', 'resolved', 'deprecated', 'closed')
        RETURNING issue_id
+    `;
+    r.moved = moved.length;
+  });
+
+  // 11b. Held work-items, ALL item_kinds (WI-3642) — the P-010 unified base table
+  //      directly. Step 11 above only re-keys via the engineer_issues COMPAT VIEW,
+  //      which is filtered to item_kind IN ('bug','change','task'); FEATURE-family
+  //      claims (feature/research-task/chunk — the majority of live work-item
+  //      claims) were NEVER re-keyed by this module. Root cause of WI-3642: after
+  //      step 3 deletes the from-id's presence row, a feature-family claim still
+  //      held by the (now presence-less) from-id looks exactly like an abandoned
+  //      claim to the NEXT stale-claims reap sweep (work-items-stale-claims.ts) —
+  //      which then legitimately (from ITS point of view) frees/requeues it out
+  //      from under the still-live session that just got a new sid. Only
+  //      non-terminal rows follow the live id; terminal history keeps its author.
+  await run('held-work-items', async (r) => {
+    const moved = await sql<Array<{ feature_id: string }>>`
+      UPDATE harness_shared.work_items SET taken_by = ${t}
+       WHERE taken_by = ${f} AND status <> ALL(${WORK_ITEM_NON_REQUEUE_STATES}::text[])
+       RETURNING feature_id
     `;
     r.moved = moved.length;
   });

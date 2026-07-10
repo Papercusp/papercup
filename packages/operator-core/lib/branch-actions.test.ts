@@ -119,6 +119,61 @@ describe('runAction', () => {
     expect(log).toContain('::papercusp::action-completed');
   });
 
+  // settings-audit 2026-07-09: /settings/backups ships `post_run` ("After each
+  // {pot} run") ON by default, but NOTHING ever emitted it, so the checkbox was
+  // inert. This runner owns the operator's run lifecycle — it already fires
+  // `pre_destructive` before the child spawns — so its terminal `close` is where
+  // the post-run snapshot belongs. Pins both halves of that pairing.
+  it('fires pre_destructive before the run and post_run after it completes', async () => {
+    const { triggerSnapshotEvent } = await import('./backup');
+    vi.mocked(triggerSnapshotEvent).mockClear();
+
+    await writeAction('staging', 'snap', '#!/bin/bash\nexit 0\n');
+    const handle = await runAction({
+      stagingPath: staging, harness: 'h1', branch: 'staging', name: 'snap',
+    });
+    const meta = await handle.done;
+
+    const reasons = vi.mocked(triggerSnapshotEvent).mock.calls.map((c) => c[1]);
+    expect(reasons).toContain('pre_destructive');
+    expect(reasons).toContain('post_run');
+
+    const postRun = vi.mocked(triggerSnapshotEvent).mock.calls.find((c) => c[1] === 'post_run');
+    expect(postRun?.[2]).toMatchObject({
+      op: 'branch_action_run', harness: 'h1', branch: 'staging', name: 'snap',
+      runId: meta.runId, exitCode: 0, status: 'completed',
+    });
+  });
+
+  it('fires post_run even when the run FAILS (a failed run mutates the tree too)', async () => {
+    const { triggerSnapshotEvent } = await import('./backup');
+    vi.mocked(triggerSnapshotEvent).mockClear();
+
+    await writeAction('staging', 'snapfail', '#!/bin/bash\nexit 3\n');
+    const handle = await runAction({
+      stagingPath: staging, harness: 'h1', branch: 'staging', name: 'snapfail',
+    });
+    await handle.done;
+
+    const postRun = vi.mocked(triggerSnapshotEvent).mock.calls.find((c) => c[1] === 'post_run');
+    expect(postRun).toBeTruthy();
+    expect(postRun?.[2]).toMatchObject({ exitCode: 3, status: 'failed' });
+  });
+
+  it('a failing backup never breaks the run', async () => {
+    const { triggerSnapshotEvent } = await import('./backup');
+    vi.mocked(triggerSnapshotEvent).mockRejectedValueOnce(new Error('kopia down'));
+
+    await writeAction('staging', 'snapresil', '#!/bin/bash\nexit 0\n');
+    const handle = await runAction({
+      stagingPath: staging, harness: 'h1', branch: 'staging', name: 'snapresil',
+    });
+    const meta = await handle.done;
+    expect(meta.status).toBe('completed');
+
+    vi.mocked(triggerSnapshotEvent).mockImplementation(async () => {});
+  });
+
   it('records exit code on failure', async () => {
     await writeAction('staging', 'fail', '#!/bin/bash\nexit 7\n');
     const handle = await runAction({

@@ -21,7 +21,7 @@ sessions **hours** of avoidable rework (audit 2026-07-01, W1–W3/W6/H5). Read i
 observation/completion ─► scout ─► route (plan | improvement | gym) ─► mug ─► cup ─► complete ─► observation
                                                                                          ▲
                                           overwatch (meta-monitor) watches ALL of it ────┘
-                                          and emits the `hive-coordination-health` scorecard
+                                          and emits the `pot-coordination-health` scorecard
 ```
 
 * **Feedback half** = scout: reads the corpus (observations, completions, patterns) and
@@ -29,7 +29,7 @@ observation/completion ─► scout ─► route (plan | improvement | gym) ─�
 * **Forward half** = mug → cup: the Mug *places* ranked work onto generic cups; a cup
   does it and `complete`s; the completion feeds the next scout cycle.
 * **Overwatch** = the meta-monitor. Every wake it surveys system health and emits a
-  14-criterion `hive-coordination-health` scorecard, then acts on anomalies (files an
+  14-criterion `pot-coordination-health` scorecard, then acts on anomalies (files an
   observation, escalates, etc.). It is the thing that catches a *stalled Mug*.
 
 A "clean full cycle" (the reliability bar) is: an observation/completion → scout routes it →
@@ -98,7 +98,7 @@ from harness_shared.autoloop_state
 where harness_slug = 'papercusp' and role = 'overwatch';
 ```
 
-Or, typed: `scorecards:freshness { rubricRef: 'hive-coordination-health', since: <overwatch last wake> }`
+Or, typed: `scorecards:freshness { rubricRef: 'pot-coordination-health', since: <overwatch last wake> }`
 → `fresh` (a COMPLETE real scorecard landed), `partial-only` (silent truncation), or `stale`
 (nothing landed). In `scorecards:list`/`:freshness`, **`synthesized:false` = a REAL agent
 scorecard**; `synthesized:true` = the derived floor. A `last_status` of "no complete scorecard
@@ -151,7 +151,7 @@ where id = 'rt__singleton_bp_singleton_scout_0';
 | `routines`                | cron lives in **`trigger_config->>'cron'`** (jsonb), not a `cron` column. `last_fired_at` / `next_fire_at` are **timestamptz** (note: `last_fired_at`, not `last_fire_at`). `id`, `install_slug`, `name`, `active` (bool), `target_role`, `catchup`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `autoloop_state`          | `harness_slug`, `role`, `last_fired_at` (timestamptz), `last_status` (text), `consecutive_errors` (int). NO `next_fire_at` here — that's on `routines`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
-* **The overwatch rubric `hive-coordination-health` is a CODE CONSTANT**, not a rubric-registry
+* **The overwatch rubric `pot-coordination-health` is a CODE CONSTANT**, not a rubric-registry
   row: `COORDINATION_RUBRIC_REF` in `packages/operator-core/lib/overwatch/scorecard-backstop.ts`
   (14 criterion keys). Don't look for it in `rubrics:list`.
 * **Two scout routines exist — don't confuse them.** The LIVE one is install `@singleton`,

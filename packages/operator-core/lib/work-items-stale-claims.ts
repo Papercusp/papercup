@@ -194,7 +194,12 @@ function classify(row: ReleasedRow, cap: number): StaleClaimAction {
   return 'freed-terminal';
 }
 
-const WORK_ITEM_NON_REQUEUE_STATES = Array.from(new Set([
+/** Every terminal work_items.status value across BOTH vocabularies (feature-family
+ *  todo/blocked/…/passed/deprecated + the unified done/resolved/closed/dropped set).
+ *  Exported so any other surface that must distinguish "still live" from "settled
+ *  history" (e.g. rebind-identity's held-work-items re-key) shares this single list
+ *  instead of re-deriving/drifting from it. */
+export const WORK_ITEM_NON_REQUEUE_STATES = Array.from(new Set([
   ...FEATURE_NON_REQUEUE_STATES,
   // Unified work_items terminal vocabulary (task/bug/change/feature-family).
   'done',

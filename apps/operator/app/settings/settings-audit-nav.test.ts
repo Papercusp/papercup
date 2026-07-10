@@ -34,3 +34,30 @@ describe('settings nav — WI-3449 audit', () => {
     expect(new Set(allHrefs).size).toBe(allHrefs.length);
   });
 });
+
+/**
+ * WI-3532 (the sibling field-level audit). The Plugins pages were fully
+ * functional and had working operator-vite route stubs, but were absent from
+ * this nav and reachable only via plugins/page.tsx's own self-link — so they
+ * were dead UI in practice. Owner directed: "Add them to the settings nav."
+ */
+describe('settings nav — WI-3532 audit', () => {
+  it('lists /settings/plugins (was functional but unreachable)', () => {
+    expect(allHrefs).toContain('/settings/plugins');
+  });
+
+  it('lists /settings/plugins/tools', () => {
+    expect(allHrefs).toContain('/settings/plugins/tools');
+  });
+
+  // The layout picks the active link by longest-href-first, so a nested route
+  // must not be shadowed by its parent. Pins the invariant that makes
+  // /settings/plugins/tools highlight itself rather than /settings/plugins.
+  it('resolves the most specific nav entry for a nested route', () => {
+    const pathname = '/settings/plugins/tools';
+    const active = [...allHrefs]
+      .sort((a, b) => b.length - a.length)
+      .find((href) => pathname === href || pathname.startsWith(`${href}/`));
+    expect(active).toBe('/settings/plugins/tools');
+  });
+});

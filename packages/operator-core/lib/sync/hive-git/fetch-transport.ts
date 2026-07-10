@@ -174,6 +174,14 @@ export function fetchOverDuplex(
   opts: { timeoutMs?: number } = {},
 ): Promise<TransportResult> {
   return new Promise((resolve) => {
+    let stderr = '';
+    let settled = false;
+    let timedOut = false;
+    let tmpDir: string | null = null;
+    // Tracked so the OUTER ceiling timer (below) can actually kill whatever's
+    // in flight — a child process, or nothing yet if we're still stuck in
+    // mkdtemp/server.listen setup.
+    let child: ChildProcessWithoutNullStreams | null = null;
     // Never let a stream error crash the host — attached SYNCHRONOUSLY, before
     // any await, so an already-destroyed/decoy duplex (the documented
     // DIAL-REGISTRY GAP idiom several callers use — a pre-destroyed stub
@@ -184,15 +192,29 @@ export function fetchOverDuplex(
     // `duplex.on('error', () => {})` is attached once a real connection
     // exists — harmless double-attach, EventEmitter supports multiple
     // listeners on the same event.
-    duplex.on('error', () => {});
-    let stderr = '';
-    let settled = false;
-    let timedOut = false;
-    let tmpDir: string | null = null;
-    // Tracked so the OUTER ceiling timer (below) can actually kill whatever's
-    // in flight — a child process, or nothing yet if we're still stuck in
-    // mkdtemp/server.listen setup.
-    let child: ChildProcessWithoutNullStreams | null = null;
+    //
+    // FAIL FAST on a destroyed duplex (EI-8863/WI-3643, su-95401d6d's
+    // handoff finding): a `.destroy(err)` on the injected duplex means the
+    // PEER already refused or the channel/connection dropped (serve-wiring.ts's
+    // handleRefuse / failAllSessions) — there is nothing left to wait for.
+    // Previously this listener was a pure no-op, so a refused fetch sat until
+    // the OUTER ceiling timer (`opts.timeoutMs`) fired regardless —
+    // serve-wiring.integration.test.ts's 3 refusal-path tests each burned
+    // their FULL 15s timeout on an instant refusal, fragile under host load
+    // (the "hangs, times out near 90s" symptom the handoff reproduced).
+    // Finish immediately instead — mirrors the fail-soft contract (never
+    // throws, never crashes) while resolving as fast as the real signal
+    // allows.
+    duplex.on('error', (err) => {
+      if (settled) return;
+      stderr += `\nduplex error: ${err instanceof Error ? err.message : String(err)}`;
+      try {
+        child?.kill('SIGKILL');
+      } catch {
+        /* ignore */
+      }
+      finish(-1);
+    });
     // allowHalfOpen:true so a FIN on either leg does NOT destroy the socket
     // before its buffered bytes flush — the git pack is delimited in-band, so a
     // premature destroy truncates it ("bad pack header"). Default end:true pipes
@@ -247,11 +269,18 @@ export function fetchOverDuplex(
     void (async () => {
       try {
         tmpDir = await mkdtemp(join(tmpdir(), 'hgfetch-'));
+        // The duplex may already have errored (fast refusal, or a
+        // pre-destroyed decoy stub — see the `duplex.on('error', ...)`
+        // handler above) while we were still awaiting mkdtemp — `finish`
+        // already ran, so don't waste a real `git fetch` spawn on a fetch
+        // that's already resolved failed.
+        if (settled) return;
         const sockPath = join(tmpDir, 's.sock');
         await new Promise<void>((r, rej) => {
           server.once('error', rej);
           server.listen(sockPath, () => r());
         });
+        if (settled) return;
         // ext:: command tokens are space-split by git — EXT_BRIDGE_PATH/sockPath
         // live under tmp/dist dirs with no spaces, so a plain command is safe.
         const url = `ext::node ${EXT_BRIDGE_PATH} ${sockPath}`;

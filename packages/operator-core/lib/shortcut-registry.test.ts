@@ -115,6 +115,33 @@ describe('registry integrity (discord-shortcuts 2026-06-06)', () => {
     }
   });
 
+  // settings-audit 2026-07-09 (WI-3532). /settings/shortcuts renders straight from
+  // SHORTCUTS, so every id here is a rebindable row. 14 ids had no handler in ANY
+  // component — the whole `feature.*` block (its FeatureList was deleted) and four
+  // `goto.*` ids whose /adv tabs are long gone from ADV_TAB_IDS — so users could
+  // rebind keys that fired nothing. Removed; `goto.brainstorm`/`goto.insights` were
+  // instead WIRED (AdvShell + GlobalAppShortcuts). Pins both halves.
+  describe('no dead rebindable rows', () => {
+    it('drops the feature-list ids (their FeatureList no longer exists)', () => {
+      expect(SHORTCUTS.filter((s) => s.id.startsWith('feature.'))).toEqual([]);
+    });
+
+    it('drops goto.* ids whose /adv tabs were removed', () => {
+      for (const id of ['goto.dashboard', 'goto.summary', 'goto.config', 'goto.proposals']) {
+        expect(getShortcutDef(id), id).toBeUndefined();
+      }
+    });
+
+    it('keeps find.open — it is navigation, and merely sat inside the feature block', () => {
+      expect(getShortcutDef('find.open')?.category).toBe('navigation');
+    });
+
+    it('keeps the two goto.* ids that were wired up instead of deleted', () => {
+      expect(getShortcutDef('goto.brainstorm')?.defaultCombo).toBe('g>b');
+      expect(getShortcutDef('goto.insights')?.defaultCombo).toBe('g>i');
+    });
+  });
+
   it('the Discord-parity bindings are registered with their combos', () => {
     const expectCombo = (id: string, combo: string) =>
       expect(getShortcutDef(id)?.defaultCombo, id).toBe(combo);

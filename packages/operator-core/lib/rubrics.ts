@@ -267,7 +267,17 @@ async function queryRubricPlans(): Promise<Rubric[]> {
 /** The recorded plan owner for a seeded rubric (createdBy/proposedBy/ratifiedBy in
  *  reads). The content VERSION lives in the bundle (rubric.json/listing.json), not in
  *  template_data — rubricTemplateDataSchema is .strict() and a version field there
- *  would fail loud; v1 has no upgrade semantics anyway (existing rows always win). */
+ *  would fail loud; v1 has no upgrade semantics anyway (existing rows always win).
+ *
+ *  ⚠ Renaming a first-party rubric's on-disk dir? This seeder WILL race you: the
+ *  moment the new dir is on disk with no plan row under the new id yet, any lazy
+ *  seed pass (this function, fired by any rubrics read) auto-creates a blank
+ *  placeholder row owner=FIRST_PARTY_RUBRIC_SEED_OWNER under the NEW id — ahead of
+ *  whatever DB migration renames the real row. That migration must DELETE a
+ *  same-id owner=FIRST_PARTY_RUBRIC_SEED_OWNER placeholder before renaming the real
+ *  row into place. Full writeup + copy-paste SQL:
+ *  agent-insights/renaming-a-first-party-rubric-races-the-cold-start-seeder
+ *  (EI-8912 / WI-3618, worked example: sql/531-rename-hive-coordination-health-rubric-to-pot.sql). */
 export const FIRST_PARTY_RUBRIC_SEED_OWNER = 'first-party-bundle';
 
 type RubricSeedState = 'pending' | 'running' | 'done';
