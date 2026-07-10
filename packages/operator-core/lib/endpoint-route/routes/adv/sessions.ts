@@ -432,6 +432,13 @@ const searchTranscripts = defineTool({
     const sources = SEARCH_SOURCES.filter((s) => s.name === 'session_turn');
     const embedder = await buildQueryEmbedder();
     const { sql } = getOrgPg();
+    // Interactive-search embed budget: this is a HUMAN typing in the desktop
+    // pill, so a slow/cold query-embedder must not block the result. If the
+    // embed exceeds this the engine degrades to BM25-only (which is ~20ms and
+    // returns real keyword hits) rather than blocking to the 30s watchdog and
+    // 408ing (2026-07-10: OpenAI embed quota exhausted → local ONNX cold
+    // embed ran 15–30s per query; BM25 alone was 20ms). Env-tunable.
+    const embedTimeoutMs = Number(process.env.PAPERCUSP_TRANSCRIPT_EMBED_BUDGET_MS) || 4000;
     // The route watchdog's signal is threaded into the engine so a timed-out
     // search stops running instead of grinding all sources to completion
     // after the 408 already went out (2026-07-09 incident: 34–69s server
@@ -445,6 +452,7 @@ const searchTranscripts = defineTool({
       limit: hitLimit,
       mode: 'hybrid',
       embedder,
+      embedTimeoutMs,
       signal,
     });
 
