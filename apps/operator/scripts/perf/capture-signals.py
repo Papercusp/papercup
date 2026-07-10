@@ -14,7 +14,7 @@ the same `capturedAt`. Lane F (SLO budgets) consumes the perf-signals-v1 schema.
 Usage:  python3 capture-signals.py [--label round4] [--out DIR]
 Prints the written path on stdout. No shell=True (no injection surface).
 """
-import json, os, re, socket, subprocess, sys
+import json, os, re, socket, subprocess, sys, time
 from datetime import datetime, timezone
 
 OUT_DIR = os.path.expanduser("~/.papercusp/perf-baselines")
@@ -88,6 +88,92 @@ def kopia():
             "snapshotNice": q.get("nice"), "healthcheckState": hc}
 
 
+def psi():
+    """/proc/pressure/* — kernel Pressure Stall Information. THE host-saturation
+    signal on a many-core box: loadavg-absolute lies at 128 cores (see perf-budgets
+    header), but psi cpu `some avg60` = %time at least one task STARVED for CPU —
+    ratio-free. The 2026-07-10 fs-watch meltdown ran cpu some avg10=96 while every
+    naive metric needed interpretation. `full` (all tasks stalled) matters for io/mem."""
+    out = {}
+    for res in ("cpu", "io", "memory"):
+        try:
+            d = {}
+            for ln in open(f"/proc/pressure/{res}"):
+                parts = ln.split()
+                kind = parts[0]  # some | full
+                vals = dict(p.split("=") for p in parts[1:] if "=" in p)
+                d[kind] = {"avg10": float(vals.get("avg10", "nan")),
+                           "avg60": float(vals.get("avg60", "nan")),
+                           "avg300": float(vals.get("avg300", "nan"))}
+            out[res] = d
+        except Exception:
+            out[res] = None
+    return out
+
+
+def inotify(budget_sec=8.0):
+    """Per-uid inotify usage: instances + watches per process, worst offenders,
+    kernel limits. The 2026-07-10 meltdown was a silent watch balloon (a recursive
+    fs.watch → 94.5k watches × 16 workers); nothing surfaced it before the host
+    starved, so agents only saw the symptom (loadavg 1100), never the cause.
+    /proc/<pid>/fd is only readable for our own uid — exactly the scope the
+    per-uid kernel limits apply to. Bounded by budget_sec; partial=True if hit."""
+    deadline = time.monotonic() + budget_sec
+    total_inst = total_watch = scanned = 0
+    per_proc = []
+    partial = False
+    try:
+        pids = [p for p in os.listdir("/proc") if p.isdigit()]
+    except Exception:
+        pids = []
+    for pid in pids:
+        if time.monotonic() > deadline:
+            partial = True
+            break
+        fd_dir = f"/proc/{pid}/fd"
+        try:
+            fds = os.listdir(fd_dir)
+        except Exception:
+            continue  # other-uid / vanished
+        scanned += 1
+        inst = watches = 0
+        for fd in fds:
+            try:
+                if os.readlink(f"{fd_dir}/{fd}") != "anon_inode:inotify":
+                    continue
+                inst += 1
+                with open(f"/proc/{pid}/fdinfo/{fd}") as f:
+                    watches += sum(1 for ln in f if ln.startswith("inotify"))
+            except Exception:
+                continue  # fd vanished mid-scan
+        if inst:
+            total_inst += inst
+            total_watch += watches
+            try:
+                comm = open(f"/proc/{pid}/comm").read().strip()
+            except Exception:
+                comm = "?"
+            per_proc.append({"pid": int(pid), "comm": comm, "instances": inst, "watches": watches})
+    per_proc.sort(key=lambda r: -r["watches"])
+
+    def sysctl_int(name):
+        try:
+            return int(open(f"/proc/sys/fs/inotify/{name}").read())
+        except Exception:
+            return None
+
+    return {
+        "totalInstances": total_inst,
+        "totalWatches": total_watch,
+        "maxPerProcess": per_proc[0] if per_proc else None,
+        "topProcs": per_proc[:5],
+        "scannedProcs": scanned,
+        "partial": partial,
+        "limits": {"maxUserWatches": sysctl_int("max_user_watches"),
+                   "maxUserInstances": sysctl_int("max_user_instances")},
+    }
+
+
 def host_state(la):
     """stable | loaded | wedge-suspect — pure-local loadavg proxy. An agent run
     should overwrite with the real event-loop-lag verdict when available."""
@@ -128,6 +214,8 @@ def main():
             "gateway_8788_reachable": tcp_reachable(GATEWAY_PORT),
             "operator_3070_reachable": tcp_reachable(OPERATOR_PORT),
             "kopia": kopia(),
+            "psi": psi(),
+            "inotify": inotify(),
             "_mcp_supplemented": {
                 "note": "Fill by an agent run keyed to capturedAt; not host-local.",
                 "toolLatency": None, "toolCallRate": None,

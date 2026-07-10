@@ -20,8 +20,8 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { reconcileClaudeCredentials } from './claude-credential-sync';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { reconcileClaudeCredentials, startClaudeCredentialSync } from './claude-credential-sync';
 import { _setClaudeKeychainAccessForTests, type KeychainAccess } from './agent-auth-detect';
 
 const NOW = 1_780_000_000_000;
@@ -310,4 +310,45 @@ describe('reconcileClaudeCredentials — macOS Keychain bridge (REQ B)', () => {
     expect(r.keychainWriteBack).toBeNull();
     expect(keychainWrites).toEqual([]);
   });
+});
+
+describe('startClaudeCredentialSync — depth-bounded session watch (2026-07-10 meltdown guard)', () => {
+  // The recursive fs.watch this replaced held ~94.5k inotify watches per process
+  // (Node's Linux userland recursive fallback walked every <owner>/projects/**
+  // transcript dir) and rescan-stormed 16 cluster workers into a load-1100 host
+  // meltdown. The contract now: the watch set stays O(owner dirs) — root + one
+  // level — and NEVER descends into deep per-session trees.
+  it('watches only sessionRoot + owner dirs; deep transcript trees stay unwatched; a fork write still propagates', async () => {
+    // Owner fork with a DEEP churn tree (the transcript shape that melted the host).
+    writeCreds(sessionPath('su-a'), { claudeAiOauth: bundle(NOW + 1 * HOUR, 'old') });
+    const deep = join(sessionRoot, 'su-a', 'projects', 'munged-cwd', 'nested');
+    mkdirSync(deep, { recursive: true });
+    writeFileSync(join(deep, 'transcript.jsonl'), '{}\n');
+    writeCreds(globalPath(), { claudeAiOauth: bundle(NOW + 2 * HOUR, 'mid') });
+
+    const handle = startClaudeCredentialSync({ home, sessionRoot });
+    try {
+      const watcher = handle._sessionWatcherForTests;
+      expect(watcher).toBeTruthy();
+      await new Promise<void>((resolve) => watcher!.once('ready', () => resolve()));
+
+      // Watch set: sessionRoot + su-a (depth 1). Nothing under projects/.
+      const watchedDirs = Object.keys(watcher!.getWatched());
+      expect(watchedDirs).toContain(sessionRoot);
+      expect(watchedDirs).toContain(join(sessionRoot, 'su-a'));
+      expect(watchedDirs.some((d) => d.includes('projects'))).toBe(false);
+
+      // A fork refresh (newest bundle written into an owner dir) still propagates
+      // through the watcher → debounce → reconcile, without any recursive watching.
+      writeCreds(sessionPath('su-a'), { claudeAiOauth: bundle(NOW + 8 * HOUR, 'fresh') });
+      await vi.waitFor(
+        () => {
+          expect(readJson(globalPath()).claudeAiOauth.accessToken).toBe('sk-ant-oat01-fresh');
+        },
+        { timeout: 10_000, interval: 250 },
+      );
+    } finally {
+      handle.stop();
+    }
+  }, 20_000);
 });

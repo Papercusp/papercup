@@ -60,7 +60,7 @@ export default defineTool({
     'Your prior transcript does NOT carry across a task boundary / re-spawn; the checkpoint is your continuity, ' +
     "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; blank/omitted clears. " +
     'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, verified, storedHead, by | error }], counts } — correlate by id. ' +
-    'Every write is VERIFY-READ (read back via the reader path in the same call); a write that would be invisible to the next pickup fails loudly as checkpoint_verify_failed instead of silently not carrying.',
+    'Writes are VERIFY-READ; an invisible-to-pickup write fails loudly (checkpoint_verify_failed).',
   guidance: {
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your ' +

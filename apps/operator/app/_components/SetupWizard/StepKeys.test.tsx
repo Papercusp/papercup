@@ -53,8 +53,23 @@ describe('StepKeys (SetupWizard API-keys step)', () => {
     expect(screen.getByText(/This app is alpha\./i)).toBeTruthy();
     expect(screen.getByText(/OpenAI — embeddings/i)).toBeTruthy();
     expect(screen.getByText(/ElevenLabs — voice/i)).toBeTruthy();
-    expect(screen.getByText('Required for memory & search')).toBeTruthy();
-    expect(screen.getByText('Optional')).toBeTruthy();
+    // The memory-system chooser is the one required memory step; it defaults to
+    // EmbeddingGemma so no cloud key is needed (owner ask 2026-07-10).
+    expect(screen.getByText('Memory system')).toBeTruthy();
+    expect(screen.getByText(/EmbeddingGemma-300m \(recommended\)/)).toBeTruthy();
+    expect(screen.getByText('Required')).toBeTruthy();
+    // Both key cards are now optional (memory no longer requires a cloud key).
+    expect(screen.getAllByText('Optional').length).toBeGreaterThan(0);
+  });
+
+  it('defaults the memory system to EmbeddingGemma and offers BGE/OpenAI/off', async () => {
+    installFetch();
+    render(<StepKeys />);
+    const gemma = await screen.findByDisplayValue('gemma');
+    expect((gemma as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByDisplayValue('local')).toBeTruthy();
+    expect(screen.getByDisplayValue('openai')).toBeTruthy();
+    expect(screen.getByDisplayValue('disabled')).toBeTruthy();
   });
 
   it('shows the "Save" button label and no saved-mask chip when no key is stored', async () => {

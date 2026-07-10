@@ -115,4 +115,65 @@ describe('evaluatePerfSignals (per-thread SLO budgets)', () => {
     expect(evaluatePerfSignals(null, NOW).status).toBe('unknown');
     expect(evaluatePerfSignals({ schemaVersion: 'other' } as unknown as PerfSignalsV1, NOW).status).toBe('unknown');
   });
+
+  // ── inotify watch balloon + PSI budgets (2026-07-10 meltdown class) ──────────────
+  // A recursive fs.watch held 94.5k watches PER PROCESS × 16 workers and starved the
+  // host (loadavg >1100, PSI cpu some=96) with NO signal firing beforehand. These
+  // budgets make the balloon visible at warn long before the kernel-limit cliff.
+
+  it('warn when a single process balloons its fs watches (early per-offender attention)', () => {
+    const v = evaluatePerfSignals(
+      sig({ inotify: { totalWatches: 100_000, maxPerProcess: { pid: 4242, comm: 'node-MainThread', watches: 94_531 }, limits: { maxUserWatches: 4_194_304 } } }),
+      NOW,
+    );
+    expect(v.status).toBe('warn');
+    expect(v.degraded).toBe(false);
+    expect(v.inotifyMaxPerProc?.watches).toBe(94_531);
+    expect(v.reasons.join(' ')).toMatch(/watch balloon/);
+  });
+
+  it('warn also fires on the pre-GC bloat tier (~17.7k — dead-session dirs), not only a full melt', () => {
+    // 2026-07-10 follow-up: after the depth-1 fix the staging operator still held
+    // 17,713 watches purely from session-dir-gc lag. That state must alarm — the
+    // healthy ceiling is ~5k (fattest legit holder 4.9k).
+    const v = evaluatePerfSignals(
+      sig({ inotify: { totalWatches: 30_000, maxPerProcess: { pid: 7, comm: 'node-MainThread', watches: 17_713 }, limits: { maxUserWatches: 4_194_304 } } }),
+      NOW,
+    );
+    expect(v.status).toBe('warn');
+    expect(v.reasons.join(' ')).toMatch(/watch balloon/);
+    // …while the fattest observed LEGIT holder stays quiet.
+    const legit = evaluatePerfSignals(
+      sig({ inotify: { totalWatches: 30_000, maxPerProcess: { pid: 8, comm: 'node', watches: 4_857 }, limits: { maxUserWatches: 4_194_304 } } }),
+      NOW,
+    );
+    expect(legit.status).toBe('ok');
+  });
+
+  it('crit when host-total watches approach max_user_watches (ENOSPC imminent)', () => {
+    const v = evaluatePerfSignals(
+      sig({ inotify: { totalWatches: 3_400_000, maxPerProcess: { pid: 1, comm: 'node', watches: 10_000 }, limits: { maxUserWatches: 4_194_304 } } }),
+      NOW,
+    );
+    expect(v.status).toBe('crit');
+    expect(v.degraded).toBe(true);
+    expect(v.reasons.join(' ')).toMatch(/ENOSPC/);
+  });
+
+  it('PSI cpu starvation: warn at sustained pressure, crit at meltdown levels', () => {
+    const warm = evaluatePerfSignals(sig({ psi: { cpu: { some: { avg60: 45 } } } }), NOW);
+    expect(warm.status).toBe('warn');
+    expect(warm.psiCpuSome60).toBe(45);
+
+    const melt = evaluatePerfSignals(sig({ psi: { cpu: { some: { avg60: 94.8 } } } }), NOW);
+    expect(melt.status).toBe('crit');
+    expect(melt.reasons.join(' ')).toMatch(/starved for CPU/);
+  });
+
+  it('absent inotify/psi signals never alarm (older captures stay evaluable)', () => {
+    const v = evaluatePerfSignals(sig(), NOW);
+    expect(v.status).toBe('ok');
+    expect(v.inotifyTotalWatches).toBeNull();
+    expect(v.psiCpuSome60).toBeNull();
+  });
 });

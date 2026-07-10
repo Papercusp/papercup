@@ -572,3 +572,99 @@ describe('memory recall degraded propagation — EI-9031', () => {
     expect('degradedReason' in (r.memory as object)).toBe(false);
   });
 });
+
+// ── P-004 (fleet-deltas-leader-primitives): monitor-mode fleet DELTA over the
+// injected server-side read cursor — the caller carries nothing.
+describe("mode:'monitor' fleet delta (P-004 server-side cursor)", () => {
+  const FLEET = {
+    ...CORE,
+    'fleet:assignments': () => ({
+      ok: true,
+      summary: { agents: 3 },
+      agents: [
+        { agentId: 'su-lead', isSelf: true, verdict: 'speaking', sessionState: 'live', claims: 1 },
+        { agentId: 'su-a', verdict: 'speaking', sessionState: 'live', doing: 'WI-1', claims: 2 },
+        { agentId: 'su-b', verdict: 'stalled', sessionState: 'live', claims: 1 },
+      ],
+      orphaned: [],
+      stalled: [{ id: 'WI-9' }],
+    }),
+  };
+
+  it('BASELINE (first read): fleetDelta.baseline=true and `me` keeps the FULL roster', async () => {
+    const { call } = fakeCall({ ...FLEET });
+    const cursor = vi.fn(async () => ({ committed: null, baseline: true }));
+    const r = await composeOrient({ mode: 'monitor' }, call, 'su-lead', undefined, undefined, cursor);
+    expect(r.fleetDelta).toEqual({ baseline: true });
+    expect((r.me as { agents: unknown[] }).agents).toHaveLength(3);
+    // The cursor received THIS read's fingerprint — the next call diffs against it.
+    expect(cursor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        members: expect.objectContaining({ 'su-b': { v: 'stalled', s: 'live', c: 1 } }),
+        stalled: 1,
+      }),
+    );
+  });
+
+  it('DELTA: transitions since committed; `me` slims to the self row + agentsElided', async () => {
+    const { call } = fakeCall({ ...FLEET });
+    const committed = {
+      members: {
+        'su-lead': { v: 'speaking', s: 'live', c: 1 },
+        'su-a': { v: 'speaking', s: 'live', d: 'WI-1', c: 2 },
+        'su-b': { v: 'speaking', s: 'live', c: 1 }, // was speaking, now stalled
+      },
+      orphaned: 0,
+      stalled: 0,
+    };
+    const cursor = vi.fn(async () => ({ committed, baseline: false }));
+    const r = await composeOrient({ mode: 'monitor' }, call, 'su-lead', undefined, undefined, cursor);
+    expect(r.fleetDelta?.baseline).toBe(false);
+    expect(r.fleetDelta?.changes).toEqual([
+      {
+        change: 'updated',
+        type: 'member',
+        id: 'su-b',
+        from: { v: 'speaking', s: 'live', c: 1 },
+        to: { v: 'stalled', s: 'live', c: 1 },
+      },
+    ]);
+    expect(r.fleetDelta?.unchanged).toBe(2);
+    expect(r.fleetDelta?.stalled).toEqual({ from: 0, to: 1 });
+    const me = r.me as { agents: Array<{ agentId: string }>; agentsElided: number };
+    expect(me.agents).toEqual([expect.objectContaining({ agentId: 'su-lead', isSelf: true })]);
+    expect(me.agentsElided).toBe(2);
+  });
+
+  it('FAIL-OPEN: a throwing cursor keeps the full roster fold and omits fleetDelta', async () => {
+    const { call } = fakeCall({ ...FLEET });
+    const cursor = vi.fn(async () => { throw new Error('pg down'); });
+    const r = await composeOrient({ mode: 'monitor' }, call, 'su-lead', undefined, undefined, cursor);
+    expect(r.fleetDelta).toBeUndefined();
+    expect((r.me as { agents: unknown[] }).agents).toHaveLength(3);
+  });
+
+  it('FAIL-OPEN: an unrecognizable roster shape (e.g. TOON string) never touches the cursor', async () => {
+    const { call } = fakeCall({ ...FLEET, 'fleet:assignments': () => 'opaque-toon-string' });
+    const cursor = vi.fn(async () => ({ committed: null, baseline: true }));
+    const r = await composeOrient({ mode: 'monitor' }, call, 'su-lead', undefined, undefined, cursor);
+    expect(cursor).not.toHaveBeenCalled();
+    expect(r.fleetDelta).toBeUndefined();
+    expect(r.me).toBe('opaque-toon-string');
+  });
+
+  it('FULL mode never consults the cursor (delta is a monitor-tick economizer only)', async () => {
+    const { call } = fakeCall({ ...FLEET });
+    const cursor = vi.fn(async () => ({ committed: null, baseline: true }));
+    const r = await composeOrient({}, call, 'su-lead', undefined, undefined, cursor);
+    expect(cursor).not.toHaveBeenCalled();
+    expect(r.fleetDelta).toBeUndefined();
+  });
+
+  it('no cursor injected (flag off / unresolved identity) ⇒ pre-P-004 monitor behavior, byte-identical', async () => {
+    const { call } = fakeCall({ ...FLEET });
+    const r = await composeOrient({ mode: 'monitor' }, call, 'su-lead');
+    expect(r.fleetDelta).toBeUndefined();
+    expect((r.me as { agents: unknown[] }).agents).toHaveLength(3);
+  });
+});

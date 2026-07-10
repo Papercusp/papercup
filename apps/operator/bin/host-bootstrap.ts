@@ -927,9 +927,12 @@ export function runBootstrap(): void {
         '@papercusp/operator-core/lib/sync/hyperbee/substrate-boot-wrapper'
       );
       const t0 = Date.now();
-      const result = await bootSubstrateWithFallback({
-        perHarnessTimeoutMs: 30_000,
-      });
+      // WI-3684: no explicit perHarnessTimeoutMs here — an explicit value
+      // short-circuits bootSingleHarness's PAPERCUSP_SUBSTRATE_BOOT_TIMEOUT_MS
+      // env read (WI-1892's operator knob), which is set precisely for THIS
+      // boot-storm path. The hardcoded 30_000 this replaces meant the 180s
+      // drop-in never took effect and every loaded boot mass-timed-out at 30s.
+      const result = await bootSubstrateWithFallback({});
       console.log(
         `[hyperbee-substrate] boot complete in ${Date.now() - t0}ms — attempted=${result.attempted} booted=${result.booted} alreadyBooted=${result.alreadyBooted} failed=${result.failed}`,
       );

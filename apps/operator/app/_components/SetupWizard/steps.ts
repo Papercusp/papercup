@@ -40,9 +40,9 @@ export const SETUP_STEPS: readonly StepDef[] = [
   },
   {
     id: 'keys',
-    title: 'API keys & Memory',
+    title: 'Memory system',
     summary:
-      'An OpenAI embeddings key is REQUIRED for agent memory (mem0); other provider/voice keys are optional.',
+      'Choose how memories are embedded — defaults to EmbeddingGemma-300m (best quality, local & private, no API key needed). Alternatives: BGE-small (lighter local) or OpenAI text-embedding-3-small (cloud, needs a key). Provider/voice API keys are optional and set here too.',
     required: true,
   },
   {

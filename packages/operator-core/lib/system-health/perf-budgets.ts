@@ -33,6 +33,22 @@ export interface PerfSignalsV1 {
     // MCP-merged (null until an agent run fills them) — supported in either spot.
     eventLoopLag?: { lag_p95_ms?: number | null } | null;
     _mcp_supplemented?: { eventLoopLag?: { lag_p95_ms?: number | null } | null } | null;
+    /** Kernel Pressure Stall Information — %time tasks starved for the resource.
+     *  Ratio-free, so it is the ONE host-saturation signal that does not lie on a
+     *  128-core box (the 2026-07-10 fs-watch meltdown ran cpu some avg10=96). */
+    psi?: {
+      cpu?: { some?: { avg60?: number | null } | null } | null;
+      io?: { some?: { avg60?: number | null } | null } | null;
+      memory?: { some?: { avg60?: number | null } | null } | null;
+    } | null;
+    /** Per-uid inotify usage (2026-07-10 meltdown class: a silent watch balloon —
+     *  94.5k watches/process × 16 workers — starved the host with no signal). */
+    inotify?: {
+      totalWatches?: number | null;
+      totalInstances?: number | null;
+      maxPerProcess?: { pid: number; comm: string; watches: number } | null;
+      limits?: { maxUserWatches?: number | null } | null;
+    } | null;
   };
 }
 
@@ -51,6 +67,23 @@ export interface PerfBudgets {
    *  1746ms during the wedge). Only evaluated when an agent run merged it. warn then crit. */
   eventLoopLagP95WarnMs: number;
   eventLoopLagP95CritMs: number;
+  /** A single process holding more fs watches than this is ballooning (warn — early
+   *  per-offender attention). Grounded live 2026-07-10: healthy max ≈ 5k (biggest
+   *  legit holder 4.9k); pre-GC session-dir bloat put an operator at 17.7k (real
+   *  signal — dead-session dirs); the meltdown watcher held 94.5k per process.
+   *  NOTE: the host-total tiers do NOT catch a per-proc melt (16×94.5k ≈ 38% of the
+   *  kernel limit) — this warn + the PSI crit are the meltdown-class catchers. */
+  inotifyPerProcWarn: number;
+  /** Host-total watches as a FRACTION of fs.inotify.max_user_watches. Crit is
+   *  reserved for approaching the hard kernel limit — past it every chokidar/
+   *  fs.watch boot fails ENOSPC fleet-wide (the EI-3385 crash-loop class). */
+  inotifyLimitWarnFrac: number;
+  inotifyLimitCritFrac: number;
+  /** PSI cpu `some avg60` (%time ≥1 task starved for CPU over the last minute).
+   *  THE ratio-free host-saturation budget — loadavg-absolute lies here (128
+   *  cores). Meltdown 2026-07-10: 94.8; healthy: <1. */
+  psiCpuSomeWarn: number;
+  psiCpuSomeCrit: number;
   /** A capture older than this (ms) is STALE — don't threshold its numbers (avoid
    *  alarming on a briefly-old snapshot: the capture timer may have skipped a tick). */
   staleMs: number;
@@ -70,6 +103,11 @@ export const PERF_BUDGETS: PerfBudgets = {
   closeWaitCrit: 500,
   eventLoopLagP95WarnMs: 250,
   eventLoopLagP95CritMs: 1000,
+  inotifyPerProcWarn: 10_000,
+  inotifyLimitWarnFrac: 0.5,
+  inotifyLimitCritFrac: 0.8,
+  psiCpuSomeWarn: 40,
+  psiCpuSomeCrit: 85,
   staleMs: 10 * 60_000,
   blindMs: 30 * 60_000,
 };
@@ -87,6 +125,11 @@ export interface PerfVerdict {
   closeWait: number | null;
   eventLoopLagP95Ms: number | null;
   operatorReachable: boolean | null;
+  /** Host-total inotify watches (per-uid) / the fattest single holder. */
+  inotifyTotalWatches: number | null;
+  inotifyMaxPerProc: { pid: number; comm: string; watches: number } | null;
+  /** PSI cpu `some avg60` — %time ≥1 task starved for CPU. */
+  psiCpuSome60: number | null;
   ageMs: number | null;
   stale: boolean;
 }
@@ -111,7 +154,9 @@ export function evaluatePerfSignals(
   const base: PerfVerdict = {
     status: 'unknown', degraded: false, reasons: [], hostState: null,
     worstWorkerCpuPct: null, worstWorkerRssKb: null, closeWait: null,
-    eventLoopLagP95Ms: null, operatorReachable: null, ageMs: null, stale: false,
+    eventLoopLagP95Ms: null, operatorReachable: null,
+    inotifyTotalWatches: null, inotifyMaxPerProc: null, psiCpuSome60: null,
+    ageMs: null, stale: false,
   };
   if (!signals || signals.schemaVersion !== 'perf-signals-v1') return base;
   const s = signals.signals ?? ({} as PerfSignalsV1['signals']);
@@ -123,11 +168,17 @@ export function evaluatePerfSignals(
   const closeWait = typeof s.closeWait_3070 === 'number' ? s.closeWait_3070 : null;
   const lag = lagP95(s);
   const reachable = typeof s.operator_3070_reachable === 'boolean' ? s.operator_3070_reachable : null;
+  const inotifyTotal = typeof s.inotify?.totalWatches === 'number' ? s.inotify.totalWatches : null;
+  const inotifyMax = s.inotify?.maxPerProcess ?? null;
+  const inotifyLimit = typeof s.inotify?.limits?.maxUserWatches === 'number' ? s.inotify.limits.maxUserWatches : null;
+  const psiCpu = typeof s.psi?.cpu?.some?.avg60 === 'number' ? s.psi.cpu.some.avg60 : null;
   const v: PerfVerdict = {
     ...base,
     hostState: signals.hostState ?? null,
     worstWorkerCpuPct: worstCpu, worstWorkerRssKb: worstRss, closeWait,
-    eventLoopLagP95Ms: lag, operatorReachable: reachable, ageMs,
+    eventLoopLagP95Ms: lag, operatorReachable: reachable,
+    inotifyTotalWatches: inotifyTotal, inotifyMaxPerProc: inotifyMax, psiCpuSome60: psiCpu,
+    ageMs,
     stale: ageMs !== null && ageMs > budgets.staleMs,
   };
   if (v.stale) {
@@ -155,6 +206,10 @@ export function evaluatePerfSignals(
   if (signals.hostState === 'wedge-active') crit.push('hostState=wedge-active (live wedge captured)');
   if (lag !== null && lag >= budgets.eventLoopLagP95CritMs) crit.push(`event-loop lag p95 ${lag}ms ≥ ${budgets.eventLoopLagP95CritMs}ms`);
   if (closeWait !== null && closeWait >= budgets.closeWaitCrit) crit.push(`:3070 CLOSE_WAIT ${closeWait} ≥ ${budgets.closeWaitCrit} (event-loop peg)`);
+  if (inotifyTotal !== null && inotifyLimit !== null && inotifyTotal >= inotifyLimit * budgets.inotifyLimitCritFrac) {
+    crit.push(`inotify watches ${inotifyTotal} ≥ ${Math.round(budgets.inotifyLimitCritFrac * 100)}% of max_user_watches ${inotifyLimit} — ENOSPC imminent, fs.watch boots will fail fleet-wide`);
+  }
+  if (psiCpu !== null && psiCpu >= budgets.psiCpuSomeCrit) crit.push(`PSI cpu some avg60 ${psiCpu} ≥ ${budgets.psiCpuSomeCrit} — tasks starved for CPU (host saturation)`);
   if (crit.length) return { ...v, status: 'crit', degraded: true, reasons: crit };
 
   // ── WARN: hot-but-not-fatal ────────────────────────────────────────────────────
@@ -163,6 +218,13 @@ export function evaluatePerfSignals(
   if (closeWait !== null && closeWait >= budgets.closeWaitWarn) warn.push(`:3070 CLOSE_WAIT ${closeWait} ≥ ${budgets.closeWaitWarn}`);
   if (worstCpu !== null && worstCpu >= budgets.workerCpuPctWarn) warn.push(`a worker at ${Math.round(worstCpu)}% CPU ≥ ${budgets.workerCpuPctWarn}% (hot thread)`);
   if (worstRss !== null && worstRss >= budgets.workerRssKbWarn) warn.push(`a worker RSS ${(worstRss / 1048576).toFixed(1)}GB ≥ ${(budgets.workerRssKbWarn / 1048576).toFixed(1)}GB`);
+  if (inotifyMax && inotifyMax.watches >= budgets.inotifyPerProcWarn) {
+    warn.push(`${inotifyMax.comm} (pid ${inotifyMax.pid}) holds ${inotifyMax.watches} fs watches ≥ ${budgets.inotifyPerProcWarn} — watch balloon (2026-07-10 meltdown class: find the recursive/unbounded watcher)`);
+  }
+  if (inotifyTotal !== null && inotifyLimit !== null && inotifyTotal >= inotifyLimit * budgets.inotifyLimitWarnFrac) {
+    warn.push(`inotify watches ${inotifyTotal} ≥ ${Math.round(budgets.inotifyLimitWarnFrac * 100)}% of max_user_watches ${inotifyLimit}`);
+  }
+  if (psiCpu !== null && psiCpu >= budgets.psiCpuSomeWarn) warn.push(`PSI cpu some avg60 ${psiCpu} ≥ ${budgets.psiCpuSomeWarn} — sustained CPU starvation pressure`);
   if (s.gateway_8788_reachable === false) warn.push('inference gateway :8788 unreachable');
   if (warn.length) return { ...v, status: 'warn', reasons: warn };
   return { ...v, status: 'ok', reasons: [] };

@@ -58,11 +58,11 @@ import {
   renameSync,
   watch,
   writeFileSync,
-  type FSWatcher,
 } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
+import chokidar, { type FSWatcher as ChokidarFSWatcher } from 'chokidar';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join, relative, sep } from 'node:path';
 import { sessionClaudeRoot } from '@papercusp/orchestrator/session-launch-dirs';
 import { readClaudeKeychainOAuthBundle, writeClaudeKeychainOAuthBundle } from './agent-auth-detect';
 
@@ -295,13 +295,20 @@ const FALLBACK_INTERVAL_MS = 5 * 60 * 1000;
 
 export interface CredentialSyncHandle {
   stop(): void;
+  /** Test-only: the depth-bounded session-root watcher (null if it failed to start).
+   *  Lets tests assert the watch SET stays O(owner dirs) — the 2026-07-10 regression
+   *  guard (recursive watch → 94.5k watches/process → host meltdown). */
+  _sessionWatcherForTests?: ChokidarFSWatcher | null;
 }
 
 /**
  * Start the background sync: an initial reconcile, fs.watch on the global
- * `~/.claude` dir + the session-claude root (recursive — Linux-supported), a
- * debounce so claude's own temp+rename bursts coalesce into one pass, and a
- * 5-minute interval fallback for missed events. Idempotent per process.
+ * `~/.claude` dir + a depth-1 chokidar watch on the session-claude root (the
+ * creds forks live at exactly `<root>/<owner>/.credentials.json`; recursive
+ * fs.watch is Node's userland tree-walk on Linux and caused the 2026-07-10
+ * host meltdown — see the watcher block below), a debounce so claude's own
+ * temp+rename bursts coalesce into one pass, and a 5-minute interval fallback
+ * for missed events. Idempotent per process.
  *
  * `isEnabled` is consulted per PASS (not at start), so a feature-flag flip
  * takes effect without an operator restart.
@@ -344,7 +351,7 @@ export function startClaudeCredentialSync(opts: {
     debounce.unref?.();
   };
 
-  const watchers: FSWatcher[] = [];
+  const watchers: Array<{ close(): unknown }> = [];
   try {
     watchers.push(
       watch(join(home, '.claude'), { persistent: false }, (_ev, file) => {
@@ -354,13 +361,49 @@ export function startClaudeCredentialSync(opts: {
   } catch (e) {
     console.warn(`[claude-cred-sync] global watch unavailable: ${(e as Error)?.message ?? e}`);
   }
+  let sessionWatcher: ChokidarFSWatcher | null = null;
   try {
     mkdirSync(sessionRoot, { recursive: true });
-    watchers.push(
-      watch(sessionRoot, { persistent: false, recursive: true }, (_ev, file) => {
-        if (file && file.endsWith('.credentials.json')) kick('watch:session');
-      }),
-    );
+    // depth: 1 — credential forks live at EXACTLY sessionRoot/<owner>/.credentials.json
+    // (reconcileClaudeCredentials reads only that shape), so root + owner dirs is the
+    // complete watch set. ⚠ NEVER a recursive fs.watch here: Linux has no kernel
+    // recursive watch, so Node falls back to a userland walk that watches EVERY
+    // directory and re-stats subtrees on events — against the fleet's
+    // <owner>/projects/** transcript churn that held ~94.5k inotify watches PER
+    // PROCESS × 16 cluster workers and rescan-stormed the host to load >1100
+    // (the 2026-07-10 meltdown). chokidar depth-1 keeps the same ≤debounce
+    // propagation latency with O(owner dirs) inert watches and zero events from
+    // the deep transcript trees.
+    const depthUnder = (p: string): number => {
+      const rel = relative(sessionRoot, p);
+      return !rel || rel.startsWith('..') ? 0 : rel.split(sep).length;
+    };
+    sessionWatcher = chokidar.watch(sessionRoot, {
+      depth: 1,
+      ignoreInitial: true,
+      persistent: false,
+      // Prune HARD below the owner level (depth 1 alone still tracks owner
+      // SUBdirs as watch entries — ~10×/owner): a dir deeper than <owner>/ is
+      // never walked or watched, and the only file that exists for us is the
+      // fork's creds file at exactly <owner>/.credentials.json — everything
+      // else (cache/, chrome/, .claude.json, deep transcript trees) is noise.
+      ignored: (p, stats) => {
+        if (!stats) return false; // path-only pre-check — decide once stats arrive
+        const d = depthUnder(p);
+        if (stats.isDirectory()) return d >= 2;
+        return d !== 2 || basename(p) !== '.credentials.json';
+      },
+    });
+    const onCreds = (p: string) => {
+      if (basename(p) === '.credentials.json') kick('watch:session');
+    };
+    sessionWatcher.on('add', onCreds);
+    sessionWatcher.on('change', onCreds);
+    // An unhandled 'error' on an EventEmitter throws — degrade to the interval instead.
+    sessionWatcher.on('error', (e) => {
+      console.warn(`[claude-cred-sync] session watch error: ${(e as Error)?.message ?? e}`);
+    });
+    watchers.push(sessionWatcher);
   } catch (e) {
     console.warn(`[claude-cred-sync] session watch unavailable: ${(e as Error)?.message ?? e}`);
   }
@@ -375,9 +418,10 @@ export function startClaudeCredentialSync(opts: {
       stopped = true;
       if (debounce) clearTimeout(debounce);
       interval.stop();
-      for (const w of watchers) w.close();
+      for (const w of watchers) void w.close();
       delete g[GUARD_KEY];
     },
+    _sessionWatcherForTests: sessionWatcher,
   };
   g[GUARD_KEY] = handle;
   return handle;

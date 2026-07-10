@@ -40,6 +40,16 @@ import { readOwnerPresence } from '../../../power-user-sessions';
 import { activeWorkspaceId, resolveConcreteWorkspaceId } from '../../../workspace-registry';
 import { getModes } from '../../../modes/store';
 import { modeById } from '../../../modes/registry';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
+import type { AckResult, CursorState } from '../read-cursors';
+import {
+  fingerprintFleet,
+  diffFleet,
+  slimAssignmentsForDelta,
+  type FleetFingerprint,
+  type FleetDelta,
+} from './fleet-monitor-delta';
 
 /** D-008 COMPACT bounds — keep the folded payload small so it doesn't re-enter
  *  context as bulk input on every later turn. */
@@ -177,6 +187,22 @@ export interface OrientResult {
    *  !== false; null on a failed fold. Folded so agents don't re-call coord:glance
    *  right after orient (compaction-fold-audit-2026-07-06 — 44%+ did). */
   fleetHealth?: { bees?: unknown; wake?: unknown; governor?: unknown } | null;
+  /** Monitor-mode fleet DELTA (fleet-deltas-leader-primitives P-004): what changed
+   *  in the fleet since this caller's last monitor orient, diffed server-side
+   *  against the (owner, 'fleet:monitor') read cursor — the caller carries nothing.
+   *  `baseline:true` ⇒ first read (or cursor reset): `me` carries the FULL roster
+   *  this once. Otherwise `me.agents` is slimmed to the caller's own row
+   *  (`agentsElided` says how many peers were withheld) and `changes` carries the
+   *  member transitions ({change:added|updated|removed, id, from, to} — v=verdict,
+   *  s=sessionState, d=doing, c=claims). At-least-once: a wake that dies mid-turn
+   *  re-receives the same delta next call. Absent in full mode / flag off. */
+  fleetDelta?: {
+    baseline: boolean;
+    changes?: FleetDelta['rows'];
+    unchanged?: number;
+    orphaned?: { from: number; to: number };
+    stalled?: { from: number; to: number };
+  };
   /** ownerPresent (flush-to-proceed-stretch-discipline-2026-07-04 P-004): whether a human
    *  power-user session is live for this workspace (readOwnerPresence — a fresh, non-revoked
    *  auth session), so presence-adaptive cadence keys off a MECHANICAL signal rather than
@@ -206,12 +232,46 @@ export async function composeOrient(
    *  INJECTED so composeOrient stays IO-free + unit-testable. Folded verbatim into the result
    *  when provided; undefined ⇒ the leg is absent (e.g. a test that doesn't exercise it). */
   ownerPresent?: OrientResult['ownerPresent'],
+  /** fleet-deltas-leader-primitives P-004: the (owner,'fleet:monitor') read-cursor
+   *  ack — resolved by the handler (flag + identity) and INJECTED so composeOrient
+   *  stays IO-free. Undefined ⇒ no delta (full roster fold, pre-P-004 behavior). */
+  fleetCursor?: (next: CursorState) => Promise<AckResult>,
 ): Promise<OrientResult> {
   const monitor = args.mode === 'monitor';
-  const me = await call('fleet:assignments', {
+  let me = await call('fleet:assignments', {
     ...(ownerId ? { agent: ownerId } : {}),
     ...(args.harness ? { harness: args.harness } : {}),
   });
+  // ── monitor-mode fleet DELTA (P-004): diff the roster against the caller's
+  // server-side cursor and deliver TRANSITIONS instead of the full roster the
+  // monitor re-read byte-identically every wake (D-003 audit). FAIL-OPEN at every
+  // step: an unrecognizable roster shape, a cursor store error, or a baseline
+  // (first read) all keep the full `me` fold — a delta must never make
+  // orientation worse than no delta.
+  let fleetDelta: OrientResult['fleetDelta'];
+  if (monitor && fleetCursor) {
+    try {
+      const fp = fingerprintFleet(me);
+      if (fp) {
+        const ack = await fleetCursor(fp as unknown as CursorState);
+        if (!ack.baseline && ack.committed) {
+          const delta = diffFleet(ack.committed as unknown as FleetFingerprint, fp);
+          fleetDelta = {
+            baseline: false,
+            changes: delta.rows,
+            unchanged: delta.unchanged,
+            ...(delta.orphaned ? { orphaned: delta.orphaned } : {}),
+            ...(delta.stalled ? { stalled: delta.stalled } : {}),
+          };
+          me = slimAssignmentsForDelta(me);
+        } else {
+          fleetDelta = { baseline: true };
+        }
+      }
+    } catch {
+      fleetDelta = undefined; /* fail-open: full roster */
+    }
+  }
   // EI-8300: a monitor tick doesn't self-select work — skip the claimable read
   // entirely (no round-trip), not just cap its output.
   const list = monitor
@@ -274,6 +334,7 @@ export async function composeOrient(
     me,
     claimable,
     inbox: { summary: inbox?.summary, recent: inbox?.entries },
+    ...(fleetDelta !== undefined ? { fleetDelta } : {}),
     // P-004: fold the mechanical owner-present bit when the handler resolved it (undefined ⇒
     // leg absent; the handler passes null on a read failure).
     ...(ownerPresent !== undefined ? { ownerPresent } : {}),
@@ -587,7 +648,23 @@ export default defineTool({
     } catch {
       ownerPresent = null;
     }
-    const result = await composeOrient(args, inProcessCall(ctx), ownerId, driveMode, ownerPresent);
+    // P-004 (fleet-deltas-leader-primitives): resolve the monitor fleet-delta seam —
+    // an attributable caller in monitor mode, with the flag ON, gets the
+    // (owner,'fleet:monitor') server-side cursor closure. Fail-open: a flag-read
+    // failure defaults ON (it's a read-path economizer); composeOrient itself
+    // fail-opens to the full roster on any cursor error.
+    let fleetCursor: ((next: CursorState) => Promise<AckResult>) | undefined;
+    if (args.mode === 'monitor' && ownerId) {
+      const deltaOn = await getFlag(FLAGS.ORIENT_MONITOR_DELTA, 'system').catch(() => true);
+      if (deltaOn) {
+        const oid = ownerId;
+        fleetCursor = async (next) => {
+          const { ackAndAdvance } = await import('../read-cursors');
+          return ackAndAdvance(oid, 'fleet:monitor', next);
+        };
+      }
+    }
+    const result = await composeOrient(args, inProcessCall(ctx), ownerId, driveMode, ownerPresent, fleetCursor);
     // Fold in the caller's own identity so the orientation states YOUR ownerId
     // explicitly (the roster/assignments it composes are about peers; `self` is
     // the "and this is you" anchor). Best-effort — omitted for an unattributable

@@ -1233,6 +1233,16 @@ export const FLAGS = {
   // ON after an attended running-desktop verify (the checksum/keep-stale guard degrades a wrong
   // merge to a refetch, never a wrong view).
   SYNC_RESOURCE_DELTA: "papercusp-sync-resource-delta",
+  // fleet-deltas-leader-primitives-2026-07-10 P-004: coord:orient mode:'monitor'
+  // returns a fleet DELTA (member verdict/state transitions since the caller's
+  // server-side read cursor — mig 537 coord_read_cursors, two-phase
+  // ack-on-next-read) instead of the full fleet:assignments roster every wake.
+  // DEFAULT ON — a read-path economizer with NO client merge (orient folds the
+  // delta server-side; a died wake re-receives via the two-phase cursor), so the
+  // D-012 dark-flag rationale (client-merge risk) does not apply. OFF ⇒ the full
+  // roster fold, byte-identical to pre-P-004 monitor mode — a reversible runtime
+  // kill-switch.
+  ORIENT_MONITOR_DELTA: "papercusp-orient-monitor-delta",
   // queen-bee-spawn-reclaim-relaunch-2026-06-22 (EI-85 restart-kills): the boot
   // spawn-admission reconcile RE-LAUNCHES a reclaimed queen/bee whose durable
   // work-item is non-terminal, instead of marking it `failed` and losing the work.

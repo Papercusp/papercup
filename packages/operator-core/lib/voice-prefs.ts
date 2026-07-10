@@ -223,6 +223,19 @@ export interface VoicePrefs {
    */
   fullAgentVoiceMode: 'continuous' | 'hybrid' | 'single-utterance';
   /**
+   * The full-agent provider (EL Conv AI / OpenAI Realtime) speaks a low-latency
+   * "ack" voice (e.g. "On it — I'll come back to you") BEFORE the real answer is
+   * synthesized through our own voice-out (Kokoro / the shared synthesize seam).
+   * That is TWO different voices per turn, and you pay for a premium provider
+   * voice that only ever says filler. This controls the provider ack voice in
+   * full-agent mode:
+   *   'provider'   — keep the provider's own ack voice (default; current behavior).
+   *   'suppressed' — mute the provider ack; only our synthesized answer is heard.
+   * Only consulted when fullAgentEngine !== 'off'.
+   * (voice-convergence-additive-wins-2026-07-10 P-002)
+   */
+  fullAgentAckVoice: 'provider' | 'suppressed';
+  /**
    * How many tokens of recent chat history the operator brain sees per
    * converse turn. Replaces the legacy 30-turn fixed cap. The route
    * walks messages newest → oldest, accumulating until this budget is
@@ -387,6 +400,9 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   fullAgentIdleTimeoutMin: 2,
   fullAgentSessionMaxMin: 30,
   fullAgentVoiceMode: 'continuous',
+  // Default keeps the provider's own low-latency ack voice (current behavior);
+  // flip to 'suppressed' to hear only our synthesized answer (P-002).
+  fullAgentAckVoice: 'provider',
   operatorHistoryTokenBudget: 40000,
   operatorContextMode: 'compaction',
   fullAgentMonthlyMinuteCap: 600,

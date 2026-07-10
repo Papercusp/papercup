@@ -4,6 +4,17 @@ import { useEffect, useState } from 'react';
 import RouteLink from '../RouteLink';
 import { useLexicon } from '@/lib/useLexicon';
 
+// The one required memory choice — defaults to EmbeddingGemma-300m (local, no
+// key), so a user who changes nothing still gets working memory (owner ask
+// 2026-07-10). Each option carries a one-line tradeoff.
+type MemMode = 'gemma' | 'local' | 'openai' | 'disabled';
+const MEMORY_OPTIONS: { value: MemMode; label: string; tradeoff: string }[] = [
+  { value: 'gemma', label: 'EmbeddingGemma-300m (recommended)', tradeoff: 'Best quality, fully local & private, no API key. ~1GB RAM.' },
+  { value: 'local', label: 'BGE-small', tradeoff: 'Lighter local model (~400MB RAM), no API key; lower quality than Gemma.' },
+  { value: 'openai', label: 'OpenAI text-embedding-3-small', tradeoff: 'Cloud embeddings — needs the API key below; memory text leaves your device.' },
+  { value: 'disabled', label: 'No persistent memory', tradeoff: 'Turn memory off entirely.' },
+];
+
 export function StepKeys() {
   const t = useLexicon();
   const [loaded, setLoaded] = useState(false);
@@ -11,6 +22,8 @@ export function StepKeys() {
   const [openaiInput, setOpenaiInput] = useState('');
   const [savingOpenai, setSavingOpenai] = useState(false);
   const [openaiSaved, setOpenaiSaved] = useState<'idle' | 'saved' | 'error'>('idle');
+  const [memMode, setMemMode] = useState<MemMode>('gemma');
+  const [memSaving, setMemSaving] = useState(false);
 
   useEffect(() => {
     void (async () => {
@@ -20,11 +33,35 @@ export function StepKeys() {
           const j = (await credsRes.json()) as { openai_api_key?: string | null };
           setOpenaiMasked(j.openai_api_key ?? null);
         }
+        // Current memory system (defaults to gemma if never set). Tolerant of
+        // either a bare prefs object or a { prefs } envelope.
+        const prefsRes = await fetch('/api/agent-mcp/operator-voice-prefs', { cache: 'no-store' });
+        if (prefsRes.ok) {
+          const body = (await prefsRes.json()) as { memoryEmbedderMode?: string; prefs?: { memoryEmbedderMode?: string } };
+          const mode = body.memoryEmbedderMode ?? body.prefs?.memoryEmbedderMode;
+          if (mode === 'gemma' || mode === 'local' || mode === 'openai' || mode === 'disabled') setMemMode(mode);
+        }
       } finally {
         setLoaded(true);
       }
     })();
   }, []);
+
+  const saveMemMode = async (mode: MemMode) => {
+    setMemMode(mode);
+    setMemSaving(true);
+    try {
+      await fetch('/api/agent-mcp/operator-voice-prefs', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ memoryEmbedderMode: mode }),
+      });
+    } catch {
+      /* best-effort — also settable at Settings → Memory */
+    } finally {
+      setMemSaving(false);
+    }
+  };
 
   const saveOpenaiKey = async () => {
     const v = openaiInput.trim();
@@ -57,12 +94,47 @@ export function StepKeys() {
         your spend.
       </div>
 
+      <div className="pc-key-card">
+        <div className="pc-key-card__head">
+          <h3>Memory system</h3>
+          <span className="pc-badge pc-badge--required">Required</span>
+        </div>
+        <p className="pc-key-card__desc">
+          How your agents embed and recall memories. <strong>EmbeddingGemma-300m is the default</strong> — leave it
+          as-is and memory just works, no key required.
+        </p>
+        <div role="radiogroup" aria-label="Memory system" style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>
+          {MEMORY_OPTIONS.map((o) => (
+            <label key={o.value} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', cursor: !loaded || memSaving ? 'wait' : 'pointer' }}>
+              <input
+                type="radio"
+                name="memory-system"
+                value={o.value}
+                checked={memMode === o.value}
+                disabled={!loaded || memSaving}
+                onChange={() => void saveMemMode(o.value)}
+                style={{ marginTop: 3 }}
+              />
+              <span>
+                <strong style={{ fontSize: 13 }}>{o.label}</strong>
+                <br />
+                <span style={{ fontSize: 12, color: 'var(--fg-mute, #888)' }}>{o.tradeoff}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+        <p style={{ margin: '10px 0 0', fontSize: 11, color: 'var(--fg-mute, #888)' }}>
+          Each system stores vectors in its own space — switching later then running “Re-embed” (Settings → Memory)
+          brings old memories forward.
+        </p>
+      </div>
+
       <KeyCard
-        title="OpenAI — embeddings"
-        required
+        title="OpenAI — embeddings (optional)"
         description={
           <>
-            Powers semantic search across your harnesses, memory, and code. Uses{' '}
+            Only needed if you pick the <strong>OpenAI</strong> memory system above, or want cloud semantic search.
+            The default EmbeddingGemma-300m needs no key. Uses{' '}
             <code>text-embedding-3-small</code> — very low cost per call (under $0.02 per million
             tokens at the time of writing).
           </>
