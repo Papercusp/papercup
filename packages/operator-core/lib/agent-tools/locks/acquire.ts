@@ -88,13 +88,13 @@ const PROGRESS_TICK_MS = 10_000;
 export default defineTool({
   name: 'locks:acquire',
   description:
-    'Claim a set of files for exclusive editing. Returns ok+lock_id, or busy+contention details. On contention prefer wake_on_grant:true — queue a waiter + a one-shot wake and return immediately; END YOUR TURN, re-invoked when the cascade grants the locks (no polling, no held turn). wait={max_sec:N} (≤300) is the legacy blocking wait for short same-turn needs. Paths must be repo-relative POSIX (no ./, .., //, trailing /, backslashes, or absolute paths) — the server canonicalizes equivalent spellings but rejects malformed ones; resolve symlinks caller-side.',
+    'Claim a set of files for exclusive editing. Returns ok+lock_id, or busy+contention details. On contention prefer wake_on_grant:true — queue a waiter + one-shot wake, return immediately; END YOUR TURN, re-invoked on grant (no polling, no held turn). Attach pending_edit for a small non-conflicting edit applied on grant, no wake needed. wait={max_sec:N} (≤300) is the legacy blocking wait for short same-turn needs. Paths must be repo-relative POSIX (no ./, .., //, trailing /, backslashes, absolute paths); resolve symlinks caller-side.',
   guidance: {
-    when: 'For a DELIBERATE multi-file claim you hold across several edits AND the commit — acquire once for the whole set, release after committing. Before individual Codex writes only when that session lacks lock hooks (unmanaged home, or diagnostics say hooks offline); managed Codex/Claude/OMP homes hook apply_patch/Edit/Write automatically.',
+    when: 'For a DELIBERATE multi-file claim held across several edits AND the commit — acquire once, release after committing. Before individual Codex writes only when that session lacks lock hooks; managed Codex/Claude/OMP homes hook apply_patch/Edit/Write automatically.',
     notWhen:
-      'Read-only inspection needs no claim. A single incidental edit in a hooked session needs no manual call — do NOT wrap every hooked edit in acquire/release (it duplicates the hook + churns the lock). Explicit locks are the fallback for unhooked Codex.',
+      'Read-only inspection needs no claim. A single incidental edit in a hooked session needs no manual call — do NOT wrap every hooked edit in acquire/release. Explicit locks are the fallback for unhooked Codex.',
     chaining:
-      'On ok: make your edits → commit → locks:release { lock_id }. On busy: wake_on_grant:true → end your turn; the wake turn carries your lock_id + TTL (already running) — edit, then release. Only block (wait) when you need the lock within THIS turn and the holder is about to finish; events:cancel + locks:cancel_wait to retract a queued wake.',
+      'On ok: edit → commit → locks:release { lock_id }. On busy: wake_on_grant:true → end your turn; the wake carries your lock_id + running TTL — edit, then release. Only block (wait) when you need the lock THIS turn and the holder is about to finish; events:cancel + locks:cancel_wait retracts a queued wake.',
     seeAlso: [
       'locks:acquire_granular (a directory/subtree, not a single file set)',
       'locks:acquire_resource (a named shared resource — dev server, db schema)',
@@ -130,6 +130,16 @@ export default defineTool({
       .describe(
         'On contention: queue a waiter ticket + a one-shot wake subscription and return IMMEDIATELY (no held turn). End your turn; when the grant cascade reaches your ticket you are re-invoked with the lock_id (TTL running). Takes precedence over wait.',
       ),
+    pending_edit: z
+      .object({
+        file: z.string().min(1).describe('The single repo-relative path to edit — MUST equal paths[0].'),
+        old_string: z.string().min(1).describe('Exact text to replace — must occur EXACTLY ONCE in the current file.'),
+        new_string: z.string().describe('Replacement text.'),
+      })
+      .optional()
+      .describe(
+        'APPLY-ON-GRANT: attach the concrete edit you were going to make (the Edit-tool contract). Requires wake_on_grant + a single-file claim (paths must be exactly [pending_edit.file]). On grant the server applies it iff old_string still matches exactly once, then notifies you PASSIVELY (no wake). If the holder changed that region it is NOT applied and you are woken to redo it — i.e. it degrades to plain wake_on_grant. Best for a small, provably-non-conflicting edit to a high-contention shared file.',
+      ),
   }),
   async handler(args, ctx) {
     const { ownerId, ownerLabel, coordinationDomain } = readIdentity(ctx);
@@ -155,6 +165,31 @@ export default defineTool({
     const waitClamped = requestedWaitSec > MAX_WAIT_SEC;
     const maxWaitSec = waitClamped ? MAX_WAIT_SEC : requestedWaitSec;
     const startedAt = Date.now();
+
+    // ── pending_edit guardrails (EI-9033) ───────────────────────────
+    // Apply-on-grant is single-file + wake-only by construction. Validate the
+    // shape up front so a malformed request fails loudly here rather than
+    // silently queueing a waiter whose edit can never satisfy the guardrail.
+    let pendingEdit: { file: string; old_string: string; new_string: string } | undefined;
+    if (args.pending_edit) {
+      if (!args.wake_on_grant) {
+        return errorResult('pending_edit requires wake_on_grant:true (apply-on-grant runs on the wake queue, not a blocking wait).');
+      }
+      let editFile: string;
+      try {
+        editFile = normalizePaths([args.pending_edit.file])[0];
+      } catch (err: unknown) {
+        return errorResult(`pending_edit.file invalid: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (paths.length !== 1 || paths[0] !== editFile) {
+        return errorResult('pending_edit is single-file only: paths must be exactly [pending_edit.file].');
+      }
+      pendingEdit = {
+        file: editFile,
+        old_string: args.pending_edit.old_string,
+        new_string: args.pending_edit.new_string,
+      };
+    }
 
     // ── Fast path: try once, no wait ─────────────────────────────────
     // fed-reanchor-2026-06-06 P-060 (cutover 2): route the acquire DECISION through the
@@ -283,6 +318,7 @@ export default defineTool({
           intent: args.intent,
           ttlSec,
           maxWaitSec: WAKE_QUEUE_WINDOW_SEC,
+          pendingEdit,
         }),
       );
       if (!inserted.ok) {
@@ -322,13 +358,15 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               queued_for_wake: true,
+              ...(pendingEdit ? { apply_on_grant: true } : {}),
               ticket_id: inserted.ticket_id,
               await_id: awaitRow.id,
               queue_window_sec: WAKE_QUEUE_WINDOW_SEC,
               wake_handle: handleNote,
               busy: await enrichBusy(first.busy),
-              advice:
-                'Queued. END YOUR TURN — you will be re-invoked when the grant cascade reaches your ticket (the wake carries lock_id + TTL, already running: edit, then locks:release). If the window lapses without a grant you are woken with granted:false. Retract with locks:cancel_wait + events:cancel.',
+              advice: pendingEdit
+                ? `Queued WITH your edit attached (apply-on-grant). END YOUR TURN. On grant the server applies your edit to ${pendingEdit.file} iff old_string still matches exactly once, then drops a PASSIVE inbox note (category lock-edit-applied) — you are NOT woken and the lock is released for you. Only if the region changed under the holder are you woken (granted:true) to redo it. Retract with locks:cancel_wait + events:cancel.`
+                : 'Queued. END YOUR TURN — you will be re-invoked when the grant cascade reaches your ticket (the wake carries lock_id + TTL, already running: edit, then locks:release). If the window lapses without a grant you are woken with granted:false. Retract with locks:cancel_wait + events:cancel.',
             }),
           },
         ],
@@ -630,6 +668,12 @@ function ok(
         }),
       },
     ],
+  };
+}
+
+function errorResult(error: string) {
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error }) }],
   };
 }
 

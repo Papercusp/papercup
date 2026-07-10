@@ -160,6 +160,46 @@ describe('PendingMembershipContent', () => {
   it('default size cap is the documented backstop', () => {
     expect(DEFAULT_MAX_PENDING_MEMBER_CONTENT).toBe(5_000);
   });
+
+  describe('WI-3852 (F2 of WI-898): eviction-signal recovery without a process restart', () => {
+    it('consumeEvictionSignal is false until a TTL sweep or capacity eviction actually happens', () => {
+      const buf = new PendingMembershipContent(100, 1_000);
+      expect(buf.consumeEvictionSignal()).toBe(false);
+      buf.defer(entry({ rowKey: 'F-1' }), 0);
+      expect(buf.consumeEvictionSignal()).toBe(false); // deferring alone never trips it
+      expect(buf.sweepExpired(999)).toBe(0); // not yet expired
+      expect(buf.consumeEvictionSignal()).toBe(false);
+    });
+
+    it('a TTL sweep trips the signal exactly once until re-consumed', () => {
+      const buf = new PendingMembershipContent(100, 1_000);
+      buf.defer(entry({ authorDevice: 'devGhost', rowKey: 'F-ghost' }), 0); // expiresAt=1000
+      // A later defer()'s internal sweepExpired(now) crosses the TTL for the ghost entry —
+      // this is THE RECOVERY PATH: without the signal, that silent loss is invisible until
+      // the next process restart re-folds the peer log from scratch.
+      buf.defer(entry({ authorDevice: 'devReal', rowKey: 'F-real' }), 1_001);
+      expect(buf.consumeEvictionSignal()).toBe(true);
+      expect(buf.consumeEvictionSignal()).toBe(false); // read-and-clear
+    });
+
+    it('a capacity eviction also trips the signal', () => {
+      const buf = new PendingMembershipContent(2, 1_000_000);
+      buf.defer(entry({ authorDevice: 'dev0', rowKey: 'F-0' }), 0);
+      buf.defer(entry({ authorDevice: 'dev1', rowKey: 'F-1' }), 0);
+      expect(buf.consumeEvictionSignal()).toBe(false); // at cap, nothing evicted yet
+      buf.defer(entry({ authorDevice: 'dev2', rowKey: 'F-2' }), 0); // over cap → evicts dev0
+      expect(buf.consumeEvictionSignal()).toBe(true);
+      expect(buf.consumeEvictionSignal()).toBe(false);
+    });
+
+    it('an explicit sweepExpired() call (the drain-hot-path sweep) also trips the signal', () => {
+      const buf = new PendingMembershipContent(100, 1_000);
+      buf.defer(entry({ rowKey: 'F-1' }), 0);
+      expect(buf.sweepExpired(1_000)).toBe(1); // evicted at the deadline
+      expect(buf.consumeEvictionSignal()).toBe(true);
+      expect(buf.consumeEvictionSignal()).toBe(false);
+    });
+  });
 });
 
 describe('reapplyDrainedMemberContent', () => {

@@ -128,7 +128,22 @@ def _cmd_in_canonical_tree():
         _canon = os.path.realpath(
             os.environ.get('PAPERCUSP_CANONICAL_TREE')
             or os.path.join(_ws_root, 'papercusp'))
-        return _cwd == _canon or _cwd.startswith(_canon + os.sep)
+        def _in(p):
+            return p == _canon or p.startswith(_canon + os.sep)
+        if _in(_cwd):
+            return True
+        # Also honor a leading `cd <path> && …`: a marker-less fleet session
+        # (EI-7872) running e.g. `cd <canonical> && git reset --hard` (or a heavy
+        # build) carries the OUTER cwd in the payload, so the cwd check alone
+        # misses it. Resolve ONLY a simple, unambiguous leading cd target (no
+        # spaces, quotes, or shell operators/expansion) against the outer cwd;
+        # anything fancier falls back to the cwd-only result, and accurate
+        # realpath resolution means `cd /other/repo && …` stays outside canonical
+        # — so this only ever gates MORE (never a false positive on another tree).
+        _cd = re.match(r"\s*cd\s+(['\"]?)([^&|;<>\s'\"]+)\1\s*(?:&&|;|\||$)", command)
+        if _cd and _in(os.path.realpath(os.path.join(_cwd, _cd.group(2)))):
+            return True
+        return False
     except Exception:
         return False
 

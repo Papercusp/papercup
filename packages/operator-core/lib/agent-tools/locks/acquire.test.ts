@@ -135,6 +135,46 @@ describe('locks:acquire — outcome branches', () => {
   });
 });
 
+describe('locks:acquire — EI-9033 pending_edit (apply-on-grant) guardrails', () => {
+  it('rejects pending_edit without wake_on_grant (it runs on the wake queue)', async () => {
+    const b = body(await call({ pending_edit: { file: 'a.ts', old_string: 'X', new_string: 'Y' } }));
+    expect(b).toMatchObject({ ok: false });
+    expect(String(b.error)).toMatch(/requires wake_on_grant/);
+    expect(routeM).not.toHaveBeenCalled();
+  });
+
+  it('rejects pending_edit when paths is not exactly [pending_edit.file]', async () => {
+    const b = body(
+      await call({
+        paths: ['a.ts', 'b.ts'],
+        wake_on_grant: true,
+        pending_edit: { file: 'a.ts', old_string: 'X', new_string: 'Y' },
+      }),
+    );
+    expect(b).toMatchObject({ ok: false });
+    expect(String(b.error)).toMatch(/single-file only/);
+    expect(routeM).not.toHaveBeenCalled();
+  });
+
+  it('threads a valid pending_edit into the waiter and flags apply_on_grant', async () => {
+    routeM.mockResolvedValue({ value: { ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] } } as never);
+    insertM.mockResolvedValue({ ok: true, ticket_id: 'T9' } as never);
+    const b = body(
+      await call({
+        wake_on_grant: true,
+        pending_edit: { file: 'a.ts', old_string: 'OLD', new_string: 'NEW' },
+      }),
+    );
+    expect(b).toMatchObject({ ok: false, queued_for_wake: true, apply_on_grant: true, ticket_id: 'T9' });
+    expect(insertM).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        pendingEdit: { file: 'a.ts', old_string: 'OLD', new_string: 'NEW' },
+      }),
+    );
+  });
+});
+
 describe('locks:acquire — WI-1550 P-015 lock-event emission on a LOCALLY-decided grant', () => {
   it('emits a lock-event when the grant was decided local-authority with a resolved scope', async () => {
     routeM.mockResolvedValue({

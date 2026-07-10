@@ -25,12 +25,14 @@ const H = vi.hoisted(() => {
   const state: {
     existingSchemas: Set<string>;
     unsafeCalls: Array<{ query: string; params: unknown[] }>;
-  } = { existingSchemas: new Set(), unsafeCalls: [] };
+    probeCalls: string[];
+  } = { existingSchemas: new Set(), unsafeCalls: [], probeCalls: [] };
 
   const sql = ((_strings: readonly string[], ...values: unknown[]) => {
     // The only tagged-template query doSendMessage runs is the schema
     // existence check, whose single interpolated value is the schema name.
     const schema = values[0] as string;
+    state.probeCalls.push(schema);
     return Promise.resolve([{ exists: state.existingSchemas.has(schema) }]);
   }) as unknown as {
     (strings: readonly string[], ...values: unknown[]): Promise<unknown>;
@@ -48,7 +50,13 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...actual, getOrgPg: () => ({ sql: H.sql }) };
 });
 
-import { validateIdentityFields, executeAction, dispatchAction, type SendMessageAction } from './execute-action';
+import {
+  validateIdentityFields,
+  executeAction,
+  dispatchAction,
+  __resetSchemaExistsCacheForTest,
+  type SendMessageAction,
+} from './execute-action';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const body = (over: any) => ({ actionId: 'a1', action: { op: 'noop' }, ...over }) as never;
@@ -106,10 +114,14 @@ describe('doSendMessage — recipient harness existence (WI-385)', () => {
   beforeEach(() => {
     H.state.existingSchemas = new Set();
     H.state.unsafeCalls = [];
+    H.state.probeCalls = [];
+    __resetSchemaExistsCacheForTest();
   });
   afterEach(() => {
     H.state.existingSchemas = new Set();
     H.state.unsafeCalls = [];
+    H.state.probeCalls = [];
+    __resetSchemaExistsCacheForTest();
   });
 
   it('a non-existent recipient fails cleanly with not_found — no crash, no INSERT', async () => {
@@ -147,5 +159,30 @@ describe('doSendMessage — recipient harness existence (WI-385)', () => {
     expect(r.detail).toContain('ghostA');
     expect(r.detail).toContain('ghostB');
     expect(inserts()).toHaveLength(0);
+  });
+
+  // WI-3800: the existence probe was a top-3 pgbouncer churn driver (~605K
+  // catalog scans). A positive result is cached, so a repeat send to the same
+  // recipient must NOT re-probe — that is the pool-pressure relief.
+  it('caches a positive existence check — a repeat send to the same recipient skips the catalog probe', async () => {
+    H.state.existingSchemas.add('harness_target');
+    await dispatchAction(CALLER, action({ to: ['target'] }));
+    await dispatchAction(CALLER, action({ to: ['target'] }));
+    // Two sends, exactly one probe: the second is served from cache.
+    expect(H.state.probeCalls.filter((s) => s === 'harness_target')).toHaveLength(1);
+    expect(inserts()).toHaveLength(2);
+  });
+
+  // Correctness guard: a negative is never cached, so a recipient created after
+  // a failed send is seen on the very next attempt (no stale not_found).
+  it('does NOT cache a negative — a recipient created after a miss is seen on the next send', async () => {
+    const r1 = await dispatchAction(CALLER, action({ to: ['ghost'] }));
+    expect(r1).toMatchObject({ ok: false, error: 'not_found' });
+    H.state.existingSchemas.add('harness_ghost'); // created between attempts
+    const r2 = await dispatchAction(CALLER, action({ to: ['ghost'] }));
+    expect(r2.ok).toBe(true);
+    // Re-probed on the second attempt (negatives are not cached).
+    expect(H.state.probeCalls.filter((s) => s === 'harness_ghost').length).toBeGreaterThanOrEqual(2);
+    expect(inserts()).toHaveLength(1);
   });
 });

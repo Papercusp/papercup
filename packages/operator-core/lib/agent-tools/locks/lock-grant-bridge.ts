@@ -28,14 +28,13 @@ import { emitAwaitedEvent, registerAwaitReconciler } from '../../events/await/en
 import { listActiveAwaitsByKeyPrefix } from '../../events/await/store';
 import { getTxPool, readWaiterStatus } from './su-lock-store';
 import { subscribeWorkspace } from './workspace-listener';
+import { applyPendingEditOnGrant } from './apply-on-grant';
 
-export const LOCK_GRANT_KEY_PREFIX = 'lock:grant:';
-
-export const lockGrantKey = (ticketId: string): string => `${LOCK_GRANT_KEY_PREFIX}${ticketId}`;
-
-export function ticketFromLockGrantKey(key: string): string | null {
-  return key.startsWith(LOCK_GRANT_KEY_PREFIX) ? key.slice(LOCK_GRANT_KEY_PREFIX.length) : null;
-}
+// Key helpers live in ./lock-grant-key (broken out to avoid a module cycle with
+// apply-on-grant). Imported for local use AND re-exported so existing
+// `from './lock-grant-bridge'` importers keep resolving.
+import { LOCK_GRANT_KEY_PREFIX, lockGrantKey, ticketFromLockGrantKey } from './lock-grant-key';
+export { LOCK_GRANT_KEY_PREFIX, lockGrantKey, ticketFromLockGrantKey };
 
 /** Injectable seams for tests. */
 export interface BridgeDeps {
@@ -43,6 +42,10 @@ export interface BridgeDeps {
   readStatus?: (ticketId: string) => ReturnType<typeof readWaiterStatus>;
   emit?: typeof emitAwaitedEvent;
   listAwaits?: typeof listActiveAwaitsByKeyPrefix;
+  /** Apply-on-grant (EI-9033). Default applies a ticket's attached pending edit
+   *  in place of a wake. Returns whether the caller should still fire the grant
+   *  wake ('fallback'/'none') or suppress it ('applied'/'in-flight'). */
+  applyOnGrant?: typeof applyPendingEditOnGrant;
 }
 
 /**
@@ -53,14 +56,23 @@ export async function reconcileLockTicket(
   ticketId: string,
   workspaceId?: string,
   deps: BridgeDeps = {},
-): Promise<'fired-granted' | 'fired-terminal' | 'waiting' | 'no-op'> {
+): Promise<'fired-granted' | 'fired-terminal' | 'waiting' | 'no-op' | 'applied'> {
   const readStatus = deps.readStatus ?? ((tid: string) => readWaiterStatus(getTxPool(), tid));
   const emit = deps.emit ?? emitAwaitedEvent;
+  const applyOnGrant = deps.applyOnGrant ?? applyPendingEditOnGrant;
 
   const status = await readStatus(ticketId);
   if (status.status === 'waiting') return 'waiting';
 
   if (status.status === 'granted' && status.granted_lock_id) {
+    // Apply-on-grant (EI-9033): if the ticket carries a pending edit and it
+    // still applies cleanly, land it mechanically + notify passively INSTEAD of
+    // waking the agent to retry. Only 'fallback'/'none' fall through to the wake
+    // (region changed under the holder, or no pending edit was attached).
+    const disposition = await applyOnGrant(ticketId, workspaceId, {});
+    if (disposition === 'applied') return 'applied';
+    if (disposition === 'in-flight') return 'no-op';
+
     await emit({
       key: lockGrantKey(ticketId),
       summary: `file lock GRANTED — you now hold ${ (status.paths ?? []).join(', ') || 'your requested paths' } (lock ${status.granted_lock_id}). The TTL is already running: do the edit, then locks:release.`,

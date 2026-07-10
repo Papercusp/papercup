@@ -179,17 +179,43 @@ function currentCheckpointCandidate(root: string, execFn: ExecSyncLike): {
   return { current_head: currentHead, current_candidate: aged, quiet_cut_sec: quietSec };
 }
 
+/** Default MainPID liveness probe: `kill(pid, 0)` — succeeds iff a process with that PID
+ *  currently exists (and we have permission to signal it), without actually signalling it.
+ *  Injectable so `checkActiveCheckpointRun` is unit-testable without touching real PIDs. */
+function defaultPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // ESRCH = no such process (genuinely dead). EPERM means a process WITH that PID exists
+    // but we can't signal it (e.g. owned by another user) — that still proves it's alive.
+    return (e as NodeJS.ErrnoException)?.code === 'EPERM';
+  }
+}
+
 /**
  * Detect whether a manual checkpoint run for `root` is CURRENTLY ACTIVE, before we'd try to
  * launch a new one (WI-1562). Reads systemd's live unit state directly — rather than firing
  * `systemd-run` and parsing its refusal — so the caller gets a STRUCTURED answer (unit,
  * candidate, started_at, eta_sec) proactively instead of a bare "exited 1" string, and so
  * `launchDetachedCheckpoint` never has to attempt (and fail) the spawn just to find out.
+ *
+ * EI-9180: under extreme host load, systemd's own `--user` manager bookkeeping can lag well
+ * behind reality (observed: an 18h phantom-wedge — ActiveState kept reading 'active' for a run
+ * whose process was already gone, and every re-fire got refused with a stable, unchanging
+ * started_at/eta_sec from the original dead run). Trusting ActiveState alone lets a KILLED run
+ * (OOM, a manual `kill -9` outside systemd, a host-load-starved systemd manager that hasn't
+ * processed the child's SIGCHLD yet) permanently wedge the gate — nothing self-heals it short of
+ * an agent noticing and passing `force:true`. Cross-check with a real OS-level liveness probe
+ * (`kill(pid, 0)`) on the unit's own MainPID: if systemd still claims 'active' but the PID it
+ * itself reports is provably gone, the ActiveState is stale — treat the run as NOT active so the
+ * gate self-heals on the very next fire instead of staying wedged until someone force-bypasses it.
  */
 export function checkActiveCheckpointRun(
   root: string,
   execFn: ExecSyncLike = defaultExecSync,
   readLogHead: (logPath: string) => string | null = defaultReadLogHead,
+  pidAlive: (pid: number) => boolean = defaultPidAlive,
 ): ActiveCheckpointCheck {
   const unit = checkpointUnitForRoot(root);
   const r = execFn('systemctl', [
@@ -198,6 +224,7 @@ export function checkActiveCheckpointRun(
     `${unit}.service`,
     '--property=ActiveState',
     '--property=ExecMainStartTimestamp',
+    '--property=MainPID',
   ]);
   const props = parseSystemctlShow(r.stdout);
   const activeState = props.ActiveState ?? '';
@@ -205,6 +232,13 @@ export function checkActiveCheckpointRun(
   // A NEVER-STARTED or GC'd unit shows 'inactive' (or systemctl exits non-zero with empty
   // output for a truly unknown unit) — either way activeState won't be in this set.
   if (activeState !== 'active' && activeState !== 'activating' && activeState !== 'reloading') {
+    return { active: false, unit };
+  }
+  // EI-9180 self-heal: MainPID=0 means systemd has no main process to report (nothing to
+  // cross-check — fall through and trust ActiveState as before). A NONZERO MainPID that
+  // `kill(pid, 0)` proves is gone means systemd's ActiveState is stale — don't trust it.
+  const mainPid = Number(props.MainPID ?? '0');
+  if (Number.isFinite(mainPid) && mainPid > 0 && !pidAlive(mainPid)) {
     return { active: false, unit };
   }
   const startedAt = props.ExecMainStartTimestamp && props.ExecMainStartTimestamp !== '' ? props.ExecMainStartTimestamp : null;

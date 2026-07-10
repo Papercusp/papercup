@@ -62,12 +62,47 @@ describe('reconcileLockTicket', () => {
         paths: ['lib/foo.ts'],
       }),
       emit: emit as never,
+      // No pending edit attached → apply-on-grant is a no-op; the grant wake fires.
+      applyOnGrant: async () => 'none',
     });
     expect(out).toBe('fired-granted');
     const arg = (emit.mock.calls[0] as unknown as [{ key: string; payload: Record<string, unknown>; summary: string }])[0];
     expect(arg.key).toBe(lockGrantKey('t-2'));
     expect(arg.payload).toMatchObject({ granted: true, lock_id: 'lock-9', paths: ['lib/foo.ts'] });
     expect(arg.summary).toContain('GRANTED');
+  });
+
+  it('EI-9033 apply-on-grant: applied → NO wake (returns applied)', async () => {
+    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 1, notified: [], msgId: null }));
+    const out = await reconcileLockTicket('t-ap', 'ws', {
+      readStatus: async () => ({ status: 'granted' as const, granted_lock_id: 'l', paths: ['boot.ts'] }),
+      emit: emit as never,
+      applyOnGrant: async () => 'applied',
+    });
+    expect(out).toBe('applied');
+    expect(emit).not.toHaveBeenCalled(); // the agent was notified passively, not woken
+  });
+
+  it('EI-9033 apply-on-grant: in-flight (a peer reconcile is applying) → no-op, no wake', async () => {
+    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 1, notified: [], msgId: null }));
+    const out = await reconcileLockTicket('t-if', 'ws', {
+      readStatus: async () => ({ status: 'granted' as const, granted_lock_id: 'l', paths: ['boot.ts'] }),
+      emit: emit as never,
+      applyOnGrant: async () => 'in-flight',
+    });
+    expect(out).toBe('no-op');
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('EI-9033 apply-on-grant: fallback (region changed) → the normal grant wake fires', async () => {
+    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 1, notified: [], msgId: null }));
+    const out = await reconcileLockTicket('t-fb', 'ws', {
+      readStatus: async () => ({ status: 'granted' as const, granted_lock_id: 'l', paths: ['boot.ts'] }),
+      emit: emit as never,
+      applyOnGrant: async () => 'fallback',
+    });
+    expect(out).toBe('fired-granted');
+    expect(emit).toHaveBeenCalledTimes(1);
   });
 
   it('expired/cancelled/missing → fires granted:false (the waiter decides re-queue vs pivot)', async () => {
@@ -98,6 +133,7 @@ describe('reconcileLockGrantAwaits', () => {
         return s as never;
       },
       emit: emit as never,
+      applyOnGrant: async () => 'none',
     });
     // t-a fired, t-b threw (logged, skipped), t-c still waiting.
     expect(emit).toHaveBeenCalledTimes(1);

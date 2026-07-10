@@ -193,6 +193,70 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
   });
 });
 
+// EI-9180: an 18h phantom-wedge — ActiveState kept reading 'active' for a run whose process was
+// already gone (host-load-starved systemd --user manager bookkeeping lag / a kill -9 outside
+// systemd), so every re-fire got refused with a stable started_at/eta_sec from the dead run and
+// nothing self-healed short of a manual force:true. Cross-check the unit's own reported MainPID
+// with a real OS-level liveness probe; when systemd's ActiveState disagrees with reality, trust
+// reality.
+describe('checkActiveCheckpointRun MainPID liveness cross-check (EI-9180 self-heal)', () => {
+  function fakeSystemctlShow(props: Record<string, string>) {
+    const stdout = Object.entries(props)
+      .map(([k, v]) => `${k}=${v}`)
+      .join('\n');
+    return vi.fn(() => ({ status: 0, stdout, stderr: '' }));
+  }
+
+  it('self-heals: ActiveState says active but the reported MainPID is provably dead → active:false', () => {
+    const execFn = fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: '2026-07-10T12:20:44Z', MainPID: '99999' });
+    const pidAlive = vi.fn(() => false); // the PID systemd names no longer exists
+    const r = checkActiveCheckpointRun('/tree', execFn, () => null, pidAlive);
+    expect(pidAlive).toHaveBeenCalledWith(99999);
+    expect(r).toEqual({ active: false, unit: checkpointUnitForRoot('/tree') });
+  });
+
+  it('trusts ActiveState when the reported MainPID IS alive (the normal case)', () => {
+    const startedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    const execFn = fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: startedAt, MainPID: '12345' });
+    const pidAlive = vi.fn(() => true);
+    const r = checkActiveCheckpointRun('/tree', execFn, () => null, pidAlive);
+    expect(pidAlive).toHaveBeenCalledWith(12345);
+    expect(r.active).toBe(true);
+  });
+
+  it('MainPID=0 (systemd has no main process to report) skips the probe and trusts ActiveState (back-compat)', () => {
+    const startedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    const execFn = fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: startedAt, MainPID: '0' });
+    const pidAlive = vi.fn(() => false);
+    const r = checkActiveCheckpointRun('/tree', execFn, () => null, pidAlive);
+    expect(pidAlive).not.toHaveBeenCalled();
+    expect(r.active).toBe(true);
+  });
+
+  it('no MainPID property at all (older systemd / unexpected output) skips the probe and trusts ActiveState', () => {
+    const startedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    const execFn = fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: startedAt });
+    const pidAlive = vi.fn(() => false);
+    const r = checkActiveCheckpointRun('/tree', execFn, () => null, pidAlive);
+    expect(pidAlive).not.toHaveBeenCalled();
+    expect(r.active).toBe(true);
+  });
+
+  it('default pidAlive probe uses kill(pid, 0): the current process (self) reads as alive', () => {
+    // No injected pidAlive — exercise the real default against our OWN pid, guaranteed alive.
+    const execFn = fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: new Date().toISOString(), MainPID: String(process.pid) });
+    const r = checkActiveCheckpointRun('/tree', execFn, () => null);
+    expect(r.active).toBe(true);
+  });
+
+  it('default pidAlive probe: an implausible/reserved PID (1 is always alive as init; use a huge unused one) reads as dead', () => {
+    // PID space wraps well below 2**22 on Linux; a value past any real max is guaranteed absent.
+    const execFn = fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: new Date().toISOString(), MainPID: '4194304' });
+    const r = checkActiveCheckpointRun('/tree', execFn, () => null);
+    expect(r).toEqual({ active: false, unit: checkpointUnitForRoot('/tree') });
+  });
+});
+
 describe('launchDetachedCheckpoint refuse-when-active (WI-1562)', () => {
   it('refuses with a structured alreadyRunning detail and never calls spawnFn when a run is active', async () => {
     const spawnFn = vi.fn();

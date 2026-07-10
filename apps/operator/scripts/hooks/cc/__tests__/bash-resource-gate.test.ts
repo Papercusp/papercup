@@ -319,3 +319,39 @@ describe('heavy-command admission control (WI-3821)', () => {
     expectAllow(runGate(bashCmd('npm run test:affected'), { ...AGENT, PC_HEAVY_MAX_LOAD1: '100', PC_HEAVY_LOAD1_OVERRIDE: 'not-a-number' }));
   });
 });
+
+describe('compound `cd <canonical> && …` coverage (WI-3853 — marker-less fleet sessions)', () => {
+  // The OUTER cwd is outside the canonical tree; the command cds INTO it. A
+  // fleet-launched session carries no PAPERCUSP_AGENT_SESSION marker (EI-7872),
+  // so only the tree check can catch these — and it must follow the leading cd.
+  const OUTSIDE = '/tmp/outside-canonical';
+  const OVER = { PC_HEAVY_MAX_LOAD1: '100', PC_HEAVY_LOAD1_OVERRIDE: '200' };
+  const expectHeavyDeny = (out: { stdout: string; status: number | null }) => {
+    expect(out.status).toBe(0);
+    expect(JSON.parse(out.stdout).hookSpecificOutput.permissionDecisionReason).toContain('heavy-command admission');
+  };
+
+  it('git-guard fires on `cd <canonical> && git reset --hard` from a marker-less session', () => {
+    expectGitDeny(runGate(bashCmd(`cd ${CANON} && git reset --hard`, { cwd: OUTSIDE }), CANON_ENV));
+  });
+
+  it('git-guard resolves a simply-quoted cd target', () => {
+    expectGitDeny(runGate(bashCmd(`cd "${CANON}" && git clean -fd`, { cwd: OUTSIDE }), CANON_ENV));
+  });
+
+  it('git-guard does NOT fire when the cd targets a DIFFERENT tree (no false positive)', () => {
+    expectAllow(runGate(bashCmd('cd /some/other/repo && git reset --hard', { cwd: OUTSIDE }), CANON_ENV));
+  });
+
+  it('admission gate denies `cd <canonical> && npm run test:affected` (marker-less, over threshold)', () => {
+    expectHeavyDeny(runGate(bashCmd(`cd ${CANON} && npm run test:affected`, { cwd: OUTSIDE }), { ...CANON_ENV, ...OVER }));
+  });
+
+  it('admission gate does NOT gate a heavy command that cds into a DIFFERENT tree', () => {
+    expectAllow(runGate(bashCmd('cd /some/other/repo && npm run test:affected', { cwd: OUTSIDE }), { ...CANON_ENV, ...OVER }));
+  });
+
+  it('a bare `cd` with no path does not throw / falls through to allow', () => {
+    expectAllow(runGate(bashCmd('cd && npm run test:affected', { cwd: OUTSIDE }), { ...CANON_ENV, ...OVER }));
+  });
+});

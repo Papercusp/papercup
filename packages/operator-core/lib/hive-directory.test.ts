@@ -453,6 +453,67 @@ describe('cross-Hive addressability — hive_pubkey flows announce→DiscoveredH
   });
 });
 
+describe('EI-1599: contentPeersForHive / lastContentSyncAtForHive', () => {
+  const desc = (over: Partial<LocalHiveDescriptor> = {}): LocalHiveDescriptor => ({
+    potId: 'owned-1',
+    title: 'Owned',
+    description: 'd',
+    memberTopics: ['a'.repeat(64)],
+    visibility: 'private',
+    createdAt: NOW,
+    ownerGithubLogin: 'me',
+    ownerGithubUserId: 1,
+    ownerDevicePubkey: keypair().pubkey,
+    attestationGistId: 'g',
+    ...over,
+  });
+
+  it('is 0/null for an unknown potId', () => {
+    const dir = new HiveDirectory(makeDeps({ contentPeers: () => 9, lastContentSyncMs: () => 123 }));
+    expect(dir.contentPeersForHive('nope')).toBe(0);
+    expect(dir.lastContentSyncAtForHive('nope')).toBeNull();
+  });
+
+  it('is 0/null for a hive with no minted identity (no hivePubkey) — never calls the seam', () => {
+    const dir = new HiveDirectory(makeDeps({ contentPeers: () => 9, lastContentSyncMs: () => 123 }));
+    dir.registerLocalHive(desc()); // no hivePubkey
+    expect(dir.contentPeersForHive('owned-1')).toBe(0);
+    expect(dir.lastContentSyncAtForHive('owned-1')).toBeNull();
+  });
+
+  it('reports the wired seam\'s value, scoped to THIS hive\'s content topic — even for a PRIVATE hive', () => {
+    let seenTopicHex: string | undefined;
+    const dir = new HiveDirectory(
+      makeDeps({
+        contentPeers: (topicHex) => {
+          seenTopicHex = topicHex;
+          return 2;
+        },
+        lastContentSyncMs: () => NOW - 1000,
+      }),
+    );
+    dir.registerLocalHive(desc({ potId: 'priv', visibility: 'private', hivePubkey: 'aGl2ZS1wdWJrZXktMzItYnl0ZXMtYmFzZTY0eHg=' }));
+    // Private hives never announce (reachablePeersForHive is 0), but content
+    // replication is NOT gated on discovery visibility.
+    expect(dir.contentPeersForHive('priv')).toBe(2);
+    expect(dir.lastContentSyncAtForHive('priv')).toBe(NOW - 1000);
+    expect(seenTopicHex).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('scopes different hives (different hivePubkeys) to different topics', () => {
+    const seen: string[] = [];
+    const dir = new HiveDirectory(
+      makeDeps({ contentPeers: (topicHex) => { if (topicHex) seen.push(topicHex); return 1; } }),
+    );
+    dir.registerLocalHive(desc({ potId: 'h1', hivePubkey: 'aGl2ZS1wdWJrZXktb25lLTMyLWJ5dGVzeHg=' }));
+    dir.registerLocalHive(desc({ potId: 'h2', hivePubkey: 'aGl2ZS1wdWJrZXktdHdvLTMyLWJ5dGVzeHg=' }));
+    dir.contentPeersForHive('h1');
+    dir.contentPeersForHive('h2');
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).not.toBe(seen[1]);
+  });
+});
+
 describe('hiveDirectoryReady — the capability probe', () => {
   it('is true now that the directory substrate exists', () => {
     expect(hiveDirectoryReady()).toBe(true);

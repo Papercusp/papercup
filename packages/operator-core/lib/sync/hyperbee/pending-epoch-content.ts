@@ -71,6 +71,14 @@ export class PendingEpochContent {
   private seqCounter = 0;
   /** Total deferred ops across all buckets (kept in sync for O(1) bound checks). */
   private total = 0;
+  /** WI-3852 (F2 of WI-898): set true whenever `evictOldest` drops a deferral. There is NO
+   *  steady-state re-fold in production (`createMergeCursor` only runs at boot / log-set
+   *  change / an explicit `forceReFold`, per boot.ts) — without this signal an evicted
+   *  deferral's ciphertext sits unreachable in the peer log until the NEXT process restart,
+   *  contradicting this class's own "a later re-fold re-defers it" contract. Consumed (and
+   *  cleared) by boot.ts's merge loop every pass to trip `forceReFold`, so an eviction is
+   *  recovered by the very next merge pass instead of waiting on a restart. */
+  private evictedSinceCheck = false;
 
   constructor(private readonly maxPending: number = DEFAULT_MAX_PENDING) {}
 
@@ -121,9 +129,21 @@ export class PendingEpochContent {
     return this.buckets.size;
   }
 
+  /** WI-3852: read-and-clear whether `evictOldest` has dropped anything since the last call.
+   *  The caller (boot.ts's merge loop) polls this once per pass and, on true, sets
+   *  `forceReFold` so the evicted op's bytes (still in the peer log) are re-encountered and
+   *  re-deferred (or, if its key has since arrived, actually decrypted) by the very next
+   *  pass — closing the "no recovery short of a process restart" gap. */
+  consumeEvictionSignal(): boolean {
+    const v = this.evictedSinceCheck;
+    this.evictedSinceCheck = false;
+    return v;
+  }
+
   /** Drop the globally-oldest deferral to honour `maxPending`. The op's ciphertext
    *  remains in the peer log, so a later re-fold re-defers it — dropping is safe
-   *  back-pressure, not data loss. */
+   *  back-pressure, not data loss (as long as that later re-fold actually happens —
+   *  see `consumeEvictionSignal`). */
   private evictOldest(): void {
     let oldestKey: string | null = null;
     let oldestSeq = Infinity;
@@ -139,6 +159,7 @@ export class PendingEpochContent {
     list.shift();
     this.total--;
     if (list.length === 0) this.buckets.delete(oldestKey);
+    this.evictedSinceCheck = true;
   }
 }
 

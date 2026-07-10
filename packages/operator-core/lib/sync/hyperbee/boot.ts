@@ -1929,6 +1929,18 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   /** One serialized merge pass. Only ever called from mergeNow's gate. */
   async function mergeOnePass(): Promise<number> {
     try {
+      // WI-3852 (F2 of WI-898): a bucket EVICTED from either content-deferral buffer (epoch-
+      // key-not-yet-local / member-not-yet-federated) since the last pass has NO recovery path
+      // short of a process restart, because there is otherwise no steady-state re-fold in
+      // production — createMergeCursor only resets at boot / log-set change / an explicit
+      // forceReFold below. Poll-and-clear each buffer's eviction signal once per pass (cheap:
+      // O(1) flag reads, false in the overwhelmingly common case of zero evictions) and trip
+      // forceReFold on a hit so the SAME re-fold mechanism the rekey rebind already uses
+      // re-encounters (and, for a still-relevant deferral, re-applies) the evicted op on the
+      // very next pass instead of waiting on a restart.
+      if (rekeyDeps?.pending.consumeEvictionSignal()) forceReFold = true;
+      if (pendingMemberContent.consumeEvictionSignal()) forceReFold = true;
+
       // Queued admissions land first so THIS pass merges them (P-022).
       await drainAdmissionQueue();
 

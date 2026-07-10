@@ -114,6 +114,16 @@ export class PendingMembershipContent {
   private seqCounter = 0;
   /** Total deferred ops across all buckets (kept in sync for O(1) bound checks). */
   private total = 0;
+  /** WI-3852 (F2 of WI-898): set true whenever `sweepExpired` or `evictOldest` drops a
+   *  deferral. Unlike pending-epoch-content, this class stores a `reapply` CLOSURE per entry
+   *  (not raw op bytes) — but the doc comments above still promise "the op's bytes stay in
+   *  the peer log, so a later re-fold re-encounters (and, for a real member, re-defers) it",
+   *  which is only true if a re-fold actually runs. There is NO steady-state re-fold in
+   *  production (`createMergeCursor` only resets at boot / log-set change / an explicit
+   *  `forceReFold`) — without this signal a TTL-expired or capacity-evicted deferral for a
+   *  genuine member (the race just ran long) is unreachable until the NEXT process restart.
+   *  Consumed (and cleared) by boot.ts's merge loop every pass to trip `forceReFold`. */
+  private evictedSinceCheck = false;
 
   constructor(
     private readonly maxPending: number = DEFAULT_MAX_PENDING_MEMBER_CONTENT,
@@ -235,6 +245,7 @@ export class PendingMembershipContent {
       else this.sourceLogBuckets.set(sourceLogKey, live);
     }
     this.total -= removed;
+    if (removed > 0) this.evictedSinceCheck = true;
     return removed;
   }
 
@@ -248,8 +259,17 @@ export class PendingMembershipContent {
     return this.buckets.size + this.sourceLogBuckets.size;
   }
 
+  /** WI-3852: read-and-clear whether `sweepExpired`/`evictOldest` have dropped anything since
+   *  the last call. See the field doc above for why this exists. */
+  consumeEvictionSignal(): boolean {
+    const v = this.evictedSinceCheck;
+    this.evictedSinceCheck = false;
+    return v;
+  }
+
   /** Drop the globally-oldest deferral to honour `maxPending`. The op's bytes remain in the peer
-   *  log, so a later re-fold re-defers it (for a real member) — back-pressure, not data loss. */
+   *  log, so a later re-fold re-defers it (for a real member) — back-pressure, not data loss
+   *  (as long as that later re-fold actually happens — see `consumeEvictionSignal`). */
   private evictOldest(): void {
     let oldestKey: string | null = null;
     let oldestKind: 'device' | 'sourceLog' | null = null;
@@ -276,6 +296,7 @@ export class PendingMembershipContent {
     list.shift();
     this.total--;
     if (list.length === 0) buckets.delete(oldestKey);
+    this.evictedSinceCheck = true;
   }
 }
 

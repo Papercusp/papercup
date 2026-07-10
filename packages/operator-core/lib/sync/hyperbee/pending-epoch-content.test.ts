@@ -96,4 +96,44 @@ describe('PendingEpochContent — key-before-content deferral', () => {
     expect(p.drainEpoch(HIVE, 2).map((d) => d.op.hbKey)).toEqual(['b']);
     expect(p.drainEpoch(HIVE, 4).map((d) => d.op.hbKey)).toEqual(['d']);
   });
+
+  describe('WI-3852 (F2 of WI-898): eviction-signal recovery without a process restart', () => {
+    it('consumeEvictionSignal is false until an eviction actually happens', () => {
+      const p = new PendingEpochContent(50);
+      expect(p.consumeEvictionSignal()).toBe(false);
+      p.defer(op('a'), HIVE, 1);
+      p.defer(op('b'), HIVE, 2);
+      // Under the cap — deferring alone never trips the signal.
+      expect(p.consumeEvictionSignal()).toBe(false);
+    });
+
+    it('overflowing maxPending trips the eviction signal exactly once until re-consumed', () => {
+      const CAP = 10;
+      const p = new PendingEpochContent(CAP);
+      for (let i = 0; i < CAP; i++) p.defer(op(`F-${i}`), HIVE, 1);
+      expect(p.consumeEvictionSignal()).toBe(false); // still at cap, nothing evicted yet
+
+      p.defer(op('F-overflow'), HIVE, 1); // CAP+1 → evicts the oldest
+      // THE RECOVERY PATH (no process restart): the signal fires...
+      expect(p.consumeEvictionSignal()).toBe(true);
+      // ...and consuming it CLEARS it (read-and-clear, not read-only) so a caller
+      // that already reacted (tripped its own forceReFold) doesn't re-react forever.
+      expect(p.consumeEvictionSignal()).toBe(false);
+
+      // Multiple evictions between polls still collapse to one true (a boot.ts pass
+      // only needs to know "at least one eviction happened since last pass").
+      for (let i = 0; i < 5; i++) p.defer(op(`F-more-${i}`), HIVE, 1); // 5 more evictions
+      expect(p.consumeEvictionSignal()).toBe(true);
+      expect(p.consumeEvictionSignal()).toBe(false);
+
+      // And critically: the evicted ops are NOT actually gone from the source-of-truth
+      // (the peer log) — this buffer only forgot them. A re-fold (which boot.ts now
+      // triggers off this very signal) re-defers whatever is still relevant; draining
+      // proves the buffer itself recovered to a consistent, boundable state (no restart
+      // needed to keep operating).
+      expect(p.size()).toBe(CAP);
+      const ready = p.drainEpoch(HIVE, 1);
+      expect(ready.length).toBe(CAP);
+    });
+  });
 });

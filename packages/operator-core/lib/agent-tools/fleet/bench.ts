@@ -223,7 +223,7 @@ export default defineTool({
         expires_ts: row.expiresTs,
         registered: handle !== null,
         wake_handle_note: handleNote,
-        benched_by: identity.ownerId,
+        benched_by: ownerId,
         advice:
           handle !== null
             ? 'Benched. events:emit on this key will wake them; the staged assignment rides the wake note.'
