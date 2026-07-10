@@ -523,6 +523,18 @@ export interface InvariantThresholds {
    *  lower one fires an EI on the human's normal review backlog every hour, the EI-6910
    *  anti-pattern (and the two knobs could silently drift apart, reopening the gap). */
   pendingWakeStaleHours: number;
+  /** WI-3959: a coord_event_log-touching pg_stat_statements entry averaging more
+   *  rows/call than this is flagged as a "furnace" — an unbounded full-surface
+   *  read (the WI-3937/WI-3869 class: readLines-shaped, no LIMIT/id-cursor). The
+   *  original WI-3937 incident sustained ~28k rows/call across 285k calls before
+   *  it was caught, so 50k comfortably clears any legitimate bounded read
+   *  (a single page, a small delta) while still catching the class early. */
+  coordLogFurnaceRowsPerCall: number;
+  /** A coord_event_log statement averaging slower than this (ms) is ALSO flagged
+   *  as a furnace, even under the rows/call threshold — a slow-but-not-huge scan
+   *  (e.g. missing an index) is the same drain-starving pattern the rows check
+   *  exists to catch. */
+  coordLogFurnaceMeanExecMs: number;
 }
 
 export const DEFAULT_THRESHOLDS: InvariantThresholds = {
@@ -531,6 +543,8 @@ export const DEFAULT_THRESHOLDS: InvariantThresholds = {
   presenceGhostHours: 72,
   wakeQueueDepthMax: 50,
   pendingWakeStaleHours: 24,
+  coordLogFurnaceRowsPerCall: 50_000,
+  coordLogFurnaceMeanExecMs: 2_000,
 };
 
 /**
@@ -554,6 +568,31 @@ export interface OpenEscalationLite {
   hasOptions: boolean;
 }
 
+/** One pg_stat_statements row touching `coord_event_log` — raw, NOT yet
+ *  threshold-judged (evaluateInvariants does the judging, same split as every
+ *  other check here). Populated best-effort: empty when pg_stat_statements is
+ *  not installed (it is superuser-only / opt-in — see sql/002-tables.sql). */
+export interface CoordLogFurnaceStatement {
+  queryid: string;
+  /** Truncated query text — enough to identify the call site, never the full
+   *  (potentially huge) statement. */
+  queryPreview: string;
+  calls: number;
+  rowsPerCall: number;
+  meanExecMs: number;
+}
+
+/** A CURRENTLY-RUNNING pg_stat_activity row whose query text also touches
+ *  `coord_event_log` — best-effort forensics so a furnace violation can name
+ *  the offending client (application_name/pid) when caught in the act, not
+ *  just the aggregate historical pattern. Correlation is by text pattern, not
+ *  a precise queryid join (pg_stat_activity carries no queryid column here). */
+export interface CoordLogActiveOffender {
+  pid: number;
+  applicationName: string | null;
+  durationSeconds: number;
+}
+
 export interface InvariantSnapshot {
   openHandoffTs: string[];
   openEscalations: OpenEscalationLite[];
@@ -563,6 +602,11 @@ export interface InvariantSnapshot {
   presenceGhosts: number;
   wakeQueueDepth: number;
   wakeQueueOldestMs: number | null;
+  /** WI-3959: coord_event_log-touching pg_stat_statements rows (raw, unjudged). */
+  coordLogFurnaces: CoordLogFurnaceStatement[];
+  /** WI-3959: currently-running queries matching the same pattern, for naming
+   *  the live offender when one is caught mid-scan. */
+  coordLogActiveOffenders: CoordLogActiveOffender[];
 }
 
 export interface Violation {
@@ -648,6 +692,31 @@ export function evaluateInvariants(snap: InvariantSnapshot, t: InvariantThreshol
       title: 'coord invariant: wake-queue depth/age growth',
       detail: `pending_wakes depth=${snap.wakeQueueDepth} (max ${t.wakeQueueDepthMax}), oldest=${oldestH.toFixed(1)}h (auto-expiry ${t.pendingWakeStaleHours}h + ${graceH.toFixed(0)}h grace) — the stale-wake sweep is not keeping the queue bounded.`,
       severity: 'minor',
+    });
+  }
+  // WI-3959: recurrence guard for the WI-3937/WI-3869 class — an unbounded
+  // full-surface read against coord_event_log (8.04B rows / 48h of DB time in
+  // the original incident, which starved the bg-host substrate drain into its
+  // pass timeout). Fires MAJOR (not minor, like the other substrate-hygiene
+  // checks above) because this class has already once taken the whole drain
+  // down, not just left debris.
+  const furnaces = snap.coordLogFurnaces.filter(
+    (f) => f.rowsPerCall > t.coordLogFurnaceRowsPerCall || f.meanExecMs > t.coordLogFurnaceMeanExecMs,
+  );
+  if (furnaces.length > 0) {
+    const lines = furnaces.map(
+      (f) =>
+        `  queryid=${f.queryid} calls=${f.calls} rows/call=${Math.round(f.rowsPerCall)} mean_exec_ms=${Math.round(f.meanExecMs)} :: ${f.queryPreview}`,
+    );
+    const offenders = snap.coordLogActiveOffenders.length
+      ? `\nCurrently-active client(s) matching the pattern (best-effort text correlation): ${snap.coordLogActiveOffenders
+          .map((o) => `pid=${o.pid} app=${o.applicationName ?? 'unknown'} running=${o.durationSeconds.toFixed(1)}s`)
+          .join(', ')}`
+      : '';
+    out.push({
+      title: 'coord invariant: unbounded coord_event_log read pattern (furnace class)',
+      detail: `${furnaces.length} coord_event_log-touching statement(s) averaging > ${t.coordLogFurnaceRowsPerCall} rows/call or > ${t.coordLogFurnaceMeanExecMs}ms mean exec time — an unbounded/near-unbounded scan (WI-3937/WI-3869 class):\n${lines.join('\n')}${offenders}`,
+      severity: 'major',
     });
   }
   return out;
@@ -740,6 +809,61 @@ export async function drainOperationalEscalationsBeforeMeasure(
   }
 }
 
+/**
+ * WI-3959: pg_stat_statements rows touching `coord_event_log`, top-N by
+ * rows/call. Best-effort — the extension is superuser-only / opt-in (see
+ * sql/002-tables.sql), so an unavailable extension (undefined_table /
+ * undefined_function) degrades to an empty list, same as every other check
+ * here. Exported for unit tests (injectable sql).
+ */
+export async function gatherCoordLogFurnaceStatements(
+  sql: postgres.Sql,
+  limit = 10,
+): Promise<CoordLogFurnaceStatement[]> {
+  const rows = await sql<{ queryid: string; query_preview: string; calls: string; rows: string; mean_exec_time: number }[]>`
+    SELECT
+      queryid::text AS queryid,
+      LEFT(query, 300) AS query_preview,
+      calls::text AS calls,
+      rows::text AS rows,
+      mean_exec_time
+    FROM pg_stat_statements
+    WHERE query ILIKE '%coord_event_log%'
+      AND calls > 0
+    ORDER BY (rows::float8 / GREATEST(calls, 1)) DESC
+    LIMIT ${limit}
+  `;
+  return rows.map((r) => {
+    const calls = Number(r.calls);
+    return {
+      queryid: r.queryid,
+      queryPreview: r.query_preview,
+      calls,
+      rowsPerCall: Number(r.rows) / Math.max(calls, 1),
+      meanExecMs: r.mean_exec_time,
+    };
+  });
+}
+
+/**
+ * WI-3959: currently-running queries whose text also touches
+ * `coord_event_log` — best-effort forensics (pg_stat_activity, mirrors
+ * dev:pg_active_queries) so a furnace violation can name a live offender's
+ * application_name/pid when caught mid-scan. Exported for unit tests.
+ */
+export async function gatherCoordLogActiveOffenders(sql: postgres.Sql, limit = 10): Promise<CoordLogActiveOffender[]> {
+  const rows = await sql<{ pid: number; application_name: string | null; duration_seconds: number }[]>`
+    SELECT pid, application_name, EXTRACT(EPOCH FROM (now() - query_start))::float AS duration_seconds
+    FROM pg_stat_activity
+    WHERE datname = current_database()
+      AND state = 'active'
+      AND query ILIKE '%coord_event_log%'
+    ORDER BY query_start ASC NULLS LAST
+    LIMIT ${limit}
+  `;
+  return rows.map((r) => ({ pid: r.pid, applicationName: r.application_name, durationSeconds: r.duration_seconds }));
+}
+
 /** Gather the live snapshot. Every leg is isolated — a failing query zeroes
  *  its own check (and notes it), never the fire. */
 async function gatherSnapshot(t: InvariantThresholds): Promise<InvariantSnapshot> {
@@ -750,6 +874,8 @@ async function gatherSnapshot(t: InvariantThresholds): Promise<InvariantSnapshot
     presenceGhosts: 0,
     wakeQueueDepth: 0,
     wakeQueueOldestMs: null,
+    coordLogFurnaces: [],
+    coordLogActiveOffenders: [],
   };
   try {
     snap.openHandoffTs = (await listHandoffs({ status: 'open' })).map((h) => h.record.ts);
