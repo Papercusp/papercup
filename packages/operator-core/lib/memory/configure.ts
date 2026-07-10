@@ -422,15 +422,25 @@ export async function localAvailable(): Promise<boolean> {
   }
 }
 
+/** Every embedder preference, in ONE place: the env parser, the return type,
+ *  and tests all derive from this. A hand-copied subset drifts the moment a
+ *  leg is added or a default flips (it did, when 'gemma' became the default). */
+export const EMBEDDER_PREFERENCES = ['auto', 'openai', 'local', 'gemma', 'disabled'] as const;
+export type EmbedderPreference = (typeof EMBEDDER_PREFERENCES)[number];
+
+const isEmbedderPreference = (v: string | undefined): v is EmbedderPreference =>
+  !!v && (EMBEDDER_PREFERENCES as readonly string[]).includes(v);
+
 /** Read the live embedder preference (env override → persisted voice pref →
  *  'auto'). Exported as a seam for the `resolveEmbedder` cascade tests (GAP 4). */
-export async function readEmbedderPreference(): Promise<'auto' | 'openai' | 'local' | 'gemma' | 'disabled'> {
+export async function readEmbedderPreference(): Promise<EmbedderPreference> {
   // Env override first (memory-backend-improve-and-hybrid P-004b): lets the
   // bench force one leg (e.g. PAPERCUSP_MEMORY_EMBEDDER=local to measure the
   // BGE-ONNX leg, or =gemma for EmbeddingGemma) without flipping the live
   // operator preference in PG.
-  const env = process.env.PAPERCUSP_MEMORY_EMBEDDER;
-  if (env === 'auto' || env === 'openai' || env === 'local' || env === 'gemma' || env === 'disabled') return env;
+  if (isEmbedderPreference(process.env.PAPERCUSP_MEMORY_EMBEDDER)) {
+    return process.env.PAPERCUSP_MEMORY_EMBEDDER;
+  }
   try {
     const prefs = await loadVoicePrefs();
     return prefs.memoryEmbedderMode;

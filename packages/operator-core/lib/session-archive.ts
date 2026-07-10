@@ -83,6 +83,11 @@ export function sha256Hex(buf: Buffer): string {
   return createHash('sha256').update(buf).digest('hex');
 }
 
+/** Decompress one archived file row back to its raw bytes (codec-aware). */
+export async function decompressArchiveBlob(row: Pick<ArchiveFileRow, 'codec' | 'blob'>): Promise<Buffer> {
+  return row.codec === 'zstd' ? zstdDecompress(row.blob) : row.blob;
+}
+
 // ── types ────────────────────────────────────────────────────────────────────
 
 export type ArchiveSourceKind = 'claude' | 'omp' | 'codex';
@@ -515,7 +520,8 @@ export function pgSessionArchiveStore(): SessionArchiveStore {
               (workspace_id, source_kind, session_id, relpath, codec, blob,
                sha256, bytes_raw, bytes_stored, mtime)
             VALUES (${f.workspace_id}, ${f.source_kind}, ${f.session_id}, ${f.relpath},
-                    ${f.codec}, ${f.blob}, ${f.sha256}, ${f.bytes_raw}, ${f.bytes_stored}, ${f.mtime})
+                    ${f.codec}, ${f.blob}, ${f.sha256}, ${f.bytes_raw}, ${f.bytes_stored},
+                    ${f.mtime ? f.mtime.toISOString() : null})
             ON CONFLICT (workspace_id, source_kind, session_id, relpath) DO UPDATE SET
               codec = EXCLUDED.codec, blob = EXCLUDED.blob, sha256 = EXCLUDED.sha256,
               bytes_raw = EXCLUDED.bytes_raw, bytes_stored = EXCLUDED.bytes_stored,

@@ -43,6 +43,7 @@ import {
   compactCoverage,
   coverageCollisions,
   type CoverageCollision,
+  type PlanItemCoverage,
 } from '../../plan-item-coverage';
 import { listParkedAwaitsForSubscribers } from '../../events/await/store';
 import { boundRowField, boundListField, trimToByteBudget } from '../_bound-output';
@@ -53,6 +54,40 @@ import { shapeDagFrontier, claimsFromCoverage, type DagFrontierView } from '../.
 
 /** Coverage levels most-covered → least, for sorting the rollup. */
 const COVERAGE_ORDER = ['complete', 'full', 'partial', 'unclaimed', 'none'];
+
+/** A 'complete' coverage entry stays in the DEFAULT rollup only while its newest
+ *  linked work-item update is this recent (EI-9015). */
+export const COVERAGE_ACTIVE_WINDOW_MS = 7 * 24 * 3600 * 1000;
+
+/**
+ * EI-9015: the ACTIVE-scope coverage default. coord_links edges never expire, so the
+ * unfiltered rollup replayed 60+ long-complete, unrelated plan entries on EVERY
+ * mandated orient wake (the caller with no resolvable {agent} gets no inScope
+ * narrowing at all). Default: keep everything still in motion (level !== 'complete'),
+ * and keep 'complete' entries only when they are the caller's own lane
+ * (`lanePlans`) or recently touched (~7d). An explicit `{plan}` query or
+ * `fullCoverage:true` returns the untrimmed ledger. Pure — unit-tested directly.
+ */
+export function filterActiveCoverage(
+  entries: PlanItemCoverage[],
+  opts: {
+    explicitPlan?: string | null;
+    lanePlans?: Set<string> | null;
+    fullCoverage?: boolean;
+    now?: number;
+  },
+): PlanItemCoverage[] {
+  if (opts.fullCoverage || opts.explicitPlan) return entries;
+  const now = opts.now ?? Date.now();
+  return entries.filter((c) => {
+    if (c.level !== 'complete') return true;
+    const hash = c.ref.indexOf('#');
+    const plan = hash > 0 ? c.ref.slice(0, hash) : null;
+    if (plan && opts.lanePlans?.has(plan)) return true;
+    const ts = c.lastActivityAt?.getTime();
+    return ts != null && now - ts <= COVERAGE_ACTIVE_WINDOW_MS;
+  });
+}
 
 /**
  * EI-6077 (detector gap): `AgentAssignment.alive` is heartbeat-freshness only
@@ -303,6 +338,12 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('Include lapsed (expired, unreclaimed) plan-item leases. Default false.'),
+    fullCoverage: z
+      .boolean()
+      .optional()
+      .describe(
+        "Include long-complete historical coverage entries (the full ledger). Default false: 'complete' entries are kept only for your lane plans or with recent (~7d) activity (EI-9015).",
+      ),
     includeDag: z
       .boolean()
       .optional()
@@ -416,8 +457,14 @@ export default defineTool({
         return true;
       };
       const scoped = [...covMap.values()].filter((c) => inScope(c.ref));
+      // Collisions are computed over the UNTRIMMED scope — the active-coverage
+      // default below is a payload filter, never a correctness filter.
       collisions = coverageCollisions(scoped);
-      const entries = scoped
+      const entries = filterActiveCoverage(scoped, {
+        explicitPlan: args.plan ?? null,
+        lanePlans: agentPlans,
+        fullCoverage: args.fullCoverage,
+      })
         // 'none' carries no signal worth surfacing here (it's the absence of coverage).
         .filter((c) => c.level !== 'none')
         // Most-covered first: complete/full/partial/unclaimed.
@@ -512,7 +559,7 @@ export default defineTool({
               ...(coverageTruncated
                 ? {
                     coverage_truncated: true,
-                    coverage_hint: `Coverage list trimmed to ${COVERAGE_CAP}; narrow with { plan }.`,
+                    coverage_hint: `Coverage list trimmed to ${COVERAGE_CAP}; narrow with { plan }, or pass fullCoverage:true for the untrimmed historical ledger.`,
                   }
                 : {}),
             }

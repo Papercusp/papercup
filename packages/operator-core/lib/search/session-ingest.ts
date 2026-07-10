@@ -96,7 +96,10 @@ const BOILERPLATE_PREFIXES = [
   'Caveat: The messages below',
 ];
 
-function cleanTurnText(raw: string): string | null {
+/** Exported for the archive fall-through reader (session-archive-read.ts,
+ *  P-009): archived bytes are VERBATIM, so anything surfaced to agents must
+ *  pass the SAME cap+redaction the index applies at ingest. */
+export function cleanTurnText(raw: string): string | null {
   const t = raw.trim();
   if (t.length < MIN_TEXT_LEN) return null;
   for (const p of BOILERPLATE_PREFIXES) if (t.startsWith(p)) return null;

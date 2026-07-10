@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { z } from 'zod';
 import type { UseFormRegisterReturn } from 'react-hook-form';
 import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
+import { Button } from '@/app/harness/Button';
 import { useLexicon } from '@/lib/useLexicon';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { AuthSignInCards } from '@/app/_components/AuthSignInCards';
@@ -509,22 +510,23 @@ function SearchProvidersSection() {
             </LazyDetails>
           ))}
           <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
-            <button
+            <Button
+              size="lg"
+              variant="primary"
               onClick={onSave}
               disabled={saving || Object.keys(drafts).length === 0}
-              className="pc-button primary"
               style={{ padding: '6px 14px', fontSize: 13 }}
             >
               {saving ? 'Saving…' : `Save ${Object.keys(drafts).length} change${Object.keys(drafts).length === 1 ? '' : 's'}`}
-            </button>
+            </Button>
             {Object.keys(drafts).length > 0 && (
-              <button
+              <Button
+                size="lg"
                 onClick={() => setDrafts({})}
-                className="pc-button ghost"
                 style={{ padding: '6px 14px', fontSize: 13 }}
               >
                 Discard
-              </button>
+              </Button>
             )}
           </div>
         </div>

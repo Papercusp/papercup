@@ -53,8 +53,12 @@ import {
   type SessionArchiveStore,
 } from './session-archive';
 
-/** Per-tick bounds — the reconciler converges over ticks, never gulps. */
-const MAX_DB_ROWS_PER_TICK = 50;
+/** Per-tick bounds — the reconciler converges over ticks, never gulps.
+ *  DB rows are scanned wide (a stamp-out of a nothing-to-archive row is one
+ *  cheap UPDATE — the pre-plan backlog is ~19k such rows) while actual
+ *  ARCHIVE work per tick is capped separately. */
+const MAX_DB_ROWS_PER_TICK = 500;
+const MAX_DB_ARCHIVES_PER_TICK = 50;
 const MAX_DIRS_PER_TICK = 100;
 const MAX_OMP_FILES_PER_TICK = 200;
 /** ended_at must be at least this old before a nothing-to-archive row is
@@ -150,6 +154,7 @@ export async function runSessionArchiveReconcileOnce(deps: ReconcilerDeps = {}):
 
   // ── (a) DB-side: ended-but-unarchived adv rows ──────────────────────────
   for (const row of await db.listEndedUnarchived(MAX_DB_ROWS_PER_TICK)) {
+    if (stats.dbArchived >= MAX_DB_ARCHIVES_PER_TICK) break; // archive-work cap; stamps stay cheap
     stats.dbScanned++;
     try {
       const r = await runAdv(row.id);

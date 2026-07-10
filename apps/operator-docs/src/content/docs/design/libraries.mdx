@@ -107,15 +107,24 @@ The `:where(input:not([type]), input[type=text|number|email|search|tel|url|passw
 ## `<Button>` wrapper + native baseline
 
 <Aside type="caution" title="Buttons are flat — no 3D">
-In-page buttons get a solid/tinted fill, a 1px border, and readable text — **no** embossed bevel, raised drop-shadow/glow, hover-lift, or "sheen" gradient. Hover/active changes colour, not elevation. See [Buttons](/internal/docs/design#buttons) for the recipe and anti-patterns (this is hard rule 9). On `/adv` a scoped `.pc-advshell__body` rule enforces it; the top tab strip is exempt.
+In-page buttons get a solid/tinted fill, a 1px border, and readable text — **no** embossed bevel, raised drop-shadow/glow, hover-lift, or "sheen" gradient. Hover/active changes colour, not elevation. See [Buttons](/internal/docs/design#buttons) for the recipe and anti-patterns (this is hard rule 9). There is no scoped backstop rule on `/adv` (the `.pc-advshell__*` family no longer exists) — author buttons flat at the source; the top tab strip is exempt.
 </Aside>
 
 <Aside type="note" title="The native-button baseline and .pc-btn-* CSS ARE in source CSS">
-A native `<button>` baseline and the `.pc-btn-primary` / `.pc-btn-destructive` / `.pc-btn-ghost` variant rules **are present** in `globals.css`: the shared `:where(button:not(.pc-button), .pc-btn-primary, .pc-btn-destructive, .pc-btn-ghost)` block (`:679-755`) sets fill, a 1px border, `border-radius: 6px`, and hover/focus/disabled states, plus the per-variant colors (`.pc-btn-primary` `:718`, `.pc-btn-destructive` `:730`, `.pc-btn-ghost` `:742`). (A separate bare `button { font/color/cursor }` inheritance rule is at `:623`.) So applying a `.pc-btn-*` class to a native `<button>` **does** style it — `Button.tsx` / `SubmitButton.tsx` rely on exactly that. The wrappers add icon/spinner/sizing affordances on top; they are not the only styled path. *(An earlier version of this Aside claimed these rules had been dropped in the operator-vite migration; they are present.)*
+A native `<button>` baseline and the `.pc-btn-*` variant rules **are present** in `globals.css`: the shared `:where(button, .pc-btn)` block sets fill, a 1px border, `border-radius: 6px`, and hover/focus/disabled states, followed by the per-variant colors (`.pc-btn-accent`, `.pc-btn-primary`, `.pc-btn-destructive`, `.pc-btn-ghost`) and the one size class (`.pc-btn-lg`). So applying a `.pc-btn-*` class to a native `<button>` **does** style it — `Button.tsx` / `SubmitButton.tsx` rely on exactly that. Those rules are all specificity-0 `:where()`, so **source order** decides: the size and variant rules must stay *after* the baseline block.
 </Aside>
 
-**What:** The `<Button>` wrapper at `app/harness/Button.tsx` is the styled entry point (it layers on the global native-`<button>` baseline — see the note above). It carries the neutral default look and adds three variants for the cases where more emphasis is needed:
+**What:** The `<Button>` wrapper at `app/harness/Button.tsx` is the styled entry point (it layers on the global native-`<button>` baseline — see the note above). It has **two orthogonal axes**, and every Button emits the `.pc-btn` base class:
 
+`size` — the scale:
+
+- `size="sm"` *(default)* — the 26px chrome/toolbar scale
+- `size="lg"` — the 40px page-CTA scale
+
+`variant` — the surface:
+
+- `variant="neutral"` *(default)* — the plain surface
+- `variant="accent"` — soft accent tint; the everyday page CTA
 - `variant="primary"` — filled accent for the page's primary CTA
 - `variant="destructive"` — red tint for delete / clear / forget actions
 - `variant="ghost"` — transparent until hovered, for low-emphasis chrome
@@ -126,6 +135,9 @@ A native `<button>` baseline and the `.pc-btn-primary` / `.pc-btn-destructive` /
 - Use `<Button variant="primary">` for the **one** save/submit button on a page. Don't sprinkle primary buttons everywhere; the variant is for the dominant action.
 - Use `<Button variant="destructive">` whenever the button triggers `useConfirmDialog({ destructive: true })` — the visual and the confirm modal both signal "this is dangerous."
 - Use `<Button variant="ghost">` for icon-only buttons in toolbars or for "Cancel" in a modal footer where you want the primary button to dominate.
+- Reach for `size="lg"` only for page-level calls-to-action (empty states, 404, settings action rows), not for chrome.
+
+**Link-buttons use `asChild`** — never hand-write the classes onto an `<a>`. `asChild` (Radix `Slot`) renders the single child element instead of a `<button>`, merging the classes, handlers, and ref onto it, and never stamps the button-only `type` attribute onto a link:
 
 ```tsx
 import { Button } from '@/app/harness/Button';
@@ -134,11 +146,18 @@ import { Button } from '@/app/harness/Button';
 <Button variant="destructive" onClick={handleDelete}>Delete forever</Button>
 <Button>Cancel</Button>  {/* baseline neutral */}
 <Button variant="ghost"><X size={12}/></Button>
+
+{/* a link that looks like a button */}
+<Button asChild size="lg" variant="primary">
+  <RouteLink href="/cupboard">Browse the cupboard</RouteLink>
+</Button>
 ```
 
 The wrapper forwards refs and spreads all native button props. `type` defaults to `"button"` so you don't accidentally submit a form.
 
-**The variant classes** (`.pc-btn-primary`, `.pc-btn-destructive`, `.pc-btn-ghost`) are applied by the wrapper **and have matching CSS rules** in `globals.css` (`:679-755`) — applying one to a bare native `<button>` reproduces the look. The wrapper adds icon/spinner/sizing affordances on top.
+<Aside type="caution" title="There is no second button recipe">
+A parallel `.pc-button` CTA recipe (plus `.pc-button.primary` / `.ghost` / `.danger`) used to live in `globals.css` alongside this one, and was hand-applied to links. It was folded into the `size`/`variant` axes above (design-simplification P-015) — `.pc-button` no longer exists. Don't reintroduce a bespoke button recipe: add a variant, or a size, here.
+</Aside>
 
 ## `<TextInput>` + `<TextArea>` wrappers
 

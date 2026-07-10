@@ -113,7 +113,28 @@ export async function resolveSelfSession(ownerId: string): Promise<SelfSession |
     const hit = files.find((f) => basename(f, '.jsonl').endsWith(`_${uuid}`));
     return hit ? { sourceKind: 'omp', sessionId: uuid, filePath: hit } : null;
   }
-  const files = await listJsonlUnder(join(HOME, '.codex', 'sessions'));
+  const files: string[] = [];
+  // Fleet codex sessions live in PER-SESSION homes (su-codex-homes/session-
+  // <advId>), not the shared ~/.codex — resolve via the owner's open adv rows
+  // first (session-db-archive-retire-dirs P-015; before this a live fleet
+  // codex session could never resolve `session:'self'`). Fail-soft to the
+  // shared root.
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<{ id: number }>>`
+      SELECT id FROM harness_shared.adv_sessions
+       WHERE coord_owner_id = ${ownerId} AND agent = 'codex' AND ended_at IS NULL
+       ORDER BY started_at DESC
+       LIMIT 3`;
+    const { codexHomeForSessionKey } = await import('@papercusp/orchestrator/session-launch-dirs');
+    for (const r of rows) {
+      files.push(...(await listJsonlUnder(join(codexHomeForSessionKey(r.id), 'sessions'))));
+    }
+  } catch {
+    /* PG unavailable — the shared root below still works for non-fleet runs */
+  }
+  files.push(...(await listJsonlUnder(join(HOME, '.codex', 'sessions'))));
   const hit = files.find((f) => basename(f, '.jsonl').toLowerCase().endsWith(uuid.toLowerCase()));
   return hit ? { sourceKind: 'codex', sessionId: uuid, filePath: hit } : null;
 }

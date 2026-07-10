@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 /**
- * Tests for the harness <Button> primitive — variant→class mapping, the
- * className composition rules, type default/override, ref forwarding, and
- * prop passthrough. Pure presentational, so a render + DOM assertions.
+ * Tests for the harness <Button> primitive — the size × variant class mapping,
+ * className composition, `asChild` slotting onto a link, type default/override,
+ * ref forwarding, and prop passthrough. Pure presentational, so a render + DOM
+ * assertions.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
@@ -12,30 +13,33 @@ import { Button, type ButtonVariant } from './Button';
 afterEach(() => cleanup());
 
 describe('Button', () => {
-  it('renders children and defaults to type="button" with no class', () => {
+  it('renders children and defaults to type="button" and the base class', () => {
     render(<Button>Click me</Button>);
     const btn = screen.getByRole('button', { name: 'Click me' });
     expect(btn.getAttribute('type')).toBe('button');
-    expect(btn.className).toBe('');
+    // `neutral` + `sm` are the base look — they add no class of their own.
+    expect(btn.className).toBe('pc-btn');
   });
 
   it.each([
-    ['primary', 'pc-btn-primary'],
-    ['destructive', 'pc-btn-destructive'],
-    ['ghost', 'pc-btn-ghost'],
-  ] as [ButtonVariant, string][])('maps variant=%s to %s', (variant, cls) => {
+    ['neutral', 'pc-btn'],
+    ['accent', 'pc-btn pc-btn-accent'],
+    ['primary', 'pc-btn pc-btn-primary'],
+    ['destructive', 'pc-btn pc-btn-destructive'],
+    ['ghost', 'pc-btn pc-btn-ghost'],
+  ] as [ButtonVariant, string][])('maps variant=%s to "%s"', (variant, cls) => {
     render(<Button variant={variant}>Label</Button>);
     expect(screen.getByRole('button').className).toBe(cls);
   });
 
-  it('composes the variant class with a caller className', () => {
-    render(<Button variant="primary" className="extra">Label</Button>);
-    expect(screen.getByRole('button').className).toBe('pc-btn-primary extra');
+  it('adds the size class only for size="lg", before the variant class', () => {
+    render(<Button size="lg" variant="primary">Label</Button>);
+    expect(screen.getByRole('button').className).toBe('pc-btn pc-btn-lg pc-btn-primary');
   });
 
-  it('uses only the caller className when no variant is given', () => {
-    render(<Button className="just-mine">Label</Button>);
-    expect(screen.getByRole('button').className).toBe('just-mine');
+  it('composes size + variant with a caller className', () => {
+    render(<Button size="lg" variant="primary" className="extra">Label</Button>);
+    expect(screen.getByRole('button').className).toBe('pc-btn pc-btn-lg pc-btn-primary extra');
   });
 
   it('honours a type override', () => {
@@ -60,5 +64,49 @@ describe('Button', () => {
     render(<Button ref={ref}>R</Button>);
     expect(ref.current).toBeInstanceOf(HTMLButtonElement);
     expect(ref.current?.textContent).toBe('R');
+  });
+
+  describe('asChild', () => {
+    it('renders the child element instead of a button, merging the classes', () => {
+      render(
+        <Button asChild size="lg" variant="primary">
+          <a href="/cupboard">Browse</a>
+        </Button>,
+      );
+      expect(screen.queryByRole('button')).toBeNull();
+      const link = screen.getByRole('link', { name: 'Browse' });
+      expect(link.tagName).toBe('A');
+      expect(link.className).toBe('pc-btn pc-btn-lg pc-btn-primary');
+      expect(link.getAttribute('href')).toBe('/cupboard');
+    });
+
+    it("keeps the child's own className alongside the button classes", () => {
+      render(
+        <Button asChild variant="ghost">
+          <a href="/x" className="mine">L</a>
+        </Button>,
+      );
+      expect(screen.getByRole('link').className).toBe('pc-btn pc-btn-ghost mine');
+    });
+
+    it('never stamps the button-only `type` attribute onto a link', () => {
+      render(
+        <Button asChild>
+          <a href="/x">L</a>
+        </Button>,
+      );
+      expect(screen.getByRole('link').hasAttribute('type')).toBe(false);
+    });
+
+    it('forwards handlers onto the child', () => {
+      const onClick = vi.fn();
+      render(
+        <Button asChild onClick={onClick}>
+          <a href="/x">L</a>
+        </Button>,
+      );
+      fireEvent.click(screen.getByRole('link'));
+      expect(onClick).toHaveBeenCalledTimes(1);
+    });
   });
 });

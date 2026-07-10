@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import RouteLink from '../../_components/RouteLink';
+import { Button } from '../../harness/Button';
 import { useLexicon } from '@/lib/useLexicon';
 import { useRouter } from '@/lib/router-compat/navigation';
 import { CreateHarnessPicker } from '../../harness/CreateHarnessPicker';
@@ -127,9 +128,11 @@ function ProjectsGrid({ projects, allProjects }: { projects: ProjectRow[]; allPr
       align: 'right',
       render: ({ row }) => (
         row.exists ? (
-          <RouteLink href={`/harness?project=${encodeURIComponent(row.slug)}`} className="pc-button pc-installed-harness-open" style={{ padding: '4px 10px' }} onClick={(e) => e.stopPropagation()}>
-            Open
-          </RouteLink>
+          <Button asChild size="lg" variant="accent" className="pc-installed-harness-open">
+            <RouteLink href={`/harness?project=${encodeURIComponent(row.slug)}`} style={{ padding: '4px 10px' }} onClick={(e) => e.stopPropagation()}>
+              Open
+            </RouteLink>
+          </Button>
         ) : null
       ),
     },
@@ -264,14 +267,15 @@ export default function InstalledHarnessesPage() {
             Click a {t('pot', { lower: true })} to open it in mission control.
           </p>
         </div>
-        <button
-          type="button"
-          className="pc-button pc-btn-primary pc-installed-harnesses-add-btn"
+        <Button
+          size="lg"
+          variant="primary"
+          className="pc-installed-harnesses-add-btn"
           onClick={() => setPickerOpen(true)}
           style={{ whiteSpace: 'nowrap', marginTop: 4 }}
         >
           + Add {t('pot')}
-        </button>
+        </Button>
       </header>
       <CreateHarnessPicker
         open={pickerOpen}
@@ -286,7 +290,9 @@ export default function InstalledHarnessesPage() {
         <div className="pc-installed-ops-empty pc-installed-harnesses-empty" style={{ padding: 32, border: '1px dashed var(--border)', borderRadius: 8, textAlign: 'center' }}>
           <p style={{ color: 'var(--fg-mute)' }}>No {t('pot', { plural: true, lower: true })} installed yet.</p>
           <p>
-            <RouteLink href="/cupboard" className="pc-button">Browse the {t('cupboard')}</RouteLink>
+            <Button asChild size="lg" variant="accent">
+              <RouteLink href="/cupboard">Browse the {t('cupboard')}</RouteLink>
+            </Button>
           </p>
         </div>
       )}
@@ -313,11 +319,10 @@ export default function InstalledHarnessesPage() {
             />
             <div role="group" aria-label="Filter by kind" style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
               {KIND_FILTERS.map((kind) => (
-                <button
+                <Button
                   key={kind}
-                  type="button"
                   aria-pressed={kindFilter === kind}
-                  className="pc-button"
+                  size="lg"
                   onClick={() => void setKindFilter(kind)}
                   style={{
                     padding: '6px 10px',
@@ -327,7 +332,7 @@ export default function InstalledHarnessesPage() {
                   }}
                 >
                   {kind === 'all' ? 'All' : kind}
-                </button>
+                </Button>
               ))}
             </div>
             <Select

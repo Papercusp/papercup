@@ -79,6 +79,10 @@ export interface PlanItemCoverage {
   level: CoverageLevel;
   /** Distinct holder ids actively on it (live links + a live direct claim). */
   workers: string[];
+  /** Newest linked work-item update (≈ completion time for a 'complete' entry) —
+   *  the recency signal the active-coverage default filters on (EI-9015). Null when
+   *  no linked row carries a timestamp (e.g. a direct-claim-only entry). */
+  lastActivityAt: Date | null;
 }
 
 /**
@@ -184,6 +188,8 @@ interface CoverageLinkRow {
   issue_state: string | null;
   feature_status: string | null;
   feature_id: string | null;
+  /** Newest update on the joined work-item row (issue or feature side). */
+  src_updated_at: Date | string | null;
 }
 
 /**
@@ -211,7 +217,10 @@ export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCove
     SELECT l.dst_ref, l.rel, l.src_kind, l.src_ref,
            i.state      AS issue_state,
            f.status     AS feature_status,
-           f.feature_id AS feature_id
+           f.feature_id AS feature_id,
+           GREATEST(i.updated_at,
+                    to_timestamp((f.updated_ts::numeric / 1000.0)::double precision))
+                        AS src_updated_at
       FROM harness_shared.coord_links l
       LEFT JOIN harness_shared.engineer_issues i
         ON l.src_kind = 'issue' AND i.issue_id = l.src_ref
@@ -240,6 +249,7 @@ export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCove
 
   // Group links by plan-item ref, joining each to its live activity.
   const byRef = new Map<string, CoverageWorkLink[]>();
+  const newestByRef = new Map<string, number>();
   for (const row of linkRows) {
     const workItemId = row.src_kind === 'issue' ? row.src_ref : (row.feature_id ?? row.src_ref);
     const terminal =
@@ -251,6 +261,12 @@ export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCove
     const arr = byRef.get(row.dst_ref) ?? [];
     arr.push({ workItemId, rel: row.rel, terminal, activity, holder });
     byRef.set(row.dst_ref, arr);
+    if (row.src_updated_at != null) {
+      const ts = new Date(row.src_updated_at).getTime();
+      if (Number.isFinite(ts) && ts > (newestByRef.get(row.dst_ref) ?? 0)) {
+        newestByRef.set(row.dst_ref, ts);
+      }
+    }
   }
 
   // Assemble coverage for the union of refs that have a link OR a direct claim.
@@ -264,6 +280,7 @@ export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCove
     const workers = new Set<string>();
     for (const l of links) if (l.holder) workers.add(l.holder);
     if (directlyClaimed && direct?.holder) workers.add(direct.holder);
+    const newest = newestByRef.get(ref);
     out.set(ref, {
       ref,
       links,
@@ -272,6 +289,7 @@ export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCove
       directActivity: direct?.activity ?? null,
       level,
       workers: [...workers],
+      lastActivityAt: newest != null ? new Date(newest) : null,
     });
   }
   return out;

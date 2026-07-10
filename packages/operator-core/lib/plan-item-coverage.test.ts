@@ -75,6 +75,7 @@ describe('compactCoverage', () => {
     directActivity: null,
     level: 'full',
     workers: ['su-aaa'],
+    lastActivityAt: null,
   };
 
   it('projects level + workers + lean links', () => {
@@ -105,6 +106,7 @@ describe('coverageCollisions (EI-6074)', () => {
     directActivity: null,
     level: 'none',
     workers: [],
+    lastActivityAt: null,
     ...over,
   });
 

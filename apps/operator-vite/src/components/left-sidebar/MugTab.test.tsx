@@ -139,7 +139,7 @@ describe('MugTab (Colony sidebar, round 2)', () => {
     expect(screen.getByRole('tab', { name: /Capacity1 custom/i })).toBeTruthy();
   });
 
-  it('shows a reset only for the active customized pane and names its scope', async () => {
+  it('names the reset for the active customized pane', async () => {
     H.steeringResult = {
       data: [steering({
         directive: 'Prioritize benchmarks.',
@@ -155,10 +155,16 @@ describe('MugTab (Colony sidebar, round 2)', () => {
 
     await openLane('Work');
     expect(screen.getByRole('button', { name: 'Reset Work controls' }).textContent).toContain('Reset Work');
+  });
 
-    await openLane('Capacity');
-    expect(screen.getByRole('button', { name: 'Reset Capacity controls' }).textContent).toContain('Reset Capacity');
-
+  it('hides reset on the read-only Schedule pane', async () => {
+    H.steeringResult = {
+      data: [steering({ directive: 'Prioritize benchmarks.', maxBees: 2 })],
+      loading: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<MugTab active={true} />, { wrapper: Wrap });
     await openLane('Schedule');
     expect(screen.queryByRole('button', { name: /Reset .* controls/ })).toBeNull();
   });

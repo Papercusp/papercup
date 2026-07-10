@@ -24,6 +24,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryState, parseAsString, parseAsArrayOf } from 'nuqs';
+import { Button } from '../../harness/Button';
 import { Checkbox } from '../../harness/Checkbox';
 import { Select } from '../../harness/Select';
 import { DraftNumberInput } from '@/lib/forms';
@@ -381,25 +382,25 @@ function OmpIntegrationPanel() {
           )}
 
           <div style={{ display: 'flex', gap: 8 }}>
-            <button
-              type="button"
+            <Button
+              size="lg"
+              variant="primary"
               onClick={install}
               disabled={action !== 'idle'}
-              className="pc-button-primary"
             >
               {action === 'installing' ? 'Installing…' : (state.mcpServerInstalled || state.wrapperInstalled ? 'Re-install' : 'Install')}
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              size="lg"
+              variant="accent"
               onClick={uninstall}
               disabled={action !== 'idle' || (!state.mcpServerInstalled && !state.wrapperInstalled)}
-              className="pc-button"
             >
               {action === 'uninstalling' ? 'Uninstalling…' : 'Uninstall'}
-            </button>
-            <button type="button" onClick={() => void refresh()} disabled={action !== 'idle'} className="pc-button">
+            </Button>
+            <Button size="lg" variant="accent" onClick={() => void refresh()} disabled={action !== 'idle'}>
               Refresh
-            </button>
+            </Button>
           </div>
 
           {actionResult && (

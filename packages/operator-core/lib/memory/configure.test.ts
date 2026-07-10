@@ -22,6 +22,7 @@ import {
   isOpenAiEmbedInCooldown,
   clearOpenAiEmbedHardExhaustion,
   __resetOpenAiEmbedCooldownForTest,
+  EMBEDDER_PREFERENCES,
   type ResolveEmbedderDeps,
 } from './configure';
 import {
@@ -473,19 +474,21 @@ describe('readEmbedderPreference — env override wiring (production seam)', () 
     else process.env.PAPERCUSP_MEMORY_EMBEDDER = ORIGINAL;
   });
 
-  for (const v of ['auto', 'openai', 'local', 'disabled'] as const) {
+  for (const v of EMBEDDER_PREFERENCES) {
     it(`PAPERCUSP_MEMORY_EMBEDDER=${v} overrides the persisted pref`, async () => {
       process.env.PAPERCUSP_MEMORY_EMBEDDER = v;
       await expect(readEmbedderPreference()).resolves.toBe(v);
     });
   }
 
-  it('an unrecognized env value is ignored (falls through to the persisted pref / auto)', async () => {
+  it('an unrecognized env value is ignored (falls through to the persisted pref / default)', async () => {
     process.env.PAPERCUSP_MEMORY_EMBEDDER = 'bogus';
-    // With no PG-backed voice prefs in this unit env, loadVoicePrefs rejects and
-    // the cascade defaults to 'auto'. The point: 'bogus' is NOT returned.
+    // With no PG-backed voice prefs in this unit env the cascade lands on the
+    // voice-prefs DEFAULT (currently 'gemma'). The point is only that 'bogus'
+    // is NOT returned — so assert against the full preference union, never a
+    // hand-copied subset that silently reds when a default flips.
     const pref = await readEmbedderPreference();
     expect(pref).not.toBe('bogus');
-    expect(['auto', 'openai', 'local', 'disabled']).toContain(pref);
+    expect(EMBEDDER_PREFERENCES).toContain(pref);
   });
 });

@@ -108,6 +108,12 @@ const OVERRIDES: readonly OverrideSpec[] = [
     help: 'Auto-disconnect voice session after this many minutes of user silence. 0 = never.' },
   { key: 'fullAgentSessionMaxMin', kind: 'number', min: 0, max: 240, step: 5, label: 'Session max (min)',
     help: 'Hard session-duration cap. 0 = no max.' },
+  { key: 'fullAgentAckVoice', kind: 'enum', label: 'Full-agent instant ack',
+    help: 'In full-agent voice mode the provider speaks a short "On it…" ack in its own (paid) voice before the real answer arrives in your configured voice. Suppress it to hear only one voice and skip the provider-TTS cost.',
+    options: [
+      { value: 'provider', label: 'Provider voice speaks the ack (default)' },
+      { value: 'suppressed', label: 'Silent — no spoken ack, only the real answer' },
+    ] },
   { key: 'operatorHistoryTokenBudget', kind: 'number', min: 5000, max: 150000, step: 1000, label: 'Papercup history budget (tokens)',
     help: 'How much chat history the Papercup brain sees per turn. Higher = better recall, more cost.' },
   { key: 'operatorContextMode', kind: 'enum', label: 'Papercup long-conversation memory',

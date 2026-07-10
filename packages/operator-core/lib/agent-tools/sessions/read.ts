@@ -88,6 +88,39 @@ export default defineTool({
     `;
     rows.reverse();
 
+    // Archive fall-through (session-db-archive-retire-dirs P-009): the index
+    // prunes at 45d, but the session_archives blob store is permanent. A
+    // session with NO index rows may still be readable — decompress, re-parse
+    // with the ingest parsers, re-apply the ingest cap+redaction, and window
+    // in JS. sessions:search stays index-bounded by design (D-001).
+    let archiveNote: string | undefined;
+    if (!rows.length && args.session !== 'self') {
+      try {
+        const { readArchivedSessionTurns } = await import('../../session-archive-read');
+        const arch = await readArchivedSessionTurns(sessionId, args.source_kind);
+        if (arch) {
+          let t = arch.turns;
+          if (lo !== null || hi !== null) {
+            t = t.filter((x) => (lo === null || x.turn_idx >= lo) && (hi === null || x.turn_idx <= hi));
+          }
+          t = t.slice(-limit);
+          rows.push(
+            ...t.map((x) => ({
+              source_kind: x.source_kind,
+              turn_idx: x.turn_idx,
+              speaker: x.speaker,
+              owner: x.owner,
+              ts: x.ts,
+              text: x.text.slice(0, 1500),
+            })),
+          );
+          archiveNote = `served from the permanent archive (index pruned/absent); source=${arch.sourceKind}`;
+        }
+      } catch (e) {
+        console.warn(`[sessions:read] archive fall-through failed: ${(e as Error)?.message ?? e}`);
+      }
+    }
+
     return {
       content: [{
         type: 'text' as const,
@@ -95,6 +128,7 @@ export default defineTool({
           ok: true,
           session_id: sessionId,
           ...(selfNote ? { note: selfNote } : {}),
+          ...(archiveNote ? { note: archiveNote } : {}),
           turn_count: rows.length,
           turns: rows.map((r: { source_kind: string; turn_idx: number; speaker: string; owner: string | null; ts: string | null; text: string }) => ({
             turn_idx: r.turn_idx, speaker: r.speaker,

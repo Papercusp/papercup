@@ -255,6 +255,7 @@ export default function MugTab({ active }: { active: boolean }) {
   const inflightRef = useRef(0);
   const [err, setErr] = useState<string | null>(null);
   const [pauseMins, setPauseMins] = useState('30');
+  const [capacityResetVersion, setCapacityResetVersion] = useState(0);
 
   const projects = projectsQ.data ?? [];
   const rows = (steeringQ.data ?? []) as HiveSteeringRow[];
@@ -474,6 +475,7 @@ export default function MugTab({ active }: { active: boolean }) {
       return;
     }
     if (mugView === 'capacity') {
+      setCapacityResetVersion((version) => version + 1);
       const patch = {
         modelTiers: null,
         tierCeilings: null,
@@ -738,7 +740,7 @@ export default function MugTab({ active }: { active: boolean }) {
       {mugView === 'capacity' && (
         <>
       <ModelTiersOverride
-        key={(view.modelTiers ?? []).map((tier) => `${tier.name}:${tier.spec}`).join('|') || 'workspace'}
+        key={capacityResetVersion}
         override={view.modelTiers ?? null}
         onWrite={setModelTiers}
         busy={controlsBusy}
