@@ -173,6 +173,20 @@ of throwing — a symptom that used to look like "the routine fired but errored"
 now reads as an explicit, distinguishable skip reason in
 `harness_shared.pipeline_events`.
 
+**UPDATE 2026-07-10 — the reaper's own tick could overlap itself + misreport
+timing (EI-3673).** `startExecutorReaper`'s tick function used to fire
+`reapDeadExecutorWorkflows(...)` fire-and-forget (`void promise.then(...)`) and
+return `undefined` synchronously, instead of returning the promise chain. That
+broke two things the `managedSetInterval` tick wrapper relies on: (1)
+re-entrancy — its `rec.running` guard only holds while it is actually awaiting
+the fn's returned promise, so a slow reap pass (e.g. many queued queries right
+after a restart) could let a second tick start concurrently with the first
+instead of being skipped; (2) visibility — `schedule:inventory`'s
+`lastFireAt`/`fires` were stamped the instant `run()` returned, not when the
+reap actually finished, so recorded fire timing didn't reflect real completion.
+`run` now returns the promise chain so the wrapper genuinely awaits it, fixing
+both (`dbos-executor-reaper.ts`, `startExecutorReaper`).
+
 ## Layer 2: the post-deploy 406 (main advances but :3070 stays stale)
 
 Once `main` advances, `release-trigger` runs the scripted deploy — which can fail

@@ -43,6 +43,17 @@ pipeline to pick it up, there currently isn't one — use the coding-pot `cup`
 path instead.
 :::
 
+:::note[Terminology drift in comments, 2026-07 — not yet a role/field rename]
+As of `autoloop-pot-operator-rebuild-2026-06-05`, `blueprints/coding/blueprint.yaml`'s own
+comments and description now call this the **"Hive" operator blueprint** — "the Queen in charge
+of the bee fleet" — and `operator-spawn.ts`'s factory-vs-self-pulling guard comments likewise say
+"coding-HIVE worker" / "bee". This is comment-level renaming only so far: the blueprint's actual
+`id: coding`, `kind: pot`, and `spine.decider: mug` are unchanged, and `blueprints/cup/blueprint.yaml`
+still names the worker role `cup` and its placer "the Mug." So **`role="cup"` / `scheduler:set_claim_spec`
+/ `scheduler:get_next` are still the literal tool-call surface** — treat "Hive"/"Queen"/"bee" in
+comments as a synonym for "coding pot"/"Mug"/"cup" until the `kind`/role identifiers themselves change.
+:::
+
 ## The two models (they share `cup:spawn`, but they are opposites)
 
 ### coding POT — PULL (mug + self-pulling cups)

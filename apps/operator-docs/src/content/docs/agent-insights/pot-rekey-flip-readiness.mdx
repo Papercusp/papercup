@@ -65,17 +65,17 @@ All flag-gated on `papercusp-pot-rekey`; **OFF ⇒ byte-identical to today** (no
 
 | Concern | Where | Note |
 |---|---|---|
-| Flag gate / crypto resolve | `pot-epoch-serving.ts` `resolveHiveEpochCrypto(enabled)` | `true` ⇒ real `createHiveEpochCrypto()` (sodium); `false` ⇒ fail-closed stub (never silent plaintext) |
-| Boot composition (flag FIRST) | `pot-epoch-boot-deps.ts` `buildHiveRekeyBootDeps` | one cached flag read; `null` for OFF / non-pot / no-device — cheap off-path |
+| Flag gate / crypto resolve | `hive-epoch-serving.ts` `resolveHiveEpochCrypto(enabled)` | `true` ⇒ real `createHiveEpochCrypto()` (sodium); `false` ⇒ fail-closed stub (never silent plaintext) |
+| Boot composition (flag FIRST) | `hive-epoch-boot-deps.ts` `buildHiveRekeyBootDeps` | one cached flag read; `null` for OFF / non-pot / no-device — cheap off-path |
 | Encrypt-on-write | `wire-outbox.ts` → `outbox-drain.ts` (`epochEncrypt.encryptOp`) | exclude-set: `shouldEncryptOpForRekey` encrypts all CONTENT, keeps admission/key/policy tags plaintext (`REKEY_PLAINTEXT_TAGS`), fail-closed (new tag defaults to encrypted) |
 | Decrypt-on-read | `boot.ts` `rekeyDeps.epochGate(enforcedApply)` | op carries its `epoch`; gate resolves epoch key → decrypt, else defers (pending-epoch buffer) |
-| Advance-on-boundary (revoke) | `pot-revoke-contributor.ts` → `advanceEpochOnHiveBoundary` | wraps the new epoch key to REMAINING members only; revoked device excluded forever (K-CUT). Loud `rekey_boundary_skipped` boot event if it no-ops |
-| Advance-on-boundary (go-private) | `pot-set-listing.ts` → `advanceEpochOnHiveBoundary` | re-keys to all current members (no cutOff) |
+| Advance-on-boundary (revoke) | `hive-revoke-contributor.ts` → `advanceEpochOnHiveBoundary` | wraps the new epoch key to REMAINING members only; revoked device excluded forever (K-CUT). Loud `rekey_boundary_skipped` boot event if it no-ops |
+| Advance-on-boundary (go-private) | `hive-set-listing.ts` → `advanceEpochOnHiveBoundary` | re-keys to all current members (no cutOff) |
 | Deferred-content drain | `boot.ts` `epochDrainQueue` / `onEpochKeyApplied` | re-applies buffered content once a member's key row arrives |
 
 ## Witness evidence (re-ran 2026-06-24, this checkout, staging)
 
-- **Hermetic end-to-end content read-cut witness — `pot-epoch-read-cut-witness.test.ts` 2/2 GREEN.**
+- **Hermetic end-to-end content read-cut witness — `hive-epoch-read-cut-witness.test.ts` 2/2 GREEN.**
   Drives the **REAL** XChaCha20-Poly1305 + Ed25519 sealed-box crypto through the **production
   op-path capabilities** (`buildEpochEncryptCapability` → federated op → `buildEpochDecryptGate` +
   `createEpochKeyProvider`) across the full lifecycle **K0 → K1 → K-revoke → K-CUT**:
@@ -148,7 +148,7 @@ HEAD, but it is **flag-independent and not a re-key defect**:
   the epoch re-grant lives inside `upsertHiveMember` — the admit block is **NOT** gated on
   HIVE_REKEY.
 - Confirmed flag-independent: forcing the flag off still fails; the cached last run shows it
-  already red while all 14 pot-epoch files were green.
+  already red while all 14 hive-epoch files were green.
 - Filed separately (see WI tracking); it does **not** change the flip decision.
 
 ## Go / No-Go

@@ -84,6 +84,16 @@ separate `coord:whoami` call (`self-marker.ts`).
 > membership questions. `coord:glance` gives a one-line fleet headline. `coord:presence` stays the
 > dispatch-focused door documented here.
 
+**A `parked` row can be deliberately benched, not just idle — check `parkedOn`.** As of
+2026-07-10 (WI-3715), `coord:presence` stamps each active row with `parkedOn: string[]` when the
+agent is parked on a real `events:await` key (the same derivation `fleet:assignments` already
+used via `decorateParkedOn`, now surfaced here too via `listParkedAwaitsForSubscribers` +
+`buildParkedOnMap`). A `parkedOn` agent is intentionally waiting for a specific event to be
+pushed — not abandoned, and not necessarily the ideal dispatch target: waking it re-invokes a
+turn that will just re-arm the same await unless your dispatch is what it's waiting on. `parkedOn`
+is (like `modes`) derived fresh outside the byte-stable snapshot, so it is **not** etag-tracked —
+a `since:`-short-circuited read can be stale on it, same caveat as liveness.
+
 ## coord:dispatch — assign + wake + confirm, in ONE call
 
 `coord:dispatch { to, planSlug?, items?[], note }` (`tools/dispatch.ts`) replaces the

@@ -728,6 +728,48 @@ describe('ensureSendSideWired — EI-521: send-side wiring is idempotent + retry
     await bootSingleHarness('ws-rewire', 'h', { wireSendSide: { wireOutbox, wirePresence } });
     expect(wireOutbox).toHaveBeenCalledTimes(2);
   });
+
+  it('WI-3684 send-side twin: a SESSION_CLOSED self-stop un-marks wiring so the next pass RE-WIRES fresh', async () => {
+    // ensureSendSideWired passes each wire fn an `onSessionClosed` callback
+    // (markSendSideUnwired) — captured here so the test can simulate the
+    // drain/announce loop itself later detecting a permanently-closed own-log
+    // session and firing it, exactly as outbox-drain.ts / presence-announce.ts
+    // do on a SESSION_CLOSED append failure.
+    const handle = fakeHandle('ws-session-closed-rewire', 'h');
+    let capturedOnSessionClosed: (() => void) | undefined;
+    const wireOutbox = vi.fn(async (_h: BootedHarnessHandle, onSessionClosed: () => void) => {
+      capturedOnSessionClosed = onSessionClosed;
+    });
+    const wirePresence = vi.fn(async () => {});
+
+    // Call 1: both steps wire successfully (outbox captures its onSessionClosed).
+    await ensureSendSideWired(handle, { wireOutbox, wirePresence });
+    expect(wireOutbox).toHaveBeenCalledTimes(1);
+    expect(wirePresence).toHaveBeenCalledTimes(1);
+    expect(capturedOnSessionClosed).toBeDefined();
+
+    // Call 2 while nothing has changed: both already wired → no-op.
+    await ensureSendSideWired(handle, { wireOutbox, wirePresence });
+    expect(wireOutbox).toHaveBeenCalledTimes(1);
+    expect(wirePresence).toHaveBeenCalledTimes(1);
+
+    // Simulate the outbox drain loop itself detecting SESSION_CLOSED on a later
+    // poll tick and self-stopping — it fires the captured onSessionClosed,
+    // which is markSendSideUnwired('outbox') un-marking JUST the outbox step.
+    capturedOnSessionClosed?.();
+
+    // Next boot pass (a reconcile / rebootHarness call against a fresh handle
+    // once a new session is available): outbox RE-WIRES fresh; presence, never
+    // un-marked, stays skipped — proving the un-mark is step-scoped.
+    await ensureSendSideWired(handle, { wireOutbox, wirePresence });
+    expect(wireOutbox, 'the un-marked outbox step must re-wire on the next pass').toHaveBeenCalledTimes(2);
+    expect(wirePresence, 'presence was never un-marked — must not re-wire').toHaveBeenCalledTimes(1);
+
+    // And once re-wired it settles again (no-op on a further pass).
+    await ensureSendSideWired(handle, { wireOutbox, wirePresence });
+    expect(wireOutbox).toHaveBeenCalledTimes(2);
+    expect(wirePresence).toHaveBeenCalledTimes(1);
+  });
 });
 
 // WI-1877: after a substrate-sidecar crash+respawn, cached RemoteBootedHarnessHandle

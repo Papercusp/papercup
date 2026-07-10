@@ -53,6 +53,20 @@ for repo binding, revocation actions, push/PR/merge, and shipped verification;
 it is not the swarm read-admission allow-list.
 </Aside>
 
+<Aside type="note" title="Build-state update (A-003 / a′) — slug-aware admission scope">
+When one hive topic carries **multiple local harnesses'** log announces (a joiner's member
+harness sharing the same topic as the hive-home log it rebinds from), the D-004 identity
+decider alone would let any identity-valid frame be admitted by **every** on-topic handler —
+since every harness registers all projections, a wrong-scope log could then cross-merge (e.g.
+the owner's hive-home harness applying a member-log's features into the hive-home schema).
+`announceSlugInScope` (`read-admission.ts`) is a pure, no-I/O predicate applied **after** the
+D-004 identity decision (`boot.ts`'s `onAnnounce`): it admits an inbound log only if its
+**signed** origin-slug is either this harness's own slug, or the hive-home slug it rebinds
+(`joinerPotHomeSlug`). An absent origin-slug (legacy/single-harness peers, pre-dating the field)
+is admitted for backward compatibility. A scope miss returns `out_of_scope` — conclusive, never
+retried, distinct from the identity decider's own `bad_sig`/`binding_invalid`/`revoked`/`pending`.
+</Aside>
+
 ## What a shared harness is
 
 A shared harness lets several engineers collaborate on one coding project. Shared state —
