@@ -227,7 +227,7 @@ describe('session:request-compaction — EI-8987 stale-checkpoint warning', () =
       heldItems: [{ id: 'WI-200', title: 'the risky one', body: null, harness: 'papercup', checkpoint: null }],
     });
     const b = body(await call({ focus: 'x' }));
-    expect(b.staleCheckpoints).toEqual([{ id: 'WI-200', title: 'the risky one' }]);
+    expect(b.staleCheckpoints).toEqual([{ id: 'WI-200', title: 'the risky one', reason: 'missing' }]);
     expect(b.note).toContain('WI-200');
     expect(b.note).toContain('NO checkpoint');
     // Never a refusal — the compaction is still queued.
@@ -247,9 +247,61 @@ describe('session:request-compaction — EI-8987 stale-checkpoint warning', () =
     });
     const b = body(await call({ focus: 'x' }));
     expect(b.staleCheckpoints).toEqual([
-      { id: 'WI-2', title: 'missing' },
-      { id: 'WI-3', title: 'also missing' },
+      { id: 'WI-2', title: 'missing', reason: 'missing' },
+      { id: 'WI-3', title: 'also missing', reason: 'missing' },
     ]);
+  });
+
+  it('P-003: a held item whose checkpoint is OLDER than the stale window → flagged reason:stale with ageMinutes, note names the age, compaction proceeds', async () => {
+    const fortyMinAgo = Date.now() - 40 * 60_000;
+    buildCarryBrief.mockResolvedValue({
+      ...emptyBrief,
+      heldItems: [
+        { id: 'WI-300', title: 'long-running', body: null, harness: 'papercup', checkpoint: 'old flush', checkpointUpdatedAtMs: fortyMinAgo },
+      ],
+    });
+    const b = body(await call({ focus: 'x' }));
+    expect(b.staleCheckpoints).toEqual([{ id: 'WI-300', title: 'long-running', reason: 'stale', ageMinutes: 40 }]);
+    expect(b.note).toContain('STALE checkpoint');
+    expect(b.note).toContain('WI-300 40m old');
+    expect(b.ok).toBe(true); // warn, never refuse
+  });
+
+  it('P-003: a FRESH checkpoint (within the stale window) is not flagged', async () => {
+    buildCarryBrief.mockResolvedValue({
+      ...emptyBrief,
+      heldItems: [
+        { id: 'WI-301', title: 'fresh', body: null, harness: 'papercup', checkpoint: 'just flushed', checkpointUpdatedAtMs: Date.now() - 60_000 },
+      ],
+    });
+    const b = body(await call({ focus: 'x' }));
+    expect(b.staleCheckpoints).toEqual([]);
+  });
+
+  it('P-003: a checkpoint with NO write-instant meta (legacy/injected read) is never age-flagged', async () => {
+    buildCarryBrief.mockResolvedValue({
+      ...emptyBrief,
+      heldItems: [{ id: 'WI-302', title: 'no meta', body: null, harness: 'papercup', checkpoint: 'state', checkpointUpdatedAtMs: null }],
+    });
+    const b = body(await call({ focus: 'x' }));
+    expect(b.staleCheckpoints).toEqual([]);
+  });
+
+  it('P-003: missing + stale mix — both legs appear in the note independently', async () => {
+    buildCarryBrief.mockResolvedValue({
+      ...emptyBrief,
+      heldItems: [
+        { id: 'WI-310', title: 'no note', body: null, harness: 'papercup', checkpoint: null },
+        { id: 'WI-311', title: 'old note', body: null, harness: 'papercup', checkpoint: 'x', checkpointUpdatedAtMs: Date.now() - 20 * 60_000 },
+      ],
+    });
+    const b = body(await call({ focus: 'x' }));
+    expect(b.staleCheckpoints).toEqual([
+      { id: 'WI-310', title: 'no note', reason: 'missing' },
+      { id: 'WI-311', title: 'old note', reason: 'stale', ageMinutes: 20 },
+    ]);
+    expect(b.note).toContain('NO checkpoint');
+    expect(b.note).toContain('STALE checkpoint');
   });
 
   it('buildCarryBrief throwing → fails soft to an empty staleCheckpoints list, never blocks the compaction', async () => {

@@ -137,7 +137,10 @@ export function shapeOrient(data: unknown, tier: TierName): unknown {
     };
   }
 
-  const memory = d.memory as { query?: unknown; hits?: unknown[] } | null | undefined;
+  const memory = d.memory as
+    | { query?: unknown; hits?: unknown[]; degraded?: unknown; degradedReason?: unknown; withheld?: unknown; filteredLowScore?: unknown }
+    | null
+    | undefined;
   if (memory && typeof memory === 'object' && Array.isArray(memory.hits)) {
     out.memory = {
       query: memory.query,
@@ -147,6 +150,15 @@ export function shapeOrient(data: unknown, tier: TierName): unknown {
         return { ...r, memory: cap(r.memory, c.memoryText) };
       }),
       ...(memory.hits.length > c.memory ? { hitsTruncated: { total: memory.hits.length, shown: c.memory, more: 'memory:search' } } : {}),
+      // EI-9031: carry the LOUD scalar markers through tier-shaping — a trimmed/
+      // standard session (a fleet member — the exact case this ticket reports) must
+      // still see `degraded` so an empty `hits` isn't read as an informative empty
+      // during an embedding-backend outage. `withheld`/`filteredLowScore` are the
+      // same class of loud marker and were being silently dropped here too.
+      ...(memory.degraded === true ? { degraded: true } : {}),
+      ...(typeof memory.degradedReason === 'string' ? { degradedReason: memory.degradedReason } : {}),
+      ...(typeof memory.withheld === 'number' ? { withheld: memory.withheld } : {}),
+      ...(typeof memory.filteredLowScore === 'number' ? { filteredLowScore: memory.filteredLowScore } : {}),
     };
   }
 

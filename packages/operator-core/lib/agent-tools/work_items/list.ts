@@ -213,6 +213,12 @@ export default defineTool({
       .describe(
         "EI-7841/WI-3649: exclude items the actual claim path would refuse. Feature-family: the G2 admission/trust gate (remote, un-admitted, untrusted-author) work_items:claim / claim_next enforce. Issue-family (bug/change/task, WI-3649): a federated origin='remote' row, which is owned exclusively by its authoring peer and can never be claimed locally. Default false (full backlog, including gated items, for overview/leader reads). Pass true for a SELF-SELECT read so 'claimable' actually means claimable.",
       ),
+    audit: z
+      .enum(['no-evidence'])
+      .optional()
+      .describe(
+        "P-005 completion-integrity audit: 'no-evidence' lists TERMINAL-state items closed WITHOUT a structured completion record (terminal_completion_ref IS NULL — a bare set_state close; work_items:complete always stamps one). The DRAIN leader's stale-done spot-audit as one filter. Composes with `state`.",
+      ),
     limit: z.number().int().positive().max(500).optional(),
   }),
   result: z.array(WORK_ITEM_ROW),
@@ -261,6 +267,7 @@ export default defineTool({
           parent: args.parent ?? null,
           includeChildren: args.includeChildren === true,
           admissibleOnly: args.admissibleOnly === true,
+          audit: args.audit ?? null,
           limit: args.limit ?? null,
         },
         tags: ["harness_features_consolidated"],
@@ -275,6 +282,7 @@ export default defineTool({
           parent: args.parent,
           includeChildren: args.includeChildren,
           admissibleOnly: args.admissibleOnly,
+          audit: args.audit,
           limit: args.limit,
         });
         // EI-1597: excerpt per-row summaries so a large backlog can't overflow the agent

@@ -188,6 +188,27 @@ describe('shapeOrient — compaction folds (compaction-fold-audit-2026-07-06)', 
     expect(recovered.inbox.recent[0].summary.length).toBe(400); // 400 < relaxed 700-char cap ⇒ untruncated
   });
 
+  it('EI-9031: carries the memory `degraded` marker through tier-shaping (a trimmed fleet-member session must still see it)', () => {
+    const degradedMemory = {
+      query: 'own-log-fork-guard work',
+      hits: [],
+      degraded: true,
+      degradedReason: 'embedding_backend_degraded',
+      filteredLowScore: 4,
+    };
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const out = shapeOrient({ ...fixture(), memory: degradedMemory }, tier) as {
+        memory: { degraded?: boolean; degradedReason?: string; filteredLowScore?: number };
+      };
+      expect(out.memory.degraded).toBe(true);
+      expect(out.memory.degradedReason).toBe('embedding_backend_degraded');
+      expect(out.memory.filteredLowScore).toBe(4);
+    }
+    // A healthy recall carries no degraded marker after shaping (backward-compatible).
+    const healthy = shapeOrient(fixture(), 'trimmed') as { memory: Record<string, unknown> };
+    expect('degraded' in healthy.memory).toBe(false);
+  });
+
   it('fold #1: passes a compact fleetHealth through unchanged (not re-shaped away)', () => {
     const fleetHealth = {
       bees: { running: 3, working: 2 },

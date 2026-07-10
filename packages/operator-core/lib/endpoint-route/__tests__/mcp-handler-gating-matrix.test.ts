@@ -926,10 +926,14 @@ describe('tools/call — auth failures reject before any dispatch', () => {
     expect(seen).toEqual([]);
   });
 
-  it('unknown tool name → unknown_tool error envelope', async () => {
+  it('unknown tool name → unknown_tool error envelope with the discovery referral (EI-9011)', async () => {
     const res = await callTool('gatingtest:does-not-exist', {}, extraFor(MCP));
     expect(res.isError).toBe(true);
-    expect(textOf(res)).toBe('unknown_tool: no tool named "gatingtest:does-not-exist"');
+    expect(textOf(res)).toContain('unknown_tool: no tool named "gatingtest:does-not-exist"');
+    // Moment-of-failure referral: the error itself routes the caller to the
+    // universal fallbacks instead of letting a miss read as "doesn't exist".
+    expect(textOf(res)).toContain('tools:invoke');
+    expect(textOf(res)).toContain('tools:find');
   });
 
   it('a projected tool called WITHOUT any spawn ctx → invalid_request_context (not unknown)', async () => {

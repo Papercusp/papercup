@@ -38,7 +38,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { defineTool, SU_ROLES, fuzzyEnum } from '@papercusp/agent-mcp';
 import { buildConsoleEnvelope } from '../../console-launcher';
-import { spawnConsole } from '../../console-spawn';
+import { spawnConsole, spawnHeadless } from '../../console-spawn';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
 import { validateCloudModelSpec } from '../../agent-config-constants';
@@ -87,6 +87,11 @@ export interface MemberLaunchOpts {
   agent: string;
   harness: string;
   plan: string;
+  /** P-003 headless fleet: emit `psu --headless` so the member launches as a
+   *  background managed-pty session with NO terminal window, yet stays injectable
+   *  for warm loop:arm wakes (usePtyHost bypasses only the isTTY gate). Orthogonal
+   *  to every other flag; the spawn itself routes through spawnHeadless. */
+  headless?: boolean;
   account?: string;
   workspace?: string;
   role?: string;
@@ -342,6 +347,10 @@ export function memberLaunchCommand(opts: MemberLaunchOpts): string {
     `--harness=${opts.harness}`,
     `--plan=${opts.plan}`,
   ];
+  // P-003: `--headless` forces the managed-pty host on despite non-TTY stdio (the
+  // member has no window) so the session stays injectable for warm wakes. Boolean
+  // flag like --brain; implies picker=false (already set via --no-picker).
+  if (opts.headless) parts.push('--headless');
   if (opts.account) parts.push(`--account=${shq(opts.account)}`);
   if (opts.workspace) parts.push(`--workspace=${shq(opts.workspace)}`);
   if (opts.role) parts.push(`--role=${shq(opts.role)}`);
@@ -463,10 +472,33 @@ export const LEADER_STANDING_JOB: readonly string[] = [
 ];
 
 /** Render the full member-facing baseline markdown (the numbered rules with a
- *  short header). Pure + exported for tests. */
-export function renderMemberBaseline(opts: { fleetSlug: string; plan: string; count: number }): string {
-  const { fleetSlug, plan, count } = opts;
-  const rules = MEMBER_BASELINE_RULES.map((r, i) => `${i + 1}. **${r.head}.** ${r.body}`).join('\n');
+ *  short header). Pure + exported for tests.
+ *  P-004 carry (owner directive 2026-07-10, orthogonal to headless): `carry:'cold'`
+ *  rewrites the loop:arm rule to arm a COLD loop (each wake a fresh context) and
+ *  promotes the carry-note checkpoint from "at every boundary" to LOAD-BEARING —
+ *  a cold wake reconstructs ONLY from the last checkpoint. Default 'warm' is
+ *  byte-identical to before (nothing silently goes cold). */
+export function renderMemberBaseline(opts: {
+  fleetSlug: string;
+  plan: string;
+  count: number;
+  carry?: 'warm' | 'cold';
+}): string {
+  const { fleetSlug, plan, count, carry = 'warm' } = opts;
+  const cold = carry === 'cold';
+  const rules = MEMBER_BASELINE_RULES.map((r, i) => {
+    let body = r.body;
+    if (cold && r.head.startsWith('STAY ALIVE')) {
+      body = body.replace(
+        '`loop:arm { intervalSec, goal }`',
+        "`loop:arm { intervalSec, goal, carry: 'cold' }` — you are a COLD member: each wake starts a FRESH context, so nothing but your checkpoint carries across wakes",
+      );
+    }
+    if (cold && r.head.startsWith('Carry-note checkpoint')) {
+      body = `${body} COLD CARRY makes this LOAD-BEARING, not optional: your next wake reconstructs itself ONLY from this checkpoint — skip it and your successor-self wakes blind with no memory of what you did.`;
+    }
+    return `${i + 1}. **${r.head}.** ${body}`;
+  }).join('\n');
   return [
     '# Fleet member — operating baseline',
     '',
@@ -486,6 +518,7 @@ export function composeMemberLaunchContext(opts: {
   fleetSlug: string;
   plan: string;
   count: number;
+  carry?: 'warm' | 'cold';
   customBriefText?: string | null;
 }): string {
   const baseline = renderMemberBaseline(opts);
@@ -573,13 +606,13 @@ function err(text: string) {
 export default defineTool({
   name: 'fleet:launch-on-plan',
   description:
-    'Open visible desktop su member terminals on a plan in one call. This is what "launch a fleet" means; use cup:spawn for background cups. Ensures the named fleet exists, opens N visible member terminals, and each scripted psu launch auto-starts work on the plan. Author the plan first. `perMemberLaunchContext` gives distinct per-member briefs. Works on Linux, macOS, Windows desktop (WI-3289: Windows spawns relay through the open desktop window).',
+    'Launch su member sessions on a plan in one call — visible desktop terminals, or headless background sessions with `headless:true` (same leader-led su fleet either way; use cup:spawn only for Mug-supervised cups). Ensures the named fleet exists, opens N members, and each scripted psu launch auto-starts work on the plan. Author the plan first. `carry` picks warm/cold auto-mode; `perMemberLaunchContext` gives distinct per-member briefs. Linux/macOS/Windows desktop.',
   guidance: {
-    when: 'Use when the owner wants a new visible desktop fleet working a plan immediately. Pass the plan slug, fleet name, and member count; terminals open on the desktop and start work on boot.',
+    when: 'The owner wants a new su fleet working a plan immediately — desktop terminals by default, `headless:true` for windowless (both are su members, not cups). Pass plan slug, fleet name, count; disclose owner-chosen `headless`/`carry`; members start on boot.',
     notWhen:
       'Not for background cups (cup:spawn), plain worker windows with no fleet/plan (capability:terminal), fleet registration only (fleet:create), or authoring/starting the plan itself. Unsure which spawn tool you want? See the decision table: /internal/docs/agent-insights/desktop-fleet-vs-loop-bee.',
     chaining:
-      'plans:apply-plan-block or plans:new/plans:add-item → plans:start (REQUIRED) → fleet:launch-on-plan { name, plan, count }. plans:start is NOT optional: members self-pull WORK-ITEMS via scheduler:get_next, and plan items become claimable work-items ONLY via plans:start — skip it and the fleet launches onto an empty backlog and idles. This tool idempotently backstops a forgotten plans:start. As leader, loop:arm a lean monitor and avoid polling full rosters every wake.',
+      'plans:apply-plan-block or plans:new/plans:add-item → plans:start (REQUIRED) → fleet:launch-on-plan { name, plan, count }. plans:start is NOT optional — plan items become claimable work-items only through it; skipped, the fleet launches onto an empty backlog (this tool backstops it idempotently). As leader, loop:arm a lean monitor; avoid polling full rosters every wake.',
   },
   // Desktop-spawn is the privileged action — gate it exactly like capability:terminal.
   capability: 'capability:terminal',
@@ -608,6 +641,18 @@ export default defineTool({
       .max(MAX_MEMBERS)
       .optional()
       .describe(`Number of member terminals to open (default 1, max ${MAX_MEMBERS}).`),
+    headless: z
+      .boolean()
+      .optional()
+      .describe(
+        'Launch the members HEADLESS — background su sessions with NO desktop window (default false = visible terminals). Identical fleet in every other way: same su members (NOT cups), same leader-led contract, they register presence + count toward the fleet, auto-start on the plan, and stay injectable for warm loop:arm wakes; they just have no window and log to a file you can tail. Use when the owner wants the fleet working invisibly / on a headless host. Orthogonal to `carry`.',
+      ),
+    carry: z
+      .enum(['warm', 'cold'])
+      .optional()
+      .describe(
+        "Auto-mode carry for EVERY member (default 'warm'), INDEPENDENT of `headless`: 'warm' = each loop:arm wake resumes the SAME live context (fast, remembers the thread); 'cold' = each wake starts a FRESH context reconstructed from the member's last checkpoint (cheaper long-run, survives compaction, but the carry-note is the ONLY memory). Threads into the member baseline so a cold member arms `loop:arm { carry:'cold' }` and treats its checkpoint as load-bearing. ANNOUNCE the choice to the owner per the persona spawn-disclosure rule (alongside account + model).",
+      ),
     overrideCapacityClamp: z
       .boolean()
       .optional()
@@ -1076,7 +1121,7 @@ export default defineTool({
           briefReadError = `Could not read launchContext \`${effectiveLaunchContext}\` (${e?.message ?? e}) — members got the baseline only.`;
         }
       }
-      const composed = composeMemberLaunchContext({ fleetSlug, plan: args.plan, count, customBriefText: sharedBriefText });
+      const composed = composeMemberLaunchContext({ fleetSlug, plan: args.plan, count, carry: args.carry, customBriefText: sharedBriefText });
       const ctxDir = join(papercuspPathForWorkspace(workspaceId), 'launch-context');
       mkdirSync(ctxDir, { recursive: true });
       const ctxPath = join(ctxDir, `fleet-${fleetSlug}-launch-context.md`);
@@ -1125,7 +1170,7 @@ export default defineTool({
         }
         const briefText = ownBriefText ?? sharedBriefText;
         try {
-          const composed = composeMemberLaunchContext({ fleetSlug, plan: args.plan, count, customBriefText: briefText });
+          const composed = composeMemberLaunchContext({ fleetSlug, plan: args.plan, count, carry: args.carry, customBriefText: briefText });
           const ctxPath = join(ctxDir, `fleet-${fleetSlug}-launch-context-member-${i + 1}.md`);
           writeFileSync(ctxPath, composed, 'utf8');
           resolved.push(ctxPath);
@@ -1160,11 +1205,14 @@ export default defineTool({
     }
 
     // The fleet's bound color scheme (cosmetic — a lookup failure never blocks launch).
+    // Skipped entirely for a headless launch: there is no window to color (P-003).
     let scheme: ColorScheme | null = null;
-    try {
-      scheme = await getFleetScheme(workspaceId, fleetSlug);
-    } catch {
-      scheme = null;
+    if (!args.headless) {
+      try {
+        scheme = await getFleetScheme(workspaceId, fleetSlug);
+      } catch {
+        scheme = null;
+      }
     }
 
     // EI-8985: build each member's OWN command — identical for every member unless
@@ -1176,6 +1224,7 @@ export default defineTool({
         agent: effAgent,
         harness,
         plan: args.plan,
+        headless: args.headless || undefined,
         account: effAccount,
         workspace: args.workspace?.trim() || undefined,
         role: args.role?.trim() || undefined,
@@ -1205,17 +1254,31 @@ export default defineTool({
     // Concurrent spawns: spawnConsole is async since WI-1886 (it verifies each
     // window survives an early-exit probe instead of reporting ok+pid for a
     // client that died off-screen) — a serial loop would stack N probe windows.
+    // P-003: a headless launch routes each member through spawnHeadless (same
+    // SpawnConsoleResult shape → no result-handling branch below), which runs the
+    // SAME one-liner under a detached `bash -lc` logging to a file — no window, no
+    // scheme, no desktop bridge. Members log under the workspace's fleet-logs dir
+    // (NON-repo — never the staging tree git-sync would try to commit).
+    const headlessLogDir = args.headless
+      ? join(papercuspPathForWorkspace(workspaceId), 'fleet-logs')
+      : null;
     const results = await Promise.all(
       Array.from({ length: openCount }, (_v, i) =>
-        spawnConsole({
-          envelope: { ...base, greetingCmd: memberCommands[i], cwd: base.cwd },
-          label: `${fleetSlug} · member ${i + 1}/${openCount} (${args.plan})`,
-          writeMcpJson: false,
-          scheme,
-          // WI-3289: on a Windows desktop host, relay each member window to the
-          // desktop shell's Tauri console_launch instead of hard-501ing.
-          allowDesktopBridge: true,
-        }),
+        args.headless
+          ? spawnHeadless({
+              envelope: { ...base, greetingCmd: memberCommands[i], cwd: base.cwd },
+              label: `${fleetSlug} · member ${i + 1}/${openCount} (${args.plan})`,
+              logDir: headlessLogDir,
+            })
+          : spawnConsole({
+              envelope: { ...base, greetingCmd: memberCommands[i], cwd: base.cwd },
+              label: `${fleetSlug} · member ${i + 1}/${openCount} (${args.plan})`,
+              writeMcpJson: false,
+              scheme,
+              // WI-3289: on a Windows desktop host, relay each member window to the
+              // desktop shell's Tauri console_launch instead of hard-501ing.
+              allowDesktopBridge: true,
+            }),
       ),
     );
     results.forEach((result, i) => {
@@ -1264,10 +1327,11 @@ export default defineTool({
         );
       }
     }
+    const carryMode: 'warm' | 'cold' = args.carry ?? 'warm';
     lines.push(
       opened.length
-        ? `Launched fleet \`${fleetSlug}\` (you are ${leaderRole}) on plan \`${args.plan}\` — ${opened.length}/${openCount} member${openCount > 1 ? 's' : ''} opened${liveMembers > 0 ? ` (deficit top-up: ${liveMembers} already live of the ${count} requested)` : ''}${capacityClamp?.clamped ? `; requested deficit was ${requestedOpenCount}` : ''}${scheme ? ` (scheme: ${scheme.name})` : ''}:`
-        : `No member terminals opened for fleet \`${fleetSlug}\`.`,
+        ? `Launched fleet \`${fleetSlug}\` (you are ${leaderRole}) on plan \`${args.plan}\` — ${opened.length}/${openCount} ${args.headless ? 'HEADLESS ' : ''}member${openCount > 1 ? 's' : ''} opened${args.headless ? ' (no desktop windows — tail the per-member log paths below)' : ''}${carryMode === 'cold' ? ' [COLD carry]' : ''}${liveMembers > 0 ? ` (deficit top-up: ${liveMembers} already live of the ${count} requested)` : ''}${capacityClamp?.clamped ? `; requested deficit was ${requestedOpenCount}` : ''}${scheme ? ` (scheme: ${scheme.name})` : ''}:`
+        : `No ${args.headless ? 'headless ' : ''}member${args.headless ? 's were' : ' terminals were'} started for fleet \`${fleetSlug}\`.`,
     );
     for (const o of opened) {
       const displayNote = o.display ? ` [DISPLAY=${o.display}]` : '';
@@ -1339,6 +1403,10 @@ export default defineTool({
         harness,
         agent: effAgent,
         account: effAccount ?? null,
+        // P-003/P-004: the two orthogonal launch knobs, echoed so non-prose
+        // consumers (hooks, scorers, the persona disclosure) can key on them.
+        headless: !!args.headless,
+        carry: carryMode,
         // P-005: the seat pin this wave launched from (null = a plain, non-seat launch).
         seats: seatPin ? { ...seatPin, requested: count, launched: opened.length } : null,
         requested: count,

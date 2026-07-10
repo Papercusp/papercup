@@ -33,7 +33,7 @@ import { createHash } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { setWorkItemCheckpoint } from '../../work-item-checkpoint';
+import { setWorkItemCheckpoint, getWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { getWorkItem, markFeatureProgress, markIssueProgress } from '../../work-items';
 import { runBulk, bulkContent } from '../_bulk';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
@@ -59,8 +59,8 @@ export default defineTool({
     'Single: { id, checkpoint? }. Many: items:[{ id, checkpoint?, harness? }]. ' +
     'Your prior transcript does NOT carry across a task boundary / re-spawn; the checkpoint is your continuity, ' +
     "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; blank/omitted clears. " +
-    'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, by | error }], counts } — correlate by id. ' +
-    'contentHash (EI-8987) is a short sha256 of what was actually STORED — a same-call round-trip proof the write landed.',
+    'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, verified, storedHead, by | error }], counts } — correlate by id. ' +
+    'Every write is VERIFY-READ (read back via the reader path in the same call); a write that would be invisible to the next pickup fails loudly as checkpoint_verify_failed instead of silently not carrying.',
   guidance: {
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your ' +
@@ -138,6 +138,35 @@ export default defineTool({
           void markFeatureProgress(harness ?? '', it.id);
           void markIssueProgress(it.id);
         }
+        // P-003 (fleet-deltas-leader-primitives-2026-07-10): TRUE read-after-write
+        // through the SAME path a future reader uses (getWorkItemCheckpoint, same
+        // canonicalized ref). contentHash-of-the-returned-string (EI-8987) proves the
+        // store ECHOED the write, but not that a future READ resolves the row — and
+        // the real silent-loss class (WI-3549 / EI-8805 / EI-8824 / EI-9013) was
+        // precisely write/read KEY divergence. A verify miss fails THIS item loudly
+        // at write time instead of being discovered post-compaction.
+        let readBack: string | null = null;
+        if (stored !== null) {
+          try {
+            readBack = await getWorkItemCheckpoint({
+              harness,
+              workItemId: it.id,
+              workspaceId: resolveConcreteWorkspaceId(c.workspaceId),
+            });
+          } catch {
+            readBack = null;
+          }
+          if (readBack !== stored) {
+            return {
+              ok: false as const,
+              id: it.id,
+              error:
+                `checkpoint_verify_failed — the write did not read back via the reader path ` +
+                `(stored ${stored.length} chars, read back ${readBack === null ? 'null' : `${readBack.length} chars`}). ` +
+                `The checkpoint would be INVISIBLE to the next pickup. Retry, or pass { harness } explicitly.`,
+            };
+          }
+        }
         return {
           ok: true as const,
           id: it.id,
@@ -145,6 +174,11 @@ export default defineTool({
           cleared: stored === null,
           length: stored?.length ?? 0,
           contentHash: stored !== null ? shortHash(stored) : null,
+          /** P-003: verified = the stored text READ BACK byte-identically via the reader
+           *  path (null on a clear — nothing to verify). */
+          verified: stored !== null ? (true as const) : null,
+          /** P-003: first 80 chars of what was stored — eyeball-check without a re-read. */
+          storedHead: stored !== null ? stored.slice(0, 80) : null,
           by: ident.ownerId,
         };
       },

@@ -193,19 +193,19 @@ describe('pauseStateLabel', () => {
   const now = 1_000_000;
 
   it('reports an indefinite pause as active', () => {
-    expect(pauseStateLabel(steering({ pauseNewWork: true }), now)).toEqual({ active: true, label: 'New work PAUSED' });
+    expect(pauseStateLabel(steering({ pauseNewWork: true }), now)).toEqual({ active: true, label: 'Paused' });
   });
 
   it('reports a future timed pause with rounded minutes remaining', () => {
     const r = pauseStateLabel(steering({ pausedUntil: now + 5 * 60_000 }), now);
     expect(r.active).toBe(true);
-    expect(r.label).toBe('Paused ~5m');
+    expect(r.label).toBe('Paused · 5 min left');
   });
 
   it('clamps the displayed minutes to at least 1 for a sub-minute window', () => {
     const r = pauseStateLabel(steering({ pausedUntil: now + 5_000 }), now);
     expect(r.active).toBe(true);
-    expect(r.label).toBe('Paused ~1m');
+    expect(r.label).toBe('Paused · 1 min left');
   });
 
   it('reports flowing when the timed pause has already elapsed', () => {

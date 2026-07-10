@@ -258,14 +258,30 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
     const t = setTimeout(async () => {
       setLoading(true);
       setError(null);
+      // CLIENT-SIDE deadline (owner-hit 07-10): a server that never answers —
+      // mid-boot after an auto-deploy restart, wedged socket — otherwise spins
+      // "Searching…" forever (fetch has no default timeout). 35s sits just past
+      // the server's 30s watchdog, so a live-but-slow server's own 408 arrives
+      // first and this only trips when the server is truly unresponsive.
+      let timedOut = false;
+      const deadline = setTimeout(() => { timedOut = true; ctl.abort(); }, 35_000);
       try {
         const r = await fetch(`/api/adv/sessions/search-transcripts?q=${encodeURIComponent(query)}&limit=30`, { signal: ctl.signal });
         const j = await r.json() as { ok: boolean; error?: string; sessions?: SearchSessionResult[] };
+        clearTimeout(deadline);
         if (!j.ok) { setError(searchFailureMessage(r.status, j.error)); setLoading(false); return; }
         setSessions(j.sessions ?? []);
         setLoading(false);
       } catch {
-        if (!ctl.signal.aborted) { setError(searchFailureMessage(null)); setLoading(false); }
+        clearTimeout(deadline);
+        if (timedOut) {
+          setError(searchFailureMessage(408, 'timeout'));
+          setLoading(false);
+        } else if (!ctl.signal.aborted) {
+          setError(searchFailureMessage(null));
+          setLoading(false);
+        }
+        // else: superseded by a newer keystroke / unmount — stay silent.
       }
     }, 300);
     return () => { clearTimeout(t); ctl.abort(); };

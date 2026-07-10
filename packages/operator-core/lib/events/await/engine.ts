@@ -176,7 +176,7 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
     }
   }
 
-  return { ok: true, key: opts.key, woken: wakes.length, notified: notifyTo, msgId };
+  return { ok: true, key: opts.key, woken: wakes.length, notified: notifyTo, msgId, waiters: fired.length };
 }
 
 // ── the pump ──────────────────────────────────────────────────────────────────

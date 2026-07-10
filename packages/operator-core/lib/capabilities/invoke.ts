@@ -23,6 +23,7 @@ import { dispatchProjectedToolToMcp } from '@papercusp/tooldef-mcp';
 import { withWorkspace } from '@papercusp/db-org';
 import { PROJECTED_DEPS } from '../projected-tool-deps';
 import { activeWorkspaceId } from '../workspace-registry';
+import { suggestClosestToolNames } from '../agent-tools/tools/unknown-tool-referral';
 import { projectedToolToCapability } from './from-tooldef';
 import { paletteEligibility } from './safety-filter';
 import type { Capability } from './types';
@@ -71,7 +72,12 @@ export async function invokeServerCapability(opts: {
   // `no tool named "pot:start"` for a tool MCP dispatched fine.
   const projected = lookupByMcpName(opts.name);
   if (!projected) {
-    return { ok: false, status: 404, code: 'unknown_tool', message: `no tool named "${opts.name}"` };
+    // EI-9011 (generalized): carry closest catalog matches so a typo'd / format-variant
+    // name is recoverable from the error itself (this path surfaces in UI toasts, so no
+    // agent-facing tools:find referral here — just the matches).
+    const close = suggestClosestToolNames(opts.name);
+    const didYouMean = close.length > 0 ? ` Closest matches: ${close.join(', ')}.` : '';
+    return { ok: false, status: 404, code: 'unknown_tool', message: `no tool named "${opts.name}".${didYouMean}` };
   }
 
   const cap = projectedToolToCapability(

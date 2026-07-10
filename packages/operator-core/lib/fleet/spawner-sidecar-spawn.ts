@@ -20,6 +20,9 @@ import { resolveSpawnerSocketPath, SPAWNER_SOCKET_ENV } from './spawner-socket-p
 import {
   resolveSidecarSpawnPlan,
   gracefulStopChild,
+  respawnBackoffMs,
+  pruneRespawnWindow,
+  respawnBudgetExhausted,
   registerSidecarShutdownHooks as registerSharedSidecarShutdownHooks,
 } from '../process-supervision/sidecar-spawn-shared';
 import { isBenignHostError } from '../host-benign-errors';
@@ -34,6 +37,55 @@ let sidecarProcess: ChildProcess | null = null;
 let sidecarReady = false;
 const readyWaiters: (() => void)[] = [];
 
+// ── P-006 (critical-process-supervisor-2026-07-04): auto-respawn-on-crash ───
+//
+// Before this, an unexpected sidecar exit just cleared module state and waited
+// for the NEXT caller to lazily `spawnSpawnerSidecar()` again — no proactive
+// respawn, no flap-damping, no give-up. That's the exact shape of the observed
+// "DHT bootstrap every ~6min" churn class (WI-3568/EI-8810 residue) for the
+// SIBLING substrate sidecar; this one just never got the fix substrate got in
+// WI-1504. Cloned from substrate-sidecar-spawn.ts's mechanism (same shared
+// helpers, same numbers) so both node-child sidecars behave identically.
+// `deliberateStop` distinguishes a deliberate stopSpawnerSidecar() call from an
+// unexpected crash — only the latter triggers auto-respawn.
+let deliberateStop = false;
+export const MAX_RESPAWN_ATTEMPTS = 5;
+export const RESPAWN_WINDOW_MS = 5 * 60_000;
+let respawnAttempts: number[] = []; // timestamps (ms) of recent auto-respawn schedules
+let respawnTimer: ReturnType<typeof setTimeout> | null = null;
+let gaveUp = false;
+
+/** Applies a short exponential backoff (capped at 30s, `respawnBackoffMs`) so a
+ *  fast crash loop doesn't hammer the spawn path, and the sliding-window circuit
+ *  breaker so a persistently-crashing sidecar gives up rather than looping
+ *  forever (agent-spawn just falls back to whatever `getSpawnerIpcClient`'s
+ *  caller does when the sidecar is unreachable — same degrade path as today). */
+function scheduleRespawn(socketPath: string): void {
+  if (deliberateStop) return;
+  if (respawnTimer) return; // a respawn is already pending
+  const now = Date.now();
+  respawnAttempts = pruneRespawnWindow(respawnAttempts, now, RESPAWN_WINDOW_MS);
+  if (respawnBudgetExhausted(respawnAttempts, MAX_RESPAWN_ATTEMPTS)) {
+    gaveUp = true;
+    console.error(
+      `[spawner-sidecar] ${MAX_RESPAWN_ATTEMPTS} crashes within ${Math.round(RESPAWN_WINDOW_MS / 1000)}s — giving up auto-respawn. ` +
+        'Agent-spawn stays on its degrade path until an explicit spawnSpawnerSidecar() call.',
+    );
+    return;
+  }
+  respawnAttempts.push(now);
+  const backoffMs = respawnBackoffMs(respawnAttempts.length);
+  console.warn(
+    `[spawner-sidecar] auto-respawning in ${backoffMs}ms (attempt ${respawnAttempts.length}/${MAX_RESPAWN_ATTEMPTS} in window)`,
+  );
+  respawnTimer = setTimeout(() => {
+    respawnTimer = null;
+    spawnSpawnerSidecar(socketPath).catch((err) => {
+      console.error('[spawner-sidecar] auto-respawn failed:', err);
+    });
+  }, backoffMs);
+}
+
 /**
  * Spawn the spawner sidecar process.
  * Waits for the PAPERCUSP_SPAWNER_READY handshake line.
@@ -46,6 +98,16 @@ export async function spawnSpawnerSidecar(socketPath?: string): Promise<void> {
     return new Promise((resolve) => {
       readyWaiters.push(resolve);
     });
+  }
+
+  // A fresh spawn attempt — clear any pending backoff timer and the deliberate-stop
+  // flag so the crash-respawn machinery is armed for this (re)spawn (mirrors
+  // substrate-sidecar-spawn.ts's reset at the top of spawnSubstrateSidecar).
+  deliberateStop = false;
+  gaveUp = false;
+  if (respawnTimer) {
+    clearTimeout(respawnTimer);
+    respawnTimer = null;
   }
 
   const sidecarScript = path.join(
@@ -154,9 +216,14 @@ export async function spawnSpawnerSidecar(socketPath?: string): Promise<void> {
 
     sidecarProcess.on('exit', (code) => {
       const msg = code !== null ? `exit code ${code}` : 'killed';
-      console.warn(`[spawner-sidecar] died (${msg})`);
+      // A deliberate stopSpawnerSidecar() is a graceful shutdown, not a crash —
+      // "died" here would be misleading noise (mirrors substrate's same guard).
+      if (!deliberateStop) {
+        console.warn(`[spawner-sidecar] died (${msg})`);
+      }
       sidecarProcess = null;
       sidecarReady = false;
+      scheduleRespawn(resolvedSocket);
     });
   });
 }
@@ -188,6 +255,11 @@ export function _setSpawnerSidecarProcessForTests(proc: ChildProcess | null): vo
  */
 export async function stopSpawnerSidecar(): Promise<void> {
   if (!sidecarProcess || sidecarProcess.killed) return;
+  deliberateStop = true;
+  if (respawnTimer) {
+    clearTimeout(respawnTimer);
+    respawnTimer = null;
+  }
   const proc = sidecarProcess;
   await gracefulStopChild(proc, { timeoutMs: 5000, kill: (sig) => proc.kill(sig) });
   sidecarProcess = null;
@@ -208,4 +280,41 @@ export function registerSpawnerSidecarShutdownHooks(): void {
     // ~6min "DHT bootstrap" churn).
     isFatalException: (err) => !isBenignHostError(err),
   });
+}
+
+/** Test seam — reset the module-global respawn state between unit tests. */
+export function _resetSpawnerSidecarSpawnStateForTests(): void {
+  deliberateStop = false;
+  gaveUp = false;
+  if (respawnTimer) {
+    clearTimeout(respawnTimer);
+    respawnTimer = null;
+  }
+  respawnAttempts = [];
+  sidecarProcess = null;
+  sidecarReady = false;
+  readyWaiters.length = 0;
+}
+
+/**
+ * P-006: node-child supervision status for `dev:service_health`'s additive
+ * `supervision` block — mirrors `substrateSidecarSupervisionStatus()`
+ * (sync/hyperbee/substrate-sidecar-spawn.ts). PURE given the module's own
+ * in-memory state (no I/O), safe to call on every request.
+ */
+export interface SpawnerSidecarSupervisionStatus {
+  running: boolean;
+  respawnAttemptsInWindow: number;
+  gaveUp: boolean;
+  lastRespawnScheduledAt: number | null;
+}
+
+export function spawnerSidecarSupervisionStatus(now: number = Date.now()): SpawnerSidecarSupervisionStatus {
+  const attempts = pruneRespawnWindow(respawnAttempts, now, RESPAWN_WINDOW_MS);
+  return {
+    running: !!sidecarProcess && !sidecarProcess.killed,
+    respawnAttemptsInWindow: attempts.length,
+    gaveUp,
+    lastRespawnScheduledAt: attempts.length ? attempts[attempts.length - 1] : null,
+  };
 }

@@ -9,7 +9,38 @@ import { z } from "zod";
 import { defineTool } from "@papercusp/agent-mcp";
 import { probeAll } from "../../service-health";
 import { getTelemetryHealth } from "../../projected-tool-deps";
-import { supervisionSnapshot } from "../../supervision/unit-reconciler";
+import { supervisionSnapshot, type SupervisionStatusEntry, type SupervisionFlapState } from "../../supervision/unit-reconciler";
+import { substrateSidecarSupervisionStatus, type SidecarSupervisionStatus } from "../../sync/hyperbee/substrate-sidecar-spawn";
+import { spawnerSidecarSupervisionStatus } from "../../fleet/spawner-sidecar-spawn";
+
+function sidecarFlapState(s: SidecarSupervisionStatus): SupervisionFlapState {
+  return s.gaveUp ? "gave-up" : s.respawnAttemptsInWindow > 0 ? "damping" : "ok";
+}
+
+/**
+ * P-006 (critical-process-supervisor-2026-07-04): overlay the two node-child
+ * sidecars' OWN respawn-with-backoff state (owned by their respective spawn
+ * modules, not the systemd-user reconciler) onto `supervisionSnapshot()`'s
+ * registry-shaped entries. PURE (both status reads are sync/in-memory) — every
+ * OTHER entry (systemd-user, desktop-shell) passes through untouched.
+ */
+export function overlayNodeChildSupervision(
+  entries: SupervisionStatusEntry[],
+  substrate: SidecarSupervisionStatus,
+  spawner: SidecarSupervisionStatus,
+): SupervisionStatusEntry[] {
+  return entries.map((entry) => {
+    const status = entry.name === "substrate-sidecar" ? substrate : entry.name === "spawner-sidecar" ? spawner : null;
+    if (!status) return entry;
+    return {
+      ...entry,
+      consecutiveProbeFailures: status.running ? 0 : entry.consecutiveProbeFailures,
+      lastRestartAt: status.lastRespawnScheduledAt,
+      restartsLast10m: status.respawnAttemptsInWindow,
+      flapState: sidecarFlapState(status),
+    };
+  });
+}
 
 export default defineTool({
   name: "dev:service_health",
@@ -50,10 +81,15 @@ export default defineTool({
             ok: true,
             services,
             telemetry: getTelemetryHealth(),
-            // P-004 (critical-process-supervisor-2026-07-04): additive block, existing fields
-            // above are UNCHANGED — sourced from the P-002 reconciler's own flap state, not a
-            // second probe pass (pure/sync, no extra I/O).
-            supervision: supervisionSnapshot(),
+            // P-004/P-006 (critical-process-supervisor-2026-07-04): additive block, existing
+            // fields above are UNCHANGED — the systemd-user layer is sourced from the P-002
+            // reconciler's own flap state, the node-child sidecars from THEIR OWN respawn
+            // modules (P-006) — no second probe pass, everything here is sync/in-memory.
+            supervision: overlayNodeChildSupervision(
+              supervisionSnapshot(),
+              substrateSidecarSupervisionStatus(),
+              spawnerSidecarSupervisionStatus(),
+            ),
           }),
         },
       ],

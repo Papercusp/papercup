@@ -217,10 +217,10 @@ async function runSetSteering(args: Record<string, unknown>): Promise<void> {
 /** The pause badge state: indefinite pause, a timed pause still in the future,
  *  or "flowing". Pure (now is injected). */
 export function pauseStateLabel(row: HiveSteeringRow, nowMs: number): { active: boolean; label: string } {
-  if (row.pauseNewWork) return { active: true, label: 'New work PAUSED' };
+  if (row.pauseNewWork) return { active: true, label: 'Paused' };
   if (row.pausedUntil != null && nowMs < row.pausedUntil) {
     const mins = Math.max(1, Math.round((row.pausedUntil - nowMs) / 60000));
-    return { active: true, label: `Paused ~${mins}m` };
+    return { active: true, label: `Paused · ${mins} min left` };
   }
   return { active: false, label: 'New work flowing' };
 }
@@ -566,10 +566,10 @@ export default function MugTab({ active }: { active: boolean }) {
       <MugHeartbeat homeSlug={home} />
 
       {/* 1 — New-work flow */}
-      <section className="pc-queen__section pc-queen__section--pause">
+      <section className={`pc-queen__section pc-queen__section--pause${pause.active ? ' pc-queen__section--paused' : ''}`}>
         <div className="pc-queen__section-head">
           <span className="pc-queen__section-title">New work</span>
-          <span className={`pc-queen__pausebadge${pause.active ? ' pc-queen__pausebadge--on' : ''}`}>
+          <span className={`pc-queen__pausebadge${pause.active ? ' pc-queen__pausebadge--on' : ''}`} aria-live="polite">
             {pause.active ? pause.label : 'Accepting'}
           </span>
         </div>
@@ -582,21 +582,25 @@ export default function MugTab({ active }: { active: boolean }) {
           {pause.active ? <Play size={12} aria-hidden /> : <Pause size={12} aria-hidden />}
           {pause.active ? 'Resume' : 'Pause until resumed'}
         </button>
-        <div className="pc-queen__quick-pause" role="group" aria-label="Pause new work for">
-          {[15, 30, 60].map((minutes) => (
-            <button key={minutes} type="button" className="pc-queen__chip" onClick={() => pauseFor(minutes)} disabled={controlsBusy}>
-              {minutes === 60 ? '1 hour' : `${minutes} min`}
-            </button>
-          ))}
-        </div>
-        <div className="pc-queen__pausefor">
-          <label className="pc-queen__duration">
-            <span className="pc-queen__presetlabel">Custom</span>
-            <input type="number" min={1} className="pc-queen__mins" value={pauseMins} onChange={(e) => setPauseMins(e.target.value)} aria-label="Pause duration in minutes" />
-            <span className="pc-queen__presetlabel">min</span>
-          </label>
-          <button type="button" className="pc-queen__chip" onClick={pauseForMinutes} disabled={controlsBusy}>Pause</button>
-        </div>
+        {!pause.active && (
+          <>
+            <div className="pc-queen__quick-pause" role="group" aria-label="Pause new work for">
+              {[15, 30, 60].map((minutes) => (
+                <button key={minutes} type="button" className="pc-queen__chip" onClick={() => pauseFor(minutes)} disabled={controlsBusy}>
+                  {minutes === 60 ? '1 hour' : `${minutes} min`}
+                </button>
+              ))}
+            </div>
+            <div className="pc-queen__pausefor">
+              <label className="pc-queen__duration">
+                <span className="pc-queen__presetlabel">Custom</span>
+                <input type="number" min={1} className="pc-queen__mins" value={pauseMins} onChange={(e) => setPauseMins(e.target.value)} aria-label="Pause duration in minutes" disabled={controlsBusy} />
+                <span className="pc-queen__presetlabel">min</span>
+              </label>
+              <button type="button" className="pc-queen__chip" onClick={pauseForMinutes} disabled={controlsBusy}>Pause</button>
+            </div>
+          </>
+        )}
       </section>
 
       {/* 2 — Focus directive */}

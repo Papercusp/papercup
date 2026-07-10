@@ -14,9 +14,11 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 
 const setWorkItemCheckpoint = vi.fn();
+const getWorkItemCheckpoint = vi.fn();
 const getWorkItem = vi.fn();
 vi.mock('../../work-item-checkpoint', () => ({
   setWorkItemCheckpoint: (...a: unknown[]) => setWorkItemCheckpoint(...a),
+  getWorkItemCheckpoint: (...a: unknown[]) => getWorkItemCheckpoint(...a),
 }));
 vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
@@ -59,12 +61,20 @@ const one = async (x: unknown, ctx: unknown = baseCtx) => (await env(x, ctx)).re
 
 beforeEach(() => {
   setWorkItemCheckpoint.mockReset();
+  getWorkItemCheckpoint.mockReset();
   getWorkItem.mockReset();
   // The write now ALWAYS keys by the item's canonical harness (EI-8805), so it looks
   // the item up on every call. Default the lookup to a miss; tests that assert the
   // canonical harness override it. A resolved-null default keeps the `.catch(...)`
   // chain valid (an unmocked vi.fn returns undefined, which has no .catch).
   getWorkItem.mockResolvedValue(null);
+  // P-003 verify-read default: the read-back mirrors whatever the store's LAST write
+  // resolved to, so every pre-existing write-path test verifies clean without each
+  // one re-declaring the round-trip. Verify-failure tests override this per-case.
+  getWorkItemCheckpoint.mockImplementation(async () => {
+    const last = setWorkItemCheckpoint.mock.results.at(-1);
+    return last && last.type === 'return' ? await (last.value as Promise<string | null>) : null;
+  });
 });
 
 describe('work_items:checkpoint (bulk keyed-array)', () => {
@@ -112,7 +122,46 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
     setWorkItemCheckpoint.mockResolvedValue(null);
     const r = await one({ id: 'WI-7', checkpoint: '' });
-    expect(r).toMatchObject({ ok: true, cleared: true, contentHash: null });
+    expect(r).toMatchObject({ ok: true, cleared: true, contentHash: null, verified: null, storedHead: null });
+  });
+
+  it('P-003: a write is VERIFY-READ via the reader path — verified:true + storedHead on the round-trip', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+    setWorkItemCheckpoint.mockResolvedValue('did step 1; next: step 2');
+    const r = await one({ id: 'WI-7', checkpoint: 'did step 1; next: step 2' });
+    expect(r).toMatchObject({ ok: true, verified: true, storedHead: 'did step 1; next: step 2' });
+    // The read-back uses the SAME canonicalized ref as the write (harness + concrete ws).
+    expect(getWorkItemCheckpoint).toHaveBeenCalledWith({ harness: 'papercup', workItemId: 'WI-7', workspaceId: 'default' });
+  });
+
+  it('P-003: a write the reader path CANNOT see fails loudly (checkpoint_verify_failed), never silently', async () => {
+    // The WI-3549 class: the store echoes the write but a future read resolves to a
+    // different key (or nothing). The tool must fail THIS item at write time.
+    getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+    setWorkItemCheckpoint.mockResolvedValue('in-flight state');
+    getWorkItemCheckpoint.mockResolvedValue(null); // reader path sees nothing
+    const r = await one({ id: 'WI-7', checkpoint: 'in-flight state' });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('checkpoint_verify_failed');
+    expect(r.error).toContain('read back null');
+  });
+
+  it('P-003: a read-back that returns DIFFERENT bytes also fails verification', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+    setWorkItemCheckpoint.mockResolvedValue('fresh state');
+    getWorkItemCheckpoint.mockResolvedValue('a stale prior checkpoint'); // wrong row wins the read
+    const r = await one({ id: 'WI-7', checkpoint: 'fresh state' });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('checkpoint_verify_failed');
+  });
+
+  it('P-003: storedHead caps at 80 chars', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+    const long = 'x'.repeat(300);
+    setWorkItemCheckpoint.mockResolvedValue(long);
+    const r = await one({ id: 'WI-7', checkpoint: long });
+    expect(r.ok).toBe(true);
+    expect(r.storedHead).toHaveLength(80);
   });
 
   it('uses an explicit harness arg as the lookup hint over ctx', async () => {

@@ -135,8 +135,18 @@ export interface OrientResult {
   inbox: { summary?: unknown; recent?: unknown };
   /** memory:search recall for `intent`/`memoryQuery` — bounded hits; null if the
    *  recall failed/timed out; absent when no query was given. `withheld` counts
-   *  queen-loop-steering hits stripped for a responsive caller (P-002). */
-  memory?: { query: string; hits: OrientMemoryHit[]; withheld?: number } | null;
+   *  queen-loop-steering hits stripped for a responsive caller (P-002). EI-9031:
+   *  `degraded` (+ `degradedReason`) is propagated from memory:search when the
+   *  embedder is on a reduced-breadth fallback — so an empty `hits` is NOT read as
+   *  "nothing relevant exists" during an embedding-backend outage. */
+  memory?: {
+    query: string;
+    hits: OrientMemoryHit[];
+    withheld?: number;
+    filteredLowScore?: number;
+    degraded?: boolean;
+    degradedReason?: string;
+  } | null;
   /** STANDING FACTS (queen-memory-hybrid L1c) — deterministic scoped conclusions
    *  (workspace + owner + harness scopes), delivered VERBATIM every orient (unlike
    *  the fuzzy memory recall above). Assert via facts:assert; retract when stale.
@@ -282,7 +292,9 @@ export async function composeOrient(
         query: memQuery,
         ...(args.harness ? { harness_slug: args.harness } : {}),
         limit: memLimit,
-      })) as { results?: OrientMemoryHit[] } | undefined;
+      })) as
+        | { results?: OrientMemoryHit[]; degraded?: boolean; reason?: string; degraded_reason?: string }
+        | undefined;
       const rawHits = (mem?.results ?? []).slice(0, memLimit).map((r) => ({
         id: r.id,
         memory: typeof r.memory === 'string' ? r.memory.slice(0, MEMORY_TEXT_CAP) : undefined,
@@ -294,11 +306,21 @@ export async function composeOrient(
       // P-002 / D-001: a responsive caller doesn't receive queen-loop steering as
       // a binding recall hit (it self-drained fleet leaders). Auto callers keep all.
       const { kept, withheld } = withholdQueenLoopControl(hits, driveMode, (h) => ({ body: h.memory }));
+      // EI-9031: propagate memory:search's degraded signal (embedder on a
+      // reduced-breadth fallback / a failed embed) into the fold, so an empty
+      // `hits` is NOT read as "nothing relevant exists" during an embedding-backend
+      // outage — the very false-miss this ticket reports. Reason prefers the
+      // explicit degraded_reason, then the failure reason string.
+      const memDegraded = mem?.degraded === true;
+      const memDegradedReason = mem?.degraded_reason ?? mem?.reason;
       result.memory = {
         query: memQuery,
         hits: kept,
         ...(withheld.length > 0 ? { withheld: withheld.length } : {}),
         ...(filteredLowScore > 0 ? { filteredLowScore } : {}),
+        ...(memDegraded
+          ? { degraded: true, ...(memDegradedReason ? { degradedReason: memDegradedReason } : {}) }
+          : {}),
       };
     } catch {
       result.memory = null;

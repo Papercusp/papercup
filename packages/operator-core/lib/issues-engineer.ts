@@ -434,7 +434,16 @@ export interface ListIssuesFilter {
    * (work_items:list's issue branch) so "claimable" actually means claimable.
    */
   admissibleOnly?: boolean;
+  /**
+   * fleet-leader-frictions P-005 (the issue-family leg of listWorkItems' audit):
+   * 'no-evidence' restricts to TERMINAL-state rows with no structured completion
+   * record (`terminal_completion_ref IS NULL`). Composes with an explicit `state`.
+   */
+  audit?: 'no-evidence';
 }
+
+/** Issue-family terminal states for the P-005 audit (subset of the cross-family set). */
+const ISSUE_TERMINAL_STATES: readonly string[] = ['resolved', 'closed', 'deprecated', 'done'];
 
 export async function listIssues(filter: ListIssuesFilter = {}): Promise<EngineerIssue[]> {
   const { sql } = getOrgPg();
@@ -461,6 +470,11 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
        AND ${idsFromTopic ? sql`issue_id = ANY(${idsFromTopic})` : sql`TRUE`}
        AND ${filter.admissibleOnly ? sql`(origin = 'local' OR origin IS NULL)` : sql`TRUE`}
+       AND ${
+         filter.audit === 'no-evidence'
+           ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND terminal_completion_ref IS NULL)`
+           : sql`TRUE`
+       }
      ORDER BY created_at DESC
      LIMIT ${Math.min(filter.limit ?? 100, ISSUES_MAX_LIMIT)}`;
   return rows.map(toIssue);

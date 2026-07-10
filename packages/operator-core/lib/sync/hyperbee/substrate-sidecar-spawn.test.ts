@@ -10,6 +10,10 @@ import {
   getSubstrateSidecarProcess,
   onSidecarRespawned,
   spawnSubstrateSidecar,
+  stopSubstrateSidecar,
+  substrateSidecarSupervisionStatus,
+  MAX_RESPAWN_ATTEMPTS,
+  RESPAWN_WINDOW_MS,
 } from './substrate-sidecar-spawn';
 
 type FakeChild = EventEmitter & {
@@ -284,6 +288,127 @@ describe('substrate sidecar spawn hardening (WI-1504)', () => {
         expect.stringContaining('onSidecarRespawned listener threw'),
         expect.any(String),
       );
+    });
+  });
+
+  // P-006 (critical-process-supervisor-2026-07-04): give-up + the
+  // `dev:service_health` supervision-status accessor.
+  describe('give-up + substrateSidecarSupervisionStatus (P-006)', () => {
+    it('MAX_RESPAWN_ATTEMPTS crashes within the window give up auto-respawning', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const first = makeChild();
+      spawnMock.mockReturnValueOnce(first);
+      const ready = spawnSubstrateSidecar('/tmp/substrate-sidecar.sock', true);
+      first.stdout.emit('data', Buffer.from('PAPERCUSP_SUBSTRATE_READY\n'));
+      await ready;
+
+      let current = first;
+      for (let i = 0; i < MAX_RESPAWN_ATTEMPTS; i++) {
+        const next = makeChild();
+        spawnMock.mockReturnValueOnce(next);
+        current.emit('exit', 137);
+        // 20s comfortably clears every backoff rung up to MAX_RESPAWN_ATTEMPTS
+        // (capped at 30s) while keeping cumulative elapsed time well under the
+        // 5-minute RESPAWN_WINDOW_MS, so none of these attempts prune out of
+        // the sliding window before the give-up check below.
+        await vi.advanceTimersByTimeAsync(20_000);
+        next.stdout.emit('data', Buffer.from('PAPERCUSP_SUBSTRATE_READY\n'));
+        await vi.runAllTicks();
+        current = next;
+      }
+      expect(spawnMock).toHaveBeenCalledTimes(MAX_RESPAWN_ATTEMPTS + 1); // initial + MAX_RESPAWN_ATTEMPTS respawns
+      expect(substrateSidecarSupervisionStatus().gaveUp).toBe(false);
+
+      // The NEXT unexpected exit (still inside the window) gives up instead of
+      // scheduling yet another respawn.
+      const spawnCallsBefore = spawnMock.mock.calls.length;
+      current.emit('exit', 137);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(spawnMock).toHaveBeenCalledTimes(spawnCallsBefore); // no further respawn attempt
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('giving up auto-respawn'));
+      expect(substrateSidecarSupervisionStatus().gaveUp).toBe(true);
+      warn.mockRestore();
+    });
+
+    it('a fresh spawnSubstrateSidecar() call resets the gaveUp latch', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const first = makeChild();
+      spawnMock.mockReturnValueOnce(first);
+      const ready = spawnSubstrateSidecar('/tmp/substrate-sidecar.sock', true);
+      first.stdout.emit('data', Buffer.from('PAPERCUSP_SUBSTRATE_READY\n'));
+      await ready;
+
+      let current = first;
+      for (let i = 0; i < MAX_RESPAWN_ATTEMPTS; i++) {
+        const next = makeChild();
+        spawnMock.mockReturnValueOnce(next);
+        current.emit('exit', 137);
+        await vi.advanceTimersByTimeAsync(20_000);
+        next.stdout.emit('data', Buffer.from('PAPERCUSP_SUBSTRATE_READY\n'));
+        await vi.runAllTicks();
+        current = next;
+      }
+      current.emit('exit', 137);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(substrateSidecarSupervisionStatus().gaveUp).toBe(true);
+
+      // A fresh, EXPLICIT respawn (e.g. from substrate-boot-wrapper on the next
+      // boot, per the module's own doc comment) re-arms the machinery.
+      const fresh = makeChild();
+      spawnMock.mockReturnValueOnce(fresh);
+      const freshReady = spawnSubstrateSidecar('/tmp/substrate-sidecar.sock', true);
+      fresh.stdout.emit('data', Buffer.from('PAPERCUSP_SUBSTRATE_READY\n'));
+      await freshReady;
+      expect(substrateSidecarSupervisionStatus().gaveUp).toBe(false);
+    });
+
+    it('reports running:true + zero flap counters for a healthy, never-crashed sidecar', async () => {
+      const child = makeChild();
+      spawnMock.mockReturnValueOnce(child);
+      const ready = spawnSubstrateSidecar('/tmp/substrate-sidecar.sock', true);
+      child.stdout.emit('data', Buffer.from('PAPERCUSP_SUBSTRATE_READY\n'));
+      await ready;
+
+      const status = substrateSidecarSupervisionStatus();
+      expect(status).toEqual({ running: true, respawnAttemptsInWindow: 0, gaveUp: false, lastRespawnScheduledAt: null });
+    });
+
+    it('reports running:false after a deliberate stop, with no flap counters incremented', async () => {
+      const child = makeChild();
+      spawnMock.mockReturnValueOnce(child);
+      const ready = spawnSubstrateSidecar('/tmp/substrate-sidecar.sock', true);
+      child.stdout.emit('data', Buffer.from('PAPERCUSP_SUBSTRATE_READY\n'));
+      await ready;
+
+      const stopPromise = stopSubstrateSidecar();
+      child.emit('exit', 0);
+      await stopPromise;
+
+      const status = substrateSidecarSupervisionStatus();
+      expect(status).toEqual({ running: false, respawnAttemptsInWindow: 0, gaveUp: false, lastRespawnScheduledAt: null });
+    });
+
+    it('restarts older than RESPAWN_WINDOW_MS are pruned from the reported count', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const first = makeChild();
+      const second = makeChild();
+      spawnMock.mockReturnValueOnce(first).mockReturnValueOnce(second);
+      const ready = spawnSubstrateSidecar('/tmp/substrate-sidecar.sock', true);
+      first.stdout.emit('data', Buffer.from('PAPERCUSP_SUBSTRATE_READY\n'));
+      await ready;
+
+      first.emit('exit', 137);
+      await vi.advanceTimersByTimeAsync(1000);
+      second.stdout.emit('data', Buffer.from('PAPERCUSP_SUBSTRATE_READY\n'));
+      await vi.runAllTicks();
+      expect(substrateSidecarSupervisionStatus().respawnAttemptsInWindow).toBe(1);
+
+      // Advance past the window — the recorded attempt ages out of the reported count.
+      await vi.advanceTimersByTimeAsync(RESPAWN_WINDOW_MS + 1000);
+      expect(substrateSidecarSupervisionStatus().respawnAttemptsInWindow).toBe(0);
     });
   });
 });

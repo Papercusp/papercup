@@ -37,10 +37,15 @@ import type { Watermark } from '@papercusp/coordination/core';
  *  any doubt and are swept on read so the roster stays bounded. */
 const PRESENCE_GC_MS = 24 * 60 * 60 * 1000;
 
-/** Cap the rows rendered into the re-bootstrap injection block — the hive
- *  roster is small by design (D-002), but bound it so a workspace-fallback read
- *  can't balloon the inject; overflow points at coord:presence. */
-const REBOOTSTRAP_MAX_ROWS = 40;
+/** EI-9029: below this size, the re-bootstrap block still inlines a full
+ *  per-agent roster (small enough to be cheap AND genuinely readable at a
+ *  glance — a fleet/hive roster is small by design, D-002). At or above it
+ *  (a workspace-fallback read on a large workspace), inlining every row is
+ *  expensive context most sessions never read — deltas ([coord+N]) are
+ *  already the steady-state mechanism and carry everything that changes
+ *  from here, so the block collapses to a one-line summary + an explicit
+ *  on-demand pointer at coord:presence instead of a 40-line dump. */
+const REBOOTSTRAP_INLINE_MAX_ROWS = 15;
 
 export interface PresenceScopeArgs {
   scope?: 'hive' | 'workspace' | 'all';
@@ -449,23 +454,43 @@ export async function fetchPresenceHeldFiles(
  * Render a terse re-bootstrap block for the [coord+N] injection (P-010): one
  * line per active agent — `<label> [<role>] <intent> (<plan>)` — under a header
  * that tells the agent its lost roster baseline is restored and to resume
- * tailing deltas. Capped at REBOOTSTRAP_MAX_ROWS; overflow points at
- * coord:presence. Pure (snapshot in → string out) so it is unit-testable.
+ * tailing deltas. Pure (snapshot in → string out) so it is unit-testable.
+ *
+ * EI-9029: at/above REBOOTSTRAP_INLINE_MAX_ROWS active agents, per-row detail
+ * is dropped in favor of a compact byState summary + an explicit on-demand
+ * pointer — a 40+-line roster dump was being re-paid on every compaction in
+ * a long session regardless of whether that turn ever consulted it; deltas
+ * ([coord+N]) already carry what changes from here.
  */
 export function renderPresenceRebootstrapBlock(snap: PresenceSnapshot): string {
-  const shown = snap.active.slice(0, REBOOTSTRAP_MAX_ROWS);
-  const overflow = snap.active.length - shown.length;
+  const total = snap.summary.active;
   const header =
-    `[presence ⟲ ${snap.summary.active}] roster re-read after context compaction — ` +
+    `[presence ⟲ ${total}] roster re-read after context compaction — ` +
     `baseline restored, tail [coord+N] deltas from here (as_of ${snap.as_of})`;
-  const lines = shown.map((r) => {
+
+  if (total >= REBOOTSTRAP_INLINE_MAX_ROWS) {
+    const { live, parked, ended, recorded } = snap.summary.byState;
+    const stateBits = [
+      live ? `${live} live` : null,
+      parked ? `${parked} parked` : null,
+      ended ? `${ended} ended` : null,
+      recorded ? `${recorded} recorded` : null,
+    ].filter((b): b is string => b !== null);
+    const stateNote = stateBits.length ? ` (${stateBits.join(', ')})` : '';
+    return (
+      `${header}\n` +
+      `${total} agents active${stateNote} — not inlined (>=${REBOOTSTRAP_INLINE_MAX_ROWS}); ` +
+      `fetch the full roster on demand via coord:presence if you need it.`
+    );
+  }
+
+  const lines = snap.active.map((r) => {
     const label = String(r.ownerLabel ?? r.ownerId ?? '?');
     const role = r.agentRole ? `[${String(r.agentRole)}]` : '[—]';
     const intent = r.intent ? String(r.intent) : '';
     const plan = r.currentPlanSlug ? ` (${String(r.currentPlanSlug)})` : '';
     return `${label} ${role} ${intent}${plan}`.trimEnd();
   });
-  if (overflow > 0) lines.push(`…+${overflow} more (coord:presence for the full roster)`);
   return [header, ...lines].join('\n');
 }
 

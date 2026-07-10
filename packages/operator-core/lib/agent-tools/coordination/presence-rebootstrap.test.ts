@@ -95,8 +95,8 @@ describe('renderPresenceRebootstrapBlock', () => {
     expect(block).toContain('fed:42@box [—] remote work');
   });
 
-  it('caps the roster at REBOOTSTRAP_MAX_ROWS (40) and points overflow at coord:presence', () => {
-    const active = Array.from({ length: 45 }, (_, i) => ({
+  it('below the inline threshold (14 agents) still lists every row', () => {
+    const active = Array.from({ length: 14 }, (_, i) => ({
       ownerLabel: `su-${i}`,
       agentRole: 'su',
       intent: 'x',
@@ -104,13 +104,36 @@ describe('renderPresenceRebootstrapBlock', () => {
     const block = renderPresenceRebootstrapBlock({
       as_of: '2026-06-15T02:00:00.000Z',
       scope: 'workspace',
-      summary: { active: 45, stale: 0, federated: 0, wakeable: 0, onDesktop: 0, viewerAttached: 0, byState: { live: 0, parked: 0, ended: 0, recorded: 0 } },
+      summary: { active: 14, stale: 0, federated: 0, wakeable: 0, onDesktop: 0, viewerAttached: 0, byState: { live: 14, parked: 0, ended: 0, recorded: 0 } },
       active,
       etag: 'test-etag',
     });
     const lines = block.split('\n');
-    // header + 40 rows + 1 overflow line
-    expect(lines.length).toBe(1 + 40 + 1);
-    expect(lines[lines.length - 1]).toContain('…+5 more');
+    expect(lines.length).toBe(1 + 14); // header + one row per agent, no summary/overflow line
+    expect(lines).toContain('su-0 [su] x');
+    expect(lines).toContain('su-13 [su] x');
+  });
+
+  it('EI-9029: at/above the inline threshold (15+ agents) collapses to a byState summary + on-demand pointer, never a per-row dump', () => {
+    const active = Array.from({ length: 55 }, (_, i) => ({
+      ownerLabel: `su-${i}`,
+      agentRole: 'su',
+      intent: 'x',
+    }));
+    const block = renderPresenceRebootstrapBlock({
+      as_of: '2026-06-15T02:00:00.000Z',
+      scope: 'workspace',
+      summary: { active: 55, stale: 0, federated: 0, wakeable: 0, onDesktop: 0, viewerAttached: 0, byState: { live: 50, parked: 5, ended: 0, recorded: 0 } },
+      active,
+      etag: 'test-etag',
+    });
+    expect(block).toContain('[presence ⟲ 55]');
+    // No per-agent rows at all — none of the row labels may appear.
+    for (let i = 0; i < 55; i++) expect(block).not.toContain(`su-${i} [su] x`);
+    expect(block).toContain('55 agents active (50 live, 5 parked)');
+    expect(block).toContain('not inlined');
+    expect(block).toContain('coord:presence');
+    // Exactly two lines: header + summary — not a 40+-line dump.
+    expect(block.split('\n').length).toBe(2);
   });
 });

@@ -453,7 +453,32 @@ export interface ListWorkItemsFilter {
    * claimable.
    */
   admissibleOnly?: boolean;
+  /**
+   * fleet-leader-frictions P-005: completion-integrity audit filters. 'no-evidence'
+   * restricts the list to TERMINAL-state rows closed WITHOUT a structured completion
+   * record (`terminal_completion_ref IS NULL`) — the "stale-done close" a DRAIN leader
+   * spot-audits by hand today (a bare set_state-to-done stamps no completion ref;
+   * work_items:complete always does). Composes with `state` (an explicit terminal
+   * state narrows the audit to it); without `state` it spans the whole cross-family
+   * terminal set. Non-terminal rows never match (an open item owes no evidence yet).
+   */
+  audit?: 'no-evidence';
 }
+
+/**
+ * The cross-family TERMINAL state set (P-005) — a row in any of these owes completion
+ * evidence. Union of both families' closes (feature: done/passed/dropped/deprecated;
+ * issue: resolved/closed/deprecated). Exported so audit consumers (work_items:list,
+ * burn_down) share ONE definition.
+ */
+export const TERMINAL_WORK_ITEM_STATES: readonly string[] = [
+  'done',
+  'passed',
+  'resolved',
+  'closed',
+  'deprecated',
+  'dropped',
+];
 
 /**
  * Recency comparator — newest `updatedAt` first. The default work-item order.
@@ -533,6 +558,11 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
                : sql`(parent_id IS NULL OR parent_id = '')`
          }
          AND ${filter.admissibleOnly ? autoPickableWhereSql(sql, ws) : sql`TRUE`}
+         AND ${
+           filter.audit === 'no-evidence'
+             ? sql`(status = ANY(${TERMINAL_WORK_ITEM_STATES as string[]}::text[]) AND terminal_completion_ref IS NULL)`
+             : sql`TRUE`
+         }
        ORDER BY ${filter.orderByRank ? sql`assignee_rank ASC NULLS LAST, updated_ts DESC` : sql`updated_ts DESC NULLS LAST`}
        LIMIT ${limit}`;
     out.push(...rows.map(featureRowToWorkItem));
@@ -555,6 +585,7 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
       // that the write path (claimNextIssueWorkItem / the engineer_issues_view_dml
       // trigger) will never actually let a local claim succeed against.
       admissibleOnly: filter.admissibleOnly,
+      audit: filter.audit,
       limit,
     });
     out.push(...issues.map(issueToWorkItem));

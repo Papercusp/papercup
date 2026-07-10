@@ -133,12 +133,13 @@ const OVERRIDES: readonly OverrideSpec[] = [
     help: 'Announce silence-nudge events via TTS.' },
   { key: 'operatorBackstoryEnabled', kind: 'bool', label: 'Papercup backstory enabled',
     help: 'Include the Papercup persona backstory in the system prompt.' },
-  { key: 'memoryEmbedderMode', kind: 'enum', label: 'Memory embedder',
-    help: 'How mem0 embeds memories for retrieval. Auto prefers OpenAI if you have a key, else local. Local uses ~400MB RAM. Disabled turns memory off entirely.',
+  { key: 'memoryEmbedderMode', kind: 'enum', label: 'Memory system',
+    help: 'Which model embeds your memories for search. EmbeddingGemma-300m is the default — best quality, fully local & private. Each system stores vectors in its own space, so switching then running "Re-embed" (on the Memory page) brings old memories forward.',
     options: [
-      { value: 'auto', label: 'Auto (recommended) — OpenAI if key, else local' },
-      { value: 'openai', label: 'OpenAI text-embedding-3-small (needs key)' },
-      { value: 'local', label: 'Local @huggingface/transformers (~400MB RAM)' },
+      { value: 'gemma', label: 'EmbeddingGemma-300m (recommended) — best quality, local & private, no API key; ~1GB RAM' },
+      { value: 'local', label: 'BGE-small — lighter local (~400MB RAM), no API key; lower quality than Gemma' },
+      { value: 'openai', label: 'OpenAI text-embedding-3-small — cloud, needs an API key, memory text leaves your device' },
+      { value: 'auto', label: 'Auto — OpenAI when a key is set, else BGE-small local' },
       { value: 'disabled', label: 'Disabled — turn off persistent memory' },
     ] },
 ] as const;

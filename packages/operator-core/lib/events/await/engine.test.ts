@@ -117,12 +117,17 @@ describe('emitAwaitedEvent', () => {
     expect(sendArgs[1].summary).toContain('k');
     expect(sendArgs[1].extra.event_key).toBe('k');
     expect(r.notified.sort()).toEqual(['@topic:locks', 'su-extra', 'su-n'].sort());
+    // EI-9000: waiters = total ACTIVE await registrations matched (wake + notify
+    // policy), independent of the extra to[] audience — 1 wake + 1 notify = 2,
+    // regardless of the 2 extra to[] names folded into the notify send above.
+    expect(r.waiters).toBe(2);
   });
 
-  it('nothing fired + no to[] → no message, no deliveries', async () => {
+  it('nothing fired + no to[] → no message, no deliveries, waiters:0 (emit reached no one)', async () => {
     h.store.fireAwaitsForKey.mockResolvedValueOnce([]);
     const r = await emitAwaitedEvent({ key: 'k' });
     expect(r.woken).toBe(0);
+    expect(r.waiters).toBe(0);
     expect(h.store.insertDeliveries).not.toHaveBeenCalled();
     expect(h.sendMessage).not.toHaveBeenCalled();
   });

@@ -73,6 +73,7 @@ import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { dispatchNeedsTx, effectiveDispatchWorkspace, synthesizeDispatchPrincipal } from './role-principal-caps';
 import { runWithWorkspaceIfConcrete } from '../../../workspace-als';
 import { capabilityMapText } from '../../../agent-tools/tools/capability-map';
+import { unknownToolReferral } from '../../../agent-tools/tools/unknown-tool-referral';
 import { maybeBatchNudge, maybeOrientDedupNudge, canRoleActOnCodeRun } from '../../../code-run-batch-nudge';
 import { recordBatchNudgeFire } from '../../../code-run-nudge-telemetry';
 import { authSafeToolsRemoveSet } from '../../../auth-config-overrides';
@@ -1065,7 +1066,10 @@ async function buildMcpToolContext(
   const dispatchTool: UnifiedToolContext['dispatchTool'] = async (toolName, toolArgs) => {
     const target = lookupByMcpName(toolName);
     if (!target?.expose?.mcp) {
-      return { isError: true, content: [{ type: 'text' as const, text: `unknown_tool: ${toolName}` }] };
+      // EI-9011 (generalized): moment-of-failure referral — closest catalog matches +
+      // the tools:find/tools:invoke routing hint, so a typo'd or client-format name
+      // never reads as "the tool doesn't exist".
+      return { isError: true, content: [{ type: 'text' as const, text: unknownToolReferral(toolName) }] };
     }
     // EI-6982: bind the tx/principal the TARGET tool needs — NOT the outer
     // tools:invoke ctx (requirePrincipal:false, so tx-less). Without this, every
@@ -1980,9 +1984,11 @@ const handler = createMcpHandler(
           };
         }
 
+        // EI-9011 (generalized): moment-of-failure referral — closest catalog matches +
+        // the tools:find/tools:invoke routing hint (see unknown-tool-referral.ts).
         return {
           isError: true,
-          content: [{ type: 'text' as const, text: `unknown_tool: no tool named "${toolName}"` }],
+          content: [{ type: 'text' as const, text: unknownToolReferral(toolName) }],
         };
       },
     );

@@ -365,6 +365,31 @@ describe('resolveEmbedderWith — the openai → local → disabled cascade (GAP
     expect(buildOpenAi).not.toHaveBeenCalled();
   });
 
+  it('gemma-forced resolves EmbeddingGemma (mode gemma, dims 384) via the local package', async () => {
+    const { deps, buildGemma, buildLocal, buildOpenAi, resolveKey } = makeDeps({
+      readPreference: async () => 'gemma',
+      resolveKey: async () => 'sk-present',
+      localInstalled: async () => true, // shares the @huggingface/transformers package
+    });
+    const res = await resolveEmbedderWith(deps);
+    expect(res).toMatchObject({ mode: 'gemma', dims: EMBEDDER_DIM });
+    expect(buildGemma).toHaveBeenCalledOnce();
+    // gemma is its OWN model — never the BGE ('local') or OpenAI builder
+    expect(buildLocal).not.toHaveBeenCalled();
+    expect(buildOpenAi).not.toHaveBeenCalled();
+    expect(resolveKey).not.toHaveBeenCalled(); // forced means forced
+  });
+
+  it('gemma-forced-but-transformers-not-installed disables (no wrong-space write)', async () => {
+    const { deps, buildGemma } = makeDeps({
+      readPreference: async () => 'gemma',
+      localInstalled: async () => false,
+    });
+    const res = await resolveEmbedderWith(deps);
+    expect(res).toEqual({ mode: 'disabled', reason: 'gemma_forced_but_transformers_not_installed' });
+    expect(buildGemma).not.toHaveBeenCalled();
+  });
+
   describe('EI-3381 — auto prefers local during an OpenAI post-failure cooldown', () => {
     it('auto + key present + in cooldown + local installed → local (NOT openai)', async () => {
       const { deps, buildOpenAi, buildLocal } = makeDeps({

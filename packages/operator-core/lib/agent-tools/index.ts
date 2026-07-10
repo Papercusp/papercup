@@ -817,6 +817,10 @@ import './work_items/completion_stats';
 // (fleet-as-supervised-blackboard-2026-06-04). fleet:cancel is the transitive
 // cancellation primitive (D-003); fleet:tree reads the durable nursery structure.
 import './fleet/cancel';
+// fleet:kill — unified desktop+headless agent termination with close_terminal
+// (WI-3728, owner-directed 2026-07-10). Desktop leg kills the psu host + closes
+// the terminal window; headless leg delegates to the fleet/cancel machinery.
+import './fleet/kill';
 import './fleet/tree';
 import './fleet/supervise';
 import './fleet/admit';

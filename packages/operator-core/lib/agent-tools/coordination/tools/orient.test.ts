@@ -521,3 +521,54 @@ describe('memory-recall relevance floor — P-004 fleet-member-dx (EI-9017)', ()
     expect('filteredLowScore' in (r.memory as object)).toBe(false);
   });
 });
+
+// ── EI-9031: orient must PROPAGATE memory:search's degraded signal so an empty
+// recall during an embedding-backend outage is NOT read as "nothing relevant
+// exists". Before the fix, orient dropped ok/reason/degraded and folded a bare
+// `hits: []` — byte-indistinguishable from a genuine empty. ──
+describe('memory recall degraded propagation — EI-9031', () => {
+  const CORE_DEG = {
+    'fleet:assignments': () => ({ ok: true, summary: {}, agents: [] }),
+    'work_items:list': () => [],
+    'coord:inbox': () => ({ summary: { total: 0 }, entries: [] }),
+    'coord:plan-events': () => ({ total: 0, recent: [] }),
+    'coord:whoami': () => ({ fleetSlug: null }),
+    'recipes:search': () => ({ ok: true, recipes: [] }),
+    'coord:declare-intent': () => ({ ok: true }),
+  };
+
+  it('stamps degraded + degradedReason when memory:search reports an embed failure (empty is NOT informative)', async () => {
+    const { call } = fakeCall({
+      ...CORE_DEG,
+      // The exact shape the memory:search embed-failure branch returns.
+      'memory:search': () => ({ ok: false, reason: 'embed_quota_exhausted', degraded: true, results: [] }),
+    });
+    const r = await composeOrient({ intent: 'own-log-fork-guard work' }, call, 'me');
+    expect(r.memory?.hits).toEqual([]);
+    expect((r.memory as { degraded?: boolean }).degraded).toBe(true);
+    expect((r.memory as { degradedReason?: string }).degradedReason).toBe('embed_quota_exhausted');
+  });
+
+  it('stamps degraded from the ok:true reduced-breadth fallback (silent local-vec empty), preferring degraded_reason', async () => {
+    const { call } = fakeCall({
+      ...CORE_DEG,
+      // OpenAI in cooldown → auto cascade fell back to local vec table → ok:true but empty.
+      'memory:search': () => ({ ok: true, degraded: true, degraded_reason: 'embedding_backend_degraded', results: [] }),
+    });
+    const r = await composeOrient({ intent: 'own-log-fork-guard work' }, call, 'me');
+    expect(r.memory?.hits).toEqual([]);
+    expect((r.memory as { degraded?: boolean }).degraded).toBe(true);
+    expect((r.memory as { degradedReason?: string }).degradedReason).toBe('embedding_backend_degraded');
+  });
+
+  it('a HEALTHY recall carries no degraded marker (backward-compatible)', async () => {
+    const { call } = fakeCall({
+      ...CORE_DEG,
+      'memory:search': () => ({ ok: true, results: [{ id: 'm1', memory: 'a real hit', score: 0.7 }] }),
+    });
+    const r = await composeOrient({ intent: 'x' }, call, 'me');
+    expect(r.memory?.hits.map((h) => h.id)).toEqual(['m1']);
+    expect('degraded' in (r.memory as object)).toBe(false);
+    expect('degradedReason' in (r.memory as object)).toBe(false);
+  });
+});

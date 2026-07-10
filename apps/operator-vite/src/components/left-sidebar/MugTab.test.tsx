@@ -197,6 +197,9 @@ describe('MugTab (Colony sidebar, round 2)', () => {
       invalidate: vi.fn(),
     };
     render(<MugTab active={true} />, { wrapper: Wrap });
+    expect(screen.getAllByText(/Paused · .* min left/)).toHaveLength(2);
+    expect(screen.queryByLabelText('Pause duration in minutes')).toBeNull();
+    expect(screen.queryByRole('button', { name: '15 min' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     expect(setSteeringBody().args).toMatchObject({ pauseNewWork: false, pausedUntil: null });

@@ -53,18 +53,26 @@ describe('events:emit envelope', () => {
     });
   });
 
-  it('response carries woken, notified=count (NOT the array), msg_id', async () => {
-    vi.mocked(emitAwaitedEvent).mockResolvedValue({ ok: true, key: 'k2', woken: 5, notified: ['a', 'b', 'c'], msgId: 'm-42' });
+  it('response carries woken, notified=count (NOT the array), waiters, msg_id', async () => {
+    vi.mocked(emitAwaitedEvent).mockResolvedValue({ ok: true, key: 'k2', woken: 5, notified: ['a', 'b', 'c'], msgId: 'm-42', waiters: 6 });
     const out = await call({ event: 'k2' });
-    expect(out).toEqual({ ok: true, event: 'k2', woken: 5, notified: 3, msg_id: 'm-42' });
+    expect(out).toEqual({ ok: true, event: 'k2', woken: 5, notified: 3, waiters: 6, msg_id: 'm-42' });
     // notified must be the count, never the array.
     expect(Array.isArray(out.notified)).toBe(false);
   });
 
   it('null msgId + zero notify audience surface as msg_id:null, notified:0', async () => {
-    vi.mocked(emitAwaitedEvent).mockResolvedValue({ ok: true, key: 'k3', woken: 0, notified: [], msgId: null });
+    vi.mocked(emitAwaitedEvent).mockResolvedValue({ ok: true, key: 'k3', woken: 0, notified: [], msgId: null, waiters: 0 });
     const out = await call({ event: 'k3' });
-    expect(out).toMatchObject({ event: 'k3', woken: 0, notified: 0, msg_id: null });
+    expect(out).toMatchObject({ event: 'k3', woken: 0, notified: 0, waiters: 0, msg_id: null });
+  });
+
+  it('EI-9000: waiters:0 + no to[] + notified:0 signals the emit genuinely reached no one', async () => {
+    vi.mocked(emitAwaitedEvent).mockResolvedValue({ ok: true, key: 'k4', woken: 0, notified: [], msgId: null, waiters: 0 });
+    const out = await call({ event: 'k4' });
+    expect(out.waiters).toBe(0);
+    expect(out.woken).toBe(0);
+    expect(out.notified).toBe(0);
   });
 });
 

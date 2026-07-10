@@ -47,6 +47,11 @@ export interface CarryBriefHeldItem {
   harness: string | null;
   /** In-flight state left by work_items:checkpoint — null when never written. */
   checkpoint: string | null;
+  /** Epoch ms of the checkpoint's last write (carry_notes.updated_ts) — the
+   *  staleness signal (P-003 fleet-deltas-leader-primitives: a checkpoint written
+   *  long before a compaction means the turns since it will NOT carry). Null when
+   *  no checkpoint, or when an injected test read supplies no meta. */
+  checkpointUpdatedAtMs?: number | null;
 }
 
 export interface CarryBrief {
@@ -141,12 +146,19 @@ export async function readHeldWorkItems(
      ORDER BY feature_id DESC
      LIMIT ${limit}
   `;
-  const getCheckpoint =
-    opts.getWorkItemCheckpointFn ??
-    (async (ref: { harness: string | null; workItemId: string; workspaceId?: string }) => {
-      const { getWorkItemCheckpoint } = await import('./work-item-checkpoint');
-      return getWorkItemCheckpoint(ref);
-    });
+  // P-003 (fleet-deltas-leader-primitives): the default read carries the checkpoint's
+  // write instant (getWorkItemCheckpointWithMeta) so the compaction gate can flag a
+  // STALE checkpoint, not just a missing one. An injected test fn (string-only) keeps
+  // the legacy shape — its meta stays null.
+  const getCheckpointWithMeta = opts.getWorkItemCheckpointFn
+    ? async (ref: { harness: string | null; workItemId: string; workspaceId?: string }) => ({
+        checkpoint: await opts.getWorkItemCheckpointFn!(ref),
+        updatedAtMs: null as number | null,
+      })
+    : async (ref: { harness: string | null; workItemId: string; workspaceId?: string }) => {
+        const { getWorkItemCheckpointWithMeta } = await import('./work-item-checkpoint');
+        return getWorkItemCheckpointWithMeta(ref);
+      };
   const out: CarryBriefHeldItem[] = [];
   for (const h of held) {
     // EI-8813: reuse the SAME scope→harness resolution the write/read paths use
@@ -157,12 +169,15 @@ export async function readHeldWorkItems(
     // only — work_items:checkpoint/get already canonicalize correctly (EI-8805).
     const harness = harnessOfScope(h.scope ?? '');
     let checkpoint: string | null = null;
+    let checkpointUpdatedAtMs: number | null = null;
     try {
-      checkpoint = await getCheckpoint({ harness, workItemId: h.issue_id, workspaceId: ws });
+      const meta = await getCheckpointWithMeta({ harness, workItemId: h.issue_id, workspaceId: ws });
+      checkpoint = meta.checkpoint;
+      checkpointUpdatedAtMs = meta.updatedAtMs;
     } catch {
       /* per-item best-effort */
     }
-    out.push({ id: h.issue_id, title: h.title, body: h.body, harness, checkpoint });
+    out.push({ id: h.issue_id, title: h.title, body: h.body, harness, checkpoint, checkpointUpdatedAtMs });
   }
   return out;
 }

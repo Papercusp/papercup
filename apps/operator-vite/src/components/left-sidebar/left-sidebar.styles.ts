@@ -873,6 +873,7 @@ body.has-left-sidebar .pc-header {
 .pc-queen__err { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #fca5a5; padding: 6px 9px; border-radius: 7px; border: 1px solid color-mix(in srgb, var(--bad, #f43f5e), transparent 58%); background: color-mix(in srgb, var(--bad, #f43f5e), transparent 90%); }
 .pc-queen__section { display: flex; flex-direction: column; gap: 7px; padding: 8px 9px; border-radius: 8px; border: 1px solid var(--border, rgba(125, 211, 252, 0.14)); background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.04)), transparent 18%); }
 .pc-queen__section--pause { border-color: color-mix(in srgb, var(--accent), transparent 72%); }
+.pc-queen__section--paused { border-color: color-mix(in srgb, var(--warn), transparent 58%); background: color-mix(in srgb, var(--warn), transparent 95%); }
 .pc-queen__section-head { display: flex; align-items: center; gap: 6px; }
 .pc-queen__section-head svg { color: var(--fg-mute, #7f9bb4); }
 .pc-queen__section-title { font-size: 11px; font-weight: 760;  color: var(--fg, #e7f7ff); }
@@ -894,7 +895,7 @@ body.has-left-sidebar .pc-header {
 .pc-queen__duration { display: inline-flex; align-items: center; gap: 5px; min-height: 27px; padding: 2px 6px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-2); }
 .pc-queen__presetlabel { font-size: 10px;  color: var(--fg-mute); }
 .pc-queen__mins { width: 48px; font: inherit; font-size: 12px; padding: 3px 6px; border-radius: 5px; color: var(--fg); background: var(--bg); border: 1px solid var(--border-strong); }
-.pc-queen__mins:focus { outline: none; border-color: color-mix(in srgb, var(--queen-accent), transparent 35%); }
+.pc-queen__mins:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent), transparent 62%); }
 .pc-queen__hint { font-size: 10px; line-height: 1.3; color: var(--fg-mute); }
 .pc-queen__scope { font-size: 10.5px; line-height: 1.35; color: var(--fg-dim); padding: 6px 8px; border-radius: 7px; background: color-mix(in srgb, var(--accent), transparent 94%); border: 1px solid color-mix(in srgb, var(--accent), transparent 82%); }
 .pc-queen__scope--restricted { color: var(--fg); background: color-mix(in srgb, var(--accent), transparent 93%); border-color: color-mix(in srgb, var(--accent), transparent 68%); }

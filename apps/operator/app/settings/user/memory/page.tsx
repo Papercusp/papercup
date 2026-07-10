@@ -231,8 +231,8 @@ export default function MemoryPage() {
     }
   }, [refreshMeta, askConfirm]);
 
-  const [reembedBusy, setReembedBusy] = useState<null | 'openai-to-local' | 'local-to-openai'>(null);
-  const onReembed = useCallback(async (from: 'openai' | 'local', to: 'openai' | 'local') => {
+  const [reembedBusy, setReembedBusy] = useState<null | `${'openai' | 'local' | 'gemma'}-to-${'openai' | 'local' | 'gemma'}`>(null);
+  const onReembed = useCallback(async (from: 'openai' | 'local' | 'gemma', to: 'openai' | 'local' | 'gemma') => {
     const ok = await askConfirm({
       title: `Re-embed memories from "${from}" → "${to}"?`,
       body: `This may take 30s-5min depending on size. Existing "${to}" memories with the same id will be overwritten.`,
@@ -754,6 +754,22 @@ export default function MemoryPage() {
             style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', fontSize: 12, opacity: reembedBusy ? 0.5 : 1 }}
           >
             {reembedBusy === 'local-to-openai' ? 'Re-embedding…' : 'local → openai'}
+          </button></Tooltip>
+          <Tooltip label="Re-embed BGE-small (local) memories into the EmbeddingGemma-300m collection so they're visible after switching your memory system to EmbeddingGemma (the default)."><button
+            type="button"
+            onClick={() => onReembed('local', 'gemma')}
+            disabled={reembedBusy !== null}
+            style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', fontSize: 12, opacity: reembedBusy ? 0.5 : 1 }}
+          >
+            {reembedBusy === 'local-to-gemma' ? 'Re-embedding…' : 'local → gemma'}
+          </button></Tooltip>
+          <Tooltip label="Re-embed OpenAI memories into the EmbeddingGemma-300m collection so they're visible after switching your memory system to EmbeddingGemma (the default)."><button
+            type="button"
+            onClick={() => onReembed('openai', 'gemma')}
+            disabled={reembedBusy !== null}
+            style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', fontSize: 12, opacity: reembedBusy ? 0.5 : 1 }}
+          >
+            {reembedBusy === 'openai-to-gemma' ? 'Re-embedding…' : 'openai → gemma'}
           </button></Tooltip>
           <button
             type="button"

@@ -62,20 +62,56 @@ async function carryBriefFocus(brief: import('../../carry-brief').CarryBrief | n
   return DEFAULT_FOCUS;
 }
 
+/** P-003 (fleet-deltas-leader-primitives): a held item's checkpoint older than this
+ *  at compaction time is flagged STALE — the turns since it was written will NOT
+ *  carry across the boundary. 15 min ≈ several monitor wakes / a full task step;
+ *  younger than that, the checkpoint plausibly still covers the current unit. */
+export const STALE_CHECKPOINT_WARN_MS = 15 * 60_000;
+
+export interface CheckpointFlushWarning {
+  id: string;
+  title: string | null;
+  /** 'missing' = never written (EI-8987, genuine state loss); 'stale' = written, but
+   *  long enough ago that the turns since it will not carry (P-003). */
+  reason: 'missing' | 'stale';
+  /** Minutes since the checkpoint was written — only on reason:'stale'. */
+  ageMinutes?: number;
+}
+
 /**
- * EI-8987: a WARN-only (never refuse — a hard-refuse gate on the tool an agent
- * calls BECAUSE it is at its context limit would strand it there on any gate bug,
- * a worse failure than the one this catches) proactive check for held work-items
- * with NO checkpoint at all — the highest-risk case, since a compacted-away
- * transcript with zero durable carry-note is a genuine state loss, not just a
- * staleness risk. Best-effort: an unavailable brief yields an empty list, never
- * blocks the compaction.
+ * EI-8987 + P-003 (fleet-deltas-leader-primitives): a WARN-only (never refuse — a
+ * hard-refuse gate on the tool an agent calls BECAUSE it is at its context limit
+ * would strand it there on any gate bug, a worse failure than the one this catches)
+ * proactive flush-integrity check over the caller's held work-items:
+ *   - 'missing' — NO checkpoint at all (the highest-risk case: a compacted-away
+ *     transcript with zero durable carry-note is a genuine state loss);
+ *   - 'stale'   — a checkpoint OLDER than STALE_CHECKPOINT_WARN_MS (the WI-3549
+ *     class: the flush happened, but so much has happened since that the summary
+ *     boundary will drop unparked state anyway).
+ * Best-effort: an unavailable brief yields an empty list, never blocks compaction.
  */
-function staleCheckpointWarnings(
+export function staleCheckpointWarnings(
   brief: import('../../carry-brief').CarryBrief | null,
-): Array<{ id: string; title: string | null }> {
+  nowMs: number = Date.now(),
+): CheckpointFlushWarning[] {
   if (!brief) return [];
-  return brief.heldItems.filter((h) => h.checkpoint === null).map((h) => ({ id: h.id, title: h.title }));
+  const out: CheckpointFlushWarning[] = [];
+  for (const h of brief.heldItems) {
+    if (h.checkpoint === null) {
+      out.push({ id: h.id, title: h.title, reason: 'missing' });
+    } else if (
+      typeof h.checkpointUpdatedAtMs === 'number' &&
+      nowMs - h.checkpointUpdatedAtMs > STALE_CHECKPOINT_WARN_MS
+    ) {
+      out.push({
+        id: h.id,
+        title: h.title,
+        reason: 'stale',
+        ageMinutes: Math.round((nowMs - h.checkpointUpdatedAtMs) / 60_000),
+      });
+    }
+  }
+  return out;
 }
 
 /**
@@ -199,11 +235,21 @@ export default defineTool({
     // ended yet, so the agent reading this result can fire one more
     // work_items:checkpoint call for the flagged item(s) before it truly stops —
     // and the already-queued compaction will still pick up that fresh checkpoint.
+    const missing = staleCheckpoints.filter((s) => s.reason === 'missing');
+    const stale = staleCheckpoints.filter((s) => s.reason === 'stale');
     const staleNote =
       ok && staleCheckpoints.length > 0
-        ? ` ⚠ ${staleCheckpoints.length} held work-item(s) have NO checkpoint written (${staleCheckpoints
-            .map((s) => s.id)
-            .join(', ')}) — write one now (work_items:checkpoint) before you actually stop, or that state will not carry.`
+        ? ` ⚠ flush-integrity:${
+            missing.length > 0
+              ? ` ${missing.length} held work-item(s) have NO checkpoint written (${missing.map((s) => s.id).join(', ')}) — write one now (work_items:checkpoint) before you actually stop, or that state will not carry.`
+              : ''
+          }${
+            stale.length > 0
+              ? ` ${stale.length} held work-item(s) have a STALE checkpoint (${stale
+                  .map((s) => `${s.id} ${s.ageMinutes}m old`)
+                  .join(', ')}) — everything since it was written will NOT carry; refresh it now if this unit progressed since.`
+              : ''
+          }`
         : '';
     return {
       content: [

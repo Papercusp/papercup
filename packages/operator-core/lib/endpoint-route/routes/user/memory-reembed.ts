@@ -14,7 +14,10 @@ import { getSessionUserOrDefault } from '../../../auth';
 import { reembedMemories } from '../../../memory/reembed';
 import { defineTool } from '@papercusp/agent-mcp';
 
-const VALID_MODES = ['openai', 'local'] as const;
+// 'gemma' = EmbeddingGemma-300m @ MRL-384 (the default local embedder; its own
+// space → memory_vec_gemma). Switching TO gemma from a prior mode re-embeds the
+// corpus into the gemma vec table so old memories stay recall-visible.
+const VALID_MODES = ['openai', 'local', 'gemma'] as const;
 type Mode = (typeof VALID_MODES)[number];
 
 function isMode(v: unknown): v is Mode {

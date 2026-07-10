@@ -22,7 +22,7 @@ import { softText, clampText, LIMITS } from '../limits';
 export default defineTool({
   name: 'events:emit',
   description:
-    'Fire an event key through the await-event primitive: every agent with an events:await on the key is woken (durable delivery — pty-inject / session-resume / inbox ladder); an optional `to` list additionally receives a coord inbox notification (notify policy — never wakes). Use the key your waiter registered (events:await tells them what to wait on).',
+    'Fire an event key through the await-event primitive: every agent with an events:await on the key is woken (durable delivery — pty-inject / session-resume / inbox ladder); an optional `to` list additionally receives a coord inbox notification (notify policy — never wakes). Use the key your waiter registered (events:await tells them what to wait on). Reports `waiters` — the total ACTIVE await registrations this emit actually matched (woken + notify-policy, excluding any extra `to[]`) — so `waiters:0` with no `to[]` tells you the emit reached no one, distinct from a genuine `woken:0` amid nonzero notifies.',
   guidance: {
     when: 'Announcing that the thing a peer is blocked on has happened: their requested work is done, an artifact landed, a decision resolved. Pair with events:await — the waiter registers the key, you emit it. (To WAKE a parked AGENT — re-invoke its turn — the key is `coord:inbox-wake:<ownerId>`, but prefer the higher-level verbs that hide the key: coord:wake to nudge, coord:dispatch to assign+wake, coord:send {wake:\'required\'} to message+wake.)',
     notWhen:
@@ -127,6 +127,7 @@ export default defineTool({
             event: result.key,
             woken: result.woken,
             notified: result.notified.length,
+            waiters: result.waiters,
             msg_id: result.msgId,
             ...(federated !== undefined ? { federated } : {}),
             ...(federationError ? { federation_error: federationError } : {}),

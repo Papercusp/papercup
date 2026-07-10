@@ -11,14 +11,17 @@ const spawnMock = vi.fn();
 vi.mock('node:child_process', () => ({ spawn: (...args: unknown[]) => spawnMock(...args) }));
 
 import {
+  _resetSpawnerSidecarSpawnStateForTests,
   _setSpawnerSidecarProcessForTests,
   getSpawnerSidecarProcess,
   isSpawnerSidecarRunning,
   registerSpawnerSidecarShutdownHooks,
+  spawnerSidecarSupervisionStatus,
   spawnSpawnerSidecar,
   stopSpawnerSidecar,
+  MAX_RESPAWN_ATTEMPTS,
 } from './spawner-sidecar-spawn';
-import { _resetSidecarShutdownHookRegistryForTests } from '../process-supervision/sidecar-spawn-shared';
+import { _resetSidecarShutdownHookRegistryForTests, respawnBackoffMs } from '../process-supervision/sidecar-spawn-shared';
 
 type FakeChild = EventEmitter & {
   pid: number;
@@ -44,11 +47,13 @@ function makeChild(): FakeChild {
 describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
   beforeEach(() => {
     spawnMock.mockReset();
-    _setSpawnerSidecarProcessForTests(null);
+    vi.useFakeTimers();
+    _resetSpawnerSidecarSpawnStateForTests();
   });
 
   afterEach(() => {
-    _setSpawnerSidecarProcessForTests(null);
+    _resetSpawnerSidecarSpawnStateForTests();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -70,11 +75,7 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
     expect(getSpawnerSidecarProcess()).toBe(child);
   });
 
-  it('stopSpawnerSidecar SIGTERMs the child and resolves once it exits (no respawn — spawner has none)', async () => {
-    // spawner-sidecar-spawn.ts has no `deliberateStop` flag (unlike its substrate/gateway
-    // siblings), so its 'exit' handler unconditionally console.warns "died" even on a
-    // deliberate stop — pre-existing behavior, not something this migration changed.
-    // Mock + assert per the fail-on-console convention.
+  it('stopSpawnerSidecar SIGTERMs the child, resolves once it exits, and does NOT auto-respawn (P-006: deliberate stop gates the respawn machinery)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const child = makeChild();
     spawnMock.mockReturnValueOnce(child);
@@ -87,7 +88,11 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
     expect(child.kill).toHaveBeenCalledWith('SIGTERM');
     expect(getSpawnerSidecarProcess()).toBeNull();
     expect(isSpawnerSidecarRunning()).toBe(false);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('died'));
+    // A deliberate stop is a graceful shutdown, not a crash — neither the "died"
+    // warning nor an auto-respawn attempt should fire.
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('died'));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(spawnMock).toHaveBeenCalledTimes(1); // still just the original spawn — no respawn
   });
 
   it('a no-op stop when nothing is running never throws', async () => {
@@ -175,6 +180,117 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
 
       expect(child.kill).toHaveBeenCalledWith('SIGTERM');
       warn.mockRestore();
+    });
+  });
+
+  // P-006 (critical-process-supervisor-2026-07-04): the spawner sidecar previously
+  // had NO auto-respawn-on-crash at all (unlike its substrate-sidecar sibling,
+  // WI-1504) — an unexpected exit just cleared state and waited for the next
+  // caller to lazily re-spawn it. This block locks in the added mechanism,
+  // cloned from substrate-sidecar-spawn.ts's (same shared helpers, same numbers).
+  describe('auto-respawn-on-crash (P-006)', () => {
+    it('auto-respawns after an unexpected post-ready exit', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const first = makeChild();
+      const second = makeChild();
+      spawnMock.mockReturnValueOnce(first).mockReturnValueOnce(second);
+
+      const ready = spawnSpawnerSidecar('/tmp/spawner-sidecar.sock');
+      first.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
+      await ready;
+      expect(getSpawnerSidecarProcess()).toBe(first);
+
+      first.emit('exit', 137);
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('auto-respawning'));
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(spawnMock).toHaveBeenCalledTimes(2);
+      second.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
+      await vi.runAllTicks();
+      expect(getSpawnerSidecarProcess()).toBe(second);
+    });
+
+    it('isStopping-equivalent guard: a deliberate stopSpawnerSidecar() never schedules a respawn', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const child = makeChild();
+      spawnMock.mockReturnValueOnce(child);
+      const ready = spawnSpawnerSidecar('/tmp/spawner-sidecar.sock');
+      child.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
+      await ready;
+
+      const stopPromise = stopSpawnerSidecar();
+      child.emit('exit', 0); // the deliberate-stop exit
+      await stopPromise;
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(spawnMock).toHaveBeenCalledTimes(1); // no respawn
+      expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('died'));
+      expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('auto-respawning'));
+    });
+
+    it('MAX_RESPAWN_ATTEMPTS crashes within the window give up auto-respawning', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const first = makeChild();
+      spawnMock.mockReturnValueOnce(first);
+      const ready = spawnSpawnerSidecar('/tmp/spawner-sidecar.sock');
+      first.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
+      await ready;
+
+      let current = first;
+      for (let i = 0; i < MAX_RESPAWN_ATTEMPTS; i++) {
+        const next = makeChild();
+        spawnMock.mockReturnValueOnce(next);
+        current.emit('exit', 137);
+        // Advance EXACTLY this attempt's backoff (never more) then immediately emit
+        // ready on the new child, with zero elapsed time in between — unlike
+        // substrate's killSidecarTree (a real process-group kill that no-ops
+        // against a fake pid in tests), spawner's internal 10s ready-handshake
+        // timeout directly calls `sidecarProcess.kill()`, which THIS suite's
+        // mock synchronously turns into a real 'exit' emission. Blindly
+        // overshooting the advance (e.g. a flat 20s) would let that internal
+        // timeout fire first and double-count a respawn attempt.
+        await vi.advanceTimersByTimeAsync(respawnBackoffMs(i + 1));
+        next.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
+        await vi.runAllTicks();
+        current = next;
+      }
+      expect(spawnMock).toHaveBeenCalledTimes(MAX_RESPAWN_ATTEMPTS + 1);
+      expect(spawnerSidecarSupervisionStatus().gaveUp).toBe(false);
+
+      const spawnCallsBefore = spawnMock.mock.calls.length;
+      current.emit('exit', 137);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(spawnMock).toHaveBeenCalledTimes(spawnCallsBefore); // no further respawn
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('giving up auto-respawn'));
+      expect(spawnerSidecarSupervisionStatus().gaveUp).toBe(true);
+    });
+  });
+
+  describe('spawnerSidecarSupervisionStatus (P-006 — dev:service_health feed)', () => {
+    it('reports running:true + zero flap counters for a healthy, never-crashed sidecar', async () => {
+      const child = makeChild();
+      spawnMock.mockReturnValueOnce(child);
+      const ready = spawnSpawnerSidecar('/tmp/spawner-sidecar.sock');
+      child.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
+      await ready;
+
+      expect(spawnerSidecarSupervisionStatus()).toEqual({
+        running: true,
+        respawnAttemptsInWindow: 0,
+        gaveUp: false,
+        lastRespawnScheduledAt: null,
+      });
+    });
+
+    it('reports running:false + no state when nothing has ever spawned', () => {
+      expect(spawnerSidecarSupervisionStatus()).toEqual({
+        running: false,
+        respawnAttemptsInWindow: 0,
+        gaveUp: false,
+        lastRespawnScheduledAt: null,
+      });
     });
   });
 });

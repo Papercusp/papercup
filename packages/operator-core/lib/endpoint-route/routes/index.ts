@@ -439,6 +439,7 @@ import devDrizzleStudio from './dev/drizzle-studio';
 import desktopGitPipeline from './desktop/git-pipeline';
 import desktopGitRemoteMain from './desktop/git-remote-main';
 import desktopGitPotGreenCmd from './desktop/git-pot-green-cmd';
+import desktopGitHiveMode from './desktop/git-hive-mode';
 // dogfood-silent-canonical-hive-join P-013/P-014 — the cross-platform env switcher's
 // operator-discovery feed (server-side reachability of the dev/prod/staging/local +
 // release envs).
@@ -885,6 +886,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(desktopGitPipeline as AnyRoute[]),
   ...flatten(desktopGitRemoteMain as AnyRoute[]),
   ...flatten(desktopGitPotGreenCmd as AnyRoute[]),
+  ...flatten(desktopGitHiveMode as AnyRoute[]),
   ...flatten(desktopDevOperators as AnyRoute[]),
   ...flatten(marketplaceCatalog as AnyRoute),
   ...flatten(marketplaceSpawnable as AnyRoute),

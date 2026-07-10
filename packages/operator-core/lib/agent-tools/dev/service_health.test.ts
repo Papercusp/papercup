@@ -19,14 +19,27 @@ vi.mock("../../projected-tool-deps", () => ({
 vi.mock("../../supervision/unit-reconciler", () => ({
   supervisionSnapshot: vi.fn(() => [
     { name: "mcp-proxy", layer: "systemd-user", autoRestart: true, criticality: "important", consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok" },
+    { name: "substrate-sidecar", layer: "node-child", autoRestart: true, criticality: "important", consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok" },
+    { name: "spawner-sidecar", layer: "node-child", autoRestart: true, criticality: "important", consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok" },
   ]),
+}));
+vi.mock("../../sync/hyperbee/substrate-sidecar-spawn", () => ({
+  substrateSidecarSupervisionStatus: vi.fn(() => ({ running: true, respawnAttemptsInWindow: 2, gaveUp: false, lastRespawnScheduledAt: 1000 })),
+}));
+vi.mock("../../fleet/spawner-sidecar-spawn", () => ({
+  spawnerSidecarSupervisionStatus: vi.fn(() => ({ running: false, respawnAttemptsInWindow: 5, gaveUp: true, lastRespawnScheduledAt: 2000 })),
 }));
 
 import { probeAll } from "../../service-health";
 import { getTelemetryHealth } from "../../projected-tool-deps";
 import { supervisionSnapshot } from "../../supervision/unit-reconciler";
+import { substrateSidecarSupervisionStatus } from "../../sync/hyperbee/substrate-sidecar-spawn";
+import { spawnerSidecarSupervisionStatus } from "../../fleet/spawner-sidecar-spawn";
+import { overlayNodeChildSupervision } from "./service_health";
 const probeM = vi.mocked(probeAll);
 const supervisionM = vi.mocked(supervisionSnapshot);
+const substrateM = vi.mocked(substrateSidecarSupervisionStatus);
+const spawnerM = vi.mocked(spawnerSidecarSupervisionStatus);
 const tool = (await import("./service_health")).default;
 
 type Out = { content: { text: string }[] };
@@ -54,6 +67,10 @@ describe("dev:service_health handler", () => {
       },
       supervision: [
         { name: "mcp-proxy", layer: "systemd-user", autoRestart: true, criticality: "important", consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok" },
+        // P-006: the node-child entries get OVERLAID with the sidecars' own respawn
+        // status (mocked above) instead of the reconciler's all-zero defaults.
+        { name: "substrate-sidecar", layer: "node-child", autoRestart: true, criticality: "important", consecutiveProbeFailures: 0, lastRestartAt: 1000, restartsLast10m: 2, flapState: "damping" },
+        { name: "spawner-sidecar", layer: "node-child", autoRestart: true, criticality: "important", consecutiveProbeFailures: 0, lastRestartAt: 2000, restartsLast10m: 5, flapState: "gave-up" },
       ],
     });
     expect(getTelemetryHealth).toHaveBeenCalledTimes(1);
@@ -68,8 +85,46 @@ describe("dev:service_health handler", () => {
     expect(b.telemetry).toBeDefined();
     // New, additive field.
     expect(supervisionM).toHaveBeenCalledTimes(1);
-    expect(b.supervision).toEqual([
-      { name: "mcp-proxy", layer: "systemd-user", autoRestart: true, criticality: "important", consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok" },
-    ]);
+    expect(substrateM).toHaveBeenCalledTimes(1);
+    expect(spawnerM).toHaveBeenCalledTimes(1);
+    expect(b.supervision).toHaveLength(3);
+  });
+});
+
+describe("overlayNodeChildSupervision (P-006, pure)", () => {
+  const base = [
+    { name: "mcp-proxy", layer: "systemd-user" as const, autoRestart: true, criticality: "important" as const, consecutiveProbeFailures: 1, lastRestartAt: 999, restartsLast10m: 1, flapState: "damping" as const },
+    { name: "substrate-sidecar", layer: "node-child" as const, autoRestart: true, criticality: "important" as const, consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok" as const },
+    { name: "spawner-sidecar", layer: "node-child" as const, autoRestart: true, criticality: "important" as const, consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok" as const },
+    { name: "desktop-shell", layer: "desktop-shell" as const, autoRestart: true, criticality: "critical" as const, consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok" as const },
+  ];
+
+  it("leaves non-sidecar entries (systemd-user, desktop-shell) completely untouched", () => {
+    const out = overlayNodeChildSupervision(
+      base,
+      { running: true, respawnAttemptsInWindow: 0, gaveUp: false, lastRespawnScheduledAt: null },
+      { running: true, respawnAttemptsInWindow: 0, gaveUp: false, lastRespawnScheduledAt: null },
+    );
+    expect(out[0]).toEqual(base[0]); // mcp-proxy (systemd-user)
+    expect(out[3]).toEqual(base[3]); // desktop-shell
+  });
+
+  it("overlays substrate-sidecar and spawner-sidecar from their own respawn status", () => {
+    const out = overlayNodeChildSupervision(
+      base,
+      { running: true, respawnAttemptsInWindow: 3, gaveUp: false, lastRespawnScheduledAt: 5000 },
+      { running: false, respawnAttemptsInWindow: 6, gaveUp: true, lastRespawnScheduledAt: 9000 },
+    );
+    expect(out[1]).toEqual({ ...base[1], consecutiveProbeFailures: 0, lastRestartAt: 5000, restartsLast10m: 3, flapState: "damping" });
+    expect(out[2]).toEqual({ ...base[2], consecutiveProbeFailures: 0, lastRestartAt: 9000, restartsLast10m: 6, flapState: "gave-up" });
+  });
+
+  it("derives flapState 'ok' when running with zero attempts, 'gave-up' takes priority over a nonzero attempt count", () => {
+    const out = overlayNodeChildSupervision(
+      [base[1]],
+      { running: true, respawnAttemptsInWindow: 4, gaveUp: true, lastRespawnScheduledAt: 1 },
+      { running: true, respawnAttemptsInWindow: 0, gaveUp: false, lastRespawnScheduledAt: null },
+    );
+    expect(out[0].flapState).toBe("gave-up");
   });
 });

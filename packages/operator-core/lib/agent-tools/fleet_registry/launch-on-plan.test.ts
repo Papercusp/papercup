@@ -19,6 +19,8 @@ import launchOnPlan, {
   resolveFleetAgent,
   buildFleetKindClaimSpec,
   clampFleetTopUpToCapacity,
+  composeMemberLaunchContext,
+  renderMemberBaseline,
   type MemberLaunchOpts,
 } from './launch-on-plan';
 
@@ -70,6 +72,91 @@ describe('memberLaunchCommand (WI-1408 — fleet:launch-on-plan threads --fleet 
     expect(memberLaunchCommand(base)).not.toContain('--allow-subagents');
     expect(memberLaunchCommand({ ...base, allowSubagents: true }).split(' ')).toContain('--allow-subagents');
     expect(memberLaunchCommand({ ...base, allowSubagents: false })).not.toContain('--allow-subagents');
+  });
+
+  // P-003 headless fleet: `--headless` forces the managed-pty host on despite non-TTY stdio so
+  // the member (no window) stays injectable for warm wakes. Boolean flag like --brain.
+  it('headless (P-003): omitted by default (visible), --headless when opted in — and never crowds out --fleet', () => {
+    expect(memberLaunchCommand(base)).not.toContain('--headless');
+    const cmd = memberLaunchCommand({ ...base, headless: true });
+    const tokens = cmd.split(' ');
+    expect(tokens).toContain('--headless');
+    expect(tokens).toContain('--fleet=atlas-fleet');
+    expect(tokens).toContain('--no-picker');
+    expect(memberLaunchCommand({ ...base, headless: false })).not.toContain('--headless');
+    // exactly one occurrence, coexists with other optional flags
+    const both = memberLaunchCommand({ ...base, headless: true, account: 'acct-1', model: 'opus:high' });
+    expect((both.match(/--headless/g) ?? [])).toHaveLength(1);
+  });
+});
+
+// P-004 carry (owner directive 2026-07-10, INDEPENDENT of headless): the warm/cold auto-mode
+// knob threads into the member operating baseline. renderMemberBaseline / composeMemberLaunchContext
+// rewrite the loop:arm rule + promote the checkpoint to load-bearing for a COLD member; warm
+// (default) is byte-identical to before so nothing silently goes cold.
+describe('member baseline carry directive (P-004 — warm/cold auto-mode)', () => {
+  const opts = { fleetSlug: 'atlas-fleet', plan: 'p-plan', count: 3 };
+
+  it('WARM (default): arms a plain loop:arm and never mentions cold carry', () => {
+    const warm = renderMemberBaseline(opts);
+    expect(warm).toContain('`loop:arm { intervalSec, goal }`');
+    expect(warm).not.toContain("carry: 'cold'");
+    expect(warm).not.toContain('COLD');
+    // explicit warm is identical to the default
+    expect(renderMemberBaseline({ ...opts, carry: 'warm' })).toBe(warm);
+  });
+
+  it('COLD: rewrites the loop:arm rule to arm a cold loop and marks the checkpoint load-bearing', () => {
+    const cold = renderMemberBaseline({ ...opts, carry: 'cold' });
+    expect(cold).toContain("`loop:arm { intervalSec, goal, carry: 'cold' }`");
+    expect(cold).not.toContain('`loop:arm { intervalSec, goal }`'); // the warm form is gone
+    expect(cold).toMatch(/COLD CARRY makes this LOAD-BEARING/);
+    // the STAY ALIVE rule explains a cold wake starts fresh
+    expect(cold).toMatch(/FRESH context/);
+  });
+
+  it('composeMemberLaunchContext threads carry through to the baseline (warm vs cold)', () => {
+    const warm = composeMemberLaunchContext({ ...opts, carry: 'warm' });
+    const cold = composeMemberLaunchContext({ ...opts, carry: 'cold' });
+    expect(warm).not.toContain("carry: 'cold'");
+    expect(cold).toContain("carry: 'cold'");
+    // carry does not disturb the leader's per-fleet brief, which still layers below
+    const coldWithBrief = composeMemberLaunchContext({ ...opts, carry: 'cold', customBriefText: 'FLEET SPECIAL BRIEF' });
+    expect(coldWithBrief).toContain('FLEET SPECIAL BRIEF');
+    expect(coldWithBrief).toContain("carry: 'cold'");
+  });
+});
+
+// P-003/P-004 arg-schema round-trip: both knobs parse, default undefined (→ visible + warm
+// downstream), reject bad values, and are optional.
+describe('headless + carry args (P-003/P-004)', () => {
+  const parseArgs = (extra: Record<string, unknown>) =>
+    (launchOnPlan.args as { parse: (x: unknown) => Record<string, unknown> }).parse({
+      name: 'atlas',
+      plan: 'p-plan',
+      ...extra,
+    });
+
+  it('headless: accepts booleans, rejects non-boolean, optional (default undefined)', () => {
+    expect(parseArgs({ headless: true }).headless).toBe(true);
+    expect(parseArgs({ headless: false }).headless).toBe(false);
+    expect(parseArgs({}).headless).toBeUndefined();
+    expect(() => parseArgs({ headless: 'yes' })).toThrow();
+  });
+
+  it("carry: accepts 'warm'/'cold', rejects other strings, optional (default undefined)", () => {
+    expect(parseArgs({ carry: 'warm' }).carry).toBe('warm');
+    expect(parseArgs({ carry: 'cold' }).carry).toBe('cold');
+    expect(parseArgs({}).carry).toBeUndefined();
+    expect(() => parseArgs({ carry: 'lukewarm' })).toThrow();
+  });
+
+  it('headless and carry are INDEPENDENT — every combination parses', () => {
+    for (const headless of [true, false]) {
+      for (const carry of ['warm', 'cold']) {
+        expect(() => parseArgs({ headless, carry }), `${headless}/${carry}`).not.toThrow();
+      }
+    }
   });
 });
 

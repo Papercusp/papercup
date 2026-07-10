@@ -25,7 +25,7 @@ vi.mock('@papercusp/db-org', async () => {
   return { ...actual, getOrgPg: () => ({ sql: hb.sql }) };
 });
 
-const { registerAwait, upsertInboxWakeAwait, cancelInboxWakeAwaits, cancelAwait, listActiveAwaits, listActiveAwaitsForKey, fireAwaitsForKey } =
+const { registerAwait, upsertInboxWakeAwait, cancelInboxWakeAwaits, cancelAwait, listActiveAwaits, listActiveAwaitsForKey, fireAwaitsForKey, listParkedAwaitsForSubscribers } =
   await import('./store');
 
 let rootSql: postgres.Sql;
@@ -176,5 +176,32 @@ describe('await-event store (PG)', () => {
     const a = await registerAwait({ subscriberId: 'owner', eventKey: 'k:mine' });
     expect(await cancelAwait({ awaitId: a.id, subscriberId: 'not-owner' })).toBe(false); // cannot cancel a peer's
     expect(await cancelAwait({ awaitId: a.id, subscriberId: 'owner' })).toBe(true); // owner can
+  });
+
+  // ── P-001 (fleet-member-dx-improvements-2026-07-10): parked-on-event read ──
+  it('listParkedAwaitsForSubscribers returns only ACTIVE non-inbox-wake awaits for the asked subscribers', async () => {
+    // sub-a: a genuine parked-on-event await → the ONE row that should surface
+    await registerAwait({ subscriberId: 'sub-a', eventKey: 'p2p-git:phase3-open', note: 'benched until phase 3' });
+    // sub-a: the always-armed inbox-wake self-key → excluded (liveness, not benching)
+    await upsertInboxWakeAwait({ subscriberId: 'sub-a', eventKey: 'coord:inbox-wake:sub-a', wakeHandle: { sessionId: 's1' } as never });
+    // sub-a: a fired await → excluded
+    await registerAwait({ subscriberId: 'sub-a', eventKey: 'k:already-fired', once: true });
+    await fireAwaitsForKey({ eventKey: 'k:already-fired' });
+    // sub-a: a cancelled await → excluded
+    const cancelled = await registerAwait({ subscriberId: 'sub-a', eventKey: 'k:cancelled' });
+    await cancelAwait({ awaitId: cancelled.id, subscriberId: 'sub-a' });
+    // sub-a: an EXPIRED await (expires_ts in the past) → excluded
+    const expired = await registerAwait({ subscriberId: 'sub-a', eventKey: 'k:expired', timeoutSec: 60 });
+    await rootSql`UPDATE harness_shared.event_awaits SET expires_ts = now() - interval '1 minute' WHERE id = ${expired.id}`;
+    // sub-b (NOT asked about): parked, but not in the subscriber list → excluded
+    await registerAwait({ subscriberId: 'sub-b', eventKey: 'k:other-agent' });
+
+    const parked = await listParkedAwaitsForSubscribers(['sub-a', 'sub-c']);
+    expect(parked).toHaveLength(1);
+    expect(parked[0]).toMatchObject({ subscriberId: 'sub-a', eventKey: 'p2p-git:phase3-open', note: 'benched until phase 3' });
+
+    // empty / all-blank input short-circuits to []
+    expect(await listParkedAwaitsForSubscribers([])).toEqual([]);
+    expect(await listParkedAwaitsForSubscribers([''])).toEqual([]);
   });
 });
