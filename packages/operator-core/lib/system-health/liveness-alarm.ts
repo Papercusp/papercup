@@ -190,7 +190,15 @@ export function evaluateLivenessAlarm(
 
   // 6. Catch-all: any OTHER panel self-reporting `crit` (so a new critical signal
   //    is never silently missed). Sharper-keyed panels above are skipped.
-  const coveredKeys = new Set(['workFeed', 'mug', 'tokens']);
+  //    NOTE: the panel KEY for the Queen/Mug card is the STABLE identifier
+  //    `'queen'` (types.ts PANEL_LABELS maps queen: 'Mug' — key-stable,
+  //    label-renamed seam, cup-lexicon-full-rename-2026-07-09 KEEP-set). A
+  //    2026-07-05 edit mis-renamed this entry to the display label `'mug'`,
+  //    which never matches `panel.key` — so the queen-dark signal (#3 above)
+  //    was silently duplicated by this catch-all whenever the queen panel
+  //    went crit. Bug found + fixed 2026-07-10 (cup-lexicon-full-rename
+  //    fleet read-only-prep pass, su-78d15).
+  const coveredKeys = new Set(['workFeed', 'queen', 'tokens']);
   for (const panel of Object.values(health.panels)) {
     if (panel.status !== 'crit' || coveredKeys.has(panel.key)) continue;
     // EI-2146 #3: suppress the no-bees-while-idle FALSE POSITIVE. A fleet with

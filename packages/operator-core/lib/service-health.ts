@@ -427,6 +427,51 @@ export async function probeSubstrateSidecar(timeoutMs = 5000): Promise<ProbeResu
   }
 }
 
+/**
+ * P-002 (shared-embedding-sidecar-and-enrichment-2026-07-10): liveness of the
+ * shared EMBED SIDECAR — the loopback HTTP process that owns the warm local
+ * embedding model when a host opts in (PAPERCUSP_EMBED_SIDECAR=1, or an
+ * explicit PAPERCUSP_EMBED_SIDECAR_URL pointing at one).
+ *
+ * Fail-soft + opt-in-aware, mirroring `probeSubstrateSidecar`'s contract: not
+ * enabled on this host ⇒ `present: false` (nothing to probe — NEVER a phantom
+ * DOWN; that is the exact EI-188/EI-276 false-alarm class the HEALTH_ENDPOINTS
+ * header warns against, which is why this is a dedicated probe and not a raw
+ * endpoint entry). Enabled + /healthz answers ⇒ up. Enabled + no answer ⇒ DOWN,
+ * with a note saying embedding is NOT broken (the client seam falls back to
+ * in-process embedding per D-003) — degraded, not an outage.
+ */
+export async function probeEmbedSidecar(timeoutMs = 5000): Promise<ProbeResult> {
+  const name = 'embed-sidecar';
+  const start = Date.now();
+  let url: string;
+  try {
+    const spawnMod = await import('./memory/embed-sidecar-spawn');
+    const explicitUrl = process.env.PAPERCUSP_EMBED_SIDECAR_URL;
+    if (!spawnMod.embedSidecarEnabled() && !explicitUrl) {
+      return {
+        name,
+        up: true,
+        status: null,
+        latencyMs: Date.now() - start,
+        present: false,
+        note: 'embed sidecar not enabled on this host (PAPERCUSP_EMBED_SIDECAR/…_URL unset) — nothing to probe',
+      };
+    }
+    url = (explicitUrl ?? spawnMod.embedSidecarLocalUrl()).replace(/\/$/, '');
+  } catch {
+    return { name, up: true, status: null, latencyMs: Date.now() - start, present: false, note: 'embed-sidecar liveness unknown (spawn-module read failed)' };
+  }
+  const result = await probeEndpoint({ name, url: `${url}/healthz`, timeoutMs });
+  if (!result.up) {
+    result.note =
+      `⚠ embed sidecar DOWN (healthz to ${url}: ${result.note ?? 'no response'}) — the shared warm-model embedding ` +
+      `process for this host. Embedding is NOT broken: every consumer falls back to in-process embedding (D-003), ` +
+      `just without the shared warm model. Spawn-side auto-respawn should recover it; not a :3070 fault.`;
+  }
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Supervised-process registry (critical-process-supervisor-2026-07-04 P-001,
 // EI-7021 design). ADDITIVE ONLY — a static metadata list describing which
@@ -480,6 +525,10 @@ export const SUPERVISED_PROCESSES: SupervisionEntry[] = [
   { name: 'mcp-proxy', layer: 'systemd-user', unit: 'papercup-mcp-proxy', criticality: 'important', autoRestart: true }, // :9071
   { name: 'substrate-sidecar', layer: 'node-child', criticality: 'important', autoRestart: true },
   { name: 'spawner-sidecar', layer: 'node-child', criticality: 'important', autoRestart: true }, // apps/operator/bin/spawner-sidecar.ts
+  // Shared warm-model embedding process (P-002, shared-embedding-sidecar-and-
+  // enrichment-2026-07-10). D-003: consumers fall back to in-process embedding
+  // when it's down, so 'important' not 'critical'.
+  { name: 'embed-sidecar', layer: 'node-child', criticality: 'important', autoRestart: true }, // apps/operator/bin/embed-sidecar.ts
   // supervised by the Tauri shell itself (P-005), not the server-side reconciler.
   { name: 'desktop-shell', layer: 'desktop-shell', criticality: 'critical', autoRestart: true },
   // A test gate, not a service — restarting it in a loop would re-run smokes.
@@ -505,15 +554,18 @@ export async function probeAll(specs: EndpointSpec[] = HEALTH_ENDPOINTS): Promis
   // The Tauri desktop has no HTTP endpoint — probe it from its local signals
   // (bridge eval + IPC socket + recent error toasts) alongside the HTTP ones; the
   // bg-host DBOS ticker has no port either — probe it from routine fire-freshness (EI-1832);
-  // the substrate sidecar (WI-899) is a third portless process, probed via its own IPC RPC.
-  const [http, desktop, bgHostTicker, bgHostCode, substrateSidecar] = await Promise.all([
+  // the substrate sidecar (WI-899) is a third portless process, probed via its own IPC RPC;
+  // the embed sidecar HAS a port but is opt-in, so its probe is present:false-aware
+  // rather than a raw HEALTH_ENDPOINTS entry (phantom-DOWN guard).
+  const [http, desktop, bgHostTicker, bgHostCode, substrateSidecar, embedSidecar] = await Promise.all([
     Promise.all(specs.map((s) => probeEndpoint(s))),
     probeDesktop(),
     probeBgHostTicker(),
     probeBgHostCodeDrift(),
     probeSubstrateSidecar(),
+    probeEmbedSidecar(),
   ]);
-  return [...http, desktop, bgHostTicker, bgHostCode, substrateSidecar];
+  return [...http, desktop, bgHostTicker, bgHostCode, substrateSidecar, embedSidecar];
 }
 
 export interface HealthTransition {

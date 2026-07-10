@@ -804,6 +804,17 @@ async function main(): Promise<void> {
     runSpawnerSidecarServer();
     return;
   }
+  // PACKAGED embed-sidecar (P-002, shared-embedding-sidecar-and-enrichment):
+  // same re-exec divert — embed-sidecar-spawn.ts re-execs THIS bundled
+  // serve.mjs with PAPERCUSP_EMBED_SIDECAR_MODE=1. The loopback HTTP server
+  // keeps the process alive.
+  if (process.env.PAPERCUSP_EMBED_SIDECAR_MODE === '1') {
+    const { runEmbedSidecarServer } = await import(
+      '@papercusp/operator-core/lib/memory/embed-sidecar-server'
+    );
+    runEmbedSidecarServer();
+    return;
+  }
   // PACKAGED inference-gateway sidecar (cross-platform-hardening P-006): same
   // re-exec divert — gateway-sidecar-spawn.ts re-execs THIS bundled serve.mjs
   // with PAPERCUSP_GATEWAY_SIDECAR_MODE=1 (a bundle has no tsx / no bin.ts on

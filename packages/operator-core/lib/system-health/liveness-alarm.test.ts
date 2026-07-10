@@ -149,6 +149,22 @@ describe('evaluateLivenessAlarm (pure)', () => {
     expect(sigs.map((s) => s.key)).toContain('panel:deploy');
   });
 
+  it('queen crit + dark → exactly ONE signal (queen-dark), not also duplicated by the catch-all', () => {
+    // Regression: coveredKeys must list the panel's stable KEY ('queen'), not its
+    // display label ('Mug') — the key is deliberately unrenamed (types.ts
+    // PANEL_LABELS: queen → 'Mug'), so a coveredKeys entry of 'mug' never matches
+    // panel.key and the catch-all silently double-fires 'panel:queen' alongside
+    // 'queen-dark'. See cup-lexicon-full-rename-2026-07-09.
+    const h = mkHealth({
+      crossMonitor: { queenAlive: false },
+      panels: { queen: { status: 'crit', summary: 'queen loop dark', data: { started: true } } },
+    });
+    const keys = evaluateLivenessAlarm(h, null).map((s) => s.key);
+    expect(keys).toContain('queen-dark');
+    expect(keys).not.toContain('panel:queen');
+    expect(keys.filter((k) => k === 'queen-dark' || k === 'panel:queen')).toHaveLength(1);
+  });
+
   it('EI-2146 #3: "no bees" does NOT fire when the frontier is empty (idle fleet, not a fault)', () => {
     const h = mkHealth({
       panels: {

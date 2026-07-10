@@ -66,9 +66,10 @@ import { pinSubstrateSocketForCluster } from '@papercusp/operator-core/lib/sync/
 import { runSubstrateSidecarServer } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-sidecar-server';
 import { runSpawnerSidecarServer } from '@papercusp/operator-core/lib/fleet/spawner-sidecar-server';
 import { runGatewaySidecarMain } from '@papercusp/operator-core/lib/inference-gateway/sidecar-main';
+import { runEmbedSidecarServer } from '@papercusp/operator-core/lib/memory/embed-sidecar-server';
 
 // ── EI-8810: sidecar re-exec divert ─────────────────────────────────────────
-// The three sidecar spawners (substrate / spawner / inference-gateway) re-exec
+// The sidecar spawners (substrate / spawner / inference-gateway / embed) re-exec
 // THEIR OWN bundle with a *_SIDECAR_MODE env var. On the packaged desktop that
 // bundle is serve.mjs, whose main() carries this divert — but on the systemd
 // bg-host deployment the bundle is THIS entry (dist-host/hono-host.mjs), which
@@ -77,14 +78,16 @@ import { runGatewaySidecarMain } from '@papercusp/operator-core/lib/inference-ga
 // respawn — the all-day :3270 crash-loop that destabilized the substrate
 // primary (2026-07-09, EI-8810). Divert BEFORE any host boot side-effect; each
 // sidecar server keeps the process alive. Mirrors serve.ts main() exactly.
-const sidecarMode: 'substrate' | 'spawner' | 'gateway' | null =
+const sidecarMode: 'substrate' | 'spawner' | 'gateway' | 'embed' | null =
   process.env.PAPERCUSP_SUBSTRATE_SIDECAR_MODE === '1'
     ? 'substrate'
     : process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE === '1'
       ? 'spawner'
       : process.env.PAPERCUSP_GATEWAY_SIDECAR_MODE === '1'
         ? 'gateway'
-        : null;
+        : process.env.PAPERCUSP_EMBED_SIDECAR_MODE === '1'
+          ? 'embed'
+          : null;
 if (sidecarMode === 'substrate') runSubstrateSidecarServer();
 if (sidecarMode === 'spawner') runSpawnerSidecarServer();
 if (sidecarMode === 'gateway') {
@@ -93,6 +96,7 @@ if (sidecarMode === 'gateway') {
     process.exit(1);
   });
 }
+if (sidecarMode === 'embed') runEmbedSidecarServer();
 
 // Resilience guard: the multi-tenant host must never let ONE bad inbound frame
 // crash-loop :3070 for the entire fleet. Two known classes originate inside the
