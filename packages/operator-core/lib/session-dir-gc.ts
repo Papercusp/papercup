@@ -70,13 +70,26 @@ import {
  *  (session-db-archive-retire-dirs P-012) deletion is LOSSLESS — every ended
  *  session's files live in `harness_shared.session_archives` and
  *  `rematerializeSession` restores them byte-exact on resume — so the old 7-day
- *  "window for a human to resume a crashed session" rationale is obsolete. The
- *  24h mtime gate that remains is only a materialization-race guard (a dir
+ *  "window for a human to resume a crashed session" rationale is obsolete.
+ *
+ *  The mtime gate that remains is ONLY a materialization-race guard: a dir
  *  created for a session that hasn't registered its adv row/presence yet must
- *  never be swept). Callers running WITHOUT the archive flag ON should pass
+ *  never be swept. That race closes in seconds, so 2h is generous.
+ *
+ *  Why not 24h (P-012's first cut)? The steady-state dir population is
+ *  `live + retention-window churn` whenever the sweep cadence <= retention —
+ *  the *retention*, not the cadence, sets the floor. At 24h × ~650 ended
+ *  sessions/day this box floors at ~900 dirs; at 2h (swept hourly) it floors at
+ *  ~tens, which is the plan's actual goal (P-013) and what keeps the fs-watch
+ *  set small. Safe to tighten only because two guards now backstop it: the
+ *  archive guard ({@link findUnarchivedSessionDirs}) refuses to delete
+ *  un-committed sessions, and a degraded protected-set aborts the sweep
+ *  outright.
+ *
+ *  Callers running WITHOUT the archive flag ON should pass
  *  {@link LEGACY_RETENTION_MS} instead — without an archive, deletion is lossy
  *  and deserves the old generous window. */
-export const DEFAULT_RETENTION_MS = 24 * 60 * 60 * 1000;
+export const DEFAULT_RETENTION_MS = 2 * 60 * 60 * 1000;
 
 /** The pre-archive retention (7d) — the safe window when archive-at-death is
  *  DISABLED (kill-switch) and collecting a dir actually destroys data. */
@@ -115,6 +128,18 @@ export interface ProtectedSessionIdentity {
   ownerIds: Set<string>;
   /** adv-session keys (for `session-`-keyed codex roots). */
   sessionKeys: Set<string>;
+  /**
+   * TRUE when any protected-set read FAILED, so this set is incomplete.
+   *
+   * The reads fail OPEN (a dead PG contributes no protected ids), which makes
+   * the sweep MORE aggressive exactly when it can least afford to be. A dir
+   * holding archivable files is still shielded by the archive guard, but a
+   * BARE dir (a session mid-launch, before its first jsonl exists) has nothing
+   * to verify and would be collected. `runSessionDirGc` therefore refuses to
+   * sweep on a degraded set — a skipped sweep costs a day of disk; a wrong one
+   * kills live sessions.
+   */
+  degraded?: boolean;
 }
 
 export interface SessionDirGcPlan {
@@ -239,6 +264,8 @@ export interface SessionDirGcResult {
   keptUnarchived: number;
   dryRun: boolean;
   errors: Array<{ path: string; error: string }>;
+  /** Set when the sweep was ABORTED before removing anything (fail-closed). */
+  skipped?: 'degraded-protected-set';
 }
 
 /**
@@ -310,12 +337,14 @@ export function sweepStaleSessionDirs(opts: {
 export async function gatherProtectedSessionIdentity(): Promise<ProtectedSessionIdentity> {
   const ownerIds = new Set<string>();
   const sessionKeys = new Set<string>();
+  let degraded = false;
 
   // Live interactive/SU sessions — coord_presence is the primary roster.
   try {
     const { listPresence } = await import('./agent-tools/coordination/presence');
     for (const p of await listPresence()) ownerIds.add(p.ownerId);
   } catch (e) {
+    degraded = true;
     console.warn('[session-dir-gc] presence read failed:', (e as Error).message);
   }
 
@@ -364,10 +393,11 @@ export async function gatherProtectedSessionIdentity(): Promise<ProtectedSession
       for (const r of sessOfAwaiters) sessionKeys.add(String(r.id));
     }
   } catch (e) {
+    degraded = true;
     console.warn('[session-dir-gc] PG protected-set read failed:', (e as Error).message);
   }
 
-  return { ownerIds, sessionKeys };
+  return { ownerIds, sessionKeys, degraded };
 }
 
 /**
@@ -435,9 +465,34 @@ export async function findUnarchivedSessionDirs(
  * correct when paired with {@link LEGACY_RETENTION_MS}.
  */
 export async function runSessionDirGc(
-  opts: { retentionMs?: number; dryRun?: boolean; archiveGuard?: boolean } = {},
+  opts: {
+    retentionMs?: number;
+    dryRun?: boolean;
+    archiveGuard?: boolean;
+    /** Injected for tests; production gathers it from PG. */
+    protectedIdentity?: ProtectedSessionIdentity;
+  } = {},
 ): Promise<SessionDirGcResult> {
-  const protectedIdentity = await gatherProtectedSessionIdentity();
+  const protectedIdentity = opts.protectedIdentity ?? (await gatherProtectedSessionIdentity());
+
+  // FAIL CLOSED: an incomplete protected set cannot distinguish a dead dir from
+  // a live session's home. Skip this tick entirely — the next one sweeps.
+  if (protectedIdentity.degraded) {
+    console.warn(
+      '[session-dir-gc] protected-set read DEGRADED (presence/PG unavailable) — sweep SKIPPED, nothing removed',
+    );
+    return {
+      scanned: 0,
+      removed: [],
+      keptProtected: 0,
+      keptFresh: 0,
+      keptUnarchived: 0,
+      dryRun: opts.dryRun ?? false,
+      errors: [],
+      skipped: 'degraded-protected-set',
+    };
+  }
+
   const nowMs = Date.now();
   const retentionMs = opts.retentionMs ?? DEFAULT_RETENTION_MS;
   const candidates = discoverSessionDirCandidates(defaultSessionDirRoots());

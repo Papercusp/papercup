@@ -229,16 +229,23 @@ const sessionArchiveReconcileWorkflow = DBOS.registerWorkflow(sessionArchiveReco
 });
 DBOS.registerScheduled(sessionArchiveReconcileWorkflow, { name: 'sessionArchiveReconcile', crontab: '0 20 * * * *' });
 
-// Daily 04:35 — the session-dir GC (session-db-archive-retire-dirs P-012). The
+// Hourly @:50 — the session-dir GC (session-db-archive-retire-dirs P-012). The
 // isolation-dir janitor existed since EI-155 but its seeded ROUTINE was never
 // armed (seeded inactive, bring-up never happened) — the root cause of the
 // 17k+ dead session-claude dirs that fed the 2026-07-09 inotify/fs-watch
 // meltdown. Registering it HERE makes the cadence code-owned and deploy-armed,
 // immune to the "seeded but never enabled" failure class. Retention picks by
-// the archive kill-switch: archive ON → 24h (deletion is lossless, dirs live
-// in session_archives; the gate is only a materialization-race guard); archive
+// the archive kill-switch: archive ON → 2h (deletion is lossless, dirs live in
+// session_archives; the gate is only a materialization-race guard); archive
 // OFF → the legacy 7d window (deletion is lossy again). The manual
 // `system:session-dir-gc` routine action remains as an admin lever.
+//
+// Cadence + retention are chosen TOGETHER: the steady-state dir population is
+// `live + retention-window churn` once cadence <= retention, so a daily sweep
+// with a 24h window floored this box at ~900 dirs. Hourly @:50 (offset from the
+// reconciler's @:20 so the archiver has committed the last hour's endings
+// before the janitor looks) with a 2h window floors it at ~tens — the P-013
+// goal. The sweep is cheap: a 23,671-dir scan measured 7s.
 async function sessionDirGcTick(): Promise<void> {
   await DBOS.runStep(async () => {
     try {
@@ -265,7 +272,7 @@ async function sessionDirGcTick(): Promise<void> {
 const sessionDirGcWorkflow = DBOS.registerWorkflow(sessionDirGcTick, {
   name: 'sessionDirGc', maxRecoveryAttempts: 5,
 });
-DBOS.registerScheduled(sessionDirGcWorkflow, { name: 'sessionDirGc', crontab: '0 35 4 * * *' });
+DBOS.registerScheduled(sessionDirGcWorkflow, { name: 'sessionDirGc', crontab: '0 50 * * * *' });
 
 // Daily 04:45 (off the 04:00/04:15/04:30 GC stampede): per-plan retention cap for
 // the plan_revisions spine — keep the newest N revisions per plan, delete the older

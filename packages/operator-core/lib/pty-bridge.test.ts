@@ -4,7 +4,7 @@
  * tests exercise the same node-pty + xterm-headless wiring the
  * operator uses in production. Requires bash on PATH.
  */
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterEach, afterAll } from 'vitest';
 import {
   spawnPty,
   killPty,
@@ -19,9 +19,26 @@ import { getResourceProfile } from './resource-profile';
 
 const liveIds: string[] = [];
 
-afterAll(() => {
-  for (const id of liveIds) try { killPty(id); } catch { /* */ }
-});
+/** Reap each test's pty as soon as that test ends. */
+function reap(): void {
+  for (const id of liveIds.splice(0)) {
+    try {
+      killPty(id);
+    } catch {
+      /* already exited */
+    }
+  }
+}
+
+// These ptys used to be reaped only in afterAll, so all six stayed alive at once.
+// That is fine on a big box (the F-E2 backstop resolves to 16) but a hard
+// `pty cap reached (2/2)` on a small host, because maxConcurrentPtys() scales to the
+// host's resource-profile agent budget — see the derivation suite at the bottom of
+// this file, where a 4-core laptop's budget of 1 yields a backstop of 2. The result
+// was a file that passed on the 128-core dev box and failed on a laptop, a CI runner,
+// or a packaged install. No test depends on a previous test's pty, so reap per test.
+afterEach(reap);
+afterAll(reap);
 
 async function waitForOutput(id: string, predicate: (s: string) => boolean, timeoutMs = 2000): Promise<string> {
   const start = Date.now();

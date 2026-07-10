@@ -1,8 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   getFleet: vi.fn(),
-  listFleetRoster: vi.fn(),
+  listFleetRosterDiagnosed: vi.fn(),
   countRunningWorkspaceBees: vi.fn(),
   countRunningFleetBees: vi.fn(),
   getCompletionIntegrityStats: vi.fn(),
@@ -12,14 +12,15 @@ const h = vi.hoisted(() => ({
 vi.mock('../../agent-fleets-store', () => ({
   getFleet: (...a: unknown[]) => h.getFleet(...a),
 }));
-// Real split helpers (pure) + a mocked roster/bee-count IO seam.
+// Real split helpers (pure) + a mocked roster/bee-count IO seam. status.ts now calls
+// listFleetRosterDiagnosed (WI-3818) — mocked to resolve { entries, degradedLegs }.
 vi.mock('../../fleet/fleet-roster', async () => {
   const actual =
     await vi.importActual<typeof import('../../fleet/fleet-roster')>('../../fleet/fleet-roster');
   return {
     isBeeRole: actual.isBeeRole,
     splitFleetRosterCounts: actual.splitFleetRosterCounts,
-    listFleetRoster: (...a: unknown[]) => h.listFleetRoster(...a),
+    listFleetRosterDiagnosed: (...a: unknown[]) => h.listFleetRosterDiagnosed(...a),
     countRunningWorkspaceBees: (...a: unknown[]) => h.countRunningWorkspaceBees(...a),
     countRunningFleetBees: (...a: unknown[]) => h.countRunningFleetBees(...a),
   };
@@ -57,20 +58,23 @@ beforeEach(() => {
     createdAt: 0,
     updatedAt: 0,
   });
-  h.listFleetRoster.mockResolvedValue([
-    {
-      agentId: 'su-leader',
-      ownerLabel: 'Leader',
-      fleetRole: 'leader',
-      agentRole: 'su',
-      intent: 'ship it',
-      alive: true,
-      sessionState: 'live',
-      lastActiveSecAgo: 2,
-      doing: 'WI-1',
-      load: 1,
-    },
-  ]);
+  h.listFleetRosterDiagnosed.mockResolvedValue({
+    entries: [
+      {
+        agentId: 'su-leader',
+        ownerLabel: 'Leader',
+        fleetRole: 'leader',
+        agentRole: 'su',
+        intent: 'ship it',
+        alive: true,
+        sessionState: 'live',
+        lastActiveSecAgo: 2,
+        doing: 'WI-1',
+        load: 1,
+      },
+    ],
+    degradedLegs: [],
+  });
   h.countRunningWorkspaceBees.mockResolvedValue(0);
   h.countRunningFleetBees.mockResolvedValue(0);
   h.getCompletionIntegrityStats.mockResolvedValue({
@@ -90,11 +94,14 @@ describe('fleet:status', () => {
   });
 
   it('reports memberCount from the roster (presence) and beeCount from the nursery, plus workspace runningBees (WI-1764 #4 / WI-1813)', async () => {
-    h.listFleetRoster.mockResolvedValueOnce([
-      { agentId: 'su-leader', agentRole: 'su', fleetRole: 'leader', alive: true },
-      { agentId: 'su-m2', agentRole: 'su', fleetRole: 'member', alive: true },
-      { agentId: 's-bee1', agentRole: 'cup', fleetRole: 'member', alive: true },
-    ]);
+    h.listFleetRosterDiagnosed.mockResolvedValueOnce({
+      entries: [
+        { agentId: 'su-leader', agentRole: 'su', fleetRole: 'leader', alive: true },
+        { agentId: 'su-m2', agentRole: 'su', fleetRole: 'member', alive: true },
+        { agentId: 's-bee1', agentRole: 'cup', fleetRole: 'member', alive: true },
+      ],
+      degradedLegs: [],
+    });
     h.countRunningWorkspaceBees.mockResolvedValueOnce(4);
     // WI-1813: beeCount is the nursery-authoritative per-fleet count, NOT the roster's
     // presence-labeled bee (the roster has 1 bee; the nursery reports 3 — beeCount = 3).
@@ -111,15 +118,18 @@ describe('fleet:status', () => {
   // EI-7137: an `ended` former member (a dead wave, presence row not yet reaped) must
   // not inflate memberCount forever — but stays visible in the full `members[]` list.
   it('excludes sessionState:"ended" entries from memberCount but keeps them in members[]', async () => {
-    h.listFleetRoster.mockResolvedValueOnce([
-      { agentId: 'su-live1', agentRole: 'su', fleetRole: 'member', alive: true, sessionState: 'live' },
-      { agentId: 'su-live2', agentRole: 'su', fleetRole: 'member', alive: true, sessionState: 'parked' },
-      // A dead prior-wave member: heartbeat may still look fresh, but wakeability
-      // reconciliation (EI-5858) has already determined the session truly ended.
-      { agentId: 'su-dead1', agentRole: 'su', fleetRole: 'member', alive: false, sessionState: 'ended' },
-      { agentId: 'su-dead2', agentRole: 'su', fleetRole: 'member', alive: false, sessionState: 'ended' },
-      { agentId: 's-bee1', agentRole: 'cup', fleetRole: 'member', alive: true, sessionState: 'live' },
-    ]);
+    h.listFleetRosterDiagnosed.mockResolvedValueOnce({
+      entries: [
+        { agentId: 'su-live1', agentRole: 'su', fleetRole: 'member', alive: true, sessionState: 'live' },
+        { agentId: 'su-live2', agentRole: 'su', fleetRole: 'member', alive: true, sessionState: 'parked' },
+        // A dead prior-wave member: heartbeat may still look fresh, but wakeability
+        // reconciliation (EI-5858) has already determined the session truly ended.
+        { agentId: 'su-dead1', agentRole: 'su', fleetRole: 'member', alive: false, sessionState: 'ended' },
+        { agentId: 'su-dead2', agentRole: 'su', fleetRole: 'member', alive: false, sessionState: 'ended' },
+        { agentId: 's-bee1', agentRole: 'cup', fleetRole: 'member', alive: true, sessionState: 'live' },
+      ],
+      degradedLegs: [],
+    });
     const out = parse(await invoke({ fleet: 'rocket' }));
     expect(out.memberCount).toBe(2); // su-live1 + su-live2 only — the 2 ended rows excluded
     // The full roster (all 5, including the dead ones) is still surfaced for visibility.
@@ -145,5 +155,63 @@ describe('fleet:status', () => {
         load: 1,
       }),
     ]);
+  });
+
+  // WI-3818: a slow optional leg (completionStats / bee counts) must degrade to its
+  // fallback within its own budget instead of hanging the whole handler — and the
+  // degradation must be REPORTED (`degraded`/`degradedLegs`), not silently swallowed.
+  describe('WI-3818 bounded fan-out — degraded legs', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('drops completionStats first when it never resolves, still returning the roster promptly', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      h.getCompletionIntegrityStats.mockReturnValue(new Promise(() => {}));
+      const resultPromise = invoke({ fleet: 'rocket', harness: 'papercusp' });
+      await vi.advanceTimersByTimeAsync(10_000);
+      const out = parse(await resultPromise);
+      expect(out.ok).toBe(true);
+      expect(out.completionStats).toBeUndefined();
+      expect(out.members).toHaveLength(1); // the roster itself still came back
+      expect(out.degraded).toBe(true);
+      expect(out.degradedLegs).toEqual(['completionStats']);
+      warnSpy.mockRestore();
+    });
+
+    it('falls back bee counts to 0 + reports the legs when the nursery counts hang', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      h.countRunningWorkspaceBees.mockReturnValue(new Promise(() => {}));
+      h.countRunningFleetBees.mockReturnValue(new Promise(() => {}));
+      const resultPromise = invoke({ fleet: 'rocket' });
+      await vi.advanceTimersByTimeAsync(10_000);
+      const out = parse(await resultPromise);
+      expect(out.runningBees).toBe(0);
+      expect(out.beeCount).toBe(0);
+      expect(out.degraded).toBe(true);
+      expect(out.degradedLegs.sort()).toEqual(['beeCount', 'runningBees']);
+      warnSpy.mockRestore();
+    });
+
+    it('surfaces a degraded roster sub-read as a prefixed `roster.<leg>` entry', async () => {
+      h.listFleetRosterDiagnosed.mockResolvedValueOnce({
+        entries: [{ agentId: 'su-leader', agentRole: 'su', fleetRole: 'leader', alive: true }],
+        degradedLegs: ['assignments'],
+      });
+      const out = parse(await invoke({ fleet: 'rocket' }));
+      expect(out.degraded).toBe(true);
+      expect(out.degradedLegs).toEqual(['roster.assignments']);
+      // the roster itself is still returned — the whole point of WI-3818.
+      expect(out.members).toHaveLength(1);
+    });
+
+    it('omits degraded/degradedLegs entirely when every leg answers in time', async () => {
+      const out = parse(await invoke({ fleet: 'rocket', harness: 'papercusp' }));
+      expect(out.degraded).toBeUndefined();
+      expect(out.degradedLegs).toBeUndefined();
+    });
   });
 });

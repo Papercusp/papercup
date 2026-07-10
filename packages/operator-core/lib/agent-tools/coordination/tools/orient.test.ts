@@ -26,13 +26,18 @@ function fakeCall(handlers: Record<string, (args: Record<string, unknown>) => un
   return { call, calls };
 }
 
-/** The core three + plan-events (the default folds when no `intent` is passed). */
+/** The core three + plan-events (the default folds when no `intent` is passed).
+ *  `coord:glance` is included so a test that opts a caller INTO a fleet (via a
+ *  `coord:whoami` override) without caring about the fleet-health glance itself
+ *  doesn't trip the WI-3818 bounded-timeout `console.warn` on an "unexpected
+ *  sub-call" — override it locally when a test asserts on glance behavior. */
 const CORE = {
   'fleet:assignments': () => ({ ok: true, summary: { agents: 1 }, agents: [{ ownerId: 'me' }] }),
   'work_items:list': () => [{ id: 'WI-1', state: 'todo' }, { id: 'WI-2', state: 'todo' }],
   'coord:inbox': () => ({ summary: { total: 3 }, entries: [{ msg_id: 'm1' }] }),
   'coord:plan-events': () => ({ events: [{ kind: 'item_status_changed', plan: 'p1' }], total: 1, truncated: false }),
   'coord:whoami': () => ({ fleetSlug: null }),
+  'coord:glance': () => ({ bees: { running: 0, working: 0 } }),
 };
 
 describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
@@ -313,6 +318,10 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
   });
 
   it('best-effort: a failing fleet-health glance degrades to null, not a thrown orient', async () => {
+    // WI-3818: the glance leg is now wrapped in withBoundedTimeout, which logs a
+    // console.warn on a caught failure (visibility into a degraded leg) — expected
+    // here since this test deliberately makes coord:glance throw.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { call } = fakeCall({
       ...CORE,
       'coord:whoami': () => ({ fleetSlug: 'backend' }),
@@ -326,6 +335,8 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(r.fleetHealth).toBeNull();
     expect(r.fleetCatchUp).toEqual({ fleet: 'backend', total: 0, recent: [] });
     expect(r.claimable).toHaveLength(2);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 
   // ── fold #2 (compaction-fold-audit-2026-07-06): afterCompaction beefs the inbox ──
@@ -440,6 +451,105 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
         expect(inboxCall?.args.since_ts).toBeUndefined();
         expect(inboxCall?.args).toMatchObject({ limit: 25, max_body_chars: 800 });
       });
+    });
+  });
+
+  // ── fleet-reliability-verification-2026-07-10 P-007: leaderBrief fold ──
+  describe("mode:'monitor' leaderBrief fold (P-007)", () => {
+    const LEADER_BRIEF_RESULT = { ok: true, summary: { fleet: 'p2p-git', members: 2 }, members: [] };
+
+    it('a resolvable fleet LEADER on a monitor tick gets fleet:leader-brief folded in', async () => {
+      const { call, calls } = fakeCall({
+        ...CORE,
+        'fleet:leader-brief': () => LEADER_BRIEF_RESULT,
+      });
+      const r = await composeOrient(
+        { mode: 'monitor' },
+        call,
+        'leader',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { fleetSlug: 'p2p-git', fleetRole: 'leader' },
+      );
+      expect(r.leaderBrief).toEqual(LEADER_BRIEF_RESULT);
+      const briefCall = calls.find((c) => c.name === 'fleet:leader-brief');
+      expect(briefCall?.args).toMatchObject({ fleet: 'p2p-git' });
+    });
+
+    it('a non-leader fleet MEMBER never triggers the fold (no round-trip)', async () => {
+      const { call, calls } = fakeCall({ ...CORE });
+      const r = await composeOrient(
+        { mode: 'monitor' },
+        call,
+        'member',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { fleetSlug: 'p2p-git', fleetRole: 'member' },
+      );
+      expect(r.leaderBrief).toBeUndefined();
+      expect(calls.some((c) => c.name === 'fleet:leader-brief')).toBe(false);
+    });
+
+    it('a leader with NO fleet resolvable never triggers the fold', async () => {
+      const { call, calls } = fakeCall({ ...CORE });
+      const r = await composeOrient(
+        { mode: 'monitor' },
+        call,
+        'leader',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { fleetSlug: null, fleetRole: null },
+      );
+      expect(r.leaderBrief).toBeUndefined();
+      expect(calls.some((c) => c.name === 'fleet:leader-brief')).toBe(false);
+    });
+
+    it('FULL mode never triggers the fold, even for a resolvable leader', async () => {
+      const { call, calls } = fakeCall({ ...CORE, 'fleet:leader-brief': () => LEADER_BRIEF_RESULT });
+      const r = await composeOrient(
+        {},
+        call,
+        'leader',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { fleetSlug: 'p2p-git', fleetRole: 'leader' },
+      );
+      expect(r.leaderBrief).toBeUndefined();
+      expect(calls.some((c) => c.name === 'fleet:leader-brief')).toBe(false);
+    });
+
+    it('a failed leaderBrief fold degrades to null, never breaks orientation', async () => {
+      const { call } = fakeCall({
+        ...CORE,
+        'fleet:leader-brief': () => {
+          throw new Error('down');
+        },
+      });
+      const r = await composeOrient(
+        { mode: 'monitor' },
+        call,
+        'leader',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { fleetSlug: 'p2p-git', fleetRole: 'leader' },
+      );
+      expect(r.ok).toBe(true);
+      expect(r.leaderBrief).toBeNull();
     });
   });
 

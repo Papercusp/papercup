@@ -98,6 +98,56 @@ describeCoordEventLogConformance(
   });
 });
 
+// WI-3826 (fleet-reliability-verification-2026-07-10): the `ts` COLUMN must agree with the
+// envelope's own `body->>'ts'` — a safe `WHERE ts >= $since` SQL pushdown (the optimization
+// this bug was found while designing) is only possible when they can never diverge. Column
+// used to default to now() at INSERT time, which could lag body.ts by however long
+// sendMessage's audience/hive-scope resolution took between stamping `ts` and calling
+// appendLine — silently dropping messages from any future since_ts pushdown (found: >1s
+// drift on 2,317/53,560 live `messages` rows). appendLine now stamps `ts` FROM the envelope,
+// so this asserts they agree by construction (the invariant the historical rows were
+// one-time-repaired to by migration 546).
+(pgOk ? describe : describe.skip)('coord_event_log.ts agrees with body->>\'ts\' (WI-3826)', () => {
+  it('appendLine (LINE surface, e.g. messages) stamps the ts COLUMN from the envelope\'s own ts — never DB now()', async () => {
+    await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${TEST_WS}`;
+    const log = new PgCoordLog({ getSql: () => sql!, ensureSchema: async () => {}, workspaceId: TEST_WS });
+    // An envelope ts far from "now" proves the column is NOT defaulting to now() —
+    // if it silently fell back to the DB default, this row's ts would land near the
+    // test's wall-clock time, not two years in the past.
+    const envelopeTs = '2024-03-01T00:00:00.000Z';
+    await log.appendLine('messages', 'agent-ts-check', {
+      ts: envelopeTs, msg_id: 'ts-invariant-1', kind: 'message', from: 'agent-ts-check', to: ['*'],
+    });
+    const rows = await sql!<{ ts: string; body: unknown }[]>`
+      SELECT ts, body FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${TEST_WS} AND msg_id = 'ts-invariant-1'
+    `;
+    expect(rows).toHaveLength(1);
+    expect(new Date(rows[0].ts).toISOString()).toBe(envelopeTs);
+    const body = typeof rows[0].body === 'string' ? JSON.parse(rows[0].body) : rows[0].body;
+    expect(body.ts).toBe(envelopeTs);
+
+    await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${TEST_WS}`;
+  });
+
+  it('no row anywhere on the live coord_event_log.messages surface drifts >1s from its own body->>\'ts\' (the repaired invariant)', async () => {
+    // A live-data assertion (not scoped to TEST_WS on purpose — the whole point is to
+    // catch drift on REAL traffic, the same query the bug was found with). Soft-skips
+    // when the table is empty (a fresh/CI PG with no live traffic yet).
+    const [{ sampled, mismatch }] = await sql!<{ sampled: string; mismatch: string }[]>`
+      SELECT count(*) AS sampled,
+             count(*) FILTER (
+               WHERE (body ->> 'ts') IS NOT NULL
+                 AND abs(extract(epoch FROM (ts - (body ->> 'ts')::timestamptz))) > 1
+             ) AS mismatch
+      FROM harness_shared.coord_event_log
+      WHERE surface = 'messages'
+    `;
+    if (Number(sampled) === 0) return; // nothing written yet on this PG — nothing to assert
+    expect(Number(mismatch)).toBe(0);
+  });
+});
+
 // EI-1576 regression: ensureCoordEventLogTable must be idempotent WITHOUT a
 // destructive DROP/CREATE window. It runs against the LIVE org DB (here via
 // connectionString, and in the operator's getOrgPg seam), so dropping an

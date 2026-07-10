@@ -6,7 +6,7 @@
  * carry-note wins; a duplicate active await is cancelled, not doubled), the
  * append-only fleet fact discipline, and per-surface error isolation.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { rebindIdentity, REBIND_FROM_LIVE_WINDOW_MS } from './rebind-identity';
 import { loopRoutineId, loopRoutineName } from '../../harness/routines/loop';
 
@@ -379,6 +379,34 @@ describe('remaining re-keys, totals, and error isolation', () => {
     expect(res.ok).toBe(false);
     expect(surfaceOf(res, 'fleet-leadership').error).toContain('surface exploded');
     expect(res.surfaces).toHaveLength(15);
+    expect(surfaceOf(res, 'plan-claims')).toMatchObject({ moved: 1 });
+  });
+});
+
+describe('SU-locks file locks + waiters (EI-8999/P-002 — opt-in, separate side-database)', () => {
+  it('is entirely SKIPPED when the caller does not wire rebindLockOwner — no I/O attempted, surface count unchanged', async () => {
+    const sql = fakeSql();
+    const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
+    expect(res.surfaces).toHaveLength(15);
+    expect(res.surfaces.find((s) => s.surface === 'file-locks')).toBeUndefined();
+  });
+
+  it('is called + folded into totalMoved when the caller wires it (the production tool always does)', async () => {
+    const sql = fakeSql();
+    const rebindLockOwner = vi.fn().mockResolvedValue({ fileLocksMoved: 2, waitersMoved: 1 });
+    const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW, rebindLockOwner });
+    expect(res.surfaces).toHaveLength(16);
+    expect(surfaceOf(res, 'file-locks')).toMatchObject({ moved: 3 });
+    expect(rebindLockOwner).toHaveBeenCalledWith(FROM, TO);
+    expect(res.totalMoved).toBeGreaterThanOrEqual(3);
+  });
+
+  it('a throwing rebindLockOwner is isolated like any other surface — recorded as an error, never sinks the rest', async () => {
+    const sql = fakeSql({ planClaims: 1 });
+    const rebindLockOwner = vi.fn().mockRejectedValue(new Error('papercusp_su unreachable'));
+    const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW, rebindLockOwner });
+    expect(res.ok).toBe(false);
+    expect(surfaceOf(res, 'file-locks').error).toContain('papercusp_su unreachable');
     expect(surfaceOf(res, 'plan-claims')).toMatchObject({ moved: 1 });
   });
 });

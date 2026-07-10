@@ -144,4 +144,46 @@ describe('planItemLaneBlockReason', () => {
     });
     expect(got).toBeNull();
   });
+
+  // EI-9108: regression, mirroring the REAL 2026-07-10 incident shape (p2p-git-live-
+  // activation-2026-07-09, P-401/WI-3503) — a 7-deep blockedBy chain
+  // (P-401→P-308→{P-302..P-307}→P-301→{P-205,P-101}→P-101→P-003), where P-003 (the true
+  // root cause) is still `wip`. work_item.state alone (plain 'todo') would surface P-401
+  // as scheduler-claimable; this pins that the guard correctly walks the FULL chain depth
+  // (not just a direct one-hop blockedBy) and reports it blocked.
+  it('reports blocked through a deep multi-level blockedBy chain (EI-9108, real P-401 shape)', async () => {
+    getPlanRowMock.mockResolvedValue({
+      items: [
+        planItem({ id: 'P-003', storedStatus: 'wip' }), // true root cause: still in-flight
+        planItem({ id: 'P-101', storedStatus: 'todo', blockedBy: ['P-003'] }),
+        planItem({ id: 'P-205', storedStatus: 'done' }),
+        planItem({ id: 'P-301', storedStatus: 'done', blockedBy: ['P-205', 'P-101'] }),
+        planItem({ id: 'P-302', storedStatus: 'todo', blockedBy: ['P-301'] }),
+        planItem({ id: 'P-303', storedStatus: 'todo', blockedBy: ['P-301'] }),
+        planItem({ id: 'P-304', storedStatus: 'todo', blockedBy: ['P-301'] }),
+        planItem({ id: 'P-305', storedStatus: 'todo', blockedBy: ['P-301'] }),
+        planItem({ id: 'P-306', storedStatus: 'todo', blockedBy: ['P-301'] }),
+        planItem({ id: 'P-307', storedStatus: 'done', blockedBy: ['P-301'] }),
+        planItem({
+          id: 'P-308',
+          storedStatus: 'todo',
+          blockedBy: ['P-302', 'P-303', 'P-304', 'P-305', 'P-306', 'P-307'],
+        }),
+        planItem({ id: 'P-401', storedStatus: 'todo', blockedBy: ['P-308'] }),
+      ],
+    });
+    const got = await planItemLaneBlockReason({
+      payload: { plan_item: { plan_slug: 'p2p-git-live-activation-2026-07-09', item_id: 'P-401' } },
+      harness: 'papercusp',
+    });
+    expect(got).not.toBeNull();
+    expect(got?.effectiveStatus).toBe('blocked');
+    expect(got?.itemId).toBe('P-401');
+    // The IMMEDIATE unresolved blocker is P-308 (this level's own blockedBy) — the chain
+    // walk resolves recursively, but the reported reason names the direct dependency, not
+    // the transitive root (P-003). That's fine: the guard's job is "don't hand this out",
+    // not "explain the whole chain" — plans:get-item/plans:items are where an agent
+    // traces the full unresolvedBlockers path back to the true root cause.
+    expect(got?.reason).toMatch(/blocked-by: P-308/);
+  });
 });

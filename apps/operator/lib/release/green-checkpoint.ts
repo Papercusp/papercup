@@ -67,12 +67,29 @@ export interface CheckpointDeps {
   runGreen(
     treeDir: string,
     base: string | null,
-  ): Promise<{ green: boolean; summary: string; failingTests?: string[]; flakeSuspects?: string[] }>;
+  ): Promise<{
+    green: boolean;
+    summary: string;
+    failingTests?: string[];
+    flakeSuspects?: string[];
+    /** Workspace-mapped failures, so a re-run knows the cwd for each file. Feeds the
+     *  stale-candidate re-triage; absent ⇒ no re-triage (the red is treated as real). */
+    failingFiles?: FailingFile[];
+  }>;
   /** Fast-forward `ready` to `candidate` (advanceReady). */
   advance(candidate: string): Promise<AdvanceResult>;
   /** Publish `ready` to origin. */
   push(ref: string): Promise<void>;
   broadcast(summary: string, body?: string): Promise<void>;
+  /** Resolve the CURRENT tip of the integration branch (may be newer than `candidate`,
+   *  which the quiet-cut deliberately holds back). Optional: absent ⇒ no re-triage. */
+  resolveTip?(): Promise<string | null>;
+  /** Re-run EXACTLY these failing files at `ref`, for the stale-candidate re-triage.
+   *  Optional: absent ⇒ every red is treated as real (today's behaviour). */
+  runTestsAtRef?(ref: string, files: FailingFile[]): Promise<{ pass: boolean; summary: string }>;
+  /** Age of the deployed release pin + how far it trails tip, for the staleness alarm.
+   *  Optional: absent ⇒ alarm never fires. */
+  deployStaleness?(): Promise<{ pinAgeMs: number; commitsBehind: number } | null>;
   /** release-pipeline-resilience-2026-06-09 P-002: open a durable, human-facing
    *  `release-not-green` escalation on red. Transition-only (no-op if one is
    *  already open) so the hourly tick doesn't re-open it while the gate stays
@@ -137,6 +154,13 @@ export interface CheckpointResult {
   /** P-012: a stable signature of what failed (test files / workspaces) on the
    *  not-green path, so the release-fixer dispatch dedups by FAILURE, not candidate sha. */
   failingTests?: string[];
+  /** The individual failing CASE names, for the human reading the verdict. Never used
+   *  as a signature (see extractFailingTestNames). */
+  failingTestNames?: string[];
+  /** Stale-candidate re-triage (2026-07-10): was this red still broken at TIP? Present
+   *  on the not-green path whenever the re-triage could run. `stale-candidate` means the
+   *  gate judged a commit whose failures peers had already fixed. */
+  retriage?: RedTriage & { tip: string | null };
   /** load-flake-isolation-2026-06-23: files the gate ABSORBED as load-flakes — they
    *  failed under the 8-fork checkpoint load but PASSED in an isolated re-run, so the
    *  gate is GREEN despite the initial red. Surfaced so the P-009 ledger can tally a
@@ -387,14 +411,171 @@ export function acquireCheckpointRunLock(
  *  stdout (P-008). MUST stay in sync with the literal in release-actions.ts. */
 export const GREEN_CHECKPOINT_RESULT_MARKER = '__GREEN_CHECKPOINT_RESULT__';
 
+/** Strip SGR colour codes. The suite runs under a pty-less pipe but vitest still
+ *  colourizes (FORCE_COLOR in the fleet env), and EVERY line-anchored matcher below
+ *  would otherwise see `\x1b[41m FAIL \x1b[0m …` and miss: a red verdict on
+ *  2026-07-10 carried `failingTests: []` for exactly this reason (0 raw matches, 5
+ *  after stripping), sending triage at the wrong test for hours. Strip first, match
+ *  second — always. */
+export function stripAnsi(s: string): string {
+  // eslint-disable-next-line no-control-regex -- SGR codes are the thing being removed.
+  return s.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
 /** Extract a stable failure signature from the FULL suite output (NOT the 2000-char
- *  tail, which can truncate the markers): vitest `FAIL <file>` lines + the affected
- *  runner's `>>> <ws> FAILED` workspace markers. Used for the release-fixer dedup. */
+ *  tail, which can truncate the markers). Covers every shape the gate's runners emit:
+ *    - vitest failed-tests section:  ` FAIL  src/x.test.tsx > suite > case`
+ *    - vitest per-file rollup:       ` ❯ src/x.test.tsx (9 tests | 8 failed) 4435ms`
+ *    - affected runner workspaces:   ` >>> @papercusp/web FAILED`
+ *  The rollup line is the load-bearing one: vitest prints only the first few `FAIL`
+ *  lines but a `❯ … | N failed)` for EVERY failing file, so a 17-failure run is fully
+ *  named. Used for the release-fixer dedup, the quarantine check, and (now) the
+ *  stale-candidate re-triage, which can only re-run tests it can name. */
 export function extractFailingTests(out: string): string[] {
+  const clean = stripAnsi(out);
   const set = new Set<string>();
-  for (const m of out.matchAll(/^\s*FAIL\s+(\S+)/gm)) set.add(m[1]);
-  for (const m of out.matchAll(/>>>\s+(\S+)\s+FAILED\b/g)) set.add(m[1]);
+  for (const m of clean.matchAll(/^\s*FAIL\s+(\S+)/gm)) set.add(m[1]);
+  for (const m of clean.matchAll(/^\s*❯\s+(\S+)\s+\(\d+\s+tests?[^)]*\|\s*\d+\s+failed\)/gm)) set.add(m[1]);
+  for (const m of clean.matchAll(/>>>\s+(\S+)\s+FAILED\b/g)) set.add(m[1]);
   return [...set].sort().slice(0, 50);
+}
+
+/** The individual failing CASE names (`× renders the …`), for humans reading a verdict.
+ *  Deliberately separate from `extractFailingTests`: that one returns a stable FILE /
+ *  workspace signature (consumed by dedup, quarantine, partial-green and re-triage),
+ *  and folding case names into it would break every one of those matchers. */
+export function extractFailingTestNames(out: string): string[] {
+  const clean = stripAnsi(out);
+  const set = new Set<string>();
+  for (const m of clean.matchAll(/^\s*×\s+(.+?)(?:\s+\d+ms)?\s*$/gm)) set.add(m[1].trim());
+  for (const m of clean.matchAll(/^\s*FAIL\s+\S+\s+>\s+(.+?)\s*$/gm)) set.add(m[1].trim());
+  return [...set].sort().slice(0, 50);
+}
+
+/* ── stale-candidate re-triage ────────────────────────────────────────────────
+ *
+ * The gate judges a QUIET commit (≥240s old), never the tip — so on a tree this
+ * busy the candidate is routinely 1-3h behind by the time the suite finishes. Any
+ * failure that peers have already fixed in that window reds the gate on work that
+ * is no longer broken. On 2026-07-09/10 that cost ~6h of deploy latency across four
+ * runs; the manual remedy was identical every time: re-run the failing files at tip,
+ * see them pass, re-fire.
+ *
+ * This is the GENERAL form of the "rename-skew" problem (a vocabulary rename whose
+ * tests and components crossed the gate in separate commits, redding every candidate
+ * cut inside the window). A lint rule would only have caught renames; classifying the
+ * red against the tip catches every kind of skew — renames, peer fixes, half-landed
+ * refactors — because it asks the only question that matters: *is this still broken?*
+ */
+
+export interface RedTriage {
+  /** `stale-candidate` = failed at the judged commit, passes at tip ⇒ not a real red.
+   *  `real-red` = reproduces at tip (or there is no newer tip to blame).
+   *  `unknown` = could not localize (no named failures / no re-run) ⇒ treat as real. */
+  classification: 'real-red' | 'stale-candidate' | 'unknown';
+  /** Re-fire the gate on the newer tip? Only ever true for `stale-candidate`, and
+   *  only while under the attempt cap — a re-fire storm is worse than a held gate. */
+  autoRefire: boolean;
+  detail: string;
+}
+
+/** Bounded auto-refire cap; 0 disables auto-refire entirely. Default 2 — enough to
+ *  ride out the common "peer fixed it 20 minutes ago" case, few enough that a
+ *  genuinely broken tip still reaches a human quickly. */
+export function autoRefireCapFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.PAPERCUSP_GATE_AUTO_REFIRE_CAP;
+  if (raw === undefined) return 2;
+  const v = Number(raw);
+  return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 2;
+}
+
+/** Pure verdict classifier. `tipRetest` is the result of re-running EXACTLY the named
+ *  failing files at `tip` (null when we could not or did not run it). */
+export function classifyRedAgainstTip(input: {
+  candidate: string;
+  tip: string | null;
+  failingTests: string[];
+  tipRetest: { ran: boolean; pass: boolean } | null;
+  refireAttempts: number;
+  maxRefires: number;
+}): RedTriage {
+  const { candidate, tip, failingTests, tipRetest, refireAttempts, maxRefires } = input;
+  if (!tip || tip === candidate) {
+    return { classification: 'real-red', autoRefire: false, detail: 'candidate is the tip — nothing newer to blame' };
+  }
+  if (failingTests.length === 0) {
+    return { classification: 'unknown', autoRefire: false, detail: 'no named failing tests — cannot re-run at tip' };
+  }
+  if (!tipRetest?.ran) {
+    return { classification: 'unknown', autoRefire: false, detail: 'tip re-run unavailable' };
+  }
+  if (tipRetest.pass) {
+    const autoRefire = maxRefires > 0 && refireAttempts < maxRefires;
+    return {
+      classification: 'stale-candidate',
+      autoRefire,
+      detail:
+        `${failingTests.length} failing file(s) PASS at tip ${tip.slice(0, 8)} — the red is stale ` +
+        `(candidate ${candidate.slice(0, 8)} predates the fix)` +
+        (autoRefire ? `; auto-refiring (attempt ${refireAttempts + 1}/${maxRefires})` : '; refire cap reached'),
+    };
+  }
+  return {
+    classification: 'real-red',
+    autoRefire: false,
+    detail: `failures REPRODUCE at tip ${tip.slice(0, 8)} — genuine red, holding the gate`,
+  };
+}
+
+/* ── deploy-staleness alarm ───────────────────────────────────────────────────
+ * A held gate is loud; a gate that greens but whose PIN never moves is silent. On
+ * 2026-07-09/10 the release pin sat ~18h behind tip with owner-priority UI invisible,
+ * and the only alarm was the owner asking (twice) where a feature had gone. Age alone
+ * is a bad trigger (a quiet Sunday is fine); commits-behind alone is a bad trigger (a
+ * busy hour is fine). Fire only when BOTH cross — the tree moved a lot AND the deploy
+ * did not follow. */
+
+export interface DeployStalenessThresholds {
+  maxPinAgeMs: number;
+  maxCommitsBehind: number;
+}
+
+export function deployStalenessThresholdsFromEnv(env: NodeJS.ProcessEnv = process.env): DeployStalenessThresholds {
+  const hours = Number(env.PAPERCUSP_DEPLOY_STALE_HOURS);
+  const commits = Number(env.PAPERCUSP_DEPLOY_STALE_COMMITS);
+  return {
+    maxPinAgeMs: (Number.isFinite(hours) && hours > 0 ? hours : 6) * 3_600_000,
+    maxCommitsBehind: Number.isFinite(commits) && commits > 0 ? commits : 20,
+  };
+}
+
+export interface DeployStalenessVerdict {
+  alarm: boolean;
+  urgency: 'none' | 'warn' | 'urgent';
+  message: string;
+}
+
+export function evaluateDeployStaleness(
+  input: { pinAgeMs: number; commitsBehind: number; blockingFailures?: string[] },
+  thresholds: DeployStalenessThresholds,
+): DeployStalenessVerdict {
+  const { pinAgeMs, commitsBehind, blockingFailures = [] } = input;
+  const ageHours = pinAgeMs / 3_600_000;
+  if (pinAgeMs < thresholds.maxPinAgeMs || commitsBehind < thresholds.maxCommitsBehind) {
+    return { alarm: false, urgency: 'none', message: '' };
+  }
+  // Double the age threshold ⇒ this is no longer "the gate is chewing", it is a drought.
+  const urgency: 'warn' | 'urgent' = pinAgeMs >= thresholds.maxPinAgeMs * 2 ? 'urgent' : 'warn';
+  const blocking = blockingFailures.length
+    ? `\n\nBlocking red:\n${blockingFailures.slice(0, 10).map((f) => `  - ${f}`).join('\n')}`
+    : '\n\nNo failing tests recorded — the gate may be wedged rather than red.';
+  return {
+    alarm: true,
+    urgency,
+    message:
+      `${urgency === 'urgent' ? '🚨' : '⚠️'} deploy stale: the release pin is ${ageHours.toFixed(1)}h old and ` +
+      `${commitsBehind} commits behind tip. Shipped work is not reaching the running app.${blocking}`,
+  };
 }
 
 export interface TestQuarantineEntry {
@@ -526,7 +707,12 @@ export function parseFailingFilesByWorkspace(fullOutput: string): FailingFile[] 
   const out: FailingFile[] = [];
   const seen = new Set<string>();
   let currentWs: string | null = null;
-  for (const line of fullOutput.split('\n')) {
+  // Strip ANSI FIRST: every matcher below is line-anchored, and vitest colourizes both
+  // the `❯` rollup and ` FAIL ` rows. Without this the parse silently returned [] on real
+  // gate output — which quietly disabled load-flake AND worker-crash absorption (they
+  // re-run "the originally failing files", of which there were apparently none). Same
+  // root cause as the empty `failingTests` in the 2026-07-10 verdict.
+  for (const line of stripAnsi(fullOutput).split('\n')) {
     const h = HEADER.exec(line);
     if (h) {
       currentWs = h[1];
@@ -1000,16 +1186,36 @@ export function checkpointFailureSignature(
   return failingTests;
 }
 
-/** De-noise the suite (+ build) output for the held-gate broadcast/escalation: drop npm's
- *  error boilerplate (~10 lines/failed-workspace that repeatedly pushed the real `FAIL`
- *  test names out of the tail — cost two diagnosis round-trips 2026-06-06) and keep the
- *  last 2000 chars (FAIL lines, timeouts, assertion output, the SPA-build failure tail). */
+/** De-noise the suite (+ build) output for the held-gate broadcast/escalation.
+ *
+ *  Strips ANSI, drops npm's error boilerplate (~10 lines/failed-workspace that
+ *  repeatedly pushed the real `FAIL` names out of the tail — cost two diagnosis
+ *  round-trips 2026-06-06), then leads with a FAILURE-FOCUSED digest: the per-file
+ *  rollups, the `FAIL` lines, the failing case names, and vitest's own counts.
+ *
+ *  Leading with the digest (rather than the raw tail) is the fix for the 2026-07-10
+ *  verdict whose `summary` was 2000 chars of a testing-library DOM dump — the tail of
+ *  a red run is whatever the LAST assertion happened to print, which is uncorrelated
+ *  with what broke. The tail is still appended underneath, since timeouts and build
+ *  breaks surface there and nowhere else. */
 export function summarizeSuiteOutput(fullOutput: string): string {
-  return fullOutput
+  const lines = stripAnsi(fullOutput)
     .split('\n')
-    .filter((l) => !/^npm error/.test(l))
-    .join('\n')
-    .slice(-2000);
+    .filter((l) => !/^npm error/.test(l));
+
+  const isSignal = (l: string): boolean =>
+    /^\s*FAIL\s+\S/.test(l) ||
+    /^\s*❯\s+\S+\s+\(\d+\s+tests?[^)]*\|\s*\d+\s+failed\)/.test(l) ||
+    /^\s*×\s+\S/.test(l) ||
+    />>>\s+\S+\s+FAILED\b/.test(l) ||
+    /^\s*(Test Files|Tests)\s+.*(failed|passed)/.test(l);
+
+  const digest = lines.filter(isSignal).slice(0, 40);
+  // No failure markers (a build break, a wedge, a runner crash): the tail is the ONLY
+  // evidence there is, so it keeps the full budget.
+  if (digest.length === 0) return lines.join('\n').slice(-2000);
+  // Otherwise the digest leads and the tail follows within the same budget.
+  return `${digest.join('\n')}\n\n--- tail ---\n${lines.join('\n').slice(-1200)}`.slice(0, 2000);
 }
 
 export interface CheckpointOpts {
@@ -1017,6 +1223,9 @@ export interface CheckpointOpts {
   candidate?: string;
   /** Don't push `ready` to origin (local-only). */
   noPush?: boolean;
+  /** How many times this run has already auto-refired on a stale red (internal; the
+   *  cap in autoRefireCapFromEnv bounds the recursion). */
+  refireAttempts?: number;
 }
 
 /**
@@ -1224,7 +1433,10 @@ export async function runGreenCheckpoint(
 
   deps.log(`checkpointing candidate ${candidate.slice(0, 8)} (base ${lastReady?.slice(0, 8) ?? 'none'})`);
   await deps.setupTree(candidate);
-  const { green, summary, failingTests, flakeSuspects } = await deps.runGreen(cfg.checkpointRoot, lastReady);
+  const { green, summary, failingTests, flakeSuspects, failingFiles = [] } = await deps.runGreen(
+    cfg.checkpointRoot,
+    lastReady,
+  );
   // load-flake-isolation-2026-06-23: runGreen may have ABSORBED a load-flake — the
   // affected suite went red under the gate's 8-fork load, but every originally-failing
   // FILE then PASSED on an isolated single-concurrency re-run, so it reported green=true
@@ -1333,7 +1545,75 @@ export async function runGreenCheckpoint(
       );
       if (partial) return partial;
     }
-    return { advanced: false, candidate, from: lastReady, green: false, reason: 'not-green', summary, failingTests };
+
+    // Stale-candidate re-triage: is this red still broken at TIP? The quiet-cut judges a
+    // commit that is minutes-to-hours old, so a peer fix (or the far side of a half-landed
+    // rename) lands between the cut and the verdict. Re-run exactly the named failing files
+    // at tip: if they pass, the red is an artifact of WHEN we cut, not of what we shipped.
+    // Fail-soft in every direction — any error here degrades to today's plain red.
+    const tip = await deps.resolveTip?.().catch(() => null) ?? null;
+    let retriage: (RedTriage & { tip: string | null }) | undefined;
+    // Re-running needs a workspace per file (the cwd for `npm run test --workspace`), so a
+    // red we could name but not LOCATE stays a plain red rather than a silent no-op.
+    if (tip && tip !== candidate && failingFiles.length > 0 && deps.runTestsAtRef) {
+      deps.log(`red at ${candidate.slice(0, 8)}; re-running ${failingFiles.length} failing file(s) at tip ${tip.slice(0, 8)}`);
+      const tipRun = await deps.runTestsAtRef(tip, failingFiles).catch((e: unknown) => {
+        deps.log(`tip re-run failed to execute (${e instanceof Error ? e.message : e}) — treating red as real`);
+        return null;
+      });
+      const verdict = classifyRedAgainstTip({
+        candidate,
+        tip,
+        failingTests,
+        tipRetest: tipRun ? { ran: true, pass: tipRun.pass } : null,
+        refireAttempts: opts.refireAttempts ?? 0,
+        maxRefires: autoRefireCapFromEnv(),
+      });
+      retriage = { ...verdict, tip };
+      deps.log(`re-triage: ${verdict.classification} — ${verdict.detail}`);
+
+      // A stale red is not a red. Re-fire the whole gate on the newer tip rather than
+      // holding the pin on a failure that no longer exists — bounded by the refire cap
+      // so a genuinely-broken tip still converges to a held gate and a human.
+      if (verdict.autoRefire) {
+        await deps.broadcast(
+          `🔁 green-checkpoint re-firing on tip ${tip.slice(0, 8)}: red at ${candidate.slice(0, 8)} was STALE (${failingTests.length} file(s) pass at tip)`,
+        ).catch(() => {});
+        return runGreenCheckpoint(cfg, deps, {
+          ...opts,
+          candidate: tip,
+          refireAttempts: (opts.refireAttempts ?? 0) + 1,
+        });
+      }
+    }
+
+    // Deploy-staleness alarm: a held gate is loud, but a PIN that never moves is silent.
+    // Attach the blocking red so the page is actionable, not just an age complaint.
+    const staleness = await deps.deployStaleness?.().catch(() => null);
+    if (staleness) {
+      const verdict = evaluateDeployStaleness(
+        { ...staleness, blockingFailures: failingTests },
+        deployStalenessThresholdsFromEnv(),
+      );
+      if (verdict.alarm) {
+        await deps.broadcast(verdict.message.split('\n')[0], verdict.message).catch(() => {});
+        if (verdict.urgency === 'urgent') {
+          await deps.escalate?.('deploy stale: shipped work is not reaching the running app', verdict.message).catch(() => {});
+        }
+      }
+    }
+
+    return {
+      advanced: false,
+      candidate,
+      from: lastReady,
+      green: false,
+      reason: 'not-green',
+      summary,
+      failingTests,
+      failingTestNames: extractFailingTestNames(summary),
+      ...(retriage ? { retriage } : {}),
+    };
   }
 
   // F2 (round-4 P-031): the candidate is GREEN — but if the operator is in a definitive

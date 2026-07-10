@@ -41,7 +41,7 @@ beforeEach(() => vi.clearAllMocks());
 
 describe('events:emit envelope', () => {
   it('forwards source=identity.ownerId + workspaceId, and key/summary/payload/to', async () => {
-    vi.mocked(emitAwaitedEvent).mockResolvedValue({ ok: true, key: 'k1', woken: 2, notified: ['a', 'b', 'c'], msgId: 'm-9' });
+    vi.mocked(emitAwaitedEvent).mockResolvedValue({ ok: true, key: 'k1', woken: 2, notified: ['a', 'b', 'c'], msgId: 'm-9', waiters: 2 });
     await call({ event: 'k1', summary: 's', payload: { n: 1 }, to: ['x', 'y'] });
     expect(emitAwaitedEvent).toHaveBeenCalledWith({
       key: 'k1',

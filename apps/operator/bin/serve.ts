@@ -574,7 +574,37 @@ export async function sweepOrphanPostgres(
   const pidStr = (raw.split('\n')[0] ?? '').trim();
   const pid = Number(pidStr);
   if (!Number.isInteger(pid) || pid <= 0) {
+    // WI-3822: an unclean shutdown (power loss, host crash, VM reset, OOM)
+    // can leave postmaster.pid partially/never flushed — e.g. all-NUL bytes
+    // from ext4 delayed allocation after a hard reset. We already recognise
+    // this as malformed, but historically just logged and left the file in
+    // place: Postgres itself then refuses to start ("FATAL: bogus data in
+    // lock file"), permanently bricking the app until a human manually
+    // deletes the file from a hidden data dir. An unparseable pid means we
+    // cannot identify an owning postmaster process to check aliveness on, so
+    // fall back to the same ground-truth check the "alive but not ours"
+    // branch below uses: only unlink if nothing is actually listening on the
+    // recorded port. If something IS listening, a real server may still hold
+    // the dir; leave it alone and let the start fail loudly rather than
+    // silently orphaning a live server.
     logFn(`sweepOrphanPostgres: malformed pid '${pidStr}' in ${pidFile}`);
+    const recordedPort = Number((raw.split('\n')[3] ?? '').trim()) || 0;
+    if (recordedPort > 0 && (await isPortAccepting(recordedPort))) {
+      logFn(
+        `sweepOrphanPostgres: pid unparseable but :${recordedPort} is accepting — ` +
+          `a live server may hold ${dataDir}; leaving ${pidFile} alone`,
+      );
+      return;
+    }
+    logFn(
+      `sweepOrphanPostgres: unparseable postmaster.pid and :${recordedPort || '?'} not accepting — ` +
+        `unlinking ${pidFile}`,
+    );
+    try {
+      unlinkSync(pidFile);
+    } catch {
+      /* already gone */
+    }
     return;
   }
   if (!pidAlive(pid)) {
@@ -700,13 +730,29 @@ async function ensurePostgres(): Promise<PgHandle | null> {
       `effective_cache_size=${extraPostgresSettings.effective_cache_size}`,
   );
 
+  // WI-3822: embedded-postgres' pg.start() can reject with an Error whose
+  // message is empty, or (observed live, EI-7099) with no Error object at
+  // all — losing the actual cause. The real reason (e.g. `FATAL: bogus data
+  // in lock file "postmaster.pid": ""`) already streams through onLog just
+  // above the rejection; capture the last FATAL-looking line here so a bare
+  // rejection can be re-thrown WITH it attached, instead of forcing whoever
+  // reads the crash to scroll back through the log to find it.
+  let lastPgFatalLine: string | undefined;
   const pg = (await startEmbeddedPostgresServer({
     port,
     dataDir,
     dbSqlDir: existsSync(dbSqlDir) ? dbSqlDir : undefined,
     seedPath: seedPath && existsSync(seedPath) ? seedPath : undefined,
     extraPostgresSettings,
-    onLog: (m: string) => log(`pg: ${m}`),
+    onLog: (m: string) => {
+      log(`pg: ${m}`);
+      if (/FATAL/i.test(m)) lastPgFatalLine = m;
+    },
+  }).catch((e: unknown) => {
+    if (lastPgFatalLine && (!(e instanceof Error) || !e.message)) {
+      throw new Error(`embedded postgres failed to start: ${lastPgFatalLine.trim()}`, { cause: e });
+    }
+    throw e;
   })) as PgHandle;
 
   // Make the admin URL the #1 resolution source BEFORE any operator module

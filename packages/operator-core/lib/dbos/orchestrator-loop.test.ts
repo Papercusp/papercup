@@ -153,14 +153,19 @@ describe('resolvePerHarnessCap — honor the harness parallelism settings (#1)',
   });
 
   test('blueprint safetyCeiling tightens the default ceiling…', () => {
-    expect(
-      resolvePerHarnessCap({
-        parallelMax: null,
-        maxFeaturesInFlight: null,
-        blueprintConcurrency: 12,
-        blueprintSafetyCeiling: 8,
-      }),
-    ).toBe(8);
+    // The imperative SAFETY_CEILING still clamps on top, and it scales with the host's
+    // resource profile (F-E2 of app-wide-load-traps) — an 8-core box resolves it below
+    // 8. Asserting the big-box literal `8` made this pass on the 128-core dev box and
+    // fail everywhere smaller (laptop, CI runner, packaged install). Compare against
+    // the live ceiling, exactly as the D-007 test just below already does.
+    const cap = resolvePerHarnessCap({
+      parallelMax: null,
+      maxFeaturesInFlight: null,
+      blueprintConcurrency: 12,
+      blueprintSafetyCeiling: 8,
+    });
+    expect(cap).toBe(Math.min(8, getSafetyCeiling()));
+    expect(cap, 'the blueprint ceiling must TIGHTEN the 12-wide concurrency').toBeLessThan(12);
   });
 
   test('…but can never RAISE it past the imperative SAFETY_CEILING (D-007)', () => {
@@ -252,18 +257,24 @@ describe('resolveDispatchPolicy — blueprint dispatch: merged with per-install 
   });
 
   test('the live fleet cap (maxSimultaneousAgents, D-004) clamps the merged result', () => {
+    // The host-scaled SAFETY_CEILING (F-E2) clamps every result on top, so a small box
+    // resolves these below the requested concurrency of 8. Comparing against bare
+    // literals made this pass only on a big dev box; clamp the expectations the same
+    // way the production code does.
+    const ceil = (n: number) => Math.min(n, getSafetyCeiling());
+
     const r = resolveDispatchPolicy({
       dispatch: dispatch({ concurrency: 8 }),
       cfg: cfg(),
       fleetCap: 3,
     });
-    expect(r.cap).toBe(3);
+    expect(r.cap).toBe(ceil(3));
     // No fleet clamp when omitted/null (legacy behavior).
     const r2 = resolveDispatchPolicy({ dispatch: dispatch({ concurrency: 8 }), cfg: cfg(), fleetCap: null });
-    expect(r2.cap).toBe(8);
+    expect(r2.cap).toBe(ceil(8));
     // Floor of 1 survives an absurdly low fleet cap (dispatch never starves).
     const r3 = resolveDispatchPolicy({ dispatch: dispatch({ concurrency: 8 }), cfg: cfg(), fleetCap: 0 });
-    expect(r3.cap).toBe(8); // 0 = invalid → ignored, not "cap everything to 0"
+    expect(r3.cap).toBe(ceil(8)); // 0 = invalid → ignored, not "cap everything to 0"
   });
 
   test('the env ceiling clamps the merged result', () => {

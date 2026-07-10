@@ -11,6 +11,11 @@ import {
   runGreenCheckpoint,
   quietCutSecFromEnv,
   extractFailingTests,
+  extractFailingTestNames,
+  stripAnsi,
+  classifyRedAgainstTip,
+  autoRefireCapFromEnv,
+  evaluateDeployStaleness,
   buildGreenCheckpointEnv,
   sanitizeForkNodeOptions,
   GREEN_CHECKPOINT_FORK_HEAP_MB,
@@ -580,6 +585,162 @@ describe('extractFailingTests (P-012 failure signature)', () => {
 
   it('returns [] when nothing failed', () => {
     expect(extractFailingTests('All affected tests passed.\nTests 1200 passed')).toEqual([]);
+  });
+
+  // Regression: the 2026-07-10 red carried `failingTests: []` because vitest colourizes
+  // ` FAIL ` — the SGR prefix defeated the `^\s*FAIL` anchor. Fixture is the real byte
+  // shape from /tmp checkpoint logs: `\x1b[41m FAIL \x1b[0m\x1b[31m file > case\x1b[0m`.
+  it('sees FAIL lines through ANSI colour codes', () => {
+    const out = '\x1b[41m\x1b[1m FAIL \x1b[0m\x1b[31m src/left-sidebar/MugTab.test.tsx > MugTab > renders Pause\x1b[0m';
+    expect(extractFailingTests(out)).toEqual(['src/left-sidebar/MugTab.test.tsx']);
+  });
+
+  // vitest prints only the first few FAIL lines but one `❯ file (N tests | M failed)`
+  // rollup per failing FILE — the rollup is what makes a 17-failure run fully nameable,
+  // and naming it is what lets the stale-candidate re-triage re-run it at tip.
+  it('pulls every failing file from the per-file rollup lines', () => {
+    const out = [
+      ' ❯ src/components/left-sidebar/MugTab.test.tsx (9 tests | 8 failed) 4435ms',
+      '     × renders Pause (topmost), directive, eligible hives + plans 188ms',
+      ' ❯ src/components/left-sidebar/MugTab.tree.test.tsx (9 tests | 9 failed) 8646ms',
+      ' ❯ src/components/left-sidebar/Healthy.test.tsx (4 tests) 12ms', // passing ⇒ ignored
+    ].join('\n');
+    expect(extractFailingTests(out)).toEqual([
+      'src/components/left-sidebar/MugTab.test.tsx',
+      'src/components/left-sidebar/MugTab.tree.test.tsx',
+    ]);
+  });
+});
+
+describe('extractFailingTestNames (human-facing case names)', () => {
+  it('extracts case names from × lines and FAIL … > case lines, ignoring durations', () => {
+    const out = [
+      '\x1b[31m     × toggling a hive writes eligibleHives + the home hive 1047ms\x1b[0m',
+      ' FAIL  src/x.test.tsx > MugTab > summarizes current work flow',
+    ].join('\n');
+    expect(extractFailingTestNames(out)).toEqual([
+      'MugTab > summarizes current work flow',
+      'toggling a hive writes eligibleHives + the home hive',
+    ]);
+  });
+
+  it('stays empty on a green run', () => {
+    expect(extractFailingTestNames('Tests 1200 passed')).toEqual([]);
+  });
+});
+
+describe('classifyRedAgainstTip (stale-candidate re-triage)', () => {
+  const base = { candidate: 'aaaaaaaa1111', tip: 'bbbbbbbb2222', failingTests: ['a.test.ts'], refireAttempts: 0, maxRefires: 2 };
+
+  it('calls a red REAL when the failures reproduce at tip', () => {
+    const v = classifyRedAgainstTip({ ...base, tipRetest: { ran: true, pass: false } });
+    expect(v).toMatchObject({ classification: 'real-red', autoRefire: false });
+  });
+
+  it('calls a red STALE and auto-refires when the failing files pass at tip', () => {
+    const v = classifyRedAgainstTip({ ...base, tipRetest: { ran: true, pass: true } });
+    expect(v).toMatchObject({ classification: 'stale-candidate', autoRefire: true });
+    expect(v.detail).toContain('attempt 1/2');
+  });
+
+  it('stops auto-refiring at the cap (a refire storm is worse than a held gate)', () => {
+    const v = classifyRedAgainstTip({ ...base, tipRetest: { ran: true, pass: true }, refireAttempts: 2 });
+    expect(v).toMatchObject({ classification: 'stale-candidate', autoRefire: false });
+    expect(v.detail).toContain('refire cap reached');
+  });
+
+  it('never refires when the cap is 0 (opt-out)', () => {
+    const v = classifyRedAgainstTip({ ...base, tipRetest: { ran: true, pass: true }, maxRefires: 0 });
+    expect(v.autoRefire).toBe(false);
+  });
+
+  it('treats the red as real when the candidate IS the tip', () => {
+    const v = classifyRedAgainstTip({ ...base, tip: base.candidate, tipRetest: { ran: true, pass: true } });
+    expect(v).toMatchObject({ classification: 'real-red', autoRefire: false });
+  });
+
+  it('is UNKNOWN (never auto-refires) when failures cannot be named or re-run', () => {
+    expect(classifyRedAgainstTip({ ...base, failingTests: [], tipRetest: null })).toMatchObject({
+      classification: 'unknown',
+      autoRefire: false,
+    });
+    expect(classifyRedAgainstTip({ ...base, tipRetest: { ran: false, pass: false } })).toMatchObject({
+      classification: 'unknown',
+      autoRefire: false,
+    });
+  });
+});
+
+describe('autoRefireCapFromEnv', () => {
+  it('defaults to 2, honours an explicit value, and treats 0 as disabled', () => {
+    expect(autoRefireCapFromEnv({})).toBe(2);
+    expect(autoRefireCapFromEnv({ PAPERCUSP_GATE_AUTO_REFIRE_CAP: '5' })).toBe(5);
+    expect(autoRefireCapFromEnv({ PAPERCUSP_GATE_AUTO_REFIRE_CAP: '0' })).toBe(0);
+    expect(autoRefireCapFromEnv({ PAPERCUSP_GATE_AUTO_REFIRE_CAP: 'nonsense' })).toBe(2);
+  });
+});
+
+describe('summarizeSuiteOutput leads with the failure, not the tail', () => {
+  // The 2026-07-10 verdict's `summary` was 2000 chars of a testing-library DOM dump:
+  // the TAIL of a red run is whatever the last assertion happened to print, which is
+  // uncorrelated with what broke. Lead with the digest; keep the tail underneath.
+  it('surfaces FAIL/rollup lines even when a huge DOM dump trails them', () => {
+    const domDump = Array.from({ length: 400 }, (_, i) => `        <div class="pc-qh__dot" data-i="${i}" />`).join('\n');
+    const out = [
+      '\x1b[41m FAIL \x1b[0m src/left-sidebar/MugTab.test.tsx > MugTab > renders Pause',
+      ' ❯ src/left-sidebar/MugTab.test.tsx (9 tests | 8 failed) 4435ms',
+      '     × renders Pause 188ms',
+      'TestingLibraryElementError: Unable to find an element with the text: Eligible pot',
+      domDump,
+      ' Test Files  2 failed | 40 passed (42)',
+    ].join('\n');
+
+    const summary = summarizeSuiteOutput(out);
+    expect(summary).toContain('MugTab.test.tsx');
+    expect(summary).toContain('8 failed');
+    expect(summary).toContain('× renders Pause');
+    expect(summary).toContain('Test Files  2 failed');
+    expect(summary).not.toContain('\x1b['); // ANSI stripped
+    expect(summary.length).toBeLessThanOrEqual(2000);
+  });
+
+  it('falls back to the tail when there are no failure markers (e.g. a build break)', () => {
+    const out = ['npm error boilerplate', 'noise', 'ELIFECYCLE: vite build failed'].join('\n');
+    const summary = summarizeSuiteOutput(out);
+    expect(summary).toContain('ELIFECYCLE');
+    expect(summary).not.toContain('npm error');
+  });
+});
+
+describe('stripAnsi', () => {
+  it('removes SGR codes and leaves the text', () => {
+    expect(stripAnsi('\x1b[41m\x1b[1m FAIL \x1b[0m\x1b[31m x\x1b[0m')).toBe(' FAIL  x');
+  });
+});
+
+describe('evaluateDeployStaleness (silent-drought alarm)', () => {
+  const th = { maxPinAgeMs: 6 * 3_600_000, maxCommitsBehind: 20 };
+
+  it('stays quiet when only ONE threshold is crossed', () => {
+    expect(evaluateDeployStaleness({ pinAgeMs: 12 * 3_600_000, commitsBehind: 3 }, th).alarm).toBe(false);
+    expect(evaluateDeployStaleness({ pinAgeMs: 1 * 3_600_000, commitsBehind: 300 }, th).alarm).toBe(false);
+  });
+
+  it('fires with the blocking red attached when both cross', () => {
+    const v = evaluateDeployStaleness(
+      { pinAgeMs: 8 * 3_600_000, commitsBehind: 40, blockingFailures: ['src/x.test.tsx'] },
+      th,
+    );
+    expect(v).toMatchObject({ alarm: true, urgency: 'warn' });
+    expect(v.message).toContain('8.0h old');
+    expect(v.message).toContain('40 commits behind');
+    expect(v.message).toContain('src/x.test.tsx');
+  });
+
+  it('escalates to urgent past double the age threshold, and says so when nothing is red', () => {
+    const v = evaluateDeployStaleness({ pinAgeMs: 18 * 3_600_000, commitsBehind: 40 }, th);
+    expect(v).toMatchObject({ alarm: true, urgency: 'urgent' });
+    expect(v.message).toContain('may be wedged rather than red');
   });
 });
 

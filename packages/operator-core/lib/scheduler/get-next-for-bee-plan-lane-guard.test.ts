@@ -4,8 +4,10 @@
  * effectiveStatus (a JS-side blocked-by-graph computation), so getNextForBee
  * claims atomically as before, then POST-CHECKS the plan-item lane via
  * planItemLaneBlockReason: on a hit it releases (never surfaced to the
- * caller) and retries the next row, bounded, failing open (serve-anyway) once
- * the retry budget is exhausted.
+ * caller) and retries the next row, bounded, failing CLOSED (report no
+ * claimable item) once the retry budget is exhausted (EI-9108 — a prior
+ * fail-open-serve-anyway exhaustion path guaranteed handing out a row already
+ * confirmed blocked; see the last test below).
  *
  * getNextWorkItem / planItemLaneBlockReason / releaseWorkItem are mocked at
  * the module boundary — no PG. `ignoreStoredSpec:true` skips
@@ -97,7 +99,12 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
     expect(releaseWorkItemMock).toHaveBeenCalledTimes(1);
   });
 
-  it('fails open and SERVES the last claim once the 5-attempt retry budget is exhausted', async () => {
+  // EI-9108 (2026-07-10: WI-3503/P-401 handed out via scheduler:get_next while its
+  // 7-deep blockedBy chain was still open): the retry-budget-exhaustion path used to
+  // FAIL OPEN and serve the last (confirmed-blocked) claim. That guaranteed handing out
+  // exactly the row this guard exists to withhold, so it now fails CLOSED — release the
+  // last row too and report no claimable item, same as any other exhausted miss.
+  it('fails CLOSED (returns null) once the 5-attempt retry budget is exhausted — never serves a confirmed-blocked row (EI-9108)', async () => {
     for (let i = 0; i < 5; i += 1) {
       getNextWorkItemMock.mockResolvedValueOnce(claimResult(`F-${i}`));
       planItemLaneBlockReasonMock.mockResolvedValueOnce({
@@ -110,11 +117,11 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
 
     const res = await getNextForBee({ cupId: 'me', harness: 'papercusp', ignoreStoredSpec: true });
 
-    // Served anyway (fail-open courtesy guard, not a hard floor) — the LAST attempt's
-    // claim, never released.
-    expect(res?.workItem.id).toBe('F-4');
+    // Never served (fail-closed): every confirmed-blocked candidate — including the
+    // last one at the retry budget's edge — is released, and the caller sees a miss.
+    expect(res).toBeNull();
     expect(getNextWorkItemMock).toHaveBeenCalledTimes(5);
-    // 4 releases (attempts 0-3); the 5th (final) claim is served, not released.
-    expect(releaseWorkItemMock).toHaveBeenCalledTimes(4);
+    expect(releaseWorkItemMock).toHaveBeenCalledTimes(5);
+    expect(releaseWorkItemMock).toHaveBeenLastCalledWith('F-4', { harness: 'papercusp', expectedAssignee: 'me' });
   });
 });

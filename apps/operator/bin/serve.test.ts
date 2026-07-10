@@ -349,12 +349,40 @@ describe('sweepOrphanPostgres', () => {
     expect(logs.join('\n')).toMatch(/stale postmaster\.pid/);
   });
 
-  it('leaves a malformed pid file alone (logs, does not unlink)', async () => {
+  it('unlinks a malformed (unparseable) postmaster.pid when nothing is listening on the recorded port (WI-3822)', async () => {
     mkdirSync(dataDir(), { recursive: true });
     writeFileSync(pidFile(), 'not-a-pid\n');
     await serve.sweepOrphanPostgres(dataDir(), logFn);
-    expect(statSync(pidFile(), { throwIfNoEntry: false })).toBeDefined();
+    expect(statSync(pidFile(), { throwIfNoEntry: false })).toBeUndefined();
     expect(logs.join('\n')).toMatch(/malformed pid/);
+    expect(logs.join('\n')).toMatch(/unparseable postmaster\.pid.*unlinking/s);
+  });
+
+  it('unlinks an all-NUL postmaster.pid (the exact ext4-delayed-allocation repro, WI-3822)', async () => {
+    mkdirSync(dataDir(), { recursive: true });
+    // 84 bytes of NUL — the observed on-disk shape after a qemu system_reset
+    // caught the file mid-flush.
+    writeFileSync(pidFile(), Buffer.alloc(84, 0));
+    await serve.sweepOrphanPostgres(dataDir(), logFn);
+    expect(statSync(pidFile(), { throwIfNoEntry: false })).toBeUndefined();
+    expect(logs.join('\n')).toMatch(/unparseable postmaster\.pid.*unlinking/s);
+  });
+
+  it('leaves a malformed postmaster.pid alone when the recorded port IS accepting (a live server may hold the dir, WI-3822)', async () => {
+    mkdirSync(dataDir(), { recursive: true });
+    const { createServer } = await import('node:net');
+    const srv = createServer();
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
+    const port = (srv.address() as import('node:net').AddressInfo).port;
+    try {
+      // Line 1 unparseable; line 4 (recorded port) IS accepting.
+      writeFileSync(pidFile(), `not-a-pid\n${dataDir()}\n0\n${port}\n`);
+      await serve.sweepOrphanPostgres(dataDir(), logFn);
+      expect(statSync(pidFile(), { throwIfNoEntry: false })).toBeDefined();
+      expect(logs.join('\n')).toMatch(/pid unparseable but.*is accepting.*leaving.*alone/s);
+    } finally {
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
   });
 
   it('NEVER kills a live process that is not our postgres (only touches the lockfile)', async () => {

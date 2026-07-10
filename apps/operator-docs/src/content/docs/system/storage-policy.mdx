@@ -175,6 +175,20 @@ migration that breaks `empty → head` fails CI loudly — there is no skip-tole
   `node libs/papercusp/libs/db/scripts/pull-schema.mjs` to regenerate `generated.ts` — it reads
   the *live* DB, so it must already have your migration applied (chicken-and-egg: apply first,
   then regenerate).
+- **Indexing a HOT high-churn table (`coord_event_log`, `work_items`, …) live under an active
+  fleet: `CREATE`/`DROP INDEX CONCURRENTLY` can time out repeatedly** (EI-9151) — the fleet's
+  continuous read/write traffic never leaves a clean window for CONCURRENTLY's
+  wait-for-old-snapshots phase, even with `lock_timeout` raised to 120-240s (`PGOPTIONS='-c
+  lock_timeout=240s' psql ...`). Each failed attempt leaves an **INVALID** index of the same
+  name behind, and a subsequent `IF NOT EXISTS` attempt then silently no-ops on the name
+  collision (fast, no error) *without* actually building it — always verify `SELECT indisvalid
+  FROM pg_index JOIN pg_class ON pg_class.oid = pg_index.indexrelid WHERE relname = '<idx>'`
+  before trusting a fast/clean return. If CONCURRENTLY keeps timing out, drop the invalid index
+  (plain `DROP INDEX`, not `CONCURRENTLY` — still needs the lock, but is a single fast
+  acquisition rather than CONCURRENTLY's multi-phase wait) and fall back to a **plain, blocking
+  `CREATE INDEX`**: for a table in the tens-to-hundreds-of-k-rows range the actual build is
+  sub-second once the lock is granted (the bottleneck is queueing for the lock, not the build
+  itself), so a brief blocking build is the safer bet over CONCURRENTLY refusing to ever land.
 
 ## Acceptable file uses
 

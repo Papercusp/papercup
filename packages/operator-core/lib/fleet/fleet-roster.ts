@@ -33,6 +33,20 @@ import {
 import { listFleetAssignments, groupByAgent, type AgentAssignment } from './assignments';
 import { listFleets, type AgentFleetRecord } from '../agent-fleets-store';
 import { getOrgPg } from '@papercusp/db-org';
+import { withBoundedTimeout } from '../bounded-timeout';
+
+/**
+ * WI-3818: per-sub-read budget for listFleetRoster's fan-out (presence, then
+ * Tier-1/assignments/wakeability in parallel). During the 2026-07-10 host-load
+ * storm any one of these hanging blocked the WHOLE roster read until the 55s
+ * MCP client timeout — the caller got nothing instead of a slim-but-usable
+ * partial roster. Each leg now degrades to an empty fallback at this budget
+ * instead of hanging; a degraded leg means that leg's detail is simply
+ * missing from the fold (e.g. a timed-out `listFleetAssignments` yields
+ * presence-only entries with `doing:null`/`queued:[]`/`load:0` — the "drop
+ * queued detail first" fallback happens naturally at this level).
+ */
+export const FLEET_ROSTER_SUBREAD_TIMEOUT_MS = 8_000;
 
 /** The presence fields the fold needs, plus the joined-in fleet label. Kept structural
  *  so foldFleetRoster unit-tests without importing the store types. */
@@ -231,29 +245,88 @@ async function defaultReadFleetPresence(opts: { workspaceId?: string | null }): 
   });
 }
 
+/** Which fan-out legs of a `listFleetRoster` read were degraded (timed out or
+ *  errored) and fell back to an empty/default value — WI-3818 observability,
+ *  so a caller can tell "this roster may be incomplete" instead of silently
+ *  trusting a possibly-partial fold. Empty array ⇒ every leg answered fully. */
+export type FleetRosterDegradedLeg = 'presence' | 'tier1' | 'assignments' | 'wakeability';
+
+export interface ListFleetRosterResult {
+  entries: FleetRosterEntry[];
+  degradedLegs: FleetRosterDegradedLeg[];
+}
+
 /**
- * The unified fleet-roster read. Fleet-scopes presence (on the fleet_slug label),
- * enriches with Tier-1, joins the fleet work-detail, and folds — one read for "who's in
- * this fleet and exactly what each is doing".
+ * The unified fleet-roster read, WITH per-leg timeout diagnostics (WI-3818).
+ * Fleet-scopes presence (on the fleet_slug label), enriches with Tier-1, joins
+ * the fleet work-detail, and folds — one read for "who's in this fleet and
+ * exactly what each is doing". Each sub-read is bounded at
+ * FLEET_ROSTER_SUBREAD_TIMEOUT_MS: a slow/hanging leg degrades to an empty
+ * fallback (reported in `degradedLegs`) instead of hanging the whole read —
+ * so under host load this resolves with a slim-but-usable partial roster
+ * well inside the 55s MCP client timeout, rather than nothing at all.
  */
-export async function listFleetRoster(opts: ListFleetRosterOpts): Promise<FleetRosterEntry[]> {
+export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promise<ListFleetRosterResult> {
   const { fleetSlug, workspaceId } = opts;
   const includeUnattributed = opts.includeUnattributed === true;
   const readPresence = opts.readPresence ?? defaultReadFleetPresence;
-  const presenceAll = await readPresence({ workspaceId });
+  const degradedLegs: FleetRosterDegradedLeg[] = [];
+
+  const presenceResult = await withBoundedTimeout(readPresence({ workspaceId }), {
+    fallback: [] as FleetFoldPresence[],
+    timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
+    label: 'fleet-roster:presence',
+  });
+  if (presenceResult.degraded) degradedLegs.push('presence');
+  const presenceAll = presenceResult.value;
   const presence = filterPresenceToFleet(presenceAll, fleetSlug, includeUnattributed);
   const inFleet = new Set(presence.map((p) => p.ownerId));
   const localIds = presence.filter((p) => !p.federated).map((p) => p.ownerId);
-  const [tier1, rows, wakeability] = await Promise.all([
-    fetchPresenceTier1(localIds),
-    listFleetAssignments({ workspaceId }),
-    // EI-5858: wakeability drives the `ended` gate on `alive` + surfaces sessionState.
-    // Best-effort — a query failure degrades to heartbeat-only `alive` (today's
-    // behavior), never breaks the roster read.
-    fetchWakeability(localIds).catch(() => new Map<string, WakeabilitySignals>()),
+
+  const [tier1Result, rowsResult, wakeabilityResult] = await Promise.all([
+    withBoundedTimeout(fetchPresenceTier1(localIds), {
+      fallback: new Map<string, PresenceTier1Joins>(),
+      timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
+      label: 'fleet-roster:tier1',
+    }),
+    withBoundedTimeout(listFleetAssignments({ workspaceId }), {
+      fallback: [],
+      timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
+      label: 'fleet-roster:assignments',
+    }),
+    // EI-5858: wakeability drives the `ended` gate on `alive` + surfaces
+    // sessionState. Best-effort — a slow/failed query degrades to
+    // heartbeat-only `alive` (today's pre-WI-3818 behavior), never breaks the
+    // roster read.
+    withBoundedTimeout(fetchWakeability(localIds), {
+      fallback: new Map<string, WakeabilitySignals>(),
+      timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
+      label: 'fleet-roster:wakeability',
+    }),
   ]);
-  const assignments = groupByAgent(rows).filter((a) => inFleet.has(a.agentId));
-  return foldFleetRoster(presence, assignments, tier1, Date.now(), wakeability);
+  if (tier1Result.degraded) degradedLegs.push('tier1');
+  if (rowsResult.degraded) degradedLegs.push('assignments');
+  if (wakeabilityResult.degraded) degradedLegs.push('wakeability');
+
+  // A degraded `assignments` leg naturally drops the heaviest per-member detail
+  // first (WI-3818's "drop queued detail first" fallback): foldFleetRoster
+  // synthesizes a work-detail-empty AgentAssignment from presence alone
+  // (assignmentFromPresence) when no assignment row is found — so entries
+  // still exist with identity/intent/liveness, just without doing/queued/load.
+  const assignments = groupByAgent(rowsResult.value).filter((a) => inFleet.has(a.agentId));
+  const entries = foldFleetRoster(presence, assignments, tier1Result.value, Date.now(), wakeabilityResult.value);
+  return { entries, degradedLegs };
+}
+
+/**
+ * The unified fleet-roster read. Fleet-scopes presence (on the fleet_slug label),
+ * enriches with Tier-1, joins the fleet work-detail, and folds — one read for "who's in
+ * this fleet and exactly what each is doing". Back-compat wrapper over
+ * `listFleetRosterDiagnosed` for callers that don't need the degraded-legs
+ * diagnostics (WI-3818) — same bounded-fan-out behavior either way.
+ */
+export async function listFleetRoster(opts: ListFleetRosterOpts): Promise<FleetRosterEntry[]> {
+  return (await listFleetRosterDiagnosed(opts)).entries;
 }
 
 /**

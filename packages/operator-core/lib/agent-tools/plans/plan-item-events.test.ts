@@ -7,7 +7,7 @@ import { emitPlanItemDoneEvent } from './plan-item-events';
 
 type EmitOpts = { key: string; summary?: string; payload?: unknown; to?: string[]; source?: string };
 const typedEmit = () =>
-  vi.fn(async (_opts: EmitOpts) => ({ ok: true as const, key: '', woken: 0, notified: [] as string[], msgId: null }));
+  vi.fn(async (_opts: EmitOpts) => ({ ok: true as const, key: '', woken: 0, notified: [] as string[], msgId: null, waiters: 0 }));
 
 describe('emitPlanItemDoneEvent (P-105)', () => {
   it('fires plan-item:done:<slug>:<id> with the (slug,id) in both key and payload', async () => {

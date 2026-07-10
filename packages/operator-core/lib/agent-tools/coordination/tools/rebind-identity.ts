@@ -9,6 +9,12 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
 import { rebindIdentity } from '../rebind-identity';
+// The SU-locks (file locks + lock waiters) owner rebind lives in a SEPARATE
+// side-database (`papercusp_su`) that rebindIdentity's own `sql` (harness_shared,
+// main org db) can never reach — go through the operator-side locks shim (which
+// guarantees `./configure`'s host-seam wiring ran first) rather than
+// `@papercusp/locks` directly (EI-8999/P-002).
+import { rebindLockOwner } from '../../locks/su-lock-store';
 
 export default defineTool({
   name: 'coord:rebind-identity',
@@ -16,7 +22,8 @@ export default defineTool({
   description:
     'Migrate every ownerId-keyed surface from a DEAD predecessor sid to a live one after a relaunch/recovery ' +
     'changed your PAPERCUSP_SID: armed loop routine, loop carry-note (+walls), plan/work-item claims, scheduler ' +
-    'claim-spec, standing awaits, fleet membership/leadership, open held work-items, owner-scoped facts. ' +
+    'claim-spec, standing awaits, fleet membership/leadership, open held work-items, owner-scoped facts, held ' +
+    'FILE LOCKS + lock waiters (EI-8999/P-002 — a separate side-database, rekeyed too). ' +
     'Idempotent — re-run to finish a partial pass. Refuses while the old sid still shows a fresh presence ' +
     'heartbeat (a live peer) unless force:true. Returns { ok, from, to, surfaces:[{surface,moved,…}], totalMoved }.',
   guidance: {
@@ -53,7 +60,7 @@ export default defineTool({
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     const to = args.to ?? identity.ownerId;
-    const result = await rebindIdentity(args.from, to, { force: args.force });
+    const result = await rebindIdentity(args.from, to, { force: args.force, rebindLockOwner });
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(result) }],
       ...(result.ok ? {} : { isError: true }),

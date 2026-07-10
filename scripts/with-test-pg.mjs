@@ -105,13 +105,20 @@ const child = spawn(cmd[0], cmd.slice(1), {
   stdio: 'inherit',
   env: {
     ...process.env,
-    // Step 1 of the connection.ts chain — beats the discovery file AND the native
-    // fallback, so nothing can drift onto the product's database.
-    HARNESS_ADMIN_DATABASE_URL: pg.urls.admin,
-    HARNESS_DATABASE_URL: pg.urls.app,
-    // Belt for callers that hit the native fallback before env is consulted, and for
-    // resolvers that key off the port alone (host-platform's getHarnessAdminUrl).
+    // PAPERCUSP_PG_PORT is the repo's OWN isolation lever for "this process owns a
+    // dedicated PG" (see connection.ts's two native fallbacks and its pgbouncer
+    // opt-out, and harness-invoke-once.ts: "getHarnessAdminUrl() honors
+    // PAPERCUSP_PG_PORT, so isolated ..."). Both resolvers build their fallback URL
+    // from it, which is all the throwaway PG needs.
+    //
+    // Deliberately NOT exporting HARNESS_ADMIN_DATABASE_URL / HARNESS_DATABASE_URL:
+    // those are step 1 of the resolution chain, and injecting them changes the
+    // behaviour of the very code under test — it broke harness-invoke-once.test.ts's
+    // env-resolution cases (52/52 → 2 failures) purely because the runner had set
+    // them. A test harness must not perturb the tests it runs.
     PAPERCUSP_PG_PORT: String(port),
+    // Belt-and-braces: the unit layer pins this too, but a non-vitest child (a script,
+    // a CLI) must also never resolve the *product's* live embedded PG.
     PAPERCUSP_SKIP_PG_DISCOVERY: '1',
   },
 });

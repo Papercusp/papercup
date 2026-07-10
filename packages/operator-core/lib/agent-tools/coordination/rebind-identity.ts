@@ -61,6 +61,19 @@ export interface RebindIdentityOpts {
   force?: boolean;
   sql?: Sql;
   now?: number;
+  /**
+   * SU-locks (file locks + lock waiters) owner rebind (EI-8999 / P-002,
+   * fleet-reliability-verification-2026-07-10) — injected because
+   * `@papercusp/locks` owns a SEPARATE side-database (`papercusp_su`),
+   * untouched by the `sql` above (which only ever points at `harness_shared`
+   * in the main org db). Left undefined here (the default), the 'file-locks'
+   * surface is skipped entirely — this keeps `rebindIdentity` itself free of
+   * any real network I/O beyond the one `sql` handle callers already control,
+   * so a caller that doesn't pass it (every existing unit test) stays fully
+   * hermetic. The production `coord:rebind-identity` tool handler wires the
+   * real `rebindLockOwner` from `@papercusp/locks` — see tools/rebind-identity.ts.
+   */
+  rebindLockOwner?: (from: string, to: string) => Promise<{ fileLocksMoved: number; waitersMoved: number }>;
 }
 
 /** Carry-note scopes that embed the ownerId as their last `:`-segment. */
@@ -406,6 +419,21 @@ export async function rebindIdentity(
     `;
     r.moved = moved.length;
   });
+
+  // 14. SU-locks file locks + lock waiters (EI-8999/P-002) — a genuinely
+  //     SEPARATE side-database from every surface above; opt-in via
+  //     opts.rebindLockOwner (see the option's doc). A file lock stranded
+  //     under a dead sid blocks every other agent from that path until its
+  //     TTL lapses (up to 20 min) — the WI-3642 class of bug, on a
+  //     different database. Only recorded when the caller wired it, so the
+  //     surface never appears (and never attempts I/O) for a caller that
+  //     didn't ask for it.
+  if (opts.rebindLockOwner) {
+    await run('file-locks', async (r) => {
+      const res = await opts.rebindLockOwner!(f, t);
+      r.moved = res.fileLocksMoved + res.waitersMoved;
+    });
+  }
 
   const totalMoved = surfaces.reduce(
     (n, s) => n + s.moved + (s.dropped ?? 0) + (s.cancelled ?? 0) + (s.appended ?? 0),

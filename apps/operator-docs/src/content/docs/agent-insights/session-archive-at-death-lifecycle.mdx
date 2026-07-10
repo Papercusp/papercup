@@ -53,12 +53,55 @@ never clobbers a differing existing file (disk wins).
 ## GC is code-owned now
 
 The seeded `session-dir-gc` routine was **never armed** — the root cause of
-the 17k accumulation. The daily cadence is now a DBOS periodic workflow
-(`sessionDirGc` @ 04:35, `dbos/periodic-workflows.ts`), deploy-armed and
+the 17k accumulation. The cadence is now a DBOS periodic workflow
+(`sessionDirGc`, hourly @:50, `dbos/periodic-workflows.ts`), deploy-armed and
 immune to the seeded-but-never-enabled class. Retention picks by the flag:
-archive ON → 24h (deletion lossless; the gate is only a materialization-race
+archive ON → 2h (deletion lossless; the gate is only a materialization-race
 guard), OFF → the legacy 7d (deletion lossy again). The routine action
 remains a manual/admin lever.
+
+**Cadence and retention are chosen together.** The steady-state dir population
+is `live + retention-window churn` whenever cadence ≤ retention — the
+*retention* sets the floor, not the cadence. A daily sweep with a 24h window
+floored this box at ~900 dirs; hourly @:50 (offset from the reconciler's @:20,
+so the archiver has committed the last hour's endings before the janitor looks)
+with a 2h window floors it at ~live count. Measured 2026-07-10: `session-claude`
+17,359 → 110, total dirs 17,962 → 554.
+
+## What actually makes the 24h retention safe: the archive guard
+
+Retention is a **race guard, not the safety net** — the archive is. So gc
+does not trust that the archiver ran: before deleting, `findUnarchivedSessionDirs`
+lists each collectible dir's session ids and checks for a **committed stamp**
+in `session_archives`. Any dir holding even one un-stamped session is diverted
+to `keptUnarchived` and survives; the reconciler archives it on a later tick
+and the next sweep collects it.
+
+This closes a real hole: the fast path can miss (`kill -9` between session-end
+and the hook), the reconciler's disk sweep is bounded per tick, and a `dbFailed`
+row archives nothing at all. Under the old 7d retention those cases had a week
+of slack; at 24h they would have been **permanently deleted a day later**.
+
+Three rules that must not drift:
+
+- The guard **fails CLOSED** — an unreadable dir or a failed stamp read keeps
+  the dir. A wrong "keep" costs an hour of disk; a wrong "remove" is forever.
+- `archiveGuard` must track the flag: ON with `DEFAULT_RETENTION_MS` (2h),
+  OFF only with `LEGACY_RETENTION_MS` (7d), because with the archive off there
+  is nothing to verify against. Both call sites (the DBOS workflow and the
+  routine action) pick them together from `SESSION_ARCHIVE_AT_END`.
+- **A degraded protected-set aborts the sweep.** `gatherProtectedSessionIdentity`
+  fails *open* (a dead PG contributes no protected ids), which would make the
+  sweep maximally aggressive exactly when it can least afford it. It now reports
+  `degraded: true` and `runSessionDirGc` returns `skipped:
+  'degraded-protected-set'` without scanning. The archive guard alone is not
+  enough here: a **bare** dir (a session mid-launch, before its first `.jsonl`
+  exists) has no files to verify, so only the protected set stands between it
+  and deletion. This is what makes the tight 2h window safe.
+
+A dir with **no** session files is safe to collect (nothing to lose) — which is
+why a healthy steady state reports `keptUnarchived=0`: the archiver already
+deleted the files it committed.
 
 ## Traps for the next agent
 
@@ -70,6 +113,19 @@ remains a manual/admin lever.
 - Don't hand-write a new dead-dir walker: the reconciler + protected set
   (`gatherProtectedSessionIdentity`, EI-311 liveness rules) already own that
   sweep, and a walker that misses the protected set WILL delete a live
-  session's home.
+  session's home — or, missing the archive guard, silently delete sessions the
+  archiver never committed.
+- `keptUnarchived > 0` in the gc log is **not** an error: it means the archiver
+  hasn't caught up with those dirs yet. Investigate only if it stays non-zero
+  across several hourly sweeps (that implies `dbFailed` rows or a wedged
+  reconciler), never by deleting the dirs by hand.
+- **`keptFresh` transiently over-counts right after a big archive run.** The
+  retention gate reads the dir's mtime as "last materialization", but deleting
+  the archived files *inside* a dir also bumps it. So a just-archived dead dir
+  looks freshly materialized and survives one more window. Harmless (the next
+  sweep collects it) — do not "fix" it by deleting on a younger mtime.
+- `skipped: 'degraded-protected-set'` in the log means a presence/PG read failed
+  and the sweep declined to run. That is the system working. Fix the PG read;
+  never bypass the guard to "catch up" on disk.
 - Storage cost is measured: ~69KB zstd per session (~4.7×), ~46MB/day at
   650 sessions/day ≈ 17GB/yr.

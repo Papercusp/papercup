@@ -18,10 +18,11 @@
  * Env (all optional): PAPERCUSP_GATEWAY_PORT, _WATCHDOG_POLL_MS, _WATCHDOG_FREEZE_MS,
  *   _WATCHDOG_UNREACHABLE_MS, _WATCHDOG_DEBOUNCE_MS, _WATCHDOG_MAX_RESTARTS_HR, _WATCHDOG_UNIT.
  */
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { appendFileSync, mkdirSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { hostname, homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const PORT = Number(process.env.PAPERCUSP_GATEWAY_PORT) || 8788;
 const POLL_MS = Number(process.env.PAPERCUSP_GATEWAY_WATCHDOG_POLL_MS) || 15_000;
@@ -30,6 +31,14 @@ const UNREACHABLE_MS = Number(process.env.PAPERCUSP_GATEWAY_WATCHDOG_UNREACHABLE
 const DEBOUNCE_MS = Number(process.env.PAPERCUSP_GATEWAY_WATCHDOG_DEBOUNCE_MS) || 5 * 60_000;
 const MAX_RESTARTS_PER_HR = Number(process.env.PAPERCUSP_GATEWAY_WATCHDOG_MAX_RESTARTS_HR) || 4;
 const UNIT = process.env.PAPERCUSP_GATEWAY_WATCHDOG_UNIT || 'papercup-inference-gateway';
+/** deploys:vintage self-report sink (fleet-reliability-verification-2026-07-10 P-008): this
+ *  watchdog itself is a "runtime" whose vintage matters (an old watchdog script silently
+ *  auto-restarting the gateway with stale wedge-detection logic is exactly the kind of thing
+ *  "is the fix actually running there" should answer). Best-effort fire-and-forget POST — a
+ *  dependency-free script can't import runtime-vintage.ts directly, so it hits the HTTP sink
+ *  instead (never blocks/affects the poll loop on failure). Default target is :3070 (the
+ *  always-up release operator, per the two-port model) — override for a non-default topology. */
+const VINTAGE_URL = process.env.PAPERCUSP_RUNTIME_VINTAGE_URL || 'http://127.0.0.1:3070/api/internal/runtime-vintage';
 /** Durable, journald-INDEPENDENT decision log. The systemd journal's stdout-socket capture
  *  (/run/systemd/journal/stdout) was observed wedged host-wide (2026-06-22, EI-2421): the watchdog's
  *  console.log restart decisions were invisible in journald for 44h, which is exactly why "is the
@@ -204,10 +213,56 @@ async function poll() {
   }
 }
 
+/** Mirrors build-info.ts's resolveBuildInfo() sha resolution — env override, else a one-time
+ *  `git rev-parse --short HEAD` in this script's own directory (works from any subdir of a
+ *  checkout; resolves null in a packaged bundle with neither env nor a .git dir, same contract
+ *  as the TS resolver). */
+function resolveTreeSha() {
+  const envSha = process.env.PAPERCUSP_BUILD_SHA?.trim();
+  if (envSha) return envSha;
+  try {
+    const dir = dirname(fileURLToPath(import.meta.url));
+    const out = execFileSync('git', ['-C', dir, 'rev-parse', '--short', 'HEAD'], {
+      encoding: 'utf8',
+      timeout: 2_000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return out.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Best-effort boot self-report into the deploys:vintage ledger (P-008). Never throws, never
+ *  blocks the poll loop — a failed report just means this watchdog's row stays stale until its
+ *  next successful boot. */
+async function reportVintage(unit) {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 3_000);
+    await fetch(VINTAGE_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        unit,
+        host: hostname(),
+        treeSha: resolveTreeSha(),
+        buildTime: new Date().toISOString(),
+        pid: process.pid,
+      }),
+      signal: ctrl.signal,
+    });
+    clearTimeout(t);
+  } catch (e) {
+    log(`[runtime-vintage] boot self-report failed (non-fatal): ${e.message}`);
+  }
+}
+
 function start() {
   log(
     `up — port ${PORT}, poll ${POLL_MS}ms, freeze ${FREEZE_MS}ms, debounce ${DEBOUNCE_MS}ms, cap ${MAX_RESTARTS_PER_HR}/hr, unit ${UNIT}; suppress-restart-on-external-stall ON; dead-proxy alert >=${Math.round(DEADPROXY_RATE * 100)}% over >=${DEADPROXY_MIN_ATTEMPTS} attempts; durable log ${LOG_FILE}`,
   );
+  void reportVintage('inference-gateway-watchdog');
   setInterval(() => void poll().catch((e) => log(`poll error: ${e.message}`)), POLL_MS);
 }
 

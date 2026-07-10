@@ -71,6 +71,52 @@ function sampleLoadRatio(): number {
   return loadavg()[0] / cpuCount;
 }
 
+/**
+ * EI-9145: CPU loadavg (the ratio check above) doesn't catch host MEMORY
+ * pressure — a wall-clock-sensitive in-memory scenario (e.g. merge.idle-tick's
+ * repeated substrate mergeNow() over a large history) can be dominated by
+ * swap-in/out page faults even while loadavg looks "back to normal". Observed
+ * 2026-07-10 during EI-9087 triage: three re-runs of the same scenario got
+ * progressively WORSE (+187% → +622% → +875%) even as the CPU load ratio fell
+ * from 1.62× to 1.13×, because the box was still actively swapping (~150GB
+ * used, live `vmstat` si/so in the 100-300k KB/s range) throughout every run.
+ * Sample `/proc/vmstat`'s cumulative `pswpin`/`pswpout` counters (Linux-only;
+ * `null` elsewhere — best-effort, never throws) at run-start and run-end; a
+ * non-trivial page-in/out delta during the run window is an independent
+ * "host swapping" signal, orthogonal to the CPU ratio.
+ */
+const HOST_SWAPPING_PAGES_THRESHOLD = 1000; // ~4MB of swap I/O (4KB pages) over the run
+
+/** Pure parse of /proc/vmstat text — exported for unit testing without touching the fs. */
+export function parseSwapPages(vmstatText: string): { pswpin: number; pswpout: number } | null {
+  const pswpin = Number(/^pswpin (\d+)$/m.exec(vmstatText)?.[1] ?? NaN);
+  const pswpout = Number(/^pswpout (\d+)$/m.exec(vmstatText)?.[1] ?? NaN);
+  if (!Number.isFinite(pswpin) || !Number.isFinite(pswpout)) return null;
+  return { pswpin, pswpout };
+}
+
+function sampleSwapPages(): { pswpin: number; pswpout: number } | null {
+  try {
+    return parseSwapPages(readFileSync('/proc/vmstat', 'utf8'));
+  } catch {
+    return null; // non-Linux host, /proc unavailable, or permission denied — best-effort
+  }
+}
+
+/**
+ * Combine the CPU-ratio and swap-delta signals into one host-health verdict.
+ * Pure + exported for unit testing (EI-9145) — the two confounds are
+ * independent: either alone should mark the comparison UNCERTAIN.
+ */
+export function computeHostHealth(input: {
+  ratio1m: number;
+  swapPagesDelta: number | null;
+}): { oversubscribed: boolean; swapping: boolean } {
+  const swapping = input.swapPagesDelta !== null && input.swapPagesDelta > HOST_SWAPPING_PAGES_THRESHOLD;
+  const oversubscribed = input.ratio1m > HOST_OVERSUBSCRIBED_RATIO || swapping;
+  return { oversubscribed, swapping };
+}
+
 const TIER1: PerfScenario[] = [...mergeCostScenarios, ...replicationScenarios, ...churnScenarios];
 const TIER2: PerfScenario[] = [...netemScenarios];
 const ALL: PerfScenario[] = [...TIER1, ...TIER2];
@@ -107,11 +153,20 @@ export interface RunSummary {
   regressions: Array<{ scenario: string; paramsKey: string; metric: string; baseline: number; current: number; relChange: number }>;
   improvements: number;
   baselineCompared: boolean;
-  /** EI-8843: host contention sampled around the run (max of a start/end
-   *  os.loadavg() sample, /cpus). `oversubscribed` ⇒ the baseline comparison
-   *  above is UNCERTAIN — a wall-clock/PG-latency-sensitive scenario could be
-   *  measuring shared-box contention, not a code regression. */
-  hostLoad: { loadavg1m: number; cpus: number; ratio1m: number; oversubscribed: boolean };
+  /** EI-8843/EI-9145: host contention sampled around the run (max of a
+   *  start/end os.loadavg() sample, /cpus; plus a start/end /proc/vmstat
+   *  swap-page delta). `oversubscribed` ⇒ the baseline comparison above is
+   *  UNCERTAIN — a wall-clock/PG-latency-sensitive scenario could be
+   *  measuring shared-box CPU contention OR swap thrashing, not a code
+   *  regression. `swapping` isolates which confound fired. */
+  hostLoad: {
+    loadavg1m: number;
+    cpus: number;
+    ratio1m: number;
+    oversubscribed: boolean;
+    swapPagesDelta: number | null;
+    swapping: boolean;
+  };
 }
 
 function parseArgs(argv: string[]): Args | 'list' {
@@ -171,7 +226,14 @@ function renderReport(
   profile: string,
   artifacts: PerfArtifact[],
   compareText: string | null,
-  hostLoad?: { loadavg1m: number; cpus: number; ratio1m: number; oversubscribed: boolean },
+  hostLoad?: {
+    loadavg1m: number;
+    cpus: number;
+    ratio1m: number;
+    oversubscribed: boolean;
+    swapPagesDelta: number | null;
+    swapping: boolean;
+  },
 ): string {
   const lines: string[] = [
     `# p2p-perf run \`${runId}\``,
@@ -182,8 +244,11 @@ function renderReport(
     ...(hostLoad
       ? [
           `- host load: ${hostLoad.loadavg1m.toFixed(1)} / ${hostLoad.cpus} cpus (ratio ${hostLoad.ratio1m.toFixed(2)}×)` +
+            (hostLoad.swapPagesDelta !== null ? `, swap Δ ${hostLoad.swapPagesDelta} pages` : '') +
             (hostLoad.oversubscribed
-              ? ' — **⚠ OVERSUBSCRIBED: baseline comparison below is UNCERTAIN (EI-8843), auto-filing skipped**'
+              ? ` — **⚠ OVERSUBSCRIBED (${hostLoad.swapping ? 'swap thrashing, EI-9145' : 'CPU, EI-8843'}${
+                  hostLoad.swapping && hostLoad.ratio1m > 1.0 ? ' + CPU' : ''
+                }): baseline comparison below is UNCERTAIN, auto-filing skipped**`
               : ''),
         ]
       : []),
@@ -228,6 +293,7 @@ async function main(): Promise<void> {
   // by the time it finishes is still a run whose early scenarios' numbers are
   // suspect; the max of the two samples is the conservative call.
   const startLoadRatio = sampleLoadRatio();
+  const startSwap = sampleSwapPages();
 
   const artifacts: PerfArtifact[] = [];
   const ctx: ScenarioRunCtx = {
@@ -295,17 +361,25 @@ async function main(): Promise<void> {
   const regressionCount = compareReport?.regressions.length ?? 0;
 
   // EI-8843: max(start, end) load sample — conservative call on whether the
-  // comparison above is trustworthy or shared-box contention.
+  // comparison above is trustworthy or shared-box CPU contention.
   const endLoadRatio = sampleLoadRatio();
   const ratio1m = Math.max(startLoadRatio, endLoadRatio);
-  const oversubscribed = ratio1m > HOST_OVERSUBSCRIBED_RATIO;
-  const hostLoad = { loadavg1m: loadavg()[0], cpus: osCpus().length, ratio1m, oversubscribed };
+  // EI-9145: swap-page delta over the SAME run window — an independent
+  // memory-pressure confound loadavg alone can miss (see computeHostHealth).
+  const endSwap = sampleSwapPages();
+  const swapPagesDelta =
+    startSwap && endSwap ? endSwap.pswpin - startSwap.pswpin + (endSwap.pswpout - startSwap.pswpout) : null;
+  const { oversubscribed, swapping } = computeHostHealth({ ratio1m, swapPagesDelta });
+  const hostLoad = { loadavg1m: loadavg()[0], cpus: osCpus().length, ratio1m, oversubscribed, swapPagesDelta, swapping };
   if (oversubscribed) {
+    const reasons = [
+      ratio1m > HOST_OVERSUBSCRIBED_RATIO ? `CPU load ratio ${ratio1m.toFixed(2)}× cpus (limit ${HOST_OVERSUBSCRIBED_RATIO}×, EI-8843)` : null,
+      swapping ? `host swapping (Δ${swapPagesDelta} pages over the run, EI-9145)` : null,
+    ].filter(Boolean);
     console.warn(
-      `\n⚠ host oversubscribed during this run (load ratio ${ratio1m.toFixed(2)}× cpus, ` +
-        `limit ${HOST_OVERSUBSCRIBED_RATIO}×) — the baseline comparison above is UNCERTAIN: a ` +
-        `wall-clock/PG-latency-sensitive scenario may be measuring shared-box contention, not a ` +
-        `code regression (EI-8843). The nightly routine will skip auto-filing findings from this run.`,
+      `\n⚠ host oversubscribed during this run (${reasons.join(' AND ')}) — the baseline comparison ` +
+        `above is UNCERTAIN: a wall-clock/PG-latency-sensitive scenario may be measuring shared-box ` +
+        `contention, not a code regression. The nightly routine will skip auto-filing findings from this run.`,
     );
   }
 
@@ -359,4 +433,12 @@ async function main(): Promise<void> {
   process.exit(process.exitCode ?? 0);
 }
 
-void main();
+// EI-9145: only auto-run the CLI when this file is executed directly (`tsx
+// runner.ts ...`) — NOT when imported as a module (e.g. a unit test pulling
+// in the pure `parseSwapPages`/`computeHostHealth` helpers above). Before
+// this guard, importing this file for its exports had the side effect of
+// kicking off a live perf run (writing real artifacts, eventually calling
+// `process.exit()`) racing against the importer's own code.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  void main();
+}

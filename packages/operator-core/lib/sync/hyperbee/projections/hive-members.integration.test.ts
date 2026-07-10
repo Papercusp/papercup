@@ -7,7 +7,7 @@
  * that a federated revoked_pubkeys lands where loadRevokedHivePubkeys reads it.
  */
 
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +18,18 @@ import { insertHiveIfAbsent } from '../../../hive-store';
 import { loadRevokedHivePubkeys, getHiveMember } from '../../../hive-membership-store';
 import { buildHiveMembersProjection, _testing, type HiveMemberRow } from './hive-members';
 import type { DeviceAttestationEntry } from '../../../harness/contributor-row-types';
+import { listBootHistory, _resetBootHistoryForTests } from '../boot-history';
+
+// WI-3828: the WI-887 self-heal (writeToPg's onMemberApplied epoch-key reconcile) used to
+// swallow its dynamic-import result in a bare `catch {}` — a thrown grant failure, or a
+// meaningful non-throw skip, was completely invisible. Mock the dynamically-imported module
+// so each test below controls exactly what reconcileEpochKeysForCurrentMembers returns/throws.
+const reconcileEpochKeysForCurrentMembers = vi.fn().mockResolvedValue({ applied: true, newEpoch: 1, distributed: 1 });
+const isHiveRekeyEnabledMock = vi.fn().mockResolvedValue(true);
+vi.mock('../hive-epoch-boundary-wiring', () => ({
+  reconcileEpochKeysForCurrentMembers: (...args: unknown[]) => reconcileEpochKeysForCurrentMembers(...args),
+  isHiveRekeyEnabled: () => isHiveRekeyEnabledMock(),
+}));
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../../../../libs/papercusp/libs/db/sql');
 const WS = 'ws-proj';
@@ -53,6 +65,9 @@ afterAll(async () => {
 });
 afterEach(async () => {
   await db.sql.unsafe('TRUNCATE harness_shared.hive_members, harness_shared.hives CASCADE');
+  reconcileEpochKeysForCurrentMembers.mockReset().mockResolvedValue({ applied: true, newEpoch: 1, distributed: 1 });
+  isHiveRekeyEnabledMock.mockReset().mockResolvedValue(true);
+  _resetBootHistoryForTests();
 });
 async function seedHive(slug = HIVE) {
   await insertHiveIfAbsent(
@@ -112,5 +127,45 @@ describe('hive-members projection — writeToPg / deleteFromPg (real PG)', () =>
     expect(await getHiveMember(WS, HIVE, 7, db.sql)).not.toBeNull();
     await p.deleteFromPg('7', 200); // newer del — applies
     expect(await getHiveMember(WS, HIVE, 7, db.sql)).toBeNull();
+  });
+});
+
+describe('hive-members projection — WI-3828 self-heal grant is no longer a bare swallow', () => {
+  it('records a rekey_grant_failed boot-history event when the reconcile throws (was: silently swallowed)', async () => {
+    await seedHive();
+    reconcileEpochKeysForCurrentMembers.mockRejectedValueOnce(new Error('boom-grant'));
+    // writeToPg must still resolve — a grant failure must never abort the member apply.
+    await expect(
+      proj().writeToPg(memberRow({ github_user_id: 7 }), { ts: 100, origin: 'remote', authorPubkey: 'peer' }),
+    ).resolves.toBeUndefined();
+    expect(await getHiveMember(WS, HIVE, 7, db.sql)).not.toBeNull(); // the row still landed
+    const events = listBootHistory({ workspaceId: WS, harnessSlug: HIVE, kinds: ['rekey_grant_failed'] });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.message).toContain('boom-grant');
+    expect(events[0]?.message).toContain('onMemberApplied self-heal');
+  });
+
+  it('records a rekey_grant_skipped boot-history event on a meaningful (non-throw) skip reason', async () => {
+    await seedHive();
+    reconcileEpochKeysForCurrentMembers.mockResolvedValueOnce({ applied: false, reason: 'no-fresh-members' });
+    await proj().writeToPg(memberRow({ github_user_id: 7 }), { ts: 100, origin: 'remote', authorPubkey: 'peer' });
+    const events = listBootHistory({ workspaceId: WS, harnessSlug: HIVE, kinds: ['rekey_grant_skipped'] });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.message).toContain('no-fresh-members');
+  });
+
+  it('does NOT record an event for the benign no-gap / no-author skip reasons (steady-state noise)', async () => {
+    await seedHive();
+    reconcileEpochKeysForCurrentMembers.mockResolvedValueOnce({ applied: false, reason: 'no-gap' });
+    await proj().writeToPg(memberRow({ github_user_id: 7 }), { ts: 100, origin: 'remote', authorPubkey: 'peer' });
+    reconcileEpochKeysForCurrentMembers.mockResolvedValueOnce({ applied: false, reason: 'no-author' });
+    await proj().writeToPg(memberRow({ github_user_id: 8, github_username: 'octo2' }), { ts: 101, origin: 'remote', authorPubkey: 'peer' });
+    expect(listBootHistory({ workspaceId: WS, harnessSlug: HIVE })).toHaveLength(0);
+  });
+
+  it('records nothing on a healthy applied:true grant (the common case)', async () => {
+    await seedHive();
+    await proj().writeToPg(memberRow({ github_user_id: 7 }), { ts: 100, origin: 'remote', authorPubkey: 'peer' });
+    expect(listBootHistory({ workspaceId: WS, harnessSlug: HIVE })).toHaveLength(0);
   });
 });

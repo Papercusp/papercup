@@ -29,6 +29,7 @@ import {
   findUnarchivedSessionDirs,
   isProtected,
   planSessionDirGc,
+  runSessionDirGc,
   sessionDirKey,
   sweepStaleSessionDirs,
   type ProtectedSessionIdentity,
@@ -180,6 +181,47 @@ describe('planSessionDirGc archive guard', () => {
     });
     expect(guarded.keptProtected).toEqual([stale]);
     expect(guarded.remove).toEqual([]);
+  });
+});
+
+describe('degraded protected-set', () => {
+  // The protected-set reads fail OPEN (a dead PG yields no protected ids), so a
+  // sweep that trusted it would delete live sessions' homes — including BARE
+  // dirs (mid-launch, no jsonl yet) that the archive guard cannot shield.
+  it('runSessionDirGc ABORTS the sweep rather than trust an incomplete set', async () => {
+    // A real dir that a naive sweep would collect (stale, unprotected).
+    const root = tmpRoot();
+    const stale = seedDir(root, 'su-live-but-unknown', DEFAULT_RETENTION_MS * 2);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const res = await runSessionDirGc({
+        protectedIdentity: { ownerIds: new Set(), sessionKeys: new Set(), degraded: true },
+      });
+      expect(res.skipped).toBe('degraded-protected-set');
+      expect(res.removed).toEqual([]);
+      expect(res.scanned).toBe(0); // aborted before even scanning
+      expect(existsSync(stale)).toBe(true); // the live-but-unknown home survives
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a healthy (non-degraded) set sweeps normally', () => {
+    const stale: SessionDirCandidate = {
+      path: '/tmp/su-dead',
+      keyKind: 'owner',
+      key: 'su-dead',
+      mtimeMs: NOW - DEFAULT_RETENTION_MS * 2,
+    };
+    const healthy: ProtectedSessionIdentity = { ownerIds: new Set(), sessionKeys: new Set() };
+    const plan = planSessionDirGc({
+      candidates: [stale],
+      protectedIdentity: healthy,
+      nowMs: NOW,
+      retentionMs: DEFAULT_RETENTION_MS,
+    });
+    expect(plan.remove).toEqual([stale]);
   });
 });
 

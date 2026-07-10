@@ -125,6 +125,14 @@ describe('buildInvokeOnce — env-resolution nuances', () => {
     // map whose role entries would append `--model <x>` to these expectations
     // (see the RB-012 describe below for the same trap).
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    // Same class of trap. The DATABASE_URL cases below assert the NON-isolated
+    // resolution, but buildInvokeOnce deliberately IGNORES an inherited DATABASE_URL
+    // when PAPERCUSP_PG_PORT is set (WI-1666: an isolated process must never be
+    // rerouted to the box's shared native PG). Every isolated runner exports it — a
+    // desktop sidecar, a smoke witness, a rig instance, scripts/with-test-pg.mjs — so
+    // leaving it ambient made these cases pass only where it happened to be unset.
+    // The isolated branch gets its own explicit test below.
+    vi.stubEnv('PAPERCUSP_PG_PORT', undefined as unknown as string);
   });
 
   // These two isolate CLAUDE/AGENT_CMD resolution, so they use `reviewer` — a role
@@ -169,6 +177,24 @@ describe('buildInvokeOnce — env-resolution nuances', () => {
     vi.stubEnv('PAPERCUSP_DATABASE_URL', undefined as unknown as string);
     vi.stubEnv('DATABASE_URL', '');
     expect(buildInvokeOnce(spec()).env.PAPERCUSP_DATABASE_URL).toBe('postgres://admin/resolved');
+  });
+
+  // The WI-1666 invariant itself. It had NO test: the `PAPERCUSP_PG_PORT ? '' : …`
+  // branch was only ever exercised implicitly, by whether the ambient env happened to
+  // carry the var. An isolated process (explicit PAPERCUSP_PG_PORT) must resolve its
+  // OWN embedded PG and never let an inherited DATABASE_URL — agent shells export the
+  // box's shared native :5432 — reroute the spawned worker to it.
+  it('an ISOLATED process (PAPERCUSP_PG_PORT set) ignores an inherited DATABASE_URL', () => {
+    vi.stubEnv('PAPERCUSP_PG_PORT', '54329');
+    vi.stubEnv('PAPERCUSP_DATABASE_URL', undefined as unknown as string);
+    vi.stubEnv('DATABASE_URL', 'postgres://shared-native/db');
+    const { env } = buildInvokeOnce(spec());
+    expect(env.DATABASE_URL, 'inherited DATABASE_URL must not win in an isolated process').toBe(
+      'postgres://admin/resolved',
+    );
+    expect(env.PAPERCUSP_DATABASE_URL, 'the worker bootstrap must track the isolated DB too').toBe(
+      'postgres://admin/resolved',
+    );
   });
 
   it('DATABASE_URL: an explicit value is kept', () => {

@@ -38,12 +38,11 @@ import {
   localAvailable,
   isOpenAiEmbedInCooldown,
 } from '../memory/configure';
-import { buildGemmaEmbedder, type EmbedFn, type ResolvedEmbedder } from '@papercusp/memory';
+import { buildGemmaEmbedder, buildLocalEmbedder, type EmbedFn, type ResolvedEmbedder } from '@papercusp/memory';
 
 // Exported for embed-space-self-check.ts (WI-3644): the expected vector width.
 export const EMBEDDER_DIM = 384;
 const OPENAI_EMBEDDER_MODEL = 'text-embedding-3-small';
-const LOCAL_EMBEDDER_MODEL = 'Xenova/bge-small-en-v1.5';
 // F-E5 (app-wide-load-traps § E): hardware-adaptive embed batch — a big host
 // pushes bigger batches for throughput, a laptop keeps latency/memory down.
 const BATCH_SIZE = getResourceProfile().embedBatchSize;
@@ -93,17 +92,6 @@ function buildAdmissionGovernedOpenAiEmbedder(key: string): EmbedFn {
   };
 }
 
-async function buildLocalTransformersEmbedder(): Promise<EmbedFn> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const dynamicImport = new Function('s', 'return import(s)') as any;
-  const transformers = await dynamicImport('@huggingface/transformers');
-  const pipe = await transformers.pipeline('feature-extraction', LOCAL_EMBEDDER_MODEL);
-  return async (text: string): Promise<number[]> => {
-    const result = await pipe(text, { pooling: 'mean', normalize: true });
-    return Array.from(result.data) as number[];
-  };
-}
-
 /**
  * Resolve BOTH which embedder to use AND build it, via the SAME cascade
  * mem0 uses (`memory/configure.ts`'s `resolveEmbedderWith`, EI-8913). This
@@ -128,7 +116,7 @@ export async function resolveBackfillEmbedder(): Promise<ResolvedEmbedder> {
     localInstalled: localAvailable,
     isOpenAiRecentlyExhausted: isOpenAiEmbedInCooldown,
     buildOpenAi: buildAdmissionGovernedOpenAiEmbedder,
-    buildLocal: buildLocalTransformersEmbedder,
+    buildLocal: buildLocalEmbedder,
     // Prose backfill is STORAGE, so EmbeddingGemma gets the document prompt.
     buildGemma: async () => buildGemmaEmbedder({ kind: 'document' }),
   });

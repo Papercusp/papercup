@@ -9,12 +9,46 @@ import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildCheckpointSystemdArgv,
+  checkpointRunLogPath,
+  checkpointLatestLogPath,
   launchDetachedCheckpoint,
   checkActiveCheckpointRun,
   CHECKPOINT_UNIT,
   checkpointUnitForRoot,
   CHECKPOINT_MAX_RUNTIME_SEC,
 } from './release-checkpoint-launch';
+
+// 2026-07-10: every run wrote to /tmp/<unit>.log, so the natural response to a red —
+// re-fire — truncated the failure output that red was telling you to read. Each run now
+// owns a timestamped file; the well-known path becomes a symlink to the newest.
+describe('per-run checkpoint logs (re-fire must not destroy the evidence)', () => {
+  it('gives each run its own timestamped path under the unit name', () => {
+    const a = checkpointRunLogPath('papercup-gc', new Date('2026-07-10T04:06:59.566Z'));
+    expect(a).toBe('/tmp/papercup-gc-2026-07-10T04-06-59-566Z.log');
+    // A second run at a different instant never collides with the first.
+    expect(checkpointRunLogPath('papercup-gc', new Date('2026-07-10T06:29:46.196Z'))).not.toBe(a);
+  });
+
+  it('keeps the well-known path stable for existing readers', () => {
+    expect(checkpointLatestLogPath('papercup-gc')).toBe('/tmp/papercup-gc.log');
+  });
+
+  it('symlinks the stable path at the run log before redirecting into it', () => {
+    const argv = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin', false, '/tmp/cp-RUN.log');
+    const inner = argv[argv.length - 1];
+    // ln first (so a reader polling the stable path lands on this run's file), then the
+    // redirect binds to green-checkpoint only, and -n keeps ln from following the old link.
+    expect(inner).toContain("ln -sfn '/tmp/cp-RUN.log' '/tmp/cp.log' &&");
+    expect(inner).toContain('> /tmp/cp-RUN.log 2>&1');
+    expect(inner.indexOf('ln -sfn')).toBeLessThan(inner.indexOf('green-checkpoint.ts'));
+  });
+
+  it('writes straight to the given path when no run log is supplied (back-compat)', () => {
+    const inner = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin').at(-1)!;
+    expect(inner).toContain('> /tmp/cp.log 2>&1');
+    expect(inner).not.toContain('ln -sfn');
+  });
+});
 
 describe('buildCheckpointSystemdArgv', () => {
   it('targets the manual unit, bounds runtime, and runs the green-checkpoint CLI in the tree root', () => {

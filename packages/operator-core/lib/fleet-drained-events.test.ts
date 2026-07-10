@@ -18,7 +18,7 @@ import {
 
 type EmitOpts = { key: string; summary?: string; payload?: unknown; to?: string[]; source?: string };
 const typedEmit = () =>
-  vi.fn(async (_opts: EmitOpts) => ({ ok: true as const, key: '', woken: 0, notified: [] as string[], msgId: null }));
+  vi.fn(async (_opts: EmitOpts) => ({ ok: true as const, key: '', woken: 0, notified: [] as string[], msgId: null, waiters: 0 }));
 
 /** A fleet_assignment row with every field defaulted; override only what a case needs. */
 function row(p: Partial<FleetAssignmentRow>): FleetAssignmentRow {

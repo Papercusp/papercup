@@ -54,9 +54,9 @@
  * Env (all optional): PAPERCUSP_BGHOST_WATCHDOG_{UNIT,POLL_MS,SILENCE_S,DEBOUNCE_MS,MAX_RESTARTS_HR,DB_URL,LOG,
  *   BOOT_GRACE_MS,BACKOFF_MULTIPLIER,MAX_DEBOUNCE_MS,ALERT_AFTER_RESTARTS}, PAPERCUSP_INTEGRATION_ROOT, DATABASE_URL.
  */
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
-import { cpus, freemem, homedir, loadavg, totalmem } from 'node:os';
+import { cpus, freemem, homedir, hostname, loadavg, totalmem } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -83,6 +83,10 @@ const ALERT_AFTER_RESTARTS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_ALERT_
 const HEARTBEAT_MS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_HEARTBEAT_MS) || 10 * 60_000;
 /** Durable, journald-INDEPENDENT decision log (EI-2434: journald can't be trusted to capture stdout). */
 const LOG_FILE = process.env.PAPERCUSP_BGHOST_WATCHDOG_LOG || join(homedir(), '.papercusp', 'bghost-watchdog.log');
+/** deploys:vintage self-report sink (fleet-reliability-verification-2026-07-10 P-008) — see the
+ *  matching constant in inference-gateway/watchdog.mjs for the rationale (this watchdog is itself
+ *  a tracked runtime). Default target :3070 (always-up release operator, two-port model). */
+const VINTAGE_URL = process.env.PAPERCUSP_RUNTIME_VINTAGE_URL || 'http://127.0.0.1:3070/api/internal/runtime-vintage';
 
 let lastRestart = 0;
 let lastHeartbeat = 0;
@@ -418,12 +422,53 @@ async function poll() {
   }
 }
 
+/** Mirrors build-info.ts's resolveBuildInfo() sha resolution (see watchdog.mjs's twin helper). */
+function resolveTreeSha() {
+  const envSha = process.env.PAPERCUSP_BUILD_SHA?.trim();
+  if (envSha) return envSha;
+  try {
+    const dir = dirname(fileURLToPath(import.meta.url));
+    const out = execFileSync('git', ['-C', dir, 'rev-parse', '--short', 'HEAD'], {
+      encoding: 'utf8',
+      timeout: 2_000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return out.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Best-effort boot self-report into the deploys:vintage ledger (P-008) — never throws/blocks. */
+async function reportVintage(unit) {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 3_000);
+    await fetch(VINTAGE_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        unit,
+        host: hostname(),
+        treeSha: resolveTreeSha(),
+        buildTime: new Date().toISOString(),
+        pid: process.pid,
+      }),
+      signal: ctrl.signal,
+    });
+    clearTimeout(t);
+  } catch (e) {
+    log(`[runtime-vintage] boot self-report failed (non-fatal): ${e.message}`);
+  }
+}
+
 function start() {
   log(
     `up — unit ${UNIT}, poll ${POLL_MS}ms, freeze-silence ${FREEZE_SILENCE_S}s, debounce ${DEBOUNCE_MS}ms (backoff x${BACKOFF_MULTIPLIER}, cap ${MAX_DEBOUNCE_MS}ms), ` +
       `boot-grace ${BOOT_GRACE_MS}ms, alert-after ${ALERT_AFTER_RESTARTS} consecutive restarts, circuit cap ${MAX_RESTARTS_PER_HR}/hr; ` +
       `signal=PG-routine-freshness (journald-independent); durable log ${LOG_FILE}`,
   );
+  void reportVintage('bghost-watchdog');
   setInterval(() => void poll().catch((e) => log(`poll error: ${e.message}`)), POLL_MS);
 }
 

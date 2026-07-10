@@ -189,6 +189,29 @@ export async function appendAck(
   });
 }
 
+/** WI-3825: skew-padded lower bound subtracted from `since_ts` before it is
+ *  pushed into SQL as `ts >= …`. The row `ts` column is set via `DEFAULT
+ *  now()` at INSERT time (monotonic with `id`) — a DIFFERENT field from
+ *  `body->>'ts'`, the client-stamped envelope time `filterInbox` filters on,
+ *  which can trail the DB insert under load/retries (or, under clock skew,
+ *  even lead it). Live-verified divergence: >1s on 2,317 of 53,560 rows. This
+ *  pad is a PRE-filter only — generous enough that no row `filterInbox` would
+ *  keep (`body.ts > since_ts`) is ever pruned before it runs; `filterInbox`
+ *  remains the authoritative, byte-identical final filter over the reduced
+ *  set. 10 minutes comfortably covers any plausible insert-latency /
+ *  clock-skew jitter while still giving the new `coord_event_log_messages_ts_idx`
+ *  (migration 545) a highly selective range to seek on the dominant "since a
+ *  few minutes/hours ago" polling pattern (orient / inbox-wake / dispatch). */
+export const INBOX_SINCE_TS_SKEW_PAD_MS = 10 * 60_000;
+
+/** Hard backstop on rows scanned per `readInbox` PG-fast-path call, applied
+ *  even with NO `since_ts` (a full-history read) — a LIMIT is the one bound
+ *  that is correct regardless of any ts/id skew question. Generously above
+ *  the live-observed ~12.5k-rows-per-call figure so a normal read is never
+ *  truncated; only a genuinely pathological full-history backlog is capped
+ *  (and logged, never silently). */
+export const INBOX_FAST_PATH_ROW_CAP = 25_000;
+
 /**
  * Read everything addressed to `ownerId` (or to '*') across all outboxes.
  * Sorted by ts ascending; forgiving of malformed/missing files.
@@ -211,21 +234,46 @@ export async function readInbox(
   // output is byte-identical to the full-scan path (it re-applies the recipient
   // check plus since/kinds/excludeOwn/sort). EI-401 precedent (readAckedMsgIds).
   //
+  // WI-3825: that predicate alone was still an UNBOUNDED scan of the whole
+  // `messages` surface (no since/id predicate, no LIMIT) — ~79h of cumulative
+  // DB CPU, saturating the bg-host's PG pool and starving the substrate
+  // outbox-drain. Two independent bounds, both safe:
+  //   (a) when the caller passes `since_ts`, push a SKEW-PADDED `ts >= …`
+  //       lower bound (INBOX_SINCE_TS_SKEW_PAD_MS) — a highly selective range
+  //       the new coord_event_log_messages_ts_idx (migration 545) can seek on;
+  //   (b) always cap rows scanned via LIMIT (INBOX_FAST_PATH_ROW_CAP) — the
+  //       one bound that holds regardless of any ts/id skew question, so even
+  //       a no-`since_ts` full-history read can never trigger an unbounded scan.
+  // Both are PRE-filters only: `filterInbox` below remains the authoritative,
+  // exact filter over the (now bounded) reduced set.
+  //
   // Gated on a true PG backend (coordHasPgFastPath): an in-memory/fs seam (tests)
   // keeps using readLines, since coordSql() would otherwise read getOrgPg() and miss
   // the swapped store. Any query error falls through to the authoritative full read.
   if (coordHasPgFastPath()) {
     try {
       const sql = coordSql();
+      const sinceBound = opts.since_ts
+        ? new Date(new Date(opts.since_ts).getTime() - INBOX_SINCE_TS_SKEW_PAD_MS).toISOString()
+        : null;
       const rows = await sql<{ body: unknown }[]>`
         SELECT body
           FROM harness_shared.coord_event_log
          WHERE workspace_id = ${coordWorkspaceId()}
            AND surface = 'messages'
+           ${sinceBound ? sql`AND ts >= ${sinceBound}` : sql``}
            AND jsonb_typeof(body->'to') = 'array'
            AND (jsonb_exists(body->'to', ${ownerId}) OR jsonb_exists(body->'to', '*'))
          ORDER BY id ASC
+         LIMIT ${INBOX_FAST_PATH_ROW_CAP}
       `;
+      if (rows.length >= INBOX_FAST_PATH_ROW_CAP) {
+        console.warn(
+          `[readInbox] fast-path row cap (${INBOX_FAST_PATH_ROW_CAP}) hit for owner=${ownerId} ` +
+            `since_ts=${opts.since_ts ?? '(none)'} — the oldest matching rows beyond the cap were NOT ` +
+            'returned; a caller doing a genuine full-history backfill should page via since_ts.',
+        );
+      }
       const lines = rows.map((r) => (typeof r.body === 'string' ? JSON.parse(r.body) : r.body) as CoordEnvelope);
       return filterInbox(lines, ownerId, opts);
     } catch {

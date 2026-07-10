@@ -208,6 +208,13 @@ import './memory/list';
 import './facts/assert';
 import './facts/retract';
 import './facts/list';
+// fleet-reliability-verification-2026-07-10 P-010 (WI-3812) — self-verifying
+// federation probes: probe:emit stamps required federation keys + refuses
+// loudly when unfederatable; probe:get reads the derived per-hop verdict;
+// probe:record-hop is the extension seam later pipeline stages stamp through.
+import './probe/emit';
+import './probe/get';
+import './probe/record-hop';
 // learning-packs-2026-06-11 P-009/P-012/P-013 — hive learning-pack management
 // (catalog/install-with-review/uninstall/mute/upgrade/conflict-sweep):
 import './learning_packs/list';
@@ -842,6 +849,10 @@ import './bee/spawn';
 // fleet:assignments — the canonical "who's on what" state query over the
 // fleet_assignment view (state-not-chat-fleet-state-2026-06-05 D-002).
 import './fleet/assignments';
+// fleet:leader-brief — a leader's ONE-call fleet-health brief over ITS OWN
+// fleet (fleet-reliability-verification-2026-07-10 P-007): reuses
+// fleet:assignments' decoration pipeline, filtered + reshaped leader-lean.
+import './fleet/leader-brief';
 // fleet:place_batch — one-wake BATCH placement (queen-autonomous-execution
 // B-07 / P-001+P-002): ranks task↔bee affinity + fans spawn/warm-inject across
 // the fleet in a single call (the Queen's serial placement loop, collapsed).

@@ -11,7 +11,7 @@ import {
 
 type EmitOpts = { key: string; summary?: string; payload?: unknown; to?: string[]; source?: string };
 const typedEmit = () =>
-  vi.fn(async (_opts: EmitOpts) => ({ ok: true as const, key: '', woken: 0, notified: [] as string[], msgId: null }));
+  vi.fn(async (_opts: EmitOpts) => ({ ok: true as const, key: '', woken: 0, notified: [] as string[], msgId: null, waiters: 0 }));
 
 describe('emitSessionCompactedEvent (P-103)', () => {
   it('fires session:compacted:<owner> with the owner in both key and payload', async () => {
@@ -71,7 +71,7 @@ describe('emitSessionCompactedEventAsync (the CLI-awaited core)', () => {
     const emit = vi.fn(async (_opts: EmitOpts) => {
       await new Promise((r) => setTimeout(r, 5));
       settled = true;
-      return { ok: true as const, key: '', woken: 1, notified: [] as string[], msgId: null };
+      return { ok: true as const, key: '', woken: 1, notified: [] as string[], msgId: null, waiters: 1 };
     });
     await emitSessionCompactedEventAsync('su-9', 'focus', { emit });
     expect(settled).toBe(true); // awaited through — not fire-and-forget

@@ -230,11 +230,29 @@ export function checkActiveCheckpointRun(
  *  release-deploy-launch.ts's buildSystemdRunArgv (PATH passthrough so the unit doesn't depend
  *  on the systemd-manager env; PAPERCUSP_INTEGRATION_ROOT explicit like the deploy). Exported
  *  for unit-testing the command construction. */
+/** The stable, well-known path readers poll (`/tmp/<unit>.log`). It is a SYMLINK to the
+ *  newest run's own log — see checkpointRunLogPath. */
+export function checkpointLatestLogPath(unit: string): string {
+  return `/tmp/${unit}.log`;
+}
+
+/** A PER-RUN log path. The gate used to write every run to `/tmp/<unit>.log`, so the
+ *  natural response to a red — re-fire — truncated the very output the red was telling
+ *  you to read (2026-07-10: run #5's failure detail destroyed by the re-fire it
+ *  prompted). Each run now owns a timestamped file; `checkpointLatestLogPath` symlinks
+ *  to it, so every existing reader of the stable path keeps working. */
+export function checkpointRunLogPath(unit: string, now: Date = new Date()): string {
+  const stamp = now.toISOString().replace(/[:.]/g, '-');
+  return `/tmp/${unit}-${stamp}.log`;
+}
+
 export function buildCheckpointSystemdArgv(
   root: string,
   logPath: string,
   pathEnv: string,
   partialGreenGate = false,
+  /** When given, the run writes HERE and `logPath` is repointed at it as a symlink. */
+  runLogPath?: string,
 ): string[] {
   // Mirror the PERIODIC gate: the routine spawns green-checkpoint.ts with { ...process.env } so it
   // inherits PAPERCUSP_PARTIAL_GREEN_GATE (the longest-green-prefix FF). A MANUAL checkpoint runs via
@@ -242,9 +260,15 @@ export function buildCheckpointSystemdArgv(
   // ran whole-batch. Forward the flag into the inner command when the launcher itself has it set, so
   // release:checkpoint-run behaves the same as the scheduled gate.
   const gateEnv = partialGreenGate ? `PAPERCUSP_PARTIAL_GREEN_GATE='1' ` : '';
+  // Write to the per-run file and point the stable path at it (`ln -sfn`, so a symlink
+  // left by a previous run is replaced, not followed into). The redirect binds to the
+  // green-checkpoint command only — the symlink is created first, so a reader polling
+  // the stable path during startup follows it to the file this run is about to fill.
+  const target = runLogPath ?? logPath;
+  const link = runLogPath ? `ln -sfn '${runLogPath}' '${logPath}' && ` : '';
   const inner =
-    `${gateEnv}PAPERCUSP_INTEGRATION_ROOT='${root}' '${tsxBin(root)}' ` +
-    `apps/operator/lib/release/green-checkpoint.ts > ${logPath} 2>&1`;
+    `${link}${gateEnv}PAPERCUSP_INTEGRATION_ROOT='${root}' '${tsxBin(root)}' ` +
+    `apps/operator/lib/release/green-checkpoint.ts > ${target} 2>&1`;
   return [
     '--user',
     '--collect',
@@ -290,7 +314,10 @@ export function launchDetachedCheckpoint(
 ): Promise<LaunchCheckpointResult> {
   const root = opts.root ?? integrationRoot();
   const unit = checkpointUnitForRoot(root);
-  const logPath = `/tmp/${unit}.log`;
+  // `logPath` stays the stable, well-known path (readers + the alreadyRunning probe use
+  // it); the run itself writes to its own timestamped file behind that symlink.
+  const logPath = checkpointLatestLogPath(unit);
+  const runLogPath = checkpointRunLogPath(unit);
 
   if (!opts.force) {
     const active = checkActiveCheckpointRun(root, execFn, readLogHead);
@@ -311,10 +338,13 @@ export function launchDetachedCheckpoint(
     logPath,
     process.env.PATH ?? '',
     process.env.PAPERCUSP_PARTIAL_GREEN_GATE === '1',
+    runLogPath,
   );
 
   return new Promise<LaunchCheckpointResult>((resolve) => {
-    const base: LaunchCheckpointResult = { launched: false, unit, argv, logPath };
+    // Report the RUN's own path: it is the file that survives the next re-fire, and the
+    // one an agent should quote when triaging this verdict.
+    const base: LaunchCheckpointResult = { launched: false, unit, argv, logPath: runLogPath };
     let stderr = '';
     const child = spawnFn('systemd-run', argv);
     child.stderr?.on('data', (d: unknown) => (stderr += String(d)));

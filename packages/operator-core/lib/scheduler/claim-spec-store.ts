@@ -243,9 +243,23 @@ export async function getNextForBee(args: {
   // check the linked plan-item lane; if it's blocked/needs-human, release (never
   // surfaced to the caller — the claim/release round-trip is invisible) and try the
   // next row. Bounded so a pathological run of blocked plan-linked rows can't spin
-  // forever; on exhaustion this degrades to serving the LAST (still-blocked) claim
-  // rather than silently starving the caller — a peer's plan-item lane check
-  // (`plans:items`) remains the authoritative backstop.
+  // forever.
+  //
+  // EI-9108 (2026-07-10 incident: WI-3503/P-401 claimed via scheduler:get_next while
+  // its 7-deep blockedBy chain was still open): on retry-budget exhaustion this used to
+  // FAIL OPEN — serve the last (still-confirmed-blocked) claim rather than starve the
+  // caller. That is exactly the harm WI-3667 exists to prevent: a caller that reaches
+  // exhaustion has, by construction, just proven the row IS plan-lane-blocked (the
+  // `blocked` check right above ran on THIS row), so "serve it anyway" was a guaranteed
+  // hand-out of confirmed-bad work, not a courtesy fallback. Now it releases the last
+  // row too and reports NO claimable item (fail CLOSED) — a caller reading `null` here
+  // retries shortly or helps unblock the backlog (per work_items:claim_next's own
+  // drained-vs-pending contract), which is a far safer outcome than executing a plan
+  // item the plan's own dependency graph says isn't ready. A backlog where 5 CONSECUTIVE
+  // ranked candidates are each individually blocked is the genuinely pathological case
+  // this budget guards against; failing closed there is a temporary under-supply, not a
+  // correctness bug — a peer's plan-item lane check (`plans:items`) remains the
+  // authoritative backstop for surfacing why nothing was eligible.
   const MAX_PLAN_LANE_ATTEMPTS = 5;
   for (let attempt = 0; attempt < MAX_PLAN_LANE_ATTEMPTS; attempt += 1) {
     const result = await getNextWorkItem(record.spec, { assignee: args.cupId, heldPaths: args.heldPaths }, {
@@ -265,11 +279,8 @@ export async function getNextForBee(args: {
     }
     const blocked = await planItemLaneBlockReason(result.workItem);
     if (!blocked) return { ...result, specSource: record.source };
-    if (attempt === MAX_PLAN_LANE_ATTEMPTS - 1) {
-      // Exhausted the retry budget — serve it rather than starve the caller; the
-      // guard is a best-effort courtesy, not a hard floor (fail-open by design).
-      return { ...result, specSource: record.source };
-    }
+    // Confirmed blocked (whether this is attempt 1 or the last) — always release; NEVER
+    // serve a row we just confirmed is plan-lane-blocked (EI-9108).
     await releaseWorkItem(result.workItem.id, { harness: args.harness, expectedAssignee: args.cupId });
   }
   return null;

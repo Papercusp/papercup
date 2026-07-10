@@ -28,11 +28,12 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { resolveAgentIdentity } from '../identity';
+import { resolveAgentIdentity, deriveFleetMembership } from '../identity';
 import { resolveSelfRef } from '../self-marker';
 import { COORD_ROLES } from '../roles';
 import { inProcessCall, type InnerCall } from '../../_compound-dispatch';
 import { hardText, LIMITS } from '../../limits';
+import { withBoundedTimeout } from '../../../bounded-timeout';
 import { shapeOrient } from './orient-shape';
 import { classifyOwnerDriveMode } from '../agent-drive-mode';
 import { withholdQueenLoopControl, QUEEN_LOOP_WITHHELD_REASON } from '../queen-loop-facts';
@@ -71,6 +72,12 @@ const FLEET_CATCHUP_CAP = 25;
 const RECIPES_DEFAULT = 3;
 const RECIPES_CAP = 5;
 const RECIPE_TITLE_CAP = 120;
+/** WI-3818: fleet:assignments (`me`) and coord:glance (`fleetHealth`) fan out to
+ *  presence/assignments/Tier-1 reads with no internal budget — during the
+ *  2026-07-10 host-load storm either could hang orient until the 55s MCP
+ *  client timeout, in BOTH monitor and full mode (`me` runs unconditionally).
+ *  Bound each so a slow leg degrades to an empty/null fallback instead. */
+const ORIENT_FLEET_LEG_TIMEOUT_MS = 8_000;
 
 export interface OrientArgs {
   harness?: string;
@@ -194,6 +201,13 @@ export interface OrientResult {
    *  !== false; null on a failed fold. Folded so agents don't re-call coord:glance
    *  right after orient (compaction-fold-audit-2026-07-06 — 44%+ did). */
   fleetHealth?: { bees?: unknown; wake?: unknown; governor?: unknown } | null;
+  /** A fleet LEADER's per-member health brief (fleet:leader-brief) — folded automatically
+   *  on a MONITOR tick when the caller resolves (via their launch-env fleet membership)
+   *  to a fleet leader: the lever that collapses "monitor orient + a separate
+   *  fleet:assignments scan for the whole fleet" into ONE round-trip
+   *  (fleet-reliability-verification-2026-07-10 P-007). Absent for a non-leader / non-fleet
+   *  caller, or in full mode; null on a failed fold. */
+  leaderBrief?: unknown | null;
   /** Monitor-mode fleet DELTA (fleet-deltas-leader-primitives P-004): what changed
    *  in the fleet since this caller's last monitor orient, diffed server-side
    *  against the (owner, 'fleet:monitor') read cursor — the caller carries nothing.
@@ -254,12 +268,31 @@ export async function composeOrient(
   /** P-005: the (owner,'orient:fleetCatchUp') read-cursor ack for the fleet
    *  catch-up fold — same contract. Undefined ⇒ full delivery every call. */
   fleetCatchUpCursor?: (next: CursorState) => Promise<AckResult>,
+  /** fleet-reliability-verification-2026-07-10 P-007: the caller's launch-env fleet
+   *  membership (fleetSlug/fleetRole) — resolved by the handler via
+   *  deriveFleetMembership() (a sync, IO-free env read local to the CALLING agent's
+   *  own process) and INJECTED so composeOrient stays IO-free + unit-testable.
+   *  Drives the leaderBrief fold below (monitor mode + fleetRole==='leader' only). */
+  fleetMembership?: { fleetSlug: string | null; fleetRole: string | null } | null,
 ): Promise<OrientResult> {
   const monitor = args.mode === 'monitor';
-  let me = await call('fleet:assignments', {
-    ...(ownerId ? { agent: ownerId } : {}),
-    ...(args.harness ? { harness: args.harness } : {}),
-  });
+  // WI-3818: unconditional in BOTH modes (monitor's one fleet-related read) — a
+  // hang here used to block the whole orient call. Degrades to a minimal
+  // empty-roster shape (never throws) so downstream folds — already
+  // try/catch-guarded (fingerprintFleet, slimAssignmentsForDelta) — see an
+  // empty-but-well-shaped roster instead of hanging past the deadline.
+  const meResult = await withBoundedTimeout(
+    call('fleet:assignments', {
+      ...(ownerId ? { agent: ownerId } : {}),
+      ...(args.harness ? { harness: args.harness } : {}),
+    }),
+    {
+      fallback: { ok: false, degraded: true, agents: [] } as unknown,
+      timeoutMs: ORIENT_FLEET_LEG_TIMEOUT_MS,
+      label: 'orient:fleet:assignments',
+    },
+  );
+  let me = meResult.value;
   // ── fleet ROSTER delta (P-004 monitor / P-005 full): diff the roster against
   // the caller's server-side cursor and deliver TRANSITIONS instead of the full
   // roster re-read byte-identically almost every call (D-003 audit — the same
@@ -360,6 +393,23 @@ export async function composeOrient(
     // leg absent; the handler passes null on a read failure).
     ...(ownerPresent !== undefined ? { ownerPresent } : {}),
   };
+
+  // ── leaderBrief fold (fleet-reliability-verification-2026-07-10 P-007): a MONITOR
+  // tick belonging to a resolvable FLEET LEADER also gets the whole fleet's per-member
+  // health brief in this SAME round-trip — the lever that collapses "monitor orient +
+  // a separate fleet:assignments scan" into one call. Gated the OPPOSITE way from the
+  // full-mode fleet legs below (monitor-only); BEST-EFFORT, absent for a non-leader /
+  // non-fleet caller or any failure.
+  if (monitor && fleetMembership?.fleetRole === 'leader' && fleetMembership.fleetSlug) {
+    try {
+      result.leaderBrief = await call('fleet:leader-brief', {
+        fleet: fleetMembership.fleetSlug,
+        ...(args.harness ? { harness: args.harness } : {}),
+      });
+    } catch {
+      result.leaderBrief = null;
+    }
+  }
 
   // ── memory:search recall — only when a query is available (a query-less recall is
   // meaningless). BEST-EFFORT: memory p95 is multi-second and can time out; that must
@@ -518,14 +568,17 @@ export async function composeOrient(
     // governor; audience 'su' + activity_limit:0 skip the human display/tips/activity
     // rows). Kills the post-orient coord:glance re-call for fleet members.
     if (fleetSlug && args.includeFleetHealth !== false) {
-      try {
-        const g = (await call('coord:glance', { audience: 'su', activity_limit: 0 })) as
-          | { bees?: unknown; wake?: unknown; governor?: unknown }
-          | undefined;
-        result.fleetHealth = g ? { bees: g.bees, wake: g.wake, governor: g.governor } : null;
-      } catch {
-        result.fleetHealth = null;
-      }
+      // WI-3818: bounded — a slow coord:glance used to hang orient until the
+      // 55s MCP client timeout; now degrades to null (same as the pre-existing
+      // catch-based failure contract) within ORIENT_FLEET_LEG_TIMEOUT_MS.
+      const glanceResult = await withBoundedTimeout(
+        call('coord:glance', { audience: 'su', activity_limit: 0 }) as Promise<
+          { bees?: unknown; wake?: unknown; governor?: unknown } | undefined
+        >,
+        { fallback: undefined, timeoutMs: ORIENT_FLEET_LEG_TIMEOUT_MS, label: 'orient:coord:glance' },
+      );
+      const g = glanceResult.value;
+      result.fleetHealth = g ? { bees: g.bees, wake: g.wake, governor: g.governor } : null;
     }
   }
 
@@ -614,6 +667,7 @@ export default defineTool({
     'coord:declare-intent',
     'coord:catch-up',
     'coord:glance',
+    'fleet:leader-brief',
   ],
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
@@ -626,7 +680,7 @@ export default defineTool({
       .enum(['full', 'monitor'])
       .optional()
       .describe(
-        "Default 'full'. Pass 'monitor' for a repeating leader/monitor loop tick: skips the claimable backlog, facts fold, plan-events delta, fleet catch-up, recipes search, and memory recall ENTIRELY (no sub-call, not just capped output) — keeps fleet:assignments (the live/parked/stalled/orphaned counts a monitor loop watches), the inbox read, and coord:declare-intent (when `intent` is passed). Sharply cuts per-wake context/token cost for a long-running monitor loop (EI-8300).",
+        "Default 'full'. Pass 'monitor' for a repeating leader/monitor loop tick: skips the claimable backlog, facts fold, plan-events delta, fleet catch-up, recipes search, and memory recall ENTIRELY (no sub-call, not just capped output) — keeps fleet:assignments (the live/parked/stalled/orphaned counts a monitor loop watches), the inbox read, and coord:declare-intent (when `intent` is passed). A resolvable FLEET LEADER also gets `leaderBrief` (fleet:leader-brief) folded in — the whole fleet's per-member sessionState/verdict/claims/unanswered/contextPressure in this same round-trip. Sharply cuts per-wake context/token cost for a long-running monitor loop (EI-8300).",
       ),
     intent: hardText(LIMITS.ANNOTATION)
       .optional()
@@ -731,6 +785,10 @@ export default defineTool({
         };
       }
     }
+    // fleet-reliability-verification-2026-07-10 P-007: a sync, IO-free read of THIS
+    // process's own launch-env fleet membership (mirrors coord:whoami) — drives the
+    // leaderBrief fold (monitor mode + fleetRole==='leader' only).
+    const fleetMembership = deriveFleetMembership();
     const result = await composeOrient(
       args,
       inProcessCall(ctx),
@@ -740,6 +798,7 @@ export default defineTool({
       fleetCursor,
       planEventsCursor,
       fleetCatchUpCursor,
+      fleetMembership,
     );
     // Fold in the caller's own identity so the orientation states YOUR ownerId
     // explicitly (the roster/assignments it composes are about peers; `self` is

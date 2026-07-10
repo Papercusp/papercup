@@ -182,6 +182,23 @@ const ALLOWLIST: Record<string, Classification> = {
     status: 'covered',
     surface: 'held-work-items',
   },
+
+  'predicate_watches.owner_id': {
+    status: 'exempt',
+    reason:
+      'registrant attribution for the poll dispatch principal + display (predicate-watch.ts) — the row\'s ' +
+      'actual liveness is governed entirely by its PAIRED event_awaits row (gcOrphanedPredicateWatches ' +
+      'deactivates on that pairing going inactive, never on owner_id/presence), and event_awaits.subscriber_id ' +
+      'IS re-keyed (the \'awaits\' surface) — so a stale owner_id here means the dead predecessor\'s id lingers ' +
+      'in error/source strings, not a stranded claim or a wrongly-GC\'d watch. Same class as tui_view_state.owner_id.',
+  },
+  'session_archives.owner': {
+    status: 'exempt',
+    reason:
+      "the archived session's OWN post-mortem attribution, stamped by archiveSession() AFTER that session " +
+      'already ended (migration 539) — never read by a reaper keyed on a DIFFERENT session\'s presence, same ' +
+      'class as session_turns.owner.',
+  },
 };
 
 /** Column-name patterns that mean "this stores a CURRENT holder/owner

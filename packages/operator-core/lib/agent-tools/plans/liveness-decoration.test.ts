@@ -13,17 +13,28 @@ const H = vi.hoisted(() => {
   return { state };
 });
 
-vi.mock('@papercusp/db-org', () => ({
-  getOrgPg: () => ({
-    sql: Object.assign(
-      async (..._args: unknown[]) => {
-        if (H.state.sqlError) throw new Error('pg unavailable');
-        return H.state.presenceRows;
-      },
-      { json: (x: unknown) => ({ __json: x }) },
-    ),
-  }),
-}));
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  // EI-9153: the second vi.mock below (presence-wakeability) imports the REAL
+  // module via `orig()`, which transitively pulls in inbox-wake -> events/await
+  // -> wake-executor -> omp-sessions, which destructures BOTH `getOrgPg` AND
+  // `generated` from '@papercusp/db-org'. A mock that returns only `getOrgPg`
+  // makes `generated` undefined, which vitest's strict ESM mock validation now
+  // rejects outright ("No 'generated' export is defined on the mock"). Spread
+  // the real module (schema-only, no I/O) and override just `getOrgPg`.
+  const actual = await importOriginal<typeof import('@papercusp/db-org')>();
+  return {
+    ...actual,
+    getOrgPg: () => ({
+      sql: Object.assign(
+        async (..._args: unknown[]) => {
+          if (H.state.sqlError) throw new Error('pg unavailable');
+          return H.state.presenceRows;
+        },
+        { json: (x: unknown) => ({ __json: x }) },
+      ),
+    }),
+  };
+});
 
 vi.mock('../coordination/presence-wakeability', async (orig) => {
   const actual = await orig<typeof import('../coordination/presence-wakeability')>();

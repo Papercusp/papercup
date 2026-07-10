@@ -24,10 +24,10 @@ registerSystemAction('session-dir-gc', async (ctx: SystemActionCtx) => {
   const retentionDays = Number(cfg.retention_days);
   // No explicit knob → pick by the archive kill-switch (session-db-archive-
   // retire-dirs P-012): archive ON = deletion is lossless (dirs live in
-  // session_archives) so 24h; archive OFF = deletion is lossy again → the
-  // legacy 7d window. NOTE: the daily cadence is now CODE-OWNED in
-  // dbos/periodic-workflows.ts (sessionDirGc, 04:35) — this routine action
-  // remains as a manual/admin lever only.
+  // session_archives) so 2h; archive OFF = deletion is lossy again → the
+  // legacy 7d window. NOTE: the cadence is now CODE-OWNED in
+  // dbos/periodic-workflows.ts (sessionDirGc, hourly @:50) — this routine
+  // action remains as a manual/admin lever only.
   const archiveOn = await getFlag(FLAGS.SESSION_ARCHIVE_AT_END, 'system').catch(() => false);
   const retentionMs =
     Number.isFinite(retentionDays) && retentionDays > 0
@@ -42,6 +42,10 @@ registerSystemAction('session-dir-gc', async (ctx: SystemActionCtx) => {
   // ON; in legacy mode there is no archive to verify against (and retention is
   // the 7d lossy window instead).
   const result = await runSessionDirGc({ retentionMs, dryRun, archiveGuard: archiveOn });
+  if (result.skipped) {
+    console.warn(`[session-dir-gc] sweep skipped (${result.skipped}) — nothing removed`);
+    return;
+  }
   console.log(
     `[session-dir-gc] scanned ${result.scanned} dir(s) → ` +
       `${result.dryRun ? 'WOULD remove' : 'removed'} ${result.removed.length}, ` +

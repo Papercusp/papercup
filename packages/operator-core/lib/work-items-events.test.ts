@@ -63,7 +63,7 @@ describe('emitWorkItemSettledEvents', () => {
   });
 
   it('emits work-item:done to the delegator + parent claimant (deduped, never the item agent itself)', async () => {
-    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null }));
+    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null, waiters: 0 }));
     const parent = wi({ id: 'WI-PARENT', assignee: 'su-grand' });
     await emitWorkItemSettledEvents(wi({ parent: 'WI-PARENT' }), {
       emit: emit as never,
@@ -78,7 +78,7 @@ describe('emitWorkItemSettledEvents', () => {
   });
 
   it('fires work-item:unblocked for a dependent whose LAST blocker settled, targeted at its claimant', async () => {
-    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null }));
+    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null, waiters: 0 }));
     const dependent = wi({ id: 'WI-DEP', state: 'open', assignee: 'su-claimant' });
     const otherBlockerSettled = wi({ id: 'WI-B2', state: 'closed' });
     await emitWorkItemSettledEvents(wi(), {
@@ -98,7 +98,7 @@ describe('emitWorkItemSettledEvents', () => {
   });
 
   it('does NOT fire unblocked while another blocker is still live, nor for an already-settled dependent', async () => {
-    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null }));
+    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null, waiters: 0 }));
     const dependent = wi({ id: 'WI-DEP', state: 'open', assignee: 'su-claimant' });
     const liveBlocker = wi({ id: 'WI-B2', state: 'open' });
     const settledDep = wi({ id: 'WI-DONE-DEP', state: 'resolved' });
@@ -130,7 +130,7 @@ describe('emitWorkItemSettledEvents', () => {
 
 type EmitOpts = import('./events/await/engine').EmitAwaitedEventOpts;
 const typedEmit = () =>
-  vi.fn(async (_opts: EmitOpts) => ({ ok: true as const, key: '', woken: 0, notified: [] as string[], msgId: null }));
+  vi.fn(async (_opts: EmitOpts) => ({ ok: true as const, key: '', woken: 0, notified: [] as string[], msgId: null, waiters: 0 }));
 
 describe('emitWorkItemClaimedEvent', () => {
   it('fires work-item:claimed:<id> with the assignee in payload', async () => {

@@ -35,6 +35,7 @@ import { recordLocalWrite } from './clobber-events';
 import { shouldEncryptOpForRekey } from './hive-epoch-content-ops';
 import { isSessionClosedError } from './own-log-fork-guard';
 import { redactContentOpValueForEgress } from './content-op-egress-guard';
+import { logIfStageStalls, STAGE_STALL_LOG_MS } from './stage-stall-log';
 
 /**
  * The projection tableTag for federated plans (harness-plans.ts:199 — the value
@@ -153,29 +154,14 @@ export class DrainPassTimeoutError extends Error {
  * PASS TIMEOUT watchdog names the PASS but not the STAGE — the journal says
  * "hung await (keychain unwrap / epoch-key resolution / append)" and the
  * operator is left guessing which. Every await inside a pass is wrapped with
- * this one-shot stall logger: if the await is still pending after
- * `STAGE_STALL_LOG_MS`, a loud grep-able line names the exact stage (+ row id
- * + table), so a hung pass is diagnosable from the journal alone — even when
- * the await NEVER settles (a log-after-completion line would never fire).
- * Silent on the healthy path (timer cleared on settle); the pass watchdog
- * still un-wedges the loop.
+ * `logIfStageStalls` (P-012, fleet-reliability-verification-2026-07-10:
+ * generalized out of this module into `./stage-stall-log` so every other
+ * federation hop can adopt the same instrumentation without re-deriving it —
+ * see that module's doc-comment for the current adopter list). Re-exported
+ * here for back-compat with any existing import of `STAGE_STALL_LOG_MS` from
+ * this module.
  */
-export const STAGE_STALL_LOG_MS = 15_000;
-
-async function logIfStageStalls<T>(scope: string, stage: string, p: PromiseLike<T>): Promise<T> {
-  const timer = setTimeout(() => {
-    console.error(
-      `[outbox-drain] STAGE STALL for ${scope}: '${stage}' still pending after ` +
-        `${STAGE_STALL_LOG_MS}ms — this is the hung await (WI-3619 per-stage detector)`,
-    );
-  }, STAGE_STALL_LOG_MS);
-  timer.unref?.();
-  try {
-    return await p;
-  } finally {
-    clearTimeout(timer);
-  }
-}
+export { STAGE_STALL_LOG_MS, logIfStageStalls };
 
 /** The NOTIFY channel the Stage-1 capture trigger fires on. */
 const NOTIFY_CHANNEL = 'substrate_outbox';

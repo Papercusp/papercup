@@ -66,7 +66,7 @@ export interface LeaderBriefMember {
   isSelf?: true;
 }
 
-type DecoratedAgent = AgentAssignment & {
+export type DecoratedAgent = AgentAssignment & {
   sessionState?: SessionState | null;
   verdict?: MemberVerdict;
   wakeMode?: WakeMode;
@@ -76,12 +76,13 @@ type DecoratedAgent = AgentAssignment & {
   unanswered?: UnansweredDirectedSummary;
 };
 
-function projectMember(a: DecoratedAgent, nowMs: number): LeaderBriefMember {
+/** PURE: exported for direct unit-testing (no PG/DI ceremony needed). */
+export function projectMember(a: DecoratedAgent, nowMs: number): LeaderBriefMember {
   const lastMs = a.lastToolCallAt ? Date.parse(a.lastToolCallAt) : NaN;
   return {
     agentId: a.agentId,
     label: a.label,
-    fleetRole: a.fleetRole,
+    fleetRole: a.fleetRole ?? null,
     sessionState: a.sessionState ?? null,
     verdict: a.verdict ?? null,
     wakeMode: a.wakeMode ?? null,

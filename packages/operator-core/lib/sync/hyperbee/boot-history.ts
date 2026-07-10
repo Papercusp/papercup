@@ -8,9 +8,15 @@
  * (which holds the live handle map): this is the *history* of boot
  * events, including ones that fell out of the map.
  *
- * Pure logic — module-level append-only buffer with a configurable
- * cap (default 200 entries). Process-local; clears when the operator
- * restarts. Test seams for time + reset.
+ * Pure logic — TWO module-level append-only rings, each with its own
+ * configurable cap: the default ring (200 entries, env
+ * PAPERCUSP_BOOT_HISTORY_CAP) for every low-frequency lifecycle kind, and a
+ * separate high-frequency ring (40 entries, env
+ * PAPERCUSP_BOOT_HISTORY_EPOCH_CAP) for the per-op epoch-decrypt-gate trace
+ * kinds (WI-3827) — so hot epoch chatter can never evict the sparse
+ * boot/peer/announce/replication forensic evidence `listBootHistory` merges
+ * both rings back into one ts-ordered view. Process-local; clears when the
+ * operator restarts. Test seams for time + reset.
  *
  * Event kinds:
  *   - 'boot_start'        — bootHarnessSubstrate called; corestore opening.
@@ -186,10 +192,47 @@ export interface BootHistoryEntry {
   message?: string;
 }
 
-const DEFAULT_CAP = 200;
+function envCap(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
 
+const DEFAULT_CAP = envCap('PAPERCUSP_BOOT_HISTORY_CAP', 200);
+
+/**
+ * EI-9108's boot-history sibling (WI-3827): `epoch_gate_seen` / `epoch_defer` /
+ * `epoch_decrypt_fail` / `epoch_applied` fire PER-OP from the hot decrypt-gate trace
+ * (buildEpochDecryptGate in hive-epoch-op-gate.ts) — orders of magnitude more frequent
+ * than every other kind here (boot/close/peer/announce/replication events, each of
+ * which fires at most once per lifecycle transition). A single shared ring meant this
+ * high-frequency trace evicted the low-frequency admission/forensic evidence within
+ * minutes (empirically confirmed 2026-07-10: a 200-deep ring held NOTHING but epoch
+ * trace, producing a false "zero announces" signal that cost hours of misdirected
+ * diagnosis). `epoch_gate_built` is excluded — it fires once per gate install, not
+ * per-op, so it belongs with the low-frequency set.
+ *
+ * Fix: route the hot epoch-trace kinds into their OWN ring with their OWN (smaller,
+ * env-configurable) cap, so no volume of epoch chatter can ever evict a
+ * boot/peer/announce/replication entry — structural, not just a bigger shared cap
+ * (which only buys time before the same eviction recurs at higher volume).
+ */
+const HIGH_FREQUENCY_KINDS: ReadonlySet<BootHistoryKind> = new Set([
+  'epoch_gate_seen',
+  'epoch_defer',
+  'epoch_decrypt_fail',
+  'epoch_applied',
+]);
+const DEFAULT_EPOCH_CAP = envCap('PAPERCUSP_BOOT_HISTORY_EPOCH_CAP', 40);
+
+// Two independent append-only rings (each ascending-by-ts, oldest-first): `buffer` for
+// every low-frequency/forensic kind, `epochBuffer` for the HIGH_FREQUENCY_KINDS hot
+// trace. Evicting one never touches the other.
 const buffer: BootHistoryEntry[] = [];
+const epochBuffer: BootHistoryEntry[] = [];
 let cap = DEFAULT_CAP;
+let epochCap = DEFAULT_EPOCH_CAP;
 
 let _nowImpl: () => number = () => Date.now();
 
@@ -197,13 +240,18 @@ export function _setNowForTests(impl: () => number): void {
   _nowImpl = impl;
 }
 
-export function _setCapForTests(n: number): void {
+/** Set the default (low-frequency) ring's cap. Pass `epochN` to also set the
+ *  high-frequency epoch-trace ring's cap (omit to leave it at its current value). */
+export function _setCapForTests(n: number, epochN?: number): void {
   cap = n;
+  if (epochN != null) epochCap = epochN;
 }
 
 export function _resetBootHistoryForTests(): void {
   buffer.length = 0;
+  epochBuffer.length = 0;
   cap = DEFAULT_CAP;
+  epochCap = DEFAULT_EPOCH_CAP;
   _nowImpl = () => Date.now();
 }
 
@@ -213,14 +261,20 @@ export function recordBootEvent(
   kind: BootHistoryKind,
   message?: string,
 ): void {
-  buffer.push({
+  const entry: BootHistoryEntry = {
     ts: _nowImpl(),
     workspaceId,
     harnessSlug,
     kind,
     message,
-  });
-  while (buffer.length > cap) buffer.shift();
+  };
+  if (HIGH_FREQUENCY_KINDS.has(kind)) {
+    epochBuffer.push(entry);
+    while (epochBuffer.length > epochCap) epochBuffer.shift();
+  } else {
+    buffer.push(entry);
+    while (buffer.length > cap) buffer.shift();
+  }
 }
 
 export interface ListBootHistoryOpts {
@@ -234,23 +288,45 @@ export interface ListBootHistoryOpts {
 /**
  * Returns a fresh array each call (sorted newest first), capped at
  * `limit` (default 50).
+ *
+ * Merges the two independent rings (`buffer` + the high-frequency `epochBuffer`) —
+ * each individually ascending-by-ts, oldest-first — by walking both from their tail
+ * (newest) end and always taking whichever is newer next, so the merged output stays
+ * correctly ts-ordered across both rings without concatenating + re-sorting.
  */
 export function listBootHistory(
   opts: ListBootHistoryOpts = {},
 ): BootHistoryEntry[] {
   const limit = opts.limit ?? 50;
   const kinds = opts.kinds ? new Set(opts.kinds) : null;
+  const matches = (entry: BootHistoryEntry): boolean => {
+    if (opts.workspaceId && entry.workspaceId !== opts.workspaceId) return false;
+    if (opts.harnessSlug && entry.harnessSlug !== opts.harnessSlug) return false;
+    if (kinds && !kinds.has(entry.kind)) return false;
+    return true;
+  };
+
   const filtered: BootHistoryEntry[] = [];
-  for (let i = buffer.length - 1; i >= 0 && filtered.length < limit; i -= 1) {
-    const entry = buffer[i]!;
-    if (opts.workspaceId && entry.workspaceId !== opts.workspaceId) continue;
-    if (opts.harnessSlug && entry.harnessSlug !== opts.harnessSlug) continue;
-    if (kinds && !kinds.has(entry.kind)) continue;
-    filtered.push(entry);
+  let i = buffer.length - 1;
+  let j = epochBuffer.length - 1;
+  while (filtered.length < limit && (i >= 0 || j >= 0)) {
+    const a = i >= 0 ? buffer[i] : undefined;
+    const b = j >= 0 ? epochBuffer[j] : undefined;
+    let pick: BootHistoryEntry;
+    // Prefer `a` on a tie (arbitrary but deterministic) — newest-first overall.
+    if (a && (!b || a.ts >= b.ts)) {
+      pick = a;
+      i -= 1;
+    } else {
+      pick = b!;
+      j -= 1;
+    }
+    if (matches(pick)) filtered.push(pick);
   }
   return filtered;
 }
 
+/** Total entries currently held across BOTH rings (default + high-frequency epoch). */
 export function bootHistoryDepth(): number {
-  return buffer.length;
+  return buffer.length + epochBuffer.length;
 }

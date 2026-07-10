@@ -120,4 +120,33 @@ describe('readInbox recipient-pushdown (P-003 / D-005 SQL path)', () => {
   it('returns empty when nothing matches', async () => {
     expect(await readInbox('alice')).toEqual([]);
   });
+
+  // WI-3825: the PG fast path now pushes a skew-padded `ts >= …` bound (the row
+  // `ts` column, set at INSERT time) when `since_ts` is given, as a SQL
+  // pre-filter ahead of `filterInbox`'s authoritative check on `body.ts` (a
+  // DIFFERENT field, client-stamped, which the fixtures above seed with
+  // arbitrary historical dates while the actual DB row is inserted "now").
+  // These pin the two properties that make the pre-filter SAFE: it never
+  // wrongly excludes a row `filterInbox` would keep (near-`now` since_ts —
+  // the realistic production shape), and a `since_ts` that legitimately
+  // excludes everything (in the future relative to every row) still empties
+  // out correctly end-to-end.
+  describe('since_ts SQL pre-filter safety (row ts vs body.ts skew, WI-3825)', () => {
+    it('a near-now since_ts still returns rows just inserted (real production shape)', async () => {
+      const now = new Date().toISOString();
+      await seed({ msg_id: 'recent1', ts: now, from: 'bob', to: ['alice'] });
+      const since = new Date(Date.now() - 1000).toISOString(); // 1s ago
+      const got = await readInbox('alice', { since_ts: since });
+      expect(ids(got)).toEqual(await reference('alice', { since_ts: since }).then(ids));
+      expect(ids(got)).toContain('recent1');
+    });
+
+    it('a since_ts in the future (relative to every seeded row) empties out, matching the reference', async () => {
+      await seedSpread();
+      const future = new Date(Date.now() + 3_600_000).toISOString();
+      const got = await readInbox('alice', { since_ts: future });
+      expect(got).toEqual([]);
+      expect(await reference('alice', { since_ts: future })).toEqual([]);
+    });
+  });
 });

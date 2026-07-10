@@ -12,7 +12,7 @@
  *   - exit text frame on process exit
  *   - replay (P4 screen-state) on second connect
  */
-import { describe, it, expect, afterAll, beforeAll } from 'vitest';
+import { describe, it, expect, afterAll, afterEach, beforeAll } from 'vitest';
 import { WebSocket } from 'ws';
 import { spawnPty, killPty } from './pty-bridge';
 import { startPtyWsServer } from './pty-ws';
@@ -36,7 +36,24 @@ beforeAll(async () => {
 });
 
 const liveIds: string[] = [];
-afterAll(() => { for (const id of liveIds) try { killPty(id); } catch { /* */ } });
+/**
+ * Reap each test's pty as it ends. Reaping only in afterAll kept every spawned pty
+ * alive at once, which trips `pty cap reached` on a small host: the F-E2 backstop
+ * (maxConcurrentPtys) scales to the resource-profile agent budget, so a 4-core box
+ * allows 2 — green on the 128-core dev box, red on a laptop / CI runner / packaged
+ * install. Every test here spawns its own pty; none reads a previous test's.
+ */
+function reap(): void {
+  for (const id of liveIds.splice(0)) {
+    try {
+      killPty(id);
+    } catch {
+      /* already exited */
+    }
+  }
+}
+afterEach(reap);
+afterAll(reap);
 
 function spawnTestPty(args: readonly string[]) {
   const h = spawnPty({

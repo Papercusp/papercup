@@ -10,18 +10,31 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
 import { getFleet } from '../../agent-fleets-store';
 import {
-  listFleetRoster,
+  listFleetRosterDiagnosed,
   splitFleetRosterCounts,
   countRunningFleetBees,
   countRunningWorkspaceBees,
+  type FleetRosterDegradedLeg,
 } from '../../fleet/fleet-roster';
-import { getCompletionIntegrityStats } from '../../work-items';
+import { getCompletionIntegrityStats, type CompletionIntegrityStats } from '../../work-items';
+import { withBoundedTimeout } from '../../bounded-timeout';
 import { json, resolveFleetCaller, ROUTING_LADDER } from './_shared';
+
+/**
+ * WI-3818: bound the two OPTIONAL legs — completionStats (harness-scoped
+ * aggregate, only fetched when `harness` is passed) and the two bee-count
+ * queries — so a slow one degrades to "omitted"/0 instead of hanging the
+ * whole handler until the 55s MCP client timeout. The roster itself carries
+ * the bulk of the fan-out and is bounded internally (fleet-roster.ts); these
+ * are the "drop completionStats/queued detail first" fallback the ticket
+ * asks for — completionStats is the first thing to go missing under load.
+ */
+const FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS = 6_000;
 
 export default defineTool({
   name: 'fleet:status',
   description:
-    'Show one fleet\'s identity (title, description, current leader) plus its live roster — who is in the fleet and what each member is doing right now — with the roster split as `memberCount` VISIBLE desktop su members / `beeCount` background autonomous-loop bees (WI-1764). Also reports `runningBees`: background bees running in the whole workspace — a fleet with 0 members while runningBees>0 means cup:spawn (bees) was used where fleet:launch-on-plan (desktop members) was meant. Optionally include harness-scoped completion integrity stats so progress reads can separate genuine completions from dedup churn. The per-fleet analog of coord:presence.',
+    'Show one fleet\'s identity (title, description, current leader) plus its live roster — who is in the fleet and what each member is doing right now — with the roster split as `memberCount` VISIBLE desktop su members / `beeCount` background autonomous-loop bees (WI-1764). Also reports `runningBees`: background bees running in the whole workspace — a fleet with 0 members while runningBees>0 means cup:spawn (bees) was used where fleet:launch-on-plan (desktop members) was meant. Optionally include harness-scoped completion integrity stats so progress reads can separate genuine completions from dedup churn. Under host load, a slow sub-read (presence/assignments/completion-stats/bee-counts) degrades to a fallback instead of hanging the whole call — a degraded response still returns promptly, with `degraded:true` + `degradedLegs` naming exactly which reads timed out/failed (WI-3818). The per-fleet analog of coord:presence.',
   guidance: {
     when: 'Inspecting a specific fleet — its leader and live members — before joining it or handing it a plan.',
     notWhen: 'For the catalog of ALL fleets with availability, use fleet:list.',
@@ -75,12 +88,45 @@ export default defineTool({
         true,
       );
     }
-    const [roster, completionStats, runningBees, beeCount] = await Promise.all([
-      listFleetRoster({ fleetSlug: args.fleet, workspaceId }),
-      args.harness ? getCompletionIntegrityStats(args.harness) : Promise.resolve(null),
-      countRunningWorkspaceBees(workspaceId),
-      countRunningFleetBees(args.fleet, workspaceId),
+    // WI-3818: each leg is independently bounded so a slow/hanging one degrades
+    // to its fallback instead of hanging the whole handler — completionStats
+    // (an optional harness-scoped aggregate) and the bee counts are the
+    // droppable-first detail; the roster itself reports its OWN per-sub-read
+    // degradation (fleet-roster.ts) rather than degrading as a single unit.
+    const [rosterResult, completionStatsResult, runningBeesResult, beeCountResult] = await Promise.all([
+      listFleetRosterDiagnosed({ fleetSlug: args.fleet, workspaceId }),
+      args.harness
+        ? withBoundedTimeout<CompletionIntegrityStats | null>(getCompletionIntegrityStats(args.harness), {
+            fallback: null,
+            timeoutMs: FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS,
+            label: 'fleet:status:completionStats',
+          })
+        : Promise.resolve({ value: null, degraded: false, elapsedMs: 0 } as const),
+      withBoundedTimeout(countRunningWorkspaceBees(workspaceId), {
+        fallback: 0,
+        timeoutMs: FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS,
+        label: 'fleet:status:runningBees',
+      }),
+      withBoundedTimeout(countRunningFleetBees(args.fleet, workspaceId), {
+        fallback: 0,
+        timeoutMs: FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS,
+        label: 'fleet:status:beeCount',
+      }),
     ]);
+    const roster = rosterResult.entries;
+    const completionStats = completionStatsResult.value;
+    const runningBees = runningBeesResult.value;
+    const beeCount = beeCountResult.value;
+    // Aggregate every degraded leg (roster sub-reads prefixed `roster.<leg>` +
+    // the three top-level optional legs) into one flat, order-stable list —
+    // absent entirely when nothing degraded, so a healthy call's payload is
+    // byte-identical to pre-WI-3818 behavior.
+    const degradedLegs: string[] = [
+      ...rosterResult.degradedLegs.map((leg: FleetRosterDegradedLeg) => `roster.${leg}`),
+      ...(completionStatsResult.degraded ? ['completionStats'] : []),
+      ...(runningBeesResult.degraded ? ['runningBees'] : []),
+      ...(beeCountResult.degraded ? ['beeCount'] : []),
+    ];
     // WI-1764 #4 / WI-1813: `memberCount` = VISIBLE desktop su members from the roster
     // (presence — members-only, was roster.length). `beeCount` = BACKGROUND bees spawned
     // INTO this fleet, from the nursery (countRunningFleetBees — reliable + presence-
@@ -122,6 +168,11 @@ export default defineTool({
         load: m.load,
       })),
       ...(completionStats ? { completionStats } : {}),
+      // WI-3818: present ONLY when something degraded — a healthy call's shape
+      // stays byte-identical to pre-WI-3818 behavior. `degraded:true` means the
+      // roster/counts above may be incomplete (a slow leg fell back rather than
+      // hanging); `degradedLegs` names exactly which ones.
+      ...(degradedLegs.length > 0 ? { degraded: true, degradedLegs } : {}),
     });
   },
 });

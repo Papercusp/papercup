@@ -63,7 +63,7 @@ export interface VintageReport {
   rows: VintageRowReport[];
 }
 
-function noteFor(behind: number | null, ahead: number | null, treeSha: string | null): string {
+export function noteFor(behind: number | null, ahead: number | null, treeSha: string | null): string {
   if (!treeSha) return 'no treeSha reported — cannot resolve a commit position.';
   if (behind === null) return `treeSha ${treeSha.slice(0, 9)} does not resolve in this checkout (unknown commit — likely a packaged bundle built from a different clone).`;
   if (behind === 0 && (ahead ?? 0) === 0) return 'up to date with origin/staging HEAD.';

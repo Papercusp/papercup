@@ -262,9 +262,24 @@ export class PgCoordLog implements CoordEventLog {
     // testcontainer pool (where bare `::jsonb` double-encodes to a jsonb
     // string). One form, correct everywhere. See agent-insight
     // postgres-js-jsonb-binding.
+    //
+    // WI-3826 (fleet-reliability-verification-2026-07-10): `ts` is stamped
+    // EXPLICITLY from `line.ts` (the envelope's own construction-time
+    // timestamp) instead of the column's DEFAULT now(). The row USED to get
+    // its `ts` from whenever this INSERT happened to commit — but callers
+    // (e.g. sendMessage) build the envelope, then `await` audience/hive-scope
+    // resolution BEFORE calling appendLine, so a slow resolve step let the
+    // column drift >1s past body.ts on ~4.3% of live `messages` rows. Any
+    // `WHERE ts >= $since` pushdown compared against body.ts (what
+    // application code, e.g. filterInbox, has always used) would then
+    // silently drop those rows. Stamping from `line.ts` makes column and body
+    // agree BY CONSTRUCTION for every future row. (Existing divergent rows are
+    // one-time-repaired by migration 546; `id` — not `ts` — is the append-order
+    // cursor everywhere in this codebase, e.g. coord-inbox-bus.ts, so this
+    // does not disturb ordering semantics.)
     await sql`
-      INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body, harness_slug)
-      VALUES (${this.resolveWs()}, ${surface}, ${writerKey}, ${line.msg_id}, ${JSON.stringify(line)}::text::jsonb, ${line.harness_slug ?? null})
+      INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body, harness_slug, ts)
+      VALUES (${this.resolveWs()}, ${surface}, ${writerKey}, ${line.msg_id}, ${JSON.stringify(line)}::text::jsonb, ${line.harness_slug ?? null}, ${line.ts}::timestamptz)
     `;
   }
 

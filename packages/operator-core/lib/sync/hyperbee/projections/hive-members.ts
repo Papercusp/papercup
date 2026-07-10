@@ -38,6 +38,7 @@ import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
 import type { DeviceAttestationEntry } from '../../../harness/contributor-row-types';
 import { invalidateHiveMemberDeviceSet } from '../hive-member-identity-set';
+import { recordBootEvent } from '../boot-history';
 import {
   reapplyDrainedMemberContent,
   type PendingMembershipContent,
@@ -205,18 +206,50 @@ async function writeToPg(
   // non-owner box → no-op), flag-gated, idempotent per (epoch, member), C-001-safe (revoked devices
   // excluded). DYNAMIC import avoids the projection ↔ boundary-wiring cycle. Best-effort: a grant
   // failure must NOT abort the member apply (the row is the source of truth; it retries next apply).
+  //
+  // WI-3828: this used to be a bare `catch {}` — a thrown grant failure was completely
+  // invisible (no console, no boot-history), indistinguishable from a healthy no-op self-heal.
+  // Mirrors the established rekey_grant_failed/rekey_grant_skipped convention already used at
+  // the sibling upsertHiveMember grant call-site (hive-membership-store.ts): record a
+  // queryable boot-history event on both the throw path AND a meaningful (non-benign) skip, so
+  // a stuck member missing its epoch key is diagnosable from boot-history instead of silent.
+  // 'no-gap' (this call's own perf-guard steady state — every live device already holds the
+  // current key) and 'no-author' (expected on every non-owner box) are excluded as pure noise —
+  // recording either on EVERY membership apply would drown the 200-entry buffer.
   try {
     const { reconcileEpochKeysForCurrentMembers, isHiveRekeyEnabled } = await import(
       '../hive-epoch-boundary-wiring'
     );
-    await reconcileEpochKeysForCurrentMembers({
+    const result = await reconcileEpochKeysForCurrentMembers({
       workspaceId: opts.workspaceId,
       potHomeSlug: opts.harnessSlug,
       enabled: await isHiveRekeyEnabled(),
       sql: opts.sql,
     });
-  } catch {
-    /* best-effort — never fail the member apply on an epoch-key grant hiccup */
+    if (!result.applied && result.reason && result.reason !== 'no-author' && result.reason !== 'no-gap') {
+      try {
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'rekey_grant_skipped',
+          `reconcileEpochKeysForCurrentMembers on onMemberApplied self-heal skipped: ${result.reason}`,
+        );
+      } catch {
+        /* boot-history unavailable */
+      }
+    }
+  } catch (e) {
+    const detail = e instanceof Error ? (e.stack ?? e.message) : String(e);
+    try {
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'rekey_grant_failed',
+        `reconcileEpochKeysForCurrentMembers on onMemberApplied self-heal failed: ${detail}`,
+      );
+    } catch {
+      /* boot-history unavailable — best-effort, never fail the member apply on this hiccup */
+    }
   }
 }
 

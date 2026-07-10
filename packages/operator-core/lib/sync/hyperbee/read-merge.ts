@@ -27,6 +27,7 @@ import type { OpEnvelope } from './op-envelope-types';
 import type { PeerLogOp } from './peer-log';
 import { applyHyperbeeOpToPg, lwwPick } from './projection';
 import { encodeHlc } from '@papercusp/locks-core';
+import { logIfStageStalls } from './stage-stall-log';
 import {
   isSnapshotOp,
   SNAPSHOT_COMPACT_EVERY_OPS,
@@ -644,16 +645,26 @@ function opIdent(groupKey: string, env: OpEnvelope): string {
  * infinite retry loop. Winner-recording semantics on the no-throw path are
  * UNCHANGED (apply true OR false both record the winner). Returns true iff apply
  * landed the op.
+ *
+ * P-012 (fleet-reliability-verification-2026-07-10, named-hop pipeline
+ * observability): `apply(env)` is an unbounded PG write (the projection
+ * writer) with the SAME hang shape `outbox-drain.ts`'s send-side `append()`
+ * had (a wedged connection/lock never resolves) — the merge pass has no
+ * per-op timeout on it the way `readOpBoundedDetailed` does on the read side.
+ * Wrapped with the shared `logIfStageStalls` (formalized out of WI-3619) so a
+ * hung merge-apply NAMES ITSELF (scope = source log key, stage = table+key)
+ * in the journal instead of the merge pass just going silent.
  */
 async function applyRecordingWinner(
   cursor: MergeCursor,
   groupKey: string,
   env: OpEnvelope,
   apply: (op: OpEnvelope) => Promise<boolean>,
+  scope = 'read-merge',
 ): Promise<boolean> {
   let ok: boolean;
   try {
-    ok = await apply(env);
+    ok = await logIfStageStalls(scope, `merge-apply (${groupKey})`, apply(env));
   } catch (err) {
     const throws = (cursor.applyThrows ??= new Map());
     const ident = opIdent(groupKey, env);
@@ -873,7 +884,7 @@ export async function mergeAdmittedLogsIncremental(
           const groupKey = `${env.table}::${env.hbKey}`;
           const prev = cursor.winners.get(groupKey);
           if (prev && !beatsStored(env, prev)) continue; // stale row, never applied
-          if (await applyRecordingWinner(cursor, groupKey, env, apply)) applied++;
+          if (await applyRecordingWinner(cursor, groupKey, env, apply, log.keyHex)) applied++;
         }
         continue;
       }
@@ -881,7 +892,7 @@ export async function mergeAdmittedLogsIncremental(
       const groupKey = `${env.table}::${env.hbKey}`;
       const prev = cursor.winners.get(groupKey);
       if (prev && !beatsStored(env, prev)) continue; // ts-guard: stale op, never applied
-      if (await applyRecordingWinner(cursor, groupKey, env, apply)) applied++;
+      if (await applyRecordingWinner(cursor, groupKey, env, apply, log.keyHex)) applied++;
     }
     cursor.positions.set(log.keyHex, pos);
     // WI-2105 REV fix: persist this log's advanced cursor (persist-after-apply —

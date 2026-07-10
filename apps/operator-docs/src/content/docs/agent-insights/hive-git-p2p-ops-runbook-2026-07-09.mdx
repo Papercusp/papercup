@@ -283,10 +283,69 @@ bootstrap) meant no single fix showed green — verify each layer independently:
   DHT/bootstrap fix, allow one periodic swarm re-announce cycle (~10–15 min)
   before judging the fix red.
 
+## Named-hop pipeline observability (P-012, fleet-reliability-verification-2026-07-10)
+
+WI-3619's fix (send-side drain, `outbox-drain.ts`) proved a pattern worth
+generalizing: when a pass-level watchdog (like `DRAIN_PASS_TIMEOUT_MS` above)
+can name that a hop HUNG, but not WHICH internal await hung, wrap every await
+inside that hop with a one-shot stall logger. If the await is still pending
+after a threshold, it logs a loud, grep-able line naming the exact stage —
+turning "the pipeline went quiet" into "THIS specific await, on THIS scope,
+has been hung for THIS long", diagnosable from the journal alone even when
+the await never settles.
+
+This is now a **shared primitive**, not a one-off:
+`packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts` exports
+`logIfStageStalls(scope, stage, promise, thresholdMs?)` (default threshold
+`STAGE_STALL_LOG_MS` = 15s). It never times out or rejects the wrapped
+promise — it's purely an observability side-channel; the promise's own
+resolve/reject is untouched.
+
+**Current adopters** (capture → drain → replicate → **merge** → member-guard
+→ project — the federation hop chain this item names):
+
+- **`outbox-drain.ts`** (drain stage, the original WI-3619 site) — every await
+  inside a drain pass (GC delete, the undrained-batch SELECT, epoch-encrypt,
+  the Hypercore `append`, the fan-out, the `mark-drained` UPDATE) is wrapped;
+  scope = `${workspaceId}::${harnessSlug}`.
+- **`read-merge.ts`** (merge stage, P-012) — `applyRecordingWinner`'s
+  `apply(env)` call is an **unbounded PG write** (the projection writer) with
+  the exact same hang shape as the drain's `append()` (a wedged
+  connection/lock never resolves) — unlike `readOpBoundedDetailed`, which
+  already has its own per-op timeout on the read side, nothing bounded the
+  write side before this. Scope = the source peer log's `keyHex`; stage =
+  `merge-apply (${table}::${hbKey})`. Tests:
+  `read-merge-stage-stall.test.ts` (a hung apply logs the named line; a fast
+  apply logs nothing) + `stage-stall-log.test.ts` (the shared primitive
+  itself: silent-on-fast-settle, logs-on-stall, never swallows a reject,
+  respects an explicit threshold override).
+
+**Not yet adopted** (deliberately scoped out of this pass — a candidate list
+for a follow-up, not a silent gap):
+
+- **capture** (Stage 1) — a synchronous PG trigger; no long-lived await to
+  name.
+- **replicate** — Hypercore's own internal replication machinery; not this
+  codebase's await to wrap.
+- **member-guard / project** (`github-ingress-admission.ts`,
+  `contribution-admission.ts`, the per-table projection writers other than
+  the merge-pass caller above) — worth instrumenting once a LIVE wedge is
+  actually observed there, per this pattern's own philosophy: name the
+  failure class you've actually seen, don't pre-emptively wrap every await in
+  the repo speculatively.
+
+**To add it to a new hop:** identify the hop's serialized, single-flight-
+per-tick await loop; pick a `scope` string that identifies the pipeline
+instance (workspace+harness, or a peer/log key); wrap each await with
+`logIfStageStalls(scope, '<stage-name>', theAwaitedPromise)`. The stage name
+should be specific enough to be immediately actionable (include a row/op id
+or key, not just a generic verb).
+
 ## Refs
 
 Plan `p2p-git-live-activation-2026-07-09`; design doc
 `docs/plans/p2p-git-research-2026-07-01.md`; the drill
 `papercusp-desktop/bin/hive-git-drill.sh` (P-301); `hive-git-mode.ts`,
 `integrator.ts`, `integrator-tick.ts`, `sigrefs.ts`, `github-divergence.ts`,
-`git-sync-stall-watchdog.ts`.
+`git-sync-stall-watchdog.ts`; `stage-stall-log.ts` (P-012, named-hop pipeline
+observability), plan `fleet-reliability-verification-2026-07-10`.

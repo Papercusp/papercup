@@ -39,6 +39,7 @@ import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
+  SUBSTRATE_OUTBOX_DDL,
   USER_TRUST_LIST_DDL,
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
@@ -138,7 +139,34 @@ beforeAll(async () => {
   await db.sql.unsafe(USER_TRUST_LIST_DDL); // claim path LEFT-JOINs the trust list (autoPickableWhereSql)
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // the dep table the readiness clause reads
   // The bee_claim_specs store getNextForBee → getClaimSpec reads (absent bee ⇒ DEFAULT_CLAIM_SPEC).
+  // 372 (base table) + 389 (id_only tripwire column) + 438 (harness_slug federation column) —
+  // getClaimSpecRecord / setClaimSpec (claim-spec-store.ts) select/upsert both columns, so 372
+  // alone leaves this test failing with `column "harness_slug" does not exist` whenever
+  // getNextForBee is exercised. Mig 438's CDC triggers call harness_shared.capture_substrate_outbox()
+  // (archive/102) — but archive/102's OWN trigger-attach statements target
+  // harness_features_consolidated, which HARNESS_FEATURES_CONSOLIDATED_DDL (above) makes a compat
+  // VIEW post-P-010-unification, and `CREATE TRIGGER ... ON <view>` fails. So define just the
+  // generic capture_substrate_outbox() function (verbatim from the canonical fixture pattern —
+  // see HARNESS_ISSUES_CONSOLIDATED_FED_DDL in _work-items-schema.ts) + the substrate_outbox
+  // table it writes to, without archive/102's incompatible trigger-attach statements.
+  await db.sql.unsafe(SUBSTRATE_OUTBOX_DDL);
+  await db.sql.unsafe(`
+    CREATE OR REPLACE FUNCTION harness_shared.capture_substrate_outbox() RETURNS trigger
+      LANGUAGE plpgsql AS $cso$
+      DECLARE v_op TEXT; v_rec RECORD; v_origin TEXT; v_key TEXT; v_row JSONB; v_ws TEXT; v_slug TEXT; v_keycol TEXT := TG_ARGV[0];
+      BEGIN
+        IF (TG_OP = 'DELETE') THEN v_op := 'del'; v_rec := OLD; ELSE v_op := 'put'; v_rec := NEW; END IF;
+        v_row := to_jsonb(v_rec); v_origin := v_row ->> 'origin';
+        IF COALESCE(v_origin, 'local') <> 'local' THEN RETURN v_rec; END IF;
+        v_key := v_row ->> v_keycol; v_ws := COALESCE(v_row ->> 'workspace_id', ''); v_slug := v_row ->> 'harness_slug';
+        INSERT INTO harness_shared.substrate_outbox (workspace_id, harness_slug, table_name, op, key, row, ts)
+          VALUES (v_ws, v_slug, TG_TABLE_NAME, v_op, v_key, v_row, (extract(epoch from now()) * 1000)::bigint);
+        PERFORM pg_notify('substrate_outbox', v_ws || '::' || v_slug);
+        RETURN v_rec;
+      END; $cso$;`);
   await db.sql.unsafe(readMigration('372-bee-claim-specs.sql')).simple();
+  await db.sql.unsafe(readMigration('389-bee-claim-spec-id-only.sql')).simple();
+  await db.sql.unsafe(readMigration('438-bee-claim-specs-federation.sql')).simple();
   // Columns get-next / claim-readiness fixtures add on top of the base superset.
   await db.sql.unsafe(`
     ALTER TABLE harness_shared.work_items
