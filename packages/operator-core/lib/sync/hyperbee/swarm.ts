@@ -34,7 +34,7 @@ import { getResourceProfile } from '../../resource-profile';
 import type { SignedAnnounce } from './announce';
 import type { AdmissionResult } from './read-admission';
 import { wireHiveGitServe, type HiveGitServeConfig } from '../hive-git/serve-wiring';
-import { wireHiveGitDial } from '../hive-git/peer-dial-registry';
+import { wireHiveGitDial, resolveVerifiedDevicePubkeyForSocket } from '../hive-git/peer-dial-registry';
 
 /** Protomux protocol id for the signed-announce exchange (Model B Stage 4b).
  *  Exported for the A-002 multi-hive demonstrator test. */
@@ -216,7 +216,15 @@ export interface JoinHarnessSwarmOpts {
    * this). Omitted for a non-hive-git harness, so byte-for-byte unchanged
    * when not set. Independent of `hiveGitServe` — either can be set alone.
    */
-  hiveGitDial?: { selfDevicePubkeyBase64: string };
+  hiveGitDial?: {
+    selfDevicePubkeyBase64: string;
+    /** WI-3641: signs OUR hello frame (Ed25519 over the hello sign-context)
+     *  so the peer's `wireHiveGitServe` can verify it owns `selfDevicePubkeyBase64`
+     *  before binding it to this socket. Required — a dial registration with no
+     *  signer can announce a device_pubkey without proving it, which is exactly
+     *  what the signed-hello handshake exists to prevent. */
+    sign: (bytes: Buffer) => Promise<Buffer> | Buffer;
+  };
 }
 
 /**
@@ -905,13 +913,25 @@ export async function joinHarnessSwarm(
       // P-201: register the hive-git serve plane on the SAME connection/muxer
       // the announce channel just rode — additive, never-throwing, no-op when
       // `hiveGitServe` is omitted (every non-hive-git harness, unchanged).
-      if (opts.hiveGitServe) wireHiveGitServe(socket, opts.topic, opts.hiveGitServe);
+      if (opts.hiveGitServe) {
+        // WI-3641: default the scope-repo authorization resolver to the
+        // signed-hello registry's verified-device lookup unless the caller
+        // already supplied one — every real caller wants this; only a
+        // hermetic test wiring its own resolver would ever override it.
+        wireHiveGitServe(socket, opts.topic, {
+          ...opts.hiveGitServe,
+          resolvePeerDevicePubkey:
+            opts.hiveGitServe.resolvePeerDevicePubkey ?? resolveVerifiedDevicePubkeyForSocket,
+        });
+      }
       // WI-3583: register the dial-hello handshake on the SAME connection so
       // this device's live socket becomes resolvable by device_pubkey for a
       // REAL cross-machine fetch (additive, never-throwing — see
       // peer-dial-registry.ts's header for why this rides its own channel
       // rather than extending wireHiveGitServe's wire format).
-      if (opts.hiveGitDial) wireHiveGitDial(socket, opts.topic, opts.hiveGitDial.selfDevicePubkeyBase64);
+      if (opts.hiveGitDial) {
+        wireHiveGitDial(socket, opts.topic, opts.hiveGitDial.selfDevicePubkeyBase64, opts.hiveGitDial.sign);
+      }
     } catch {
       // Replication failures shouldn't crash the swarm handler; the
       // peer will reconnect if relevant. Diagnostic counters could
