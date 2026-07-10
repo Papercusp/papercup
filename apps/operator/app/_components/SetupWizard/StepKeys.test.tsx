@@ -65,11 +65,13 @@ describe('StepKeys (SetupWizard API-keys step)', () => {
   it('defaults the memory system to EmbeddingGemma and offers BGE/OpenAI/off', async () => {
     installFetch();
     render(<StepKeys />);
-    const gemma = await screen.findByDisplayValue('gemma');
-    expect((gemma as HTMLInputElement).checked).toBe(true);
-    expect(screen.getByDisplayValue('local')).toBeTruthy();
-    expect(screen.getByDisplayValue('openai')).toBeTruthy();
-    expect(screen.getByDisplayValue('disabled')).toBeTruthy();
+    // pc-radio-card buttons (design-primitives lint: no native radio inputs) —
+    // query by role + accessible name; checked-ness lives on aria-checked.
+    const gemma = await screen.findByRole('radio', { name: /EmbeddingGemma-300m/ });
+    expect(gemma.getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByRole('radio', { name: /BGE-small/ })).toBeTruthy();
+    expect(screen.getByRole('radio', { name: /OpenAI text-embedding-3-small/ })).toBeTruthy();
+    expect(screen.getByRole('radio', { name: /No persistent memory/ })).toBeTruthy();
   });
 
   it('shows the "Save" button label and no saved-mask chip when no key is stored', async () => {

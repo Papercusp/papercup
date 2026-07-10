@@ -7281,21 +7281,6 @@ body:has(.h-top-collapse-inline) main {
   line-height: 1.45;
 }
 
-.h-config-plugin-pane .pc-button {
-  min-height: 29px;
-  border-radius: 6px !important;
-  transition:
-    background var(--dur-fast) var(--ease-out),
-    border-color var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out),
-    transform var(--dur-fast) var(--ease-out);
-}
-
-.h-config-plugin-pane .pc-button:hover:not(:disabled) {
-  transform: translateY(-1px);
-  border-color: color-mix(in oklab, var(--border), white 16%) !important;
-}
-
 @media (max-width: 760px) {
   .h-manifest-editor-head {
     align-items: stretch !important;

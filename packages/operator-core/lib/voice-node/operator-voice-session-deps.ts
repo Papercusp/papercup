@@ -47,6 +47,11 @@ import type { OperatorVoiceSessionDeps, ElConnectHandlers, ElSocket, BrainRelayR
 export const EL_RELAY_PERSONA = [
   'You are the Herald — the voice front-end for the Papercusp Sentinel. You are NOT the brain.',
   'For EVERY user message: call the ask_operator tool with the message, then speak the tool result VERBATIM and nothing else.',
+  // P-002 (fullAgentAckVoice 'suppressed'): the host signals "don't ack" by
+  // returning an EMPTY tool result. Pinning the silence rule in the base
+  // persona keeps ONE contract for both modes — in default mode the result is
+  // never empty, so this sentence is inert.
+  'If the tool result is empty, say NOTHING at all — stay completely silent.',
   'Never answer questions yourself. Never invent status. The Sentinel’s full answer is delivered separately on this session — do not wait for it or mention the mechanics.',
   'Keep any speech under 20 words. No preamble, no filler.',
 ].join(' ');
@@ -85,6 +90,9 @@ async function resolveConfig(): ReturnType<OperatorVoiceSessionDeps['resolveConf
         // One shared session across surfaces — the brain is surface-agnostic.
         dynamicVariables: { workspace_id: activeWorkspaceId(), surface: 'desktop' },
         humanFacingRole,
+        // P-002: only the explicit 'suppressed' opt-in silences the provider
+        // ack; anything else (unset, legacy value) keeps today's behavior.
+        fullAgentAckVoice: prefs.fullAgentAckVoice === 'suppressed' ? 'suppressed' : 'provider',
       },
     };
   } catch (err) {

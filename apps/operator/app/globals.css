@@ -655,7 +655,16 @@ button {
   accent-color: var(--accent);
 }
 
-:where(button:not(.pc-button), .pc-btn-primary, .pc-btn-destructive, .pc-btn-ghost) {
+/* ── The one button system (design-simplification P-015) ─────────────────────
+ * Two orthogonal axes, applied by app/harness/Button.tsx:
+ *   size    — sm (this baseline, 26px chrome) | lg (.pc-btn-lg, 40px page CTA)
+ *   variant — neutral (this baseline) | .pc-btn-accent | .pc-btn-primary
+ *             | .pc-btn-destructive | .pc-btn-ghost
+ * `.pc-btn` is on every <Button>, so an `asChild` link gets the same chrome a
+ * bare <button> gets free. Every rule below is specificity-0 `:where()`, so
+ * SOURCE ORDER decides: size + variant rules must stay AFTER this baseline.
+ * (This replaced the parallel `.pc-button` CTA recipe — do not reintroduce it.) */
+:where(button, .pc-btn) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -678,18 +687,18 @@ button {
     opacity var(--dur-fast) var(--ease-out);
 }
 
-:where(button:not(.pc-button), .pc-btn-primary, .pc-btn-destructive, .pc-btn-ghost):hover:not(:disabled) {
+:where(button, .pc-btn):hover:not(:disabled) {
   background: var(--bg-3);
   border-color: var(--accent);
   color: var(--fg);
 }
 
-:where(button:not(.pc-button), .pc-btn-primary, .pc-btn-destructive, .pc-btn-ghost):focus-visible {
+:where(button, .pc-btn):focus-visible {
   outline: 1px solid var(--accent);
   outline-offset: -1px;
 }
 
-:where(button:not(.pc-button), .pc-btn-primary, .pc-btn-destructive, .pc-btn-ghost):disabled {
+:where(button, .pc-btn):disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
@@ -728,6 +737,30 @@ button {
   background: var(--bg-2);
   border-color: var(--border);
   color: var(--fg);
+}
+
+/* Soft accent tint — the everyday page CTA (the old bare `.pc-button`). */
+:where(.pc-btn-accent) {
+  background: rgb(from var(--accent) r g b / 0.09);
+  border-color: rgb(from var(--accent) r g b / 0.20);
+  color: var(--fg);
+}
+
+:where(.pc-btn-accent):hover:not(:disabled) {
+  background: rgb(from var(--accent) r g b / 0.15);
+  border-color: rgb(from var(--accent-strong) r g b / 0.36);
+  color: var(--fg);
+}
+
+/* Size lg — the 40px page-CTA scale. Geometry only: orthogonal to variant, so
+ * it composes with any of the surface variants above. */
+:where(.pc-btn-lg) {
+  gap: 7px;
+  min-height: 40px;
+  padding: 10px 15px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 720;
 }
 
 code, pre, kbd {
@@ -1213,60 +1246,6 @@ p {
 
 .pc-card:hover::before {
   opacity: 1;
-}
-
-.pc-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  min-height: 40px;
-  padding: 10px 15px;
-  border: 1px solid rgb(from var(--accent) r g b / 0.20);
-  border-radius: 12px;
-  background: rgb(from var(--accent) r g b / 0.09);
-  color: var(--fg);
-  font-size: 13px;
-  font-weight: 720;
-  cursor: pointer;
-  box-shadow: none;
-  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
-}
-
-.pc-button:hover {
-  background: rgb(from var(--accent) r g b / 0.15);
-  border-color: rgb(from var(--accent-strong) r g b / 0.36);
-  color: var(--fg);
-  box-shadow: none;
-}
-
-.pc-button.primary {
-  background: var(--accent);
-  border-color: color-mix(in srgb, var(--accent-soft), transparent 45%);
-  color: var(--accent-ink, var(--bg));
-  box-shadow: none;
-}
-
-.pc-button.primary:hover {
-  background: var(--accent-strong);
-  color: var(--accent-ink, var(--bg));
-}
-
-.pc-button.ghost {
-  background: rgba(255,255,255,0.035);
-  border-color: rgba(255,255,255,0.08);
-  color: var(--fg-dim);
-}
-
-.pc-button.ghost:hover {
-  color: var(--fg);
-  border-color: var(--border-strong);
-}
-
-.pc-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  transform: none;
 }
 
 .pc-input {
@@ -1794,11 +1773,6 @@ p {
 .pc-action-card p {
   flex: 1;
   font-size: 14px;
-}
-
-.pc-action-card .pc-button {
-  align-self: flex-start;
-  margin-top: 6px;
 }
 
 .pc-card-icon {
@@ -2608,17 +2582,6 @@ p {
   margin-top: auto;
 }
 
-.pc-button.danger {
-  background: rgb(from var(--rose-400) r g b / 0.07);
-  border-color: rgb(from var(--rose-400) r g b / 0.22);
-  color: #fecdd3;
-}
-
-.pc-button.danger:hover {
-  background: rgb(from var(--rose-400) r g b / 0.12);
-  border-color: rgb(from var(--rose-400) r g b / 0.34);
-}
-
 .pc-marketplace-empty {
   grid-column: 1 / -1;
   display: flex;
@@ -2970,10 +2933,6 @@ p {
     font-size: 17px;
   }
 
-  .pc-hero-actions .pc-button {
-    width: 100%;
-  }
-
   .pc-home-proof,
   .pc-home-role-grid,
   .pc-stat-grid {
@@ -3075,10 +3034,6 @@ p {
   .pc-marketplace-hero h1,
   .pc-marketplace-pagehead h1 {
     font-size: 40px;
-  }
-
-  .pc-marketplace-actions .pc-button {
-    width: 100%;
   }
 
   .pc-marketplace-stat-row,
@@ -8028,7 +7983,7 @@ body.h-harness-top-collapsed .pc-header {
 .pc-marketplace-card,
 .pc-marketplace-dialog,
 .pc-marketplace-harness-list label,
-.pc-marketplace-card-actions .pc-button {
+.pc-marketplace-card-actions .pc-btn {
   transition:
     transform var(--dur-fast) var(--ease-out),
     border-color var(--dur-fast) var(--ease-out),
@@ -8059,7 +8014,7 @@ body.h-harness-top-collapsed .pc-header {
   transform: translateY(-1px);
 }
 
-.pc-support-actions .pc-button,
+.pc-support-actions .pc-btn,
 .pc-support-resources,
 .pc-support-faq {
   transition:
@@ -8069,7 +8024,7 @@ body.h-harness-top-collapsed .pc-header {
     box-shadow var(--dur-fast) var(--ease-out),
     color var(--dur-fast) var(--ease-out);
 }
-.pc-support-actions .pc-button:hover,
+.pc-support-actions .pc-btn:hover,
 .pc-support-resources:hover,
 .pc-support-faq:hover {
   transform: translateY(-1px);
@@ -8120,8 +8075,8 @@ body.h-harness-top-collapsed .pc-header {
   .pc-marketplace-card,
   .pc-marketplace-dialog,
   .pc-marketplace-harness-list label,
-  .pc-marketplace-card-actions .pc-button,
-  .pc-support-actions .pc-button,
+  .pc-marketplace-card-actions .pc-btn,
+  .pc-support-actions .pc-btn,
   .pc-support-resources,
   .pc-support-faq,
   .pc-support-faq-chevron {
@@ -10750,10 +10705,6 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
 .pc-marketplace-list--maximal-hud .pc-marketplace-meta span {
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 0 14px rgb(from var(--accent) r g b / 0.06);
 }
-.pc-marketplace-list--maximal-hud .pc-marketplace-dialog-actions .pc-button {
-  position: relative;
-  overflow: hidden;
-}
 
 .pc-support-shell {
   position: relative;
@@ -10790,13 +10741,13 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   position: relative;
   z-index: 1;
 }
-.pc-support-shell .pc-support-actions .pc-button,
+.pc-support-shell .pc-support-actions .pc-btn,
 .pc-support-shell .pc-support-resources,
 .pc-support-shell .pc-support-faq {
   border-radius: 0 !important;
   clip-path: polygon(12px 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 0 100%, 0 12px);
 }
-.pc-support-shell .pc-support-actions .pc-button,
+.pc-support-shell .pc-support-actions .pc-btn,
 .pc-support-shell .pc-support-resources {
   box-shadow: 0 16px 34px rgba(0,0,0,0.16);
 }
@@ -13944,31 +13895,12 @@ div[class*="grid-area:toc"]::before {
     0 0 22px rgb(from var(--accent) r g b / 0.06);
 }
 
-.pc-login-shell .pc-button {
-  position: relative;
-  overflow: hidden;
-  box-shadow: 0 0 24px rgb(from var(--accent) r g b / 0.12);
-}
-
-.pc-login-shell .pc-button::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(100deg, transparent 0 36%, rgba(255,255,255,0.22) 48%, transparent 60% 100%);
-  transform: translateX(-118%);
-  animation: pcDetailCommandSweep 3.8s cubic-bezier(0.65, 0, 0.35, 1) infinite;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .pc-marketplace-detail::before,
   .pc-marketplace-detail-head .pc-marketplace-card-icon::before,
   .pc-marketplace-detail-head .pc-marketplace-card-icon::after,
   .pc-marketplace-detail .pc-card::after,
-  .pc-marketplace-detail-cmd::after,
-  .pc-login-shell::before,
-  .pc-login-shell .pc-card::after,
-  .pc-login-shell .pc-button::after {
+  .pc-marketplace-detail-cmd::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
   }
@@ -15903,17 +15835,11 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
     color-mix(in srgb, var(--bg), transparent 22%) !important;
 }
 
-.pc-marketplace-card-actions .pc-button,
-.pc-marketplace-hero-search-v2 .pc-button.primary {
+.pc-marketplace-card-actions .pc-btn {
   box-shadow: 0 18px 34px color-mix(in srgb, var(--bg-raised-high), transparent 82%);
 }
 
-.pc-marketplace-card-actions .pc-button.ghost {
-  background: linear-gradient(0deg, rgba(255,255,255,0.05), rgba(255,255,255,0.05));
-  border-color: rgba(148, 196, 228, 0.20);
-}
-
-.pc-marketplace-card-actions .pc-button.danger {
+.pc-marketplace-card-actions .pc-btn-destructive {
   background: linear-gradient(0deg, rgb(from var(--rose-400) r g b / 0.14), rgb(from var(--rose-400) r g b / 0.14));
   border-color: rgb(from var(--rose-400) r g b / 0.28);
   box-shadow: 0 18px 34px rgba(94, 24, 37, 0.16);
@@ -16360,27 +16286,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
     color-mix(in srgb, var(--bg-deep), transparent 14%);
 }
 
-.pc-marketplace-hero-search-v2 .pc-button.primary,
-.pc-marketplace-card-actions .pc-button.primary {
-  min-height: 34px;
-  padding: 7px 14px;
-  border-radius: 12px;
-  border-color: rgb(from var(--accent-strong) r g b / 0.34) !important;
-  color: #e8fbff !important;
-  background: radial-gradient(circle at 24% 12%, rgba(255,255,255,0.18), transparent 34%),
-    linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.22), rgb(from var(--accent-strong) r g b / 0.22)) !important;
-  box-shadow: 0 12px 28px rgba(8, 145, 178, 0.16) !important;
-  text-shadow: 0 0 10px rgb(from var(--accent-strong) r g b / 0.20);
-}
-
-.pc-marketplace-hero-search-v2 .pc-button.primary:hover,
-.pc-marketplace-card-actions .pc-button.primary:hover {
-  background: radial-gradient(circle at 24% 12%, rgba(255,255,255,0.22), transparent 34%),
-    linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.30), rgb(from var(--accent-strong) r g b / 0.30)) !important;
-}
-
-.pc-marketplace-card-actions .pc-button,
-.pc-marketplace-dialog-actions .pc-button {
+.pc-marketplace-card-actions .pc-btn {
   min-height: 34px;
   padding: 7px 12px;
   border-radius: 12px;
@@ -16388,8 +16294,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
     color-mix(in srgb, var(--bg-deep), transparent 18%);
 }
 
-.pc-marketplace-card-actions .pc-button:hover,
-.pc-marketplace-dialog-actions .pc-button:hover {
+.pc-marketplace-card-actions .pc-btn:hover {
   border-color: rgb(from var(--accent-strong) r g b / 0.30);
   background: linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.10), rgb(from var(--accent-strong) r g b / 0.10)),
     color-mix(in srgb, var(--bg), transparent 10%);
@@ -16906,11 +16811,6 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   font-weight: 660;
 }
 
-.pc-marketplace-hero-search-v2 .pc-button.primary {
-  min-width: 92px;
-  font-weight: 860;
-}
-
 .pc-marketplace-category-card {
   cursor: pointer;
   box-shadow:
@@ -16926,8 +16826,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
 
 .pc-marketplace-category-card:focus-visible,
 .pc-marketplace-tabs .pc-tab:focus-visible,
-.pc-marketplace-card-actions .pc-button:focus-visible,
-.pc-marketplace-hero-search-v2 .pc-button:focus-visible {
+.pc-marketplace-card-actions .pc-btn:focus-visible {
   outline: 2px solid rgb(from var(--accent-strong) r g b / 0.62);
   outline-offset: 3px;
 }
@@ -16966,7 +16865,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   background: linear-gradient(180deg, rgb(from var(--accent-strong) r g b / 0.025), transparent 60%);
 }
 
-.pc-marketplace-card-actions .pc-button {
+.pc-marketplace-card-actions .pc-btn {
   font-weight: 820;
 }
 
@@ -17359,7 +17258,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
     color-mix(in srgb, var(--bg-deep), transparent 10%) !important;
 }
 
-.pc-marketplace-card-actions .pc-button:not(.ghost):not(.danger) {
+.pc-marketplace-card-actions .pc-btn-accent {
   margin-right: auto;
   min-width: 112px;
   border-color: rgb(from var(--accent-strong) r g b / 0.36) !important;
@@ -17368,17 +17267,12 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   box-shadow: 0 12px 26px rgba(8, 145, 178, 0.14) !important;
 }
 
-.pc-marketplace-card-actions .pc-button:not(.ghost):not(.danger):hover {
+.pc-marketplace-card-actions .pc-btn-accent:hover {
   border-color: rgb(from var(--accent-strong) r g b / 0.52) !important;
   background: linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.28), rgb(from var(--accent-strong) r g b / 0.28)) !important;
 }
 
-.pc-marketplace-card-actions .pc-button.ghost {
-  color: color-mix(in oklab, var(--fg-dim), white 10%);
-  border-color: rgba(148, 196, 228, 0.18);
-}
-
-.pc-marketplace-card-actions .pc-button.danger {
+.pc-marketplace-card-actions .pc-btn-destructive {
   border-color: rgb(from var(--rose-400) r g b / 0.34);
   color: #ffd5db;
 }
@@ -17420,10 +17314,6 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
 }
 
 /* Marketplace clarity pass v2.1: separate primary install from secondary attach. */
-.pc-marketplace-card-actions > div:has(.pc-button.primary) {
-  width: 100%;
-  justify-content: space-between !important;
-}
 
 /* Operator clarity refinement: make passive status words read like live system
    state, not incidental small text. */
@@ -17546,21 +17436,9 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
     inset 0 0 0 1px rgba(148, 196, 228, 0.075);
 }
 
-.pc-marketplace-card-actions:has(.pc-button.primary) {
-  background: linear-gradient(90deg, rgb(from var(--accent-strong) r g b / 0.075), transparent 46%);
-  box-shadow: inset 0 0 0 1px rgb(from var(--accent-strong) r g b / 0.12);
-}
-
-.pc-marketplace-card-actions:has(.pc-button.danger):not(:has(.pc-button.primary)) {
+.pc-marketplace-card-actions:has(.pc-btn-destructive) {
   background: linear-gradient(90deg, rgb(from var(--rose-400) r g b / 0.035), transparent 48%);
   box-shadow: inset 0 0 0 1px rgb(from var(--rose-400) r g b / 0.080);
-}
-
-.pc-marketplace-card-actions .pc-button.ghost:hover {
-  color: #f3fbff;
-  border-color: rgba(148, 196, 228, 0.30);
-  background: linear-gradient(0deg, rgba(148, 196, 228, 0.09), rgba(148, 196, 228, 0.09)),
-    color-mix(in srgb, var(--bg), transparent 12%);
 }
 
 .pc-marketplace-meta span {

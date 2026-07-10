@@ -335,11 +335,22 @@ export async function setAdvSessionOmpThreadId(id: number, ompThreadId: string):
 export async function markAdvSessionEnded(id: number, exitCode: number | null): Promise<void> {
   try {
     const { sql } = getOrgPg();
-    await sql`
+    const r = await sql`
       UPDATE harness_shared.adv_sessions
          SET ended_at = now(), exit_code = ${exitCode}
        WHERE id = ${id} AND ended_at IS NULL
+       RETURNING id
     `;
+    if (r.length) {
+      // End-of-session fast path (session-db-archive-retire-dirs-2026-07-10
+      // P-004): archive-then-delete the session's files after a settle delay.
+      // Dynamic import: no module cycle, and this hot end path stays free of
+      // FS/zstd imports. Fire-and-forget — ending never blocks on archival;
+      // a missed schedule is caught by the P-006 reconciler.
+      void import('./session-archive-hook')
+        .then((m) => m.scheduleArchiveForAdvSession(id))
+        .catch((e) => console.warn(`[adv-sessions] archive hook unavailable: ${(e as Error)?.message ?? e}`));
+    }
   } catch (e) {
     warnUnlessMissingTable(e, 'markAdvSessionEnded');
   }

@@ -202,6 +202,11 @@ export function parseCodexLine(line: string): ParsedTurn | null {
 interface RootSpec {
   root: string;
   dirDepth: number;
+  /** Optional per-level descend filter (1-based dir level under root). Lets a
+   *  FAT root walk only its known layout — su-codex-homes holds ~20 subdirs
+   *  per home but only <home>/sessions/YYYY/MM/DD carries transcripts;
+   *  enumerating everything is the 2026-07-05 sweep-hang class. */
+  descend?: (dirName: string, level: number) => boolean;
 }
 
 interface FileAdapter {
@@ -246,7 +251,19 @@ export const FILE_ADAPTERS: FileAdapter[] = [
   {
     sourceKind: 'codex',
     // ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl
-    roots: () => [{ root: join(HOME, '.codex', 'sessions'), dirDepth: 3 }],
+    roots: () => [
+      { root: join(HOME, '.codex', 'sessions'), dirDepth: 3 },
+      // Per-session CODEX_HOMEs: <home>/sessions/YYYY/MM/DD/rollout-*.jsonl.
+      // session-db-archive-retire-dirs-2026-07-10 P-005: fleet codex sessions
+      // previously had ZERO session_turns rows — only the shared ~/.codex was
+      // walked. descend pins level 2 to 'sessions' so the walk never
+      // enumerates the ~20 unrelated subdirs of every home.
+      {
+        root: join(HOME, '.papercusp', 'su-codex-homes'),
+        dirDepth: 5,
+        descend: (name, level) => (level === 2 ? name === 'sessions' : true),
+      },
+    ],
     parseLine: parseCodexLine,
     meta: (filePath) => {
       // rollout-<ts>-<uuid>.jsonl → uuid tail is the session id.
@@ -258,15 +275,22 @@ export const FILE_ADAPTERS: FileAdapter[] = [
 ];
 
 /** Collect *.jsonl exactly `dirDepth` directory levels under `root` (BFS,
- * never descending past the known layout — see RootSpec). */
-async function jsonlAtDepth(root: string, dirDepth: number): Promise<string[]> {
+ * never descending past the known layout — see RootSpec). Exported for the
+ * walker's own tests (P-005 descend-filter contract). */
+export async function jsonlAtDepth(
+  root: string,
+  dirDepth: number,
+  descend?: (dirName: string, level: number) => boolean,
+): Promise<string[]> {
   let dirs = [root];
   for (let d = 0; d < dirDepth; d += 1) {
     const next: string[] = [];
     for (const dir of dirs) {
       try {
         for (const e of await readdir(dir, { withFileTypes: true })) {
-          if (e.isDirectory()) next.push(join(dir, e.name));
+          if (!e.isDirectory()) continue;
+          if (descend && !descend(e.name, d + 1)) continue;
+          next.push(join(dir, e.name));
         }
       } catch { /* absent / raced — skip */ }
     }
@@ -308,7 +332,7 @@ async function listCandidateFiles(
 ): Promise<Array<{ path: string; size: number; mtimeMs: number }>> {
   const out: Array<{ path: string; size: number; mtimeMs: number }> = [];
   for (const spec of adapter.roots()) {
-    const paths = await jsonlAtDepth(spec.root, spec.dirDepth);
+    const paths = await jsonlAtDepth(spec.root, spec.dirDepth, spec.descend);
     for (const p of paths) {
       try {
         const s = await stat(p);

@@ -242,6 +242,18 @@ export const FLAGS = {
   // a terminated wake-armed session is safe because the wake-executor --resumes
   // it. OFF ⇒ a pure no-op (the kill-switch if this ever misfires).
   IDLE_SESSION_REAPER_TERMINATE: "papercusp-idle-session-reaper-terminate",
+  // session-db-archive-retire-dirs-2026-07-10 P-004: the end-of-session
+  // archive-then-delete fast path. When ON, markAdvSessionEnded schedules
+  // archiveAndDeleteSession for the ended session: its irreplaceable files
+  // (claude/omp transcripts; codex rollout + memories/goals sqlite +
+  // config.toml) are zstd'd into harness_shared.session_archive_files with a
+  // sha256-verified manifest stamp (migration 539), and ONLY then deleted
+  // from disk — a post-archive write refuses deletion. Resume rematerializes
+  // from PG on disk-miss (wake-executor P-008). DEFAULT ON (not in
+  // DARK_FLAGS); OFF ⇒ pure no-op kill-switch — session dirs simply
+  // accumulate as in the old world (session-dir-gc live-protection is
+  // unaffected, and the P-006 reconciler is separately gated by this flag).
+  SESSION_ARCHIVE_AT_END: "papercusp-session-archive-at-end",
   // agent-managed-compaction-2026-07-01 P-012 (L2 mechanical backstop): the
   // compaction-compliance watchdog's FORCE-COMPACT rung. When ON, a limit-carrying
   // session that ran PAST its soft compaction limit WITHOUT self-compacting gets

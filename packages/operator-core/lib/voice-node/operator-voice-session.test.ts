@@ -58,7 +58,12 @@ interface Harness {
 }
 
 function makeHarness(
-  opts: { leaseGranted?: boolean; configError?: string; humanFacingRole?: 'operator' | 'papercup' } = {},
+  opts: {
+    leaseGranted?: boolean;
+    configError?: string;
+    humanFacingRole?: 'operator' | 'papercup';
+    fullAgentAckVoice?: 'provider' | 'suppressed';
+  } = {},
 ): Harness {
   const out: OpVoiceMessage[] = [];
   let el: FakeEl | null = null;
@@ -77,6 +82,7 @@ function makeHarness(
             overrides: { agent: { language: 'en' } },
             dynamicVariables: { workspace_id: 'w', surface: 'tui' },
             ...(opts.humanFacingRole ? { humanFacingRole: opts.humanFacingRole } : {}),
+            ...(opts.fullAgentAckVoice ? { fullAgentAckVoice: opts.fullAgentAckVoice } : {}),
           },
         }),
   );
@@ -314,6 +320,57 @@ describe('OperatorVoiceSession — EL fan-out (P-003)', () => {
     expect(h.deps.relayToBrain).not.toHaveBeenCalled();
     const result = h.getEl().sent.slice(before).map((s) => JSON.parse(s)).find((m) => m.type === 'client_tool_result');
     expect(result).toMatchObject({ tool_call_id: 'tc_x', is_error: true });
+  });
+});
+
+// voice-convergence-additive-wins-2026-07-10 P-002 — the "two voices" wrinkle.
+// 'suppressed' silences the provider ack (empty tool result; the relay persona
+// pins "empty → say nothing"), so the only voice heard is the pane's real
+// answer. Failure lines bypass suppression: the user must HEAR a miss.
+describe('OperatorVoiceSession — fullAgentAckVoice (P-002)', () => {
+  it("'suppressed' returns an EMPTY tool result on a successful relay (agent stays silent)", async () => {
+    const h = makeHarness({ fullAgentAckVoice: 'suppressed' });
+    await startSession(h);
+    const before = h.getEl().sent.length;
+    h.getEl().push({
+      type: 'client_tool_call',
+      client_tool_call: { tool_name: 'ask_operator', tool_call_id: 'tc_q', parameters: { question: 'status?' } },
+    });
+    await flush();
+    expect(h.deps.relayToBrain).toHaveBeenCalledWith('status?');
+    const result = h.getEl().sent.slice(before).map((s) => JSON.parse(s)).find((m) => m.type === 'client_tool_result');
+    expect(result).toMatchObject({ tool_call_id: 'tc_q', is_error: false, result: '' });
+  });
+
+  it("'suppressed' still SPEAKS the failure line when the relay missed (never a silent miss)", async () => {
+    const h = makeHarness({ fullAgentAckVoice: 'suppressed' });
+    h.deps.relayToBrain.mockResolvedValue({ ok: false, reason: 'no-dock', error: 'no live pui-dock session' });
+    await startSession(h);
+    const before = h.getEl().sent.length;
+    h.getEl().push({
+      type: 'client_tool_call',
+      client_tool_call: { tool_name: 'ask_operator', tool_call_id: 'tc_fq', parameters: { question: 'status?' } },
+    });
+    await flush();
+    const result = h.getEl().sent.slice(before).map((s) => JSON.parse(s)).find((m) => m.type === 'client_tool_result');
+    expect(result).toMatchObject({
+      tool_call_id: 'tc_fq',
+      is_error: false,
+      result: relayFailureLine({ ok: false, reason: 'no-dock', error: 'x' }),
+    });
+  });
+
+  it("an unset pref keeps the spoken provider ack (default-preserving; 'provider' explicit too)", async () => {
+    const h = makeHarness({ fullAgentAckVoice: 'provider' });
+    await startSession(h);
+    const before = h.getEl().sent.length;
+    h.getEl().push({
+      type: 'client_tool_call',
+      client_tool_call: { tool_name: 'ask_operator', tool_call_id: 'tc_p', parameters: { question: 'hello' } },
+    });
+    await flush();
+    const result = h.getEl().sent.slice(before).map((s) => JSON.parse(s)).find((m) => m.type === 'client_tool_result');
+    expect(result).toMatchObject({ tool_call_id: 'tc_p', is_error: false, result: VOICE_RELAY_ACK });
   });
 });
 

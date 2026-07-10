@@ -15,6 +15,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import {
   mkdtempSync,
   mkdirSync,
+  readFileSync,
   rmSync,
   writeFileSync,
   statSync,
@@ -199,7 +200,7 @@ describe('buildIdentityMismatch (EI-9002)', () => {
 
 describe('terminateForeignOperator (EI-9002)', () => {
   it('is a no-op (never throws) for an already-dead pid', async () => {
-    await expect(serve.terminateForeignOperator(2 ** 30, { graceMs: 100 })).resolves.toBeUndefined();
+    await expect(serve.terminateForeignOperator(2 ** 30, { graceMs: 100 })).resolves.toBe(true);
   });
 
   it('SIGTERMs a live process and returns once it exits', async () => {
@@ -210,7 +211,25 @@ describe('terminateForeignOperator (EI-9002)', () => {
     });
     await new Promise((r) => setTimeout(r, 100)); // let it actually start
     expect(serve.pidAlive(child.pid!)).toBe(true);
-    await serve.terminateForeignOperator(child.pid!, { graceMs: 2000 });
+    await expect(serve.terminateForeignOperator(child.pid!, { graceMs: 2000 })).resolves.toBe(true);
+    expect(serve.pidAlive(child.pid!)).toBe(false);
+  });
+
+  // The SIGKILL fallback used to fire-and-forget: it returned while the doomed
+  // process was still alive, still holding its listening socket. The caller
+  // then probed that port, found it taken, and moved the operator elsewhere.
+  it('waits for the pid to be GONE after the SIGKILL fallback, not merely signalled', async () => {
+    const { spawn } = await import('node:child_process');
+    const child = spawn(
+      process.execPath,
+      ['-e', "process.on('SIGTERM', () => {}); setTimeout(() => {}, 30000)"],
+      { stdio: 'ignore' },
+    );
+    await new Promise((r) => setTimeout(r, 200)); // let the SIGTERM handler install
+    expect(serve.pidAlive(child.pid!)).toBe(true);
+    await expect(
+      serve.terminateForeignOperator(child.pid!, { graceMs: 300, killWaitMs: 3000 }),
+    ).resolves.toBe(true);
     expect(serve.pidAlive(child.pid!)).toBe(false);
   });
 });
@@ -463,6 +482,112 @@ describe('sticky operator port (stale-port-pin class fix, 2026-07-07)', () => {
 
   it('resolveStickyPort with no memory returns the hint (first desktop boot seeds it later)', async () => {
     expect(await serve.resolveStickyPort(19999, '127.0.0.1', { PAPERCUSP_DESKTOP: '1' })).toBe(19999);
+  });
+});
+
+// The `--ensure` reconciliation and the sticky-port resolution are ORDERED in
+// main(): resolving the port first (as it once did) probed a port the
+// build-mismatched operator was still holding, so every update restart fell
+// back to the launcher's random hint and moved the operator to a new address —
+// defeating the sticky port in the one case pinned client URLs most need it.
+describe('--ensure reconciliation frees the sticky port before it is resolved (EI-9002 follow-up)', () => {
+  const portMemory = () => join(pcDir(), 'operator-port.json');
+
+  /** A live stand-in operator: answers any HTTP probe, reports its port. */
+  async function spawnFakeOperator(): Promise<{ pid: number; port: number; kill: () => void }> {
+    const { spawn } = await import('node:child_process');
+    const child = spawn(
+      process.execPath,
+      [
+        '-e',
+        "const s = require('http').createServer((_q, r) => r.end('ok'));" +
+          "s.listen(0, '127.0.0.1', () => console.log(s.address().port));",
+      ],
+      { stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    const port = await new Promise<number>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('fake operator never reported a port')), 5000);
+      child.stdout!.once('data', (b: Buffer) => {
+        clearTimeout(t);
+        resolve(Number(b.toString().trim()));
+      });
+    });
+    return {
+      pid: child.pid!,
+      port,
+      kill: () => {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          /* already gone */
+        }
+      },
+    };
+  }
+
+  const writeDiscovery = (pid: number, port: number, build: { version: string; sha: string }) => {
+    mkdirSync(pcDir(), { recursive: true });
+    writeFileSync(
+      operatorJson(),
+      JSON.stringify({
+        httpUrl: `http://127.0.0.1:${port}`,
+        port,
+        token: null,
+        pid,
+        startedAt: Date.now(),
+        ...build,
+      }),
+    );
+  };
+
+  afterEach(() => {
+    rmSync(portMemory(), { force: true });
+    rmSync(operatorJson(), { force: true });
+  });
+
+  it('adopts a same-build operator — never kills it', async () => {
+    const op = await spawnFakeOperator();
+    try {
+      writeDiscovery(op.pid, op.port, { version: '0.0.6', sha: 'same-sha' });
+      const reuse = await serve.reconcileEnsure({ sha: 'same-sha', version: '0.0.6' });
+      expect(reuse?.pid).toBe(op.pid);
+      expect(serve.pidAlive(op.pid)).toBe(true);
+    } finally {
+      op.kill();
+    }
+  });
+
+  it('refuses a build-mismatched operator and leaves its sticky port re-bindable — an update must not MOVE the operator', async () => {
+    const op = await spawnFakeOperator();
+    try {
+      writeDiscovery(op.pid, op.port, { version: '0.0.5', sha: 'old-sha' });
+      writeFileSync(portMemory(), JSON.stringify({ port: op.port }));
+
+      expect(await serve.reconcileEnsure({ sha: 'new-sha', version: '0.0.6' })).toBeNull();
+      expect(serve.pidAlive(op.pid)).toBe(false);
+
+      // main() resolves its bind port at exactly this point. The port the
+      // refused operator just released must win over the launcher's hint.
+      const hint = op.port === 19999 ? 19998 : 19999;
+      expect(await serve.resolveStickyPort(hint, '127.0.0.1', { PAPERCUSP_DESKTOP: '1' })).toBe(
+        op.port,
+      );
+    } finally {
+      op.kill();
+    }
+  });
+
+  // The test above proves the MECHANISM (a refused operator's port is free the
+  // moment reconcileEnsure resolves) but it calls the two steps in the right
+  // order itself. The regression lived in main()'s ordering, which no behavior
+  // test reaches without booting a server — so assert it on the source.
+  it('main() resolves the bind port AFTER reconcileEnsure, never before', () => {
+    const src = readFileSync(new URL('./serve.ts', import.meta.url), 'utf8');
+    const reconciledAt = src.indexOf('await reconcileEnsure()');
+    const portResolvedAt = src.indexOf('await resolveStickyPort(honoPortHint, hostname)');
+    expect(reconciledAt, 'reconcileEnsure() call went missing from main()').toBeGreaterThan(-1);
+    expect(portResolvedAt, 'resolveStickyPort() call went missing from main()').toBeGreaterThan(-1);
+    expect(portResolvedAt).toBeGreaterThan(reconciledAt);
   });
 });
 

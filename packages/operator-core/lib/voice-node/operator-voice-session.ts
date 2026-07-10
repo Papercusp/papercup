@@ -55,6 +55,19 @@ export interface ElSessionConfig {
    * Optional + defaults to 'operator' so the existing live path is unchanged.
    */
   humanFacingRole?: 'operator' | 'papercup';
+  /**
+   * The "two voices" wrinkle (voice-convergence-additive-wins-2026-07-10
+   * P-002): in full-agent mode the EL agent speaks the instant ack ("On it…")
+   * in its premium provider voice, then the pane's real answer arrives in the
+   * shared synthesize voice — two voices for one exchange, and the provider
+   * ack costs TTS characters to say nothing. 'suppressed' returns an EMPTY
+   * tool result on a successful relay so the agent stays silent (the persona
+   * pins "empty result → say nothing"); relay FAILURE lines are always spoken
+   * regardless — the user must hear a miss. Resolved from the
+   * `fullAgentAckVoice` voice pref; optional + defaults to 'provider' so the
+   * existing live path is byte-for-byte unchanged.
+   */
+  fullAgentAckVoice?: 'provider' | 'suppressed';
 }
 
 export interface ElSocket {
@@ -141,6 +154,10 @@ export class OperatorVoiceSession {
   // resolved ElSessionConfig at start (P-011); defaults to 'operator' so the
   // existing live voice path is byte-for-byte unchanged when the pref is unset.
   private brainRole = 'operator';
+  // P-002: whether the EL agent speaks the instant ack ('provider', default)
+  // or stays silent on a successful relay ('suppressed'). Failure lines are
+  // spoken either way. Set from the resolved ElSessionConfig at start.
+  private ackVoice: 'provider' | 'suppressed' = 'provider';
   private audioFormat: 'pcm_s16le' | 'encoded' = 'pcm_s16le';
   private sampleRate = 16000;
   private socket: ElSocket | null = null;
@@ -320,6 +337,9 @@ export class OperatorVoiceSession {
       // Repoint the live brain to the configured persona (P-011). Default
       // 'operator' keeps the existing voice path byte-for-byte unchanged.
       this.brainRole = resolved.config.humanFacingRole === 'papercup' ? 'papercup' : 'operator';
+      // P-002: ack-voice policy for this session. Anything but the explicit
+      // 'suppressed' opt-in keeps the spoken ack (default-preserving).
+      this.ackVoice = resolved.config.fullAgentAckVoice === 'suppressed' ? 'suppressed' : 'provider';
       const socket = await this.deps.connect(resolved.config.signedUrl, {
         onText: (t) => this.onElText(t),
         onClose: (reason) => void this.teardown(reason),
@@ -461,7 +481,17 @@ export class OperatorVoiceSession {
       // wait it out — ack optimistically past the cap and trust the write.
       result = await Promise.race([inFlight, new Promise<null>((r) => setTimeout(() => r(null), RELAY_ACK_WAIT_MS))]);
     }
-    const speak = result && !result.ok ? relayFailureLine(result) : VOICE_RELAY_ACK;
+    // P-002 (fullAgentAckVoice): failures are ALWAYS spoken — the user must
+    // hear a miss. On success, 'suppressed' returns an EMPTY result: the relay
+    // persona pins "empty tool result → say nothing at all", so the agent
+    // neither speaks nor spends provider-TTS characters on the ack; the pane's
+    // real answer still arrives via the sentinel-says pump as usual.
+    const speak =
+      result && !result.ok
+        ? relayFailureLine(result)
+        : this.ackVoice === 'suppressed'
+          ? ''
+          : VOICE_RELAY_ACK;
     this.socket?.send(elClientToolResultMessage(toolCallId, speak, false));
   }
 

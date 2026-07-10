@@ -103,24 +103,23 @@ export function StepKeys() {
           How your agents embed and recall memories. <strong>EmbeddingGemma-300m is the default</strong> — leave it
           as-is and memory just works, no key required.
         </p>
-        <div role="radiogroup" aria-label="Memory system" style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>
+        <div className="pc-radio-grid" role="radiogroup" aria-label="Memory system" style={{ marginTop: 4 }}>
           {MEMORY_OPTIONS.map((o) => (
-            <label key={o.value} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', cursor: !loaded || memSaving ? 'wait' : 'pointer' }}>
-              <input
-                type="radio"
-                name="memory-system"
-                value={o.value}
-                checked={memMode === o.value}
-                disabled={!loaded || memSaving}
-                onChange={() => void saveMemMode(o.value)}
-                style={{ marginTop: 3 }}
-              />
-              <span>
-                <strong style={{ fontSize: 13 }}>{o.label}</strong>
-                <br />
-                <span style={{ fontSize: 12, color: 'var(--fg-mute, #888)' }}>{o.tradeoff}</span>
-              </span>
-            </label>
+            <button
+              key={o.value}
+              type="button"
+              role="radio"
+              aria-checked={memMode === o.value}
+              className="pc-radio-card"
+              data-active={memMode === o.value ? 'true' : undefined}
+              disabled={!loaded || memSaving}
+              onClick={() => void saveMemMode(o.value)}
+            >
+              <div>
+                <div className="pc-radio-card__title">{o.label}</div>
+                <div className="pc-radio-card__sub">{o.tradeoff}</div>
+              </div>
+            </button>
           ))}
         </div>
         <p style={{ margin: '10px 0 0', fontSize: 11, color: 'var(--fg-mute, #888)' }}>

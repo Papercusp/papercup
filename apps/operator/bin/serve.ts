@@ -225,33 +225,76 @@ export function buildIdentityMismatch(
   return existing.version !== mine.version;
 }
 
+/** Poll until `pid` is gone, or `ms` elapses. True when it exited. */
+async function waitForExit(pid: number, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (pidAlive(pid)) {
+    if (Date.now() >= deadline) return false;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return true;
+}
+
 /**
  * (EI-9002) Gracefully terminate a FOREIGN running operator (SIGTERM, wait up
  * to `graceMs` for it to exit, SIGKILL fallback) so `--ensure` can cold-start
  * a fresh one instead of silently adopting a stale build. Never throws — a
  * process that's already gone (ESRCH on the initial kill) is a no-op success.
+ *
+ * Resolves ONLY once the pid is actually gone (`true`) — including after the
+ * SIGKILL fallback, which used to return while the doomed process still held
+ * its listening socket and PG data dir. The caller depends on that: the port
+ * the stale operator occupies is released at its exit, and `resolveStickyPort`
+ * probes for it immediately afterwards (see the ordering note in main). A
+ * `false` return means it outlived even SIGKILL (uninterruptible sleep); the
+ * boot continues and the port probe falls back to the launcher hint.
  */
 export async function terminateForeignOperator(
   pid: number,
-  opts: { graceMs?: number } = {},
-): Promise<void> {
-  const graceMs = opts.graceMs ?? 5000;
+  opts: { graceMs?: number; killWaitMs?: number } = {},
+): Promise<boolean> {
   try {
     process.kill(pid, 'SIGTERM');
   } catch {
-    return; // already gone
+    return true; // already gone
   }
-  const deadline = Date.now() + graceMs;
-  while (Date.now() < deadline && pidAlive(pid)) {
-    await new Promise((r) => setTimeout(r, 200));
+  if (await waitForExit(pid, opts.graceMs ?? 5000)) return true;
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch {
+    return true; // raced to death
   }
-  if (pidAlive(pid)) {
-    try {
-      process.kill(pid, 'SIGKILL');
-    } catch {
-      /* raced to death */
-    }
+  return waitForExit(pid, opts.killWaitMs ?? 2000);
+}
+
+/**
+ * (EI-9002) The `--ensure` reconciliation: adopt the operator that is already
+ * running, or refuse it and terminate it. Returns the discovery record to
+ * reuse, or null when the caller must cold-start.
+ *
+ * Extracted from main so the ordering invariant it establishes — a refused
+ * operator is DEAD, and its port free, by the time this resolves — has a unit
+ * recurrence guard.
+ */
+export async function reconcileEnsure(
+  mine: { sha: string | null; version: string } = { sha: BUILD_SHA, version: VERSION },
+): Promise<OperatorDiscovery | null> {
+  const existing = readOperatorDiscovery();
+  if (!existing || !pidAlive(existing.pid) || !(await httpAlive(existing.httpUrl))) return null;
+  if (!buildIdentityMismatch(existing, mine)) {
+    log(`already running (pid ${existing.pid}) at ${existing.httpUrl} — reusing`);
+    return existing;
   }
+  log(
+    `refusing to adopt pid ${existing.pid} at ${existing.httpUrl}: build mismatch ` +
+      `(running sha=${existing.sha ?? 'unknown'} version=${existing.version}, ` +
+      `mine sha=${mine.sha ?? 'unknown'} version=${mine.version}) — this is the silent ` +
+      `no-op-update bug (EI-9002); terminating the stale operator and cold-starting fresh`,
+  );
+  if (!(await terminateForeignOperator(existing.pid))) {
+    log(`stale operator pid ${existing.pid} outlived SIGKILL — it still holds port ${existing.port}`);
+  }
+  return null;
 }
 
 /** Read the superuser bearer token if present. */
@@ -763,13 +806,6 @@ async function main(): Promise<void> {
   const hostname =
     process.env.PAPERCUSP_BIND_HOST ?? process.env.HOSTNAME ?? '127.0.0.1';
   const honoPortHint = Number(process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT ?? 3070);
-  // WI-3287: an env-sidecar sibling has a FIXED, well-known port per the
-  // env-switcher contract (env-operator-launcher.ts's PROVISIONABLE_ENV_OPERATORS)
-  // — it must never wander onto the PRIMARY's remembered sticky port (which
-  // operator-port.json records for the primary alone; siblings must not read
-  // OR write it — see the OPERATOR_JSON/OPERATOR_PORT_MEMORY guard below).
-  const port = ENV_OPERATOR_ID ? honoPortHint : await resolveStickyPort(honoPortHint, hostname);
-  const httpUrl = `http://${hostname}:${port}`;
 
   // --ensure: reuse a healthy running operator and exit 0 — UNLESS it's a
   // DIFFERENT build (EI-9002). Before this check, an install-then-relaunch
@@ -780,22 +816,29 @@ async function main(): Promise<void> {
   // gracefully kills the foreign operator and falls through to a fresh
   // cold-start below instead of returning early.
   if (ensure) {
-    const existing = readOperatorDiscovery();
-    if (existing && pidAlive(existing.pid) && (await httpAlive(existing.httpUrl))) {
-      if (!buildIdentityMismatch(existing, { sha: BUILD_SHA, version: VERSION })) {
-        log(`already running (pid ${existing.pid}) at ${existing.httpUrl} — reusing`);
-        process.stdout.write(JSON.stringify(existing) + '\n');
-        return;
-      }
-      log(
-        `refusing to adopt pid ${existing.pid} at ${existing.httpUrl}: build mismatch ` +
-          `(running sha=${existing.sha ?? 'unknown'} version=${existing.version}, ` +
-          `mine sha=${BUILD_SHA ?? 'unknown'} version=${VERSION}) — this is the silent ` +
-          `no-op-update bug (EI-9002); terminating the stale operator and cold-starting fresh`,
-      );
-      await terminateForeignOperator(existing.pid);
+    const reuse = await reconcileEnsure();
+    if (reuse) {
+      process.stdout.write(JSON.stringify(reuse) + '\n');
+      return;
     }
   }
+
+  // ⚠ ORDER IS LOAD-BEARING: resolve the port only AFTER the ensure block has
+  // terminated a build-mismatched operator. That operator holds the remembered
+  // sticky port, so resolving first made portAvailable() report it taken —
+  // every update restart fell back to the launcher's fresh random hint and
+  // MOVED the operator (observed live on the Windows VM: 17043 → 18384), then
+  // persisted the new port as the memory. An update is exactly when pinned
+  // client URLs (spawned members' MCP configs, --operator-url consumers) must
+  // survive, so the sticky-port fix was defeated in its most important case.
+  //
+  // WI-3287: an env-sidecar sibling has a FIXED, well-known port per the
+  // env-switcher contract (env-operator-launcher.ts's PROVISIONABLE_ENV_OPERATORS)
+  // — it must never wander onto the PRIMARY's remembered sticky port (which
+  // operator-port.json records for the primary alone; siblings must not read
+  // OR write it — see the OPERATOR_JSON/OPERATOR_PORT_MEMORY guard below).
+  const port = ENV_OPERATOR_ID ? honoPortHint : await resolveStickyPort(honoPortHint, hostname);
+  const httpUrl = `http://${hostname}:${port}`;
 
   // Cold-start race guard.
   if (!acquireColdStartLock()) {

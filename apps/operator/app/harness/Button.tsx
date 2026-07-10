@@ -1,48 +1,81 @@
 'use client';
 
+import { Slot } from '@radix-ui/react-slot';
 import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
 
 /**
- * Button — canonical button wrapper with variant support.
+ * Button — the operator's one button primitive.
  *
- * The default look matches the native <button> baseline in globals.css
- * (var(--bg-2) bg, var(--border) border, font-size 12, 4px 10px padding).
+ * Two ORTHOGONAL axes (design-simplification P-015 folded the old parallel
+ * `.pc-button` CTA recipe into these):
  *
- * Variants layer on:
- *   - primary     — filled accent, for the page's primary CTA
- *   - destructive — red tint, for destructive confirmations / "Delete"
- *   - ghost       — transparent until hovered, for low-emphasis actions
+ *   size    — 'sm' (default) the 26px chrome/toolbar scale
+ *             'lg'           the 40px page-CTA scale
+ *   variant — 'neutral' (default) the plain surface
+ *             'accent'           soft accent tint — the usual page CTA
+ *             'primary'          filled accent — the one true CTA on a page
+ *             'destructive'      red tint — "Delete", destructive confirmations
+ *             'ghost'            transparent until hovered — low emphasis
  *
- * Use `<Button variant="primary">Save</Button>` for emphasis-needing
- * buttons. For neutral inline actions, a bare `<button>` is enough —
- * the global baseline already handles styling.
+ * Every Button emits the `.pc-btn` base class, so a Button rendered `asChild`
+ * onto a link picks up the same chrome a bare `<button>` gets for free from the
+ * globals.css baseline.
  *
- * See /docs/design for the form-control decision matrix.
+ * `asChild` renders the single child element instead of a `<button>` (Radix
+ * Slot: classes/handlers/ref merge onto the child). Use it for link-buttons so
+ * they share this component's vocabulary rather than hand-written classes:
+ *
+ *   <Button asChild variant="primary" size="lg">
+ *     <RouteLink href="/cupboard">Browse</RouteLink>
+ *   </Button>
+ *
+ * A bare `<button>` is still fine for a neutral inline action — the global
+ * baseline already styles it. See /docs/design for the form-control matrix.
  */
-export type ButtonVariant = 'primary' | 'destructive' | 'ghost';
+export type ButtonVariant = 'neutral' | 'accent' | 'primary' | 'destructive' | 'ghost';
+export type ButtonSize = 'sm' | 'lg';
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
+  size?: ButtonSize;
+  /** Render the child element instead of a `<button>`, merging props onto it. */
+  asChild?: boolean;
   children: ReactNode;
 }
 
-const VARIANT_CLASS: Record<ButtonVariant, string> = {
+/** `neutral` / `sm` are the base look — they add no class of their own. */
+const VARIANT_CLASS: Record<ButtonVariant, string | null> = {
+  neutral: null,
+  accent: 'pc-btn-accent',
   primary: 'pc-btn-primary',
   destructive: 'pc-btn-destructive',
   ghost: 'pc-btn-ghost',
 };
 
+const SIZE_CLASS: Record<ButtonSize, string | null> = {
+  sm: null,
+  lg: 'pc-btn-lg',
+};
+
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
-  { variant, className, type = 'button', children, ...rest },
+  { variant = 'neutral', size = 'sm', asChild = false, className, type, children, ...rest },
   ref,
 ) {
-  const cls = variant
-    ? className
-      ? `${VARIANT_CLASS[variant]} ${className}`
-      : VARIANT_CLASS[variant]
-    : className;
+  const cls = ['pc-btn', SIZE_CLASS[size], VARIANT_CLASS[variant], className]
+    .filter(Boolean)
+    .join(' ');
+
+  if (asChild) {
+    // `type` is a button-only attribute — never stamp it onto an <a>.
+    return (
+      <Slot ref={ref} className={cls} {...rest}>
+        {children}
+      </Slot>
+    );
+  }
+
   return (
-    <button ref={ref} type={type} className={cls} {...rest}>
+    <button ref={ref} type={type ?? 'button'} className={cls} {...rest}>
       {children}
     </button>
   );
