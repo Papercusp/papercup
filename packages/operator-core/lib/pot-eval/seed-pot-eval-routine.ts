@@ -30,7 +30,7 @@ const SLUG =
 // a battery is a long-running in-host job a deploy-restart at a shared boundary would kill.
 // Fires the `hive-eval` PROGRAM blueprint via `system:blueprint-run` (deterministic-blueprints
 // pattern) — the budget lives under payload_template.payload.budgetUsd.
-const ROUTINE = { name: 'hive-eval-battery', target: 'system:blueprint-run', cron: '0 50 6 1 * *' };
+const ROUTINE = { name: 'pot-eval-battery', target: 'system:blueprint-run', cron: '0 50 6 1 * *' };
 
 async function main(): Promise<void> {
   const active = process.argv.includes('--active');

@@ -340,8 +340,10 @@ describe('coord:send federation scope (cross-machine-coord-parity P-001)', () =>
 
   it('un-scoped sender + no shared Hive → stays local; result federated:false (never mistaken for delivery)', async () => {
     const b = await body({ to: ['bee-1'], summary: 'hi' });
-    const opts = sendM.mock.calls[0][1] as { harnessSlug?: string };
-    expect(opts.harnessSlug).toBeUndefined();
+    // WI-3653: a resolved "stay local" decision passes null THROUGH (not undefined) —
+    // undefined would re-trigger sendMessage's own AUTO-stamp default and defeat scope:'local'.
+    const opts = sendM.mock.calls[0][1] as { harnessSlug?: string | null };
+    expect(opts.harnessSlug).toBeNull();
     expect(b.results[0]).toMatchObject({ ok: true, federated: false });
     expect(b.results[0].federationScope).toBeUndefined();
   });
@@ -356,8 +358,9 @@ describe('coord:send federation scope (cross-machine-coord-parity P-001)', () =>
 
   it("scope:'local' keeps even a harness-scoped sender machine-local", async () => {
     const b = await bodyWithCtx({ to: ['bee-1'], summary: 'hi', scope: 'local' }, { harnessSlug: 'h1' });
-    const opts = sendM.mock.calls[0][1] as { harnessSlug?: string };
-    expect(opts.harnessSlug).toBeUndefined();
+    // WI-3653: explicit local scope passes null THROUGH, not undefined (see above).
+    const opts = sendM.mock.calls[0][1] as { harnessSlug?: string | null };
+    expect(opts.harnessSlug).toBeNull();
     expect(b.results[0]).toMatchObject({ federated: false });
   });
 

@@ -88,20 +88,20 @@ export async function runHiveEvalCadenceTick(
     const reason =
       'REFUSING unattended Hive-eval generation: no owner-set budgetUsd in the routine payload_template ' +
       '(a whole-Hive run is real LLM spend — P-051). Set it via the seeder (--budget) or the routines admin.';
-    deps.log(`[hive-eval-battery] ${reason}`);
+    deps.log(`[pot-eval-battery] ${reason}`);
     return { action: 'refused', reason };
   }
 
   const codeSha = deps.currentCodeSha();
   if (!codeSha || codeSha === 'unknown') {
     const reason = 'REFUSING: code SHA unknowable (no git?) — a generation needs an identity to trend/dedupe.';
-    deps.log(`[hive-eval-battery] ${reason}`);
+    deps.log(`[pot-eval-battery] ${reason}`);
     return { action: 'refused', reason };
   }
 
   if (await deps.generationExists(codeSha)) {
     const reason = `generation at ${codeSha} already measured — unchanged code (or a replayed tick); nothing new to benchmark`;
-    deps.log(`[hive-eval-battery] skip — ${reason}`);
+    deps.log(`[pot-eval-battery] skip — ${reason}`);
     return { action: 'skipped', codeSha, reason };
   }
 
@@ -114,18 +114,18 @@ export async function runHiveEvalCadenceTick(
     dryRun: input.payload?.dryRun === true,
   };
   deps.log(
-    `[hive-eval-battery] running generation ${codeSha} — harness=${req.harness} cap=$${req.capUsd} ` +
+    `[pot-eval-battery] running generation ${codeSha} — harness=${req.harness} cap=$${req.capUsd} ` +
       `repeats=${req.repeats} beeCap=${req.beeCap}${req.scenarioIds ? ` scenarios=${req.scenarioIds.join(',')}` : ' (full corpus)'}` +
       `${req.dryRun ? ' DRY-RUN' : ''}`,
   );
   try {
     await deps.runBattery(req);
-    deps.log(`[hive-eval-battery] generation ${codeSha} complete (cap $${req.capUsd})`);
+    deps.log(`[pot-eval-battery] generation ${codeSha} complete (cap $${req.capUsd})`);
     return { action: 'ran', codeSha, capUsd: req.capUsd };
   } catch (err) {
     // Logged, NOT thrown — a thrown durable step replays the handler (= double spend).
     const error = err instanceof Error ? err.message : String(err);
-    deps.log(`[hive-eval-battery] generation ${codeSha} FAILED: ${error}`);
+    deps.log(`[pot-eval-battery] generation ${codeSha} FAILED: ${error}`);
     return { action: 'failed', codeSha, error };
   }
 }

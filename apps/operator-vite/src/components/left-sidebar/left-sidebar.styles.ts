@@ -865,12 +865,18 @@ body.has-left-sidebar .pc-header {
 .pc-queen__reset:hover:not(:disabled) { color: var(--fg, #e7f7ff); border-color: color-mix(in srgb, var(--queen-accent), transparent 52%); }
 .pc-queen__reset:disabled { opacity: 0.5; cursor: default; }
 .pc-queen__reset:focus-visible, .pc-queen__btn:focus-visible, .pc-queen__chip:focus-visible, .pc-queen__check:focus-visible { outline: 1px solid var(--queen-accent); outline-offset: 1px; }
-.pc-queen__summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
-.pc-queen__summary-item { min-width: 0; display: flex; align-items: baseline; gap: 6px; padding: 5px 8px; border-radius: 7px; border: 1px solid var(--border, rgba(125, 211, 252, 0.16)); background: var(--bg-2, rgba(255, 255, 255, 0.04)); }
-.pc-queen__summary-item--good { border-color: color-mix(in srgb, var(--good, #34d399), transparent 62%); background: color-mix(in srgb, var(--good, #34d399), transparent 91%); }
-.pc-queen__summary-item--warn { border-color: color-mix(in srgb, var(--queen-accent), transparent 58%); background: color-mix(in srgb, var(--queen-accent), transparent 90%); }
-.pc-queen__summary-label { flex: 0 0 auto; font-size: 9.5px; font-weight: 720; letter-spacing: 0; color: var(--fg-mute, #7f9bb4); }
-.pc-queen__summary-value { flex: 1; min-width: 0; text-align: right; font-size: 11px; font-weight: 680; color: var(--fg, #e7f7ff); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pc-queen__lanes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+.pc-queen__lane { min-width: 0; min-height: 46px; display: flex; align-items: center; gap: 8px; padding: 7px 8px; text-align: left; cursor: pointer; color: var(--fg-dim, #b9d4e8); background: var(--bg-2, rgba(255, 255, 255, 0.04)); border: 1px solid var(--border, rgba(125, 211, 252, 0.16)); border-radius: 8px; }
+.pc-queen__lane:hover { color: var(--fg, #e7f7ff); border-color: color-mix(in srgb, var(--queen-accent), transparent 64%); background: color-mix(in srgb, var(--queen-accent), transparent 94%); }
+.pc-queen__lane[aria-selected='true'] { color: var(--fg, #e7f7ff); border-color: color-mix(in srgb, var(--queen-accent), transparent 42%); background: color-mix(in srgb, var(--queen-accent), transparent 88%); }
+.pc-queen__lane:focus-visible { outline: 1px solid var(--queen-accent); outline-offset: 1px; }
+.pc-queen__lane-icon { width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; border-radius: 7px; color: var(--fg-mute, #7f9bb4); background: var(--bg-3, rgba(255, 255, 255, 0.05)); border: 1px solid var(--border, rgba(125, 211, 252, 0.16)); }
+.pc-queen__lane[aria-selected='true'] .pc-queen__lane-icon { color: var(--accent-ink); background: var(--queen-accent); border-color: var(--queen-accent); }
+.pc-queen__lane-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.pc-queen__lane-label { font-size: 11px; font-weight: 760; line-height: 1; color: inherit; }
+.pc-queen__lane-value { max-width: 100%; font-size: 9.5px; line-height: 1.1; color: var(--fg-mute, #7f9bb4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pc-queen__lane[aria-selected='true'] .pc-queen__lane-value { color: var(--fg-dim, #b9d4e8); }
+.pc-queen__panel { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
 .pc-queen__err { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #fca5a5; padding: 6px 9px; border-radius: 7px; border: 1px solid color-mix(in srgb, var(--bad, #f43f5e), transparent 58%); background: color-mix(in srgb, var(--bad, #f43f5e), transparent 90%); }
 .pc-queen__section { display: flex; flex-direction: column; gap: 7px; padding: 8px 9px; border-radius: 8px; border: 1px solid var(--border, rgba(125, 211, 252, 0.14)); border-left-color: color-mix(in srgb, var(--queen-accent), transparent 48%); background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.04)), transparent 18%); }
 .pc-queen__section--pause { border-color: color-mix(in srgb, var(--queen-accent), transparent 68%); border-left-color: var(--queen-accent); }

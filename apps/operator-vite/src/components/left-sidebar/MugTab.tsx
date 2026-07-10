@@ -285,11 +285,6 @@ export default function MugTab({ active }: { active: boolean }) {
   const hiveRestricted = view.eligibleHives.length > 0;
   const pause = pauseStateLabel(view, Date.now());
   const hiveWord = (n: number) => (n === 1 ? t('pot', { lower: true }) : t('pot', { plural: true, lower: true }));
-  const scopeLabel = hiveRestricted || planRestricted
-    ? `${hiveRestricted ? `${view.eligibleHives.length} ${hiveWord(view.eligibleHives.length)}` : `any ${t('pot', { lower: true })}`} · ${planRestricted ? countLabel(view.eligiblePlans.length, 'plan') : 'any plan'}`
-    : `Any ${t('pot', { lower: true })} · any plan`;
-  const directiveLabel = view.directive?.trim() ? 'Directive set' : 'No directive';
-  const tierLabel = view.modelTiers?.length ? `${countLabel(view.modelTiers.length, 'tier')} override` : 'Workspace tiers';
   const throttleOverrideCount = throttleActiveCount({
     cadenceFloorSec: view.cadenceFloorSec ?? null,
     maxBees: view.maxBees ?? null,
@@ -649,16 +644,11 @@ export default function MugTab({ active }: { active: boolean }) {
           <section className="pc-queen__section">
             <div className="pc-queen__section-head">
               <Network size={12} aria-hidden />
-              <span className="pc-queen__section-title">Eligible {t('pot', { plural: true, lower: true })}</span>
+              <span className="pc-queen__section-title">{t('pot', { plural: true })}</span>
               <span className="pc-queen__count">{hiveRestricted ? `${view.eligibleHives.length} selected` : 'no restriction'}</span>
               <span className="pc-queen__spacer" />
               <button type="button" className="pc-queen__chip" onClick={() => setAllHives(true)} disabled={controlsBusy || hiveOptions.length === 0} aria-label={`Select every ${t('pot', { lower: true })}`}>all</button>
               <button type="button" className="pc-queen__chip" onClick={() => setAllHives(false)} disabled={controlsBusy || !hiveRestricted} aria-label={`Clear the ${t('pot', { lower: true })} scope`}>none</button>
-            </div>
-            <div className={`pc-queen__scope${hiveRestricted ? ' pc-queen__scope--restricted' : ''}`}>
-              {hiveRestricted
-                ? `${t('brain')} may place ONLY into the checked ${t('pot', { plural: true, lower: true })}. Uncheck all to remove the scope.`
-                : `Nothing checked → ${t('brain')} may place into ANY ${t('pot', { lower: true })}. Check ${t('pot', { plural: true, lower: true })} to scope where she places work.`}
             </div>
             {hiveOptions.length === 0 ? (
               <div className="pc-queen__placeholder">Loading {t('pot', { plural: true, lower: true })}…</div>
@@ -683,16 +673,11 @@ export default function MugTab({ active }: { active: boolean }) {
           <section className="pc-queen__section">
             <div className="pc-queen__section-head">
               <ListChecks size={12} aria-hidden />
-              <span className="pc-queen__section-title">Eligible plans</span>
+              <span className="pc-queen__section-title">Plans</span>
               <span className="pc-queen__count">{planRestricted ? `${view.eligiblePlans.length} selected` : 'no restriction'}</span>
               <span className="pc-queen__spacer" />
               <button type="button" className="pc-queen__chip" onClick={() => setAllPlans(true)} disabled={controlsBusy || planRows.length === 0} aria-label="Select every plan shown">all</button>
               <button type="button" className="pc-queen__chip" onClick={() => setAllPlans(false)} disabled={controlsBusy || !planRestricted} aria-label="Clear the plan restriction">none</button>
-            </div>
-            <div className={`pc-queen__scope${planRestricted ? ' pc-queen__scope--restricted' : ''}`}>
-              {planRestricted
-                ? `${t('brain')} works ONLY the checked plans. Uncheck all to remove the restriction.`
-                : `Nothing selected → ${t('brain')} may work ANY plan. Check plans to focus her (eligibility ≠ lifecycle status).`}
             </div>
             {plansQ.loading && !plansQ.data ? (
               <div className="pc-queen__placeholder">Loading plans…</div>

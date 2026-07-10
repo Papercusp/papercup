@@ -545,7 +545,13 @@ export function sampleReplicationLiveness(
             `log=${sample.keyHex.slice(0, 12)}… swarm has ${sample.swarmConnections} live ` +
             `connection(s) but this log has NEVER attached a replicator ` +
             `(${Math.round((now - st.connectedNeverReplSinceMs) / 1000)}s connected-but-dead — ` +
-            `WI-183 zombie-connection class)`,
+            `WI-183 zombie-connection class). Common cause: host-resource exhaustion on the ` +
+            `PEER side (disk-full ENOSPC crash-looping its serve process, CPU/load starvation) ` +
+            `— the connection itself looks alive while the peer never actually completes a ` +
+            `handshake (EI-8982: a Mac VM's Data volume hit 100% and produced exactly this ` +
+            `connect/drop-every-25s signature on the OTHER machine, undetected for hours). Check ` +
+            `the peer's disk usage (\`df -h\`) and serve.log for ENOSPC/crash-loop before assuming ` +
+            `a pure network/DHT issue.`,
         });
       }
     } else if (

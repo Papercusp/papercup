@@ -5,10 +5,10 @@
  * prebuilt SteeringTree; this pins the render branches and the pure toggle
  * intents:
  *   • the loading / empty / populated states;
- *   • the "no restriction" vs "N hives" header + scope copy (anyHiveChecked);
+ *   • the compact "all work" vs focused-count header state (anyHiveChecked);
  *   • the illegal-plan alert (illegalCount > 0);
  *   • a HiveNode's meta (all-plans / some / count) + the expanded plan rows;
- *   • the per-hive all/none + the global all/none chips → callbacks;
+ *   • the per-hive all/none + the global all/clear chips → callbacks;
  *   • the unassigned (no-hive) plans section.
  * Radix Collapsible/Checkbox render natively in jsdom; the @/app/harness/Checkbox
  * alias resolves to the operator component.
@@ -78,20 +78,20 @@ describe('<HiveSteeringTree> states', () => {
     expect(screen.getByText('No pot with plans.')).toBeTruthy();
   });
 
-  it('shows "no restriction" + the open scope copy when nothing is checked', () => {
+  it('shows the compact all-work state when nothing is checked', () => {
     render(<HiveSteeringTree {...makeProps({ tree: tree({ hives: [hive()] }) })} />);
-    expect(screen.getByText('no restriction')).toBeTruthy();
-    expect(screen.getByText(/brain may work ANY pot\/plan/)).toBeTruthy();
+    expect(screen.getByText('all work')).toBeTruthy();
+    expect(screen.queryByText(/brain may work ANY pot\/plan/)).toBeNull();
   });
 
-  it('shows the restricted hive count + restricted scope copy when a hive is checked', () => {
+  it('shows the focused pot count without an instructional paragraph when a pot is checked', () => {
     render(
       <HiveSteeringTree
         {...makeProps({ tree: tree({ hives: [hive({ checked: true, planMode: 'all' })] }) })}
       />,
     );
-    expect(screen.getByText('1 pot')).toBeTruthy();
-    expect(screen.getByText(/brain works ONLY the checked pot/)).toBeTruthy();
+    expect(screen.getByText('1 pot focused')).toBeTruthy();
+    expect(screen.queryByText(/brain works ONLY the checked pot/)).toBeNull();
   });
 
   it('renders the illegal-plan alert when illegalCount > 0', () => {
@@ -184,10 +184,10 @@ describe('<HiveSteeringTree> header chips + unassigned', () => {
     expect(onSetAllHives).toHaveBeenCalledWith(true);
   });
 
-  it('disables the header "none" chip when nothing is restricted', () => {
+  it('disables the header clear chip when nothing is focused', () => {
     render(<HiveSteeringTree {...makeProps({ tree: tree({ hives: [hive()] }) })} />);
-    const noneChip = screen.getByLabelText('Clear the scope') as HTMLButtonElement;
-    expect(noneChip.disabled).toBe(true);
+    const clearChip = screen.getByLabelText('Clear work focus') as HTMLButtonElement;
+    expect(clearChip.disabled).toBe(true);
   });
 
   it('renders the unassigned (no-hive) plans section', () => {

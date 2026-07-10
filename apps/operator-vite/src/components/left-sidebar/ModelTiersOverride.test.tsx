@@ -66,7 +66,7 @@ describe('ModelTiersOverride render', () => {
     H.useSyncQuery.mockReset();
   });
 
-  it('renders the baseline tiers with default badges + the session-override note', async () => {
+  it('renders the baseline tiers with default badges in the compact Models section', async () => {
     render(<ModelTiersOverride override={null} onWrite={vi.fn()} busy={false} />);
     expect(H.useSyncQuery).toHaveBeenCalledWith({
       queryName: 'agentConfig.modelTiersBaseline',
@@ -77,7 +77,8 @@ describe('ModelTiersOverride render', () => {
     expect(screen.getByText('std')).toBeTruthy();
     expect(screen.getAllByText('default').length).toBe(2);
     expect(screen.getByText('workspace default')).toBeTruthy();
-    expect(screen.getByText(/Session override of the workspace model tiers/)).toBeTruthy();
+    expect(screen.getByText('Models')).toBeTruthy();
+    expect(screen.queryByText(/Session override of the workspace model tiers/)).toBeNull();
   });
 
   it('shows the override badge + value when a tier is overridden', async () => {

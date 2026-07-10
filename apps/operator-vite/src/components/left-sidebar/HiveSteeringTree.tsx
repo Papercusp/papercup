@@ -185,17 +185,13 @@ export default function HiveSteeringTree({
     <section className="pc-queen__section">
       <div className="pc-queen__section-head">
         <ListChecks size={12} aria-hidden />
-        <span className="pc-queen__section-title">Steering scope</span>
-        <span className="pc-queen__count">{restricted ? `${checkedCount} ${hiveNoun(checkedCount)}` : 'no restriction'}</span>
+        <span className="pc-queen__section-title">{t('pot', { plural: true })} &amp; plans</span>
+        <span className={`pc-queen__count${restricted ? ' pc-queen__count--on' : ''}`}>
+          {restricted ? `${checkedCount} ${hiveNoun(checkedCount)} focused` : 'all work'}
+        </span>
         <span className="pc-queen__spacer" />
         <button type="button" className="pc-queen__chip" onClick={() => onSetAllHives(true)} disabled={busy || tree.hives.length === 0} aria-label={`Select every ${t('pot', { lower: true })}`}>all</button>
-        <button type="button" className="pc-queen__chip" onClick={() => onSetAllHives(false)} disabled={busy || !restricted} aria-label="Clear the scope">none</button>
-      </div>
-
-      <div className={`pc-queen__scope${restricted ? ' pc-queen__scope--restricted' : ''}`}>
-        {restricted
-          ? `${t('brain')} works ONLY the checked ${t('pot', { plural: true, lower: true })} — check a ${t('pot', { lower: true })} for all its plans, or expand it to narrow to specific plans. Uncheck all to remove the restriction.`
-          : `Nothing checked → ${t('brain')} may work ANY ${t('pot', { lower: true })}/plan. Check a ${t('pot', { lower: true })} to scope her; expand it to pick specific plans.`}
+        <button type="button" className="pc-queen__chip" onClick={() => onSetAllHives(false)} disabled={busy || !restricted} aria-label="Clear work focus">clear</button>
       </div>
 
       {illegalCount > 0 && (

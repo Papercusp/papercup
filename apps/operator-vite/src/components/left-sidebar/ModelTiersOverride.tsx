@@ -98,12 +98,8 @@ export default function ModelTiersOverride({
   return (
     <section className="pc-queen__section">
       <div className="pc-queen__section-head">
-        <span className="pc-queen__section-title">Model tiers</span>
+        <span className="pc-queen__section-title">Models</span>
         <span className="pc-queen__count">{overriding ? 'session override' : 'workspace default'}</span>
-      </div>
-      <div className="pc-queen__scope">
-        Session override of the workspace model tiers for the running fleet. Edit a tier's model to retune this
-        session; reset returns it to the Settings default. (Precedence: session &gt; workspace &gt; default.)
       </div>
       {baseline.length === 0 ? (
         <div className="pc-queen__placeholder">Loading tiers…</div>

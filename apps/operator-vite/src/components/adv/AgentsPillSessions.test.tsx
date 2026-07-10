@@ -17,6 +17,7 @@ import {
   endedDisplayName,
   endedSessionStreamUrl,
   headlineToSafeHtml,
+  searchFailureMessage,
   searchHitStreamUrl,
   type EndedSessionRow,
 } from './AgentsPillSessions';
@@ -130,5 +131,22 @@ describe('appendEndedPage', () => {
     const next = appendEndedPage(prev, [endedRow({ id: 2 }), endedRow({ id: 3 })]);
     expect(next.map((r) => r.id)).toEqual([1, 2, 3]);
     expect(appendEndedPage([], [])).toEqual([]);
+  });
+});
+
+describe('searchFailureMessage', () => {
+  it('a route timeout (408 watchdog / timeout error code / gateway 503-504) names the busy server + invites retry', () => {
+    expect(searchFailureMessage(408)).toMatch(/timed out.*busy.*Try again/i);
+    expect(searchFailureMessage(503)).toMatch(/timed out/i);
+    expect(searchFailureMessage(504)).toMatch(/timed out/i);
+    // Route-stack timeout body: { error: 'timeout' } — the status may have been
+    // consumed by the time the body is parsed, so the code alone must classify.
+    expect(searchFailureMessage(200, 'timeout')).toMatch(/timed out/i);
+  });
+
+  it('anything else stays the generic failure (403 loopback, 500 handler_error, network throw)', () => {
+    expect(searchFailureMessage(403, 'loopback_only')).toBe('Search failed.');
+    expect(searchFailureMessage(500, 'handler_error')).toBe('Search failed.');
+    expect(searchFailureMessage(null)).toBe('Search failed.');
   });
 });

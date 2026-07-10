@@ -1373,10 +1373,7 @@
 .h-empty {
   gap: 9px;
   color: color-mix(in oklab, var(--fg-dim), white 10%);
-}
-
-.h-feat:hover,
-.h-issue:hover {
+}.h-feat:hover {
   background: color-mix(in oklab, var(--accent), transparent 94%);
 }
 
@@ -2439,10 +2436,7 @@
 
 .h-mission-overview.has-action {
   grid-template-columns: minmax(240px, 1.1fr) minmax(280px, 2fr) auto;
-}
-
-.h-focus-card,
-.h-overview-action {
+}.h-focus-card {
   border: 1px solid color-mix(in oklab, var(--border), white 7%);
   border-radius: 13px;
   background: linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 4%), color-mix(in oklab, var(--bg-2), transparent 2%));
@@ -5935,10 +5929,7 @@ body:has(.h-top-collapse-inline) main {
 .h-inbox-top-actions .h-inbox-action.primary {
   order: 3;
   min-width: 48px;
-}
-
-.h-feature-row > div > div,
-.h-issue > div > div {
+}.h-feature-row > div > div {
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
   -webkit-font-smoothing: antialiased;
   text-rendering: geometricPrecision;
@@ -6162,14 +6153,7 @@ body:has(.h-top-collapse-inline) main {
 .h-feature-row:hover,
 .h-feature-row:focus-visible {
   box-shadow: 0 14px 28px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.03);
-}
-
-
-
-
-
-.h-feature-row-action,
-.h-issue-row-action {
+}.h-feature-row-action {
   box-shadow: 0 6px 14px rgba(0,0,0,0.12), inset 0 1px 0 rgba(255,255,255,0.035);
 }
 
@@ -7175,11 +7159,8 @@ body:has(.h-top-collapse-inline) main {
 .h-mission-overview,
 .h-mission-overview.has-action {
   gap: 10px;
-}
-
-.h-focus-card,
-.h-status-distribution,
-.h-overview-action {
+}.h-focus-card,
+.h-status-distribution {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 78%);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018)),
@@ -7195,11 +7176,7 @@ body:has(.h-top-collapse-inline) main {
 .h-focus-title,
 .h-status-token {
   color: color-mix(in oklab, var(--fg-dim), white 18%);
-}
-
-.h-overview-action:hover,
-.h-overview-action:focus-visible,
-.h-focus-card:hover:not(:disabled),
+}.h-focus-card:hover:not(:disabled),
 .h-focus-card:focus-visible {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 62%);
 }
@@ -8207,11 +8184,8 @@ body:has(.h-top-collapse-inline) main {
 
 .h-stat-button:focus-visible {
   outline: none !important;
-}
-
-.h-phase-plan-row .h-phase-plan-focus,
+}.h-phase-plan-row .h-phase-plan-focus,
 .h-phase-plan-row .h-plan-review-banner.compact,
-.h-phase-plan-row .h-overview-action,
 .h-phase-plan-row .h-btn {
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.18) !important;
 }
@@ -8469,9 +8443,7 @@ body:has(.h-top-collapse-inline) main {
 
 .h-main-tabs .h-tab[aria-selected="true"]::after {
   filter: drop-shadow(0 0 7px color-mix(in srgb, var(--accent-strong), transparent 60%)) !important;
-}
-
-/* Proposals toolbar follow-up: stack dense controls so search/select never collide. */
+}/* Proposals toolbar follow-up: stack dense controls so search/select never collide. */
 
 /* Eighth top-bar pass: minimal interaction-state polish; no geometry changes. */
 .h-top-collapse-btn,
@@ -8479,7 +8451,6 @@ body:has(.h-top-collapse-inline) main {
 .h-project-phases .h-phase-item,
 .h-stat,
 .h-phase-plan-row .h-phase-plan-focus,
-.h-phase-plan-row .h-overview-action,
 .h-phase-plan-row .h-btn,
 .h-quick-action-btn,
 .h-main-tabs .h-tab {
@@ -8738,12 +8709,8 @@ body:has(.h-top-collapse-inline) main {
 .h-stat:hover,
 .h-stat-button:focus-visible .h-stat {
   filter: brightness(1.035) saturate(1.06) !important;
-}
-
-.h-phase-plan-row .h-phase-plan-focus:hover,
-.h-phase-plan-row .h-phase-plan-focus:focus-visible,
-.h-phase-plan-row .h-overview-action:hover,
-.h-phase-plan-row .h-overview-action:focus-visible {
+}.h-phase-plan-row .h-phase-plan-focus:hover,
+.h-phase-plan-row .h-phase-plan-focus:focus-visible {
   filter: brightness(1.035) saturate(1.08) !important;
 }
 
@@ -10222,16 +10189,13 @@ body:has(.h-top-collapse-inline) main {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.038), rgba(255, 255, 255, 0.01)),
     var(--h-topbar-surface-soft) !important;
-}
-
-.h-project,
+}.h-project,
 .h-project-progress,
 .h-project-count,
 .h-chip,
 .h-decision-chip,
 .h-quick-action-btn,
 .h-phase-plan-actions .h-btn,
-.h-overview-action,
 .h-focus-card,
 .h-top-collapse-btn,
 .h-feature-search,
@@ -10417,65 +10381,39 @@ body:has(.h-top-collapse-inline) main {
 .h-quick-action-btn em,
 .h-quick-action-copy strong {
   color: color-mix(in oklab, var(--fg-dim), white 22%) !important;
-}
-
-/* Darker queue / inbox / git surfaces restored toward the issues-tab palette. */
+}/* Darker queue / inbox / git surfaces restored toward the issues-tab palette. */
 .h-feature-queue-panel > .h-panel-body,
-.h-inbox-shell,
-.h-git-panel {
+.h-inbox-shell {
   background:
     radial-gradient(circle at 0% 0%, color-mix(in srgb, var(--accent-strong), transparent 90%), transparent 34%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.026), rgba(255, 255, 255, 0.008)),
     color-mix(in srgb, var(--bg), transparent 16%) !important;
-}
-
-.h-feature-toolbar,
-.h-inbox-command,
-.h-git-command,
-.h-git-summary {
+}.h-feature-toolbar,
+.h-inbox-command {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 78%) !important;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.012)),
     color-mix(in srgb, var(--bg-1), transparent 8%) !important;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.045) !important;
-}
-
-.h-inbox-feed,
-.h-issues,
-.h-git-list {
+}.h-inbox-feed,
+.h-issues {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.012), rgba(255, 255, 255, 0.004)) !important;
-}
-
-.h-feature-row,
-.h-issue,
-.h-inbox-row,
-.h-agent-row,
-.h-git-row {
+}.h-feature-row,
+.h-inbox-row {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 84%) !important;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.022), rgba(255, 255, 255, 0.006)),
     color-mix(in srgb, var(--bg-1), transparent 18%) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.028) !important;
-}
-
-.h-feature-row:hover,
+}.h-feature-row:hover,
 .h-feature-row:focus-visible,
-.h-issue:hover,
-.h-issue:focus-visible,
 .h-inbox-row:hover,
-.h-inbox-row:focus-visible,
-.h-agent-row:hover,
-.h-agent-row:focus-visible,
-.h-git-row:hover,
-.h-git-row:focus-visible {
+.h-inbox-row:focus-visible {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 70%) !important;
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 92.5%), rgba(255, 255, 255, 0.012)),
     color-mix(in srgb, var(--bg-1), transparent 12%) !important;
-}
-
-.h-inbox-metric,
-.h-git-summary span {
+}.h-inbox-metric {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 82%) !important;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.01)),
@@ -10494,50 +10432,19 @@ body:has(.h-top-collapse-inline) main {
 
 .h-feature-row.compact {
   margin-block: 2px !important;
-}
-
-.h-feature-row-title,
-.h-issue-title,
+}.h-feature-row-title,
 .h-inbox-row-title {
   color: color-mix(in oklab, var(--fg), white 6%) !important;
   letter-spacing: 0;
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.22);
-}
-
-.h-feature-row-meta,
-.h-issue-meta,
+}.h-feature-row-meta,
 .h-inbox-row-sub,
 .h-inbox-row-foot {
   color: color-mix(in oklab, var(--fg-dim), white 8%) !important;
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-/* Fixed-column list polish: every scalar value sits in a compact pill. */
+}/* Fixed-column list polish: every scalar value sits in a compact pill. */
 .h-feature-row-id,
 .h-feature-claims-chip,
 .h-feature-attempts-pill,
-.h-issue-source,
-.h-issue-id,
-.h-issue-feat,
-.h-issue-code,
-.h-agent-time-cell,
-.h-agent-runid-pill,
-.h-agent-size-pill,
 .h-inbox-foot-pill {
   box-sizing: border-box;
   display: inline-flex;
@@ -10553,14 +10460,8 @@ body:has(.h-top-collapse-inline) main {
   color: color-mix(in oklab, var(--fg-dim), white 10%) !important;
   line-height: 1;
   white-space: nowrap;
-}
-
-.h-feature-row-id,
+}.h-feature-row-id,
 .h-feature-attempts-pill,
-.h-issue-id,
-.h-issue-code,
-.h-agent-runid-pill,
-.h-agent-size-pill,
 .h-inbox-foot-pill {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 10px;
@@ -10736,59 +10637,32 @@ body:has(.h-top-collapse-inline) main {
   color: color-mix(in oklab, var(--accent), white 16%) !important;
   border-color: color-mix(in oklab, var(--accent), transparent 64%);
   background: color-mix(in oklab, var(--accent), transparent 91%);
-}
-
-/* Harness-wide list normalization: stronger striping, dark info pills, brighter actions. */
+}/* Harness-wide list normalization: stronger striping, dark info pills, brighter actions. */
 .h-feature-row,
-.h-issue,
-.h-inbox-row,
-.h-agent-row,
-.h-git-row {
+.h-inbox-row {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.018), rgba(255, 255, 255, 0.004)),
     color-mix(in srgb, var(--bg-deep), transparent 12%) !important;
-}
-
-[data-index]:nth-child(even) > .h-feature-row,
-.h-issue:nth-of-type(even),
-.h-inbox-feed .h-inbox-row:nth-child(even),
-.h-agent-row:nth-of-type(even),
-.h-git-row:nth-child(even) {
+}[data-index]:nth-child(even) > .h-feature-row,
+.h-inbox-feed .h-inbox-row:nth-child(even) {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 96.2%), rgba(255, 255, 255, 0.006)),
     color-mix(in srgb, var(--bg-popover), transparent 6%) !important;
-}
-
-[data-index]:nth-child(odd) > .h-feature-row,
-.h-issue:nth-of-type(odd),
-.h-inbox-feed .h-inbox-row:nth-child(odd),
-.h-agent-row:nth-of-type(odd),
-.h-git-row:nth-child(odd) {
+}[data-index]:nth-child(odd) > .h-feature-row,
+.h-inbox-feed .h-inbox-row:nth-child(odd) {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.012), rgba(255, 255, 255, 0.002)),
     color-mix(in srgb, var(--bg-deeper), transparent 8%) !important;
-}
-
-.h-feature-row:hover,
+}.h-feature-row:hover,
 .h-feature-row:focus-visible,
-.h-issue:hover,
-.h-issue:focus-visible,
 .h-inbox-row:hover,
-.h-inbox-row:focus-visible,
-.h-agent-row:hover,
-.h-agent-row:focus-visible,
-.h-git-row:hover,
-.h-git-row:focus-visible {
+.h-inbox-row:focus-visible {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 89.5%), rgba(255, 255, 255, 0.014)),
     color-mix(in srgb, var(--bg-popover), transparent 2%) !important;
-}
-
-.h-feature-row-title,
-.h-issue-title,
+}.h-feature-row-title,
 .h-inbox-row-title,
-.h-inbox-row-sub,
-.h-git-subject {
+.h-inbox-row-sub {
   box-sizing: border-box;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 84%) !important;
   border-radius: 999px;
@@ -10797,73 +10671,36 @@ body:has(.h-top-collapse-inline) main {
     color-mix(in srgb, var(--bg-deepest), transparent 12%) !important;
   color: color-mix(in oklab, var(--fg), white 8%) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
-}
-
-.h-feature-row-title,
-.h-issue-title,
-.h-git-subject {
+}.h-feature-row-title {
   padding: 2px 8px !important;
 }
 
 .h-inbox-row-title,
 .h-inbox-row-sub {
   padding: 2px 7px !important;
-}
-
-.h-feature-row-id,
+}.h-feature-row-id,
 .h-feature-claims-chip,
 .h-feature-attempts-pill,
-.h-issue-source,
-.h-issue-id,
-.h-issue-feat,
-.h-issue-code,
-.h-agent-time-cell,
-.h-agent-runid-pill,
-.h-agent-size-pill,
 .h-inbox-feature,
 .h-inbox-kind,
-.h-inbox-foot-pill,
-.h-git-summary span,
-.h-git-meta span,
-.h-git-meta time,
-.h-git-ref {
+.h-inbox-foot-pill {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 83%) !important;
   background: linear-gradient(0deg, rgba(255, 255, 255, 0.022), rgba(255, 255, 255, 0.022)),
     color-mix(in srgb, var(--bg-deepest), transparent 16%) !important;
   color: color-mix(in oklab, var(--fg-dim), white 16%) !important;
   box-shadow: none;
-}
-
-
-
-
-
-/* Fixed columns keep layout stable; pill chrome should hug the text. */
+}/* Fixed columns keep layout stable; pill chrome should hug the text. */
 .h-feature-row-title,
-.h-issue-title,
 .h-inbox-row-title,
 .h-inbox-row-sub,
-.h-git-subject,
 .h-feature-row-id,
 .h-feature-claims-chip,
 .h-feature-attempts-pill,
-.h-issue-source,
-.h-issue-id,
-.h-issue-feat,
-.h-issue-code,
-.h-agent-time-cell,
-.h-agent-runid-pill,
-.h-agent-size-pill,
 .h-inbox-feature,
 .h-inbox-kind,
 .h-inbox-foot-pill,
-.h-git-meta span,
-.h-git-meta time,
-.h-git-ref,
 .h-feature-status-pill,
-.h-feature-row-mini-status,
-.h-issue-status,
-.h-agent-role {
+.h-feature-row-mini-status {
   inline-size: auto !important;
   width: fit-content !important;
   max-inline-size: 100% !important;
@@ -10875,12 +10712,7 @@ body:has(.h-top-collapse-inline) main {
   inline-size: auto !important;
   width: fit-content !important;
   max-inline-size: 100% !important;
-}
-
-
-
-.h-feature-status-pill,
-.h-issue-status {
+}.h-feature-status-pill {
   justify-self: end;
 }
 
@@ -10941,37 +10773,21 @@ body:has(.h-top-collapse-inline) main {
   text-overflow: ellipsis !important;
   white-space: nowrap !important;
   line-height: 1.2 !important;
-}
-
-/* Stable row bands: parity is row-data based, flat, and borderless. */
-.h-feature-row,
-.h-issue {
+}/* Stable row bands: parity is row-data based, flat, and borderless. */
+.h-feature-row {
   border: 0 !important;
   border-bottom: 0 !important;
   outline: 0 !important;
   box-shadow: none !important;
   background: color-mix(in srgb, var(--bg), transparent 4%) !important;
-}
-
-.h-feature-row > div,
-.h-issue > div {
+}.h-feature-row > div {
   background: transparent !important;
-}
-
-.h-feature-row.h-row-odd,
-.h-issue.h-row-odd {
+}.h-feature-row.h-row-odd {
   background: color-mix(in srgb, var(--bg), transparent 4%) !important;
-}
-
-.h-feature-row.h-row-even,
-.h-issue.h-row-even {
+}.h-feature-row.h-row-even {
   background: color-mix(in srgb, var(--bg-raised), transparent 3%) !important;
-}
-
-.h-feature-row:hover,
-.h-feature-row:focus-visible,
-.h-issue:hover,
-.h-issue:focus-visible {
+}.h-feature-row:hover,
+.h-feature-row:focus-visible {
   background: color-mix(in srgb, var(--bg-raised), transparent 1%) !important;
   border: 0 !important;
   box-shadow: none !important;
@@ -10982,34 +10798,23 @@ body:has(.h-top-collapse-inline) main {
 .h-feature-row.is-selected {
   outline: 0 !important;
   box-shadow: none !important;
-}
-
-.h-feature-row-action,
-.h-issue-row-action,
+}.h-feature-row-action,
 .h-inbox-action,
-.h-proposal-btn,
-.h-git-actions button {
+.h-proposal-btn {
   border-color: color-mix(in srgb, var(--accent), transparent 52%) !important;
   background: linear-gradient(0deg, color-mix(in srgb, var(--accent), transparent 72%), color-mix(in srgb, var(--accent), transparent 72%)),
     color-mix(in srgb, var(--bg), transparent 4%) !important;
   color: color-mix(in oklab, #e0f7ff, var(--fg) 20%) !important;
   box-shadow: 0 6px 14px rgba(0, 0, 0, 0.22) !important;
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.34);
-}
-
-.h-feature-row-action:hover:not(:disabled),
-.h-issue-row-action:hover:not(:disabled),
+}.h-feature-row-action:hover:not(:disabled),
 .h-inbox-action:hover:not(:disabled),
-.h-proposal-btn:hover:not(:disabled),
-.h-git-actions button:hover:not(:disabled) {
+.h-proposal-btn:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 24%) !important;
   background: linear-gradient(0deg, color-mix(in srgb, var(--accent-strong), transparent 64%), color-mix(in srgb, var(--accent-strong), transparent 64%)),
     color-mix(in srgb, var(--bg-popover), transparent 2%) !important;
   color: #ffffff !important;
-}
-
-.h-feature-row-action.danger,
-.h-issue-row-action.danger,
+}.h-feature-row-action.danger,
 .h-inbox-action.danger {
   border-color: rgba(248, 113, 113, 0.52) !important;
   background:
@@ -11091,13 +10896,11 @@ body:has(.h-top-collapse-inline) main {
   inset: 0;
   z-index: 0;
   pointer-events: none;
-}
-.h-root--maximal-hud .h-header,
+}.h-root--maximal-hud .h-header,
 .h-root--maximal-hud .h-phase-plan-row,
 .h-root--maximal-hud .h-quick-action-row,
 .h-root--maximal-hud .h-tabs.h-main-tabs,
-.h-root--maximal-hud .h-main-shell,
-.h-root--maximal-hud .h-dashboard-panel-anchor {
+.h-root--maximal-hud .h-main-shell {
   position: relative;
 }
 .h-root--maximal-hud .h-header,
@@ -11293,8 +11096,7 @@ body:has(.h-top-collapse-inline) main {
     display: none;
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .h-hud-overlay__scanline,
+@media (prefers-reduced-motion: reduce) {.h-hud-overlay__scanline,
   .h-hud-dial-ring--outer,
   .h-hud-dial-ring--inner,
   .h-hud-dial-copy,
@@ -11302,9 +11104,7 @@ body:has(.h-top-collapse-inline) main {
   .h-root--maximal-hud .h-phase-plan-row::after,
   .h-root--maximal-hud .h-quick-action-row::after,
   .h-root--maximal-hud .h-tabs.h-main-tabs::after,
-  .h-root--maximal-hud .h-running-lane.live::after,
-  .h-root--maximal-hud .h-dashboard-panel-anchor::after,
-  .h-root--maximal-hud .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line::after {
+  .h-root--maximal-hud .h-running-lane.live::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
   }
@@ -11348,10 +11148,7 @@ body:has(.h-top-collapse-inline) main {
   place-items: center;
   gap: 4px;
   padding: 18px;
-}
-
-
-/* Continue darker dashboard restoration: deepen queue/inbox/git controls to match issues tab contrast. */
+}/* Continue darker dashboard restoration: deepen queue/inbox/git controls to match issues tab contrast. */
 
 
 
@@ -11366,21 +11163,14 @@ body:has(.h-top-collapse-inline) main {
 .h-inbox-feature,
 .h-inbox-kind,
 .h-inbox-ops-row span,
-.h-inbox-action.ghost,
-.h-git-search,
-.h-git-clear,
-.h-git-limit,
-.h-git-filter {
+.h-inbox-action.ghost {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 80%) !important;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.032), rgba(255, 255, 255, 0.010)),
     color-mix(in srgb, var(--bg-1), transparent 8%) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
-}
-
-.h-inbox-filter.on,
-.h-inbox-kind-chip.on,
-.h-git-filter.on {
+}.h-inbox-filter.on,
+.h-inbox-kind-chip.on {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 66%) !important;
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 88%), color-mix(in srgb, var(--accent-strong), transparent 96.5%)),
@@ -11710,11 +11500,7 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
     0 16px 34px rgba(0, 0, 0, 0.30),
     inset 0 1px 0 rgba(255, 255, 255, 0.050),
     inset 0 -1px 0 color-mix(in srgb, var(--accent-strong), transparent 91.5%) !important;
-}
-
-.h-root .h-project-topline-statuses .h-overview-pulse,
-.h-root .h-project-topline-statuses .h-overview-lanes,
-.h-root .h-project-topline-statuses .h-project-lanes,
+}.h-root .h-project-topline-statuses .h-project-lanes,
 .h-root .h-project-pulse > div,
 .h-root .h-feature-toolbar-title,
 .h-root .h-feature-project-filter,
@@ -11788,16 +11574,12 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
   box-shadow:
     0 12px 26px rgba(0, 0, 0, 0.24),
     inset 0 1px 0 rgba(255, 255, 255, 0.055) !important;
-}
-
-/* Harness top-bar contrast continuation v3: crisper rims and state tones for existing pills. */
+}/* Harness top-bar contrast continuation v3: crisper rims and state tones for existing pills. */
 .h-root .h-project,
 .h-root .h-project-progress,
 .h-root .h-project-count,
 .h-root .h-status-chip,
 .h-root .h-escalated-pill,
-.h-root .h-project-topline-statuses .h-overview-pulse,
-.h-root .h-project-topline-statuses .h-overview-lanes,
 .h-root .h-project-topline-statuses .h-project-lanes,
 .h-root .h-running-head strong,
 .h-root .h-running-lane,
@@ -12040,11 +11822,8 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 .h-root .h-quick-action-buttons .h-quick-action-btn:nth-child(3) { --h-topbar-control-tone: #a78bfa; }
 .h-root .h-header-actions .h-btn:nth-child(4),
 .h-root .h-phase-plan-actions .h-btn:nth-child(4),
-.h-root .h-quick-action-buttons .h-quick-action-btn:nth-child(4) { --h-topbar-control-tone: #f59e0b; }
-
-/* Harness top-bar contrast continuation v5: focus the Pulse / Now running / Idle controls. */
-.h-root .h-project-pulse > div,
-.h-root .h-project-topline-statuses .h-overview-pulse {
+.h-root .h-quick-action-buttons .h-quick-action-btn:nth-child(4) { --h-topbar-control-tone: #f59e0b; }/* Harness top-bar contrast continuation v5: focus the Pulse / Now running / Idle controls. */
+.h-root .h-project-pulse > div {
   --h-topbar-control-tone: var(--accent);
   color: color-mix(in oklab, var(--h-topbar-control-tone), white 44%) !important;
   border-color: color-mix(in srgb, var(--accent), transparent 58%) !important;
@@ -12642,11 +12421,8 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 .h-root .h-tabs.h-main-tabs {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
-}
-
-.h-root .h-project-card :is(.h-project, .h-project-path, .h-project-progress, .h-project-count, .h-project-count *, .h-status-chip, .h-status-chip *),
+}.h-root .h-project-card :is(.h-project, .h-project-path, .h-project-progress, .h-project-count, .h-project-count *, .h-status-chip, .h-status-chip *),
 .h-root .h-project-phases :is(.h-phase-item, .h-phase-item *, .h-phase-open, .h-phase-actions-btn),
-.h-root .h-project-topline-statuses :is(.h-overview-pulse, .h-overview-pulse *, .h-overview-lanes, .h-overview-lanes *, .h-project-lanes, .h-project-lanes *, .h-running-head, .h-running-head *, .h-running-lane),
 .h-root .h-project-pulse :is(div, span, strong),
 .h-root .h-stats :is(.h-stat, .h-stat *, .h-save-template-btn, .h-save-snapshot-btn),
 .h-root .h-phase-plan-row :is(.h-phase-plan-focus, .h-phase-plan-focus *, .h-plan-review-banner, .h-plan-review-banner *, .h-phase-plan-actions .h-btn, .h-phase-plan-actions .h-btn *, .h-decision-chip, .h-decision-chip *),
@@ -12751,32 +12527,20 @@ html[data-visual-effects='minimal'] .h-root--maximal-hud .h-main-tabs .h-tab.on:
   animation: none !important;
   content: none !important;
   display: none !important;
-}
-
-html[data-visual-effects='minimal'] .h-root--maximal-hud .h-header,
+}html[data-visual-effects='minimal'] .h-root--maximal-hud .h-header,
 html[data-visual-effects='minimal'] .h-root--maximal-hud .h-phase-plan-row,
 html[data-visual-effects='minimal'] .h-root--maximal-hud .h-quick-action-row,
 html[data-visual-effects='minimal'] .h-root--maximal-hud .h-tabs.h-main-tabs,
-html[data-visual-effects='minimal'] .h-root--maximal-hud .h-dashboard-panel-anchor,
 html[data-visual-effects='minimal'] .h-root--maximal-hud .h-running-lane,
 html[data-visual-effects='minimal'] .h-root--maximal-hud .h-pulse-dot,
 html[data-visual-effects='minimal'] .h-root--maximal-hud .h-tab {
   transform: none !important;
   filter: none !important;
-}
-
-/* Pane overflow stability: animated HUD chrome and wide tool rows must not surface
+}/* Pane overflow stability: animated HUD chrome and wide tool rows must not surface
    horizontal scrollbars on harness panes. Keep vertical scrolling intact. */
-.h-main-shell.dashboard,
-.h-dashboard-panel-anchor,
-.h-dashboard-panel-anchor > .h-panel,
-.h-dashboard-panel-anchor > .h-panel > .h-panel-body {
+.h-main-shell.dashboard {
   min-width: 0;
-}
-
-.h-main-shell.dashboard,
-.h-dashboard-panel-anchor,
-.h-dashboard-panel-anchor > .h-panel > .h-panel-body {
+}.h-main-shell.dashboard {
   overflow-x: hidden !important;
 }
 
@@ -13479,21 +13243,15 @@ html body .h-root.h-root :is(
   filter: brightness(1.08) saturate(1.10);
   outline: 1px solid color-mix(in oklab, var(--bad), transparent 35%);
   outline-offset: 2px;
-}
-
-/* Right-side feature/issue drawers: align popouts with the harness HUD theme. */
-.h-feature-peek-overlay,
-.h-issue-detail-overlay {
+}/* Right-side feature/issue drawers: align popouts with the harness HUD theme. */
+.h-feature-peek-overlay {
   background:
     radial-gradient(circle at 75% 18%, color-mix(in srgb, var(--accent), transparent 84%), transparent 30rem),
     radial-gradient(circle at 82% 84%, rgba(45, 212, 191, 0.10), transparent 28rem),
     color-mix(in srgb, var(--bg-deepest), transparent 28%) !important;
   backdrop-filter: blur(9px) saturate(135%);
   -webkit-backdrop-filter: blur(9px) saturate(135%);
-}
-
-.h-feature-peek-drawer,
-.h-issue-detail-drawer {
+}.h-feature-peek-drawer {
   --h-popout-accent: var(--accent-cool);
   color: var(--fg) !important;
   background:
@@ -13506,10 +13264,7 @@ html body .h-root.h-root :is(
     -1px 0 0 rgba(255, 255, 255, 0.055),
     inset 1px 0 0 color-mix(in oklab, var(--h-popout-accent), transparent 70%),
     inset 0 1px 0 rgba(255, 255, 255, 0.060) !important;
-}
-
-.h-feature-peek-drawer::before,
-.h-issue-detail-drawer::before {
+}.h-feature-peek-drawer::before {
   content: "";
   position: absolute;
   inset: 0 auto 0 0;
@@ -13518,10 +13273,7 @@ html body .h-root.h-root :is(
   background:
     linear-gradient(180deg, transparent, color-mix(in oklab, var(--h-popout-accent), white 10%) 18%, color-mix(in oklab, var(--good), transparent 25%) 54%, transparent);
   box-shadow: 0 0 24px color-mix(in oklab, var(--h-popout-accent), transparent 55%);
-}
-
-.h-feature-peek-drawer > div:nth-of-type(1),
-.h-issue-detail-drawer > div:nth-of-type(1) {
+}.h-feature-peek-drawer > div:nth-of-type(1) {
   padding: 14px 18px !important;
   border-bottom: 1px solid color-mix(in oklab, var(--h-popout-accent), transparent 72%) !important;
   background:
@@ -13530,19 +13282,13 @@ html body .h-root.h-root :is(
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.07),
     0 12px 24px rgba(0, 0, 0, 0.18);
-}
-
-.h-feature-peek-drawer > div:nth-of-type(2),
-.h-issue-detail-drawer > div:nth-of-type(2) {
+}.h-feature-peek-drawer > div:nth-of-type(2) {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 97%), transparent 16rem),
     linear-gradient(90deg, rgba(255, 255, 255, 0.018), transparent 34%),
     transparent !important;
   scrollbar-color: color-mix(in oklab, var(--h-popout-accent), transparent 45%) transparent;
-}
-
-.h-feature-peek-drawer > div:nth-of-type(2) > div,
-.h-issue-detail-drawer > div:nth-of-type(2) > div:not(:first-of-type) {
+}.h-feature-peek-drawer > div:nth-of-type(2) > div {
   border: 1px solid color-mix(in oklab, var(--h-popout-accent), transparent 76%) !important;
   border-radius: 18px !important;
   background:
@@ -13551,68 +13297,40 @@ html body .h-root.h-root :is(
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.064),
     0 16px 34px rgba(0, 0, 0, 0.22) !important;
-}
-
-.h-feature-peek-drawer > div:nth-of-type(2) > div:first-child,
-.h-issue-detail-drawer > div:nth-of-type(2) > div:not(:first-of-type):first-of-type {
+}.h-feature-peek-drawer > div:nth-of-type(2) > div:first-child {
   background:
     radial-gradient(circle at 0% 0%, color-mix(in oklab, var(--h-popout-accent), transparent 82%), transparent 22rem),
     linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.014)),
     color-mix(in oklab, var(--bg-2), black 4%) !important;
-}
-
-.h-feature-peek-drawer h2,
-.h-issue-detail-drawer h2 {
+}.h-feature-peek-drawer h2 {
   color: color-mix(in oklab, var(--fg), white 8%) !important;
   letter-spacing: 0 !important;
   text-shadow: 0 1px 18px rgba(0, 0, 0, 0.42);
-}
-
-.h-feature-peek-drawer > div:nth-of-type(2) > div > div:first-child,
-.h-issue-detail-drawer > div:nth-of-type(2) > div:not(:first-of-type) > div:first-child {
+}.h-feature-peek-drawer > div:nth-of-type(2) > div > div:first-child {
   color: color-mix(in oklab, var(--h-popout-accent), white 18%) !important;
   letter-spacing: 0 !important;
-}
-
-
-
-.h-feature-peek-drawer pre,
-.h-issue-detail-drawer pre,
-.h-feature-peek-drawer .vditor-reset,
-.h-issue-detail-drawer .vditor-reset {
+}.h-feature-peek-drawer pre,
+.h-feature-peek-drawer .vditor-reset {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.030), rgba(255, 255, 255, 0.008)),
     color-mix(in oklab, var(--bg), black 8%) !important;
   border-color: color-mix(in oklab, var(--h-popout-accent), transparent 80%) !important;
   border-radius: 12px !important;
-}
-
-.h-feature-peek-drawer button,
-.h-issue-detail-drawer button,
-.h-feature-peek-drawer a,
-.h-issue-detail-drawer a {
+}.h-feature-peek-drawer button,
+.h-feature-peek-drawer a {
   transition:
     border-color 160ms ease,
     background-color 160ms ease,
     box-shadow 160ms ease,
     transform 160ms ease;
-}
-
-.h-feature-peek-drawer button:hover,
+}.h-feature-peek-drawer button:hover,
 .h-feature-peek-drawer button:focus-visible,
-.h-issue-detail-drawer button:hover,
-.h-issue-detail-drawer button:focus-visible,
 .h-feature-peek-drawer a:hover,
-.h-feature-peek-drawer a:focus-visible,
-.h-issue-detail-drawer a:hover,
-.h-issue-detail-drawer a:focus-visible {
+.h-feature-peek-drawer a:focus-visible {
   border-color: color-mix(in oklab, var(--h-popout-accent), transparent 45%) !important;
   box-shadow: 0 0 0 1px color-mix(in oklab, var(--h-popout-accent), transparent 82%) !important;
   transform: translateY(-1px);
-}
-
-.h-feature-peek-drawer > div:nth-of-type(2) > div:last-child,
-.h-issue-detail-drawer > div:nth-of-type(3) {
+}.h-feature-peek-drawer > div:nth-of-type(2) > div:last-child {
   border-top: 1px solid color-mix(in oklab, var(--h-popout-accent), transparent 76%) !important;
   background:
     linear-gradient(90deg, color-mix(in oklab, var(--h-popout-accent), transparent 91%), transparent 62%),
@@ -13622,17 +13340,12 @@ html body .h-root.h-root :is(
 
 
 
-@media (max-width: 860px) {
-  .h-feature-peek-drawer,
-  .h-issue-detail-drawer {
+@media (max-width: 860px) {.h-feature-peek-drawer {
     width: min(100vw, 720px) !important;
   }
-}
-
-/* Right-side drawer polish v2: make feature/issue inspectors feel primary,
+}/* Right-side drawer polish v2: make feature/issue inspectors feel primary,
    opaque, and above neighboring sidecars like Oracle. */
-.h-feature-peek-overlay,
-.h-issue-detail-overlay {
+.h-feature-peek-overlay {
   z-index: 1760 !important;
   background:
     radial-gradient(circle at 72% 14%, color-mix(in srgb, var(--accent), transparent 82%), transparent 24rem),
@@ -13640,10 +13353,7 @@ html body .h-root.h-root :is(
     color-mix(in srgb, var(--bg-deepest), transparent 16%) !important;
   backdrop-filter: blur(14px) saturate(150%);
   -webkit-backdrop-filter: blur(14px) saturate(150%);
-}
-
-.h-feature-peek-drawer,
-.h-issue-detail-drawer {
+}.h-feature-peek-drawer {
   z-index: 1770 !important;
   width: min(760px, 74vw) !important;
   background:
@@ -13657,16 +13367,10 @@ html body .h-root.h-root :is(
     -1px 0 0 rgba(255, 255, 255, 0.065),
     inset 1px 0 0 color-mix(in oklab, var(--h-popout-accent), transparent 64%),
     inset 0 1px 0 rgba(255, 255, 255, 0.075) !important;
-}
-
-.h-feature-peek-drawer > div:nth-of-type(1),
-.h-issue-detail-drawer > div:nth-of-type(1) {
+}.h-feature-peek-drawer > div:nth-of-type(1) {
   position: relative;
   padding: 16px 20px !important;
-}
-
-.h-feature-peek-drawer > div:nth-of-type(1)::after,
-.h-issue-detail-drawer > div:nth-of-type(1)::after {
+}.h-feature-peek-drawer > div:nth-of-type(1)::after {
   content: "";
   position: absolute;
   left: 20px;
@@ -13675,16 +13379,10 @@ html body .h-root.h-root :is(
   height: 1px;
   background: linear-gradient(90deg, color-mix(in oklab, var(--h-popout-accent), transparent 35%), rgba(255, 255, 255, 0.05), transparent);
   pointer-events: none;
-}
-
-.h-feature-peek-drawer > div:nth-of-type(2),
-.h-issue-detail-drawer > div:nth-of-type(2) {
+}.h-feature-peek-drawer > div:nth-of-type(2) {
   padding-top: 18px !important;
   padding-bottom: 22px !important;
-}
-
-.h-feature-peek-drawer > div:nth-of-type(2) > div,
-.h-issue-detail-drawer > div:nth-of-type(2) > div:not(:first-of-type) {
+}.h-feature-peek-drawer > div:nth-of-type(2) > div {
   position: relative;
   overflow: hidden;
   border-color: color-mix(in oklab, var(--h-popout-accent), transparent 70%) !important;
@@ -13695,82 +13393,49 @@ html body .h-root.h-root :is(
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.075),
     0 18px 36px rgba(0, 0, 0, 0.28) !important;
-}
-
-.h-feature-peek-drawer > div:nth-of-type(2) > div::before,
-.h-issue-detail-drawer > div:nth-of-type(2) > div:not(:first-of-type)::before {
+}.h-feature-peek-drawer > div:nth-of-type(2) > div::before {
   content: "";
   position: absolute;
   inset: 0 0 auto;
   height: 1px;
   background: linear-gradient(90deg, color-mix(in oklab, var(--h-popout-accent), transparent 28%), transparent 70%);
   pointer-events: none;
-}
-
-.h-feature-peek-drawer .h-btn-icon,
-.h-issue-detail-drawer .h-btn-icon {
+}.h-feature-peek-drawer .h-btn-icon {
   border: 1px solid color-mix(in oklab, var(--h-popout-accent), transparent 56%) !important;
   border-radius: 999px !important;
   background: linear-gradient(0deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.055)),
     color-mix(in srgb, var(--bg), transparent 22%) !important;
   color: color-mix(in oklab, var(--fg), white 10%) !important;
   box-shadow: none;
-}
-
-
-
-
-
-.h-feature-peek-drawer button,
-.h-feature-peek-drawer a,
-.h-issue-detail-drawer button,
-.h-issue-detail-drawer a {
+}.h-feature-peek-drawer button,
+.h-feature-peek-drawer a {
   box-shadow: none;
 }
 
 
 
-@media (max-width: 860px) {
-  .h-feature-peek-drawer,
-  .h-issue-detail-drawer {
+@media (max-width: 860px) {.h-feature-peek-drawer {
     width: min(100vw, 760px) !important;
   }
-}
-
-/* Vaul right-drawer open state fix: keep themed inspectors visible instead of
+}/* Vaul right-drawer open state fix: keep themed inspectors visible instead of
    leaving them translated off-canvas. */
-.h-feature-peek-drawer[data-state="open"][data-vaul-drawer-direction="right"],
-.h-issue-detail-drawer[data-state="open"][data-vaul-drawer-direction="right"] {
+.h-feature-peek-drawer[data-state="open"][data-vaul-drawer-direction="right"] {
   transform: translate3d(0, 0, 0) !important;
-}
-
-/* Right-side drawer polish v3: stronger title hierarchy and more integrated
+}/* Right-side drawer polish v3: stronger title hierarchy and more integrated
    inner surfaces/controls. */
-.h-feature-peek-drawer > div:nth-of-type(2),
-.h-issue-detail-drawer > div:nth-of-type(2) {
+.h-feature-peek-drawer > div:nth-of-type(2) {
   padding-inline: 20px !important;
-}
-
-.h-feature-peek-drawer > div:nth-of-type(2) > h2,
-.h-issue-detail-drawer > div:nth-of-type(2) > h2,
+}.h-feature-peek-drawer > div:nth-of-type(2) > h2,
 .h-feature-peek-drawer > div:nth-of-type(2) > div:first-child h2 {
   font-size: 1.5rem !important;
   line-height: 1.18 !important;
-}
-
-
-
-.h-feature-peek-drawer > div:nth-of-type(2) > div:first-child,
-.h-issue-detail-drawer > div:nth-of-type(2) > div:not(:first-of-type) {
+}.h-feature-peek-drawer > div:nth-of-type(2) > div:first-child {
   padding: 16px 16px 14px !important;
 }
 
 .h-feature-peek-drawer > div:nth-of-type(2) > div:first-child {
   border-radius: 20px !important;
-}
-
-.h-feature-peek-drawer > div:nth-of-type(2) > div:first-child::after,
-.h-issue-detail-drawer > div:nth-of-type(2) > div:not(:first-of-type)::after {
+}.h-feature-peek-drawer > div:nth-of-type(2) > div:first-child::after {
   content: "";
   position: absolute;
   inset: 14px auto 14px 0;
@@ -13784,23 +13449,15 @@ html body .h-root.h-root :is(
 .h-feature-peek-drawer > div:nth-of-type(2) > div:first-child > div:last-child {
   row-gap: 10px !important;
   column-gap: 16px !important;
-}
-
-.h-feature-peek-drawer > div:nth-of-type(2) button,
-.h-feature-peek-drawer > div:nth-of-type(2) a,
-.h-issue-detail-drawer > div:nth-of-type(2) button,
-.h-issue-detail-drawer > div:nth-of-type(3) button {
+}.h-feature-peek-drawer > div:nth-of-type(2) button,
+.h-feature-peek-drawer > div:nth-of-type(2) a {
   min-height: 30px;
   border-radius: 999px !important;
   background: linear-gradient(0deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.05)),
     color-mix(in srgb, var(--bg), transparent 22%) !important;
-}
-
-.h-feature-peek-drawer > div:nth-of-type(2) ul,
+}.h-feature-peek-drawer > div:nth-of-type(2) ul,
 .h-feature-peek-drawer > div:nth-of-type(2) pre,
-.h-issue-detail-drawer > div:nth-of-type(2) pre,
-.h-feature-peek-drawer > div:nth-of-type(2) .vditor-reset,
-.h-issue-detail-drawer > div:nth-of-type(2) .vditor-reset {
+.h-feature-peek-drawer > div:nth-of-type(2) .vditor-reset {
   font-size: 0.94rem;
   line-height: 1.58;
 }
@@ -13821,19 +13478,14 @@ html body .h-root.h-root :is(
 
 
 
-@media (max-width: 860px) {
-  .h-feature-peek-drawer > div:nth-of-type(2),
-  .h-issue-detail-drawer > div:nth-of-type(2) {
+@media (max-width: 860px) {.h-feature-peek-drawer > div:nth-of-type(2) {
     padding-inline: 16px !important;
   }
 
   
-}
-
-/* Right-side drawer feedback pass: semantic header/title hierarchy,
+}/* Right-side drawer feedback pass: semantic header/title hierarchy,
    structured run rows, and consistent modal controls. */
-.h-feature-peek-drawer,
-.h-issue-detail-drawer {
+.h-feature-peek-drawer {
   right: 0 !important;
   left: auto !important;
   height: auto !important;
@@ -13872,10 +13524,7 @@ html body .h-root.h-root :is(
   font-weight: 800;
   letter-spacing: 0;
   text-transform: uppercase;
-}
-
-.h-drawer-eyebrow .h-issue-id,
-.h-drawer-eyebrow button {
+}.h-drawer-eyebrow button {
   text-transform: none;
   letter-spacing: 0;
 }
@@ -13983,10 +13632,7 @@ html body .h-root.h-root :is(
   
 
   
-}
-
-
-/* Pane tint pass: give sibling controls distinct visual identities without
+}/* Pane tint pass: give sibling controls distinct visual identities without
    changing dashboard structure. */
 
 
@@ -14033,8 +13679,7 @@ html body .h-root.h-root :is(
 
 /* Right-side drawer feedback pass r2: polish readability, scroll hooks,
    and selected lifecycle semantics. */
-.h-feature-peek-drawer,
-.h-issue-detail-drawer {
+.h-feature-peek-drawer {
   min-height: 0 !important;
 }
 
@@ -14068,12 +13713,9 @@ html body .h-root.h-root :is(
 .h-feature-status-button[aria-pressed="true"]:focus-visible,
 .h-feature-status-button.is-current:focus-visible {
   transform: none;
-}
-
-/* Right-side drawer markdown surfaces: Vditor read-only previews styled as
+}/* Right-side drawer markdown surfaces: Vditor read-only previews styled as
    first-class HUD cards. */
-.h-feature-peek-drawer .h-markdown-view,
-.h-issue-detail-drawer .h-markdown-view {
+.h-feature-peek-drawer .h-markdown-view {
   margin: 0;
   padding: 12px 14px;
   border: 1px solid color-mix(in oklab, var(--h-popout-accent), transparent 76%);
@@ -14087,37 +13729,19 @@ html body .h-root.h-root :is(
     0 14px 30px rgba(0, 0, 0, 0.20);
   font-size: 0.86rem;
   line-height: 1.62;
-}
-
-.h-feature-peek-drawer .h-markdown-view > :first-child,
-.h-issue-detail-drawer .h-markdown-view > :first-child {
+}.h-feature-peek-drawer .h-markdown-view > :first-child {
   margin-top: 0 !important;
-}
-
-.h-feature-peek-drawer .h-markdown-view > :last-child,
-.h-issue-detail-drawer .h-markdown-view > :last-child {
+}.h-feature-peek-drawer .h-markdown-view > :last-child {
   margin-bottom: 0 !important;
-}
-
-.h-feature-peek-drawer .h-markdown-view :where(h1, h2, h3, h4),
-.h-issue-detail-drawer .h-markdown-view :where(h1, h2, h3, h4) {
+}.h-feature-peek-drawer .h-markdown-view :where(h1, h2, h3, h4) {
   color: color-mix(in oklab, var(--fg), white 10%) !important;
   letter-spacing: 0;
-}
-
-.h-feature-peek-drawer .h-markdown-view :where(pre, code),
-.h-issue-detail-drawer .h-markdown-view :where(pre, code) {
+}.h-feature-peek-drawer .h-markdown-view :where(pre, code) {
   border-color: color-mix(in oklab, var(--h-popout-accent), transparent 76%) !important;
   background: color-mix(in oklab, var(--bg), black 10%) !important;
-}
-
-.h-feature-peek-drawer .h-markdown-view a,
-.h-issue-detail-drawer .h-markdown-view a {
+}.h-feature-peek-drawer .h-markdown-view a {
   color: color-mix(in oklab, var(--h-popout-accent), white 18%) !important;
-}
-
-.h-feature-peek-drawer .h-markdown-view blockquote,
-.h-issue-detail-drawer .h-markdown-view blockquote {
+}.h-feature-peek-drawer .h-markdown-view blockquote {
   border-left-color: color-mix(in oklab, var(--h-popout-accent), transparent 35%) !important;
   background: color-mix(in oklab, var(--h-popout-accent), transparent 92%);
 }
@@ -15345,24 +14969,17 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   font-size: 9px !important;
   letter-spacing: 0 !important;
   color: color-mix(in oklab, var(--fg), white 10%) !important;
-}
-
-
-/* Right-side drawer polish v4: make feature/issue inspectors read as first-class
+}/* Right-side drawer polish v4: make feature/issue inspectors read as first-class
    HUD panels instead of older purple popouts. Keep this last so it overrides
    legacy inline styles and the earlier drawer passes above. */
-.h-feature-peek-overlay,
-.h-issue-detail-overlay {
+.h-feature-peek-overlay {
   background:
     radial-gradient(circle at 68% 10%, color-mix(in srgb, var(--accent), transparent 80%), transparent 26rem),
     radial-gradient(circle at 86% 78%, rgba(45, 212, 191, 0.14), transparent 24rem),
     linear-gradient(90deg, color-mix(in srgb, var(--bg-deepest), transparent 45%), color-mix(in srgb, var(--bg-deepest), transparent 12%)) !important;
   backdrop-filter: blur(16px) saturate(155%) brightness(0.82) !important;
   -webkit-backdrop-filter: blur(16px) saturate(155%) brightness(0.82) !important;
-}
-
-.h-feature-peek-drawer,
-.h-issue-detail-drawer {
+}.h-feature-peek-drawer {
   --h-popout-accent: var(--accent);
   --h-popout-accent-2: #2dd4bf;
   isolation: isolate;
@@ -15378,12 +14995,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
     -1px 0 0 rgba(255, 255, 255, 0.07),
     inset 1px 0 0 color-mix(in oklab, var(--h-popout-accent), transparent 60%),
     inset 0 1px 0 rgba(255, 255, 255, 0.09) !important;
-}
-
-
-
-.h-feature-peek-drawer::after,
-.h-issue-detail-drawer::after {
+}.h-feature-peek-drawer::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -15395,16 +15007,10 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
     linear-gradient(90deg, color-mix(in srgb, var(--accent-strong), transparent 95.5%) 1px, transparent 1px);
   background-size: 56px 56px;
   mask-image: linear-gradient(90deg, rgba(0,0,0,0.84), rgba(0,0,0,0.20));
-}
-
-.h-feature-peek-drawer > *,
-.h-issue-detail-drawer > * {
+}.h-feature-peek-drawer > * {
   position: relative;
   z-index: 1;
-}
-
-.h-feature-peek-drawer > div:nth-of-type(1),
-.h-issue-detail-drawer > div:nth-of-type(1) {
+}.h-feature-peek-drawer > div:nth-of-type(1) {
   min-height: 58px;
   padding: 15px 22px !important;
   background:
@@ -15435,20 +15041,14 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   box-shadow:
     0 0 0 4px color-mix(in oklab, var(--h-popout-accent), transparent 84%),
     0 0 20px color-mix(in oklab, var(--h-popout-accent), transparent 34%);
-}
-
-.h-feature-peek-drawer .h-btn-icon,
-.h-issue-detail-drawer .h-btn-icon {
+}.h-feature-peek-drawer .h-btn-icon {
   width: 30px;
   height: 30px;
   border-color: color-mix(in oklab, var(--h-popout-accent), transparent 50%) !important;
   background:
     radial-gradient(circle at 35% 25%, rgba(255,255,255,0.14), transparent 32%),
     color-mix(in srgb, var(--bg-deep), transparent 14%) !important;
-}
-
-.h-feature-peek-drawer .h-drawer-body,
-.h-issue-detail-drawer .h-drawer-body {
+}.h-feature-peek-drawer .h-drawer-body {
   padding: 20px 22px 24px !important;
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--accent-strong), transparent 96.5%), transparent 14rem),
@@ -15474,10 +15074,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   font-size: 1.6rem !important;
   line-height: 1.14 !important;
   color: color-mix(in oklab, var(--fg), white 14%) !important;
-}
-
-.h-feature-peek-drawer .h-drawer-body > div:not(.h-drawer-title-card),
-.h-issue-detail-drawer .h-drawer-body > div:not(.h-drawer-title-card) {
+}.h-feature-peek-drawer .h-drawer-body > div:not(.h-drawer-title-card) {
   margin-bottom: 16px !important;
   padding: 15px 15px 13px !important;
   border-radius: 18px !important;
@@ -15489,40 +15086,24 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.078),
     0 16px 34px rgba(0, 0, 0, 0.24) !important;
-}
-
-.h-feature-peek-drawer .h-drawer-body > div:not(.h-drawer-title-card) > div:first-child,
-.h-issue-detail-drawer .h-drawer-body > div:not(.h-drawer-title-card) > div:first-child {
+}.h-feature-peek-drawer .h-drawer-body > div:not(.h-drawer-title-card) > div:first-child {
   color: color-mix(in oklab, var(--h-popout-accent), white 18%) !important;
   font-size: 0.72rem !important;
   font-weight: 860 !important;
   letter-spacing: 0 !important;
-}
-
-.h-drawer-meta-strip > span,
-.h-drawer-meta-strip > code,
-.h-issue-detail-drawer .h-issue-sev,
-.h-issue-detail-drawer .h-issue-status,
-.h-issue-detail-drawer .h-issue-linked,
-.h-issue-detail-drawer .h-issue-id {
+}.h-drawer-meta-strip > span,
+.h-drawer-meta-strip > code {
   min-height: 25px !important;
   border-color: color-mix(in oklab, var(--h-popout-accent), transparent 66%) !important;
   background:
     linear-gradient(180deg, rgba(255,255,255,0.052), rgba(255,255,255,0.010)),
     color-mix(in oklab, var(--h-popout-accent), transparent 91%) !important;
-}
-
-.h-feature-status-button,
+}.h-feature-status-button,
 .h-feature-peek-drawer > div:nth-of-type(2) button,
-.h-feature-peek-drawer > div:nth-of-type(2) a,
-.h-issue-detail-drawer > div:nth-of-type(2) button,
-.h-issue-detail-drawer > div:nth-of-type(3) button {
+.h-feature-peek-drawer > div:nth-of-type(2) a {
   min-height: 32px !important;
   border-radius: 999px !important;
-}
-
-.h-drawer-footer,
-.h-issue-detail-drawer > div:nth-of-type(3) {
+}.h-drawer-footer {
   background:
     linear-gradient(90deg, color-mix(in oklab, var(--h-popout-accent), transparent 90%), transparent 66%),
     linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.010)),
@@ -15535,40 +15116,26 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 
 
 
-@media (max-width: 860px) {
-  .h-feature-peek-drawer,
-  .h-issue-detail-drawer {
+@media (max-width: 860px) {.h-feature-peek-drawer {
     width: min(100vw, 820px) !important;
   }
-}
-
-/* Right-side drawer simplicity pass: keep the feature/issue accents, but make
+}/* Right-side drawer simplicity pass: keep the feature/issue accents, but make
    the inspector feel calmer, easier to scan, and more form-like. */
-.h-feature-peek-overlay,
-.h-issue-detail-overlay {
+.h-feature-peek-overlay {
   background: linear-gradient(90deg, color-mix(in srgb, var(--bg-deepest), transparent 58%), color-mix(in srgb, var(--bg-deepest), transparent 22%)) !important;
   backdrop-filter: blur(10px) saturate(118%) brightness(0.88) !important;
   -webkit-backdrop-filter: blur(10px) saturate(118%) brightness(0.88) !important;
-}
-
-.h-feature-peek-drawer,
-.h-issue-detail-drawer {
+}.h-feature-peek-drawer {
   width: min(760px, 72vw) !important;
   background: linear-gradient(180deg, color-mix(in srgb, var(--bg), transparent 0.5%), color-mix(in srgb, var(--bg-deeper), transparent 0.5%)) !important;
   border-left-color: color-mix(in oklab, var(--h-popout-accent), transparent 58%) !important;
   box-shadow:
     -28px 0 72px rgba(0, 0, 0, 0.56),
     inset 1px 0 0 color-mix(in oklab, var(--h-popout-accent), transparent 76%) !important;
-}
-
-.h-feature-peek-drawer::after,
-.h-issue-detail-drawer::after {
+}.h-feature-peek-drawer::after {
   opacity: 0.08 !important;
   background-size: 72px 72px !important;
-}
-
-.h-feature-peek-drawer > div:nth-of-type(1),
-.h-issue-detail-drawer > div:nth-of-type(1) {
+}.h-feature-peek-drawer > div:nth-of-type(1) {
   min-height: 52px;
   padding: 12px 20px !important;
   background: color-mix(in srgb, var(--bg-deeper), transparent 6%) !important;
@@ -15587,18 +15154,12 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   width: 7px;
   height: 7px;
   box-shadow: 0 0 0 3px color-mix(in oklab, var(--h-popout-accent), transparent 88%) !important;
-}
-
-.h-feature-peek-drawer .h-btn-icon,
-.h-issue-detail-drawer .h-btn-icon {
+}.h-feature-peek-drawer .h-btn-icon {
   width: 32px;
   height: 32px;
   background: color-mix(in srgb, var(--bg-deep), transparent 28%) !important;
   box-shadow: none !important;
-}
-
-.h-feature-peek-drawer .h-drawer-body,
-.h-issue-detail-drawer .h-drawer-body {
+}.h-feature-peek-drawer .h-drawer-body {
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -15614,13 +15175,9 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   border-color: color-mix(in oklab, var(--h-popout-accent), transparent 68%) !important;
   background: color-mix(in srgb, var(--bg-1), transparent 22%) !important;
   box-shadow: none !important;
-}
-
-.h-drawer-title-card::before,
+}.h-drawer-title-card::before,
 .h-feature-peek-drawer .h-drawer-body > div:not(.h-drawer-title-card)::before,
-.h-feature-peek-drawer .h-drawer-body > div:not(.h-drawer-title-card)::after,
-.h-issue-detail-drawer .h-drawer-body > div:not(.h-drawer-title-card)::before,
-.h-issue-detail-drawer .h-drawer-body > div:not(.h-drawer-title-card)::after {
+.h-feature-peek-drawer .h-drawer-body > div:not(.h-drawer-title-card)::after {
   display: none !important;
 }
 
@@ -15672,40 +15229,25 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 .h-drawer-meta-strip {
   gap: 6px 8px;
   padding-top: 8px;
-}
-
-.h-drawer-meta-strip > span,
-.h-drawer-meta-strip > code,
-.h-issue-detail-drawer .h-issue-sev,
-.h-issue-detail-drawer .h-issue-status,
-.h-issue-detail-drawer .h-issue-linked,
-.h-issue-detail-drawer .h-issue-id {
+}.h-drawer-meta-strip > span,
+.h-drawer-meta-strip > code {
   min-height: 22px !important;
   padding-inline: 7px !important;
   background: rgba(255, 255, 255, 0.035) !important;
   box-shadow: none !important;
-}
-
-.h-feature-peek-drawer .h-drawer-body > div:not(.h-drawer-title-card),
-.h-issue-detail-drawer .h-drawer-body > div:not(.h-drawer-title-card) {
+}.h-feature-peek-drawer .h-drawer-body > div:not(.h-drawer-title-card) {
   margin-bottom: 0 !important;
   padding: 14px 16px !important;
   border-radius: 14px !important;
   border-color: color-mix(in oklab, var(--h-popout-accent), transparent 78%) !important;
   background: color-mix(in srgb, var(--bg-deep), transparent 32%) !important;
   box-shadow: none !important;
-}
-
-.h-feature-peek-drawer .h-drawer-body > div:not(.h-drawer-title-card) > div:first-child,
-.h-issue-detail-drawer .h-drawer-body > div:not(.h-drawer-title-card) > div:first-child {
+}.h-feature-peek-drawer .h-drawer-body > div:not(.h-drawer-title-card) > div:first-child {
   margin-bottom: 10px !important;
   color: color-mix(in oklab, var(--fg-dim), white 16%) !important;
   font-size: 0.68rem !important;
   letter-spacing: 0 !important;
-}
-
-.h-feature-peek-drawer .h-markdown-view,
-.h-issue-detail-drawer .h-markdown-view {
+}.h-feature-peek-drawer .h-markdown-view {
   padding: 0 !important;
   border: 0 !important;
   border-radius: 0 !important;
@@ -15714,21 +15256,12 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   color: color-mix(in oklab, var(--fg), white 4%) !important;
   font-size: 0.90rem;
   line-height: 1.68;
-}
-
-.h-feature-peek-drawer .h-markdown-view :where(p, li),
-.h-issue-detail-drawer .h-markdown-view :where(p, li) {
+}.h-feature-peek-drawer .h-markdown-view :where(p, li) {
   max-width: 68ch;
-}
-
-.h-feature-peek-drawer .h-markdown-view :where(pre, code),
-.h-issue-detail-drawer .h-markdown-view :where(pre, code) {
+}.h-feature-peek-drawer .h-markdown-view :where(pre, code) {
   border-color: color-mix(in oklab, var(--h-popout-accent), transparent 82%) !important;
   background: color-mix(in srgb, var(--bg-deepest), transparent 28%) !important;
-}
-
-.h-feature-peek-drawer .h-feature-run-row,
-.h-issue-detail-drawer .h-feature-run-row {
+}.h-feature-peek-drawer .h-feature-run-row {
   border-radius: 12px !important;
   padding: 8px 10px !important;
   background: color-mix(in srgb, var(--bg-deeper), transparent 30%) !important;
@@ -15752,126 +15285,65 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 .h-feature-peek-drawer .h-drawer-footer > span:last-child {
   margin-left: 0 !important;
   justify-self: end;
-}
-
-
-
-
-
-
-
-
-/* Specificity follow-up for the readability pass: older HUD selectors target
+}/* Specificity follow-up for the readability pass: older HUD selectors target
    structural first children, so restate the calmer shapes with drawer scope. */
-.h-feature-peek-drawer .h-drawer-title-card,
-.h-issue-detail-drawer .h-drawer-title-card {
+.h-feature-peek-drawer .h-drawer-title-card {
   border-radius: 16px !important;
-}
-
-.h-feature-peek-drawer .h-drawer-title-card h2,
-.h-issue-detail-drawer .h-drawer-title-card h2 {
+}.h-feature-peek-drawer .h-drawer-title-card h2 {
   font-size: 1.3rem !important;
   line-height: 1.28 !important;
-}
-
-.h-feature-peek-drawer > div:nth-of-type(2) > .h-drawer-title-card,
-.h-issue-detail-drawer > div:nth-of-type(2) > .h-drawer-title-card {
+}.h-feature-peek-drawer > div:nth-of-type(2) > .h-drawer-title-card {
   border-radius: 16px !important;
-}
-
-.h-feature-peek-drawer > div:nth-of-type(2) > .h-drawer-title-card h2,
-.h-issue-detail-drawer > div:nth-of-type(2) > .h-drawer-title-card h2 {
+}.h-feature-peek-drawer > div:nth-of-type(2) > .h-drawer-title-card h2 {
   font-size: 1.3rem !important;
   line-height: 1.28 !important;
-}
-
-.h-feature-peek-drawer > div:nth-of-type(2) > div.h-drawer-title-card:first-child,
-.h-issue-detail-drawer > div:nth-of-type(2) > div.h-drawer-title-card:first-child {
+}.h-feature-peek-drawer > div:nth-of-type(2) > div.h-drawer-title-card:first-child {
   border-radius: 16px !important;
-}
-
-.h-feature-peek-drawer > div:nth-of-type(2) > div.h-drawer-title-card:first-child h2,
-.h-issue-detail-drawer > div:nth-of-type(2) > div.h-drawer-title-card:first-child h2 {
+}.h-feature-peek-drawer > div:nth-of-type(2) > div.h-drawer-title-card:first-child h2 {
   font-size: 1.3rem !important;
   line-height: 1.28 !important;
-}
-
-.h-feature-peek-drawer .h-drawer-body > div:not(.h-drawer-title-card) > div:first-child,
-.h-issue-detail-drawer .h-drawer-body > div:not(.h-drawer-title-card) > div:first-child {
+}.h-feature-peek-drawer .h-drawer-body > div:not(.h-drawer-title-card) > div:first-child {
   text-transform: none !important;
   font-weight: 720 !important;
   letter-spacing: 0 !important;
-}
-
-.h-feature-peek-drawer > div:nth-of-type(2) > div:not(.h-drawer-title-card):not(.h-drawer-footer),
-.h-issue-detail-drawer > div:nth-of-type(2) > div:not(.h-drawer-title-card):not(:first-of-type) {
+}.h-feature-peek-drawer > div:nth-of-type(2) > div:not(.h-drawer-title-card):not(.h-drawer-footer) {
   border-radius: 14px !important;
-}
-
-.h-feature-peek-drawer > div:nth-of-type(2) > div:not(.h-drawer-title-card):not(.h-drawer-footer) > div:first-child,
-.h-issue-detail-drawer > div:nth-of-type(2) > div:not(.h-drawer-title-card):not(:first-of-type) > div:first-child {
+}.h-feature-peek-drawer > div:nth-of-type(2) > div:not(.h-drawer-title-card):not(.h-drawer-footer) > div:first-child {
   text-transform: none !important;
   font-weight: 720 !important;
   letter-spacing: 0 !important;
 }
-@media (max-width: 860px) {
-  .h-feature-peek-drawer,
-  .h-issue-detail-drawer {
+@media (max-width: 860px) {.h-feature-peek-drawer {
     width: 100vw !important;
-  }
-
-  .h-feature-peek-drawer .h-drawer-body,
-  .h-issue-detail-drawer .h-drawer-body {
+  }.h-feature-peek-drawer .h-drawer-body {
     padding-inline: 16px !important;
-  }
-
-  .h-feature-peek-drawer .h-drawer-footer,
-  .h-issue-detail-drawer > div:nth-of-type(3) {
+  }.h-feature-peek-drawer .h-drawer-footer {
     grid-template-columns: 1fr !important;
     justify-items: stretch;
-  }
-
-  .h-feature-peek-drawer .h-drawer-footer > span:last-child,
-  .h-issue-detail-drawer > div:nth-of-type(3) .h-drawer-footer-hint {
+  }.h-feature-peek-drawer .h-drawer-footer > span:last-child {
     justify-self: start;
   }
-}
-
-/* Right-side drawer usability guardrails: named section/footer classes beat the
+}/* Right-side drawer usability guardrails: named section/footer classes beat the
    older structural HUD rules that clipped dense content inside cards. */
-.h-feature-peek-drawer,
-.h-issue-detail-drawer {
+.h-feature-peek-drawer {
   max-width: calc(100vw - 24px);
-}
-
-.h-feature-peek-drawer .h-drawer-body,
-.h-issue-detail-drawer .h-drawer-body {
+}.h-feature-peek-drawer .h-drawer-body {
   flex: 1 1 auto !important;
   min-height: 0 !important;
   overflow-x: hidden !important;
   overflow-y: auto !important;
   scroll-padding-bottom: 96px;
-}
-
-.h-feature-peek-drawer .h-drawer-section,
-.h-issue-detail-drawer .h-drawer-section {
+}.h-feature-peek-drawer .h-drawer-section {
   position: relative;
   overflow: visible !important;
   min-height: auto !important;
   height: auto !important;
   contain: none !important;
   border-radius: 14px !important;
-}
-
-.h-feature-peek-drawer .h-drawer-section::before,
-.h-feature-peek-drawer .h-drawer-section::after,
-.h-issue-detail-drawer .h-drawer-section::before,
-.h-issue-detail-drawer .h-drawer-section::after {
+}.h-feature-peek-drawer .h-drawer-section::before,
+.h-feature-peek-drawer .h-drawer-section::after {
   display: none !important;
-}
-
-.h-feature-peek-drawer .h-drawer-section-title,
-.h-issue-detail-drawer .h-drawer-section-title {
+}.h-feature-peek-drawer .h-drawer-section-title {
   min-height: 1rem;
   margin-bottom: 0.65rem !important;
   color: color-mix(in oklab, var(--fg-dim), white 18%) !important;
@@ -15880,30 +15352,16 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   letter-spacing: 0 !important;
   line-height: 1.35;
   text-transform: none !important;
-}
-
-.h-feature-peek-drawer .h-drawer-section > :last-child,
-.h-issue-detail-drawer .h-drawer-section > :last-child,
-.h-feature-peek-drawer .h-drawer-section .h-markdown-view > :last-child,
-.h-issue-detail-drawer .h-drawer-section .h-markdown-view > :last-child {
+}.h-feature-peek-drawer .h-drawer-section > :last-child,
+.h-feature-peek-drawer .h-drawer-section .h-markdown-view > :last-child {
   margin-bottom: 0 !important;
-}
-
-.h-feature-peek-drawer .h-drawer-title-card,
-.h-issue-detail-drawer .h-drawer-title-card {
+}.h-feature-peek-drawer .h-drawer-title-card {
   overflow: visible !important;
-}
-
-.h-feature-peek-drawer .h-drawer-title-card h2,
-.h-issue-detail-drawer .h-drawer-title-card h2 {
+}.h-feature-peek-drawer .h-drawer-title-card h2 {
   max-width: 64ch;
   overflow-wrap: anywhere;
   text-wrap: balance;
-}
-
-.h-feature-peek-drawer .h-drawer-eyebrow,
-.h-issue-detail-drawer .h-drawer-eyebrow,
-.h-issue-detail-drawer .h-drawer-meta-strip {
+}.h-feature-peek-drawer .h-drawer-eyebrow {
   min-width: 0;
   white-space: normal;
   row-gap: 6px;
@@ -15916,45 +15374,24 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 
 .h-feature-peek-drawer .h-feature-status-button {
   white-space: nowrap;
-}
-
-.h-feature-peek-drawer .h-markdown-view,
-.h-issue-detail-drawer .h-markdown-view {
+}.h-feature-peek-drawer .h-markdown-view {
   max-width: 100%;
   overflow: visible !important;
   overflow-wrap: anywhere;
-}
-
-.h-feature-peek-drawer .h-markdown-view :where(pre, table),
-.h-issue-detail-drawer .h-markdown-view :where(pre, table) {
+}.h-feature-peek-drawer .h-markdown-view :where(pre, table) {
   max-width: 100%;
   overflow-x: auto;
-}
-
-.h-feature-peek-drawer .h-markdown-view p,
-.h-issue-detail-drawer .h-markdown-view p {
+}.h-feature-peek-drawer .h-markdown-view p {
   margin: 0 0 0.75rem !important;
   color: color-mix(in oklab, var(--fg), white 6%) !important;
   opacity: 1 !important;
-}
-
-.h-feature-peek-drawer .h-markdown-view :where(strong, code),
-.h-issue-detail-drawer .h-markdown-view :where(strong, code) {
+}.h-feature-peek-drawer .h-markdown-view :where(strong, code) {
   color: color-mix(in oklab, var(--fg), white 12%) !important;
-}
-
-.h-feature-peek-drawer .h-feature-run-row,
-.h-issue-detail-drawer .h-feature-run-row {
+}.h-feature-peek-drawer .h-feature-run-row {
   min-width: 0;
-}
-
-.h-feature-peek-drawer .h-feature-run-row > *,
-.h-issue-detail-drawer .h-feature-run-row > * {
+}.h-feature-peek-drawer .h-feature-run-row > * {
   min-width: 0;
-}
-
-.h-feature-peek-drawer .h-drawer-footer,
-.h-issue-detail-drawer .h-issue-detail-footer {
+}.h-feature-peek-drawer .h-drawer-footer {
   flex: 0 0 auto !important;
   position: sticky;
   bottom: 0;
@@ -15965,14 +15402,9 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 
 
 
-@media (max-width: 860px) {
-  .h-feature-peek-drawer,
-  .h-issue-detail-drawer {
+@media (max-width: 860px) {.h-feature-peek-drawer {
     max-width: 100vw;
-  }
-
-  .h-feature-peek-drawer .h-drawer-footer,
-  .h-issue-detail-drawer .h-issue-detail-footer {
+  }.h-feature-peek-drawer .h-drawer-footer {
     grid-template-columns: 1fr !important;
   }
 }
@@ -16070,12 +15502,9 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 .h-stat-value.warn,
 .h-btn.danger {
   color: color-mix(in oklab, var(--warn), white 10%) !important;
-}
-
-.h-btn,
+}.h-btn,
 .h-key-btn,
 .h-feature-row-action,
-.h-issue-row-action,
 .h-feature-add,
 .h-inbox-action,
 .h-phase-actions-btn,
@@ -16090,12 +15519,9 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   color: color-mix(in oklab, var(--fg-dim), white 10%) !important;
   box-shadow: none !important;
   text-shadow: none !important;
-}
-
-.h-btn:hover,
+}.h-btn:hover,
 .h-key-btn:hover,
 .h-feature-row-action:hover,
-.h-issue-row-action:hover,
 .h-feature-add:hover,
 .h-inbox-action:hover,
 .h-phase-actions-btn:hover,
@@ -16220,18 +15646,11 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 
 .h-active-agents-row.is-stopped {
   border-block: 1px solid color-mix(in oklab, var(--border), white 4%) !important;
-}
-
-.h-feature-row,
-.h-issue {
+}.h-feature-row {
   background: color-mix(in oklab, var(--bg-2), white 1.5%) !important;
   box-shadow: none !important;
-}
-
-.h-feature-row:hover,
-.h-feature-row:focus-visible,
-.h-issue:hover,
-.h-issue:focus-visible {
+}.h-feature-row:hover,
+.h-feature-row:focus-visible {
   box-shadow: none !important;
   background: color-mix(in oklab, var(--bg-3), transparent 12%) !important;
 }
@@ -16322,9 +15741,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   left: 10px !important;
   right: 10px !important;
   bottom: 3px !important;
-}
-
-.h-root .h-header-side .h-btn,
+}.h-root .h-header-side .h-btn,
 .h-root .h-phase-plan-row .h-btn,
 .h-root .h-top-collapse-btn,
 .h-root .h-chip,
@@ -16335,7 +15752,6 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 .h-root .h-feature-add,
 .h-root .h-inbox-action,
 .h-root .h-feature-row-action,
-.h-root .h-issue-row-action,
 .h-root .h-phase-actions-btn,
 .h-root .h-active-agents-idle,
 .h-root .h-active-agents-start,
@@ -16347,9 +15763,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   box-shadow: none !important;
   filter: none !important;
   text-shadow: none !important;
-}
-
-.h-root .h-header-side .h-btn:hover,
+}.h-root .h-header-side .h-btn:hover,
 .h-root .h-phase-plan-row .h-btn:hover,
 .h-root .h-top-collapse-btn:hover,
 .h-root .h-chip:hover,
@@ -16360,7 +15774,6 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 .h-root .h-feature-add:hover,
 .h-root .h-inbox-action:hover,
 .h-root .h-feature-row-action:hover,
-.h-root .h-issue-row-action:hover,
 .h-root .h-phase-actions-btn:hover,
 .h-root .h-active-agents-idle:hover,
 .h-root .h-active-agents-start:hover,
@@ -16465,14 +15878,11 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   border-color: color-mix(in oklab, var(--h-flat-cyan), transparent 78%) !important;
   background: color-mix(in oklab, var(--h-flat-cyan), var(--bg-2) 95%) !important;
   box-shadow: none !important;
-}
-
-.h-root .h-stat,
+}.h-root .h-stat,
 .h-root .h-project,
 .h-root .h-running-lane,
 .h-root .h-focus-card,
 .h-root .h-status-distribution,
-.h-root .h-overview-action,
 .h-root .h-phase-plan-row .h-phase-plan-focus {
   border-color: color-mix(in oklab, var(--h-flat-cyan), transparent 74%) !important;
   background: color-mix(in oklab, var(--h-flat-cyan), var(--bg-2) 92%) !important;
@@ -16480,16 +15890,12 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   box-shadow: none !important;
   filter: none !important;
   text-shadow: none !important;
-}
-
-.h-root .h-stat:hover,
+}.h-root .h-stat:hover,
 .h-root .h-stat-button:focus-visible .h-stat,
 .h-root .h-project:hover,
 .h-root .h-project:focus-visible,
 .h-root .h-focus-card:hover:not(:disabled),
-.h-root .h-focus-card:focus-visible,
-.h-root .h-overview-action:hover,
-.h-root .h-overview-action:focus-visible {
+.h-root .h-focus-card:focus-visible {
   border-color: color-mix(in oklab, var(--h-flat-cyan), transparent 56%) !important;
   background: color-mix(in oklab, var(--h-flat-cyan), var(--bg-3) 88%) !important;
   box-shadow: none !important;
@@ -16596,9 +16002,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 .h-root .h-project-phases .h-phase-item.active .h-phase-dot {
   filter: none !important;
   box-shadow: none !important;
-}
-
-.h-root .h-btn,
+}.h-root .h-btn,
 .h-root .h-key-btn,
 .h-root .h-header-side .h-btn,
 .h-root .h-phase-plan-row .h-btn,
@@ -16608,7 +16012,6 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 .h-root .h-feature-tag-filter,
 .h-root .h-feature-mode-btn,
 .h-root .h-feature-row-action,
-.h-root .h-issue-row-action,
 .h-root .h-inbox-action,
 .h-root .h-phase-actions-btn,
 .h-root .h-active-agents-idle,
@@ -16620,9 +16023,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   box-shadow: none !important;
   filter: none !important;
   text-shadow: none !important;
-}
-
-.h-root .h-btn:hover,
+}.h-root .h-btn:hover,
 .h-root .h-key-btn:hover,
 .h-root .h-header-side .h-btn:hover,
 .h-root .h-phase-plan-row .h-btn:hover,
@@ -16632,7 +16033,6 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 .h-root .h-feature-tag-filter:hover,
 .h-root .h-feature-mode-btn:hover,
 .h-root .h-feature-row-action:hover,
-.h-root .h-issue-row-action:hover,
 .h-root .h-inbox-action:hover,
 .h-root .h-phase-actions-btn:hover,
 .h-root .h-active-agents-idle:hover,
@@ -17044,18 +16444,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   background: color-mix(in oklab, var(--h-flat-panel-tone), var(--bg-3) 78%) !important;
   box-shadow: none !important;
   filter: none !important;
-}
-
-
-
-
-
-
-
-
-
-.h-root :is(.h-panel, .h-compact-panel) .h-tabs:not(.h-main-tabs) .h-tab,
-.h-root .h-dashboard-panel-anchor .h-tab {
+}.h-root :is(.h-panel, .h-compact-panel) .h-tabs:not(.h-main-tabs) .h-tab {
   --h-panel-tab-tone: var(--accent-cool);
   border-color: color-mix(in oklab, var(--h-panel-tab-tone), transparent 58%) !important;
   background: color-mix(in oklab, var(--h-panel-tab-tone), var(--bg-2) 90%) !important;
@@ -17063,24 +16452,13 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   box-shadow: none !important;
   filter: none !important;
   text-shadow: none !important;
-}
-
-.h-root :is(.h-panel, .h-compact-panel) .h-tabs:not(.h-main-tabs) .h-tab:nth-child(2),
-.h-root .h-dashboard-panel-anchor .h-tab:nth-child(2) {
+}.h-root :is(.h-panel, .h-compact-panel) .h-tabs:not(.h-main-tabs) .h-tab:nth-child(2) {
   --h-panel-tab-tone: var(--good);
-}
-
-.h-root :is(.h-panel, .h-compact-panel) .h-tabs:not(.h-main-tabs) .h-tab:nth-child(3),
-.h-root .h-dashboard-panel-anchor .h-tab:nth-child(3) {
+}.h-root :is(.h-panel, .h-compact-panel) .h-tabs:not(.h-main-tabs) .h-tab:nth-child(3) {
   --h-panel-tab-tone: var(--warn);
-}
-
-.h-root :is(.h-panel, .h-compact-panel) .h-tabs:not(.h-main-tabs) .h-tab.on,
+}.h-root :is(.h-panel, .h-compact-panel) .h-tabs:not(.h-main-tabs) .h-tab.on,
 .h-root :is(.h-panel, .h-compact-panel) .h-tabs:not(.h-main-tabs) .h-tab[aria-selected="true"],
-.h-root .h-dashboard-panel-anchor .h-tab.on,
-.h-root .h-dashboard-panel-anchor .h-tab[aria-selected="true"],
-.h-root :is(.h-panel, .h-compact-panel) .h-tabs:not(.h-main-tabs) .h-tab:hover,
-.h-root .h-dashboard-panel-anchor .h-tab:hover {
+.h-root :is(.h-panel, .h-compact-panel) .h-tabs:not(.h-main-tabs) .h-tab:hover {
   border-color: color-mix(in oklab, var(--h-panel-tab-tone), transparent 34%) !important;
   background: color-mix(in oklab, var(--h-panel-tab-tone), var(--bg-3) 80%) !important;
   color: color-mix(in oklab, var(--h-panel-tab-tone), white 62%) !important;
@@ -17242,58 +16620,23 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 .h-root .h-insights-status-row:nth-child(4) { --h-row-tone: var(--h-row-neutral); }
 .h-root .h-insights-status-row:nth-child(5) { --h-row-tone: var(--h-row-warn); }
 .h-root .h-insights-status-row:nth-child(6) { --h-row-tone: var(--h-row-good); }
-.h-root .h-insights-status-row:nth-child(7) { --h-row-tone: var(--h-row-pink); }
-
-.h-root .h-feature-row::after,
-.h-root .h-issue::before,
+.h-root .h-insights-status-row:nth-child(7) { --h-row-tone: var(--h-row-pink); }.h-root .h-feature-row::after,
 .h-root .h-inbox-row::before,
 .h-root .h-proposal-item::before {
   background: color-mix(in oklab, var(--h-row-tone), white 4%) !important;
   opacity: 0.95 !important;
   box-shadow: none !important;
-}
-
-
-
-
-
-
-
-
-
-/* Panel-local row selectors with older specificity get the same readable wash. */
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-.h-root .h-agent-table .h-agent-row,
-.h-root .h-proposals-panel .h-proposal-item,
+}.h-root .h-proposals-panel .h-proposal-item,
 .h-root .h-proposal-list .h-proposal-item {
   background: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)) 11%, rgb(7 15 28 / 0.96)) !important;
   border-color: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 62%) !important;
   color: color-mix(in oklab, var(--fg), white 3%) !important;
   box-shadow: none !important;
   filter: none !important;
-}
-
-.h-root .h-agent-table .h-agent-row:nth-of-type(2n),
-.h-root .h-proposals-panel .h-proposal-item:nth-child(2n),
+}.h-root .h-proposals-panel .h-proposal-item:nth-child(2n),
 .h-root .h-proposal-list .h-proposal-item:nth-child(2n) {
   background: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)) 8%, rgb(11 25 42 / 0.97)) !important;
-}
-
-.h-root .h-agent-table .h-agent-row:is(:hover, :focus-visible, :focus-within),
-.h-root .h-proposals-panel .h-proposal-item:is(:hover, :focus-within, .is-active),
+}.h-root .h-proposals-panel .h-proposal-item:is(:hover, :focus-within, .is-active),
 .h-root .h-proposal-list .h-proposal-item:is(:hover, :focus-within, .is-active) {
   background: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)) 22%, rgb(17 37 61 / 0.98)) !important;
   border-color: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 36%) !important;
@@ -17323,25 +16666,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 .h-root {
   --h-row-info: color-mix(in oklab, var(--accent-cool), var(--fg-dim) 68%);
   --h-row-accent: color-mix(in oklab, var(--accent-cool), var(--fg-dim) 72%);
-}
-
-.h-root :is(
-  .h-feature-row,
-  .h-issue,
-  .h-git-row,
-  .h-inbox-row,
-  .h-agent-row,
-  .h-proposal-item,
-  .h-plugin-action-row,
-  .h-feature-run-row,
-  .h-log-line,
-  .h-insights-status-row
-),
-.h-root [data-index] > .h-feature-row,
-.h-root .h-git-panel .h-git-row,
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line,
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issue,
-.h-root .h-agent-table .h-agent-row,
+}.h-root [data-index] > .h-feature-row,
 .h-root .h-proposals-panel .h-proposal-item,
 .h-root .h-proposal-list .h-proposal-item {
   background: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)) 6%, rgb(4 9 18 / 0.985)) !important;
@@ -17349,71 +16674,32 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   color: color-mix(in oklab, var(--fg), white 5%) !important;
   box-shadow: none !important;
   filter: none !important;
-}
-
-.h-root :is(.h-feature-row, .h-issue, .h-git-row, .h-inbox-row, .h-agent-row, .h-proposal-item, .h-log-line).h-row-even,
-.h-root [data-index]:nth-child(2n) > .h-feature-row,
+}.h-root [data-index]:nth-child(2n) > .h-feature-row,
 .h-root [data-index] > .h-feature-row.h-row-even,
-.h-root .h-git-panel .h-git-row:nth-child(2n),
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:nth-child(2n),
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issue.h-row-even,
-.h-root .h-agent-table .h-agent-row:nth-of-type(2n),
 .h-root .h-proposals-panel .h-proposal-item:nth-child(2n),
 .h-root .h-proposal-list .h-proposal-item:nth-child(2n) {
   background: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)) 4%, rgb(8 15 27 / 0.99)) !important;
-}
-
-.h-root :is(
-  .h-feature-row,
-  .h-issue,
-  .h-git-row,
-  .h-inbox-row,
-  .h-agent-row,
-  .h-proposal-item,
-  .h-plugin-action-row,
-  .h-feature-run-row,
-  .h-log-line,
-  .h-insights-status-row
-):is(:hover, :focus-visible, :focus-within, .is-active, .is-focused, .is-selected),
-.h-root [data-index] > .h-feature-row:is(:hover, :focus-visible, :focus-within, .is-active, .is-focused, .is-selected),
-.h-root .h-git-panel .h-git-row:is(:hover, :focus-visible, :focus-within, .is-active),
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-log-line:is(:hover, :focus-within),
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issue:is(:hover, :focus-visible, :focus-within),
-.h-root .h-agent-table .h-agent-row:is(:hover, :focus-visible, :focus-within),
+}.h-root [data-index] > .h-feature-row:is(:hover, :focus-visible, :focus-within, .is-active, .is-focused, .is-selected),
 .h-root .h-proposals-panel .h-proposal-item:is(:hover, :focus-within, .is-active),
 .h-root .h-proposal-list .h-proposal-item:is(:hover, :focus-within, .is-active) {
   background: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)) 14%, rgb(12 24 40 / 0.992)) !important;
   border-color: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 28%) !important;
   box-shadow: none !important;
-}
-
-/* Row title cleanup: titles should read as text on the row, not as pills. */
+}/* Row title cleanup: titles should read as text on the row, not as pills. */
 
 
-.h-root .h-feature-row-main .h-feature-row-title,
-.h-root .h-issue-body--inline .h-issue-title {
+.h-root .h-feature-row-main .h-feature-row-title {
   inline-size: auto !important;
   width: auto !important;
-}
-
-/* Match feature and issue row outlines to the clearer git-row treatment. */
+}/* Match feature and issue row outlines to the clearer git-row treatment. */
 .h-root .h-feature-row,
-.h-root [data-index] > .h-feature-row,
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issue,
-.h-root .h-issue {
+.h-root [data-index] > .h-feature-row {
   border: 1px solid color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 72%) !important;
   border-left-width: 2px !important;
   border-radius: 9px !important;
-}
-
-.h-root :is(.h-feature-row.h-row-even, .h-issue.h-row-even),
-.h-root [data-index]:nth-child(2n) > .h-feature-row {
+}.h-root [data-index]:nth-child(2n) > .h-feature-row {
   border-color: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 78%) !important;
-}
-
-.h-root :is(.h-feature-row, .h-issue):is(:hover, :focus-visible, :focus-within, .is-active, .is-focused, .is-selected),
-.h-root [data-index] > .h-feature-row:is(:hover, :focus-visible, :focus-within, .is-active, .is-focused, .is-selected),
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issue:is(:hover, :focus-visible, :focus-within) {
+}.h-root [data-index] > .h-feature-row:is(:hover, :focus-visible, :focus-within, .is-active, .is-focused, .is-selected) {
   border-color: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 58%) !important;
   border-left-color: color-mix(in oklab, var(--h-row-tone, var(--h-row-accent)), transparent 44%) !important;
   box-shadow: none !important;
@@ -17434,10 +16720,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   box-shadow: none !important;
   filter: none !important;
   text-shadow: none !important;
-}
-
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-chip.h-issues-filter,
-.h-root .h-chip.h-issues-filter,
+}.h-root .h-chip.h-issues-filter,
 .h-root .h-issues-filter {
   --h-issues-filter-tone: var(--accent-cool);
   border-color: color-mix(in oklab, var(--h-issues-filter-tone), transparent 58%) !important;
@@ -17451,10 +16734,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 .h-root .h-chip.h-issues-filter--all { --h-issues-filter-tone: color-mix(in oklab, var(--accent-cool), var(--fg-dim) 46%); }
 .h-root .h-chip.h-issues-filter--active { --h-issues-filter-tone: var(--accent-cool); }
 .h-root .h-chip.h-issues-filter--closed { --h-issues-filter-tone: #a78bfa; }
-.h-root .h-chip.h-issues-filter--triage { --h-issues-filter-tone: var(--warn); }
-
-.h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-chip.h-issues-filter:is(.on, [aria-pressed="true"], :hover, :focus-visible),
-.h-root .h-chip.h-issues-filter:is(.on, [aria-pressed="true"], :hover, :focus-visible),
+.h-root .h-chip.h-issues-filter--triage { --h-issues-filter-tone: var(--warn); }.h-root .h-chip.h-issues-filter:is(.on, [aria-pressed="true"], :hover, :focus-visible),
 .h-root .h-issues-filter:is(.on, [aria-pressed="true"], :hover, :focus-visible) {
   border-color: color-mix(in oklab, var(--h-issues-filter-tone), transparent 38%) !important;
   background: color-mix(in oklab, var(--h-issues-filter-tone), rgb(10 22 38 / 0.98) 80%) !important;
@@ -17521,10 +16801,7 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 
 .h-root .h-feature-row .h-feature-attempts-pill.warn {
   --h-attempt-pill-tone: var(--warn);
-}
-
-.h-root .h-dashboard-panel-anchor .h-panel,
-.h-root .h-main-shell.embed > .h-proposals-with-inbox,
+}.h-root .h-main-shell.embed > .h-proposals-with-inbox,
 .h-root .h-main-shell.embed > *,
 .h-root .h-main-shell.brainstorm-full > .h-bsfull-panel {
   background: color-mix(in oklab, var(--accent-cool), rgb(5 12 24 / 0.98) 94%) !important;
@@ -17549,20 +16826,12 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   background: color-mix(in oklab, var(--h-flat-audit-tone), rgb(10 22 38 / 0.98) 80%) !important;
   box-shadow: none !important;
   filter: none !important;
-}
-
-
-
-/* Feature / issue right-side popouts: flat, readable inspector treatment. */
-.h-feature-peek-overlay,
-.h-issue-detail-overlay {
+}/* Feature / issue right-side popouts: flat, readable inspector treatment. */
+.h-feature-peek-overlay {
   background: color-mix(in srgb, var(--bg-deepest), transparent 28%) !important;
   backdrop-filter: blur(4px) !important;
   -webkit-backdrop-filter: blur(4px) !important;
-}
-
-.h-feature-peek-drawer,
-.h-issue-detail-drawer {
+}.h-feature-peek-drawer {
   --h-popout-surface: rgb(5 12 24 / 0.995);
   --h-popout-surface-2: rgb(8 18 31 / 0.99);
   --h-popout-surface-3: rgb(11 25 42 / 0.99);
@@ -17572,29 +16841,18 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   box-shadow: -16px 0 36px rgba(0, 0, 0, 0.42) !important;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
-}
-
-.h-feature-peek-drawer::before,
-.h-issue-detail-drawer::before {
+}.h-feature-peek-drawer::before {
   width: 2px !important;
   background: color-mix(in oklab, var(--h-popout-accent), transparent 40%) !important;
   box-shadow: none !important;
-}
-
-.h-feature-peek-drawer > div:nth-of-type(1),
-.h-issue-detail-drawer > div:nth-of-type(1) {
+}.h-feature-peek-drawer > div:nth-of-type(1) {
   padding: 12px 16px !important;
   background: var(--h-popout-surface-2) !important;
   border-bottom: 1px solid color-mix(in oklab, var(--h-popout-accent), transparent 78%) !important;
   box-shadow: none !important;
-}
-
-.h-feature-peek-drawer > div:nth-of-type(1)::after,
-.h-issue-detail-drawer > div:nth-of-type(1)::after,
+}.h-feature-peek-drawer > div:nth-of-type(1)::after,
 .h-feature-peek-drawer > div:nth-of-type(2) > div::before,
-.h-issue-detail-drawer > div:nth-of-type(2) > div:not(:first-of-type)::before,
-.h-feature-peek-drawer > div:nth-of-type(2) > div:first-child::after,
-.h-issue-detail-drawer > div:nth-of-type(2) > div:not(:first-of-type)::after {
+.h-feature-peek-drawer > div:nth-of-type(2) > div:first-child::after {
   content: none !important;
   display: none !important;
 }
@@ -17603,23 +16861,14 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   color: color-mix(in oklab, var(--fg-dim), white 8%) !important;
   font-size: 0.68rem !important;
   letter-spacing: 0 !important;
-}
-
-.h-feature-peek-drawer > div:nth-of-type(2),
-.h-issue-detail-drawer > div:nth-of-type(2),
-.h-feature-peek-drawer .h-drawer-body,
-.h-issue-detail-drawer .h-drawer-body {
+}.h-feature-peek-drawer > div:nth-of-type(2),
+.h-feature-peek-drawer .h-drawer-body {
   background: var(--h-popout-surface) !important;
   padding: 14px 16px 16px !important;
   scrollbar-color: color-mix(in oklab, var(--h-popout-accent), transparent 62%) transparent !important;
-}
-
-.h-feature-peek-drawer .h-drawer-title-card,
-.h-issue-detail-drawer .h-drawer-title-card,
+}.h-feature-peek-drawer .h-drawer-title-card,
 .h-feature-peek-drawer .h-drawer-section,
-.h-issue-detail-drawer .h-drawer-section,
-.h-feature-peek-drawer > div:nth-of-type(2) > div,
-.h-issue-detail-drawer > div:nth-of-type(2) > div:not(:first-of-type) {
+.h-feature-peek-drawer > div:nth-of-type(2) > div {
   overflow: visible !important;
   border: 1px solid color-mix(in oklab, var(--h-popout-accent), transparent 82%) !important;
   border-left: 2px solid color-mix(in oklab, var(--h-popout-accent), transparent 54%) !important;
@@ -17627,65 +16876,36 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   background: var(--h-popout-surface-2) !important;
   box-shadow: none !important;
   filter: none !important;
-}
-
-.h-feature-peek-drawer .h-drawer-title-card,
-.h-issue-detail-drawer .h-drawer-title-card {
+}.h-feature-peek-drawer .h-drawer-title-card {
   padding: 14px 14px 12px !important;
   margin-bottom: 12px !important;
-}
-
-.h-feature-peek-drawer .h-drawer-section,
-.h-issue-detail-drawer .h-drawer-section {
+}.h-feature-peek-drawer .h-drawer-section {
   padding: 11px 12px 10px !important;
   margin-bottom: 10px !important;
-}
-
-.h-feature-peek-drawer .h-drawer-title-card h2,
-.h-issue-detail-drawer .h-drawer-title-card h2,
-.h-feature-peek-drawer h2,
-.h-issue-detail-drawer h2 {
+}.h-feature-peek-drawer .h-drawer-title-card h2,
+.h-feature-peek-drawer h2 {
   color: color-mix(in oklab, var(--fg), white 7%) !important;
   font-size: 1.14rem !important;
   line-height: 1.28 !important;
   letter-spacing: 0 !important;
   text-shadow: none !important;
-}
-
-.h-feature-peek-drawer .h-drawer-eyebrow,
-.h-issue-detail-drawer .h-drawer-eyebrow,
+}.h-feature-peek-drawer .h-drawer-eyebrow,
 .h-feature-peek-drawer .h-drawer-section-title,
-.h-issue-detail-drawer .h-drawer-section-title,
-.h-feature-peek-drawer > div:nth-of-type(2) > div > div:first-child,
-.h-issue-detail-drawer > div:nth-of-type(2) > div:not(:first-of-type) > div:first-child {
+.h-feature-peek-drawer > div:nth-of-type(2) > div > div:first-child {
   color: color-mix(in oklab, var(--fg-dim), var(--h-popout-accent) 18%) !important;
   font-size: 0.69rem !important;
   font-weight: 760 !important;
   letter-spacing: 0 !important;
   text-transform: uppercase !important;
   text-shadow: none !important;
-}
-
-.h-feature-peek-drawer .h-drawer-eyebrow-separator,
-.h-issue-detail-drawer .h-drawer-eyebrow-separator {
+}.h-feature-peek-drawer .h-drawer-eyebrow-separator {
   color: color-mix(in oklab, var(--border), white 8%) !important;
-}
-
-.h-feature-peek-drawer .h-drawer-meta-strip,
-.h-issue-detail-drawer .h-drawer-meta-strip {
+}.h-feature-peek-drawer .h-drawer-meta-strip {
   gap: 5px 7px !important;
   padding-top: 8px !important;
   border-top: 1px solid color-mix(in oklab, var(--border), transparent 24%) !important;
-}
-
-.h-feature-peek-drawer .h-drawer-meta-strip > span,
-.h-feature-peek-drawer .h-drawer-meta-strip > code,
-.h-issue-detail-drawer .h-drawer-meta-strip > span,
-.h-issue-detail-drawer .h-drawer-meta-strip > code,
-.h-issue-detail-drawer .h-issue-id,
-.h-issue-detail-drawer .h-issue-sev,
-.h-issue-detail-drawer .h-issue-status,
-.h-issue-detail-drawer .h-issue-linked {
+}.h-feature-peek-drawer .h-drawer-meta-strip > span,
+.h-feature-peek-drawer .h-drawer-meta-strip > code {
   min-height: 21px !important;
   padding: 2px 7px !important;
   border: 1px solid color-mix(in oklab, var(--h-popout-accent), transparent 78%) !important;
@@ -17699,13 +16919,9 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 
 .h-feature-status-controls {
   gap: 6px !important;
-}
-
-.h-feature-status-button,
+}.h-feature-status-button,
 .h-feature-peek-drawer button,
-.h-feature-peek-drawer a,
-.h-issue-detail-drawer button,
-.h-issue-detail-drawer a {
+.h-feature-peek-drawer a {
   border: 1px solid color-mix(in oklab, var(--h-popout-accent), transparent 76%) !important;
   border-radius: 8px !important;
   background: var(--h-popout-surface-3) !important;
@@ -17714,24 +16930,15 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   filter: none !important;
   text-shadow: none !important;
   transform: none !important;
-}
-
-.h-feature-status-button.is-current,
-.h-feature-peek-drawer button[aria-pressed="true"],
-.h-issue-detail-drawer button[aria-pressed="true"] {
+}.h-feature-status-button.is-current,
+.h-feature-peek-drawer button[aria-pressed="true"] {
   border-color: color-mix(in oklab, var(--h-popout-accent), transparent 48%) !important;
   background: color-mix(in oklab, var(--h-popout-accent), var(--h-popout-surface-3) 84%) !important;
   color: color-mix(in oklab, var(--fg), white 8%) !important;
-}
-
-.h-feature-peek-drawer button:hover,
+}.h-feature-peek-drawer button:hover,
 .h-feature-peek-drawer button:focus-visible,
 .h-feature-peek-drawer a:hover,
-.h-feature-peek-drawer a:focus-visible,
-.h-issue-detail-drawer button:hover,
-.h-issue-detail-drawer button:focus-visible,
-.h-issue-detail-drawer a:hover,
-.h-issue-detail-drawer a:focus-visible {
+.h-feature-peek-drawer a:focus-visible {
   border-color: color-mix(in oklab, var(--h-popout-accent), transparent 52%) !important;
   background: color-mix(in oklab, var(--h-popout-accent), var(--h-popout-surface-3) 88%) !important;
   color: color-mix(in oklab, var(--fg), white 7%) !important;
@@ -17739,98 +16946,57 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
   transform: none !important;
   outline: 2px solid color-mix(in oklab, var(--h-popout-accent), transparent 72%) !important;
   outline-offset: 2px !important;
-}
-
-.h-feature-peek-drawer pre,
-.h-issue-detail-drawer pre,
-.h-feature-peek-drawer .vditor-reset,
-.h-issue-detail-drawer .vditor-reset {
+}.h-feature-peek-drawer pre,
+.h-feature-peek-drawer .vditor-reset {
   background: rgb(3 9 18 / 0.96) !important;
   border: 1px solid color-mix(in oklab, var(--border), transparent 18%) !important;
   border-radius: 8px !important;
   box-shadow: none !important;
   color: color-mix(in oklab, var(--fg), white 3%) !important;
-}
-
-.h-feature-peek-drawer .h-drawer-footer,
-.h-issue-detail-drawer .h-drawer-footer,
-.h-issue-detail-drawer > div:nth-of-type(3) {
+}.h-feature-peek-drawer .h-drawer-footer {
   border-top: 1px solid color-mix(in oklab, var(--h-popout-accent), transparent 80%) !important;
   background: var(--h-popout-surface-2) !important;
   box-shadow: none !important;
-}
-
-
-
-/* Drawer specificity guards: lazy drawer polish rules above use structural
+}/* Drawer specificity guards: lazy drawer polish rules above use structural
    selectors, so repeat the flat treatment with equal-or-higher specificity. */
-.h-feature-peek-drawer[data-state],
-.h-issue-detail-drawer[data-state] {
+.h-feature-peek-drawer[data-state] {
   background: var(--h-popout-surface) !important;
   box-shadow: -14px 0 30px rgba(0, 0, 0, 0.38) !important;
   border-left-color: color-mix(in oklab, var(--h-popout-accent), transparent 66%) !important;
-}
-
-.h-feature-peek-drawer .h-drawer-body > div:not(.h-drawer-title-card),
-.h-issue-detail-drawer .h-drawer-body > div:not(.h-drawer-title-card),
-.h-feature-peek-drawer .h-drawer-body > .h-drawer-section,
-.h-issue-detail-drawer .h-drawer-body > .h-drawer-section {
+}.h-feature-peek-drawer .h-drawer-body > div:not(.h-drawer-title-card),
+.h-feature-peek-drawer .h-drawer-body > .h-drawer-section {
   border: 1px solid color-mix(in oklab, var(--h-popout-accent), transparent 84%) !important;
   border-left: 2px solid color-mix(in oklab, var(--h-popout-accent), transparent 62%) !important;
   border-radius: 10px !important;
   background: var(--h-popout-surface-2) !important;
   box-shadow: none !important;
   filter: none !important;
-}
-
-.h-feature-peek-drawer .h-drawer-body > div:not(.h-drawer-title-card) > div:first-child,
-.h-issue-detail-drawer .h-drawer-body > div:not(.h-drawer-title-card) > div:first-child,
-.h-feature-peek-drawer .h-drawer-body .h-drawer-section-title,
-.h-issue-detail-drawer .h-drawer-body .h-drawer-section-title {
+}.h-feature-peek-drawer .h-drawer-body > div:not(.h-drawer-title-card) > div:first-child,
+.h-feature-peek-drawer .h-drawer-body .h-drawer-section-title {
   color: color-mix(in oklab, var(--fg-dim), white 12%) !important;
   font-size: 0.68rem !important;
   font-weight: 740 !important;
   letter-spacing: 0 !important;
   text-transform: uppercase !important;
-}
-
-.h-feature-peek-drawer > div:nth-of-type(2) button,
+}.h-feature-peek-drawer > div:nth-of-type(2) button,
 .h-feature-peek-drawer > div:nth-of-type(2) a,
-.h-issue-detail-drawer > div:nth-of-type(2) button,
-.h-issue-detail-drawer > div:nth-of-type(3) button,
 .h-feature-peek-drawer .h-btn,
-.h-issue-detail-drawer .h-btn,
-.h-feature-peek-drawer .h-btn-icon,
-.h-issue-detail-drawer .h-btn-icon {
+.h-feature-peek-drawer .h-btn-icon {
   background: var(--h-popout-surface-3) !important;
   box-shadow: none !important;
   border-radius: 8px !important;
   transform: none !important;
-}
-
-.h-feature-peek-drawer .h-drawer-title-card,
-.h-issue-detail-drawer .h-drawer-title-card {
+}.h-feature-peek-drawer .h-drawer-title-card {
   border-radius: 10px !important;
   background: var(--h-popout-surface-2) !important;
   box-shadow: none !important;
-}
-
-.h-feature-peek-drawer .h-markdown-view,
-.h-issue-detail-drawer .h-markdown-view {
+}.h-feature-peek-drawer .h-markdown-view {
   border-radius: 8px !important;
   background: rgb(3 9 18 / 0.96) !important;
   box-shadow: none !important;
-}
-
-.h-feature-peek-drawer .h-drawer-body > .h-drawer-title-card,
-.h-issue-detail-drawer .h-drawer-body > .h-drawer-title-card,
-.h-feature-peek-drawer .h-drawer-body > div.h-drawer-section,
-.h-issue-detail-drawer .h-drawer-body > div.h-drawer-section {
+}.h-feature-peek-drawer .h-drawer-body > .h-drawer-title-card,
+.h-feature-peek-drawer .h-drawer-body > div.h-drawer-section {
   border-radius: 10px !important;
-}
-
-.h-issue-detail-drawer > div:nth-of-type(3) .h-btn,
-.h-feature-peek-drawer .h-drawer-footer .h-btn,
-.h-issue-detail-drawer .h-drawer-footer .h-btn {
+}.h-feature-peek-drawer .h-drawer-footer .h-btn {
   border-radius: 8px !important;
 }

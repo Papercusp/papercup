@@ -138,6 +138,17 @@ export function appendEndedPage(prev: readonly EndedSessionRow[], page: readonly
   return [...prev, ...page.filter((r) => !seen.has(r.id))];
 }
 
+/** Classify a failed search response into the user-facing message. A route
+ *  timeout (the 30s watchdog 408s under host load — 2026-07-09 incident) is
+ *  NOT "broken": say so and invite a retry, instead of a dead generic error
+ *  the owner reads as "no results". Pure — exported for tests. */
+export function searchFailureMessage(status: number | null, errCode?: string | null): string {
+  if (status === 408 || status === 503 || status === 504 || errCode === 'timeout') {
+    return 'Search timed out — the server is busy right now. Try again in a moment.';
+  }
+  return 'Search failed.';
+}
+
 /** The popover's session search input. Controlled; the parent decides when the
  *  query is "active" (>= 2 chars) and swaps the roster for the results view. */
 export function SessionsSearchInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
@@ -235,6 +246,10 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
   const [sessions, setSessions] = useState<SearchSessionResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Bumped by the Retry button to re-fire the same query. DELIBERATELY manual —
+  // auto-retry against a server that just 408'd under load would stack more
+  // heavy queries onto the exact condition that caused the failure.
+  const [attempt, setAttempt] = useState(0);
   const [inspecting, setInspecting] = useState<InspectTarget | null>(null);
 
   useEffect(() => {
@@ -245,16 +260,16 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
       setError(null);
       try {
         const r = await fetch(`/api/adv/sessions/search-transcripts?q=${encodeURIComponent(query)}&limit=30`, { signal: ctl.signal });
-        const j = await r.json() as { ok: boolean; sessions?: SearchSessionResult[] };
-        if (!j.ok) throw new Error('search_failed');
+        const j = await r.json() as { ok: boolean; error?: string; sessions?: SearchSessionResult[] };
+        if (!j.ok) { setError(searchFailureMessage(r.status, j.error)); setLoading(false); return; }
         setSessions(j.sessions ?? []);
         setLoading(false);
       } catch {
-        if (!ctl.signal.aborted) { setError('Search failed'); setLoading(false); }
+        if (!ctl.signal.aborted) { setError(searchFailureMessage(null)); setLoading(false); }
       }
     }, 300);
     return () => { clearTimeout(t); ctl.abort(); };
-  }, [query]);
+  }, [query, attempt]);
 
   const activeResults = sessions.filter((s) => s.active);
   const inactiveResults = sessions.filter((s) => !s.active);
@@ -264,7 +279,19 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
   return (
     <div className="pc-agents-sessions__results" data-testid="agents-search-results">
       {loading && <div className="pc-agents-sessions__status">Searching…</div>}
-      {error && <div className="pc-agents-sessions__status is-error">{error}</div>}
+      {error && (
+        <div className="pc-agents-sessions__status is-error" data-testid="search-error">
+          {error}{' '}
+          <button
+            type="button"
+            className="pc-agents-sessions__retry"
+            data-testid="search-retry"
+            onClick={() => setAttempt((a) => a + 1)}
+          >
+            Retry
+          </button>
+        </div>
+      )}
       {!loading && !error && sessions.length === 0 && (
         <div className="pc-agents-sessions__status">No matches in any session.</div>
       )}
@@ -510,6 +537,12 @@ function SessionsStyles() {
       .pc-agents-sessions__search:focus { outline: 1px solid var(--accent, #38bdf8); }
       .pc-agents-sessions__status { padding: 8px 10px; font-size: 11.5px; color: var(--fg-mute); font-style: italic; }
       .pc-agents-sessions__status.is-error { color: #d97757; }
+      .pc-agents-sessions__retry {
+        margin-left: 6px; padding: 1px 8px; font-size: 11px; font-style: normal;
+        color: var(--accent, #7aa2f7); background: transparent;
+        border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
+      }
+      .pc-agents-sessions__retry:hover { border-color: var(--accent, #7aa2f7); }
       .pc-agents-sessions__scroll { max-height: 300px; overflow-y: auto; }
       .pc-agents-sessions__result { padding: 2px 0 4px; border-bottom: 1px solid var(--border); }
       .pc-agents-sessions__result:last-child { border-bottom: none; }

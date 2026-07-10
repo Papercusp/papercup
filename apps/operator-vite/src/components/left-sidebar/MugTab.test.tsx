@@ -56,7 +56,13 @@ import MugTab from './MugTab';
 
 // MugTab's new Throttle + Autonomy sections use nuqs (collapse state); the
 // adapter supplies the URL-state context the hooks need under test.
-const Wrap = ({ children }: { children: ReactNode }) => <NuqsTestingAdapter>{children}</NuqsTestingAdapter>;
+const Wrap = ({ children }: { children: ReactNode }) => <NuqsTestingAdapter hasMemory>{children}</NuqsTestingAdapter>;
+
+async function openLane(label: 'Now' | 'Work' | 'Capacity' | 'Schedule') {
+  const tab = screen.getByRole('tab', { name: new RegExp(`^${label}`, 'i') });
+  fireEvent.click(tab);
+  await waitFor(() => expect(tab.getAttribute('aria-selected')).toBe('true'));
+}
 
 const PROJECTS = [
   { slug: 'papercup-hive', harness_kind: 'hive' },
@@ -97,20 +103,30 @@ afterEach(() => {
 });
 
 describe('MugTab (Colony sidebar, round 2)', () => {
-  it('renders Pause (topmost), directive, eligible hives + plans, and the minutes input — no hive dropdown', () => {
+  it('groups the Mug controls into state-led lanes and only mounts the selected lane', async () => {
     render(<MugTab active={true} />, { wrapper: Wrap });
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
+      'NowFlowing',
+      'WorkAll work',
+      'CapacityDefaults',
+      'ScheduleRoutines',
+    ]);
     expect(screen.getByText('Pause new work')).toBeTruthy();
     expect(screen.getByText('Focus directive')).toBeTruthy();
-    expect(screen.getByText('Eligible pot')).toBeTruthy();
-    expect(screen.getByText('Eligible plans')).toBeTruthy();
     expect(screen.getByLabelText('Pause duration in minutes')).toBeTruthy();
+    expect(screen.queryByText('Eligible pot')).toBeNull();
+
+    await openLane('Work');
+    expect(screen.queryByText('Pause new work')).toBeNull();
+    expect(screen.getByText('pot')).toBeTruthy();
+    expect(screen.getByText('Plans')).toBeTruthy();
     expect(screen.getByText('Plan A')).toBeTruthy();
     expect(screen.queryByText('Shipped')).toBeNull();
     // The old per-hive selector is gone (steers the home Queen).
     expect(screen.queryByLabelText('Select hive to steer')).toBeNull();
   });
 
-  it('summarizes current work flow, scope, directive, and model overrides', () => {
+  it('surfaces live flow, work focus, and capacity overrides directly in the lane navigation', () => {
     H.steeringResult = {
       data: [steering({ directive: 'Prioritize benchmarks.', eligibleHives: ['pot-a'], eligiblePlans: ['plan-a'], modelTiers: ['opus'] })],
       loading: false,
@@ -118,15 +134,14 @@ describe('MugTab (Colony sidebar, round 2)', () => {
       invalidate: vi.fn(),
     };
     render(<MugTab active={true} />, { wrapper: Wrap });
-    expect(screen.getByLabelText('brain steering summary')).toBeTruthy();
-    expect(screen.getByText('Flowing')).toBeTruthy();
-    expect(screen.getByText('1 pot · 1 plan')).toBeTruthy();
-    expect(screen.getByText('Directive set')).toBeTruthy();
-    expect(screen.getByText('1 tier override')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: /NowFlowing · brief set/i })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: /Work1 pot · 1 plan/i })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: /Capacity1 custom/i })).toBeTruthy();
   });
 
   it('renders the eligible-hives checkboxes from harnessProjects.lite sync data', async () => {
     render(<MugTab active={true} />, { wrapper: Wrap });
+    await openLane('Work');
     await waitFor(() => expect(screen.getByRole('checkbox', { name: 'pot-a' })).toBeTruthy());
     expect(screen.getByRole('checkbox', { name: 'papercup-hive' })).toBeTruthy();
     expect(screen.getByRole('checkbox', { name: 'pot-b' })).toBeTruthy();
@@ -135,6 +150,7 @@ describe('MugTab (Colony sidebar, round 2)', () => {
 
   it('toggling a hive writes eligibleHives + the home hive', async () => {
     render(<MugTab active={true} />, { wrapper: Wrap });
+    await openLane('Work');
     await waitFor(() => expect(screen.getByRole('checkbox', { name: 'pot-a' })).toBeTruthy());
     fireEvent.click(screen.getByRole('checkbox', { name: 'pot-a' }));
     await waitFor(() => expect(wroteRunTool()).toBe(true));
@@ -146,6 +162,7 @@ describe('MugTab (Colony sidebar, round 2)', () => {
 
   it('toggling a plan writes eligiblePlans + the home hive', async () => {
     render(<MugTab active={true} />, { wrapper: Wrap });
+    await openLane('Work');
     fireEvent.click(screen.getByRole('checkbox', { name: 'Plan A' }));
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     const { args } = setSteeringBody();
@@ -155,6 +172,7 @@ describe('MugTab (Colony sidebar, round 2)', () => {
 
   it('toggling Non-plan work items writes includeUnplannedWork + the home hive', async () => {
     render(<MugTab active={true} />, { wrapper: Wrap });
+    await openLane('Work');
     // Default view is "included" (checked) → clicking turns loose work OFF.
     fireEvent.click(screen.getByRole('checkbox', { name: 'Work non-plan work items' }));
     await waitFor(() => expect(wroteRunTool()).toBe(true));
@@ -173,6 +191,7 @@ describe('MugTab (Colony sidebar, round 2)', () => {
 
   it('accumulates fast back-to-back checkbox clicks without clobbering (owner bug 2026-06-16)', async () => {
     render(<MugTab active={true} />, { wrapper: Wrap });
+    await openLane('Work');
     // two clicks before any server refetch — the old read-modify-write on the
     // stale server array dropped the first selection; optimistic state accumulates.
     fireEvent.click(screen.getByRole('checkbox', { name: 'Plan A' }));
@@ -188,6 +207,7 @@ describe('MugTab (Colony sidebar, round 2)', () => {
     H.fetchMock = vi.fn(() => new Promise(() => {}));
     vi.stubGlobal('fetch', H.fetchMock);
     render(<MugTab active={true} />, { wrapper: Wrap });
+    await openLane('Capacity');
 
     const std = await screen.findByLabelText('std model spec') as HTMLInputElement;
     fireEvent.change(std, { target: { value: 'opus:xhigh' } });

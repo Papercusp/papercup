@@ -40,6 +40,21 @@ vi.mock('../audience-host', async (importOriginal) => {
   };
 });
 
+// WI-3653: controllable federation-scope resolver — sendMessage's AUTO stamp
+// (undefined harnessSlug → resolve the workspace's single shared hive) must
+// never reach PG in these in-memory tests. Default: no shared hive → the stamp
+// stays off and every pre-WI-3653 test sees byte-identical envelopes.
+const hiveScope = vi.hoisted(() => ({
+  resolve: (async () => ({ kind: 'none' })) as (ws: string) => Promise<unknown>,
+}));
+vi.mock('../federation-scope', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../federation-scope')>();
+  return {
+    ...actual,
+    resolveWorkspaceHiveScope: (ws: string) => hiveScope.resolve(ws),
+  };
+});
+
 import { configureCoordLog, resetCoordLog, coordLog } from '../log';
 import { appendAck, readInbox, readOutbox, readThread, sendMessage } from '../messages';
 import type { AgentIdentity } from '../identity';
@@ -228,5 +243,55 @@ describe('appendAck double-ack — dedup-or-not contract (P3-16)', () => {
     // dedup) — pinning that the double-ack is visible, not silently swallowed.
     const inboxA = await readInbox('A');
     expect(inboxA.filter((x) => x.kind === 'ack')).toHaveLength(2);
+  });
+});
+
+describe('sendMessage federation auto-stamp (WI-3653)', () => {
+  afterEach(() => {
+    hiveScope.resolve = async () => ({ kind: 'none' });
+  });
+
+  it('undefined harnessSlug + exactly one shared hive → stamps the hive home', async () => {
+    hiveScope.resolve = async () => ({ kind: 'one', homeSlug: 'my-hive-home' });
+    const env = await sendMessage(fakeIdentity('A'), { to: ['B'], summary: 'hi' });
+    expect(env.harness_slug).toBe('my-hive-home');
+  });
+
+  it('explicit string harnessSlug wins verbatim — resolver never consulted', async () => {
+    hiveScope.resolve = async () => {
+      throw new Error('resolver must not be called for an explicit slug');
+    };
+    const env = await sendMessage(fakeIdentity('A'), {
+      to: ['B'],
+      summary: 'hi',
+      harnessSlug: 'scoped-h',
+    });
+    expect(env.harness_slug).toBe('scoped-h');
+  });
+
+  it("null harnessSlug (scope:'local') is NEVER auto-stamped, even with a hive", async () => {
+    hiveScope.resolve = async () => ({ kind: 'one', homeSlug: 'my-hive-home' });
+    const env = await sendMessage(fakeIdentity('A'), {
+      to: ['B'],
+      summary: 'hi',
+      harnessSlug: null,
+    });
+    expect(env.harness_slug).toBeUndefined();
+  });
+
+  it('no / ambiguous shared hive → machine-local (no stamp)', async () => {
+    hiveScope.resolve = async () => ({ kind: 'many', candidates: ['a', 'b'] });
+    const env = await sendMessage(fakeIdentity('A'), { to: ['B'], summary: 'hi' });
+    expect(env.harness_slug).toBeUndefined();
+  });
+
+  it('resolver throw is fail-soft: send still lands, unstamped', async () => {
+    hiveScope.resolve = async () => {
+      throw new Error('pg down');
+    };
+    const env = await sendMessage(fakeIdentity('A'), { to: ['B'], summary: 'hi' });
+    expect(env.harness_slug).toBeUndefined();
+    const inboxB = await readInbox('B');
+    expect(inboxB.some((m) => m.msg_id === env.msg_id)).toBe(true);
   });
 });

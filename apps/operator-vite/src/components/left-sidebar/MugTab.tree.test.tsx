@@ -53,7 +53,9 @@ import MugTab from './MugTab';
 
 // MugTab's new Throttle + Autonomy sections use nuqs (collapse state); the
 // adapter supplies the URL-state context the hooks need under test.
-const Wrap = ({ children }: { children: ReactNode }) => <NuqsTestingAdapter>{children}</NuqsTestingAdapter>;
+const Wrap = ({ children }: { children: ReactNode }) => (
+  <NuqsTestingAdapter searchParams="?qMug=work">{children}</NuqsTestingAdapter>
+);
 
 const PROJECTS = [
   { slug: 'papercup-hive', harness_kind: 'hive' },
@@ -94,9 +96,9 @@ afterEach(() => {
 });
 
 describe('MugTab nested steering tree', () => {
-  it('renders the Steering scope tree with hive nodes (no flat Eligible-hives/plans sections)', async () => {
+  it('renders the pot-and-plan tree in the Work lane (no flat Eligible-hives/plans sections)', async () => {
     render(<MugTab active={true} />, { wrapper: Wrap });
-    expect(screen.getByText('Steering scope')).toBeTruthy();
+    expect(screen.getByText('pot & plans')).toBeTruthy();
     await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Toggle pot pot-a' })).toBeTruthy());
     expect(screen.getByRole('checkbox', { name: 'Toggle pot papercup-hive' })).toBeTruthy();
     expect(screen.queryByRole('checkbox', { name: 'Toggle pot pot-b' })).toBeNull();
