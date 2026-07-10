@@ -145,8 +145,18 @@ describe('plugins:fire_event', () => {
       invokePluginAction: vi.fn(),
       firePluginLifecycle,
     }));
-    vi.doMock('../../../harness-registry', async (importOriginal) => ({
-      ...(await importOriginal<Record<string, unknown>>()),
+    // fire_event top-level imports `emitSystemEvent` from ../../events/engine;
+    // the lifecycle branch never uses it, but leaving it un-mocked eagerly loads
+    // the REAL events/engine → … → p2p/revocation-reaper graph, whose
+    // `import { deregisterEphemeralForeignHarness } from '../harness-registry'`
+    // then reads THIS test's partial harness-registry mock. Relying on
+    // `importOriginal` to carry that (and every other) export across is fragile
+    // and flaked the gate 18× (EI-9039: "No 'deregisterEphemeralForeignHarness'
+    // export is defined on the mock"). Mock events/engine here — exactly as the
+    // sibling event-mode test does — so the deep graph never loads and the
+    // registry mock only needs the one export fire_event actually calls.
+    vi.doMock('../../../events/engine', () => ({ emitSystemEvent: vi.fn() }));
+    vi.doMock('../../../harness-registry', () => ({
       loadHarnessRegistry: vi.fn(async () => ({
         projects: [{ slug: 'sheets', path: '/tmp/sheets' }],
       })),

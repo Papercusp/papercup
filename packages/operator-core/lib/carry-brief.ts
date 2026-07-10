@@ -26,7 +26,8 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { activeWorkspaceId } from './workspace-registry';
+import { activeWorkspaceId, resolveConcreteWorkspaceId } from './workspace-registry';
+import { FEATURE_TERMINAL_STATES } from './work-item-dispatch-states';
 import {
   getLoopCarryNoteWithMeta,
   splitCarryNoteWalls,
@@ -111,13 +112,33 @@ export async function readHeldWorkItems(
 ): Promise<CarryBriefHeldItem[]> {
   const sql = opts.sql ?? getOrgPg().sql;
   const limit = opts.limit ?? CARRY_BRIEF_MAX_HELD_ITEMS;
+  // EI-9013: canonicalize the workspace — an unscoped su session's '*' (or a raw
+  // ctx pass-through) previously scoped this query + the checkpoint reads to a
+  // workspace that holds no rows, so the fold showed NOTHING held.
+  const ws = resolveConcreteWorkspaceId(workspaceId);
+  // EI-9013: query work_items DIRECTLY, covering BOTH families. The previous read
+  // went through the engineer_issues VIEW, which filters item_kind IN
+  // ('bug','change','task') — so a held FEATURE/chunk item (e.g. WI-3535, the
+  // incident item) never appeared in the fold at all, checkpoint or not. The
+  // scope CASE mirrors the view's mapping so harnessOfScope() semantics are
+  // unchanged (EI-8813). Terminal filters stay per-family: the issue-family list
+  // is the view-era literal set; feature-family uses FEATURE_TERMINAL_STATES.
   const held = await sql<Array<{ issue_id: string; title: string | null; body: string | null; scope: string }>>`
-    SELECT issue_id, title, body, scope
-      FROM harness_shared.engineer_issues
-     WHERE assignee = ${ownerId}
-       AND state NOT IN ('done', 'resolved', 'deprecated', 'closed')
-       AND (workspace_id = ${workspaceId} OR workspace_id = 'default')
-     ORDER BY issue_id DESC
+    SELECT feature_id AS issue_id,
+           title,
+           COALESCE(summary, '') AS body,
+           CASE
+             WHEN harness_slug LIKE 'operator:%' OR harness_slug = '' OR harness_slug IS NULL THEN 'operator'
+             ELSE 'harness:' || harness_slug
+           END AS scope
+      FROM harness_shared.work_items
+     WHERE taken_by = ${ownerId}
+       AND (workspace_id = ${ws} OR workspace_id = 'default')
+       AND (
+         (item_kind IN ('bug', 'change', 'task') AND status NOT IN ('done', 'resolved', 'deprecated', 'closed'))
+         OR (item_kind IN ('feature', 'chunk') AND NOT (status = ANY(${[...FEATURE_TERMINAL_STATES]}::text[])))
+       )
+     ORDER BY feature_id DESC
      LIMIT ${limit}
   `;
   const getCheckpoint =
@@ -137,7 +158,7 @@ export async function readHeldWorkItems(
     const harness = harnessOfScope(h.scope ?? '');
     let checkpoint: string | null = null;
     try {
-      checkpoint = await getCheckpoint({ harness, workItemId: h.issue_id, workspaceId });
+      checkpoint = await getCheckpoint({ harness, workItemId: h.issue_id, workspaceId: ws });
     } catch {
       /* per-item best-effort */
     }

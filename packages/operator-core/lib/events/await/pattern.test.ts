@@ -12,6 +12,7 @@ import {
   patternToOperatorTest,
   keyMatchesPattern,
   assertUsablePattern,
+  payloadMatchesFilter,
 } from './pattern';
 
 describe('isPattern', () => {
@@ -76,6 +77,31 @@ describe('keyMatchesPattern (reuses the @papercusp/rules mingo matcher)', () => 
   it('an exact (non-pattern) key degrades to string equality', () => {
     expect(keyMatchesPattern('lock:grant:t1', 'lock:grant:t1')).toBe(true);
     expect(keyMatchesPattern('lock:grant:t1', 'lock:grant:t2')).toBe(false);
+  });
+});
+
+describe('payloadMatchesFilter (EI-8998 — predicate/payload watches)', () => {
+  it('a null/undefined filter always matches (no predicate registered)', () => {
+    expect(payloadMatchesFilter(null, { queue_depth: 99 })).toBe(true);
+    expect(payloadMatchesFilter(undefined, undefined)).toBe(true);
+  });
+  it('evaluates a mingo comparator against a payload field', () => {
+    expect(payloadMatchesFilter({ queue_depth: { $lt: 5 } }, { queue_depth: 3 })).toBe(true);
+    expect(payloadMatchesFilter({ queue_depth: { $lt: 5 } }, { queue_depth: 9 })).toBe(false);
+  });
+  it('supports the all/any/not combinators (same vocabulary as an ECA rule when)', () => {
+    const filter = { all: [{ status: 'red' }, { severity: { $gte: 3 } }] };
+    expect(payloadMatchesFilter(filter, { status: 'red', severity: 4 })).toBe(true);
+    expect(payloadMatchesFilter(filter, { status: 'red', severity: 1 })).toBe(false);
+    expect(payloadMatchesFilter(filter, { status: 'green', severity: 4 })).toBe(false);
+  });
+  it('a payload missing the tested field fails the predicate rather than throwing', () => {
+    expect(payloadMatchesFilter({ queue_depth: { $lt: 5 } }, {})).toBe(false);
+    expect(payloadMatchesFilter({ queue_depth: { $lt: 5 } }, null)).toBe(false);
+  });
+  it('a malformed filter degrades to false rather than throwing (best-effort emit path)', () => {
+    expect(payloadMatchesFilter('not-an-object', { x: 1 })).toBe(false);
+    expect(payloadMatchesFilter(42, { x: 1 })).toBe(false);
   });
 });
 

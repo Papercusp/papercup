@@ -19,6 +19,7 @@
  */
 
 import { z } from 'zod';
+import { dataConditionSchema } from '@papercusp/rules';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
@@ -105,6 +106,11 @@ export default defineTool({
       .optional()
       .describe('wake:false only — inject delivery tiering: full (default), digest (high-churn), mention (the quiet floor).'),
     note: softText(LIMITS.ANNOTATION).optional().describe('Why you are watching — echoed into the wake turn (wake:true). Auto-truncated to 2000 chars if longer.'),
+    payload_filter: dataConditionSchema
+      .optional()
+      .describe(
+        "EI-8998: a predicate tested against the emitted event's PAYLOAD (not just its key/pattern), e.g. { queue_depth: { $lt: 5 } } — kills the polling-vigil pattern (\"wake me when X crosses a threshold\") without a bespoke exact key per condition. Same MatchMap/all/any/not vocabulary as an ECA rule's `when`. A filter that never matches the emitter's actual payload shape silently never fires — check the emitting source's payload shape first.",
+      ),
     plan_run_id: z
       .number()
       .int()
@@ -119,6 +125,15 @@ export default defineTool({
     const once = args.once ?? wake;
 
     if (!wake) {
+      // EI-8998: payload_filter is a wake-path-only feature today (it filters which
+      // AWAIT rows fire; inject is a topic subscription with no per-emit fire/claim
+      // step to hook it into) — fail loud rather than silently ignore it, so a caller
+      // never believes an inject watch is predicate-filtered when it isn't.
+      if (args.payload_filter) {
+        throw new Error(
+          'watch:create — payload_filter is only supported with wake:true today (it filters wake-await fires; a wake:false inject subscription has no per-emit matching step to apply it to).',
+        );
+      }
       // ── Inject preset (D-002 cheap default) → a standing topic subscription. ──
       const sub = await subscribeTopic(identity, args.pattern, { mode: args.mode, ttl_sec: args.timeout_sec });
       return {
@@ -158,6 +173,7 @@ export default defineTool({
       once,
       minSleepSec,
       urgency: args.urgency,
+      payloadFilter: args.payload_filter ?? null,
     });
     return {
       content: [

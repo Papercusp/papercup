@@ -10,6 +10,7 @@
  */
 
 import { z } from 'zod';
+import { dataConditionSchema } from '@papercusp/rules';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
@@ -70,6 +71,11 @@ export default defineTool({
       .positive()
       .optional()
       .describe('When awaiting FROM a plan run, pass its runId — the wake re-invokes the run via the plans:resume path instead of a session resume.'),
+    payload_filter: dataConditionSchema
+      .optional()
+      .describe(
+        "EI-8998: also require the emitted PAYLOAD to satisfy this predicate before firing, e.g. { queue_depth: { $lt: 5 } } — same vocabulary as an ECA rule's `when`. Only takes effect combined with an `event` key/pattern the emitter actually fires.",
+      ),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -94,6 +100,7 @@ export default defineTool({
       wakeHandle: handle,
       timeoutBehavior: args.on_timeout ?? 'wake',
       timeoutSec: args.timeout_sec ?? DEFAULT_TIMEOUT_SEC,
+      payloadFilter: args.payload_filter ?? null,
     });
 
     return {

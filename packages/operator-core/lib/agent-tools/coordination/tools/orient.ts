@@ -37,7 +37,7 @@ import { shapeOrient } from './orient-shape';
 import { classifyOwnerDriveMode } from '../agent-drive-mode';
 import { withholdQueenLoopControl, QUEEN_LOOP_WITHHELD_REASON } from '../queen-loop-facts';
 import { readOwnerPresence } from '../../../power-user-sessions';
-import { activeWorkspaceId } from '../../../workspace-registry';
+import { activeWorkspaceId, resolveConcreteWorkspaceId } from '../../../workspace-registry';
 import { getModes } from '../../../modes/store';
 import { modeById } from '../../../modes/registry';
 
@@ -567,7 +567,11 @@ export default defineTool({
     if (args.afterCompaction && ownerId) {
       try {
         const { buildCompactionRecovery } = await import('../compaction-recovery');
-        const ws = (ctx as { workspaceId?: string | null }).workspaceId ?? 'default';
+        // EI-9013: an unscoped su session's ctx.workspaceId is the literal '*' —
+        // passing it (or 'default') straight into the recovery build made the
+        // held-items query + checkpoint reads look under a workspace that holds
+        // no rows. Resolve to the concrete active workspace.
+        const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
         recovery = await buildCompactionRecovery(ownerId, ws);
       } catch { /* fail-soft */ }
     }

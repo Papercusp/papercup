@@ -11,6 +11,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
+import * as http from 'node:http';
 import * as os from 'node:os';
 import { join } from 'node:path';
 
@@ -249,6 +250,104 @@ describe('cc PostToolUse activity-report hook — operator-independent paths', (
     expect(r.status).toBe(0);
     expect(r.stdout).toBe('');
     expect(elapsed).toBeLessThan(2500); // proves it did NOT wait on the 3s POST timeout
+  });
+});
+
+// ── PreToolUse activity-report hook (EI-8997) ──────────────────────────
+// Mirrors the PostToolUse suite above — same contract, `phase:'pre'`, fired
+// at dispatch time instead of completion (closes the D-003 claim-renewal gap
+// a single long-running tool call leaves under PostToolUse-only reporting).
+const PRE_ACTIVITY_HOOK = join(__dirname, '..', 'pretooluse-activity-report.sh');
+
+function runActivityPre(extraEnv: Record<string, string> = {}, input: string = payload(editPayload), homeDir = home) {
+  const r = spawnSync('bash', [PRE_ACTIVITY_HOOK], {
+    input,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      HOME: homeDir,
+      PAPERCUSP_SID: '', // cleared unless a test opts in
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1', // never reach a real operator
+      ...extraEnv,
+    },
+  });
+  return { status: r.status, stdout: (r.stdout ?? '').trim() };
+}
+
+describe('cc PreToolUse activity-report hook — operator-independent paths', () => {
+  it('no PAPERCUSP_SID (not a psu session) → no-op (exit 0, no stdout)', () => {
+    const r = runActivityPre();
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+
+  it('psu session but not installed (no token) → no-op', () => {
+    const bareHome = fs.mkdtempSync(join(os.tmpdir(), 'acthook-pre-bare-'));
+    const r = runActivityPre({ PAPERCUSP_SID: 'sid-x' }, payload(editPayload), bareHome);
+    fs.rmSync(bareHome, { recursive: true, force: true });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+
+  it('SID + token, SYNC mode, operator unreachable → FAIL-OPEN (exit 0, no stdout)', () => {
+    const r = runActivityPre({ PAPERCUSP_SID: 'sid-sync', PAPERCUSP_ACTIVITY_SYNC: '1' });
+    expect(r.status).toBe(0); // a reporting blip never blocks the tool
+    expect(r.stdout).toBe(''); // and never emits anything onto the tool result
+  });
+
+  it('malformed JSON in SYNC mode → fail-open (exit 0, no stdout)', () => {
+    const r = runActivityPre({ PAPERCUSP_SID: 'sid-junk', PAPERCUSP_ACTIVITY_SYNC: '1' }, 'not valid json {');
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+
+  it('detached (default) mode is NON-BLOCKING — returns fast even when the operator would hang', () => {
+    const t0 = Date.now();
+    const r = runActivityPre({ PAPERCUSP_SID: 'sid-detach', PAPERCUSP_OPERATOR_URL: 'http://10.255.255.1:81' });
+    const elapsed = Date.now() - t0;
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+    expect(elapsed).toBeLessThan(2500); // proves it did NOT wait on the 3s POST timeout
+  });
+
+  it('SYNC mode actually posts phase:"pre" (not "post") to the operator', () => {
+    // A tiny local HTTP server standing in for the operator, capturing the POST body.
+    const http = require('node:http') as typeof import('node:http');
+    let captured: string | null = null;
+    const server = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        captured = Buffer.concat(chunks).toString('utf8');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{}');
+      });
+    });
+    const port = 39217;
+    server.listen(port, '127.0.0.1');
+    try {
+      const tokenHome = fs.mkdtempSync(join(os.tmpdir(), 'acthook-pre-live-'));
+      fs.mkdirSync(join(tokenHome, '.papercusp'), { recursive: true });
+      fs.writeFileSync(join(tokenHome, '.papercusp', 'superuser-token'), 'tok');
+      const r = runActivityPre(
+        {
+          PAPERCUSP_SID: 'sid-live',
+          PAPERCUSP_ACTIVITY_SYNC: '1',
+          PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${port}`,
+        },
+        payload(editPayload),
+        tokenHome,
+      );
+      fs.rmSync(tokenHome, { recursive: true, force: true });
+      expect(r.status).toBe(0);
+      expect(captured).toBeTruthy();
+      const body = JSON.parse(captured!);
+      expect(body.params.name).toBe('activity:report');
+      expect(body.params.arguments.phase).toBe('pre');
+      expect(body.params.arguments.tool_name).toBe('Edit');
+    } finally {
+      server.close();
+    }
   });
 });
 

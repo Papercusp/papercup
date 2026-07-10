@@ -205,6 +205,10 @@ CC_COORD_HOOK="${CC_HOOK_DEST_DIR}/posttooluse-coord-inbox.sh"
 # + curator. psu sessions only (scopes itself via PAPERCUSP_SID). Fire-and-forget
 # + detached, so it adds no latency; its own settings.json entry, matcher "*".
 CC_ACTIVITY_HOOK="${CC_HOOK_DEST_DIR}/posttooluse-activity-report.sh"
+# PreToolUse counterpart (EI-8997): the SAME activity bridge, reported at
+# dispatch time instead of completion — closes the D-003 claim-renewal gap a
+# single long-running tool call leaves during PostToolUse-only reporting.
+CC_PRE_ACTIVITY_HOOK="${CC_HOOK_DEST_DIR}/pretooluse-activity-report.sh"
 # SessionStart/SessionEnd hook: report a worker's session LIFECYCLE (appeared/left)
 # into the activity bridge — a kind='lifecycle' marker for the fleet view.
 CC_LIFECYCLE_HOOK="${CC_HOOK_DEST_DIR}/lifecycle-report.sh"
@@ -370,6 +374,45 @@ arr = [e for e in hooks.get('PostToolUse', []) if not is_ours(e)]
 arr.append({'matcher': '*',
             'hooks': [{'type': 'command', 'command': activity}]})
 hooks['PostToolUse'] = arr
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+PYEOF
+}
+
+# Merge the activity-report PreToolUse hook as its OWN entry (matcher "*" —
+# every tool, mirroring merge_activity_hook but on the PreToolUse array). Same
+# idempotency contract.
+#   $1 = settings.json path
+merge_activity_pre_hook() {
+  python3 - "$1" "$CC_PRE_ACTIVITY_HOOK" <<'PYEOF'
+import json, os, sys, time
+path, activity = sys.argv[1:3]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError
+except FileNotFoundError:
+    cfg = {}
+except (json.JSONDecodeError, ValueError):
+    os.rename(path, path + '.bak.' + str(int(time.time())))
+    cfg = {}
+
+ours = {activity, os.path.basename(activity)}
+
+def is_ours(entry):
+    for h in (entry.get('hooks') or []):
+        if any(o in h.get('command', '') for o in ours):
+            return True
+    return False
+
+hooks = cfg.setdefault('hooks', {})
+arr = [e for e in hooks.get('PreToolUse', []) if not is_ours(e)]
+arr.append({'matcher': '*',
+            'hooks': [{'type': 'command', 'command': activity}]})
+hooks['PreToolUse'] = arr
 
 os.makedirs(os.path.dirname(path), exist_ok=True)
 with open(path, 'w') as f:
@@ -918,6 +961,10 @@ if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" ]; then
     cp "${CC_HOOK_SRC_DIR}/posttooluse-activity-report.sh" "$CC_ACTIVITY_HOOK"
     chmod 755 "$CC_ACTIVITY_HOOK"
   fi
+  if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-activity-report.sh" ]; then
+    cp "${CC_HOOK_SRC_DIR}/pretooluse-activity-report.sh" "$CC_PRE_ACTIVITY_HOOK"
+    chmod 755 "$CC_PRE_ACTIVITY_HOOK"
+  fi
   if [ -f "${CC_HOOK_SRC_DIR}/lifecycle-report.sh" ]; then
     cp "${CC_HOOK_SRC_DIR}/lifecycle-report.sh" "$CC_LIFECYCLE_HOOK"
     chmod 755 "$CC_LIFECYCLE_HOOK"
@@ -963,6 +1010,7 @@ if [ -x "$CC_PRE_HOOK" ]; then
   merge_lock_hooks "$CLAUDE_SETTINGS" "Edit|Write|MultiEdit"
   [ -x "$CC_COORD_HOOK" ] && merge_coord_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_ACTIVITY_HOOK" ] && merge_activity_hook "$CLAUDE_SETTINGS"
+  [ -x "$CC_PRE_ACTIVITY_HOOK" ] && merge_activity_pre_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_LIFECYCLE_HOOK" ] && merge_lifecycle_hooks "$CLAUDE_SETTINGS"
   [ -x "$CC_WORKITEM_NUDGE_HOOK" ] && merge_workitem_nudge_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_STATUSLINE" ] && merge_statusline "$CLAUDE_SETTINGS"
