@@ -70,6 +70,23 @@ export function embedSidecarLocalUrl(env: NodeJS.ProcessEnv = process.env): stri
   return `http://127.0.0.1:${port}`;
 }
 
+/** Does anything answer /healthz at `url`? Cheap loopback probe used for the
+ *  shared-fixed-port adoption logic (ensure + respawn): the sidecar port is
+ *  ONE per host, so "already served" means a sibling process owns it — adopt
+ *  it, never spawn a doomed EADDRINUSE child into a crash-respawn loop. */
+async function healthzAnswers(url: string, timeoutMs = 1500): Promise<boolean> {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${url.replace(/\/$/, '')}/healthz`, { signal: ctl.signal });
+    return res.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Short exponential backoff + sliding-window circuit breaker — a persistently
  *  crashing sidecar gives up rather than looping; embedding just stays on the
  *  in-process fallback path (D-003) until an explicit respawn. */
@@ -93,9 +110,18 @@ function scheduleRespawn(): void {
   );
   respawnTimer = setTimeout(() => {
     respawnTimer = null;
-    spawnEmbedSidecar().catch((err) => {
-      console.error('[embed-sidecar] auto-respawn failed:', err);
-    });
+    void (async () => {
+      // A likely reason OUR child died with the port contested: a sibling
+      // process's sidecar owns it. If something healthy answers, adopt it —
+      // respawning would just EADDRINUSE-crash into the circuit breaker.
+      if (await healthzAnswers(embedSidecarLocalUrl())) {
+        console.log('[embed-sidecar] port already served by a sibling process — adopting, not respawning');
+        return;
+      }
+      await spawnEmbedSidecar().catch((err) => {
+        console.error('[embed-sidecar] auto-respawn failed:', err);
+      });
+    })();
   }, backoffMs);
 }
 
@@ -221,16 +247,25 @@ export async function spawnEmbedSidecar(): Promise<void> {
 }
 
 /**
- * Ensure the host-local sidecar is up (spawn if enabled + not running) and
- * return its base URL, or null when disabled/unspawnable. The lazy front door
- * consumers call on first embed — mirrors spawnInvokeOnceWithFallback's shape:
- * failure returns null (caller stays on its in-process path), never throws.
+ * Ensure the host-local sidecar is up and return its base URL, or null when
+ * disabled/unspawnable. The lazy front door consumers call on first embed —
+ * mirrors spawnInvokeOnceWithFallback's shape: failure returns null (caller
+ * stays on its in-process path), never throws.
+ *
+ * Shared-fixed-port semantics: the port is ONE per host, so if ANY process
+ * already serves it (this one earlier, or a sibling operator process), adopt
+ * that instance instead of spawning a second child that would EADDRINUSE-die.
+ * First process to need the sidecar spawns it; everyone else rides along.
  */
 export async function ensureEmbedSidecar(): Promise<string | null> {
   if (!embedSidecarEnabled()) return null;
+  const url = embedSidecarLocalUrl();
+  if (isEmbedSidecarRunning()) return url;
+  if (await healthzAnswers(url)) return url; // sibling-owned — adopt
   try {
     await spawnEmbedSidecar();
-    return embedSidecarLocalUrl();
+    registerEmbedSidecarShutdownHooks();
+    return url;
   } catch (err) {
     console.warn('[embed-sidecar] ensure failed (embedding stays in-process):', err instanceof Error ? err.message : err);
     return null;

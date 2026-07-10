@@ -13,11 +13,20 @@
 # lifecycle hooks use). ONE script, two phases keyed off `hook_event_name`:
 #   • PostToolUse(Edit|Write|MultiEdit|apply_patch|write_file|edit_file) → mark this
 #     session as having edited WORKSPACE code (a local touch in the lock-cache,
-#     `wi-nudge-<SID>.edited`; no network, no flag check — cheap + harmless).
+#     `wi-nudge-<SID>.edited`; no network, no flag check — cheap + harmless), and
+#     append each edited PRODUCT-SOURCE path (not tests / docs / *.md) to
+#     `wi-nudge-<SID>.files` for the multi-file check below.
 #   • Stop / SessionEnd → if (this session has an `.edited` marker) AND (not already
-#     nudged) AND (the backstop flag is ON) AND (coord:glance self.objective is
-#     CONFIRMED empty) → emit the reminder (durable local log + a coord activity
-#     note + stderr) and write the `.done` marker.
+#     nudged) AND (the backstop flag is ON) AND either
+#       (1) coord:glance self.objective is CONFIRMED empty, or
+#       (2) the objective is non-empty BUT the session edited ≥
+#           PAPERCUSP_WORKITEM_NUDGE_MULTIFILE_THRESHOLD (default 3; 0 disables)
+#           distinct product-source files — a standing objective (fleet lead /
+#           armed loop / monitor) is NOT registration for a multi-file code change
+#           (agent-change-traceability-discipline-2026-07-10 P-002),
+#     → emit the reminder (durable local log + a coord activity note + stderr) and
+#     write the `.done` marker. The objective-holding nudge is VERIFY-phrased: it
+#     names the objective and asks the agent to confirm coverage, never accuses.
 #
 # GATED behind the `papercusp-workitem-verify-nudge` feature flag (DEFAULT ON;
 # registered in @papercusp/flags, deliberately NOT in DARK_FLAGS). An owner can flip
@@ -74,6 +83,7 @@ def safe(s):
 
 sid_safe = safe(sid)
 edited_marker = os.path.join(cache_dir, 'wi-nudge-' + sid_safe + '.edited')
+files_marker = os.path.join(cache_dir, 'wi-nudge-' + sid_safe + '.files')
 done_marker = os.path.join(cache_dir, 'wi-nudge-' + sid_safe + '.done')
 log_path = os.environ.get('PAPERCUSP_WORKITEM_NUDGE_LOG') or os.path.join(cache_dir, 'wi-nudge.log')
 
@@ -85,6 +95,20 @@ if not isinstance(ev, dict):
     sys.exit(0)
 
 name = (ev.get('hook_event_name') or ev.get('hookEventName') or '').strip()
+
+
+def is_product_source(p):
+    """Tests, specs, docs and markdown don't count toward the multi-file trigger —
+    only product-source edits suggest an unregistered code change."""
+    low = p.replace(os.sep, '/').lower()
+    base = os.path.basename(low)
+    if base.endswith('.md'):
+        return False
+    if '.test.' in base or '.spec.' in base:
+        return False
+    if '/__tests__/' in low or '/docs/' in low:
+        return False
+    return True
 
 
 # ── PostToolUse: mark this session as having edited WORKSPACE code ──────────────
@@ -104,6 +128,7 @@ if name == 'PostToolUse':
     # Scope to the workspace: a concrete file path must resolve under WORKSPACE_ROOT;
     # with no concrete path (e.g. codex apply_patch text) fall back to the cwd scope.
     in_ws = False
+    ws_paths = []
     try:
         ws_real = os.path.realpath(workspace_root)
         if concrete:
@@ -112,7 +137,7 @@ if name == 'PostToolUse':
                 ap = os.path.realpath(ap) if os.path.exists(ap) else os.path.abspath(ap)
                 if ap == ws_real or ap.startswith(ws_real + os.sep):
                     in_ws = True
-                    break
+                    ws_paths.append(ap)
         else:
             cr = os.path.realpath(cwd) if os.path.exists(cwd) else os.path.abspath(cwd)
             in_ws = (cr == ws_real or cr.startswith(ws_real + os.sep))
@@ -123,6 +148,17 @@ if name == 'PostToolUse':
     try:
         with open(edited_marker, 'w') as f:
             f.write(json.dumps({'sid': sid, 'last': now_iso()}))
+    except Exception:
+        pass
+    # Append product-source paths for the multi-file check (duplicates fine —
+    # the Stop leg counts DISTINCT lines). apply_patch-style edits with no
+    # concrete path only set the .edited marker; they can't name a file.
+    try:
+        srcs = [p for p in ws_paths if is_product_source(p)]
+        if srcs:
+            with open(files_marker, 'a') as f:
+                for p in srcs:
+                    f.write(p + '\n')
     except Exception:
         pass
     sys.exit(0)
@@ -206,15 +242,38 @@ except Exception:
 if not isinstance(glance, dict):
     sys.exit(0)
 obj = (glance.get('self') or {}).get('objective')
-if isinstance(obj, str) and obj.strip():
-    sys.exit(0)              # has an objective — nothing to nudge.
+has_objective = isinstance(obj, str) and bool(obj.strip())
+multi_file_count = 0
+if has_objective:
+    # Standing-objective false-negative fix (agent-change-traceability P-002):
+    # holding an objective (fleet lead / armed loop / monitor) is not registration
+    # for THIS work — a session that edits many product-source files still gets ONE
+    # verify-phrased nudge. Threshold keeps legit small in-objective edits silent.
+    try:
+        threshold = int(os.environ.get('PAPERCUSP_WORKITEM_NUDGE_MULTIFILE_THRESHOLD', '3') or '3')
+    except Exception:
+        threshold = 3
+    if threshold <= 0:
+        sys.exit(0)          # multi-file trigger disabled — objective covers it.
+    distinct = set()
+    try:
+        with open(files_marker) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    distinct.add(line)
+    except Exception:
+        pass
+    multi_file_count = len(distinct)
+    if multi_file_count < threshold:
+        sys.exit(0)          # small edit under an objective — nothing to nudge.
 
 # Best-effort prune of orphaned markers from long-dead sessions (bounded, once per
 # nudging session). Keeps the lock-cache from accumulating stale wi-nudge-* files.
 try:
     cutoff = time.time() - 24 * 3600
     for fn in os.listdir(cache_dir):
-        if fn.startswith('wi-nudge-') and (fn.endswith('.edited') or fn.endswith('.done')):
+        if fn.startswith('wi-nudge-') and (fn.endswith('.edited') or fn.endswith('.done') or fn.endswith('.files')):
             fp = os.path.join(cache_dir, fn)
             try:
                 if os.path.getmtime(fp) < cutoff:
@@ -224,9 +283,20 @@ try:
 except Exception:
     pass
 
-# CONFIRMED: edited workspace code + no objective → emit ONE short reminder.
-msg = ('papercusp: you edited workspace code this session with no work-item or declared '
-       'objective — open one (work_items:create, or claim a plan item) so the work is tracked.')
+# CONFIRMED: (no objective + edits) OR (objective + threshold-many product files)
+# → emit ONE short reminder, phrased for the trigger that fired.
+if has_objective:
+    obj_short = obj.strip()[:120]
+    msg = ('papercusp: you edited ' + str(multi_file_count) + ' distinct product-source files '
+           'this session while holding the standing objective "' + obj_short + '" — VERIFY this '
+           "work is registered: if it is not that objective's own scope, open a work-item for it "
+           '(work_items:create, or claim a plan item).')
+    activity_summary = ('edited ' + str(multi_file_count) + ' product files under a standing '
+                        'objective — verify registration (multi-file backstop)')
+else:
+    msg = ('papercusp: you edited workspace code this session with no work-item or declared '
+           'objective — open one (work_items:create, or claim a plan item) so the work is tracked.')
+    activity_summary = 'edited code with no work-item — open one (verify backstop)'
 
 # (1) durable local log line (audit trail; always safe).
 try:
@@ -248,7 +318,7 @@ except Exception:
 if not glance_fixture:
     try:
         a = {'owner': sid, 'kind': 'lifecycle',
-             'summary': 'edited code with no work-item — open one (verify backstop)'}
+             'summary': activity_summary}
         if agent:
             a['agent'] = agent
         sess = ev.get('session_id') or ev.get('sessionId')
