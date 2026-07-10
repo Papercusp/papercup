@@ -206,7 +206,17 @@ export async function runRecurrenceEscalation(
           `(P-052 — cross-harness lesson promotion).`,
         subTopic: 'lesson-promotion',
         sourceRole: 'system',
-        dedupScope: 'open',
+        // NOT 'open' (EI-9170): planRecurrenceEscalation re-emits this action EVERY
+        // tick the signature is still recurring across ≥2 scopes — it has no memory
+        // of "already suggested," so the capture's own dedup is the only thing that
+        // makes repeated re-emission idempotent (per the stageCandidate comment
+        // below). dedupScope:'open' is the watchdog's regression-reopen semantic (a
+        // RESOLVED dup means the bug came back, so re-file) — wrong here: resolving
+        // this capture means the lesson was promoted, not that the friction stopped
+        // recurring, so a resolved dup must keep blocking or the exact same
+        // proposal re-files every tick forever (observed: EI-9057→9111→9167 and
+        // EI-9058→9112→9168, identical titles, ~hourly). Default (omitted ⇒ 'all')
+        // blocks on ANY prior state match, open or resolved.
       });
       if (r.created) result.promotionsSuggested += 1;
 

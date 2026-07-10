@@ -52,7 +52,7 @@ shell (`cd papercusp-desktop && npm run dev` → the Evaluation tab), per
 
 | Subtab | What it does |
 | --- | --- |
-| **Launch** | Pick arm / task set / cap / `$`-budget, see a cost+time estimate, owner-confirm when the estimate is `>= $20` of opus (`OWNER_CONFIRM_USD`), launch. opus is pinned (fail-closed). Arms: `pot-realqueen` (treatment), `fifo-noqueen` (no-Mug control), `mini-swe-agent` (reference harness); task sets: 11-task pilot, full ~731, custom ids. |
+| **Launch** | Pick arm / task set / cap / `$`-budget, see a cost+time estimate, owner-confirm when the estimate is `>= $20` of opus (`OWNER_CONFIRM_USD`), launch. opus is pinned (fail-closed). Arms: `hive-realqueen` (treatment), `fifo-noqueen` (no-Mug control), `mini-swe-agent` (reference harness); task sets: 11-task pilot, full ~731, custom ids. |
 | **Preserved runs** | Browse runs (imports + live) — id · arm · resolved% · status. Per-run: Grade, Export, Re-run, Delete. Validity badges, live fleet panel, coordination timeline. |
 | **Compare** | Arm-vs-arm over the same task set: resolved% delta + Frontier + per-task table + the honest-caveats panel. |
 
@@ -62,7 +62,7 @@ The launch form posts to `POST /api/external-bench/runs/launch`. The run goes
 through the **real bench engine** (not a `/tmp` launcher) as a detached managed
 job: it persists `status=running`, returns a `run_id` immediately, and streams
 live. Only **one run at a time** (spend-safety). The launch form offers three
-arms — `pot-realqueen` (treatment), `fifo-noqueen` (no-Mug control),
+arms — `hive-realqueen` (treatment), `fifo-noqueen` (no-Mug control),
 `mini-swe-agent` (the reference harness) — over three task sets (11-task pilot /
 full ~731 / custom ids), and requires an explicit **owner-confirm when the
 estimate is `>= $20`** of opus (`OWNER_CONFIRM_USD`). Launches are gated on the
@@ -124,7 +124,7 @@ actionable `verified_harness_not_installed` error (with the exact install steps)
 ## Compare arms (P-011 / P-012)
 
 Pick run **A** (baseline) and **B** (treatment). The headline comparison is
-**pot-realqueen vs mini-swe-agent** (the SWE-bench Pro reference harness), same
+**hive-realqueen vs mini-swe-agent** (the SWE-bench Pro reference harness), same
 model + same tasks (D-005). The view shows the resolved% delta, the cost/accuracy
 Frontier, and the per-task table.
 

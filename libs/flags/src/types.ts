@@ -943,6 +943,14 @@ export const FLAGS = {
   // touch-set overlaps a running bee's files or an already-admitted sibling — proactive
   // hive-scoped conflict avoidance (cross-hive collisions stay on reactive git-merge).
   TOUCH_SET_EXCLUSION: "papercusp-touch-set-exclusion",
+  // EI-1611: when the Queen's fleet:place_batch places >=2 bees onto tasks sharing the
+  // SAME plan in one batch, auto-ensure a `plan:<slug>` topic and subscribe every
+  // placed bee to it — pushed, scoped group updates (sibling completions, decisions,
+  // blast-radius warnings) instead of each bee polling coord:inbox. Additive + best-
+  // effort (a subscribe failure never blocks/reverts the placement); DEFAULT ON — no
+  // hot-path risk, only adds a topic subscription row alongside an already-committed
+  // placement.
+  QUEEN_GROUP_TOPIC_SUBSCRIBE: "papercusp-queen-group-topic-subscribe",
   // plan-implementation-framework P-004 (workitem-amend): when on, work_items:amend
   // records a non-re-derivable structural decision (split/drop/reapproach/expand/note)
   // durably on a node — the Queen disposes, a bee proposes; the commit-before-dispatch record.

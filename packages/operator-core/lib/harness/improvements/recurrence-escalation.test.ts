@@ -179,6 +179,22 @@ describe('runRecurrenceEscalation — glue', () => {
     expect(stagedInputs[0]!.signature).toBeTruthy();
   });
 
+  it('EI-9170: the suggest-promotion capture must NOT use dedupScope:"open" — a resolved prior promotion has to keep blocking re-file, or the same proposal re-files every tick forever', async () => {
+    const captureInputs: Array<{ dedupScope?: 'all' | 'open' }> = [];
+    const deps = baseDeps({
+      capture: vi.fn(async (input) => {
+        captureInputs.push({ dedupScope: input.dedupScope });
+        return { ok: true as const, created: true, possibleDuplicates: [] };
+      }),
+    });
+    await runRecurrenceEscalation({}, deps);
+    expect(captureInputs).toHaveLength(1);
+    // Resolving this capture means the lesson was promoted, not that the friction
+    // stopped recurring — a resolved duplicate must still decline the re-create.
+    // dedupScope:'open' is the watchdog regression-reopen semantic and is wrong here.
+    expect(captureInputs[0]!.dedupScope).not.toBe('open');
+  });
+
   it('a deduped/capped stage does not count; a throwing stage never aborts the pass', async () => {
     const dup = await runRecurrenceEscalation(
       {},
