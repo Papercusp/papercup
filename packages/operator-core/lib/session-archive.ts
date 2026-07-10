@@ -34,17 +34,18 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { Dirent } from 'node:fs';
+import type { Dirent, Stats } from 'node:fs';
 import {
   lstat,
   mkdir,
   readdir,
   readFile,
+  realpath,
   unlink,
   utimes,
   writeFile,
 } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
 import * as zlib from 'node:zlib';
 import { getOrgPg } from '@papercusp/db-org';
@@ -81,6 +82,18 @@ async function zstdDecompress(blob: Buffer): Promise<Buffer> {
 
 export function sha256Hex(buf: Buffer): string {
   return createHash('sha256').update(buf).digest('hex');
+}
+
+/** A manifest relpath is DATA from a PG row, not trusted code. Reject anything
+ *  that could resolve OUTSIDE the session root (absolute, `..` segments, NUL):
+ *  a poisoned/corrupt stamp row must never turn the delete leg into an
+ *  arbitrary unlink or the rematerialize leg into an arbitrary write
+ *  (WI-3859 adversarial pass). Collectors only ever produce rooted,
+ *  dot-dot-free relpaths, so a hit here is corruption by definition. */
+export function isUnsafeArchiveRelpath(rel: string): boolean {
+  if (!rel || rel.includes('\0')) return true;
+  if (isAbsolute(rel)) return true;
+  return rel.split(/[/\\]/).some((seg) => seg === '..');
 }
 
 /** Decompress one archived file row back to its raw bytes (codec-aware). */
@@ -423,9 +436,27 @@ export async function deleteArchivedSessionFiles(
   let missing = 0;
   const refused: string[] = [];
   for (const m of stamp.manifest) {
+    if (isUnsafeArchiveRelpath(m.relpath)) {
+      refused.push(m.relpath); // poisoned/corrupt manifest — never resolve it
+      continue;
+    }
     const abs = join(root, m.relpath);
     const st = await statFile(abs);
     if (!st) {
+      missing++;
+      continue;
+    }
+    // Resolve-and-verify: the path must resolve EXACTLY to <root>/<relpath>.
+    // Collection was symlink-safe at ARCHIVE time, but the tree is re-resolved
+    // at DELETE time — an intermediate dir since swapped for a symlink (the
+    // per-session dirs are symlink farms into shared ~/.claude) would carry
+    // the unlink into shared state.
+    try {
+      if ((await realpath(abs)) !== join(await realpath(root), m.relpath)) {
+        refused.push(m.relpath);
+        continue;
+      }
+    } catch {
       missing++;
       continue;
     }
@@ -453,11 +484,12 @@ export async function archiveAndDeleteSession(
 
 export interface RematerializeResult {
   ok: boolean;
-  reason?: 'not_archived' | 'incomplete_archive' | 'sha_mismatch';
+  reason?: 'not_archived' | 'incomplete_archive' | 'sha_mismatch' | 'bad_relpath';
   root?: string;
   written: number;
   skippedExisting: number;
-  /** Existing on-disk files that DIFFER from the archive — left untouched. */
+  /** Existing on-disk entries that DIFFER from the archive (or are symlinks /
+   *  resolve outside the root) — left untouched; disk shape wins. */
   conflicts: string[];
 }
 
@@ -472,10 +504,16 @@ export async function rematerializeSession(
   const rows = await store.readFiles(key.sourceKind, key.sessionId, ws);
   const byRel = new Map(rows.map((r) => [r.relpath, r]));
   const root = key.targetRoot ?? stamp.session_root;
+  await mkdir(root, { recursive: true });
+  const realRoot = await realpath(root);
   let written = 0;
   let skippedExisting = 0;
   const conflicts: string[] = [];
   for (const m of stamp.manifest) {
+    if (isUnsafeArchiveRelpath(m.relpath)) {
+      // Poisoned/corrupt manifest — never resolve it into a write.
+      return { ok: false, reason: 'bad_relpath', root, written, skippedExisting, conflicts };
+    }
     const row = byRel.get(m.relpath);
     if (!row) return { ok: false, reason: 'incomplete_archive', root, written, skippedExisting, conflicts };
     const raw = row.codec === 'zstd' ? await zstdDecompress(row.blob) : row.blob;
@@ -483,17 +521,37 @@ export async function rematerializeSession(
       return { ok: false, reason: 'sha_mismatch', root, written, skippedExisting, conflicts };
     }
     const abs = join(root, m.relpath);
-    const st = await statFile(abs);
-    if (st) {
-      const cur = await readFile(abs);
-      if (sha256Hex(cur) === m.sha256) {
-        skippedExisting++;
+    // lstat DIRECTLY (not statFile's file-only view): a SYMLINK at the target
+    // is an existing entry we must never write through — writeFile would
+    // follow it into shared ~/.claude (the per-session dirs are symlink farms
+    // the launcher re-creates). Any non-file entry ⇒ conflict, disk shape wins.
+    let entry: Stats | null = null;
+    try {
+      entry = await lstat(abs);
+    } catch {
+      entry = null;
+    }
+    if (entry) {
+      if (entry.isFile()) {
+        const cur = await readFile(abs);
+        if (sha256Hex(cur) === m.sha256) {
+          skippedExisting++;
+        } else {
+          conflicts.push(m.relpath); // disk wins — it may be newer than the archive
+        }
       } else {
-        conflicts.push(m.relpath); // disk wins — it may be newer than the archive
+        conflicts.push(m.relpath); // symlink / dir at the target — never write through
       }
       continue;
     }
     await mkdir(dirname(abs), { recursive: true });
+    // Containment: a PRE-EXISTING parent may be (or contain) a symlink that
+    // escapes the root — verify it still resolves inside before writing.
+    const realDir = await realpath(dirname(abs));
+    if (realDir !== join(realRoot, dirname(m.relpath))) {
+      conflicts.push(m.relpath);
+      continue;
+    }
     await writeFile(abs, raw);
     if (row.mtime) {
       try {

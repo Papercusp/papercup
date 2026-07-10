@@ -162,6 +162,14 @@ export default defineTool({
       directives: { open: directiveOpen, acknowledged: directiveAcked },
       audit: { actions_24h_by_op: opCounts24h },
       autoloop: { active: autoloopActive, recent_fires: lastFires },
+      system: {
+        // Host uptime in seconds (node:os.uptime()), NOT the operator
+        // process's own uptime — the card reads as "how long has this
+        // machine been up", which is what an operator/ops dashboard cares
+        // about. Client computes a live-ticking duration from this + the
+        // fetch timestamp rather than re-polling for a moving number.
+        uptime_seconds: Math.floor(os.uptime()),
+      },
     };
     return new Response(JSON.stringify(body), {
       headers: {

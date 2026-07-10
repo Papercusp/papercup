@@ -13,6 +13,7 @@ import {
   type WrapDispatch,
 } from '@papercusp/agent-mcp';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
+import { FOREGROUND_TIMEOUT_CEILING_MS, clampForegroundTimeoutMs } from '../capability/inspect';
 import { captureRecipe } from './capture-recipe';
 import type { SimilarRecipe } from '../../code-recipes-search';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
@@ -114,7 +115,21 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('Preview: record effect:write tool calls without executing them (reads still run).'),
-    timeoutSec: z.number().int().min(1).max(120).optional().describe('Wall-clock budget (default 30s).'),
+    timeoutSec: z
+      .number()
+      .int()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe(
+        `Wall-clock budget (default 30s). EI-9239: code:run has no run_in_background — every call is ` +
+          `foreground, and the papercusp-su MCP transport hard-caps a foreground call at ~55s regardless ` +
+          `of this value. A request above ${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s is clamped down to it ` +
+          `so the script gets a clean internal script_timeout (with whatever it returned so far) instead ` +
+          `of an opaque transport request_timeout — the script itself may keep running server-side past ` +
+          `that, but this call will not see the result. For work that genuinely needs longer, split it ` +
+          `into multiple code:run calls or fall back to individual tool calls.`,
+      ),
   }),
   async handler(args, ctx) {
     const all = listAllProjectedTools();
@@ -133,7 +148,10 @@ export default defineTool({
       tools: all,
       allowed,
       dryRun: args.dryRun ?? false,
-      timeoutMs: args.timeoutSec ? args.timeoutSec * 1000 : undefined,
+      // EI-9239: clamp below the ~55s MCP transport cap (mirrors capability:inspect's identical
+      // EI-6073 fix) so a script_timeout fires cleanly here instead of the caller getting an
+      // opaque transport-level request_timeout after the script's own budget was never reached.
+      timeoutMs: args.timeoutSec ? clampForegroundTimeoutMs(args.timeoutSec * 1000) : undefined,
       wrapDispatch: bindInnerDispatch,
     });
 

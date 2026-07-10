@@ -231,9 +231,9 @@ async function sessionArchiveReconcileTick(): Promise<void> {
       if (!enabled) return;
       const { runSessionArchiveReconcileOnce } = await import('../session-archive-reconciler');
       const s = await runSessionArchiveReconcileOnce();
-      if (s.dbArchived || s.diskSessionsArchived || s.ompFilesArchived || s.dbStampedEmpty || s.dbFailed || s.diskFailed) {
+      if (s.dbArchived || s.diskSessionsArchived || s.ompFilesArchived || s.dbStampedEmpty || s.dbFailed || s.diskFailed || s.diskSkippedFresh || s.skippedDisk) {
         console.log(
-          `[session-archive-reconciler] db: ${s.dbArchived} archived / ${s.dbStampedEmpty} stamped-empty / ${s.dbFailed} failed (${s.endedUnarchivedRemaining} remaining); disk: ${s.diskSessionsArchived} archived + ${s.diskLeftoversDeleted} leftovers across ${s.diskDirsScanned} dirs; omp: ${s.ompFilesArchived}`,
+          `[session-archive-reconciler] db: ${s.dbArchived} archived / ${s.dbStampedEmpty} stamped-empty / ${s.dbFailed} failed (${s.endedUnarchivedRemaining} remaining); disk: ${s.diskSessionsArchived} archived + ${s.diskLeftoversDeleted} leftovers across ${s.diskDirsScanned} dirs (${s.diskSkippedFresh} fresh-skipped${s.skippedDisk ? `; SWEEP SKIPPED: ${s.skippedDisk}` : ''}); omp: ${s.ompFilesArchived}`,
         );
       }
     } catch (e) {

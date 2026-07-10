@@ -11,10 +11,10 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import {
   archiveAndDeleteSession,
   archiveSession,
@@ -264,5 +264,149 @@ describe('archive → delete → rematerialize (the safety core)', () => {
     const r = await archiveSession({ sourceKind: 'claude', sessionId: SID, sessionRoot: empty }, store);
     expect(r).toMatchObject({ ok: false, reason: 'no_files' });
     expect(store.stamps.size).toBe(0);
+  });
+});
+
+describe('adversarial: poisoned manifests + symlink attacks (WI-3859)', () => {
+  // A stamp row is DATA, not trusted code: a corrupt/poisoned manifest relpath
+  // must never turn deleteArchivedSessionFiles into an arbitrary unlink or
+  // rematerializeSession into an arbitrary write outside the session root.
+
+  it('delete NEVER unlinks a ../ relpath outside the session root (poisoned manifest)', async () => {
+    const { root } = await claudeFixture();
+    const store = new MemStore();
+    const ref = { sourceKind: 'claude' as const, sessionId: SID, sessionRoot: root };
+    expect((await archiveSession(ref, store)).ok).toBe(true);
+
+    const outside = await tmp('sa-victim-');
+    const victim = join(outside, 'victim.txt');
+    await writeFile(victim, 'precious\n');
+    const rel = relative(root, victim); // ../sa-victim-XXX/victim.txt
+    const stamp = store.stamps.get(`claude:${SID}`)!;
+    stamp.manifest.push({ relpath: rel, sha256: sha256Hex(Buffer.from('precious\n')), bytes_raw: 9 });
+
+    const del = await deleteArchivedSessionFiles(ref, store);
+    expect(existsSync(victim)).toBe(true); // the file outside the root MUST survive
+    expect(del.refused).toContain(rel);
+  });
+
+  it('rematerialize NEVER writes a ../ relpath outside the target root (poisoned manifest)', async () => {
+    const { root } = await claudeFixture();
+    const store = new MemStore();
+    await archiveAndDeleteSession({ sourceKind: 'claude', sessionId: SID, sessionRoot: root }, store);
+
+    const outside = await tmp('sa-evil-');
+    const evilAbs = join(outside, 'evil.txt');
+    const rel = relative(root, evilAbs);
+    const row = [...store.files.values()][0];
+    store.files.set(`claude:${SID}:${rel}`, { ...row, relpath: rel });
+    const stamp = store.stamps.get(`claude:${SID}`)!;
+    stamp.manifest.push({ relpath: rel, sha256: row.sha256, bytes_raw: row.bytes_raw });
+
+    const remat = await rematerializeSession({ sourceKind: 'claude', sessionId: SID }, store);
+    expect(existsSync(evilAbs)).toBe(false); // MUST NOT be created outside the root
+    expect(remat.ok).toBe(false);
+    expect(remat.reason).toBe('bad_relpath');
+  });
+
+  it('rematerialize refuses to write THROUGH a symlink at the target relpath (per-session dirs are symlink farms)', async () => {
+    const { root } = await claudeFixture();
+    const store = new MemStore();
+    await archiveAndDeleteSession({ sourceKind: 'claude', sessionId: SID, sessionRoot: root }, store);
+
+    // the launcher (or an adversary) re-created the path as a symlink to shared state
+    const shared = await tmp('sa-shared2-');
+    const target = join(shared, 'shared-state.jsonl');
+    await writeFile(target, 'SHARED — must not be clobbered\n');
+    const rel = join('projects', '-home-repo', `${SID}.jsonl`);
+    await mkdir(join(root, 'projects', '-home-repo'), { recursive: true });
+    await symlink(target, join(root, rel));
+
+    const remat = await rematerializeSession({ sourceKind: 'claude', sessionId: SID }, store);
+    expect((await readFile(target)).toString()).toBe('SHARED — must not be clobbered\n'); // untouched
+    expect(remat.written).toBe(0);
+    expect(remat.conflicts).toContain(rel);
+  });
+
+  it('rematerialize refuses when an INTERMEDIATE dir is now a symlink escaping the root', async () => {
+    const store = new MemStore();
+    const root = await tmp('sa-claude2-');
+    await mkdir(join(root, 'projects', '-x'), { recursive: true });
+    await writeFile(join(root, 'projects', '-x', `${SID}.jsonl`), 't\n');
+    await mkdir(join(root, 'todos'), { recursive: true });
+    await writeFile(join(root, 'todos', `${SID}-agent.json`), '{"t":1}');
+    await archiveAndDeleteSession({ sourceKind: 'claude', sessionId: SID, sessionRoot: root }, store);
+
+    // the launcher re-created todos/ as a SYMLINK into shared ~/.claude
+    const sharedTodos = await tmp('sa-sharedtodos-');
+    await rm(join(root, 'todos'), { recursive: true, force: true });
+    await symlink(sharedTodos, join(root, 'todos'));
+
+    const remat = await rematerializeSession({ sourceKind: 'claude', sessionId: SID }, store);
+    expect(existsSync(join(sharedTodos, `${SID}-agent.json`))).toBe(false); // never written into shared
+    expect(remat.conflicts).toContain(join('todos', `${SID}-agent.json`));
+  });
+
+  it('delete refuses to unlink THROUGH an intermediate symlink escaping the root', async () => {
+    const store = new MemStore();
+    const root = await tmp('sa-claude3-');
+    await mkdir(join(root, 'projects', '-x'), { recursive: true });
+    await writeFile(join(root, 'projects', '-x', `${SID}.jsonl`), 't\n');
+    await mkdir(join(root, 'todos'), { recursive: true });
+    await writeFile(join(root, 'todos', `${SID}-agent.json`), '{"t":1}');
+    const ref = { sourceKind: 'claude' as const, sessionId: SID, sessionRoot: root };
+    expect((await archiveSession(ref, store)).ok).toBe(true);
+
+    // swap todos/ for a symlink to a shared dir holding an IDENTICAL file (same sha)
+    const sharedTodos = await tmp('sa-sharedtodos2-');
+    const sharedFile = join(sharedTodos, `${SID}-agent.json`);
+    await writeFile(sharedFile, '{"t":1}');
+    await rm(join(root, 'todos'), { recursive: true, force: true });
+    await symlink(sharedTodos, join(root, 'todos'));
+
+    const del = await deleteArchivedSessionFiles(ref, store);
+    expect(existsSync(sharedFile)).toBe(true); // the SHARED target must survive
+    expect(del.refused).toContain(join('todos', `${SID}-agent.json`));
+  });
+
+  it('rematerialize reports sha_mismatch on a blob whose bytes drifted from the manifest (writes nothing new)', async () => {
+    const root = await tmp('sa-drift-');
+    await mkdir(join(root, 'projects', '-x'), { recursive: true });
+    const abs = join(root, 'projects', '-x', `${SID}.jsonl`);
+    await writeFile(abs, 'v1\n');
+    const store = new MemStore();
+    const ref = { sourceKind: 'claude' as const, sessionId: SID, sessionRoot: root };
+    await archiveSession(ref, store);
+    const v1Row = { ...(await store.readFiles('claude', SID))[0] };
+
+    await writeFile(abs, 'v2 — different bytes\n');
+    await archiveAndDeleteSession(ref, store); // manifest + rows now v2
+
+    // poison: the blob row silently reverts to v1 while the manifest expects v2
+    const v2Key = [...store.files.keys()].find((k) => k.startsWith(`claude:${SID}:`))!;
+    store.files.set(v2Key, { ...store.files.get(v2Key)!, blob: v1Row.blob });
+
+    const remat = await rematerializeSession({ sourceKind: 'claude', sessionId: SID }, store);
+    expect(remat.ok).toBe(false);
+    expect(remat.reason).toBe('sha_mismatch');
+    expect(existsSync(abs)).toBe(false); // nothing written from a corrupt archive
+  });
+
+  it('bounds: >64 files → too_many_files; >256MB raw → too_large (malformed input, not an archive job)', async () => {
+    const many = await tmp('sa-many-');
+    for (let i = 0; i < 65; i++) {
+      await mkdir(join(many, `d${i}`), { recursive: true });
+      await writeFile(join(many, `d${i}`, `${SID}.jsonl`), 'x\n');
+    }
+    const rMany = await archiveSession({ sourceKind: 'omp', sessionId: SID, sessionRoot: many }, new MemStore());
+    expect(rMany).toMatchObject({ ok: false, reason: 'too_many_files' });
+
+    const big = await tmp('sa-big-');
+    await mkdir(join(big, 'projects', '-x'), { recursive: true });
+    const bigAbs = join(big, 'projects', '-x', `${SID}.jsonl`);
+    await writeFile(bigAbs, 'seed\n');
+    await truncate(bigAbs, 257 * 1024 * 1024); // sparse — costs no real disk
+    const rBig = await archiveSession({ sourceKind: 'claude', sessionId: SID, sessionRoot: big }, new MemStore());
+    expect(rBig).toMatchObject({ ok: false, reason: 'too_large' });
   });
 });

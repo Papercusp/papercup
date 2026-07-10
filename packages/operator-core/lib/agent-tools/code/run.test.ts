@@ -147,6 +147,40 @@ describe('code:run → recipe capture (P-003)', () => {
 });
 
 /**
+ * EI-9239: a `timeoutSec` above the ~55s papercusp-su MCP transport cap used to fly straight
+ * through to `runToolOrchestration` unclamped — the transport would then hard-kill the whole
+ * call with an opaque `request_timeout` before the tool's own graceful script_timeout could ever
+ * fire (repro: `timeoutSec: 90` on a multi-call script). Fixed by clamping the effective
+ * timeoutMs below the cap (mirrors capability:inspect's identical EI-6073 fix) — the schema still
+ * ACCEPTS up to 120s (so a caller isn't rejected for asking), it's just honored only up to the
+ * clamped ceiling. A fast script well under the ceiling must behave identically either way.
+ */
+describe('code:run → timeoutSec clamped below MCP transport cap (EI-9239)', () => {
+  const codeRun = () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    if (!tool) throw new Error('code:run not registered');
+    return tool;
+  };
+  const mkCtx = () =>
+    ({
+      log: () => {},
+      workspaceId: 'ws-test',
+      harnessSlug: 'alpha',
+      role: 'su',
+      isSuperuser: true,
+      uiClientId: 'su-test',
+    }) as never;
+
+  it('accepts a timeoutSec above the foreground ceiling without a schema error, and still runs to completion', async () => {
+    const tool = codeRun();
+    const res = await tool.fn({ script: 'return 42;', timeoutSec: 90 }, mkCtx());
+    const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(payload.summary).toBe(42);
+  });
+});
+
+/**
  * P-007 (agent-tooling-token-efficiency): a script that references an unknown tool fails the
  * parse-check AND gets the typed signatures handed back inline — so the agent fixes the name and
  * re-runs WITHOUT a separate code:tools discovery round-trip. Capture never fires on this path.

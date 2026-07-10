@@ -34,6 +34,10 @@ import {
   fetchGithubRepoMeta,
   type RepoCoords,
 } from '../../cupboard/resolve-repo-coords';
+import {
+  assertBlueprintVisibilityPublishable,
+  BlueprintVisibilityError,
+} from '../../cupboard/publish-blueprint-visibility';
 
 export default defineTool({
   method: 'POST',
@@ -75,6 +79,20 @@ export default defineTool({
       }
     } catch {
       return Response.json({ ok: false, error: `blueprint "${id}" failed to parse at ${file}` }, { status: 422 });
+    }
+
+    // Public-visibility gate (cupboard-full-dogfood P-002 durable guardrail): the
+    // public Cupboard listing is irreversible, so a blueprint is publishable only
+    // when its own blueprint.yaml explicitly declares `visibility: public`. Absent
+    // / anything else ⇒ internal ⇒ refuse (422) — nothing leaks by default. Fires
+    // BEFORE the GitHub resolution so an internal blueprint fails fast (no network).
+    try {
+      assertBlueprintVisibilityPublishable(id, manifest);
+    } catch (e) {
+      if (e instanceof BlueprintVisibilityError) {
+        return Response.json({ ok: false, error: e.message }, { status: e.status });
+      }
+      throw e;
     }
 
     // The content repo is always explicit for blueprints (the bundled set lives

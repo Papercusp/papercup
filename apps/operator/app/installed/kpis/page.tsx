@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { useLexicon } from '@/lib/useLexicon';
+import { formatUptime } from './format-uptime';
 
 type AutoLoopFire = KPIs['autoloop']['recent_fires'][number];
 
@@ -36,6 +37,7 @@ interface KPIs {
       consecutive_errors: number;
     }[];
   };
+  system: { uptime_seconds: number };
 }
 
 function formatRel(iso: string): string {
@@ -124,6 +126,10 @@ export default function KPIsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastFetched, setLastFetched] = useState<number | null>(null);
+  // Local 1s ticker so the uptime card counts up smoothly between the 30s
+  // KPI refreshes, instead of jumping every 30s or re-polling for a value
+  // that's trivially derivable client-side. UI-timer exception (no network).
+  const [nowTick, setNowTick] = useState(() => Date.now());
 
   const refresh = useCallback(async () => {
     setError(null);
@@ -151,6 +157,11 @@ export default function KPIsPage() {
     return () => clearInterval(id);
   }, [refresh]);
 
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 1_000);
+    return () => clearInterval(id);
+  }, []);
+
   if (loading && !data) {
     return <div className="pc-installed-ops-shell pc-kpi-shell pc-kpi-loading" style={{ padding: 32 }}>Loading KPIs…</div>;
   }
@@ -161,6 +172,9 @@ export default function KPIsPage() {
 
   const opEntries = Object.entries(data.audit.actions_24h_by_op).sort((a, b) => b[1] - a[1]);
   const opMax = opEntries.length > 0 ? opEntries[0][1] : 0;
+
+  const elapsedSinceFetch = lastFetched ? Math.max(0, Math.floor((nowTick - lastFetched) / 1000)) : 0;
+  const liveUptimeSeconds = data.system.uptime_seconds + elapsedSinceFetch;
 
   return (
     <div className="pc-installed-ops-shell pc-kpi-shell" style={{ padding: 24, maxWidth: 1200, margin: '0 auto' }}>
@@ -179,12 +193,13 @@ export default function KPIsPage() {
       </div>
 
       {/* Top stats */}
-      <div className="pc-kpi-stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12, marginBottom: 24 }}>
+      <div className="pc-kpi-stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 12, marginBottom: 24 }}>
         <StatCard label={t('pot', { plural: true })} value={data.totals.harnesses} />
         <StatCard label="Projects" value={data.totals.projects} sub={Object.entries(data.totals.projects_by_status).map(([k, v]) => `${k}:${v}`).join(' ')} />
         <StatCard label="Messages 24h" value={data.totals.messages_24h.toLocaleString()} />
         <StatCard label="Actions 24h" value={data.totals.executed_actions_24h.toLocaleString()} />
         <StatCard label="AutoLoop active" value={data.autoloop.active} />
+        <StatCard label="System uptime" value={formatUptime(liveUptimeSeconds)} sub="host machine" />
       </div>
 
       <div className="pc-kpi-lower-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>

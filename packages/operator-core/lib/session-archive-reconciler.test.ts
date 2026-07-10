@@ -8,7 +8,7 @@
  *  - a fresh (recently-written) omp transcript is left alone.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -77,6 +77,13 @@ async function claudeOwnerDir(root: string, owner: string, sid: string): Promise
   return abs;
 }
 
+/** Age a file past the disk-sweep quiet grace (a fresh mtime = possibly a live
+ *  session still writing — the sweep must leave it alone until it goes quiet). */
+async function ageFile(abs: string, hours = 2): Promise<void> {
+  const old = new Date(Date.now() - hours * 3600_000);
+  await utimes(abs, old, old);
+}
+
 describe('runSessionArchiveReconcileOnce', () => {
   it('db-side: archives resolvable rows; stamps nothing-to-archive rows only past the grace', async () => {
     const nowMs = Date.now();
@@ -112,6 +119,11 @@ describe('runSessionArchiveReconcileOnce', () => {
     const codexAbs = join(codexHome, 'sessions', '2026', '07', '10', `rollout-x-${SID_CODEX}.jsonl`);
     await writeFile(codexAbs, 'r\n');
     await writeFile(join(codexHome, 'config.toml'), 'm\n');
+    // quiet-grace: the sweep only takes files that stopped changing
+    await ageFile(deadAbs);
+    await ageFile(liveAbs);
+    await ageFile(codexAbs);
+    await ageFile(join(codexHome, 'config.toml'));
 
     const store = new MiniStore();
     const stats = await runSessionArchiveReconcileOnce({
@@ -140,6 +152,7 @@ describe('runSessionArchiveReconcileOnce', () => {
   it('disk-side: already-archived leftovers get the sha-checked delete', async () => {
     const claudeRoot = await tmp('sar-left-');
     const abs = await claudeOwnerDir(claudeRoot, 'su-gone', SID_DEAD);
+    await ageFile(abs);
     const store = new MiniStore();
     // archive WITHOUT deleting (simulates a fast path that archived then crashed)
     await archiveSession(
@@ -158,6 +171,53 @@ describe('runSessionArchiveReconcileOnce', () => {
     });
     expect(stats.diskLeftoversDeleted).toBe(1);
     expect(existsSync(abs)).toBe(false);
+  });
+
+  it('DEGRADED protected-set: the disk-side sweep is SKIPPED entirely (never trusts an incomplete set)', async () => {
+    // gatherProtectedSessionIdentity fails OPEN per-source — a partial presence
+    // read with a WORKING archive PG would otherwise let the sweep archive and
+    // DELETE a live session's files mid-flight. Mirror session-dir-gc's abort.
+    const claudeRoot = await tmp('sar-degraded-');
+    const abs = await claudeOwnerDir(claudeRoot, 'su-live-but-unknown', SID_DEAD);
+    await ageFile(abs); // stale enough that only the degraded-abort protects it
+    const store = new MiniStore();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const stats = await runSessionArchiveReconcileOnce({
+        db: fakeDb([]),
+        store,
+        dirRoots: [{ root: claudeRoot, keyKind: 'owner', label: 'session-claude' }],
+        ompRoot: await tmp('sar-noomp3-'),
+        protectedIdentity: { ownerIds: new Set(), sessionKeys: new Set(), degraded: true },
+        nowMs: Date.now(),
+      });
+      expect(stats.skippedDisk).toBe('degraded-protected-set');
+      expect(stats.diskSessionsArchived).toBe(0);
+      expect(existsSync(abs)).toBe(true); // the live-but-unknown session survives
+      expect(store.stamps.size).toBe(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('QUIET GRACE: a fresh (still-changing) claude transcript is left alone this tick', async () => {
+    // A raw/untracked resumed session has no adv row and no presence — the
+    // protected set cannot see it. Its only signal is a fresh mtime: the sweep
+    // must not archive+delete a transcript that is still being appended to.
+    const claudeRoot = await tmp('sar-fresh-');
+    const abs = await claudeOwnerDir(claudeRoot, 'su-raw-live', SID_LIVE); // just written → fresh
+    const store = new MiniStore();
+    const stats = await runSessionArchiveReconcileOnce({
+      db: fakeDb([]),
+      store,
+      dirRoots: [{ root: claudeRoot, keyKind: 'owner', label: 'session-claude' }],
+      ompRoot: await tmp('sar-noomp4-'),
+      protectedIdentity: { ownerIds: new Set(), sessionKeys: new Set() },
+      nowMs: Date.now(),
+    });
+    expect(existsSync(abs)).toBe(true); // untouched
+    expect(store.stamps.size).toBe(0);
+    expect(stats.diskSkippedFresh).toBe(1);
   });
 
   it('omp: takes only transcripts past the mtime grace', async () => {
