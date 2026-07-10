@@ -67,10 +67,18 @@ failed`, LISTEN/NOTIFY silently dropped (transaction pooling), wrong-database re
 Fix: pin `process.env.PAPERCUSP_PGBOUNCER = '0'` explicitly (never `delete`);
 `libs/papercusp/libs/db` now pins it package-wide via `vitest.integration.setup.ts`.
 
-Related: the `[seed:git] skipping submodule` console.warn is fatal ONLY under the gate's
-full forks-pool run in the checkpoint tree (real submodules legitimately not checked
-out + the WI-1660 attribution race) — silenced by exact message in
-`libs/test-config/src/console-noise-filter.ts`.
+Related: `libs/test-config/src/console-noise-filter.ts` silences a small, growing set of
+DELIBERATE best-effort `console.warn`/`error` messages that are fatal ONLY under the
+gate's full forks-pool run (never standalone or whole-file) — the WI-1660 attribution
+race misattributes the warn to whichever unrelated test is live in the same forks-pool
+worker when it fires. Each entry is an exact-message match with its own provenance
+comment; as of 2026-07 the list covers: `[seed:git] skipping submodule` (no checked-out
+submodule in the checkpoint tree), `[hive-directory] failed to publish hive` /
+`[hive-directory] boot-join skipped for workspace` (best-effort hive-directory wiring,
+WI-2994), and `[docs-engine] MDX parse failed for` (a malformed-MDX doc self-heals via
+the git-sync content guard regardless, WI-3842). Never broaden this list for a message
+that ISN'T a proven, deliberately-caught best-effort warn — it exists to remove
+misattributed noise, not to weaken the gate.
 
 ## Class 4 — chronic reds (NOT yours to block on)
 

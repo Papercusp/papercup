@@ -162,7 +162,7 @@ async function loadStoredOverrides(): Promise<Partial<Record<FlagKey, boolean>>>
   const ck = currentCacheKey();
   const t = Date.now();
   const hit = overrideCache.get(ck);
-  if (hit && t - hit.ts < OVERRIDE_CACHE_TTL_MS) {
+  if (hit && t - hit.ts < overrideCacheTtlMs()) {
     return hit.flags;
   }
   try {

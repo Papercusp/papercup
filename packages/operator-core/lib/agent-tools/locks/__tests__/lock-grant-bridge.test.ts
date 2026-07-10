@@ -29,6 +29,7 @@ const awaitRow = (eventKey: string): AwaitRow => ({
   once: true,
   minSleepSec: null,
   urgency: false,
+  payloadFilter: null,
 });
 
 describe('key helpers', () => {
