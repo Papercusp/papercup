@@ -1238,6 +1238,27 @@ export async function setWorkItemState(
         `deliberately reopening it (e.g. the completion was wrong), otherwise investigate the peer's completion first.`,
     );
   }
+  // P-006 (fleet-deltas-leader-primitives, EI-8993): an item HELD OPEN by someone
+  // (payload.held_open_by — a leader gating it on a release criterion / owner
+  // decision) refuses a terminal transition by ANYONE ELSE unless forced. This is
+  // the dup-close guard: WI-3546-class items were "held open" only as checkpoint
+  // prose, so a well-meaning peer (or a dup-close audit) closed them as stale —
+  // the hold is now a FIELD this chokepoint enforces (complete + set_state both
+  // route through here). The holder closing their own held item is NOT gated.
+  const heldOpen = readWorkItemHeldOpenBy(wi.payload);
+  if (
+    !opts.force &&
+    heldOpen &&
+    opts.by !== heldOpen.by &&
+    !isSettledWorkItemState(wi.state) &&
+    isSettledWorkItemState(state)
+  ) {
+    throw new Error(
+      `work_item '${id}' is HELD OPEN by ${heldOpen.by}${heldOpen.reason ? ` ("${heldOpen.reason}")` : ''} — ` +
+        `closing it into '${state}' requires the holder (or { force: true } with a reason the holder can audit). ` +
+        `If you believe the hold is stale, coordinate with the holder first (coord:send).`,
+    );
+  }
   let result: WorkItem | null;
   if (wi.family === 'issue') {
     if (wi.origin === 'remote') {
@@ -1302,6 +1323,49 @@ export async function setWorkItemState(
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
       RETURNING ${sql.unsafe(FEATURE_COLS)}`;
     result = rows[0] ? featureRowToWorkItem(rows[0]) : null;
+  }
+  // P-006 (fleet-deltas-leader-primitives, EI-8973): a REOPEN (settled → non-settled,
+  // forced or holder-self) must CLEAR the terminal stamps — a reopened item still
+  // carrying terminalOwner/terminalCompletionRef reads as "terminally completed" to
+  // every later auditor/peer, which re-closes or releases it as a stale duplicate
+  // (the exact loop EI-8973 reports). The stamps are ARCHIVED into
+  // payload.reopenHistory (bounded, newest-last) so the audit trail survives the
+  // clear. Best-effort: the reopen itself already committed; a failed clear leaves
+  // the pre-P-006 behavior (stamps linger) rather than failing the state change.
+  if (
+    result &&
+    isSettledWorkItemState(wi.state) &&
+    !isSettledWorkItemState(result.state) &&
+    (wi.terminalOwner || wi.terminalCompletionRef)
+  ) {
+    try {
+      const { sql } = getOrgPg();
+      const prevHistory = Array.isArray((wi.payload as Record<string, unknown> | null)?.reopenHistory)
+        ? ((wi.payload as Record<string, unknown>).reopenHistory as unknown[])
+        : [];
+      const entry = {
+        at: new Date().toISOString(),
+        by: opts.by ?? null,
+        force: opts.force === true,
+        prevState: wi.state,
+        terminalOwner: wi.terminalOwner,
+        terminalCompletionRef: wi.terminalCompletionRef,
+      };
+      const history = JSON.stringify({ reopenHistory: [...prevHistory.slice(-4), entry] });
+      await sql`
+        UPDATE harness_shared.work_items
+           SET terminal_owner = NULL,
+               terminal_completion_ref = NULL,
+               payload = COALESCE(payload, '{}'::jsonb) || ${history}::text::jsonb,
+               updated_ts = ${Date.now()}
+         WHERE feature_id = ${id}
+           AND workspace_id IN (${issuesScopeWorkspace()}, ${activeWorkspaceId()})`;
+      // Reflect the clear in the returned row so callers see the truth this turn.
+      (result as { terminalOwner?: string | null }).terminalOwner = null;
+      (result as { terminalCompletionRef?: string | null }).terminalCompletionRef = null;
+    } catch {
+      /* best-effort — see above */
+    }
   }
   // event-await-discoverability-and-coverage P-101: EVERY real status transition
   // fires the general `work-item:status:<id>` — the "wake me on any change of
@@ -1814,6 +1878,14 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
     AND ${autoPickableWhereSql(sql, opts.workspaceId)}
     AND (taken_by IS NULL OR taken_by = '')
     AND status = ANY(${states}::text[])
+    -- P-006 (fleet-deltas-leader-primitives): the claim-hold floor, extended to the
+    -- FEATURE family. The issue-family claim already honors payload._claimHold
+    -- (claimHoldExclusionSql, WI-2797) — but the incident class that motivated
+    -- held_open_by (EI-8993: a leader-held FEATURE like WI-3548 getting claim_next'd
+    -- off the leader the moment its claim lapsed) lived on THIS path, which never
+    -- read the tag. Same COALESCE-for-NULL-safety shape, unaliased (this fragment
+    -- runs in harness_features_consolidated context).
+    AND COALESCE(payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
     AND ${opts.swarmId ? sql`(swarm_affinity IS NULL OR swarm_affinity = ${opts.swarmId})` : sql`TRUE`}
     -- P-014: under the redundancy flag, high-stakes (redundancy > 1) items fan out via
     -- claim_replica to N Swarms, so an exactly-once claim must NOT grab them. Flag OFF ⇒
@@ -2161,26 +2233,51 @@ export function alreadyTerminallyCompletedExclusionSql(sql: OrgSql) {
 export async function setWorkItemClaimHold(
   id: string,
   hold: boolean,
-  opts: { harness?: string } = {},
+  opts: {
+    harness?: string;
+    /** P-006 (fleet-deltas-leader-primitives, EI-8993): stamp WHO holds the item
+     *  open (`held_open_by`) + why (`held_open_reason`) alongside `_claimHold`,
+     *  so a terminal transition by a NON-holder can refuse (setWorkItemState's
+     *  held-open guard) and peers can see whose gate it is. Omitted ⇒ the legacy
+     *  anonymous hold (tag only). */
+    by?: string;
+    reason?: string;
+  } = {},
 ): Promise<{ id: string; harness: string | null; hold: boolean; applicable: boolean } | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
-  if (wi.family !== 'issue') {
-    return { id, harness: wi.harness, hold: false, applicable: false };
-  }
   const { sql } = getOrgPg();
   const issueWs = issuesScopeWorkspace();
+  // P-006: BOTH families now — the feature claim floor honors _claimHold too
+  // (claimFloorsWhereSql), so the hold is meaningful on features (the WI-3548
+  // leader-held incident class). Both families are rows of the ONE work_items
+  // base table; features may live under the active workspace rather than the
+  // issue scope, so match either.
+  const ws = activeWorkspaceId();
+  const holdPatch = JSON.stringify({
+    _claimHold: true,
+    ...(opts.by ? { held_open_by: opts.by, held_open_at: new Date().toISOString() } : {}),
+    ...(opts.reason ? { held_open_reason: opts.reason } : {}),
+  });
   const rows = await sql<{ payload: Record<string, unknown> | null }[]>`
     UPDATE harness_shared.work_items
        SET payload = CASE
-             WHEN ${hold} THEN COALESCE(payload, '{}'::jsonb) || jsonb_build_object('_claimHold', true)
-             ELSE COALESCE(payload, '{}'::jsonb) - '_claimHold'
+             WHEN ${hold} THEN COALESCE(payload, '{}'::jsonb) || ${holdPatch}::text::jsonb
+             ELSE COALESCE(payload, '{}'::jsonb) - '_claimHold' - 'held_open_by' - 'held_open_reason' - 'held_open_at'
            END,
            updated_ts = ${Date.now()}
-     WHERE workspace_id = ${issueWs} AND feature_id = ${id}
+     WHERE workspace_id IN (${issueWs}, ${ws}) AND feature_id = ${id}
      RETURNING payload`;
   if (!rows[0]) return null;
   return { id, harness: wi.harness, hold, applicable: true };
+}
+
+/** P-006: who holds a work-item OPEN (payload.held_open_by), or null. */
+export function readWorkItemHeldOpenBy(payload: unknown): { by: string; reason: string | null } | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const p = payload as Record<string, unknown>;
+  if (typeof p.held_open_by !== 'string' || !p.held_open_by) return null;
+  return { by: p.held_open_by, reason: typeof p.held_open_reason === 'string' ? p.held_open_reason : null };
 }
 
 /**

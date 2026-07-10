@@ -12,6 +12,7 @@ import {
   dropReplicationLogState,
   dropReplicationLiveness,
   setReplicationStallRecoveryReporterForTests,
+  setReplicationRepairHandler,
   setDhtUniverseAssertion,
   _resetReplicationLivenessForTests,
   SAMPLING_STALE_AFTER_MS,
@@ -918,5 +919,90 @@ describe('connected_never_replicated axis (WI-183 zombie connections, rig run m1
     now += 2_000; // well within grace
     sample(1, 1, 5); // replicator attaches before ever alarming
     expect(recoveries).toHaveLength(0);
+  });
+});
+
+describe('WI-3684 repair-on-detect: the per-harness repair-handler seam', () => {
+  // Drive the zombie axis (swarm connected, replicator never attached): two
+  // samples spanning the grace window fire exactly one episode.
+  const driveZombieEpisode = (
+    on: (e: ReplicationStallEpisode) => void,
+    startMs = 1_000_000,
+  ): void => {
+    const sample = (now: number) =>
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        { keyHex: KEY, knownLength: 5, mergedPosition: 0, peersCount: 0, swarmConnections: 3 },
+        { graceMs: GRACE, nowMs: now, onStallEpisode: on, onRecovery: () => {} },
+      );
+    sample(startMs);
+    sample(startMs + GRACE);
+  };
+
+  it('a registered handler receives the connected_never_replicated episode ALONGSIDE the reporter', () => {
+    const { episodes, on } = collect();
+    const repairs: ReplicationStallEpisode[] = [];
+    setReplicationRepairHandler(WS, HS, (e) => repairs.push(e));
+    driveZombieEpisode(on);
+    expect(episodes).toHaveLength(1);
+    expect(repairs).toHaveLength(1);
+    expect(repairs[0]!.kind).toBe('connected_never_replicated');
+    expect(repairs[0]!.logKeyHex).toBe(KEY);
+    expect(repairs[0]!.workspaceId).toBe(WS);
+    expect(repairs[0]!.harnessSlug).toBe(HS);
+  });
+
+  it('the seam is kind-agnostic — a no_replicator episode dispatches too (registrants filter)', () => {
+    const { on } = collect();
+    const repairs: ReplicationStallEpisode[] = [];
+    setReplicationRepairHandler(WS, HS, (e) => repairs.push(e));
+    let now = 1_000_000;
+    const sample = (peers: number) =>
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        { keyHex: KEY, knownLength: 5, mergedPosition: 5, peersCount: peers },
+        { graceMs: GRACE, nowMs: now, onStallEpisode: on, onRecovery: () => {} },
+      );
+    sample(1); // was replicating
+    now += 1_000;
+    sample(0); // detached
+    now += GRACE;
+    sample(0); // past grace → no_replicator episode
+    expect(repairs).toHaveLength(1);
+    expect(repairs[0]!.kind).toBe('no_replicator');
+  });
+
+  it('a THROWING handler never breaks the sample — the episode still reaches the reporter', () => {
+    const { episodes, on } = collect();
+    setReplicationRepairHandler(WS, HS, () => {
+      throw new Error('repair exploded');
+    });
+    expect(() => driveZombieEpisode(on)).not.toThrow();
+    expect(episodes).toHaveLength(1);
+  });
+
+  it('only the matching harness dispatches; null unregisters', () => {
+    const { on } = collect();
+    const repairs: ReplicationStallEpisode[] = [];
+    setReplicationRepairHandler(WS, 'some-other-harness', (e) => repairs.push(e));
+    driveZombieEpisode(on);
+    expect(repairs).toHaveLength(0); // wrong harness — never dispatched
+
+    _resetReplicationLivenessForTests();
+    setReplicationRepairHandler(WS, HS, (e) => repairs.push(e));
+    setReplicationRepairHandler(WS, HS, null); // unregister
+    driveZombieEpisode(on);
+    expect(repairs).toHaveLength(0);
+  });
+
+  it('dropReplicationLiveness (handle close) clears the handler — a post-close episode never reaches it', () => {
+    const { on } = collect();
+    const repairs: ReplicationStallEpisode[] = [];
+    setReplicationRepairHandler(WS, HS, (e) => repairs.push(e));
+    dropReplicationLiveness(WS, HS); // handle closed — handler must die with it
+    driveZombieEpisode(on); // fresh state re-alarms after grace
+    expect(repairs).toHaveLength(0);
   });
 });

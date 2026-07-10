@@ -46,6 +46,8 @@ interface FakeOpts {
   factsDrop?: number;
   factsMove?: number;
   pendingWakes?: number;
+  cursorDrop?: number;
+  cursorMove?: number;
   /** Statements matching this throw (per-surface error isolation). */
   failOn?: RegExp;
 }
@@ -128,6 +130,12 @@ function fakeSql(opts: FakeOpts = {}) {
     if (text.includes('UPDATE harness_shared.pending_wakes')) {
       return Promise.resolve(rows(opts.pendingWakes, { id: 42 }));
     }
+    if (text.includes('DELETE FROM harness_shared.coord_read_cursors')) {
+      return Promise.resolve(rows(opts.cursorDrop, { owner_id: FROM }));
+    }
+    if (text.includes('UPDATE harness_shared.coord_read_cursors')) {
+      return Promise.resolve(rows(opts.cursorMove, { owner_id: TO }));
+    }
     // Remaining writes (routine/carry-note/await/fleet-event mutations) return no rows.
     return Promise.resolve([]);
   };
@@ -173,7 +181,7 @@ describe('argument + liveness guards', () => {
       const sql = fakeSql({ presenceBeatMsAgo: opts.presenceBeatMsAgo });
       const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW, force: opts.force });
       expect(res.ok).toBe(true);
-      expect(res.surfaces).toHaveLength(14);
+      expect(res.surfaces).toHaveLength(15);
     }
   });
 
@@ -181,7 +189,7 @@ describe('argument + liveness guards', () => {
     const sql = fakeSql({ failOn: /SELECT heartbeat_at/ });
     const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
     expect(res.ok).toBe(true);
-    expect(res.surfaces).toHaveLength(14);
+    expect(res.surfaces).toHaveLength(15);
   });
 });
 
@@ -308,6 +316,8 @@ describe('remaining re-keys, totals, and error isolation', () => {
       factsDrop: 1,
       factsMove: 2,
       pendingWakes: 3,
+      cursorDrop: 1,
+      cursorMove: 1,
     });
     const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
     expect(surfaceOf(res, 'presence')).toMatchObject({ dropped: 1 });
@@ -319,8 +329,18 @@ describe('remaining re-keys, totals, and error isolation', () => {
     expect(surfaceOf(res, 'held-work-items')).toMatchObject({ moved: 5 });
     expect(surfaceOf(res, 'owner-facts')).toMatchObject({ moved: 2, dropped: 1 });
     expect(surfaceOf(res, 'pending-wakes')).toMatchObject({ moved: 3 });
-    expect(res.totalMoved).toBe(24);
+    expect(surfaceOf(res, 'read-cursors')).toMatchObject({ moved: 1, dropped: 1 });
+    expect(res.totalMoved).toBe(26);
     expect(res.ok).toBe(true);
+  });
+
+  it('read-cursors (EI-8999, migration 537) re-keys coord_read_cursors, live-side-wins on a (workspace,surface) collision', async () => {
+    const sql = fakeSql({ cursorMove: 2 });
+    const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
+    expect(surfaceOf(res, 'read-cursors')).toMatchObject({ moved: 2 });
+    const upd = sql.calls.find((c) => c.text.includes('UPDATE harness_shared.coord_read_cursors SET owner_id'));
+    expect(upd).toBeTruthy();
+    expect(upd!.vals).toEqual([TO, FROM]);
   });
 
   it('pending-wakes (EI-8999) re-keys staged manual-mode wakes so a compaction rebind never strands one under the dead sid', async () => {
@@ -358,7 +378,7 @@ describe('remaining re-keys, totals, and error isolation', () => {
     const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
     expect(res.ok).toBe(false);
     expect(surfaceOf(res, 'fleet-leadership').error).toContain('surface exploded');
-    expect(res.surfaces).toHaveLength(14);
+    expect(res.surfaces).toHaveLength(15);
     expect(surfaceOf(res, 'plan-claims')).toMatchObject({ moved: 1 });
   });
 });

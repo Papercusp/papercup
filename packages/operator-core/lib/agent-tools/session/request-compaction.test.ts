@@ -328,6 +328,6 @@ describe('session:request-compaction — EI-8987 stale-checkpoint warning', () =
     expect(b.ok).toBe(false);
     // Failed injection short-circuits the stale-note suffix (nothing was actually
     // queued), but the raw list is still returned for the caller to act on.
-    expect(b.staleCheckpoints).toEqual([{ id: 'WI-9', title: null }]);
+    expect(b.staleCheckpoints).toEqual([{ id: 'WI-9', title: null, reason: 'missing' }]);
   });
 });

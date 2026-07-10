@@ -57,7 +57,17 @@ import { startEnergyVadCapture } from './energy-vad-capture';
  * transcript), not at provider receive time, so a slow React queue
  * doesn't shift the engagement window. C1 of the audit.
  */
-function emitOperatorUserTurn(text: string): void {
+/**
+ * Who produced a user transcript. The transport layer stays split (local
+ * Whisper STT vs. a full-agent provider's own STT), but both flow into the
+ * pane through one uniform, source-tagged seam so the origin is observable
+ * (voice-convergence-additive-wins-2026-07-10 P-001). `source: 'voice_stt'`
+ * on the event is the coarse turn-kind (vs. text); `transcriptSource` is the
+ * finer producer discriminator.
+ */
+export type TranscriptSource = 'localWhisper' | 'providerSTT';
+
+function emitOperatorUserTurn(text: string, transcriptSource: TranscriptSource): void {
   if (typeof window === 'undefined') return;
   const trimmed = text?.trim();
   if (!trimmed) return;
@@ -65,7 +75,7 @@ function emitOperatorUserTurn(text: string): void {
   try {
     window.dispatchEvent(
       new CustomEvent('papercusp:operatorUserTurn', {
-        detail: { text: trimmed, source: 'voice_stt', tsMs },
+        detail: { text: trimmed, source: 'voice_stt', transcriptSource, tsMs },
       }),
     );
   } catch { /* ignore */ }
@@ -1138,7 +1148,7 @@ async function maybeStartFullAgentInner(): Promise<boolean> {
       onTranscript: (text) => {
         setState({ lastTranscript: text });
         void persistOperatorVoiceTurn({ role: 'user', text, source: 'voice_stt' });
-        emitOperatorUserTurn(text);
+        emitOperatorUserTurn(text, 'providerSTT');
         // Idle = USER idle. Resetting on agent transcripts too lets a
         // chatty agent keep the session alive indefinitely, defeating
         // the timeout. EL credit-burn audit, fix #2.
@@ -1328,8 +1338,8 @@ async function startElevenLabsConvAgent(_prefs: unknown): Promise<boolean> {
         if (!final) return;
         debugLog('el-conv:user-transcript', { text });
         pulseUserSpoken();
-        if (text && text.trim().length > 1) onUtteranceFinal(text);
-        emitOperatorUserTurn(text);
+        if (text && text.trim().length > 1) onUtteranceFinal(text, 'providerSTT');
+        emitOperatorUserTurn(text, 'providerSTT');
         nudgeFullAgentIdle();
         // The HOST persists this user turn once to the shared operator
         // conversation (P-010) — the desktop no longer double-writes it.
@@ -2034,9 +2044,11 @@ async function maybeStartCaptureForPtt(): Promise<void> {
   if (!pttRawCapture && !whisperCapture && state.hasWebSpeechSTT) activateListening('');
 }
 
-const utteranceListeners = new Set<(text: string) => void>();
+const utteranceListeners = new Set<(text: string, transcriptSource?: TranscriptSource) => void>();
 
-export function onFinalUtterance(listener: (text: string) => void): () => void {
+export function onFinalUtterance(
+  listener: (text: string, transcriptSource?: TranscriptSource) => void,
+): () => void {
   utteranceListeners.add(listener);
   return () => {
     utteranceListeners.delete(listener);
@@ -2045,12 +2057,12 @@ export function onFinalUtterance(listener: (text: string) => void): () => void {
 
 
 
-function onUtteranceFinal(text: string): void {
+function onUtteranceFinal(text: string, transcriptSource: TranscriptSource = 'localWhisper'): void {
   endProcessingTranscript();
   beginAwaitingResponse();
   for (const l of utteranceListeners) {
     try {
-      l(text);
+      l(text, transcriptSource);
     } catch {
       /* ignore */
     }

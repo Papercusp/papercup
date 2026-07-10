@@ -51,6 +51,7 @@ import {
   dropReplicationLogState,
   dropReplicationLiveness,
   setDhtUniverseAssertion,
+  setReplicationRepairHandler,
 } from './replication-liveness';
 import { stampOpHlc } from './hlc-stamp';
 import type { HlcClock } from '@papercusp/locks-core';
@@ -1611,6 +1612,75 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // always covers that admission.
   const admissionQueue: SignedAnnounce[] = [];
 
+  // ── WI-3684 repair-on-detect: replication-liveness episode → ACTIVE repair ──
+  // The liveness registry DETECTS a connected-but-dead log (the ef7a8160 class:
+  // swarm holds live connections, the core never attaches a replicator this
+  // process lifetime) but nothing REPAIRED it — every fire was a dead end that
+  // ended in a blind bg-host restart, and each restart-under-load re-rolled the
+  // dice on a differently part-wired plane. The repair for the zombie class is
+  // a SESSION RE-ATTACH: close the stale Corestore session and re-open it,
+  // which re-registers the core with the replication muxer on every live swarm
+  // stream. Episodes fire INSIDE a merge pass (the sampler rides it), and a
+  // re-attach mutates `admitted` — so the handler only ENQUEUES, and
+  // `drainRepairQueue()` applies the swap UNDER the merge gate at the top of
+  // the next pass (the admissionQueue / reverifyDropQueue pattern). Scope: only
+  // 'connected_never_replicated' — no_replicator already has the WI-752/WI-1534
+  // swarm self-heal re-peer loop, and 'frozen' is attached-with-blocks-stuck,
+  // which a re-attach does not address. The attempt cap is per process lifetime
+  // (episodes are edge-latched, so a failed repair cannot storm; the cap guards
+  // the recover→re-stall flap case).
+  const repairQueue: string[] = [];
+  const repairAttempts = new Map<string, number>();
+  const REPAIR_MAX_ATTEMPTS_PER_LOG = 3;
+  setReplicationRepairHandler(opts.workspaceId, opts.harnessSlug, (episode) => {
+    if (episode.kind !== 'connected_never_replicated') return;
+    const attempts = repairAttempts.get(episode.logKeyHex) ?? 0;
+    if (attempts >= REPAIR_MAX_ATTEMPTS_PER_LOG) return;
+    repairAttempts.set(episode.logKeyHex, attempts + 1);
+    if (!repairQueue.includes(episode.logKeyHex)) repairQueue.push(episode.logKeyHex);
+  });
+
+  /** Re-attach queued zombie logs. MUST run under the merge gate (mergeOnePass). */
+  async function drainRepairQueue(): Promise<void> {
+    while (repairQueue.length > 0) {
+      const keyHex = repairQueue.shift()!;
+      const current = admitted.get(keyHex);
+      // Dropped/revoked between enqueue and drain — the drop IS the resolution
+      // (EI-7788 semantics); and the own log is never repair material.
+      if (!current || keyHex === ownLog.keyHex) continue;
+      const attempt = repairAttempts.get(keyHex) ?? 1;
+      try {
+        try {
+          await current.close?.();
+        } catch {
+          // stale-session close is best-effort — the fresh session IS the repair
+        }
+        const fresh = await (opts.openRemoteLogOverride ?? openRemoteLog)(store, keyHex);
+        admitted.set(keyHex, fresh);
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'replication_repair' as BootHistoryKind,
+          `re-attached replica session ${peerLabel(keyHex)} after connected_never_replicated ` +
+            `(attempt ${attempt}/${REPAIR_MAX_ATTEMPTS_PER_LOG})`,
+        );
+        console.info(
+          `[replication-liveness] repair-on-detect: re-attached replica session ` +
+            `log=${keyHex.slice(0, 12)}… harness=${opts.harnessSlug} ` +
+            `(attempt ${attempt}/${REPAIR_MAX_ATTEMPTS_PER_LOG})`,
+        );
+      } catch (e) {
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'replication_repair_failed' as BootHistoryKind,
+          `${peerLabel(keyHex)} (attempt ${attempt}/${REPAIR_MAX_ATTEMPTS_PER_LOG}): ` +
+            `${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+  }
+
   // 'admitted' listeners (audit P-022): consumers (perf rigs) previously
   // polled handle.admitted.size on a 100ms timer to detect mesh-readiness —
   // emit directly at admission instead. Best-effort: a throwing listener
@@ -1866,6 +1936,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // (P-002) — mirror of drainAdmissionQueue: the GitHub I/O ran off the
       // merge lock; this only applies its conclusive-fail results under the gate.
       drainReverifyDropQueue();
+
+      // WI-3684 repair-on-detect: apply queued zombie-log session re-attaches
+      // under the same gate (see drainRepairQueue above) — the liveness episode
+      // that enqueued them fired inside a PRIOR pass.
+      await drainRepairQueue();
 
       // ── Revocation refresh BEFORE collecting the merge set (G7 fix) ──
       // A published revocation that has propagated to this peer's loader (e.g.

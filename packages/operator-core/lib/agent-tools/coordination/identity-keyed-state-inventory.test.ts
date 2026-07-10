@@ -76,6 +76,8 @@ const ALLOWLIST: Record<string, Classification> = {
   'plan_item_claims.owner': { status: 'covered', surface: 'plan-claims' },
   'work_item_claims.owner': { status: 'covered', surface: 'work-claims' },
   'coord_watermarks.owner_id': { status: 'covered', surface: 'watermarks' },
+  'coord_read_cursors.owner_id': { status: 'covered', surface: 'read-cursors' }, // EI-8999, caught live as migration 537 landed
+
   'work_items.taken_by': { status: 'covered', surface: 'held-work-items' },
   'agent_facts.scope_ref': { status: 'covered', surface: 'owner-facts' },
 

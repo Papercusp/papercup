@@ -329,7 +329,7 @@ describe('readHeldWorkItems — scope→harness resolution (EI-8813 regression)'
       ]),
       getWorkItemCheckpointFn: async (ref) => `harness=${ref.harness}`,
     });
-    expect(held).toEqual([{ id: 'WI-1', title: 't', body: 'b', harness: 'papercusp', checkpoint: 'harness=papercusp' }]);
+    expect(held).toEqual([{ id: 'WI-1', title: 't', body: 'b', harness: 'papercusp', checkpoint: 'harness=papercusp', checkpointUpdatedAtMs: null }]);
   });
 
   it('resolves an operator-scope (harness-null) item to null — NEVER a guessed slug', async () => {
@@ -347,7 +347,7 @@ describe('readHeldWorkItems — scope→harness resolution (EI-8813 regression)'
       },
     });
     expect(held).toEqual([
-      { id: 'EI-8810', title: 't', body: 'b', harness: null, checkpoint: 'the real checkpoint' },
+      { id: 'EI-8810', title: 't', body: 'b', harness: null, checkpoint: 'the real checkpoint', checkpointUpdatedAtMs: null },
     ]);
   });
 });
@@ -376,7 +376,7 @@ describe('readHeldWorkItems — EI-9013 (feature-family coverage + workspace can
       getWorkItemCheckpointFn: async () => 'feature checkpoint',
     });
     expect(held).toEqual([
-      { id: 'WI-3535', title: 'feature item', body: 'b', harness: 'papercusp', checkpoint: 'feature checkpoint' },
+      { id: 'WI-3535', title: 'feature item', body: 'b', harness: 'papercusp', checkpoint: 'feature checkpoint', checkpointUpdatedAtMs: null },
     ]);
     expect(calls).toHaveLength(1);
     expect(calls[0]!.text).toContain('harness_shared.work_items');

@@ -366,6 +366,30 @@ export async function rebindIdentity(
     r.moved = moved.length;
   });
 
+  // 13b. Server-side read cursors (P-004 fleet-deltas-leader-primitives,
+  //      migration 537) — PK (workspace_id, owner_id, surface), same shape and
+  //      same non-monotonic-cursor-survival rationale as the 'watermarks' step
+  //      above (coord_watermarks): if the live id already re-acked its OWN
+  //      cursor for a surface post-rebind, its fresher committed/pending state
+  //      wins over the ghost's. Found + fixed live by the EI-8999 static
+  //      inventory guard the moment migration 537 landed (identity-keyed-
+  //      state-inventory.test.ts) — exactly the class of gap it exists to catch.
+  await run('read-cursors', async (r) => {
+    const dropped = await sql<Array<{ owner_id: string }>>`
+      DELETE FROM harness_shared.coord_read_cursors fcur
+       USING harness_shared.coord_read_cursors tcur
+       WHERE fcur.owner_id = ${f} AND tcur.owner_id = ${t}
+         AND tcur.workspace_id = fcur.workspace_id AND tcur.surface = fcur.surface
+       RETURNING fcur.owner_id
+    `;
+    r.dropped = dropped.length;
+    const moved = await sql<Array<{ owner_id: string }>>`
+      UPDATE harness_shared.coord_read_cursors SET owner_id = ${t}
+       WHERE owner_id = ${f} RETURNING owner_id
+    `;
+    r.moved = moved.length;
+  });
+
   // 13. Staged (manual-mode) wakes — pending-wakes.ts (D-005/migration 204) reads
   //     PURELY by owner_id, no fallback: `listPendingWakes(ownerId)` is the sole
   //     read path the agent's pane and the wake-count sync query use. A wake

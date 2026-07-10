@@ -59,7 +59,7 @@ import {
   type OperatorMode,
   type ParsedReport,
 } from '@papercusp/operator-core/lib/operator-converse-tags';
-import { getVoiceState, speak, subscribeVoiceState } from './voice/voice-mode';
+import { getVoiceState, speak, subscribeVoiceState, type TranscriptSource } from './voice/voice-mode';
 import { useSyncQuery } from '@papercusp/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import type { ChatMessage, ChatToolCall } from './chat/chat-types';

@@ -306,6 +306,46 @@ export function setReplicationStallRecoveryReporterForTests(
   episodeRecoveredReporter = fn;
 }
 
+/**
+ * WI-3684 repair-on-detect: per-harness REPAIR handler, registered by the
+ * process that owns the harness's substrate handle (boot.ts) and invoked for
+ * EVERY stall episode this module fires — alongside the reporter, never
+ * instead of it. The registry's defect class (WI-3684, unified from the
+ * SESSION_CLOSED retry storm + the ef7a8160 connected_never_replicated fire)
+ * was DETECT-WITHOUT-REPAIR: every axis alarmed correctly and nothing acted,
+ * so each detection was a dead end a human had to convert into a restart.
+ * The handler fires at exactly the right moment — the episode carries the
+ * (workspace, harness, logKeyHex) triple while the stall is CURRENT — and the
+ * registrant decides what a repair means (boot.ts: enqueue a session
+ * re-attach applied under the merge gate). Episodes are edge-triggered (once
+ * per stall), so a handler is naturally rate-limited to one invocation per
+ * episode per kind; the registrant adds its own attempt cap on top.
+ * Keyed per harness; cleared on `dropReplicationLiveness` (handle close) so a
+ * closed harness's handler can never act on a stale `admitted` set.
+ */
+export type ReplicationRepairHandler = (episode: ReplicationStallEpisode) => void;
+const repairHandlers = new Map<string, ReplicationRepairHandler>();
+
+export function setReplicationRepairHandler(
+  workspaceId: string,
+  harnessSlug: string,
+  handler: ReplicationRepairHandler | null,
+): void {
+  const key = hKey(workspaceId, harnessSlug);
+  if (handler) repairHandlers.set(key, handler);
+  else repairHandlers.delete(key);
+}
+
+function dispatchRepair(episode: ReplicationStallEpisode): void {
+  const handler = repairHandlers.get(hKey(episode.workspaceId, episode.harnessSlug));
+  if (!handler) return;
+  try {
+    handler(episode);
+  } catch {
+    /* a repair-handler throw must never wedge the merge pass the sampler rides */
+  }
+}
+
 function defaultEpisodeReporter(episode: ReplicationStallEpisode): void {
   // Leg 0 — a LOUD process-log line carrying the grep-able event token. The b8
   // matrix scenario's detector-assert (and any live witness) greps serve.log
@@ -506,7 +546,7 @@ export function sampleReplicationLiveness(
         now - st.lastNonZeroPeersMs >= graceMs
       ) {
         st.alarmedNoReplicator = true;
-        onEpisode({
+        const episode: ReplicationStallEpisode = {
           workspaceId,
           harnessSlug,
           logKeyHex: sample.keyHex,
@@ -515,7 +555,9 @@ export function sampleReplicationLiveness(
           detail:
             `log=${sample.keyHex.slice(0, 12)}… has had 0 live replicator peers for ` +
             `${Math.round((now - st.lastNonZeroPeersMs) / 1000)}s (was previously replicating)`,
-        });
+        };
+        onEpisode(episode);
+        dispatchRepair(episode);
       }
     }
   }
@@ -535,7 +577,7 @@ export function sampleReplicationLiveness(
         now - st.connectedNeverReplSinceMs >= graceMs
       ) {
         st.alarmedConnectedNever = true;
-        onEpisode({
+        const episode: ReplicationStallEpisode = {
           workspaceId,
           harnessSlug,
           logKeyHex: sample.keyHex,
@@ -552,7 +594,9 @@ export function sampleReplicationLiveness(
             `connect/drop-every-25s signature on the OTHER machine, undetected for hours). Check ` +
             `the peer's disk usage (\`df -h\`) and serve.log for ENOSPC/crash-loop before assuming ` +
             `a pure network/DHT issue.`,
-        });
+        };
+        onEpisode(episode);
+        dispatchRepair(episode);
       }
     } else if (
       st.connectedNeverReplSinceMs !== null &&
@@ -637,7 +681,7 @@ export function sampleReplicationLiveness(
       // on peers>0 so a plainly-disconnected peer alarms on the peers axis
       // (or never, if it was never connected), not twice.
       st.alarmedFrozen = true;
-      onEpisode({
+      const episode: ReplicationStallEpisode = {
         workspaceId,
         harnessSlug,
         logKeyHex: sample.keyHex,
@@ -647,7 +691,9 @@ export function sampleReplicationLiveness(
           `log=${sample.keyHex.slice(0, 12)}… replicator attached but ingest frozen: ` +
           `writer at ${st.knownLength}, merged to ${sample.mergedPosition}, ` +
           `no progress for ${Math.round((now - st.lastIngestProgressMs) / 1000)}s`,
-      });
+      };
+      onEpisode(episode);
+      dispatchRepair(episode);
     }
   }
 }
@@ -854,6 +900,9 @@ export function dropReplicationLiveness(workspaceId: string, harnessSlug: string
     for (const st of logs.values()) reportDropRecoveries(workspaceId, harnessSlug, st, now);
   }
   registry.delete(hKey(workspaceId, harnessSlug));
+  // WI-3684: a closed harness's repair handler closes over its (now torn-down)
+  // admitted set — drop it so a later episode can never act on stale state.
+  repairHandlers.delete(hKey(workspaceId, harnessSlug));
 }
 
 /** Test seam — wipe the registry between tests. */
@@ -862,4 +911,5 @@ export function _resetReplicationLivenessForTests(): void {
   dhtUniverseState.clear();
   episodeReporter = null;
   episodeRecoveredReporter = null;
+  repairHandlers.clear();
 }
