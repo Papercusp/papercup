@@ -176,7 +176,7 @@ const PEER_LOG_WORKSPACE_OWNED = [
   // state over the peer-log (projections/hive-settings.ts). Keyed (workspace_id,
   // harness_slug = the Hive home, setting_key) → workspace-owned + peer-log; rides
   // the Hive-pubkey topic (P-004).
-  'hive_settings',
+  'pot_settings',
   // cross-machine-coord-parity-and-trust-2026-07-01 (P-016): the Queen's per-bee
   // claim SPECS federate as hive state (projections/bee-claim-spec.ts) so a remote
   // bee's get_next sees spec authoring/versioning. Keyed (workspace_id, bee_id);
@@ -194,32 +194,32 @@ const PEER_LOG_WORKSPACE_OWNED = [
   // (hive_members — the Hive-grain analog of contributors) federates across the Hive's
   // Swarms so a revocation propagates. Keyed (workspace_id, hive_home_slug,
   // github_user_id) → workspace-owned + peer-log.
-  'hive_members',
+  'pot_members',
   // shared-hive-owner-enforcement-2026-06-19 (EN-1): the owner-SIGNED Hive policy
   // record (projections/hive-policy.ts). SINGLETON per Hive — keyed (workspace_id,
   // harness_slug = the Hive home) → workspace-owned + peer-log; rides the Hive-pubkey
   // topic (P-004). The projection VERIFIES the owner signature before applying (a
   // forged policy is dropped). Listed here so it resolves to sync:'peer-log'.
-  'hive_policy',
+  'pot_policy',
   // shared-hive-owner-enforcement-2026-06-19 (EN-3 / P-MEMBER): approval-mode pending
   // join requests (projections/hive-pending-joins.ts). Keyed (workspace_id, harness_slug
   // = the Hive home, github_user_id) → workspace-owned + peer-log; rides the Hive-pubkey
   // topic. Bidirectional on the hive-home seam: a joiner's REQUEST reaches the owner, the
   // owner's DECISION (status) reaches the joiner back.
-  'hive_pending_joins',
+  'pot_pending_joins',
   // shared-hive-owner-enforcement-2026-06-19 (EN-3 / P-MOD): the member→owner moderation
   // report queue (projections/hive-reports.ts). Keyed (workspace_id, harness_slug = the
   // Hive home, report_id) → workspace-owned + peer-log. A MEMBER's report federates to the
   // owner's queue; the owner's resolution (status) federates back. (Takedowns + bans ride
-  // EN-1's owner-SIGNED hive_policy, not this table — reports go member→owner so they
+  // EN-1's owner-SIGNED pot_policy, not this table — reports go member→owner so they
   // cannot ride the owner signature.)
-  'hive_reports',
+  'pot_reports',
   // shared-hive-rekey-2026-06-19 (P-005): per-member WRAPPED epoch keys for the read-plane
   // re-key (projections/hive-epoch-keys.ts). Keyed (workspace_id, harness_slug = the Hive
   // home, epoch, member_device_pubkey) → workspace-owned + peer-log; rides the Hive-pubkey
   // topic. DARK until papercusp-hive-rekey flips (the boundary trigger + producer are
   // flag-gated, so the table stays empty + its capture trigger never fires locally).
-  'hive_epoch_keys',
+  'pot_epoch_keys',
   // fed-reanchor B5: the work-queue's issue/task family (work_items kind ∈ bug|change|
   // task) federates over the Hive peer-log — closes engineer-issues-2026-06-03 D-009's
   // "federation deferred". Keyed (workspace_id, issue_id); the capture trigger (mig 197)

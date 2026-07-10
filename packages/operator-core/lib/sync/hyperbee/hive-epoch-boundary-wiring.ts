@@ -208,8 +208,24 @@ export async function grantEpochKeysToMembers(
   } = {},
 ): Promise<BoundaryRekeyResult> {
   if (!opts.enabled) return { applied: false, reason: 'flag-disabled' };
-  const fresh = [...new Set(opts.newMemberPubkeys.filter((pk) => pk))];
-  if (fresh.length === 0) return { applied: false, reason: 'no-fresh-members' };
+  const candidates = [...new Set(opts.newMemberPubkeys.filter((pk) => pk))];
+  if (candidates.length === 0) return { applied: false, reason: 'no-fresh-members' };
+  // WI-3927 guard: a MALFORMED device pubkey (e.g. a leaked test fixture like 'pk-creator' —
+  // 7 chars, not the 43/44-char base64 of a 32-byte key) makes crypto.wrapKeyToMember THROW
+  // below, aborting the WHOLE grant pass — and every caller funnels through here (boundary
+  // rekey, member-add, the WI-887 reconcile sweep), so one bad row starved every well-formed
+  // member hive-wide (epoch-key reconciled=0 + outbox-drain PASS TIMEOUT, 2026-07-10).
+  // Skip + log the bad key(s); keep granting to the rest.
+  const malformed = candidates.filter((pk) => pk.length !== 43 && pk.length !== 44);
+  if (malformed.length > 0) {
+    console.warn(
+      `[pot-epoch-boundary] skipping ${malformed.length} MALFORMED member device pubkey(s) (char length not 43/44): ${malformed
+        .map((pk) => JSON.stringify(pk.length > 20 ? `${pk.slice(0, 17)}…` : pk))
+        .join(', ')} — grant continues for well-formed members (WI-3927)`,
+    );
+  }
+  const fresh = candidates.filter((pk) => pk.length === 43 || pk.length === 44);
+  if (fresh.length === 0) return { applied: false, reason: 'all-members-malformed' };
   const {
     resolveCrypto = resolveHiveEpochCrypto,
     resolveAuthorPubkey = loadHivePubkey,

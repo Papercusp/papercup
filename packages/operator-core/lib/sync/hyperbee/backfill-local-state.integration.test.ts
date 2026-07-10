@@ -86,13 +86,13 @@ async function seedPlan(
 async function seedHiveMember(
   sql: postgres.Sql,
   githubUserId: number,
-  opts: { origin?: string; workspace_id?: string; hive_home_slug?: string } = {},
+  opts: { origin?: string; workspace_id?: string; pot_home_slug?: string } = {},
 ): Promise<void> {
   await sql`
-    INSERT INTO harness_shared.hive_members
-      (workspace_id, hive_home_slug, github_user_id, github_username, origin)
+    INSERT INTO harness_shared.pot_members
+      (workspace_id, pot_home_slug, github_user_id, github_username, origin)
     VALUES
-      (${opts.workspace_id ?? WS}, ${opts.hive_home_slug ?? SLUG}, ${githubUserId},
+      (${opts.workspace_id ?? WS}, ${opts.pot_home_slug ?? SLUG}, ${githubUserId},
        ${`u${githubUserId}`}, ${opts.origin ?? 'local'})`;
 }
 
@@ -174,7 +174,7 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
       -- (scope == harness_slug) and (P-006) added hive_members (scope ==
       -- hive_home_slug). The fixture must create BOTH or the backfill's count query
       -- hits a missing relation. Subset of the real columns the SELECT / to_jsonb touch.
-      CREATE TABLE harness_shared.hive_settings (
+      CREATE TABLE harness_shared.pot_settings (
         harness_slug TEXT NOT NULL,
         setting_key  TEXT NOT NULL,
         workspace_id TEXT NOT NULL DEFAULT '',
@@ -184,16 +184,16 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
         fed_hlc      TEXT,
         PRIMARY KEY (harness_slug, setting_key)
       );
-      CREATE TABLE harness_shared.hive_members (
+      CREATE TABLE harness_shared.pot_members (
         workspace_id   TEXT   NOT NULL,
-        hive_home_slug TEXT   NOT NULL,
+        pot_home_slug  TEXT   NOT NULL,
         github_user_id BIGINT NOT NULL,
         github_username TEXT  NOT NULL DEFAULT '',
         revoked_pubkeys TEXT[] NOT NULL DEFAULT '{}',
         origin         TEXT   NOT NULL DEFAULT 'local',
         fed_ts         BIGINT,
         fed_hlc        TEXT,
-        PRIMARY KEY (workspace_id, hive_home_slug, github_user_id)
+        PRIMARY KEY (workspace_id, pot_home_slug, github_user_id)
       );
       -- engineer_issues is the unified ei compat VIEW (created by the helper above); the
       -- backfill's issue block reads it + derives the federation slug from scope (operator

@@ -51,7 +51,7 @@ export const PEER_LOG_TAG_TO_TABLE: Readonly<Record<string, string>> = {
   'item-assignments': 'plan_item_assignments',
   // shared-hive-federation-2026-06-08 (P-005): per-Hive settings federate over the
   // peer-log (projections/hive-settings.ts → hive_settings; tableTag 'hive-settings-by-key').
-  'hive-settings-by-key': 'hive_settings',
+  'hive-settings-by-key': 'pot_settings',
   'bee-claim-specs': 'cup_claim_specs',
   // cross-machine-coord-parity-and-trust-2026-07-01 (P-044 DG-1): the distributed
   // test gate's device-signed shard-run verdict facts federate over the peer-log
@@ -59,24 +59,24 @@ export const PEER_LOG_TAG_TO_TABLE: Readonly<Record<string, string>> = {
   'gate-verdicts': 'gate_verdicts',
   // shared-hive-federation-2026-06-08 (P-006): per-Hive admission federates over the
   // peer-log (projections/hive-members.ts → hive_members).
-  'hive-members': 'hive_members',
+  'hive-members': 'pot_members',
   // shared-hive-owner-enforcement-2026-06-19 (EN-1): the owner-SIGNED Hive policy record
   // federates over the peer-log (projections/hive-policy.ts → hive_policy; tableTag
   // 'hive-policy'). SINGLETON per Hive, scoped to the Hive home; the projection verifies
   // the owner signature before applying.
-  'hive-policy': 'hive_policy',
+  'hive-policy': 'pot_policy',
   // shared-hive-owner-enforcement-2026-06-19 (EN-3): the member→owner moderation report
   // queue + the approval-mode pending-join queue federate over the peer-log
   // (projections/hive-reports.ts → hive_reports; projections/hive-pending-joins.ts →
   // hive_pending_joins). Both hive-home-grained (scoped to the Hive home slug).
-  'hive-reports': 'hive_reports',
-  'hive-pending-joins': 'hive_pending_joins',
+  'hive-reports': 'pot_reports',
+  'hive-pending-joins': 'pot_pending_joins',
   // shared-hive-rekey-2026-06-19 (P-005): per-member WRAPPED epoch keys for the read-plane
   // re-key federate over the peer-log (projections/hive-epoch-keys.ts → hive_epoch_keys;
   // tableTag 'hive-epoch-keys'). Hive-home-grained (keyed workspace_id, harness_slug = the
   // Hive home, epoch, member_device_pubkey). DARK until papercusp-hive-rekey flips — the
   // boundary trigger + producer are flag-gated, so the table stays empty until then.
-  'hive-epoch-keys': 'hive_epoch_keys',
+  'hive-epoch-keys': 'pot_epoch_keys',
   // fed-reanchor B5: the work-queue's issue/task family federates over the peer-log
   // (projections/engineer-issues.ts → engineer_issues; key == issue_id).
   'engineer-issues': 'engineer_issues',
