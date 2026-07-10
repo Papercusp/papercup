@@ -1130,10 +1130,14 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     // at commit-time; now wired. Also marks the silence-ladder
     // freshness clock so it stays active after a voice exchange.
     const onVoiceUserTurn = (e: Event) => {
-      const detail = (e as CustomEvent<{ tsMs?: number; text?: string; confidence?: number }>).detail;
+      const detail = (e as CustomEvent<{ tsMs?: number; text?: string; confidence?: number; transcriptSource?: TranscriptSource }>).detail;
       const tsMs = typeof detail?.tsMs === 'number' ? detail.tsMs : Date.now();
       const text = typeof detail?.text === 'string' ? detail.text : '';
       const confidence = typeof detail?.confidence === 'number' ? detail.confidence : undefined;
+      // Producer origin (localWhisper vs providerSTT) — observable on the
+      // uniform pane seam (P-001). Not branched on today; engagement +
+      // card-routing are source-agnostic.
+      void detail?.transcriptSource;
 
       // Phase 2: voice-card routing (plan §C.1).
       // Try resolving an in-flight chat:ask_choice card first; only
@@ -1600,7 +1604,10 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           if (typeof window === 'undefined') continue;
           window.dispatchEvent(
             new CustomEvent('papercusp:operatorUserTurn', {
-              detail: { text: tx.text, source: 'voice_stt', tsMs: tx.tsMs, confidence: tx.confidence },
+              // Buffered transcripts only ever enter the router from the
+            // provider pane-relay (the sole emitter of operatorUserTurn), so
+            // replays are providerSTT (P-001 uniform seam).
+            detail: { text: tx.text, source: 'voice_stt', tsMs: tx.tsMs, confidence: tx.confidence, transcriptSource: 'providerSTT' as TranscriptSource },
             }),
           );
         }
@@ -1674,7 +1681,10 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       for (const tx of drained) {
         window.dispatchEvent(
           new CustomEvent('papercusp:operatorUserTurn', {
-            detail: { text: tx.text, source: 'voice_stt', tsMs: tx.tsMs, confidence: tx.confidence },
+            // Buffered transcripts only ever enter the router from the
+            // provider pane-relay (the sole emitter of operatorUserTurn), so
+            // replays are providerSTT (P-001 uniform seam).
+            detail: { text: tx.text, source: 'voice_stt', tsMs: tx.tsMs, confidence: tx.confidence, transcriptSource: 'providerSTT' as TranscriptSource },
           }),
         );
       }
