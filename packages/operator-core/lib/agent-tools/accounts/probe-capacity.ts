@@ -28,8 +28,11 @@ import { probeCapacityForAccounts, type CapacityProbeResult } from '../../infere
 
 const wsArg = z.string().min(1).optional().describe('Workspace id (defaults to the active workspace)');
 
+// { data } shape (definetool-token-optimization P-003): the framework owns wire
+// encoding (auto-TOON on the MCP transport, lossless JSON elsewhere) — no hand-rolled
+// inline-JSON content array. Payload is identical to the legacy shape.
 const ok = (payload: Record<string, unknown>) => ({
-  content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...payload }) }],
+  data: { ok: true, ...payload },
 });
 
 /** One legible evidence row: what we thought, what upstream says, and the verdict. */

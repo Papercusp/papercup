@@ -95,6 +95,16 @@ export function findLinuxTerminal(): { bin: string; args: string[] } | null {
   return cachedTerminal;
 }
 
+/** Test-only: clear the memoized terminal so a test can re-resolve after stubbing
+ *  $TERMINAL. Without this, findLinuxTerminal() caches whatever the host had at
+ *  first call — so the early-exit-probe tests (which mock `spawn` but need the
+ *  resolver to return non-null) passed on a box with a terminal emulator installed
+ *  and failed on a headless one (packaged install / CI runner) with "no terminal
+ *  emulator found". */
+export function _resetTerminalCacheForTests(): void {
+  cachedTerminal = undefined;
+}
+
 function shellEscape(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }

@@ -21,6 +21,7 @@ import {
   spawnConsole,
   spawnHeadless,
   headlessLogPath,
+  _resetTerminalCacheForTests,
   type AppearanceOpts,
   type DesktopEnvProbes,
 } from './console-spawn';
@@ -196,8 +197,19 @@ describe('spawnConsole early-exit probe — WI-1886(b)', () => {
     vi.mocked(isWindowsDesktopHost).mockReturnValue(false);
     spawnMock.mockReset();
     vi.stubEnv('DISPLAY', ':99');
+    // These tests mock `spawn`, so no real terminal ever runs — but spawnConsole
+    // still calls findLinuxTerminal() first, which needs a terminal emulator on
+    // PATH. On a headless host (packaged install / CI runner) there is none, so it
+    // returned "no terminal emulator found" (500) before the mocked spawn was ever
+    // reached. Point $TERMINAL at bash (always present; never actually executed
+    // since spawn is mocked) and clear the resolver's memo so the stub takes effect.
+    vi.stubEnv('TERMINAL', 'bash');
+    _resetTerminalCacheForTests();
   });
-  afterEach(() => vi.unstubAllEnvs());
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    _resetTerminalCacheForTests();
+  });
 
   it('a terminal client that dies nonzero inside the probe ⇒ LOUD error (no more ok+pid ghost windows)', async () => {
     spawnMock.mockImplementation(() => {
