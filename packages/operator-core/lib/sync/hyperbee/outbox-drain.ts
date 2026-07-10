@@ -33,6 +33,7 @@ import type { BootedHarnessHandle, LocalWriteOp } from './boot';
 import { outboxRowToLocalWriteOp, UnknownOutboxTableError, type OutboxRow } from './feature-issue-op-keys';
 import { recordLocalWrite } from './clobber-events';
 import { shouldEncryptOpForRekey } from './hive-epoch-content-ops';
+import { isSessionClosedError } from './own-log-fork-guard';
 import { redactContentOpValueForEgress } from './content-op-egress-guard';
 
 /**
@@ -479,6 +480,21 @@ export interface StartDrainOptions {
    *  (`DRAIN_ORPHAN_CHECK_INTERVAL_MS`). A NEGATIVE value disables the detector.
    *  Production omits it. */
   _orphanCheckIntervalMs?: number;
+  /**
+   * WI-3684 send-side twin: fired when a drain pass fails with a Hypercore
+   * `SESSION_CLOSED` error (own-log-fork-guard's `isSessionClosedError`) — the
+   * own-log session is PERMANENTLY dead (Hypercore never recovers a closed
+   * session on the same handle), so this drain SELF-STOPS instead of
+   * blind-retrying the poll every `pollMs` forever. The caller (wire-outbox.ts
+   * → boot-all.ts's `ensureSendSideWired`) uses this to un-mark the harness as
+   * "send-side wired" so the NEXT boot-all reconcile pass re-wires a fresh
+   * drain against whatever handle is current then — mirroring the receive
+   * side's repair-on-detect posture (boot.ts's `drainRepairQueue`), which
+   * likewise reacts to a dead session instead of retrying it. Best-effort:
+   * called AFTER this drain has already stopped itself, so a throwing/slow
+   * callback can't wedge the drain loop.
+   */
+  onSessionClosed?: () => void;
   /** Test seam: intercept ALL detector escalations (default = durable EI via
    *  `fileReplicationStallEi`). Receives the human detail + the episode `kind`
    *  ('drain_stalled' hung-pass | 'drain_backlog_stalled' no-progress |
@@ -524,6 +540,33 @@ export function startOutboxDrain(
   // applied batch racing another). A pending drain is coalesced (run-again flag).
   let draining = false;
   let runAgain = false;
+
+  // Declared here (assigned once started, below) so `stopInternal` — called
+  // both from the public `stop()` AND from the SESSION_CLOSED self-stop path
+  // inside `drainSafely`'s catch — can release them from one place.
+  let pollTimer: ReturnType<typeof managedSetInterval> | null = null;
+  let listenReq: ReturnType<typeof pg.listen> | undefined;
+
+  /** Idempotent: clears the poll timer + closes the LISTEN connection. */
+  async function stopInternal(): Promise<void> {
+    if (stopped) return;
+    stopped = true;
+    if (pollTimer) {
+      try {
+        pollTimer.stop();
+      } catch {
+        // no-op
+      }
+    }
+    try {
+      if (listenReq) {
+        const req = await listenReq;
+        await req.unlisten();
+      }
+    } catch {
+      // best-effort: the connection may already be closing
+    }
+  }
 
   const passTimeoutMs = opts._passTimeoutMs ?? DRAIN_PASS_TIMEOUT_MS;
   const backlogStallMs = opts._backlogStallMs ?? DRAIN_BACKLOG_STALL_MS;
@@ -756,6 +799,26 @@ export function startOutboxDrain(
             `WI-2009 permanence class; loop un-wedged, next tick re-attempts)`,
           passTimeoutMs,
         );
+      } else if (isSessionClosedError(e)) {
+        // WI-3684 send-side twin: the own-log session is PERMANENTLY closed
+        // (Hypercore equivocation guard, or an explicit close) — every future
+        // `handle.append` on this same handle will throw the same error, so
+        // the `${pollMs}ms` poll blind-retrying forever just spams this error
+        // every tick. Self-stop instead, and tell the caller (wire-outbox.ts →
+        // boot-all.ts) so it can re-wire a fresh drain once a live handle is
+        // available again (mirrors boot.ts's repair-on-detect for the receive
+        // side — detect-and-act, not detect-and-retry-blindly).
+        console.error(
+          `[outbox-drain] own-log session for ${wantPayload} is SESSION_CLOSED — ` +
+            `stopping this drain (no further ${pollMs}ms retries against the dead session); ` +
+            `signaling for a re-wire`,
+        );
+        await stopInternal();
+        try {
+          opts.onSessionClosed?.();
+        } catch {
+          // best-effort — a throwing callback must never surface from here
+        }
       }
     } finally {
       draining = false;
@@ -776,13 +839,13 @@ export function startOutboxDrain(
 
   // LISTEN — drain on a matching NOTIFY. `pg.listen` reserves its own dedicated
   // connection internally; the returned request's `unlisten()` releases it.
-  const listenReq = pg.listen(NOTIFY_CHANNEL, (payload) => {
+  listenReq = pg.listen(NOTIFY_CHANNEL, (payload) => {
     if (stopped) return;
     if (payload === wantPayload) void drainSafely();
   });
   // Surface a listen-setup failure without crashing the boot path.
   void Promise.resolve(listenReq).catch((e: unknown) => {
-     
+
     console.error(
       `[outbox-drain] LISTEN setup failed for ${wantPayload}:`,
       e instanceof Error ? e.message : String(e),
@@ -791,7 +854,7 @@ export function startOutboxDrain(
 
   // Poll-fallback timer (liveness if a NOTIFY is missed). `.unref()` so it never
   // keeps the process alive on its own.
-  const pollTimer =
+  pollTimer =
     pollMs > 0
       ? managedSetInterval('hyperbee-outbox-drain-poll', pollMs, () => {
           void drainSafely();
@@ -799,22 +862,6 @@ export function startOutboxDrain(
       : null;
 
   return {
-    async stop(): Promise<void> {
-      if (stopped) return;
-      stopped = true;
-      if (pollTimer) {
-        try {
-          pollTimer.stop();
-        } catch {
-          // no-op
-        }
-      }
-      try {
-        const req = await listenReq;
-        await req.unlisten();
-      } catch {
-        // best-effort: the connection may already be closing
-      }
-    },
+    stop: stopInternal,
   };
 }

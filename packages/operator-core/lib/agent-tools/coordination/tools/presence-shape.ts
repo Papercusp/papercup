@@ -40,6 +40,9 @@ export function shapeCoordPresence(data: unknown, tier: PresenceTier): unknown {
       role: r.agentRole ?? null,
       state: r.sessionState ?? null,
       wakeable: r.wakeable ?? null,
+      // P-007: coarse context-pressure bucket (ok|high|critical|null) — cheap
+      // enough (one short string) to keep at every tier, like state/wakeable.
+      contextPressure: r.contextPressure ?? null,
       intent: clip(r.intent, c.intent),
       plan: r.currentPlanSlug ?? null,
       claims: claimed.length,

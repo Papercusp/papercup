@@ -20,6 +20,8 @@ import { resolveSelfRef, markSelfRows } from '../self-marker';
 import { shapeCoordPresence } from './presence-shape';
 import { COORD_ROLES } from '../roles';
 import { getModesForOwners } from '../../../modes/store';
+import { listParkedAwaitsForSubscribers } from '../../../events/await/store';
+import { buildParkedOnMap } from '../../fleet/assignments';
 
 export default defineTool({
   name: 'coord:presence',
@@ -163,6 +165,27 @@ export default defineTool({
           active = active.map((r) => {
             const m = modeMap.get(String((r as { ownerId?: unknown }).ownerId ?? ''));
             return m?.length ? { ...r, modes: m.map((x) => x.mode) } : r;
+          });
+        }
+      }
+    } catch { /* fail-soft */ }
+    // WI-3715 (fleet-leader-frictions-six-improvements-2026-07-10, P-001): stamp
+    // `parkedOn` — same derived-from-events:await, non-etag-tracked overlay
+    // pattern as the `modes` block above (fleet:assignments already carries this
+    // via decorateParkedOn; reuse its shared grouping helper here rather than a
+    // second copy of the cap/dedup rule). An agent parked on a real event key is
+    // DELIBERATELY idle (benched awaiting a pushed event), not abandoned — a
+    // caller scanning presence sees who's parked without a separate fleet:assignments
+    // read. Best-effort: an await-store hiccup never degrades the roster.
+    try {
+      const ids2 = active.map((r) => String((r as { ownerId?: unknown }).ownerId ?? '')).filter(Boolean);
+      if (ids2.length) {
+        const rows = await listParkedAwaitsForSubscribers(ids2);
+        if (rows.length) {
+          const byId = buildParkedOnMap(rows);
+          active = active.map((r) => {
+            const keys = byId.get(String((r as { ownerId?: unknown }).ownerId ?? ''));
+            return keys && keys.length > 0 ? { ...r, parkedOn: keys } : r;
           });
         }
       }

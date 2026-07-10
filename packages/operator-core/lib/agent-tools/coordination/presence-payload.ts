@@ -37,6 +37,7 @@
 import type { UnifiedPresenceRecord } from './federated-presence';
 import type { PresenceTier1Joins } from './presence-tier1';
 import type { SessionState } from './presence-wakeability';
+import type { ContextPressureBucket } from './context-pressure';
 
 /**
  * The self-referential placeholder a presence declare writes when an agent is
@@ -78,6 +79,13 @@ export type RosterRow = UnifiedPresenceRecord &
       sessionState: SessionState | null;
       /** P-001: a live inbox-wake await exists → a wake will be delivered. */
       wakeable: boolean | null;
+      /** P-007 (fleet-deltas-leader-primitives-2026-07-10): the coarse per-member
+       *  context-pressure bucket (ok|high|critical), derived from the SAME watchdog-
+       *  cached (context_tokens, compaction_limit) the ambient gauge bands on — a
+       *  CONTINUOUS, churning signal (advances every watchdog sweep), so it lives in
+       *  LIVENESS like sessionState/wakeable, never delta-eligible. null = unknown
+       *  (untracked owner / federated peer), never coerced to 'ok'. */
+      contextPressure: ContextPressureBucket | null;
       /** This session is CURRENTLY on the desktop — a live OS window on the
        *  user's screen (derived live via wmctrl + adv_sessions.window_id; owner
        *  decision 2026-06-29). true ⇒ hard-exempt from the idle-session reaper
@@ -152,6 +160,9 @@ export const PRESENCE_LIVENESS_FIELDS = [
   'stale',
   'sessionState',
   'wakeable',
+  // P-007: derived every read from the watchdog-cached tokens/limit — continuous,
+  // same lane as sessionState/wakeable, never a [coord+N] delta.
+  'contextPressure',
   // Derived live from the OS window list each read — a continuous external
   // signal, so it lives in LIVENESS (snapshot-only, never a [coord+N] delta:
   // open/close-window churn must not ride the byte-stable delta channel).
@@ -252,6 +263,8 @@ export function toStableRosterRow(row: RosterRow): Record<string, unknown> {
     // field is always present for a reader.
     sessionState: (liveness.sessionState as SessionState | null | undefined) ?? null,
     wakeable: (liveness.wakeable as boolean | null | undefined) ?? null,
+    // P-007: always present for a reader (null = unknown), like sessionState/wakeable.
+    contextPressure: (liveness.contextPressure as ContextPressureBucket | null | undefined) ?? null,
     // "On the desktop right now" — always emitted (null when un-derived, e.g. a
     // federated row), so a reader can always filter "agents on the desktop".
     onDesktop: (liveness.onDesktop as boolean | null | undefined) ?? null,

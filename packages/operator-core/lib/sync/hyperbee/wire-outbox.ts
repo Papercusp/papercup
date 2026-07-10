@@ -52,6 +52,11 @@ export interface WireOutboxDeps {
     pg: postgres.Sql,
   ) => Promise<BackfillResult>;
   startOutboxDrain?: (handle: BootedHarnessHandle, pg: postgres.Sql) => OutboxDrainHandle;
+  /** WI-3684 send-side twin: threaded to `startOutboxDrain`'s `onSessionClosed`
+   *  (see outbox-drain.ts) — fires once the drain self-stops on a permanently
+   *  closed own-log session, so `ensureSendSideWired` (boot-all.ts) can un-mark
+   *  this harness as wired and re-wire on the next boot pass. */
+  onSessionClosed?: () => void;
 }
 
 /**
@@ -99,7 +104,11 @@ export async function wireOutboxForHarness(
   const start =
     deps.startOutboxDrain ??
     ((h: BootedHarnessHandle, p: postgres.Sql) =>
-      realStartOutboxDrain(h, p, { fanout: fanoutOutboxRow, epochEncrypt: rekeyDeps?.epochEncrypt }));
+      realStartOutboxDrain(h, p, {
+        fanout: fanoutOutboxRow,
+        epochEncrypt: rekeyDeps?.epochEncrypt,
+        onSessionClosed: deps.onSessionClosed,
+      }));
 
   // (1) Best-effort one-time backfill. A failure here must not stop the drain —
   // the backfill catches up rows that PRE-DATE federation; the drain handles

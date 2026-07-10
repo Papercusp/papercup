@@ -19,6 +19,18 @@
  * { ok, results:[{ ok, id, harness, cleared, length, contentHash, by | error }], counts }.
  * Each item resolves its own harness; one unresolvable item never fails the rest.
  *
+ * EI-9036: `append: true` is an opt-in mode for the common "just add a short addendum
+ * to my detailed checkpoint" case. Replace-on-write is the default and stays the
+ * default — a caller who forgets `append` gets EXACTLY today's behavior, no surprise
+ * either direction. With `append: true`, the tool reads the CURRENT stored checkpoint
+ * first (via the same reader path a future pickup uses) and joins the new text onto it
+ * with a `---` separator, instead of overwriting it — so an incremental progress note
+ * can never silently discard a detailed prior record. Still bounded to the 32000-char
+ * cap: if the join would exceed it, the OLDEST content is trimmed (with a visible
+ * `[older checkpoint content truncated]` marker) so the newest addendum is never the
+ * part that gets cut. `append: true` with a blank/omitted checkpoint text is rejected
+ * (append + clear is a contradiction) rather than silently falling back to a clear.
+ *
  * EI-8987: `contentHash` is a short sha256 (first 12 hex chars) of the STORED text —
  * computed from what the store actually persisted (the same trimmed string
  * setWorkItemCheckpoint returns), not from the caller's input — so a paranoid caller
@@ -44,11 +56,36 @@ function shortHash(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 12);
 }
 
+/** Hard cap on a stored checkpoint (matches the `checkpoint` arg's max). */
+const CHECKPOINT_CAP = 32000;
+const TRUNCATION_MARKER = '…[older checkpoint content truncated]…\n';
+
+/** EI-9036: join an addendum onto the prior checkpoint text, bounded to CHECKPOINT_CAP.
+ *  Trims from the FRONT (oldest content) when the join would overflow, so the newest
+ *  addendum — the part the caller just wrote and cares most about right now — is never
+ *  the part that gets cut. */
+function joinCheckpoint(prior: string | null, addendum: string): string {
+  const joined = prior && prior.length > 0 ? `${prior}\n\n---\n${addendum}` : addendum;
+  if (joined.length <= CHECKPOINT_CAP) return joined;
+  const keep = CHECKPOINT_CAP - TRUNCATION_MARKER.length;
+  // keep <= 0 only if CHECKPOINT_CAP is absurdly small; guard against a negative slice.
+  return TRUNCATION_MARKER + joined.slice(joined.length - Math.max(keep, 0));
+}
+
 const itemSpec = z.object({
   id: z.string().min(1).describe('the work-item id to checkpoint'),
   /** The compressed in-flight state. Blank / null / omitted ⇒ CLEAR the checkpoint. */
   checkpoint: z.string().max(32000).nullish().describe('compressed in-flight state; blank/omitted ⇒ clear'),
   harness: z.string().max(80).optional().describe('per-item harness (else the batch `harness` default / ctx / item lookup)'),
+  append: z
+    .boolean()
+    .optional()
+    .describe(
+      'EI-9036: append `checkpoint` onto the EXISTING stored checkpoint (joined with a `---` separator) instead ' +
+        'of replacing it. Reads the current checkpoint first via the same path a future pickup uses. Requires a ' +
+        'non-blank `checkpoint` (append + clear is contradictory — rejected, not silently treated as a clear). ' +
+        'Bounded to the 32000-char cap: the OLDEST content is trimmed first if the join would overflow it.',
+    ),
 });
 
 export default defineTool({
@@ -58,9 +95,10 @@ export default defineTool({
     "Write (or clear) one OR many work-items' checkpoints — a compressed snapshot of your in-flight state. " +
     'Single: { id, checkpoint? }. Many: items:[{ id, checkpoint?, harness? }]. ' +
     'Your prior transcript does NOT carry across a task boundary / re-spawn; the checkpoint is your continuity, ' +
-    "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; blank/omitted clears. " +
-    'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, verified, storedHead, by | error }], counts } — correlate by id. ' +
-    'Writes are VERIFY-READ; an invisible-to-pickup write fails loudly (checkpoint_verify_failed).',
+    "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` " +
+    'joins instead (EI-9036). ' +
+    'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, verified, storedHead, by | error }], counts }. ' +
+    'Writes are verify-read; fails loudly on an invisible write (checkpoint_verify_failed).',
   guidance: {
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your ' +
@@ -83,8 +121,15 @@ export default defineTool({
       id: z.string().min(1).optional().describe('single shorthand: the work-item id (use with `checkpoint`)'),
       /** The compressed in-flight state. Blank / null / omitted ⇒ CLEAR the checkpoint. */
       checkpoint: z.string().max(32000).nullish().describe('single shorthand: compressed in-flight state; blank/omitted ⇒ clear'),
-      items: z.array(itemSpec).min(1).max(100).optional().describe('checkpoint many work-items at once — each { id, checkpoint?, harness? }'),
+      items: z.array(itemSpec).min(1).max(100).optional().describe('checkpoint many work-items at once — each { id, checkpoint?, harness?, append? }'),
       harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
+      append: z
+        .boolean()
+        .optional()
+        .describe(
+          'single shorthand default for `append` (EI-9036): join `checkpoint` onto the existing stored checkpoint ' +
+            'instead of replacing it. Also the default applied to any `items[]` entry that omits its own `append`.',
+        ),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || Boolean(a.id), {
       message: 'pass { id, checkpoint? } for one, or items:[{ id, checkpoint? }] for many',
@@ -94,7 +139,7 @@ export default defineTool({
     const c = ctx as { harnessSlug?: string | null; workspaceId?: string | null };
     const items = args.items?.length
       ? args.items
-      : [{ id: args.id as string, checkpoint: args.checkpoint, harness: args.harness }];
+      : [{ id: args.id as string, checkpoint: args.checkpoint, harness: args.harness, append: args.append }];
     const env = await runBulk(
       items,
       async (it) => {
@@ -116,6 +161,25 @@ export default defineTool({
         // store canonicalizes it). Fall back to the hint only when the item can't be
         // resolved (e.g. a not-yet-persisted id).
         const harness: string | null = item ? item.harness ?? null : hintHarness ?? null;
+        const workspaceId = resolveConcreteWorkspaceId(c.workspaceId);
+        // EI-9036: append:true joins onto the EXISTING checkpoint instead of replacing
+        // it — the fix for the "meant to add a short addendum, silently wiped the
+        // detailed prior note" trap. append + a blank/omitted checkpoint is a
+        // contradiction (append has nothing to append, and blank normally means
+        // CLEAR) — reject it loudly rather than guessing which the caller meant.
+        const wantsAppend = it.append ?? args.append ?? false;
+        if (wantsAppend && !(it.checkpoint && it.checkpoint.length > 0)) {
+          return {
+            ok: false as const,
+            id: it.id,
+            error: 'append:true requires a non-blank `checkpoint` — append has nothing to append, and blank normally means clear (contradiction).',
+          };
+        }
+        let checkpointToStore = it.checkpoint;
+        if (wantsAppend && it.checkpoint) {
+          const prior = await getWorkItemCheckpoint({ harness, workItemId: it.id, workspaceId }).catch(() => null);
+          checkpointToStore = joinCheckpoint(prior, it.checkpoint);
+        }
         // EI-8824: c.workspaceId is '*' for an unscoped superuser session (the
         // read-scoping wildcard) — passing it straight through as `?? undefined`
         // let the truthy '*' win and persisted the checkpoint under a literal
@@ -123,8 +187,8 @@ export default defineTool({
         // getWorkItemCheckpoint, which never resolves to '*') can ever see. Same
         // bug class as EI-3409/WI-892; resolveConcreteWorkspaceId is the fix.
         const stored = await setWorkItemCheckpoint(
-          { harness, workItemId: it.id, workspaceId: resolveConcreteWorkspaceId(c.workspaceId) },
-          it.checkpoint,
+          { harness, workItemId: it.id, workspaceId },
+          checkpointToStore,
         );
         // agent-activity-liveness-truth P-001 (D-001/D-004): a non-clear checkpoint write
         // is REAL item-scoped progress — credit it so the item reads as `progressing`, not
@@ -148,11 +212,7 @@ export default defineTool({
         let readBack: string | null = null;
         if (stored !== null) {
           try {
-            readBack = await getWorkItemCheckpoint({
-              harness,
-              workItemId: it.id,
-              workspaceId: resolveConcreteWorkspaceId(c.workspaceId),
-            });
+            readBack = await getWorkItemCheckpoint({ harness, workItemId: it.id, workspaceId });
           } catch {
             readBack = null;
           }

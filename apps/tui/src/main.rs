@@ -34,6 +34,7 @@ mod operator_voice_bus;
 mod plans_board;
 mod reap;
 mod session_panes;
+mod shared_cache;
 mod sse;
 mod theme;
 mod transcript;

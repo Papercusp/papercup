@@ -20,7 +20,7 @@
  * Scripting:     psu --no-picker --agent=<claude|omp|codex> --harness=<slug> [--plan=<slug>|--no-plan]
  */
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, writeFileSync, chmodSync, rmSync, renameSync, realpathSync, statSync, readlinkSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, writeFileSync, chmodSync, rmSync, renameSync, realpathSync, statSync, readlinkSync, openSync, readSync, closeSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, dirname, delimiter } from 'node:path';
@@ -426,6 +426,40 @@ export function parseArgs(argv) {
 }
 
 /**
+ * Map a psu model spec (`<model>[:<effort>]`) onto ONE backend's native model
+ * flags. Shared by the fresh-launch wrapper path (suWrapperExtraArgs) and the
+ * resume path (resumeArgsFor — WI-3758 `psu --resume … --model`). Pure —
+ * exported for tests.
+ *
+ *   - claude: the CLI takes effort as its OWN flag — a verbatim suffixed spec
+ *     sets the model and silently DROPS the effort, so the session falls back
+ *     to the box's saved default (how a sonnet-5:high fleet came up at xhigh,
+ *     2026-07-01). Split a recognized effort tail into `--effort`; anything
+ *     else (a bare id, or a non-effort `:` segment like bedrock's `…-v2:0`)
+ *     passes through verbatim.
+ *   - codex: `-m` wants a BARE model id; reasoning effort is a CONFIG override
+ *     (`-c model_reasoning_effort="high"`, `max` clamped to codex's `xhigh` —
+ *     mirrors applyRoleModel in harness-invoke-once.ts). A verbatim suffixed
+ *     spec would set an unknown MODEL and silently drop the effort — the same
+ *     effort-drop class the claude branch fixed (2026-07-01), found for codex
+ *     launching the backlog-clearance fleet (2026-07-03).
+ *   - omp: understands the `<model>[:<effort>]` spec natively → verbatim.
+ */
+export function modelArgsFor(agent, model) {
+  if (!model) return [];
+  const m = /^(.+):(low|medium|high|xhigh|max)$/.exec(model);
+  if (agent === 'codex') {
+    if (m) {
+      const codexEffort = m[2] === 'max' ? 'xhigh' : m[2];
+      return ['-m', m[1], '-c', `model_reasoning_effort="${codexEffort}"`];
+    }
+    return ['-m', model];
+  }
+  if (agent === 'claude' && m) return ['--model', m[1], '--effort', m[2]];
+  return ['--model', model];
+}
+
+/**
  * Extra args to pass THROUGH a `*-su` wrapper to the underlying CLI (the
  * wrappers all end with `"$@"`). Maps a model fuzzy-match + a resume-by-id
  * onto each backend's native flags. Pure — exported for tests.
@@ -436,32 +470,7 @@ export function parseArgs(argv) {
  */
 export function suWrapperExtraArgs(agent, { model, resumeSession } = {}) {
   const args = [];
-  if (model) {
-    if (agent === 'codex') {
-      // codex's `-m` wants a BARE model id; reasoning effort is a CONFIG override
-      // (`-c model_reasoning_effort="high"`, `max` clamped to codex's `xhigh` —
-      // mirrors applyRoleModel in harness-invoke-once.ts). A verbatim suffixed
-      // spec (`gpt-5.5:high`) would set an unknown MODEL and silently drop the
-      // effort — the same effort-drop class the claude branch below fixed
-      // (2026-07-01), just never done for codex (found launching the
-      // backlog-clearance codex fleet, 2026-07-03).
-      const m = /^(.+):(low|medium|high|xhigh|max)$/.exec(model);
-      if (m) {
-        const codexEffort = m[2] === 'max' ? 'xhigh' : m[2];
-        args.push('-m', m[1], '-c', `model_reasoning_effort="${codexEffort}"`);
-      } else args.push('-m', model);
-    } else if (agent === 'claude') {
-      // psu's model spec is `<model>[:<effort>]` (e.g. claude-sonnet-5:high), but the
-      // claude CLI takes effort as its OWN flag — a verbatim suffixed spec sets the
-      // model and silently DROPS the effort, so the session falls back to the box's
-      // saved default (how a sonnet-5:high fleet came up at xhigh, 2026-07-01). Split
-      // a recognized effort tail into `--effort`; anything else (a bare id, or a
-      // non-effort `:` segment like bedrock's `…-v2:0`) passes through verbatim.
-      const m = /^(.+):(low|medium|high|xhigh|max)$/.exec(model);
-      if (m) args.push('--model', m[1], '--effort', m[2]);
-      else args.push('--model', model);
-    } else args.push('--model', model); // omp understands the `<model>[:<effort>]` spec natively
-  }
+  if (model) args.push(...modelArgsFor(agent, model));
   if (resumeSession) {
     if (agent === 'omp' || agent === 'claude') args.push('-r', resumeSession);
     else if (agent === 'codex') args.push('resume', resumeSession);
@@ -768,7 +777,7 @@ export function resolveKickoffText(args, env = process.env) {
  * in the thread). codex re-supplies its bypass flags; its hooks/MCP live in the
  * CODEX_HOME the caller points at.
  */
-export function resumeArgsFor(session, { coordExtPath, fork = false, forkSessionId = null, addDir = [], allowSubagents } = {}) {
+export function resumeArgsFor(session, { coordExtPath, fork = false, forkSessionId = null, addDir = [], allowSubagents, model = null } = {}) {
   // --fork is native for claude and codex; omp has no branch-the-session flag,
   // and silently appending to the original would be the very clobber the user asked
   // to avoid. Refuse loudly instead.
@@ -794,22 +803,26 @@ export function resumeArgsFor(session, { coordExtPath, fork = false, forkSession
     // Subagent-launch (Task/Agent) DENIED BY DEFAULT (owner mandate 2026-07-02).
     // CLI flags don't persist into a resume, so re-arm the deny every resume —
     // unless this resume explicitly opts in (`psu --resume … --allow-subagents`).
-    return { bin: 'claude', args: [...resume, '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', ...(allowSubagents ? [] : [NO_SUBAGENTS_DENY_FLAG]), ...forkFlag, ...addDirArgs('claude', addDir)] };
+    // `--model`/`--effort` are top-level claude flags — a resume honors them like a
+    // fresh launch (WI-3758: model select on resume).
+    return { bin: 'claude', args: [...resume, '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', ...(allowSubagents ? [] : [NO_SUBAGENTS_DENY_FLAG]), ...forkFlag, ...addDirArgs('claude', addDir), ...modelArgsFor('claude', model)] };
   }
   if (session.agent === 'omp') {
     const args = session.ompThreadId ? ['-r', session.ompThreadId] : ['-c'];
     args.push('--approval-mode', 'yolo');
     if (coordExtPath) args.push('-e', coordExtPath);
+    if (model) args.push(...modelArgsFor('omp', model));
     return { bin: 'omp', args };
   }
   if (session.agent === 'codex') {
-    // Bypass flags + any --add-dir BEFORE the `resume` subcommand (all top-level
-    // codex options). CODEX_HOME (the session's home) is set by the caller.
-    // `resume <uuid>` / `fork <uuid>` (UUIDs take precedence) for an exact
-    // session; `resume --last` / `fork --last` otherwise.
+    // Bypass flags + model + any --add-dir BEFORE the `resume` subcommand (all
+    // top-level codex options — `-m`/`-c` AFTER the subcommand would be parsed as
+    // resume's own args and fail; WI-3758). CODEX_HOME (the session's home) is set
+    // by the caller. `resume <uuid>` / `fork <uuid>` (UUIDs take precedence) for an
+    // exact session; `resume --last` / `fork --last` otherwise.
     const subcommand = fork ? 'fork' : 'resume';
     const target = session.sessionId ? [subcommand, session.sessionId] : [subcommand, '--last'];
-    return { bin: 'codex', args: ['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', ...addDirArgs('codex', addDir), ...target] };
+    return { bin: 'codex', args: ['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', ...modelArgsFor('codex', model), ...addDirArgs('codex', addDir), ...target] };
   }
   throw new Error(`resumeArgsFor: unknown agent: ${session.agent}`);
 }
@@ -1088,17 +1101,25 @@ export function mintRecycleArgs(args = [], { mintId = () => randomUUID() } = {})
  * fails "No conversation found". Pure-ish (reads FS); exported for tests.
  */
 export function claudeStoreHasSession(id, { home = homedir(), configDir = null } = {}) {
-  if (!id) return false;
+  return Boolean(claudeSessionTranscriptFile(id, { home, configDir }));
+}
+
+/** The transcript jsonl PATH for a claude session id (isolated configDir first —
+ *  EI-155 — then the shared ~/.claude store), or null. Pure-ish (reads FS). */
+export function claudeSessionTranscriptFile(id, { home = homedir(), configDir = null } = {}) {
+  if (!id) return null;
   // EI-155: an interactive session's transcript lives in its isolated configDir,
   // not the shared ~/.claude — check that first (when known) before the shared store.
   const roots = [configDir, join(home, '.claude')].filter(Boolean);
   for (const root of roots) {
     const projects = join(root, 'projects');
     for (const d of safeReaddir(projects)) {
-      if (d.isDirectory() && existsSync(join(projects, d.name, `${id}.jsonl`))) return true;
+      if (!d.isDirectory()) continue;
+      const f = join(projects, d.name, `${id}.jsonl`);
+      if (existsSync(f)) return f;
     }
   }
-  return false;
+  return null;
 }
 
 /**
@@ -1136,6 +1157,93 @@ export function sessionHasTranscript(session, { home = homedir() } = {}) {
     return Boolean(findCodexRollout(sessionsRoot, session.sessionId));
   }
   return true;
+}
+
+/**
+ * The persisted transcript file for a resolved session (tracked or untracked),
+ * or null: claude → `<store>/projects/<dir>/<sid>.jsonl` (isolated configDir
+ * first, EI-155); codex → the rollout jsonl under the tracked per-session
+ * CODEX_HOME, else the shared ~/.codex store (an untracked resume); omp → null
+ * (its thread store isn't path-indexed here). Pure-ish (reads FS); `home`
+ * injectable for tests; exported for tests.
+ */
+export function sessionTranscriptFile(session, { home = homedir() } = {}) {
+  if (session.agent === 'claude' && session.sessionId) {
+    const configDir =
+      session.configDir ||
+      (session.coordOwnerId ? sessionClaudeConfigDir(session.coordOwnerId, home) : null);
+    return claudeSessionTranscriptFile(session.sessionId, { home, configDir });
+  }
+  if (session.agent === 'codex' && session.sessionId) {
+    const roots = [];
+    if (session.id != null) {
+      const r = trackedCodexSessionsRoot(session, home);
+      if (r) roots.push(r);
+    }
+    roots.push(join(home, '.codex', 'sessions'));
+    for (const root of roots) {
+      const hit = findCodexRollout(root, session.sessionId);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
+/** How much of a transcript's tail lastActiveModelFor reads — the model appears
+ *  on every assistant event (claude) / turn_context (codex), so a quarter-MB of
+ *  tail always covers the latest turn without reading a multi-MB file. */
+const LAST_MODEL_TAIL_BYTES = 256 * 1024;
+
+/**
+ * The model that was LAST ACTIVE in a session, read from its own transcript
+ * (WI-3758: `psu --resume` shows it and offers to keep it). Tail-reads the
+ * final ~256KB and scans lines newest-first:
+ *   - claude: `{"type":"assistant","message":{"model":"…"}}` — the model that
+ *     actually answered; `<synthetic>` (error/system events) is skipped.
+ *   - codex: `{"type":"turn_context","payload":{"model":"…"}}` — stamped every
+ *     turn (verified codex CLI 0.144.0; session_meta carries only
+ *     model_provider).
+ *   - omp / no transcript / unreadable → null (callers degrade to "unknown").
+ * Pure-ish (reads FS); `home` injectable for tests; exported for tests.
+ */
+export function lastActiveModelFor(session, { home = homedir() } = {}) {
+  const file = sessionTranscriptFile(session, { home });
+  if (!file) return null;
+  let tail;
+  try {
+    const size = statSync(file).size;
+    const want = Math.min(size, LAST_MODEL_TAIL_BYTES);
+    const fd = openSync(file, 'r');
+    try {
+      const buf = Buffer.alloc(want);
+      readSync(fd, buf, 0, want, size - want);
+      tail = buf.toString('utf8');
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+  const lines = tail.split('\n');
+  // A truncated read starts mid-line — drop the partial first line so a stray
+  // `"model":"…"` fragment can never half-parse into a wrong answer.
+  if (tail.length === LAST_MODEL_TAIL_BYTES) lines.shift();
+  const marker = session.agent === 'codex' ? '"turn_context"' : '"assistant"';
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line.includes(marker) || !line.includes('"model"')) continue; // cheap prefilter
+    try {
+      const o = JSON.parse(line);
+      const m =
+        session.agent === 'codex'
+          ? (o?.type === 'turn_context' ? o?.payload?.model : null)
+          : (o?.type === 'assistant' ? o?.message?.model : null);
+      if (typeof m === 'string' && m && m !== '<synthetic>') return m;
+    } catch {
+      /* malformed / partial line — keep scanning */
+    }
+  }
+  return null;
 }
 
 /** Map a plan picker value to the bootstrap-su `plan_slug` (NO_PLAN → null). Pure. */
@@ -3280,7 +3388,7 @@ function fmtAge(iso) {
  *  session as the pinned brain (Queen) — an AGENT, so it re-applies the
  *  native-scheduler lockout the human resume path deliberately skips
  *  (flags don't persist into resumes; every brain dock-open re-arms it). */
-function launchResume(session, { brain = false, fork = false, passthrough = [], addDir = [], accountEnv = null, allowSubagents } = {}) {
+function launchResume(session, { brain = false, fork = false, passthrough = [], addDir = [], accountEnv = null, allowSubagents, model = null } = {}) {
   // --fork is native for claude/codex — refuse early with a clear message rather than letting
   // resumeArgsFor throw a terse error (or, worse, appending to the original, which
   // is the clobber --fork exists to avoid).
@@ -3315,7 +3423,7 @@ function launchResume(session, { brain = false, fork = false, passthrough = [], 
   // use -e. Stable path, only added when actually installed.
   const coordExt = join(homedir(), '.papercusp', 'papercusp-coord.ts');
   const coordExtPath = session.agent === 'omp' && existsSync(coordExt) ? coordExt : undefined;
-  const { bin, args } = resumeArgsFor(session, { coordExtPath, fork, addDir, allowSubagents });
+  const { bin, args } = resumeArgsFor(session, { coordExtPath, fork, addDir, allowSubagents, model });
   if (brain && session.agent === 'claude') args.push(NATIVE_SCHEDULER_DENY_FLAG);
   // Generic `--` passthrough, forwarded verbatim after psu's own resume flags.
   if (passthrough.length) args.push(...passthrough);
@@ -3596,7 +3704,7 @@ export function trackedForkEnvelopeEnv(bootstrapEnvelopeEnv) {
   return { ...bootstrapEnvelopeEnv, PAPERCUSP_AGENT_SESSION: '1' };
 }
 
-async function launchTrackedFork(session, args = {}, acct = { id: null, env: {}, notice: null }) {
+async function launchTrackedFork(session, args = {}, acct = { id: null, env: {}, notice: null }, model = null) {
   // The account re-pin: a TRACKED fork folds it server-side (forkBootstrapBody →
   // resolveAccountPin), like a fresh launch; an UNTRACKED fallback re-pins client-
   // side via accountEnv (it never hits bootstrap-su).
@@ -3606,6 +3714,7 @@ async function launchTrackedFork(session, args = {}, acct = { id: null, env: {},
     addDir: args.addDir,
     accountEnv: { env: acct?.env ?? {}, notice: acct?.notice ?? null },
     allowSubagents: args.allowSubagents,
+    model,
   };
   const forkable = session.agent === 'claude' && session.sessionId && session.coordOwnerId && session.id != null;
   if (!forkable) {
@@ -3644,7 +3753,7 @@ async function launchTrackedFork(session, args = {}, acct = { id: null, env: {},
     console.error(`psu: could not seed the fork transcript (${e?.message ?? e}) — continuing; claude --resume may not find the original.`);
   }
   // Resume the ORIGINAL's id, fork into the FORCED fork id. No playbook re-inject.
-  const { bin, args: forkArgs } = resumeArgsFor(session, { fork: true, forkSessionId: forkId, addDir: args.addDir, allowSubagents: args.allowSubagents });
+  const { bin, args: forkArgs } = resumeArgsFor(session, { fork: true, forkSessionId: forkId, addDir: args.addDir, allowSubagents: args.allowSubagents, model });
   if (args.passthrough?.length) forkArgs.push(...args.passthrough);
   console.error(
     `psu: forking claude ${session.sessionId} → tracked session #${res.sessionId ?? '?'} (${forkId}) in ${session.cwd}  (${bin} ${forkArgs.join(' ')})`,
@@ -3685,6 +3794,58 @@ async function confirmUntrackedResume(session, args) {
   if (!proceed) { console.error('psu: aborted.'); process.exit(0); }
 }
 
+/** Sentinel for the "type a different model" resume-prompt row. */
+const CHOOSE_MODEL = '<choose-model>';
+
+/**
+ * WI-3758 (owner directive 2026-07-10): a resume SHOWS the session's
+ * last-active model and lets you pick the one to resume with. Returns the psu
+ * model spec to thread into resumeArgsFor, or null for the agent default (no
+ * flag — the pre-WI-3758 behavior).
+ *
+ *   - `--model=<spec>` (already validated + normalized by parseArgs) wins —
+ *     no prompt, like every other resume flag.
+ *   - interactive (the default) → announce the last-active model + a select:
+ *     keep it (an EXPLICIT flag — CLI flags don't persist into resumes, so
+ *     "keep" must re-pass it) / agent default / type a different spec
+ *     (validateModelSpec-checked, same guard as parseArgs' --model).
+ *   - `--no-picker` scripting → no prompt, announce only (mirrors
+ *     chooseResumeAccount's no-prompt gating) — agent default, exactly the old
+ *     behavior.
+ */
+async function chooseResumeModel(session, args) {
+  let last = null;
+  try {
+    last = lastActiveModelFor(session);
+  } catch { /* a transcript we can't read only costs the announce */ }
+  if (last) console.error(`psu: last active model in this session: ${last}`);
+  if (args.model) return args.model;
+  if (!args.picker) return null;
+  const { select, input } = await import('@inquirer/prompts');
+  // "Keep" passes the recorded id back through normalizeModelSpec so a
+  // default-1M family (fable/opus/sonnet-5) keeps its 1M window on the resume
+  // — the raw id alone would silently drop to the 200k auto-compact window.
+  const picked = await select({
+    message: 'Model for the resumed session?',
+    choices: [
+      ...(last ? [{ name: `Keep last active — ${last}`, value: normalizeModelSpec(last) }] : []),
+      { name: 'Agent default (no model flag)', value: null },
+      { name: 'Choose a different model…', value: CHOOSE_MODEL },
+    ],
+  });
+  if (picked !== CHOOSE_MODEL) return picked;
+  const typed = await input({
+    message: 'Model spec (<model>[:<effort>], e.g. fable:high):',
+    validate: (v) => {
+      if (!String(v ?? '').trim()) return true; // empty → agent default
+      const r = validateModelSpec(String(v).trim());
+      return r.ok ? true : r.message;
+    },
+  });
+  const spec = String(typed ?? '').trim();
+  return spec ? normalizeModelSpec(spec) : null;
+}
+
 // `psu --resume` (picker) or `psu --resume=<id>` / `psu --resume <id>`
 // (direct): resume a tracked session by adv id, recorded native session id,
 // linked OMP thread id, or Codex rollout UUID under a tracked CODEX_HOME. If
@@ -3718,8 +3879,10 @@ async function resumeFlow(args = {}) {
       // Re-pin the gateway account (prompt when interactive / honor --account) —
       // the pin is spawn-env only, so a resume otherwise drops it (option 1).
       const acct = await chooseResumeAccount(tracked, args);
-      if (args.fork) { await launchTrackedFork(tracked, args, acct); return; }
-      launchResume(tracked, { passthrough: args.passthrough, addDir: args.addDir, accountEnv: acct, allowSubagents: args.allowSubagents });
+      // Show the last-active model + honor/prompt the one to resume with (WI-3758).
+      const model = await chooseResumeModel(tracked, args);
+      if (args.fork) { await launchTrackedFork(tracked, args, acct, model); return; }
+      launchResume(tracked, { passthrough: args.passthrough, addDir: args.addDir, accountEnv: acct, allowSubagents: args.allowSubagents, model });
       return;
     }
 
@@ -3751,7 +3914,8 @@ async function resumeFlow(args = {}) {
     // place (claude mints a random id; resumable only by uuid). launchResume handles it.
     // Account re-pin applies here too (a raw resume can be routed through the gateway).
     const acct = await chooseResumeAccount(untracked, args);
-    launchResume(untracked, { fork: args.fork, passthrough: args.passthrough, addDir: args.addDir, accountEnv: acct, allowSubagents: args.allowSubagents });
+    const model = await chooseResumeModel(untracked, args);
+    launchResume(untracked, { fork: args.fork, passthrough: args.passthrough, addDir: args.addDir, accountEnv: acct, allowSubagents: args.allowSubagents, model });
     return;
   }
 
@@ -3771,12 +3935,18 @@ async function resumeFlow(args = {}) {
     process.exit(1);
   }
   const { search } = await import('@inquirer/prompts');
-  const rows = resumable.map((s) => ({
-    name:
-      `${s.id != null ? `#${s.id}  ·  ` : ''}${s.agent}  ·  ${s.planSlug ? `plan ${s.planSlug}` : 'no plan'}  ·  ${s.cwd}  ·  ${fmtAge(s.startedAt)}` +
-      `${s.endedAt ? '' : '  · active'}`,
-    value: s,
-  }));
+  const rows = resumable.map((s) => {
+    // Surface each session's last-active model in its row (WI-3758) — a cheap
+    // tail read per row; unknown (omp / unreadable) rows just omit the segment.
+    let lastModel = null;
+    try { lastModel = lastActiveModelFor(s); } catch { /* row stays model-less */ }
+    return {
+      name:
+        `${s.id != null ? `#${s.id}  ·  ` : ''}${s.agent}${lastModel ? ` (${lastModel})` : ''}  ·  ${s.planSlug ? `plan ${s.planSlug}` : 'no plan'}  ·  ${s.cwd}  ·  ${fmtAge(s.startedAt)}` +
+        `${s.endedAt ? '' : '  · active'}`,
+      value: s,
+    };
+  });
   const picked = await search({
     message: 'Resume which session?',
     source: async (term) => filterRows(rows, term),
@@ -3784,8 +3954,9 @@ async function resumeFlow(args = {}) {
   // Re-pin the gateway account (prompt when interactive / honor --account) before
   // resuming — the pin is spawn-env only, otherwise lost on resume (option 1).
   const acct = await chooseResumeAccount(picked, args);
-  if (args.fork) { await launchTrackedFork(picked, args, acct); return; }
-  launchResume(picked, { passthrough: args.passthrough, addDir: args.addDir, accountEnv: acct, allowSubagents: args.allowSubagents });
+  const model = await chooseResumeModel(picked, args);
+  if (args.fork) { await launchTrackedFork(picked, args, acct, model); return; }
+  launchResume(picked, { passthrough: args.passthrough, addDir: args.addDir, accountEnv: acct, allowSubagents: args.allowSubagents, model });
 }
 
 // `psu --brain` was retired 2026-06-21. Keep a hard CLI tombstone so old

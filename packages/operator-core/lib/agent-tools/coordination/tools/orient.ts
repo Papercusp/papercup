@@ -50,6 +50,7 @@ import {
   type FleetFingerprint,
   type FleetDelta,
 } from './fleet-monitor-delta';
+import { fingerprintIdList, idListUnchanged, rowKey } from './orient-list-delta';
 
 /** D-008 COMPACT bounds — keep the folded payload small so it doesn't re-enter
  *  context as bulk input on every later turn. */
@@ -169,8 +170,12 @@ export interface OrientResult {
    *  (P-002) — transparent, never a silent drop. Pull live state via pot:get-steering. */
   factsWithheld?: { count: number; reason: string };
   /** coord:plan-events delta — newest few + the true total; null on failure;
-   *  absent when includePlanEvents:false. */
-  planEvents?: { total: number; recent: unknown[] } | null;
+   *  absent when includePlanEvents:false. P-005 (full-mode delta rollout):
+   *  `unchanged:true` ⇒ `recent` is deliberately empty — the newest events are
+   *  byte-identical to what this caller already saw on a prior orient (server-
+   *  side cursor, surface 'orient:planEvents'); `total` is still fresh. Absent
+   *  `unchanged` ⇒ normal full delivery (baseline, changed, or no cursor injected). */
+  planEvents?: { total: number; recent: unknown[]; unchanged?: boolean } | null;
   /** Reusable code:run recipes relevant to `intent`/`memoryQuery` (recipes:search) —
    *  id + title + run/similarity, bounded. Reuse one (recipes:run) instead of hand-looping
    *  or re-authoring. null on failure; absent when no query or includeRecipes:false. */
@@ -180,8 +185,10 @@ export interface OrientResult {
   intentDeclared?: boolean;
   /** A bounded slice of the caller's fleet audience-history (coord:catch-up on
    *  @fleet:<own slug>) — present only when the caller belongs to a fleet; null on a
-   *  failed fold. The auto-catch-up at wake. */
-  fleetCatchUp?: { fleet: string; total: number; recent: unknown[] } | null;
+   *  failed fold. The auto-catch-up at wake. P-005: `unchanged:true` ⇒ `recent` is
+   *  deliberately empty (server-side cursor, surface 'orient:fleetCatchUp') — see
+   *  `planEvents.unchanged`. */
+  fleetCatchUp?: { fleet: string; total: number; recent: unknown[]; unchanged?: boolean } | null;
   /** A COMPACT fleet-health glance (coord:glance's health subset: bees, wake,
    *  governor) — present only when the caller is in a fleet and includeFleetHealth
    *  !== false; null on a failed fold. Folded so agents don't re-call coord:glance
@@ -232,24 +239,38 @@ export async function composeOrient(
    *  INJECTED so composeOrient stays IO-free + unit-testable. Folded verbatim into the result
    *  when provided; undefined ⇒ the leg is absent (e.g. a test that doesn't exercise it). */
   ownerPresent?: OrientResult['ownerPresent'],
-  /** fleet-deltas-leader-primitives P-004: the (owner,'fleet:monitor') read-cursor
-   *  ack — resolved by the handler (flag + identity) and INJECTED so composeOrient
-   *  stays IO-free. Undefined ⇒ no delta (full roster fold, pre-P-004 behavior). */
+  /** fleet-deltas-leader-primitives P-004 (monitor mode) / P-005 (full mode):
+   *  the (owner,'fleet:monitor') read-cursor ack — resolved by the handler (flag
+   *  + identity + mode) and INJECTED so composeOrient stays IO-free. ONE surface
+   *  regardless of which mode reads it (D-002: "server owns baseline+delta" — a
+   *  single roster truth an agent alternating monitor/full calls shares).
+   *  Undefined ⇒ no delta (full roster fold, pre-P-004 behavior). */
   fleetCursor?: (next: CursorState) => Promise<AckResult>,
+  /** P-005: the (owner,'orient:planEvents') read-cursor ack for the plan-events
+   *  fold — same injection contract as `fleetCursor`. Undefined ⇒ full delivery
+   *  every call (pre-P-005 behavior). Applies in FULL mode only (monitor already
+   *  skips this fold entirely). */
+  planEventsCursor?: (next: CursorState) => Promise<AckResult>,
+  /** P-005: the (owner,'orient:fleetCatchUp') read-cursor ack for the fleet
+   *  catch-up fold — same contract. Undefined ⇒ full delivery every call. */
+  fleetCatchUpCursor?: (next: CursorState) => Promise<AckResult>,
 ): Promise<OrientResult> {
   const monitor = args.mode === 'monitor';
   let me = await call('fleet:assignments', {
     ...(ownerId ? { agent: ownerId } : {}),
     ...(args.harness ? { harness: args.harness } : {}),
   });
-  // ── monitor-mode fleet DELTA (P-004): diff the roster against the caller's
-  // server-side cursor and deliver TRANSITIONS instead of the full roster the
-  // monitor re-read byte-identically every wake (D-003 audit). FAIL-OPEN at every
-  // step: an unrecognizable roster shape, a cursor store error, or a baseline
-  // (first read) all keep the full `me` fold — a delta must never make
-  // orientation worse than no delta.
+  // ── fleet ROSTER delta (P-004 monitor / P-005 full): diff the roster against
+  // the caller's server-side cursor and deliver TRANSITIONS instead of the full
+  // roster re-read byte-identically almost every call (D-003 audit — the same
+  // ~100%-repeat shape in both modes). Gated on the INJECTED closure, not the
+  // mode — the handler decides per-mode whether to inject it (monitor: existing
+  // ORIENT_MONITOR_DELTA flag, unchanged; full: new ORIENT_FULL_DELTA flag).
+  // FAIL-OPEN at every step: an unrecognizable roster shape, a cursor store
+  // error, or a baseline (first read) all keep the full `me` fold — a delta must
+  // never make orientation worse than no delta.
   let fleetDelta: OrientResult['fleetDelta'];
-  if (monitor && fleetCursor) {
+  if (fleetCursor) {
     try {
       const fp = fingerprintFleet(me);
       if (fp) {
@@ -432,10 +453,20 @@ export async function composeOrient(
         limit: PLAN_EVENTS_FOLD,
       })) as { events?: unknown[]; total?: number } | undefined;
       const events = Array.isArray(pe?.events) ? (pe!.events as unknown[]) : [];
-      result.planEvents = {
-        total: typeof pe?.total === 'number' ? pe.total : events.length,
-        recent: events.slice(0, PLAN_EVENTS_FOLD),
-      };
+      const total = typeof pe?.total === 'number' ? pe.total : events.length;
+      const recent = events.slice(0, PLAN_EVENTS_FOLD);
+      // P-005: full-mode delta — the newest batch is ~96% byte-identical to what
+      // this caller already saw last orient (D-003 audit). FAIL-OPEN: any cursor
+      // error just skips the unchanged check and delivers in full, same as no
+      // cursor injected.
+      let unchanged = false;
+      if (planEventsCursor) {
+        try {
+          const ack = await planEventsCursor(fingerprintIdList(recent.map(rowKey)));
+          unchanged = !ack.baseline && idListUnchanged(ack.committed, recent.map(rowKey));
+        } catch { /* fail-open: full delivery */ }
+      }
+      result.planEvents = unchanged ? { total, recent: [], unchanged: true } : { total, recent };
     } catch {
       result.planEvents = null;
     }
@@ -464,11 +495,21 @@ export async function composeOrient(
           limit: cuLimit,
         })) as { total?: number; rows?: unknown[] } | undefined;
         const rows = Array.isArray(cu?.rows) ? (cu!.rows as unknown[]) : [];
-        result.fleetCatchUp = {
-          fleet: fleetSlug,
-          total: typeof cu?.total === 'number' ? cu.total : rows.length,
-          recent: rows.slice(0, cuLimit),
-        };
+        const total = typeof cu?.total === 'number' ? cu.total : rows.length;
+        const recent = rows.slice(0, cuLimit);
+        // P-005: same full-mode delta treatment as plan-events — an append-only
+        // message log where "nothing new since last orient" is a safe, fully
+        // actionable answer. FAIL-OPEN on any cursor error.
+        let unchanged = false;
+        if (fleetCatchUpCursor) {
+          try {
+            const ack = await fleetCatchUpCursor(fingerprintIdList(recent.map(rowKey)));
+            unchanged = !ack.baseline && idListUnchanged(ack.committed, recent.map(rowKey));
+          } catch { /* fail-open: full delivery */ }
+        }
+        result.fleetCatchUp = unchanged
+          ? { fleet: fleetSlug, total, recent: [], unchanged: true }
+          : { fleet: fleetSlug, total, recent };
       } catch {
         result.fleetCatchUp = null;
       }
@@ -664,7 +705,42 @@ export default defineTool({
         };
       }
     }
-    const result = await composeOrient(args, inProcessCall(ctx), ownerId, driveMode, ownerPresent, fleetCursor);
+    // fleet-deltas-leader-primitives P-005: the FULL-mode sibling of the monitor
+    // delta above — same ONE 'fleet:monitor' surface (D-002: one roster truth
+    // regardless of which mode reads it) plus two new surfaces for the
+    // append-only-log folds (plan-events, fleet catch-up). Own flag
+    // (ORIENT_FULL_DELTA) so it can be independently killed without touching the
+    // separately-shipped, separately-tested monitor path above.
+    let planEventsCursor: ((next: CursorState) => Promise<AckResult>) | undefined;
+    let fleetCatchUpCursor: ((next: CursorState) => Promise<AckResult>) | undefined;
+    if (args.mode !== 'monitor' && ownerId) {
+      const fullDeltaOn = await getFlag(FLAGS.ORIENT_FULL_DELTA, 'system').catch(() => true);
+      if (fullDeltaOn) {
+        const oid = ownerId;
+        fleetCursor = async (next) => {
+          const { ackAndAdvance } = await import('../read-cursors');
+          return ackAndAdvance(oid, 'fleet:monitor', next);
+        };
+        planEventsCursor = async (next) => {
+          const { ackAndAdvance } = await import('../read-cursors');
+          return ackAndAdvance(oid, 'orient:planEvents', next);
+        };
+        fleetCatchUpCursor = async (next) => {
+          const { ackAndAdvance } = await import('../read-cursors');
+          return ackAndAdvance(oid, 'orient:fleetCatchUp', next);
+        };
+      }
+    }
+    const result = await composeOrient(
+      args,
+      inProcessCall(ctx),
+      ownerId,
+      driveMode,
+      ownerPresent,
+      fleetCursor,
+      planEventsCursor,
+      fleetCatchUpCursor,
+    );
     // Fold in the caller's own identity so the orientation states YOUR ownerId
     // explicitly (the roster/assignments it composes are about peers; `self` is
     // the "and this is you" anchor). Best-effort — omitted for an unattributable

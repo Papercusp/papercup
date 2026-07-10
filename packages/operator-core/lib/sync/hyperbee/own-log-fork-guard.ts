@@ -220,3 +220,24 @@ export function _resetOwnLogForkGuardForTests(): void {
   registry.clear();
   episodeReporter = null;
 }
+
+/**
+ * WI-3684 send-side twin: detect a Hypercore `SESSION_CLOSED` error — thrown
+ * by every open session to a core once Hypercore's equivocation guard (the
+ * conflict handler above) or an explicit close tears it down (see the
+ * `attachOwnLogForkListener` doc comment + health.ts's `ownLogFork` field).
+ * Structural (checks `.code`), so it matches both a real `hypercore-errors`
+ * `HypercoreError` and a plain test fake that just sets `.code =
+ * 'SESSION_CLOSED'`. Callers (outbox-drain.ts, presence-announce.ts) use this
+ * to distinguish "this session is permanently dead, stop blind-retrying and
+ * signal for a re-wire" from an ordinary transient append/PG failure that the
+ * next poll tick should keep retrying as before.
+ */
+export function isSessionClosedError(e: unknown): boolean {
+  return (
+    typeof e === 'object' &&
+    e !== null &&
+    'code' in e &&
+    (e as { code?: unknown }).code === 'SESSION_CLOSED'
+  );
+}

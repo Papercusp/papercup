@@ -68,7 +68,11 @@ export type BootHistoryKind =
   // join, right after this process's shared swarm resolves its DHT
   // bootstrap. See boot-history.ts for the full incident rationale.
   | 'dht_universe_ok'
-  | 'dht_universe_mismatch';
+  | 'dht_universe_mismatch'
+  // WI-3684 repair-on-detect: a connected_never_replicated zombie session
+  // re-attach applied (or failed) under the merge gate. See boot-history.ts.
+  | 'replication_repair'
+  | 'replication_repair_failed';
 
 export interface BootHistoryEntry {
   ts: number;
@@ -117,6 +121,8 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   epoch_applied: '✓',
   dht_universe_ok: '🌐',
   dht_universe_mismatch: '🌐⚠',
+  replication_repair: '🔧',
+  replication_repair_failed: '🔧✗',
 };
 
 const EMPTY: CSSProperties = {

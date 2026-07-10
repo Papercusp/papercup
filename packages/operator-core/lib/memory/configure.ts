@@ -443,7 +443,17 @@ export async function readEmbedderPreference(): Promise<EmbedderPreference> {
   }
   try {
     const prefs = await loadVoicePrefs();
-    return prefs.memoryEmbedderMode;
+    const stored: string = prefs.memoryEmbedderMode;
+    if (isEmbedderPreference(stored)) return stored;
+    // A stored pref THIS build doesn't know — written by NEWER code (live
+    // 2026-07-10: frozen pre-gemma dist-host bundles read the freshly-flipped
+    // 'gemma' pref, fell through the cascade's 'auto' tail, and re-tried the
+    // out-of-credit OpenAI key on every worker restart — an alert storm; with
+    // credit it would have been silent PAID embeddings in a foreign vector
+    // space). An unknown mode is always a deliberate move to some newer
+    // embedder, so the safe reading is 'local': free, on-box, and its writes
+    // land in memory_vec_local where a re-embed sweep can recover them.
+    return 'local';
   } catch {
     return 'auto';
   }
@@ -501,7 +511,13 @@ export interface ResolveEmbedderDeps {
  * embedder is installed; it degrades to local until the cooldown lapses.
  */
 export async function resolveEmbedderWith(deps: ResolveEmbedderDeps): Promise<ResolvedEmbedder> {
-  const preference = await deps.readPreference();
+  // Normalize here too, not just in readEmbedderPreference: the seam's TS type
+  // can't stop a live value from being a mode this build has never heard of
+  // (the readPreference wiring differs per consumer), and the fallthrough cost
+  // is asymmetric — the 'auto' tail below reaches a PAID cloud embedder in a
+  // foreign vector space, while 'local' is free and recoverable by re-embed.
+  const rawPreference: string = await deps.readPreference();
+  const preference: EmbedderPreference = isEmbedderPreference(rawPreference) ? rawPreference : 'local';
   if (preference === 'disabled') {
     return { mode: 'disabled', reason: 'user_disabled' };
   }

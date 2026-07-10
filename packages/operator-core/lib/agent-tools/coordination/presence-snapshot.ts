@@ -27,6 +27,7 @@ import { fetchPresenceFleet, type FleetMembership } from './presence-fleet';
 import { createHash } from 'node:crypto';
 import { toStableRosterRow, deltaEligibleProjection, type RosterRow } from './presence-payload';
 import { fetchWakeability, deriveSessionState, isHardStale, type WakeabilitySignals } from './presence-wakeability';
+import { deriveContextPressure } from './context-pressure';
 import { writeWatermark } from './watermarks';
 import { getTxPool, readGranularHolders } from '../locks/su-lock-store';
 import { gatherOnDesktopSessions } from '../../desktop-window-liveness';
@@ -80,6 +81,11 @@ export interface PresenceSnapshot {
      *  (no OS window) — the reaper's other hard-exempt cohort (pty-viewer-heartbeat.ts). */
     viewerAttached: number;
     byState: { live: number; parked: number; ended: number; recorded: number };
+    /** P-007: agents whose context-pressure bucket is 'high' or 'critical' right
+     *  now — the fleet-health headline (silent by design: 'ok'/unknown agents are
+     *  the common case and aren't counted, mirroring the ambient gauge's own
+     *  quiet-below-LOUD philosophy). */
+    byContextPressure: { high: number; critical: number };
   };
   /** The ACTIONABLE roster: live + parked + recorded rows (everything a
    *  coordinator can dispatch to / wake) — `ended` rows are NEVER included here
@@ -328,6 +334,15 @@ export async function assemblePresenceSnapshot(
   const withViewerAttached = (r: RosterRow): RosterRow =>
     isFederated(r) ? r : { ...r, viewerAttached: viewerAttachedOwners.has(r.ownerId) };
 
+  /** P-007: attach the coarse context-pressure bucket, derived live from the row's
+   *  own (contextTokens, compactionLimit) — no extra query, these already ride
+   *  PresenceRecord (watchdog-cached). A federated row carries no local estimate →
+   *  leave it null/unknown, like onDesktop/viewerAttached. */
+  const withContextPressure = (r: RosterRow): RosterRow =>
+    isFederated(r)
+      ? r
+      : { ...r, contextPressure: deriveContextPressure(r.contextTokens, r.compactionLimit) };
+
   /** Attach the P-005 named-fleet membership. An agent in no fleet (or a federated
    *  row with no local coord_presence) has no entry → fleetSlug/fleetRole stay absent
    *  (toStableRosterRow emits them only when present, so no null spam for non-members). */
@@ -340,9 +355,10 @@ export async function assemblePresenceSnapshot(
     .map(withWakeability)
     .map(withOnDesktop)
     .map(withViewerAttached)
+    .map(withContextPressure)
     .map(withFleet);
   const staleEnriched = stale.map((r) =>
-    withFleet(withViewerAttached(withOnDesktop(withWakeability(r as RosterRow)))),
+    withFleet(withContextPressure(withViewerAttached(withOnDesktop(withWakeability(r as RosterRow))))),
   );
 
   // The FULL enriched roster (fresh-heartbeat + stale), each carrying its derived
@@ -379,6 +395,7 @@ export async function assemblePresenceSnapshot(
   // reads instead of `active`, and `byState` separates the dispatchable (parked)
   // from the busy (live) and the dead (ended).
   const byState = { live: 0, parked: 0, ended: 0, recorded: 0 };
+  const byContextPressure = { high: 0, critical: 0 };
   let wakeable = 0;
   let onDesktop = 0;
   let viewerAttached = 0;
@@ -386,6 +403,8 @@ export async function assemblePresenceSnapshot(
     if (r.wakeable === true) wakeable += 1;
     if (r.onDesktop === true) onDesktop += 1;
     if (r.viewerAttached === true) viewerAttached += 1;
+    if (r.contextPressure === 'high') byContextPressure.high += 1;
+    else if (r.contextPressure === 'critical') byContextPressure.critical += 1;
     const state = r.sessionState;
     if (state === 'live' || state === 'parked' || state === 'ended' || state === 'recorded') {
       byState[state] += 1;
@@ -405,6 +424,7 @@ export async function assemblePresenceSnapshot(
       onDesktop,
       viewerAttached,
       byState,
+      byContextPressure,
     },
     active: activeRows,
     etag,

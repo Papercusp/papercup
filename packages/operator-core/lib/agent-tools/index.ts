@@ -1174,3 +1174,14 @@ try {
 } catch {
   /* never block boot */
 }
+
+// fleet-deltas-leader-primitives-2026-07-10 P-008 — the predicate-watch poller
+// (engine-side "wake me when a tool result crosses a threshold"). Boot-started so
+// rows registered before a host restart keep polling; same fail-soft contract as
+// the sweeper above (missing table pre-migration-541 must never block boot).
+import { startPredicateWatchPoller } from '../events/await/predicate-watch';
+try {
+  startPredicateWatchPoller();
+} catch {
+  /* never block boot */
+}

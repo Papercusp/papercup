@@ -208,6 +208,39 @@ function resolveChannel(params: URLSearchParams, override?: string): Channel {
   return 'stable';
 }
 
+/**
+ * WI-3697: the tauri-plugin-updater protocol only distinguishes "update
+ * available" (200 + manifest JSON) from "no update" (204) — it has no slot
+ * for WHY there's no update, so this route historically returned a bare 204
+ * for four genuinely different conditions: no GitHub token resolvable, the
+ * GitHub fetch failing, no release matching the channel, and a genuine
+ * version-equal match. A caller reading only the HTTP status (a preflight
+ * script, an ops dashboard, or a future UI affordance) cannot tell "up to
+ * date" from "couldn't check" — which cost a full diagnostic detour when a
+ * no-token 204 was misread as "VM is up to date" (P-006/P-007).
+ *
+ * Fix: keep the WIRE PROTOCOL unchanged (204, empty body — the real Tauri
+ * updater plugin parses neither headers nor a body on a 204, so this is
+ * 100% back-compat) but stamp two extra response headers a caller CAN read
+ * via a plain `fetch()`:
+ *   - `X-Update-Check: up_to_date` for the genuine no-update case, or
+ *     `X-Update-Check: cannot_check` for the four degrade-to-204 paths.
+ *   - `X-Update-Reason: no_token|fetch_failed|no_candidate` on the
+ *     cannot_check paths only (omitted on a genuine up_to_date 204).
+ */
+type UpdateCannotCheckReason = 'no_token' | 'fetch_failed' | 'no_candidate';
+
+function upToDateResponse(): Response {
+  return new Response(null, { status: 204, headers: { 'X-Update-Check': 'up_to_date' } });
+}
+
+function cannotCheckResponse(reason: UpdateCannotCheckReason): Response {
+  return new Response(null, {
+    status: 204,
+    headers: { 'X-Update-Check': 'cannot_check', 'X-Update-Reason': reason },
+  });
+}
+
 export default defineTool({
   method: 'GET',
   path: '/updates/manifest',
@@ -231,7 +264,7 @@ export default defineTool({
       console.warn(
         '[updates/manifest] no GitHub token available (gh auth / github_pat / GITHUB_TOKEN) — serving 204 (no update offered)',
       );
-      return new Response(null, { status: 204 });
+      return cannotCheckResponse('no_token');
     }
 
     let releases: GhRelease[] | null;
@@ -246,9 +279,9 @@ export default defineTool({
       console.warn(
         `[updates/manifest] releases fetch failed — serving 204 (no update offered): ${e instanceof Error ? e.message : String(e)}`,
       );
-      return new Response(null, { status: 204 });
+      return cannotCheckResponse('fetch_failed');
     }
-    if (!releases) return new Response(null, { status: 204 });
+    if (!releases) return cannotCheckResponse('fetch_failed');
 
     const visible = visibleChannels(channel);
     const candidate = releases
@@ -256,10 +289,10 @@ export default defineTool({
       .filter((r) => visible.has(classifyChannel(r)))
       .sort((a, b) => Date.parse(b.published_at) - Date.parse(a.published_at))[0];
 
-    if (!candidate) return new Response(null, { status: 204 });
+    if (!candidate) return cannotCheckResponse('no_candidate');
     const candidateVersion = normalizeTagVersion(candidate.tag_name);
     if (currentVersion && candidateVersion === currentVersion) {
-      return new Response(null, { status: 204 });
+      return upToDateResponse();
     }
 
     const platformKey = platformKeyFor(target, arch);

@@ -98,10 +98,16 @@ export function dbosStarted(): boolean {
  * minutes late instead of never, the ticker freshens, and the watchdog goes
  * quiet. One warn line per failed retry (30s default) keeps it diagnosable.
  */
-const PG_LAUNCH_RETRY_MS = Math.max(
-  10_000,
-  Number(process.env.PAPERCUSP_DBOS_PG_RETRY_MS) || 30_000,
-);
+/** Pure: resolve the PG-reachability launch-retry cadence from env (WI-3619).
+ *  Exported for unit tests — mirrors `withDbosIdleTxGrace`'s floor+default
+ *  shape. Floor 10s (never hammer a down/loaded PG with a tight retry loop);
+ *  default 30s; a non-numeric / unset override falls back to the default
+ *  (NOT the floor — floor only clamps an explicit too-small value). */
+export function resolvePgLaunchRetryMs(env: NodeJS.ProcessEnv = process.env): number {
+  return Math.max(10_000, Number(env.PAPERCUSP_DBOS_PG_RETRY_MS) || 30_000);
+}
+
+const PG_LAUNCH_RETRY_MS = resolvePgLaunchRetryMs();
 let pgRetryTimer: ManagedHandle | null = null;
 let pgRetryInFlight = false;
 

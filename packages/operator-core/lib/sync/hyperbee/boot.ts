@@ -1660,7 +1660,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         recordBootEvent(
           opts.workspaceId,
           opts.harnessSlug,
-          'replication_repair' as BootHistoryKind,
+          'replication_repair',
           `re-attached replica session ${peerLabel(keyHex)} after connected_never_replicated ` +
             `(attempt ${attempt}/${REPAIR_MAX_ATTEMPTS_PER_LOG})`,
         );
@@ -1673,7 +1673,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         recordBootEvent(
           opts.workspaceId,
           opts.harnessSlug,
-          'replication_repair_failed' as BootHistoryKind,
+          'replication_repair_failed',
           `${peerLabel(keyHex)} (attempt ${attempt}/${REPAIR_MAX_ATTEMPTS_PER_LOG}): ` +
             `${e instanceof Error ? e.message : String(e)}`,
         );

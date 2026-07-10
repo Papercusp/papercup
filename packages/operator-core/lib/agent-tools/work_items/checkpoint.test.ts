@@ -276,4 +276,77 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(setWorkItemCheckpoint).toHaveBeenNthCalledWith(1, expect.objectContaining({ harness: 'def', workItemId: 'WI-1' }), 'a');
     expect(setWorkItemCheckpoint).toHaveBeenNthCalledWith(2, expect.objectContaining({ harness: 'web', workItemId: 'WI-2' }), 'b');
   });
+
+  describe('EI-9036: append mode (join onto the existing checkpoint instead of replacing it)', () => {
+    it('append:true joins the new text onto the existing checkpoint with a --- separator', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+      // Only the PRIOR-fetch call is stubbed explicitly; the post-write verify-read
+      // falls back to the suite default (echoes the last setWorkItemCheckpoint call).
+      getWorkItemCheckpoint.mockResolvedValueOnce('did step 1; next: step 2 (detailed 4-file build record)');
+      setWorkItemCheckpoint.mockImplementation(async (_key: unknown, text: string) => text);
+      const r = await one({ id: 'WI-7', checkpoint: 'tsc came back clean', append: true });
+      expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
+        { harness: 'papercup', workItemId: 'WI-7', workspaceId: 'default' },
+        'did step 1; next: step 2 (detailed 4-file build record)\n\n---\ntsc came back clean',
+      );
+      expect(r).toMatchObject({ ok: true, id: 'WI-7', cleared: false, verified: true });
+      // The detailed prior record survives verbatim inside the stored text — the exact
+      // failure EI-9036 reported (an addendum call silently wiping it) cannot happen.
+      expect(r.storedHead).toContain('detailed 4-file build record');
+    });
+
+    it('append:true with NO prior checkpoint just stores the addendum as-is (no leading separator)', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+      getWorkItemCheckpoint.mockResolvedValueOnce(null); // nothing stored yet
+      setWorkItemCheckpoint.mockImplementation(async (_key: unknown, text: string) => text);
+      const r = await one({ id: 'WI-7', checkpoint: 'first note', append: true });
+      expect(setWorkItemCheckpoint).toHaveBeenCalledWith(expect.anything(), 'first note');
+      expect(r).toMatchObject({ ok: true, cleared: false });
+    });
+
+    it('append:true rejects a blank/omitted checkpoint (append + clear is a contradiction) without touching the store', async () => {
+      const r = await one({ id: 'WI-7', checkpoint: '', append: true });
+      expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
+      expect(getWorkItemCheckpoint).not.toHaveBeenCalled();
+      expect(r.ok).toBe(false);
+      expect(r.error).toContain('append:true requires a non-blank');
+    });
+
+    it('append:true truncates the OLDEST content (front) with a marker when the join would exceed the 32000-char cap', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+      const prior = 'P'.repeat(31990);
+      const addendum = 'A'.repeat(50);
+      getWorkItemCheckpoint.mockResolvedValueOnce(prior);
+      setWorkItemCheckpoint.mockImplementation(async (_key: unknown, text: string) => text);
+      const r = await one({ id: 'WI-7', checkpoint: addendum, append: true });
+      expect(r.ok).toBe(true);
+      const [, storedArg] = setWorkItemCheckpoint.mock.calls[0] as [unknown, string];
+      expect(storedArg.length).toBeLessThanOrEqual(32000);
+      expect(storedArg.startsWith('…[older checkpoint content truncated]…')).toBe(true);
+      // The newest addendum — the part the caller just wrote — is never the part cut.
+      expect(storedArg.endsWith(addendum)).toBe(true);
+    });
+
+    it('a per-item append:true overrides a batch-level append:false/omitted default, and vice versa', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+      getWorkItemCheckpoint.mockResolvedValueOnce('existing');
+      setWorkItemCheckpoint.mockImplementation(async (_key: unknown, text: string) => text);
+      // Batch default append:true, no per-item override → still appends.
+      const out = await env({ append: true, items: [{ id: 'WI-7', checkpoint: 'addendum' }] });
+      expect(setWorkItemCheckpoint).toHaveBeenCalledWith(expect.anything(), 'existing\n\n---\naddendum');
+      expect(out.results[0].ok).toBe(true);
+    });
+
+    it('plain replace-on-write (no append) is UNCHANGED: never reads the prior checkpoint, always overwrites', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+      setWorkItemCheckpoint.mockResolvedValue('brand new note');
+      const r = await one({ id: 'WI-7', checkpoint: 'brand new note' });
+      // The default suite mock for getWorkItemCheckpoint only fires on the verify-read
+      // (post-write); confirm no PRE-write read happened by checking call count is
+      // exactly the verify-read's one call, not two.
+      expect(getWorkItemCheckpoint).toHaveBeenCalledTimes(1);
+      expect(setWorkItemCheckpoint).toHaveBeenCalledWith(expect.anything(), 'brand new note');
+      expect(r.ok).toBe(true);
+    });
+  });
 });

@@ -26,11 +26,13 @@ import { openOwnLog, type RemoteLog } from '../peer-log';
 import { buildAnnounce, type SignedAnnounce } from '../announce';
 import type { HyperswarmLike } from '../swarm';
 import { _clearRegistryForTests } from '../projection';
-import { listBootHistory, _resetBootHistoryForTests } from '../boot-history';
+import { listBootHistory, _resetBootHistoryForTests, type BootHistoryKind } from '../boot-history';
 import type { AdmittedLog } from '../read-merge';
 import {
   setReplicationStallEpisodeReporterForTests,
   setReplicationStallRecoveryReporterForTests,
+  sampleReplicationLiveness,
+  dropReplicationLogState,
 } from '../replication-liveness';
 
 /** Build a VALID signed announce with a freshly-generated Ed25519 keypair —
@@ -1856,6 +1858,157 @@ describe('bootHarnessSubstrate — WI-183 replication-stall detector', () => {
       vi.useRealTimers();
       errorSpy.mockRestore();
     }
+  });
+});
+
+// WI-3684 P-002 (plan p2p-parity-closeout-lanes-2026-07-10): e2e coverage for
+// boot.ts's repair-on-detect reaction to a `connected_never_replicated`
+// liveness episode. The SEND-side fix (P-001) drives `ensureSendSideWired`;
+// THIS describe covers the receive-side twin that already landed here —
+// `setReplicationRepairHandler` registers a per-harness handler that
+// ENQUEUES a re-attach (never mutates `admitted` directly — a liveness
+// episode can fire mid merge-pass) and `drainRepairQueue()` applies it under
+// the merge gate at the top of the NEXT pass (boot.ts ~1615-1682).
+describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
+  // Same silencing rationale + LIFO-ordering caveat as the WI-183 describe
+  // above: `dropReplicationLogState` (used below to re-arm the edge-triggered
+  // axis between repair attempts) fires a RECOVERY report through the
+  // module-level reporter seam (not the per-call `onStallEpisode` override),
+  // and `handle.close()` (pushed by each test onto the shared `cleanups`
+  // LIFO) does the same on teardown — so the reset must be pushed onto that
+  // SAME stack here, in `beforeEach`, to land below (and thus run after) the
+  // test's own `handle.close()` push.
+  beforeEach(() => {
+    setReplicationStallEpisodeReporterForTests(() => {});
+    setReplicationStallRecoveryReporterForTests(() => {});
+    cleanups.push(() => {
+      setReplicationStallEpisodeReporterForTests(null);
+      setReplicationStallRecoveryReporterForTests(null);
+    });
+  });
+
+  function tmpWorkspaceRoot(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'mb-boot-repair-'));
+    cleanups.push(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });
+    return dir;
+  }
+
+  /** A minimal RemoteLog replica with a spy-able `close()` — the drain only
+   *  needs the session to exist + be closeable (mirrors `fakeRemoteLog` in the
+   *  WI-1544 describe above, which is scoped to that block, not importable here). */
+  function fakeCloseableRemoteLog(keyHex: string): RemoteLog & { close: ReturnType<typeof vi.fn> } {
+    return {
+      keyHex,
+      length: 0,
+      contiguousLength: 0,
+      get: async () => null,
+      update: async () => {},
+      prefetch: () => {},
+      has: () => false,
+      close: vi.fn(async () => {}),
+    };
+  }
+
+  it('drainRepairQueue closes the stale session, re-opens via openRemoteLogOverride, swaps `admitted`, records replication_repair — capped at 3 attempts per log', async () => {
+    const workspaceId = 'ws-repair-3684';
+    const harnessSlug = 's-repair-3684';
+    const keyHex = 'ee'.repeat(32);
+
+    // Every successful repair opens a FRESH session via this override — track
+    // each one so we can assert exactly which session is current/closed.
+    const sessions: Array<RemoteLog & { close: ReturnType<typeof vi.fn> }> = [];
+    const openRemoteLogOverride = vi.fn(async (_store: unknown, k: string) => {
+      const fresh = fakeCloseableRemoteLog(k);
+      sessions.push(fresh);
+      return fresh;
+    });
+
+    // No swarmBinding/swarmOverride (mirrors the WI-183 describe above) — boot
+    // never joins a real swarm, so boot's OWN per-pass liveness auto-sample
+    // (mergeOnePass ~2009) always sees `swarmConnections: undefined` for this
+    // harness and can never itself fire/interfere with the episode this test
+    // drives explicitly below.
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId,
+      harnessSlug,
+      mergePollMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      openRemoteLogOverride,
+    });
+    cleanups.push(() => handle.close());
+
+    // Seed `admitted` with the STALE session under repair — `handle.admitted`
+    // is the live Map boot.ts closes over (not a snapshot), so setting it here
+    // is equivalent to a real admission having happened earlier.
+    const stale = fakeCloseableRemoteLog(keyHex);
+    handle.admitted.set(keyHex, stale);
+
+    /**
+     * Fires one fresh `connected_never_replicated` episode for `keyHex` (via
+     * the SAME exported `sampleReplicationLiveness` the merge pass itself
+     * rides — the openRemoteLogOverride seam this test targets), then drains
+     * it through a real merge pass. `graceMs: 0` makes the FIRST sample after
+     * a (re)seed fire immediately — no fake timers / real sleeps needed. The
+     * `beforeEach` above silences the default reporter's `console.error`
+     * (would trip vitest-fail-on-console) and its fire-and-forget durable-EI
+     * dynamic import — out of scope for this unit test.
+     */
+    async function fireEpisodeAndDrain(): Promise<void> {
+      sampleReplicationLiveness(
+        workspaceId,
+        harnessSlug,
+        { keyHex, knownLength: 0, swarmConnections: 1 },
+        { graceMs: 0 },
+      );
+      await handle.mergeNow();
+    }
+
+    function repairEvents() {
+      return listBootHistory({
+        workspaceId,
+        harnessSlug,
+        kinds: ['replication_repair' as BootHistoryKind],
+      });
+    }
+
+    // ── Attempt 1: closes `stale`, opens session #1, swaps `admitted`, records
+    // the repair event. ──
+    await fireEpisodeAndDrain();
+    expect(stale.close).toHaveBeenCalledTimes(1);
+    expect(openRemoteLogOverride).toHaveBeenCalledWith(expect.anything(), keyHex);
+    expect(sessions).toHaveLength(1);
+    expect(handle.admitted.get(keyHex)).toBe(sessions[0]);
+    expect(repairEvents()).toHaveLength(1);
+    expect(repairEvents()[0]!.message).toContain('attempt 1/3');
+
+    // ── Attempts 2 and 3: each needs the liveness STATE re-armed first — the
+    // axis is edge-triggered (fires once per episode; see replication-liveness.ts)
+    // so `dropReplicationLogState` clears just the tracked liveness state for
+    // `keyHex`, letting a fresh episode fire. `repairAttempts` is boot.ts's OWN
+    // Map (untouched by that drop), so the cap keeps counting across the re-arms. ──
+    for (const attempt of [2, 3] as const) {
+      dropReplicationLogState(workspaceId, harnessSlug, keyHex);
+      await fireEpisodeAndDrain();
+      expect(sessions).toHaveLength(attempt);
+      expect(handle.admitted.get(keyHex)).toBe(sessions[attempt - 1]);
+      // The PRIOR session (this attempt's repair target) was closed exactly once.
+      expect(sessions[attempt - 2]!.close).toHaveBeenCalledTimes(1);
+      const events = repairEvents();
+      expect(events).toHaveLength(attempt);
+      expect(events[0]!.message).toContain(`attempt ${attempt}/3`); // newest-first
+    }
+
+    // ── Attempt 4 — THE CAP: `repairAttempts` is already 3, so the handler
+    // early-returns WITHOUT enqueueing (boot.ts: `if (attempts >= REPAIR_MAX_ATTEMPTS_PER_LOG) return;`)
+    // — no close, no re-open, no boot event. ──
+    dropReplicationLogState(workspaceId, harnessSlug, keyHex);
+    await fireEpisodeAndDrain();
+    expect(sessions).toHaveLength(3); // unchanged
+    expect(openRemoteLogOverride).toHaveBeenCalledTimes(3);
+    expect(handle.admitted.get(keyHex)).toBe(sessions[2]); // unchanged (session #3 stays current)
+    expect(sessions[2]!.close).not.toHaveBeenCalled(); // the live session was never closed
+    expect(repairEvents()).toHaveLength(3); // no 4th entry
   });
 });
 

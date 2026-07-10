@@ -42,6 +42,19 @@ describe('fingerprintFleet', () => {
     expect(fingerprintFleet('a TOON string')).toBeNull();
     expect(fingerprintFleet({ ok: true })).toBeNull();
   });
+
+  it('P-007: stamps contextPressure as `p` when present; omits it (no fake key) when absent/null', () => {
+    const fp = fingerprintFleet(
+      roster([
+        { agentId: 'su-a', verdict: 'speaking', sessionState: 'live', claims: 0, contextPressure: 'critical' },
+        { agentId: 'su-b', verdict: 'speaking', sessionState: 'live', claims: 0, contextPressure: null },
+        { agentId: 'su-c', verdict: 'speaking', sessionState: 'live', claims: 0 },
+      ]),
+    );
+    expect(fp?.members['su-a']).toEqual({ v: 'speaking', s: 'live', c: 0, p: 'critical' });
+    expect(fp?.members['su-b']).toEqual({ v: 'speaking', s: 'live', c: 0 });
+    expect(fp?.members['su-c']).toEqual({ v: 'speaking', s: 'live', c: 0 });
+  });
 });
 
 describe('diffFleet', () => {
@@ -87,6 +100,29 @@ describe('diffFleet', () => {
     const d = diffFleet(base, base);
     expect(d.rows).toEqual([]);
     expect(d.unchanged).toBe(2);
+  });
+
+  it('P-007: a context-pressure-only crossing (ok→high) is itself a transition row', () => {
+    const withOk: FleetFingerprint = {
+      members: { 'su-a': { v: 'speaking', s: 'live', c: 0, p: 'ok' } },
+      orphaned: 0,
+      stalled: 0,
+    };
+    const d = diffFleet(withOk, {
+      members: { 'su-a': { v: 'speaking', s: 'live', c: 0, p: 'high' } }, // ONLY pressure moved
+      orphaned: 0,
+      stalled: 0,
+    });
+    expect(d.rows).toEqual([
+      {
+        change: 'updated',
+        type: 'member',
+        id: 'su-a',
+        from: { v: 'speaking', s: 'live', c: 0, p: 'ok' },
+        to: { v: 'speaking', s: 'live', c: 0, p: 'high' },
+      },
+    ]);
+    expect(d.unchanged).toBe(0);
   });
 });
 

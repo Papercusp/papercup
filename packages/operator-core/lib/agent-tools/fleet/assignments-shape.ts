@@ -63,6 +63,10 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
       // kept at EVERY tier (two short strings; the monitor loop runs trimmed).
       verdict: typeof r.verdict === "string" ? r.verdict : null,
       wakeMode: typeof r.wakeMode === "string" ? r.wakeMode : null,
+      // P-007 (fleet-deltas-leader-primitives-2026-07-10): coarse context-pressure
+      // bucket (ok|high|critical) — kept at EVERY tier like verdict/wakeMode (one
+      // short string; the monitor loop runs trimmed and needs it for the P-004 delta).
+      contextPressure: typeof r.contextPressure === "string" ? r.contextPressure : null,
       intent: clip(r.intent, c.intent),
       plan: r.declaredPlanSlug ?? null,
       fleet: r.fleetSlug ?? null,

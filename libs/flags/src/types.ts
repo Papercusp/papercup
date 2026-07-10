@@ -1255,6 +1255,21 @@ export const FLAGS = {
   // roster fold, byte-identical to pre-P-004 monitor mode — a reversible runtime
   // kill-switch.
   ORIENT_MONITOR_DELTA: "papercusp-orient-monitor-delta",
+  // fleet-deltas-leader-primitives-2026-07-10 P-005: the FULL-mode sibling of
+  // ORIENT_MONITOR_DELTA above — extends the same server-side read-cursor
+  // treatment (mig 537 coord_read_cursors) to coord:orient's default (non-
+  // monitor) folds: the fleet roster (`me`, same 'fleet:monitor' surface),
+  // coord:plan-events, and the fleet-catch-up fold. Each becomes an
+  // "unchanged since your last orient" marker instead of a full re-delivery
+  // when nothing changed (D-003 audit: ~96-100% exact-repeat on these folds).
+  // DEFAULT ON — same no-client-merge, read-path-economizer rationale as
+  // ORIENT_MONITOR_DELTA (D-012 dark-flag rationale does not apply); every step
+  // is fail-open (a cursor error or unrecognizable shape just delivers in full,
+  // never worse than pre-P-005 behavior). Deliberately does NOT touch
+  // `claimable` (self-select surface) or `facts` (binding-context surface) —
+  // omitting "unchanged" content there risks an agent acting on stale
+  // knowledge; see plan decision D-007 for the full reasoning.
+  ORIENT_FULL_DELTA: "papercusp-orient-full-delta",
   // queen-bee-spawn-reclaim-relaunch-2026-06-22 (EI-85 restart-kills): the boot
   // spawn-admission reconcile RE-LAUNCHES a reclaimed queen/bee whose durable
   // work-item is non-terminal, instead of marking it `failed` and losing the work.

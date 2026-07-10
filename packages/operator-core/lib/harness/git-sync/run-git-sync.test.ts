@@ -300,6 +300,41 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(() => git(originDir, 'merge-base', '--is-ancestor', localTipAfter, 'main')).toThrow();
   });
 
+  // p2p-git-live-activation P-306 (Leg E bridged/commit-only false-alarm question): on a
+  // BRIDGED hive, member git-sync runs with push:false (decideGitSyncPush) and the bridge
+  // writer is the sole origin pusher — so a member's `fetch` to origin can legitimately fail
+  // (offline bridge writer, transient network) on every single tick. GAP-4's push:true branch
+  // would classify that as `status: 'error'` (unpushed HEAD, cannot reconcile) — which, if it
+  // ever happened here, would persist across ticks and eventually trip the git-sync-stall
+  // watchdog's errorStall signal. Proves it CANNOT: with push:false, an unreachable origin
+  // still yields a local commit + `status: 'synced'` (never 'error'), so a commit-only member
+  // can never accumulate the watchdog's errorStall streak from its own (expected) push-less
+  // state — the false alarm this leg exists to rule out.
+  it('bridged/commit-only (push:false): an UNREACHABLE origin still commits locally and never reports "error" (git-sync-stall false-alarm guard)', async () => {
+    writeFileSync(join(repo, 'local.txt'), 'x\n');
+    const localTipBefore = git(repo, 'rev-parse', 'HEAD');
+    // simulate the bridge writer being unreachable: point origin at a path with no repo there.
+    git(repo, 'remote', 'set-url', 'origin', join(root, 'no-such-remote.git'));
+
+    const out = await runGitSync('test', { repoPath: repo, config: { push: false, pushSubmodules: false } });
+
+    expect(out.status).not.toBe('error');
+    expect(out.status).toBe('synced');
+    if (out.status === 'synced') expect(out.pushed).toEqual([]);
+    // HEAD still advanced — the local commit landed despite the unreachable remote.
+    const localTipAfter = git(repo, 'rev-parse', 'HEAD');
+    expect(localTipAfter).not.toBe(localTipBefore);
+  });
+
+  // Same fetch-unreachable scenario on a CLEAN tree (no dirty files): the commit-only member
+  // reports 'nothing', which the watchdog's commitNotAttemptable exemption already treats as
+  // never head-stale — confirms the quiet-idle path holds under bridged mode too.
+  it('bridged/commit-only (push:false): an unreachable origin on a CLEAN tree reports "nothing", never "error"', async () => {
+    git(repo, 'remote', 'set-url', 'origin', join(root, 'no-such-remote.git'));
+    const out = await runGitSync('test', { repoPath: repo, config: { push: false, pushSubmodules: false } });
+    expect(out.status).toBe('nothing');
+  });
+
   it('on a divergent conflict: aborts to a CLEAN tree and reports conflicted files', async () => {
     // a second clone pushes a conflicting change to origin/main
     const other = join(root, 'other');

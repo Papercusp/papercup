@@ -2,10 +2,13 @@
  * bootstrap.test.ts — WI-2790: DBOS's own system-database pool must get extra
  * idle-in-transaction slack (via a startup `options` GUC on its own connection
  * string) WITHOUT touching the cluster-wide EI-49 default any other connection
- * relies on. Pure-function unit tests only (no PG, no DBOS.setConfig/launch).
+ * relies on. Also covers WI-3619's PG-reachability launch-retry cadence (a
+ * bounded retry instead of skip-DBOS-for-the-process-lifetime on a boot-time
+ * PG probe timeout). Pure-function unit tests only (no PG, no
+ * DBOS.setConfig/launch).
  */
 import { describe, expect, it, afterEach } from 'vitest';
-import { withDbosIdleTxGrace } from './bootstrap';
+import { withDbosIdleTxGrace, resolvePgLaunchRetryMs } from './bootstrap';
 
 describe('withDbosIdleTxGrace', () => {
   const ENV_KEY = 'PAPERCUSP_DBOS_IDLE_IN_TX_TIMEOUT_SEC';
@@ -44,5 +47,36 @@ describe('withDbosIdleTxGrace', () => {
     process.env[ENV_KEY] = 'not-a-number';
     out = withDbosIdleTxGrace('postgresql://user:pass@host:5432/db');
     expect(out).toContain(encodeURIComponent('idle_in_transaction_session_timeout=300000'));
+  });
+});
+
+describe('resolvePgLaunchRetryMs (WI-3619)', () => {
+  it('defaults to 30s when unset', () => {
+    expect(resolvePgLaunchRetryMs({})).toBe(30_000);
+  });
+
+  it('honors PAPERCUSP_DBOS_PG_RETRY_MS when set above the 10s floor', () => {
+    expect(resolvePgLaunchRetryMs({ PAPERCUSP_DBOS_PG_RETRY_MS: '60000' })).toBe(60_000);
+  });
+
+  it('clamps a below-floor override up to the 10s floor (never hammer a down/loaded PG)', () => {
+    expect(resolvePgLaunchRetryMs({ PAPERCUSP_DBOS_PG_RETRY_MS: '1000' })).toBe(10_000);
+  });
+
+  it('falls back to the 30s default (not the floor) on a non-numeric override', () => {
+    expect(resolvePgLaunchRetryMs({ PAPERCUSP_DBOS_PG_RETRY_MS: 'not-a-number' })).toBe(30_000);
+  });
+
+  it('defaults to process.env when no env is passed', () => {
+    const prior = process.env.PAPERCUSP_DBOS_PG_RETRY_MS;
+    try {
+      delete process.env.PAPERCUSP_DBOS_PG_RETRY_MS;
+      expect(resolvePgLaunchRetryMs()).toBe(30_000);
+      process.env.PAPERCUSP_DBOS_PG_RETRY_MS = '45000';
+      expect(resolvePgLaunchRetryMs()).toBe(45_000);
+    } finally {
+      if (prior === undefined) delete process.env.PAPERCUSP_DBOS_PG_RETRY_MS;
+      else process.env.PAPERCUSP_DBOS_PG_RETRY_MS = prior;
+    }
   });
 });

@@ -68,7 +68,8 @@ function copy(kind: EmbedExhaustionKind): { title: string; body: string } {
   return {
     title: 'Durable memory degraded - OpenAI embedding quota exhausted',
     body:
-      'OpenAI embedding quota/billing is exhausted. memory:* is running on the local BGE-ONNX fallback with reduced recall breadth; add OpenAI credit or raise the billing cap.',
+      'OpenAI embedding quota/billing is exhausted. memory:* is running on the local BGE-ONNX fallback with reduced recall breadth; add OpenAI credit or raise the billing cap. ' +
+      'BUT if this workspace deliberately runs a local embedder (memoryEmbedderMode local/gemma), do NOT add credit — this alert means an OUTDATED or misconfigured process is still routing embeds to OpenAI (live 2026-07-10: pre-gemma dist-host bundles fell through an unknown pref to the auto→openai path); update or restart that process instead.',
   };
 }
 

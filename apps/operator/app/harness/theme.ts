@@ -267,6 +267,9 @@ export const BOOT_HISTORY_KIND_COLOR: Record<string, string> = {
   // WI-3604: split-DHT-universe recurrence guard.
   dht_universe_ok: 'var(--good)',
   dht_universe_mismatch: 'var(--bad)',
+  // WI-3684: repair-on-detect re-attach outcome.
+  replication_repair: 'var(--good)',
+  replication_repair_failed: 'var(--bad)',
 };
 export const BOOT_HISTORY_KIND_FALLBACK = 'var(--fg-dim)';
 

@@ -246,8 +246,10 @@ export interface BeeTraceLoaders {
   loadSpawn(spawnId: string): Promise<BeeSpawnRow | null>;
   /** Token totals for the run from agent_usage_samples (null when none landed). */
   loadRunTokens(runId: string): Promise<BeeRunTokens | null>;
-  /** The bee's transcript text (null when absent on disk). */
-  loadTranscript(spawnId: string): string | null;
+  /** The bee's transcript text (null when absent). May be async: the live
+   *  loader falls through to the session archive when the per-spawn dir was
+   *  already archived-then-deleted (session-db-archive-retire-dirs P-010). */
+  loadTranscript(spawnId: string): string | null | Promise<string | null>;
 }
 
 /**
@@ -272,7 +274,7 @@ export function makeBeeCollectAndDistill(loaders: BeeTraceLoaders) {
       };
     }
     const runTokens = spawn.runId ? await loaders.loadRunTokens(spawn.runId) : null;
-    const transcriptText = loaders.loadTranscript(spawnId);
+    const transcriptText = await loaders.loadTranscript(spawnId);
     return collectAndDistillFromBee({ spawnId, spawn, transcriptText, runTokens, maxChars: input.maxChars });
   };
 }

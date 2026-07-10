@@ -46,6 +46,7 @@ import {
   type PlanItemCoverage,
 } from '../../plan-item-coverage';
 import { listParkedAwaitsForSubscribers } from '../../events/await/store';
+import { fetchContextPressure, type ContextPressureBucket } from '../coordination/context-pressure';
 import { boundRowField, boundListField, trimToByteBudget } from '../_bound-output';
 import { shapeFleetAssignments } from './assignments-shape';
 import { getPlanRow, planItemsForRow } from '../plans/source';
@@ -261,6 +262,24 @@ export async function decorateParkedOn<T extends AgentAssignment & { parkedOn?: 
   if (agents.length === 0) return agents;
   const rows = await fetchParkedAwaits(agents.map((a) => a.agentId));
   if (rows.length === 0) return agents;
+  const byId = buildParkedOnMap(rows);
+  for (const a of agents) {
+    const keys = byId.get(a.agentId);
+    if (keys && keys.length > 0) a.parkedOn = keys;
+  }
+  return agents;
+}
+
+/**
+ * WI-3715 (fleet-leader-frictions-six-improvements-2026-07-10, P-001): the
+ * `subscriberId → capped/deduped event-key list` grouping `decorateParkedOn`
+ * above needs — pulled out so `coord:presence`'s own parkedOn overlay (the
+ * item's other required surface) derives from the SAME cap/dedup rule
+ * instead of re-implementing it, rather than forking a second copy.
+ */
+export function buildParkedOnMap(
+  rows: ReadonlyArray<{ subscriberId: string; eventKey: string }>,
+): Map<string, string[]> {
   const byId = new Map<string, string[]>();
   for (const r of rows) {
     const list = byId.get(r.subscriberId) ?? [];
@@ -268,9 +287,28 @@ export async function decorateParkedOn<T extends AgentAssignment & { parkedOn?: 
     if (list.length < 6 && !list.includes(r.eventKey)) list.push(r.eventKey);
     byId.set(r.subscriberId, list);
   }
+  return byId;
+}
+
+/**
+ * P-007 (fleet-deltas-leader-primitives-2026-07-10): stamp each agent row with
+ * `contextPressure` (ok|high|critical|null) — the fleet-health read of the SAME
+ * watchdog-cached context signal the ambient gauge bands on (context-pressure.ts),
+ * so a leader scanning fleet:assignments sees who is about to compact WITHOUT a
+ * separate per-member coord:presence call. Exported with an injectable fetcher so
+ * it unit-tests without PG (the decorateParkedOn pattern). Mutates in place;
+ * best-effort at the call site.
+ */
+export async function decorateContextPressure<
+  T extends AgentAssignment & { contextPressure?: ContextPressureBucket | null },
+>(
+  agents: T[],
+  fetchPressure: (ownerIds: string[]) => Promise<Map<string, ContextPressureBucket>> = fetchContextPressure,
+): Promise<T[]> {
+  if (agents.length === 0) return agents;
+  const pressure = await fetchPressure(agents.map((a) => a.agentId));
   for (const a of agents) {
-    const keys = byId.get(a.agentId);
-    if (keys && keys.length > 0) a.parkedOn = keys;
+    a.contextPressure = pressure.get(a.agentId) ?? null;
   }
   return agents;
 }
@@ -383,9 +421,10 @@ export default defineTool({
       harness: args.harness,
       activeOnly: !args.include_lapsed,
     });
-    const agents: (AgentAssignment & { sessionState?: SessionState | null })[] = groupByAgent(rows).filter(
-      (g) => args.include_stale || g.claims.length > 0 || g.alive,
-    );
+    const agents: (AgentAssignment & {
+      sessionState?: SessionState | null;
+      contextPressure?: ContextPressureBucket | null;
+    })[] = groupByAgent(rows).filter((g) => args.include_stale || g.claims.length > 0 || g.alive);
     // EI-6077: reconcile `alive` against coord:presence's own wakeability signal
     // (see reconcileWakeability above) — best-effort, a query failure just leaves
     // today's heartbeat-only `alive` and an absent `sessionState` (state unknown).
@@ -398,6 +437,9 @@ export default defineTool({
     // keys — so a deliberately-benched member reads as parked, not abandoned.
     // Best-effort: a failure just omits the field.
     await decorateParkedOn(agents).catch(() => {});
+    // P-007: stamp `contextPressure` (ok|high|critical|null) — best-effort, never
+    // breaks the read. Independent of the joins above (its own batch query).
+    await decorateContextPressure(agents).catch(() => {});
     const orphans = orphanedClaims(rows);
     // agent-activity-liveness-truth P-002/P-005: a live-but-not-progressing holder
     // is NOT "covered" — surface stalled claims as reclaimable alongside orphans, so
@@ -521,6 +563,11 @@ export default defineTool({
       parked: agents.filter((a) => ((a as { parkedOn?: string[] }).parkedOn?.length ?? 0) > 0).length,
       // P-021: total work-item load across live agents (the warm-inject signal).
       work_item_load: agents.reduce((n, a) => n + a.load, 0),
+      // P-007: fleet-health headline — members whose context-pressure bucket is
+      // high/critical right now (silent when 0, mirroring the ambient gauge's
+      // quiet-below-LOUD philosophy).
+      high_context: agents.filter((a) => a.contextPressure === 'high').length,
+      critical_context: agents.filter((a) => a.contextPressure === 'critical').length,
     };
     // EI-1597: bound the agent-facing output so a large fleet (esp. include_stale)
     // can't overflow the agent result cap. `agents` is already sorted live-first, so

@@ -211,17 +211,42 @@ describe('GET /api/updates/manifest — manifest contract with tauri-plugin-upda
   });
 
   it('204s when current_version already matches the candidate (normalized)', async () => {
-    expect(
-      await manifestStatus('?target=windows&arch=x86_64&current_version=0.0.4-alpha&channel=alpha'),
-    ).toBe(204);
+    const res = await manifestResponse(
+      '?target=windows&arch=x86_64&current_version=0.0.4-alpha&channel=alpha',
+    );
+    expect(res.status).toBe(204);
+    // WI-3697: the genuine up-to-date case is distinguishable from a
+    // cannot-check 204 via this header (no X-Update-Reason alongside it).
+    expect(res.headers.get('X-Update-Check')).toBe('up_to_date');
+    expect(res.headers.get('X-Update-Reason')).toBeNull();
   });
 
   it('204s (with a server-side warn) when NO GitHub token is available — private repo', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(resolveGithubToken).mockResolvedValue(null);
-    expect(await manifestStatus('?target=windows&arch=x86_64&current_version=0.0.3')).toBe(204);
+    const res = await manifestResponse('?target=windows&arch=x86_64&current_version=0.0.3');
+    expect(res.status).toBe(204);
+    // WI-3697: distinguishable from a genuine up-to-date 204 — a preflight /
+    // ops script (or a future UI affordance) reading only the status code
+    // used to misread this as "up to date" (P-006/P-007 diagnostic detour).
+    expect(res.headers.get('X-Update-Check')).toBe('cannot_check');
+    expect(res.headers.get('X-Update-Reason')).toBe('no_token');
     expect(warnSpy).toHaveBeenCalledOnce();
     warnSpy.mockRestore();
+  });
+
+  it('204s with X-Update-Reason=no_candidate when releases exist but none match the channel', async () => {
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify([{ ...guiRelease, tag_name: 'desktop-v0.0.4-beta', prerelease: true }]),
+        { status: 200 },
+      ),
+    );
+    // channel=stable (default) excludes a beta-tagged release.
+    const res = await manifestResponse('?target=windows&arch=x86_64&current_version=0.0.3');
+    expect(res.status).toBe(204);
+    expect(res.headers.get('X-Update-Check')).toBe('cannot_check');
+    expect(res.headers.get('X-Update-Reason')).toBe('no_candidate');
   });
 
   it('falls back to latest.json + release host for artifacts too big for GitHub (Linux)', async () => {
@@ -281,19 +306,35 @@ describe('GET /api/updates/manifest — graceful degradation when GitHub is unre
 
   it('returns 204 (NOT 502) when GitHub rate-limits the releases fetch (403)', async () => {
     mockFetch.mockResolvedValue(new Response('rate limited', { status: 403 }));
-    expect(await manifestStatus('?target=linux&arch=x86_64&current_version=0.0.1')).toBe(204);
+    const res = await manifestResponse('?target=linux&arch=x86_64&current_version=0.0.1');
+    expect(res.status).toBe(204);
+    // WI-3697: distinguishable cannot-check reason (not a genuine up-to-date).
+    expect(res.headers.get('X-Update-Check')).toBe('cannot_check');
+    expect(res.headers.get('X-Update-Reason')).toBe('fetch_failed');
     expect(warnSpy).toHaveBeenCalledOnce();
   });
 
   it('returns 204 when the releases fetch throws (network error)', async () => {
     mockFetch.mockRejectedValue(new Error('network down'));
-    expect(await manifestStatus('?target=linux&arch=x86_64&current_version=0.0.1')).toBe(204);
+    const res = await manifestResponse('?target=linux&arch=x86_64&current_version=0.0.1');
+    expect(res.status).toBe(204);
+    expect(res.headers.get('X-Update-Reason')).toBe('fetch_failed');
     expect(warnSpy).toHaveBeenCalledOnce();
   });
 
   it('returns 204 when GitHub 5xxs', async () => {
     mockFetch.mockResolvedValue(new Response('boom', { status: 503 }));
-    expect(await manifestStatus('?target=linux&arch=x86_64&current_version=0.0.1')).toBe(204);
+    const res = await manifestResponse('?target=linux&arch=x86_64&current_version=0.0.1');
+    expect(res.status).toBe(204);
+    expect(res.headers.get('X-Update-Reason')).toBe('fetch_failed');
     expect(warnSpy).toHaveBeenCalledOnce();
+  });
+
+  it('returns 204 with X-Update-Reason=fetch_failed when the releases listing 404s', async () => {
+    mockFetch.mockResolvedValue(new Response('not found', { status: 404 }));
+    const res = await manifestResponse('?target=linux&arch=x86_64&current_version=0.0.1');
+    expect(res.status).toBe(204);
+    expect(res.headers.get('X-Update-Check')).toBe('cannot_check');
+    expect(res.headers.get('X-Update-Reason')).toBe('fetch_failed');
   });
 });

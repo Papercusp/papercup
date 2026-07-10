@@ -51,6 +51,9 @@ import {
   mintRecycleArgs,
   claudeStoreHasSession,
   sessionHasTranscript,
+  sessionTranscriptFile,
+  lastActiveModelFor,
+  modelArgsFor,
   reportSessionEnded,
   reportSessionResumed,
   roleLaunchArgs,
@@ -2384,6 +2387,95 @@ describe('sessionHasTranscript (ghost rows — adv-tracked launches that never p
 
   it('omp: always kept (the thread store is not path-indexed here)', () => {
     expect(sessionHasTranscript({ agent: 'omp', ompThreadId: 't-1' }, { home })).toBe(true);
+  });
+});
+
+describe('WI-3758 — psu --resume model select + last-active model', () => {
+  it('modelArgsFor maps a spec onto each backend (and stays in lockstep with suWrapperExtraArgs)', () => {
+    // claude: a recognized :effort tail splits into the CLI's own --effort flag.
+    expect(modelArgsFor('claude', 'claude-sonnet-5:high')).toEqual(['--model', 'claude-sonnet-5', '--effort', 'high']);
+    // …but a non-effort ':' segment (bedrock version) passes through verbatim.
+    expect(modelArgsFor('claude', 'anthropic.claude-3-5-sonnet-v2:0')).toEqual(['--model', 'anthropic.claude-3-5-sonnet-v2:0']);
+    // codex: bare -m + config-override effort, max clamped to xhigh.
+    expect(modelArgsFor('codex', 'gpt-5.5:max')).toEqual(['-m', 'gpt-5.5', '-c', 'model_reasoning_effort="xhigh"']);
+    expect(modelArgsFor('codex', 'gpt-5.5')).toEqual(['-m', 'gpt-5.5']);
+    // omp understands the suffixed spec natively.
+    expect(modelArgsFor('omp', 'opus:high')).toEqual(['--model', 'opus:high']);
+    expect(modelArgsFor('claude', null)).toEqual([]);
+    // The wrapper path delegates — a divergence here would resurrect the effort-drop class.
+    for (const [agent, spec] of [['claude', 'fable:high'], ['codex', 'gpt-5.5:max'], ['omp', 'opus:low']] as const) {
+      expect(suWrapperExtraArgs(agent, { model: spec })).toEqual(modelArgsFor(agent, spec));
+    }
+  });
+
+  it('resumeArgsFor threads a model into each backend resume — codex flags BEFORE the subcommand', () => {
+    expect(resumeArgsFor({ agent: 'claude', sessionId: 'uuid-1' }, { model: 'fable:high' }).args).toEqual([
+      '--resume', 'uuid-1', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, '--model', 'fable', '--effort', 'high',
+    ]);
+    // codex `-m`/`-c` are TOP-LEVEL options — after the `resume` subcommand they'd
+    // be parsed as resume's own args and fail the launch.
+    expect(resumeArgsFor({ agent: 'codex', sessionId: 'uuid-2' }, { model: 'gpt-5.6-sol:high' }).args).toEqual([
+      '--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', '-m', 'gpt-5.6-sol', '-c', 'model_reasoning_effort="high"', 'resume', 'uuid-2',
+    ]);
+    expect(resumeArgsFor({ agent: 'omp', ompThreadId: 'thr-1' }, { model: 'opus:high' }).args).toEqual([
+      '-r', 'thr-1', '--approval-mode', 'yolo', '--model', 'opus:high',
+    ]);
+    // No model → byte-identical to the pre-WI-3758 args (the agent-default path).
+    expect(resumeArgsFor({ agent: 'claude', sessionId: 'uuid-1' }).args).not.toContain('--model');
+  });
+
+  describe('lastActiveModelFor (tail-read the session transcript)', () => {
+    const UUID = '0123abcd-1234-5678-9abc-def012345678';
+    let home = '';
+    beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'psu-lastmodel-')); });
+    afterEach(() => { if (home) rmSync(home, { recursive: true, force: true }); });
+
+    const writeJsonl = (file: string, lines: unknown[]) => {
+      mkdirSync(join(file, '..'), { recursive: true });
+      writeFileSync(file, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+    };
+
+    it('claude: the NEWEST assistant model wins; <synthetic> (error events) is skipped', () => {
+      const owner = 'su-owner-1';
+      const f = join(home, '.papercusp', 'session-claude', owner, 'projects', '-some-dir', `${UUID}.jsonl`);
+      writeJsonl(f, [
+        { type: 'user', message: { content: 'hi' } },
+        { type: 'assistant', message: { model: 'claude-fable-5-20260101', content: [] } },
+        { type: 'assistant', message: { model: 'claude-fable-5-20260415', content: [] } },
+        { type: 'assistant', message: { model: '<synthetic>', content: [] } },
+      ]);
+      expect(lastActiveModelFor({ agent: 'claude', sessionId: UUID, coordOwnerId: owner }, { home })).toBe('claude-fable-5-20260415');
+    });
+
+    it('codex: the NEWEST turn_context payload.model wins (tracked per-session CODEX_HOME)', () => {
+      const f = join(home, '.papercusp', 'su-codex-homes', 'session-42', 'sessions', '2026', '07', '09', `rollout-2026-07-09T22-08-28-${UUID}.jsonl`);
+      writeJsonl(f, [
+        { type: 'session_meta', payload: { id: UUID, model_provider: 'openai' } },
+        { type: 'turn_context', payload: { model: 'gpt-5.6-sol' } },
+        { type: 'turn_context', payload: { model: 'gpt-5.6-lux' } },
+        { type: 'response_item', payload: { role: 'assistant' } },
+      ]);
+      expect(lastActiveModelFor({ agent: 'codex', id: 42, sessionId: UUID }, { home })).toBe('gpt-5.6-lux');
+    });
+
+    it('codex: an UNTRACKED session (no adv row id) falls back to the shared ~/.codex store', () => {
+      const f = join(home, '.codex', 'sessions', '2026', '07', '10', `rollout-2026-07-10T00-00-00-${UUID}.jsonl`);
+      writeJsonl(f, [
+        { type: 'session_meta', payload: { id: UUID } },
+        { type: 'turn_context', payload: { model: 'gpt-5.6-sol' } },
+      ]);
+      expect(sessionTranscriptFile({ agent: 'codex', id: null, sessionId: UUID }, { home })).toBe(f);
+      expect(lastActiveModelFor({ agent: 'codex', id: null, sessionId: UUID }, { home })).toBe('gpt-5.6-sol');
+    });
+
+    it('degrades to null: omp, a missing transcript, and a transcript with no model events', () => {
+      expect(lastActiveModelFor({ agent: 'omp', ompThreadId: 't-1' }, { home })).toBe(null);
+      expect(lastActiveModelFor({ agent: 'claude', sessionId: UUID, coordOwnerId: 'su-none' }, { home })).toBe(null);
+      const owner = 'su-owner-2';
+      const f = join(home, '.papercusp', 'session-claude', owner, 'projects', '-d', `${UUID}.jsonl`);
+      writeJsonl(f, [{ type: 'user', message: { content: 'hi' } }]);
+      expect(lastActiveModelFor({ agent: 'claude', sessionId: UUID, coordOwnerId: owner }, { home })).toBe(null);
+    });
   });
 });
 

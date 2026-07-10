@@ -84,6 +84,10 @@ export default defineTool({
       states: args.states,
       rigAvailable: args.rigAvailable,
       ignoreStoredSpec: !specOn,
+      // P-006 (fleet-leader-frictions-six-improvements-2026-07-10, WI-3763): this is
+      // THE live fleet-member self-pull surface — a miss here is the real "claim-spec
+      // view is empty" signal a fleet leader wants pushed, so opt in.
+      checkIdleDrainOnMiss: true,
     });
     // EI-8579: a self-puller with NEITHER a per-bee NOR an inherited fleet spec resolves to
     // DEFAULT_CLAIM_SPEC (plain oldest-first) — it can silently draw owner-deferred work

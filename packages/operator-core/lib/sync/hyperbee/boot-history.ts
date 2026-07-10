@@ -69,6 +69,13 @@
  *                           nothing pointing at "check this machine's clock/NTP".
  *   - 'announce_error'    — an exception while handling an announce (defensive).
  *   - 'merge_error'       — the read-merge driver threw on a pass (defensive).
+ *   - 'replication_repair' — WI-3684 repair-on-detect: a connected_never_replicated
+ *                           zombie session was re-attached (closed + re-opened) under
+ *                           the merge gate. See `drainRepairQueue` in boot.ts.
+ *   - 'replication_repair_failed' — WI-3684: a queued re-attach attempt threw (the
+ *                           fresh session open itself failed); the log stays on its
+ *                           stale (already-closed) session until a later episode
+ *                           re-queues it, up to the per-log attempt cap.
  *
  * Keep this union in sync with the second declaration in
  * `app/harness/insights/BootHistoryTable.tsx` (+ its KIND_COLOR / KIND_MARK
@@ -167,7 +174,9 @@ export type BootHistoryKind =
   // `dhtUniverseMismatch` axis in replication-liveness.ts, which reads any
   // subsequent per-log stall as THIS cause instead of connected-but-dead.
   | 'dht_universe_ok'
-  | 'dht_universe_mismatch';
+  | 'dht_universe_mismatch'
+  | 'replication_repair'
+  | 'replication_repair_failed';
 
 export interface BootHistoryEntry {
   ts: number;

@@ -19,9 +19,11 @@ use crate::models::{
     RosterEntry, RosterResponse, TestingDomain, TestingResponse, ToastsResponse, TuiPanesPayload,
     TurnsPage, ViewState, ViewStateResponse, WorkItem, WorkItemsPayload,
 };
+use crate::shared_cache;
 use crate::sse::{parse_sse_frames, SseFrame};
 use anyhow::{anyhow, Context, Result};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// The wire `OperatorClient` rides. `Ipc` is the local zero-auth Unix socket;
@@ -363,14 +365,54 @@ impl OperatorClient {
         self.post_json("/api/agent-mcp/run-tool", run_tool_body(name, args))
             .await
     }
+    /// Cross-process cache key for `plans_list`'s response (D-004 of
+    /// `fleet-deltas-leader-primitives-2026-07-10`) — bump this if the query
+    /// shape below ever changes, so a stale-shaped cache entry from an older
+    /// binary can never be misread as a hit for a new shape.
+    const PLANS_LIST_CACHE_KEY: &'static str = "plans-list-standard-v1";
+    /// How long a cached `plans:list` response is trusted before a fresh
+    /// fetch is required. Short on purpose: this exists ONLY to collapse a
+    /// same-machine burst of independent `pui` processes waking off the
+    /// SAME SSE-invalidate signal within milliseconds of each other (see
+    /// `shared_cache.rs`), not to genuinely slow the read cadence — 3s is
+    /// comfortably inside the SSE loop's own 250ms invalidate-debounce +
+    /// 60s safety-net cadence, so it adds no perceptible staleness.
+    const PLANS_LIST_CACHE_FRESH_FOR: Duration = Duration::from_secs(3);
+
     pub async fn plans_list(&self) -> Result<serde_json::Value> {
         // EI-7430: `standard` tier is ~6x smaller than the default `full` tier for
         // the same list (521KB -> 87KB live-measured) — the TUI only ever renders
         // the summary fields anyway. `/api/admin/plans/:verb` forwards unknown
         // query params straight through (bodyFromSearchParams), so this needs no
         // server-side change.
-        self.get_json("/api/admin/plans/list?payloadTier=standard")
-            .await
+        //
+        // D-004 (fleet-deltas-leader-primitives-2026-07-10): this admin-proxy
+        // route carries ZERO cursor/delta negotiation — SYNC_RESOURCE_DELTA only
+        // wires the desktop webview's `@papercusp/sync` rest-query path, which
+        // this call never touches, so the flag being ON can't help this traffic.
+        // The remaining structural waste is duplicate fetches: several `pui`
+        // processes (Fleet/PlansBoard/Plans/Inbox panes, …) react to the SAME
+        // SSE-invalidate push and each independently re-fetch within
+        // milliseconds of each other. A short shared-disk cache (`shared_cache`)
+        // collapses that burst into one real call + N-1 free local reads.
+        if let Some(cached) = shared_cache::read_fresh(
+            Self::PLANS_LIST_CACHE_KEY,
+            Self::PLANS_LIST_CACHE_FRESH_FOR,
+        ) {
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&cached) {
+                return Ok(v);
+            }
+            // Corrupt/partial cache entry (shouldn't happen — writes are
+            // atomic — but never let a bad cache file break the read): fall
+            // through to a real fetch rather than erroring.
+        }
+        let v = self
+            .get_json("/api/admin/plans/list?payloadTier=standard")
+            .await?;
+        if let Ok(bytes) = serde_json::to_vec(&v) {
+            shared_cache::write_best_effort(Self::PLANS_LIST_CACHE_KEY, &bytes);
+        }
+        Ok(v)
     }
 
     /// Bring an agent's external terminal window to the foreground via the

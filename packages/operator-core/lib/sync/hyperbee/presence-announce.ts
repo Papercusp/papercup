@@ -29,6 +29,7 @@
 import type { SharedPresenceRow } from './projections/presence';
 import { CURRENT_SCHEMA_VERSION } from './schema-version';
 import type { LocalWriteOp } from './boot';
+import { isSessionClosedError } from './own-log-fork-guard';
 
 /** The presence schema version (presence rows carry schema_version). */
 const PRESENCE_SCHEMA_VERSION = 1;
@@ -217,6 +218,16 @@ export interface PresenceAnnounceLoopDeps {
   clearIntervalFn?: (h: ReturnType<typeof setInterval>) => void;
   /** Surface a tick error (a failed announce must NOT kill the loop). */
   onError?: (err: unknown) => void;
+  /**
+   * WI-3684 send-side twin (outbox-drain.ts's `onSessionClosed` sibling):
+   * fired instead of `onError` when a tick's `append` fails with a Hypercore
+   * `SESSION_CLOSED` error — the own-log session is permanently dead, so this
+   * loop self-stops (clears its interval) rather than blind-retrying every
+   * `intervalMs` forever. The caller (wire-presence.ts → boot-all.ts's
+   * `ensureSendSideWired`) uses this to re-wire a fresh loop on the next boot
+   * pass, mirroring the receive side's repair-on-detect posture.
+   */
+  onSessionClosed?: () => void;
 }
 
 export interface PresenceAnnounceLoopHandle {
@@ -240,8 +251,13 @@ export function startPresenceAnnounceLoop(deps: PresenceAnnounceLoopDeps): Prese
   const clearIv = deps.clearIntervalFn ?? clearInterval;
   let identity: PresenceIdentity | null | undefined;
   let prev: LastAnnounce | null = null;
+  let stopped = false;
+  // Assigned right after creation, below — `tickOnce`'s SESSION_CLOSED
+  // self-stop path needs to clear the SAME interval `stop()` clears.
+  let intervalHandle: ReturnType<typeof setInterval> | undefined;
 
   async function tickOnce(): Promise<void> {
+    if (stopped) return;
     try {
       if (identity === undefined) identity = await deps.resolveIdentity();
       if (!identity) return; // no swarm identity → nothing to announce
@@ -254,10 +270,31 @@ export function startPresenceAnnounceLoop(deps: PresenceAnnounceLoopDeps): Prese
       });
       if (result.last) prev = result.last;
     } catch (err) {
+      if (isSessionClosedError(err)) {
+        // WI-3684 send-side twin: the own-log session is permanently closed —
+        // every future tick's append would throw the same error, so stop
+        // ticking (rather than blind-retrying every `intervalMs` forever) and
+        // signal the caller to re-wire once a live handle is available again.
+        stopped = true;
+        if (intervalHandle !== undefined) clearIv(intervalHandle);
+        try {
+          deps.onSessionClosed?.();
+        } catch {
+          // best-effort — a throwing callback must never surface from here
+        }
+        return;
+      }
       deps.onError?.(err);
     }
   }
 
-  const handle = setIv(() => void tickOnce(), deps.intervalMs);
-  return { stop: () => clearIv(handle), tickOnce };
+  intervalHandle = setIv(() => void tickOnce(), deps.intervalMs);
+  return {
+    stop: () => {
+      if (stopped) return;
+      stopped = true;
+      if (intervalHandle !== undefined) clearIv(intervalHandle);
+    },
+    tickOnce,
+  };
 }

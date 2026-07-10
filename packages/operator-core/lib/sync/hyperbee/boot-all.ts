@@ -265,16 +265,53 @@ const presenceWired = new Set<string>();
 const wiringInflight = new Map<string, Promise<void>>();
 
 export interface SendSideWiringDeps {
-  /** Default: getOrgPg() + wireOutboxForHarness. Tests inject a fake. */
-  wireOutbox?: (handle: BootedHarnessHandle) => Promise<void>;
+  /** Default: getOrgPg() + wireOutboxForHarness. Tests inject a fake.
+   *  `onSessionClosed` (2nd param) is provided by `ensureSendSideWired` — a
+   *  test fake with the old 1-arg shape still type-checks (JS ignores extra
+   *  call args; a `void`-returning target accepts a narrower callback). */
+  wireOutbox?: (handle: BootedHarnessHandle, onSessionClosed: () => void) => Promise<void>;
   /** Default: wirePresenceAnnounceForHarness. Tests inject a fake. */
-  wirePresence?: (handle: BootedHarnessHandle) => Promise<void>;
+  wirePresence?: (handle: BootedHarnessHandle, onSessionClosed: () => void) => Promise<void>;
 }
 
 /** Default outbox wiring: resolve the org PG, then wire the drain loop. */
-async function defaultWireOutbox(handle: BootedHarnessHandle): Promise<void> {
+async function defaultWireOutbox(
+  handle: BootedHarnessHandle,
+  onSessionClosed: () => void,
+): Promise<void> {
   const { sql } = (await import('@papercusp/db-org')).getOrgPg();
-  await wireOutboxForHarness(handle, sql);
+  await wireOutboxForHarness(handle, sql, { onSessionClosed });
+}
+
+/** Default presence wiring: wirePresenceAnnounceForHarness with the session-closed hook. */
+async function defaultWirePresence(
+  handle: BootedHarnessHandle,
+  onSessionClosed: () => void,
+): Promise<void> {
+  await wirePresenceAnnounceForHarness(handle, { onSessionClosed });
+}
+
+/**
+ * WI-3684 send-side twin: un-mark ONE step (outbox|presence) as wired for a
+ * harness so the NEXT `ensureSendSideWired` call — the periodic boot-all
+ * reconcile pass, or a fresh boot — re-attempts it against whatever handle is
+ * current then, instead of the permanently-closed session's drain/announce
+ * loop blind-retrying every poll tick forever. This is the send-side
+ * counterpart to boot.ts's repair-on-detect (`drainRepairQueue`): react to a
+ * dead session by clearing it for re-wire, rather than leaving a zombie loop
+ * to keep failing against it. Idempotent — a step that was never marked wired
+ * (e.g. a wiring attempt that itself never succeeded) is a silent no-op.
+ */
+function markSendSideUnwired(k: string, step: 'outbox' | 'presence'): void {
+  const set = step === 'outbox' ? outboxWired : presenceWired;
+  const wasWired = set.delete(k);
+  if (wasWired) {
+
+    console.error(
+      `[boot-all] ${step} session for ${k} is SESSION_CLOSED — un-marking send-side ` +
+        `wiring so the next boot pass re-wires a fresh ${step} loop`,
+    );
+  }
 }
 
 /**
@@ -296,18 +333,21 @@ export async function ensureSendSideWired(
   if (existing) return existing;
 
   const wireOutbox = deps.wireOutbox ?? defaultWireOutbox;
-  const wirePresence = deps.wirePresence ?? wirePresenceAnnounceForHarness;
+  const wirePresence = deps.wirePresence ?? defaultWirePresence;
 
   const run = (async () => {
     // (1) Outbox drain — the critical federation send-side (EI-521). Best-effort
     //     so a failure never blocks boot, but RETRYABLE: only marked wired on
-    //     success, so the next boot pass re-attempts it.
+    //     success, so the next boot pass re-attempts it. WI-3684: also passed an
+    //     `onSessionClosed` hook — fired by the drain loop itself if it later
+    //     self-stops on a permanently closed own-log session, so THIS successful
+    //     wiring doesn't stay marked "done" forever once its loop has died.
     if (!outboxWired.has(k)) {
       try {
-        await wireOutbox(handle);
+        await wireOutbox(handle, () => markSendSideUnwired(k, 'outbox'));
         outboxWired.add(k);
       } catch (e) {
-         
+
         console.error(
           `[boot-all] outbox wiring failed for ${k} (boot still succeeded; ` +
             `will retry on the next boot pass):`,
@@ -316,14 +356,15 @@ export async function ensureSendSideWired(
       }
     }
     // (2) Presence announce — additive (the per-Hive lock authority, P-009,
-    //     elects over the live roster). Same retryable best-effort posture; a
-    //     no-op for a private/unswarmed harness (handle.swarm null).
+    //     elects over the live roster). Same retryable best-effort posture (+ the
+    //     same WI-3684 onSessionClosed hook); a no-op for a private/unswarmed
+    //     harness (handle.swarm null).
     if (!presenceWired.has(k)) {
       try {
-        await wirePresence(handle);
+        await wirePresence(handle, () => markSendSideUnwired(k, 'presence'));
         presenceWired.add(k);
       } catch (e) {
-         
+
         console.error(
           `[boot-all] presence wiring failed for ${k} (boot still succeeded; ` +
             `will retry on the next boot pass):`,

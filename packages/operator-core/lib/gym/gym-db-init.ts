@@ -67,12 +67,15 @@ export const MAIN_SQL_DIR = resolveMainSqlDir(__dirname);
  * on `pgvector/pgvector:pg16`. The gym applies the SAME `000-baseline.sql` the
  * operator ships, so a version skew makes provisioning drift from what the
  * passing `gym-db-init.integration.test.ts` (which runs on pg18 via getTestPg)
- * actually validates — every live gym-cycle fire on gymloopharness then died at
- * `CREATE DATABASE cannot run inside a transaction block` (29 consecutive reds),
- * a failure the pg18 integration test never reproduced because it runs the
- * identical code against pg18. Pinning this to pg18 makes the live path
- * byte-identical to the green test; `gym-provision-image.test.ts` asserts it
- * can't drift from `TEST_PG_IMAGE` again.
+ * actually validates. Pinning this to pg18 keeps the live path byte-identical to
+ * the green test; `gym-provision-image.test.ts` asserts it can't drift from
+ * `TEST_PG_IMAGE` again.
+ *
+ * NOTE (EI-9101): this pin was ALSO (wrongly) credited with fixing the live
+ * `CREATE DATABASE cannot run inside a transaction block` failure. A Postgres MAJOR
+ * has no bearing on a transaction-block error — that was a postgres.js query-protocol
+ * bug in the `CREATE DATABASE` call itself (now forced `.simple()`, see
+ * `createGymDatabase`), which is why the reds kept climbing 29 → 45 after this pin.
  */
 export const GYM_PROVISION_PG_IMAGE = 'pgvector/pgvector:pg18';
 
@@ -108,6 +111,38 @@ export interface ProvisionGymDbOpts {
 }
 
 /**
+ * Create the gym database over `maint`, via the SIMPLE query protocol. Idempotent —
+ * an already-existing database (42P04 / duplicate_database) is tolerated.
+ *
+ * EI-9101: `CREATE DATABASE` cannot run inside a transaction block, and postgres.js
+ * sends a query through the EXTENDED (prepared) protocol — which PostgreSQL treats as
+ * an implicit transaction — unless the SIMPLE protocol is forced. A bare
+ * `maint.unsafe('CREATE DATABASE …')` only happens to use the simple protocol because
+ * postgres@3.4.9 defaults a parameterless `unsafe` to simple; that default is
+ * version/bundling-fragile, so the live bg-host gym-cycle chronically died with
+ * `PostgresError: CREATE DATABASE cannot run inside a transaction block` (45 consecutive
+ * reds) while the pg18 integration test — pinned to a postgres.js version that DOES
+ * default to simple — kept passing. Explicitly `.simple()` (exactly as the operator boot
+ * does for its own `CREATE DATABASE`) makes the single-statement simple protocol
+ * guaranteed, independent of the postgres.js version. The earlier pg16→pg18 pin was a
+ * misdiagnosis: a Postgres MAJOR has no bearing on a transaction-block error, which is
+ * why the reds climbed 29→45 after it landed.
+ */
+export async function createGymDatabase(maint: Sql, dbName: string): Promise<void> {
+  if (!SAFE_DB_NAME.test(dbName)) {
+    throw new Error(`unsafe gym db name: ${JSON.stringify(dbName)}`);
+  }
+  try {
+    // `.simple()` = the simple query protocol; CREATE DATABASE is rejected under the
+    // extended protocol's implicit transaction ("cannot run inside a transaction block").
+    await maint.unsafe(`CREATE DATABASE "${dbName}"`).simple();
+  } catch (err) {
+    // 42P04 = duplicate_database — fine (idempotent).
+    if (!/already exists|duplicate_database|42P04/i.test(String(err))) throw err;
+  }
+}
+
+/**
  * Create + fully provision the gym database. Returns its connection URI (admin role).
  * Idempotent on the schema (CREATE ... IF NOT EXISTS + the migration tracker); the
  * CREATE DATABASE tolerates an already-existing database.
@@ -118,10 +153,7 @@ export async function provisionGymDatabase(opts: ProvisionGymDbOpts): Promise<{ 
   }
   const maint = postgres(opts.maintenanceUri, { max: 1, onnotice: () => {} });
   try {
-    await maint.unsafe(`CREATE DATABASE "${opts.dbName}"`);
-  } catch (err) {
-    // 42P04 = duplicate_database — fine (idempotent).
-    if (!/already exists|duplicate_database|42P04/i.test(String(err))) throw err;
+    await createGymDatabase(maint, opts.dbName);
   } finally {
     await maint.end({ timeout: 5 });
   }

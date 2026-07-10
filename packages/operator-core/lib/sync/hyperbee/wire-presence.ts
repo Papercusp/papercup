@@ -63,6 +63,12 @@ export interface WirePresenceOpts {
   clearIntervalFn?: (h: ReturnType<typeof setInterval>) => void;
   now?: () => number;
   onError?: (err: unknown) => void;
+  /** WI-3684 send-side twin: threaded to `startPresenceAnnounceLoop`'s
+   *  `onSessionClosed` (see presence-announce.ts) — fires once the announce
+   *  loop self-stops on a permanently closed own-log session, so
+   *  `ensureSendSideWired` (boot-all.ts) can un-mark this harness as wired and
+   *  re-wire on the next boot pass. */
+  onSessionClosed?: () => void;
 }
 
 const DEFAULT_PRESENCE_INTERVAL_MS = 5_000;
@@ -155,6 +161,7 @@ export async function wirePresenceAnnounceForHarness(
             err instanceof Error ? err.message : String(err)
           }`,
         )),
+    onSessionClosed: opts.onSessionClosed,
   });
   handle.registerCloseHook(() => loop.stop());
 

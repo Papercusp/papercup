@@ -12,6 +12,7 @@ import {
   deriveMemberVerdict,
   decorateMemberVerdicts,
   decorateParkedOn,
+  decorateContextPressure,
   filterActiveCoverage,
   COVERAGE_ACTIVE_WINDOW_MS,
   VERDICT_SPEAKING_FRESH_MS,
@@ -23,6 +24,7 @@ import type { AgentAssignment } from '../../fleet/assignments';
 import type { PlanItemCoverage, CoverageLevel } from '../../plan-item-coverage';
 import type { WakeMode } from '../coordination/wake-mode';
 import type { SessionState, WakeabilitySignals } from '../coordination/presence-wakeability';
+import type { ContextPressureBucket } from '../coordination/context-pressure';
 
 function baseAgent(overrides: Partial<AgentAssignment> = {}): AgentAssignment & {
   sessionState?: SessionState | null;
@@ -310,6 +312,32 @@ describe('decorateParkedOn — P-001 fleet-member-dx (EI-9014)', () => {
   });
 });
 
+describe('decorateContextPressure — P-007 (fleet-deltas-leader-primitives-2026-07-10)', () => {
+  it('stamps the fetched bucket per agent (injected fetcher)', async () => {
+    const agents = [baseAgent({ agentId: 'a1' }), baseAgent({ agentId: 'a2' })];
+    await decorateContextPressure(
+      agents,
+      async () => new Map<string, ContextPressureBucket>([['a1', 'critical']]),
+    );
+    expect((agents[0] as { contextPressure?: ContextPressureBucket | null }).contextPressure).toBe('critical');
+  });
+
+  it('an untracked agent (no fetcher entry) is stamped null, not left undefined', async () => {
+    const agents = [baseAgent({ agentId: 'a1' })];
+    await decorateContextPressure(agents, async () => new Map());
+    expect((agents[0] as { contextPressure?: ContextPressureBucket | null }).contextPressure).toBeNull();
+  });
+
+  it('empty agent list is a no-op that never calls the fetcher', async () => {
+    let called = false;
+    await decorateContextPressure([], async () => {
+      called = true;
+      return new Map();
+    });
+    expect(called).toBe(false);
+  });
+});
+
 describe('shapeFleetAssignments carries parkedOn at every tier (P-001 fleet-member-dx)', () => {
   const data = {
     ok: true,
@@ -335,5 +363,33 @@ describe('shapeFleetAssignments carries parkedOn at every tier (P-001 fleet-memb
       agents: Array<Record<string, unknown>>;
     };
     expect(shaped.agents[0].parkedOn).toEqual(['p2p-git:phase3-open']);
+  });
+});
+
+describe('shapeFleetAssignments carries contextPressure at every tier (P-007)', () => {
+  const data = {
+    ok: true,
+    summary: { agents: 2 },
+    orphaned: [],
+    stalled: [],
+    agents: [
+      { agentId: 'a1', contextPressure: 'critical', claims: [], queued: [] },
+      { agentId: 'a2', claims: [], queued: [] },
+    ],
+  };
+
+  it('trimmed tier keeps the bucket; an unstamped row reads null', () => {
+    const shaped = shapeFleetAssignments(data, 'trimmed') as {
+      agents: Array<Record<string, unknown>>;
+    };
+    expect(shaped.agents[0].contextPressure).toBe('critical');
+    expect(shaped.agents[1].contextPressure).toBeNull();
+  });
+
+  it('standard tier keeps it too', () => {
+    const shaped = shapeFleetAssignments(data, 'standard') as {
+      agents: Array<Record<string, unknown>>;
+    };
+    expect(shaped.agents[0].contextPressure).toBe('critical');
   });
 });

@@ -653,12 +653,12 @@ describe("mode:'monitor' fleet delta (P-004 server-side cursor)", () => {
     expect(r.me).toBe('opaque-toon-string');
   });
 
-  it('FULL mode never consults the cursor (delta is a monitor-tick economizer only)', async () => {
+  it('P-005: FULL mode ALSO consults an injected cursor (the handler, not composeOrient, decides per-mode whether to inject — see the full-mode delta describe block below)', async () => {
     const { call } = fakeCall({ ...FLEET });
     const cursor = vi.fn(async () => ({ committed: null, baseline: true }));
     const r = await composeOrient({}, call, 'su-lead', undefined, undefined, cursor);
-    expect(cursor).not.toHaveBeenCalled();
-    expect(r.fleetDelta).toBeUndefined();
+    expect(cursor).toHaveBeenCalledTimes(1);
+    expect(r.fleetDelta).toEqual({ baseline: true });
   });
 
   it('no cursor injected (flag off / unresolved identity) ⇒ pre-P-004 monitor behavior, byte-identical', async () => {
@@ -666,5 +666,80 @@ describe("mode:'monitor' fleet delta (P-004 server-side cursor)", () => {
     const r = await composeOrient({ mode: 'monitor' }, call, 'su-lead');
     expect(r.fleetDelta).toBeUndefined();
     expect((r.me as { agents: unknown[] }).agents).toHaveLength(3);
+  });
+});
+
+describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side cursors)', () => {
+  const EVENTS_V1 = [{ msg_id: 'e1', kind: 'item_status_changed', detail: 'P-001' }];
+  const EVENTS_V2 = [{ msg_id: 'e2', kind: 'item_status_changed', detail: 'P-002' }, { msg_id: 'e1', kind: 'item_status_changed', detail: 'P-001' }];
+  const CATCHUP_V1 = [{ msg_id: 'c1', summary: 'hello' }];
+
+  it('plan-events BASELINE: full delivery, cursor receives this batch\'s id fingerprint', async () => {
+    const { call } = fakeCall({ ...CORE, 'coord:plan-events': () => ({ events: EVENTS_V1, total: 1 }) });
+    const cursor = vi.fn(async () => ({ committed: null, baseline: true }));
+    const r = await composeOrient({}, call, 'me', undefined, undefined, undefined, cursor);
+    expect(r.planEvents).toEqual({ total: 1, recent: EVENTS_V1 });
+    expect(cursor).toHaveBeenCalledWith({ ids: ['e1'] });
+  });
+
+  it('plan-events UNCHANGED: same ids as committed ⇒ recent:[] + unchanged:true, total still fresh', async () => {
+    const { call } = fakeCall({ ...CORE, 'coord:plan-events': () => ({ events: EVENTS_V1, total: 7 }) });
+    const cursor = vi.fn(async () => ({ committed: { ids: ['e1'] }, baseline: false }));
+    const r = await composeOrient({}, call, 'me', undefined, undefined, undefined, cursor);
+    expect(r.planEvents).toEqual({ total: 7, recent: [], unchanged: true });
+  });
+
+  it('plan-events CHANGED: different ids than committed ⇒ full delivery, no unchanged marker', async () => {
+    const { call } = fakeCall({ ...CORE, 'coord:plan-events': () => ({ events: EVENTS_V2, total: 2 }) });
+    const cursor = vi.fn(async () => ({ committed: { ids: ['e1'] }, baseline: false }));
+    const r = await composeOrient({}, call, 'me', undefined, undefined, undefined, cursor);
+    expect(r.planEvents).toEqual({ total: 2, recent: EVENTS_V2 });
+  });
+
+  it('plan-events FAIL-OPEN: a throwing cursor still delivers in full (no unchanged, no throw)', async () => {
+    const { call } = fakeCall({ ...CORE, 'coord:plan-events': () => ({ events: EVENTS_V1, total: 1 }) });
+    const cursor = vi.fn(async () => { throw new Error('pg down'); });
+    const r = await composeOrient({}, call, 'me', undefined, undefined, undefined, cursor);
+    expect(r.planEvents).toEqual({ total: 1, recent: EVENTS_V1 });
+  });
+
+  it('plan-events: no cursor injected ⇒ pre-P-005 behavior, byte-identical', async () => {
+    const { call } = fakeCall({ ...CORE, 'coord:plan-events': () => ({ events: EVENTS_V1, total: 1 }) });
+    const r = await composeOrient({}, call, 'me');
+    expect(r.planEvents).toEqual({ total: 1, recent: EVENTS_V1 });
+  });
+
+  it('fleet catch-up UNCHANGED: same row ids as committed ⇒ recent:[] + unchanged:true', async () => {
+    const { call } = fakeCall({
+      ...CORE,
+      'coord:whoami': () => ({ fleetSlug: 'backend' }),
+      'coord:catch-up': () => ({ total: 9, rows: CATCHUP_V1 }),
+    });
+    const cursor = vi.fn(async () => ({ committed: { ids: ['c1'] }, baseline: false }));
+    const r = await composeOrient({}, call, 'me', undefined, undefined, undefined, undefined, cursor);
+    expect(r.fleetCatchUp).toEqual({ fleet: 'backend', total: 9, recent: [], unchanged: true });
+  });
+
+  it('fleet catch-up CHANGED: delivers in full and updates the cursor', async () => {
+    const { call } = fakeCall({
+      ...CORE,
+      'coord:whoami': () => ({ fleetSlug: 'backend' }),
+      'coord:catch-up': () => ({ total: 1, rows: CATCHUP_V1 }),
+    });
+    const cursor = vi.fn(async () => ({ committed: null, baseline: true }));
+    const r = await composeOrient({}, call, 'me', undefined, undefined, undefined, undefined, cursor);
+    expect(r.fleetCatchUp).toEqual({ fleet: 'backend', total: 1, recent: CATCHUP_V1 });
+    expect(cursor).toHaveBeenCalledWith({ ids: ['c1'] });
+  });
+
+  it('fleet catch-up FAIL-OPEN: a throwing cursor still delivers in full', async () => {
+    const { call } = fakeCall({
+      ...CORE,
+      'coord:whoami': () => ({ fleetSlug: 'backend' }),
+      'coord:catch-up': () => ({ total: 1, rows: CATCHUP_V1 }),
+    });
+    const cursor = vi.fn(async () => { throw new Error('pg down'); });
+    const r = await composeOrient({}, call, 'me', undefined, undefined, undefined, undefined, cursor);
+    expect(r.fleetCatchUp).toEqual({ fleet: 'backend', total: 1, recent: CATCHUP_V1 });
   });
 });

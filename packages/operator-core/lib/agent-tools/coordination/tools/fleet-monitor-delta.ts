@@ -31,6 +31,10 @@ export interface MemberFingerprint {
   d?: string;
   /** Claim count. */
   c?: number;
+  /** P-007: coarse context-pressure bucket (ok|high|critical) — a member crossing
+   *  into high/critical (or recovering) is exactly the kind of transition a
+   *  monitor loop should see without re-reading the full roster. */
+  p?: string;
   [k: string]: unknown;
 }
 
@@ -65,6 +69,7 @@ interface AssignmentsAgentRow {
   sessionState?: unknown;
   doing?: unknown;
   claims?: unknown;
+  contextPressure?: unknown;
 }
 
 /**
@@ -88,6 +93,9 @@ export function fingerprintFleet(me: unknown): FleetFingerprint | null {
       fp.d = ((raw.doing as { id: string }).id).slice(0, 40);
     }
     if (typeof raw.claims === 'number') fp.c = raw.claims;
+    // P-007: only stamp when a real bucket ('ok'|'high'|'critical') is present —
+    // omit for null/absent so an untracked member never diffs as a fake transition.
+    if (typeof raw.contextPressure === 'string') fp.p = raw.contextPressure;
     members[id] = fp;
   }
   return {
@@ -98,7 +106,7 @@ export function fingerprintFleet(me: unknown): FleetFingerprint | null {
 }
 
 function sameFingerprint(a: MemberFingerprint, b: MemberFingerprint): boolean {
-  return a.v === b.v && a.s === b.s && a.d === b.d && a.c === b.c;
+  return a.v === b.v && a.s === b.s && a.d === b.d && a.c === b.c && a.p === b.p;
 }
 
 /** Diff two fleet fingerprints into transition rows. Pure. */

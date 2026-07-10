@@ -18,6 +18,7 @@ import { DEFAULT_CLAIM_SPEC, validateClaimSpec, isIdOnlySelector, type ClaimSpec
 import { getNextWorkItem, type GetNextResult } from './get-next';
 import { releaseWorkItem, type OrgSql } from '../work-items';
 import { planItemLaneBlockReason } from './plan-item-lane-guard';
+import { maybeEmitFleetIdleDrain } from './fleet-idle-drain';
 
 export interface SetClaimSpecResult {
   ok: boolean;
@@ -214,6 +215,15 @@ export async function getNextForBee(args: {
   /** SCHEDULER_SPEC_CLAIM kill-switch: when true, ignore the bee's stored spec and use the
    *  DEFAULT ordering (== work_items:claim_next) — a no-breakage degrade. */
   ignoreStoredSpec?: boolean;
+  /** P-006 (fleet-leader-frictions-six-improvements-2026-07-10, WI-3763): on a genuine
+   *  miss, ALSO check whether the caller's fleet is fully idle and, if so, push
+   *  `fleet:drained:<slug>` (see fleet-idle-drain.ts). OPT-IN (default false) — this is
+   *  a live-fleet-context side effect meaningful only from the real self-pull tool
+   *  surface fleet members are steered to use (scheduler:get_next, per the su fleet-
+   *  member operating baseline); leaving it off by default keeps getNextForBee
+   *  side-effect-free for every other caller (notably the many unit tests that
+   *  exercise its miss path directly, unmocked PG and all). */
+  checkIdleDrainOnMiss?: boolean;
 }): Promise<(GetNextResult & { specSource: ClaimSpecRecord['source'] }) | null> {
   // EI-8579: resolve via getClaimSpecRecord (not the bare getClaimSpec) so the caller can
   // tell WHICH row answered — a bee with neither a per-bee nor an inherited fleet spec
@@ -245,7 +255,14 @@ export async function getNextForBee(args: {
       ...(args.states ? { states: args.states } : {}),
       ...(args.rigAvailable ? { rigAvailable: true } : {}),
     });
-    if (!result) return null;
+    if (!result) {
+      // P-006: this IS "the claim-spec view is empty" — when the caller opted in,
+      // check whether its fleet is ALSO fully idle and, if so, push
+      // fleet:drained:<slug> instead of leaving the leader to burn-down-watch
+      // fleet:assignments. Fire-and-forget; never blocks or throws into this miss.
+      if (args.checkIdleDrainOnMiss) maybeEmitFleetIdleDrain(args.cupId, args.workspaceId);
+      return null;
+    }
     const blocked = await planItemLaneBlockReason(result.workItem);
     if (!blocked) return { ...result, specSource: record.source };
     if (attempt === MAX_PLAN_LANE_ATTEMPTS - 1) {

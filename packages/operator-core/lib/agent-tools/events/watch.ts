@@ -20,11 +20,18 @@
 
 import { z } from 'zod';
 import { dataConditionSchema } from '@papercusp/rules';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, lookupByMcpName, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
-import { registerAwait } from '../../events/await/store';
+import { registerAwait, cancelAwait } from '../../events/await/store';
 import { startAwaitSweeper } from '../../events/await/engine';
+import {
+  PREDICATE_OPS,
+  registerPredicateWatch,
+  startPredicateWatchPoller,
+  evalPredicateWatch,
+} from '../../events/await/predicate-watch';
+import { activeWorkspaceId } from '../../workspace-registry';
 import { subscribeTopic } from '../coordination/topics';
 import { softText, clampText, LIMITS } from '../limits';
 
@@ -43,9 +50,9 @@ function standingWakeFloorSec(): number {
 export default defineTool({
   name: 'watch:create',
   description:
-    'The unified subscription primitive — watch(pattern, {wake, once, min_sleep_sec, urgency, timeout_sec, mode}): register an interest, receive a delivery. DELIVERY — wake:false (DEFAULT, cheap) injects updates into your coord inbox (seen on your next natural turn, no token cost); wake:true (opt-in, a turn = tokens) re-invokes you when it fires. CARDINALITY — once:true is one-shot (fires once, auto-consumes — a grant/readiness); once:false is standing (re-fires on every match). Named sugar presets: `events:await {key}` = watch(key,{wake:true,once:true}); `topics:subscribe {topic}` = watch(topic,{wake:false}). Lifecycle: events:cancel / events:status (wake) · topics:unsubscribe (inject).',
+    'The unified subscription primitive — watch(pattern, {wake, once, min_sleep_sec, urgency, timeout_sec, mode}): register an interest, receive a delivery. DELIVERY — wake:false (DEFAULT, cheap) injects updates into your coord inbox (next natural turn, no token cost); wake:true (opt-in, a turn = tokens) re-invokes you when it fires. CARDINALITY — once:true is one-shot (auto-consumes — a grant); once:false is standing (re-fires per match). Sugar: events:await = watch(key,{wake:true,once:true}); topics:subscribe = watch(topic,{wake:false}). Lifecycle: events:cancel / events:status (wake) · topics:unsubscribe (inject). PREDICATE (wake:true): predicate:{tool,args,path,op,value}+interval_sec — the engine polls a read-only tool under YOUR role and wakes you on the false→true cross.',
   guidance: {
-    when: 'Register interest in something and receive its updates. Prefer wake:false (inject) for continuous awareness of a churning area — no cost. Use wake:true ONLY for specific readiness ("wake me when THIS grant/lock/deadline is ready"); for a standing wake watch set min_sleep_sec to bound the re-wake rate. once:true for a one-shot grant; once:false to keep following.',
+    when: 'Prefer wake:false (inject) for continuous awareness of a churning area — no cost. Use wake:true ONLY for specific readiness ("wake me when THIS grant/lock/deadline is ready"); for a standing wake watch set min_sleep_sec to bound the re-wake rate. once:true for a one-shot grant; once:false to keep following.',
     notWhen:
       'A sub-minute wait inside one turn — just do the bounded blocking call. A recurring TIME schedule — the pot/routines own time-based wakes. Ambient interest where a wake would burn turns — use wake:false.',
     chaining:
@@ -117,12 +124,35 @@ export default defineTool({
       .positive()
       .optional()
       .describe('wake:true from a plan run — the wake resumes the run via the plans:resume path instead of a session resume.'),
+    predicate: z
+      .object({
+        tool: z.string().min(1).max(200).describe('READ-ONLY tool to poll, by mcp name (e.g. "work_items:list").'),
+        args: z.record(z.string(), z.unknown()).optional().describe('Args passed on every poll.'),
+        path: z.string().min(1).max(300).describe('Dot-path into the tool result, e.g. "counts.open" or "rows.0.status".'),
+        op: z.enum(PREDICATE_OPS),
+        value: z.unknown().optional().describe('Comparison operand (omit for exists).'),
+      })
+      .optional()
+      .describe(
+        'P-008 predicate watch (wake:true only): the engine polls `tool` every interval_sec UNDER YOUR ROLE (role gate enforced per poll, audited), extracts `path`, compares with `op` against `value`, and EDGE-fires your wake on the false→true cross. `pattern` becomes a label; the real key is synthetic (predicate:<id>). once:true deactivates after the first fire; once:false re-fires per cross. Registration runs ONE inline eval — a broken tool/role/args fails loudly NOW, and an already-true predicate fires immediately.',
+      ),
+    interval_sec: z
+      .number()
+      .int()
+      .min(15)
+      .max(3600)
+      .optional()
+      .describe('Predicate poll cadence in seconds (predicate only; default 60).'),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     const wake = args.wake ?? false;
     // Default cardinality follows delivery: a wake is a one-shot grant; an inject is standing.
     const once = args.once ?? wake;
+
+    if (args.interval_sec != null && !args.predicate) {
+      throw new Error('watch:create — interval_sec applies only to a predicate watch (for a wake floor, use min_sleep_sec).');
+    }
 
     if (!wake) {
       // EI-8998: payload_filter is a wake-path-only feature today (it filters which
@@ -132,6 +162,13 @@ export default defineTool({
       if (args.payload_filter) {
         throw new Error(
           'watch:create — payload_filter is only supported with wake:true today (it filters wake-await fires; a wake:false inject subscription has no per-emit matching step to apply it to).',
+        );
+      }
+      // P-008: a predicate watch exists to FIRE A WAKE on a threshold cross — an
+      // inject subscription has no await row to pair the poll with. Fail loud.
+      if (args.predicate) {
+        throw new Error(
+          'watch:create — predicate requires wake:true (the engine-side poll fires a wake await on the false→true cross; there is no inject leg).',
         );
       }
       // ── Inject preset (D-002 cheap default) → a standing topic subscription. ──
@@ -162,6 +199,92 @@ export default defineTool({
     const { handle, note: handleNote } = await captureWakeHandleForOwner(identity.ownerId, {
       planRunId: args.plan_run_id,
     });
+
+    if (args.predicate) {
+      // ── P-008 predicate watch: engine-side poll under the CALLER's role envelope. ──
+      const p = args.predicate;
+      const projected = lookupByMcpName(p.tool);
+      if (!projected) {
+        throw new Error(`watch:create — predicate.tool "${p.tool}" is not a known tool (use the mcp name, e.g. "work_items:list").`);
+      }
+      if (projected.effect !== 'read') {
+        throw new Error(
+          `watch:create — predicate.tool "${p.tool}" is not read-only (effect=${projected.effect ?? 'unset'}); a predicate poll may only observe, never mutate.`,
+        );
+      }
+      startPredicateWatchPoller();
+      const id = globalThis.crypto.randomUUID();
+      const eventKey = `predicate:${id}`;
+      // The await registers FIRST: the poller GCs any predicate row whose paired
+      // await is gone, so the row must never exist without its waiter.
+      const row = await registerAwait({
+        subscriberId: identity.ownerId,
+        eventKey,
+        policy: 'wake',
+        note: clampText(args.note ?? `predicate: ${p.tool} ${p.path} ${p.op}`, LIMITS.ANNOTATION) ?? null,
+        wakeHandle: handle,
+        timeoutBehavior: args.on_timeout ?? 'wake',
+        timeoutSec: args.timeout_sec ?? (once ? DEFAULT_TIMEOUT_SEC : null),
+        once,
+        minSleepSec,
+        urgency: args.urgency,
+        payloadFilter: null,
+      });
+      const watchRow = await registerPredicateWatch({
+        id,
+        workspaceId: ctx.workspaceId ?? activeWorkspaceId(),
+        ownerId: identity.ownerId,
+        role: ctx.role ?? 'su',
+        harnessSlug: ctx.harnessSlug ?? null,
+        eventKey,
+        tool: p.tool,
+        args: p.args ?? {},
+        path: p.path,
+        op: p.op,
+        value: p.value,
+        intervalSec: args.interval_sec ?? 60,
+        once,
+      });
+      // ONE inline eval: validates the whole pipeline under the real envelope NOW,
+      // and an already-true predicate fires immediately instead of one interval out.
+      const first = await evalPredicateWatch(watchRow);
+      if (first.error) {
+        // A registration whose very first poll fails (role gate, bad args, tool
+        // throw) will fail every poll — unwind both rows and fail LOUDLY now.
+        await cancelAwait({ awaitId: Number(row.id), subscriberId: identity.ownerId });
+        throw new Error(
+          `watch:create — predicate registration failed its inline first eval (unwound): ${first.error}`,
+        );
+      }
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: true,
+              watch: {
+                id: row.id,
+                pattern: eventKey,
+                label: args.pattern,
+                wake: true,
+                once: row.once,
+                min_sleep_sec: row.minSleepSec,
+                urgency: row.urgency,
+                expires_ts: row.expiresTs,
+                on_timeout: row.timeoutBehavior,
+              },
+              predicate: { tool: p.tool, path: p.path, op: p.op, value: p.value, interval_sec: watchRow.intervalSec },
+              first_eval: { matched: first.matched, fired: first.fired, observed: first.observed },
+              wake_handle: handleNote,
+              advice: first.fired
+                ? 'Predicate is ALREADY true — the wake fired on this registration. End your turn; the delivery is on its way.'
+                : `Predicate registered (polled every ${watchRow.intervalSec}s under your role). End your turn — you will be woken on the false→true cross${once ? ' exactly once' : ', each cross'} (or at the deadline). Do not poll.`,
+            }),
+          },
+        ],
+      };
+    }
+
     const row = await registerAwait({
       subscriberId: identity.ownerId,
       eventKey: args.pattern,

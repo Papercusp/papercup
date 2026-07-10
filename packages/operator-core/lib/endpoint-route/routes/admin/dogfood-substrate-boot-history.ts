@@ -78,6 +78,9 @@ const VALID_KINDS_MAP: Record<BootHistoryKind, true> = {
   // WI-3604: split-DHT-universe recurrence guard.
   dht_universe_ok: true,
   dht_universe_mismatch: true,
+  // WI-3684: repair-on-detect re-attach outcome.
+  replication_repair: true,
+  replication_repair_failed: true,
 };
 const VALID_KINDS: ReadonlySet<string> = new Set(Object.keys(VALID_KINDS_MAP));
 

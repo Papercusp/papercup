@@ -391,6 +391,36 @@ describe('resolveEmbedderWith — the openai → local → disabled cascade (GAP
     expect(buildGemma).not.toHaveBeenCalled();
   });
 
+  // Live 2026-07-10: frozen pre-gemma dist-host bundles read the freshly-flipped
+  // 'gemma' pref — a mode THEIR build had never heard of — and fell through the
+  // cascade's 'auto' tail onto the out-of-credit OpenAI key (alert storm; with
+  // credit it would have been silent PAID embeddings in a foreign vector space).
+  // An unknown stored mode is always a deliberate move to some NEWER embedder,
+  // so an old build must read it as 'local': free, on-box, recoverable by
+  // re-embed — never the paid cloud leg.
+  it('an UNKNOWN preference (written by newer code) resolves as local-forced, never the auto→openai tail', async () => {
+    const { deps, buildOpenAi, buildLocal } = makeDeps({
+      readPreference: async () => 'some-future-mode' as never,
+      resolveKey: async () => 'sk-present', // key available — the auto tail WOULD have taken it
+      localInstalled: async () => true,
+    });
+    const res = await resolveEmbedderWith(deps);
+    expect(res).toMatchObject({ mode: 'local', dims: EMBEDDER_DIM });
+    expect(buildLocal).toHaveBeenCalledOnce();
+    expect(buildOpenAi).not.toHaveBeenCalled();
+  });
+
+  it('an UNKNOWN preference without the local package disables (still never openai)', async () => {
+    const { deps, buildOpenAi } = makeDeps({
+      readPreference: async () => 'some-future-mode' as never,
+      resolveKey: async () => 'sk-present',
+      localInstalled: async () => false,
+    });
+    const res = await resolveEmbedderWith(deps);
+    expect(res).toEqual({ mode: 'disabled', reason: 'local_forced_but_not_installed' });
+    expect(buildOpenAi).not.toHaveBeenCalled();
+  });
+
   describe('EI-3381 — auto prefers local during an OpenAI post-failure cooldown', () => {
     it('auto + key present + in cooldown + local installed → local (NOT openai)', async () => {
       const { deps, buildOpenAi, buildLocal } = makeDeps({
