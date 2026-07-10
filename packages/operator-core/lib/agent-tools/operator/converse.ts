@@ -504,8 +504,8 @@ export default defineTool({
     try {
       const parsed = parseOperatorTurn(assembled);
       // Sentinel control tags: the
-      // SENTINEL never places work itself. It can emit `<handoff_to_queen>` for
-      // buildable work (file-and-nudge to the Queen) and `<delegate_deep>` for
+      // SENTINEL never places work itself. It can emit `<handoff_to_mug>` for
+      // buildable work (file-and-nudge to the Mug) and `<delegate_deep>` for
       // hard thinking (deep-analysis lane). Honored ONLY for role==='sentinel';
       // the operator path below ignores both entirely (and the sentinel ignores
       // spawns — the two can't cross). The Sentinel must NOT cup:spawn.

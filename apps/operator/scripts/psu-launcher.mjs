@@ -2928,11 +2928,12 @@ export async function reportSessionResumed(
  *  process (the terminal daemon's own frozen env) and isn't fixable here, but
  *  THIS is the one choke point every psu-launched agent session passes
  *  through — sanitizing here fixes it fleet-wide regardless of what garbage
- *  the launching shell carried in. Non-destructive: only strips `npm_*`
- *  lifecycle vars (never touches PAPERCUSP_*/PATH entries the caller
- *  explicitly set after this runs) and PATH segments naming the release
- *  checkout, which an interactive agent session never legitimately needs. */
-function sanitizeInheritedEnv(env) {
+ *  the launching shell carried in. Non-destructive: only strips the npm
+ *  lifecycle vars above (never touches any PAPERCUSP_ variable, nor a PATH
+ *  entry the caller explicitly sets after this runs) and PATH segments
+ *  naming the release checkout, which an interactive agent session never
+ *  legitimately needs. */
+export function sanitizeInheritedEnv(env) {
   const out = { ...env };
   for (const key of Object.keys(out)) {
     if (

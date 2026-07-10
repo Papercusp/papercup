@@ -1,27 +1,32 @@
 /**
- * p2p/offer-executor-prod-deps.ts — WI-1937 production implementation of
- * ONE of the two REQUIRED-with-no-default `OfferExecutorDeps` ports
- * offer-executor.ts leaves for the caller to inject: `applyCapabilityEnvelope`.
- * `launchSession` is DELIBERATELY NOT implemented here yet — see the doc
- * comment below; a real architectural gap blocks it, not an ordering choice.
+ * p2p/offer-executor-prod-deps.ts — WI-1937 production implementation of the
+ * two REQUIRED-with-no-default `OfferExecutorDeps` ports offer-executor.ts
+ * leaves for the caller to inject: `applyCapabilityEnvelope` and
+ * `launchSession`.
  *
  * Split out from offer-executor.ts itself (which stays pure/host-agnostic and
- * unit-tests against hand-rolled stubs) so the actual envelope wiring lives
- * next to what it wires INTO (capability-envelope/policy.ts) rather than
- * inside the pure execution engine.
+ * unit-tests against hand-rolled stubs) so the actual envelope + spawn wiring
+ * lives next to what it wires INTO (capability-envelope/policy.ts,
+ * fleet/operator-spawn.ts) rather than inside the pure execution engine.
  *
- * Sequencing note (leader decision, WI-1937, msg mre4g13q 2026-07-09): this
- * module intentionally does NOT edit capability-envelope/policy.ts — it only
- * READS the exported `ROLE_ENVELOPES` map. `applyCapabilityEnvelope` below is
- * a FAIL-CLOSED GUARD: until a genuine deny-all entry lands on
- * `ROLE_ENVELOPES['foreign-session']` (step 7 of the WI-1937 plan), this
- * throws on every call — so even once `launchSession` is eventually wired,
- * landing THIS module alone does not make the spawn leg live; it stays inert
- * until step 7 explicitly arms it. That is by design, not an oversight:
- * "OWNER-GATED... wire ONLY after..." holds all the way through this module.
+ * Sequencing note (leader decision, WI-1937, msg mre4g13q 2026-07-09,
+ * UPDATED 2026-07-09 once step 7 landed): this module intentionally does NOT
+ * edit capability-envelope/policy.ts — it only READS the exported
+ * `ROLE_ENVELOPES` map. `applyCapabilityEnvelope` below is a FAIL-CLOSED
+ * GUARD: it verifies (never mutates) that `ROLE_ENVELOPES['foreign-session']`
+ * resolves to a genuine deny-all profile before permitting ANY foreign-work
+ * spawn. Step 7 has now landed `denyCapabilities: ['*']` on that entry
+ * (policy.ts) — the SHIPPING v1 policy, not a placeholder — so this guard now
+ * RESOLVES rather than throws, and the spawn leg this module wires
+ * (`launchSession`) is LIVE: every foreign session that actually launches
+ * still runs under a default-deny-ALL capability envelope, confined further
+ * by the P-105 sandbox tier. Any grant beyond deny-all is a separate,
+ * explicitly owner-ratified follow-up work-item — never widened here.
  */
 import { ROLE_ENVELOPES, matchesAny } from '../capability-envelope/policy';
-import type { OfferExecutorDeps } from './offer-executor';
+import { spawnAgentInHarness } from '../fleet/operator-spawn';
+import { ephemeralForeignHarnessSlug } from '../harness-registry';
+import type { ForeignLaunchSpec, OfferExecutorDeps } from './offer-executor';
 
 /**
  * C2: verify (never mutate) that `ROLE_ENVELOPES['foreign-session']` resolves
@@ -55,7 +60,8 @@ export async function applyCapabilityEnvelopeForForeignSession(spec: {
 }
 
 /**
- * D-001 `launchSession` — INTENTIONALLY NOT IMPLEMENTED YET.
+ * D-001 `launchSession` — WI-1937 option B (leader steer, msg mre5tvu2
+ * 2026-07-09): resolved.
  *
  * `spawnAgentInHarness` (fleet/operator-spawn.ts) — the ONE production spawn
  * chokepoint every other agent in this codebase goes through — resolves its
@@ -65,36 +71,45 @@ export async function applyCapabilityEnvelopeForForeignSession(spec: {
  * spawn a real agent process cwd'd into an ARBITRARY filesystem path — and a
  * foreign-work clone (`ForeignLaunchSpec.clonePath`, produced by
  * `provisionForeignClone`, foreign-clone.ts) is exactly that: a standalone git
- * clone the offer-executor pipeline creates on the fly, which
- * `foreign-clone.ts` confirms (grepped, no `harness_registry` / `resolveProject`
- * touch anywhere in it) is NEVER registered as a harness project.
+ * clone the offer-executor pipeline creates on the fly.
  *
- * Wiring `launchSession` to `spawnAgentInHarness` today, with no harness
- * override, would spawn the foreign session into whatever the DEFAULT/explicit
- * local harness resolves to — silently running claimed peer work inside the
- * WRONG repository (this host's own tree, not the sandboxed foreign clone).
- * That is a correctness *and* security bug worse than refusing to wire it at
- * all, so this is left unimplemented on purpose rather than shipped wrong.
- *
- * Two ways to close this gap (need an owner/leader call, not a unilateral
- * pick — this changes the shared spawn chokepoint's contract):
- *   (A) extend `OperatorSpawnInput` / `spawnAgentInHarness` with an explicit
- *       project-path override for exactly this case (audited, still routed
- *       through the same admission/nursery/lock-domain machinery — the
- *       resolution step alone gets a second source), or
- *   (B) have `provisionForeignClone` register an EPHEMERAL `harness_registry`
- *       row for the clone (cleaned up when the ForeignWorkspace is reaped),
- *       so `resolveProject` finds it with zero core-spawn-path changes.
- * Flagged to the fleet leader (WI-1937) rather than decided here.
+ * The gap is closed WITHOUT any core-spawn-path change: `provisionForeignClone`
+ * now registers an EPHEMERAL `harness_registry` row for the clone the moment
+ * it's provisioned (foreign-clone.ts, `registerEphemeralForeignHarness`),
+ * deregistered when the session is reaped (revocation-reaper.ts) or caught by
+ * the orphan sweep (`sweepOrphanedEphemeralForeignHarnesses`) if that call was
+ * missed. So by the time THIS function runs, `resolveProject` already finds
+ * the clone under `ephemeralForeignHarnessSlug(spec.offer.offerId)` — this
+ * just spawns into that slug like any other harness. Enumeration/listing
+ * sites (`projects-lite.ts`, the default-harness inference in
+ * `operator-spawn.ts`, `/api/harness/projects`) filter the row out via
+ * `isEphemeralForeignProject` so it never leaks into human-facing UI; a
+ * slug-scoped lookup — exactly what this does — is unaffected by design.
  */
+export async function launchForeignSession(spec: ForeignLaunchSpec): Promise<{ sessionId: string }> {
+  const harness = ephemeralForeignHarnessSlug(spec.offer.offerId);
+  const res = await spawnAgentInHarness({
+    workspaceId: spec.workspace.workspaceId,
+    harness,
+    role: spec.sessionRole,
+    fleet: { slug: spec.workspace.fleetSlug, role: spec.sessionRole },
+    turnTrigger: 'p2p-foreign-offer',
+    parentRole: 'p2p:offer-executor',
+    extras: [`PAPERCUSP_FOREIGN_PRESENCE_LABEL=${spec.presenceLabel}`],
+  });
+  if (!res.ok || !res.spawnId) {
+    throw new Error(
+      `launchForeignSession: spawnAgentInHarness refused for offer ${spec.offer.offerId} ` +
+        `(harness=${harness}): ${res.error ?? 'no spawnId returned'}`,
+    );
+  }
+  return { sessionId: res.spawnId };
+}
 
-/** Convenience composer for the ports this module owns. `launchSession` is
- *  DELIBERATELY OMITTED (see the doc comment above `applyCapabilityEnvelope`'s
- *  sibling export) — a caller assembling `OfferExecutorDeps` must supply it
- *  explicitly once the clonePath↔harness-registry gap above is resolved,
- *  rather than silently inheriting a wrong default from this module. */
-export function foreignSessionExecutorDeps(): Pick<OfferExecutorDeps, 'applyCapabilityEnvelope'> {
+/** Convenience composer for the ports this module owns. */
+export function foreignSessionExecutorDeps(): Pick<OfferExecutorDeps, 'applyCapabilityEnvelope' | 'launchSession'> {
   return {
     applyCapabilityEnvelope: applyCapabilityEnvelopeForForeignSession,
+    launchSession: launchForeignSession,
   };
 }

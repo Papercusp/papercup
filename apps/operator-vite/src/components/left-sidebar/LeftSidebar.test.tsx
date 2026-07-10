@@ -5,7 +5,7 @@
  * panels are stubbed so this covers the SHELL — the collapsed icon rail vs the
  * expanded shell, open/collapse + tab switching writing ?lsb/?lst atomically (one
  * setRail), the OVERWATCH flag gating its tab (and snapping a stale ?lst=overwatch
- * back to Queen), Queen as the default tab, the body-reservation side effect, and
+ * back to Mug), Mug as the default tab, the body-reservation side effect, and
  * the chromeless-route null-out. nuqs runs via the real testing adapter so the
  * atomic useQueryStates write is exercised end-to-end.
  */
@@ -82,7 +82,7 @@ function renderRail(searchParams = '') {
 }
 
 describe('<LeftSidebar> shell', () => {
-  it('defaults to OPEN on the Queen tab (the owner-default Colony tab)', async () => {
+  it('defaults to OPEN on the Mug tab (the owner-default Colony tab)', async () => {
     renderRail();
     const rail = screen.getByTestId('left-sidebar');
     expect(rail.getAttribute('data-collapsed')).toBe('false');
@@ -90,7 +90,7 @@ describe('<LeftSidebar> shell', () => {
     expect(await screen.findByTestId('panel-queen')).toBeTruthy();
   });
 
-  it('orders Accounts as the leftmost tab before Queen', () => {
+  it('orders Accounts as the leftmost tab before Mug', () => {
     renderRail();
     const tabs = within(screen.getByRole('tablist')).getAllByRole('tab');
     // The queen tab label now routes through the lexicon (t('brain')); the
@@ -158,11 +158,11 @@ describe('<LeftSidebar> shell', () => {
     expect(screen.getByTestId('left-sidebar-tab-overwatch')).toBeTruthy();
   });
 
-  it('snaps a stale ?lst=overwatch back to Queen while the flag is off', async () => {
+  it('snaps a stale ?lst=overwatch back to Mug while the flag is off', async () => {
     H.overwatchOn = false;
     renderRail('?lst=overwatch');
     // The guard effect rewrites lst → queen (the default, so it's omitted from the
-    // URL); assert the rail lands on the Queen tab + panel.
+    // URL); assert the rail lands on the Mug tab + panel.
     await waitFor(() => expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('queen'));
     expect(await screen.findByTestId('panel-queen')).toBeTruthy();
   });

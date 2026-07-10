@@ -1318,7 +1318,12 @@ export function classifySpawnError(message: string | null | undefined): SpawnErr
   return 'other';
 }
 
-interface FailedSpawnRow { error_message: string | null; started_at: string | Date | null }
+interface FailedSpawnRow {
+  error_message: string | null;
+  started_at: string | Date | null;
+  harness_slug?: string | null;
+  workspace_id?: string | null;
+}
 
 /**
  * Pure (audit P-008 + P-005): failed-spawn rows → at most ONE signal, keyed by the
@@ -1341,9 +1346,16 @@ export function failedSpawnSignalsFromRows(
   //    the ceiling after a host restart or hung child; expected housekeeping, not a spawn failure
   //    the loop can fix (EI-6018: 15/29 "other" were `reclaimed`-prefixed boot-reconcile rows,
   //    re-filing this non-actionable bug every cadence).
+  //  • ephemeral-benchmark / test-fixture harness — a torn-down benchmark instance (P-006) OR the
+  //    literal `test-harness` fixture slug used by `agent-chats-messages.test.ts` (EI-8890: a
+  //    not-fully-pinned test-isolation leak occasionally lets a real run of that suite write a
+  //    LIVE row here carrying its hardcoded fixture error string, instead of staying inside its
+  //    mocked chat-spawn-tracking). This is a MITIGATION for `test-harness`, not the underlying
+  //    fix — the leak itself is still unresolved and still writes the row; we just stop it from
+  //    re-triggering this watchdog. Never broadens to any REAL harness slug.
   const failures = rows.filter((r) => {
     const cls = classifySpawnError(r.error_message);
-    return cls !== 'backpressure' && cls !== 'reclaimed';
+    return cls !== 'backpressure' && cls !== 'reclaimed' && !isEphemeralBenchmarkHarnessSlug(r.harness_slug);
   });
   if (failures.length < minCount) return [];
   const byClass = new Map<SpawnErrorClass, { n: number; sample: string | null }>();
@@ -1378,7 +1390,7 @@ export function failedSpawnSignalsFromRows(
 export async function collectFailedSpawnSignals(sql: Sql, opts: CollectOptions = {}): Promise<WatchdogSignal[]> {
   const windowHours = opts.failedSpawnWindowHours ?? 6;
   const rows = await sql<FailedSpawnRow[]>`
-    SELECT error_message, started_at
+    SELECT error_message, started_at, harness_slug, workspace_id
       FROM harness_shared.spawned_agents
      WHERE status = 'failed' AND started_at > now() - make_interval(hours => ${windowHours})
      ORDER BY started_at DESC
@@ -2230,9 +2242,15 @@ export async function defaultPapercuspCollectors(
  * Conservative pattern (only unmistakable throwaway markers) so a real harness slug —
  * papercup, papercup-org, papercup-hive, sheets, … — never matches.
  * (watchdog-embed-resilience-and-dedup-2026-06-17 P-006.)
+ *
+ * `^test-harness$` (EI-8890): the exact fixture slug hardcoded by
+ * `agent-chats-messages.test.ts` (its `SLUG`/`CHAT` constants) — a not-fully-pinned
+ * test-isolation leak occasionally lets a real run of that suite write a LIVE row to
+ * `harness_shared.spawned_agents` with the test's fixture error string. Anchored exact
+ * match only, so it can never shadow a real harness slug that merely contains "test".
  */
 export const EPHEMERAL_BENCHMARK_SLUG_RE =
-  /(^|[^a-z0-9])(xbench|xbq[a-z0-9]{6}|hiveloop|memcap|memrun)|-instance[_-]|_instance[_-]|deleteme|^e2e-imp|^sb-gym|gym-eval|^bench-|smoke-p[0-9]/i;
+  /(^|[^a-z0-9])(xbench|xbq[a-z0-9]{6}|hiveloop|memcap|memrun)|-instance[_-]|_instance[_-]|deleteme|^e2e-imp|^sb-gym|gym-eval|^bench-|smoke-p[0-9]|^test-harness$/i;
 
 export function isEphemeralBenchmarkHarnessSlug(slug: string | null | undefined): boolean {
   return !!slug && EPHEMERAL_BENCHMARK_SLUG_RE.test(slug);

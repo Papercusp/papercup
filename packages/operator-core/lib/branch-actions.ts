@@ -459,6 +459,26 @@ export async function runAction(opts: RunOpts): Promise<RunHandle> {
       publishAction(channelKey, terminalKind, '', {
         runId, exitCode: code, signal, durationMs: final.durationMs, endedAt,
       });
+
+      // Fire the `post_run` backup trigger — /settings/backups renders it as "After
+      // each {pot} run" and it ships ON by default (event_triggers_json), but NOTHING
+      // emitted it, so the checkbox was inert (settings-audit 2026-07-09). This runner
+      // is the operator's run lifecycle: it already fires `pre_destructive` before the
+      // child starts (see above), so its terminal `close` is the symmetric home for the
+      // post-run snapshot. Fires on BOTH outcomes — a failed run mutates the tree just
+      // as a successful one does, and that is precisely the state worth capturing.
+      // Best-effort + swallowed: a backup failure must never change the run's result.
+      try {
+        const [{ triggerSnapshotEvent }, { activeWorkspaceId }] = await Promise.all([
+          import('./backup'),
+          import('./workspace-registry'),
+        ]);
+        await triggerSnapshotEvent(activeWorkspaceId(), 'post_run', {
+          op: 'branch_action_run', harness, branch, name, runId,
+          exitCode: code, status: final.status, durationMs: final.durationMs,
+        }).catch(() => { /* ignore */ });
+      } catch { /* backup module not loaded — fine */ }
+
       resolve(final);
     });
   });

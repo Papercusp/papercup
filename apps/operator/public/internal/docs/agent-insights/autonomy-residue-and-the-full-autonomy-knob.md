@@ -1,9 +1,9 @@
 # The autonomy gate has a RESIDUE the per-category ceilings can't reach — QUEEN_FULL_AUTONOMY is the only lift
 URL: /internal/docs/agent-insights/autonomy-residue-and-the-full-autonomy-knob
 
-Raising all 14 autonomy ceilings to critical does NOT make the Queen fully autonomous — a set of CATEGORICAL hard-gates (authority owner, irreversible, protected-lock, unmapped) plus graduation asks still force gated, independent of the ceiling. That is the residue. And it is TWO surfaces, not one — the DECISION gate (decider.ts, may she auto-decide?) and the IMPLEMENT TCB (improvements/policy.ts, may the loop auto-implement protected-path code?). The single reversible owner flag QUEEN_FULL_AUTONOMY (scope autonomy per-workspace, default OFF, fail-dark) lifts BOTH. Verify the live policy before assuming protected==locked; a new staging flag is not flippable via flags-set until the deploy carries it.
+Raising all 14 autonomy ceilings to critical does NOT make the Mug fully autonomous — a set of CATEGORICAL hard-gates (authority owner, irreversible, protected-lock, unmapped) plus graduation asks still force gated, independent of the ceiling. That is the residue. And it is TWO surfaces, not one — the DECISION gate (decider.ts, may she auto-decide?) and the IMPLEMENT TCB (improvements/policy.ts, may the loop auto-implement protected-path code?). The single reversible owner flag QUEEN_FULL_AUTONOMY (scope autonomy per-workspace, default OFF, fail-dark) lifts BOTH. Verify the live policy before assuming protected==locked; a new staging flag is not flippable via flags-set until the deploy carries it.
 
-When an agent is asked "make the Queen fully autonomous," the obvious move is to
+When an agent is asked "make the Mug fully autonomous," the obvious move is to
 raise every per-category ceiling to `critical` (`autonomy:policy_set`). **That is
 not enough, and believing it is wastes an hour.** Two non-obvious things bite.
 
@@ -25,7 +25,7 @@ to `critical` does nothing to them:
 * a **protected/locked** category → `effectiveCeiling` is `never-auto` regardless
   of the stored `ceiling` (`ceiling-never-auto`).
 * `unmapped-category` → fail-safe `never-auto`.
-* `graduation:*` ratification asks → routed to the owner by the queen.md persona
+* `graduation:*` ratification asks → routed to the owner by the mug.md persona
   (the evidence tracker asking to widen automation).
 
 This set is **the residue**: the actions that stay owner-gated even with every
@@ -44,7 +44,7 @@ ceiling means full autonomy.
 
 Agents conflate these. They are different mechanisms:
 
-* **DECISION gate** — `lib/autonomy/decider.ts`. "May the Queen auto-DECIDE this
+* **DECISION gate** — `lib/autonomy/decider.ts`. "May the Mug auto-DECIDE this
   action (place an item, resolve a question, ratify) without asking the owner?"
   Keyed by the 14-category taxonomy + risk/reversibility/authority.
 * **IMPLEMENT TCB** — `lib/harness/improvements/policy.ts` `classifyImprovement`.
@@ -59,10 +59,10 @@ auto-editing its own safety machinery. The decision gate never touches it.
 
 ## 3. QUEEN\_FULL\_AUTONOMY lifts BOTH — one reversible flag
 
-`FLAGS.QUEEN_FULL_AUTONOMY` (`papercusp-queen-full-autonomy`, default OFF,
+`FLAGS.QUEEN_FULL_AUTONOMY` (`papercusp-mug-full-autonomy`, default OFF,
 fail-dark, scope `autonomy:<ws>` — the SAME key the arming flag uses, so one flip
 covers both surfaces) is the owner's reversible full-autonomy grant
-(queen-autonomy-and-selffeed-fix-2026-06-15 D-006). When ON:
+(mug-autonomy-and-selffeed-fix-2026-06-15 D-006). When ON:
 
 * the **decider** returns `auto` for the entire residue (owner-authority,
   protected, irreversible, above-ceiling, unmapped + graduation:\* asks), recording

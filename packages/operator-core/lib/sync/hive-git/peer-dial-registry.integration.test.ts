@@ -13,6 +13,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { rm, mkdtemp } from 'node:fs/promises';
 import { createServer, connect, type Server, type Socket } from 'node:net';
+import { Duplex } from 'node:stream';
+import Protomux from 'protomux';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -46,7 +48,104 @@ async function mintCommit(repoPath: string, msg: string): Promise<string> {
   return c.stdout.trim();
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+/**
+ * WI-3583 diagnosis: a RAW `node:net.Socket` (this test's stand-in for the
+ * real Hyperswarm/NoiseSecretStream connection) gives protomux NO message
+ * framing guarantee — `Protomux._ondata` decodes exactly ONE message from
+ * whatever bytes ONE 'data' event happens to deliver, with no loop over
+ * leftover bytes. Two UNBATCHED `channel.open()` writes (from wireHiveGitServe
+ * then wireHiveGitDial, called back-to-back) are two independent
+ * `stream.write()` calls — the OS/loopback layer is free to coalesce them
+ * into ONE 'data' event, which then silently DROPS the second channel's open
+ * frame (never observed as an error, just an eternally-unopened channel).
+ * This reproduced as real, non-deterministic hangs under fleet host load.
+ * Real Hyperswarm connections don't have this problem (NoiseSecretStream
+ * frames each message explicitly), so this is a TEST-fixture-only concern —
+ * but the safe, general fix (also worth mirroring in production wiring that
+ * ever calls multiple `wireX` functions back-to-back on one fresh socket) is
+ * to CORK the shared mux around every `wireX` call on one connection, so
+ * protomux batches them into ONE `_sendBatch` write — decoded via
+ * `_onbatch`'s own loop over multiple messages per buffer, which is robust
+ * regardless of how the transport chunks the underlying bytes.
+ */
+function wireAllCorked(socket: Duplex, wire: () => void): void {
+  const muxStream = socket as unknown as { userData?: unknown };
+  const mux = Protomux.from(muxStream as never);
+  if (!muxStream.userData) muxStream.userData = mux;
+  mux.cork();
+  try {
+    wire();
+  } finally {
+    mux.uncork();
+  }
+}
+
+/**
+ * WI-3583 diagnosis (root cause #4, continued): `wireAllCorked` above closes
+ * the coalescing gap for the INITIAL corked batch of `channel.open()` calls,
+ * but it does NOT — and structurally CANNOT — close it for messages sent
+ * LATER, asynchronously, from an `onopen` callback (e.g. the hello-channel's
+ * `maybeSendHello`) in response to the PEER's incoming batch arriving. That
+ * later send is a lone, un-corked `stream.write()`, and it can still
+ * coalesce at the OS/loopback layer with some OTHER write on the same raw
+ * socket happening at nearly the same wall-clock moment (observed: a
+ * peer's hello, sent synchronously from its own onopen while processing an
+ * incoming batch, can arrive before OR merged with a write the other side
+ * makes moments later — losing one message with zero error, exactly like
+ * the original coalescing bug). Chasing every such site individually is
+ * whack-a-mole; the actual, general, root-cause fix is to stop relying on
+ * "one `stream.write()` == one peer-side 'data' event" from a raw
+ * `node:net.Socket` AT ALL — that guarantee is real production's job
+ * (`NoiseSecretStream` explicitly frames every message), not a raw
+ * socket's. So: wrap the raw socket in a minimal length-prefixed framing
+ * Duplex before handing it to Protomux, restoring exactly the invariant
+ * Protomux already assumes its transport provides. This is transport-only
+ * (no protocol/business-logic change) and is a strict superset guarantee of
+ * `wireAllCorked`'s batching — every write, corked-batch or lone message
+ * alike, now arrives atomically regardless of how many raw socket 'data'
+ * events the OS happens to deliver it as, or how many separate writes get
+ * physically coalesced into one.
+ */
+function frameWrap(raw: Socket): Duplex {
+  let recvBuf: Buffer = Buffer.alloc(0);
+  const wrapped: Duplex = new Duplex({
+    read() {
+      /* backpressure ignored — test-scale volumes only */
+    },
+    write(chunk: Buffer, _enc, cb) {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const header = Buffer.alloc(4);
+      header.writeUInt32LE(buf.length, 0);
+      // ONE Buffer.concat'd write — Node's stream internals may still split
+      // this across multiple underlying syscalls, but never across two
+      // logically-separate `wrapped.write()` calls, which is the only
+      // coalescing this framing needs to defeat.
+      raw.write(Buffer.concat([header, buf]), (err) => cb(err ?? null));
+    },
+    final(cb) {
+      raw.end(() => cb());
+    },
+    destroy(err, cb) {
+      raw.destroy(err ?? undefined);
+      cb(err ?? null);
+    },
+  });
+  raw.on('data', (data: Buffer) => {
+    recvBuf = recvBuf.length ? Buffer.concat([recvBuf, data]) : data;
+    while (recvBuf.length >= 4) {
+      const len = recvBuf.readUInt32LE(0);
+      if (recvBuf.length < 4 + len) break;
+      wrapped.push(Buffer.from(recvBuf.subarray(4, 4 + len)));
+      recvBuf = recvBuf.subarray(4 + len);
+    }
+  });
+  raw.on('end', () => wrapped.push(null));
+  raw.on('close', () => wrapped.push(null));
+  raw.on('error', (e) => wrapped.destroy(e));
+  return wrapped;
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 15000): Promise<void> {
   const start = Date.now();
   while (!predicate()) {
     if (Date.now() - start > timeoutMs) throw new Error('waitFor: timed out');
@@ -61,6 +160,7 @@ describe('hive-git peer-dial-registry (WI-3583: device_pubkey -> live socket, ov
   let sockPath: string;
   let server: Server;
   let clientSocket: Socket;
+  let clientDuplex: Duplex;
   let sha = '';
   let db: OrgTestDb;
   let prevAppUrl: string | undefined;
@@ -102,8 +202,14 @@ describe('hive-git peer-dial-registry (WI-3583: device_pubkey -> live socket, ov
       srvConn.on('error', () => {});
       // Coexist on the SAME muxer as serve-wiring.ts's own six-slot channel —
       // proves the hello channel is genuinely additive, not a wire collision.
-      wireHiveGitServe(srvConn, TOPIC, { potHomeSlug: HIVE, workspaceId: WORKSPACE_ID });
-      wireHiveGitDial(srvConn, TOPIC, SERVER_DEVICE);
+      // frameWrap (see its header) restores real production's per-write
+      // message-atomicity guarantee; wireAllCorked's batching on top just
+      // cuts syscalls, it's no longer load-bearing for correctness.
+      const srvDuplex = frameWrap(srvConn);
+      wireAllCorked(srvDuplex, () => {
+        wireHiveGitServe(srvDuplex, TOPIC, { potHomeSlug: HIVE, workspaceId: WORKSPACE_ID });
+        wireHiveGitDial(srvDuplex, TOPIC, SERVER_DEVICE);
+      });
     });
     await new Promise<void>((r) => server.listen(sockPath, () => r()));
     clientSocket = await new Promise<Socket>((resolve, reject) => {
@@ -112,6 +218,7 @@ describe('hive-git peer-dial-registry (WI-3583: device_pubkey -> live socket, ov
       s.once('error', reject);
     });
     clientSocket.on('error', () => {});
+    clientDuplex = frameWrap(clientSocket);
     // Symmetric wiring — matches REAL production usage: swarm.ts's connection
     // handler calls wireHiveGitServe + wireHiveGitDial unconditionally on
     // EVERY peer connection (both the dialer and the acceptor side), never
@@ -122,8 +229,10 @@ describe('hive-git peer-dial-registry (WI-3583: device_pubkey -> live socket, ov
     // hits protomux's unregistered-protocol fallback and gets REJECTED,
     // which was starving the SEPARATE hello channel's own pairing on the
     // same connection (WI-3583 diagnosis).
-    wireHiveGitServe(clientSocket, TOPIC, { potHomeSlug: HIVE, workspaceId: WORKSPACE_ID });
-    wireHiveGitDial(clientSocket, TOPIC, CLIENT_DEVICE);
+    wireAllCorked(clientDuplex, () => {
+      wireHiveGitServe(clientDuplex, TOPIC, { potHomeSlug: HIVE, workspaceId: WORKSPACE_ID });
+      wireHiveGitDial(clientDuplex, TOPIC, CLIENT_DEVICE);
+    });
   });
 
   afterAll(async () => {

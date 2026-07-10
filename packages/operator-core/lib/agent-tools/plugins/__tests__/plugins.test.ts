@@ -54,7 +54,8 @@ describe('plugins:invoke_action', () => {
       invokePluginAction,
       firePluginLifecycle: vi.fn(),
     }));
-    vi.doMock('../../../harness-registry', () => ({
+    vi.doMock('../../../harness-registry', async (importOriginal) => ({
+      ...(await importOriginal<Record<string, unknown>>()),
       loadHarnessRegistry: vi.fn(async () => ({
         projects: [{ slug: 'sheets', path: '/tmp/sheets' }],
       })),
@@ -85,7 +86,8 @@ describe('plugins:invoke_action', () => {
       invokePluginAction,
       firePluginLifecycle: vi.fn(),
     }));
-    vi.doMock('../../../harness-registry', () => ({
+    vi.doMock('../../../harness-registry', async (importOriginal) => ({
+      ...(await importOriginal<Record<string, unknown>>()),
       loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
     }));
     const { default: tool } = await import('../invoke_action');
@@ -104,7 +106,10 @@ describe('plugins:invoke_action', () => {
       invokePluginAction: vi.fn(),
       firePluginLifecycle: vi.fn(),
     }));
-    vi.doMock('../../../harness-registry', () => ({ loadHarnessRegistry: vi.fn() }));
+    vi.doMock('../../../harness-registry', async (importOriginal) => ({
+      ...(await importOriginal<Record<string, unknown>>()),
+      loadHarnessRegistry: vi.fn(),
+    }));
     const { default: tool } = await import('../invoke_action');
     expect(tool.agentRoles).toEqual(['architect', 'operator']);
   });
@@ -119,7 +124,8 @@ describe('plugins:fire_event', () => {
       firePluginLifecycle: vi.fn(),
     }));
     vi.doMock('../../../events/engine', () => ({ emitSystemEvent }));
-    vi.doMock('../../../harness-registry', () => ({
+    vi.doMock('../../../harness-registry', async (importOriginal) => ({
+      ...(await importOriginal<Record<string, unknown>>()),
       loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
     }));
     const { default: tool } = await import('../fire_event');
@@ -139,7 +145,8 @@ describe('plugins:fire_event', () => {
       invokePluginAction: vi.fn(),
       firePluginLifecycle,
     }));
-    vi.doMock('../../../harness-registry', () => ({
+    vi.doMock('../../../harness-registry', async (importOriginal) => ({
+      ...(await importOriginal<Record<string, unknown>>()),
       loadHarnessRegistry: vi.fn(async () => ({
         projects: [{ slug: 'sheets', path: '/tmp/sheets' }],
       })),

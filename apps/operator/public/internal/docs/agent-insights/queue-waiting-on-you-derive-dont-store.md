@@ -10,15 +10,15 @@ The Queue's "**N waiting on you**" headline (`QueueSummary.waitingOnYou` =
 was **\~40**. The number even grew over time. It was not backlog — it was a
 counting failure with a structural root cause.
 
-Root cause: the placement watchdog (`hive/placement-watchdog.ts`) opens a
+Root cause: the placement watchdog (`pot/placement-watchdog.ts`) opens a
 durable **blocker** escalation for every cursed placement ("Cursed placement:
 F-X failed 301× — stopped auto-re-placing"), from owner
-`system:hive-placement-watchdog`, **with no options**. The fleet curses
+`system:pot-placement-watchdog`, **with no options**. The fleet curses
 thousands of placements; \~7218 such escalations were opened and only \~135 ever
 resolved. The attention reader (`agent-tools/plans/attention.ts`, source #2)
 mapped **every open blocker escalation to the `decision` tier** — no cap, no
 sender filter, no rollup — so all \~7083 open ones counted as "waiting on you".
-The same was true of `green-checkpoint`/bee operational escalations.
+The same was true of `green-checkpoint`/cup operational escalations.
 
 ## Why it's the wrong shape
 
@@ -62,5 +62,5 @@ source's own verb (`plans:set-status`, `coord:resolve`, `conversations:answer`,
   relying on any agent remembering to resolve it. Prompts will not hold.
 
 Counterpart fleet-health signal worth its own look: \~7000 cursed placements is a
-real work-item-quality problem (ill-specified items / wedging bees), independent
+real work-item-quality problem (ill-specified items / wedging cups), independent
 of the queue.

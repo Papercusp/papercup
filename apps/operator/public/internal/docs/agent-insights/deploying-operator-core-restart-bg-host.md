@@ -1,11 +1,11 @@
 # Deploying operator-core code: restart papercup-bg-host (not :3070); blueprint prompts are live-from-source
 URL: /internal/docs/agent-insights/deploying-operator-core-restart-bg-host
 
-Where the autonomous hive loop actually runs (the bg-host DBOS ticker, not the :3070 operator), why dev:restart alone won't deploy a routine/sweep change, how to restart + tune bg-host, and why a blueprint prompt change is live with NO restart.
+Where the autonomous pot loop actually runs (the bg-host DBOS ticker, not the :3070 operator), why dev:restart alone won't deploy a routine/sweep change, how to restart + tune bg-host, and why a blueprint prompt change is live with NO restart.
 
 ## What
 
-The autonomous "hive loop" scheduled machinery — the DBOS `routinesTick` and the
+The autonomous "pot loop" scheduled machinery — the DBOS `routinesTick` and the
 sweeps it runs (`scoutDraftReviewSweep`, `pausedHiveRecoverySweep`, git-sync,
 scout-cycle, wake-brain) — runs in the **`papercup-bg-host`** systemd `--user`
 service ("dedicated background host — DBOS routines/git-sync ticker"), **NOT** the
@@ -32,7 +32,7 @@ The `dev:restart` TOOL only restarts `papercup-dev-api.service` (`:3070`)
   `promptHarnessRoot()` (`libs/papercusp/packages/harness/paths.ts`) redirects to
   `PAPERCUSP_INTEGRATION_ROOT` (the live units point it at the working tree) and
   `resolvePromptFiles` reads it per wake. So a change to e.g.
-  `blueprints/base/prompts/queen.base.md` is live on the **next wake with NO restart
+  `blueprints/base/prompts/mug.base.md` is live on the **next wake with NO restart
   / NO deploy**. Only operator-core *code* needs a process restart.
 
 ## How

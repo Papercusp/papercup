@@ -71,7 +71,7 @@ export default defineTool({
       return { content: [{ type: 'text', text: JSON.stringify({ config: await readRateLimitConfig() }) }] };
     }
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('operator:rate_limit_config set requires operator, architect, or queen role');
+      throw new Error('operator:rate_limit_config set requires operator, architect, or mug role');
     }
     if (
       args.maxSimultaneousAgents === undefined &&

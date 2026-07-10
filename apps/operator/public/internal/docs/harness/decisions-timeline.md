@@ -22,9 +22,9 @@ verb *does* is declared by the blueprint, not hardcoded.
 The director spine is the built-in **`coding-factory`** blueprint
 (`spine.decider: director`, the strict scoper → architect → worker →
 validator loop this page describes). The `coding` id no longer points
-here: the 2026-06-18 HIVE rename repurposed it into the HIVE/Queen operator
-blueprint (`kind: hive`, `spine.decider: queen`), so a reader looking for
-the director spine under `coding` will find the Queen instead. The durable
+here: the 2026-06-18 POT rename repurposed it into the POT/Mug operator
+blueprint (`kind: pot`, `spine.decider: mug`), so a reader looking for
+the director spine under `coding` will find the Mug instead. The durable
 workflow loads `coding-factory` as its behavior-preserving default spine.
 
 The full verb vocabulary (including legacy/global verbs) is still classified

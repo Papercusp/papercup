@@ -39,7 +39,7 @@ describe('coord:handoff_config', () => {
     expect(b).toEqual({ handoffTtlMs: null, default: 43_200_000 });
   });
   it('is operator-authority gated', async () => {
-    await expect(tool.handler({ op: 'set', handoffTtlMs: 3_600_000 } as never, { role: 'cup' } as never)).rejects.toThrow(/operator, architect, or queen/i);
+    await expect(tool.handler({ op: 'set', handoffTtlMs: 3_600_000 } as never, { role: 'cup' } as never)).rejects.toThrow(/operator, architect, or mug/i);
     expect(writeM).not.toHaveBeenCalled();
   });
   it('applies a valid TTL and verifies', async () => {

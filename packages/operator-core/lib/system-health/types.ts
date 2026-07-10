@@ -472,7 +472,7 @@ export interface OverwatchPanelHealth {
   watchdogFires24h: number;
   /**
    * Monitor-the-monitor (hive-loop-supervision 2026-06-21): the emission freshness of
-   * the every-wake hive-coordination-health scorecard, checked SINCE the Overwatch's
+   * the every-wake pot-coordination-health scorecard, checked SINCE the Overwatch's
    * ACTUAL last wake. null when not applicable (paused / never-woke / flag-off / read
    * error). `fresh` = a COMPLETE scorecard landed since the last wake.
    */

@@ -1,7 +1,7 @@
-# Rubric method: hive-coordination-health (the 14-criteria scorecard)
+# Rubric method: hive-coordination-health (the 15-criteria scorecard)
 URL: /internal/docs/agent-insights/hive-coordination-health
 
-The investigation method behind the `hive-coordination-health` rubric — the model, how-to-investigate (live DB signals), and drift markers for each of the 14 per-characteristic criteria that Overwatch (and any agent) grades a structured observation against. This MDX is the rubric's `method_ref`; the structured part (criteria keys, rating scale, drift markers) lives in the `rubrics` store.
+The investigation method behind the `hive-coordination-health` rubric — the model, how-to-investigate (live DB signals), and drift markers for each of the 15 per-characteristic criteria that Overwatch (and any agent) grades a structured observation against. This MDX is the rubric's `method_ref`; the structured part (criteria keys, rating scale, drift markers) lives in the `rubrics` store.
 
 ## What this is
 
@@ -12,12 +12,13 @@ ratings + mandatory evidence), with free-text observations still first-class.
 
 This rubric generalizes the owner's one-off 13-question hive-coordination scorecard
 (`hive-coordination-test-loop-2026-06-20` D-001) into a standing capability, since extended to
-**14 criteria** (the founding 13 + `scheduler-usage`, added by
-`hybrid-bee-scheduler-work-stealing-2026-06-22` P-004). The **Overwatch** role MUST emit a
-structured scorecard against it **every turn** (owner requirement #1): rate each of the 14
+**15 criteria** (the founding 13 + `scheduler-usage`, added by
+`hybrid-bee-scheduler-work-stealing-2026-06-22` P-004, + `context-burn`, added with the
+loop-wake context-diet work — EI-7624). The **Overwatch** role MUST emit a
+structured scorecard against it **every turn** (owner requirement #1): rate each of the 15
 criteria + cite evidence, in addition to its free-form observations.
 
-This page is the rubric's **`method_ref`** — the long-form METHOD. The structured part (the 14
+This page is the rubric's **`method_ref`** — the long-form METHOD. The structured part (the 15
 criteria `key`s, per-criterion `model`/`method`/`driftMarkers`, the default rating scale) lives
 in the `rubrics` store (`rubrics:get { rubric_id: 'hive-coordination-health' }`). Author this
 prose; grade against the store.
@@ -63,7 +64,7 @@ These trip every first-time hive auditor. Apply them to EVERY criterion below.
    not evidence of health. Report stage-by-stage numbers + WHICH workspace/hive, never "no
    alarms / looks fine".
 
-## The 14 criteria
+## The 15 criteria
 
 Each criterion lists its `key` (the stable id graded against), its MODEL (how it is supposed
 to work), the METHOD (live signals to investigate — source of truth is code + DB, never
@@ -164,7 +165,7 @@ docs/tool-summaries), and the DRIFT MARKERS (what a big drift looks like).
   (rate each criterion + cite evidence), in addition to free-form.
 * **Method.** Read recent overwatch observations/escalations — specific + self-aware (catching
   stale panels, conflations, over-fires)? Verify the structured scorecard is emitted EVERY turn
-  against `hive-coordination-health` (`rubricRef` set, all 14 criteria rated, evidence
+  against `hive-coordination-health` (`rubricRef` set, all 15 criteria rated, evidence
   non-empty on each). A missing scorecard is an owner-#1 violation even if the free-form is
   good.
 * **Drift markers.** Free-form only, no structured scorecard (owner #1 violation); a scorecard
@@ -253,6 +254,26 @@ to continuously verify the scheduler is USED, not merely built.
   drift: `model_fit` being neutral (descoped). Low evidence (no spec-driven hive running) is
   `unknown`, not `broken`.
 
+### 15. `context-burn` — context burn and compaction cadence
+
+Added with the loop-wake context-diet work (EI-7624) once the wake-template diet shipped. The
+wake-template scaffold itself is unit-ratcheted (`loop-fire.test.ts` P-008 byte budgets); this
+criterion watches the LIVE deliveries, catching content-side bloat the unit ratchet cannot see.
+
+* **Model.** The coordination layer's own context injections stay on the post-diet budget:
+  mean coord inbox-wake delivery at or under \~3000 chars, compaction cadence sane, and
+  compactions never degrade work — ZERO post-compaction error markers (hallucinated-schema
+  errors right after a session's context was rebuilt).
+* **Method.** ACTIVITY GATE first (EI-7624): `loop:soak-report` `contextBurn.loopWakes == 0`
+  in the window means rate `unknown` with `idle:` evidence (no loops ran). Then read
+  `contextBurn`: `meanWakeChars` / `estMeanWakeTokens` against the `WAKE_MEAN_CHAR_BUDGET`
+  (3000); `requestedCompactions` + `compactionsPerSession` for cadence;
+  `postCompactionErrorMarkers` MUST be 0.
+* **Drift markers.** Mean wake size drifting back toward full-boilerplate (3000+ chars — the
+  pre-diet behavior burned \~200k tokens/session); `postCompactionErrorMarkers` greater than 0
+  (a compacted session immediately erring on hallucinated schema); `compactionsPerSession`
+  spiking above its baseline.
+
 ## How to grade (the observation shape)
 
 An agent grading this rubric files a structured observation (via
@@ -280,3 +301,14 @@ reason as evidence. Never invent a rating to fill the scorecard.
 * `rubric-driven-observations-2026-06-20` — the plan (D-001 model, D-002 scope + owner #1, D-003 the schema contract).
 * `hive-coordination-test-loop-2026-06-20` D-001 — the owner's original 13-question scorecard this rubric crystallizes.
 * `rubrics:get { rubric_id: 'hive-coordination-health' }` — the structured rubric (criteria keys, rating scale, drift markers).
+
+## Maintaining this pointer (for future rubric authors)
+
+**This file and its served twin must stay byte-identical.** This METHOD.md and
+`apps/operator-docs/src/content/docs/agent-insights/hive-coordination-health.mdx`
+(frontmatter aside) are hand-synced with no generation link — a grader reads the *mdx*
+via `docs:search`/`docs:get`, not this file directly, so an edit to only one silently
+stales the served copy (the su-agent-behavior rubric hit exactly this: WI-3456 →
+WI-3479, EI-8795). **Edit BOTH files together, in the same change.**
+`npm run lint:rubric-method-ref-parity` (CI-gating) fails loudly on drift — run it
+locally before you consider a METHOD.md edit done.

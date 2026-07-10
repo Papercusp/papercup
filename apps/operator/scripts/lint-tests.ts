@@ -187,8 +187,13 @@ function globMatches(g: CompiledGlob, relPath: string): boolean {
 
 // Transient build temp dirs carry a pid suffix (e.g. `sidecar.tmp.4001496`, created
 // while the Tauri sidecar bundles); they leak into the FS walk as phantom orphans.
-// Match by pattern since the suffix is dynamic.
-const COVERAGE_IGNORE_RE = /\.tmp\.\d+$/;
+// Match by pattern since the suffix is dynamic. ALSO skip every hidden (dot-)dir
+// wholesale: no canonical test home is under one, and agent scratch dirs at the
+// repo root (e.g. a `.wi3388-cargo-target/` CARGO_TARGET_DIR whose debug/ tree
+// carries sidecar-template *.test.ts COPIES) otherwise surface as phantom
+// orphans — this subsumes the .git/.next/.papercusp/.vitest-tmp/… entries above
+// and kills the whole per-scratch-dir whack-a-mole class.
+const COVERAGE_IGNORE_RE = /^\.|\.tmp\.\d+$/;
 
 /** Recursively list every file under `dir` whose basename matches `match`,
  * POSIX-relative, skipping ignore dirs. Defaults to canonical TS/JS tests. */

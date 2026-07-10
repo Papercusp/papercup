@@ -8,6 +8,7 @@
  * so this panel never diverges from the live coordination roster.
  */
 import { useSyncQuery } from '@papercusp/sync';
+import { Table, type TableColumn } from '../harness/Table';
 
 interface FleetStatusRow {
   ownerId: string;
@@ -59,30 +60,28 @@ export default function FleetStatusPanel() {
   }
 
   return (
-    <table className="pc-fleet-status">
-      <caption>{rows.length} live agent{rows.length === 1 ? '' : 's'}</caption>
-      <thead>
-        <tr>
-          <th scope="col">Agent</th>
-          <th scope="col">Role</th>
-          <th scope="col">Fleet</th>
-          <th scope="col">Current claim</th>
-          <th scope="col">State</th>
-          <th scope="col">Last activity</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row) => (
-          <tr key={row.ownerId}>
-            <td>{row.label}</td>
-            <td>{row.role ?? '—'}</td>
-            <td>{row.fleetSlug ? `${row.fleetSlug}${row.fleetRole ? ` (${row.fleetRole})` : ''}` : '—'}</td>
-            <td>{row.planSlug ?? row.intent ?? '—'}</td>
-            <td>{row.sessionState ?? '—'}</td>
-            <td>{formatLastActive(row.lastActiveSecAgo)}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <Table
+      className="pc-fleet-status"
+      caption={`${rows.length} live agent${rows.length === 1 ? '' : 's'}`}
+      columns={COLUMNS}
+      rows={rows}
+      getRowKey={(row) => row.ownerId}
+    />
   );
 }
+
+/** Column defs for the fleet-status table (shared design-primitives Table —
+ *  WI-3537, replacing the hand-rolled native table markup that redded the
+ *  design-primitives lint). Module-scope: pure renders, no component state. */
+const COLUMNS: TableColumn<FleetStatusRow>[] = [
+  { key: 'agent', header: 'Agent', render: (row) => row.label },
+  { key: 'role', header: 'Role', render: (row) => row.role ?? '—' },
+  {
+    key: 'fleet',
+    header: 'Fleet',
+    render: (row) => (row.fleetSlug ? `${row.fleetSlug}${row.fleetRole ? ` (${row.fleetRole})` : ''}` : '—'),
+  },
+  { key: 'claim', header: 'Current claim', render: (row) => row.planSlug ?? row.intent ?? '—' },
+  { key: 'state', header: 'State', render: (row) => row.sessionState ?? '—' },
+  { key: 'last-activity', header: 'Last activity', render: (row) => formatLastActive(row.lastActiveSecAgo) },
+];

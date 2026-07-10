@@ -70,7 +70,7 @@ export default defineTool({
 
     // writes — operator-authority only.
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('prompt:role_override set/clear requires operator, architect, or queen role');
+      throw new Error('prompt:role_override set/clear requires operator, architect, or mug role');
     }
 
     if (args.op === 'set') {

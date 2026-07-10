@@ -41,9 +41,12 @@ function stubFetches(opts: { workspace: Record<string, unknown>; user: Record<st
 
 beforeEach(() => {
   stubFetches({
-    // wakeWordKeyword is overridden by the user; voiceMaxSpokenWords is not.
-    workspace: { wakeWordKeyword: 'jarvis', voiceMaxSpokenWords: 60 },
-    user: { wakeWordKeyword: 'computer' },
+    // porcupineKeyword is overridden by the user; voiceMaxSpokenWords is not.
+    // (This was `wakeWordKeyword` until settings-audit 2026-07-09 — a phantom key
+    // that exists in no VoicePrefs schema, which this test had enshrined as its
+    // canonical example of an overridden key.)
+    workspace: { porcupineKeyword: 'Jarvis', voiceMaxSpokenWords: 60 },
+    user: { porcupineKeyword: 'Computer' },
   });
 });
 afterEach(() => {
@@ -55,15 +58,15 @@ afterEach(() => {
 describe('UserSettingsPage override surface (shared OverridableSetting)', () => {
   it('an overridden row shows the override badge, the workspace hint, and a Clear reset', async () => {
     render(<UserSettingsPage />);
-    await waitFor(() => expect(screen.getByText('Wake word')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Wake word (Porcupine)')).toBeTruthy());
 
     // The shared primitive renders the label inside .pc-override; find that row.
-    const label = screen.getByText('Wake word');
+    const label = screen.getByText('Wake word (Porcupine)');
     const row = label.closest('.pc-override') as HTMLElement;
     expect(row).toBeTruthy();
     // Overridden → "override" badge (not "default") and a Clear reset button.
     expect(within(row).getByText('override')).toBeTruthy();
-    const clear = within(row).getByRole('button', { name: /Reset Wake word to default/i });
+    const clear = within(row).getByRole('button', { name: /Reset Wake word \(Porcupine\) to default/i });
     expect(clear.textContent).toContain('Clear');
     // The workspace-value hint persists next to the row.
     expect(screen.getByText(/workspace:/)).toBeTruthy();
@@ -79,15 +82,15 @@ describe('UserSettingsPage override surface (shared OverridableSetting)', () => 
 
   it('clicking Clear fires the DELETE for that override key', async () => {
     render(<UserSettingsPage />);
-    await waitFor(() => expect(screen.getByText('Wake word')).toBeTruthy());
-    const row = screen.getByText('Wake word').closest('.pc-override') as HTMLElement;
-    fireEvent.click(within(row).getByRole('button', { name: /Reset Wake word to default/i }));
+    await waitFor(() => expect(screen.getByText('Wake word (Porcupine)')).toBeTruthy());
+    const row = screen.getByText('Wake word (Porcupine)').closest('.pc-override') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: /Reset Wake word \(Porcupine\) to default/i }));
     await waitFor(() =>
       expect(
         (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.some(
           ([u, init]) =>
             String(u).includes('/api/user/preferences') &&
-            String(u).includes('wakeWordKeyword') &&
+            String(u).includes('porcupineKeyword') &&
             (init as RequestInit | undefined)?.method === 'DELETE',
         ),
       ).toBe(true),

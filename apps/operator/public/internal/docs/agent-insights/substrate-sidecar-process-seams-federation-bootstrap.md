@@ -1,7 +1,7 @@
 # Substrate sidecar process seams: why federation bootstrap resolves fail there (and the deterministic fix)
 URL: /internal/docs/agent-insights/substrate-sidecar-process-seams-federation-bootstrap
 
-The substrate sidecar is a SEPARATE process where PG-backed default seams and process-local singletons (org-PG, operator-state reads, the live hive-directory instance) can be unconfigured or empty — and every failure is a silently-caught fail-closed null. The owner-bootstrap admit binding (hivePubkey → ownerDevicePubkey) depended on exactly such state, making owner→joiner federation directory-timing LUCK. Fix pattern: thread boot-resolved values into per-frame paths + carry verified bindings in the REGISTRY (the one store that resolves in every process).
+The substrate sidecar is a SEPARATE process where PG-backed default seams and process-local singletons (org-PG, operator-state reads, the live pot-directory instance) can be unconfigured or empty — and every failure is a silently-caught fail-closed null. The owner-bootstrap admit binding (hivePubkey → ownerDevicePubkey) depended on exactly such state, making owner→joiner federation directory-timing LUCK. Fix pattern: thread boot-resolved values into per-frame paths + carry verified bindings in the REGISTRY (the one store that resolves in every process).
 
 ## The trap in one sentence
 
@@ -14,15 +14,15 @@ like "no data": **fail-closed, silent, and unreproducible in-process.**
 ## How it manifested (2026-07-01, Brief-3 live rig — a full day of INCOMPLETEs)
 
 The joiner's **owner-bootstrap admit** must resolve
-`(hivePubkey → ownerDevicePubkey)` before it will admit the hive OWNER's log
+`(hivePubkey → ownerDevicePubkey)` before it will admit the pot OWNER's log
 (`resolveJoinedHiveOwnerDevice` in `boot.ts`; `loadHiveOwnerDevicePubkey` in
-`hive-membership-store.ts`). Until that resolves, the joiner **rejects every
+`pot-membership-store.ts`). Until that resolves, the joiner **rejects every
 owner announce** (`[A-003] owner-admit …: ownerDevice=<null> match=false`) — no
 roster, no content, nothing federates.
 
 The binding's two legs were BOTH process-local state:
 
-1. **The live in-process hive directory** (`getHiveDirectory().listDiscoveredHives`)
+1. **The live in-process pot directory** (`getHiveDirectory().listDiscoveredHives`)
    — a per-process singleton. The OPERATOR process's directory heard the owner's
    announce (and wrote the PG cache row); the SIDECAR's instance had not.
 2. **The PG offline cache** (`readOperatorState('hive_directory_cache', ws)`) —
@@ -36,7 +36,7 @@ in-process matrix could never catch this — in one process, the directory
 singleton is shared, so the binding always resolves.
 
 The same trap, second face: the fire-and-forget `admitAnnouncedPeerAsOwner`
-call re-resolved the harness's hive-home **per inbound announce** through
+call re-resolved the harness's pot-home **per inbound announce** through
 registry+PG defaults. In the sidecar/test contexts those defaults threw
 (`getOrgPg().sql` undefined → "reading 'unsafe'"; `readOperatorState` → "sql is
 not a function"), and the catch turned every announce into a silent admit skip
@@ -45,7 +45,7 @@ not a function"), and the catch turned every announce into a silent admit skip
 ## The fix pattern (two halves, both landed 2026-07-02)
 
 1. **Thread boot-resolved values; never re-resolve per frame.** The boot already
-   knows its hive-home (`hiveHomeProjectionSlug ?? ownHiveHomeSlug`, kept
+   knows its pot-home (`hiveHomeProjectionSlug ?? ownHiveHomeSlug`, kept
    current across rekey rebinds). `boot.ts` now passes it into
    `admitAnnouncedPeerAsOwner` via `deps.hiveHomeSlugForHarness` — deterministic,
    free, and independent of any process-local seam.

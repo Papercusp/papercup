@@ -5,7 +5,7 @@ URL: /internal/docs/agent-insights/locating-a-live-session-by-owner-id
 
 ## The recurring friction
 
-Given a coordination `ownerId` (`su-…`, a fleet bee's `s-…` spawn id, `pus-…` for
+Given a coordination `ownerId` (`su-…`, a fleet cup's `s-…` spawn id, `pus-…` for
 a power-user) — or a session you *just* launched via `capability:terminal` /
 `fleet:launch-on-plan` — you need one of: its **live OS pid**, its **session
 directory** (to tail logs / find the socket), or its **transcript jsonl** (to
@@ -104,9 +104,9 @@ retention), query the two tables that link `ownerId` → session:
 * **`harness_shared.adv_sessions`** — interactive SU / console sessions.
   `coord_owner_id` → `session_id` (what `claude --resume <id>` takes) and
   `omp_thread_id` for omp. This is the durable owner↔native-session link.
-* **`harness_shared.spawned_agents`** — fleet bees. `session_owner` (the
+* **`harness_shared.spawned_agents`** — fleet cups. `session_owner` (the
   ownerId) → `spawn_id` + `session_id`. Also match `spawn_id = ownerId`
-  directly — a bee's own ownerId often *is* its spawn id.
+  directly — a cup's own ownerId often *is* its spawn id.
 * **`harness_shared.tool_invocations`** — per-turn telemetry, `coord_owner_id`
   (migration 427) → `spawn_id`. `GROUP BY spawn_id` with `MIN(invoked_at)`
   pins when a fresh boot's first tool call landed (useful for "did the newly-
@@ -122,7 +122,7 @@ plan\_slug, cwd, started/ended) **and** the `tool_invocations` activity rollup
 Gotcha: `tool_invocations` retains only \~14 days and `coord_owner_id` is
 **partially backfilled** — a legacy row from before migration 427 has it NULL.
 Interactive-SU history doesn't need the backfill at all (resolved live from
-`adv_sessions`); only fleet-bee activity older than the column's introduction
+`adv_sessions`); only fleet-cup activity older than the column's introduction
 is unrecoverable this way.
 
 ## Route 4: the session-directory / transcript walk

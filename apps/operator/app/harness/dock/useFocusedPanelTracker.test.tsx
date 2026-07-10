@@ -14,14 +14,23 @@ import { useFocusedPanelTracker } from './useFocusedPanelTracker';
 import { bindDockApi } from './dock-actions';
 
 // nuqs requires a Next.js adapter context. Provide a minimal mock at
-// module-load time so useQueryState resolves to a no-op.
-vi.mock('nuqs', () => ({
-  useQueryState: () => [
-    '',
-    (() => Promise.resolve(null)) as unknown as (val: string, options?: unknown) => Promise<unknown>,
-  ],
-  parseAsString: { withDefault: (_: string) => ({}) },
-}));
+// module-load time so useQueryState resolves to a no-op. Dynamic import
+// inside the factory (not a static top-level import) — a static import
+// referenced here collides with this file's own pre-mock import of
+// useFocusedPanelTracker (which itself imports 'nuqs'), producing a
+// "Cannot access '__vi_import_N__' before initialization" TDZ error from
+// vitest's mock-hoisting transform.
+vi.mock('nuqs', async () => {
+  const { nuqsParsers } = await import('@papercusp/test-config/nuqs-mock');
+  return {
+    ...nuqsParsers,
+    useQueryState: () => [
+      '',
+      (() => Promise.resolve(null)) as unknown as (val: string, options?: unknown) => Promise<unknown>,
+    ],
+    parseAsString: { withDefault: (_: string) => ({}) },
+  };
+});
 
 interface FakeApi {
   activeGroup: { activePanel: { id: string; params: { harnessSlug?: string } } | null } | null;

@@ -12,7 +12,7 @@
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { loadHarnessRegistry } from '../harness-registry';
+import { loadHarnessRegistry, isEphemeralForeignProject } from '../harness-registry';
 import { harnessDir } from '../harness-core';
 import { groupByHive, isRepoLessHiveHome, type HiveGroup, type HiveGroupProject } from './hive-groups';
 import { activeWorkspaceId } from '../workspace-registry';
@@ -103,7 +103,13 @@ export async function buildProjectsLitePayload(
   // parent_slug is a scaffold-time harness contract artifact in
   // .papercusp/config.json (NOT a migrated HarnessConfig field —
   // deprecate-harness-config-json-2026-06-06 D-005); the file persists for it.
-  const allProjects = await Promise.all(reg.projects.map(async (p): Promise<ProjectsLiteEntry> => {
+  // WI-1937: an ephemeral P-104 foreign-clone registry row is not a real
+  // harness a human registered — never surface it to the UI/GUI selectors or
+  // the Hive grouping. (A slug-scoped `.find()` lookup elsewhere is UNaffected
+  // — this filter is enumeration-only, per the ProjectEntry.ephemeral_foreign
+  // doc comment.)
+  const registeredProjects = reg.projects.filter((p) => !isEphemeralForeignProject(p));
+  const allProjects = await Promise.all(registeredProjects.map(async (p): Promise<ProjectsLiteEntry> => {
     const hDir = harnessDir(p);
     const cfgPath = join(p.path, '.papercusp', 'config.json');
     let parentSlug: string | null = null;

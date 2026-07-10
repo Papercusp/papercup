@@ -27,6 +27,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getTestPg } from '@papercusp/test-config';
@@ -64,9 +65,19 @@ let rootSql: postgres.Sql;
 let bootClient: postgres.Sql;
 let dbUrl: string;
 
+// EI-8888-adjacent (2026-07-09 host-load root-cause finding): every mkdtemp()
+// below lands under the fleet-wide shared TMPDIR (/tmp/pcv — pinned by
+// libs/test-config/src/vitest-config.ts) and was NEVER cleaned up. At fleet
+// scale that leaked 700k+ stale directories into one dir, degrading every
+// mkdir/readdir/stat that touches it (including the testcontainer start-lock
+// under the same tree) and contributing to spurious integration-test
+// timeouts fleet-wide. Track + remove every dir this file creates.
+const createdSqlDirs: string[] = [];
+
 /** Write a temp sql dir with the given { filename: ddl } files. */
 function makeSqlDir(files: Record<string, string>): string {
   const dir = mkdtempSync(join(tmpdir(), 'a1-boot-'));
+  createdSqlDirs.push(dir);
   for (const [name, ddl] of Object.entries(files)) writeFileSync(join(dir, name), ddl);
   return dir;
 }
@@ -94,6 +105,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await bootClient?.end({ timeout: 5 });
   await rootSql?.end({ timeout: 5 });
+  await Promise.all(createdSqlDirs.map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
 describe('boot-apply runner mechanics (§A1)', () => {

@@ -7,7 +7,7 @@ The φ+SWIM eviction lib's decideEviction treats all-relays-unreachable as confi
 
 Wiring `@papercusp/failure-detector` (φ-accrual + SWIM `indirectProbe` +
 `decideEviction`) into the lock authority so a crashed authority is evicted before
-the 90s staleness window (`shared-hive-hardening-2026-06-13` P-016,
+the 90s staleness window (`shared-pot-hardening-2026-06-13` P-016,
 `packages/operator-core/lib/authority/peer-eviction.ts`). Two non-obvious traps,
 each of which would silently break correctness if wired the naive way.
 

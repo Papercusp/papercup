@@ -22,7 +22,7 @@ the door by the question you are actually asking:
 | -------------------------------------------------------------------------------- | ----------------------- | --------------------------------------------------- |
 | Is agent X **alive right now**? (live / parked / ended / recorded, wakeable?)    | STATE — *now*           | `coord:presence`                                    |
 | **Who holds which work-item / plan-item** right now? (claims, orphaned, stalled) | STATE — *now*           | `fleet:assignments`                                 |
-| One-glance **fleet health** (wake mode, bees in flight, paused governors, tips)  | STATE — *now, digest*   | `coord:glance`                                      |
+| One-glance **fleet health** (wake mode, cups in flight, paused governors, tips)  | STATE — *now, digest*   | `coord:glance`                                      |
 | **Who was *ever* in this fleet / topic / plan**, and **what was said**?          | HISTORY — *ever*        | `coord:catch-up` (member) / `coord:feed` (firehose) |
 | **What did I miss** while I was asleep, or before I joined?                      | HISTORY — *ever*        | `coord:catch-up` with an `audience`                 |
 | My own identity + fleet membership                                               | STATE — *self*          | `coord:whoami`                                      |
@@ -82,7 +82,7 @@ coord:feed { q: "green gate", since_ts: "2026-07-01T00:00:00Z" }
 
 ## Membership is the join key — and it must outlive death
 
-Both history doors resolve an audience to its member set, so fleet/hive **membership**
+Both history doors resolve an audience to its member set, so fleet/pot **membership**
 is the load-bearing fact: it must be recorded durably and *never nulled on agent
 death*, or the audience cannot be reconstructed once the fleet disperses. Making
 membership an **append-only** fact (the state tables project from it and are freely
@@ -98,7 +98,7 @@ Today the STATE axis is spread across `coord:presence` / `fleet:assignments` /
 `coord:glance` — "which of the five do I call?" is itself the friction. The unification
 (P-001, **not yet built** — additive, ships after the append-only membership fix) is a
 single `coord:roster` with an explicit `scope` + `view`: `view=live` (in-a-turn),
-`view=members` (fleet/hive membership), `view=claims` (who-on-what-item),
+`view=members` (fleet/pot membership), `view=claims` (who-on-what-item),
 `view=history` (who-was-ever-here). The existing tools become thin aliases. Until it
 exists, use the table above; when you see `coord:roster` in your toolset, prefer it.
 

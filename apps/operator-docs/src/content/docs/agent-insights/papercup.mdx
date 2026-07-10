@@ -1,6 +1,6 @@
 ---
 title: The Papercup — the always-on voice of the pot
-description: "One role that watches the fleet AND narrates it: always-on, voice-first, short replies, status + suggestions (never deep planning). How to enable it (the PAPERCUP flag + the humanFacingRole='papercup' voice pref repoints the live converse brain), the read-context sources it walks in with (curation:state-of-pot / curation:feed / Overwatch compute-brief / fleet:assignments — never waits on the Mug), the handoff-to-Mug flow (<handoff_to_queen> → high-priority work_item + nudge, tier-gated, hindsight landing report), the live-override settings tab, and the in-progress server-side proactive path (P-018-022)."
+description: "One role that watches the fleet AND narrates it: always-on, voice-first, short replies, status + suggestions (never deep planning). How to enable it (the PAPERCUP flag + the humanFacingRole='papercup' voice pref repoints the live converse brain), the read-context sources it walks in with (curation:state-of-pot / curation:feed / Overwatch compute-brief / fleet:assignments — never waits on the Mug), the handoff-to-Mug flow (<handoff_to_mug> → high-priority work_item + nudge, tier-gated, hindsight landing report), the live-override settings tab, and the in-progress server-side proactive path (P-018-022)."
 discovered: 2026-06-21
 tags: [papercup, operator, voice, converse, read-context, handoff-to-mug, overrides, proactive, papercup-herald-2026-06-21]
 status: active
@@ -95,7 +95,7 @@ EI-2032 auto-capture kill switch).
 ## Handoff to the Mug
 
 When the user says "do it," the Papercup does **not** spawn a cup. It emits a
-`<handoff_to_queen>` tag (parsed in `operator-converse-tags.ts`, dispatched by
+`<handoff_to_mug>` tag (parsed in `operator-converse-tags.ts`, dispatched by
 `operator-papercup-handoff.ts`), which (D-003):
 
 1. files a **high-priority `work_item`** tagged `user-requested`

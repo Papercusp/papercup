@@ -13,7 +13,9 @@ import type { LearningPackCandidate } from '@papercusp/operator-core/lib/learnin
 
 const nuqsState: Record<string, unknown> = { lcand: '' };
 const setLcand = vi.fn();
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   useQueryState: (key: string) => [nuqsState[key], setLcand],
   parseAsString: { withDefault: () => ({}) },
 }));

@@ -47,7 +47,7 @@ helper resolves — only `git` itself was missing.
 * The wizard (`BootstrapFinishGate` / `DogfoodBootstrapBanner`) shows the install
   hint and does **not** auto-retry a git-missing error (it's a user-action error,
   not transient — distinct from the network-timeout auto-retry path).
-* `bootstrap-papercusp-hive.ts` now logs the real clone failure (code + git
+* `bootstrap-papercusp-pot.ts` now logs the real clone failure (code + git
   stderr) — the diagnostic that was missing cost a full live debugging round.
 
 ## The robust fix (deferred — needs a Mac build box)

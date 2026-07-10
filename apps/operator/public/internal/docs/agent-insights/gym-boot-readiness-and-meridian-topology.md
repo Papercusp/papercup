@@ -107,9 +107,9 @@ box egressing DIRECT to `api.anthropic.com` — there the only failure mode is a
 missing/expired credential, and `api.anthropic.com` is effectively always
 reachable.
 
-**The hive inference-gateway (`hive-inference-gateway-2026-06-09`) reintroduced a
+**The pot inference-gateway (`pot-inference-gateway-2026-06-09`) reintroduced a
 reachability dimension** — the exact *mirror* of trap 1. When the
-`INFERENCE_GATEWAY` flag is ON, the gym judge/proposer, llm-testing, and bee
+`INFERENCE_GATEWAY` flag is ON, the gym judge/proposer, llm-testing, and cup
 spawns no longer hit `api.anthropic.com`; `operator-spawn.ts` + `autoloop-cycle.ts`
 point `ANTHROPIC_BASE_URL` / `PAPERCUSP_ANTHROPIC_URL` at a **localhost pacing
 gateway** (`127.0.0.1:8788`). That gateway is a real process that can die while a

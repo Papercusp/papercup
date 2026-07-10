@@ -71,7 +71,7 @@ remote peer writes op → replicated → projected into local PG
 
 Replicated content is untrusted input — it may inform and propose, but it must never autonomously drive code execution on the local machine without local-human admission.
 
-Two refinements landed in G2 after this memo (see `shared-hive-trust-admission-2026-06-14`):
+Two refinements landed in G2 after this memo (see `shared-pot-trust-admission-2026-06-14`):
 
 * **Every chokepoint, not one read.** The original gate lived on the single feature-frontier read; the fleet/blackboard distribution layer (`claimNextWorkItem`, `claimWorkItem`, `claimReplicaSlotLocal`, `fleet:place_batch`/`gatherFrontier`) grew up around that read and never inherited it — so un-screened remote work was claimable. The admission predicate (`isAutoPickable` / `autoPickableWhereSql`) is now the single source of truth applied at **every** claim/place chokepoint, so a future distribution path can't silently re-open the hole. The live DBOS frontier read carries the same inline `origin`/`audit_verdict` gate as a fail-safe.
 * **A verified-id trust fast-path — still not a forgeable one.** Admission also auto-admits a remote, un-admitted feature when its `author_pubkey` resolves to a `github_user_id` in the owner's workspace-scoped local trust list. Crucially, that id is resolved **only** via a verified, non-revoked device attestation (`resolveVerifiedAuthorGithubId`) — a self-claimed GitHub id never qualifies, and the trust check is workspace-scoped (no cross-workspace leak). So the "never the forgeable GitHub id" rule still holds: the new path keys on a verified-and-attested id, alongside the auditor verdict.

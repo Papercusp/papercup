@@ -21,7 +21,9 @@ import type { ReactNode } from 'react';
 // ── nuqs: per-key store with spy setters captured per render. ──
 const nuqsState: Record<string, unknown> = { evalView: 'external', evalSuite: null, evalRun: null };
 const nuqsSetters: Record<string, ReturnType<typeof vi.fn>> = {};
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   useQueryState: (key: string) => {
     const set = vi.fn(async (v: unknown) => {
       nuqsState[key] = typeof v === 'function' ? (v as (p: unknown) => unknown)(nuqsState[key]) : v;

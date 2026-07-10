@@ -5,7 +5,7 @@ When a desktop E2E must CREATE state but you can't touch the live fleet, stand u
 
 ## What
 
-Driving the desktop UI for **mutation** tests (create a hive / plan / work-item,
+Driving the desktop UI for **mutation** tests (create a pot / plan / work-item,
 run a worker chat, fault-inject) against the live `:3270` session operator is
 risky (hits the owner's live fleet) and often blocked — MCP writes route to a
 *different* operator/store than the webview reads (\[\[../testing/agent-e2e]];
@@ -77,11 +77,11 @@ way to E2E the onboarding flow at all.
 
 ## What works / what doesn't on this stack
 
-* **Works end-to-end:** onboarding wizard; hive create (UI "Add a Hive → New
-  local directory" → DB `hives` row + git-init'd folder + "✓ Hive created");
+* **Works end-to-end:** onboarding wizard; pot create (UI "Add a Pot → New
+  local directory" → DB `pots` row + git-init'd folder + "✓ Pot created");
   API-fault error-state (`POST /api/admin/fault-injection {pathPrefix,method,status,times}`
   → UI degrades without crashing → `DELETE` to clear). Verify every mutation by
-  querying the iso DB directly (`SELECT count(*) FROM harness_shared.hives`).
+  querying the iso DB directly (`SELECT count(*) FROM harness_shared.pots`).
 * **Still blocked even here:** a real **worker-chat dispatch** (needs a
   pipeline-generated work-item + the agent-spawn machinery this minimal operator
   runs with OFF); **plan create** (the "New plan" button doesn't activate via
@@ -89,8 +89,8 @@ way to E2E the onboarding flow at all.
   a clickable Save (the React-controlled-input wall, agent-e2e §15.5).
 * **Driving:** set React-19 controlled `<input>` values with the native-setter +
   `input`/`change` events (the `__reactProps$.onChange({target:{value}})` path
-  did NOT stick for the hive form). Synthetic Radix pointer sequences activate
-  *most* buttons (hive Create) but not all (New plan).
+  did NOT stick for the pot form). Synthetic Radix pointer sequences activate
+  *most* buttons (pot Create) but not all (New plan).
 
 ## Teardown (leave nothing)
 
@@ -98,7 +98,7 @@ way to E2E the onboarding flow at all.
 fuser -k 3370/tcp                                  # operator
 kill -TERM -- -<tauri-pgid>; kill <Xvfb :95 pid>   # webview + display
 psql "$ADMIN" -c 'DROP DATABASE IF EXISTS papercup_e2e_r5 WITH (FORCE)'
-rm -rf /tmp/e2e-*                                   # logs, schema dump, hive folders
+rm -rf /tmp/e2e-*                                   # logs, schema dump, pot folders
 ```
 
 Target temp infra by **recorded PID / process-group**, never `pkill -f <pattern>`

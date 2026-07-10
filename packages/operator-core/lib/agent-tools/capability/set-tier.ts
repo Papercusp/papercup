@@ -62,7 +62,7 @@ export default defineTool({
     }
 
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('capability_tier:set requires operator, architect, or queen role');
+      throw new Error('capability_tier:set requires operator, architect, or mug role');
     }
 
     const { capability } = args;

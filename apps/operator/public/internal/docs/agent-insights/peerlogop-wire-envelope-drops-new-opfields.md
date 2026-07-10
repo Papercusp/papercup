@@ -1,13 +1,13 @@
-# A new OpEnvelope field silently drops on the wire unless PeerLogOp carries it — the hive-content epoch-drop
+# A new OpEnvelope field silently drops on the wire unless PeerLogOp carries it — the pot-content epoch-drop
 URL: /internal/docs/agent-insights/peerlogop-wire-envelope-drops-new-opfields
 
-Encrypted shared-hive content (work_items/features) silently dropped on every joiner with ZERO decrypt-gate trace. Root cause: OpEnvelope.epoch existed but the on-wire PeerLogOp never carried an `epoch` field, so the rekey stamp was dropped at the send-append, the receive toEnvelope, AND the snapshot path → the op reached the gate with epoch==null → ciphertext treated as plaintext → dropped. The PeerLogOp compat `Pick` only guards field REMOVAL, so TS never flagged it. Same class as the pre-P-010 hlc-drop.
+Encrypted shared-pot content (work_items/features) silently dropped on every joiner with ZERO decrypt-gate trace. Root cause: OpEnvelope.epoch existed but the on-wire PeerLogOp never carried an `epoch` field, so the rekey stamp was dropped at the send-append, the receive toEnvelope, AND the snapshot path → the op reached the gate with epoch==null → ciphertext treated as plaintext → dropped. The PeerLogOp compat `Pick` only guards field REMOVAL, so TS never flagged it. Same class as the pre-P-010 hlc-drop.
 
 ## Symptom
 
-On the live 2-machine fed rig (owner fed-a → joiner fed-b), a shared hive's
+On the live 2-machine fed rig (owner fed-a → joiner fed-b), a shared pot's
 **roster + epoch keys federated** owner→joiner (origin=remote) but its **content**
-(`harness_features_consolidated` / `engineer_issues`, written under the hive-home
+(`harness_features_consolidated` / `engineer_issues`, written under the pot-home
 harness) **never materialized on the joiner**. Confirmed a DROP, not lag: an op
 created *after* the joiner held the epoch key also never landed, and the key was
 correctly wrapped for the joiner's device. The decrypt-gate emitted **zero**
@@ -15,15 +15,15 @@ correctly wrapped for the joiner's device. The decrypt-gate emitted **zero**
 never reached `applyImpl` at all.
 
 The unit + integration suites were **green** throughout, because they federate
-**plaintext** content (the `papercusp-hive-rekey` flag is off in tests, so no
+**plaintext** content (the `papercusp-pot-rekey` flag is off in tests, so no
 encryption ⇒ no `epoch` stamp ⇒ no drop). The bug only manifests with the flag ON.
 
 ## Root cause — a new `OpEnvelope` field that never reached the wire
 
-The read-plane re-key (shared-hive-rekey-2026-06-19) added `epoch?: number` to
+The read-plane re-key (shared-pot-rekey-2026-06-19) added `epoch?: number` to
 `OpEnvelope` (op-envelope-types.ts): the outbox drain encrypts a selected content
 op's `value` and stamps `op.epoch`; the apply-side decrypt-gate
-(`hive-epoch-op-gate.ts`) reads `op.epoch` to resolve the wrapped key + AAD.
+(`pot-epoch-op-gate.ts`) reads `op.epoch` to resolve the wrapped key + AAD.
 
 But the **on-wire op** is `PeerLogOp` (peer-log.ts) — a *separate* interface that is
 what actually gets appended to and read from each single-writer hypercore log.
@@ -73,7 +73,7 @@ A second WI-808 fix landed after the seam-threading above: a new `epoch_gate_see
 trace event fires at the very TOP of the decrypt gate — before the `epoch == null`
 passthrough — for ANY op that **looks encrypted** (either `op.epoch != null` OR
 `isRekeyValue(op.value)` i.e. value has the `{__rekey: <base64>}` envelope). Wired via
-`EpochDecryptGateDeps.onTrace` → `recordBootEvent` in `hive-epoch-boot-deps.ts`.
+`EpochDecryptGateDeps.onTrace` → `recordBootEvent` in `pot-epoch-boot-deps.ts`.
 
 **Why:** the verdict-only traces (`epoch_defer` / `epoch_decrypt_fail` / `epoch_applied`)
 left a diagnostic gap: if a content op never reached the gate at all — dropped upstream
@@ -87,7 +87,7 @@ from the original wire-drop bug (the symptom in the `## Symptom` section above).
 * `epoch_gate_seen` with `epoch=NULL` + `rekeyVal=true` → the wire-drop bug is back:
   the epoch stamp was lost at a seam (smoking gun for the original regression).
 
-Tests added in `hive-epoch-op-gate.test.ts`: verifies `epoch_gate_seen` fires for an
+Tests added in `pot-epoch-op-gate.test.ts`: verifies `epoch_gate_seen` fires for an
 epoch-stamped op AND for a ciphertext value with `epoch==null` (the regression case).
 
 ## The general lesson

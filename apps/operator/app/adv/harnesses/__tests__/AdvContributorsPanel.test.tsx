@@ -25,7 +25,9 @@ vi.mock('@papercusp/sync', () => ({
 }));
 
 // nuqs: useQueryState → a plain useState seeded with the parser default.
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   useQueryState: (_key: string, opts?: { defaultValue?: unknown }) => {
     const [v, setV] = React.useState(opts?.defaultValue ?? null);
     return [v, async (x: unknown) => setV(x)];

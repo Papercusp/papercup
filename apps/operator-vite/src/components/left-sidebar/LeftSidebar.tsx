@@ -23,6 +23,7 @@ import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 // WebKitGTK desktop must retry, not escalate to the fatal boundary (WI-2902).
 import { lazyWithRetry as lazy } from '@papercusp/operator-core/lib/lazy-with-retry';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
+import { Tooltip } from '@/app/harness/Tooltip';
 import { useQueryStates, parseAsBoolean, parseAsStringLiteral } from 'nuqs';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { usePathname } from '@/lib/router-compat/navigation';
@@ -34,21 +35,21 @@ import { FLAGS } from '@papercusp/flags';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
 // Always-on operator-voice controls, pinned to the TOP of the rail (above the
 // tabs) so they show on every tab, not just Sentinel (owner request 2026-06-22).
-import SentinelVoiceBar from '../voice-bar/SentinelVoiceBar';
+import PapercupVoiceBar from '../voice-bar/PapercupVoiceBar';
 
 const SwarmTab = lazy(() => import('./SwarmTab'));
 const VoiceTab = lazy(() => import('./VoiceTab'));
 const PotsTab = lazy(() => import('./PotsTab'));
 // 🔑 Accounts — the owner's session-now account override (which Max accounts the fleet
-// may use right now), beside Queen as a sibling owner-steering lever (accounts-pool-tab
+// may use right now), beside Mug as a sibling owner-steering lever (accounts-pool-tab
 // P-005; promoted to the LEFTMOST sidebar tab by owner request 2026-06-17).
 const AccountsTab = lazy(() => import('./AccountsTab'));
-// 👑 Queen steering — the owner's focus/pause controls for the autonomous Queen.
+// 👑 Mug steering — the owner's focus/pause controls for the autonomous Mug.
 // Moved here from the /adv top tab strip as an owner-steering tab (owner
 // review 2026-06-15; queen-steering-panel-2026-06-15 B-04).
 const MugTab = lazy(() => import('./MugTab'));
 // 👁 Overwatch — the autonomous supervisor's actionable panel (control + the
-// anomaly→action list). Moved here from the /adv strip next to Queen (owner ask
+// anomaly→action list). Moved here from the /adv strip next to Mug (owner ask
 // 2026-06-15; system-health-tab P-008) — its duplicated health grid dropped (the
 // Health tab owns the panels). Flag-gated (OVERWATCH); hidden when the role is dark.
 const OverwatchTab = lazy(() => import('./OverwatchTab'));
@@ -119,7 +120,7 @@ export default function LeftSidebar() {
   // lsb=false survived). A single setRail() write is atomic.
   const [{ lsb: open, lst: tab }, setRail] = useQueryStates({
     lsb: parseAsBoolean.withDefault(true),
-    // Queen is the DEFAULT-OPEN tab (owner's call 2026-06-15) — the steering
+    // Mug is the DEFAULT-OPEN tab (owner's call 2026-06-15) — the steering
     // panel is the first thing the owner reaches in the Colony sidebar.
     lst: parseAsStringLiteral(TAB_IDS).withDefault('queen'),
   });
@@ -129,7 +130,7 @@ export default function LeftSidebar() {
   // Overwatch is flag-gated (OVERWATCH, default OFF until proven live, D-009):
   // hide its sidebar tab while the role is dark. The nuqs enum still accepts
   // 'overwatch' (deep-link / ui:dispatch), so snap a stale ?lst=overwatch back
-  // to Queen when the flag is off (mirrors AdvShell's health/overwatch guard).
+  // to Mug when the flag is off (mirrors AdvShell's health/overwatch guard).
   const overwatchOn = useFlag(FLAGS.OVERWATCH);
   // Papercup is flag-gated too (PAPERCUP, default OFF until the role
   // is live) — same hide-tab + stale-?lst snap-back treatment as overwatch.
@@ -270,28 +271,34 @@ export default function LeftSidebar() {
                   bar's header now; the old empty header row was removed (owner
                   2026-06-22) and the active-tab title heading before it (the
                   highlighted tab already shows which view you're on). */}
-              <SentinelVoiceBar onCollapse={() => setOpen(false)} />
+              <PapercupVoiceBar onCollapse={() => setOpen(false)} />
 
               <div className="pclsb__tabs" role="tablist">
                 {visibleTabs.map((x) => {
                   const Icon = x.icon;
                   const isActive = x.id === tab;
                   return (
-                    <button
-                      key={x.id}
-                      type="button"
-                      role="tab"
-                      aria-selected={isActive}
-                      className={`pclsb__tab pclsb__tab--${x.id}${isActive ? ' is-active' : ''}`}
-                      data-testid={`left-sidebar-tab-${x.id}`}
-                      title={x.tip(t)}
-                      onClick={() => setTab(x.id)}
-                    >
-                      <span className="pclsb__tab-icon">
-                        <Icon size={14} aria-hidden="true" />
-                      </span>
-                      <span className="pclsb__tab-label">{x.label(t)}</span>
-                    </button>
+                    // The per-tab tip is an owner ask (2026-06-23) and is PRESERVED
+                    // verbatim — only its delivery moved from a native `title=` to the
+                    // shared Tooltip primitive (design-simplification P-009), which the
+                    // design lint requires. Radix's Provider/Root render no DOM and the
+                    // trigger renders the button itself, so `role="tablist" > role="tab"`
+                    // is unchanged.
+                    <Tooltip key={x.id} label={x.tip(t)} side="right">
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={isActive}
+                        className={`pclsb__tab pclsb__tab--${x.id}${isActive ? ' is-active' : ''}`}
+                        data-testid={`left-sidebar-tab-${x.id}`}
+                        onClick={() => setTab(x.id)}
+                      >
+                        <span className="pclsb__tab-icon">
+                          <Icon size={14} aria-hidden="true" />
+                        </span>
+                        <span className="pclsb__tab-label">{x.label(t)}</span>
+                      </button>
+                    </Tooltip>
                   );
                 })}
               </div>

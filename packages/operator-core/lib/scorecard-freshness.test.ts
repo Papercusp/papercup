@@ -17,7 +17,7 @@ import type { ScorecardRow, ListScorecardsFilter } from './scorecards';
 function row(p: Partial<ScorecardRow> & { issueId: string; createdAt: string }): ScorecardRow {
   return {
     createdBy: 's-overwatch',
-    rubricRef: 'hive-coordination-health',
+    rubricRef: 'pot-coordination-health',
     ratings: {},
     nKeys: 0,
     missingKeys: [],
@@ -34,7 +34,7 @@ const withRows = (rows: ScorecardRow[]) => ({ listScorecards: async () => rows }
 describe('checkScorecardFreshness — P-014b emission-freshness', () => {
   it('FRESH: a complete scorecard landed in-window (the mandate is met)', async () => {
     const r = await checkScorecardFreshness(
-      { rubricRef: 'hive-coordination-health', since: SINCE },
+      { rubricRef: 'pot-coordination-health', since: SINCE },
       withRows([
         row({ issueId: 'EI-1', createdAt: '2026-06-20T13:00:00.000Z', nKeys: 13, missingKeys: [], rubricResolved: true }),
       ]),
@@ -48,7 +48,7 @@ describe('checkScorecardFreshness — P-014b emission-freshness', () => {
 
   it('PARTIAL-ONLY: scorecards landed but ALL incomplete — the silent truncation becomes visible', async () => {
     const r = await checkScorecardFreshness(
-      { rubricRef: 'hive-coordination-health', since: SINCE },
+      { rubricRef: 'pot-coordination-health', since: SINCE },
       withRows([
         // newest-first
         row({ issueId: 'EI-2', createdAt: '2026-06-20T13:30:00.000Z', nKeys: 3, missingKeys: ['wake', 'federation'], rubricResolved: true }),
@@ -67,7 +67,7 @@ describe('checkScorecardFreshness — P-014b emission-freshness', () => {
 
   it('STALE: nothing landed in-window — the silent emission gap becomes visible', async () => {
     const r = await checkScorecardFreshness(
-      { rubricRef: 'hive-coordination-health', since: SINCE },
+      { rubricRef: 'pot-coordination-health', since: SINCE },
       withRows([]),
     );
     expect(r.status).toBe('stale');
@@ -81,7 +81,7 @@ describe('checkScorecardFreshness — P-014b emission-freshness', () => {
 
   it('FRESH picks the newest COMPLETE even when a later partial follows an earlier complete', async () => {
     const r = await checkScorecardFreshness(
-      { rubricRef: 'hive-coordination-health', since: SINCE },
+      { rubricRef: 'pot-coordination-health', since: SINCE },
       withRows([
         row({ issueId: 'EI-5', createdAt: '2026-06-20T14:00:00.000Z', nKeys: 2, missingKeys: ['wake'], rubricResolved: true }), // newest, partial
         row({ issueId: 'EI-6', createdAt: '2026-06-20T13:00:00.000Z', nKeys: 13, missingKeys: [], rubricResolved: true }), // older, complete
@@ -125,13 +125,13 @@ describe('checkScorecardFreshness — P-014b emission-freshness', () => {
         f?.includeSynthesized ? rows : rows.filter((r) => !r.synthesized),
     };
     const byDefault = await checkScorecardFreshness(
-      { rubricRef: 'hive-coordination-health', since: SINCE },
+      { rubricRef: 'pot-coordination-health', since: SINCE },
       seam,
     );
     expect(byDefault.status).toBe('stale'); // the floor does NOT satisfy the agent mandate
 
     const including = await checkScorecardFreshness(
-      { rubricRef: 'hive-coordination-health', since: SINCE, includeSynthesized: true },
+      { rubricRef: 'pot-coordination-health', since: SINCE, includeSynthesized: true },
       seam,
     );
     expect(including.status).toBe('fresh'); // counted only when explicitly asked
@@ -139,7 +139,7 @@ describe('checkScorecardFreshness — P-014b emission-freshness', () => {
 
   it('defaults `since` to a lookback window when omitted', async () => {
     const r = await checkScorecardFreshness(
-      { rubricRef: 'hive-coordination-health', lookbackMs: 60_000 },
+      { rubricRef: 'pot-coordination-health', lookbackMs: 60_000 },
       withRows([]),
     );
     expect(typeof r.since).toBe('string');

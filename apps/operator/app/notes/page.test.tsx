@@ -9,9 +9,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import React from 'react';
 
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', async () => {
   const withDefault = (defaultValue: unknown) => ({ defaultValue });
   return {
+    ...nuqsParsers,
     parseAsString: { withDefault },
     useQueryState: (_key: string, parser?: { defaultValue?: unknown }) =>
       React.useState<unknown>(parser && 'defaultValue' in parser ? parser.defaultValue : null),

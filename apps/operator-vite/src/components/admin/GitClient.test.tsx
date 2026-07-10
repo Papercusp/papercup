@@ -11,7 +11,9 @@ import { cleanup, render, screen } from '@testing-library/react';
 // nuqs: useQueryState needs the adapter context — stub it. The 'window' state reads '24h';
 // the per-hive 'hive' selection reads from `selectedHive` (default '' → nothing expanded).
 let selectedHive = '';
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   useQueryState: (key: string) => (key === 'hive' ? [selectedHive, vi.fn()] : ['24h', vi.fn()]),
   parseAsStringEnum: () => ({ withDefault: () => ({}) }),
   parseAsString: { withDefault: () => ({}) },

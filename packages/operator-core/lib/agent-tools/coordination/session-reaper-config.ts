@@ -52,7 +52,7 @@ export default defineTool({
     }
 
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('coord:session_reaper_config set requires operator, architect, or queen role');
+      throw new Error('coord:session_reaper_config set requires operator, architect, or mug role');
     }
 
     // dryRun: preview the would-reap count at the proposed grace — mark nothing (de-risk the SIGKILL change).

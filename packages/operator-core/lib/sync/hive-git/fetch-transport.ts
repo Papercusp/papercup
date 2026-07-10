@@ -28,7 +28,7 @@
  * treats a failed fetch as "try again next announce").
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -189,6 +189,10 @@ export function fetchOverDuplex(
     let settled = false;
     let timedOut = false;
     let tmpDir: string | null = null;
+    // Tracked so the OUTER ceiling timer (below) can actually kill whatever's
+    // in flight — a child process, or nothing yet if we're still stuck in
+    // mkdtemp/server.listen setup.
+    let child: ChildProcessWithoutNullStreams | null = null;
     // allowHalfOpen:true so a FIN on either leg does NOT destroy the socket
     // before its buffered bytes flush — the git pack is delimited in-band, so a
     // premature destroy truncates it ("bad pack header"). Default end:true pipes
@@ -209,9 +213,25 @@ export function fetchOverDuplex(
       void cleanup();
       resolve({ code, stderr, timedOut });
     };
+    // BUG FIXED (WI-3490/P-201): this ceiling used to only SET `timedOut` —
+    // it never actually killed anything or resolved the promise. So a stall
+    // BEFORE `child` exists (mkdtemp / server.listen never resolving — e.g. a
+    // wedged fs call) had NO ceiling at all: the inner `killTimer` below only
+    // starts once `spawn()` has already run, so it can't cover that window.
+    // A hostile/wedged peer or a slow host could then pin this open forever
+    // (bounded only by an external caller's own timeout, if any — vitest's
+    // global 90s test timeout is what surfaced this in serve-wiring's
+    // integration tests, not a real fix). Now this outer timer is the actual
+    // enforced ceiling: kill the child if one was spawned, and always finish.
     const timer = setTimeout(() => {
       timedOut = true;
       stderr += `\nfetch timed out after ${opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS}ms`;
+      try {
+        child?.kill('SIGKILL');
+      } catch {
+        /* ignore */
+      }
+      finish(-1);
     }, opts.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS);
     timer.unref?.();
 
@@ -243,7 +263,7 @@ export function fetchOverDuplex(
         const cleanEnv = { ...process.env } as Record<string, string | undefined>;
         delete cleanEnv.NODE_OPTIONS;
         delete cleanEnv.TSX_TSCONFIG_PATH;
-        const child = spawn(
+        child = spawn(
           'git',
           [
             '-c',
@@ -257,9 +277,14 @@ export function fetchOverDuplex(
           ],
           { cwd: localRepoPath, env: { ...cleanEnv, GIT_PROTOCOL: 'version=2', LC_ALL: 'C', LANG: 'C' } },
         );
+        // Fires faster than the outer ceiling timer would in the common case
+        // (same deadline, but this one only has to wait on the child, not
+        // re-derive that nothing else settled it) — the outer `timer` above
+        // is the actual backstop now, so this being redundant on the happy
+        // path is fine; `finish` is idempotent either way.
         const killTimer = setTimeout(() => {
           try {
-            child.kill('SIGKILL');
+            child?.kill('SIGKILL');
           } catch {
             /* ignore */
           }

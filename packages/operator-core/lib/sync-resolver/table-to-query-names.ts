@@ -259,11 +259,11 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'workItems.byHarness',
     'fleetAssignments.byHarness',
     'advRoster.list',
-    // sidebar.fleetBees reads the SAME fleet_assignment view as
+    // sidebar.fleetCups reads the SAME fleet_assignment view as
     // fleetAssignments.byHarness, so a spawn/claim/presence flip must push the
     // Swarm sidebar's "Bees" cells too (else they stay stale until next
     // interaction). Bridged wherever fleetAssignments.byHarness is.
-    'sidebar.fleetBees',
+    'sidebar.fleetCups',
     // hiveRoster.byHive (presence-v2 P-006 fold) reads spawned_agents for the
     // Tier-1 model tier; an outcome/model flip re-fires it too. byHarness (P-007,
     // the MemberWorkPanel repoint) is the same fold keyed by harness→hive.
@@ -289,7 +289,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // rail was a 30s poll before; SSE push replaces it).
   'harness_shared.coord_presence': [
     'fleetAssignments.byHarness',
-    'sidebar.fleetBees', // same fleet_assignment view — keep the Swarm sidebar live
+    'sidebar.fleetCups', // same fleet_assignment view — keep the Swarm sidebar live
     'network.board',
     'dev.coordPresence',
     'agentDetail.byOwner',
@@ -314,8 +314,8 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // also fires notifySyncInvalidate explicitly; this covers a FEDERATED steering
   // write arriving from a peer Swarm (the keys federate via the capture trigger).
   'harness_shared.hive_settings': ['hive.steering'],
-  'harness_shared.feature_claims': ['fleetAssignments.byHarness', 'sidebar.fleetBees', 'network.board', 'hiveRoster.byHive', 'hiveRoster.byHarness', 'scheduler.running'],
-  'harness_shared.claim_audit': ['fleetAssignments.byHarness', 'sidebar.fleetBees', 'hiveRoster.byHive', 'hiveRoster.byHarness', 'scheduler.running'],
+  'harness_shared.feature_claims': ['fleetAssignments.byHarness', 'sidebar.fleetCups', 'network.board', 'hiveRoster.byHive', 'hiveRoster.byHarness', 'scheduler.running'],
+  'harness_shared.claim_audit': ['fleetAssignments.byHarness', 'sidebar.fleetCups', 'hiveRoster.byHive', 'hiveRoster.byHarness', 'scheduler.running'],
   // bee_claim_specs backs the per-run claim-spec specId@revision shown by the
   // live-execution view (scheduler.running) — a Queen set_claim_spec re-steer bumps the
   // revision a running bee shows (hybrid-bee-scheduler P-001 / D-007).

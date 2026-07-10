@@ -20,9 +20,11 @@ vi.mock('./useConfirmDialog', () => ({
   useConfirmDialog: () => ({ confirm: async () => confirmState.answer, element: null }),
 }));
 
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', async () => {
   const React = await import('react');
   return {
+    ...nuqsParsers,
     useQueryState: (_k: string, parser?: { __default?: unknown }) => React.useState(parser?.__default ?? false),
     parseAsBoolean: { withDefault: (d: unknown) => ({ __default: d }) },
   };

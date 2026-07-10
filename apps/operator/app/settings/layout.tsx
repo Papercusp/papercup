@@ -10,7 +10,6 @@ import { useLexicon } from '@/lib/useLexicon';
 
 const SETTINGS_PATH_FLAGS: Record<string, FlagKey> = {
   '/settings/publishing': FLAGS.CLOUDFLARE_PUBLISH,
-  '/settings/oracle':     FLAGS.TESTING,
   '/settings/prompt-studio': FLAGS.PROMPT_STUDIO,
   '/settings/autonomy':   FLAGS.MUG_AUTONOMY_SETTINGS,
   '/settings/storage':    FLAGS.STORAGE_SETTINGS,
@@ -35,7 +34,10 @@ interface SettingsGroup {
 // ONBOARDING_AGENT_FIRST), and the wizard survives as the fallback — reachable
 // here and at /setup?force=1. Keep it listed (it is the no-pty / browser escape
 // hatch), but not as the headline "Get started" entry.
-const SETTINGS_GROUPS: readonly SettingsGroup[] = [
+// Exported for the WI-3449 regression test (settings-audit-nav.test.ts) — a
+// plain-data unit test asserting the removed /settings/oracle +
+// /settings/omp-integration nav entries never resurface.
+export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
   {
     label: 'Identity & devices',
     links: [
@@ -48,7 +50,6 @@ const SETTINGS_GROUPS: readonly SettingsGroup[] = [
   {
     label: 'Assistants',
     links: [
-      { href: '/settings/oracle', label: 'Oracle assistant', keywords: ['oracle', 'assistant', 'prompt', 'memory'] },
       { href: '/settings/operator', label: 'Papercup agent', keywords: ['operator', 'agent', 'prompt', 'budget', 'preferences', 'approvals'] },
       { href: '/settings/autonomy', label: 'Autonomy', keywords: ['autonomy', 'policy', 'ceiling', 'graduated', 'mug', 'auto', 'auto-decide', 'risk', 'protected', 'lock', 'escalation'] },
       { href: '/settings/pot-customization', label: 'Pot customization', keywords: ['pot', 'hive', 'customization', 'override', 'blueprint', 'prompt', 'persona', 'role', 'scout', 'config', 'queen', 'brain', 'bee', 'cup', 'overwatch', 'su', 'tuning', 'per-hive', 'per-pot', 'domain'] },
@@ -77,8 +78,12 @@ const SETTINGS_GROUPS: readonly SettingsGroup[] = [
       { href: '/settings/setup-wizard', label: 'Setup Wizard (classic)', keywords: ['setup', 'wizard', 'onboarding', 'first run', 'install', 'permissions', 'workspace', 'keys', 'login', 'pair', 'fallback', 'classic', 'gui'], advanced: true },
       { href: '/settings/user/memory', label: 'Memory', keywords: ['memory', 'mem0', 'recall', 'forget', 'embeddings', 'history', 'identity', 'preference', 'harness'], advanced: true },
       { href: '/settings/agent', label: 'AI backend', keywords: ['agent backend', 'claude', 'omp', 'models', 'roles', 'command'], advanced: true },
-      { href: '/settings/omp', label: 'Oh-My-Pi (omp)', keywords: ['omp', 'oh my pi', 'web search', 'tavily', 'perplexity', 'brave', 'jina', 'kimi', 'exa', 'kagi', 'searxng', 'parallel', 'synthetic', 'hindsight', 'memory', 'thinking', 'compaction'], advanced: true },
-      { href: '/settings/omp-integration', label: 'OMP integration', keywords: ['omp', 'engineer collaborator', 'omp-su', 'wrapper', 'mcp', 'integration'], advanced: true },
+      { href: '/settings/omp', label: 'Oh-My-Pi (omp)', keywords: ['omp', 'oh my pi', 'web search', 'tavily', 'perplexity', 'brave', 'jina', 'kimi', 'exa', 'kagi', 'searxng', 'parallel', 'synthetic', 'hindsight', 'memory', 'thinking', 'compaction', 'engineer collaborator', 'omp-su', 'wrapper', 'mcp', 'integration'], advanced: true },
+      // Plugins + Plugin tools were functional but UNREACHABLE — on disk, with working
+      // operator-vite route stubs, yet absent from this nav and linked only from
+      // plugins/page.tsx's own self-link (settings-audit 2026-07-09, owner: add to nav).
+      { href: '/settings/plugins', label: 'Plugins', keywords: ['plugin', 'plugins', 'install', 'enable', 'disable', 'marketplace', 'extension', 'global'], advanced: true },
+      { href: '/settings/plugins/tools', label: 'Plugin tools', keywords: ['plugin', 'tools', 'mcp', 'agent tools', 'permissions', 'config'], advanced: true },
       { href: '/settings/plugin-runtime', label: 'Plugin runtime', keywords: ['plugin', 'runtime', 'hooks', 'load errors', 'cache'], advanced: true },
       { href: '/settings/backups', label: 'Backups', keywords: ['backup', 'backups', 'kopia', 'snapshot', 'restore', 'retention', 'dedup'], advanced: true },
       { href: '/settings/storage', label: 'Storage', keywords: ['storage', 'disk', 'trim', 'prune', 'reclaim', 'cleanup', 'cache', 'usage', 'space', 'vacuum', 'transcripts', 'telemetry'], advanced: true },
@@ -136,7 +141,6 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   }, []);
 
   const publishingEnabled = useFlag(FLAGS.CLOUDFLARE_PUBLISH);
-  const testingEnabled = useFlag(FLAGS.TESTING);
   const promptStudioEnabled = useFlag(FLAGS.PROMPT_STUDIO);
   const autonomySettingsEnabled = useFlag(FLAGS.MUG_AUTONOMY_SETTINGS);
   const storageSettingsEnabled = useFlag(FLAGS.STORAGE_SETTINGS);
@@ -148,7 +152,6 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   // `Record<FlagKey, boolean>` (which would (wrongly) require every flag).
   const flagEnabled: Record<string, boolean> = {
     [FLAGS.CLOUDFLARE_PUBLISH]: publishingEnabled,
-    [FLAGS.TESTING]: testingEnabled,
     [FLAGS.PROMPT_STUDIO]: promptStudioEnabled,
     [FLAGS.MUG_AUTONOMY_SETTINGS]: autonomySettingsEnabled,
     [FLAGS.STORAGE_SETTINGS]: storageSettingsEnabled,

@@ -1,21 +1,21 @@
 # The real-metal full-loop multi-swarm E2E rig (loop-agent)
 URL: /internal/docs/agent-insights/full-loop-multiswarm-e2e-rig
 
-How to run/extend the shared-hive autonomous-loop E2E across machines — the loop-agent child, the deterministic joinPeer mesh, and the chaos knobs. Two gotchas that cost a run each.
+How to run/extend the shared-pot autonomous-loop E2E across machines — the loop-agent child, the deterministic joinPeer mesh, and the chaos knobs. Two gotchas that cost a run each.
 
 ## What
 
-`shared-hive-loop-e2e-testing-2026-06-10` P-008/P-009/P-011 exercise the WHOLE
+`shared-pot-loop-e2e-testing-2026-06-10` P-008/P-009/P-011 exercise the WHOLE
 autonomous loop — steer → contend → execute → converge → steer — on ≥3 Swarms,
 both $0 on loopback and paid across real Hetzner machines. The rig is three files
 under `packages/operator-core/lib/deployment/p2p-perf-tier3/`, plus the test:
 
 * **`loop-agent.ts`** — one Swarm as an OS process: the composition of
-  `claim-agent.ts` (per-Hive authority election + real HTTP authority RPC +
+  `claim-agent.ts` (per-Pot authority election + real HTTP authority RPC +
   fail-open) and `peer-child.ts` (real hyperbee substrate over Hyperswarm,
-  re-keyed onto the Hive federation topic). On top it adds the loop pieces the
-  hermetic `composition-rig.ts` proved on one box: a scripted Queen turn
-  (`queen {epoch,order}` over stdin → `wi-steer` ops), a fake pipeline
+  re-keyed onto the Pot federation topic). On top it adds the loop pieces the
+  hermetic `composition-rig.ts` proved on one box: a scripted Mug turn
+  (`mug {epoch,order}` over stdin → `wi-steer` ops), a fake pipeline
   (work → side-effect marker → the D-007 rule-5 heartbeat abort seam →
   federated `wi-done`), and chaos commands (`partition on|off`, a configured
   mid-pipeline `stall`, `revoke <pubkey>` arming the EI-284 caller-standing gate).
@@ -63,7 +63,7 @@ concurrent mutation.
 reporters. A killed authority's `wi-done` records federate before it dies and are
 real completions visible in every survivor's converged projection — but the dead
 Swarm never reports a `result`. So `starvedItems` unions reported completions
-with the Queen's turn-2 `sawDone` projection; only an item with no evidence
+with the Mug's turn-2 `sawDone` projection; only an item with no evidence
 anywhere starved. (The residual — a dead-reporter completion racing a survivor's
 fail-open re-claim, double-completing invisibly to this verdict — is exactly what
 production's P-012 cross-swarm double-completion detector is for.)

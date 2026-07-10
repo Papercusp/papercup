@@ -487,6 +487,17 @@ describe('AdvShell — Discord-parity shortcuts', () => {
     act(() => shortcutHandlers.get('harness.create')!());
     await waitFor(() => expect(nuqsSetters.create).toHaveBeenCalledWith(true));
   });
+
+  // settings-audit 2026-07-09: `g b` / `g i` were listed in the shortcut registry
+  // (and rebindable on /settings/shortcuts) but NO component ever registered a
+  // handler, so pressing them did nothing. Regression guard for the wire-up.
+  it('goto.brainstorm and goto.insights jump to their per-pot tabs', async () => {
+    await renderShell();
+    act(() => shortcutHandlers.get('goto.brainstorm')!());
+    await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('brainstorm'));
+    act(() => shortcutHandlers.get('goto.insights')!());
+    await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('insights'));
+  });
 });
 
 describe('AdvShell — CreateHarnessPicker into-hive scope gating', () => {

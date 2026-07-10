@@ -10,10 +10,10 @@
  * Per Plan 4 + PLAN-operator-arc-2026-05-12.md.
  *
  * Settings that get user-override scope (see UI list):
- *   agentLanguage, elevenlabsVoiceId, wakeWordKeyword, voiceMaxSpokenWords,
- *   fullAgentIdleTimeoutMin, fullAgentSessionMaxMin,
+ *   agentLanguage, elevenlabsVoiceId, porcupineKeyword, openwakewordKeyword,
+ *   voiceMaxSpokenWords, fullAgentIdleTimeoutMin, fullAgentSessionMaxMin,
  *   operatorHistoryTokenBudget, operatorActiveOnStartup, voicePrivacyMode,
- *   speakSuggestions, speakReceivingFlips, speakCadenceStatus,
+ *   speakSuggestions, speakModeFlips, speakCadenceStatus,
  *   operatorBackstoryEnabled
  */
 
@@ -106,7 +106,12 @@ export function mergeUserOverWorkspace<W extends Record<string, unknown>>(
 export const VOICE_USER_OVERRIDE_KEYS = [
   'agentLanguage',
   'elevenlabsVoiceId',
-  'wakeWordKeyword',
+  // settings-audit 2026-07-09: 'wakeWordKeyword' lived here but is NOT a VoicePrefs
+  // field, violating the invariant stated above — mergeLayered happily copied it onto
+  // the merged object and no reader ever looked at it, so the /settings/user "Wake
+  // word" box was inert. The real, engine-scoped keys (chosen by `wakeWordEngine`):
+  'porcupineKeyword',
+  'openwakewordKeyword',
   'voiceMaxSpokenWords',
   'fullAgentIdleTimeoutMin',
   'fullAgentSessionMaxMin',
@@ -115,7 +120,7 @@ export const VOICE_USER_OVERRIDE_KEYS = [
   'operatorActiveOnStartup',
   'voicePrivacyMode',
   'speakSuggestions',
-  'speakReceivingFlips',
+  'speakModeFlips',
   'speakCadenceStatus',
   // Sentinel-as-Herald (P-029/P-030): the Sentinel sidebar tab surfaces these as
   // per-user live overrides, so they must merge user-over-workspace to reach the brain.

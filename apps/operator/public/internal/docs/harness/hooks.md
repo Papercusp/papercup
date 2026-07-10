@@ -52,7 +52,7 @@ The roles that surround the hooks are **declarative**, not hardcoded:
 `planFinalization()` resolves the finalize recipe from the harness's
 `.papercusp/blueprint.yaml` `gates.finalize`, defaulting to the coding
 blueprint's recipe (`onDone`: curator → postCuratorOutputs → documenter →
-`[archive]`; `onEscalate`: curator). A non-coding HIVE blueprint can override
+`[archive]`; `onEscalate`: curator). A non-coding POT blueprint can override
 `gates.finalize`, so the hooks fire around whatever finalize recipe that
 harness declares. A `judge`-acceptance blueprint additionally inserts a
 `judge`-role acceptance gate before the `onDone` recipe whose `revise` verdict
@@ -129,10 +129,10 @@ User hook scripts are per-harness; **plugins** hook the same lifecycle
 globally. At the `afterDone` step the finalizer fires the in-process typed
 hook `firePluginLifecycle('afterDone', …)` on every loaded plugin that
 declares a handler (one of the FROZEN legacy fire-points —
-plugin-system-hive-port D-003), then emits the `pipeline:done:<slug>:<feature>`
+plugin-system-pot-port D-003), then emits the `pipeline:done:<slug>:<feature>`
 event. Plugin hook failures are logged by the host and ignored; plugin hooks
 fire whether or not a user hook script ran. (The old per-plugin shell-out via
-the `papercusp-fire-hook` CLI was retired 2026-06-12 — plugin-system-hive-port
+the `papercusp-fire-hook` CLI was retired 2026-06-12 — plugin-system-pot-port
 P-006.) New pipeline integrations should not use typed hooks at all: declare
 **event-reaction rules** on the pipeline event vocabulary instead — see
 [Plugins](/internal/docs/spec/plugins).

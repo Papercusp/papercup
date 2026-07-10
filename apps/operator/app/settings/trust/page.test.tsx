@@ -22,7 +22,9 @@ vi.mock('@papercusp/sync', () => ({
   useSyncQuery: () => trustResult,
   useSyncMutate: () => mutateMock,
 }));
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   useQueryState: () => ['', vi.fn()],
   parseAsString: { withDefault: () => ({}) },
 }));

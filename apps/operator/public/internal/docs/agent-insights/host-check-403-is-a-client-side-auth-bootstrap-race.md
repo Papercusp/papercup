@@ -76,7 +76,7 @@ each of those three now calls `reportSyncReachable()` / `reportSyncUnreachable()
 the exact same pattern `SSEAdapter.tsx` already uses. Two more per-panel /
 per-job consumers of `createResilientEventSource` (`agent-mcp/run-command/sse`
 via `CommandCard`/`TerminalTab`/`PiPanel`/etc., and the voice
-`sentinel-output` poll) were deliberately left OUT of scope — they're
+`papercup-output` poll) were deliberately left OUT of scope — they're
 scoped to a specific panel/job, not indicative of "the operator itself is
 down," and wiring them in would risk false-positive banners from an
 unrelated per-command failure.

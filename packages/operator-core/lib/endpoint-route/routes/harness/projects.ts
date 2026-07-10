@@ -16,6 +16,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import {
   loadHarnessRegistry,
   mutateHarnessRegistry,
+  isEphemeralForeignProject,
   type ProjectEntry,
 } from '../../../harness-registry';
 import { harnessDir } from '../../../harness-core';
@@ -139,12 +140,18 @@ const list = defineTool({
     const reg = await loadHarnessRegistry();
     const filterParentSlug = url.searchParams.get('parent_slug');
 
+    // WI-1937: an ephemeral P-104 foreign-clone row is not a real harness a
+    // human registered — never list it on the main /api/harness/projects
+    // enumeration. (A slug-scoped lookup elsewhere, e.g. scan-subharnesses,
+    // is unaffected — this filter is this enumeration route only.)
+    const listedProjects = reg.projects.filter((p) => !isEphemeralForeignProject(p));
+
     // The registry is PG-canonical (mig 025) — derive the signature from its
     // CONTENTS. The previous signature additionally stat'd two dead files
     // (<workspace-root>/registry.json + ~/.restart-harness-projects.json),
     // so path/hive edits with an unchanged slug list never busted the cache
     // (audit P-005).
-    const sig = JSON.stringify(reg.projects);
+    const sig = JSON.stringify(listedProjects);
 
     const now = Date.now();
     const TTL_MS = 5_000;
@@ -157,7 +164,7 @@ const list = defineTool({
           // ONE batched probe on the shared org pool (audit P-005, EI-64) +
           // per-project fs stats — see enrichProjects. The previous shape opened
           // a PER-SLUG PG pool per project, blowing the 30s route budget cold.
-          const out = await enrichProjects(reg.projects);
+          const out = await enrichProjects(listedProjects);
           __projectsCache.value = out;
           __projectsCache.expires = Date.now() + TTL_MS;
           __projectsCache.inflight = null;

@@ -2,7 +2,7 @@
 title: "Rubric method: pot-coordination-health (the 15-criteria scorecard)"
 description: The investigation method behind the `pot-coordination-health` rubric — the model, how-to-investigate (live DB signals), and drift markers for each of the 15 per-characteristic criteria that Overwatch (and any agent) grades a structured observation against. This MDX is the rubric's `method_ref`; the structured part (criteria keys, rating scale, drift markers) lives in the `rubrics` store.
 discovered: 2026-06-20
-tags: [pot, coordination, rubric, observation, overwatch, scout, mug, cup, self-improving-loop]
+tags: [hive, coordination, rubric, observation, overwatch, scout, mug, cup, self-improving-loop]
 status: active
 documents:
   - packages/operator-core/lib/agent-tools/improvements/capture.ts
@@ -17,10 +17,10 @@ system (`rubric-driven-observations-2026-06-20`). A rubric is the reusable STAND
 system characteristic; the agent's output against it is a **structured observation** (rubric
 ratings + mandatory evidence), with free-text observations still first-class.
 
-This rubric generalizes the owner's one-off 13-question pot-coordination scorecard
-(`pot-coordination-test-loop-2026-06-20` D-001) into a standing capability, since extended to
+This rubric generalizes the owner's one-off 13-question hive-coordination scorecard
+(`hive-coordination-test-loop-2026-06-20` D-001) into a standing capability, since extended to
 **15 criteria** (the founding 13 + `scheduler-usage`, added by
-`hybrid-cup-scheduler-work-stealing-2026-06-22` P-004, + `context-burn`, added with the
+`hybrid-bee-scheduler-work-stealing-2026-06-22` P-004, + `context-burn`, added with the
 loop-wake context-diet work — EI-7624). The **Overwatch** role MUST emit a
 structured scorecard against it **every turn** (owner requirement #1): rate each of the 15
 criteria + cite evidence, in addition to its free-form observations.
@@ -47,9 +47,9 @@ rating — an idle stage with no signal is `unknown`, never `broken`.
 
 ## Three pitfalls that invalidate a naive read
 
-These trip every first-time pot auditor. Apply them to EVERY criterion below.
+These trip every first-time hive auditor. Apply them to EVERY criterion below.
 
-1. **Multi-workspace.** Started pots live across MULTIPLE `workspace_id`s (`papercusp`,
+1. **Multi-workspace.** Started hives live across MULTIPLE `workspace_id`s (`papercusp`,
    `default`, `generic-test`, `lane7`, wildcard `*`, plus eval instances). Recon scoped to ONE
    workspace mis-reads the loop as dead. ALWAYS enumerate first:
 
@@ -60,7 +60,7 @@ These trip every first-time pot auditor. Apply them to EVERY criterion below.
    GROUP BY 1, 2;
    ```
 
-2. **Idle is not dead; activity is not health — check WHY.** A Mug can be idle by GOOD
+2. **Idle is not dead; activity is not health — check WHY.** A Queen can be idle by GOOD
    judgment (frontier drained, holding undecided/needs-design items, leaving cursed alone,
    long cadence on a vacuous frontier). Conversely "woke, burned budget, 0 placements" can be
    a broken/cursed/unpromoted frontier. Distinguish by reading the carryNote
@@ -68,7 +68,7 @@ These trip every first-time pot auditor. Apply them to EVERY criterion below.
 
 3. **Silence is not health (the cursed-latch).** A cursed item stops escalating by design, and
    a stale alarm can keep firing on a premise live state already contradicts. "No alarms" is
-   not evidence of health. Report stage-by-stage numbers + WHICH workspace/pot, never "no
+   not evidence of health. Report stage-by-stage numbers + WHICH workspace/hive, never "no
    alarms / looks fine".
 
 ## The 15 criteria
@@ -80,18 +80,18 @@ docs/tool-summaries), and the DRIFT MARKERS (what a big drift looks like).
 ### 1. `end-to-end-flow` — the full loop turns end-to-end
 
 - **Model.** The self-improving loop is a closed cycle: observe → scout-ideate → grade →
-  plan-start/promote → mug-place → cup-complete → commit/git-sync → observe. Health = the
+  plan-start/promote → queen-place → bee-complete → commit/git-sync → observe. Health = the
   WHOLE loop turning. Each stage must hand off to the next with no structural dead-end; any one
   broken hand-off breaks closure even if other stages look busy.
-- **Method.** Walk every stage in the live DB after enumerating pots across all workspaces:
+- **Method.** Walk every stage in the live DB after enumerating hives across all workspaces:
   (a) observations flowing — `engineer_issues` where `payload.lane = 'observation'`, recent
   distinct authors; (b) `scout_ticks` ran AND ideas greater than 0; (c) plans started +
   promoted to `work_items`; (d) `hive_placements` with a completion in the last hour;
   (e) git-sync auto-commits recent. The tell of a BROKEN vs merely-quiet loop: input present
   at stage N, output absent at stage N+1.
 - **Drift markers.** A stage emits zero output for more than one cycle while upstream produces
-  input: Scout 0 ideas in 24h with a non-empty observation corpus; Mug 0 placements with a
-  ready actionable frontier + idle cups; cups claim an item but make 0 tool calls (zombie).
+  input: Scout 0 ideas in 24h with a non-empty observation corpus; Queen 0 placements with a
+  ready actionable frontier + idle bees; bees claim an item but make 0 tool calls (zombie).
 
 ### 2. `ideation-quality` — Scout idea quality and thematic diversity
 
@@ -106,13 +106,13 @@ docs/tool-summaries), and the DRIFT MARKERS (what a big drift looks like).
 - **Drift markers.** Thematic convergence (a majority of a batch on one theme; near-dup ideas);
   shallow symptom-only ideas; OR a hard 0-ideas transport-death.
 
-### 3. `mug-workitem-selection` — Mug picks the right work-items
+### 3. `queen-workitem-selection` — Queen picks the right work-items
 
-- **Model.** From the ready frontier the Mug places the most valuable ACTIONABLE items,
+- **Model.** From the ready frontier the Queen places the most valuable ACTIONABLE items,
   correctly HOLDS undecided/needs-design items, leaves cursed items alone, and refuses to place
   a vacuous/unpromoted frontier. Reasoned idleness is correct, not a failure.
 - **Method.** Compare placements against the ready frontier (`work_items` todo/ready) — would
-  you pick these? Read the carryNote (`hive_wake.payload`) for WHY she held or placed. A Mug
+  you pick these? Read the carryNote (`hive_wake.payload`) for WHY she held or placed. A Queen
   holding undecided items + leaving cursed alone + long cadence on a vacuous frontier is GOOD.
   "Woke, burned budget, 0 placements" with a ready actionable frontier is the problem case —
   distinguish by carryNote + completions, not wake-count/spend.
@@ -120,11 +120,11 @@ docs/tool-summaries), and the DRIFT MARKERS (what a big drift looks like).
   high-value items unplaced while idle with capacity (the "88 unplaced, idle fleet" pattern);
   places into a vacuous frontier and manufactures zombies.
 
-### 4. `mug-plan-selection` — Mug pursues the right plans
+### 4. `queen-plan-selection` — Queen pursues the right plans
 
-- **Model.** The Mug starts/pursues the right plans in priority order and does NOT
+- **Model.** The Queen starts/pursues the right plans in priority order and does NOT
   auto-materialize plans that are not ready (she does not force-start a draft).
-- **Method.** Look at started plans across member harnesses and the Mug's plan-selection
+- **Method.** Look at started plans across member harnesses and the Queen's plan-selection
   reasoning. Signal is limited when Scout is not routing plans — assess what she does with what
   is available; she should respect plan readiness (draft vs ready) and not auto-start.
 - **Drift markers.** Starts unready/draft plans; ignores a high-priority ready plan; or churns
@@ -132,37 +132,37 @@ docs/tool-summaries), and the DRIFT MARKERS (what a big drift looks like).
 
 ### 5. `parallel-distribution` — batch placement + tight topic scope
 
-- **Model.** When multiple independent items are ready, the Mug places a parallel BATCH
-  (`fleet:place_batch`), distributes across cups by affinity (disjoint files/topics), and scopes
-  each cup's topic-subscriptions TIGHTLY (its own item + plan topics) to avoid chatter.
-- **Method.** Observe a parallel seed: did she batch-place concurrent cups on disjoint work? Is
-  file/topic affinity overlap minimized? Are per-cup topic subscriptions narrow? Only
+- **Model.** When multiple independent items are ready, the Queen places a parallel BATCH
+  (`fleet:place_batch`), distributes across bees by affinity (disjoint files/topics), and scopes
+  each bee's topic-subscriptions TIGHTLY (its own item + plan topics) to avoid chatter.
+- **Method.** Observe a parallel seed: did she batch-place concurrent bees on disjoint work? Is
+  file/topic affinity overlap minimized? Are per-bee topic subscriptions narrow? Only
   observable when a parallel-ready frontier exists.
-- **Drift markers.** Serializes genuinely-parallel work; places overlapping cups that collide on
+- **Drift markers.** Serializes genuinely-parallel work; places overlapping bees that collide on
   locks; over-broad topic subscriptions causing chatter. Idle is `unknown`, not `broken`.
 
-### 6. `cup-execution` — cups complete real, verified work
+### 6. `bee-execution` — bees complete real, verified work
 
-- **Model.** A cup boots with full MCP tools, claims its item, makes real tool calls, and
+- **Model.** A bee boots with full MCP tools, claims its item, makes real tool calls, and
   completes a well-scoped, correct, VERIFIED change in one turn (tests run, not diagnosis-only),
   then commits.
-- **Method.** For observable cups: did it boot clean (WaitForMcpServers; tools present — no
+- **Method.** For observable bees: did it boot clean (WaitForMcpServers; tools present — no
   zombie)? Did it make tool calls (a claim with 0 tool calls is the EI-1758 zombie)? Was the
   completion well-scoped + verified (tests run) vs diagnosis-only / observability-only when a
   root-cause fix was scoped? Watch token-budget exhaustion truncating non-trivial fixes.
-- **Drift markers.** Zombie cups (claim, 0 tool calls, no MCP tools at bootstrap);
+- **Drift markers.** Zombie bees (claim, 0 tool calls, no MCP tools at bootstrap);
   diagnosis-only completions where a fix was scoped; uncommitted/undeployed fixes
   (self-referential infra deadlock); token-budget truncation on ambiguous items.
 
-### 7. `cup-observation-quality` — cups file good observations
+### 7. `bee-observation-quality` — bees file good observations
 
-- **Model.** Cups emit specific, root-cause-oriented, quantified, actionable turn-end
+- **Model.** Bees emit specific, root-cause-oriented, quantified, actionable turn-end
   observations (`lane = observation`) — the raw material Scout ideates on — reliably, not
   unevenly.
-- **Method.** Read recent `lane = observation` entries by cup authors; judge
+- **Method.** Read recent `lane = observation` entries by bee authors; judge
   specificity/root-cause/quantification. Check emission COVERAGE — every turn, or uneven?
   Emission is prompt-driven, not enforced, so under-emission is a known risk.
-- **Drift markers.** Sparse/absent observations from active cups; vague symptom-only
+- **Drift markers.** Sparse/absent observations from active bees; vague symptom-only
   observations; no quantification or evidence.
 
 ### 8. `overwatch-observation-quality` — overwatch observations + the mandatory scorecard
@@ -226,39 +226,39 @@ docs/tool-summaries), and the DRIFT MARKERS (what a big drift looks like).
 ### 13. `tool-utilization` — available tools reached for when apt
 
 - **Model.** Tools that exist are reached for when apt: `scout:grade-idea` used regularly, the
-  mug-scout coord+wake channel used, the `mcp-call.mjs` fallback wired into the cup path.
+  queen-scout coord+wake channel used, the `mcp-call.mjs` fallback wired into the bee path.
 - **Method.** Check usage counts + recency for key tools (`scout:grade-idea` grade count + last
-  use; the mug-scout channel; the cup curl-fallback). A tool with near-zero lifetime use that
+  use; the queen-scout channel; the bee curl-fallback). A tool with near-zero lifetime use that
   SHOULD be hot is a gap.
 - **Drift markers.** A capability built but barely invoked (8 grades ever, none recent; an
   unused coord+wake channel); a fallback not wired into the path that needs it.
 
-### 14. `scheduler-usage` — the within-pot scheduler used as designed
+### 14. `scheduler-usage` — the within-hive scheduler used as designed
 
-Added by `hybrid-cup-scheduler-work-stealing-2026-06-22` (P-004) once the deterministic
-within-pot scheduler (per-cup claim SPECS + the `get_next` pull path) shipped. The point is
+Added by `hybrid-bee-scheduler-work-stealing-2026-06-22` (P-004) once the deterministic
+within-hive scheduler (per-bee claim SPECS + the `get_next` pull path) shipped. The point is
 to continuously verify the scheduler is USED, not merely built.
 
-- **Model.** The Mug authors + VERSIONS a per-cup claim SPEC (a scoped `view.filter` + `rank`
+- **Model.** The Queen authors + VERSIONS a per-bee claim SPEC (a scoped `view.filter` + `rank`
   over the live work-item DAG, composed from the primitive vocabulary) and re-steers a running
-  cup by bumping the spec `revision` — she does NOT micro-dispatch each item. Cups PULL their
+  bee by bumping the spec `revision` — she does NOT micro-dispatch each item. Bees PULL their
   next item through `get_next` (global hard floors AND the spec filter, `ORDER BY` the spec rank,
   `FOR UPDATE SKIP LOCKED`) rather than self-scanning the raw frontier or hand-claiming.
   Resolution is deterministic, the plan-item dedup floor holds (ZERO duplicate-plan-item claims),
   and completions flow from pulled work. Model-routing (`model_fit` / per-model capability) is
   DESCOPED behind its own flag (plan D-010) — its absence is NOT a drift.
-- **Method.** Walk the live claim path: are cup claims stamped with a spec `specId@revision`
-  (`get_next` records provenance), and do revisions bump when the Mug re-steers? Are there
+- **Method.** Walk the live claim path: are bee claims stamped with a spec `specId@revision`
+  (`get_next` records provenance), and do revisions bump when the Queen re-steers? Are there
   claims that did NOT go through `get_next` (a self-scanned / hand-claimed item — the bypass)?
   Query for duplicate-plan-item claims (two non-terminal claims sharing a `source_plan_item_id` —
   the dedup floor failing). Check pulled items reach completion (claim → working → done) rather
-  than zombie-holding. Signal is limited when no spec-driven pot is running (rate `unknown`).
+  than zombie-holding. Signal is limited when no spec-driven hive is running (rate `unknown`).
   `model_fit` is neutral until its lane ships — do NOT flag its absence.
-- **Drift markers.** Mug micro-dispatching item-by-item instead of issuing/versioning specs;
-  cups bypassing the scheduler (self-prioritizing the raw frontier, hand-claiming) instead of
+- **Drift markers.** Queen micro-dispatching item-by-item instead of issuing/versioning specs;
+  bees bypassing the scheduler (self-prioritizing the raw frontier, hand-claiming) instead of
   pulling via `get_next`; non-deterministic or floor-violating resolution; duplicate-plan-item
   claims (dedup floor breached); pulled claims that never make progress (zombie holds). NOT a
-  drift: `model_fit` being neutral (descoped). Low evidence (no spec-driven pot running) is
+  drift: `model_fit` being neutral (descoped). Low evidence (no spec-driven hive running) is
   `unknown`, not `broken`.
 
 ### 15. `context-burn` — context burn and compaction cadence
@@ -293,8 +293,8 @@ an empty-evidence rating):
 {
   "rubricRef": "pot-coordination-health",
   "ratings": {
-    "end-to-end-flow":          { "rating": "degraded", "evidence": "scout 0 ideas/24h (transport-death) but cups completing WI-214 03:43; closure broken at the scout->plan hand-off" },
-    "mug-workitem-selection": { "rating": "healthy",  "evidence": "held WI-263/268 (needs-design), left WI-231 (cursed), placed the 2 actionable bugs — matches what I'd pick" }
+    "end-to-end-flow":          { "rating": "degraded", "evidence": "scout 0 ideas/24h (transport-death) but bees completing WI-214 03:43; closure broken at the scout->plan hand-off" },
+    "queen-workitem-selection": { "rating": "healthy",  "evidence": "held WI-263/268 (needs-design), left WI-231 (cursed), placed the 2 actionable bugs — matches what I'd pick" }
     // ... key = a rubric criterion `key`; rating = a value from that criterion's scale
   }
 }
@@ -306,7 +306,7 @@ reason as evidence. Never invent a rating to fill the scorecard.
 ## See also
 
 - `rubric-driven-observations-2026-06-20` — the plan (D-001 model, D-002 scope + owner #1, D-003 the schema contract).
-- `pot-coordination-test-loop-2026-06-20` D-001 — the owner's original 13-question scorecard this rubric crystallizes.
+- `hive-coordination-test-loop-2026-06-20` D-001 — the owner's original 13-question scorecard this rubric crystallizes.
 - `rubrics:get { rubric_id: 'pot-coordination-health' }` — the structured rubric (criteria keys, rating scale, drift markers).
 
 ## Maintaining this pointer (for future rubric authors)

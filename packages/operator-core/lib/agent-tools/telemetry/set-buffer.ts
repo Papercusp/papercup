@@ -56,7 +56,7 @@ export default defineTool({
     }
 
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('telemetry:set_buffer requires operator, architect, or queen role');
+      throw new Error('telemetry:set_buffer requires operator, architect, or mug role');
     }
 
     const patch: TelemetryBufferOverride =

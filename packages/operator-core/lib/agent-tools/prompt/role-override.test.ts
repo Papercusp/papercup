@@ -72,7 +72,7 @@ describe('prompt:role_override — set', () => {
   it('is operator-authority gated', async () => {
     await expect(
       tool.handler({ op: 'set', harness: 'h', role: 'validator', content: 'NEW' } as never, { role: 'cup' } as never),
-    ).rejects.toThrow(/operator, architect, or queen/i);
+    ).rejects.toThrow(/operator, architect, or mug/i);
     expect(setM).not.toHaveBeenCalled();
   });
   it('applies the override and verifies', async () => {
@@ -112,7 +112,7 @@ describe('prompt:role_override — clear', () => {
   it('is operator-authority gated', async () => {
     await expect(
       tool.handler({ op: 'clear', harness: 'h' } as never, { role: 'cup' } as never),
-    ).rejects.toThrow(/operator, architect, or queen/i);
+    ).rejects.toThrow(/operator, architect, or mug/i);
     expect(clearAllM).not.toHaveBeenCalled();
   });
 });

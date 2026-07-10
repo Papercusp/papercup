@@ -35,12 +35,12 @@ bin/reap-orphans.sh                 # reap all dead runs
 bin/reap-orphans.sh --dry-run       # show what WOULD be reaped, touch nothing
 
 # Clean up exactly ONE known run's leftovers (you have its $WORK):
-bin/cleanup-run.sh /tmp/hive-fromrepo-smoke.AbC123
+bin/cleanup-run.sh /tmp/pot-fromrepo-smoke.AbC123
 ```
 
 These wrap `fed_reap_orphans` / `fed_cleanup_run` in `federation-asserts.sh`. The
 rig's `$WORK` prefixes are registered in `FED_RIG_TMP_PREFIXES` (e.g.
-`/tmp/hive-fromrepo-smoke.`, `/tmp/merge-smoke.`, `/tmp/vm-fed.`,
+`/tmp/pot-fromrepo-smoke.`, `/tmp/merge-smoke.`, `/tmp/vm-fed.`,
 `/tmp/deb-hzfed.`) — **add a new prefix there** if you add a rig, so the reapers
 keep seeing it. The reapers exclude the calling shell + its ancestors, so running
 them from inside an agent shell never false-flags or kills the caller.
@@ -185,7 +185,7 @@ green-rig/red-binary guard, WI-261/P-013). It:
   genuine content-matrix FAIL was silently masked out of every verdict until
   this fix. journald still captures both streams, so nothing is lost.
 * **The from-repo leg's known-red is WI-971, not WI-259** — WI-259 was closed
-  as a duplicate of WI-971 (outbox drain never wired for joined/created hive
+  as a duplicate of WI-971 (outbox drain never wired for joined/created pot
   harnesses); WI-280/WI-1666 are resolved. A content-matrix FAIL whose only
   `✗` lines match the WI-971 backfill/incr-B→A signature is downgraded to
   `PASS-971` (not a clean pass — WI-971 remains open) rather than a red.
@@ -231,11 +231,11 @@ substrate/admission/cursor bug — check auth FIRST.)
 
 Symptoms:
 
-* `GET /api/discovery/hives` on the peer returns `count: 0`.
-* `POST /api/discovery/set-hive {visibility:"public"}` and
-  `POST /api/harness/hives/from-repo` return
+* `GET /api/discovery/pots` on the peer returns `count: 0`.
+* `POST /api/discovery/set-pot {visibility:"public"}` and
+  `POST /api/harness/pots/from-repo` return
   `announced:false, reachablePeers:0, error:"local-announce-identity: gh not authenticated"`.
-* Cross-machine: the peer's hives never appear on any other peer's directory.
+* Cross-machine: the peer's pots never appear on any other peer's directory.
 
 Check it FIRST:
 
@@ -244,7 +244,7 @@ ssh -i ~/.ssh/papercup-vm-linux -p <sshPort> tester@127.0.0.1 'gh auth status'
 # "You are not logged into any GitHub hosts" → this IS your dead link.
 ```
 
-Restore (reversible; **no operator restart needed** — `hive-directory-boot`
+Restore (reversible; **no operator restart needed** — `pot-directory-boot`
 lazily re-wires the directory on the next browse/announce):
 
 ```sh
@@ -299,8 +299,8 @@ accepts a `harness_admin` psql — so it survives app/VM restarts with no edits.
 cd papercusp-desktop/scripts/linux-test-vm
 ./fed.sh a ports                       # show the discovered operator/PG ports
 ./fed.sh a sql  "select count(*) from harness_features"
-./fed.sh a api  GET /api/discovery/hives
-./fed.sh a mcp  hive:report '{"hive":"…"}'
+./fed.sh a api  GET /api/discovery/pots
+./fed.sh a mcp  pot:report '{"pot":"…"}'
 ./fed.sh a ssh  'gh auth status'       # raw ssh (used by §6's gh-auth restore)
 ./fed.sh b rediscover                  # force a fresh probe (after a restart)
 ```
@@ -317,20 +317,20 @@ probe. SSH host-forward ports default to `2225` (a) / `2226` (b) — override wi
 `FED_SSH_A` / `FED_SSH_B`.
 
 For a live two-machine federation witness, do not create an arbitrary
-repo-less throwaway with `hive:create`. The cross-machine join path joins the
+repo-less throwaway with `pot:create`. The cross-machine join path joins the
 owner's per-member GitHub links (`joinHiveAsView` parses each member link and
-clones the member repo). A repo-less `hive:create` home has no member links
-for the peer to join, so the peer never subscribes to that hive's topic and
-owner writes have no remote log to arrive on. Use `hive:create_from_repo` (or
-an existing repo-bound hive with a joined peer member) for B8/B10-style ban,
+clones the member repo). A repo-less `pot:create` home has no member links
+for the peer to join, so the peer never subscribes to that pot's topic and
+owner writes have no remote log to arrive on. Use `pot:create_from_repo` (or
+an existing repo-bound pot with a joined peer member) for B8/B10-style ban,
 dissolve, grant, and receipt witnesses. A valid witness setup is: owner box
-owns the hive, peer box has joined at least one repo-bound member, then drive
+owns the pot, peer box has joined at least one repo-bound member, then drive
 the federation action.
 
 Superuser MCP resolves `ctx.workspaceId='*'` while the HTTP routes/queue use
-`'default'`, so a hive created via `mcp` lands in the wrong workspace and the
+`'default'`, so a pot created via `mcp` lands in the wrong workspace and the
 routes return `not_owner_swarm`. For a workspace-scoped WRITE tool
-(`hive:create` / `hive:takedown` / `hive:report` / `hive:moderation_*`), pass
+(`pot:create` / `pot:takedown` / `pot:report` / `pot:moderation_*`), pass
 `"workspace":"default"` in the args — or set `FED_MCP_WS=default` and `fed.sh`
 injects it for you (opt-in; off by default because blanket injection breaks
 READ tools whose schema rejects an unknown `workspace` key). The durable fix

@@ -11,6 +11,7 @@
  * `hive.steering.modelOverrides[role]`) + `onWrite(spec|null)` that writes via
  * `pot:set-steering`. A null spec CLEARS the override (⇒ workspace default).
  */
+import { Select } from '@/app/harness/Select';
 import OverridableSetting from '../override/OverridableSetting';
 
 /** Self-contained styles so the control looks right in any rail tab's CSS namespace. */
@@ -21,9 +22,11 @@ const MODEL_OVERRIDE_CSS = `
 .pc-modelover__row { display: flex; gap: 6px; }
 .pc-modelover__select {
   flex: 1; min-width: 0; padding: 4px 6px; font-size: 12px;
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  text-align: left; font-family: inherit; cursor: pointer; outline: none;
   color: var(--fg); background: var(--bg-elev, var(--bg)); border: 1px solid var(--border); border-radius: 4px;
 }
-.pc-modelover__select:disabled { opacity: 0.55; }
+.pc-modelover__select:disabled { opacity: 0.55; cursor: default; }
 .pc-modelover__select--effort { flex: 0 0 42%; }
 .pc-modelover__hint { font-size: 11px; color: var(--fg-mute); line-height: 1.35; }
 `;
@@ -32,6 +35,21 @@ const MODEL_OVERRIDE_CSS = `
 export const MODEL_CHOICES = ['haiku', 'sonnet', 'opus', 'fable'] as const;
 /** Reasoning-effort levels; '' = unset (the model's own default). */
 export const EFFORT_CHOICES = ['', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+/**
+ * Radix Select (the shared `Select` primitive) refuses an empty-string option value
+ * and the wrapper drops such options defensively, so the two "unset" choices —
+ * "(workspace default)" model and "effort: default" — ride on sentinels instead of
+ * ''. They are UI-only: `toSpecValue` maps them back to '' before `joinSpec`, so
+ * nothing outside this file ever sees them.
+ */
+export const NO_MODEL = '__workspace_default__';
+export const NO_EFFORT = '__effort_default__';
+
+/** Sentinel → the '' the spec helpers expect. Pure. */
+function toSpecValue(v: string, sentinel: string): string {
+  return v === sentinel ? '' : v;
+}
 
 /** Split a stored `model[:effort]` spec into its parts. Pure. */
 export function splitSpec(spec: string | null | undefined): { model: string; effort: string } {
@@ -80,34 +98,29 @@ export default function ModelOverride({
         <span className="pc-modelover__state">{overriding ? 'session override' : 'workspace default'}</span>
       </div>
       <div className="pc-modelover__row">
-        <select
-          className="pc-modelover__select"
-          aria-label={`${label} — model`}
-          value={model}
+        <Select
+          triggerClassName="pc-modelover__select"
+          ariaLabel={`${label} — model`}
+          value={model || NO_MODEL}
           disabled={busy}
-          onChange={(e) => onWrite(joinSpec(e.target.value, effort))}
-        >
-          <option value="">(workspace default)</option>
-          {MODEL_CHOICES.map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
-        </select>
-        <select
-          className="pc-modelover__select pc-modelover__select--effort"
-          aria-label={`${label} — effort`}
-          value={effort}
+          onChange={(v: string) => onWrite(joinSpec(toSpecValue(v, NO_MODEL), effort))}
+          options={[
+            { value: NO_MODEL, label: '(workspace default)' },
+            ...MODEL_CHOICES.map((m) => ({ value: m, label: m })),
+          ]}
+        />
+        <Select
+          triggerClassName="pc-modelover__select pc-modelover__select--effort"
+          ariaLabel={`${label} — effort`}
+          value={effort || NO_EFFORT}
           // Effort is meaningless without a model; disabled until one is picked.
           disabled={busy || !model}
-          onChange={(e) => onWrite(joinSpec(model, e.target.value))}
-        >
-          {EFFORT_CHOICES.map((e) => (
-            <option key={e || 'default'} value={e}>
-              {e ? `effort: ${e}` : 'effort: default'}
-            </option>
-          ))}
-        </select>
+          onChange={(v: string) => onWrite(joinSpec(model, toSpecValue(v, NO_EFFORT)))}
+          options={EFFORT_CHOICES.map((e) => ({
+            value: e || NO_EFFORT,
+            label: e ? `effort: ${e}` : 'effort: default',
+          }))}
+        />
       </div>
       <div className="pc-modelover__hint">
         Session-only — overrides the workspace default (Settings → AI backend) for this agent until reset. Applies on its

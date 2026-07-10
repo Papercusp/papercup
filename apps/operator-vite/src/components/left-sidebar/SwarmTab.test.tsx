@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 /**
- * SwarmTab coverage — the colony roster split into SU agents (🛠) and Bees (☕),
+ * SwarmTab coverage — the colony roster split into SU agents (🛠) and Cups (☕),
  * each row expanding inline to its tasks + plan-progress + comms. Pins: roster
- * (empty/error/live + load pill + intent fallback + stale excluded), the SU/Bee
+ * (empty/error/live + load pill + intent fallback + stale excluded), the SU/Cup
  * split (by presence `source`), selection (?lsa write + toggle), and the inline
  * expansion (tasks + plans, plus mail when present). nuqs is a per-key store
  * seeded with spy setters; sync queries are dispatched by queryName.
@@ -12,7 +12,9 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
 const nuqsState: Record<string, unknown> = { lsa: null };
 const nuqsSetters: Record<string, ReturnType<typeof vi.fn>> = {};
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   useQueryState: (key: string) => {
     const set = vi.fn(async (v: unknown) => {
       nuqsState[key] = v;
@@ -80,7 +82,7 @@ const PRESENCE = [
   { ownerId: 'ghost', ownerLabel: 'Ghost', source: 'fleet-spawn', intent: null, currentPlanSlug: null, heartbeatAt: 0, stale: true },
 ];
 
-const BEES = [
+const CUPS = [
   {
     agentId: 'bee-1', name: 'Bee One', alive: true, intent: 'refactoring', declaredPlanSlug: 'plan-a',
     claims: [
@@ -113,15 +115,15 @@ describe('<SwarmTab> roster', () => {
     expect(screen.getByText(/coord down/)).toBeTruthy();
   });
 
-  it('splits SU agents from bees, excludes stale, shows load pill + intent fallback', () => {
+  it('splits SU agents from cups, excludes stale, shows load pill + intent fallback', () => {
     seed('dev.coordPresence', PRESENCE);
-    seed('sidebar.fleetBees', BEES);
+    seed('sidebar.fleetCups', CUPS);
     render(<SwarmTab active={true} />);
     expect(screen.getByText('fleet · 3 live')).toBeTruthy();
     expect(screen.getByTestId('swarm-su').textContent).toContain('SU One');
-    const beeSec = screen.getByTestId('swarm-bees');
-    expect(beeSec.textContent).toContain('Bee One');
-    expect(beeSec.textContent).toContain('Bee Two');
+    const cupSec = screen.getByTestId('swarm-cups');
+    expect(cupSec.textContent).toContain('Bee One');
+    expect(cupSec.textContent).toContain('Bee Two');
     expect(screen.queryByTestId('swarm-agent-ghost')).toBeNull();
     expect(screen.getByTestId('swarm-agent-bee-1').textContent).toContain('⇄2');
     expect(screen.getByTestId('swarm-agent-bee-2').textContent).toContain('no declared intent');
@@ -131,7 +133,7 @@ describe('<SwarmTab> roster', () => {
 describe('<SwarmTab> selection + expansion', () => {
   it('clicking an agent row writes ?lsa', () => {
     seed('dev.coordPresence', PRESENCE);
-    seed('sidebar.fleetBees', BEES);
+    seed('sidebar.fleetCups', CUPS);
     render(<SwarmTab active={true} />);
     fireEvent.click(screen.getByTestId('swarm-agent-bee-1'));
     expect(nuqsSetters.lsa).toHaveBeenCalledWith('bee-1');
@@ -140,7 +142,7 @@ describe('<SwarmTab> selection + expansion', () => {
   it('re-clicking the selected agent clears it (toggle off)', () => {
     nuqsState.lsa = 'bee-1';
     seed('dev.coordPresence', PRESENCE);
-    seed('sidebar.fleetBees', BEES);
+    seed('sidebar.fleetCups', CUPS);
     render(<SwarmTab active={true} />);
     fireEvent.click(screen.getByTestId('swarm-agent-bee-1'));
     expect(nuqsSetters.lsa).toHaveBeenCalledWith(null);
@@ -149,7 +151,7 @@ describe('<SwarmTab> selection + expansion', () => {
   it('the selected agent expands inline with its tasks + plan progress', () => {
     nuqsState.lsa = 'bee-1';
     seed('dev.coordPresence', PRESENCE);
-    seed('sidebar.fleetBees', BEES);
+    seed('sidebar.fleetCups', CUPS);
     seed('plans.list', PLANS);
     render(<SwarmTab active={true} />);
     const exp = screen.getByTestId('swarm-expand-bee-1');
@@ -164,7 +166,7 @@ describe('<SwarmTab> selection + expansion', () => {
   it('links tasks and plans to their full detail surfaces', () => {
     nuqsState.lsa = 'bee-1';
     seed('dev.coordPresence', PRESENCE);
-    seed('sidebar.fleetBees', BEES);
+    seed('sidebar.fleetCups', CUPS);
     seed('plans.list', PLANS);
     render(<SwarmTab active={true} />);
 
@@ -184,7 +186,7 @@ describe('<SwarmTab> selection + expansion', () => {
     H.linkBase = { lsb: 'true', lst: 'swarm', lsa: 'bee-1', tab: 'overview' };
     nuqsState.lsa = 'bee-1';
     seed('dev.coordPresence', PRESENCE);
-    seed('sidebar.fleetBees', BEES);
+    seed('sidebar.fleetCups', CUPS);
     seed('plans.list', PLANS);
     render(<SwarmTab active={true} />);
 
@@ -204,8 +206,8 @@ describe('<SwarmTab> selection + expansion', () => {
   it('folds the selected agent’s recent comms into the expansion', () => {
     nuqsState.lsa = 'bee-1';
     seed('dev.coordPresence', PRESENCE);
-    seed('sidebar.fleetBees', BEES);
-    seed('sidebar.beeMail', [
+    seed('sidebar.fleetCups', CUPS);
+    seed('sidebar.cupMail', [
       { owner: 'bee-1', inbox: [{ msg_id: 'm-in', from: 'mug', kind: 'task', summary: 'do X' }], outbox: [{ msg_id: 'm-out', to: ['mug'], kind: 'ack', summary: 'done Y' }] },
     ]);
     render(<SwarmTab active={true} />);

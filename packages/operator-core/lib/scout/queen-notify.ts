@@ -73,7 +73,7 @@ export interface DraftRoutedResult {
  * the resolved `owner` almost always targets a session that has ALREADY ENDED
  * by the time she next wakes under a different owner id: the durable send
  * lands in an inbox no future Queen session ever reads again. Confirmed live:
- * draft `scout-rubric-hive-coordination-health-scorecard-2026-06-26` sat
+ * draft `scout-rubric-pot-coordination-health-scorecard-2026-06-26` sat
  * unreviewed 3+ days despite this notify firing on route (WI-963 root cause).
  *
  * The fix: ALWAYS ALSO address the durable `@role:queen` slot selector.

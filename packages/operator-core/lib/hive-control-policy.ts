@@ -1,5 +1,5 @@
 /**
- * Hive control policy (live-configurability-audit-2026-06-20 P-015).
+ * Pot control policy (live-configurability-audit-2026-06-20 P-015).
  *
  * The placement-watchdog thresholds (breakerThreshold / recoveryDebounceMs / dormancyGraceMs /
  * infraBreakerThreshold) were PAPERCUSP_HIVE_PLACEMENT_* env gates read synchronously by
@@ -14,11 +14,16 @@
  * NOTE (D-005): placement AFFINITY weights are homed in pot:set-steering, NOT here — this carries only
  * the watchdog/liveness/health thresholds. (Work-distribution + system-health alarm thresholds can be
  * added to this same row incrementally — JSONB, no further migration.)
+ *
+ * NOTE (cup-lexicon-full-rename-2026-07-09 E6): only the TS-level identifiers below were renamed
+ * Hive→Pot; the backing DB table/state-key (`operator_hive_control_policy`, migration
+ * 350-operator-hive-control-policy.sql) is real schema and stays as-is — that rename is P-009
+ * (DB rename), scoped separately and intentionally LAST in this plan.
  */
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { registerOverrideConcern, type OverrideEntry } from './config-overrides/registry';
 
-export interface HiveControlPolicy {
+export interface PotControlPolicy {
   breakerThreshold?: number;
   recoveryDebounceMs?: number;
   dormancyGraceMs?: number;
@@ -26,7 +31,7 @@ export interface HiveControlPolicy {
 }
 
 /** The consumers' baked defaults — for diff/display + the tool's "default" reporting. */
-export const HIVE_CONTROL_DEFAULTS = {
+export const POT_CONTROL_DEFAULTS = {
   breakerThreshold: 3,
   recoveryDebounceMs: 5 * 60_000,
   dormancyGraceMs: 10 * 60_000,
@@ -34,55 +39,55 @@ export const HIVE_CONTROL_DEFAULTS = {
 } as const;
 
 // Sync cache so placementConfig() (sync, hot-ish per-sweep) can overlay the override without awaiting.
-let cached: HiveControlPolicy = {};
+let cached: PotControlPolicy = {};
 
 /** The current override (sync) — overlaid by placementConfig() over its env defaults. */
-export function placementOverride(): HiveControlPolicy {
+export function placementOverride(): PotControlPolicy {
   return cached;
 }
 
-export async function refreshHiveControlPolicy(): Promise<void> {
+export async function refreshPotControlPolicy(): Promise<void> {
   try {
-    cached = (await readOperatorState<HiveControlPolicy>('operator_hive_control_policy')) ?? {};
+    cached = (await readOperatorState<PotControlPolicy>('operator_hive_control_policy')) ?? {};
   } catch {
     /* keep the last value (empty at boot ⇒ env defaults) — never throw on the config path */
   }
 }
-void refreshHiveControlPolicy();
+void refreshPotControlPolicy();
 
-export async function readHiveControlPolicy(): Promise<HiveControlPolicy> {
-  return (await readOperatorState<HiveControlPolicy>('operator_hive_control_policy')) ?? {};
+export async function readPotControlPolicy(): Promise<PotControlPolicy> {
+  return (await readOperatorState<PotControlPolicy>('operator_hive_control_policy')) ?? {};
 }
 
-export async function writeHiveControlPolicy(patch: HiveControlPolicy): Promise<HiveControlPolicy> {
-  const next = { ...(await readHiveControlPolicy()), ...patch };
-  await writeOperatorState<HiveControlPolicy>('operator_hive_control_policy', next);
+export async function writePotControlPolicy(patch: PotControlPolicy): Promise<PotControlPolicy> {
+  const next = { ...(await readPotControlPolicy()), ...patch };
+  await writeOperatorState<PotControlPolicy>('operator_hive_control_policy', next);
   cached = next; // same-process immediate effect
   return next;
 }
 
-export async function setHiveControlPolicy(cfg: HiveControlPolicy): Promise<void> {
-  await writeOperatorState<HiveControlPolicy>('operator_hive_control_policy', cfg);
+export async function setPotControlPolicy(cfg: PotControlPolicy): Promise<void> {
+  await writeOperatorState<PotControlPolicy>('operator_hive_control_policy', cfg);
   cached = cfg;
 }
 
-export async function resetHiveControlPolicy(): Promise<void> {
-  await setHiveControlPolicy({});
+export async function resetPotControlPolicy(): Promise<void> {
+  await setPotControlPolicy({});
 }
 
 registerOverrideConcern({
   name: 'pot-control-policy',
-  description: 'hive placement-watchdog thresholds (breaker / recovery-debounce / dormancy-grace / infra-breaker)',
+  description: 'pot placement-watchdog thresholds (breaker / recovery-debounce / dormancy-grace / infra-breaker)',
   auditAction: 'pot:control_policy',
   diff: async () => {
-    const c = await readHiveControlPolicy();
+    const c = await readPotControlPolicy();
     const entries: OverrideEntry[] = [];
-    for (const k of Object.keys(HIVE_CONTROL_DEFAULTS) as (keyof HiveControlPolicy)[]) {
-      if (c[k] !== undefined) entries.push({ key: k, effective: c[k], default: HIVE_CONTROL_DEFAULTS[k], layer: 'pg-settings' });
+    for (const k of Object.keys(POT_CONTROL_DEFAULTS) as (keyof PotControlPolicy)[]) {
+      if (c[k] !== undefined) entries.push({ key: k, effective: c[k], default: POT_CONTROL_DEFAULTS[k], layer: 'pg-settings' });
     }
     return entries;
   },
-  capture: () => readHiveControlPolicy(),
-  reset: () => resetHiveControlPolicy(),
-  restore: (snap) => setHiveControlPolicy((snap as HiveControlPolicy) ?? {}),
+  capture: () => readPotControlPolicy(),
+  reset: () => resetPotControlPolicy(),
+  restore: (snap) => setPotControlPolicy((snap as PotControlPolicy) ?? {}),
 });

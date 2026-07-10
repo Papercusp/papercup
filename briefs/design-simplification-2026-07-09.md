@@ -191,16 +191,93 @@ Owner-approved 2026-07-09; executor: su ("implement it yourself from start to fi
   su-4dc3b's TEMPORARY potHomeSlugForHarness self-alias in hive-federation.ts
   (lexicon rename swept it into a duplicate export → broke vite build; zero
   old-name importers remained; su-4dc3b notified msg mre4liap).
-- **P-008** retire legacy harness dashboard (D2): keep-list above; retire
-  page components, FeatureEditor, InsightsPanel, PiTerminalsDock, dock/*,
-  AgentInspectorModal, TrustBadge, PrsTab, PiPanel + vite /harness/$slug route
-  (redirect → /adv). Inventory outside-importers per file FIRST. RESTORE.md +
-  conventions row + design-docs example-table updates + lint list updates.
-- **P-009** burn down design-primitives allowlists via `@` alias imports:
-  ToolUsagePanel (select+table), AdvOverviewTab (table), ModelOverride (select),
-  settings/p2p (table→GridTable), SentinelVoiceBar title=→Tooltip. ⚠ LeftSidebar
-  title= tab tips are an OWNER ASK (2026-06-23) yet lint-allowlisted as
-  "temporary" — ASK owner: bless as documented carve-out vs migrate.
+- **P-008** [DONE 2026-07-09 — retire set derived by INVENTORY, several audit
+  hypotheses flipped to KEEP] retire legacy harness dashboard (D2). Method:
+  per-file outside-importer inventory + reachability closure over intra-harness
+  imports (scripts: session scratchpad p008-inventory.mjs / p008-closure.mjs;
+  keep-root = imported by any live file outside the retiring surface, tests
+  follow subjects). 42 harness files + 7 vite route files + e2e/dock.spec.ts →
+  `_retired/harness-dashboard/` (RESTORE.md has the full manifest):
+  [slug]/* pages, dock/sample-panels + Real*/Pinned* panels (sample-panels was
+  their ONLY registration path — HarnessDockShell + dock-preview only),
+  DockNavChevrons/DockOnboarding/LayoutsMenu/useDockLayout, InsightsPanel/
+  MemoryBrowser/PromptsTab/PromptBudgetView (zero importers),
+  InsightsFirstVisitGate, h-proposals.css (NO importer anywhere — the
+  .h-proposals-* rules in harness.css are separate; P-007 flattened a dead
+  file, harmless). Vite /harness/$slug/** → NEW `routes/harness/$.tsx` splat
+  redirect (slug → /adv?tab=harnesses&slug=…, /insights → tab=insights; + test;
+  index.tsx stale comment updated; routeTree regenerated, 0 $slug refs).
+  ⚠ AUDIT-LIST ENTRIES THAT STAYED (live importers — do NOT re-retire):
+  dock ENGINE (panel-registry 26 importers, HarnessDock/dock-actions/
+  AddPanelCatalog/close-guard/workbench-panels — /adv + /workbench are BUILT on
+  it), AgentInspectorModal + AgentThinkingStream (vite AgentsRunningPill/
+  AgentsPillSessions), TrustBadge (WorkItemsPanel), PrsTab (AdvPrsPanel),
+  FeatureEditor (DetailPanel), InsightsTab (AdvInsightsPanel), insights
+  Substrate*/BootHistory*/ClaimAttempt* cards (admin/dogfood-substrate both
+  trees), PiTerminalsDock/PiPanel (live /pi route both trees + LeftSidebar/
+  DevAdminRail links + plugin-panel lazy mapping in useRegisterPluginPanels +
+  ChatPanel imports PiPanel.css — retiring /pi is an owner call OUTSIDE D2, not
+  taken). En-route (the 2 P-005-skipped offenders that turned out LIVE):
+  AgentInspectorModal hex statuses → TONE.*; BootHistoryTable KIND_COLOR moved
+  to theme.ts BOOT_HISTORY_KIND_COLOR (+FALLBACK; WI-3604 peer added
+  dht_universe_* entries concurrently — coordinated fine). Status-map lint
+  warn output now EXACTLY the 2 P-016 categorical maps (AdvConversationsTab
+  KIND_COLOR + CupboardClient KIND_TONES) — flip enforce:true lands in P-016.
+  Also: testing-domains-registry e2e glob pruned (dock.spec.ts) + gen:contract;
+  conventions retired-table row + CLAUDE.md roster (+ missing legacy-web-chats
+  entry backfilled in both _retired/README.md and roster); design/index.mdx
+  RichGrid examples repointed to BootHistoryTable. NOT done here: AgentThinking
+  Stream green/grey literals (never on the P-005 skip list) → P-016. Verified:
+  _lints 21/21, component tests 25/25, route tests 15/15, vite build green
+  (routeTree clean), test:affected (see plan store).
+- **P-009** `[DONE 2026-07-09 — HALF THE RETIRE-LIST WAS A LINT BUG, NOT A MIGRATION]`
+  Burn down the design-primitives allowlists. As with P-008, INVENTORY FIRST flipped
+  the premise: the allowlists' stated rationale — *"the shared Select/Table primitive
+  lives in apps/operator and isn't yet available to operator-vite"* — was **never
+  true**. operator-vite's `vite.config.ts` aliases `@` → operatorRoot; 9 vite files
+  already import `@/app/harness/Select`, 21 import `@/app/harness/Tooltip`.
+
+  **Two silent lint bugs (EI-8904), failing in OPPOSITE directions:**
+  1. Rules scanned raw content, **comments included** — so a file that *documents*
+     a banned primitive was flagged for using one. FOUR entries were pure phantoms:
+     `ToolUsagePanel` (its own docstring says "no native `<select>`/`<table>`"),
+     `AdvOverviewTab` (a `<table>.changed` prose mention), and the `Select.tsx` /
+     `Checkbox.tsx` Radix wrappers (JSDoc "Replaces: `<select …>`") — **none contain
+     the primitive they were allowlisted for.** Self-perpetuating: a peer migrated
+     `FleetStatusPanel` off its native `<table>`, and their *comment saying so*
+     re-triggers the rule.
+  2. `unexpectedFiles()` ran `pattern.test(content)` with a **`/g` regex in a loop**.
+     `.test()` on `/g` advances `lastIndex`, so the next file resumes mid-string and
+     its offence is silently missed. Six rules routed through it → roughly every
+     other real offender went unreported. (This is why the lint looked green.)
+
+  **Fix:** `stripComments()` (offset/line-preserving, conservative: only line-start
+  block comments + whole-line `//`; never a mid-line `/*`, which may be a glob in a
+  string; unterminated block → left alone), `matchesAnywhere()` (fresh non-global
+  clone per test), `readCode()` memo (~35% faster). 8 new unit tests pin both,
+  including a "KEEPS real code" guard and the `/g` regression.
+
+  **Real migrations** (the only genuine offenders): `ModelOverride` 2×`<select>` →
+  `Select` (needs sentinels `NO_MODEL`/`NO_EFFORT` — Radix rejects `value=""` and the
+  wrapper drops such options, which would have silently eaten "(workspace default)");
+  `settings/p2p` 2×`<table>` → `Table` (+ new optional `rowStyle` prop on the
+  primitive for the dimmed revoked row); `PapercupVoiceBar` 5×`title=` → `Tooltip`
+  (file is `PapercupVoiceBar.tsx`, not "SentinelVoiceBar" — lexicon rename).
+  ⚠ **`settings/p2p` went to `Table`, not GridTable** — `harness/Table.tsx` (WI-3561)
+  postdates this brief line.
+
+  **OWNER-GATED, resolved by disclosure not silence:** LeftSidebar tab tips.
+  Migrated `title=` → `Tooltip` with **every tip string preserved verbatim** — that
+  implements the 2026-06-23 owner ask properly rather than violating it (styled,
+  250ms vs the OS's ~1s, `role="tablist" > role="tab"` unchanged since Radix
+  Provider/Root render no DOM). Disclosed to owner (`conv-mre8dcyf…`, unanswered —
+  owner away ~52h); revert = re-add `title=` + a *documented owner carve-out* in the
+  lint instead of a "temporary" entry.
+
+  **As-shipped:** every allowlist EMPTY except `harness/Table.tsx` (the one genuine
+  native `<table>`, wrapped once). Verified: `_lints` 29/29 (was 21), vite components
+  29/29, p2p page 9/9. Do NOT re-add an allowlist entry for a file that merely
+  mentions a primitive in a comment — that bug is fixed; fix your file, not the list.
 - **P-010** globals.css split (26,935 lines/834KB; .operator-* 2001, .pc-* 1468,
   .oracle-* 318): DELETE dead .oracle-*/.op-chat-* blocks (post P-003), extract
   Deck/feed chrome → deck.css, etc. Brace-balanced splitter + frost/black visual

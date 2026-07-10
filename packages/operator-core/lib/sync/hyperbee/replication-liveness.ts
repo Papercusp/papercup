@@ -106,7 +106,13 @@ export type ReplicationLogVerdict =
   | 'never_connected'
   | 'no_replicator'
   | 'frozen'
-  | 'sampling_stale';
+  | 'sampling_stale'
+  // WI-3604: this harness's process resolved a DIFFERENT DHT universe than
+  // the operator's declared expectation (see swarm.ts's assertDhtUniverse) —
+  // EVERY admitted log in the harness reads this verdict instead of
+  // no_replicator/frozen, so the split-DHT-universe outage class is a
+  // DISTINCT diagnosis, not indistinguishable "connected-but-dead".
+  | 'dht_universe_mismatch';
 
 /** Read-time view of one tracked log. */
 export interface ReplicationLogLiveness {
@@ -143,7 +149,13 @@ export interface HarnessReplicationLiveness {
     noReplicator: number;
     frozen: number;
     samplingStale: number;
+    dhtUniverseMismatch: number;
   };
+  /** WI-3604: true when this harness's process is currently flagged as having
+   * resolved the wrong DHT universe (see `setDhtUniverseAssertion`). */
+  dhtUniverseMismatch: boolean;
+  /** Human-readable detail for the mismatch, when `dhtUniverseMismatch`. */
+  dhtUniverseDetail?: string;
 }
 
 interface LogState {
@@ -182,6 +194,36 @@ const registry = new Map<string, Map<string, LogState>>();
 
 const hKey = (workspaceId: string, harnessSlug: string): string =>
   `${workspaceId}::${harnessSlug}`;
+
+/**
+ * WI-3604: per-harness DHT-universe assertion state, set once per join
+ * (boot.ts `joinForBinding`, right after `getSharedSwarm()` resolves) via
+ * {@link setDhtUniverseAssertion}. Separate from `registry` because the
+ * mismatch flag must be visible even for a harness with ZERO sampled logs
+ * yet (or none at all) — `getReplicationLiveness` iterates the UNION of both
+ * maps' keys.
+ */
+const dhtUniverseState = new Map<string, { mismatched: boolean; detail: string }>();
+
+/**
+ * Record this process's DHT-universe assertion result for one harness — feeds
+ * the `dht_universe_mismatch` verdict axis. Call once per join, right after
+ * `getSharedSwarm()` resolves (see boot.ts `joinForBinding`). `ok:true` clears
+ * any previously-recorded mismatch for this harness (e.g. a later re-join
+ * after the misconfiguration was fixed).
+ */
+export function setDhtUniverseAssertion(
+  workspaceId: string,
+  harnessSlug: string,
+  assertion: { ok: boolean; detail: string },
+): void {
+  const key = hKey(workspaceId, harnessSlug);
+  if (assertion.ok) {
+    dhtUniverseState.delete(key);
+  } else {
+    dhtUniverseState.set(key, { mismatched: true, detail: assertion.detail });
+  }
+}
 
 /**
  * Default grace (ms) a stall condition must hold before an episode fires.
@@ -604,7 +646,17 @@ export function sampleReplicationLiveness(
   }
 }
 
-function deriveVerdict(st: LogState, now: number, graceMs: number): ReplicationLogVerdict {
+function deriveVerdict(
+  st: LogState,
+  now: number,
+  graceMs: number,
+  harnessMismatched = false,
+): ReplicationLogVerdict {
+  // WI-3604: a flagged DHT-universe mismatch overrides every other axis for
+  // this harness's logs — the split-DHT-universe outage class must read as
+  // ITS OWN distinct verdict, never indistinguishable "connected-but-dead"
+  // (no_replicator/frozen) or a stale-sampler false alarm.
+  if (harnessMismatched) return 'dht_universe_mismatch';
   if (now - st.lastSampleMs >= SAMPLING_STALE_AFTER_MS) return 'sampling_stale';
   // Alarm states (edge-latched) OR live-derived equivalents — read-time truth
   // even between samples.
@@ -657,20 +709,35 @@ export function getReplicationLiveness(
   const now = opts.nowMs ?? Date.now();
   const graceMs = opts.graceMs ?? DEFAULT_LIVENESS_GRACE_MS;
   const out: HarnessReplicationLiveness[] = [];
-  for (const [key, logs] of registry) {
+  // WI-3604: iterate the UNION of registry keys ∪ dhtUniverseState keys — a
+  // harness may have the mismatch flag set with zero sampled logs (e.g. it
+  // just joined and hasn't admitted any remote logs yet, or has none).
+  const allKeys = new Set<string>([...registry.keys(), ...dhtUniverseState.keys()]);
+  for (const key of allKeys) {
     const sep = key.indexOf('::');
     const workspaceId = key.slice(0, sep);
     const harnessSlug = key.slice(sep + 2);
     if (opts.workspaceId && workspaceId !== opts.workspaceId) continue;
     if (opts.harnessSlug && harnessSlug !== opts.harnessSlug) continue;
+    const logs = registry.get(key);
+    const mismatch = dhtUniverseState.get(key);
+    const harnessMismatched = mismatch?.mismatched ?? false;
     const rows: ReplicationLogLiveness[] = [];
-    const counts = { live: 0, neverConnected: 0, noReplicator: 0, frozen: 0, samplingStale: 0 };
-    for (const st of logs.values()) {
-      const verdict = deriveVerdict(st, now, graceMs);
+    const counts = {
+      live: 0,
+      neverConnected: 0,
+      noReplicator: 0,
+      frozen: 0,
+      samplingStale: 0,
+      dhtUniverseMismatch: 0,
+    };
+    for (const st of logs?.values() ?? []) {
+      const verdict = deriveVerdict(st, now, graceMs, harnessMismatched);
       if (verdict === 'live') counts.live += 1;
       else if (verdict === 'never_connected') counts.neverConnected += 1;
       else if (verdict === 'no_replicator') counts.noReplicator += 1;
       else if (verdict === 'frozen') counts.frozen += 1;
+      else if (verdict === 'dht_universe_mismatch') counts.dhtUniverseMismatch += 1;
       else counts.samplingStale += 1;
       rows.push({
         keyHex: st.keyHex,
@@ -686,7 +753,14 @@ export function getReplicationLiveness(
         lastSwarmConnections: st.lastSwarmConnections,
       });
     }
-    out.push({ workspaceId, harnessSlug, logs: rows, counts });
+    out.push({
+      workspaceId,
+      harnessSlug,
+      logs: rows,
+      counts,
+      dhtUniverseMismatch: harnessMismatched,
+      ...(mismatch?.detail ? { dhtUniverseDetail: mismatch.detail } : {}),
+    });
   }
   return out;
 }
@@ -779,6 +853,7 @@ export function dropReplicationLiveness(workspaceId: string, harnessSlug: string
 /** Test seam — wipe the registry between tests. */
 export function _resetReplicationLivenessForTests(): void {
   registry.clear();
+  dhtUniverseState.clear();
   episodeReporter = null;
   episodeRecoveredReporter = null;
 }

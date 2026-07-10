@@ -66,6 +66,19 @@ declare module 'protomux' {
      */
     pair(opts: { protocol: string; id?: Buffer | null }, notify: (id: Buffer | null) => void | Promise<void>): void;
     unpair(opts: { protocol: string; id?: Buffer | null }): void;
+    /**
+     * Batch outgoing writes: while corked, this mux's channel-open/message
+     * frames accumulate in an internal buffer instead of hitting
+     * `stream.write()` individually; `uncork()` flushes them as ONE
+     * `_sendBatch` write, decoded on the peer via protomux's own
+     * multi-message `_onbatch` loop. Used (WI-3583) to make a raw,
+     * unframed test socket immune to the peer's `_ondata` path decoding
+     * only ONE message per 'data' event — real production transports
+     * (NoiseSecretStream) don't need this since they frame every write.
+     * `cork`/`uncork` nest (paired calls only flush at the outermost).
+     */
+    cork(): void;
+    uncork(): void;
   }
 }
 

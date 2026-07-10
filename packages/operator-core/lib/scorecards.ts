@@ -5,7 +5,7 @@
  * A "scorecard" is a RUBRIC-GRADED structured observation: an
  * `engineer_issues.payload.observation` carrying a `rubricRef` + a `ratings`
  * Record (one rating+evidence per rubric criterion key). The Overwatch emits one
- * every turn against the `hive-coordination-health` rubric; Scout's digest (B9 /
+ * every turn against the `pot-coordination-health` rubric; Scout's digest (B9 /
  * rubric-driven-observations P-006) consumes them. Until now they were
  * WRITE-ONLY — invisible except via raw PG (the verification gap D-005 found:
  * partial scorecards + emission stalls could not be seen). This is the READ tool
@@ -25,13 +25,13 @@ import {
   asStructuredObservation,
   type ObservationRatings,
 } from './harness/improvements/observation-types';
-import { issuesScopeWorkspace } from './issues-engineer';
+import { issuesScopeWorkspace, issuesOutLinksMany } from './issues-engineer';
 import { getRubric } from './rubrics';
 
 /** The owner-mandated built-in rubric whose prompt/backstop contract is fixed. */
-export const HIVE_COORDINATION_HEALTH_RUBRIC = 'hive-coordination-health';
+export const HIVE_COORDINATION_HEALTH_RUBRIC = 'pot-coordination-health';
 
-/** The canonical 14 keys for hive-coordination-health. This is a fallback for
+/** The canonical 14 keys for pot-coordination-health. This is a fallback for
  * read-side completeness only: if the rubric-template store is temporarily
  * unreachable/unresolvable, the monitor-of-monitor must not mark a 14-key
  * owner-mandated scorecard partial. Unknown rubrics still stay unresolved. */
@@ -98,6 +98,15 @@ export interface ScorecardRow {
    * scorecards get it automatically (numeric "backfill" with no migration).
    */
   score10: number | null;
+  /**
+   * Outbound coord_links edges from this scorecard's issue (WI-3594: the
+   * scorecard→improvement flow) — e.g. a `relates`/`fixes` edge to the
+   * improvement/work-item this grading is about, when one was linked at file
+   * time (via `improvements:capture`'s `observation.linkTo`, or `work_items:link`
+   * after the fact). Empty when nothing is linked; excludes `tagged` (topic tags
+   * are not references).
+   */
+  linkedItems: { rel: string; dst: { kind: string; ref: string } }[];
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -168,7 +177,7 @@ export function scorecardScore10(
 }
 
 export interface ListScorecardsFilter {
-  /** Restrict to one rubric (e.g. 'hive-coordination-health'). */
+  /** Restrict to one rubric (e.g. 'pot-coordination-health'). */
   rubricRef?: string;
   /** Restrict to scorecards from one source-hive. */
   sourceHive?: string;
@@ -229,6 +238,9 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
   // its criterion keys (completeness) + its scale-aware score overrides (projection).
   const rubricMeta = new Map<string, { keys: string[] | null; overrides?: Record<string, number> }>();
   const out: ScorecardRow[] = [];
+  // WI-3594: batch-fetch every row's outbound links in ONE query (no N+1) rather
+  // than a per-row listOut — a scorecard page can be up to `limit` (500) rows.
+  const linksByIssue = await issuesOutLinksMany(rows.map((r) => r.issue_id));
 
   for (const row of rows) {
     const observation = asStructuredObservation((row.payload as { observation?: unknown } | null)?.observation);
@@ -266,6 +278,7 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
       rubricResolved,
       synthesized,
       score10: scorecardScore10(ratings, meta.overrides),
+      linkedItems: linksByIssue.get(row.issue_id) ?? [],
     });
   }
 

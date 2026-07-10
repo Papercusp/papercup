@@ -55,7 +55,7 @@ describe('config:reset-overrides', () => {
   it('rejects a role without operator-config write authority (e.g. bee)', async () => {
     await expect(
       tool.handler({ concern: 'fake-concern' } as never, { role: 'cup' } as never),
-    ).rejects.toThrow(/operator, architect, or queen/i);
+    ).rejects.toThrow(/operator, architect, or mug/i);
   });
 
   it('accepts the queen (operator-equivalent, EI-2204)', async () => {

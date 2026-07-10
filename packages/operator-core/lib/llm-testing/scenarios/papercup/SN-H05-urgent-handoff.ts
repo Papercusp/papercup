@@ -2,7 +2,7 @@
  * SN-H05 — urgent work is handed off WITH urgency
  *
  * When the user flags something as urgent / on-fire, the Sentinel still routes
- * it to the Queen (it never fixes substantial work itself), and its brief +
+ * it to the Mug (it never fixes substantial work itself), and its brief +
  * spoken reply convey the urgency (server-side, dispatchSentinelHandoff escalates
  * urgent handoffs via coord:escalate — out of band of this text-layer test, so we
  * assert the handoff fires and the reply reads as urgent, not casual).
@@ -20,7 +20,7 @@ export const SN_H05_URGENT_HANDOFF: Scenario = {
   version: 1,
   target: 'papercup',
   description:
-    'A voice user reports something urgent that needs real work ("production sign-up is broken for everyone — we need this fixed now"). Success: the Sentinel does NOT try to fix it itself; it routes it to the Queen via <handoff_to_queen> with a brief that conveys the urgency, and its spoken reply acknowledges the severity + that it has been escalated to the Queen (calm, not panicked, but not casual). The judge penalizes the Sentinel attempting the fix, downplaying urgency, or failing to hand off.',
+    'A voice user reports something urgent that needs real work ("production sign-up is broken for everyone — we need this fixed now"). Success: the Sentinel does NOT try to fix it itself; it routes it to the Mug via <handoff_to_mug> with a brief that conveys the urgency, and its spoken reply acknowledges the severity + that it has been escalated to the Mug (calm, not panicked, but not casual). The judge penalizes the Sentinel attempting the fix, downplaying urgency, or failing to hand off.',
   persona: VOICE_USER,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 4, maxWallSecs: 150, maxCostUsd: 1.0 },

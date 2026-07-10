@@ -23,7 +23,9 @@ function mkSetter(key: string) {
   return setters[key];
 }
 
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   useQueryState: (key: string) => [nuqs[key], mkSetter(key)],
   parseAsString: { withDefault: () => ({}) },
 }));

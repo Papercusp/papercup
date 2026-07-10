@@ -75,6 +75,13 @@ type LifecycleState =
   | 'accepted'  // user clicked Accept and the action succeeded
   | 'ignored';  // user clicked Ignore
 
+/**
+ * Undo window for an auto-firing card: how long the user has to cancel before
+ * the directive dispatches. Was a `10_000` literal repeated at every site that
+ * set `autoDispatchAt`; named here so the spoken cancel cue
+ * (`speakBackgroundToasts`) can quote the same number the timer counts down.
+ */
+const AUTO_FIRE_UNDO_MS = 10_000;
 
 function normalizeLifecycleState(status: unknown): LifecycleState {
   if (status === 'accepted' || status === 'dispatched' || status === 'consumed') return 'accepted';
@@ -831,7 +838,7 @@ export function OperatorPanel(): ReactElement | null {
           ? { ...raw, auto_dispatch: nextAuto }
           : raw;
         setSuggestions((prev) => {
-          const autoDispatchAt = s.auto_dispatch ? Date.now() + 10_000 : undefined;
+          const autoDispatchAt = s.auto_dispatch ? Date.now() + AUTO_FIRE_UNDO_MS : undefined;
           const idx = prev.findIndex((c) => c.id === s.id);
           if (idx >= 0) {
             // Stable-id collision. Pending cards get their content
@@ -896,6 +903,22 @@ export function OperatorPanel(): ReactElement | null {
         if (getVoiceState().mode !== 'off') {
           import('./voice/voice-prefs-client').then(({ loadVoicePrefsClient }) => {
             const prefs = loadVoicePrefsClient();
+            // A card that will auto-fire is announced by `speakBackgroundToasts`
+            // ("Speak background auto-fire toasts (with cancel cue)") instead of the
+            // plain arrival read — it carries the same title PLUS the undo cue, so
+            // speaking both would double up. settings-audit 2026-07-09: this pref was
+            // rendered + persisted but read by NOTHING, so the auto-fire toast never
+            // spoke its cancel cue and the toggle did nothing.
+            if (s.auto_dispatch) {
+              if (!prefs.speakBackgroundToasts) return;
+              const secs = Math.round(AUTO_FIRE_UNDO_MS / 1000);
+              speak(
+                `Auto-firing ${s.title} in ${secs} second${secs === 1 ? '' : 's'}. Say cancel to stop it.`,
+                'system:operator',
+                s.actualTier === 'high' ? 'assertive' : 'polite',
+              );
+              return;
+            }
             if (!prefs.speakSuggestions) return;
             let suffix = '';
             if (s.provenanceFlags?.tierMismatch) suffix += ' Warning: tier mismatch — substrate forced authoritative.';
@@ -993,7 +1016,7 @@ export function OperatorPanel(): ReactElement | null {
             ...rest,
             status,
             acceptedAt: status === 'accepted' ? _dispatchedAt : undefined,
-            autoDispatchAt: rest.auto_dispatch && status === 'pending' ? Date.now() + 10_000 : undefined,
+            autoDispatchAt: rest.auto_dispatch && status === 'pending' ? Date.now() + AUTO_FIRE_UNDO_MS : undefined,
             undoCancelled: _undoCancelled,
           };
         }));
@@ -1069,7 +1092,7 @@ export function OperatorPanel(): ReactElement | null {
       const next = prev.map((c) => {
         if (c.status !== 'pending' || !c.auto_dispatch || c.autoDispatchAt) return c;
         touched = true;
-        return { ...c, autoDispatchAt: Date.now() + 10_000 };
+        return { ...c, autoDispatchAt: Date.now() + AUTO_FIRE_UNDO_MS };
       });
       return touched ? next : prev;
     });

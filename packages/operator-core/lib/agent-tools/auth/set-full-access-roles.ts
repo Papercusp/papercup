@@ -55,7 +55,7 @@ export default defineTool({
     }
 
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('auth:set_full_access_roles requires operator, architect, or queen role');
+      throw new Error('auth:set_full_access_roles requires operator, architect, or mug role');
     }
 
     const nextRoles = args.op === 'clear' ? null : args.roles;

@@ -6,7 +6,7 @@ A routine that fires an inbox-wake (e.g. system:wake-brain) must NOT add its own
 ## What
 
 Any routine whose job is to **fire an inbox-wake** for an agent — `system:wake-brain`
-(the autonomous-Queen cadence), the watchdog manual-mode backstop, a peer's
+(the autonomous-Mug cadence), the watchdog manual-mode backstop, a peer's
 `coord:send {wake:true}` — should resolve the target owner and fire the wake,
 **full stop**. It must NOT add a heartbeat/`coord_presence` liveness check that
 decides "this session looks dead, skip the wake" (or worse, clears a durable pin).
@@ -15,7 +15,7 @@ Liveness is owned, end to end, by the **wake-executor** (`lib/events/await/wake-
 the liveness-ADAPTIVE re-invoke ladder the await-event pump runs for each due delivery:
 
 * **live managed pty** (pid match) → inject the wake turn.
-* **live but in a psu-hosted session** (the common interactive psu/Queen case —
+* **live but in a psu-hosted session** (the common interactive psu/Mug case —
   the pty lives in the psu process, invisible to `findPty`) → `findPsuHost(owner)`
   injects into its control socket in place (channel 1b).
 * **process exited / dead** → resume headless: `claude --resume <uuid> -p …`

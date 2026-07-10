@@ -284,3 +284,73 @@ describe('fileFindings exact watchdogKey pre-filter (EI-7254)', () => {
     expect(captureImprovementMock.mock.calls[0]![0].kind).toBe('bug');
   });
 });
+
+describe('fileFindings host-contention gate (EI-8843)', () => {
+  beforeEach(() => {
+    captureImprovementMock.mockClear();
+    findIssuesByWatchdogKeysMock.mockClear();
+    findIssuesByWatchdogKeysMock.mockResolvedValue([]);
+  });
+
+  function summaryWith(overrides: Partial<RunSummary>): RunSummary {
+    return {
+      runId: 'r1',
+      profile: 'ci',
+      outDir: '/tmp/out',
+      reportPath: '/tmp/out/report.md',
+      scenarioFailures: [],
+      sloViolations: [],
+      regressions: [],
+      artifacts: [],
+      baselineCompared: true,
+      ...overrides,
+    } as RunSummary;
+  }
+
+  it('skips ALL auto-filing (regressions AND SLO violations) when the run sampled an oversubscribed host', async () => {
+    const { fileFindings } = (await import('./p2p-perf-actions'))._testing;
+
+    await fileFindings(
+      summaryWith({
+        regressions: [
+          { scenario: 'merge.delta-tick', paramsKey: 'historySize=1000,seed=1234', metric: 'deltaTick1000Ms', baseline: 146.982, current: 1068.699, relChange: 6.27 },
+        ],
+        sloViolations: [{ scenario: 'churn.reconnect-storm', paramsKey: 'historySize=10000,readers=4,seed=1234,winners=3710', p95Ms: 812, limitMs: 500 }],
+        hostLoad: { loadavg1m: 150, cpus: 128, ratio1m: 1.17, oversubscribed: true },
+      }),
+      'nightly Tier-1',
+    );
+
+    expect(captureImprovementMock).not.toHaveBeenCalled();
+    expect(findIssuesByWatchdogKeysMock).not.toHaveBeenCalled();
+  });
+
+  it('files normally when hostLoad is present but NOT oversubscribed', async () => {
+    const { fileFindings } = (await import('./p2p-perf-actions'))._testing;
+
+    await fileFindings(
+      summaryWith({
+        regressions: [
+          { scenario: 'merge.delta-tick', paramsKey: 'historySize=1000,seed=1234', metric: 'deltaTick1000Ms', baseline: 146.982, current: 1068.699, relChange: 6.27 },
+        ],
+        hostLoad: { loadavg1m: 20, cpus: 128, ratio1m: 0.16, oversubscribed: false },
+      }),
+      'nightly Tier-1',
+    );
+
+    expect(captureImprovementMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('files normally when hostLoad is absent (older/mocked summaries — backward compatible)', async () => {
+    const { fileFindings } = (await import('./p2p-perf-actions'))._testing;
+
+    await fileFindings(
+      summaryWith({
+        sloViolations: [{ scenario: 'churn.reconnect-storm', paramsKey: 'historySize=10000,readers=4,seed=1234,winners=3710', p95Ms: 812, limitMs: 500 }],
+      }),
+      'nightly Tier-1',
+    );
+
+    expect(captureImprovementMock).toHaveBeenCalledTimes(1);
+  });
+});

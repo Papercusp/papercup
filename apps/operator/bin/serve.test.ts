@@ -64,6 +64,38 @@ describe('pidAlive', () => {
   });
 });
 
+describe('isOrphanedFromParent (EI-8894)', () => {
+  it('is false when the ppid is unchanged', () => {
+    expect(serve.isOrphanedFromParent(100, 100)).toBe(false);
+  });
+  it('is true when the ppid changed (reparented — original parent gone)', () => {
+    expect(serve.isOrphanedFromParent(100, 1)).toBe(true);
+    expect(serve.isOrphanedFromParent(100, 42)).toBe(true);
+  });
+  it('is false when there was no original parent to compare against (0)', () => {
+    expect(serve.isOrphanedFromParent(0, 1)).toBe(false);
+  });
+});
+
+describe('startParentDeathWatch (EI-8894)', () => {
+  const origDesktop = process.env.PAPERCUSP_DESKTOP;
+  afterEach(() => {
+    if (origDesktop === undefined) delete process.env.PAPERCUSP_DESKTOP;
+    else process.env.PAPERCUSP_DESKTOP = origDesktop;
+  });
+
+  it('is a no-op outside desktop mode (PAPERCUSP_DESKTOP unset) — never fires the callback', () => {
+    delete process.env.PAPERCUSP_DESKTOP;
+    let fired = false;
+    // No timer is armed at all in this mode; calling it must not throw and
+    // must not schedule anything that could later fire.
+    expect(() => serve.startParentDeathWatch(() => {
+      fired = true;
+    })).not.toThrow();
+    expect(fired).toBe(false);
+  });
+});
+
 describe('writeJsonAtomic + readOperatorDiscovery', () => {
   afterEach(() => {
     rmSync(operatorJson(), { force: true });

@@ -150,7 +150,7 @@ Canonical ASCII form:
   text like `importance:`. Values `trivial | low | moderate | high |
   critical`; an unrecognised value degrades silently to *no tier*
   (no parse warning). Feeds the autonomy-risk / needs-human
-  derivation (`queen-autonomy-policy`), not the ranker.
+  derivation (`mug-autonomy-policy`), not the ranker.
 * **`authority:`** — keyword, glyph-agnostic and stripped from the
   visible text the same way. Values `system | owner`, default
   `system`; an unknown value degrades silently to the default.

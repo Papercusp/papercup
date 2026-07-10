@@ -57,5 +57,5 @@ watchdog's output feeds the same lane it watches, scope its alarm to failures th
 
 * `packages/operator-core/lib/harness/improvements/{orphaned-dispatch,implement-worker-exit,dispatch-ledger}.ts`
 * EI-403 (durable dispatch + host-restart Option B recovery), EI-404 (worker-exit back-edge), EI-406 (env-failure attempt rollback).
-* The nursery-slot sibling (EI-493/EI-85): a dead bee whose `localSpawnAborts` entry leaks keeps being heartbeated
+* The nursery-slot sibling (EI-493/EI-85): a dead cup whose `localSpawnAborts` entry leaks keeps being heartbeated
   → never goes stale → never reclaimed → holds a ceiling slot. Same family (a dead worker's cleanup not firing), different layer (fleet spawn/heartbeat).

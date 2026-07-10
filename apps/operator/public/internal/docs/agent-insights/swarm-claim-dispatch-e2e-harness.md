@@ -7,20 +7,20 @@ import { Aside } from '@astrojs/starlight/components';
 
 P-013 of [`decentralized-dispatch-scaling-2026-06-08`](/internal/docs/plans) asks for
 the one thing the unit/integration layers can't give: **≥3 real Swarms, across
-instances, each claiming DIFFERENT items off one Hive backlog with no central
+instances, each claiming DIFFERENT items off one Pot backlog with no central
 dispatcher; kill the authority mid-run → fail-open reconcile; assert no
 double-completed work + no starvation.** This is the harness that proves it, and the
 two non-obvious things that decide whether a real run passes.
 
 ## The shape — reuse su-116e7's Hetzner harness, add a claim scenario
 
-The federation harness (`p2p-perf-tier3` + `hive-cross-machine.integration.test.ts`)
+The federation harness (`p2p-perf-tier3` + `pot-cross-machine.integration.test.ts`)
 already provisions real frames and ships the runtime. The claim E2E plugs into it:
 
 * **`claim-agent.ts`** — ONE Swarm as an OS process (the claim analog of
   `sync/hyperbee/perf/peer-child.ts`). It runs the **real** decentralized-claim
   machinery: `routeToAuthorityForHive` (argmin-device-pubkey election over an injected
-  Hive presence roster), the real `HttpPeerRpcTransport` → `POST /api/authority/rpc` →
+  Pot presence roster), the real `HttpPeerRpcTransport` → `POST /api/authority/rpc` →
   `handleAuthorityRpc` (it serves that endpoint for ops routed to it when elected
   authority), fail-open on an unreachable authority, and a work-stealing claim loop.
 * **`claim-launcher.ts`** — `localClaimLauncher` (N child processes on loopback, the $0

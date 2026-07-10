@@ -42,8 +42,20 @@ const loadHarnessRegistryMock = vi.fn(async (_ws?: string) => ({
     hive_slug?: string;
   }>,
 }));
+// The ephemeral-foreign surface is mocked alongside loadHarnessRegistry because
+// boot-all's projection graph (projections/p2p-peer-grants → p2p/revocation-reaper,
+// offer-executor-prod-deps, foreign-clone) transitively imports it. Mocking only
+// loadHarnessRegistry left those exports undefined on the mock, which fails the
+// whole suite at import time rather than at any assertion. Listing the full
+// surface (as lib/fleet/operator-spawn.test.ts does) also keeps a FUTURE
+// transitive import from silently reintroducing the same break.
 vi.mock('../../../harness-registry', () => ({
   loadHarnessRegistry: (ws?: string) => loadHarnessRegistryMock(ws),
+  isEphemeralForeignProject: (p: { ephemeral_foreign?: boolean }) => p.ephemeral_foreign === true,
+  ephemeralForeignHarnessSlug: (offerId: string) => `foreign-${offerId}`,
+  registerEphemeralForeignHarness: vi.fn(),
+  deregisterEphemeralForeignHarness: vi.fn(async () => false),
+  sweepOrphanedEphemeralForeignHarnesses: vi.fn(async () => ({ swept: 0, removed: [] })),
 }));
 
 function fakeHandle(workspaceId: string, harnessSlug: string): BootedHarnessHandle {

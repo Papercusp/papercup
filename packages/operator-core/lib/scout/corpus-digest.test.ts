@@ -76,8 +76,8 @@ const completions: ChangeFeedEntry[] = [
 // source-hive; the pure-`healthy` criteria must drop out of the surfaced lane.
 const observations: StructuredObservationRecord[] = [
   {
-    id: 'EI-OBS-1', title: 'hive-coordination-health scorecard',
-    sourceHive: 'papercusp', rubricRef: 'hive-coordination-health', lastSeenMs: msAgo(1),
+    id: 'EI-OBS-1', title: 'pot-coordination-health scorecard',
+    sourceHive: 'papercusp', rubricRef: 'pot-coordination-health', lastSeenMs: msAgo(1),
     ratings: {
       'end-to-end-flow': { rating: 'broken', evidence: '88 items unplaced despite idle capacity' },
       'ideation-quality': { rating: 'healthy', evidence: 'lens weights diverged from uniform' },
@@ -85,8 +85,8 @@ const observations: StructuredObservationRecord[] = [
     },
   },
   {
-    id: 'EI-OBS-2', title: 'hive-coordination-health scorecard',
-    sourceHive: 'papercusp', rubricRef: 'hive-coordination-health', lastSeenMs: msAgo(3),
+    id: 'EI-OBS-2', title: 'pot-coordination-health scorecard',
+    sourceHive: 'papercusp', rubricRef: 'pot-coordination-health', lastSeenMs: msAgo(3),
     ratings: {
       'end-to-end-flow': { rating: 'broken', evidence: 'frontier stuck — 0 placements last hr' },
       'ideation-quality': { rating: 'healthy', evidence: 'fresh ideas generated' },
@@ -94,12 +94,12 @@ const observations: StructuredObservationRecord[] = [
   },
   {
     id: 'EI-OBS-3', title: 'scorecard',
-    sourceHive: 'generic-test', rubricRef: 'hive-coordination-health', lastSeenMs: msAgo(2),
+    sourceHive: 'generic-test', rubricRef: 'pot-coordination-health', lastSeenMs: msAgo(2),
     ratings: { 'end-to-end-flow': { rating: 'degraded', evidence: 'slow but moving' } },
   },
   {
     id: 'EI-OBS-4', title: 'scorecard',
-    sourceHive: 'papercusp', rubricRef: 'hive-coordination-health', lastSeenMs: msAgo(1),
+    sourceHive: 'papercusp', rubricRef: 'pot-coordination-health', lastSeenMs: msAgo(1),
     ratings: { 'tool-utilization': { rating: 'healthy', evidence: 'all tools loading fine' } },
   },
 ];
@@ -152,20 +152,20 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
     it('excludes rubric scorecard observations from friction mining while keeping free-text observations', async () => {
       const scorecardRows: ImprovementCandidate[] = [
         {
-          id: 'EI-SC-1', kind: 'bug', scope: 'operator', title: 'hive-coordination-health scorecard',
+          id: 'EI-SC-1', kind: 'bug', scope: 'operator', title: 'pot-coordination-health scorecard',
           state: 'open', updatedAt: daysAgo(1),
           observation: {
             sourceHive: 'papercusp',
-            rubricRef: 'hive-coordination-health',
+            rubricRef: 'pot-coordination-health',
             ratings: { 'end-to-end-flow': { rating: 'broken', evidence: 'frontier stuck' } },
           },
         },
         {
-          id: 'EI-SC-2', kind: 'bug', scope: 'operator', title: 'hive-coordination-health scorecard',
+          id: 'EI-SC-2', kind: 'bug', scope: 'operator', title: 'pot-coordination-health scorecard',
           state: 'open', updatedAt: daysAgo(2),
           observation: {
             sourceHive: 'papercusp',
-            rubricRef: 'hive-coordination-health',
+            rubricRef: 'pot-coordination-health',
             ratings: { 'end-to-end-flow': { rating: 'degraded', evidence: 'placements slow' } },
           },
         },
@@ -194,13 +194,13 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
           friction: async () => scorecardRows,
           observations: async () => [
             {
-              id: 'EI-SC-1', title: 'hive-coordination-health scorecard',
-              sourceHive: 'papercusp', rubricRef: 'hive-coordination-health', lastSeenMs: msAgo(1),
+              id: 'EI-SC-1', title: 'pot-coordination-health scorecard',
+              sourceHive: 'papercusp', rubricRef: 'pot-coordination-health', lastSeenMs: msAgo(1),
               ratings: { 'end-to-end-flow': { rating: 'broken', evidence: 'frontier stuck' } },
             },
             {
-              id: 'EI-SC-2', title: 'hive-coordination-health scorecard',
-              sourceHive: 'papercusp', rubricRef: 'hive-coordination-health', lastSeenMs: msAgo(2),
+              id: 'EI-SC-2', title: 'pot-coordination-health scorecard',
+              sourceHive: 'papercusp', rubricRef: 'pot-coordination-health', lastSeenMs: msAgo(2),
               ratings: { 'end-to-end-flow': { rating: 'degraded', evidence: 'placements slow' } },
             },
           ],
@@ -210,11 +210,11 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
 
       const frictionSummaries = digest.recurringFriction.map((p) => p.summary);
       expect(frictionSummaries).toEqual(['free-text observation reports stuck dispatch']);
-      expect(frictionSummaries).not.toContain('hive-coordination-health scorecard');
+      expect(frictionSummaries).not.toContain('pot-coordination-health scorecard');
       expect(frictionSummaries).not.toContain('scorecard (synthesized floor)');
       expect(digest.corpus.frictionCaptured).toBe(2);
       expect(digest.rubricRatings.map((p) => p.summary)).toContain(
-        'hive-coordination-health · end-to-end-flow @ papercusp: broken',
+        'pot-coordination-health · end-to-end-flow @ papercusp: broken',
       );
     });
   });
@@ -283,8 +283,8 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
       expect(rubricRatings).toHaveLength(3);
 
       const top = rubricRatings[0];
-      expect(top.summary).toBe('hive-coordination-health · end-to-end-flow @ papercusp: broken');
-      expect(top.ref).toBe('rubric:hive-coordination-health#end-to-end-flow@papercusp');
+      expect(top.summary).toBe('pot-coordination-health · end-to-end-flow @ papercusp: broken');
+      expect(top.ref).toBe('rubric:pot-coordination-health#end-to-end-flow@papercusp');
       expect(top.category).toBe('rubric-rating');
       expect(top.weight).toBe(1); // the most-severe group normalises to 1.0
       expect(top.detail).toContain('broken 2×');
@@ -295,8 +295,8 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
     it('separates the same criterion by source-hive into distinct groups + refs', async () => {
       const { rubricRatings } = await synthesizeStateOfHive(fixtureReaders(), { nowMs: NOW });
       const refs = rubricRatings.map((p) => p.ref);
-      expect(refs).toContain('rubric:hive-coordination-health#end-to-end-flow@papercusp');
-      expect(refs).toContain('rubric:hive-coordination-health#end-to-end-flow@generic-test'); // separate hive
+      expect(refs).toContain('rubric:pot-coordination-health#end-to-end-flow@papercusp');
+      expect(refs).toContain('rubric:pot-coordination-health#end-to-end-flow@generic-test'); // separate hive
       const generic = rubricRatings.find((p) => p.ref.endsWith('@generic-test'))!;
       expect(generic.summary).toContain('generic-test: degraded');
     });

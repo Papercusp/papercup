@@ -32,7 +32,7 @@ import { S13_VOICE_TERSE_COMPLEX } from './operator/S13-voice-terse-complex';
 import { S14_VOICE_NO_CODE } from './operator/S14-voice-no-code';
 import { S15_VOICE_ERROR_RECOVERY } from './operator/S15-voice-error-recovery';
 import { S16_VOICE_DISAMBIGUATION } from './operator/S16-voice-disambiguation';
-// SN01–SN02: sentinel-as-claude-tui-2026-06-22 — the voice→Sentinel→Queen
+// SN01–SN02: sentinel-as-claude-tui-2026-06-22 — the voice→Sentinel→Mug
 // handoff path (role='sentinel' converse brain, `sentinel` target).
 import { SN01_HANDOFF_PLANNING_ASK } from './papercup/SN01-handoff-planning-ask';
 import { SN02_NO_HANDOFF_TRIVIAL } from './papercup/SN02-no-handoff-trivial';
@@ -41,8 +41,8 @@ import { mirrorForSentinel } from './papercup/_mirror';
 // the live papercusp hive, judged for grounded/tool-backed answers.
 import { SN_H01_FLEET_STATUS } from './papercup/SN-H01-fleet-status';
 import { SN_H02_PLANS_AND_BLOCKED } from './papercup/SN-H02-plans-and-blocked';
-import { SN_H03_QUEEN_EXPLAINER } from './papercup/SN-H03-queen-explainer';
-import { SN_H04_ASSIGN_TO_QUEEN } from './papercup/SN-H04-assign-to-queen';
+import { SN_H03_MUG_EXPLAINER } from './papercup/SN-H03-mug-explainer';
+import { SN_H04_ASSIGN_TO_MUG } from './papercup/SN-H04-assign-to-mug';
 // P3 handoff-depth scenarios (sentinel-voice-flow-testing).
 import { SN_H05_URGENT_HANDOFF } from './papercup/SN-H05-urgent-handoff';
 import { SN_H06_RESPECT_NO_HANDOFF } from './papercup/SN-H06-respect-no-handoff';
@@ -138,15 +138,15 @@ import { SU_S26_TAKE_CHARGE_DONT_WAIT } from './su/S26-take-charge-dont-wait';
 // SU-S27: fleet-dispatch-wake-clarity P-003 — a woken agent that finds a DIRECTED dispatch in its
 // inbox must CLAIM + WORK the lane this turn, never read-and-repark (the su-6ef6 black-hole).
 import { SU_S27_WOKE_TO_DISPATCH_CLAIMS } from './su/S27-woke-to-dispatch-claims';
-// QUEEN-Q01/Q02: scout-idea-grading-2026-06-12 (B-06/B-08) — Queen grades
+// QUEEN-Q01/Q02: scout-idea-grading-2026-06-12 (B-06/B-08) — Mug grades
 // routed Scout drafts while triaging; owner-grade-sovereign refusals stand.
 import { QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE } from './mug/Q01-grade-routed-on-triage';
 import { QUEEN_Q02_OWNER_GRADE_SOVEREIGN_NO_RETRY } from './mug/Q02-owner-grade-sovereign-no-retry';
-// QUEEN-Q03: self-learning-frontier-2026-06-12 P-045 (FB-19, D-008) — the Queen
+// QUEEN-Q03: self-learning-frontier-2026-06-12 P-045 (FB-19, D-008) — the Mug
 // DECIDES the ranked improvement queue (triage-one place/gate/gym/reject),
 // weighs claimed confidence by calibration trust, gates graduation reports.
 import { QUEEN_Q03_RANKED_QUEUE_DECIDER } from './mug/Q03-ranked-queue-decider';
-// QUEEN-Q04 + BEE-B01: hybrid-bee-scheduler-work-stealing-2026-06-22 P-003 — the Queen
+// QUEEN-Q04 + BEE-B01: hybrid-bee-scheduler-work-stealing-2026-06-22 P-003 — the Mug
 // AUTHORS a per-bee claim spec (scheduler:set_claim_spec, steer-not-dispatch) and the bee
 // PULLS its next item via scheduler:get_next (no self-freelance). The two adoption halves.
 import { QUEEN_Q04_AUTHORS_CLAIM_SPEC } from './mug/Q04-authors-claim-spec';
@@ -182,14 +182,14 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   S14_VOICE_NO_CODE,
   S15_VOICE_ERROR_RECOVERY,
   S16_VOICE_DISAMBIGUATION,
-  // sentinel voice→Queen handoff path (SN01–SN02)
+  // sentinel voice→Mug handoff path (SN01–SN02)
   SN01_HANDOFF_PLANNING_ASK,
   SN02_NO_HANDOFF_TRIVIAL,
   // sentinel P2 hive-knowledge (real questions about the live hive)
   SN_H01_FLEET_STATUS,
   SN_H02_PLANS_AND_BLOCKED,
-  SN_H03_QUEEN_EXPLAINER,
-  SN_H04_ASSIGN_TO_QUEEN,
+  SN_H03_MUG_EXPLAINER,
+  SN_H04_ASSIGN_TO_MUG,
   // sentinel P3 handoff-depth
   SN_H05_URGENT_HANDOFF,
   SN_H06_RESPECT_NO_HANDOFF,

@@ -38,10 +38,10 @@ decisions, not bugs.
      device pubkeys directly to the **owner's own** contributor-row `revoked_pubkeys` and
      publishes it — the same blocklist self-revocation uses (`revoke-contributor.ts`
      `revokeContributorViaGithub`). Every peer's `read-admission` union honors it on the next
-     re-verify. A **Hive-scope** variant (`shared-hive-federation-2026-06-08` P-006,
-     `hive-revoke-contributor.ts` `revokeHiveContributor`) revokes the contributor from a WHOLE
-     Hive's federation (every member harness) in one call — its authority is **holding the
-     Hive's private key**, not GitHub repo-admin (a Hive may be repo-less); see the authority
+     re-verify. A **Pot-scope** variant (`shared-pot-federation-2026-06-08` P-006,
+     `pot-revoke-contributor.ts` `revokeHiveContributor`) revokes the contributor from a WHOLE
+     Pot's federation (every member harness) in one call — its authority is **holding the
+     Pot's private key**, not GitHub repo-admin (a Pot may be repo-less); see the authority
      section below.
 
 Model B verified a peer's channel-2 binding ONCE at admission and re-checked only PENDING
@@ -62,9 +62,9 @@ requires, just periodically.
 action on a papercusp-side check — but it's still anchored in GitHub, not a papercusp-native
 owner: the gate is "does the caller's GitHub token have **repo-admin** on the shared repo,"
 checked live via `octokit.repos.get(...).permissions.admin`, the same authority Component A's
-branch-delete always assumed. The **Hive-scope** variant is the one genuine departure: its
-authority is **holding the Hive's private key** (a Hive can be repo-less), not a GitHub
-permission at all — a deliberate, narrower keypair-native authority for the Hive-wide case.
+branch-delete always assumed. The **Pot-scope** variant is the one genuine departure: its
+authority is **holding the Pot's private key** (a Pot can be repo-less), not a GitHub
+permission at all — a deliberate, narrower keypair-native authority for the Pot-wide case.
 
 ## Intentional decisions a reviewer will want to "fix" (don't, without re-deciding the posture)
 

@@ -137,19 +137,19 @@ describe('resolveLocalRubric + readLocalRubricMethod', () => {
 describe('rubricsNeedingSeed (the seed decision core)', () => {
   it('no-clobber: an existing workspace rubricId always wins; idempotent on re-run', () => {
     writeRubric(bundled, 'su-agent-behavior', { manifest: manifest('su-agent-behavior') });
-    writeRubric(bundled, 'hive-coordination-health', {
-      manifest: manifest('hive-coordination-health', { characteristic: 'hive-coordination' }),
+    writeRubric(bundled, 'pot-coordination-health', {
+      manifest: manifest('pot-coordination-health', { characteristic: 'hive-coordination' }),
     });
     const all = listLocalRubrics(roots);
 
     // cold start: everything seeds
     expect(rubricsNeedingSeed(all, new Set()).map((r) => r.rubricId)).toEqual([
-      'hive-coordination-health',
+      'pot-coordination-health',
       'su-agent-behavior',
     ]);
     // an existing id (any status — even a half-authored row) blocks its seed
     expect(rubricsNeedingSeed(all, new Set(['su-agent-behavior'])).map((r) => r.rubricId)).toEqual([
-      'hive-coordination-health',
+      'pot-coordination-health',
     ]);
     // after a full seed, a re-run is a no-op (idempotence)
     expect(rubricsNeedingSeed(all, new Set(all.map((r) => r.rubricId)))).toEqual([]);
@@ -169,7 +169,7 @@ describe('the REAL bundled first-party set (in-repo rubrics/)', () => {
       'experiment-instance-quality',
       'experiment-replay-quality',
       'fleet-execution-health',
-      'hive-coordination-health',
+      'pot-coordination-health',
       'su-agent-behavior',
     ]);
     for (const r of shipped) {

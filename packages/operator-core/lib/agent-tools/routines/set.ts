@@ -52,7 +52,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('routines:set requires operator, architect, or queen role');
+      throw new Error('routines:set requires operator, architect, or mug role');
     }
     if (args.cron === undefined && args.active === undefined && args.triggerConfig === undefined) {
       throw new Error('set requires cron, active, and/or triggerConfig');

@@ -10,7 +10,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   parseAsBoolean: { withDefault: (d: boolean) => ({ defaultValue: d }) },
   useQueryState: (_key: string, parser?: { defaultValue?: boolean }) => {
     const React = require('react') as typeof import('react');

@@ -11,7 +11,7 @@
  * idempotent, no-clobber — an existing workspace rubricId always wins, so local
  * ratified edits are never overwritten). The seed also fixes cold-start: a fresh
  * install has ZERO rubric rows until it runs (the Overwatch's mandatory
- * hive-coordination-health scorecard had nothing to grade against).
+ * pot-coordination-health scorecard had nothing to grade against).
  *
  * The store is a resolved rubrics root, LAYERED (same shape as template-store):
  *   - bundled (read-only): ships in-app. Release: Tauri main.rs sets

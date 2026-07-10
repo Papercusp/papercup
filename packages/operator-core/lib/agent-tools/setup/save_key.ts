@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { maskSecret, readCredentials, writeCredentials } from '../../credentials';
+import { clearOpenAiEmbedHardExhaustion } from '../../memory/configure';
 
 /**
  * setup:save_key — save a pay-per-use provider API key to the credentials
@@ -29,6 +30,10 @@ export default defineTool({
   async handler(args) {
     const current = await readCredentials();
     const saved = await writeCredentials({ ...current, [args.key]: args.value.trim() });
+    // WI-3615: a re-saved openai_api_key is a real reason to believe embeddings might work
+    // again — clear the sticky hard-exhaustion latch so 'auto' re-tries OpenAI once instead of
+    // staying pinned to local forever (the latch only ever clears on this signal).
+    if (args.key === 'openai_api_key') clearOpenAiEmbedHardExhaustion();
     return {
       content: [
         {

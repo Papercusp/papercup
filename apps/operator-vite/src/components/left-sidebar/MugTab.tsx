@@ -44,7 +44,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
 import { buildHarnessSelectOptions } from '../adv/AdvShell';
 import { ALL_HARNESSES_OPTION } from '../adv/adv-harness-selection';
 import ScheduledRoutinesPane from '../adv/ScheduledRoutinesPane';
-import QueenHeartbeat from './QueenHeartbeat';
+import MugHeartbeat from './MugHeartbeat';
 import ModelTiersOverride from './ModelTiersOverride';
 import ThrottleSection, { type IdleKind, type IdleToggles, type ThrottleDefaults } from './ThrottleSection';
 import AutonomySurfacing, { type DecompMode } from './AutonomySurfacing';
@@ -502,7 +502,7 @@ export default function MugTab({ active }: { active: boolean }) {
       </header>
 
       {/* Queen heartbeat — is she alive? (owner-priority, queen-heartbeat-2026-06-16) */}
-      <QueenHeartbeat homeSlug={home} />
+      <MugHeartbeat homeSlug={home} />
 
       <div className="pc-queen__summary" aria-label={`${t('brain')} steering summary`}>
         <div className={`pc-queen__summary-item${pause.active ? ' pc-queen__summary-item--warn' : ' pc-queen__summary-item--good'}`}>

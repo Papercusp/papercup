@@ -263,6 +263,8 @@ export function getInProcessSubstrateStatus(
               noReplicator: l.counts.noReplicator,
               frozen: l.counts.frozen,
               samplingStale: l.counts.samplingStale,
+              // WI-3604: split-DHT-universe recurrence guard.
+              dhtUniverseMismatch: l.counts.dhtUniverseMismatch,
             }
           : undefined;
       })(),

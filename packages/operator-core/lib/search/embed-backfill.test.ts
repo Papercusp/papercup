@@ -173,3 +173,103 @@ describe('runBackfillSweep (P-010)', () => {
     expect(last[0]!.table).toBe('harness_shared.harness_escalations');
   });
 });
+
+/**
+ * WI-3616 — the embedding SPACE discriminator (migration 530).
+ *
+ * The bug these pin: `memoryEmbedderMode` selects the embedder at runtime AND drives
+ * the query-side vector. Flipping it left every already-stored vector in a foreign
+ * 384-D space. Because the sweep only ever looked for `embedding IS NULL`, those rows
+ * were never revisited — the column silently mixed OpenAI and BGE vectors forever and
+ * search returned noise (measured: a row's own exact text ranked #6574 of 8383).
+ */
+describe('embedding-space discriminator (WI-3616)', () => {
+  const TARGET = {
+    table: 'harness_shared.operator_turns',
+    embedCol: 'text_embedding',
+    bodySql: 'text',
+    keyCols: ['id'],
+  };
+
+  /** Minimal `sql` double: records calls, replays queued results. */
+  function fakeSql(results: unknown[][]) {
+    const calls: Array<{ q: string; params?: unknown[] }> = [];
+    const sql = {
+      unsafe: async (q: string, params?: unknown[]) => {
+        calls.push({ q, params });
+        return results.shift() ?? [];
+      },
+    };
+    return { sql: sql as never, calls };
+  }
+
+  const embed = async (): Promise<number[]> => VEC;
+
+  it('re-embeds a row whose recorded space differs from the active embedder', async () => {
+    // One stale row (its vector is non-NULL but was made by openai), then empty.
+    const { sql, calls } = fakeSql([[{ k0: 'row-1', body: 'hello world' }], [], []]);
+
+    const stats = await backfillTable(sql, TARGET, embed, 10, 'local', true);
+
+    // It was NOT skipped just because text_embedding was already non-NULL.
+    expect(stats.embedded).toBe(1);
+
+    const select = calls.find((c) => c.q.includes('SELECT'))!;
+    // NULL-safe comparison: `mode <> 'local'` is NULL for pre-530 rows and would
+    // match nothing, silently reintroducing the original bug.
+    expect(select.q).toContain('IS DISTINCT FROM $2');
+    expect(select.q).toContain('text_embedding IS NULL OR');
+    expect(select.params).toEqual([10, 'local']);
+
+    // The vector and the space it belongs to are written together — a row can
+    // never advertise a space it is not actually in.
+    const update = calls.find((c) => c.q.includes('UPDATE'))!;
+    expect(update.q).toContain('text_embedding_mode = $2');
+    expect(update.q).toContain('IS DISTINCT FROM $2'); // re-asserted guard
+    expect(update.params![1]).toBe('local');
+    expect(update.params![2]).toBe('row-1'); // PK shifted to $3
+  });
+
+  it('stamps the active mode so a converged column stops being re-swept', async () => {
+    const { sql, calls } = fakeSql([[{ k0: 'row-1', body: 'x' }], [], []]);
+    await backfillTable(sql, TARGET, embed, 10, 'openai', true);
+    const update = calls.find((c) => c.q.includes('UPDATE'))!;
+    expect(update.params![1]).toBe('openai');
+  });
+
+  it('legacy DB without migration 530: never binds a parameter the SQL does not use', async () => {
+    // Postgres derives the parameter COUNT from the highest $n referenced and rejects a
+    // Bind that supplies an unused one ("could not determine data type of parameter $2").
+    // The legacy path must therefore omit `mode` entirely — not just skip reading it.
+    const { sql, calls } = fakeSql([[{ k0: 'row-1', body: 'x' }], [], []]);
+
+    await backfillTable(sql, TARGET, embed, 10, 'local', false);
+
+    const select = calls.find((c) => c.q.includes('SELECT'))!;
+    expect(select.q).not.toContain('_mode');
+    expect(select.params).toEqual([10]); // no mode bound
+
+    const update = calls.find((c) => c.q.includes('UPDATE'))!;
+    expect(update.q).not.toContain('_mode');
+    expect(update.q).toContain('text_embedding IS NULL');
+    expect(update.params).toEqual([`[${VEC.join(',')}]`, 'row-1']); // PK back at $2
+  });
+
+  it('sweep turns space-awareness on only when the discriminator column exists', async () => {
+    unsafeResults = [
+      [{ extname: 'vector' }],
+      // harness_escalations: BOTH the vector column and its _mode column exist.
+      [{ column_name: 'body_embedding' }, { column_name: 'body_embedding_mode' }],
+      [{ k0: 'h', k1: 'p', body: 'escalation text' }],
+      [],
+      [],
+      [], [], [], [],
+    ];
+
+    await runBackfillSweep();
+
+    const update = unsafeCalls.find((c) => c.q.includes('UPDATE harness_shared.harness_escalations'))!;
+    expect(update.q).toContain('body_embedding_mode = $2');
+    expect(update.params![1]).toBe('openai'); // the mocked active mode
+  });
+});

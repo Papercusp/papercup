@@ -75,7 +75,7 @@ operator-side validator is safe.
 
 The sidecar advertises via `POST /api/harness/:slug/endpoint` → `registerHarnessLocalEndpoint`
 (operator-core route `endpoint.ts`). It learns the operator's URL from `MYAPP_OPERATOR_URL`
-(the same env the engine↔ops-hive bridge already used).
+(the same env the engine↔ops-pot bridge already used).
 
 ## The harness side (a HYPOTHETICAL third-party harness's own repo — NOT a papercusp path)
 

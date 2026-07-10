@@ -74,8 +74,8 @@ On fire, the executor walks:
    `PAPERCUSP_SID` is re-exported so identity, lock hooks, and your other
    awaits survive. claude resume REQUIRES the native session UUID —
    `--continue` would resume a random peer's conversation on the shared cwd.
-   **Exception — a drained bee warm-injected a NEW work-item:** the
-   bee-context-efficiency fork
+   **Exception — a drained cup warm-injected a NEW work-item:** the
+   cup-context-efficiency fork
    (`packages/operator-core/lib/events/await/wake-executor-fresh-context.ts`,
    flag `BEE_FRESH_CONTEXT_WARM_INJECT`, default ON) skips `--resume`
    entirely and spawns a **fresh session** for that item instead — the
@@ -180,9 +180,9 @@ re-register if you want the next match too.
 * **Directed-wake honesty (`coord:send`):** a `coord:send { wake:'required', to:[agent] }`
   that reaches a wakeable addressee but wakes nobody returns **`recipient_absent: true`** —
   a loud miss to act on (they're not running: spawn fresh or pick another addressee), not
-  a silent `woken:0`. Use `wake:'optimistic'` when a durable backstop (the Queen survey,
+  a silent `woken:0`. Use `wake:'optimistic'` when a durable backstop (the Mug survey,
   the inbox itself) catches a miss — and **name that backstop via the `backstop` arg**
-  (e.g. `backstop: 'queen-survey re-dispatches'`). Without a declared `backstop`, an
+  (e.g. `backstop: 'mug-survey re-dispatches'`). Without a declared `backstop`, an
   optimistic miss is now reported just as loudly as a required one (`recipient_absent` +
   the missed agents' fresh `sessionState`) — silence must be consciously claimed, never a
   default; don't pass a fake backstop just to silence the warning, that recreates the

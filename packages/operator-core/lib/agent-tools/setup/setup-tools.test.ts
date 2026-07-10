@@ -56,11 +56,13 @@ vi.mock('../../integration-credentials', () => ({
 vi.mock('../../endpoint-route/routes/desktop/setup-status', () => ({
   collectSetupStatus: h.collect,
 }));
+vi.mock('../../memory/configure', () => ({ clearOpenAiEmbedHardExhaustion: vi.fn() }));
 
 const setTelemetry = (await import('./set_telemetry')).default;
 const setChannel = (await import('./set_update_channel')).default;
 const complete = (await import('./complete')).default;
 const saveKey = (await import('./save_key')).default;
+const { clearOpenAiEmbedHardExhaustion } = await import('../../memory/configure');
 const saveIntegrationKey = (await import('./save_integration_key')).default;
 const status = (await import('./status')).default;
 const setProgress = (await import('./set_tutorial_progress')).default;
@@ -77,6 +79,7 @@ const wizard = () => h.store.get('setup_wizard_state') as Record<string, unknown
 beforeEach(() => {
   h.store.clear();
   h.creds.current = {};
+  vi.mocked(clearOpenAiEmbedHardExhaustion).mockClear();
 });
 
 describe('setup:set_telemetry', () => {
@@ -131,6 +134,21 @@ describe('setup:save_key', () => {
       github_pat: 'ghp_existing',
       anthropic_api_key: 'sk-ant-abcdef',
     });
+  });
+
+  // WI-3615: a re-saved openai_api_key is the ONLY signal that clears the sticky
+  // hard-exhaustion latch (memory/configure.ts) — assert the hook fires precisely there,
+  // not on every save (which would spuriously re-try a key that's still actually dead).
+  it('WI-3615: re-saving openai_api_key clears the sticky embed-exhaustion latch', async () => {
+    await call(saveKey, { key: 'openai_api_key', value: 'sk-new-0123456789' });
+    expect(clearOpenAiEmbedHardExhaustion).toHaveBeenCalledTimes(1);
+  });
+
+  it('WI-3615: saving a DIFFERENT key does NOT touch the embed-exhaustion latch', async () => {
+    await call(saveKey, { key: 'anthropic_api_key', value: 'sk-ant-abcdef' });
+    await call(saveKey, { key: 'github_pat', value: 'ghp_0123456789' });
+    await call(saveKey, { key: 'zeroentropy_api_key', value: 'ze-0123456789' });
+    expect(clearOpenAiEmbedHardExhaustion).not.toHaveBeenCalled();
   });
 });
 

@@ -25,7 +25,7 @@ Migration 167 drops all **six** scanner-owned tables —
 `operator_scans`, `operator_dismissed_cards`, `operator_scan_locks`,
 `operator_last_scan`, `operator_idle_snapshot`, and
 `operator_scanner_session` — while `harness_shared.operator_paused`
-intentionally survives (the pause/resume sentinel lives on in
+intentionally survives (the pause/resume papercup lives on in
 `device-operator-actions.ts`). This page is kept as design history only.
 :::
 

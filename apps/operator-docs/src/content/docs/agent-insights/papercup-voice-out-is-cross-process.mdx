@@ -7,7 +7,7 @@ status: active
 documents:
   - packages/operator-core/lib/sentinel-output-buffer.ts
   - packages/operator-core/lib/agent-tools/voice/say.ts
-  - packages/operator-core/lib/endpoint-route/routes/operator/sentinel-output.ts
+  - packages/operator-core/lib/endpoint-route/routes/operator/papercup-output.ts
   - packages/operator-core/lib/sentinel-output-buffer.integration.test.ts
   - apps/operator/app/_components/voice/voice-sentinel-bridge.ts
   - apps/operator/app/_components/voice/VoiceAppBridge.tsx
@@ -116,7 +116,10 @@ drain backs off to avoid double-draining or losing utterances.
 
 Voice-IN (`POST /api/operator/papercup-input`) does NOT use this buffer: it
 writes the transcript into the Papercup pane's stdin via
-`packages/operator-core/lib/sentinel/sentinel-pane-input.ts`, reading the pane
+`packages/operator-core/lib/papercup/papercup-pane-input.ts` (renamed from
+`sentinel/sentinel-pane-input.ts` in the 2026-07-09 lexicon rename sweep; the
+exported `writeToSentinelPane()` function name has not been renamed yet),
+reading the pane
 id from `~/.papercusp/papercup-pane` (written by the `psu-papercup` launch
 wrapper). Its hazards are different — a boot-window race after a dock relaunch,
 and writing into an EXITED pane (where the trailing Enter re-runs the command and

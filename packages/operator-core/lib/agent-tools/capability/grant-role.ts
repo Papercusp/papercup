@@ -57,7 +57,7 @@ export default defineTool({
     }
     // D-007(c) part 2 — operator-authority only (never a bee; the autonomy category is system-control/never-auto).
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('capability:grant_role requires operator, architect, or queen role');
+      throw new Error('capability:grant_role requires operator, architect, or mug role');
     }
     const caps = [...new Set(args.capabilities)];
     // D-007(a) — never grant the protected floor.

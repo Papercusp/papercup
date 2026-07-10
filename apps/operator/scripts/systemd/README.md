@@ -208,3 +208,83 @@ WEBKIT_REAPER_ORPHAN_THRESHOLD=120 ./bin/reap-leaked-webviews.sh
 # Protect stale desktops longer (default 30 min):
 WEBKIT_REAPER_DESKTOP_STALE=3600 systemctl --user start papercup-webkit-reaper.service
 ```
+
+---
+
+# Isolated-DHT liveness probe — installation (EI-8892)
+
+`papercup-isolated-dht-liveness.{service,timer}` runs a REAL 2-swarm hyperswarm
+announce/connect probe (`../p2p-dht-liveness-probe.mjs`, wrapped by
+`../papercup-dht-liveness-check.sh`) against `papercup-isolated-dht.service`'s
+bootstrap node every 5 minutes and files an EI on failure.
+
+**Root cause this catches:** the isolated DHT testnet can WEDGE (unit stays
+`ActiveState=active`, the bootstrap node stops actually routing DHT traffic)
+with ZERO passive signal — `systemctl is-active` sees nothing wrong, and
+hyperswarm rides UDX/UDP so `ss`/`netstat` show nothing useful either. This
+class wedged silently for 3 days (2026-07-06→07-09, cross-machine federation
+dead the whole time) before being caught by a hand-rolled probe. The ONLY
+reliable health signal is "did a second swarm actually receive a `connection`
+event within a timeout" — join()/flush() resolving is not enough (both can
+succeed against a wedged bootstrap).
+
+**Detection + escalation ONLY — this unit never restarts
+`papercup-isolated-dht.service`.** A health check that reads a signal spanning
+process restarts must not also hold restart authority over that process, or a
+boot-grace bug turns into a restart-storm (EI-8901's lesson: a
+freshly-restarted unit that hasn't had time to become live yet gets repeatedly
+killed by its own check). The wrapper script has its own `DHT_BOOT_GRACE_SEC`
+(default 120s) skip for exactly this reason. Recovery (`systemctl --user
+restart papercup-isolated-dht.service`) is a human/agent call made off the
+filed EI, not something this script does automatically.
+
+## Install (one-time)
+
+```bash
+cd /home/marsh-office/papercupai-workspace/papercusp/apps/operator/scripts/systemd
+ln -sf "$(pwd)/papercup-isolated-dht-liveness.service" ~/.config/systemd/user/
+ln -sf "$(pwd)/papercup-isolated-dht-liveness.timer"   ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now papercup-isolated-dht-liveness.timer
+```
+
+## Verify
+
+```bash
+systemctl --user list-timers papercup-isolated-dht-liveness.timer
+systemctl --user status papercup-isolated-dht-liveness.service
+# last successful probe (epoch seconds):
+cat ~/.papercusp/dht-liveness/last-ok
+```
+
+## Manual run / dry-run
+
+```bash
+# Run the probe directly against a given bootstrap (bypasses unit resolution):
+node apps/operator/scripts/p2p-dht-liveness-probe.mjs --host 172.31.44.1 --port 49838
+
+# Run the full wrapper (resolves host/port from the live unit) without filing an EI:
+DHT_NO_FILE=1 bash apps/operator/scripts/papercup-dht-liveness-check.sh
+
+# Force it through systemd (files a real EI on failure):
+systemctl --user start papercup-isolated-dht-liveness.service
+journalctl --user -u papercup-isolated-dht-liveness.service --since "5 min ago"
+```
+
+## Tune thresholds
+
+```bash
+# Probe connect-timeout (default 15000ms):
+DHT_PROBE_TIMEOUT_MS=20000 bash apps/operator/scripts/papercup-dht-liveness-check.sh
+
+# Boot-grace before judging a freshly-(re)started unit (default 120s, EI-8901):
+DHT_BOOT_GRACE_SEC=180 bash apps/operator/scripts/papercup-dht-liveness-check.sh
+
+# RED-EI dedup window — file once per still-wedged condition, not every 5-min
+# tick (default 12h; mirrors papercup-live-federation-gate.sh's RED_REFILE_H):
+DHT_RED_REFILE_H=6 bash apps/operator/scripts/papercup-dht-liveness-check.sh
+
+# Staleness — no successful probe at all for this long files a louder, separate
+# EI (the signal itself may be dark, default 6h):
+DHT_STALE_H=3 bash apps/operator/scripts/papercup-dht-liveness-check.sh
+```

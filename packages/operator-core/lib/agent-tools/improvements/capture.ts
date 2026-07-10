@@ -17,10 +17,11 @@ import { resolveAgentIdentity, deriveAgentRole } from '../coordination/identity'
 import { getPresence } from '../coordination/presence';
 import { COORD_ROLES } from '../coordination/roles';
 import { notifyAgents } from '../coordination/notify-agents';
-import { issueRef, type IssueSeverity } from '../../issues-engineer';
+import { issueRef, linkIssue, type IssueSeverity } from '../../issues-engineer';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
 import { recordRoutedIdea } from '../../scout/routed-ledger';
+import { resolveWorkItemRef } from '../../work-items';
 import { hardText, LIMITS } from '../limits';
 import { coerceCaptureKind } from './capture-coerce';
 
@@ -86,7 +87,7 @@ export default defineTool({
         // observations stay first-class.
         sourceHive: z.string().max(120).optional().describe('the pot the observation came FROM — AUTO-DERIVED from ctx (the agent harness/pot) when omitted; explicit callers (Kettle/Blender) may set it'),
         targetHive: z.string().max(120).optional().describe('optional: the pot the observation is ABOUT (a cross-pot observation)'),
-        rubricRef: z.string().max(120).optional().describe("a rubrics.rubric_id this observation grades against (e.g. 'hive-coordination-health'). Present ⇒ a rubric-graded observation; ratings must accompany it"),
+        rubricRef: z.string().max(120).optional().describe("a rubrics.rubric_id this observation grades against (e.g. 'pot-coordination-health'). Present ⇒ a rubric-graded observation; ratings must accompany it"),
         ratings: z
           .record(
             z.string().min(1),
@@ -97,6 +98,22 @@ export default defineTool({
           )
           .optional()
           .describe('per-criterion ratings against rubricRef, KEYED by rubric criterion `key` (a scorecard: one rating per criterion). evidence is mandatory on every entry'),
+        // WI-3594 (scorecard→improvement flow): a GRADE filing (rubricRef+ratings) often
+        // identifies a concrete follow-up — link it AT FILE TIME instead of a separate
+        // work_items:link round-trip later (which is easy to forget, silently orphaning the
+        // scorecard from the work it motivated). Surfaced in ScorecardDetail's UI (scorecards.list
+        // linkedItems). Optional — a scorecard with nothing concrete to link stays unlinked.
+        linkTo: z
+          .array(
+            z.object({
+              targetId: z.string().min(1).max(120).describe('the work-item id (WI-/F-/EI-…) this scorecard relates to'),
+              rel: z.enum(['relates', 'blocks', 'duplicates', 'fixes']).optional().describe("default 'relates'"),
+              targetHarness: z.string().max(80).optional().describe('harness for a feature targetId (disambiguation)'),
+            }),
+          )
+          .max(5)
+          .optional()
+          .describe('link this GRADE filing to one or more existing work-items at file time (e.g. the improvement this rating is about) — best-effort, never fails the capture'),
       })
       // plan-templates-and-rubric-v2 P-012 (strict/fail-loud): reject UNKNOWN observation keys
       // LOUDLY instead of silently STRIPPING them. A silent strip dropped data live (su-2a0b4: an
@@ -175,6 +192,28 @@ export default defineTool({
           // best-effort provenance — never affects the capture the user requested
         }
       }
+      // WI-3594 (scorecard→improvement flow): link a freshly-filed GRADE filing to
+      // its named follow-up work-items AT FILE TIME, so a scorecard's motivating
+      // improvement is never a separate round-trip someone forgets to make. Fires
+      // only when the caller passed observation.linkTo AND an item was actually
+      // created (not a dedup-decline). Best-effort per target: one bad targetId
+      // never fails the capture, and a partial failure is reported (not silent).
+      let linked: { targetId: string; ok: boolean; error?: string }[] | undefined;
+      if (observation?.linkTo?.length && captured.created && captured.issue?.id) {
+        const sourceId = captured.issue.id;
+        linked = await Promise.all(
+          observation.linkTo.map(async (l) => {
+            try {
+              const dst = await resolveWorkItemRef(l.targetId, l.targetHarness);
+              if (!dst) return { targetId: l.targetId, ok: false, error: `work_item '${l.targetId}' not found` };
+              await linkIssue(sourceId, dst, l.rel ?? 'relates', id.ownerId);
+              return { targetId: l.targetId, ok: true };
+            } catch (e) {
+              return { targetId: l.targetId, ok: false, error: e instanceof Error ? e.message : String(e) };
+            }
+          }),
+        );
+      }
       const notified =
         args.notifyAgents?.length && captured.created && captured.issue?.id && args.lane !== 'observation'
           ? await notifyAgents(id, {
@@ -192,7 +231,11 @@ export default defineTool({
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify(notified ? { ...result, notified: notified.notified } : result),
+            text: JSON.stringify({
+              ...result,
+              ...(notified ? { notified: notified.notified } : {}),
+              ...(linked ? { linked } : {}),
+            }),
           },
         ],
       };

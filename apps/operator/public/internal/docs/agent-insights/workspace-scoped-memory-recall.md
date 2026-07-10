@@ -1,18 +1,18 @@
 # Workspace-scoped memory recall (the per-owner user-pool bleed fix)
 URL: /internal/docs/agent-insights/workspace-scoped-memory-recall
 
-Memory recall fans out over opaque SCOPE KEYS (user.id | harness:<slug> | hive:<slug>), not a workspace column — so the per-owner user pool is recalled in every workspace and a hive's `project` learnings bleed across all the owner's work. How migration 398 promotes the scope keys to real GENERATED columns and how the dark-cutover MEMORY_WORKSPACE_SCOPED_RECALL filter scopes the user pool conservatively (owner-tier + legacy NULL kept), plus how to verify-flip it.
+Memory recall fans out over opaque SCOPE KEYS (user.id | harness:<slug> | pot:<slug>), not a workspace column — so the per-owner user pool is recalled in every workspace and a pot's `project` learnings bleed across all the owner's work. How migration 398 promotes the scope keys to real GENERATED columns and how the dark-cutover MEMORY_WORKSPACE_SCOPED_RECALL filter scopes the user pool conservatively (owner-tier + legacy NULL kept), plus how to verify-flip it.
 
 ## The model: recall is scope-key fan-out, not a workspace filter
 
 `memory_canonical` is one row per fact `(id, payload jsonb, …, state)`. There is **no
 workspace column in the recall path** — the store recalls by an opaque **scope key** held in
 `payload->>'user_id'`, which is overloaded: a user uuid (the per-owner pool), `harness:<slug>`,
-or `hive:<slug>`. `CanonicalVectorStore.search/list` post-filter each mem0 filter key against
+or `pot:<slug>`. `CanonicalVectorStore.search/list` post-filter each mem0 filter key against
 `payload->>'<key>'`. The recall callers (`memory/injection.ts`, `agent-tools/memory/search.ts`)
-fan out over `[user.id, harness:<slug>…, hive:<slug>…]` and merge.
+fan out over `[user.id, harness:<slug>…, pot:<slug>…]` and merge.
 
-The harness/hive pools are correctly scoped. **The `user.id` pool is recalled in EVERY
+The harness/pot pools are correctly scoped. **The `user.id` pool is recalled in EVERY
 workspace** — so an owner's `project`-kind memories surface in all their workspaces (the
 isolation leak). `payload.workspace_id` exists (remember.ts stamps `metadata.workspace_id =
 ctx.principal.workspaceId`) but it was an attribution tag, never the recall axis. (The legacy
@@ -39,7 +39,7 @@ when it explicitly carries a *different* `workspace_id` AND is not owner-tier:
 * otherwise (a `project` hit tagged with another workspace) → **drop**
 
 So flipping it never silently guts recall: only *new* cross-workspace `project` memories are
-scoped out; harness/hive pools are untouched.
+scoped out; harness/pot pools are untouched.
 
 ## The flag: graduated — defaults ON since the 2026-06-25 owner-attended flip
 

@@ -41,7 +41,7 @@ describe('rubric template schema', () => {
   it('accepts the full shape (methodRef + description + per-criterion ratingScale override)', () => {
     const r = rubricTemplateDataSchema.safeParse({
       ...minimalData,
-      methodRef: 'hive-coordination-health-runbook',
+      methodRef: 'pot-coordination-health-runbook',
       description: 'How well the placement/ideation/observation loop is turning.',
       criteria: [{ ...minimalCriterion, ratingScale: ['healthy', 'degraded', 'broken', 'unknown', 'n/a'] }],
     });

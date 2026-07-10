@@ -27,6 +27,13 @@ export interface ScorecardRow {
   synthesized?: boolean;
   /** Read-time 0–10 projection (P-004/D-001; null = nothing mappable). */
   score10: number | null;
+  /**
+   * WI-3594 (scorecard→improvement flow): outbound work-items this scorecard is
+   * linked to (e.g. the improvement it graded), set at file time via
+   * improvements:capture's observation.linkTo or after the fact via
+   * work_items:link. Empty when nothing is linked.
+   */
+  linkedItems?: { rel: string; dst: { kind: string; ref: string } }[];
 }
 
 /**
@@ -138,6 +145,19 @@ export default function ScorecardDetail({
               ? `incomplete — ${scorecard.missingKeys.length} unrated: ${scorecard.missingKeys.join(', ')}`
               : `rubric unresolved — ${scorecard.nKeys} rated (completeness unverifiable)`}
         </dd>
+        {scorecard.linkedItems && scorecard.linkedItems.length > 0 && (
+          <>
+            <dt style={{ opacity: 0.65 }}>Linked items</dt>
+            <dd>
+              {scorecard.linkedItems.map((l, i) => (
+                <span key={`${l.rel}:${l.dst.kind}:${l.dst.ref}`}>
+                  {i > 0 && ', '}
+                  <span style={{ opacity: 0.65 }}>{l.rel}</span> {l.dst.ref}
+                </span>
+              ))}
+            </dd>
+          </>
+        )}
       </dl>
 
       <div style={{ overflowX: 'auto' }}>

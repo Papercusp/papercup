@@ -38,7 +38,7 @@ The freshness control field is `_meta.delta` on the MCP `tools/call` params (a
 sibling of `arguments`, alongside `format`/`structured`/`idempotencyKey` —
 [`_mcp-handler.ts`](packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts)),
 with a connection-level `?delta=` URL fallback mirroring `?format=`. It must NOT
-be a key inside `arguments`: \~9 `.strict()` tools and the converse/sentinel
+be a key inside `arguments`: \~9 `.strict()` tools and the converse/papercup
 `additionalProperties:false` rejection-contract would `400` on an unknown
 `arguments` key. Wire form is a single string: `"<mode>"` or `"<mode>~<cursor>"`
 (the cursor is base64url, which never contains `~`).
@@ -194,7 +194,7 @@ must render from `rows` (or re-fetch full after compaction). The `su-S23`/`S24`/
 rows and stale updated rows must not reach the final answer.
 
 **Where this lands (and where it does NOT).** Every delta-capable consumer today is an
-EXTERNAL MCP-client runtime — `transport: 'mcp'` calls from spawned bees / psu sessions
+EXTERNAL MCP-client runtime — `transport: 'mcp'` calls from spawned cups / psu sessions
 (claude-code, omp-via-Meridian, codex *binaries*), never an in-repo Papercusp LLM loop
 (the operator's own `runAgentChat` delegates to a child process and owns no message
 array). So the model-token win is realized by the **agent runtime** importing
@@ -357,7 +357,7 @@ the client side (originally tracked as WI-514, **resolved as superseded** by the
 `dispatchWithConveyedDelta` (out-of-process — reads the `itemKeyField` the server
 conveys in `_meta.delta`, see below) and `dispatchWithBasePresence` (in-process,
 composed with `BasePresenceTracker`). Real `mode:delta` traffic still depends on
-a runtime actually calling one of these from its own tool-exec loop (psu/bee
+a runtime actually calling one of these from its own tool-exec loop (psu/cup
 Claude-Code sessions and the operator's own `runAgentChat` don't yet — see
 "Where this lands" above), so most calls today are still `full | not_modified`
 in practice, but the flag is no longer gating on a nonexistent client.

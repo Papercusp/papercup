@@ -73,7 +73,7 @@ edge that cost an hour:
 
 5. **NSIS datablock caps at \~2 GiB → this is WHY the build cut over to Inno
    Setup (WI-3172, 2026-07-06).** The owner-mandated full offline seed (git
-   `super.bundle` + hive corestore) puts the payload at \~3.4 GB and makensis
+   `super.bundle` + pot corestore) puts the payload at \~3.4 GB and makensis
    dies packaging it — "Internal compiler error … error mmapping file … out of
    range" at the signed-32-bit \~2 GiB datablock offset (the corestore alone is
    > 2 GiB, so no slimming rescues NSIS; MSI caps lower, a 7z-SFX combined `.exe`

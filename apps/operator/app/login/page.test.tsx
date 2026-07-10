@@ -49,7 +49,9 @@ vi.mock('@/lib/router-compat/navigation', () => ({
   useSearchParams: () => ({ get: mockSearchParamsGet }),
 }));
 
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   parseAsStringLiteral: () => ({
     withDefault: (defaultValue: string) => ({ defaultValue }),
   }),

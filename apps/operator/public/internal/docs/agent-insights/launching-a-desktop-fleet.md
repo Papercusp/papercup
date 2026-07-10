@@ -63,9 +63,9 @@ now auto-injects `--fleet` into a psu command when its `fleet` arg is set — bu
 | Desktop fleet on a plan (the default)      | **`fleet:launch-on-plan`** (auto-join + auto-start) |
 | Register a fleet, no terminals             | `fleet:create`                                      |
 | One-off visible terminal(s), no fleet/plan | `capability:terminal` (its `fleet` = colour only)   |
-| Headless workers (no desktop window)       | `bee:spawn` / `fleet:place_batch` (nursery bees)    |
+| Headless workers (no desktop window)       | `cup:spawn` / `fleet:place_batch` (nursery cups)    |
 
-`bee:spawn` / `fleet:place_batch` are HEADLESS — never use them for a "desktop fleet."
+`cup:spawn` / `fleet:place_batch` are HEADLESS — never use them for a "desktop fleet."
 
 ## Members default to YOUR backend/model when you omit `agent` (2026-07-03)
 

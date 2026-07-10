@@ -17,6 +17,7 @@ vi.mock('../system-health', async () => {
     computeSystemHealth: vi.fn(),
     deriveQueenAlive: real.deriveQueenAlive,
     queenPlacementStalled: real.queenPlacementStalled,
+    ADMISSION_STARVATION_IDLE_ACCOUNTS_MIN: real.ADMISSION_STARVATION_IDLE_ACCOUNTS_MIN,
   };
 });
 
@@ -107,6 +108,7 @@ test('detectAnomalies — a paused bucket WITH accounts → token-paused warning
     accountsAvailable: 2,
     gatewayWedged: false,
     gatewaySustainedThrottle: false,
+    gatewayAdmissionStarved: false,
   };
   const a = only(detectAnomalies(b), 'token-paused');
   assert.equal(a.severity, 'warning');
@@ -123,6 +125,7 @@ test('detectAnomalies — a paused bucket with ZERO accounts → token-paused cr
     accountsAvailable: 0,
     gatewayWedged: false,
     gatewaySustainedThrottle: false,
+    gatewayAdmissionStarved: false,
   };
   const a = only(detectAnomalies(b), 'token-paused');
   assert.equal(a.severity, 'critical');
@@ -155,6 +158,39 @@ test('detectAnomalies — a wedge SUPPRESSES the throttle anomaly (wedge is the 
   const kinds = detectAnomalies(b).map((a) => a.kind);
   assert.ok(kinds.includes('gateway-wedge'));
   assert.ok(!kinds.includes('gateway-throttle'), 'wedge wins; do not double-flag');
+});
+
+// ── WI-3565 (2026-07-09 admission-starvation incident): the wedge/throttle detectors both need
+// inFlight AT the ceiling — a starved queue can sit BELOW it (paced by a lower per-account/provider
+// floor) with idle healthy accounts unused, exactly the shape that ran 50 real minutes unalarmed. ──
+
+test('detectAnomalies — confirmed admission starvation WITH idle accounts above the threshold → gateway-admission-starved critical ESCALATE owner', () => {
+  const b = base();
+  b.tokens.gatewayAdmissionStarved = true;
+  b.tokens.accountsAvailable = 5; // > ADMISSION_STARVATION_IDLE_ACCOUNTS_MIN (2)
+  const a = only(detectAnomalies(b), 'gateway-admission-starved');
+  assert.equal(a.severity, 'critical');
+  assert.equal(a.suggestedAction.type, 'escalate');
+  assert.equal(a.suggestedAction.target, 'owner');
+  assert.match(a.suggestedAction.message ?? '', /rate_limit_config/);
+});
+
+test('detectAnomalies — confirmed admission starvation with NO idle headroom does NOT flag (normal full-pool pressure)', () => {
+  const b = base();
+  b.tokens.gatewayAdmissionStarved = true;
+  b.tokens.accountsAvailable = 1; // at/below ADMISSION_STARVATION_IDLE_ACCOUNTS_MIN — no spare capacity to exploit
+  const kinds = detectAnomalies(b).map((a) => a.kind);
+  assert.ok(!kinds.includes('gateway-admission-starved'));
+});
+
+test('detectAnomalies — a wedge SUPPRESSES the admission-starved anomaly too (wedge is the louder superset)', () => {
+  const b = base();
+  b.tokens.gatewayWedged = true;
+  b.tokens.gatewayAdmissionStarved = true;
+  b.tokens.accountsAvailable = 5;
+  const kinds = detectAnomalies(b).map((a) => a.kind);
+  assert.ok(kinds.includes('gateway-wedge'));
+  assert.ok(!kinds.includes('gateway-admission-starved'), 'wedge wins; do not double-flag');
 });
 
 test('detectAnomalies — a dead routine → work-feed-stuck critical ESCALATE (B-11)', () => {

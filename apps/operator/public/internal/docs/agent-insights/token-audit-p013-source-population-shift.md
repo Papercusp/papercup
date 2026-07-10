@@ -18,7 +18,7 @@ baseline of **20.77 GTok cache-read/wk** (measured 2026-06-10). Re-measured
   **autonomous fleet subprocess runs** (`source='jsonl'`). "At flat task
   throughput" is therefore violated — throughput did not stay flat on a
   comparable path; the whole workload moved to an inherently cheaper-per-unit
-  path (short bee runs vs long 200k-context psu sessions).
+  path (short cup runs vs long 200k-context psu sessions).
 
 So the honest verdict: **the ≥40% target is met in raw volume, with a major
 confound.** The sound forward acceptance metric is **per-unit** (cache per
@@ -35,7 +35,7 @@ no longer reflects the workload.
   [`interactive-usage-ingest`](packages/operator-core/lib/interactive-usage/ingest-claude-transcripts.ts)
   routine (cron every 10 min). **This is the population the D-003 baseline
   measured.**
-* **`jsonl`** — subprocess agent-run results (the fleet bees), written by
+* **`jsonl`** — subprocess agent-run results (the fleet cups), written by
   [`usage-sample-pg.ts`](libs/papercusp/packages/orchestrator/src/usage-sample-pg.ts).
 * **`headers`** — in-process anthropic-direct calls.
 
@@ -61,7 +61,7 @@ sessions.** That population is now **0–4 sessions/wk**.
 * The baseline regime was *human drives long psu sessions* (D-004: psu context
   p50=224k, p90=578k). Those are expensive per session and there were thousands
   of them.
-* The current regime is *autonomous fleet*: thousands of **short** bee
+* The current regime is *autonomous fleet*: thousands of **short** cup
   subprocess runs (`jsonl`, \~1.5–1.8 MTok/session) plus a handful of interactive
   sessions. The interactive sessions that remain are still large per session
   (06-22: \~46 MTok/session) — they did **not** get \~99% cheaper; there are just

@@ -220,6 +220,20 @@ export async function reapForeignSessionsForRevocation(
       priorState: w.state,
     });
 
+    // 1b. WI-1937: the session is now fail-closed — deregister its ephemeral
+    //     harness_registry row (if `provisionForeignClone` registered one for
+    //     it) so it stops appearing in harness listings/default-inference. A
+    //     row that was never registered (e.g. reaped before the clone leg
+    //     landed) is a no-op — deregister is idempotent. Best-effort like the
+    //     receipt below: a leaked row is caught later by the orphan sweep
+    //     (sweepOrphanedEphemeralForeignHarnesses), never allowed to abort
+    //     the reap itself.
+    try {
+      await deps.deregisterEphemeralForeignHarness(w.offerId, ws);
+    } catch {
+      /* leaked row — orphan sweep catches it; reap already landed */
+    }
+
     // 2. Receipt so the origin learns WHY its work stopped (M15/M21). Best-effort:
     //    a receipt failure is COUNTED + surfaced, never allowed to abort the sweep.
     try {

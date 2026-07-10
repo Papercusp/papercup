@@ -1883,6 +1883,48 @@ describe('failed-spawn dominant-class identity (audit P-008)', () => {
     )).toBe('reclaimed');
   });
 
+  // EI-8890: a not-fully-pinned test-isolation leak occasionally lets a real run of
+  // packages/operator-core/lib/endpoint-route/__tests__/agent-chats-messages.test.ts write a
+  // LIVE row to harness_shared.spawned_agents (harness_slug='test-harness') carrying its
+  // hardcoded fixture error string. This is a MITIGATION (hide the test debris from the
+  // watchdog) — not the underlying fix, which remains open — but it must stop this exact
+  // fixture identity from re-triggering the signal, while a genuine failure on a REAL harness
+  // in the same window still fires normally.
+  it('EXCLUDES the test-harness fixture-leak rows from the failed-spawn signal (EI-8890 mitigation)', () => {
+    const leaked = (i: number) => ({
+      error_message: `anthropic-direct: rate-limited — paused until 2026-06-14T08:50:00.000Z (${i})`,
+      started_at: '2026-07-09T20:00:00.000Z',
+      harness_slug: 'test-harness',
+      workspace_id: 'default',
+    });
+    // 10 leaked test-fixture rows + 5 genuine timeouts on a real harness: only the 5
+    // genuine failures should count, and they must dominate (not be swamped by the leak).
+    const rows = [
+      ...Array.from({ length: 10 }, (_, i) => leaked(i)),
+      ...Array.from({ length: 5 }, () => ({
+        error_message: 'spawn timed out after 280s',
+        started_at: '2026-07-09T19:00:00.000Z',
+        harness_slug: 'papercusp',
+        workspace_id: 'papercusp-workspace',
+      })),
+    ];
+    const out = failedSpawnSignalsFromRows(rows, { windowHours: 6, minCount: 5 });
+    expect(out).toHaveLength(1);
+    expect(out[0].key).toBe('failed-spawns:timeout');
+    expect(out[0].body).toContain('5 agent spawn(s) failed');
+    expect(out[0].body).not.toContain('rate-limited');
+  });
+
+  it('does not fire at all when the ONLY failures in the window are test-harness fixture leaks (EI-8890)', () => {
+    const rows = Array.from({ length: 10 }, (_, i) => ({
+      error_message: `anthropic-direct: rate-limited — paused until 2026-06-14T08:50:00.000Z (${i})`,
+      started_at: '2026-07-09T20:00:00.000Z',
+      harness_slug: 'test-harness',
+      workspace_id: 'default',
+    }));
+    expect(failedSpawnSignalsFromRows(rows, { windowHours: 6, minCount: 5 })).toEqual([]);
+  });
+
   // EI-7520: EVERY no-turn diagnostic (invoke-outcome.ts `agentProducedTurn`) embeds a
   // literal `timedOut=<bool>` token. The generic `timed?\s*out` alternative matched the
   // camelCase substring `timedOut`, so a `timedOut=false` gateway-stall / infra_loss death

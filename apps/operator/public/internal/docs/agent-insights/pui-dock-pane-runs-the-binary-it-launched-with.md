@@ -63,10 +63,10 @@ If the fresh binary behaves correctly, the running dock is stale — the fix is 
 
 1. `cargo install --path apps/tui --force` (the dock reads `~/.cargo/bin/pui`).
 2. **Relaunch the dock in the owner's terminal** — it is a full-screen zellij
-   workbench with live interactive `psu` panes (queen `--brain`, sentinel,
+   workbench with live interactive `psu` panes (mug `--brain`, papercup,
    overwatch). You cannot start a visible dock from a headless shell, and blindly
    killing the attached zellij session yanks the owner's terminal + their live
-   queen session. So the relaunch is a terminal action: quit the dock, run `pui`.
+   mug session. So the relaunch is a terminal action: quit the dock, run `pui`.
 
 The dock's `psu` panes are unaffected by a pui change — only the `pui`-subcommand
 panes (colony/plans/mail/work/wake/network) carry it.
@@ -78,7 +78,7 @@ but `↑/↓` do nothing — even though pui's reducer handles browse `↑/↓` 
 (verified in a plain `pui hud`, no zellij).
 
 Cause: the dock's chat group is a vertical **`stacked=true`** group
-(`sentinel / colony / wakes`), and zellij 0.44 reserves plain `↑/↓` to move focus
+(`papercup / colony / wakes`), and zellij 0.44 reserves plain `↑/↓` to move focus
 *between* stacked panes — a built-in, NOT a keybind (it fires even with the user's
 `clear-defaults=true` config that binds arrows only in `pane`/`move` modes). So
 `↑/↓` never reach the focused pane's program; `←/→` have no vertical-stack meaning

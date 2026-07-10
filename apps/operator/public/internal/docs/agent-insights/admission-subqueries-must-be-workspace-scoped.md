@@ -42,7 +42,7 @@ RLS is a backstop for RLS-respecting handles, not a substitute for scoping in
 code that runs as admin. Treat "this table has RLS" as *irrelevant* the moment
 you're on `getOrgPg()`.
 
-## The fix (shared-hive-trust-admission D-004)
+## The fix (shared-pot-trust-admission D-004)
 
 Thread `workspaceId` through the predicate and add the scope yourself; when the
 caller cannot supply a workspace, **drop the trust leg entirely** — the gate then
@@ -86,7 +86,7 @@ the reviewer's eye: write the adversarial cross-tenant case explicitly.
 
 ## See also
 
-* Plan `shared-hive-trust-admission-2026-06-14` (D-004 the leak, D-005 the producer rule).
+* Plan `shared-pot-trust-admission-2026-06-14` (D-004 the leak, D-005 the producer rule).
 * `work-items-admission.ts` is the SINGLE predicate; if you add a new claim/place
   chokepoint, route it through this — do not re-derive the origin/admit/trust logic.
 * Predecessor gate `papercusp-user-protection-gate-2026-05-31` (the frontier-read

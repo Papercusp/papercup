@@ -22,10 +22,12 @@ import type { ReactElement } from 'react';
 // routed copy from the THE_HIVE flag hook (restore-pot-lexicon-public-release P-007).
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 vi.mock('@/lib/router-compat/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', async () => {
   const React = await import('react');
   const withDefault = (defaultValue: unknown) => ({ defaultValue });
   return {
+    ...nuqsParsers,
     parseAsString: { withDefault },
     parseAsStringEnum: () => ({ withDefault }),
     useQueryState: (_key: string, parser?: { defaultValue?: unknown }) =>

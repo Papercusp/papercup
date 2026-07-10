@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { mergeUserOverWorkspace, VOICE_USER_OVERRIDE_KEYS } from './user-preferences';
+import { DEFAULT_VOICE_PREFS } from './voice-prefs';
 
 describe('mergeUserOverWorkspace', () => {
   const KEYS = ['fullAgentIdleTimeoutMin', 'operatorActiveOnStartup', 'agentLanguage'] as const;
@@ -96,7 +97,8 @@ describe('VOICE_USER_OVERRIDE_KEYS', () => {
     expect(VOICE_USER_OVERRIDE_KEYS).toEqual([
       'agentLanguage',
       'elevenlabsVoiceId',
-      'wakeWordKeyword',
+      'porcupineKeyword',
+      'openwakewordKeyword',
       'voiceMaxSpokenWords',
       'fullAgentIdleTimeoutMin',
       'fullAgentSessionMaxMin',
@@ -105,7 +107,7 @@ describe('VOICE_USER_OVERRIDE_KEYS', () => {
       'operatorActiveOnStartup',
       'voicePrivacyMode',
       'speakSuggestions',
-      'speakReceivingFlips',
+      'speakModeFlips',
       'speakCadenceStatus',
       'audienceMode',
       'proactiveTicksEnabled',
@@ -118,5 +120,18 @@ describe('VOICE_USER_OVERRIDE_KEYS', () => {
 
   it('contains no duplicates', () => {
     expect(new Set(VOICE_USER_OVERRIDE_KEYS).size).toBe(VOICE_USER_OVERRIDE_KEYS.length);
+  });
+
+  // RECURRENCE GUARD (settings-audit 2026-07-09). The module doc states the
+  // invariant "Each key MUST also exist in the workspace-level VoicePrefs schema
+  // so the fallback works" — but nothing enforced it, so `wakeWordKeyword` sat in
+  // this list for months as a PHANTOM: not a VoicePrefs field, happily copied onto
+  // the merged object by mergeLayered, and read by nobody. The /settings/user "Wake
+  // word" input therefore did nothing at all. TypeScript cannot catch this (the list
+  // is a plain string tuple), so assert it here instead of trusting the comment.
+  it('every override key exists in the workspace VoicePrefs schema', () => {
+    const schemaKeys = new Set(Object.keys(DEFAULT_VOICE_PREFS));
+    const phantoms = VOICE_USER_OVERRIDE_KEYS.filter((k) => !schemaKeys.has(k));
+    expect(phantoms).toEqual([]);
   });
 });

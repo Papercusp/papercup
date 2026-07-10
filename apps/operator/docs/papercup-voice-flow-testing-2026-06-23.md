@@ -11,7 +11,7 @@ layer** (voice is already converted to text before it reaches the brain, so we
 submit text directly — no mic/STT needed) and verify:
 1. the flow works (text → `papercup:converse` → streamed reply / tools / cards),
 2. it answers **real questions about the papercusp pot** well (grounded, accurate),
-3. it routes substantial work to the **Mug** via `<handoff_to_queen>` and keeps
+3. it routes substantial work to the **Mug** via `<handoff_to_mug>` and keeps
    trivia local,
 4. the borrowed **operator behavioral contracts** still hold for the Papercup.
 
@@ -28,7 +28,7 @@ because operator and papercup are the SAME role-keyed converse brain.
 - Shared brain: the route resolves `${role}:converse` and honors an explicit
   `body.role`.
 - Already built: a `papercup` target (role=`papercup`) + `scenarios/papercup/SN01`
-  (planning → `<handoff_to_queen>`) + `SN02` (trivia → no handoff).
+  (planning → `<handoff_to_mug>`) + `SN02` (trivia → no handoff).
 - Real-pot support: `realWorkspace: true` + `setup.mem0`.
 
 ## Decisions (owner delegated — chosen here)
@@ -186,13 +186,13 @@ gives good results." Results (all clean, exit 0, `event: done`):
 1. **Q: "What is the Mug's role and can you hand work to her?"**
    A: *"The Mug is the brain and placer — she triages the backlog, decides
    priority, and spawns the work. I don't place; I file high-priority work_items
-   and nudge her via handoff_to_queen."* → ✅ accurate pot division of labor;
+   and nudge her via handoff_to_mug."* → ✅ accurate pot division of labor;
    correctly says the Papercup does NOT place work; speakable `<say>`. (= SN-H03)
 
 2. **Q: "Get the Mug to plan and ship a new CSV export feature end to end."**
    A: *"On it — filing CSV export as a high-priority planning ask and flagging
    the Mug. She'll scope it, plan it, and place the work."* PLUS emitted
-   `<handoff_to_queen summary="plan and ship a brand-new CSV export feature
+   `<handoff_to_mug summary="plan and ship a brand-new CSV export feature
    end-to-end — Mug to scope, author the plan, place the chunks, and drive to
    ship" tier="high">`. → ✅ handoff fires with a FAITHFUL brief + high tier; does
    not try to do it itself. (= SN01 / SN-H04)

@@ -26,7 +26,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveProject } from '../harness-core';
-import { loadHarnessRegistry } from '../harness-registry';
+import { loadHarnessRegistry, isEphemeralForeignProject } from '../harness-registry';
 import { spawnInvokeOnceWithFallback } from '../dbos/orchestrator-runner';
 import { buildPipelineExtraEnv } from '../dbos/orchestrator-spawn-env';
 import { FLAGS } from '@papercusp/flags';
@@ -826,10 +826,16 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
   if (!slug) {
     try {
       const reg = await loadHarnessRegistry(input.workspaceId);
-      if (reg.projects.length === 1) slug = reg.projects[0].slug;
+      // WI-1937: an ephemeral P-104 foreign-clone row must never win the
+      // "only one harness registered" default-inference — it's not a real
+      // harness a human registered, and picking it here would silently cwd an
+      // unrelated spawn into a peer's sandboxed clone. (Explicitly naming its
+      // slug still resolves it fine — that's resolveProject below, untouched.)
+      const registeredProjects = reg.projects.filter((p) => !isEphemeralForeignProject(p));
+      if (registeredProjects.length === 1) slug = registeredProjects[0].slug;
       else {
         return fail(
-          `spawn rejected: no harness named and ${reg.projects.length} are registered — pass harness=<slug> (registered: ${reg.projects.map((p) => p.slug).join(', ') || '(none)'})`,
+          `spawn rejected: no harness named and ${registeredProjects.length} are registered — pass harness=<slug> (registered: ${registeredProjects.map((p) => p.slug).join(', ') || '(none)'})`,
         );
       }
     } catch (err) {
@@ -857,7 +863,7 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
     let registered = '';
     try {
       const reg = await loadHarnessRegistry(input.workspaceId);
-      registered = reg.projects.map((p) => p.slug).join(', ') || '(none)';
+      registered = reg.projects.filter((p) => !isEphemeralForeignProject(p)).map((p) => p.slug).join(', ') || '(none)';
     } catch {
       /* best-effort */
     }

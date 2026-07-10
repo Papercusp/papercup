@@ -16,12 +16,12 @@ in `bootstrap-su.ts` / the console + role + spawn paths), was only LEFT-JOINed
 Consequence: a session that the system **recorded** but that had **not yet
 self-registered** in `coord_presence` was structurally **invisible** to the
 roster and **undispatchable**. This was worst for **autonomous/console agents**
-(queens, overwatch, operators, hive bees) — they have no reliable
+(mugs, overwatch, operators, pot cups) — they have no reliable
 `coord_presence` heartbeat path, so they were invisible for their *entire* life,
 not just a startup window. It also bit any interactive session in its
 launch→first-coord-call window.
 
-Proven (2026-06-22): 6–9 live `console/queen`/`overwatch` sessions with valid
+Proven (2026-06-22): 6–9 live `console/mug`/`overwatch` sessions with valid
 `coord_owner_id`s, up to 18 min old, absent from `coord:presence`.
 
 ## The fix: presence is a VIEW over the session log
@@ -76,7 +76,7 @@ registers presence.
 ## Scope note
 
 The recorded leg runs only for **workspace/`all`** scope (`hiveId == null`).
-`adv_sessions` carries no hive attribution yet, so including it under an explicit
-**hive** scope could leak cross-hive agents. Adding `hive_slug` to the recording
-(so the hive-scoped Queen view can include un-self-registered bees too) is the
+`adv_sessions` carries no pot attribution yet, so including it under an explicit
+**pot** scope could leak cross-pot agents. Adding `hive_slug` to the recording
+(so the pot-scoped Mug view can include un-self-registered cups too) is the
 tracked follow-up (plan `presence-derive-from-session-log-2026-06-22`, P-002).

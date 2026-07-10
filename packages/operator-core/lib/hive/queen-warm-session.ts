@@ -29,7 +29,7 @@ export interface QueenRebirthInputs {
   nowMs: number;
   /** The queen's autoloop consecutive_errors (anomaly signal). */
   consecutiveErrors?: number;
-  /** The latest hive-coordination-health scorecard is red / missing (anomaly). */
+  /** The latest pot-coordination-health scorecard is red / missing (anomaly). */
   scorecardUnhealthy?: boolean;
 }
 
@@ -136,7 +136,7 @@ export function decideQueenWakeMode(inputs: QueenRebirthInputs): QueenWakeDecisi
     return { mode: 'rebirth', reason: `anomaly: consecutive_errors=${inputs.consecutiveErrors}` };
   }
   if (inputs.scorecardUnhealthy === true) {
-    return { mode: 'rebirth', reason: 'anomaly: hive-coordination-health unhealthy' };
+    return { mode: 'rebirth', reason: 'anomaly: pot-coordination-health unhealthy' };
   }
   return { mode: 'warm', reason: 'resumable session healthy + fresh' };
 }

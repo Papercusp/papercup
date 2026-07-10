@@ -33,8 +33,8 @@ Rust bridge inside the webview, so DOM queries, `eval`, `click`,
 focus-stealing or OCR.
 
 The shell also opens a **second window** — a ghostty terminal running the
-zellij `pui` dock with the live agent TUIs (the **Sentinel chat** there is a
-Claude-Code session, and the **Queen** runs beside it). `tauri-agent-tools`
+zellij `pui` dock with the live agent TUIs (the **Papercup chat** there is a
+Claude-Code session, and the **Mug** runs beside it). `tauri-agent-tools`
 **cannot** see that window; drive/observe it with `zellij action` +
 screenshots — see **§16**.
 
@@ -217,7 +217,7 @@ PID=<pid-from-tauri-agent-tools-probe>
 pstree -ap "$PID" | rg 'ghostty|zellij|pui|psu|claude|codex|omp'
 ```
 
-If that tree contains the Sentinel/Queen dock or agent TUIs, do **not**
+If that tree contains the Papercup/Mug dock or agent TUIs, do **not**
 kill or restart the shell for routine verification. Use an isolated,
 dock-suppressed second instance instead:
 
@@ -233,7 +233,7 @@ npm run tauri -- dev --config '{"build":{"devUrl":"http://127.0.0.1:3370"}}'
 Use a different free port pair for concurrent runs. On a headless
 display, launch that command under the §15.4 Xvfb + VirtualGL recipe;
 `PAPERCUSP_NATIVE_TERMINAL=0` is the load-bearing part that prevents a
-duplicate `pui chat`/Queen/Sentinel dock from joining the live fleet.
+duplicate `pui chat`/Mug/Papercup dock from joining the live fleet.
 
 `npm run tauri -- dev` runs Tauri's `beforeDevCommand`
 (`papercusp-desktop/bin/dev-operator-ifneeded.sh`), which **already pins
@@ -261,11 +261,55 @@ lives in the wrapper script; this recipe needs **no cluster env var at
 all**. Verify after boot: `ss -tlnp | grep 3370` must show exactly **ONE**
 listener PID.
 
-Separately, if you ever DO need to pass this var directly to `hono-host.ts`
-(bypassing the Tauri wrapper), know that `'1'` does **not** mean "one
-worker" — `resolveClusterWorkers` treats `'1'` the same as `'auto'`/`'on'`/`'true'`
-(clustering **ON** at the host's recommended, often worker-per-core, count).
-Only `'0'`/`'off'`/`'false'` force single-process.
+(EI-8817, fixed 2026-07-09: `'1'` used to alias `'auto'`/`'on'`/`'true'`
+— clustering **ON** at the host's recommended, often worker-per-core, count
+— instead of "one worker", and that mismatch is what turned an earlier
+`PAPERCUSP_CLUSTER_WORKERS=1` fix attempt into the same-day recurrence
+above. `resolveClusterWorkers` now treats `'1'` as exactly one worker, same
+as any other explicit positive number; only `'auto'`/`'on'`/`'true'` mean
+"use the host's recommended count". The **shadowing** hazard above is
+unaffected by this fix — any nonzero `PAPERCUSP_CLUSTER_WORKERS` in your
+shell still bypasses the wrapper's `PAPERCUSP_CLUSTER=0` pin regardless of
+its value — so the advice stands: pass **no** cluster env var to this
+recipe at all.)
+
+`npm run tauri -- dev` (including the isolated §1.3 recipe above) has no
+"don't watch Rust" mode: it file-watches the whole `src-tauri` tree, and
+Tauri does not scope that watch per dev-port. On a shared multi-agent box,
+**any peer's edit under `src-tauri` — even one targeting a totally
+different port** — triggers a cargo rebuild + restart of every live `tauri
+dev` process reading that tree, yours included. Mid-litmus this looks like
+your app vanishing (`tauri-agent-tools probe` → `No bridge found for PID <n>`), and the rebuild can then **stall for minutes** if it loses a race
+for cargo's package-cache lock against another peer's concurrent cargo job
+(a `release-local.sh` build, a `cargo test` run) — per-job `CARGO_TARGET_DIR`
+isolation does not isolate the *shared* package cache, so two independent
+cargo invocations still serialize on it.
+
+**Recovery loop**, don't just re-probe the dead PID:
+
+1. Re-discover the new binary's PID by its dev port (matching on `comm` does
+   **not** work — `pgrep -x papercusp-desktop` never matches because `comm`
+   truncates at 15 chars):
+   ```sh
+   for P in $(pgrep -f debug/papercusp-desktop); do
+     tr '\0' '\n' < /proc/$P/environ | grep -q '^OPERATOR_DEV_PORT=3370$' && echo $P
+   done
+   ```
+2. If nothing turns up yet, the rebuild is still blocked on the cargo
+   package-cache lock — wait and retry rather than concluding the shell is
+   dead; it can take several minutes when contending with a peer's cargo job.
+3. Re-`probe`/`check` against the freshly discovered PID once found.
+
+**Also watch for a first-read-transient right after the restart**: the
+webview can briefly compute `background: 'none'` (or similarly blank/unset
+styles) for elements while the CSS chunk is still parsing post-reload. A
+`check`/`eval` run in that window can read as a false negative — re-evaluate
+once more after a short beat before trusting the first read.
+
+If you need a litmus run immune to a peer's `src-tauri` edit entirely, run
+the already-built binary directly instead of `tauri -- dev` (no file-watch),
+at the cost of not picking up your own Rust-side edits without a manual
+rebuild.
 
 ### 1.4 Stale Vite cache
 
@@ -1711,40 +1755,40 @@ value injected this way bypasses UI constraints: only pass values the real
 control could produce (e.g. an option that exists in the select), or you are
 testing a state the user can never reach.
 
-## 16. Driving the zellij `pui` chat dock (the Sentinel / Queen TUIs)
+## 16. Driving the zellij `pui` chat dock (the Papercup / Mug TUIs)
 
 Everything above drives the **Tauri webview**. The desktop ALSO opens a *second*
 window: a **ghostty terminal running a zellij `pui` dock** — the live agent TUIs
 (owner directive 2026-06-11: "every agent chat is a LIVE TUI"). This is where the
-**Sentinel chat** and the **Queen** actually run for the user. `tauri-agent-tools`
+**Papercup chat** and the **Mug** actually run for the user. `tauri-agent-tools`
 **cannot see it** (it's not the webview) — drive it with `zellij action` +
 window screenshots instead.
 
 ### 16.1 What's in the dock
 
 Launched by `ghostty … -e pui chat`, which starts a zellij session from
-`~/.papercusp/pui-chat-dock.kdl` (three tabs: `this hive` / `network` / `plans`).
-The `this hive` tab stacks:
+`~/.papercusp/pui-chat-dock.kdl` (three tabs: `this pot` / `network` / `plans`).
+The `this pot` tab stacks:
 
 | Pane                                  | Command it runs                                      | What it is                                                                                  |
 | ------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | 👁 overwatch                          | `pui brain-view --overwatch`                         | read-only live transcript                                                                   |
-| ♛ queen                               | `pui brain-view --queen`                             | the Queen's brain transcript (read-only)                                                    |
-| ♛✉ prompt / ⏸ wakes / ✉ mail / ☑ work | `pui {prompt,wake,mail,work}-pane --queen`           | Queen control panes                                                                         |
-| **🛡 sentinel**                       | **`psu --no-picker --agent=claude --role=operator`** | **the Sentinel chat — a Claude Code session acting as the operator, voiced via ElevenLabs** |
-| colony                                | `pui dock-driver`                                    | reactively appends one `claude --resume` TUI per live bee                                   |
+| ♛ mug                                 | `pui brain-view --mug`                               | the Mug's brain transcript (read-only)                                                      |
+| ♛✉ prompt / ⏸ wakes / ✉ mail / ☑ work | `pui {prompt,wake,mail,work}-pane --mug`             | Mug control panes                                                                           |
+| **🛡 papercup**                       | **`psu --no-picker --agent=claude --role=operator`** | **the Papercup chat — a Claude Code session acting as the operator, voiced via ElevenLabs** |
+| colony                                | `pui dock-driver`                                    | reactively appends one `claude --resume` TUI per live cup                                   |
 | ⏸ wakes                               | `pui wake-pane`                                      | fleet-wide wake board                                                                       |
 
-> ⚠ **The Sentinel chat is a `psu`/Claude-Code TUI — NOT the `apps/tui` (`pui`)
+> ⚠ **The Papercup chat is a `psu`/Claude-Code TUI — NOT the `apps/tui` (`pui`)
 > ratatui converse client.** They are different surfaces; don't conflate "the TUI
 > chat" with `apps/tui`. (The `apps/tui` ratatui is a separate interactive
-> converse client; it is not what this dock's sentinel pane runs.)
+> converse client; it is not what this dock's papercup pane runs.)
 
 ### 16.2 Find the session + window
 
 ```sh
 zellij ls                                    # → pui-dock-<pid> (the live one; ignore "EXITED")
-DISPLAY=:0 wmctrl -l | grep pui-dock         # → ghostty window id (title "pui-dock-… | 🛡 sentinel")
+DISPLAY=:0 wmctrl -l | grep pui-dock         # → ghostty window id (title "pui-dock-… | 🛡 papercup")
 ```
 
 ### 16.3 Observe — read-only, always safe
@@ -1770,13 +1814,13 @@ zellij -s pui-dock-<pid> action move-focus down             # move focus between
 ```
 
 * **Writes hit the FOCUSED pane** — confirm focus with `dump-screen` before
-  typing (the 🛡 sentinel pane is `focus=true` in the layout, so it's usually it).
+  typing (the 🛡 papercup pane is `focus=true` in the layout, so it's usually it).
 * **Render race:** a `write-chars` immediately followed by `dump-screen` often
   doesn't show the text yet (the terminal hasn't repainted). Re-dump, or space
   the `zellij action` calls out (each CLI call is a round-trip, which usually
   suffices). For a non-destructive smoke test, type a marker and delete it with
   `write 127` — **without** Enter — then confirm via `dump-screen`.
-* **Enter submits a real turn** to a real Claude-Code operator/Queen — it will
+* **Enter submits a real turn** to a real Claude-Code operator/Mug — it will
   act on it. Never drive the user's live panes while they're working without
   permission.
 * Dock keybinds differ from stock zellij (set in the layout): **Tab** =
@@ -1785,12 +1829,12 @@ zellij -s pui-dock-<pid> action move-focus down             # move focus between
 
 ### 16.5 What you can't verify headlessly right now
 
-* A **brain reply** (Sentinel/Queen) needs LLM capacity. If the account pool is
+* A **brain reply** (Papercup/Mug) needs LLM capacity. If the account pool is
   rate-starved (every account in a 429 cooldown — surfaced as `[infra-liveness]
   all N LLM pool account(s) paused` escalations in the operator conversation),
   the panes render but won't answer. Verify *rendering* now; defer
   *reply*-verification until capacity returns.
 * A pane only shows the Phase-2 `apps/tui` cards if it's running the `apps/tui`
   ratatui (and a freshly-built `pui` binary) — **not** the `psu`/Claude-Code
-  sentinel pane above. Check the running binary's mtime vs the build, and the
+  papercup pane above. Check the running binary's mtime vs the build, and the
   pane's launch command, before concluding "cards work in the TUI."

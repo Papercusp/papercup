@@ -8,40 +8,40 @@ import { Aside } from '@astrojs/starlight/components';
 This page and [the methodology](/internal/docs/benchmarks/methodology) describe
 **how** we measure, not **what** we measured. Every headline number is a
 `TBD-after-pilot` placeholder until the pilots run (`P-009` for the per-task floor;
-`P-032` for the hive-backlog layer). No result here may be published to a third party
+`P-032` for the pot-backlog layer). No result here may be published to a third party
 before owner sign-off (`P-017`). Plan of record:
 `impartial-benchmark-suite-2026-06-15` (`plans:get { slug, harness: 'all' }`).
 
 ## What this is
 
 A benchmark suite we can show **third parties** that credibly demonstrates what the
-Papercusp **Hive** contributes — not just the ability of the underlying model it runs
-on. Per the **D-010 reframe**, the subject under test is the **Hive**: the **Queen**
-(autonomous placement, ranking, eviction, warm-inject) operating over a **bee fleet**
+Papercusp **Pot** contributes — not just the ability of the underlying model it runs
+on. Per the **D-010 reframe**, the subject under test is the **Pot**: the **Mug**
+(autonomous placement, ranking, eviction, warm-inject) operating over a **cup fleet**
 that shares the coordination substrate (`coord:*`, `locks:*`, `work_items:*`,
 `messages:*`). The per-task `coding` pipeline is a conventional multi-role spine and is
-*not* the differentiator — the Hive's autonomous orchestration over a whole backlog is.
+*not* the differentiator — the Pot's autonomous orchestration over a whole backlog is.
 
 The field's 2026 consensus is that an **agent is a model embedded in an execution
 system** (`Agent = Model + Harness`), and the harness is roughly half the performance.
 We hold the model constant and vary the system — and the system we are proving is the
 **fleet**:
 
-> **Hold the model constant. Vary only the Queen.** Measure how much faster, cheaper,
+> **Hold the model constant. Vary only the Mug.** Measure how much faster, cheaper,
 > more valuable, and less coordination-failure-prone a real backlog is drained by the
-> **Hive** than by the **same fleet with the Queen ablated** (a naive FIFO scheduler).
+> **Pot** than by the **same fleet with the Mug ablated** (a naive FIFO scheduler).
 
 ## The claim
 
 The headline is a **systems** claim (D-001, framing *both, system-delta-led*),
 supported by an absolute number and third-party re-execution. Under the reframe the
-"system" is the **Hive** and the headline baseline is the **Queen-ablated fleet**
+"system" is the **Pot** and the headline baseline is the **Mug-ablated fleet**
 (D-010, superseding the headline half of D-002 — the native harness becomes the L1 /
 serial-throughput floor):
 
-> *Holding the model constant, the Hive drains a real backlog of public tasks faster,
+> *Holding the model constant, the Pot drains a real backlog of public tasks faster,
 > cheaper-per-task, with more value captured under a fixed budget, and with fewer
-> coordination failures than the same fleet with the Queen ablated — and its per-task
+> coordination failures than the same fleet with the Mug ablated — and its per-task
 > floor matches or beats the provider's native harness.*
 
 ## The five measurement layers
@@ -52,18 +52,18 @@ places; Phase 5 adds the fleet layers on top.
 | Layer                       | Measures                                          | Headline comparison                                      |
 | --------------------------- | ------------------------------------------------- | -------------------------------------------------------- |
 | **L1 competence**           | Per-task resolve rate (pass\@1)                   | Papercusp spine vs native harness / ablation / best-of-N |
-| **L2 throughput**           | Wall-clock speedup, tasks/$, drain time, autonomy | **Hive vs Queen-ablated fleet**                          |
-| **L3 value-capture**        | $ captured under a fixed budget                   | **Hive vs Queen-ablated fleet**                          |
-| **L4 coordination-quality** | Duplication / breakdown / misalignment rates      | Hive vs published MAS baseline + other orchestrators     |
-| **L5 long-horizon**         | Multi-step sequencing                             | Hive vs Queen-ablated fleet                              |
+| **L2 throughput**           | Wall-clock speedup, tasks/$, drain time, autonomy | **Pot vs Mug-ablated fleet**                             |
+| **L3 value-capture**        | $ captured under a fixed budget                   | **Pot vs Mug-ablated fleet**                             |
+| **L4 coordination-quality** | Duplication / breakdown / misalignment rates      | Pot vs published MAS baseline + other orchestrators      |
+| **L5 long-horizon**         | Multi-step sequencing                             | Pot vs Mug-ablated fleet                                 |
 
 L4 (coordination quality, via the third-party **MAST** taxonomy) is the most
-differentiated *and* most impartial Hive claim.
+differentiated *and* most impartial Pot claim.
 
 ## Impartiality commitments (non-negotiable)
 
 A sophisticated third party discounts our *internal* eval machinery (`iq-battery`,
-`hive-eval`, the `gym`) to zero — we author the tasks *and* grade them. Impartiality
+`pot-eval`, the `gym`) to zero — we author the tasks *and* grade them. Impartiality
 requires outsourcing both ends (D-005):
 
 1. **We don't author the tasks** — only established public third-party benchmarks.
@@ -78,9 +78,9 @@ requires outsourcing both ends (D-005):
    (statically CI-proven disjoint).
 
 There is **no off-the-shelf public fleet-throughput benchmark**. So L2–L5 impartiality
-rests on public **tasks** + the external **grader** + the **Queen-ablation baseline**
+rests on public **tasks** + the external **grader** + the **Mug-ablation baseline**
 (an apples-to-apples control inside our own system) + **pre-registration**. The
-Queen-ablation delta is the honest, un-spinnable measure of what the Queen adds — and
+Mug-ablation delta is the honest, un-spinnable measure of what the Mug adds — and
 every cited third-party number (the MAST baseline, any prior-art figure) is
 re-confirmed verbatim against its source before publishing (D-011).
 
@@ -106,9 +106,9 @@ human-graded, so **not runnable** (D-011).
 * **L1 — three baselines, all three:** native harness / Claude Code (now the serial
   floor), ablation (causal proof), best-of-N (tokens-justified). Headline metric: pass\@1
   over ≥3 seeds with confidence intervals, iso-budget + cost/accuracy Pareto.
-* **L2–L5 — Hive vs Queen-ablated fleet:** throughput (tasks/$, speedup), value under
+* **L2–L5 — Pot vs Mug-ablated fleet:** throughput (tasks/$, speedup), value under
   a fixed budget, and MAST coordination-failure rates.
-* **Cost counted honestly:** `tokens_total` sums over *every* role / bee / hand-off /
+* **Cost counted honestly:** `tokens_total` sums over *every* role / cup / hand-off /
   coordination message; `cost_usd` is derived from raw tokens at a pinned price table.
 
 Full detail: **[Methodology →](/internal/docs/benchmarks/methodology)**.
@@ -124,11 +124,11 @@ that ships with the suite: **`benchmarks/README.md`** at the repo root.
 * **Plan:** `impartial-benchmark-suite-2026-06-15` (`plans:get { slug, harness: 'all' }`).
 * **Feasibility spikes:** L1 grader interface — D-008 /
   `apps/operator/docs/external-bench-grader-feasibility-2026-06-15.md`; fleet instruments
-  — D-011 / `apps/operator/docs/hive-instrument-feasibility-2026-06-15.md`.
+  — D-011 / `apps/operator/docs/pot-instrument-feasibility-2026-06-15.md`.
 * **Decisions:** D-001 (claim framing), D-002 (superseded headline → D-010), D-003
   (families), D-004 (treatment = full substrate), D-005 (we neither author nor grade),
   D-006 (Verified retired), D-007 (Evaluation dock-tab), D-008 (two grader modalities),
-  D-009 (external-bench `extends coding-factory`), **D-010 (benchmark the Hive)**, **D-011
+  D-009 (external-bench `extends coding-factory`), **D-010 (benchmark the Pot)**, **D-011
   (fleet-instrument go/no-go)**.
 * **Key external sources:** OpenAI "Why we no longer evaluate SWE-bench Verified"
   (2026-02); Harness-Bench (arXiv 2605.27922); SWE-bench Pro (arXiv 2509.16941);

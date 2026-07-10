@@ -139,7 +139,7 @@ describe('operator:preferences', () => {
     const { default: tool } = await import('../preferences');
     await expect(
       tool.handler({ op: 'append', entry: 'x' }, MAKE_CTX({ role: 'worker', chunkId: 'ck' })),
-    ).rejects.toThrow(/operator, architect, or queen/i);
+    ).rejects.toThrow(/operator, architect, or mug/i);
   });
 
   it('append as queen persists (operator-equivalent, EI-2204)', async () => {

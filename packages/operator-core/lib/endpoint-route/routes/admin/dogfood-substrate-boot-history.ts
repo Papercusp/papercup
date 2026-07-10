@@ -75,6 +75,9 @@ const VALID_KINDS_MAP: Record<BootHistoryKind, true> = {
   epoch_defer: true,
   epoch_decrypt_fail: true,
   epoch_applied: true,
+  // WI-3604: split-DHT-universe recurrence guard.
+  dht_universe_ok: true,
+  dht_universe_mismatch: true,
 };
 const VALID_KINDS: ReadonlySet<string> = new Set(Object.keys(VALID_KINDS_MAP));
 

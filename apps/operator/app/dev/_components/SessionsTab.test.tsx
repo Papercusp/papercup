@@ -9,7 +9,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@papercusp/grid-core', () => ({ RichGrid: () => null }));
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   parseAsString: { withDefault: () => ({}) },
   parseAsStringEnum: () => ({ withDefault: () => ({}) }),
   useQueryState: () => [null, () => {}],

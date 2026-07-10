@@ -46,7 +46,7 @@ export default defineTool({
     if (args.op === 'get') return json({ policy: await readOpusBudgetPolicy() });
 
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('fleet:opus_budget set requires operator, architect, or queen role');
+      throw new Error('fleet:opus_budget set requires operator, architect, or mug role');
     }
     const patch: Partial<OpusBudgetPolicy> = {};
     if (args.reserveStart !== undefined) patch.reserveStart = args.reserveStart;

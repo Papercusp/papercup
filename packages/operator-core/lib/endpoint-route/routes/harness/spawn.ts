@@ -600,7 +600,7 @@ const invoke = defineTool({
         .catch(() => {});
       // hive-loop-supervision 2026-06-21 (su-f76c85): the SYMMETRIC backstop for the
       // every-wake scorecard. If the overwatch's turn ended without emitting its
-      // hive-coordination-health scorecard, synthesize + file a baseline floor from the
+      // pot-coordination-health scorecard, synthesize + file a baseline floor from the
       // system-health brief so the monitor is never silent (the agent skip stays visible
       // — the floor is excluded from the agent-emission freshness detector). Fail-soft.
       void import('../../../overwatch/scorecard-backstop')

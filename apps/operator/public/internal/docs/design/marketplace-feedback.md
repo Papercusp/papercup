@@ -13,10 +13,10 @@ live inside the `marketplace-public-ui` lib at
 app's browse surface.) The browse/install surface is now the
 **Cupboard** (`/cupboard` → `apps/operator/app/cupboard/CupboardClient.tsx`):
 a single storefront with **kind-filter tabs** (`?kind=` nuqs param). The
-tab set is `all / harness / blueprint / hive-blueprint / plugin /
+tab set is `all / harness / blueprint / pot-blueprint / plugin /
 tool-pack / learning-pack / tools`, labelled **All / Pots** (or
-**Hives**, via the lexicon project term — not "Harnesses") **/
-Blueprints / Hive Templates / Plugins / Tool packs / Learning Packs /
+**Pots**, via the lexicon project term — not "Harnesses") **/
+Blueprints / Pot Templates / Plugins / Tool packs / Learning Packs /
 Tools**. Note there is no **Snapshots** tab: the `snapshot` kind was
 retired (`retire-snapshots-instance-spec` D-005 — the Cupboard
 distributes recipes/blueprints, not tarballs). This replaces the old

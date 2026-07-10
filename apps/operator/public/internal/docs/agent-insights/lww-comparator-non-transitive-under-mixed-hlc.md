@@ -1,7 +1,7 @@
 # The fed_hlc LWW comparator is non-transitive under MIXED HLC presence
 URL: /internal/docs/agent-insights/lww-comparator-non-transitive-under-mixed-hlc
 
-lwwPick / the fed_hlc PG guard used to use "both-HLC → compare HLC, else → compare ts" — a rule that CYCLED when a no-HLC (pre-314) op sat between two skewed HLC ops, so the fold winner became order-dependent and peers could diverge (EI-1698). FIXED as of 2026-07-02 (compare in one HLC space, everywhere) — plus a follow-up exact-tie/node-id fix (WI-1672, mig-459) and a THIRD hardening, the HlcClock recv ratchet ε-bound (maxDriftMs) that stops one absurd remote stamp from poisoning a node's (and, re-propagated, the hive's) clock.
+lwwPick / the fed_hlc PG guard used to use "both-HLC → compare HLC, else → compare ts" — a rule that CYCLED when a no-HLC (pre-314) op sat between two skewed HLC ops, so the fold winner became order-dependent and peers could diverge (EI-1698). FIXED as of 2026-07-02 (compare in one HLC space, everywhere) — plus a follow-up exact-tie/node-id fix (WI-1672, mig-459) and a THIRD hardening, the HlcClock recv ratchet ε-bound (maxDriftMs) that stops one absurd remote stamp from poisoning a node's (and, re-propagated, the pot's) clock.
 
 ## What
 
@@ -118,7 +118,7 @@ absurd remote stamp (a bad clock, a corrupted/adversarial payload, a
 far-future `ms`) would permanently pin the receiving node's clock years
 ahead — and because every subsequent local `send()` re-stamps at that poisoned
 `ms`, a re-propagated event ratchets every OTHER peer the same way, so a
-single bad stamp can drag the whole hive's clocks forward (the same
+single bad stamp can drag the whole pot's clocks forward (the same
 "amplifier" shape as the WI-1672 exact-tie bug, just via the physical
 component instead of the tie-break).
 
@@ -160,7 +160,7 @@ split-brain — always compare via the full encoded HLC string (or `compareHlc`)
 never hand-roll a `(ms, count)`-only compare. And any new caller that merges a
 REMOTE HLC into a local clock should go through `HlcClock.recv()` (or its
 `maxDriftMs` bound) rather than a bare `Math.max` — an unbounded ratchet
-re-introduces the same amplifier one absurd stamp can poison the whole hive with.
+re-introduces the same amplifier one absurd stamp can poison the whole pot with.
 
 ## Refs
 

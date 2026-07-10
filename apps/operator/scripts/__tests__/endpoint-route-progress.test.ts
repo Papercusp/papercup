@@ -45,9 +45,9 @@ describe('endpoint-route-progress', () => {
   it('points at a barrel file that exists on disk', () => {
     // Guards the specific failure mode: a stale barrel path. If the barrel
     // moves again, this fails loudly instead of the count silently going to 0.
-    const REPO = execFileSync('git', ['rev-parse', '--show-toplevel'], {
-      encoding: 'utf8',
-    }).trim();
+    // REPO comes from this file's location, not `git rev-parse` — the release
+    // source bundle ships without a .git dir.
+    const REPO = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../..');
     const BARREL = resolve(
       REPO,
       'packages/operator-core/lib/endpoint-route/routes/index.ts',

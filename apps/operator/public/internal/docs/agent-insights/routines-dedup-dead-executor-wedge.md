@@ -10,7 +10,7 @@ routine's *effect* never happens. For `gym-cycle` (2026-06-12, 06:28→14:00):
 `harness_shared.autoloop_state` frozen at `gym-cycle:dispatch`,
 `gym_autoloop_config` stuck `running` for 7.5h (far past the 45-min
 stale-reclaim — which never ran, because the reclaim lives INSIDE the action
-that never executed), zero `[gym-cycle]` lines in the host journal. The Queen
+that never executed), zero `[gym-cycle]` lines in the host journal. The Mug
 surfaced it as "P-001 autoloop discrepancy".
 
 ## Mechanism

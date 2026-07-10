@@ -63,6 +63,8 @@ const scanEvent = (detail: Record<string, unknown>) =>
   window.dispatchEvent(new CustomEvent('operator:scan', { detail }));
 const cardEvent = (detail: Record<string, unknown>) =>
   window.dispatchEvent(new CustomEvent('operator:cardOpen', { detail }));
+const modeEvent = (mode: string) =>
+  window.dispatchEvent(new CustomEvent('papercusp:operatorMode', { detail: { mode } }));
 
 /** Default: stats endpoint says "no data" so scan-done speaks the base line. */
 const statsOk = (medianAckLatencyMs: number | null) => async () =>
@@ -79,11 +81,13 @@ beforeEach(() => {
     speakCadenceStatus: true,
     speakOpenCards: true,
     speakNudges: true,
+    speakModeFlips: true,
   });
   h.sharedState.open = false;
   h.stateSubscribers.length = 0;
   h.unsubPause.mockClear();
   fetchMock.mockClear();
+  window.sessionStorage.clear(); // the mode-flip anchor seeds from sessionStorage
 });
 
 afterEach(() => {
@@ -257,6 +261,75 @@ describe('pause nudge', () => {
   });
 });
 
+// settings-audit 2026-07-09. `speakModeFlips` (formerly `speakReceivingFlips`)
+// gated a card "flips to consumed" event deleted by the card-lifecycle collapse,
+// so the toggle could never fire. Repointed at the live active↔passive flip.
+describe('mode flips', () => {
+  it('speaks on a flip away from the anchored mode', () => {
+    render(<OperatorVoiceAnnouncer />);
+    modeEvent('passive');
+    expect(h.speak).toHaveBeenCalledWith('Papercup passive.', 'system:operator', 'polite');
+  });
+
+  it('speaks both directions', () => {
+    render(<OperatorVoiceAnnouncer />);
+    modeEvent('passive');
+    modeEvent('active');
+    expect(h.speak).toHaveBeenNthCalledWith(2, 'Papercup active.', 'system:operator', 'polite');
+  });
+
+  it('stays silent when speakModeFlips is off', () => {
+    h.loadVoicePrefsClient.mockReturnValue({ speakModeFlips: false });
+    render(<OperatorVoiceAnnouncer />);
+    modeEvent('passive');
+    expect(h.speak).not.toHaveBeenCalled();
+  });
+
+  it('stays silent when voice is off', () => {
+    h.getVoiceState.mockReturnValue({ mode: 'off' });
+    render(<OperatorVoiceAnnouncer />);
+    modeEvent('passive');
+    expect(h.speak).not.toHaveBeenCalled();
+  });
+
+  it('ignores an idempotent re-broadcast of the current mode', () => {
+    render(<OperatorVoiceAnnouncer />);
+    modeEvent('active'); // anchor defaults to 'active' — not a flip
+    expect(h.speak).not.toHaveBeenCalled();
+    modeEvent('passive');
+    expect(h.speak).toHaveBeenCalledTimes(1);
+    modeEvent('passive'); // repeat of the now-current mode
+    expect(h.speak).toHaveBeenCalledTimes(1);
+  });
+
+  // The provider DISPATCHES 'passive' during startup when operatorActiveOnStartup
+  // is false. Anchoring from sessionStorage (not from the first event) keeps that
+  // boot broadcast silent instead of announcing on every app launch.
+  it('does not announce the startup passive broadcast when the session is already passive', () => {
+    window.sessionStorage.setItem('papercusp.operatorMode', 'passive');
+    render(<OperatorVoiceAnnouncer />);
+    modeEvent('passive');
+    expect(h.speak).not.toHaveBeenCalled();
+  });
+
+  it('a flip with voice off still advances the anchor (no stale replay later)', () => {
+    h.getVoiceState.mockReturnValue({ mode: 'off' });
+    render(<OperatorVoiceAnnouncer />);
+    modeEvent('passive'); // silent, but anchor moves to 'passive'
+    h.getVoiceState.mockReturnValue({ mode: 'always-on' });
+    modeEvent('passive'); // same mode → must stay silent
+    expect(h.speak).not.toHaveBeenCalled();
+    modeEvent('active');
+    expect(h.speak).toHaveBeenCalledWith('Papercup active.', 'system:operator', 'polite');
+  });
+
+  it('ignores a malformed mode payload', () => {
+    render(<OperatorVoiceAnnouncer />);
+    modeEvent('bogus');
+    expect(h.speak).not.toHaveBeenCalled();
+  });
+});
+
 describe('cleanup', () => {
   it('unmount removes the window listeners and unsubscribes the state watch', () => {
     const { unmount } = render(<OperatorVoiceAnnouncer />);
@@ -264,6 +337,7 @@ describe('cleanup', () => {
     expect(h.unsubPause).toHaveBeenCalledTimes(1);
     scanEvent({ kind: 'scan-start' });
     cardEvent({ correlationId: 'c9', fallbackText: 'late' });
+    modeEvent('passive');
     expect(h.speak).not.toHaveBeenCalled();
   });
 });

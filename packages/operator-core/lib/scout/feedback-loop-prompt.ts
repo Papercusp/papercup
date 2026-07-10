@@ -1,6 +1,6 @@
 /**
  * feedback-loop-prompt.ts — the CANONICAL Blender-side prompt guidance for the
- * Mug↔Blender feedback-iteration loop (queen-scout-feedback-loop-2026-06-20,
+ * Mug↔Blender feedback-iteration loop (mug-scout-feedback-loop-2026-06-20,
  * P-005 / D-001 / D-002 / D-003).
  *
  * The loop lets the Mug send actionable feedback on a Blender-routed DRAFT plan,

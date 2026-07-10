@@ -51,14 +51,18 @@ function makeDeps(rows: ForeignWorkspace[], overrides: Partial<ReaperDeps> = {})
   // WI-1935 deferred #2: the offer-cancel sweep — stubbed so unit runs never
   // touch the real offer store (and its PG edge).
   const cancelOffers = vi.fn(async () => 0);
+  // WI-1937 step 5: stubbed so unit runs never touch the real harness_registry
+  // (and its PG edge) — echoes success like the other store stubs above.
+  const deregisterHarness = vi.fn(async () => true);
   const deps: Partial<ReaperDeps> = {
     listForeignWorkspaces: list as unknown as ReaperDeps['listForeignWorkspaces'],
     setForeignWorkspaceState: setState as unknown as ReaperDeps['setForeignWorkspaceState'],
     emitP2pReceipt: emit as unknown as ReaperDeps['emitP2pReceipt'],
     setLocalOfferDisposition: cancelOffers as unknown as ReaperDeps['setLocalOfferDisposition'],
+    deregisterEphemeralForeignHarness: deregisterHarness as unknown as ReaperDeps['deregisterEphemeralForeignHarness'],
     ...overrides,
   };
-  return { deps, list, setState, emit, cancelOffers };
+  return { deps, list, setState, emit, cancelOffers, deregisterHarness };
 }
 
 describe('REAPABLE_STATES (the live-session set)', () => {
@@ -230,6 +234,45 @@ describe('reapForeignSessionsForRevocation (orchestration)', () => {
     expect(res.ok && res.reaped).toHaveLength(0);
     expect(setState).not.toHaveBeenCalled();
     expect(emit).not.toHaveBeenCalled();
+  });
+
+  /** WI-1937 leader-required test (b): reap removes the ephemeral harness row. */
+  it('deregisters the ephemeral harness_registry row for each session actually reaped', async () => {
+    const rows = [
+      ws({ offerId: 'A', fleetSlug: 'fleet-x', state: 'active' }),
+      ws({ offerId: 'B', fleetSlug: 'fleet-y', state: 'active' }), // spared — different fleet
+      ws({ offerId: 'D', fleetSlug: 'fleet-x', state: 'reaped' }), // already terminal — idempotent skip
+    ];
+    const { deps, deregisterHarness } = makeDeps(rows);
+    const res = await reapForeignSessionsForRevocation(
+      { ...base, workspaceId: 'ws1', trigger: { kind: 'grant-revoked', fleetSlug: 'fleet-x' } },
+      sqlStub,
+      deps,
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.reaped.map((r) => r.offerId)).toEqual(['A']);
+    // called exactly once, for the one session that actually transitioned —
+    // never for the spared fleet-y row or the already-terminal row D.
+    expect(deregisterHarness).toHaveBeenCalledTimes(1);
+    expect(deregisterHarness).toHaveBeenCalledWith('A', 'ws1');
+  });
+
+  it('a deregister failure is swallowed — the reap itself still lands ok:true (orphan sweep catches the leak)', async () => {
+    const rows = [ws({ offerId: 'A', fleetSlug: 'fleet-x', state: 'active' })];
+    const { deps } = makeDeps(rows, {
+      deregisterEphemeralForeignHarness: vi.fn(async () => {
+        throw new Error('registry write failed');
+      }) as unknown as ReaperDeps['deregisterEphemeralForeignHarness'],
+    });
+    const res = await reapForeignSessionsForRevocation(
+      { ...base, workspaceId: 'ws1', trigger: { kind: 'grant-revoked', fleetSlug: 'fleet-x' } },
+      sqlStub,
+      deps,
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.reaped).toHaveLength(1); // the safety-critical fail-close still landed
   });
 });
 

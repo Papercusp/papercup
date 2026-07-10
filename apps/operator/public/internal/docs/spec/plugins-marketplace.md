@@ -118,7 +118,7 @@ loader specially constrains it, rejecting any of those contributions on a pack
 `'service'`, `'theme'`, and `'harness'` are reserved/dormant — the loader treats
 every non-`'pack'` value as a default plugin. The Cupboard's `tool-pack` listing
 kind is how these packs surface in the storefront (and `learning-pack` is its
-sibling install kind for curated hive learnings).
+sibling install kind for curated pot learnings).
 
 **Plugins ship in one of three runtimes.** Orthogonal to the action handler
 model, a plugin declares a `runtime` descriptor in `papercusp.json`. It defaults

@@ -3,7 +3,7 @@ URL: /internal/docs/agent-insights/replication-liveness-detector-live-debugging
 
 >-
 
-Written 2026-07-04 (su-b5d1c, plan `shared-hive-p2p-release-readiness-2026-07-03`
+Written 2026-07-04 (su-b5d1c, plan `shared-pot-p2p-release-readiness-2026-07-03`
 P-004 / WI-1840, WI-183 class). Two things live here: the **diagnostic recipe**
 for the replication-liveness detector on a live frame, and the **blind-spot
 class** its first live proof exposed.
@@ -25,7 +25,7 @@ mechanisms make such a counter read 0 while a peer is demonstrably replicating:
    `'connection'` ONCE per peer socket. A join registered AFTER the socket
    exists never sees the event (the interface doc on `HyperswarmLike.connections`
    states exactly this).
-2. **Rekey reset** — the hive first-join `rekey()` replaces the handle with a
+2. **Rekey reset** — the pot first-join `rekey()` replaces the handle with a
    fresh join whose counter starts at 0; live sockets don't re-emit.
 
 Result: the merge-pass sampler fed `swarmConnections: 0` → the axis treated the

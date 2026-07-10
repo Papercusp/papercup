@@ -17,7 +17,9 @@ import { cleanup, render, screen } from '@testing-library/react';
 
 // ── nuqs: per-key store the tests seed; setters are inert spies. ──
 const nuqsState: Record<string, unknown> = { slug: null, scope: 'expanded' };
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   useQueryState: (key: string) => [nuqsState[key], vi.fn(async () => {})],
   parseAsString: {},
   parseAsStringEnum: () => ({ withDefault: (d: unknown) => ({ __default: d }) }),

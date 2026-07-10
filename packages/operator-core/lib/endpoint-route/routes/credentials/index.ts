@@ -13,6 +13,7 @@
 import { readCredentials, writeCredentials, maskCredentials } from '../../../credentials';
 import { requireAllowedOriginOr403 } from '../../cors';
 import { invalidateMemoryClient } from '@papercusp/memory';
+import { clearOpenAiEmbedHardExhaustion } from '../../../memory/configure';
 import { defineTool } from '@papercusp/agent-mcp';
 
 export default [
@@ -61,6 +62,12 @@ export default [
         existing.anthropic_api_key !== saved.anthropic_api_key
       ) {
         try { invalidateMemoryClient(); } catch { /* best-effort — never fail a credential write on this */ }
+      }
+      // WI-3615: a rotated openai_api_key is a real reason to believe embeddings might work
+      // again — clear the sticky hard-exhaustion latch (see memory/configure.ts) so 'auto'
+      // re-tries OpenAI once instead of staying pinned to local forever.
+      if (existing.openai_api_key !== saved.openai_api_key) {
+        try { clearOpenAiEmbedHardExhaustion(); } catch { /* best-effort */ }
       }
       return Response.json(maskCredentials(saved));
     },

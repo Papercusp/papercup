@@ -64,7 +64,7 @@ Three tools (`outline`, `get`, `search`). Each takes an optional `harness` arg. 
 
 `resolveHarnessScope` returns one of three outcomes, in this precedence:
 
-1. an explicit `harness: 'all'` (or the raw `'*'` sentinel) arg → `{ kind: 'all' }` — deliberate operator/cross-harness scope, regardless of session.
+1. an explicit `harness: 'all'` (or the raw `'*'` papercup) arg → `{ kind: 'all' }` — deliberate operator/cross-harness scope, regardless of session.
 2. an explicit concrete `harness: '<slug>'` arg → `{ kind: 'harness', slug }` — always wins over the session's own scope.
 3. no arg, and the session's `ctx.harnessSlug` is a **concrete** slug → `{ kind: 'harness', slug }` (a worker/scoper/validator etc. spawned with `?harness=<slug>`).
 4. no arg, and `ctx.harnessSlug` is unset **or** the operator/SU auto-default `'*'` → `{ kind: 'none' }`.

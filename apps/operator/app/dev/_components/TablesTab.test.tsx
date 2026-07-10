@@ -14,7 +14,9 @@ import { describe, expect, it, vi } from 'vitest';
 // Keep the module import side-effect-free: none of these are exercised by the
 // pure helpers, only pulled in at module top-level.
 vi.mock('@papercusp/grid-core', () => ({ RichGrid: () => null }));
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   parseAsString: { withDefault: () => ({}) },
   parseAsStringEnum: () => ({ withDefault: () => ({}) }),
   useQueryState: () => [null, () => {}],

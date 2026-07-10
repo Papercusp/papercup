@@ -145,7 +145,7 @@ const DevAdminRail =
 // rail, the desktop twin of the pui dock's retired main pane. First-class app
 // chrome (NOT dev-gated); lazy so the shell paint doesn't pay for its panels.
 const LeftSidebar = lazy(() => import('../components/left-sidebar/LeftSidebar'));
-// NOTE: the operator-voice controls (SentinelVoiceBar) used to mount here as a
+// NOTE: the operator-voice controls (PapercupVoiceBar) used to mount here as a
 // top strip; they now live at the TOP of the left rail (LeftSidebar), always
 // visible on every tab (owner request 2026-06-22).
 

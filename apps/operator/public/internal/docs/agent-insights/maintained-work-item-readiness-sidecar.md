@@ -24,7 +24,7 @@ column unsafe:
 
 So a `ready`-flip would **federate** the row. Readiness is a value each node must **derive locally** from
 the (already-federated) edges + statuses — replicating the derived value invites a stale federated
-`ready` to overwrite a node's local recompute → **a bee claims blocked work**. (Decision D-007 in
+`ready` to overwrite a node's local recompute → **a cup claims blocked work**. (Decision D-007 in
 `work-item-deps-and-readiness-2026-06-22`.)
 
 The sidecar sidesteps all of it: the maintenance triggers write **only** `work_item_blocked`, never
@@ -63,7 +63,7 @@ the inline predicate) and pass the boolean into the shared fragment, so the two 
 **Before changing the default or trusting the sidecar on a new DB, verify zero drift.** Run
 `reconcileReadiness()` (or the inline SQL: `EXCEPT` both ways between `work_item_blocked` and the
 `work_item_is_blocked()` set over features) — `drift = missing + extra` must be 0. `missing`
-(oracle-blocked but no sidecar row) is the dangerous one: a blocked item looks ready → a bee claims
+(oracle-blocked but no sidecar row) is the dangerous one: a blocked item looks ready → a cup claims
 blocked work. The claim test pins both arms explicitly (an inline-OFF describe + a sidecar-ON describe)
 so a fragment bug in either path is caught.
 
@@ -77,7 +77,7 @@ diffing the function doesn't assume they did:
   `485`): a `cooldownAssignee` opt adds a `last_released_by`/`last_released_at` NULL-safe clause
   that excludes a row from claiming **only for the agent that just voluntarily released it**,
   for `PAPERCUSP_RELEASE_COOLDOWN_SEC` (default 300s) — kills the claim/release ping-pong where a
-  released row resets to `todo`, re-sorts to the top under a stable rank, and the same bee
+  released row resets to `todo`, re-sorts to the top under a stable rank, and the same cup
   re-claims it immediately. `releaseWorkItem` stamps the provenance; every other agent can still
   claim the row instantly. This is a **fairness/anti-thrash** floor, not a correctness-of-readiness
   one — a cooled-down row is still fully "ready" by the oracle's definition, just temporarily
@@ -99,7 +99,7 @@ this" hold on a specific item, `COALESCE(wi.payload, '{}'::jsonb) ->> '_claimHol
 'true'`), `observationLaneExclusionSql` (D-005, a `lane:'observation'` scorecard/reflection row is
 never work-queue material), `needsHumanExclusionSql` (EI-7776, an issue-family row
 `improvements:resolve` already routed to a human — the issue dialect has no real terminal
-"needs-human" state, so without this a drain-loop bee re-claims and re-posts the same routed-to-human
+"needs-human" state, so without this a drain-loop cup re-claims and re-posts the same routed-to-human
 comment forever), and `federationDetectorExclusionSql` (WI-2633, gates an auto-filed
 replication-liveness detector EI to the p2p fleet that can actually action it). None of these touch
 `work_item_blocked` / oracle readiness — an item can be fully "ready" and still correctly excluded

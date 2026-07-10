@@ -6,7 +6,7 @@ When the org pools route through PgBouncer (transaction pooling), sending statem
 ## Symptom
 
 Intermittent `plans:*` write failures fleet-wide; the operator journal fills with
-`[hive-survey] plan read failed for '<hive>' — skipped: unsupported startup parameter: statement_timeout`
+`[pot-survey] plan read failed for '<pot>' — skipped: unsupported startup parameter: statement_timeout`
 (13k+ in 30 min during the 2026-06-25 incident). No work is lost — the connection is refused, the
 query is retried/skipped — but the org-pool write class degrades.
 

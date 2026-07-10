@@ -12,6 +12,11 @@
  * When the panel is OPEN, the panel itself owns suggestion-arrival
  * announcements; this component stays silent to avoid double-speech.
  *
+ * Also speaks, each behind its own pref:
+ *   - open ask_choice cards      (speakOpenCards)
+ *   - pause / resume nudges      (speakNudges)
+ *   - active↔passive mode flips  (speakModeFlips)
+ *
  * Listens to background-scan SSE via a shared event mechanism (the
  * BackgroundScanner exposes scan lifecycle via window CustomEvents).
  */
@@ -19,6 +24,7 @@
 import { useEffect, useRef } from 'react';
 import { speak, getVoiceState } from './voice-mode';
 import { sharedState, subscribeOperatorState } from '@papercusp/operator-core/lib/operator-shared-state';
+import { readOperatorModeFromSession, type OperatorMode } from '@papercusp/operator-core/lib/operator-converse-tags';
 import { loadVoicePrefsClient } from './voice-prefs-client';
 
 type ScanEvent = { kind: 'scan-start' } | { kind: 'scan-done'; suggestions: number; autoDispatched: number };
@@ -123,9 +129,38 @@ export function OperatorVoiceAnnouncer(): null {
       }).catch(() => {});
     });
 
+    // Mode flips (settings-audit 2026-07-09). `speakModeFlips` — surfaced as
+    // "Speak mode flips" on /settings/user and /settings/voice — was rendered,
+    // persisted to PG, and read by NOTHING: the toggle did nothing at all. The
+    // provider already broadcasts every active↔passive change as a
+    // `papercusp:operatorMode` CustomEvent, so gate a spoken announcement on it.
+    //
+    // Anchor from sessionStorage (the provider's own source of truth) rather than
+    // on the first event: the provider DISPATCHES 'passive' during startup when
+    // operatorActiveOnStartup is false, and anchoring on the first event instead
+    // would either announce that boot flip aloud or swallow the user's first real
+    // toggle. Default 'active' matches the provider's safe default.
+    let lastModeSpoken: OperatorMode = readOperatorModeFromSession() ?? 'active';
+    const onModeFlip = (e: Event) => {
+      const detail = (e as CustomEvent<{ mode?: OperatorMode }>).detail;
+      const mode = detail?.mode;
+      if (mode !== 'active' && mode !== 'passive') return;
+      if (mode === lastModeSpoken) return; // idempotent re-broadcast, not a flip
+      lastModeSpoken = mode;
+      if (getVoiceState().mode === 'off') return;
+      if (!loadVoicePrefsClient().speakModeFlips) return;
+      speak(
+        mode === 'active' ? 'Papercup active.' : 'Papercup passive.',
+        'system:operator',
+        'polite',
+      );
+    };
+    window.addEventListener('papercusp:operatorMode', onModeFlip as EventListener);
+
     return () => {
       window.removeEventListener('operator:scan', onScan as EventListener);
       window.removeEventListener('operator:cardOpen', onCardOpen as EventListener);
+      window.removeEventListener('papercusp:operatorMode', onModeFlip as EventListener);
       unsubPause();
     };
   }, []);

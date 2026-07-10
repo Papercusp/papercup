@@ -1,12 +1,12 @@
 # Account pins silently route to `local`: the stale gateway pool
 URL: /internal/docs/agent-insights/inference-gateway-silent-local-fallback
 
-Why `psu --account X` (or any bee account pin) can land all usage on the wrong account. The pin routes via the localhost inference gateway (:8788) + the x-papercusp-account header; the gateway resolves its account pool ONCE at startup and caches it for its whole lifetime. A swallowed pool-load error used to collapse that pool to a one-account `local` fallback (the box's ~/.claude login), so every pin was silently ignored for hours. How to spot it (/healthz accountId:local), the fix (fail-closed resolve + restart), and the x-papercusp-routed-account header that makes a pin's real destination visible.
+Why `psu --account X` (or any cup account pin) can land all usage on the wrong account. The pin routes via the localhost inference gateway (:8788) + the x-papercusp-account header; the gateway resolves its account pool ONCE at startup and caches it for its whole lifetime. A swallowed pool-load error used to collapse that pool to a one-account `local` fallback (the box's ~/.claude login), so every pin was silently ignored for hours. How to spot it (/healthz accountId:local), the fix (fail-closed resolve + restart), and the x-papercusp-routed-account header that makes a pin's real destination visible.
 
 ## Symptom
 
-You pin a session or bee to a specific pool account — `psu --account aviynw`, or a
-Queen/spawn account binding — and the usage **does not show up on that account**. It
+You pin a session or cup to a specific pool account — `psu --account aviynw`, or a
+Mug/spawn account binding — and the usage **does not show up on that account**. It
 lands somewhere else (often the box's own login) and the pin appears to do nothing.
 
 ## How the pin is *supposed* to work

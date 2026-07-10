@@ -7,19 +7,19 @@ Plugins extend a Papercusp install along five axes:
 
 Extension pointWhat it addsPlugin SDK type
 
-Lifecycle hooksCode that runs at well-known host phases (frozen surface — new pipeline integrations use event-reaction rules; plugin-system-hive-port D-003)`PluginHooks`
+Lifecycle hooksCode that runs at well-known host phases (frozen surface — new pipeline integrations use event-reaction rules; plugin-system-pot-port D-003)`PluginHooks`
 Event-reaction rulesDeclarative "when X settles, fire my tool" rules over the one reaction registry — the live pipeline extension surface (§7.0)`PluginReactionRule`
 UI (full-route)A complete React panel mounted at `/harness/&lt;slug&gt;` — see §8`UiContribution`
 API routesA Hono sub-app the runtime mounts at `/api/plugins/&lt;name&gt;/``PluginApiRoutes`
 DB schemaPostgres DDL (schemaName + ddlPath, or a bare DDL-path array) applied at install under the plugin's own schema`PluginSchemaField`
 
-Retired axes (2026-06-12, plugin-system-hive-port D-004): Roles (`RoleDefinition` — the old orchestrator's plugin-dispatched agent roles; live roles are `AGENT_ROLES` + blueprint role prompts, and "a plugin contributes a blueprint role" is a future design, not this axis) and Routines (`RoutineDefinition` — targeted the retired `pending_events` queue; use blueprint `triggers.schedule` or event-reaction schedules). Both manifest-level `roles` and `routines` entries remain schema-tolerated as inert `array<object>` declarative data — the loader ignores them; there are no `RoleDefinition` / `RoutineDefinition` SDK types.
+Retired axes (2026-06-12, plugin-system-pot-port D-004): Roles (`RoleDefinition` — the old orchestrator's plugin-dispatched agent roles; live roles are `AGENT_ROLES` + blueprint role prompts, and "a plugin contributes a blueprint role" is a future design, not this axis) and Routines (`RoutineDefinition` — targeted the retired `pending_events` queue; use blueprint `triggers.schedule` or event-reaction schedules). Both manifest-level `roles` and `routines` entries remain schema-tolerated as inert `array<object>` declarative data — the loader ignores them; there are no `RoleDefinition` / `RoutineDefinition` SDK types.
 
 Plugins also declare capabilities (§10) — a permission manifest that the runtime enforces at the DI boundary. Sections 7.1–7.5 below describe the substrate-level concerns that apply to every plugin regardless of which axes it extends.
 
 ### 7.0 Hooking the pipeline — event-reaction rules
 
-The hybrid hook model (plugin-system-hive-port-2026-06-11 D-003, ratified 2026-06-12):
+The hybrid hook model (plugin-system-pot-port-2026-06-11 D-003, ratified 2026-06-12):
 the typed PluginHooks fire-points that survived the run-loop retirement
 (beforeMissionStart, onFeaturePassed, afterDone) are
 FROZEN — they keep firing in-process for back-compat but no new typed fire-point will

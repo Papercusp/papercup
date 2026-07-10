@@ -73,16 +73,16 @@ describe('user_preferences store (real PG)', () => {
     const uid = await seedUser();
     await saveUserPreferences(uid, { agentLanguage: 'en', speakSuggestions: true });
     // Second save: overwrite one key, add another, leave speakSuggestions alone.
-    const merged = await saveUserPreferences(uid, { agentLanguage: 'fr', wakeWordKeyword: 'hey' });
+    const merged = await saveUserPreferences(uid, { agentLanguage: 'fr', porcupineKeyword: 'Jarvis' });
     expect(merged).toMatchObject({
       agentLanguage: 'fr', // overwritten
-      wakeWordKeyword: 'hey', // added
+      porcupineKeyword: 'Jarvis', // added
       speakSuggestions: true, // preserved from the first write
     });
     // Confirms the merge happened in PG, not just in the returned value.
     expect(await loadUserPreferences(uid)).toMatchObject({
       agentLanguage: 'fr',
-      wakeWordKeyword: 'hey',
+      porcupineKeyword: 'Jarvis',
       speakSuggestions: true,
     });
   });
@@ -112,10 +112,10 @@ describe('user_preferences store (real PG)', () => {
 
   it('clearUserPreferenceKey removes one key and leaves the rest', async () => {
     const uid = await seedUser();
-    await saveUserPreferences(uid, { agentLanguage: 'en', wakeWordKeyword: 'hey', speakSuggestions: true });
-    await clearUserPreferenceKey(uid, 'wakeWordKeyword');
+    await saveUserPreferences(uid, { agentLanguage: 'en', porcupineKeyword: 'Jarvis', speakSuggestions: true });
+    await clearUserPreferenceKey(uid, 'porcupineKeyword');
     const after = await loadUserPreferences(uid);
-    expect(after).not.toHaveProperty('wakeWordKeyword');
+    expect(after).not.toHaveProperty('porcupineKeyword');
     expect(after).toMatchObject({ agentLanguage: 'en', speakSuggestions: true });
   });
 

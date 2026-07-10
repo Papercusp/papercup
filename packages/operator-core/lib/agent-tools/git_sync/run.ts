@@ -53,7 +53,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('git-sync:run requires operator, architect, or queen role');
+      throw new Error('git-sync:run requires operator, architect, or mug role');
     }
     const slug = args.installSlug ?? operatorHomeHarnessSlug();
     const workspaceId = activeWorkspaceId();

@@ -14,7 +14,7 @@ rerouted through the box's shared PgBouncer (`:6432` → the REAL native
 pre-existing rows instead of its own empty DB. Confirmed live: the witness's own
 embedded PG had 0 matching rows; the box's native PG had the exact "existing" rows
 the bug reported. This is very likely the reason a chunk of the federation/live-rig
-backlog reports "cannot continue without a created hive" on this box.
+backlog reports "cannot continue without a created pot" on this box.
 
 **Fixed** (not just worked around) by implementing the "durable / class-level fix"
 option below: `pgbouncerEnabled()` now returns `false` whenever `PAPERCUSP_PG_PORT`
@@ -99,5 +99,5 @@ A shared test-env helper that forces `PAPERCUSP_PGBOUNCER=0` whenever a test
 env-routes `getOrgPg` at a testcontainer, OR `maybePgbouncer()` declining to reroute
 an explicitly-env-set non-local URL. Until then, each such test opts out manually.
 
-Discovered 2026-06-22 while landing `shared-hive-member-content-federation-2026-06-20`
+Discovered 2026-06-22 while landing `shared-pot-member-content-federation-2026-06-20`
 P-005 (it was failing the *landed* P-001+P-002 case too). Refs that plan's D-009.

@@ -6,7 +6,7 @@ A tool whose data isn't scoped by a workspace transaction (memory:*, list_worksp
 ## The symptom
 
 A `defineTool` works fine from your scoped SU session but fails **fleet-wide** for
-bees / unscoped psu sessions with:
+cups / unscoped psu sessions with:
 
 ```
 built-in tool "memory:list" requires a workspace-scoped call — this session has
@@ -16,7 +16,7 @@ workspace where the host/tool supports one.
 
 It's **deterministic** (same shape every call) and **scope-dependent**: a session
 that resolved a workspace (most interactive SU sessions) never reproduces it, so
-it hides until a bee or an unscoped psu session hits it. This is what the
+it hides until a cup or an unscoped psu session hits it. This is what the
 improvement-watchdog filed as EI-177 / EI-178 / EI-210 (memory:search / remember /
 list).
 
@@ -62,4 +62,4 @@ so a new tool (or a refactor) can't silently drop the flag — see
 which imports every memory tool's real def and asserts `crossWorkspace === true`.
 
 If you add a tool that reads a user/harness-scoped store (not `ctx.tx`) and want
-it reachable from bees, set `crossWorkspace: true` and add it to that guard.
+it reachable from cups, set `crossWorkspace: true` and add it to that guard.

@@ -5,7 +5,7 @@ Until P-010 the Model-B peer-log carried NO HLC (lwwPick always fell back to wal
 
 ## TL;DR
 
-Two non-obvious facts about the Model-B substrate (`packages/operator-core/lib/sync/hyperbee/*`), both surfaced + fixed by `shared-hive-hardening-2026-06-13` P-010/P-011:
+Two non-obvious facts about the Model-B substrate (`packages/operator-core/lib/sync/hyperbee/*`), both surfaced + fixed by `shared-pot-hardening-2026-06-13` P-010/P-011:
 
 1. **The HLC was vestigial.** `lwwPick`/`beatsStored` order same-key conflicts by Hybrid Logical Clock "when both ops carry one, else wall-clock `ts`". The HLC primitives (`@papercusp/locks-core` `processHlc`/`encodeHlc`) existed and were tested — but **`sync/hyperbee` never imported them**. `PeerLogOp` had no `hlc` field and `toEnvelope` (read-merge) silently dropped it. So **no federated write ever carried an HLC**, and the HLC branch was dead on the live path — every cross-peer conflict resolved by raw wall-clock `ts` (a fast/stepped clock wins). "HLC-when-present" meant present=never.
 

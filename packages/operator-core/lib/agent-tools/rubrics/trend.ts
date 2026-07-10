@@ -36,7 +36,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    rubricRef: z.string().describe('the rubric to trend, e.g. "hive-coordination-health" (a trend is per-rubric)'),
+    rubricRef: z.string().describe('the rubric to trend, e.g. "pot-coordination-health" (a trend is per-rubric)'),
     sourceHive: z.string().optional().describe('restrict the trend to one source-hive'),
     since: z
       .string()

@@ -66,7 +66,7 @@ describe('capability:grant_role', () => {
   it('is operator-authority gated', async () => {
     await expect(
       grantTool.handler({ role: 'planner', capabilities: ['plans:write'] } as never, { role: 'cup' } as never),
-    ).rejects.toThrow(/operator, architect, or queen/i);
+    ).rejects.toThrow(/operator, architect, or mug/i);
   });
 
   it('rejects protected-floor caps — D-007a (real matcher)', async () => {
@@ -121,7 +121,7 @@ describe('capability:revoke_role', () => {
   it('is operator-authority gated', async () => {
     await expect(
       revokeTool.handler({ role: 'planner', capabilities: ['plans:write'] } as never, { role: 'cup' } as never),
-    ).rejects.toThrow(/operator, architect, or queen/i);
+    ).rejects.toThrow(/operator, architect, or mug/i);
   });
 
   it('revokes caps from the grant store', async () => {

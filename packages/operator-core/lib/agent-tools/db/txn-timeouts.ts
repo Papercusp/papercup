@@ -72,7 +72,7 @@ export default defineTool({
     }
 
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('db:txn-timeouts requires operator, architect, or queen role');
+      throw new Error('db:txn-timeouts requires operator, architect, or mug role');
     }
 
     const patch: TxnTimeoutsOverride =

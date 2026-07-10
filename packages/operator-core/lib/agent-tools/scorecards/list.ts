@@ -22,11 +22,11 @@ export default defineTool({
   description:
     'Read rubric SCORECARDS back — rubric-graded observations (rubricRef + per-criterion {rating, evidence}). Filter by rubricRef + sourceHive + since; newest-first. ⚠ SYNTHESIZED floors (turn-end backstop / scheduled-pulse) are EXCLUDED by default — pass includeSynthesized:true for the "is the data layer alive at all?" read (e.g. while overwatch is paused). Rows carry ratings, synthesized, nKeys, missingKeys (completeness).',
   guidance: {
-    when: 'You want to SEE the rubric scorecards that have been emitted — e.g. did the Overwatch emit a COMPLETE hive-coordination-health scorecard recently (missingKeys empty)? what is one criterion\'s rating over time? is there an emission gap? The data substrate for trend/freshness/self-comparison monitoring.',
+    when: 'You want to SEE the rubric scorecards that have been emitted — e.g. did the Overwatch emit a COMPLETE pot-coordination-health scorecard recently (missingKeys empty)? what is one criterion\'s rating over time? is there an emission gap? The data substrate for trend/freshness/self-comparison monitoring.',
     notWhen:
       'You want the RUBRIC definition (criteria/model/method) — rubrics:get / rubrics:list. You want the cross-corpus meta-pattern rollup incl. rubric ratings grouped for ideation — curation:state-of-pot. You are FILING a scorecard — improvements:capture { lane: "observation", observation: { rubricRef, ratings } }.',
     chaining:
-      'scorecards:list { rubricRef: "hive-coordination-health", since } → inspect missingKeys for completeness / ratings for the latest standing → drill into a row via work_items:get { id: issueId }, or rubrics:get { rubricId: rubricRef } for the criterion definitions.',
+      'scorecards:list { rubricRef: "pot-coordination-health", since } → inspect missingKeys for completeness / ratings for the latest standing → drill into a row via work_items:get { id: issueId }, or rubrics:get { rubricId: rubricRef } for the criterion definitions.',
     seeAlso: [
       'scorecards:freshness (staleness / partial-emit summary)',
       'rubrics:trend (criteria trend over time)',
@@ -40,7 +40,7 @@ export default defineTool({
     rubricRef: z
       .string()
       .optional()
-      .describe('restrict to one rubric, e.g. "hive-coordination-health"; omit for all rubric-graded scorecards'),
+      .describe('restrict to one rubric, e.g. "pot-coordination-health"; omit for all rubric-graded scorecards'),
     sourceHive: z.string().optional().describe('restrict to scorecards from one source-hive'),
     since: z
       .string()

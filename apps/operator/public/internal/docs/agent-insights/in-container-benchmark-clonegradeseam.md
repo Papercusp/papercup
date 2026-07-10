@@ -15,7 +15,7 @@ adding one, this is the path that avoids a week of false starts.
 
 Wire to the shared `external-bench/coordination-topology.ts` `CloneGradeSeam<H>` — the per-benchmark
 clone/grade half every coordination-topology arm shares (fairness C5). You supply ONE seam + a task-set and get
-every topology (central-Queen / distributed / ensemble / baseline) for free; you do **not** author arm code or
+every topology (central-Mug / distributed / ensemble / baseline) for free; you do **not** author arm code or
 re-roll the run driver (that's the shared topology runtime — D-007). For FrontierSWE see
 `makeFrontierSweCloneGradeSeam` (`external-bench/frontier-swe-seam.ts`):
 

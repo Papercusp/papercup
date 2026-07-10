@@ -98,7 +98,7 @@ Key directories (beyond blueprints/routes above):
 - `libs/generic/hive-app-seam/` — **published package `@papercusp/hive-app-seam`** (the ONE typed app seam named in templates/personas)
 - `design-tokens/hive.semantic.tokens.json` + `design-tokens/style-dictionary.config.mjs`
 - `scripts/deploy-hive.ts` · `scripts/teardown-hive.ts`
-- `rubrics/hive-coordination-health/` · `rubrics/experiment-hive-quality/`
+- `rubrics/pot-coordination-health/` · `rubrics/experiment-hive-quality/`
 - `shared-hive-release-testing/` (in-repo test rig, 102 files/2,449 hits)
 - `templates/papercusp-ops-hives/`
 - Package names: `@papercusp/hive-app-seam`, `hive-eval-seed-app`, (`@papercusp/the-swarm-site` — D-004)

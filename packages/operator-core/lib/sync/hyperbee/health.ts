@@ -90,6 +90,21 @@ export interface SubstrateHealthInputs {
     frozen: number;
     /** Logs the merge loop hasn't sampled recently (detector dead-man). */
     samplingStale?: number;
+    /**
+     * WI-3604: this harness's process resolved a DIFFERENT DHT universe than
+     * the operator's declared expectation (split-DHT-universe outage class —
+     * e.g. the 2026-07-09 Mac VM incident: a Server.app relaunch silently
+     * dropped `PAPERCUSP_DHT_BOOTSTRAP` and joined the PUBLIC DHT). Reported
+     * as a COUNT (of admitted logs reading the `dht_universe_mismatch`
+     * verdict) for symmetry with `noReplicator`/`frozen`, but is really a
+     * per-harness boolean condition — every admitted log reads it together.
+     * Deliberately kept as its OWN distinct 'unhealthy' reason (never folded
+     * into the noReplicator/frozen "WI-183 class" wording below): a
+     * mismatched-universe harness's logs read `dht_universe_mismatch`
+     * instead of `no_replicator`/`frozen` (see replication-liveness.ts's
+     * `deriveVerdict`), so the two blocks don't double-fire.
+     */
+    dhtUniverseMismatch?: number;
   };
   /**
    * P-003 (own-log-fork-guard, WI-3535): this harness's OWN writable log hit
@@ -201,7 +216,19 @@ export function assessHarnessSubstrateHealth(
   // the detector itself is blind, which is a real signal but not proof of
   // divergence.
   if (inputs.replicationLiveness) {
-    const { noReplicator, frozen, samplingStale } = inputs.replicationLiveness;
+    const { noReplicator, frozen, samplingStale, dhtUniverseMismatch } = inputs.replicationLiveness;
+    // WI-3604: distinct from the connected-but-dead WI-183 class below — a
+    // split-DHT-universe misconfiguration is a completely different root
+    // cause (this process joined the wrong DHT entirely) and must read as
+    // its own diagnosis, not get lumped in with "peer writes silently
+    // diverging".
+    if ((dhtUniverseMismatch ?? 0) > 0) {
+      verdict = 'unhealthy';
+      reasons.push(
+        `DHT-universe mismatch on ${dhtUniverseMismatch} admitted remote log(s) — this process ` +
+          `joined a DIFFERENT DHT than expected (split-DHT-universe outage class, WI-3604)`,
+      );
+    }
     if (noReplicator > 0 || frozen > 0) {
       verdict = 'unhealthy';
       const parts: string[] = [];

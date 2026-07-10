@@ -91,7 +91,7 @@ describe('improvements:set-watchdog-tunables — set guards', () => {
   it('rejects a role without operator-config write authority (e.g. bee)', async () => {
     await expect(
       tool.handler({ op: 'set', tunables: { maxPerTick: 5 } } as never, { role: 'cup' } as never),
-    ).rejects.toThrow(/operator, architect, or queen/i);
+    ).rejects.toThrow(/operator, architect, or mug/i);
     expect(runM).not.toHaveBeenCalled();
   });
 

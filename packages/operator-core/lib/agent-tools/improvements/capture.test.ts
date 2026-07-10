@@ -130,7 +130,7 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
       title: 'scorecard',
       lane: 'observation',
       observation: {
-        rubricRef: 'hive-coordination-health',
+        rubricRef: 'pot-coordination-health',
         ratings: { placement: { rating: 'healthy', evidence: '0 stalls this wake' } },
       },
     });

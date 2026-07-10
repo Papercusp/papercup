@@ -5,7 +5,7 @@
  * Of the spawns that COULD have batched — a same-tool burst or a fan-out, classified by the
  * SAME thresholds as the live inline nudge (so metric and nudge can never disagree) — how many
  * actually folded the flow into one code:run / recipes:run? Returns the per-(role, day) rollup,
- * a fleet-wide figure, and the graded `tool-utilization` rating (the hive-coordination-health
+ * a fleet-wide figure, and the graded `tool-utilization` rating (the pot-coordination-health
  * criterion). This is the number the inline batch-nudge + recipes-at-orient are meant to MOVE;
  * exposing it as one call lets the Overwatch grade tool-utilization from data rather than vibes,
  * and makes any A/B of the nudges (flip a CODE_RUN_*_NUDGE flag, compare) measurable. Read-only.
@@ -28,7 +28,7 @@ export default defineTool({
   capability: 'intel:read',
   guidance: {
     when:
-      'Grading hive-coordination-health tool-utilization, or checking whether the code:run nudges / ' +
+      'Grading pot-coordination-health tool-utilization, or checking whether the code:run nudges / ' +
       'recipes-at-orient are moving adoption. Returns the fleet rate + a ready rating + the per-role/day breakdown.',
     notWhen:
       'Raw per-tool call counts (dev:telemetry); which tools co-occur in a spawn (dev:tool_cooccurrence).',

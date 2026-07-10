@@ -22,7 +22,7 @@ Hetzner frames, driven by `run-eviction-proof.ts` and gated in
 `relays = observed-non-self-peers − target`. With only 2 machines (the authority + the
 corpse) the witness set is empty → the SWIM relay-confirmation can't run → no eviction, ever.
 You need a **third** peer to vouch the suspect dead (`peer-eviction.ts` header: *"a real crash
-in a ≥3-peer hive (witnesses exist + agree dead) → prompt eviction"*).
+in a ≥3-peer pot (witnesses exist + agree dead) → prompt eviction"*).
 
 So the eviction proof is a **≥3-machine** gate — distinct from B-01's P-003 two-machine
 lock-*serialization* proof. Don't inherit the "two-machine" wording from P-003; an eviction
@@ -45,7 +45,7 @@ through a documented seam:
 The **real** `AuthorityEvictionMonitor`, **real** `peer.probe` op + dispatch, and **real**
 `HttpPeerRpcTransport` are unchanged — only *where liveness comes from* is swapped. The
 substrate's actual cross-machine presence federation over the public DHT is proven separately
-(hive-cross-machine P-011); this proof isolates the eviction *decision* chain.
+(pot-cross-machine P-011); this proof isolates the eviction *decision* chain.
 
 ## The A/B that makes it a proof, not a demo
 
@@ -97,4 +97,4 @@ Always verify 0 leaked VMs after: `curl -H "Authorization: Bearer $TOKEN" https:
 ## See also
 
 * [Wiring the failure detector into the lock authority](/internal/docs/agent-insights/failure-detector-eviction-wiring) — the two wiring traps (reachable-relay gate + authority-exempt probe op).
-* Plan `shared-hive-hardening-2026-06-13` D-010 (the arming + the ≥3-peer correction + exact φ/probe/timeout params).
+* Plan `shared-pot-hardening-2026-06-13` D-010 (the arming + the ≥3-peer correction + exact φ/probe/timeout params).

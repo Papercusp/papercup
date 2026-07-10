@@ -147,6 +147,35 @@ export class DrainPassTimeoutError extends Error {
   }
 }
 
+/**
+ * WI-3619 (WI-2009-class per-stage detector): when a drain pass hangs, the
+ * PASS TIMEOUT watchdog names the PASS but not the STAGE — the journal says
+ * "hung await (keychain unwrap / epoch-key resolution / append)" and the
+ * operator is left guessing which. Every await inside a pass is wrapped with
+ * this one-shot stall logger: if the await is still pending after
+ * `STAGE_STALL_LOG_MS`, a loud grep-able line names the exact stage (+ row id
+ * + table), so a hung pass is diagnosable from the journal alone — even when
+ * the await NEVER settles (a log-after-completion line would never fire).
+ * Silent on the healthy path (timer cleared on settle); the pass watchdog
+ * still un-wedges the loop.
+ */
+export const STAGE_STALL_LOG_MS = 15_000;
+
+async function logIfStageStalls<T>(scope: string, stage: string, p: PromiseLike<T>): Promise<T> {
+  const timer = setTimeout(() => {
+    console.error(
+      `[outbox-drain] STAGE STALL for ${scope}: '${stage}' still pending after ` +
+        `${STAGE_STALL_LOG_MS}ms — this is the hung await (WI-3619 per-stage detector)`,
+    );
+  }, STAGE_STALL_LOG_MS);
+  timer.unref?.();
+  try {
+    return await p;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** The NOTIFY channel the Stage-1 capture trigger fires on. */
 const NOTIFY_CHANNEL = 'substrate_outbox';
 
@@ -236,6 +265,8 @@ export async function drainOutboxOnce(
 ): Promise<number> {
   const now = opts.now ?? Date.now();
   const batch = opts.batch ?? DEFAULT_DRAIN_BATCH;
+  // WI-3619: the scope string for the per-stage stall detector lines.
+  const scope = `${handle.workspaceId}::${handle.harnessSlug}`;
 
   // Inline 24h GC — keep the table small. SCOPED to this handle's (workspace,
   // harness): every booted harness runs its own drain loop, so an unscoped GC
@@ -251,7 +282,7 @@ export async function drainOutboxOnce(
   const gcMaxBatches = opts._gcMaxBatches ?? OUTBOX_GC_MAX_BATCHES;
   try {
     for (let i = 0; i < gcMaxBatches; i++) {
-      const gc = await pg`
+      const gc = await logIfStageStalls(scope, `gc-delete (batch ${i})`, pg`
         WITH del AS (
           SELECT id
             FROM harness_shared.substrate_outbox
@@ -263,7 +294,7 @@ export async function drainOutboxOnce(
         )
         DELETE FROM harness_shared.substrate_outbox o
          USING del
-         WHERE o.id = del.id`;
+         WHERE o.id = del.id`);
       // Fewer than a full batch removed → backlog cleared for now.
       if ((gc.count ?? 0) < gcBatch) break;
     }
@@ -271,7 +302,7 @@ export async function drainOutboxOnce(
     // GC is non-fatal observability; continue to the actual drain.
   }
 
-  const rows = await pg<OutboxDbRow[]>`
+  const rows = await logIfStageStalls(scope, 'select-undrained-batch', pg<OutboxDbRow[]>`
     SELECT id, table_name, op, key, row, ts,
            -- D-001: read op_hlc RESILIENTLY via to_jsonb so an outbox provisioned
            -- before migration 314 (an older boot snapshot / a hand-rolled test rig)
@@ -283,7 +314,7 @@ export async function drainOutboxOnce(
        AND harness_slug = ${handle.harnessSlug}
        AND drained_at IS NULL
      ORDER BY id
-     LIMIT ${batch}`;
+     LIMIT ${batch}`);
 
   let drained = 0;
   for (const r of rows) {
@@ -353,13 +384,21 @@ export async function drainOutboxOnce(
       op.value !== undefined &&
       shouldEncryptOpForRekey(op.table)
     ) {
-      const enc = await opts.epochEncrypt.encryptOp(op);
+      const enc = await logIfStageStalls(
+        scope,
+        `epoch-encrypt (row id=${r.id} table=${r.table_name})`,
+        opts.epochEncrypt.encryptOp(op),
+      );
       if (enc) op = { ...op, value: enc.value, epoch: enc.epoch };
     }
 
     // AT-LEAST-ONCE: append FIRST. If this throws we stop here, leaving this
     // row + all later rows undrained for the next pass to re-attempt.
-    await handle.append(op);
+    await logIfStageStalls(
+      scope,
+      `hypercore-append (row id=${r.id} table=${r.table_name})`,
+      handle.append(op),
+    );
 
     // P-007: record this LOCAL plan write so a racing REMOTE plan op for the same
     // plan_slug is detected as a clobber (harness-plans.ts writeToPg fires
@@ -384,7 +423,11 @@ export async function drainOutboxOnce(
     // tables are a no-op inside the fan-out.
     if (opts.fanout) {
       try {
-        await opts.fanout({ id: r.id, table_name: r.table_name, op: r.op, key: r.key, row: r.row });
+        await logIfStageStalls(
+          scope,
+          `fanout (row id=${r.id} table=${r.table_name})`,
+          opts.fanout({ id: r.id, table_name: r.table_name, op: r.op, key: r.key, row: r.row }),
+        );
       } catch (e) {
          
         console.error(
@@ -402,11 +445,11 @@ export async function drainOutboxOnce(
     // or a pre-log boot state) must not crash the drain — NULL is an explicitly
     // supported value here (mig 495: 'NULL = undrained or drained pre-migration'),
     // and the recurrence guard treats NULL as unknowable, never as stranded.
-    await pg`
+    await logIfStageStalls(scope, `mark-drained (row id=${r.id})`, pg`
       UPDATE harness_shared.substrate_outbox
          SET drained_at = ${now},
              drained_log_key = ${handle.ownLog?.keyHex ?? null}
-       WHERE id = ${r.id}`;
+       WHERE id = ${r.id}`);
     drained += 1;
   }
 

@@ -6,14 +6,14 @@
  *
  * Each dep maps onto an EXISTING substrate primitive — reuse, don't rebuild:
  *   - createWorkItem      → work-items.createWorkItem (kind=change, the user-ask
- *                            issue-family kind; unassigned so the Queen's default
+ *                            issue-family kind; unassigned so the Mug's default
  *                            create-demand subscription wakes her; urgent → hive
  *                            urgent-wake). Tags `user-requested` (the P-016 gate).
- *   - setPriority         → work-items.setWorkItemPriority (the Queen's backlog
+ *   - setPriority         → work-items.setWorkItemPriority (the Mug's backlog
  *                            order lever; bump to head).
  *   - subscribeOperator   → work-items.subscribeWorkItem as OPERATOR_COORD_OWNER
  *                            (the same owner the hindsight drain reads).
- *   - nudgeQueen          → coord send/escalate to @role:queen (the slot selector
+ *   - nudgeMug            → coord send/escalate to @role:queen (the slot selector
  *                            parks→drains on her next spawn) with the urgent-wake
  *                            already fired by the work_item create.
  *   - surfaceForApproval  → coord:escalate (question) to the human + a standing-
@@ -37,7 +37,7 @@ export function defaultSentinelHandoffDeps(): SentinelHandoffDeps {
           // `change` = a desired one-off the user asked for (work_items:create
           // guidance) — issue-family, so it stays workspace/harness-scoped and is
           // NOT hive-gated (a feature would require a resolved hive). Unassigned so
-          // the Queen's default demand wake fires.
+          // the Mug's default demand wake fires.
           kind: 'change',
           title: input.title,
           summary: input.summary,
@@ -57,7 +57,7 @@ export function defaultSentinelHandoffDeps(): SentinelHandoffDeps {
     async setPriority(id, _priority, harness) {
       const { setWorkItemPriority } = await import('./work-items');
       // priority 0 = head of the backlog (lower = claimed sooner). The user-asked
-      // item should be the next thing the Queen's backlog surfaces.
+      // item should be the next thing the Mug's backlog surfaces.
       await setWorkItemPriority(id, 0, { harness: harness ?? undefined });
     },
 
@@ -71,7 +71,7 @@ export function defaultSentinelHandoffDeps(): SentinelHandoffDeps {
       });
     },
 
-    async nudgeQueen({ workItemId, summary, urgent, harness }) {
+    async nudgeMug({ workItemId, summary, urgent, harness }) {
       const [{ sendMessage }, { openEscalation }, { OPERATOR_COORD_OWNER }] = await Promise.all([
         import('./agent-tools/coordination/messages'),
         import('./agent-tools/coordination/escalations'),
@@ -89,7 +89,7 @@ export function defaultSentinelHandoffDeps(): SentinelHandoffDeps {
       };
       const body = `Filed ${workItemId} (user-requested): ${summary}`;
       if (urgent) {
-        // Urgent → escalation channel (the Queen's default coord:escalate demand
+        // Urgent → escalation channel (the Mug's default coord:escalate demand
         // subscription wakes her), advisory severity (it's a nudge, not a blocker).
         await openEscalation(identity, {
           severity: 'advisory',
@@ -98,7 +98,7 @@ export function defaultSentinelHandoffDeps(): SentinelHandoffDeps {
           ...(harness ? { meta: { harnessSlug: harness } } : {}),
         });
       } else {
-        // Routine nudge → coord:send to the Queen's role-slot with an optimistic
+        // Routine nudge → coord:send to the Mug's role-slot with an optimistic
         // wake (the work_item create already fired the demand wake; this is the
         // durable inbox record). @role:queen parks→drains on her next spawn.
         await sendMessage(identity, {
@@ -127,7 +127,7 @@ export function defaultSentinelHandoffDeps(): SentinelHandoffDeps {
       // A medium/high action awaiting approval → a `question` escalation the user
       // resolves, plus a standing-candidate refresh so the settings page can offer
       // a STANDING approval for this (capability, harness) pair (the user-facing
-      // approval tier — P-015). The Queen places once the user approves.
+      // approval tier — P-015). The Mug places once the user approves.
       //
       // WI-2200 (EI-3643): the Sentinel re-proposes the SAME gate (identical
       // capability + harness) across turns with a FRESHLY-worded `summary` each
@@ -147,7 +147,7 @@ export function defaultSentinelHandoffDeps(): SentinelHandoffDeps {
         summary: `Approve ${tier}-tier action? ${summary}`.slice(0, 280),
         body:
           `The Sentinel wants to hand off a ${tier}-tier action (capability=${capability}, ` +
-          `harness=${harness ?? 'workspace'}). Approve to let the Queen place it; ` +
+          `harness=${harness ?? 'workspace'}). Approve to let the Mug place it; ` +
           `grant a standing approval to skip this prompt next time.`,
         meta: {
           dedupKind: 'sentinel-handoff-approval',

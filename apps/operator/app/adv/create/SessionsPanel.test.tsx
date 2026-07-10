@@ -34,10 +34,12 @@ vi.mock('@/lib/use-workspace-id', () => ({
   useWorkspaceId: () => 'ws-panel',
 }));
 
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', async () => {
   const React = await import('react');
   const parser = () => ({ withDefault(defaultValue: unknown) { return { defaultValue }; } });
   return {
+    ...nuqsParsers,
     parseAsString: parser(),
     parseAsBoolean: parser(),
     useQueryState(_key: string, p?: { defaultValue?: unknown }) {

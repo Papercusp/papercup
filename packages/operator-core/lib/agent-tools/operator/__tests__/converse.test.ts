@@ -345,7 +345,7 @@ describe('operator:converse — loop behaviors (P-019)', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('role=sentinel dispatches <handoff_to_queen> and <delegate_deep> but never spawn', async () => {
+  it('role=sentinel dispatches <handoff_to_mug> and <delegate_deep> but never spawn', async () => {
     vi.mocked(activeWorkspaceId).mockReturnValue('ws-real');
     const { readSystemPrincipal } = await import('../../../system-principal');
     vi.mocked(readSystemPrincipal).mockResolvedValue({ workspaceId: 'ws-real' } as never);
@@ -354,7 +354,7 @@ describe('operator:converse — loop behaviors (P-019)', () => {
         type: 'delta',
         text:
           '<say>On it.</say>' +
-          '<handoff_to_queen summary="ship the export flow" harness="papercup">' +
+          '<handoff_to_mug summary="ship the export flow" harness="papercup">' +
           '<delegate_deep summary="compare the migration strategies" brief="Need the safer recommendation." harness="papercup">' +
           '<spawn role="worker" harness="demo" feature="F-1">',
       };
@@ -378,6 +378,34 @@ describe('operator:converse — loop behaviors (P-019)', () => {
       workspaceId: 'ws-real',
     });
     expect(spawnAgentInHarness).not.toHaveBeenCalled();
+  });
+
+  // cup-lexicon-full-rename-2026-07-09 P-006 (dual-accept, leader-mandated amendment):
+  // a live session may still hold the OLD prompt text (instructing it to emit
+  // `<handoff_to_queen>`) in-context for the rest of its lifetime — the parser must
+  // keep accepting the old tag until no such session remains. Drop once confirmed
+  // clear (Slice H / P-010 cleanup sweep).
+  it('role=sentinel dual-accepts the legacy <handoff_to_queen> tag', async () => {
+    vi.mocked(activeWorkspaceId).mockReturnValue('ws-real');
+    const { readSystemPrincipal } = await import('../../../system-principal');
+    vi.mocked(readSystemPrincipal).mockResolvedValue({ workspaceId: 'ws-real' } as never);
+    vi.mocked(runAgentChat).mockImplementation(async function* (): AnyGen {
+      yield {
+        type: 'delta',
+        text: '<say>On it.</say><handoff_to_queen summary="ship the export flow" harness="papercup">',
+      };
+    });
+
+    await handler(
+      { messages: [], trigger: 'user_message', role: 'papercup', sessionUser: null },
+      { ...makeCtx(), role: 'papercup' },
+    );
+
+    expect(dispatchSentinelHandoff).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(dispatchSentinelHandoff).mock.calls[0][0]).toMatchObject({
+      summary: 'ship the export flow',
+      harness: 'papercup',
+    });
   });
 });
 

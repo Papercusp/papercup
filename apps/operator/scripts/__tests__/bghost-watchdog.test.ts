@@ -7,6 +7,13 @@ let parseIdleSec: (s: unknown) => number | null;
 let isFrozen: (idleSec: number | null | undefined, freezeSilenceS?: number) => boolean;
 let resolveDbUrl: (readFile?: (p: string, enc: string) => string) => string | null;
 let shouldRestart: (idleSec: number | null, schedSec: number | null, freezeSilenceS?: number) => boolean;
+let withinBootGrace: (activeForSec: number | null | undefined, bootGraceMs?: number) => boolean;
+let nextDebounceMs: (baseMs: number, consecutiveRestarts: number, multiplier?: number, capMs?: number) => number;
+let shouldAlert: (consecutiveRestarts: number, alertAfter?: number) => boolean;
+let alertFleet: (
+  summary: string,
+  deps?: { dbUrl?: string | null; sh?: (cmd: string, args: string[]) => Promise<{ err: Error | null; stdout: string }>; log?: (m: string) => void },
+) => Promise<boolean>;
 let circuitOpenMessage: (
   reason: string,
   restartCount: number,
@@ -14,7 +21,8 @@ let circuitOpenMessage: (
   snapshot?: { cores: number; load1: number; loadPerCore: number; availableRatio: number; hasHeadroom: boolean } | null,
 ) => string;
 beforeAll(async () => {
-  ({ parseIdleSec, isFrozen, resolveDbUrl, shouldRestart, circuitOpenMessage } = await import('../bghost-watchdog.mjs'));
+  ({ parseIdleSec, isFrozen, resolveDbUrl, shouldRestart, withinBootGrace, nextDebounceMs, shouldAlert, alertFleet, circuitOpenMessage } =
+    await import('../bghost-watchdog.mjs'));
 });
 
 /**
@@ -84,6 +92,111 @@ describe('bghost-watchdog — journald-independent freeze signal (EI-2434)', () 
     });
     it('fires stale + scheduler UNKNOWN(null) ⇒ restart (fall back to the documented fire-staleness net)', () => {
       expect(shouldRestart(267, null, 100)).toBe(true);
+    });
+  });
+
+  /**
+   * EI-8901: the staleness signal (routine last_fired_at / routinesTick) is read from PG and SPANS process
+   * restarts, so a freshly-restarted unit that hasn't ticked yet still reads as frozen — under load, boot
+   * takes longer than the restart debounce, so every new generation gets judged frozen before it can
+   * possibly tick → a restart storm. `withinBootGrace` gates the freeze judgment on how long the unit has
+   * actually been in its current active generation (systemd's own ActiveEnterTimestampMonotonic), so a
+   * unit still booting is never mistaken for "frozen".
+   */
+  describe('withinBootGrace — restart-storm fix (EI-8901)', () => {
+    it('just restarted (well under the grace window) ⇒ within grace', () => {
+      expect(withinBootGrace(5, 8 * 60_000)).toBe(true);
+      expect(withinBootGrace(0, 8 * 60_000)).toBe(true);
+    });
+    it('past the grace window ⇒ not within grace (judge normally)', () => {
+      expect(withinBootGrace(9 * 60, 8 * 60_000)).toBe(false);
+      expect(withinBootGrace(3600, 8 * 60_000)).toBe(false);
+    });
+    it('exactly at the grace boundary ⇒ not within grace (>= is the cutoff)', () => {
+      expect(withinBootGrace(8 * 60, 8 * 60_000)).toBe(false);
+    });
+    it('UNKNOWN active-for (null/undefined) ⇒ NEVER within grace — never invent suppression from a missing signal', () => {
+      expect(withinBootGrace(null, 8 * 60_000)).toBe(false);
+      expect(withinBootGrace(undefined, 8 * 60_000)).toBe(false);
+    });
+    it('a negative active-for (clock skew / bad read) ⇒ not within grace', () => {
+      expect(withinBootGrace(-5, 8 * 60_000)).toBe(false);
+    });
+  });
+
+  /**
+   * WI-3630: EI-8901's boot-grace stops the common storm case, but a boot slower than the grace window
+   * would still hit the OLD flat debounce and get re-killed right as it might finish. `nextDebounceMs`
+   * backs off exponentially per consecutive restart (capped) so an unusually slow boot gets progressively
+   * more room; `shouldAlert` fires well before the hard hourly circuit breaker so a developing storm is
+   * visible early, not only once fully tripped.
+   */
+  describe('nextDebounceMs — exponential backoff per consecutive strike (WI-3630)', () => {
+    it('first strike (0 consecutive so far) ⇒ the base debounce, unscaled', () => {
+      expect(nextDebounceMs(5 * 60_000, 0, 2, 30 * 60_000)).toBe(5 * 60_000);
+    });
+    it('doubles per consecutive strike', () => {
+      expect(nextDebounceMs(5 * 60_000, 1, 2, 30 * 60_000)).toBe(10 * 60_000);
+      expect(nextDebounceMs(5 * 60_000, 2, 2, 30 * 60_000)).toBe(20 * 60_000);
+    });
+    it('caps at capMs — never grows unbounded', () => {
+      expect(nextDebounceMs(5 * 60_000, 10, 2, 30 * 60_000)).toBe(30 * 60_000);
+    });
+    it('a negative/garbage strike count is treated as 0 (never SHRINKS the debounce below base)', () => {
+      expect(nextDebounceMs(5 * 60_000, -3, 2, 30 * 60_000)).toBe(5 * 60_000);
+    });
+  });
+
+  describe('shouldAlert — early storm visibility, ahead of the hard circuit breaker (WI-3630)', () => {
+    it('under the alert threshold ⇒ no alert yet', () => {
+      expect(shouldAlert(0, 2)).toBe(false);
+      expect(shouldAlert(1, 2)).toBe(false);
+    });
+    it('at or over the alert threshold ⇒ alert', () => {
+      expect(shouldAlert(2, 2)).toBe(true);
+      expect(shouldAlert(5, 2)).toBe(true);
+    });
+    it('fires well before the hourly circuit-breaker cap (8) so a developing storm is caught early', () => {
+      expect(shouldAlert(2, 2)).toBe(true); // default ALERT_AFTER_RESTARTS=2 << default MAX_RESTARTS_PER_HR=8
+    });
+  });
+
+  describe('alertFleet — best-effort fleet-wide broadcast (WI-3630)', () => {
+    it('inserts into coord_event_log via psql -v bind-variables (never raw string interpolation)', async () => {
+      const calls: Array<{ cmd: string; args: string[] }> = [];
+      const sh = async (cmd: string, args: string[]) => {
+        calls.push({ cmd, args });
+        return { err: null, stdout: '' };
+      };
+      const ok = await alertFleet('test alert body', { dbUrl: 'postgresql://test', sh, log: () => {} });
+      expect(ok).toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].cmd).toBe('psql');
+      expect(calls[0].args[0]).toBe('postgresql://test');
+      // bind-variable args, not interpolated straight into the SQL string
+      expect(calls[0].args).toContain('-v');
+      const jsonBodyArg = calls[0].args.find((a) => a.startsWith('jsonbody='));
+      expect(jsonBodyArg).toBeDefined();
+      const parsed = JSON.parse(jsonBodyArg!.slice('jsonbody='.length));
+      expect(parsed).toMatchObject({ from: 'system-watchdog', to: ['*'], kind: 'message', summary: 'test alert body', category: 'severe-event' });
+      const sqlArg = calls[0].args[calls[0].args.length - 1];
+      expect(sqlArg).toContain('harness_shared.coord_event_log');
+      expect(sqlArg).not.toContain('test alert body'); // never raw-interpolated into the SQL text itself
+    });
+
+    it('never throws on a failed insert — fail-soft (a broadcast failure must not break the watchdog)', async () => {
+      const logs: string[] = [];
+      const sh = async () => ({ err: new Error('psql: connection refused'), stdout: '' });
+      const ok = await alertFleet('test alert body', { dbUrl: 'postgresql://test', sh, log: (m: string) => logs.push(m) });
+      expect(ok).toBe(false);
+      expect(logs.some((l) => l.includes('FAILED'))).toBe(true);
+    });
+
+    it('skips (never throws) when no DB url is resolvable', async () => {
+      const logs: string[] = [];
+      const ok = await alertFleet('test alert body', { dbUrl: null, sh: async () => ({ err: null, stdout: '' }), log: (m: string) => logs.push(m) });
+      expect(ok).toBe(false);
+      expect(logs.some((l) => l.includes('SKIPPED'))).toBe(true);
     });
   });
 

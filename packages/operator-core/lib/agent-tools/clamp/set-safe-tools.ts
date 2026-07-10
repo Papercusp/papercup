@@ -52,7 +52,7 @@ export default defineTool({
     }
 
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('clamp:set_safe_tools requires operator, architect, or queen role');
+      throw new Error('clamp:set_safe_tools requires operator, architect, or mug role');
     }
 
     const nextRemove = args.op === 'clear' ? null : args.remove;

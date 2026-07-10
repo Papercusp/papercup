@@ -15,9 +15,9 @@
  *   sentinel-deep-watch, which injects `[deep-answer WI-NNN] …` back into the
  *   pane — so the answer is spoken + written through the same one pipeline.
  *
- * Split of lanes (D-003): WORK ("build X") still goes to the Queen via
- * <handoff_to_queen> (operator-sentinel-handoff.ts) — she PLACES it. THINKING
- * goes here — the user gets the answer back in conversation. The Queen was the
+ * Split of lanes (D-003): WORK ("build X") still goes to the Mug via
+ * <handoff_to_mug> (operator-sentinel-handoff.ts) — she PLACES it. THINKING
+ * goes here — the user gets the answer back in conversation. The Mug was the
  * wrong tool for cognition: her wake loop is cadenced and placement-shaped.
  *
  * The durable record is a `task` (WI-2874: the old feature-family `research-task`
@@ -152,7 +152,7 @@ export async function delegateDeep(
     .catch((err) => ({ ok: false as const, error: (err as Error)?.message ?? String(err) }));
   if (!spawn.ok) {
     // The durable item survives the spawn miss — it stays visible in the backlog
-    // (the Queen's survey sees settled/open issue items), so the ask isn't lost.
+    // (the Mug's survey sees settled/open issue items), so the ask isn't lost.
     deps.log?.(`deep-delegate spawn failed for ${wi.id}: ${spawn.error ?? 'unknown'}`);
     return { ok: true, workItemId: wi.id, spawnId: null, spawned: false };
   }

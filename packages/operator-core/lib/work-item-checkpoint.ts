@@ -124,3 +124,35 @@ export async function getWorkItemCheckpoint(ref: WorkItemCheckpointRef): Promise
   // checkpoint it was written under (previously a null harness short-circuited to null).
   return getCarryNote({ scope: workItemScope(checkpointScopeHarness(ref.harness), ref.workItemId), workspaceId: ws });
 }
+
+/** A work-item checkpoint plus its write instant — the staleness signal a reader
+ *  needs (EI-8885): a checkpoint is only trustworthy relative to WHEN it was
+ *  written (a stale carry-note read across a compaction or a multi-wake gap has
+ *  bitten agents twice — WI-3578), so callers that need to judge "is this still
+ *  current" get both in one query instead of the bare string alone. Mirrors
+ *  {@link getLoopCarryNoteWithMeta}'s shape for the work-item scope. */
+export interface WorkItemCheckpointWithMeta {
+  checkpoint: string | null;
+  /** Epoch ms of the checkpoint's last write (carry_notes.updated_ts), null when none. */
+  updatedAtMs: number | null;
+}
+
+/** Read a work-item's checkpoint WITH its write instant. Same scope-canonicalization
+ *  as {@link getWorkItemCheckpoint}; one query. */
+export async function getWorkItemCheckpointWithMeta(ref: WorkItemCheckpointRef): Promise<WorkItemCheckpointWithMeta> {
+  const ws = ref.workspaceId ?? activeWorkspaceId();
+  if (!ws || !ref.workItemId) return { checkpoint: null, updatedAtMs: null };
+  const scope = workItemScope(checkpointScopeHarness(ref.harness), ref.workItemId);
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ note: string | null; updated_ts: string | number | null }[]>`
+      SELECT note, updated_ts FROM harness_shared.carry_notes
+       WHERE workspace_id = ${ws} AND scope = ${scope} LIMIT 1`;
+    const note = (rows[0]?.note ?? '').trim();
+    if (note.length === 0) return { checkpoint: null, updatedAtMs: null };
+    const ts = rows[0]?.updated_ts == null ? NaN : Number(rows[0].updated_ts);
+    return { checkpoint: note, updatedAtMs: Number.isFinite(ts) ? ts : null };
+  } catch {
+    return { checkpoint: null, updatedAtMs: null };
+  }
+}

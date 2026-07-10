@@ -47,7 +47,7 @@ URLs into `.git/config`; running it on a stale checkout is also how you'd
    `papercup-shared.git` (git-sync pushes it → every future fresh clone works).
 2. On an already-broken clone: edit its `.gitmodules`, `git submodule sync
    libs/papercusp-db libs/papercusp-shared`, then re-run the bootstrap (the
-   operator's `POST /api/desktop/bootstrap-hive/start`, which runs in the GUI
+   operator's `POST /api/desktop/bootstrap-pot/start`, which runs in the GUI
    process that holds the keychain creds — an SSH shell can't reach the
    GUI-bound osxkeychain).
 
@@ -63,7 +63,7 @@ checked out cleanly.
   `papercusp-shared` names, if the two load-bearing submodules don't point at
   their real `papercup-*` repos, or if any URL is not an `https`
   `github.com/Papercusp/*.git` URL. A blanket rename can't silently re-break it.
-* **`bootstrap-papercusp-hive.ts`** now logs *which* submodule failed and the
+* **`bootstrap-papercusp-pot.ts`** now logs *which* submodule failed and the
   git stderr tail on a non-zero exit (`fatal:` / `Repository not found` / …)
   instead of a bare `exited 128` — the missing diagnostic that cost a full live
   debugging round.

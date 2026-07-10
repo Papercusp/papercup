@@ -67,7 +67,7 @@ Shared util: `packages/operator-core/lib/agent-tools/_bound-output.ts`
 * **Big text field per row** → `boundRowField` excerpt. (plans:get decision `body`;
   work\_items:list `summary`; coord:feed `body` + `summary`.)
 * **Unbounded sub-list per row** → `boundListField` cap. (fleet:assignments `queued`
-  work-list — keep the head + `load` count; the Queen reads those for placement.)
+  work-list — keep the head + `load` count; the Mug reads those for placement.)
 * **Many variable-size fields per row** → `trimToByteBudget` backstop. (fleet:assignments
   agent groups — sorted live-first so the trim drops the least-relevant tail.)
 * **High default row count** → lower the AGENT default, keep the cursor. (coord:feed:

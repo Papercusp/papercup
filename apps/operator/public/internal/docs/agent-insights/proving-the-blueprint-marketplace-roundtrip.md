@@ -7,7 +7,7 @@ How to prove export→install→resolve→run for a migrated learning blueprint 
 
 The headline benefit of blueprint-izing a learning loop
 (`deterministic-blueprints-migration-2026-06-13` D-001): a blueprint is a
-**distributable artifact** — export it, install it on another hive, run it there
+**distributable artifact** — export it, install it on another pot, run it there
 — which a baked-in lib+routine can never be. P-112 proves that round-trip for the
 `negative-space` pilot (P-110). This page is the reusable recipe + the two
 gotchas that will otherwise burn an hour.
@@ -25,7 +25,7 @@ The proof lives in
    a faithful export.
 2. **install** — `installBlueprintFromCupboardCore` (the core the
    `POST /api/cupboard/install-blueprint` route wraps) into a **fresh**
-   installed-blueprints dir = a second hive's installed tier. Stub only the
+   installed-blueprints dir = a second pot's installed tier. Stub only the
    git-clone binary (copy the packaged repo) — the same DI seam
    `install-blueprint-core.test.ts` / `resolve-and-install.e2e.test.ts` use.
    Note: the install core now calls `registerHarnessOpProxies` on any `ops:`
@@ -40,7 +40,7 @@ The proof lives in
    resolver)` and run it through `runProgramCore` + `inlineRunOp`. Inject the
    op's test deps (`setNegativeSpaceScanDeps`) so the tick never touches PG.
    Assert it reaches a clean `done` AND stays dark (no-op, `skipReason:flag-off`)
-   when its flag is off — behavior-neutral in the new hive too (D-004).
+   when its flag is off — behavior-neutral in the new pot too (D-004).
 5. **fire (production path)** — drive the *real* `handleBlueprintRun`
    (`system:blueprint-run`) with `{ blueprintId: '<id>' }` and point its launch
    resolver at the installed copy via `setLaunchBlueprintResolver` (the same seam
@@ -84,9 +84,9 @@ Outward-facing + credential-gated; do not run autonomously without an owner OK:
 2. `node scripts/publish-official-blueprints.mts sync` — regenerate + push the
    public mirror (papercupai creds) so it includes the blueprint.
 3. Publish the listing: `scripts/publish-official-blueprints.mts publish --ids <id>` (or `POST /api/cupboard/publish-blueprint { id, github_url, listing_ref }`).
-4. On a second hive: `POST /api/cupboard/install-blueprint { listingId }` (or
+4. On a second pot: `POST /api/cupboard/install-blueprint { listingId }` (or
    `{ githubUrl, listingRef }`), then `harness:create { blueprintId: <id> }` in
-   the hive — its `triggers.schedule` cadence fires `system:blueprint-run`.
+   the pot — its `triggers.schedule` cadence fires `system:blueprint-run`.
 
 ## Files
 

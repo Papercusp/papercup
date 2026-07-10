@@ -15,7 +15,9 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 // nuqs: ?rail boolean backed by a real useState seeded with the parser default
 // (parseAsBoolean.withDefault(true)). Setter flips it so the collapse/expand
 // toggle actually re-renders.
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   useQueryState: (_key: string, opts?: { defaultValue?: unknown }) => {
     const [v, setV] = React.useState(opts?.defaultValue ?? null);
     return [v, async (x: unknown) => setV(x)];

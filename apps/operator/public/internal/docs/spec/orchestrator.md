@@ -105,11 +105,11 @@ blueprint falls back to a safe `cap: 1`.
 
 Gating & scope
 
-The orchestrator is default-on for every Started hive. `PAPERCUSP_DBOS_ORCHESTRATOR`
+The orchestrator is default-on for every Started pot. `PAPERCUSP_DBOS_ORCHESTRATOR`
 registers the workflow; `PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES` (alias
 `PAPERCUSP_DBOS_DISPATCH_HARNESSES`) scopes which harnesses are swept — unset or `*` means all,
 `none`/`off` opts out, and a comma list is an allowlist. The 30s tick is armed unless that env is an
-explicit opt-out. Placement is additionally gated on the Start-Hive bit: a stopped or never-started
-hive's backlog is skipped, so the orchestrator only places work for hives that are Started.
+explicit opt-out. Placement is additionally gated on the Start-Pot bit: a stopped or never-started
+pot's backlog is skipped, so the orchestrator only places work for pots that are Started.
 
 For idle harnesses, this is strictly better than per-agent heartbeats: zero wakeups when there's nothing to do.

@@ -364,8 +364,8 @@ describe('spawn tags', () => {
   });
 });
 
-// ── <handoff_to_queen> tag (sentinel-herald P-014) ──────────────────
-describe('handoff_to_queen tags', () => {
+// ── <handoff_to_mug> tag (sentinel-herald P-014) ──────────────────
+describe('handoff_to_mug tags', () => {
   let warn: ReturnType<typeof vi.spyOn>;
   beforeEach(() => {
     warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -376,11 +376,11 @@ describe('handoff_to_queen tags', () => {
 
   it('parses a full handoff tag (summary + harness + feature + tier + urgent + capability)', () => {
     const r = parseOperatorTurn(
-      '<say>On it — filing the auth rewrite and flagging the Queen.</say>\n' +
-        '<handoff_to_queen summary="rewrite the auth module" harness="papercup" ' +
+      '<say>On it — filing the auth rewrite and flagging the Mug.</say>\n' +
+        '<handoff_to_mug summary="rewrite the auth module" harness="papercup" ' +
         'feature="auth-module" tier="high" urgent="true" capability="cup:spawn">',
     );
-    expect(r.say).toBe('On it — filing the auth rewrite and flagging the Queen.');
+    expect(r.say).toBe('On it — filing the auth rewrite and flagging the Mug.');
     expect(r.handoffs).toEqual([
       {
         summary: 'rewrite the auth module',
@@ -394,7 +394,7 @@ describe('handoff_to_queen tags', () => {
   });
 
   it('defaults tier to high and urgent to false when omitted (user-asked-work default)', () => {
-    const r = parseOperatorTurn('<handoff_to_queen summary="scope out the wiki revamp">');
+    const r = parseOperatorTurn('<handoff_to_mug summary="scope out the wiki revamp">');
     expect(r.handoffs).toHaveLength(1);
     expect(r.handoffs[0]).toMatchObject({
       summary: 'scope out the wiki revamp',
@@ -407,22 +407,22 @@ describe('handoff_to_queen tags', () => {
   });
 
   it('accepts tier=low|medium and falls back unknown tier to high', () => {
-    expect(parseOperatorTurn('<handoff_to_queen summary="x" tier="low">').handoffs[0].tier).toBe('low');
-    expect(parseOperatorTurn('<handoff_to_queen summary="x" tier="medium">').handoffs[0].tier).toBe('medium');
-    expect(parseOperatorTurn('<handoff_to_queen summary="x" tier="bogus">').handoffs[0].tier).toBe('high');
+    expect(parseOperatorTurn('<handoff_to_mug summary="x" tier="low">').handoffs[0].tier).toBe('low');
+    expect(parseOperatorTurn('<handoff_to_mug summary="x" tier="medium">').handoffs[0].tier).toBe('medium');
+    expect(parseOperatorTurn('<handoff_to_mug summary="x" tier="bogus">').handoffs[0].tier).toBe('high');
   });
 
   it('parses urgent truthy variants (true/1/yes), everything else false', () => {
-    expect(parseOperatorTurn('<handoff_to_queen summary="x" urgent="1">').handoffs[0].urgent).toBe(true);
-    expect(parseOperatorTurn('<handoff_to_queen summary="x" urgent="yes">').handoffs[0].urgent).toBe(true);
-    expect(parseOperatorTurn('<handoff_to_queen summary="x" urgent="nope">').handoffs[0].urgent).toBe(false);
+    expect(parseOperatorTurn('<handoff_to_mug summary="x" urgent="1">').handoffs[0].urgent).toBe(true);
+    expect(parseOperatorTurn('<handoff_to_mug summary="x" urgent="yes">').handoffs[0].urgent).toBe(true);
+    expect(parseOperatorTurn('<handoff_to_mug summary="x" urgent="nope">').handoffs[0].urgent).toBe(false);
   });
 
   it('drops a handoff with no summary (warn emitted)', () => {
-    const r = parseOperatorTurn('<handoff_to_queen harness="papercup">');
+    const r = parseOperatorTurn('<handoff_to_mug harness="papercup">');
     expect(r.handoffs).toEqual([]);
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('dropped malformed <handoff_to_queen>'),
+      expect.stringContaining('dropped malformed <handoff_to_mug>'),
       expect.any(Object),
     );
   });
@@ -430,8 +430,8 @@ describe('handoff_to_queen tags', () => {
   it('collects multiple handoff tags in one turn (small batch)', () => {
     const r = parseOperatorTurn(
       '<say>Filing both.</say>\n' +
-        '<handoff_to_queen summary="first thing" harness="a">\n' +
-        '<handoff_to_queen summary="second thing" harness="b">',
+        '<handoff_to_mug summary="first thing" harness="a">\n' +
+        '<handoff_to_mug summary="second thing" harness="b">',
     );
     expect(r.handoffs.map((h) => h.summary)).toEqual(['first thing', 'second thing']);
     expect(r.handoffs.map((h) => h.harness)).toEqual(['a', 'b']);
@@ -441,11 +441,41 @@ describe('handoff_to_queen tags', () => {
     expect(parseOperatorTurn('<say>just chatting</say>').handoffs).toEqual([]);
   });
 
-  it('strips a stray <handoff_to_queen> (no <say>) from the prose fallback', () => {
+  it('strips a stray <handoff_to_mug> (no <say>) from the prose fallback', () => {
     // Model forgot the <say> wrapper — the control tag must NOT leak as bubble text.
-    const r = parseOperatorTurn('<handoff_to_queen summary="do the thing">');
+    const r = parseOperatorTurn('<handoff_to_mug summary="do the thing">');
     expect(r.say).toBeNull();
     expect(r.handoffs[0].summary).toBe('do the thing');
+  });
+
+  // cup-lexicon-full-rename-2026-07-09 P-006 (dual-accept, leader-mandated amendment):
+  // a live session may still hold the OLD prompt text in-context for the rest of its
+  // lifetime, so the parser must keep accepting `<handoff_to_queen>` too. Drop this
+  // coverage once confirmed no old-prompt sessions remain (Slice H / P-010 cleanup).
+  describe('legacy <handoff_to_queen> dual-accept', () => {
+    it('still parses the old tag literal identically to the new one', () => {
+      const r = parseOperatorTurn(
+        '<handoff_to_queen summary="rewrite the auth module" harness="papercup" tier="high" urgent="true">',
+      );
+      expect(r.handoffs).toEqual([
+        {
+          summary: 'rewrite the auth module',
+          harness: 'papercup',
+          featureId: null,
+          tier: 'high',
+          capability: null,
+          urgent: true,
+        },
+      ]);
+    });
+
+    it('mixes old and new tags in the same turn', () => {
+      const r = parseOperatorTurn(
+        '<handoff_to_mug summary="first thing" harness="a">\n' +
+          '<handoff_to_queen summary="second thing" harness="b">',
+      );
+      expect(r.handoffs.map((h) => h.summary)).toEqual(['first thing', 'second thing']);
+    });
   });
 });
 

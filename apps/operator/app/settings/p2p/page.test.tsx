@@ -53,9 +53,11 @@ vi.mock('@papercusp/sync', () => ({
   useSyncMutate: () => h.mutate,
 }));
 
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => {
   const withDefault = (d: unknown) => ({ defaultValue: d });
   return {
+    ...nuqsParsers,
     parseAsString: { withDefault },
     parseAsStringEnum: () => ({ withDefault }),
     useQueryState: (_key: string, parser?: { defaultValue?: unknown }) => {

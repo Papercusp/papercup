@@ -1,13 +1,13 @@
 # Injecting precomputed state into an agent's prompt (the wake-brief pattern)
 URL: /internal/docs/agent-insights/agent-prompt-state-injection
 
-Five load-bearing rules for handing an agent a precomputed state snapshot in its prompt instead of making it gather state via tools — tail-not-prefix (cache), strip the framing delimiter (breakout), only-tell-it-to-skip-reads-actually-in-the-brief (blindness), fresh-per-wake makes a stateless digest safe, and fail-soft to tools. Generalized from the Queen wake-brief.
+Five load-bearing rules for handing an agent a precomputed state snapshot in its prompt instead of making it gather state via tools — tail-not-prefix (cache), strip the framing delimiter (breakout), only-tell-it-to-skip-reads-actually-in-the-brief (blindness), fresh-per-wake makes a stateless digest safe, and fail-soft to tools. Generalized from the Mug wake-brief.
 
 ## What
 
 When you precompute state and hand it to an agent **in its prompt** (so its
 first turn is a decision, not 5 survey tool calls), you are doing *prompt-state
-injection*. The Queen wake-brief (\[\[queen-brief-cache-assembly-2026-06-13]]) is
+injection*. The Mug wake-brief (\[\[mug-brief-cache-assembly-2026-06-13]]) is
 the reference implementation. The pattern is reusable for any agent — but it has
 five non-obvious traps. All five were live bugs or near-bugs in that build.
 
@@ -21,7 +21,7 @@ five non-obvious traps. All five were live bugs or near-bugs in that build.
    tail** (`buildPrompt({ queenBrief })` → `prompt-build.ts`), after the cached
    preamble. **Verify with a preamble-byte-stability test**: build two prompts
    that differ ONLY in the injected content and assert `wake1.preamble ===
-   wake2.preamble` (see the QUEEN preamble test in `prompt-build.test.ts`).
+   wake2.preamble` (see the MUG preamble test in `prompt-build.test.ts`).
 
 2. **Strip the framing delimiter from embedded content (breakout defense).** The
    injected block wraps free-text the agent or *other* agents authored — a
@@ -34,10 +34,10 @@ five non-obvious traps. All five were live bugs or near-bugs in that build.
 
 3. **Only tell the agent to skip a read whose content is ACTUALLY in the brief.**
    The big win is the agent NOT re-running the tools the brief replaces — so you
-   teach "don't call `hive:survey` / `coord:inbox` / … to gather this." But if a
+   teach "don't call `pot:survey` / `coord:inbox` / … to gather this." But if a
    read is listed in that skip-set while its content is **not** folded into the
    brief, the agent goes **blind** to it. This was a real bug: the brief told the
-   Queen to skip `coord:inbox`, but the floor didn't carry the inbox →
+   Mug to skip `coord:inbox`, but the floor didn't carry the inbox →
    handoffs/acks/plan-events invisible. Keep the skip-set and the
    actually-injected set **identical**; carve out anything not folded in, or fold
    it in (we folded it in — D-021).
@@ -70,6 +70,6 @@ prompt-state-injection feature, walk these five explicitly.
 
 ## See also
 
-* \[\[queen-brief-cache-assembly-2026-06-13]] — the reference build (D-001 tail-not-prefix, D-015 breakout strip, D-017/D-021 skip-set consistency + inbox fold).
-* `agent-insights/hive-queen-fresh-per-wake` — why the Queen is stateless per wake (rule 4's precondition).
+* \[\[mug-brief-cache-assembly-2026-06-13]] — the reference build (D-001 tail-not-prefix, D-015 breakout strip, D-017/D-021 skip-set consistency + inbox fold).
+* `agent-insights/pot-mug-fresh-per-wake` — why the Mug is stateless per wake (rule 4's precondition).
 * `agent-insights/mcp-tool-surface-prompt-cache` — the prefix-cache mechanics this rides on.

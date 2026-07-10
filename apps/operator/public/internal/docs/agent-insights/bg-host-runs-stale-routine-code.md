@@ -42,7 +42,7 @@ showed `executor_id = bg-host-3270` on all 11 fires.
   younger than the process. Drift is a warning (`up:true`) — it never fires a
   down-transition or auto-restart.
 * Fix = `systemctl --user restart papercup-bg-host.service`. It is `Restart=always`
-  and DBOS work is durable, but **a restart reclaims in-flight bee spawns**
+  and DBOS work is durable, but **a restart reclaims in-flight cup spawns**
   (EI-2186/EI-2434) — restart deliberately, not on a timer, and prefer a quiet moment.
 * Rule of thumb: **if your change touches how routines/loops/wakes FIRE, restarting
   `:3070` (or `:3170`) is not enough — the bg-host is the host that runs it.**

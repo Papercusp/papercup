@@ -1,7 +1,7 @@
 # A 'weekly limit' refusal is NOT a fleet-wide block — re-probe + check the gateway before escalating
 URL: /internal/docs/agent-insights/fleet-token-weekly-limit-silent-invoke-failures
 
-Agents read a 'You've hit your weekly limit · resets <date>' refusal (usually a STALE run-output snapshot) and escalate 'the fleet is blocked until <date>' — wrong on two counts. (1) With papercusp-inference-gateway ON, bee egress routes through the localhost gateway on a bound POOL account (aviynw10 via sole-pool-account), centrally paced — one account's Max weekly cap is not a fleet block. (2) The one-line discrimination probe usually shows the account answering live RIGHT NOW. Re-probe + check the flag before concluding blocked; switching to the pool account is the SANCTIONED recovery you do yourself, not an owner-gated policy call. Original silent-exit-1 diagnosis preserved below.
+Agents read a 'You've hit your weekly limit · resets <date>' refusal (usually a STALE run-output snapshot) and escalate 'the fleet is blocked until <date>' — wrong on two counts. (1) With papercusp-inference-gateway ON, cup egress routes through the localhost gateway on a bound POOL account (aviynw10 via sole-pool-account), centrally paced — one account's Max weekly cap is not a fleet block. (2) The one-line discrimination probe usually shows the account answering live RIGHT NOW. Re-probe + check the flag before concluding blocked; switching to the pool account is the SANCTIONED recovery you do yourself, not an owner-gated policy call. Original silent-exit-1 diagnosis preserved below.
 
 ## ⚠️ STOP — before you conclude "the fleet is blocked"
 
@@ -11,11 +11,11 @@ Agents keep escalating "blocked until Jun 18" off a stale refusal string. Two
 checks kill that conclusion in under a minute:
 
 1. **Is the inference gateway ON?** `flags:get { key: 'papercusp-inference-gateway' }`.
-   When ON (it is, as of 2026-06-13), every bee spawn gets
+   When ON (it is, as of 2026-06-13), every cup spawn gets
    `ANTHROPIC_BASE_URL=http://127.0.0.1:8788` (`inference-gateway/spawn-env.ts`):
-   the gateway **strips the bee's own auth and reinjects a bound POOL account**
+   the gateway **strips the cup's own auth and reinjects a bound POOL account**
    (`aviynw10` via `sole-pool-account`, `account-resolver.ts`), paces centrally
-   against the rate governor, and proxies to `api.anthropic.com`. So bee egress
+   against the rate governor, and proxies to `api.anthropic.com`. So cup egress
    rides the **pool account through the API**, NOT `~/.papercusp/claude-token`'s
    Max-subscription weekly cap. A weekly-limit refusal on `claude-token` does
    **not** block gateway-routed spawns. (This is the conflation the owner keeps
@@ -56,7 +56,7 @@ outage**:
   Don't propagate a snapshot.
 * **A dead-spawn signature is more often EI-85 than a quota cap.** EI-85
   (open, critical): a restart of the shared `:3170` staging-api host cgroup-kills
-  every in-flight `bee:spawn` child, and the nursery mislabels it as
+  every in-flight `cup:spawn` child, and the nursery mislabels it as
   stale-heartbeat reclaim. The fleet bounces `:3170` for live smoke tests
   several times a day, so "spawn exited 1 / empty output" *right after* a
   `:3170` restart is almost certainly EI-85 — check for a recent
@@ -67,7 +67,7 @@ outage**:
 Autonomous LLM work dies fleet-wide while every *interactive* agent session
 works fine. The visible shape, wherever an orchestrator spawn runs (gym
 cycles, improvement implement-lane workers, wake-executor resumes, headless
-bees):
+cups):
 
 ```
 [dbos-invoke] role=director exited 1 with empty stderr (stdout 526 chars)
@@ -101,7 +101,7 @@ CLAUDE_CODE_OAUTH_TOKEN=$(cat ~/.papercusp/claude-token) claude -p 'reply ok' --
 ```
 
 Compare with the same call *without* the env override (interactive family)
-and, if registered, the Queen's pool credentials under
+and, if registered, the Mug's pool credentials under
 `~/.papercusp/deploy-credentials/<id>`. Whichever refuses names the exhausted
 account; whichever answers is a candidate replacement.
 
@@ -116,8 +116,8 @@ pre-gateway world the cost was real: the whole autonomous fleet shared ONE
 account's usage caps.
 
 **The inference gateway (ON since 2026-06-13) is the structural fix for exactly
-that.** With it on, bee spawns still carry `claude-token` in their env, but the
-gateway **overrides it** — `ANTHROPIC_BASE_URL` points the bee's `claude -p`
+that.** With it on, cup spawns still carry `claude-token` in their env, but the
+gateway **overrides it** — `ANTHROPIC_BASE_URL` points the cup's `claude -p`
 subprocess at `127.0.0.1:8788`, and a placeholder `ANTHROPIC_AUTH_TOKEN=papercusp-gateway`
 bearer (`GATEWAY_CLIENT_AUTH_TOKEN` in `spawn-env.ts`) makes the CLI *send at all*
 without gating on its local login state; the gateway then strips that auth and
@@ -127,12 +127,12 @@ reinjects the routed pool account's real OAuth, so egress no longer rides
 
 **NOTE the seam — and that it has since been CLOSED (D-011).** The routing
 decision now lives in ONE shared helper, `resolveSpawnGatewayEnv`
-(`inference-gateway/spawn-env.ts`), that BOTH spawn chokepoints apply: the bee
+(`inference-gateway/spawn-env.ts`), that BOTH spawn chokepoints apply: the cup
 path (`fleet/operator-spawn.ts`) AND the `/invoke` route
 (`endpoint-route/routes/harness/spawn.ts`). Earlier the `/invoke` path had
-DRIFTED and never routed Queen/overwatch/blueprint-run agents through the pool,
+DRIFTED and never routed Mug/overwatch/blueprint-run agents through the pool,
 so they egressed the single shared `~/.claude` OAuth credential and 429'd on its
-WEEKLY cap (silent 0-token wakes, the Queen placing nothing) while the 8-account
+WEEKLY cap (silent 0-token wakes, the Mug placing nothing) while the 8-account
 pool sat idle — this insight's exact failure, on the one path the gateway wasn't
 covering. That drift is fixed (see the `resolveSpawnGatewayEnv` header's D-011
 note): a non-spawn invoke path is no longer a routing hole. Still verify the

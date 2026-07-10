@@ -23,9 +23,11 @@ vi.mock('@papercusp/operator-core/lib/saved-prompts-client', () => ({
   deleteSavedPrompt: (name: string, harness?: string | null) => client.del(name as never, harness as never),
 }));
 vi.mock('sonner', () => ({ toast: { error: (m: string) => toastSpies.error(m), success: (m: string) => toastSpies.success(m) } }));
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', async () => {
   const React = await import('react');
   return {
+    ...nuqsParsers,
     useQueryState: () => React.useState<string | null>(null),
     parseAsString: {},
   };

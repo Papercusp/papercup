@@ -5,7 +5,7 @@ Why a joined member's writes never federate even though the swarm connected — 
 
 ## Symptom
 
-Cross-machine hive federation **merge** is dead: a joined member's local write
+Cross-machine pot federation **merge** is dead: a joined member's local write
 (feature / issue / coord) is captured into `harness_shared.substrate_outbox` but
 **never drains** to the replicated log, so the peer never receives it — while
 `[swarm] peer_connected` fires normally. The tell on a live frame:
@@ -79,4 +79,4 @@ loop actually start, or did a swallowed wiring failure leave a cached-but-drainl
 handle? On a live joined member, `SELECT id, table_name, harness_slug,
 workspace_id, drained_at FROM harness_shared.substrate_outbox` + whether a drain
 loop is counted pins it. Cross-machine confirmation needs `deb-hetzner-federation.sh`
-(the hive flow + `fed_hive_merge_probe`), not a single-box run.
+(the pot flow + `fed_hive_merge_probe`), not a single-box run.

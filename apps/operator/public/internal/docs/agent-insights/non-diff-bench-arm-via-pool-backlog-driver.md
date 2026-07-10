@@ -3,10 +3,10 @@ URL: /internal/docs/agent-insights/non-diff-bench-arm-via-pool-backlog-driver
 
 The shared pool-orchestration shell so a non-M1 suite (METR HCAST containers, tau2 interactive sims) runs through the same HiveBacklogDriver contract + fleet metrics as the SWE-bench diff arms, supplying ONLY a per-task work fn.
 
-The SWE-bench-Pro fleet arms (`su-independent-backlog.ts`, `hive-backlog-realqueen.ts`) and the non-diff
+The SWE-bench-Pro fleet arms (`su-independent-backlog.ts`, `pot-backlog-realqueen.ts`) and the non-diff
 suites (METR HCAST containers, tau2 interactive sims, TheAgentCompany) share ONE orchestration skeleton —
 a bounded concurrency pool + a live-occupancy `ConcurrencyTimeline` + the never-throw drain — and differ
-only in the per-task **work surface** (M1 = clone a host worktree → spine bee via :3170 → `git diff`; M2 =
+only in the per-task **work surface** (M1 = clone a host worktree → spine cup via :3170 → `git diff`; M2 =
 run an agent inside a Docker container / drive an agent↔sim conversation → score in place). Don't fork the
 orchestration per suite.
 
@@ -28,13 +28,13 @@ export function myBacklogDriver(ops, opts = {}): HiveBacklogDriver {
     now: ops.now,
     concurrencyCap: () => ops.concurrencyCap(),
     perTask: async ({ task, index, arm, seed, budget }) => {
-      // arm (FleetArmId) selects the agent loop — {baseline-opus | hive | su}; identical pool → causal isolation.
+      // arm (FleetArmId) selects the agent loop — {baseline-opus | pot | su}; identical pool → causal isolation.
       // Run the agent on ONE task → ONE FleetTaskResult. NEVER THROW: on infra failure RETURN a result with
       // attempt.stopReason='error'|'infra-failed' (downstream isScoredStopReason excludes it).
       const r = await runOneMyTask(ops, { task, arm: myArmId(arm), seed, budget });
       return toFleetTaskResult(r);            // carry suite-specific score on attempt.armMeta
     },
-    collectCoordEvents: () => [],             // hive arm → placement events; pool/independent → []
+    collectCoordEvents: () => [],             // pot arm → placement events; pool/independent → []
   });
 }
 ```
@@ -55,8 +55,8 @@ suite driver + its per-turn loop live in **external-bench**; keep `@papercusp/be
 
 ## The one honest gap (M1 vs M2)
 
-This shares the POOL topology. The REAL Queen-over-backlog (`hive-backlog-realqueen`) places bees onto host
-**worktree** member harnesses — a spine bee cannot literally operate inside a Docker container / a sim loop
-without generalizing the spine to a "container/interactive work-surface." So a non-diff suite's "hive"
+This shares the POOL topology. The REAL Mug-over-backlog (`pot-backlog-realqueen`) places cups onto host
+**worktree** member harnesses — a spine cup cannot literally operate inside a Docker container / a sim loop
+without generalizing the spine to a "container/interactive work-surface." So a non-diff suite's "pot"
 version is the in-container/interactive **coordination** arm (e.g. lead + delegate), labelled as such — NOT
-the real Queen placing over the backlog. Generalizing the spine work-surface is the deeper, separate change.
+the real Mug placing over the backlog. Generalizing the spine work-surface is the deeper, separate change.

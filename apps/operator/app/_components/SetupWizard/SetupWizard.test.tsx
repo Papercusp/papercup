@@ -21,7 +21,9 @@ const h = vi.hoisted(() => ({
   push: vi.fn(),
 }));
 
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   useQueryState: () => [h.stepId, vi.fn()] as const,
 }));
 vi.mock('@/lib/router-compat/navigation', () => ({

@@ -127,6 +127,11 @@ const RULES: ReadonlyArray<{
       // gateway rate/headroom stats view admits unverified-loopback (see the
       // route's own auth declaration in admin/inference-gateway-stats.ts).
       { method: 'GET',  path: '/admin/inference-gateway/stats', auth: VTL },
+      // Same cookie-less desktop-webview rationale (EI-338): the packaged Mac/
+      // Windows desktop app hits this route as a diagnostic from localhost with
+      // no session cookie to present (EI-8816) — see the route's own auth
+      // comment in admin/dogfood-substrate-health.ts.
+      { method: 'GET',  path: '/admin/dogfood-substrate-health', auth: VTL },
       // (admin/plans.ts is now committed + gated to VT, so its prior deferred
       // 'public' exception was removed.)
     ],

@@ -15,12 +15,12 @@ applied **at the spawn chokepoint** — `operator-spawn.ts` merges
 `resolveSpawnGatewayEnv({ ownerId, account, role, model, … })` (the
 backend-aware wrapper in `inference-gateway/spawn-env.ts` that resolves the
 account/pin/priority and internally calls `gatewaySpawnEnv`) into each
-**spawned bee's** environment. An **in-process** LLM call never passes through
+**spawned cup's** environment. An **in-process** LLM call never passes through
 that chokepoint, so it never receives the gateway env.
 
 The gym cycle (`runOneAutoloopCycle`) has both kinds of LLM call:
 
-* **Pipeline agents** run as spawned bees (the gym-operator's orchestrator
+* **Pipeline agents** run as spawned cups (the gym-operator's orchestrator
   spawns scoper→…→curator via `claude -p`) → they get `ANTHROPIC_BASE_URL` →
   they route through the gateway and work.
 * **Judge + proposer** are *in-process* `llmCall`s (`ab-runner-real.ts` /
@@ -30,7 +30,7 @@ The gym cycle (`runOneAutoloopCycle`) has both kinds of LLM call:
   401 authentication_error: Invalid authentication credentials`**.
 
 This is why the live :3070 autoloop showed `gym-cycle:error` with 10
-consecutive errors while the implement-lane workers (spawned bees) ran fine on
+consecutive errors while the implement-lane workers (spawned cups) ran fine on
 the same gateway: the cycle booted clean (EI-368 is contained), the pipeline
 agents ran, then the judge 401'd "before completing" and the circuit opened.
 

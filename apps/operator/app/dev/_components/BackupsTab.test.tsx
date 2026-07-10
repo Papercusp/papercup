@@ -16,7 +16,9 @@ const { confirmSpy, toastErrorSpy, toastSuccessSpy } = vi.hoisted(() => ({
 vi.mock('sonner', () => ({
   toast: { success: toastSuccessSpy, error: toastErrorSpy },
 }));
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   parseAsString: { withDefault: () => ({}) },
   useQueryState: () => ['', () => {}],
 }));

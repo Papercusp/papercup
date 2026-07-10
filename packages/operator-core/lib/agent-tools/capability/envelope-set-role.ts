@@ -55,7 +55,7 @@ export default defineTool({
     }
 
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('capability_envelope:set_role requires operator, architect, or queen role');
+      throw new Error('capability_envelope:set_role requires operator, architect, or mug role');
     }
     const role = args.role;
     const nextEnv: RoleEnvelope | null =

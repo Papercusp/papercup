@@ -241,8 +241,31 @@ async function openIssueExistsForKeys(keys: readonly string[]): Promise<Set<stri
 }
 
 /** File one improvement per threshold-crossing finding (deduped by capture-core,
- *  pre-filtered by an exact watchdogKey lookup — EI-7254). */
+ *  pre-filtered by an exact watchdogKey lookup — EI-7254).
+ *
+ * EI-8843: `hostLoad.oversubscribed` means the runner sampled sustained
+ * contention (load/cpus ratio) around this run — this box is a SHARED
+ * interactive dev box, not a dedicated perf host, and 7+ concurrent agent
+ * fleets routinely oversubscribe it. A wall-clock/PG-latency-sensitive
+ * scenario (loop-lag, any PG-write-heavy metric) measures shared-box
+ * contention under that condition, not a code regression (the 2026-07-09
+ * incident: 2748%-18113% "regressions" at load-ratio >1.0 that WORSENED on a
+ * second independent run, while pure in-memory scenarios in the SAME run
+ * improved 58-106% — the signature of contention, not a fixed algorithmic
+ * bug). Skip auto-filing entirely on an oversubscribed run: the artifacts +
+ * report.md are written regardless (a human auditing a noisy night still
+ * sees the real numbers, flagged uncertain in the report), only the
+ * auto-implement/auto-review backlog noise is suppressed. */
 async function fileFindings(summary: RunSummary, tierLabel: string): Promise<void> {
+  if (summary.hostLoad?.oversubscribed) {
+    console.info(
+      `[p2p-perf] ${tierLabel} run ${summary.runId}: host was oversubscribed (load ratio ` +
+        `${summary.hostLoad.ratio1m.toFixed(2)}× cpus) — skipping auto-filing of ` +
+        `${summary.sloViolations.length} SLO violation(s) / ${summary.regressions.length} regression(s) ` +
+        `as unreliable under contention (EI-8843); see ${summary.reportPath} for the raw numbers.`,
+    );
+    return;
+  }
   const sloKeys = summary.sloViolations.map((v) => `p2p-perf-slo:${v.scenario}:${v.paramsKey}`);
   const regressionKeys = summary.regressions.map(
     (r) => `p2p-perf-regression:${r.scenario}:${r.paramsKey}:${r.metric}`,

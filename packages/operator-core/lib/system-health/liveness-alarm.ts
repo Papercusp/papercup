@@ -136,7 +136,7 @@ export function evaluateLivenessAlarm(
   // 4b. Overwatch ALIVE but SKIPPING its mandated scorecard (monitor-the-monitor,
   //     hive-loop-supervision 2026-06-21). overwatch-dark catches a NON-waking
   //     supervisor; this catches the OTHER failure — it wakes (autoloop 'ok') yet
-  //     silently omits the Owner-#1 every-wake hive-coordination-health scorecard, so
+  //     silently omits the Owner-#1 every-wake pot-coordination-health scorecard, so
   //     the health-trend goes blind while everything LOOKS alive. The settled-wake grace
   //     lives in compute.ts (the `scorecardSkipped` flag) so this stays pure.
   const ow = health.panels.overwatch?.data;
@@ -147,8 +147,8 @@ export function evaluateLivenessAlarm(
       severity: 'advisory',
       summary:
         e?.status === 'partial-only'
-          ? `Overwatch emitting only PARTIAL hive-coordination-health scorecards since its last wake (${e.missingCount} criteria unrated) — Owner #1 mandate (a COMPLETE scorecard EVERY wake) truncated.`
-          : `Overwatch woke but emitted NO complete hive-coordination-health scorecard since its last wake — Owner #1 mandate (a scorecard EVERY wake) skipped; the health-trend is going blind.`,
+          ? `Overwatch emitting only PARTIAL pot-coordination-health scorecards since its last wake (${e.missingCount} criteria unrated) — Owner #1 mandate (a COMPLETE scorecard EVERY wake) truncated.`
+          : `Overwatch woke but emitted NO complete pot-coordination-health scorecard since its last wake — Owner #1 mandate (a scorecard EVERY wake) skipped; the health-trend is going blind.`,
     });
   }
 
@@ -166,7 +166,7 @@ export function evaluateLivenessAlarm(
         key: 'rubric-emission-dark',
         severity: 'advisory',
         summary:
-          `hive-coordination-health AGENT emission dark ${Math.round(darkMs / 3_600_000)}h — overwatch is enabled but STOPPED ` +
+          `pot-coordination-health AGENT emission dark ${Math.round(darkMs / 3_600_000)}h — overwatch is enabled but STOPPED ` +
           `(last wake ${new Date(ow.lastWakeAt).toISOString()}). The scheduled pulse keeps a deterministic floor, but the ` +
           `agent trend is blind. kettle:start to resume, or turn the papercusp-overwatch flag OFF to make the pause explicit.`,
       });

@@ -44,7 +44,7 @@ export default defineTool({
       throw new Error('capability:revoke_role is dark — enable papercusp-capability-grant-tool to use it.');
     }
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('capability:revoke_role requires operator, architect, or queen role');
+      throw new Error('capability:revoke_role requires operator, architect, or mug role');
     }
     const caps = [...new Set(args.capabilities)];
 

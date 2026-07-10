@@ -672,7 +672,7 @@ const sharedPresenceReaperCheck: PeriodicCheck = {
 };
 
 // Every 10min: rubric-emission floor pulse (WI-2374 adoption step 1). Files the
-// deterministic hive-coordination-health floor when NO scorecard (agent or floor)
+// deterministic pot-coordination-health floor when NO scorecard (agent or floor)
 // landed in the last hour — the data layer no longer dies with a stopped/dead
 // overwatch (the turn-end backstop only fires when an overwatch turn ENDS). Zero
 // LLM tokens; flag-gated (papercusp-overwatch) inside the pulse; a live overwatch

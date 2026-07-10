@@ -391,6 +391,15 @@ either use `npm run test:affected` (resolves per-app correctly), or pass that
 app's own config explicitly: `node_modules/.bin/vitest run --config
 apps/operator/vitest.config.ts <path/to/file.test.ts>`.
 
+**Single integration test file** (EI-8878): the unit config's own guard
+rejects a `*.integration.test.ts` path and suggests `--config
+vitest.integration.config.ts` — but there is **no root-level** one; each
+package/app has its own. Use the package-scoped one explicitly: `vitest run
+--config packages/<pkg>/vitest.integration.config.ts <path/to/file>.integration.test.ts`
+(or `apps/<app>/vitest.integration.config.ts` for an app). Following the
+guard's suggestion literally at the repo root fails with an esbuild "Could
+not resolve" error.
+
 ## Browser checks — use `verdict`
 
 Ad-hoc/exploratory browser verification → the `verdict` skill, **not** Playwright

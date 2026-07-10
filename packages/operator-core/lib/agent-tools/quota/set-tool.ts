@@ -67,7 +67,7 @@ export default defineTool({
     }
 
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('quota:set_tool requires operator, architect, or queen role');
+      throw new Error('quota:set_tool requires operator, architect, or mug role');
     }
 
     const { toolName, role } = args;

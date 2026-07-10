@@ -224,7 +224,7 @@ the most common bug class.
 Implemented (current state): the WordPress-style
 PluginHookBus (addAction /
 addFilter / emit) was retired
-2026-06-12 (plugin-system-hive-port-2026-06-11
+2026-06-12 (plugin-system-pot-port-2026-06-11
 P-006 / D-003: zero registered consumers, and its invocations bypassed
 dispatch — no audit, no fire-time capability gating). It is gone from
 the loader, SDK, and host; the only surviving reference is a
@@ -362,7 +362,7 @@ Action chains run for side effects; all handlers fire regardless of return value
 // If A says { runs: 'after:billing' }, B runs first → final = '[A] [B] do thing'
 ```
 
-Cancellation. A filter handler that returns the special sentinel `api.hooks.STOP` halts the chain — no further handlers run, the current value is returned. Useful for veto patterns (e.g., a security plugin blocks a task title containing PII). For preventing actions from happening at all, see §8.5.2 (Guard hooks).
+Cancellation. A filter handler that returns the special papercup `api.hooks.STOP` halts the chain — no further handlers run, the current value is returned. Useful for veto patterns (e.g., a security plugin blocks a task title containing PII). For preventing actions from happening at all, see §8.5.2 (Guard hooks).
 
 ### 8.5.2 Guard hooks — pre-fact veto
 

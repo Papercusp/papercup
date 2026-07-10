@@ -156,12 +156,12 @@ describe('state-of-Hive production readers (real PG)', () => {
     // issueToCandidate.observation (P-001 surfacing, su-f8ee5) → observations() reader →
     // buildRubricRatings. Proves the structured observation flows all the way to the lane.
     await createIssue({
-      title: 'hive-coordination-health scorecard',
+      title: 'pot-coordination-health scorecard',
       topics: [OBSERVATION_TOPIC],
       createdBy: 'kettle',
       payload: {
         observation: {
-          rubricRef: 'hive-coordination-health',
+          rubricRef: 'pot-coordination-health',
           sourceHive: 'papercusp',
           // ratings is a Record keyed by criterion (D-003); evidence mandatory.
           ratings: {
@@ -174,7 +174,7 @@ describe('state-of-Hive production readers (real PG)', () => {
 
     // The reader maps the surfaced candidate.observation onto a clean record.
     const records = await buildStateOfHiveReaders().observations();
-    const rec = records.find((r) => r.rubricRef === 'hive-coordination-health');
+    const rec = records.find((r) => r.rubricRef === 'pot-coordination-health');
     expect(rec).toBeDefined();
     expect(rec!.sourceHive).toBe('papercusp');
     expect(rec!.ratings?.['end-to-end-flow']).toEqual({ rating: 'broken', evidence: '88 items unplaced despite idle capacity' });
@@ -183,7 +183,7 @@ describe('state-of-Hive production readers (real PG)', () => {
     const digest = await synthesizeStateOfHive(buildStateOfHiveReaders(), { nowMs: T });
     expect(digest.corpus.observations).toBeGreaterThanOrEqual(1);
     const e2e = digest.rubricRatings.find(
-      (p) => p.ref === 'rubric:hive-coordination-health#end-to-end-flow@papercusp',
+      (p) => p.ref === 'rubric:pot-coordination-health#end-to-end-flow@papercusp',
     );
     expect(e2e).toBeDefined();
     expect(e2e!.summary).toContain('broken');

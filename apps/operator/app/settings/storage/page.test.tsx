@@ -24,6 +24,7 @@ vi.mock('sonner', () => ({
   toast: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn() }),
 }));
 vi.mock('@/lib/flag-hooks', () => ({ useFlag: () => h.flagOn }));
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', async () => {
   const React = await import('react');
   const useQueryState = (_key: string, parser?: { defaultValue?: unknown }) => {
@@ -31,6 +32,7 @@ vi.mock('nuqs', async () => {
     return [v, async (nv: unknown) => setV(nv ?? null)];
   };
   return {
+    ...nuqsParsers,
     useQueryState,
     parseAsString: {},
     parseAsStringEnum: (_vals: unknown) => ({ withDefault: (d: unknown) => ({ defaultValue: d }) }),

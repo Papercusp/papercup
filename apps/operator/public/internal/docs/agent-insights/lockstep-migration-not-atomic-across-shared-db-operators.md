@@ -99,8 +99,8 @@ plan, risk-tier, and rollback gate all see submodule migrations. Tracked in
   lives *only* in the new workspace (old resolver would 404 it). `plans:*` are
   PG-resolver-backed (`harness_plans` via `resolvePlanScope`; the FS path is
   retired), and current `resolvePlanScope` maps the operator-home scope to
-  `PAPERCUSP_WORKSPACE_ID` and concrete member harnesses to their Hive home, so
-  a real `plans:get` exercises the live resolver and Hive-scoped plan key.
+  `PAPERCUSP_WORKSPACE_ID` and concrete member harnesses to their Pot home, so
+  a real `plans:get` exercises the live resolver and Pot-scoped plan key.
 * **Worth fixing:** add a real papercup-plan-read probe to the deploy health gate
   so a half-state triggers the existing rollback path. Filed via
   `improvements:capture`.

@@ -12,7 +12,7 @@
  * Why: get_next reads the spec from LOCAL PG — without federation, a queen on
  * machine A versioning a spec never reaches a bee pulling on machine B. With
  * it, spec authoring is cross-machine steering (the scheduler-usage model the
- * hive-coordination-health rubric grades).
+ * pot-coordination-health rubric grades).
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';

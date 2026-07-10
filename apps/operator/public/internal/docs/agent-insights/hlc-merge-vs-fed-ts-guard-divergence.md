@@ -21,7 +21,7 @@ diverges**: the merge picks op X as the winner and hands it to `apply`, but the
 PG guard rejects X (its `fed_ts` lost) → no write → the cell keeps its own
 value. Each cell keeps its own → the two cells "converge" (no more ops to
 drain, `fixedPoint=true`) to **different** values. The tripwire was
-`split-brain-queen.integration.test.ts` (both Queens steer opposite orders;
+`split-brain-mug.integration.test.ts` (both Mugs steer opposite orders;
 cell A ended with a mix, cell B with all-its-own).
 
 ## Why they disagreed
@@ -111,7 +111,7 @@ permanently; thereafter any concurrent same-key writes whose wall-`ts` order
 differs across peers can diverge. The window self-heals only once every peer's
 wall clock advances past the floor.
 
-**Why the green suite missed it (still):** `split-brain-queen` and the
+**Why the green suite missed it (still):** `split-brain-mug` and the
 composition rig share one wall clock (`physical: () => this.now()`), so they
 can't construct recv-advance + skew. `three-peer-partition-rejoin` asserts
 convergence at the read-merge layer with a TEST-LOCAL ts-only LWW and an injected
@@ -161,7 +161,7 @@ reopening the ordering-key question:
   > and can no longer reject what the fold picked.
 * **WI-1672 (exact-tie split-brain, migrations `459-hlc-node-id-total-order.sql` +
   `466-hlc-node-id-strong-entropy.sql`):** `hlc_recv`/`observeRemoteHlc` ratchet
-  every peer's clock to the max wall-ms ever witnessed hive-wide, so after any
+  every peer's clock to the max wall-ms ever witnessed pot-wide, so after any
   transient fast-clock episode all peers advance by logical counter only, in
   near-lockstep — two peers then routinely mint an **identical** `fed_hlc` for
   concurrent writes to the same key, and the guard's tie-ACCEPTING `>=` lets the

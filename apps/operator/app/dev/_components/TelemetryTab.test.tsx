@@ -28,9 +28,11 @@ vi.mock('@papercusp/grid-core', () => ({
 }));
 
 const { nuqsStore } = vi.hoisted(() => ({ nuqsStore: new Map<string, string>() }));
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => {
   const React = require('react');
   return {
+    ...nuqsParsers,
     parseAsString: { withDefault: (d: string) => ({ _default: d }) },
     parseAsStringEnum: () => ({ withDefault: (d: string) => ({ _default: d }) }),
     useQueryState: (key: string, parser: { _default?: string }) => {

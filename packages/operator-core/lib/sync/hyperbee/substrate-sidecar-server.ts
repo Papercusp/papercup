@@ -24,6 +24,7 @@ import {
   createSubstrateSidecarHost,
   type SubstrateSidecarHost,
 } from './substrate-sidecar-host';
+import { installFlagOverrideStore } from '../../flag-override-store';
 import { resolveSubstrateSocketPath, reapOrphanedSubstrateSockets } from './substrate-socket-path';
 import {
   startEventLoopLagMonitor,
@@ -155,6 +156,19 @@ export function startSidecarObservability(): LagMonitorHandle | null {
  * socket path is ABSOLUTE (resolveSubstrateSocketPath()) — never CWD-relative.
  */
 export function runSubstrateSidecarServer(): void {
+  // Runtime flag overrides (EI-8867 / WI-3628). `getFlag()` consults the PG override store ONLY
+  // in a process that installed it. This is a STANDALONE process (dev: `tsx
+  // bin/substrate-sidecar.ts`; packaged: serve.mjs re-exec'd with PAPERCUSP_SUBSTRATE_SIDECAR_MODE),
+  // and it does not import flag-bus — so without this, every `flags:set` would report success and
+  // be silently INVISIBLE here, with getFlag() falling through to FLAG_DEFAULTS. That is the exact
+  // failure that made the inference gateway ignore a dark flag for hours.
+  // substrate-sidecar-host reads SUBSTRATE_MERGE_CURSOR_PG on the seed/persist path.
+  //
+  // Installed in the SERVER MAIN, deliberately NOT in bootHarnessSubstrate(): that boot function
+  // stays PG-free + hermetic for its many merge tests. This call only REGISTERS lazy callbacks —
+  // no PG connection is opened until the first flag read — so the hermetic guarantee is preserved.
+  // Idempotent + fail-soft: a store fault degrades to defaults exactly as before, never blocks boot.
+  installFlagOverrideStore();
   const host = createSubstrateSidecarHost();
   // P-005: give the sidecar its OWN leak/saturation instrumentation. The substrate
   // (and thus the +1GB/min leak) runs in THIS process under the sidecar flag, so

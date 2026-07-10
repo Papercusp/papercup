@@ -53,7 +53,7 @@ postMessage cleanly; behavior is identical minus the console noise.
 
 * **`eval`-based `fetch('ipc://…')` is INVALID.** The bridge's eval runs in a context that does not
   reproduce the page's CORS, so it returns `AbortError`/pending on BOTH a buggy and a fixed binary.
-* **`console-monitor` across a reload is unreliable** — it loses the post-reload console (a sentinel
+* **`console-monitor` across a reload is unreliable** — it loses the post-reload console (a papercup
   warn emitted after reload was not captured), so a captured warn may be stale buffer.
 * **The capture bundle's `console-errors.json` is errors-only** and the WebKit engine error bypasses
   the JS `console.*` hook — so it never appears there.

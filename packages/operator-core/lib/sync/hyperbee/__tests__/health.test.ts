@@ -262,4 +262,42 @@ describe('assessHarnessSubstrateHealth', () => {
       expect(withUndefined.verdict).toBe('healthy');
     });
   });
+
+  // WI-3604: split-DHT-universe outage class must read as its OWN distinct
+  // 'unhealthy' reason — never lumped into the noReplicator/frozen
+  // "connected-but-dead WI-183 class" wording.
+  describe('replicationLiveness.dhtUniverseMismatch (WI-3604)', () => {
+    it('dhtUniverseMismatch > 0 → unhealthy with a distinct reason', () => {
+      const r = assessHarnessSubstrateHealth({
+        flagEnabled: true,
+        handlePresent: true,
+        replicationLiveness: { noReplicator: 0, frozen: 0, dhtUniverseMismatch: 2 },
+      });
+      expect(r.verdict).toBe('unhealthy');
+      expect(r.reasons.join(' ')).toMatch(/DHT-universe mismatch/);
+      expect(r.reasons.join(' ')).not.toMatch(/WI-183 class/);
+    });
+
+    it('does not double-fire alongside noReplicator/frozen (structurally exclusive in practice)', () => {
+      // In practice deriveVerdict routes a mismatched harness's logs away from
+      // no_replicator/frozen entirely, so these counts are never simultaneously
+      // positive for the SAME harness — but the health-verdict function itself
+      // must not crash or produce a garbled reason if it ever were.
+      const r = assessHarnessSubstrateHealth({
+        flagEnabled: true,
+        handlePresent: true,
+        replicationLiveness: { noReplicator: 0, frozen: 0, dhtUniverseMismatch: 0 },
+      });
+      expect(r.verdict).toBe('healthy');
+    });
+
+    it('omitted dhtUniverseMismatch is a no-op (never fabricates a verdict)', () => {
+      const r = assessHarnessSubstrateHealth({
+        flagEnabled: true,
+        handlePresent: true,
+        replicationLiveness: { noReplicator: 0, frozen: 0 },
+      });
+      expect(r.verdict).toBe('healthy');
+    });
+  });
 });

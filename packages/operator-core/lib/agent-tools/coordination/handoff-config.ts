@@ -51,7 +51,7 @@ export default defineTool({
     }
 
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('coord:handoff_config set requires operator, architect, or queen role');
+      throw new Error('coord:handoff_config set requires operator, architect, or mug role');
     }
     const patch: CoordLivenessConfig = { handoffTtlMs: args.handoffTtlMs };
     const outcome = await runControlMutation<CoordLivenessConfig>(

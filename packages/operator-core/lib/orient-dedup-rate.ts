@@ -108,7 +108,7 @@ export async function readOrientDedupRate(
   );
 }
 
-/** A hive-coordination-health-style rating ({ rating, evidence }). */
+/** A pot-coordination-health-style rating ({ rating, evidence }). */
 export interface OrientDedupGrade {
   rating: 'healthy' | 'degraded' | 'broken' | 'unknown';
   evidence: string;

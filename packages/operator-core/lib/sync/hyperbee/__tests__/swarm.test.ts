@@ -4,6 +4,9 @@ import {
   swarmConstructorOpts,
   extractPublicKeyHex,
   extractRemoteIp,
+  resolveDhtUniverseState,
+  assertDhtUniverse,
+  readExpectedDhtBootstrap,
   type HyperswarmLike,
   _setSharedSwarmForTests,
   _peekSharedSwarmForTests,
@@ -690,5 +693,91 @@ describe('extractPublicKeyHex (P-002)', () => {
     expect(extractPublicKeyHex(null)).toBeUndefined();
     expect(extractPublicKeyHex({})).toBeUndefined();
     expect(extractPublicKeyHex({ publicKey: 123 })).toBeUndefined();
+  });
+});
+
+describe('WI-3604: resolveDhtUniverseState (split-DHT-universe recurrence guard)', () => {
+  it('unset/empty env → public', () => {
+    expect(resolveDhtUniverseState(undefined)).toEqual({ mode: 'public' });
+    expect(resolveDhtUniverseState('')).toEqual({ mode: 'public' });
+    expect(resolveDhtUniverseState('   ')).toEqual({ mode: 'public' });
+  });
+
+  it('a valid host:port list → isolated', () => {
+    expect(resolveDhtUniverseState('172.31.44.1:49838')).toEqual({
+      mode: 'isolated',
+      bootstrap: [{ host: '172.31.44.1', port: 49838 }],
+    });
+  });
+
+  it('set but all-malformed → misconfigured (the silent-fallback-to-public defect)', () => {
+    expect(resolveDhtUniverseState('not-a-valid-entry')).toEqual({
+      mode: 'misconfigured',
+      envValue: 'not-a-valid-entry',
+    });
+  });
+});
+
+describe('WI-3604: assertDhtUniverse', () => {
+  it('no expectation configured → ok regardless of actual', () => {
+    expect(assertDhtUniverse({ mode: 'public' }, undefined).ok).toBe(true);
+    expect(assertDhtUniverse({ mode: 'public' }, '').ok).toBe(true);
+  });
+
+  it('unparsable expectation → ok (never false-positives on a bad config)', () => {
+    expect(assertDhtUniverse({ mode: 'public' }, 'garbage').ok).toBe(true);
+  });
+
+  it('matching isolated bootstrap → ok', () => {
+    const state = resolveDhtUniverseState('172.31.44.1:49838');
+    expect(assertDhtUniverse(state, '172.31.44.1:49838').ok).toBe(true);
+  });
+
+  it('the 2026-07-09 incident shape: resolved public when isolated expected → mismatch', () => {
+    const result = assertDhtUniverse({ mode: 'public' }, '172.31.44.1:49838');
+    expect(result.ok).toBe(false);
+    expect(result.detail).toMatch(/PUBLIC DHT/);
+  });
+
+  it('resolved misconfigured (env set, unparsable) when isolated expected → mismatch', () => {
+    const state = resolveDhtUniverseState('garbage-value');
+    const result = assertDhtUniverse(state, '172.31.44.1:49838');
+    expect(result.ok).toBe(false);
+    expect(result.detail).toMatch(/no usable nodes/);
+  });
+
+  it('resolved a DIFFERENT isolated address than expected → mismatch', () => {
+    const state = resolveDhtUniverseState('10.0.0.1:9999');
+    const result = assertDhtUniverse(state, '172.31.44.1:49838');
+    expect(result.ok).toBe(false);
+    expect(result.detail).toMatch(/but this process resolved to/);
+  });
+});
+
+describe('WI-3604: readExpectedDhtBootstrap', () => {
+  const KEY = 'PAPERCUSP_EXPECTED_DHT_BOOTSTRAP';
+  const FILE_KEY = 'PAPERCUSP_EXPECTED_DHT_BOOTSTRAP_FILE';
+  const orig: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    for (const k of [KEY, FILE_KEY]) {
+      orig[k] = process.env[k];
+      delete process.env[k];
+    }
+  });
+  afterEach(() => {
+    for (const k of [KEY, FILE_KEY]) {
+      if (orig[k] === undefined) delete process.env[k];
+      else process.env[k] = orig[k];
+    }
+  });
+
+  it('prefers the env var when set', () => {
+    process.env[KEY] = '172.31.44.1:49838';
+    expect(readExpectedDhtBootstrap()).toBe('172.31.44.1:49838');
+  });
+
+  it('falls back to a missing file → undefined (best-effort, never throws)', () => {
+    process.env[FILE_KEY] = '/nonexistent/path/that/does/not/exist-wi3604';
+    expect(readExpectedDhtBootstrap()).toBeUndefined();
   });
 });

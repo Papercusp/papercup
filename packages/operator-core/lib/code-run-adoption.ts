@@ -330,7 +330,7 @@ export async function readCodeRunAdoption(
 
 // ───────────────────────────────────────────────────────────────────────────────────────────
 // Learning-loop wiring (code-run-adoption directive 2026-06-29): roll the per-(role,day) summaries
-// into ONE fleet figure and GRADE it against the hive-coordination-health `tool-utilization`
+// into ONE fleet figure and GRADE it against the pot-coordination-health `tool-utilization`
 // criterion, so the metric is no longer ad-hoc SQL — it feeds the scorecard substrate the
 // learning loop reads (the Overwatch scorecard-backstop + a first-class dev:code_run_adoption read).
 // Pure + unit-tested; no PG here.
@@ -370,7 +370,7 @@ export function rollupAdoption(summaries: AdoptionSummary[]): AdoptionRollup {
   };
 }
 
-/** A hive-coordination-health rating ({ rating, evidence }) — matches the scorecard shape. */
+/** A pot-coordination-health rating ({ rating, evidence }) — matches the scorecard shape. */
 export interface ToolUtilizationGrade {
   rating: 'healthy' | 'degraded' | 'broken' | 'unknown';
   evidence: string;
@@ -386,7 +386,7 @@ export const ADOPTION_MIN_SAMPLE = 5;
 export const ADOPTION_HEALTHY_AT = 0.6;
 export const ADOPTION_DEGRADED_AT = 0.25;
 
-/** Map a fleet adoption rollup → the hive-coordination-health `tool-utilization` rating. PURE. */
+/** Map a fleet adoption rollup → the pot-coordination-health `tool-utilization` rating. PURE. */
 export function gradeToolUtilization(roll: AdoptionRollup): ToolUtilizationGrade {
   if (roll.adoptionRate === null || roll.opportunitySpawns < ADOPTION_MIN_SAMPLE) {
     return {

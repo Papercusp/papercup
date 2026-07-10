@@ -30,7 +30,9 @@ vi.mock('@papercusp/operator-core/lib/browser-workspace', () => ({
   wsLocalKey: (k: string) => `ws:default:${k}`,
 }));
 
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   parseAsBoolean: { withDefault: (d: boolean) => ({ defaultValue: d }) },
   useQueryState: (_key: string, parser?: { defaultValue?: boolean }) => {
     const React = require('react') as typeof import('react');

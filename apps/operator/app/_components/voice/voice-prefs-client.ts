@@ -17,8 +17,7 @@ import type { VoicePrefs } from '@papercusp/operator-core/lib/voice-prefs';
 const DEFAULT_CLIENT_PREFS: VoicePrefs = {
   speakSuggestions: true,
   speakBackgroundToasts: true,
-  speakReceivingFlips: false,
-  speakEscalations: true,
+  speakModeFlips: false,
   speakCadenceStatus: false,
   speakNudges: true,
   wakeWordIntents: true,

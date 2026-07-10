@@ -19,10 +19,22 @@ describe('bakedCanonicalHiveInvite', () => {
   it('explicit override wins', () => {
     expect(bakedCanonicalHiveInvite(INVITE)).toEqual(INVITE);
   });
-  it('reads env when BOTH present', () => {
+  it('reads env when BOTH present (legacy PAPERCUP_DOGFOOD_HIVE_* names, dual-accept)', () => {
     process.env.PAPERCUP_DOGFOOD_HIVE_PUBKEY = 'P';
     process.env.PAPERCUP_DOGFOOD_HIVE_INVITE_SECRET = 'S';
     expect(bakedCanonicalHiveInvite()).toEqual({ pubkeyBase64: 'P', inviteSecret: 'S' });
+  });
+  it('reads env when BOTH present (current PAPERCUP_DOGFOOD_POT_* names)', () => {
+    process.env.PAPERCUP_DOGFOOD_POT_PUBKEY = 'P2';
+    process.env.PAPERCUP_DOGFOOD_POT_INVITE_SECRET = 'S2';
+    expect(bakedCanonicalHiveInvite()).toEqual({ pubkeyBase64: 'P2', inviteSecret: 'S2' });
+  });
+  it('prefers the current POT env names over the legacy HIVE names when both are set', () => {
+    process.env.PAPERCUP_DOGFOOD_POT_PUBKEY = 'NEW_PUB';
+    process.env.PAPERCUP_DOGFOOD_POT_INVITE_SECRET = 'NEW_SEC';
+    process.env.PAPERCUP_DOGFOOD_HIVE_PUBKEY = 'OLD_PUB';
+    process.env.PAPERCUP_DOGFOOD_HIVE_INVITE_SECRET = 'OLD_SEC';
+    expect(bakedCanonicalHiveInvite()).toEqual({ pubkeyBase64: 'NEW_PUB', inviteSecret: 'NEW_SEC' });
   });
   it('falls back to the committed canonical constant when env is unset', () => {
     delete process.env.PAPERCUP_DOGFOOD_HIVE_PUBKEY;

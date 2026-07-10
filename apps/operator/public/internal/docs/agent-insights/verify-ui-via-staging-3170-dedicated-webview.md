@@ -3,7 +3,7 @@ URL: /internal/docs/agent-insights/verify-ui-via-staging-3170-dedicated-webview
 
 The cheap recipe for true end-to-end UI verification of staging edits — rebuild the SPA dist :3170 serves, launch the prebuilt debug desktop pinned to :3170 on a free X display, drive it with tauri-agent-tools. Plus the three traps that cost an hour.
 
-Verified live 2026-06-11 while shipping `hive-pr-rollup-and-subharness-membership-2026-06-11`.
+Verified live 2026-06-11 while shipping `pot-pr-rollup-and-subharness-membership-2026-06-11`.
 
 ## The recipe
 

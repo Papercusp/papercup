@@ -4,15 +4,15 @@
  *
  * The Sentinel runs the role='sentinel' converse brain; the agent-mcp route
  * streams the assistant turn RAW (the client strips control tags for display,
- * the server re-parses to dispatch), so `<handoff_to_queen>` lands in the
+ * the server re-parses to dispatch), so `<handoff_to_mug>` lands in the
  * harness's accumulated `assistantText` and tool calls land in `toolCalls`.
  */
 import type { RunSummary, Violation } from '@papercusp/testing-shell/llm';
 
-const HANDOFF_RE = /<handoff_to_queen/i;
+const HANDOFF_RE = /<handoff_to_mug/i;
 const DELEGATE_RE = /<delegate_deep/i;
 
-/** SOME assistant turn must emit `<handoff_to_queen>` (work routed to the Queen). */
+/** SOME assistant turn must emit `<handoff_to_mug>` (work routed to the Mug). */
 export function emitsHandoff(run: RunSummary): Violation[] {
   if (run.turns.some((t) => HANDOFF_RE.test(t.assistantText))) return [];
   return [
@@ -20,14 +20,14 @@ export function emitsHandoff(run: RunSummary): Violation[] {
       assertKind: 'custom:emitsHandoff',
       severity: 'error',
       evidenceTurnIdx: Math.max(0, run.turns.length - 1),
-      claim: 'Sentinel never emitted <handoff_to_queen> for a planning-scale ask.',
+      claim: 'Sentinel never emitted <handoff_to_mug> for a planning-scale ask.',
       suggestion:
-        'Route substantial multi-step work to the Queen via <handoff_to_queen> (files a high-priority work_item + nudges her), not plan/place/execute it itself.',
+        'Route substantial multi-step work to the Mug via <handoff_to_mug> (files a high-priority work_item + nudges her), not plan/place/execute it itself.',
     },
   ];
 }
 
-/** NO assistant turn may emit `<handoff_to_queen>` (kept local / answered directly). */
+/** NO assistant turn may emit `<handoff_to_mug>` (kept local / answered directly). */
 export function noHandoff(run: RunSummary): Violation[] {
   const idx = run.turns.findIndex((t) => HANDOFF_RE.test(t.assistantText));
   if (idx < 0) return [];
@@ -36,9 +36,9 @@ export function noHandoff(run: RunSummary): Violation[] {
       assertKind: 'custom:noHandoff',
       severity: 'error',
       evidenceTurnIdx: idx,
-      claim: 'Sentinel handed a quick, directly-answerable request off to the Queen.',
+      claim: 'Sentinel handed a quick, directly-answerable request off to the Mug.',
       suggestion:
-        'Reserve <handoff_to_queen> for substantial multi-step work; answer status / quick-recall directly — a handoff spams the Queen.',
+        'Reserve <handoff_to_mug> for substantial multi-step work; answer status / quick-recall directly — a handoff spams the Mug.',
     },
   ];
 }

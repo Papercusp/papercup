@@ -69,7 +69,7 @@ export default defineTool({
     }
 
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('learning:set-scout-budget requires operator, architect, or queen role');
+      throw new Error('learning:set-scout-budget requires operator, architect, or mug role');
     }
 
     const nextUsd = args.op === 'clear' ? null : args.workspaceCeilingUsd;

@@ -1,0 +1,20 @@
+[Unit]
+Description=Papercusp isolated-DHT liveness probe — real 2-swarm hyperswarm connect check for the silent-wedge class (EI-8892)
+# Detection + escalation ONLY — this unit never restarts papercup-isolated-dht.service
+# (EI-8901 boot-grace lesson: a restart-authority health check on a signal that spans
+# process restarts risks a restart-storm on a freshly-restarted unit). Deliberately a
+# systemd timer, NOT a DBOS scheduled workflow / in-process operator tick
+# (dbos-scheduler-consolidation-2026-06-03 D-004 / EI-1622): this is a dev-box P2P
+# infra probe, not product state. Mirrors papercup-webkit-reaper.service /
+# papercup-perf-signals-capture.service.
+After=network-online.target
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+# The probe itself has its own ~15s connect timeout + a 5s teardown budget;
+# 60s gives headroom for node startup + a slow box without masking a genuine hang.
+TimeoutStartSec=60
+ExecStart=/home/marsh-office/papercupai-workspace/papercusp/apps/operator/scripts/papercup-dht-liveness-check.sh

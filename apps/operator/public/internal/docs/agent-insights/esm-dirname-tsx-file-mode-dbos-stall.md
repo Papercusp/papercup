@@ -88,8 +88,8 @@ boot workers — so grep `host-bootstrap.ts`, not `routines-workflow.ts`, for th
 literal log line.
 
 More importantly, this incident is no longer undetectable: `host-bootstrap.ts`
-now arms a **Red Queen engine-death sentinel**
-(`packages/operator-core/lib/red-queen/engine-death.ts`,
+now arms a **Red Mug engine-death papercup**
+(`packages/operator-core/lib/0/engine-death.ts`,
 `armEngineDeathSentinel()`) as a **plain `setInterval`, deliberately outside
 DBOS/routines** — its own comment names this exact incident ("the swallowed
 `[dbos] boot failed` above left every routine dead for 80+ min on 2026-06-12
@@ -97,5 +97,5 @@ with nothing detecting it") as the reason it must survive the failure it
 watches for. It's inert while the `papercusp-red-queen` flag is OFF (checked
 every pass). Step 1 of the diagnosis runbook above (`next_fire_at` all in the
 past) is still the fastest manual confirmation, but a live host should now
-self-report this class of stall via the sentinel instead of silently sitting
+self-report this class of stall via the papercup instead of silently sitting
 dead for 80+ minutes.

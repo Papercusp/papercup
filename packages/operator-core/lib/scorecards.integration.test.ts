@@ -171,8 +171,8 @@ describe('listScorecards (P-013) — real PG', () => {
   });
 
   it('has a built-in completeness fallback only for the owner-mandated hive coordination rubric', () => {
-    expect(builtInCriterionKeysForRubric('hive-coordination-health')).toHaveLength(14);
-    expect(builtInCriterionKeysForRubric('hive-coordination-health')).toContain('scheduler-usage');
+    expect(builtInCriterionKeysForRubric('pot-coordination-health')).toHaveLength(14);
+    expect(builtInCriterionKeysForRubric('pot-coordination-health')).toContain('scheduler-usage');
     expect(builtInCriterionKeysForRubric('no-such-rubric')).toBeNull();
   });
 

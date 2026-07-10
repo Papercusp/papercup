@@ -26,9 +26,11 @@ const { nuqs, setters, mkSetter } = vi.hoisted(() => {
   };
   return { nuqs, setters, mkSetter };
 });
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => {
   const parser = { withDefault: () => ({}) };
   return {
+    ...nuqsParsers,
     useQueryState: (key: string) => [nuqs[key], mkSetter(key)],
     parseAsString: parser,
     parseAsStringEnum: () => parser,

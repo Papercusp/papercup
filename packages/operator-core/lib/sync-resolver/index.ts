@@ -3996,11 +3996,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // ─── Left sidebar (left-sidebar-tauri-2026-06-07) — the desktop's Hives /
   // Voice / Swarm rail, the SPA twin of the pui dock tabs. ───────────────
 
-  // sidebar.fleetBees — the whole-fleet assignment groups (every agent's ranked
+  // sidebar.fleetCups — the whole-fleet assignment groups (every agent's ranked
   // work-list + plan-claim slugs + liveness), the same canonical view
   // `fleet:assignments` serves. Backs the Swarm tab's fleet-wide task list and
   // the per-agent dossier filter.
-  'sidebar.fleetBees': {
+  'sidebar.fleetCups': {
     argsSchema: z.object({ workspace: z.string().optional() }),
     resolve: async (args) => {
       const { workspace } = (args ?? {}) as { workspace?: string };
@@ -4010,10 +4010,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // sidebar.beeMail — one agent's coord inbox + outbox (the observer view the
+  // sidebar.cupMail — one agent's coord inbox + outbox (the observer view the
   // bee-dossier comms section renders; `fleet:cup_mail`'s core, most-recent 50
   // per side). One row: { owner, inbox, outbox }.
-  'sidebar.beeMail': {
+  'sidebar.cupMail': {
     argsSchema: z.object({ owner: z.string().min(1).max(200) }),
     resolve: async (args) => {
       const { owner } = args as { owner: string };

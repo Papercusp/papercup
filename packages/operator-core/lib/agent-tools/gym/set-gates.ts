@@ -51,7 +51,7 @@ export default defineTool({
     }
 
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('gym:set-gates set requires operator, architect, or queen role');
+      throw new Error('gym:set-gates set requires operator, architect, or mug role');
     }
     const patch: Partial<GymGates> = {};
     if (args.epsilon !== undefined) patch.epsilon = args.epsilon;

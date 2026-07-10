@@ -30,7 +30,24 @@ vi.mock('@papercusp/agent-mcp', () => ({
 // as they did under the real getFlag's no-PostHog fallback — behavior-preserving.
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(), onFlagChange: vi.fn() }));
 vi.mock('../harness-core', () => ({ resolveProject: vi.fn() }));
-vi.mock('../harness-registry', () => ({ loadHarnessRegistry: vi.fn() }));
+// WI-1937: operator-spawn.ts imports isEphemeralForeignProject directly, and
+// the module graph ALSO reaches harness-registry.ts transitively (via
+// inference-gateway/stall-waker-loop → ... → sync/hyperbee/projections/
+// p2p-peer-grants.ts → p2p/revocation-reaper.ts, which imports
+// deregisterEphemeralForeignHarness at module scope). Every ephemeral-foreign
+// export is stubbed inline (matching real semantics for the pure ones) rather
+// than via importOriginal, so this mock doesn't pull in the real
+// harness-registry.ts's PG-backed module graph into an otherwise fully
+// isolated unit test — and so a FUTURE transitive import of any of these
+// doesn't silently reintroduce this same "no export defined on the mock" break.
+vi.mock('../harness-registry', () => ({
+  loadHarnessRegistry: vi.fn(),
+  isEphemeralForeignProject: (p: { ephemeral_foreign?: boolean }) => p.ephemeral_foreign === true,
+  ephemeralForeignHarnessSlug: (offerId: string) => `foreign-${offerId}`,
+  registerEphemeralForeignHarness: vi.fn(),
+  deregisterEphemeralForeignHarness: vi.fn(async () => false),
+  sweepOrphanedEphemeralForeignHarnesses: vi.fn(async () => ({ swept: 0, removed: [] })),
+}));
 vi.mock('../agent-config', () => ({ readAgentConfig: vi.fn(async () => null) }));
 vi.mock('../owner-steering', () => ({
   getOwnerSteering: vi.fn(async () => h.ownerSteering.value ?? {
@@ -102,15 +119,18 @@ let runningCount = 0;
 let dupRows: Array<{ spawn_id: string }> = [];
 let errorSpy: ReturnType<typeof vi.spyOn>;
 let savedXbenchDirective: string | undefined;
+let savedXbenchDirectiveLegacy: string | undefined;
 
 beforeEach(() => {
   // Hermeticity (EI-1837): the external-bench launcher exports
-  // PAPERCUSP_XBENCH_BEE_DIRECTIVE on the shared env both the launcher and the
-  // :3170 host read; when present, operator-spawn appends it to a `cup` brief
-  // (intentional, bench-scoped). These unit tests assert the PRODUCTION contract
-  // (the brief passed through verbatim), so neutralize the var for the suite and
-  // restore it after — otherwise the suite reddens whenever it runs under the bench.
-  savedXbenchDirective = process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE;
+  // PAPERCUSP_XBENCH_CUP_DIRECTIVE (dual-accept legacy: PAPERCUSP_XBENCH_BEE_DIRECTIVE) on the
+  // shared env both the launcher and the :3170 host read; when present, operator-spawn appends
+  // it to a `cup` brief (intentional, bench-scoped). These unit tests assert the PRODUCTION
+  // contract (the brief passed through verbatim), so neutralize both var names for the suite
+  // and restore them after — otherwise the suite reddens whenever it runs under the bench.
+  savedXbenchDirective = process.env.PAPERCUSP_XBENCH_CUP_DIRECTIVE;
+  savedXbenchDirectiveLegacy = process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE;
+  delete process.env.PAPERCUSP_XBENCH_CUP_DIRECTIVE;
   delete process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE;
   runningCount = 0;
   dupRows = [];
@@ -152,8 +172,10 @@ beforeEach(() => {
 afterEach(() => {
   errorSpy.mockRestore();
   vi.clearAllMocks();
-  if (savedXbenchDirective === undefined) delete process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE;
-  else process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE = savedXbenchDirective;
+  if (savedXbenchDirective === undefined) delete process.env.PAPERCUSP_XBENCH_CUP_DIRECTIVE;
+  else process.env.PAPERCUSP_XBENCH_CUP_DIRECTIVE = savedXbenchDirective;
+  if (savedXbenchDirectiveLegacy === undefined) delete process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE;
+  else process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE = savedXbenchDirectiveLegacy;
 });
 
 /** Let the fire-and-forget completion chain settle. */
@@ -756,14 +778,14 @@ describe('spawnAgentInHarness — role + cap validation', () => {
 
 /**
  * BENCH-SCOPED, FAIL-CLOSED OPUS PIN (P-033 Fix 2). Only a bench bee (the bench flag
- * PAPERCUSP_XBENCH_BEE_DIRECTIVE set) gets pinned to opus PER-SPAWN via
+ * PAPERCUSP_XBENCH_CUP_DIRECTIVE set) gets pinned to opus PER-SPAWN via
  * extraEnv.PAPERCUSP_SPAWN_MODEL — so the opus requirement is bench-scoped (a normal
  * hive bee keeps its committed haiku floor; no GLOBAL AGENT_MODELS opus needed). The
  * pin is the highest-precedence model channel buildInvokeOnce reads, so a paused opus
  * bucket WAITS (fail-closed) and the floor-clamp never downgrades below it.
  */
 describe('spawnAgentInHarness — bench-scoped opus pin (P-033 Fix 2)', () => {
-  const KEY = 'PAPERCUSP_XBENCH_BEE_DIRECTIVE';
+  const KEY = 'PAPERCUSP_XBENCH_CUP_DIRECTIVE';
   const MODEL = 'PAPERCUSP_XBENCH_MODEL';
   let savedKey: string | undefined;
   let savedModel: string | undefined;

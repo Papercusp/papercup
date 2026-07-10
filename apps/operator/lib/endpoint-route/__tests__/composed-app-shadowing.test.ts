@@ -37,6 +37,18 @@ vi.mock('@papercusp/operator-core/lib/endpoint-route/telemetry', () => ({
 // `_hono/app.ts` pulls `server-only` transitively; it's a no-op marker in
 // a Node test context — stub it so the real app can be imported here.
 vi.mock('server-only', () => ({}));
+// The /harness/projects defineTool is NOT pure-FS: loadHarnessRegistry reads
+// PG-canonical operator state (mig 025) and throws when no DB is reachable, so
+// the handler 500s. That made this whole file silently depend on a live
+// Postgres — green on a dev box with native PG on :5432, red on a packaged
+// install (and on any contributor without a DB up). Registry CONTENTS are
+// irrelevant to a route-WIRING test, so stub the one DB seam and keep every
+// other export real. Same resolves-to-the-same-file trick as the mock above.
+vi.mock('@papercusp/operator-core/lib/harness-registry', async (importActual) => {
+  const actual =
+    await importActual<typeof import('@papercusp/operator-core/lib/harness-registry')>();
+  return { ...actual, loadHarnessRegistry: vi.fn(async () => ({ projects: [] })) };
+});
 
 import { Hono } from 'hono';
 import { registerRouteLiterals, registerRouteCatchalls } from '@papercusp/operator-core/lib/endpoint-route/register';
@@ -112,21 +124,18 @@ describe('composed-app route shadowing (endpoint-route audit regression)', () =>
 });
 
 /**
- * The block above guards the MECHANISM (two-phase registration) against
- * a stand-in app. This block guards the actual WIRING by importing the
- * real `_hono/app.ts`:
+ * The block above guards the MECHANISM (two-phase registration) against a
+ * stand-in app that still mounts a colliding `harness` sub-app. This block
+ * guards the actual WIRING by importing the real host app (`bin/host-app.ts`).
  *
- *  - `/plugins/*` reachability — a composed-app smoke test against the
- *    real wiring (phase-1 literals + phase-2 catch-all + the `harness`
- *    sub-app).
- *  - `/harness/projects` returns exactly 200 — catches a two-phase
- *    reorder. The ported defineTool is a pure-FS handler that always
- *    200s; the colliding `_hono` `harness.get('/projects')` opens per-
- *    slug PG pools and fails without a DB. If `registerRouteLiterals`
- *    is moved after `app.route('/harness', …)`, the `_hono` route wins
- *    and the status flips off 200.
+ * Note the real app no longer mounts ANY `/harness` sub-app — `app.route(
+ * '/harness', harness)` was dropped in the A4 batch and `app/_hono/` is gone.
+ * So nothing here can out-rank the phase-1 literal by shadowing; what this
+ * block still pins is that the literals resolve against the REAL registered
+ * route table (a phase-2 catch-all must not swallow them) and that the
+ * defineTool — not a dispatcher — answers with its own payload shape.
  */
-describe('composed-app route shadowing — REAL _hono/app.ts wiring', () => {
+describe('composed-app route shadowing — REAL host-app wiring', () => {
   let app: HonoType;
 
   beforeAll(async () => {
@@ -151,14 +160,12 @@ describe('composed-app route shadowing — REAL _hono/app.ts wiring', () => {
     expect(res.status).not.toBe(404);
   });
 
-  it('literal /harness/projects defineTool wins over the _hono harness sub-app', async () => {
-    // The ported defineTool is pure-FS and always 200s; the _hono
-    // harness sub-app's /projects opens PG pools and won't 200 here.
-    // 200 ⇒ the phase-1 literal out-ranked the sub-app (correct wiring).
+  it('literal /harness/projects resolves to its defineTool, not a catch-all', async () => {
+    // With the registry seam stubbed the defineTool 200s with its own
+    // `{ projects: [...] }` shape. A phase-2 catch-all answering instead
+    // would not produce that shape (and a shadowed literal would 404).
     const res = await app.request('/api/harness/projects');
-    expect(res.status, '/harness/projects must hit the defineTool, not the _hono sub-app').toBe(
-      200,
-    );
+    expect(res.status, '/harness/projects must hit the defineTool, not a catch-all').toBe(200);
     const body = (await res.json()) as { projects?: unknown };
     expect(Array.isArray(body.projects), 'defineTool response shape').toBe(true);
   });

@@ -1,12 +1,12 @@
 # Hermetic dispatch tests must seed EVERY postInvoke-seam table (tool_invocations + decision_ledger)
 URL: /internal/docs/agent-insights/dispatch-postinvoke-seam-tables-in-hermetic-tests
 
-A hive integration test that dispatches a governed tool through the real dispatch path runs the postInvoke seam, which writes to BOTH harness_shared.tool_invocations (recordInvocation) AND harness_shared.decision_ledger (recordDecisionLedger, migration 260). A beforeAll that hand-curates a migration subset and seeds only some of those tables reddens the WHOLE file via vitest-fail-on-console. Symptom: 'Expected test not to call console.warn()' wrapping 'relation harness_shared.X does not exist'.
+A pot integration test that dispatches a governed tool through the real dispatch path runs the postInvoke seam, which writes to BOTH harness_shared.tool_invocations (recordInvocation) AND harness_shared.decision_ledger (recordDecisionLedger, migration 260). A beforeAll that hand-curates a migration subset and seeds only some of those tables reddens the WHOLE file via vitest-fail-on-console. Symptom: 'Expected test not to call console.warn()' wrapping 'relation harness_shared.X does not exist'.
 
 ## The symptom
 
-A hive integration test (`packages/operator-core/lib/hive/*-e2e.integration.test.ts`,
-`shared-hive-loop/*.integration.test.ts`) goes red with:
+A pot integration test (`packages/operator-core/lib/hive/*-e2e.integration.test.ts`,
+`shared-pot-loop/*.integration.test.ts`) goes red with:
 
 ```
 vitest-fail-on-console > Expected test not to call console.warn().
@@ -18,7 +18,7 @@ The assertion the test *wrote* passes; the file fails anyway because **any
 `console.warn` reddens the whole file** under `vitest-fail-on-console`. The warn
 comes from a side-effect you didn't write — the dispatch postInvoke seam.
 
-This bit EI-496 + EI-497 (`declared-event-wake-e2e`, `start-hive-e2e`) on
+This bit EI-496 + EI-497 (`declared-event-wake-e2e`, `start-pot-e2e`) on
 2026-06-14. The same file already carried the identical comment one table
 earlier for `tool_invocations` — so this is the **second** postInvoke-seam table
 to draw blood. Expect a third when a new seam table lands.

@@ -9,7 +9,7 @@
  *   1. COLD START — a fresh install's first read seeds the shipped set ACTIVE
  *      (owner FIRST_PARTY_RUBRIC_SEED_OWNER), fixing the zero-rubrics fresh-DB state.
  *   2. NO-CLOBBER — an id that already exists in the workspace (the mig-338
- *      hive-coordination-health row) is left byte-untouched by the seed.
+ *      pot-coordination-health row) is left byte-untouched by the seed.
  *   3. IDEMPOTENCE — re-arming the seed gate and re-reading creates no second row.
  *
  * Docker-gated (`*.integration.test.ts`); mirrors rubrics-seed.integration.test.ts's
@@ -43,7 +43,7 @@ const rubrics = await import('./rubrics');
 const { createOrgTestDb } = await import('../test/_org-test-db');
 
 /** The shipped first-party set (plan D-002): the in-repo rubrics/ content dirs. */
-const FIRST_PARTY_IDS = ['fleet-execution-health', 'hive-coordination-health', 'su-agent-behavior'];
+const FIRST_PARTY_IDS = ['fleet-execution-health', 'pot-coordination-health', 'su-agent-behavior'];
 
 let db: OrgTestDb;
 
@@ -60,7 +60,7 @@ afterAll(async () => {
 
 describe('first-party rubric seed (bundled → workspace store, lazy on first read)', () => {
   it('cold start: the first read seeds the shipped set ACTIVE', async () => {
-    // Fresh migrated DB: only the mig-338 hive-coordination-health row pre-exists.
+    // Fresh migrated DB: only the mig-338 pot-coordination-health row pre-exists.
     // In production the loadAllRubrics choke point auto-runs this on any rubrics
     // read; under vitest the auto-hook is guarded off (see loadAllRubrics), so the
     // test drives the seed explicitly.
@@ -81,7 +81,7 @@ describe('first-party rubric seed (bundled → workspace store, lazy on first re
   });
 
   it('no-clobber: the pre-existing mig-338 row is untouched by the seed', async () => {
-    const hive = await rubrics.getRubric('hive-coordination-health');
+    const hive = await rubrics.getRubric('pot-coordination-health');
     // mig 338's own identity, NOT the bundle owner — the seed skipped the existing id.
     expect(hive!.ratifiedBy).toBe('aviynw@gmail.com');
     expect(hive!.createdBy).not.toBe(rubrics.FIRST_PARTY_RUBRIC_SEED_OWNER);

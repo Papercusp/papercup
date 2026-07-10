@@ -1,14 +1,14 @@
 # Inference-gateway :8788 wedges under a sustained 429 storm — admission slots squat the throttle-wait
 URL: /internal/docs/agent-insights/inference-gateway-wedge-admission-slot-squat
 
-The gateway looks 'unreachable' fleet-wide (learning/gym/bee egress down) but /healthz returns 200 in <1ms. The tell is inFlight pinned at maxConcurrent + totalRequests FROZEN + queue growing unbounded. Root cause: under a sustained pool-wide opus-4-8 429 storm every proxy() holds its admission slot for the full ~30s internal throttle-wait, so all 24 slots fill with WAITERS and throughput collapses. Restart unwedges; the durable fix is a bounded admission queue (maxQueued load-shed). NOT the same as the upstream-stall mode (STALLED count distinguishes them).
+The gateway looks 'unreachable' fleet-wide (learning/gym/cup egress down) but /healthz returns 200 in <1ms. The tell is inFlight pinned at maxConcurrent + totalRequests FROZEN + queue growing unbounded. Root cause: under a sustained pool-wide opus-4-8 429 storm every proxy() holds its admission slot for the full ~30s internal throttle-wait, so all 24 slots fill with WAITERS and throughput collapses. Restart unwedges; the durable fix is a bounded admission queue (maxQueued load-shed). NOT the same as the upstream-stall mode (STALLED count distinguishes them).
 
 ## What
 
-The hive inference gateway (`papercup-inference-gateway.service`, `127.0.0.1:8788`,
+The pot inference gateway (`papercup-inference-gateway.service`, `127.0.0.1:8788`,
 `packages/operator-core/lib/inference-gateway/gateway.ts`) can **wedge** so that
 every LLM egress through it times out — surfacing fleet-wide as
-`learning-infra-health: 🔴 inference-gateway :8788 unreachable` and gym/bee
+`learning-infra-health: 🔴 inference-gateway :8788 unreachable` and gym/cup
 "no-ideas"/timeouts. Observed **3× in one night** (2026-06-19→20), each needing a
 manual restart.
 

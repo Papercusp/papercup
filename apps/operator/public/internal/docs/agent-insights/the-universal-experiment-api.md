@@ -7,7 +7,7 @@ How the self-learning system A/B-tests a change: experiment:catalog (discover) �
 
 The **universal experiment API** lets the self-learning loop make a change and test how
 it performs through one surface over the `@papercusp/eval-battery` engine — instead of
-each Subject (gym / replay / iq-battery / hive) owning a bespoke loop. Three verbs:
+each Subject (gym / replay / iq-battery / pot) owning a bespoke loop. Three verbs:
 
 * **`experiment:catalog`** — discover registered tests: each entry's `kind`, `fidelityTier`
   (`offline` ≈ \~$0 replay, the default screen; `shadow`; `live`), the `knobSlice` it can
@@ -62,12 +62,12 @@ experiment:run {
 * Escalating off `offline` requires `escalation.offlineSignalRunId` (a prior offline run that
   showed a measurable effect) **or** `escalation.couldntIsolate` (a written ≥12-char reason the
   cheap tier can't isolate the variable, D-005/D-007). Neither ⇒ refused, zero spend.
-* The `whole-instance` / `whole-hive` kinds are the further **gated cost-exception** (D-002):
+* The `whole-instance` / `whole-pot` kinds are the further **gated cost-exception** (D-002):
   even with a signal/trigger they additionally require `escalation.costException: true`.
 * A live run also fail-closes on the learning-governor (`experiment:<testId>` budget, D-008)
   **before** the descriptor runs — unarmed/exhausted ⇒ refused with no spend.
 * `payload` carries the subject-specific battery input for the live tiers (gym tasks / instance
-  `baseSpec`+corpus / hive scenario); the offline tier ignores it and builds its battery from
+  `baseSpec`+corpus / pot scenario); the offline tier ignores it and builds its battery from
   `cases`.
 
 ## The two non-obvious load-bearing facts
@@ -98,12 +98,12 @@ A test is a **`TestDescriptor`**: declarative metadata + an opaque `run(request,
 `run` that maps the request to the runner's config. The replay descriptor is the worked example
 for the `offline` tier (wired to `runReplayBattery`).
 
-The three `live` descriptors (gym / instance / hive) all follow the **same wired-but-staged
+The three `live` descriptors (gym / instance / pot) all follow the **same wired-but-staged
 pattern** (P-063, D-023 — un-staged from the original "gym only" deferral): each `run` validates
 the arm against its `knobSlice` + the safety set, then **delegates to its own live run-core**
-(`gym-run-core.ts` / `instance-run-core.ts` / `hive-run-core.ts`), which maps each arm onto a
+(`gym-run-core.ts` / `instance-run-core.ts` / `pot-run-core.ts`), which maps each arm onto a
 config-varied run (a `genome.*`/`overlay.*` delta + a `model.<role>` spawn override) and calls
-the injected live deps (`ctx.gym.abDeps` / `ctx.instance.deps` / `ctx.hive.ports`). Those live
+the injected live deps (`ctx.gym.abDeps` / `ctx.instance.deps` / `ctx.pot.ports`). Those live
 deps are heavy infra `experiment:run` does not provision itself — absent them, the run-core
 refuses with **no spend** ("discoverable-but-staged" until the owner arms the deps for that
 tier), so all three are reachable through the same API without a code change once armed. Keep
@@ -115,7 +115,7 @@ the safety set out of any `knobSlice`.
 * `lib/experiment/knob-space.ts` — the knob algebra + the safety exclusion.
 * `lib/experiment/descriptors.ts` — the 4 descriptors + `registerExperimentDescriptors`.
 * `lib/experiment/tier-escalation.ts` — the P-041 offline→shadow/live escalation gate.
-* `lib/experiment/gym-run-core.ts` / `instance-run-core.ts` / `hive-run-core.ts` — the live-tier
+* `lib/experiment/gym-run-core.ts` / `instance-run-core.ts` / `pot-run-core.ts` — the live-tier
   bindings each live descriptor delegates to (arm → config-varied run, staged until deps armed).
 * `lib/experiment/run-core.ts` — the pure run logic (tier-match, escalation, offline replay path,
   governor-gated live path, ledgered).

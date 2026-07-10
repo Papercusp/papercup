@@ -112,7 +112,7 @@ watch-build + a desktop reload.
   reporter alongside `default`, parses the JSON file via
   `parseVitestJsonForHarnessRows`, and persists one `harness_shared.test_runs`
   row per file via `persistHarnessTestRuns` (best-effort, fail-soft — a DB error
-  never changes the run result the panel sees). This is how the hive's Tests tab
+  never changes the run result the panel sees). This is how the pot's Tests tab
   renders per-file run history without per-repo scaffolding.
 * `GET  /harness/:slug/testing/file-history` — per-file run history from
   `harness_shared.test_runs`, scoped to this harness + workspace. Backs the
@@ -123,6 +123,6 @@ watch-build + a desktop reload.
 * `GET  /harness/:slug/plan-items-test-status` — per-plan-item coverage rollup via
   `computePlanItemTestStatus` (joins assertions ↔ tests through the VAL).
 
-`resolveCtx` also handles `kind:'hive'` harnesses: a repo-less hive harness has
-its `path` pointing to the hive state dir, so `resolveCtx` now calls
+`resolveCtx` also handles `kind:'pot'` harnesses: a repo-less pot harness has
+its `path` pointing to the pot state dir, so `resolveCtx` now calls
 `resolveHarnessContentPath` to find the member repo's worktree for glob walks.

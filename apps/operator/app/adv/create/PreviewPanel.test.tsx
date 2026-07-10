@@ -16,7 +16,9 @@ import { cleanup, render, screen } from '@testing-library/react';
 
 // nuqs: ?item / ?other backed by a per-key store the tests seed.
 const nuqs: Record<string, unknown> = { item: null, other: null };
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   useQueryState: (key: string) => {
     const [, force] = React.useReducer((n: number) => n + 1, 0);
     return [

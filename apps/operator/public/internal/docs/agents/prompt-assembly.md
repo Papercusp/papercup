@@ -32,9 +32,9 @@ import { Aside } from '@astrojs/starlight/components';
 18. Runtime context           caller-supplied blocks (history, trigger, ...)
 ```
 
-Sections 1 and 3 are filesystem files under `apps/operator/prompts/`. Section 2 is auto-rendered from the projection registry. Sections 4–16 each come from a single orchestrator constant (re-exported through a `render*` wrapper) so the operator-launched-role base stays byte-identical with the spawned-bee base. Section 17 is per-request data (conversation history, trigger reason, etc.). The catalog and the playbook are skipped when empty/absent, and each shared-base section collapses to nothing when its renderer returns `''`, so a given prompt may have fewer than 18 sections.
+Sections 1 and 3 are filesystem files under `apps/operator/prompts/`. Section 2 is auto-rendered from the projection registry. Sections 4–16 each come from a single orchestrator constant (re-exported through a `render*` wrapper) so the operator-launched-role base stays byte-identical with the spawned-cup base. Section 17 is per-request data (conversation history, trigger reason, etc.). The catalog and the playbook are skipped when empty/absent, and each shared-base section collapses to nothing when its renderer returns `''`, so a given prompt may have fewer than 18 sections.
 
-`assembleRolePrompt` is the **reference/CLI assembly path** — `role-launch-spec` uses it (via the *orchestrator's* slug-based variant; see [API](#api)) and tests exercise this one, but **no live chat route calls operator-core's `assembleRolePrompt` directly**. The two real chat surfaces — operator converse and oracle — call the lower-level loaders (`loadRolePersona` / `renderToolsCatalog` / `loadRoleToolsMd`) and assemble manually so they can interleave converse rules and audience-mode overlays. The per-feature worker-chat route (`agent-chats`) calls the **orchestrator's** distinct slug-based `assembleRolePrompt` (the spawned-bee `buildPrompt` path), which produces a different layout entirely. Read this page as the canonical description of *the layering*, not a single function every surface funnels through.
+`assembleRolePrompt` is the **reference/CLI assembly path** — `role-launch-spec` uses it (via the *orchestrator's* slug-based variant; see [API](#api)) and tests exercise this one, but **no live chat route calls operator-core's `assembleRolePrompt` directly**. The two real chat surfaces — operator converse and oracle — call the lower-level loaders (`loadRolePersona` / `renderToolsCatalog` / `loadRoleToolsMd`) and assemble manually so they can interleave converse rules and audience-mode overlays. The per-feature worker-chat route (`agent-chats`) calls the **orchestrator's** distinct slug-based `assembleRolePrompt` (the spawned-cup `buildPrompt` path), which produces a different layout entirely. Read this page as the canonical description of *the layering*, not a single function every surface funnels through.
 
 ## Why a separate layer
 
@@ -114,13 +114,13 @@ For tools not in this playbook, call `agent_tools:list { onlyAllowed: true }`
 to introspect the full role-filtered surface.
 ```
 
-13 files exist today: `architect`, `auditor`, `bee`, `debugger`, `operator`, `oracle`, `papercusp-su-engineer`, `papercusp-su-power`, `reviewer`, `scoper`, `tester`, `validator`, `worker`. Loaded by `loadRoleToolsMd(role)`, which returns `null` (no playbook section) when the file is absent.
+13 files exist today: `architect`, `auditor`, `cup`, `debugger`, `operator`, `oracle`, `papercusp-su-engineer`, `papercusp-su-power`, `reviewer`, `scoper`, `tester`, `validator`, `worker`. Loaded by `loadRoleToolsMd(role)`, which returns `null` (no playbook section) when the file is absent.
 
 ### Section 3b — Shared cross-role guides (spawn path only)
 
 The orchestrator's spawn path additionally injects authored MDX from `apps/operator-docs/src/content/docs/agents/` as a separate `sharedGuides` section after `<role>.tools.md` (see `prompt-build.ts`). Today this loads `finding-context.mdx` (the retrieval-surface decision tree). The page lives in the docs site so humans + agents share one source; the orchestrator strips frontmatter and emits the body as another `## ...` section. See [Finding context](/internal/docs/agents/finding-context).
 
-`sharedGuides` is a **spawned-bee `buildPrompt` feature only**. Operator-core's `assembleRolePrompt` — the function the rest of this page documents — has no `sharedGuides` parameter and never emits this section. The shared-base policy block below is the analogue it *does* inject.
+`sharedGuides` is a **spawned-cup `buildPrompt` feature only**. Operator-core's `assembleRolePrompt` — the function the rest of this page documents — has no `sharedGuides` parameter and never emits this section. The shared-base policy block below is the analogue it *does* inject.
 
 ### Section 4 — Runtime context
 
@@ -157,10 +157,10 @@ Between the tools playbook (section 3) and runtime (section 18), `assembleRolePr
 | `code-run-note`             | reach for `code:run` to collapse a multi-step tool flow into one call instead of N inference round-trips (self-gated on `code:run` being in your toolset)                                                                                                                                                                |
 | `finish-the-rollout-note`   | a capability built then left gated OFF (flag or env boolean) is incomplete — flipping the gate on is the last step of the task                                                                                                                                                                                           |
 | `agent-activity-truth-note` | "who's doing what" is a live derived truth (`fleet:assignments`: claim + holder-liveness + progress), never a stale coord broadcast that outlives the work                                                                                                                                                               |
-| `wait-loop-note`            | waiting on something that may never fire? arm a recurring self-wake (`loop:arm` / `hive:declare-wake`) and FIX what's blocking it — don't sleep forever on a bare `events:await`                                                                                                                                         |
+| `wait-loop-note`            | waiting on something that may never fire? arm a recurring self-wake (`loop:arm` / `pot:declare-wake`) and FIX what's blocking it — don't sleep forever on a bare `events:await`                                                                                                                                          |
 | `peer-wake-note`            | a parked agent sleeps until something re-invokes it, so handing work off doesn't make a peer act — WAKE the peer you depend on (`coord:dispatch` / `coord:handoff` for new work, `coord:wake` to resume an assigned lane) and verify it landed (`woken` / `recipient_absent`); the active complement of `wait-loop-note` |
 
-Each section is sourced from a **single orchestrator constant** (`COORD_LEGEND`, `FRICTION_TRIPWIRE`, `YIELD_POLICY`, …), re-exported through a thin `render*` wrapper in operator-core. That single-source design is the point: the operator-launched-role base and the spawned-bee base (`buildPrompt`) both pull the same constant, so they can't desync. Any section whose renderer returns `''` collapses to nothing, so a prompt may carry fewer than all fourteen.
+Each section is sourced from a **single orchestrator constant** (`COORD_LEGEND`, `FRICTION_TRIPWIRE`, `YIELD_POLICY`, …), re-exported through a thin `render*` wrapper in operator-core. That single-source design is the point: the operator-launched-role base and the spawned-cup base (`buildPrompt`) both pull the same constant, so they can't desync. Any section whose renderer returns `''` collapses to nothing, so a prompt may carry fewer than all fourteen.
 
 ## The noun/verb split
 
@@ -199,7 +199,7 @@ const { text, sections } = assembleRolePrompt({
 
 The `sections` array reports `{ name, chars }` for each contributing block — useful for prompt-budget debugging.
 
-**`@papercusp/orchestrator/role-prompt` is NOT a re-export of this function.** It maps to `role-prompt-from-slug.ts`, which *defines its own* `assembleRolePrompt` with a completely different signature — `{ slug, role, mode, featureId, projectDir, ... }` — that calls `buildPrompt` (the spawned-bee path). It produces prompt **files** + the ten shared-base policy constants + a volatile tail, **not** the persona/catalog/`tools.md` four-section layout. The two functions share only a name. The dependency direction is one-way: operator-core depends on the orchestrator (`role-launch-spec.ts` imports `assembleRolePrompt` + `resolvePromptFiles` from `@papercusp/orchestrator/role-prompt`), never the reverse. The orchestrator module re-exports only the policy *constants* (`FRICTION_TRIPWIRE`, `YIELD_POLICY`, …) from `prompt-build`, never operator-core's `prompt-assembly.ts`.
+**`@papercusp/orchestrator/role-prompt` is NOT a re-export of this function.** It maps to `role-prompt-from-slug.ts`, which *defines its own* `assembleRolePrompt` with a completely different signature — `{ slug, role, mode, featureId, projectDir, ... }` — that calls `buildPrompt` (the spawned-cup path). It produces prompt **files** + the ten shared-base policy constants + a volatile tail, **not** the persona/catalog/`tools.md` four-section layout. The two functions share only a name. The dependency direction is one-way: operator-core depends on the orchestrator (`role-launch-spec.ts` imports `assembleRolePrompt` + `resolvePromptFiles` from `@papercusp/orchestrator/role-prompt`), never the reverse. The orchestrator module re-exports only the policy *constants* (`FRICTION_TRIPWIRE`, `YIELD_POLICY`, …) from `prompt-build`, never operator-core's `prompt-assembly.ts`.
 
 Lower-level loaders exist for callers that build the assembly manually (today: the operator-converse and oracle chat routes, which assemble by hand rather than calling `assembleRolePrompt`). The module exports five such loaders/renderers:
 
@@ -280,7 +280,7 @@ apps/operator/
     ├── auditor.persona.md
     ├── auditor.tools.md
     ├── architect.tools.md                  ← spawn-roles ship tools.md only here;
-    ├── bee.tools.md                        ←   their persona comes from the
+    ├── cup.tools.md                        ←   their persona comes from the
     ├── debugger.tools.md                   ←   orchestrator's blueprints/base/
     ├── reviewer.tools.md                   ←   prompts/<role>.md, NOT a
     ├── scoper.tools.md                     ←   persona.md in this directory

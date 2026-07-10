@@ -45,11 +45,14 @@ import { openHiveGitFetchDuplex } from './serve-wiring';
 
 // TEMP debug trace (WI-3583 diagnosis) — writes to a file, NOT console.error,
 // because this repo's vitest setup (vitest-fail-on-console) fails any test
-// that calls console.error, which a raw debug log would trip. Gated on
-// HGDEBUG like serve-wiring.ts's own tracing; to be removed once the root
+// that calls console.error, which a raw debug log would trip. Gated on its
+// OWN env var (HGDIALDEBUG), deliberately DECOUPLED from serve-wiring.ts's
+// HGDEBUG (which still drives raw console.error there) — turning this on
+// alone must not also trip serve-wiring.ts's console.error tracing and
+// self-sabotage the very test being debugged. To be removed once the root
 // cause is confirmed & the fix lands.
 function dbg(...args: unknown[]): void {
-  if (!process.env.HGDEBUG) return;
+  if (!process.env.HGDIALDEBUG) return;
   try {
     appendFileSync('/tmp/hgdial-trace.log', `${new Date().toISOString()} ${JSON.stringify(args)}\n`);
   } catch {
@@ -332,6 +335,15 @@ export async function openHiveGitDuplexToDevice(
       write(_chunk, _enc, cb) {
         cb();
       },
+    });
+    // Fail-soft contract (see file header): callers check `.destroyed`, they
+    // never `.on('error', ...)` — so swallow the destroy-time error here.
+    // Without this, `.destroy(err)` with no attached 'error' listener
+    // schedules an UNHANDLED 'error' emission on the next tick (a genuine
+    // Node stream footgun, not test-only — it would just as surely surface
+    // in production as an uncaught exception on the process).
+    d.on('error', () => {
+      /* fail-soft: caller reads `.destroyed`, never the error event */
     });
     d.destroy(new Error(`hive-git: no live connection to device ${devicePubkeyBase64.slice(0, 12)}…`));
     return d;

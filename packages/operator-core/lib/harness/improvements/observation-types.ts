@@ -86,7 +86,7 @@ export interface StructuredObservation {
   targetHive?: string;
   /**
    * A `rubrics.rubric_id` this observation grades against (e.g.
-   * 'hive-coordination-health'). Present ⇒ a rubric-graded observation, and
+   * 'pot-coordination-health'). Present ⇒ a rubric-graded observation, and
    * `ratings` must be present + each rating backed by evidence.
    */
   rubricRef?: string;

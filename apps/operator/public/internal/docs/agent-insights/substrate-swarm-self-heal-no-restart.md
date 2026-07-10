@@ -1,7 +1,7 @@
 # Substrate federation self-heals without an operator restart (the two re-peer loops)
 URL: /internal/docs/agent-insights/substrate-swarm-self-heal-no-restart
 
-The per-harness substrate swarm (joinHarnessSwarm) used to join its DHT topic ONCE and never re-announce/re-lookup, so a dropped peer or aged-out announce left federation DEAD until an operator RESTART (fed-a↔fed-b sat dead ~7h; WI-559/WI-752/FED-2). Two self-heal loops fix the whole class with no restart: (1) a two-speed discovery.refresh() loop in joinHarnessSwarm (fast post-join/post-peer-loss window + slow keepalive), mirroring the hive-directory gossip; (2) a bounded-backoff JOIN-retry in boot.ts for when the boot-time join itself failed (DHT/identity/gh-auth/keychain blip → local-only). Found + fixed 2026-06-24.
+The per-harness substrate swarm (joinHarnessSwarm) used to join its DHT topic ONCE and never re-announce/re-lookup, so a dropped peer or aged-out announce left federation DEAD until an operator RESTART (fed-a↔fed-b sat dead ~7h; WI-559/WI-752/FED-2). Two self-heal loops fix the whole class with no restart: (1) a two-speed discovery.refresh() loop in joinHarnessSwarm (fast post-join/post-peer-loss window + slow keepalive), mirroring the pot-directory gossip; (2) a bounded-backoff JOIN-retry in boot.ts for when the boot-time join itself failed (DHT/identity/gh-auth/keychain blip → local-only). Found + fixed 2026-06-24.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -25,7 +25,7 @@ so when an established peer connection died (idle / timeout / reset /
 mid-replication death) or the topic's DHT announce aged out, the peer was
 **never rediscovered**. The `swarm-chaos` test only "proved" recovery because the
 **test harness** called `refresh()` itself (`forceReconnectAll`) — production had
-no such driver. The hive-**directory** gossip (`directory-swarm.ts`) already
+no such driver. The pot-**directory** gossip (`directory-swarm.ts`) already
 self-healed via a two-speed refresh loop; the substrate path was just never given
 the same loop.
 
@@ -81,7 +81,7 @@ re-exchanges (a fresh per-connection announce, WI-559 issue-2) → the next
 * `__tests__/swarm-join-retry.test.ts` — a transient identity failure at boot →
   the retry loop joins on its own (no restart); `swarmJoinRetryMs: 0` disables.
 
-## Update (D-045, shared-hive-member-content-federation): fast window widened 30s → 120s
+## Update (D-045, shared-pot-member-content-federation): fast window widened 30s → 120s
 
 The original 30s fast window (above) turned out too short: a **freshly-spawned
 sidecar process** joining over the public DHT reliably misses the first several
@@ -95,7 +95,7 @@ last-peer-loss; still bounded (no forever-hammering).
 
 ## Update (2026-07-02, cross-machine-coord-parity-and-trust-2026-07-01 P-004/D-008): directory-swarm.ts is now a thin instantiation of the generic `topic-gossip.ts` chassis
 
-The hive-**directory** gossip's two-speed refresh loop referenced throughout this
+The pot-**directory** gossip's two-speed refresh loop referenced throughout this
 doc no longer lives inline in `directory-swarm.ts` — it moved to a generic
 `createTopicGossip<Frame>()` chassis in the new `topic-gossip.ts`, which
 `directory-swarm.ts` now calls as a thin instantiation (`createDirectoryGossip`
@@ -105,14 +105,14 @@ defaults for the directory path are unchanged and still live as constants
 re-exported from `topic-gossip.ts` (`DEFAULT_REFRESH_MS` = 2.5s,
 `DEFAULT_FAST_WINDOW_MS` = **30s** — not widened, unlike the substrate path
 below — `DEFAULT_SLOW_REFRESH_MS` = 60s). Public API and existing callers/tests
-(`hive-directory-boot.ts`) are unchanged.
+(`pot-directory-boot.ts`) are unchanged.
 
 The **substrate** swarm (`joinHarnessSwarm` in `swarm.ts`, the subject of the
 fix below) has **not** been migrated onto this chassis — it still runs its own
 bespoke `managedSetInterval`-based refresh loop with its own
 `DEFAULT_SUBSTRATE_*` constants (verified current as of 2026-07-04). Don't
 assume "the same loop" means "the same source file" anymore: for the
-hive-directory side, read `topic-gossip.ts`; for the per-harness substrate
+pot-directory side, read `topic-gossip.ts`; for the per-harness substrate
 side, read `swarm.ts` directly.
 
 ## Gotcha

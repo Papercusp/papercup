@@ -1,11 +1,11 @@
-# git-sync absorbs history rewrites — you cannot force-push a shared hive
+# git-sync absorbs history rewrites — you cannot force-push a shared pot
 URL: /internal/docs/agent-insights/git-sync-history-rewrite-absorbed
 
-A force-push (rewind / rebase / amend) to a shared-hive origin is NOT honored — the next peer's git-sync re-merges its own history back and fast-forwards origin, so dropped commits REAPPEAR. An unrelated-history (orphan) rewrite instead LOUDLY errors (refusing to merge unrelated histories → git-sync-error escalation), never a phantom merge-resolver or a loop. GitHub is the authority of record; the tree only moves forward.
+A force-push (rewind / rebase / amend) to a shared-pot origin is NOT honored — the next peer's git-sync re-merges its own history back and fast-forwards origin, so dropped commits REAPPEAR. An unrelated-history (orphan) rewrite instead LOUDLY errors (refusing to merge unrelated histories → git-sync-error escalation), never a phantom merge-resolver or a loop. GitHub is the authority of record; the tree only moves forward.
 
 ## What
 
-On a **shared hive** (multiple peers pushing to one GitHub origin via per-peer
+On a **shared pot** (multiple peers pushing to one GitHub origin via per-peer
 git-sync), **a history rewrite never sticks**. If a peer force-pushes a rewind,
 rebase, or amend that drops or rewrites commits, the very next peer's git-sync
 tick **absorbs (reverts) it**:
@@ -23,10 +23,10 @@ reconciled by git + the per-peer merge-resolver, so nothing is ever lost, and a
 
 ## Why it matters (don't try to force-push)
 
-Agents and humans sometimes reach for `git push --force` to "fix" a shared-hive
+Agents and humans sometimes reach for `git push --force` to "fix" a shared-pot
 branch (collapse WIP, drop a bad commit, rebase). **It won't take** — another
 peer re-pushes the old history within a tick, and you've just added churn. To
-actually remove something from a shared hive you must coordinate every peer
+actually remove something from a shared pot you must coordinate every peer
 (pause their git-sync routines) — there is no unilateral rewrite. (On the
 `papercup` dev tree this is doubly true: `main` is automation-only behind a
 pre-push hook, and `staging` is swept by git-sync — see `CLAUDE.md`.)
@@ -51,7 +51,7 @@ merge-resolver being thrown at a merge it can never complete.
 ## Where this is pinned
 
 `packages/operator-core/lib/harness/git-sync/multi-peer-convergence.test.ts`
-(shared-hive-hardening-2026-06-13 P-005) — the rewind-absorbed, conflicting, and
+(shared-pot-hardening-2026-06-13 P-005) — the rewind-absorbed, conflicting, and
 orphan-error cases, with real git. Multi-peer convergence (P-004: 3+ peers,
 cross-peer submodule conflicts) lives in the same file; the two-peer escalation /
 `last_resolver` dedup lifecycle is in `two-peer-convergence.integration.test.ts`

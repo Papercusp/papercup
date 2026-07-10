@@ -51,5 +51,5 @@ then add the column to each block, e.g.
 ## Related
 
 * `packages/operator-core/test/_work-items-schema.ts` — the D-014 precedent.
-* Plan context: hive-network-surface-2026-06-11 (P-011 close-out hit this);
+* Plan context: pot-network-surface-2026-06-11 (P-011 close-out hit this);
   self-learning-frontier P-002 (migration 241, the trigger).

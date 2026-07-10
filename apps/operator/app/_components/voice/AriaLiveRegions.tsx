@@ -11,14 +11,19 @@
  *   assertive → role=alert,  preempts SR output
  *
  * Per-feature priority assignment (per v4 §2j table):
- *   suggestion arrival     → polite
- *   receiving-flip consumed→ polite
- *   receiving-flip escalated → assertive
+ *   suggestion arrival     → polite (assertive when tier=high)
+ *   auto-fire + cancel cue → polite (assertive when tier=high)
+ *   active/passive flip    → polite
  *   cadence status         → polite
  *   budget warning         → assertive
  *   breaker tripped        → assertive
  *   pause toggle           → polite
  *   TTS-failure toast      → assertive
+ *
+ * (The original table also listed "receiving-flip consumed → polite" and
+ * "receiving-flip escalated → assertive". Both card states were removed by the
+ * card-lifecycle collapse — a card is now only pending/accepted/ignored — so
+ * neither event can fire. settings-audit 2026-07-09.)
  *
  * Visual prominence invariant: visual toasts always carry the same
  * information regardless of voice state. This component is the

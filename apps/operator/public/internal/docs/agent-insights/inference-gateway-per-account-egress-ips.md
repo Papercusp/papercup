@@ -5,9 +5,9 @@ Each Claude Max subscription can egress from its OWN outbound IP, so Anthropic's
 
 ## Why this is the highest-leverage capacity fix
 
-The hive inference gateway (`papercup-inference-gateway.service`, `127.0.0.1:8788`,
+The pot inference gateway (`papercup-inference-gateway.service`, `127.0.0.1:8788`,
 `packages/operator-core/lib/inference-gateway/gateway.ts`) is the **sole egress** to
-`api.anthropic.com` for the bee fleet. By default every Max subscription's upstream
+`api.anthropic.com` for the cup fleet. By default every Max subscription's upstream
 request leaves the box from the **same outbound IP**.
 
 Anthropic enforces a meaningful slice of the opus rate limit **per source IP**. So when
@@ -187,7 +187,7 @@ endpoint you trust; a self-hosted `/ip` echo avoids a third party.)
   from one public IP buy you nothing — Anthropic sees the one public IP. Verify with
   Level 3 (different account → different returned IP).
 * **One stable IP per account.** The dispatcher is cached per account, so an account's
-  bees all share one egress IP (good — that IP carries that account's cache/affinity).
+  cups all share one egress IP (good — that IP carries that account's cache/affinity).
   Don't expect per-request IP rotation *within* an account; rotation is *across*
   accounts.
 * **HTTPS proxy URLs (or a private link) for approach B** — an `http://` proxy on an
@@ -195,7 +195,7 @@ endpoint you trust; a self-hosted `/ip` echo avoids a third party.)
 * **SOCKS is ignored, not honored** (WI-284) — a `socks://` proxyUrl falls back to
   `localAddress`/default egress with a warning in the gateway log.
 * **The Claude Code identity framing is already handled** — the gateway injects the
-  OAuth Bearer + `oauth-2025-04-20` beta; real `claude` bees frame their first system
+  OAuth Bearer + `oauth-2025-04-20` beta; real `claude` cups frame their first system
   block. (A raw curl straight at Anthropic without that framing hits a bogus instant
   429 — see `rate-limit-is-usually-account-routing-not-capacity`. The echo test above
   goes to ipify, not Anthropic, so it is immune.)
@@ -231,7 +231,7 @@ probe** (`egress-probe.ts`) re-tests the proxy and logs/clears the streak on rec
 * **Scoping matters.** The circuit is **only** armed for accounts that egress through an
   `http(s)` proxy — only those can have a *dead proxy*. A transport failure on a **no-proxy**
   account is an Anthropic/network-side stall (the proxy can't be the fault), so it keeps the
-  existing **fast-502** (the bee's CLI retries; AIMD shrinks concurrency) and its healthy
+  existing **fast-502** (the cup's CLI retries; AIMD shrinks concurrency) and its healthy
   account is **not** penalized.
 * **`pausedUntil` is take-MAX** (the shared governor's `recordPenalty` only ever *extends* a
   pause, never shortens a real 429/usage-cap pause). The half-open probe tracks the **transport**
@@ -259,7 +259,7 @@ never a wedge; a success resets the streak).
 ### Failure mode: a too-tight recovery-probe timeout false-keeps healthy accounts paused (2026-06-22, WI-389)
 
 The breaker has a second-order failure that presents as **"all accounts throttled,
-no-fresh-account"** with **bees hanging at boot (0 invocations)** — and it is NOT capacity:
+no-fresh-account"** with **cups hanging at boot (0 invocations)** — and it is NOT capacity:
 
 * The active half-open probe (`egress-probe.ts` → `api.ipify.org`) had a **hardcoded 8s timeout**
   (`EGRESS_PROBE_HTTP_TIMEOUT_MS`). The dedicated proxies, when perfectly healthy, take **1.3-6.1s**
@@ -268,7 +268,7 @@ no-fresh-account"** with **bees hanging at boot (0 invocations)** — and it is 
   aborted)` → the **recovered** account stays circuit-paused instead of being readmitted.
 * When several proxies are slow at once (or a restart re-probes them together), the probe
   false-aborts across the pool → the gateway reads **"all accounts throttled / no-fresh-account
-  (pausing as before)"** → every inference request parks → a freshly-spawned bee blocks in
+  (pausing as before)"** → every inference request parks → a freshly-spawned cup blocks in
   `ep_poll` on its **first** inference and wedges with **0 invocations** (looks like a "corpse").
   Routing was never broken — a `gw-route` to a serviceable account still succeeds in \<1s; the pool
   was *spuriously emptied* by false-negative probes.
@@ -346,7 +346,7 @@ systemctl --user restart papercup-inference-gateway.service
   real cap; per-account egress removes the per-IP confound.
 * `llm-429-check-the-transport-not-the-account` — the missing-Claude-Code-framing instant
   429 (don't mistake it for exhaustion when testing egress directly).
-* `bg-host-watchdog-false-restart-on-wedged-journald` — the *other* reason a bee dies at boot:
+* `bg-host-watchdog-false-restart-on-wedged-journald` — the *other* reason a cup dies at boot:
   not an egress-pause wedge (this doc) but a host restart reclaim-killing the in-flight spawn.
-  Both present as "bees won't run"; `dev:session_detail` (0 invocations + `ep_poll` ⇒ egress wedge;
+  Both present as "cups won't run"; `dev:session_detail` (0 invocations + `ep_poll` ⇒ egress wedge;
   "reclaimed at operator boot" ⇒ host restart) tells them apart.

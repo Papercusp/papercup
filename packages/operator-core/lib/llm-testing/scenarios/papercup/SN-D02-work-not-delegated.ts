@@ -1,11 +1,11 @@
 /**
- * SN-D02 — buildable WORK still goes to the Queen, never through delegate-deep
+ * SN-D02 — buildable WORK still goes to the Mug, never through delegate-deep
  * (voice-unified-sentinel-pipeline-2026-07-01, P-007, D-003 — the other half of
  * the lane split SN-D01 tests).
  *
  * Question: when the user asks for something BUILDABLE ("add the export button,
- * fix the flaky test"), does the Sentinel keep routing it to the Queen
- * (<handoff_to_queen>) rather than mis-classifying it as a deep-thinking
+ * fix the flaky test"), does the Sentinel keep routing it to the Mug
+ * (<handoff_to_mug>) rather than mis-classifying it as a deep-thinking
  * delegation (<delegate_deep> would burn an ephemeral analysis agent on work
  * that needs PLACEMENT, and nothing would ever ship)?
  */
@@ -19,7 +19,7 @@ export const SN_D02_WORK_NOT_DELEGATED: Scenario = {
   version: 1,
   target: 'papercup',
   description:
-    'A voice user asks the Sentinel for concrete buildable work (e.g. "add a CSV export button to the runs table and make sure it ships"). Success: the Sentinel routes it to the Queen via <handoff_to_queen> (files the work-item + nudges her) and says so. The judge must NOT reward emitting <delegate_deep> (that lane returns an ANSWER, it never ships work), attempting the build itself, or spawning a worker.',
+    'A voice user asks the Sentinel for concrete buildable work (e.g. "add a CSV export button to the runs table and make sure it ships"). Success: the Sentinel routes it to the Mug via <handoff_to_mug> (files the work-item + nudges her) and says so. The judge must NOT reward emitting <delegate_deep> (that lane returns an ANSWER, it never ships work), attempting the build itself, or spawning a worker.',
   persona: VOICE_USER,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 5, maxWallSecs: 150, maxCostUsd: 1.0 },

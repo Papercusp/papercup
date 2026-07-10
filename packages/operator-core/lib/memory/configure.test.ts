@@ -20,6 +20,7 @@ import {
   readEmbedderPreference,
   markOpenAiEmbedFailure,
   isOpenAiEmbedInCooldown,
+  clearOpenAiEmbedHardExhaustion,
   __resetOpenAiEmbedCooldownForTest,
   type ResolveEmbedderDeps,
 } from './configure';
@@ -135,6 +136,49 @@ describe('markOpenAiEmbedFailure / isOpenAiEmbedInCooldown — the EI-3381 coold
     markOpenAiEmbedFailure(1_000_000);
     markOpenAiEmbedFailure(1_000_010);
     expect(invalidateMemoryClient).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('WI-3615 — hard exhaustion is STICKY (never thrashes a known-dead key)', () => {
+  it('a soft failure (no `hard` flag) still lapses — unaffected by the sticky latch', () => {
+    markOpenAiEmbedFailure(1_000_000); // no { hard: true } — the daily-cap / retry-budget shape
+    expect(isOpenAiEmbedInCooldown(1_000_000 + 999_999_999)).toBe(false);
+  });
+
+  it('a hard failure ({ hard: true }) does NOT lapse, arbitrarily far in the future', () => {
+    markOpenAiEmbedFailure(1_000_000, { hard: true });
+    expect(isOpenAiEmbedInCooldown(1_000_000)).toBe(true);
+    expect(isOpenAiEmbedInCooldown(1_000_000 + 999_999_999)).toBe(true); // would have lapsed if soft
+    expect(isOpenAiEmbedInCooldown(1_000_000 + 999_999_999_999)).toBe(true); // still true, days later
+  });
+
+  it('the recurrence guard: N consecutive hard failures never un-stick the latch on their own (no external re-latching needed, no thrash)', () => {
+    // The exact bug shape: cascade keeps calling markOpenAiEmbedFailure(hard) every time it
+    // re-tries a dead key. Assert the latch stays set continuously across repeated marks —
+    // there is no window where isOpenAiEmbedInCooldown reports false in between.
+    for (let i = 0; i < 5; i++) {
+      markOpenAiEmbedFailure(1_000_000 + i * 70_000, { hard: true }); // spaced past the old 60s window
+      expect(isOpenAiEmbedInCooldown(1_000_000 + i * 70_000 + 65_000)).toBe(true);
+    }
+  });
+
+  it('clearOpenAiEmbedHardExhaustion() clears the sticky latch (the ONLY way it clears)', () => {
+    markOpenAiEmbedFailure(1_000_000, { hard: true });
+    expect(isOpenAiEmbedInCooldown(1_000_000 + 999_999_999)).toBe(true);
+    clearOpenAiEmbedHardExhaustion();
+    expect(isOpenAiEmbedInCooldown(1_000_000 + 999_999_999)).toBe(false);
+  });
+
+  it('clearOpenAiEmbedHardExhaustion() does not touch an unrelated still-live SOFT cooldown', () => {
+    markOpenAiEmbedFailure(1_000_000); // soft only
+    clearOpenAiEmbedHardExhaustion(); // no-op — nothing sticky was set
+    expect(isOpenAiEmbedInCooldown(1_000_000)).toBe(true); // the soft cooldown is still live
+  });
+
+  it('is a no-op when the latch was never set (no crash, no state change)', () => {
+    expect(isOpenAiEmbedInCooldown(1_000_000)).toBe(false);
+    clearOpenAiEmbedHardExhaustion();
+    expect(isOpenAiEmbedInCooldown(1_000_000)).toBe(false);
   });
 });
 

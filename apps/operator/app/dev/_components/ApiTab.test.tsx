@@ -12,7 +12,9 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('./SchemaForm', () => ({ default: () => null }));
 vi.mock('@/app/harness/Checkbox', () => ({ Checkbox: () => null }));
 vi.mock('@/app/harness/Select', () => ({ Select: () => null }));
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   parseAsString: { withDefault: () => ({}) },
   parseAsBoolean: { withDefault: () => ({}) },
   parseAsStringEnum: () => ({ withDefault: () => ({}) }),

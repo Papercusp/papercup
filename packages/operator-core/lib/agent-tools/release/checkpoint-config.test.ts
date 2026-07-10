@@ -41,7 +41,7 @@ describe('release:checkpoint-config', () => {
     expect(b).toMatchObject({ effective: { stallReds: 3, deployBackoffMs: 3_600_000 }, overrides: {} });
   });
   it('is operator-authority gated', async () => {
-    await expect(tool.handler({ op: 'set', deployBackoffMs: 600_000 } as never, { role: 'cup' } as never)).rejects.toThrow(/operator, architect, or queen/i);
+    await expect(tool.handler({ op: 'set', deployBackoffMs: 600_000 } as never, { role: 'cup' } as never)).rejects.toThrow(/operator, architect, or mug/i);
     expect(writeM).not.toHaveBeenCalled();
   });
   it('requires at least one field', async () => {

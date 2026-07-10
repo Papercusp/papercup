@@ -73,12 +73,12 @@ GROUP BY 1,2 ORDER BY 3 DESC;
   though the batch-nudge shipped default-ON and emitted a paste-ready skeleton.
 
   **Role-access context:** The 2026-06-25 baseline was taken at the moment `code:run` shifted from
-  `agentRoles: [...SU_ROLES, 'bee']` to `agentRoles: [...AGENT_ROLES]` (owner directive 2026-06-25;
+  `agentRoles: [...SU_ROLES, 'cup']` to `agentRoles: [...AGENT_ROLES]` (owner directive 2026-06-25;
   `code/run.ts` + `code-run-batch-nudge.ts`). Before this, only superuser-role agents and the generic
-  bee were nudged — the high-repeat-call roles (worker, validator, reviewer) that would benefit MOST
+  cup were nudged — the high-repeat-call roles (worker, validator, reviewer) that would benefit MOST
   from batch collapsing were excluded and never saw the nudge. Post-expansion, the batch-nudge fires
   for EVERY built-in role, so future baselines will reflect a much larger audience. The 0.002% figure
-  describes the pre-expansion cohort (SU + bee); do NOT use it as the adoption floor for the
+  describes the pre-expansion cohort (SU + cup); do NOT use it as the adoption floor for the
   post-expansion fleet.
 
   **Nudge upgrade (2026-06-26):** The batch-nudge gained two additional levers that the 0.002%

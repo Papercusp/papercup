@@ -1,14 +1,14 @@
 /**
- * Swarm / Colony tab — the live fleet roster, split into SU agents (🛠) and Bees
+ * Swarm / Colony tab — the live fleet roster, split into SU agents (🛠) and Cups
  * (☕) with the zellij dock glyphs. Each row EXPANDS inline on click to that
  * agent's task-list + plan-progress + recent comms (owner ask 2026-06-23):
  *
  *   1. expandable rows — tasks/plans/comms live under the agent, not in a
  *      separate section that a click merely filters.
- *   2. zellij SU/Bee icons (apps/tui agent_pane_kind glyphs).
+ *   2. zellij SU/Cup icons (apps/tui agent_pane_kind glyphs).
  *   3. comms folded per-agent (the old global "comms" toggle is gone — its
  *      data was live but read as dead when empty; per-agent mail is clearer).
- *   4. SU agents and Bees in separate sections (classified by presence source).
+ *   4. SU agents and Cups in separate sections (classified by presence source).
  *
  * Selection lives in the URL (nuqs `?lsa=…`) so it stays deep-linkable +
  * agent-driveable (ui:get_state / ui:dispatch).
@@ -45,7 +45,7 @@ interface AgentClaimLite {
   planSlug?: string | null;
 }
 
-interface BeeGroup {
+interface CupGroup {
   agentId: string;
   label?: string | null;
   name?: string | null;
@@ -75,7 +75,7 @@ interface MailEntry {
   ts?: string;
 }
 
-interface BeeMailRow {
+interface CupMailRow {
   owner: string;
   inbox: MailEntry[];
   outbox: MailEntry[];
@@ -114,7 +114,7 @@ function mergeSearch(params: RowSearch) {
 }
 
 /** Work-item → its harness Working pane (needs the owning harness from the claim). */
-function taskSearch(w: WorkListItem, g: BeeGroup | undefined): RowSearch | null {
+function taskSearch(w: WorkListItem, g: CupGroup | undefined): RowSearch | null {
   const claim = g?.claims?.find((c) => c.type === 'work-item' && c.id === w.id && c.harnessSlug);
   if (!claim?.harnessSlug) return null;
   return { tab: 'harnesses', slug: claim.harnessSlug, scope: 'self', sel: w.id };
@@ -130,10 +130,10 @@ function mailSearch(ownerId: string, mm: MailEntry): RowSearch {
 
 /**
  * Classify a presence row: `fleet-spawn`/`signed-spawn` (or agentRole 'cup') is
- * a fleet Bee; everything else (omp-hook-session / static-client = SU, plus the
+ * a fleet Cup; everything else (omp-hook-session / static-client = SU, plus the
  * human power-user) sits in the SU/agents section.
  */
-function isBee(r: PresenceRecord): boolean {
+function isCup(r: PresenceRecord): boolean {
   const s = r.source ?? '';
   return r.agentRole === 'cup' || s === 'fleet-spawn' || s === 'signed-spawn';
 }
@@ -147,8 +147,8 @@ export default function SwarmTab({ active }: { active: boolean }) {
     enabled: active,
     staleTime: 8_000,
   });
-  const bees = useSyncQuery<BeeGroup>({
-    queryName: 'sidebar.fleetBees',
+  const cups = useSyncQuery<CupGroup>({
+    queryName: 'sidebar.fleetCups',
     enabled: active,
     staleTime: 8_000,
   });
@@ -158,8 +158,8 @@ export default function SwarmTab({ active }: { active: boolean }) {
     staleTime: 15_000,
   });
   // Per-agent comms: only fetched for the expanded agent.
-  const mail = useSyncQuery<BeeMailRow>({
-    queryName: 'sidebar.beeMail',
+  const mail = useSyncQuery<CupMailRow>({
+    queryName: 'sidebar.cupMail',
     args: { owner: selected ?? '' },
     enabled: active && !!selected,
     staleTime: 8_000,
@@ -167,19 +167,19 @@ export default function SwarmTab({ active }: { active: boolean }) {
 
   const roster = useMemo(() => (presence.data ?? []).filter((r) => !r.stale), [presence.data]);
   const byAgent = useMemo(() => {
-    const m = new Map<string, BeeGroup>();
-    for (const g of bees.data ?? []) m.set(g.agentId, g);
+    const m = new Map<string, CupGroup>();
+    for (const g of cups.data ?? []) m.set(g.agentId, g);
     return m;
-  }, [bees.data]);
+  }, [cups.data]);
 
-  const suAgents = useMemo(() => roster.filter((r) => !isBee(r)), [roster]);
-  const beeAgents = useMemo(() => roster.filter((r) => isBee(r)), [roster]);
+  const suAgents = useMemo(() => roster.filter((r) => !isCup(r)), [roster]);
+  const cupAgents = useMemo(() => roster.filter((r) => isCup(r)), [roster]);
 
   const toggle = (id: string) => {
     void setSelected(selected === id ? null : id);
   };
 
-  const taskRow = (w: WorkListItem, i: number, g: BeeGroup | undefined) => {
+  const taskRow = (w: WorkListItem, i: number, g: CupGroup | undefined) => {
     const search = taskSearch(w, g);
     const label = w.title || w.id;
     const body = (
@@ -355,10 +355,10 @@ export default function SwarmTab({ active }: { active: boolean }) {
         </div>
       )}
 
-      {beeAgents.length > 0 && (
-        <div className="pclsb-sec" data-testid="swarm-bees">
-          <div className="pclsb-sec__head">☕ {t('contributor', { plural: true })} ({beeAgents.length})</div>
-          {beeAgents.map((r) => renderAgentRow(r, '☕'))}
+      {cupAgents.length > 0 && (
+        <div className="pclsb-sec" data-testid="swarm-cups">
+          <div className="pclsb-sec__head">☕ {t('contributor', { plural: true })} ({cupAgents.length})</div>
+          {cupAgents.map((r) => renderAgentRow(r, '☕'))}
         </div>
       )}
     </div>

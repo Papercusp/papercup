@@ -26,10 +26,12 @@ vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), succe
 // Self-contained nuqs stand-in (useState-backed), seeded per-test from `initialParams`
 // so a test can render with a hive already selected without driving the Radix Select.
 let initialParams: Record<string, string> = {};
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', async () => {
   const React = await import('react');
   const builder = (def: unknown) => ({ __default: def, withDefault: (d: unknown) => ({ __default: d }) });
   return {
+    ...nuqsParsers,
     parseAsString: builder(null),
     // HivePolicyPanel uses parseAsBoolean.withDefault(false) for the 'hivePolicy'
     // panel-open URL state — the mock must export it or the panel render throws.

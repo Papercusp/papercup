@@ -40,7 +40,9 @@ const nuqsState: Record<string, unknown> = {
   msg: null,
   opc: null,
 };
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   useQueryState: (key: string) => [nuqsState[key], vi.fn()],
   parseAsString: { withDefault: () => ({}) },
   parseAsStringEnum: () => ({ withDefault: () => ({}) }),

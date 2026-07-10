@@ -2,7 +2,7 @@
  * overwatch/scorecard-backstop — the SCORECARD-EMISSION backstop
  * (hive-loop-supervision 2026-06-21, su-f76c85 — the sibling of watchdog.ts).
  *
- * The Overwatch's every-wake `hive-coordination-health` scorecard is Owner
+ * The Overwatch's every-wake `pot-coordination-health` scorecard is Owner
  * requirement #1, but emission is PROMPT-driven: a turn that ends without it
  * (instruction drift, a turn that died mid-flight, a budget-exhausted turn) leaves
  * the monitor SILENT — and, unlike the forgotten `kettle:declare-wake` (which
@@ -106,9 +106,9 @@ async function defaultBumpFloorRepeat(id: string, priorCount: number, firstFired
 }
 
 /** The rubric the Overwatch scorecards against (Owner requirement #1). */
-export const COORDINATION_RUBRIC_REF = 'hive-coordination-health';
+export const COORDINATION_RUBRIC_REF = 'pot-coordination-health';
 
-/** The 14 hive-coordination-health rubric criterion keys (must cover the rubric —
+/** The 14 pot-coordination-health rubric criterion keys (must cover the rubric —
  *  the capture completeness gate rejects an omitted key). Kept here so the pure
  *  synthesizer is self-contained + unit-testable without a rubric read.
  *  `scheduler-usage` (14th) added by hybrid-bee-scheduler-work-stealing-2026-06-22
@@ -149,7 +149,7 @@ const UNKNOWN_EVIDENCE =
 const unknown = (): ScorecardRating => ({ rating: 'unknown', evidence: UNKNOWN_EVIDENCE });
 
 /**
- * PURE: derive a conservative baseline `hive-coordination-health` scorecard from the
+ * PURE: derive a conservative baseline `pot-coordination-health` scorecard from the
  * system-health brief. Only the MECHANICALLY-derivable criteria are rated from panel
  * data (end-to-end-flow, queen-workitem/plan-selection, watchdog-determinism,
  * bee-execution, ideation-quality's transport-death); every judgment-only criterion
@@ -405,7 +405,7 @@ export async function overwatchScorecardEndCheck(
     const toolUtil = await toolUtilizationGrade();
     const ratings = synthesizeCoordinationScorecard(health, toolUtil);
     await capture({
-      title: 'hive-coordination-health scorecard (synthesized floor)',
+      title: 'pot-coordination-health scorecard (synthesized floor)',
       kind: 'change',
       lane: 'observation',
       sourceRole: 'system',

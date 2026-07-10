@@ -23,12 +23,12 @@ const baseData = {
     },
   ],
   ratingScale: ['healthy', 'degraded', 'broken', 'unknown'],
-  methodRef: 'hive-coordination-health-runbook',
+  methodRef: 'pot-coordination-health-runbook',
   description: 'How well the loop is turning.',
 };
 
 const planRow = (over: Partial<Parameters<typeof planRowToRubric>[0]> = {}) => ({
-  plan_slug: 'hive-coordination-health',
+  plan_slug: 'pot-coordination-health',
   workspace_id: 'default',
   harness_slug: 'papercusp',
   title: 'Hive coordination health',
@@ -66,14 +66,14 @@ describe('planRowToRubric', () => {
   it('maps a valid rubric-template plan row to the v1 Rubric shape', () => {
     const r = planRowToRubric(planRow());
     expect(r).not.toBeNull();
-    expect(r!.rubricId).toBe('hive-coordination-health');
+    expect(r!.rubricId).toBe('pot-coordination-health');
     expect(r!.title).toBe('Hive coordination health');
     expect(r!.characteristic).toBe('hive-coordination');
     expect(r!.criteria).toHaveLength(1);
     expect(r!.criteria[0].key).toBe('placement-health');
     expect(r!.criteria[0].ratingScale).toContain('n/a'); // per-criterion override preserved
     expect(r!.ratingScale).toEqual(['healthy', 'degraded', 'broken', 'unknown']);
-    expect(r!.methodRef).toBe('hive-coordination-health-runbook');
+    expect(r!.methodRef).toBe('pot-coordination-health-runbook');
     expect(r!.status).toBe('active');
     expect(r!.ratifiedBy).toBe('queen-1'); // active ⇒ owner recorded as ratifier
     expect(r!.updatedAt).toBe('2026-06-20T10:00:00.000Z');
@@ -82,7 +82,7 @@ describe('planRowToRubric', () => {
   it('falls back title → slug, description → "" when absent', () => {
     const { description: _d, ...noDesc } = baseData;
     const r = planRowToRubric(planRow({ title: null, template_data: noDesc }));
-    expect(r!.title).toBe('hive-coordination-health');
+    expect(r!.title).toBe('pot-coordination-health');
     expect(r!.description).toBe('');
   });
 

@@ -264,6 +264,9 @@ export const BOOT_HISTORY_KIND_COLOR: Record<string, string> = {
   epoch_defer: 'var(--warn)',
   epoch_decrypt_fail: 'var(--bad)',
   epoch_applied: 'var(--good)',
+  // WI-3604: split-DHT-universe recurrence guard.
+  dht_universe_ok: 'var(--good)',
+  dht_universe_mismatch: 'var(--bad)',
 };
 export const BOOT_HISTORY_KIND_FALLBACK = 'var(--fg-dim)';
 

@@ -72,7 +72,7 @@ describe('validateObservationRatings — the D-002 mandatory-evidence gate', () 
   it('passes a fully-evidenced scorecard', () => {
     const obs: StructuredObservation = {
       scope: 'papercusp',
-      rubricRef: 'hive-coordination-health',
+      rubricRef: 'pot-coordination-health',
       ratings: {
         'end-to-end-flow': { rating: 'healthy', evidence: '8 completions/hr last window (hive_throughput_ticks)' },
         'watchdog-determinism': { rating: 'degraded', evidence: 'EI-1607 throttle still live' },
@@ -90,7 +90,7 @@ describe('validateScorecardCompleteness — the P-014a completeness gate', () =>
     expect(() =>
       validateScorecardCompleteness(
         {
-          rubricRef: 'hive-coordination-health',
+          rubricRef: 'pot-coordination-health',
           ratings: {
             placement: { rating: 'healthy', evidence: 'e' },
             wake: { rating: 'healthy', evidence: 'e' },
@@ -106,7 +106,7 @@ describe('validateScorecardCompleteness — the P-014a completeness gate', () =>
     let err: unknown;
     try {
       validateScorecardCompleteness(
-        { rubricRef: 'hive-coordination-health', ratings: { placement: { rating: 'healthy', evidence: 'e' } } },
+        { rubricRef: 'pot-coordination-health', ratings: { placement: { rating: 'healthy', evidence: 'e' } } },
         required,
       );
     } catch (e) {
@@ -138,7 +138,7 @@ describe('validateScorecardCompleteness — the P-014a completeness gate', () =>
     expect(() =>
       validateScorecardCompleteness(
         {
-          rubricRef: 'hive-coordination-health',
+          rubricRef: 'pot-coordination-health',
           ratings: {
             placement: { rating: 'healthy', evidence: 'e' },
             wake: { rating: 'healthy', evidence: 'e' },
@@ -161,14 +161,14 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
       refs: ['tool:pot:survey', 'WI-1'],
       sourceHive: 'papercusp',
       targetHive: 'shared-hive-test',
-      rubricRef: 'hive-coordination-health',
+      rubricRef: 'pot-coordination-health',
       ratings: { 'end-to-end-flow': { rating: 'healthy', evidence: 'e1' } },
     });
     expect(out).toBeDefined();
     expect(out?.kind).toBe('friction');
     expect(out?.sourceHive).toBe('papercusp');
     expect(out?.targetHive).toBe('shared-hive-test');
-    expect(out?.rubricRef).toBe('hive-coordination-health');
+    expect(out?.rubricRef).toBe('pot-coordination-health');
     expect(out?.ratings?.['end-to-end-flow']).toEqual({ rating: 'healthy', evidence: 'e1' });
     expect(out?.refs).toEqual(['tool:pot:survey', 'WI-1']);
   });

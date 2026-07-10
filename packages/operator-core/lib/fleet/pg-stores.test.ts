@@ -1,8 +1,8 @@
 /**
- * pg-stores (unit) — the QueenHeartbeat freshness push on a queen spawn.
+ * pg-stores (unit) — the MugHeartbeat freshness push on a queen spawn.
  *
  * data-sync-push-completion-2026-06-23 D-008 follow-up (P-007): recordSpawnPg is the
- * single spawned_agents INSERT chokepoint. The QueenHeartbeat sidebar's hive.controlState
+ * single spawned_agents INSERT chokepoint. The MugHeartbeat sidebar's hive.controlState
  * lastWakeAt derives from this table's child_role='mug' rows, but the wake-brain Queen
  * spawns WITHOUT calling recordHiveWake — so recordSpawnPg pushes hive.controlState on a
  * queen spawn (and ONLY a queen spawn) so the heartbeat refreshes live instead of waiting

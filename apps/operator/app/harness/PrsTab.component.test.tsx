@@ -32,9 +32,11 @@ beforeAll(() => {
 // nuqs needs an adapter at runtime; stub useQueryState to plain useState so the
 // component is testable in isolation (matches the next/navigation mock pattern
 // used by the other component tests).
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', async () => {
   const React = await import('react');
   return {
+    ...nuqsParsers,
     useQueryState: (_key: string, parser?: { __default?: unknown }) =>
       React.useState(parser?.__default ?? null),
     parseAsStringLiteral: () => ({ withDefault: (d: unknown) => ({ __default: d }) }),

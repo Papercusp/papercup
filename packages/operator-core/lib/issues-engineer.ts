@@ -932,6 +932,32 @@ export async function unlinkIssue(id: string, dst: ObjectRef, rel: string): Prom
   await links.unlink(issueRef(id), dst, rel);
 }
 
+/** One outbound edge from an issue, as {@link issuesOutLinksMany} returns it. */
+export interface IssueOutLink {
+  rel: string;
+  dst: ObjectRef;
+}
+
+/**
+ * Bulk outbound-link read over many issues in ONE batched query (no N+1) —
+ * WI-3594 (scorecard→improvement flow): ScorecardDetail needs each scorecard's
+ * linked follow-up items, and a per-row `links.listOut` call would be an N+1
+ * over a scorecard list. Excludes `tagged` (topic tags are not references,
+ * same convention as {@link issueLinkCounts}'s inboundRefs). Every requested id
+ * gets an entry (empty array when unlinked).
+ */
+export async function issuesOutLinksMany(ids: readonly string[]): Promise<Map<string, IssueOutLink[]>> {
+  const out = new Map<string, IssueOutLink[]>();
+  if (ids.length === 0) return out;
+  for (const id of ids) out.set(id, []);
+  const rows = await links.listOutMany(ids.map(issueRef));
+  for (const r of rows) {
+    if (r.rel === 'tagged') continue;
+    out.get(r.src.ref)?.push({ rel: r.rel, dst: r.dst });
+  }
+  return out;
+}
+
 /** Link-degree of one issue, as the blocking-impact ranking reads it
  *  (self-improvement-consume-edges-2026-06-12 P-022). */
 export interface IssueLinkCounts {

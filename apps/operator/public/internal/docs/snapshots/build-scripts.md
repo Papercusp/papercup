@@ -58,7 +58,7 @@ displayName?, description? }` (note `path`, not `command`); `cloudProvider` /
 `{ path, timeoutSec }` per script. `displayName` / `description` are the
 consent-surface fields — the settings ProvisionPanel shows them (plus
 `allowedHosts` / `cloudProvider`) before the user's first setup run
-(2026-06-11, plugin-system-hive-port P-010). The remaining richer fields below
+(2026-06-11, plugin-system-pot-port P-010). The remaining richer fields below
 (`network`, `writesState`, `requiresInteractive`, etc.) are still design-only —
 treat those examples as the design, and the SDK type + runner as the current
 truth.

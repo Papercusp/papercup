@@ -9,7 +9,7 @@
  * with the seeded DB rubric + capture accept-schema and only move in lockstep.)
  *
  * The owner's #1 requirement: the Kettle role MUST, EVERY turn, emit a STRUCTURED
- * SCORECARD against the (now 15-point) `hive-coordination-health` rubric (rate each criterion
+ * SCORECARD against the (now 15-point) `pot-coordination-health` rubric (rate each criterion
  * + cite evidence), IN ADDITION TO its free-form observations. That requirement lives in
  * the canonical Kettle persona (`blueprints/coding/prompts/kettle.md`) as prompt
  * instructions — there is no runtime that forces an LLM to emit a tool call, so the
@@ -20,7 +20,7 @@
  * such drift trips here.
  *
  * The criterion keys below are the SHARED CONTRACT across B1 (improvements:capture
- * accept schema), B6 (the seeded `hive-coordination-health` rubric ids), and B7 (this
+ * accept schema), B6 (the seeded `pot-coordination-health` rubric ids), and B7 (this
  * persona) — the founding 13 are 1:1 with the owner's Q1..Q13 (hive-coordination-test-loop
  * D-001), plus `scheduler-usage` (the 14th, rubric mig 371).
  * If you change a key here you MUST change it in lockstep in the seeded rubric + the
@@ -59,12 +59,12 @@ const CRITERION_KEYS = [
   'context-burn', // Q15 (context-burn / soak-report contextBurn health, EI-8769)
 ] as const;
 
-describe('kettle persona — the owner #1 hive-coordination-health scorecard mandate (D-002)', () => {
+describe('kettle persona — the owner #1 pot-coordination-health scorecard mandate (D-002)', () => {
   const persona = readFileSync(CANONICAL, 'utf8');
 
   it('MANDATES the scorecard EVERY turn (not "when relevant"), against the named rubric', () => {
     // The rubric is named + referenced as the standing per-turn output.
-    expect(persona).toContain('hive-coordination-health');
+    expect(persona).toContain('pot-coordination-health');
     // "every turn" + a hard-requirement framing — the load-bearing words of the mandate.
     expect(persona).toMatch(/every turn/i);
     expect(persona).toMatch(/without exception|non-negotiable|must/i);

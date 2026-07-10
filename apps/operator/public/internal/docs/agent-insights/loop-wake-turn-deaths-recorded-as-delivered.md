@@ -35,7 +35,7 @@ delivers a **warm coord wake** to that same session so context continues across 
   time) · `loop:end` · `loop:status`. `materializeLoop` (`harness/routines/loop.ts`) upserts
   the row; `LOOP_INTERVAL_FLOOR_SEC = 60`.
 * **Scheduling:** the DBOS 30s routine tick claims due loops; an in-flight loop parks
-  `next_fire_at = 'infinity'` (the skip-if-in-flight sentinel). Dispatch routes a row with
+  `next_fire_at = 'infinity'` (the skip-if-in-flight papercup). Dispatch routes a row with
   `reschedule_interval_sec != null && target_owner_id` to `fireLoopWake`
   (`dbos/routines-workflow.ts`). **Note the fire path does NOT re-check `FLAGS.LOOPS`** —
   only `loop:arm` does.
@@ -123,7 +123,7 @@ session is parked, never concurrent-resumed.)
   just never sees 429'd turns. Feeding it the error is most of the fix.
 * **Delivery retry/backoff:** `store.ts` `markDeliveryFailed` (8 attempts) + `recoverStuckDeliveries`
   (stuck `delivering` → `pending` after 5min).
-* **Backoff patterns:** `cross-hive-outbox-drain.ts`, `agent-tools/locks/contention-retry.ts`,
+* **Backoff patterns:** `cross-pot-outbox-drain.ts`, `agent-tools/locks/contention-retry.ts`,
   `loopback-fetch.ts` (`isTransientNetworkError`). The repo rolls its own backoff helpers; there
   is no `p-retry`. Per \[\[rate-limit-governor-activation]], classify + let the governor pace —
   don't re-add ad-hoc retry at call sites.

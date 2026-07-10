@@ -1,7 +1,7 @@
 # Reflexive datatypes & tools — extend the platform from inside it
 URL: /internal/docs/agent-insights/reflexive-datatypes-and-tools
 
-How an agent declares a NEW entity type (a datatype) or a NEW tool at runtime and has the whole platform treat it as first-class. Datatypes — meta:define-datatype writes harness_shared.datatype_registry (dedup-only, D-010); a generic-kind datatype's work_item_kind is accepted by work_items:create AND its payload is validated against payload_schema (ajv), it's visible in list/search/plans, frontier-placeable via the hive-placement tag (opt-in), self-improvable by construction (P-010), and blueprint-dependable (dependencies.datatypes). Tools — meta:define-tool routes composed→live recipe / sandboxed|elevated→tools:scaffold PR rail; dynamic-tool-confinement is the adversarially-proven per-tool envelope (no fs-escape / denied-host net / cap escalation / cap minting). first-class migrations + the Comb-published shared tier + the runtime PEP wiring go through the reviewed PR rail (D-003) / the capability TCB (tier:'human', D-007).
+How an agent declares a NEW entity type (a datatype) or a NEW tool at runtime and has the whole platform treat it as first-class. Datatypes — meta:define-datatype writes harness_shared.datatype_registry (dedup-only, D-010); a generic-kind datatype's work_item_kind is accepted by work_items:create AND its payload is validated against payload_schema (ajv), it's visible in list/search/plans, frontier-placeable via the pot-placement tag (opt-in), self-improvable by construction (P-010), and blueprint-dependable (dependencies.datatypes). Tools — meta:define-tool routes composed→live recipe / sandboxed|elevated→tools:scaffold PR rail; dynamic-tool-confinement is the adversarially-proven per-tool envelope (no fs-escape / denied-host net / cap escalation / cap minting). first-class migrations + the Comb-published shared tier + the runtime PEP wiring go through the reviewed PR rail (D-003) / the capability TCB (tier:'human', D-007).
 
 ## What
 
@@ -35,7 +35,7 @@ bespoke plumbing**:
 * **Visibility** — `featureFamilyKindClause` (`work-items.ts`) makes the kind appear in
   list / count / search.
 * **Placement (OPT-IN)** — `frontierPlacementKindClause` (`datatype-frontier-placement.ts`) enrols the
-  kind in the autonomous bee-placement frontier ONLY when the datatype carries the `hive-placement` tag.
+  kind in the autonomous cup-placement frontier ONLY when the datatype carries the `pot-placement` tag.
   Visibility ≠ placement: a datatype is a data SHAPE; auto-spawning a worker per instance is deliberate.
 * **Blueprint dependency** — a blueprint's `dependencies.datatypes` resolves against the registry:
   `depHostSetsFromCatalog(cat, listRegisteredDatatypeNames(sql, ws))` populates `availableDatatypes`
@@ -61,7 +61,7 @@ runs no gym over it).
 `dynamic-tool-confinement.ts` is the **per-dynamic-tool envelope** (P-003 core, adversarially proven):
 `deriveDynamicToolEnvelope` holds ONLY the declared caps/paths/domains, NARROW-ONLY vs the host role, and
 can never hold the minting/escalation floor (`DYNAMIC_TOOL_FORBIDDEN_CAPABILITY_GLOBS`:
-grant/revoke/envelope/set-tier/meta:define-\*/tools:scaffold/platform:contribute/secrets/processes:kill/bee:spawn).
+grant/revoke/envelope/set-tier/meta:define-\*/tools:scaffold/platform:contribute/secrets/processes:kill/cup:spawn).
 The runtime PEP wiring of this into dispatch is a **capability-TCB** edit (`capability-envelope/**`,
 `tier:'human'`, D-007) → reviewed PR rail, never an unattended auto-apply.
 
@@ -94,7 +94,7 @@ Exercised against the live operator via loopback MCP (scratch workspaces, cleane
   with the ajv message. A generic-kind create requires an in-scope **harness** (by design — the feature table is harness-keyed).
 * **The `createWorkItem` re-check.** `work_items:create`'s gate validated the generic kind, but `createWorkItem` (a second entry point)
   re-checked `isWorkItemKind` and refused the insert — fixed (`work-items.ts` now re-checks the registry via `hasGenericKind`).
-* **Observability spans new datatypes (P-011).** `curation:state-of-hive` and an UNFILTERED `work_items:list` both surface a generic-kind
+* **Observability spans new datatypes (P-011).** `curation:state-of-pot` and an UNFILTERED `work_items:list` both surface a generic-kind
   instance. The **kind-FILTER** path was the gap: `work_items:list`/`work_items:search` locked `kind` to a `z.enum` of built-ins, so you
   could not filter the queue by a declared datatype — relaxed to a free string (built-in OR registered generic-kind); `familyOf()` already
   routes it to the feature family. Unknown kind simply lists empty.
@@ -103,6 +103,6 @@ Exercised against the live operator via loopback MCP (scratch workspaces, cleane
 * **Dogfood witness:** `platform:dogfood_verify {prUrl}` is read-only and wired — it returns the 5-stage round-trip assertion
   (prTracked / reviewed / merged / shipped / linked) with precise gaps.
 * **Gap on the outward PR path (WI-1293):** `platform:enable` on an install that already has a legacy shared harness returns
-  `selfHive.status:'already_standing' detail:'legacy_shared_harness'` and does NOT stand up the dedicated `papercusp-platform-hive`
+  `selfHive.status:'already_standing' detail:'legacy_shared_harness'` and does NOT stand up the dedicated `papercusp-platform-pot`
   member checkout, so `platform:contribute {kind:'pr'}` fails `self_hive_not_found`. Only blocks the owner-gated/cred-gated live
   fork→PR step; the internal loop + dogfood verifier are proven.

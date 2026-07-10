@@ -107,10 +107,10 @@ describe('P-037 newly-registered override concerns', () => {
   it('voice-prefs: a flipped toggle surfaces in diff, reset clears it', async () => {
     const c = getOverrideConcern('voice-prefs')!;
     expect(await c.diff()).toEqual([]);
-    // speakReceivingFlips defaults OFF (false) → flip ON to create an override.
-    await saveVoicePrefs({ speakReceivingFlips: true });
+    // speakModeFlips defaults OFF (false) → flip ON to create an override.
+    await saveVoicePrefs({ speakModeFlips: true });
     const diff = await c.diff();
-    expect(diff.find((e) => e.key === 'speakReceivingFlips')?.effective).toBe(true);
+    expect(diff.find((e) => e.key === 'speakModeFlips')?.effective).toBe(true);
     await c.reset();
     expect(await c.diff()).toEqual([]);
   });

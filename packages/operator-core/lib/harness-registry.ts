@@ -606,8 +606,18 @@ export async function deregisterEphemeralForeignHarness(
 export async function sweepOrphanedEphemeralForeignHarnesses(
   workspaceId: string | undefined,
   checkLive: (offerId: string) => Promise<{ state: string } | null>,
+  /** Injectable registry read/write seams (default: this module's real PG-
+   *  backed fns) — lets the sweep's ORCHESTRATION (which rows get swept,
+   *  under what live/reaped/missing conditions) be unit-tested without PG,
+   *  matching the `checkLive` injection above. */
+  deps: {
+    loadRegistry?: typeof loadHarnessRegistry;
+    deregister?: typeof deregisterEphemeralForeignHarness;
+  } = {},
 ): Promise<{ swept: number; removed: string[] }> {
-  const reg = await loadHarnessRegistry(workspaceId, { fresh: true });
+  const loadRegistry = deps.loadRegistry ?? loadHarnessRegistry;
+  const deregister = deps.deregister ?? deregisterEphemeralForeignHarness;
+  const reg = await loadRegistry(workspaceId, { fresh: true });
   const ephemeral = reg.projects.filter(isEphemeralForeignProject);
   const removed: string[] = [];
   for (const p of ephemeral) {
@@ -615,7 +625,7 @@ export async function sweepOrphanedEphemeralForeignHarnesses(
     if (!offerId) continue; // malformed row — leave for manual inspection, don't guess
     const ws = await checkLive(offerId).catch(() => null);
     if (!ws || ws.state === 'reaped') {
-      const didRemove = await deregisterEphemeralForeignHarness(offerId, workspaceId);
+      const didRemove = await deregister(offerId, workspaceId);
       if (didRemove) removed.push(offerId);
     }
   }

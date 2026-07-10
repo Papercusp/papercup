@@ -29,7 +29,7 @@ the body below is a historical capture, not the live page:
   workspace-managed paths to `.papercusp/projects/<slug>` (stripping
   everything before the `/.papercusp/projects/` marker) and keeps the full
   path in a hover `title` tooltip; external paths still render in full.
-* **C4 (no add action) — addressed.** A primary **`+ Add Hive`** button now
+* **C4 (no add action) — addressed.** A primary **`+ Add Pot`** button now
   sits top-right; it opens the `CreateHarnessPicker`, not a marketplace
   link.
 * **C5 (filter / sort / search) — addressed.** The page renders a `Filter …`
@@ -50,10 +50,10 @@ Still open / unverified: C8 (heading redundancy), C9 (per-row activity
 preview), C10 (real table semantics), and C1's collapse control.
 
 Note also that all project-unit strings now route through `useLexicon`'s
-`t('pot', …)`, which renders **`Hive`/`Hives`** when the `THE_HIVE` flag is
+`t('pot', …)`, which renders **`Pot`/`Pots`** when the `THE_HIVE` flag is
 on (it defaults to `true`). So the H1, the `+ Add` button, and the
 description sentence quoted below reflect the **pre-lexicon capture** — the
-live page reads "Hives", "+ Add Hive", etc.
+live page reads "Pots", "+ Add Pot", etc.
 :::
 
 Captured live by loading

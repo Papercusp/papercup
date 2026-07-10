@@ -5,7 +5,7 @@ URL: /internal/docs/agent-insights/testing-await-event-emit-paths
 
 ## The mistake this prevents
 
-Wiring the cross-Hive reply path (hive-network-surface-2026-06-11 B-03) to the
+Wiring the cross-Pot reply path (pot-network-surface-2026-06-11 B-03) to the
 real `emitAwaitedEvent` and asserting "a wake delivery row exists" burned two
 debugging cycles on failures that looked like the emit was broken. It wasn't —
 both were test-harness traps.

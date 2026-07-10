@@ -1,12 +1,12 @@
-# bee:spawn "structural error" — a missing transport identity default plus miscoded caller errors
+# cup:spawn "structural error" — a missing transport identity default plus miscoded caller errors
 URL: /internal/docs/agent-insights/fleet-spawn-structural-error-identity-and-coding
 
 Why the advertised curl-able superuser HTTP path failed deterministically (no uiClientId default → resolveAgentIdentity throws) and why zod failures inflated the structural tool-error class (define-tool threw plain Errors that dispatch coded handler_error instead of invalid_input).
 
 ## Symptom
 
-The watchdog key `repeated-tool-error:bee:spawn:structural` fired and filed
-EI-334 ("Tool bee:spawn returns a structural error"). Sample error:
+The watchdog key `repeated-tool-error:cup:spawn:structural` fired and filed
+EI-334 ("Tool cup:spawn returns a structural error"). Sample error:
 
 ```
 resolveAgentIdentity: superuser context is missing uiClientId — re-run install-standalone-mcp.sh to mint a ?client= id

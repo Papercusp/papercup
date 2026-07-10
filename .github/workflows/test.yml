@@ -206,6 +206,17 @@ jobs:
       - name: Lint no committed conflict markers
         run: npm run lint:no-conflict-markers
 
+      # Self-referential export-shim guard (EI-8850): a "forward-compat alias"
+      # shim of the shape `export const X = X;` — written after X was already
+      # renamed to the target name, colliding with its own export under the
+      # SAME identifier — is always either a no-op or a duplicate-export build
+      # break. esbuild fails loudly on `bundle-host.sh`, crash-looping the
+      # shared staging bg-host (:3170) for the WHOLE fleet, and the failure
+      # only surfaces at restart time. GATING — mechanical, zero-false-positive
+      # pattern (a genuine rename alias always has two DIFFERENT identifiers).
+      - name: Lint no self-referential export shims
+        run: npm run lint:no-self-referential-export
+
       # Smart-quote guard (EI-418, found via EI-412): a curly quote used as a
       # code delimiter (copy-paste through a smart-quoting surface) is a hard
       # esbuild/tsc parse failure that reads as mysterious. GATING — flags

@@ -57,7 +57,7 @@ export interface CheckScorecardFreshnessDeps {
 }
 
 export interface CheckScorecardFreshnessFilter {
-  /** The rubric whose emission freshness to check (e.g. 'hive-coordination-health'). */
+  /** The rubric whose emission freshness to check (e.g. 'pot-coordination-health'). */
   rubricRef: string;
   /** Restrict to one source-hive (freshness is per-hive when set). */
   sourceHive?: string;

@@ -32,15 +32,15 @@ InstanceSpec, not by snapshots.
 **Per-harness sharing as a Comb/Cupboard product surface was retired too**
 (plan `comb-retire-per-harness-sharing-2026-06-11`): the ShareWizard, the
 `share/finalize` + `binding/resolve` + harness `cupboard/publish` routes, and
-the storefront's per-harness Join are gone. Sharing now happens at the **Hive**
-level — `discovery:set_pot` publishes a hive to the P2P directory, the Comb
-indexes its member repos (`hive_pubkey` rows), and joiners join the hive
-(`shared-hive-federation-2026-06-08`, `hive-from-github-url-2026-06-11`).
-`kind='harness'` Cupboard rows remain as the repo→Hive lookup index only;
+the storefront's per-harness Join are gone. Sharing now happens at the **Pot**
+level — `discovery:set_pot` publishes a pot to the P2P directory, the Comb
+indexes its member repos (`hive_pubkey` rows), and joiners join the pot
+(`shared-pot-federation-2026-06-08`, `pot-from-github-url-2026-06-11`).
+`kind='harness'` Cupboard rows remain as the repo→Pot lookup index only;
 the live Cupboard `LISTING_KINDS` are `['harness', 'blueprint', 'plugin',
 'tool-pack', 'learning-pack']` — there is no `snapshot` kind (the D1
 `tarball_*` columns from migration 005 remain only as vestigial/nullable
-columns). Successor product work: `comb-hive-native-sharing-2026-06-11`.
+columns). Successor product work: `comb-pot-native-sharing-2026-06-11`.
 
 **Note — a different, still-live "iteration snapshot" concept exists.** The
 `harness_shared.harness_snapshots` / `harness_snapshots_consolidated` tables

@@ -1,12 +1,12 @@
 # Gateway pins are cache-affinity COMMITMENTS and tiers come from headers — the two traps that made pinned agents crawl or error
 URL: /internal/docs/agent-insights/gateway-pin-and-tier-semantics
 
-Two root causes behind 'pinned agents get API errors / 15-minute first turns despite available usage' (2026-07-01): (1) a spawn path that omits x-papercusp-priority drops the session into the default admission band — tier 5 — whose cap can be 1, serializing every first turn; the gateway now infers su/bee from the x-papercusp-owner prefix, but ALWAYS label spawns. (2) The soft-pin yield used to divert a pinned owner off its 97%-cache-hit account on load alone (inflight=1 was enough); it now yields ONLY when the pin is UNSERVICEABLE (paused / window-exhausted / all IPs cooled) and returns on recovery — diagnose with gateway:owner_report before blaming quota.
+Two root causes behind 'pinned agents get API errors / 15-minute first turns despite available usage' (2026-07-01): (1) a spawn path that omits x-papercusp-priority drops the session into the default admission band — tier 5 — whose cap can be 1, serializing every first turn; the gateway now infers su/cup from the x-papercusp-owner prefix, but ALWAYS label spawns. (2) The soft-pin yield used to divert a pinned owner off its 97%-cache-hit account on load alone (inflight=1 was enough); it now yields ONLY when the pin is UNSERVICEABLE (paused / window-exhausted / all IPs cooled) and returns on recovery — diagnose with gateway:owner_report before blaming quota.
 
 ## Trap 1 — a headerless spawn lands in tier 5 (cap can be 1) and the whole cohort serializes
 
 Admission tiers come from the `x-papercusp-priority` header
-(`DEFAULT_GATEWAY_PRIORITY_MAP`: queen/interactive=1, su=2, bee=3, gym=4,
+(`DEFAULT_GATEWAY_PRIORITY_MAP`: mug/interactive=1, su=2, cup=3, gym=4,
 `default`=5). A launch path that never sets the header drops EVERY session it
 spawns into the bottom band. On 2026-07-01 the interactive PSU pin path
 (`bootstrap-su.ts`) did exactly that: ten pinned sonnet sessions → tier 5 →
@@ -18,7 +18,7 @@ with `proxy handler crashed: aborted` (starved clients giving up).
 
 Defenses now in place — keep both honored:
 
-* `effectivePriorityLabel()` (gateway.ts) infers `su`/`bee` from the
+* `effectivePriorityLabel()` (gateway.ts) infers `su`/`cup` from the
   `x-papercusp-owner` id prefix when the priority header is absent, so an
   owner-bearing session can never fall to the default band again.
 * The PSU pin/auto paths thread `priority: 'su'` explicitly. **Any NEW spawn

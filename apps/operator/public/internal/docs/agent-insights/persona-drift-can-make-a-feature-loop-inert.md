@@ -1,20 +1,20 @@
 # A persona that names a non-existent tool/field can leave a whole feature loop silently INERT
 URL: /internal/docs/agent-insights/persona-drift-can-make-a-feature-loop-inert
 
-The bee carry-note checkpoint loop (bee-context-efficiency P-010/P-011/P-012) had a PG store + a re-inject seam but NO write path: bee.md told bees to write the carry-note via `work_items:complete.coordNotes` / `coord:declare-intent.carry_note` — fields that do not exist — and to read it from a `## Checkpoint` section the seam never emits. So nothing was ever written; the store + re-inject sat dead. The fix was a real `work_items:checkpoint` tool + correcting the persona to the actual tool + the real `### Carry-note` location. Lesson: a prompt/persona is intent-at-write-time and drifts from the tool surface; before trusting "the bee writes X via Y", grep that Y exists in code and actually calls the store.
+The cup carry-note checkpoint loop (cup-context-efficiency P-010/P-011/P-012) had a PG store + a re-inject seam but NO write path: cup.md told cups to write the carry-note via `work_items:complete.coordNotes` / `coord:declare-intent.carry_note` — fields that do not exist — and to read it from a `## Checkpoint` section the seam never emits. So nothing was ever written; the store + re-inject sat dead. The fix was a real `work_items:checkpoint` tool + correcting the persona to the actual tool + the real `### Carry-note` location. Lesson: a prompt/persona is intent-at-write-time and drifts from the tool surface; before trusting "the cup writes X via Y", grep that Y exists in code and actually calls the store.
 
 A feature can be **fully built on the storage + read side and still do nothing**
 because the *write* side was only ever described in a prompt, never wired.
 
 ## The concrete case
 
-`bee-context-efficiency-2026-06-14` Phase 3 built the bee carry-note checkpoint:
+`cup-context-efficiency-2026-06-14` Phase 3 built the cup carry-note checkpoint:
 
 * **P-010** — `work-item-checkpoint.ts` (PG store, `setWorkItemCheckpoint` /
   `getWorkItemCheckpoint`, migration 281). ✅ real, tested.
 * **P-011** — re-inject: `assembleSpawnHydration` calls `getWorkItemCheckpoint`
   and renders it as `### Carry-note (your last checkpoint)`. ✅ real, wired.
-* **P-012** — teach `bee.md` to *write* the checkpoint. The persona said the
+* **P-012** — teach `cup.md` to *write* the checkpoint. The persona said the
   carry-note "rides `work_items:complete` (the `coordNotes` field) or
   `coord:declare-intent` (the `carry_note` field)" and is re-injected in a
   "`## Checkpoint` section."
@@ -26,12 +26,12 @@ Every one of those persona claims was **false against live code**:
 * The re-inject heading is `### Carry-note (your last checkpoint)` inside the
   `## Handoff` block — there is no `## Checkpoint` section.
 
-Net: **no bee could ever write a checkpoint.** The store + re-inject were a
+Net: **no cup could ever write a checkpoint.** The store + re-inject were a
 loaded gun with no trigger — P-010/P-011 looked "done," but the loop was inert.
 
 ## Why it's easy to miss
 
-The plan items read green ("store ✅", "re-inject ✅", "bee.md taught ✅"), the
+The plan items read green ("store ✅", "re-inject ✅", "cup.md taught ✅"), the
 PG table exists, the seam renders it — every part *except the write path* is
 real, and the persona *describes* a write path confidently. Reading the plan or
 the persona, you'd conclude it works. Only grepping for the actual write call
@@ -52,7 +52,7 @@ you trust "the agent does X by calling Y":
    the real tool + the real inject location, so the next agent isn't re-misled.
 
 The fix here: a real `work_items:checkpoint` tool (`setWorkItemCheckpoint`,
-COORD\_ROLES incl. bee) + `bee.md` corrected to point at it and the real
+COORD\_ROLES incl. cup) + `cup.md` corrected to point at it and the real
 `### Carry-note (your last checkpoint)` location.
 
 ## Still live (2026-07-02)
@@ -66,20 +66,20 @@ fully wired, no drift reintroduced:
   `setWorkItemCheckpoint` call underneath, same semantics.
 * `setWorkItemCheckpoint` (`work-item-checkpoint.ts`) picked up a second duty
   (autonomous-loop-prod-audit-2026-07-02 P-008): a non-clear write now also bumps
-  the work-item's `last_progress_at`, so a checkpointing bee reads as
+  the work-item's `last_progress_at`, so a checkpointing cup reads as
   `progressing` rather than `stalled` and doesn't get its claim reaped mid-task —
   best-effort, never fails the checkpoint write itself.
 * The re-inject heading is unchanged: `spawn-hydration.ts` still emits
   `### Carry-note (your last checkpoint)` inside the `## Handoff` block, and
-  `bee.base.md` (the live Hive bee persona, extended per-domain by
-  `blueprints/{coding,work}/prompts/bee.md`) still names the real tool + the
+  `cup.base.md` (the live Pot cup persona, extended per-domain by
+  `blueprints/{coding,work}/prompts/cup.md`) still names the real tool + the
   real heading — the persona-drift this insight is about has not recurred.
 
 ## Still live (2026-07-03) — storage converged, contract unchanged
 
 `work-item-checkpoint.ts` was refactored (su-cold-auto-mode-2026-07-03 P-001)
 into a thin **adapter** over one new shared substrate: `carry-note.ts` (PG table
-`harness_shared.carry_notes`, migration 472). The bee checkpoint, the Queen
+`harness_shared.carry_notes`, migration 472). The cup checkpoint, the Mug
 carry-journal, and the su AUTO loop's cold-wake carry-note are now the SAME
 store + shape, keyed by a role-discriminated `scope` string —
 `setWorkItemCheckpoint`/`getWorkItemCheckpoint` now call `setCarryNote`/
@@ -98,7 +98,7 @@ nothing this insight depends on moved:
   after a non-null `setCarryNote` write instead of inline after the old raw
   `INSERT ... ON CONFLICT`.
 * **Semantics are preserved**: `setCarryNote` is called with `{ journal: false }`
-  for the bee scope specifically so the checkpoint stays a pure note (no
+  for the cup scope specifically so the checkpoint stays a pure note (no
   trajectory ring) and a clear still **deletes** the row — byte-identical
   behavior to the pre-P-001 store, just routed through the shared function.
 * The re-inject seam (`spawn-hydration.ts` → `### Carry-note (your last

@@ -8,7 +8,7 @@ control flow) **in the runtime** and returns ONLY its final value to you. So a f
 N separate tool calls — each its own inference round-trip that re-reads your whole context —
 collapses into **one** inference call. This note is the rollout companion to the `code:run` /
 `code:tools` tool guidance and the shared `CODE_RUN_NUDGE` now in every agent base prompt
-(bee base, operator-launched-role base, su playbooks, the papercusp-hive su instance override).
+(cup base, operator-launched-role base, su playbooks, the papercusp-pot su instance override).
 
 ## When to reach for it (and when not)
 
@@ -76,8 +76,8 @@ normalization flagged by su-1282a (B-TOK-ROLL). One tool round-trip ≈ one assi
 | role      | ctx tokens / turn | $ / turn | avg turns / run |
 | --------- | ----------------: | -------: | --------------: |
 | all roles |          \~45,950 | \~$0.124 |             7.8 |
-| queen     |          \~44,710 | \~$0.120 |             7.2 |
-| bee       |          \~93,350 | \~$0.118 |            19.4 |
+| mug       |          \~44,710 | \~$0.120 |             7.2 |
+| cup       |          \~93,350 | \~$0.118 |            19.4 |
 | overwatch |          \~40,050 | \~$0.199 |             6.2 |
 
 **Before/after for a flow of N tool calls** — N round-trips (N inference calls, each re-reading the
@@ -89,11 +89,11 @@ per-call inference):
 | Exemplar 1 direct (1 list + 10 act, all-roles \~46k/turn) |              11 |               \~506,000 |     \~$1.36 |
 | Exemplar 1 as one `code:run`                              |           **1** |                \~46,000 |     \~$0.12 |
 | **saved**                                                 | **−10 (\~91%)** |   **\~460,000 (\~91%)** | **\~$1.24** |
-| Bee 20-step loop direct (\~93k/turn)                      |              21 |             \~1,950,000 |     \~$2.47 |
-| Bee 20-step loop as one `code:run`                        |           **1** |                \~93,000 |     \~$0.12 |
+| Cup 20-step loop direct (\~93k/turn)                      |              21 |             \~1,950,000 |     \~$2.47 |
+| Cup 20-step loop as one `code:run`                        |           **1** |                \~93,000 |     \~$0.12 |
 | **saved**                                                 | **−20 (\~95%)** | **\~1,857,000 (\~95%)** | **\~$2.35** |
 
-The win is largest exactly where contexts are biggest: **bees average 19.4 turns/run at \~93k
+The win is largest exactly where contexts are biggest: **cups average 19.4 turns/run at \~93k
 tokens/turn**, and many of those turns are scriptable loops. Because 82.6% of the cost is cache-read
 of the re-loaded context, removing whole round-trips — not shrinking each one — is the lever.
 

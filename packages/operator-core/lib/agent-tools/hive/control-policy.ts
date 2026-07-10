@@ -13,11 +13,11 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { runControlMutation } from '../../gateway-control/control-harness';
 import {
-  readHiveControlPolicy,
-  writeHiveControlPolicy,
-  setHiveControlPolicy,
-  HIVE_CONTROL_DEFAULTS,
-  type HiveControlPolicy,
+  readPotControlPolicy,
+  writePotControlPolicy,
+  setPotControlPolicy,
+  POT_CONTROL_DEFAULTS,
+  type PotControlPolicy,
 } from '../../hive-control-policy';
 
 function json(obj: unknown) {
@@ -58,18 +58,18 @@ export default defineTool({
   ]),
   async handler(args, ctx) {
     if (args.op === 'get') {
-      const c = await readHiveControlPolicy();
+      const c = await readPotControlPolicy();
       return json({
-        effective: { ...HIVE_CONTROL_DEFAULTS, ...c },
+        effective: { ...POT_CONTROL_DEFAULTS, ...c },
         overrides: c,
-        defaults: HIVE_CONTROL_DEFAULTS,
+        defaults: POT_CONTROL_DEFAULTS,
       });
     }
 
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('pot:control_policy set requires operator, architect, or queen role');
+      throw new Error('pot:control_policy set requires operator, architect, or mug role');
     }
-    const patch: HiveControlPolicy = {};
+    const patch: PotControlPolicy = {};
     if (args.breakerThreshold !== undefined) patch.breakerThreshold = args.breakerThreshold;
     if (args.recoveryDebounceMs !== undefined) patch.recoveryDebounceMs = args.recoveryDebounceMs;
     if (args.dormancyGraceMs !== undefined) patch.dormancyGraceMs = args.dormancyGraceMs;
@@ -78,19 +78,19 @@ export default defineTool({
       throw new Error('set requires at least one of breakerThreshold / recoveryDebounceMs / dormancyGraceMs / infraBreakerThreshold');
     }
 
-    const outcome = await runControlMutation<HiveControlPolicy>(
+    const outcome = await runControlMutation<PotControlPolicy>(
       {
         action: 'pot:control_policy',
         subject: 'placement-watchdog',
         actor: `role:${ctx.role}`,
-        capturePrev: () => readHiveControlPolicy(),
-        apply: () => writeHiveControlPolicy(patch),
-        revertTo: (prev) => setHiveControlPolicy(prev),
+        capturePrev: () => readPotControlPolicy(),
+        apply: () => writePotControlPolicy(patch),
+        revertTo: (prev) => setPotControlPolicy(prev),
         verify: async (next) => {
-          const ok = (Object.keys(patch) as (keyof HiveControlPolicy)[]).every((k) => next[k] === patch[k]);
+          const ok = (Object.keys(patch) as (keyof PotControlPolicy)[]).every((k) => next[k] === patch[k]);
           return { ok, detail: ok ? undefined : 'policy did not persist' };
         },
-        describe: (prev) => ({ current: { ...HIVE_CONTROL_DEFAULTS, ...prev }, patch }),
+        describe: (prev) => ({ current: { ...POT_CONTROL_DEFAULTS, ...prev }, patch }),
       },
       { dryRun: args.dryRun },
     );

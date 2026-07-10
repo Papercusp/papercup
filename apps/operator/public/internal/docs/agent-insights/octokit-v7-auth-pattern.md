@@ -116,7 +116,7 @@ auth changes.
   `CreateOctokitOpts { timeoutMs?, fetch? }` arg to `createOctokit()`) into
   `Octokit`'s `request.fetch` option — the single app-wide guard against a
   stalled socket blocking the caller indefinitely (root cause: dogfood
-  hive-join froze at 5% because `resolveLocalAnnounceIdentity`'s GitHub
+  pot-join froze at 5% because `resolveLocalAnnounceIdentity`'s GitHub
   calls never resolved or rejected on a hung socket). The `fetch` option
   also lets tests inject a fake fetch for deterministic timeout coverage.
   (The repo now pins `@octokit/rest ^22`; the v7 `auth:`-shape break this

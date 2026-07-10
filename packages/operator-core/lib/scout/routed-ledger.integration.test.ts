@@ -261,7 +261,7 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
         routedRef: 'plan:cross-hive-x',
         harnessSlug: HARNESS,
         workspaceId: WS,
-        addressesPatternRefs: ['rubric:hive-coordination-health#wake-latency@spreadsheet-hive'],
+        addressesPatternRefs: ['rubric:pot-coordination-health#wake-latency@spreadsheet-hive'],
       });
       const rows = await db.adminSql<{ target_hive: string | null; source_hive: string | null }[]>`
         SELECT target_hive, source_hive FROM harness_shared.scout_routed_ideas WHERE idea_id = 'i-xhive'`;

@@ -67,6 +67,26 @@ export default defineTool({
       // buildInstallPluginDeps(): hard-missing deps 422 before the copy;
       // installable ones surface advisorily.
       const result = await installPluginFromCupboardCore(input, buildInstallPluginDeps());
+
+      // Fire the `plugin_install` backup trigger — /settings/backups renders it as
+      // "After plugin install" and it ships ON by default (event_triggers_json), but
+      // NOTHING emitted it, so the checkbox was inert (settings-audit 2026-07-09).
+      // Emitted at the route rather than inside installPluginFromCupboardCore because
+      // that core is pure (all IO injected via `deps`); the sibling
+      // plugins/uninstall.ts route emits its `pre_destructive` the same way. Fires
+      // AFTER a successful install, per the label (cf. `pre_destructive`, which
+      // deliberately snapshots BEFORE its op). Best-effort: a backup failure must
+      // never turn a successful install into an error response.
+      try {
+        const [{ triggerSnapshotEvent }, { activeWorkspaceId }] = await Promise.all([
+          import('../../backup'),
+          import('../../workspace-registry'),
+        ]);
+        await triggerSnapshotEvent(activeWorkspaceId(), 'plugin_install', {
+          op: 'plugin_install', githubUrl: input.githubUrl, listingRef, harness: input.harness,
+        }).catch(() => { /* ignore */ });
+      } catch { /* backup module not loaded — fine */ }
+
       return Response.json(result);
     } catch (e) {
       if (e instanceof InstallPluginError) {

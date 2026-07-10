@@ -15,7 +15,7 @@ import { COORD_ROLES } from "../coordination/roles";
 import { getWorkItem, getWorkItemDetail } from "../../work-items";
 import { mergeIds, runBulk, bulkContent } from "../_bulk";
 import { cachedRead, type CachedReadCtx } from "../../cache";
-import { getWorkItemCheckpoint } from "../../work-item-checkpoint";
+import { getWorkItemCheckpointWithMeta } from "../../work-item-checkpoint";
 
 /**
  * SWR backstop for work_items:get (cache-expensive-tool-reads-2026-06-22 P-005).
@@ -30,7 +30,7 @@ export default defineTool({
   name: "work_items:get",
   profile: "engineer",
   description:
-    "Fetch one OR many work-items by id (WI-/F-/EI-…) across every kind in ONE call — pass `id` for one or `ids` for several (1–100). Pass `harness` to disambiguate a feature id that may repeat across harnesses. Returns { ok, results:[{ ok, id, workItem?, checkpoint?, error? }], counts } — correlate each result by its id, not by position; a missing id comes back as that item's { ok:false } without failing the rest. `checkpoint` is the item's in-flight state left by work_items:checkpoint (null if none was ever written) — check it before assuming state was lost on a cold resume.",
+    "Fetch one OR many work-items by id (WI-/F-/EI-…) across every kind in ONE call — pass `id` for one or `ids` for several (1–100). Pass `harness` to disambiguate a feature id that may repeat across harnesses. Returns { ok, results:[{ ok, id, workItem?, checkpoint?, checkpointAgeMs?, checkpointUpdatedAtMs?, error? }], counts } — correlate each result by its id, not by position; a missing id comes back as that item's { ok:false } without failing the rest. `checkpoint` is the item's in-flight state left by work_items:checkpoint (null if none was ever written) — check it before assuming state was lost on a cold resume. `checkpointAgeMs`/`checkpointUpdatedAtMs` (EI-8885) are the checkpoint's write recency — a checkpoint is a HYPOTHESIS about current state, more trustworthy the fresher it is; treat one older than your own recent activity as possibly stale and re-verify against ground truth (re-read the real file, re-run the real test) rather than trusting a prose narrative that may predate a fix landing.",
   guidance: {
     when: "You have one or more work-item ids and need their full state (kind, lifecycle, assignee, parent). Pass every id you need at once via `ids` instead of calling per id.",
     notWhen:
@@ -112,11 +112,17 @@ export default defineTool({
         // (the store canonicalizes a null harness to the wildcard namespace it was
         // written under). Previously harness-null items skipped this lookup entirely
         // and always read null, silently losing a written checkpoint.
-        const checkpoint = await getWorkItemCheckpoint({
+        // EI-8885: surface the checkpoint's write recency alongside its content — a
+        // checkpoint read back with no age signal reads as CURRENT even when it's
+        // several wakes stale (a compaction summary can claim green while the
+        // actual checkpoint write never happened, or vice versa; WI-3578). Mirrors
+        // the loop carry-note's getLoopCarryNoteWithMeta shape for the work-item scope.
+        const { checkpoint, updatedAtMs: checkpointUpdatedAtMs } = await getWorkItemCheckpointWithMeta({
           harness: workItem.harness,
           workItemId: workItem.id,
-        }).catch(() => null);
-        return { ok: true as const, id, workItem, checkpoint };
+        }).catch(() => ({ checkpoint: null, updatedAtMs: null }));
+        const checkpointAgeMs = checkpointUpdatedAtMs != null ? Math.max(0, Date.now() - checkpointUpdatedAtMs) : null;
+        return { ok: true as const, id, workItem, checkpoint, checkpointAgeMs, checkpointUpdatedAtMs };
       },
       { keyOf: (id) => ({ id }) },
     );

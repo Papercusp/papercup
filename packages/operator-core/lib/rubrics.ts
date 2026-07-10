@@ -22,7 +22,7 @@
  *
  * The v1 standalone table (harness_shared.rubrics, mig 326/327) and the P-006
  * transitional plans∪table union are GONE (P-007 Stage 2): the seeded
- * hive-coordination-health rubric is served from its migrated rubric-template plan
+ * pot-coordination-health rubric is served from its migrated rubric-template plan
  * (mig 338, ws='default', harness='papercusp'), and the table is dropped by a follow-on
  * migration. Versioning falls out of the plan revision spine (no separate machinery).
  */
@@ -89,7 +89,7 @@ export interface Rubric {
  * the REAL workspace at request/write time — on this install that is 'papercusp-workspace'
  * (97k coord rows, all 643 plans), NOT the literal 'default' (327 legacy coord rows, 0
  * plans). The old code used the 'default' FALLBACK constant as the PRIMARY scope, so the
- * read looked in a near-dead workspace and missed the active `hive-coordination-health`
+ * read looked in a near-dead workspace and missed the active `pot-coordination-health`
  * rubric plan that actually lives in the active workspace — rubrics:list returned 0 and
  * the Overwatch could not emit its required scorecard. Reads AND writes both call this,
  * so they stay consistent. On a fresh/test DB with no active-workspace pin this resolves

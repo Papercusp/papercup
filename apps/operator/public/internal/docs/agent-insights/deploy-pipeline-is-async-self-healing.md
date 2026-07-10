@@ -53,8 +53,8 @@ the gate is stalled, call:
 dev:pipeline_position { path: "packages/.../your-file.ts" }   // or { sha }
 ```
 
-It is **read-only** and available to **every** execution/judgment role (operator, queen,
-the eight pipeline roles, bee, sentinel, overwatch, and the fixers). That one read is the
+It is **read-only** and available to **every** execution/judgment role (operator, mug,
+the eight pipeline roles, cup, papercup, overwatch, and the fixers). That one read is the
 answer to "did my edit go live?" — not opening `:3070`.
 
 ## On a genuine stall: don't wait — escalate, or force the deploy
@@ -110,6 +110,6 @@ and shows how to clear a DBOS dead-executor dedup.
 
 The cross-role guidance is sourced once as the **`DEPLOY_PIPELINE_NOTE`** constant
 (`libs/papercusp/packages/orchestrator/src/prompt-build.ts`) and spliced into both prompt
-bases — the spawned-bee base and the operator-launched-role base (via
+bases — the spawned-cup base and the operator-launched-role base (via
 `renderDeployPipelineNote` in `packages/operator-core/lib/deploy-pipeline-policy.ts`) — so
 the two can't desync. Every spawned agent already carries it.

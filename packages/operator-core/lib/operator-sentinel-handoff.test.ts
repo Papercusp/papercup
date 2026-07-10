@@ -2,7 +2,7 @@
  * sentinel-herald Phase 4 (P-017) — the Sentinel handoff dispatch.
  *
  * Asserts the core contract: a user request via the Sentinel produces a
- * HIGH-PRIORITY, `user-requested`-tagged work_item + a Queen nudge, the tier-gate
+ * HIGH-PRIORITY, `user-requested`-tagged work_item + a Mug nudge, the tier-gate
  * (P-015) routes medium/high un-approved actions to approval instead of placing,
  * and the Sentinel NEVER calls cup:spawn (it files + nudges + hands off only).
  *
@@ -27,7 +27,7 @@ function makeDeps(over: Partial<SentinelHandoffDeps> = {}): {
   spies: {
     createWorkItem: ReturnType<typeof vi.fn>;
     setPriority: ReturnType<typeof vi.fn>;
-    nudgeQueen: ReturnType<typeof vi.fn>;
+    nudgeMug: ReturnType<typeof vi.fn>;
     subscribeOperator: ReturnType<typeof vi.fn>;
     surfaceForApproval: ReturnType<typeof vi.fn>;
     standingApprovals: ReturnType<typeof vi.fn>;
@@ -35,14 +35,14 @@ function makeDeps(over: Partial<SentinelHandoffDeps> = {}): {
 } {
   const createWorkItem = vi.fn(async () => ({ id: 'WI-101' }));
   const setPriority = vi.fn(async () => {});
-  const nudgeQueen = vi.fn(async () => {});
+  const nudgeMug = vi.fn(async () => {});
   const subscribeOperator = vi.fn(async () => {});
   const surfaceForApproval = vi.fn(async () => {});
   const standingApprovals = vi.fn(async () => [] as Array<{ capability: string; targetHarness: string }>);
   const deps: SentinelHandoffDeps = {
     createWorkItem,
     setPriority,
-    nudgeQueen,
+    nudgeMug,
     subscribeOperator,
     surfaceForApproval,
     standingApprovals,
@@ -50,7 +50,7 @@ function makeDeps(over: Partial<SentinelHandoffDeps> = {}): {
   };
   return {
     deps,
-    spies: { createWorkItem, setPriority, nudgeQueen, subscribeOperator, surfaceForApproval, standingApprovals },
+    spies: { createWorkItem, setPriority, nudgeMug, subscribeOperator, surfaceForApproval, standingApprovals },
   };
 }
 
@@ -65,7 +65,7 @@ const lowHandoff = (over: Partial<HandoffRequest> = {}): HandoffRequest => ({
 });
 
 describe('dispatchSentinelHandoff — file + nudge (P-014)', () => {
-  it('files a high-priority, user-requested work_item and nudges the Queen', async () => {
+  it('files a high-priority, user-requested work_item and nudges the Mug', async () => {
     const { deps, spies } = makeDeps();
     const out = await dispatchSentinelHandoff(lowHandoff(), WS, deps);
 
@@ -88,9 +88,9 @@ describe('dispatchSentinelHandoff — file + nudge (P-014)', () => {
     // P-016: subscribed for hindsight outcome feedback.
     expect(spies.subscribeOperator).toHaveBeenCalledWith('WI-101', 'papercup');
 
-    // P-014: the Queen was nudged about the filed item.
-    expect(spies.nudgeQueen).toHaveBeenCalledTimes(1);
-    expect(spies.nudgeQueen.mock.calls[0][0]).toMatchObject({
+    // P-014: the Mug was nudged about the filed item.
+    expect(spies.nudgeMug).toHaveBeenCalledTimes(1);
+    expect(spies.nudgeMug.mock.calls[0][0]).toMatchObject({
       workItemId: 'WI-101',
       summary: 'draft the auth module',
       urgent: false,
@@ -104,12 +104,12 @@ describe('dispatchSentinelHandoff — file + nudge (P-014)', () => {
     const { deps, spies } = makeDeps();
     await dispatchSentinelHandoff(lowHandoff({ urgent: true }), WS, deps);
     expect(spies.createWorkItem.mock.calls[0][0].urgent).toBe(true);
-    expect(spies.nudgeQueen.mock.calls[0][0].urgent).toBe(true);
+    expect(spies.nudgeMug.mock.calls[0][0].urgent).toBe(true);
   });
 
-  it('still reports filed (nudged:false) when the Queen nudge throws — the create-event wakes her anyway', async () => {
+  it('still reports filed (nudged:false) when the Mug nudge throws — the create-event wakes her anyway', async () => {
     const { deps, spies } = makeDeps({
-      nudgeQueen: vi.fn(async () => {
+      nudgeMug: vi.fn(async () => {
         throw new Error('coord down');
       }),
     });
@@ -122,7 +122,7 @@ describe('dispatchSentinelHandoff — file + nudge (P-014)', () => {
     const { deps, spies } = makeDeps({ createWorkItem: vi.fn(async () => null) });
     const out = await dispatchSentinelHandoff(lowHandoff(), WS, deps);
     expect(out).toEqual({ status: 'error', error: 'work_item create failed' });
-    expect(spies.nudgeQueen).not.toHaveBeenCalled();
+    expect(spies.nudgeMug).not.toHaveBeenCalled();
   });
 });
 
@@ -138,9 +138,9 @@ describe('dispatchSentinelHandoff — tier gate (P-015, the user-facing approval
       capability: HANDOFF_CAPABILITY,
       harness: 'papercup',
     });
-    // Deferred to the Queen post-approval: nothing is filed/nudged now.
+    // Deferred to the Mug post-approval: nothing is filed/nudged now.
     expect(spies.createWorkItem).not.toHaveBeenCalled();
-    expect(spies.nudgeQueen).not.toHaveBeenCalled();
+    expect(spies.nudgeMug).not.toHaveBeenCalled();
   });
 
   it('a medium/high action ALREADY standing-approved is filed (not re-surfaced)', async () => {
@@ -153,7 +153,7 @@ describe('dispatchSentinelHandoff — tier gate (P-015, the user-facing approval
     expect(out).toMatchObject({ status: 'filed', tier: 'high' });
     expect(spies.surfaceForApproval).not.toHaveBeenCalled();
     expect(spies.createWorkItem).toHaveBeenCalledTimes(1);
-    expect(spies.nudgeQueen).toHaveBeenCalledTimes(1);
+    expect(spies.nudgeMug).toHaveBeenCalledTimes(1);
   });
 
   it('a wildcard standing approval (target=*) covers any harness', async () => {
@@ -195,8 +195,8 @@ describe('the Sentinel NEVER calls cup:spawn (P-017 invariant)', () => {
     // it did, the converse dispatch only honors <spawn> for the operator. Here we
     // assert the SHAPE: a user-request turn is a handoff, not a spawn.
     const turn = parseOperatorTurn(
-      '<say>Filing the auth rewrite and flagging the Queen.</say>\n' +
-        '<handoff_to_queen summary="rewrite auth" harness="papercup" capability="cup:spawn">',
+      '<say>Filing the auth rewrite and flagging the Mug.</say>\n' +
+        '<handoff_to_mug summary="rewrite auth" harness="papercup" capability="cup:spawn">',
     );
     expect(turn.handoffs).toHaveLength(1);
     expect(turn.spawns).toHaveLength(0);

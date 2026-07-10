@@ -14,7 +14,9 @@ vi.mock('@papercusp/operator-core/lib/pty-tauri', () => ({
   isTauriNative: () => false,
   openNativeSession: async () => ({}),
 }));
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   useQueryState: () => [false, () => {}],
   parseAsBoolean: { withDefault: () => ({}) },
 }));

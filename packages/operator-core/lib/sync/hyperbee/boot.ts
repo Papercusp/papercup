@@ -50,6 +50,7 @@ import {
   sampleReplicationLiveness,
   dropReplicationLogState,
   dropReplicationLiveness,
+  setDhtUniverseAssertion,
 } from './replication-liveness';
 import { stampOpHlc } from './hlc-stamp';
 import type { HlcClock } from '@papercusp/locks-core';
@@ -90,6 +91,7 @@ import {
 import {
   joinHarnessSwarm,
   getSharedSwarm,
+  getDhtUniverseAssertion,
   type AnnounceConnectionContext,
   type HyperswarmLike,
   type SwarmHandle,
@@ -3098,6 +3100,23 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     recordBootEvent(opts.workspaceId, opts.harnessSlug, 'join_started', `binding=${binding.kind}`);
     try {
       const swarm = opts.swarmOverride ?? (await getSharedSwarm());
+      // WI-3604 (split-DHT-universe recurrence guard): the assertion is
+      // computed once per PROCESS (memoized alongside the shared swarm's
+      // construction in getSharedSwarm) — record it durably per HARNESS here,
+      // on every join, so a harness that joins later still gets flagged and
+      // the boot-history ring shows it happened at THIS join. `swarmOverride`
+      // callers (unit tests) never construct the real shared swarm, so the
+      // assertion is `null` there — skip silently rather than false-positive.
+      const dhtAssertion = getDhtUniverseAssertion();
+      if (dhtAssertion) {
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          dhtAssertion.ok ? 'dht_universe_ok' : 'dht_universe_mismatch',
+          dhtAssertion.detail,
+        );
+        setDhtUniverseAssertion(opts.workspaceId, opts.harnessSlug, dhtAssertion);
+      }
       const topic = deriveSwarmTopic(binding);
       // Build OUR announce: bind our log core to our device identity. For Hive
       // topics, prefer the durable local hive_members+keychain binding so a
@@ -3295,6 +3314,14 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         ...(hiveHomeProjectionSlug
           ? { hiveGitServe: { potHomeSlug: hiveHomeProjectionSlug, workspaceId: opts.workspaceId } }
           : {}),
+        // WI-3583: register the device-pubkey -> live-socket dial registry
+        // alongside the serve plane, same hive-only gate — P-204's
+        // worktree-bridge-tick and P-202's ref-announce receive-tick both
+        // need to resolve "the device that signed this staging-advance /
+        // ref-announce" to a live socket to dial, which is exactly what
+        // wireHiveGitDial (peer-dial-registry.ts) populates on every
+        // connection, symmetric with wireHiveGitServe above.
+        ...(hiveHomeProjectionSlug ? { hiveGitDial: { selfDevicePubkeyBase64: identity.devicePubkeyBase64 } } : {}),
         onPeerConnected: (keyHex) => {
           recordBootEvent(opts.workspaceId, opts.harnessSlug, 'peer_connected');
            

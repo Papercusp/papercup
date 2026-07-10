@@ -39,7 +39,7 @@ So neither form streams a fast-changing value well.
 
 | Data shape                                                                   | Example                                                                                          | Mechanism                                                                                                                                                                                             |
 | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Event-driven** (changes on a discrete write, events typically >90 s apart) | schedule edit, plan edit, a hive announce/withdraw, a Queen wake, a spawn outcome flip           | **PUSH** — bridge the table or `notifySyncInvalidate` on the write. The dedupe rarely bites; the first event delivers promptly.                                                                       |
+| **Event-driven** (changes on a discrete write, events typically >90 s apart) | schedule edit, plan edit, a pot announce/withdraw, a Mug wake, a spawn outcome flip              | **PUSH** — bridge the table or `notifySyncInvalidate` on the write. The dedupe rarely bites; the first event delivers promptly.                                                                       |
 | **Continuous live gauge** (changes every request / sub-second)               | fleet rate usage% / in-flight, a live bench-run progress counter                                 | **POLL** (bounded). The 90 s dedupe would make it feel dead; a per-change notify is a storm. A dedicated non-deduped SSE channel is the only push that beats polling here — usually disproportionate. |
 | **System / external probe** (no backing PG-table write at all)               | OS process list, `pg_stat_activity`, git worktree state, kopia/drizzle-studio external processes | **POLL**. There is nothing to trigger on — the state changes without a PG write.                                                                                                                      |
 | **Editor draft**                                                             | a Vditor/markdown editor's source                                                                | **GUARDED one-shot** — a live re-fire mid-edit clobbers the draft.                                                                                                                                    |
@@ -50,7 +50,7 @@ The audit listed \~40 polls to "migrate to push." On inspection \~⅓ were
 continuous gauges (`FleetRateControl`, `AdvEvalsTab` bench-live), system probes
 (ProcessesTab, PgTab, AdvGitGraphPanel, BackupsTab, StudioTab), or retired
 components — none of which should be pushed. The genuinely-pushable set was the
-event-driven reads (schedule/design/plans/discovery/queen-wake/run-pills), which
+event-driven reads (schedule/design/plans/discovery/mug-wake/run-pills), which
 migrated cleanly. See plan decisions D-005 (bench-live), D-006 (the apps/operator
 poll set), D-007 (fleet-rate gauge).
 

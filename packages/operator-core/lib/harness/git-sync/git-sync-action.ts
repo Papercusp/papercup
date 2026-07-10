@@ -55,6 +55,7 @@ import {
 import { STAGING_ADVANCE_EVENT_KEY, isSignedStagingAdvance, type SignedStagingAdvance, type EpochSeq } from '../../sync/hive-git/staging-advance';
 import { hiveGitRepoPath, listNamespaces } from '../../sync/hive-git/storage';
 import { bootstrapFromPeer } from '../../sync/hive-git/bootstrap';
+import { openHiveGitDuplexToDevice } from '../../sync/hive-git/peer-dial-registry';
 import { Duplex } from 'node:stream';
 import { listHiveMembers } from '../../hive-membership-store';
 import { resolveUsageActor } from '../usage-actor';
@@ -1415,15 +1416,19 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
  *      `runWorktreeBridgeLeg` uses for `hive-git:staging-advance`), fed
  *      through `runRefAnnounceReceiveTick` against the local mirror.
  *
- * DIAL-REGISTRY GAP (known simplification, same shape as P-204's OPENDUPLEX
- * GAP above): no live per-peer connection registry exists yet (device pubkey
- * → swarm socket) — only the dial primitive itself (`openHiveGitFetchDuplex`,
- * P-201/serve-wiring.ts). `openStream` here resolves an already-destroyed
- * Duplex, so every fetch this leg would attempt reports through the
- * documented `fetch-failed` result (never a throw, matching
- * `fetchOverDuplex`'s fail-soft contract; never blocks the rest of the
- * batch) until WI-3583 lands the registry and this `openStream` is swapped
- * for a real per-device dial.
+ * DIAL-REGISTRY (WI-3583, peer-dial-registry.ts, landed 2026-07-10): `openStream`
+ * resolves this harness's live swarm topic via `getBootedHarness(...).swarm
+ * .topicHex` and dials the announcing device through `openHiveGitDuplexToDevice`
+ * — a real per-device Protomux fetch duplex over the same shared muxer P-201's
+ * serve plane answers on. Two fail-soft floors, neither ever throws: (a) no
+ * live swarm join yet for this harness (private/local-only, or not booted) ⇒
+ * an already-destroyed local stub, same shape as before WI-3583; (b) a live
+ * topic but no open connection to THIS device yet ⇒ `openHiveGitDuplexToDevice`
+ * itself resolves an already-destroyed Duplex (its own documented contract).
+ * Either way the fetch reports through the documented `fetch-failed` result
+ * (matching `fetchOverDuplex`'s fail-soft contract) and the batch continues;
+ * only genuine cross-machine reachability (Phase 3's live rig) exercises the
+ * happy path end-to-end.
  */
 async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<void> {
   try {
@@ -1530,19 +1535,33 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
       selfDevice: actor.devicePubkey,
       allowedDevices: memberDevicePubkeysBase64,
       budgetStates: priorBudgetStates,
-      openStream: () => {
-        // DIAL-REGISTRY GAP — see module doc above (WI-3583). Mirrors
-        // serve-wiring.ts's own "resolve a pre-destroyed duplex, never
-        // reject" fail-soft contract so this always reports a clean
-        // `fetch-failed` result rather than an uncaught throw.
-        const stub = new Duplex({
-          read() {},
-          write(_chunk, _enc, cb) {
-            cb();
-          },
+      openStream: async (device) => {
+        // DIAL-REGISTRY (WI-3583) — see module doc above. Real per-device
+        // dial once this harness has a live swarm topic; falls back to the
+        // same pre-WI-3583 destroyed stub when it doesn't (private/local-only
+        // harness, or not yet booted onto a swarm). `boot-all.ts` is a heavy,
+        // wide-fan-out module (projections, coordination) this per-tick leaf
+        // has no other reason to touch — imported dynamically, matching this
+        // codebase's own convention for pulling in cross-cutting substrate
+        // modules from a leaf call site (e.g. boot.ts's own
+        // `await import('../../hive-membership-store')`), so it loads only
+        // when a fetch is actually attempted, never at module-init time.
+        const { getBootedHarness } = await import('../../sync/hyperbee/boot-all');
+        const topicHex = getBootedHarness(workspaceId, potHomeSlug)?.swarm?.topicHex;
+        if (!topicHex) {
+          const stub = new Duplex({
+            read() {},
+            write(_chunk, _enc, cb) {
+              cb();
+            },
+          });
+          stub.destroy(new Error('hive-git: no live swarm join for this harness yet'));
+          return stub;
+        }
+        return openHiveGitDuplexToDevice(Buffer.from(topicHex, 'hex'), device, {
+          repoKey: slug,
+          peerGithubUserId: actor.githubUserId,
         });
-        stub.destroy(new Error('hive-git: no live per-peer dial registry yet (WI-3583)'));
-        return stub;
       },
       timeoutMs: 15_000,
     });

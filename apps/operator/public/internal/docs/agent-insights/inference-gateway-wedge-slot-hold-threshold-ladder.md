@@ -79,7 +79,7 @@ to *signal* an abort; every slot-hold await must actually *resolve on* that abor
 
 ## Related admission failure: a per-account quota-429 must NOT throttle GLOBAL concurrency (2026-06-21)
 
-Symptom: bees get frequent "API error" **even though `accounts:status` shows accounts with headroom**
+Symptom: cups get frequent "API error" **even though `accounts:status` shows accounts with headroom**
 (e.g. 5/8 at 9-44% 5h-util while 3 are at 98-99%). Owner: "the router should be smart enough to use the
 account with budget." It already is — this is NOT a routing bug and NOT capacity.
 
@@ -88,7 +88,7 @@ so \~3/8 of requests transiently hit a 98-99%-maxed account → a per-account **
 **routes around fine** (governor predictive-pause ≥0.95 + the route-to-capacity walk + failover rotation).
 But each of those routed-around quota-429s ALSO called `aimd.recordThrottle()`, so the GLOBAL admission
 concurrency collapsed to the AIMD **floor** (`effective=4, queued=34, decreases=3`). Requests then timed out
-in the admission queue (`maxQueueWaitMs`) → a synthetic 429 = the bee "API error" — **before the correct
+in the admission queue (`maxQueueWaitMs`) → a synthetic 429 = the cup "API error" — **before the correct
 budget-aware routing ever ran.** With per-account egress IPs, one account's quota says nothing about the
 others' capacity, so shrinking GLOBAL concurrency is exactly the wrong response.
 
@@ -107,7 +107,7 @@ and a hard skip would under-utilize Max 5h/7d rolling windows that recover conti
 ## Wedge vs capacity — do NOT conflate
 
 A WEDGE is a gateway BUG (a slot-hold threshold inversion) — fix it in code and verify the watchdog stops
-restarting. Forwarded 429/503s to bees under heavy opus demand are CAPACITY: the account pool can't serve
+restarting. Forwarded 429/503s to cups under heavy opus demand are CAPACITY: the account pool can't serve
 the load; the gateway can only PACE / shed gracefully. Levers: add Max accounts, pace the fleet
 (`maxSimultaneousAgents`), or route some load to Sonnet. The wedge fix removes the catastrophic
 connection-refused blips — it cannot manufacture quota.

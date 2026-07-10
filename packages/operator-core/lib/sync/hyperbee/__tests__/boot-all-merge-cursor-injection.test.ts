@@ -19,8 +19,16 @@ import type { BootHarnessOpts } from '../boot';
 import type { MergeCursorStore } from '../read-merge';
 import { makeFakeBootedHandle } from './fake-booted-handle';
 
+// See boot-all.test.ts: boot-all's projection graph transitively imports the
+// ephemeral-foreign helpers via p2p/revocation-reaper, so they must exist on the
+// mock or the suite fails at import time.
 vi.mock('../../../harness-registry', () => ({
   loadHarnessRegistry: async () => ({ projects: [] as Array<{ slug: string; path: string }> }),
+  isEphemeralForeignProject: (p: { ephemeral_foreign?: boolean }) => p.ephemeral_foreign === true,
+  ephemeralForeignHarnessSlug: (offerId: string) => `foreign-${offerId}`,
+  registerEphemeralForeignHarness: vi.fn(),
+  deregisterEphemeralForeignHarness: vi.fn(async () => false),
+  sweepOrphanedEphemeralForeignHarnesses: vi.fn(async () => ({ swept: 0, removed: [] })),
 }));
 
 vi.mock('../boot', async (importOriginal) => {

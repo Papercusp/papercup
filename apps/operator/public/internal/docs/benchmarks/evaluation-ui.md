@@ -36,11 +36,11 @@ shell (`cd papercusp-desktop && npm run dev` → the Evaluation tab), per
 
 ## Subtabs
 
-| Subtab             | What it does                                                                                                                                                                                                                                                                                                                                      |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Launch**         | Pick arm / task set / cap / `$`-budget, see a cost+time estimate, owner-confirm when the estimate is `>= $20` of opus (`OWNER_CONFIRM_USD`), launch. opus is pinned (fail-closed). Arms: `hive-realqueen` (treatment), `fifo-noqueen` (no-Queen control), `mini-swe-agent` (reference harness); task sets: 11-task pilot, full \~731, custom ids. |
-| **Preserved runs** | Browse runs (imports + live) — id · arm · resolved% · status. Per-run: Grade, Export, Re-run, Delete. Validity badges, live fleet panel, coordination timeline.                                                                                                                                                                                   |
-| **Compare**        | Arm-vs-arm over the same task set: resolved% delta + Frontier + per-task table + the honest-caveats panel.                                                                                                                                                                                                                                        |
+| Subtab             | What it does                                                                                                                                                                                                                                                                                                                                   |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Launch**         | Pick arm / task set / cap / `$`-budget, see a cost+time estimate, owner-confirm when the estimate is `>= $20` of opus (`OWNER_CONFIRM_USD`), launch. opus is pinned (fail-closed). Arms: `pot-realqueen` (treatment), `fifo-noqueen` (no-Mug control), `mini-swe-agent` (reference harness); task sets: 11-task pilot, full \~731, custom ids. |
+| **Preserved runs** | Browse runs (imports + live) — id · arm · resolved% · status. Per-run: Grade, Export, Re-run, Delete. Validity badges, live fleet panel, coordination timeline.                                                                                                                                                                                |
+| **Compare**        | Arm-vs-arm over the same task set: resolved% delta + Frontier + per-task table + the honest-caveats panel.                                                                                                                                                                                                                                     |
 
 ## Launch a run (P-004 / P-005)
 
@@ -48,15 +48,15 @@ The launch form posts to `POST /api/external-bench/runs/launch`. The run goes
 through the **real bench engine** (not a `/tmp` launcher) as a detached managed
 job: it persists `status=running`, returns a `run_id` immediately, and streams
 live. Only **one run at a time** (spend-safety). The launch form offers three
-arms — `hive-realqueen` (treatment), `fifo-noqueen` (no-Queen control),
+arms — `pot-realqueen` (treatment), `fifo-noqueen` (no-Mug control),
 `mini-swe-agent` (the reference harness) — over three task sets (11-task pilot /
 full \~731 / custom ids), and requires an explicit **owner-confirm when the
 estimate is `>= $20`** of opus (`OWNER_CONFIRM_USD`). Launches are gated on the
 `papercusp-external-bench` flag (default OFF — the owner's spend gate; enable at
 `/admin/features`).
 
-Every launched run dissolves its hive on completion/cancel — stopping the Queen
-wake, cancelling bees, and DELETING the gym/scout learning-loop rows
+Every launched run dissolves its pot on completion/cancel — stopping the Mug
+wake, cancelling cups, and DELETING the gym/scout learning-loop rows
 (`teardownHiveLearningLoop`) so no orphan re-spins opus. A run left in flight by
 a CRASHED host is reaped on the next operator boot (heartbeat-gated, so a run
 legitimately running in another live host is untouched). A UI run can never
@@ -66,19 +66,19 @@ orphan-respin opus on a `:3170` restart.
 
 While a run is active the detail view polls `evals.benchRunLive` (the manual PG
 checks made visual, from `spawned_agents` / `agent_usage_samples` scoped to the
-run's hive):
+run's pot):
 
-* **Queen survival** — alive / age / reclaims.
-* **Bee status** — placed / working / done / evicted / failed.
+* **Mug survival** — alive / age / reclaims.
+* **Cup status** — placed / working / done / evicted / failed.
 * **Per-task progress**, cumulative spend, wall-clock.
 * **Coordination timeline** — placements, evictions, recoveries, wakes, event by event.
 
 ### Validity badges — the integrity guarantee (D-003)
 
 Every run shows red/green validity badges (`computeValiditySignals` returns
-**seven**, in order): `OPUS-ONLY`, `QUEEN-SURVIVAL`, `EMPTY-DIFF`,
+**seven**, in order): `OPUS-ONLY`, `MUG-SURVIVAL`, `EMPTY-DIFF`,
 `GENERATION-ATTRIBUTED`, `FLEET-CAP`, `SUBSET-SIZE`, `SINGLE-SEED`. A **fail** (a
-non-opus leak, a queen reclaim, a 0-work arm, a phantom win) means the run is NOT
+non-opus leak, a mug reclaim, a 0-work arm, a phantom win) means the run is NOT
 a clean result — and the Compare view will refuse to render it as a valid delta.
 Warn/unknown are honest caveats, not invalidating. The same function renders the
 badges in both the live monitor and the Preserved-runs view.
@@ -108,7 +108,7 @@ actionable `verified_harness_not_installed` error (with the exact install steps)
 ## Compare arms (P-011 / P-012)
 
 Pick run **A** (baseline) and **B** (treatment). The headline comparison is
-**hive-realqueen vs mini-swe-agent** (the SWE-bench Pro reference harness), same
+**pot-realqueen vs mini-swe-agent** (the SWE-bench Pro reference harness), same
 model + same tasks (D-005). The view shows the resolved% delta, the cost/accuracy
 Frontier, and the per-task table.
 

@@ -919,8 +919,7 @@ export default function VoiceSettingsPage() {
             {([
               ['speakSuggestions',       'Speak suggestions when they arrive in the panel'],
               ['speakBackgroundToasts',  'Speak background auto-fire toasts (with cancel cue)'],
-              ['speakReceivingFlips',    'Speak when a card flips to consumed (chatty)'],
-              ['speakEscalations',       'Speak when a card is escalated (significant)'],
+              ['speakModeFlips',         'Speak Papercup active/passive mode flips (chatty)'],
               ['speakCadenceStatus',     'Speak scan-start / scan-done status (chatty)'],
               ['speakNudges',            'Speak budget / breaker / pause nudges'],
               ['wakeWordIntents',        'Enable "operator scan" wake-word commands'],

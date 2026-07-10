@@ -103,8 +103,26 @@ const EMBED_RESET_JITTER_MS = 2_500; // spread post-reset retries across this wi
 const OPENAI_EMBED_COOLDOWN_MS = Number(process.env.PAPERCUSP_EMBED_FALLBACK_COOLDOWN_MS) || 60_000;
 let openAiEmbedCooldownUntilMs = 0;
 
+// WI-3615: a HARD billing stop (insufficient_quota) fails IDENTICALLY on every retry until the
+// key is fixed — the 60s cooldown above is for SOFT/possibly-transient exhaustion (our own daily
+// spend cap, which self-clears at UTC rollover; a long-but-finite server reset window). Latching
+// those to only 60s on a genuinely dead key thrashes forever: fail -> 60s local -> re-try the same
+// dead key -> fail -> repeat, indefinitely (reproduced live: harness_shared.memory_vec_local held
+// exactly the memories written inside successive 60s windows, evidence of the thrash). A hard stop
+// instead sets this STICKY latch (no auto-expiry) so 'auto' keeps preferring local until something
+// that could plausibly have fixed the key happens — clearOpenAiEmbedHardExhaustion() below, called
+// when the openai_api_key credential is re-saved (setup:save_key / POST /credentials).
+let openAiEmbedHardExhaustedSinceMs: number | null = null;
+
 /** Record an OpenAI embed failure severe enough to prefer local for a while (a hard quota/billing
  *  stop, or the retry budget exhausting entirely). Exported as a seam for tests (GAP 4).
+ *
+ *  `hard: true` (WI-3615) — an `insufficient_quota` billing stop, known to fail identically
+ *  forever until the key is fixed — latches the STICKY exhaustion flag (see
+ *  `openAiEmbedHardExhaustedSinceMs` above) in addition to the short cooldown, so 'auto' doesn't
+ *  keep re-trying a key it has already proven is dead. Omitted/false (the daily-spend-cap and
+ *  retry-budget-exhausted call sites) only sets the short, self-expiring cooldown — those cases
+ *  are not necessarily permanent.
  *
  *  EI-7279: the cascade decision (resolveEmbedderWith, above) is only EVALUATED when the mem0
  *  client is (re)built — and mem0-client.ts caches that client for a 1-HOUR TTL. Setting the
@@ -115,20 +133,32 @@ let openAiEmbedCooldownUntilMs = 0;
  *  engaged — reproduced live 2026-07-04 (two back-to-back memory:remember probes, both
  *  embed_quota_exhausted, well inside one client lifetime). Force a rebuild on the VERY NEXT
  *  call so the cooldown just recorded is actually consulted immediately, not up to an hour late. */
-export function markOpenAiEmbedFailure(now: number = Date.now()): void {
+export function markOpenAiEmbedFailure(now: number = Date.now(), opts: { hard?: boolean } = {}): void {
   openAiEmbedCooldownUntilMs = now + OPENAI_EMBED_COOLDOWN_MS;
+  if (opts.hard) openAiEmbedHardExhaustedSinceMs = now;
   invalidateMemoryClient();
 }
 
 /** Is OpenAI embedding in its post-failure cooldown (the 'auto' cascade should prefer local)?
+ *  True during the short self-expiring cooldown OR while the WI-3615 sticky hard-exhaustion latch
+ *  is set (no auto-expiry — cleared only by clearOpenAiEmbedHardExhaustion()).
  *  Exported as a seam for the `resolveEmbedder` cascade tests (GAP 4). */
 export function isOpenAiEmbedInCooldown(now: number = Date.now()): boolean {
-  return now < openAiEmbedCooldownUntilMs;
+  return now < openAiEmbedCooldownUntilMs || openAiEmbedHardExhaustedSinceMs !== null;
+}
+
+/** WI-3615: clear the sticky hard-exhaustion latch (does NOT touch the short cooldown) — call
+ *  when there's a real reason to believe the key might work again, i.e. the `openai_api_key`
+ *  credential was just re-saved. The very next 'auto' resolution re-tries OpenAI once; if it's
+ *  still dead the next hard failure re-latches. A no-op if the latch wasn't set. */
+export function clearOpenAiEmbedHardExhaustion(): void {
+  openAiEmbedHardExhaustedSinceMs = null;
 }
 
 /** Test-only reset so cooldown state from one test can't leak into the next. */
 export function __resetOpenAiEmbedCooldownForTest(): void {
   openAiEmbedCooldownUntilMs = 0;
+  openAiEmbedHardExhaustedSinceMs = null;
 }
 
 // Dodge bundler static analysis — @huggingface/transformers is an
@@ -328,10 +358,11 @@ export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {
         // bucket (there is no reset window to wait for), and tag it DISTINCTLY so the memory
         // tools narrate "OpenAI quota exhausted — check billing" instead of "rate-limited".
         if (r.status === 429 && /insufficient_quota/.test(body)) {
-          // EI-3381: a hard billing stop fails identically forever until fixed — start the
-          // local-preference cooldown now so the NEXT resolveEmbedder() call (a fresh
-          // memory:remember/search) doesn't retry a key we just learned is dead.
-          markOpenAiEmbedFailure();
+          // EI-3381 / WI-3615: a hard billing stop fails identically forever until fixed —
+          // latch the STICKY local-preference (not just the 60s cooldown) so the NEXT
+          // resolveEmbedder() call (a fresh memory:remember/search) doesn't keep re-trying a
+          // key we just learned is dead, indefinitely, every 60s.
+          markOpenAiEmbedFailure(Date.now(), { hard: true });
           maybeEscalateEmbedExhaustion('openai_billing');
           throw new Error(`openai_embed_quota_exhausted: ${body}`);
         }

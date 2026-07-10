@@ -19,7 +19,9 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 
 const nuqsState: Record<string, unknown> = { tab: null, view: null, pBuckets: null };
 const nuqsSetters: Record<string, ReturnType<typeof vi.fn>> = {};
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   useQueryState: (key: string) => {
     nuqsSetters[key] ??= vi.fn(async () => {});
     return [nuqsState[key], nuqsSetters[key]];

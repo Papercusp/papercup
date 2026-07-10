@@ -34,6 +34,7 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadavg, cpus as osCpus } from 'node:os';
 import type { PerfArtifact } from './artifact';
 import {
   baselineFromArtifacts,
@@ -48,6 +49,27 @@ import { churnScenarios } from './scenarios/churn';
 import { netemScenarios } from './scenarios/netem';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * EI-8843: this box is a SHARED interactive dev box (not a dedicated perf
+ * host) — 7+ concurrent agent fleets routinely oversubscribe it. A
+ * PG-write-heavy scenario (each op awaits a synchronous PG projection commit)
+ * measures wall-clock/PG latency, which balloons under contention with ZERO
+ * code regression — the 2026-07-09 incident: 2748%-18113% "regressions" at
+ * load average 137-167 on a 128-core box (>100% sustained oversubscription),
+ * while pure in-memory scenarios in the SAME run improved 58-106%. Sampling
+ * `os.loadavg()[0] / cpus` around the run and flagging the comparison
+ * uncertain above this ratio lets the nightly routine (p2p-perf-actions.ts)
+ * skip auto-filing what would otherwise be a false-positive regression/SLO
+ * alarm, without discarding the run's own artifacts/report (still written
+ * either way — a human auditing a noisy night still sees the real numbers).
+ */
+const HOST_OVERSUBSCRIBED_RATIO = 1.0;
+
+function sampleLoadRatio(): number {
+  const cpuCount = osCpus().length || 1;
+  return loadavg()[0] / cpuCount;
+}
 
 const TIER1: PerfScenario[] = [...mergeCostScenarios, ...replicationScenarios, ...churnScenarios];
 const TIER2: PerfScenario[] = [...netemScenarios];
@@ -85,6 +107,11 @@ export interface RunSummary {
   regressions: Array<{ scenario: string; paramsKey: string; metric: string; baseline: number; current: number; relChange: number }>;
   improvements: number;
   baselineCompared: boolean;
+  /** EI-8843: host contention sampled around the run (max of a start/end
+   *  os.loadavg() sample, /cpus). `oversubscribed` ⇒ the baseline comparison
+   *  above is UNCERTAIN — a wall-clock/PG-latency-sensitive scenario could be
+   *  measuring shared-box contention, not a code regression. */
+  hostLoad: { loadavg1m: number; cpus: number; ratio1m: number; oversubscribed: boolean };
 }
 
 function parseArgs(argv: string[]): Args | 'list' {
@@ -139,13 +166,27 @@ function shortSummary(a: PerfArtifact): string {
   return `${a.scenario} [${Object.entries(a.params).map(([k, v]) => `${k}=${v}`).join(' ')}] ${keys} ${slo}`;
 }
 
-function renderReport(runId: string, profile: string, artifacts: PerfArtifact[], compareText: string | null): string {
+function renderReport(
+  runId: string,
+  profile: string,
+  artifacts: PerfArtifact[],
+  compareText: string | null,
+  hostLoad?: { loadavg1m: number; cpus: number; ratio1m: number; oversubscribed: boolean },
+): string {
   const lines: string[] = [
     `# p2p-perf run \`${runId}\``,
     '',
     `- profile: **${profile}**`,
     `- host: ${artifacts[0]?.host.hostname} (${artifacts[0]?.host.platform}, ${artifacts[0]?.host.cpus} cpus, node ${artifacts[0]?.host.node})`,
     `- artifacts: ${artifacts.length}`,
+    ...(hostLoad
+      ? [
+          `- host load: ${hostLoad.loadavg1m.toFixed(1)} / ${hostLoad.cpus} cpus (ratio ${hostLoad.ratio1m.toFixed(2)}×)` +
+            (hostLoad.oversubscribed
+              ? ' — **⚠ OVERSUBSCRIBED: baseline comparison below is UNCERTAIN (EI-8843), auto-filing skipped**'
+              : ''),
+        ]
+      : []),
     '',
     '| scenario | params | key metric (p95) | loop-lag p95 | SLO | notes |',
     '|---|---|---|---|---|---|',
@@ -182,6 +223,11 @@ async function main(): Promise<void> {
   const runId = new Date().toISOString().replace(/[:.]/g, '-');
   const outDir = join(args.out, runId);
   mkdirSync(outDir, { recursive: true });
+
+  // EI-8843: sample at start too — a run that STARTS oversubscribed but drains
+  // by the time it finishes is still a run whose early scenarios' numbers are
+  // suspect; the max of the two samples is the conservative call.
+  const startLoadRatio = sampleLoadRatio();
 
   const artifacts: PerfArtifact[] = [];
   const ctx: ScenarioRunCtx = {
@@ -248,6 +294,21 @@ async function main(): Promise<void> {
       }));
   const regressionCount = compareReport?.regressions.length ?? 0;
 
+  // EI-8843: max(start, end) load sample — conservative call on whether the
+  // comparison above is trustworthy or shared-box contention.
+  const endLoadRatio = sampleLoadRatio();
+  const ratio1m = Math.max(startLoadRatio, endLoadRatio);
+  const oversubscribed = ratio1m > HOST_OVERSUBSCRIBED_RATIO;
+  const hostLoad = { loadavg1m: loadavg()[0], cpus: osCpus().length, ratio1m, oversubscribed };
+  if (oversubscribed) {
+    console.warn(
+      `\n⚠ host oversubscribed during this run (load ratio ${ratio1m.toFixed(2)}× cpus, ` +
+        `limit ${HOST_OVERSUBSCRIBED_RATIO}×) — the baseline comparison above is UNCERTAIN: a ` +
+        `wall-clock/PG-latency-sensitive scenario may be measuring shared-box contention, not a ` +
+        `code regression (EI-8843). The nightly routine will skip auto-filing findings from this run.`,
+    );
+  }
+
   if (args.updateBaseline && artifacts.length) {
     const baseline = baselineFromArtifacts(artifacts, args.profile);
     mkdirSync(dirname(args.baseline), { recursive: true });
@@ -256,7 +317,7 @@ async function main(): Promise<void> {
   }
 
   const reportPath = join(outDir, 'report.md');
-  writeFileSync(reportPath, renderReport(runId, args.profile, artifacts, compareText));
+  writeFileSync(reportPath, renderReport(runId, args.profile, artifacts, compareText, hostLoad));
   console.log(`\nartifacts: ${outDir}`);
   console.log(`report:    ${reportPath}`);
 
@@ -278,6 +339,7 @@ async function main(): Promise<void> {
     })),
     improvements: compareReport?.improvements.length ?? 0,
     baselineCompared: compared,
+    hostLoad,
   };
   writeFileSync(join(outDir, 'summary.json'), JSON.stringify(summary, null, 2));
   if (args.summaryJson) {

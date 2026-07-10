@@ -197,7 +197,7 @@ export default defineTool({
         ok: false,
         op: 'force',
         refused: true,
-        reason: `role_forbidden — release:deploy{op:force} requires operator, queen, or architect role (you are role:${ctx.role ?? 'unknown'}). Forcing ships KNOWN-BROKEN code; it is an owner-authorized escape, never an agent's reflex. Prefer fixing the reds.`,
+        reason: `role_forbidden — release:deploy{op:force} requires operator, mug, or architect role (you are role:${ctx.role ?? 'unknown'}). Forcing ships KNOWN-BROKEN code; it is an owner-authorized escape, never an agent's reflex. Prefer fixing the reds.`,
         status: statusBrief(status),
       });
     }

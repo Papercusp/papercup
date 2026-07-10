@@ -1,5 +1,5 @@
 /**
- * rubrics-seed.integration.test.ts — verifies the founding 'hive-coordination-health'
+ * rubrics-seed.integration.test.ts — verifies the founding 'pot-coordination-health'
  * rubric is served from its migrated rubric-template PLAN
  * (plan-templates-and-rubric-v2-2026-06-20 P-007). Migration 338 migrated the v1 table
  * seed (326/327) → a `template: rubric` plan (harness_plans), and Stage 2 drops the v1
@@ -59,21 +59,21 @@ afterAll(async () => {
   await db?.cleanup();
 });
 
-describe('migration 338 — the hive-coordination-health rubric is served from its plan', () => {
+describe('migration 338 — the pot-coordination-health rubric is served from its plan', () => {
   it('resolves the founding rubric as ACTIVE with method_ref + the default rating scale', async () => {
-    const r = await rubrics.getRubric('hive-coordination-health');
+    const r = await rubrics.getRubric('pot-coordination-health');
     expect(r).not.toBeNull();
     expect(r!.status).toBe('active'); // seeded ratified (active plan → active rubric)
     expect(r!.characteristic).toBe('hive-coordination');
     expect(r!.title).toBe('Hive coordination health');
-    expect(r!.methodRef).toBe('hive-coordination-health'); // the agent-insights runbook slug
+    expect(r!.methodRef).toBe('pot-coordination-health'); // the agent-insights runbook slug
     expect(r!.ratingScale).toEqual(['healthy', 'degraded', 'broken', 'unknown']);
     expect(r!.ratifiedBy).toBe('aviynw@gmail.com'); // the plan owner (active ⇒ ratifier)
     expect((r!.description ?? '').length).toBeGreaterThan(0);
   });
 
   it('carries exactly the 14 canonical criteria, in order, each fully specified', async () => {
-    const r = await rubrics.getRubric('hive-coordination-health');
+    const r = await rubrics.getRubric('pot-coordination-health');
     expect(r!.criteria.map((c) => c.key)).toEqual(CANONICAL_KEYS);
     for (const c of r!.criteria) {
       expect(c.title.length).toBeGreaterThan(0);
@@ -85,15 +85,15 @@ describe('migration 338 — the hive-coordination-health rubric is served from i
 
   it('appears in listRubrics(active) and is findable via search', async () => {
     expect((await rubrics.listRubrics({ status: 'active' })).map((x) => x.rubricId)).toContain(
-      'hive-coordination-health',
+      'pot-coordination-health',
     );
     expect((await rubrics.searchRubrics('coordination')).map((x) => x.rubricId)).toContain(
-      'hive-coordination-health',
+      'pot-coordination-health',
     );
   });
 
   it('is a single rubric-template plan row (the seed migration is idempotent)', async () => {
     const all = await rubrics.listRubrics({});
-    expect(all.filter((x) => x.rubricId === 'hive-coordination-health')).toHaveLength(1);
+    expect(all.filter((x) => x.rubricId === 'pot-coordination-health')).toHaveLength(1);
   });
 });

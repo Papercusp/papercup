@@ -187,7 +187,7 @@ workspace or **explicitly** opt into unscoped god-mode via
   workspace. A `crossWorkspace` tool that isn't on the read-only
   scoped-safe allowlist is denied with `workspace_forbidden`; `harness:
   'all'` / `harness:'*'` (the global escape) and a per-call `harness`
-  that escapes the session's hive are denied with `harness_forbidden`.
+  that escapes the session's pot are denied with `harness_forbidden`.
 * Opting in with `?workspace=*` / `?all_workspaces=1` is the deliberate
   cross-workspace admin path that lifts the clamp.
 
@@ -245,7 +245,7 @@ spawn-URL signature check (superuser has its own bearer envelope).
 | `request_timeout: tool "..." exceeded ...ms`                                             | Tool ran past the 55s transport deadline (`PAPERCUSP_MCP_DEADLINE_MS`); it keeps running server-side | Retry with the same `_meta.idempotencyKey` to replay the result, or raise the env deadline                |
 | `tool_not_available_for_profile`                                                         | A `?profile=power` session named an engineer-only (Group A) tool                                     | Drop `?profile=power` (full operator surface), or call a power-profile tool                               |
 | `scoped_superuser_workspace_unresolved`                                                  | `papercusp-scoped-superuser-clamp` is ON and the session resolved to no workspace                    | Pass `?workspace=<slug>`, or opt into god-mode with `?workspace=*` / `?all_workspaces=1`                  |
-| `workspace_forbidden` / `harness_forbidden`                                              | Clamp is ON and a scoped session tried to span workspaces, use `harness:'all'`, or escape its hive   | Use an unscoped (`?workspace=*` / `?all_workspaces=1`) session, or name a concrete in-scope harness       |
+| `workspace_forbidden` / `harness_forbidden`                                              | Clamp is ON and a scoped session tried to span workspaces, use `harness:'all'`, or escape its pot    | Use an unscoped (`?workspace=*` / `?all_workspaces=1`) session, or name a concrete in-scope harness       |
 
 ## Telemetry
 
@@ -254,7 +254,7 @@ row with:
 
 * `role = "operator"`
 * `run_id = "<uuid>"` — a fresh per-request UUID, **not** a fixed
-  `"standalone"` sentinel (the shared sentinel was dropped to avoid a
+  `"standalone"` papercup (the shared papercup was dropped to avoid a
   cross-cancellation hazard)
 * `spawn_id = "ephemeral-<random hex>"`
 * `window_key = "run:<uuid>"`

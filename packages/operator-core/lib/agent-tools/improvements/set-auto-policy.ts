@@ -81,7 +81,7 @@ export default defineTool({
     }
 
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('improvements:set-auto-policy set requires operator, architect, or queen role');
+      throw new Error('improvements:set-auto-policy set requires operator, architect, or mug role');
     }
     const patch = {
       ...(args.autoKinds !== undefined ? { autoKinds: args.autoKinds } : {}),

@@ -120,7 +120,10 @@ describe.skipIf(!haveHetzner)(
         // Two distinct VMs (distinct public IPs) — the same-host holepunch wall is
         // about ONE host, not one datacenter, so both in `ash` is a valid 2-machine run.
         const locations = (process.env.P2P_PERF_HETZNER_LOCATIONS ?? 'ash,ash').split(',').map((s) => s.trim());
-        const frameCount = Math.max(2, Number(process.env.HIVE_XM_FRAMES ?? 2));
+        const frameCount = Math.max(
+          2,
+          Number(process.env.POT_XM_FRAMES ?? process.env.HIVE_XM_FRAMES /* legacy env name — dual-accept until callers migrate */ ?? 2),
+        );
         // Hetzner ssh key id is numeric; the driver accepts string|number.
         const sshKeyId = Number(hetznerSshKeyId) || hetznerSshKeyId!;
         // Server NAME derives from the label; Hetzner 409s on a duplicate name, so

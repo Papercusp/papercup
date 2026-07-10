@@ -247,7 +247,7 @@ PG but the surface looks frozen until the 180s drift-repair poll.
 * Client subscribes WITH args (`voiceLease.current` → `{ workspaceId }`,
   `planItems.byPlan` → `{ planSlug }`) → pass those **same** args.
 
-This bit the Queen-autonomy settings page: the ceiling slider wrote to PG but
+This bit the Mug-autonomy settings page: the ceiling slider wrote to PG but
 the dot never moved because the route/tool emitted `{ workspaceId }` against a
 no-arg subscription. Fixed by switching those emits to name-only. (Belt-and-
 suspenders on the consumer side: an optimistic local overlay reconciled against

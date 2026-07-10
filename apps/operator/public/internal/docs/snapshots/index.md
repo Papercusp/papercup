@@ -135,7 +135,7 @@ durable DBOS workflow (`packages/operator-core/lib/dbos/provision-workflow.ts`,
 gated by `PAPERCUSP_DBOS_PROVISION`, default-on), and three first-party plugins
 ship `provision/` scripts (`cloudflare-stack` and `github-repo` ship the full
 `{setup,teardown,verify}.sh` trio; `cloudflare-pages` ships only `verify.sh`). Per
-\[\[plugin-system-hive-port-2026-06-11]] P-010, the shipped `ProvisionScript`
+\[\[plugin-system-pot-port-2026-06-11]] P-010, the shipped `ProvisionScript`
 type carries `path` / `timeoutSec` / `runAt` plus consent-dialog fields
 `displayName` / `description`; the proposed `network`, `writesState`, and
 `requiresInteractive` fields **stay design-only** and are not in the SDK.

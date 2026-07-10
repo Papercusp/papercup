@@ -77,7 +77,7 @@ out + the WI-1660 attribution race) — silenced by exact message in
 A file failing since BEFORE the break window, with the gate green meanwhile, is a
 chronic — the gate absorbed or skipped it. Check `test_runs` history FIRST; file a WI
 instead of blocking the greening (2026-07-05: `composition-chaos` reconcile-winner
-nondeterminism WI-2923, `observation-source-hive-backfill` view-era re-run WI-2924).
+nondeterminism WI-2923, `observation-source-pot-backfill` view-era re-run WI-2924).
 A test that re-runs a HISTORICAL migration body at head schema breaks the moment a later
 migration restructures its target (mig 383 dropped 366's trigger; mig 374 made
 `engineer_issues` a view) — guard the CURRENT contract, not the retired one.

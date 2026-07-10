@@ -9,7 +9,7 @@ per-turn token burn, the obvious source is the `assistant` events —
 `event.message.usage.output_tokens`. It parses cleanly and returns numbers,
 so nothing fails. But those usage objects are **early-stream snapshots**:
 each `assistant` event carries the message state when that content block
-landed, typically `output_tokens: 1–5`. A real 86-turn bee session summed to
+landed, typically `output_tokens: 1–5`. A real 86-turn cup session summed to
 **211** output tokens this way; the true figure was **27,833** (\~130×
 under-count). Any burn-rate heuristic (inflection detection, behavioral
 embeddings, cost attribution) silently degenerates to noise below its

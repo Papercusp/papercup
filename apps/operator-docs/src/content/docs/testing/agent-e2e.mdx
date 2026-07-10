@@ -291,6 +291,47 @@ its value — so the advice stands: pass **no** cluster env var to this
 recipe at all.)
 </Aside>
 
+<Aside type="caution" title="An isolated shell still file-watches src-tauri — a PEER's edit mid-litmus rebuilds+restarts YOUR binary (EI-8870)">
+`npm run tauri -- dev` (including the isolated §1.3 recipe above) has no
+"don't watch Rust" mode: it file-watches the whole `src-tauri` tree, and
+Tauri does not scope that watch per dev-port. On a shared multi-agent box,
+**any peer's edit under `src-tauri` — even one targeting a totally
+different port** — triggers a cargo rebuild + restart of every live `tauri
+dev` process reading that tree, yours included. Mid-litmus this looks like
+your app vanishing (`tauri-agent-tools probe` → `No bridge found for PID
+<n>`), and the rebuild can then **stall for minutes** if it loses a race
+for cargo's package-cache lock against another peer's concurrent cargo job
+(a `release-local.sh` build, a `cargo test` run) — per-job `CARGO_TARGET_DIR`
+isolation does not isolate the *shared* package cache, so two independent
+cargo invocations still serialize on it.
+
+**Recovery loop**, don't just re-probe the dead PID:
+
+1. Re-discover the new binary's PID by its dev port (matching on `comm` does
+   **not** work — `pgrep -x papercusp-desktop` never matches because `comm`
+   truncates at 15 chars):
+   ```sh
+   for P in $(pgrep -f debug/papercusp-desktop); do
+     tr '\0' '\n' < /proc/$P/environ | grep -q '^OPERATOR_DEV_PORT=3370$' && echo $P
+   done
+   ```
+2. If nothing turns up yet, the rebuild is still blocked on the cargo
+   package-cache lock — wait and retry rather than concluding the shell is
+   dead; it can take several minutes when contending with a peer's cargo job.
+3. Re-`probe`/`check` against the freshly discovered PID once found.
+
+**Also watch for a first-read-transient right after the restart**: the
+webview can briefly compute `background: 'none'` (or similarly blank/unset
+styles) for elements while the CSS chunk is still parsing post-reload. A
+`check`/`eval` run in that window can read as a false negative — re-evaluate
+once more after a short beat before trusting the first read.
+
+If you need a litmus run immune to a peer's `src-tauri` edit entirely, run
+the already-built binary directly instead of `tauri -- dev` (no file-watch),
+at the cost of not picking up your own Rust-side edits without a manual
+rebuild.
+</Aside>
+
 ### 1.4 Stale Vite cache
 
 If the Tauri sidecar log shows a JSX parse error referencing a line

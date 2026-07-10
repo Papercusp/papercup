@@ -41,9 +41,9 @@ Each blueprint maps its verbs to actions in its `spine.edges`
 (`libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml`), interpreted by the pure `deriveNext`
 (`.../src/blueprint/derive-next.ts`). The per-feature `director` spine — with the
 `NEXT_WORKER` / `NEXT_VALIDATOR` / `NEXT_ARCHITECT` / `NEXT_SCOPER` role edges — lives in the
-`coding-factory` blueprint. The `coding` blueprint is now the `kind: hive` Queen (the
-hive→coding / coding→coding-factory rename, domain-generic-hive-architecture-2026-06-18 D-011): its
-`spine.decider` is `queen` (alternative `operator`) and its edges are only `DONE` / `ESCALATE` / `IDLE`.
+`coding-factory` blueprint. The `coding` blueprint is now the `kind: pot` Mug (the
+pot→coding / coding→coding-factory rename, domain-generic-pot-architecture-2026-06-18 D-011): its
+`spine.decider` is `mug` (alternative `operator`) and its edges are only `DONE` / `ESCALATE` / `IDLE`.
 The global orchestrator (`packages/operator-core/lib/dbos/orchestrator-loop.ts`) is the
 deterministic code selector that starts a durable per-feature pipeline; the LLM decider that emits the
 per-feature verbs is the `director` role in `coding-factory`.

@@ -73,7 +73,7 @@ If your tabs render content imperatively (no `<Tabs.Content>`), Radix only flips
 
 **Wrapper:** `app/harness/Select.tsx` exports `<Select value onChange options>` with a flat options array. For grouped options (org/department/coding sections, etc.), inline Radix Select directly using `<Select.Group>` + `<Select.Label>`.
 
-Radix Select reserves `value=""` to mean "no value selected". If your business logic uses `''` as a sentinel for "default mode", map to a non-empty string at the boundary: `value={mode || '_default'} onChange={(v) => setMode(v === '_default' ? '' : v)}`. See `apps/operator/app/settings/user/page.tsx` (the "(use workspace default)" option maps `'_default'` ⇄ `''`).
+Radix Select reserves `value=""` to mean "no value selected". If your business logic uses `''` as a papercup for "default mode", map to a non-empty string at the boundary: `value={mode || '_default'} onChange={(v) => setMode(v === '_default' ? '' : v)}`. See `apps/operator/app/settings/user/page.tsx` (the "(use workspace default)" option maps `'_default'` ⇄ `''`).
 
 ## Native `<input>` + `<textarea>` styling
 

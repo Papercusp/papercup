@@ -26,7 +26,7 @@ This marker means *"I recovered this routine"* — **NOT** that the routine fail
 is proven — the routine is a loop (a real wedge is caught by the separate loop-stalled collector),
 OR its `next_fire_at` is a concrete FUTURE timestamp, OR it fired within the last 30 min
 (`last_fired_at` newer than `RECENT_FIRE_PROOF_MS`, WI-3098 — added because `next_fire_at` alone
-raced the collection instant, firing EI-7771 as a false positive for `cross-hive-outbox-drain`). So
+raced the collection instant, firing EI-7771 as a false positive for `cross-pot-outbox-drain`). So
 most self-heal markers no longer mint an EI. What still **leaks through** (and mints one) is an
 **active**, non-loop, reaper-marked routine with NEITHER a future `next_fire_at` NOR a recent
 `last_fired_at` — a low-cadence routine that hasn't re-fired since the requeue still reads as failing.

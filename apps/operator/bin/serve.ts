@@ -44,10 +44,20 @@ import { mkdir, writeFile, readFile, rm, rename, chmod } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process';
 import { ensureToolPathEnv } from '@papercusp/operator-core/lib/tool-path';
 import { runShutdownWithDeadline } from '../lib/shutdown-deadline';
-import { runSubstrateSidecarServer } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-sidecar-server';
-import { runSpawnerSidecarServer } from '@papercusp/operator-core/lib/fleet/spawner-sidecar-server';
-import { runGatewaySidecarMain, gatewayLogLine } from '@papercusp/operator-core/lib/inference-gateway/sidecar-main';
 import { getBuildInfo } from '@papercusp/operator-core/lib/build-info';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
+// The three sidecar entrypoints (substrate / spawner / inference-gateway) are
+// imported DYNAMICALLY inside main(), never here — same as host-bootstrap,
+// host-handler and embedded-pg below. Each is reachable only from its own
+// mutually-exclusive PAPERCUSP_*_SIDECAR_MODE branch, and each drags in a heavy
+// graph the other paths never touch: the hypercore/holepunch substrate host,
+// DBOS (which registers workflows at module-eval), and the gateway service.
+// Statically importing them made EVERY serve.mjs start — overwhelmingly the
+// plain operator boot, which uses none of the three — pay to evaluate all three
+// (and load their native addons). esbuild bundles a dynamic import into the
+// same single-file serve.mjs (no --splitting needed) behind a lazy `__esm`
+// init, so the packaged bundle is unchanged in shape and only the eager
+// evaluation goes away.
 
 const PAPERCUSP_DIR = join(homedir(), '.papercusp');
 const OPERATOR_JSON = join(PAPERCUSP_DIR, 'operator.json');
@@ -106,6 +116,49 @@ export function pidAlive(pid: number): boolean {
     // ESRCH = no such process; EPERM = exists but not ours.
     return (e as NodeJS.ErrnoException).code === 'EPERM';
   }
+}
+
+/**
+ * (EI-8894) True when a process's parent has changed since we recorded
+ * `originalPpid` at startup — i.e. we've been reparented/orphaned.
+ *
+ * Only meaningful on Unix: a hard-killed parent (SIGKILL, `launchctl
+ * kickstart -k`, a crash — anything that skips OUR OWN SIGTERM handler)
+ * never runs the desktop app's graceful `shutdown_children` teardown, so a
+ * managed sidecar can otherwise run forever as a zombie holding ports/
+ * storage under stale env (the "runaway serve.mjs --ensure at 357% CPU"
+ * symptom). Comparing the live ppid against the ppid recorded at spawn is
+ * portable across whatever the OS reparents orphans to (traditionally pid
+ * 1, but not guaranteed) — ANY change means our original parent is gone.
+ */
+export function isOrphanedFromParent(originalPpid: number, currentPpid: number): boolean {
+  return originalPpid > 0 && currentPpid !== originalPpid;
+}
+
+/**
+ * (EI-8894) Start a low-frequency watch that self-terminates this process
+ * (via `onOrphaned`, expected to be the same graceful `shutdown()` the
+ * SIGTERM handler uses) the moment our desktop parent dies WITHOUT signaling
+ * us first. Desktop-managed only (`PAPERCUSP_DESKTOP === '1'` — the same
+ * marker `resolveStickyPort` already gates on): a plain dev/CLI `serve` has
+ * no such parent contract and legitimately outlives its launching shell.
+ */
+export function startParentDeathWatch(onOrphaned: () => void): void {
+  if (process.env.PAPERCUSP_DESKTOP !== '1') return;
+  const originalPpid = process.ppid;
+  managedSetInterval(
+    'serve-desktop-parent-death-watch',
+    5000,
+    () => {
+      if (isOrphanedFromParent(originalPpid, process.ppid)) {
+        log(
+          `desktop parent pid ${originalPpid} is gone (now reparented to ${process.ppid}) — self-terminating instead of running orphaned`,
+        );
+        onOrphaned();
+      }
+    },
+    { category: 'watchdog' },
+  );
 }
 
 /** Read the current operator.json discovery, or null. */
@@ -588,12 +641,18 @@ async function main(): Promise<void> {
   // .ts the bundle doesn't contain. Divert to the sidecar JSON-RPC server BEFORE
   // any embedded-PG / operator boot; the net server keeps the process alive.
   if (process.env.PAPERCUSP_SUBSTRATE_SIDECAR_MODE === '1') {
+    const { runSubstrateSidecarServer } = await import(
+      '@papercusp/operator-core/lib/sync/hyperbee/substrate-sidecar-server'
+    );
     runSubstrateSidecarServer();
     return;
   }
   // PACKAGED spawner-sidecar (WI-344 ③): same re-exec divert for the agent-spawn
   // sidecar — serve.mjs is re-execed with PAPERCUSP_SPAWNER_SIDECAR_MODE=1.
   if (process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE === '1') {
+    const { runSpawnerSidecarServer } = await import(
+      '@papercusp/operator-core/lib/fleet/spawner-sidecar-server'
+    );
     runSpawnerSidecarServer();
     return;
   }
@@ -604,6 +663,9 @@ async function main(): Promise<void> {
   // supervisor's respawn loop restarts us, fail-closed. The gateway's HTTP
   // server keeps the process alive after a successful start.
   if (process.env.PAPERCUSP_GATEWAY_SIDECAR_MODE === '1') {
+    const { runGatewaySidecarMain, gatewayLogLine } = await import(
+      '@papercusp/operator-core/lib/inference-gateway/sidecar-main'
+    );
     runGatewaySidecarMain().catch((e) => {
       try {
         gatewayLogLine(`fatal: ${(e as Error)?.stack || String(e)}`);
@@ -738,6 +800,10 @@ async function main(): Promise<void> {
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
+  // EI-8894: a hard-killed desktop parent (launchctl kickstart -k, pkill -9,
+  // a crash) never sends us SIGTERM — self-detect the reparenting and run
+  // the SAME graceful teardown instead of surviving as an orphan.
+  startParentDeathWatch(() => shutdown('PARENT_DEATH'));
 
   try {
     pg = await ensurePostgres();

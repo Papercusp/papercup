@@ -362,7 +362,7 @@ Replaced with `postgres-js` + `@electric-sql/pglite-tools` in 2026-05-03 (commit
 
 > **Artifact moved.** The original offender was a Next.js catch-all route, `apps/operator/app/api/[[...route]]/route.ts`, with `mountPluginApiRoutes(plugins).then(log)` at module top level — re-evaluated per request by Next dev, producing `[plugin-mount]` log spam. That route is **gone** (`apps/operator/app/api/` is empty), and `mountPluginApiRoutes().then(...)` now lives in the one-time boot script `apps/operator/bin/host-bootstrap.ts` (the Hono host), so the "re-evaluated per request" premise no longer applies.
 
-The lesson generalizes: keep boot-time side effects (route mounting, pool warmup, log statements) in a script that runs **once at process start**, not at module top level on a path that can be re-imported/re-evaluated. If a `.then(log)` runs on every request, you've put init work somewhere hot. Guard it behind a "first call" sentinel or hoist it into the host bootstrap.
+The lesson generalizes: keep boot-time side effects (route mounting, pool warmup, log statements) in a script that runs **once at process start**, not at module top level on a path that can be re-imported/re-evaluated. If a `.then(log)` runs on every request, you've put init work somewhere hot. Guard it behind a "first call" papercup or hoist it into the host bootstrap.
 
 ### A6. Don't use `<details>` to gate "lazy" rendering
 
@@ -468,7 +468,7 @@ const out = await Promise.all(PHASE_ORDER.map((p) =>
 
 Sounds obvious in isolation but easy to miss when the per-iteration helper hides the fetch. Same pattern as A15 (request-scoped cache) but at a higher level — A15 dedupes WITHIN a single resolveEnv-style helper; A17 dedupes ACROSS calls to the same helper that share an invariant input.
 
-### A18. Don't pin per-process caches to module scope without a globalThis sentinel
+### A18. Don't pin per-process caches to module scope without a globalThis papercup
 
 Caches declared `const __cache = new Map()` at module top level look durable but **reset every time the runtime re-evaluates the module** (historically visible as repeated `[plugin-mount]` log lines under the old Next.js dev catch-all route; any HMR / module-reload setup can do this). The cache key looks like a key but it's effectively per-request because the Map itself is re-allocated.
 

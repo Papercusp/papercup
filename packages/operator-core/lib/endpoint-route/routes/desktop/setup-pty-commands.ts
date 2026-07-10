@@ -5,6 +5,7 @@
  * Ported from app/api/desktop/setup-pty-commands/route.ts. `auth: {}`.
  */
 import { platform, homedir, arch as osArch } from 'node:os';
+import { join as joinPath } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
 import { detectBinaries } from '../../../agent-bin-detect';
 import { allowedFrameworks, type OnboardingFramework } from '../../../onboarding/stage-resolver';
@@ -315,10 +316,20 @@ export function buildGithubLoginSpec(home: string): SpawnSpec {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { existsSync } = require('node:fs') as typeof import('node:fs');
       // The Tauri pty child gets NO inherited PATH (empty env), so a bare `gh`
-      // resolves against /usr/bin:/bin only. Prefer the gh BUNDLED in the
-      // sidecar (build-desktop-sidecar.sh → sidecar/bin/gh) — on a fresh GUI
-      // machine that's the only gh present.
-      for (const p of [`${process.cwd()}/bin/gh`, `${process.cwd()}/../bin/gh`]) {
+      // resolves against /usr/bin:/bin only. Prefer the STABLE shim at
+      // ~/.papercusp/bin/gh (installPapercuspFiles' ensureGhLinked keeps it
+      // symlinked to the current bundle's gh, refreshed every boot) over the raw
+      // app-bundle-relative paths below — `gh auth setup-git` bakes WHICHEVER
+      // path resolves here verbatim into `credential.https://github.com.helper`
+      // in ~/.gitconfig, and an app-bundle path (`/Applications/Papercusp.app/…`)
+      // dangles the instant the app is renamed/replaced (confirmed live on the
+      // Mac VM, WI-3626 — the bundle is now `Papercusp Server.app` /
+      // `Papercusp GUI.app`, no `Papercusp.app`). The stable shim path never
+      // moves, so anything that bakes IT into gitconfig survives every future
+      // rename too. Falls through to the bundle-relative paths for a dev box /
+      // an install that predates ensureGhLinked (this run's install pass hasn't
+      // relinked yet).
+      for (const p of [joinPath(home, '.papercusp', 'bin', 'gh'), `${process.cwd()}/bin/gh`, `${process.cwd()}/../bin/gh`]) {
         if (existsSync(p)) return p;
       }
       // eslint-disable-next-line @typescript-eslint/no-require-imports

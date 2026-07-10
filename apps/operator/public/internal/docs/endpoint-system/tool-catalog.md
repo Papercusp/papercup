@@ -32,7 +32,7 @@ List, get, status, plan reviews, phase paths, markdown index, escalation, health
 
 ### `operator:*` (23)
 
-The operator surface: `audit`, `budget`, `dedup_check`, `nudge`, `trigger_state`, `preview_prompt`, `decisions`, `preferences`, `multi_workspace` view, `credentials_status`, `paused` sentinel, the standing-approval verbs (`standing_approvals_list` / `standing_approvals_decide` / `standing_approval_mark_shown`), and the voice/conversation verbs (`converse`, `conv_voice`, `voice_prefs`, `voice_debug`, `voice_spend_summary`, `voice_utterance_log`, `notes`, `stats`, `rate_limit_config`). (There is no `operator:scan`, `operator:dispatch`, `operator:scanner`, or (any longer) `operator:delegate` — names like those appear only in test files, prompt templates, and plan docs, not in the registry.)
+The operator surface: `audit`, `budget`, `dedup_check`, `nudge`, `trigger_state`, `preview_prompt`, `decisions`, `preferences`, `multi_workspace` view, `credentials_status`, `paused` papercup, the standing-approval verbs (`standing_approvals_list` / `standing_approvals_decide` / `standing_approval_mark_shown`), and the voice/conversation verbs (`converse`, `conv_voice`, `voice_prefs`, `voice_debug`, `voice_spend_summary`, `voice_utterance_log`, `notes`, `stats`, `rate_limit_config`). (There is no `operator:scan`, `operator:dispatch`, `operator:scanner`, or (any longer) `operator:delegate` — names like those appear only in test files, prompt templates, and plan docs, not in the registry.)
 
 ### `messages:*` (4)
 
@@ -135,7 +135,7 @@ Code-graph queries proxied to a long-lived `gitnexus mcp` subprocess. Tools regi
 
 ### `@papercupai/orchestrator-spawn` — **retired (2026-06-06)**
 
-The Phase-9 "spawn agents as tool calls" plugin was never installed (its `/api/plugins/orchestrator/spawn` path 404'd) and is now retired — moved to `libs/papercusp/_retired/orchestrator-spawn-plugin/` and superseded by `packages/operator-core/lib/fleet/operator-spawn.ts`. Spawn agents via the built-in `fleet:*` tools (`bee:spawn`, `fleet:supervise`, `fleet:tree`, …) instead.
+The Phase-9 "spawn agents as tool calls" plugin was never installed (its `/api/plugins/orchestrator/spawn` path 404'd) and is now retired — moved to `libs/papercusp/_retired/orchestrator-spawn-plugin/` and superseded by `packages/operator-core/lib/fleet/operator-spawn.ts`. Spawn agents via the built-in `fleet:*` tools (`cup:spawn`, `fleet:supervise`, `fleet:tree`, …) instead.
 
 ### `@papercupai/firecrawl-bridge` (3)
 

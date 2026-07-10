@@ -89,6 +89,7 @@ export function Table<Row>({
   getRowKey,
   onRowClick,
   isRowSelected,
+  rowStyle,
   emptyLabel,
 }: {
   className?: string;
@@ -99,6 +100,8 @@ export function Table<Row>({
   getRowKey: (row: Row) => string;
   onRowClick?: (row: Row) => void;
   isRowSelected?: (row: Row) => boolean;
+  /** Optional per-row style (e.g. dimming a revoked row). Merged over the built-ins. */
+  rowStyle?: (row: Row) => CSSProperties | undefined;
   /** Rendered as a single caption-only row when `rows` is empty (default: nothing extra). */
   emptyLabel?: ReactNode;
 }) {
@@ -133,6 +136,7 @@ export function Table<Row>({
                   background: isRowSelected?.(row)
                     ? 'color-mix(in oklab, var(--accent), transparent 88%)'
                     : undefined,
+                  ...rowStyle?.(row),
                 }}
                 aria-selected={isRowSelected ? isRowSelected(row) : undefined}
               >

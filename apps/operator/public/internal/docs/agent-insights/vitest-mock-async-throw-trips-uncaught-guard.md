@@ -18,7 +18,7 @@ otherwise pass. Switching to a **synchronous** throwing `mockImplementation`
 does not fix it either; the guard still fires.
 
 Concretely, this bit `FLAGS.HIVE_SEED_BUNDLE`'s fail-open gate
-(`bootstrap-papercusp-hive.ts`): the requirement is "a flags-read hiccup must
+(`bootstrap-papercusp-pot.ts`): the requirement is "a flags-read hiccup must
 never silently force the cold join path" — i.e. a thrown flag-read error
 should make the gate behave as if the flag were ON. Mocking
 `@papercusp/flags/server`'s `getFlag` to reject cost \~3 failed iterations
@@ -32,7 +32,7 @@ parameter for the call it needs to make (defaulted to the real
 implementation), and pass a throwing closure directly in the test:
 
 ```ts
-// bootstrap-papercusp-hive.ts
+// bootstrap-papercusp-pot.ts
 export async function seedBundleEnabled(
   readFlag: () => Promise<boolean> = () => getFlag(FLAGS.HIVE_SEED_BUNDLE, 'system'),
 ): Promise<boolean> {
@@ -45,7 +45,7 @@ export async function seedBundleEnabled(
 ```
 
 ```ts
-// bootstrap-papercusp-hive-seed-flag.test.ts — no vi.mock at all
+// bootstrap-papercusp-pot-seed-flag.test.ts — no vi.mock at all
 it('a flag-read THROW ⇒ fails OPEN (true)', async () => {
   expect(
     await seedBundleEnabled(async () => {

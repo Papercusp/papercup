@@ -25,13 +25,13 @@ and runs in the finalize recipe on **both** terminal outcomes:
 events always get a curation pass.
 
 A naming note: the 2026-06-18 rename
-(\[\[domain-generic-hive-architecture-2026-06-18]] D-011) moved this spine from
-the id `coding` to `coding-factory`, and reused `coding` for the Hive (Queen +
-coding bees). So the live default `coding` blueprint is now the single-role
-Hive operator — it has **no** curator role and no `gates.finalize`; the curator
-pipeline lives only in `coding-factory`, which the Hive falls back to per-repo
+(\[\[domain-generic-pot-architecture-2026-06-18]] D-011) moved this spine from
+the id `coding` to `coding-factory`, and reused `coding` for the Pot (Mug +
+coding cups). So the live default `coding` blueprint is now the single-role
+Pot operator — it has **no** curator role and no `gates.finalize`; the curator
+pipeline lives only in `coding-factory`, which the Pot falls back to per-repo
 (`extends: coding-factory`). The blueprint-id aliases deliberately have no
-`coding → coding-factory` entry — a bare `coding` resolves to the new Hive
+`coding → coding-factory` entry — a bare `coding` resolves to the new Pot
 (`libs/papercusp/packages/orchestrator/src/blueprint-aliases.ts`).
 
 ## What the curator does (per its persona)
@@ -101,7 +101,7 @@ flags; the curator files.
 
 Memory compaction is the curator's pipeline job within the `coding-factory`
 spine. (After the 2026-06-18 rename the live default `coding` blueprint is the
-Hive, which has no curator pass; the curator pipeline ships only where the
+Pot, which has no curator pass; the curator pipeline ships only where the
 spine does.) Curation has also grown an operator-level read surface: the
 `curation:*` tools
 (`packages/operator-core/lib/agent-tools/curation/` — `curation:feed`,

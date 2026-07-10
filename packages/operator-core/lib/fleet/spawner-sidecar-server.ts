@@ -33,6 +33,7 @@ import * as path from 'node:path';
 import * as net from 'node:net';
 import { spawn } from 'node:child_process';
 import { spawnInvokeOnce, type SpawnInvokeOnceResult } from '../dbos/orchestrator-runner';
+import { installFlagOverrideStore } from '../flag-override-store';
 import { resolveSpawnerSocketPath } from './spawner-socket-path';
 
 // JSON-RPC 2.0 response builders
@@ -110,6 +111,16 @@ function execProcess(params: ExecParams): Promise<{ code: number; stdout: string
  * listening so the parent spawnSpawnerSidecar() handshake completes.
  */
 export function runSpawnerSidecarServer(): void {
+  // Runtime flag overrides (EI-8867 / WI-3628). `getFlag()` consults the PG override store
+  // ONLY in a process that installed it. This is a STANDALONE process (dev: `tsx
+  // bin/spawner-sidecar.ts`; packaged: serve.mjs re-exec'd with PAPERCUSP_SPAWNER_SIDECAR_MODE),
+  // and it does not import flag-bus — so without this, every `flags:set` would report success
+  // and be silently INVISIBLE here, with getFlag() falling through to FLAG_DEFAULTS. That is the
+  // exact failure that made the inference gateway ignore a dark flag for hours.
+  // spawnInvokeOnce() (this sidecar's whole job) reads FLEET_CAPABILITY_ONLY + REPLACE_CLAUDE_BASE
+  // via orchestrator-runner. Installed HERE, in the server main, so BOTH entry routes inherit it.
+  // Idempotent + fail-soft: a store fault degrades to defaults exactly as before, never blocks boot.
+  installFlagOverrideStore();
   const socketPath = resolveSpawnerSocketPath();
   const socketDir = path.dirname(socketPath);
 

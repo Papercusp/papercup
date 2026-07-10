@@ -12,7 +12,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, fireEvent } from '@testing-library/react';
 
 vi.mock('@papercusp/grid-core', () => ({ VirtualGrid: () => null }));
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   parseAsString: { withDefault: () => ({}) },
   useQueryState: () => [null, () => {}],
 }));

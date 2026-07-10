@@ -36,8 +36,15 @@ export interface VoicePrefs {
   // Feature toggles (defaults reflect v4 §3.2)
   speakSuggestions: boolean; // ON
   speakBackgroundToasts: boolean; // ON
-  speakReceivingFlips: boolean; // OFF — chatty
-  speakEscalations: boolean; // ON — significant
+  /**
+   * Announce active↔passive mode flips ("Papercup active." / "Papercup passive.").
+   * Was `speakReceivingFlips`, which gated a card "flips to consumed" event deleted
+   * by the card-lifecycle collapse (e46ba9c) — it had no reader and could never
+   * fire. Renamed + repointed at the live mode-flip event (settings-audit
+   * 2026-07-09, owner-directed). `speakEscalations` was dropped outright in the
+   * same pass: operator cards have no `escalated` state to announce.
+   */
+  speakModeFlips: boolean; // OFF — chatty
   speakCadenceStatus: boolean; // OFF — chatty
   speakNudges: boolean; // ON
   wakeWordIntents: boolean; // ON
@@ -333,8 +340,7 @@ export interface VoicePrefs {
 export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   speakSuggestions: true,
   speakBackgroundToasts: true,
-  speakReceivingFlips: false,
-  speakEscalations: true,
+  speakModeFlips: false,
   speakCadenceStatus: false,
   speakNudges: true,
   silenceVoice: false,

@@ -5,21 +5,21 @@
  * The Sentinel is the Herald: it SUGGESTS and HANDS OFF, it never places work
  * itself. Its capability envelope denies cup:spawn/placement by design (the whole
  * point of the role), so where the OPERATOR turn dispatches `<spawn>` directly into
- * the nursery, the SENTINEL turn dispatches `<handoff_to_queen>` THROUGH HERE:
+ * the nursery, the SENTINEL turn dispatches `<handoff_to_mug>` THROUGH HERE:
  *
  *   1. (P-015) Resolve the action's TIER through the EXISTING standing-approval /
  *      tier system — the Sentinel is the user-facing approval tier.
  *        - low                    → just file + nudge (the common case).
  *        - medium/high, NOT yet a → surface for approval (record a standing-approval
  *          standing approval         candidate + escalate to the human) and DO NOT
- *                                    place yet. The Queen acts once the user approves.
+ *                                    place yet. The Mug acts once the user approves.
  *        - medium/high, ALREADY   → file + nudge (the user has a standing approval
  *          standing-approved          for this (capability, harness) — treat like low).
  *   2. (P-014) File a HIGH-PRIORITY `work_item` describing what the user wants,
- *      tagged `user-requested` — the durable record the Queen triages. Filed
- *      UNASSIGNED so the Queen's default `work_items:create` demand subscription
+ *      tagged `user-requested` — the durable record the Mug triages. Filed
+ *      UNASSIGNED so the Mug's default `work_items:create` demand subscription
  *      wakes her, and `urgent` when flagged so the hive urgent-wake fires NOW.
- *   3. (P-014) Nudge the Queen (a coord notify; an escalation when urgent) so she
+ *   3. (P-014) Nudge the Mug (a coord notify; an escalation when urgent) so she
  *      picks it up promptly — a wake, not just an inject.
  *   4. (P-016) Subscribe the operator-owner to the work_item thread and, when the
  *      item later lands, report it back through the hindsight "[While you were
@@ -29,11 +29,11 @@
  *      pending-handoff registry the lifecycle observer drains.
  *
  * The Sentinel NEVER calls cup:spawn — the converse dispatch (converse.ts) only
- * reads `<handoff_to_queen>` for role==='sentinel' and only reads `<spawn>` for the
+ * reads `<handoff_to_mug>` for role==='sentinel' and only reads `<spawn>` for the
  * operator, so the two paths can't cross.
  *
  * Dependency-injected (the `deps` arg) so the dispatch unit-tests without PG: the
- * work_item create, the Queen wake/nudge, the preferences/tier reads, and the
+ * work_item create, the Mug wake/nudge, the preferences/tier reads, and the
  * subscribe are all seams. The default deps wire the real substrate.
  */
 
@@ -41,14 +41,14 @@ import type { HandoffRequest } from './operator-converse-tags';
 import { resolveActualTier } from './operator-suggestion-schema';
 import type { CapabilityTier } from '@papercusp/plugin-sdk';
 
-/** The label the Sentinel tags onto every handoff work_item (P-014). The Queen's
+/** The label the Sentinel tags onto every handoff work_item (P-014). The Mug's
  *  survey + the user's filters key on it to spot "the user explicitly asked for
  *  this". */
 export const USER_REQUESTED_LABEL = 'user-requested';
 
 /** The capability the Sentinel's handoff is recorded under for the standing-approval
  *  tier resolution / candidate. The Sentinel itself can't place — the handoff
- *  exercises the QUEEN's placement capability, so that's what the user approves a
+ *  exercises the MUG's placement capability, so that's what the user approves a
  *  standing grant for. */
 export const HANDOFF_CAPABILITY = 'cup:spawn';
 
@@ -64,9 +64,9 @@ export interface SentinelHandoffDeps {
   }) => Promise<{ id: string } | null>;
   /** Bump the new item to high priority (the user-asked default). Best-effort. */
   setPriority: (id: string, priority: 'high', harness: string | null) => Promise<void>;
-  /** Nudge the Queen — a coord notify (escalation when urgent) carrying a wake.
+  /** Nudge the Mug — a coord notify (escalation when urgent) carrying a wake.
    *  `kind:'escalate'` for urgent, `kind:'send'` otherwise. */
-  nudgeQueen: (n: {
+  nudgeMug: (n: {
     workItemId: string;
     summary: string;
     urgent: boolean;
@@ -77,7 +77,7 @@ export interface SentinelHandoffDeps {
   subscribeOperator: (workItemId: string, harness: string | null) => Promise<void>;
   /** Surface a medium/high handoff for the user's approval (P-015): record a
    *  standing-approval candidate + escalate. Returns nothing — the placement is
-   *  deferred to the Queen, post-approval. */
+   *  deferred to the Mug, post-approval. */
   surfaceForApproval: (s: {
     summary: string;
     tier: CapabilityTier;
@@ -117,7 +117,7 @@ export function resolveHandoffTier(h: HandoffRequest): CapabilityTier {
 }
 
 /**
- * Dispatch ONE `<handoff_to_queen>` request. Tier-gated (P-015), then file +
+ * Dispatch ONE `<handoff_to_mug>` request. Tier-gated (P-015), then file +
  * nudge (P-014) + subscribe-for-hindsight (P-016). Never throws — a failure is
  * returned as `{ status: 'error' }` so a bad handoff can't crash the user-visible
  * turn (same contract as the operator's `<spawn>` dispatch).
@@ -132,7 +132,7 @@ export async function dispatchSentinelHandoff(
 
     // P-015: the Sentinel is the user-facing approval tier. A medium/high action
     // the user has NOT standing-approved for this (capability, harness) is
-    // surfaced for approval rather than placed — the Queen acts post-approval.
+    // surfaced for approval rather than placed — the Mug acts post-approval.
     if (tier !== 'low') {
       const approvals = await deps.standingApprovals().catch(() => []);
       const already = approvals.some(
@@ -152,7 +152,7 @@ export async function dispatchSentinelHandoff(
     }
 
     // P-014: file the high-priority, user-requested work_item (unassigned →
-    // wakes the Queen via her default create-demand subscription; urgent →
+    // wakes the Mug via her default create-demand subscription; urgent →
     // fires the hive urgent-wake NOW).
     const title = h.summary.slice(0, 200);
     const created = await deps.createWorkItem({
@@ -172,10 +172,10 @@ export async function dispatchSentinelHandoff(
     // hindsight ("[While you were away]").
     await deps.subscribeOperator(created.id, h.harness).catch(() => {});
 
-    // P-014: nudge the Queen with a wake (escalate when urgent).
+    // P-014: nudge the Mug with a wake (escalate when urgent).
     let nudged = false;
     try {
-      await deps.nudgeQueen({
+      await deps.nudgeMug({
         workItemId: created.id,
         summary: h.summary,
         urgent: h.urgent,

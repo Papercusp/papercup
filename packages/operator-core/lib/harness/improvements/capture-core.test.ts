@@ -56,7 +56,7 @@ describe('captureImprovement — filer-role attribution (close-observation-attri
   it('stamps payload.filedByRole on an observation when given (fixes the ~100% unknown bucket)', async () => {
     const d = deps();
     await captureImprovement(
-      { title: 'hive-coordination-health scorecard', kind: 'change', lane: 'observation', filedByRole: 'kettle' },
+      { title: 'pot-coordination-health scorecard', kind: 'change', lane: 'observation', filedByRole: 'kettle' },
       d,
     );
     expect((d.created[0].payload as Record<string, unknown>).filedByRole).toBe('kettle');

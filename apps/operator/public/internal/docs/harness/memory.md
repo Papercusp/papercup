@@ -73,9 +73,9 @@ behind the `memory:remember` / `memory:search` / `memory:list` /
 Every `memory:remember` declares one of four **kinds** — `user` /
 `feedback` / `project` / `reference`. Scoping: pass a `harness_slug` for
 project facts; omit it for personal facts; or pass a `hive_slug` (mutually
-exclusive with `harness_slug`) to write into a Hive's *shared* pool, for
+exclusive with `harness_slug`) to write into a Pot's *shared* pool, for
 discovered conventions — test command, build path, design system — the whole
-hive should inherit. Client-local file memories (e.g. Claude Code's topic
+pot should inherit. Client-local file memories (e.g. Claude Code's topic
 files) are a per-client layer — the shared store is the one every agent
 recalls from.
 

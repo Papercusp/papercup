@@ -13,7 +13,7 @@ no built-in blueprint "scout" at /…/apps/operator/dist-host/blueprints/scout/b
 ```
 
 The blueprint *does* exist in source (`libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml`).
-This has recurred (EI-1562 = `no built-in blueprint "hive"`, EI-8628 = `scout`).
+This has recurred (EI-1562 = `no built-in blueprint "pot"`, EI-8628 = `scout`).
 
 ## Why it happens
 

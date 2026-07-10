@@ -77,7 +77,7 @@ export async function readLimitFailureRate(
   );
 }
 
-/** A hive-coordination-health-style rating ({ rating, evidence}). */
+/** A pot-coordination-health-style rating ({ rating, evidence}). */
 export interface LimitFailureGrade {
   rating: 'healthy' | 'degraded' | 'broken';
   evidence: string;

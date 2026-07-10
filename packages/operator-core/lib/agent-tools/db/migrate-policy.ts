@@ -44,7 +44,7 @@ export default defineTool({
       return { content: [{ type: 'text', text: JSON.stringify({ policy: await readMigratePolicy() }) }] };
     }
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('db:migrate-policy set requires operator, architect, or queen role');
+      throw new Error('db:migrate-policy set requires operator, architect, or mug role');
     }
     if (args.lockTimeoutMs === undefined && args.statementTimeoutMs === undefined) {
       throw new Error('set requires lockTimeoutMs and/or statementTimeoutMs');

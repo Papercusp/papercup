@@ -54,7 +54,7 @@ boot-apply semantics.
    The lint error even says "use db:next-migration", naming a command that (before
    the fix) didn't exist as a script.
 
-   **Role access (2026-06-25):** `db:next-migration` previously used `agentRoles: [...SU_ROLES, 'bee']` — only superuser-role agents and the generic bee could call
+   **Role access (2026-06-25):** `db:next-migration` previously used `agentRoles: [...SU_ROLES, 'cup']` — only superuser-role agents and the generic cup could call
    it. Changed to `agentRoles: [...AGENT_ROLES]`: every built-in role (worker,
    validator, reviewer, architect, etc.) can now call the MCP tool directly and
    participate in collision-free allocation without falling back to the npm CLI.

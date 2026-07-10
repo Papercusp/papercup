@@ -27,6 +27,7 @@
  *    which handle decorators inconsistently.
  */
 import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import {
   dbosOrchestratorActive,
   dbosTimersActive,
@@ -82,6 +83,62 @@ export function dbosStarted(): boolean {
   return !!G.__papercuspDbosStarted;
 }
 
+/**
+ * WI-3619 (2026-07-09 restart-storm incident): the boot-time PG probe in
+ * `startDbos` is a SINGLE 5s connect attempt — and on a loaded host (the
+ * /tmp/pcv incident ran load 150–290, and boot always races the esbuild
+ * bundle + the whole process start storm) that one attempt can time out even
+ * though PG is perfectly healthy. The old behavior then skipped DBOS FOR THE
+ * PROCESS LIFETIME: no routinesTick, no git-sync routine, nothing — which
+ * reads exactly like a "frozen ticker" to bghost-watchdog, whose restart then
+ * re-creates the very boot-time load spike that fails the NEXT generation's
+ * probe (a self-sustaining restart loop; see EI-8901). Instead of
+ * skip-forever, arm a bounded-cadence retry that re-runs `startDbos()` (the
+ * G-flag + probe keep it idempotent) until PG answers — DBOS then launches
+ * minutes late instead of never, the ticker freshens, and the watchdog goes
+ * quiet. One warn line per failed retry (30s default) keeps it diagnosable.
+ */
+const PG_LAUNCH_RETRY_MS = Math.max(
+  10_000,
+  Number(process.env.PAPERCUSP_DBOS_PG_RETRY_MS) || 30_000,
+);
+let pgRetryTimer: ManagedHandle | null = null;
+let pgRetryInFlight = false;
+
+function armPgLaunchRetry(): void {
+  if (pgRetryTimer) return;
+  console.warn(
+    `[dbos] arming PG-reachability launch retry every ${PG_LAUNCH_RETRY_MS}ms — ` +
+      `DBOS launches as soon as PG answers (previous behavior: skip for the process lifetime)`,
+  );
+  pgRetryTimer = managedSetInterval(
+    'dbos-pg-launch-retry',
+    PG_LAUNCH_RETRY_MS,
+    () => {
+      if (G.__papercuspDbosStarted) {
+        pgRetryTimer?.stop();
+        pgRetryTimer = null;
+        return;
+      }
+      if (pgRetryInFlight) return; // single-flight: never overlap probes/launches
+      pgRetryInFlight = true;
+      void startDbos()
+        .catch((e) =>
+          console.warn('[dbos] launch retry failed:', e instanceof Error ? e.message : e),
+        )
+        .finally(() => {
+          pgRetryInFlight = false;
+          if (G.__papercuspDbosStarted && pgRetryTimer) {
+            pgRetryTimer.stop();
+            pgRetryTimer = null;
+            console.log('[dbos] launched on retry — PG became reachable after the boot-time miss');
+          }
+        });
+    },
+    { category: 'lifecycle' },
+  );
+}
+
 /** Idempotent single launch. Safe across Next HMR re-registers. */
 export async function startDbos(): Promise<void> {
   if (G.__papercuspDbosStarted) return;
@@ -98,10 +155,12 @@ export async function startDbos(): Promise<void> {
       await probe`SELECT 1`;
     } catch (err) {
       console.warn(
-        `[dbos] resolved PG not reachable (source=${source}) — skipping DBOS launch:`,
+        `[dbos] resolved PG not reachable (source=${source}) — deferring DBOS launch:`,
         err instanceof Error ? err.message : err,
       );
       await probe.end({ timeout: 2 }).catch(() => {});
+      // WI-3619: retry instead of skip-forever (see armPgLaunchRetry's doc).
+      armPgLaunchRetry();
       return;
     }
     await probe.end({ timeout: 2 }).catch(() => {});
@@ -252,6 +311,32 @@ export async function startDbos(): Promise<void> {
     // reaping stuck fires). Same process-level rationale; reads git-sync routine health.
     const { startGitSyncStallWatchdog } = await import('../release/git-sync-stall-watchdog');
     startGitSyncStallWatchdog(getOrgPg().sql);
+    // Sibling (WI-3612, EI-8820 follow-up): a git worktree carrying uncommitted edits that
+    // NO git-sync routine (or documented exclusion) covers — the class that stranded WI-3449
+    // for hours (an agent worked inside a linked env-tree worktree git-sync never sees).
+    // Cheap (no DB round-trip; shells `git worktree list` + `git status` per worktree) and
+    // scoped to THIS repo's own canonical checkout. Kill-switch:
+    // PAPERCUSP_WORKTREE_COVERAGE_WATCHDOG='0'.
+    try {
+      const { startWorktreeCoverageWatchdog } = await import('../release/worktree-coverage-watchdog');
+      const { execFileSync } = await import('node:child_process');
+      // Same resolution pattern as desktop-install/workspace-map.ts: ask git for the
+      // canonical checkout root rather than trusting process.cwd() (which is wherever
+      // this process happened to boot from, e.g. apps/operator/).
+      let repoRoot: string;
+      try {
+        repoRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+          encoding: 'utf8',
+          timeout: 5000,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim();
+      } catch {
+        repoRoot = process.cwd();
+      }
+      startWorktreeCoverageWatchdog(repoRoot);
+    } catch (e) {
+      console.warn('[worktree-coverage-watchdog] failed to start (non-fatal):', e instanceof Error ? e.message : e);
+    }
     // Sibling (Layer 4, mcp-host-availability-resilience): a spawned bee working DARK (tool-less)
     // after a :3070 deploy restart — alive + generating output, but its tool-call-coupled presence
     // beat predates the restart, so it never re-attached its papercusp MCP. Same process-level

@@ -19,7 +19,9 @@ const H = vi.hoisted(() => ({
   nuqsSetters: {} as Record<string, ReturnType<typeof vi.fn>>,
 }));
 
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   useQueryState: (key: string) => {
     const setter = (H.nuqsSetters[key] ??= vi.fn((v: unknown) => {
       H.nuqsState[key] = v;

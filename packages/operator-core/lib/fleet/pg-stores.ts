@@ -131,7 +131,7 @@ export async function recordSpawnPg(sql: Db, input: RecordSpawnInput): Promise<v
       restart_strategy = EXCLUDED.restart_strategy
   `;
   // data-sync-push-completion-2026-06-23 D-008 follow-up (P-007 freshness gap): the
-  // QueenHeartbeat sidebar reads `hive.controlState`, whose lastWakeAt = the MORE RECENT
+  // MugHeartbeat sidebar reads `hive.controlState`, whose lastWakeAt = the MORE RECENT
   // of the recordHiveWake ledger AND `latestQueenWakeAt` (= max(started_at) of THIS
   // table's child_role='queen' rows). The wake-brain Queen spawns the queen WITHOUT
   // calling recordHiveWake, so before this a real queen wake only surfaced on the

@@ -3,9 +3,16 @@
  * (endpoint-hono-elimination-2026-05-21). Ported off `_hono/oracle.ts`
  * (mounted via `registerOracle`). URLs unchanged.
  *
- *   GET  /api/oracle/config
- *   PUT  /api/oracle/config   body: { prompt?, memory? }
  *   POST /api/oracle/chat     body: { messages: [...] }  → SSE stream
+ *
+ * WI-3449 (2026-07-10, settings audit): the `GET`/`PUT /oracle/config`
+ * routes were removed here — they existed solely to back the
+ * `/settings/oracle` settings page (prompt/memory editor UI), which was
+ * removed as testing-only / cut for V1. The underlying config STORE
+ * (`readOracleConfig`/`writeOracleConfig` in `../../../agent-tools/oracle/prompts`)
+ * is NOT removed — `composeOraclePrompt` still reads it on every chat turn
+ * to inject the persisted prompt/memory, so the broader OracleDock chat
+ * feature below is unaffected.
  *
  * The legacy router gated `/oracle/*` with a Hono middleware that 404s
  * when the flag is off (V1 ship-state gate). `defineTool` has no
@@ -20,7 +27,6 @@ import { sseResponse } from '@papercusp/sse';
 import { dispatchProjectedToolStream, lookupByMcpName } from '@papercusp/agent-mcp';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../../workspace-registry';
-import { readOracleConfig, writeOracleConfig } from '../../../agent-tools/oracle/prompts';
 import { getSessionUserOrDefault } from '../../../auth';
 import '../../../agent-tools/index';
 
@@ -32,33 +38,6 @@ async function oracleEnabled(): Promise<boolean> {
 }
 
 const NOT_FOUND = () => new Response(null, { status: 404 });
-
-const configGet = defineTool({
-  method: 'GET',
-  path: '/oracle/config',
-  auth: 'public',
-  async handler() {
-    if (!(await oracleEnabled())) return NOT_FOUND();
-    return Response.json(await readOracleConfig());
-  },
-});
-
-const configPut = defineTool({
-  method: 'PUT',
-  path: '/oracle/config',
-  auth: 'loopback',
-  async handler(req) {
-    if (!(await oracleEnabled())) return NOT_FOUND();
-    const body = await req.json().catch(() => ({}));
-    if (typeof body.prompt === 'string' || typeof body.memory === 'string') {
-      await writeOracleConfig({
-        prompt: typeof body.prompt === 'string' ? body.prompt : undefined,
-        memory: typeof body.memory === 'string' ? body.memory : undefined,
-      });
-    }
-    return Response.json(await readOracleConfig());
-  },
-});
 
 const chat = defineTool({
   method: 'POST',
@@ -146,4 +125,4 @@ const chat = defineTool({
   },
 });
 
-export default [configGet, configPut, chat];
+export default [chat];

@@ -1,11 +1,35 @@
 /**
  * serve-wiring.integration.test.ts — P-201 end to end: `wireHiveGitServe` +
- * `openHiveGitFetchDuplex` over TWO REAL Protomux instances on a real
- * unix-socket pair (standing in for the hive-swarm connection — the same
- * substitution fetch-transport.integration.test.ts makes for a raw duplex),
- * driving a REAL `git upload-pack` ↔ `git fetch` round trip (git on PATH, no
- * swarm/DHT). Exercises the mode gate against the REAL federated settings
- * store (git-sync-action.ts's own dependency, unmocked here on purpose).
+ * `openHiveGitFetchDuplex` over TWO REAL Protomux instances on a
+ * `@hyperswarm/secret-stream`-framed unix-socket pair (standing in for the
+ * hive-swarm connection), driving a REAL `git upload-pack` ↔ `git fetch`
+ * round trip (git on PATH, no swarm/DHT). Exercises the mode gate against the
+ * REAL federated settings store (git-sync-action.ts's own dependency,
+ * unmocked here on purpose).
+ *
+ * WHY SecretStream AND NOT A BARE net.Socket (WI-3490 live finding,
+ * 2026-07-09): Protomux's own contract (its README: "By framed stream, it has
+ * to be a stream that preserves the messages, ie something that length
+ * prefixes like @hyperswarm/secret-stream") REQUIRES a message-framed
+ * transport — a bare `net.Socket` is a raw byte stream with NO such
+ * guarantee. Wiring `wireHiveGitServe`/`openHiveGitFetchDuplex` directly onto
+ * raw sockets (the original shape of this test) reproduced a genuine, 100%
+ * deterministic hang OUTSIDE vitest/PG too (a standalone tsx repro): two
+ * small writes issued close together (the channel's "open" control message
+ * immediately followed by the "req" data message) land in ONE 'data' event
+ * on the receiving raw socket (confirmed via a `net.Socket.prototype.write`
+ * + `Protomux.prototype._ondata` monkeypatch: a single 68-byte chunk = the
+ * 55-byte open + the 13-byte req coalesced) — but `Protomux._ondata` decodes
+ * only ONE message per 'data' event, so the coalesced `req` bytes are
+ * silently never dispatched and `handleReq` never fires. This is a
+ * TEST-HARNESS bug, not a `serve-wiring.ts` production bug: the real
+ * hive-swarm connection's `noiseStream` already provides this framing
+ * natively, so production is unaffected. Wrapping each raw socket end in a
+ * `SecretStream(isInitiator, rawSocket)` (already a transitive dependency via
+ * `apps/operator`'s `hyperswarm`/`corestore`/`hyperbee` deps — same hoisted-
+ * import pattern `lib/sync/hyperbee/swarm.ts` already relies on for
+ * `protomux`/`corestore`) reproduces the REAL connection's framing and the
+ * hang disappears (confirmed via the same standalone repro).
  *
  * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/serve-wiring.integration.test.ts
  */
@@ -15,6 +39,7 @@ import { createServer, connect, type Server, type Socket } from 'node:net';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import SecretStream from '@hyperswarm/secret-stream';
 import type { OrgTestDb } from '../../../test/_org-test-db';
 import { createOrgTestDb } from '../../../test/_org-test-db';
 import { _resetForTests } from '@papercusp/db-org';
@@ -52,6 +77,7 @@ describe('hive-git serve-wiring (P-201: serveUploadPack over the papercusp/hive-
   let sockPath: string;
   let server: Server;
   let clientSocket: Socket;
+  let clientNoise: InstanceType<typeof SecretStream>;
   let sha = '';
   let db: OrgTestDb;
   let prevAppUrl: string | undefined;
@@ -110,7 +136,16 @@ describe('hive-git serve-wiring (P-201: serveUploadPack over the papercusp/hive-
     // own link; here it also carries the Protomux muxer for BOTH channels).
     server = createServer({ allowHalfOpen: true }, (srvConn) => {
       srvConn.on('error', () => {});
-      wireHiveGitServe(srvConn, TOPIC, { potHomeSlug: HIVE, workspaceId: WORKSPACE_ID });
+      // Protomux requires a MESSAGE-FRAMED stream (its own README: "it has to
+      // be a stream that preserves the messages, ie something that length
+      // prefixes like @hyperswarm/secret-stream") — a bare net.Socket does
+      // NOT preserve message boundaries (two small writes issued close
+      // together can coalesce into one 'data' event, silently dropping the
+      // second message — see the module header, WI-3490). Wrap with a real
+      // SecretStream, exactly mirroring what the real hive-swarm connection's
+      // `noiseStream` already provides in production.
+      const srvNoise = new SecretStream(false, srvConn);
+      wireHiveGitServe(srvNoise, TOPIC, { potHomeSlug: HIVE, workspaceId: WORKSPACE_ID });
     });
     await new Promise<void>((r) => server.listen(sockPath, () => r()));
     clientSocket = await new Promise<Socket>((resolve, reject) => {
@@ -119,6 +154,8 @@ describe('hive-git serve-wiring (P-201: serveUploadPack over the papercusp/hive-
       s.once('error', reject);
     });
     clientSocket.on('error', () => {});
+    clientNoise = new SecretStream(true, clientSocket);
+    await clientNoise.opened;
   });
 
   afterAll(async () => {
@@ -148,7 +185,7 @@ describe('hive-git serve-wiring (P-201: serveUploadPack over the papercusp/hive-
   });
 
   it('fetches the served repo end to end (real git upload-pack, real git fetch)', async () => {
-    const duplex = await openHiveGitFetchDuplex(clientSocket, TOPIC, { repoKey: 'repo-1' });
+    const duplex = await openHiveGitFetchDuplex(clientNoise, TOPIC, { repoKey: 'repo-1' });
     const res = await fetchOverDuplex(clientRepo, duplex, ['+refs/heads/work:refs/heads/work'], {
       timeoutMs: 30_000,
     });
@@ -163,7 +200,7 @@ describe('hive-git serve-wiring (P-201: serveUploadPack over the papercusp/hive-
   it('a legacy-mode hive REFUSES — never serves a byte (mode re-checked live, no re-seed needed)', async () => {
     await setHiveGitMode(WORKSPACE_ID, HIVE, 'legacy');
     try {
-      const duplex = await openHiveGitFetchDuplex(clientSocket, TOPIC, { repoKey: 'repo-1' });
+      const duplex = await openHiveGitFetchDuplex(clientNoise, TOPIC, { repoKey: 'repo-1' });
       const res = await fetchOverDuplex(
         clientRepo,
         duplex,
@@ -177,7 +214,7 @@ describe('hive-git serve-wiring (P-201: serveUploadPack over the papercusp/hive-
   });
 
   it('refuses an unknown repoKey', async () => {
-    const duplex = await openHiveGitFetchDuplex(clientSocket, TOPIC, { repoKey: 'not-a-real-repo' });
+    const duplex = await openHiveGitFetchDuplex(clientNoise, TOPIC, { repoKey: 'not-a-real-repo' });
     const res = await fetchOverDuplex(clientRepo, duplex, ['+refs/heads/work:refs/heads/never'], {
       timeoutMs: 15_000,
     });
@@ -185,7 +222,7 @@ describe('hive-git serve-wiring (P-201: serveUploadPack over the papercusp/hive-
   });
 
   it('refuses a path-traversal repoKey (defense in depth — never touches the fs outside the root)', async () => {
-    const duplex = await openHiveGitFetchDuplex(clientSocket, TOPIC, { repoKey: '../../etc' });
+    const duplex = await openHiveGitFetchDuplex(clientNoise, TOPIC, { repoKey: '../../etc' });
     const res = await fetchOverDuplex(clientRepo, duplex, ['+refs/heads/work:refs/heads/never2'], {
       timeoutMs: 15_000,
     });

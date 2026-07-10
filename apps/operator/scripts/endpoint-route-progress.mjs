@@ -22,9 +22,14 @@
 
 import { execSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const REPO = execSync('git rev-parse --show-toplevel', { encoding: 'utf8' }).trim();
+// Derived from this script's own location (apps/operator/scripts/), not from
+// `git rev-parse --show-toplevel`: the release source bundle ships without a
+// .git dir, so shelling out to git made this script — and its test — hard-fail
+// on a packaged install.
+const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const API = join(REPO, 'apps/operator/app/api');
 
 // route.ts files that are NOT per-endpoint handlers — they're the host

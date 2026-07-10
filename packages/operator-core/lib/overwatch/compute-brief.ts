@@ -27,7 +27,7 @@
  */
 import { emptyOverwatchBrief } from './brief-types';
 import type { Anomaly, OverwatchBrief } from './brief-types';
-import { computeSystemHealth, deriveQueenAlive, queenPlacementStalled } from '../system-health';
+import { computeSystemHealth, deriveQueenAlive, queenPlacementStalled, ADMISSION_STARVATION_IDLE_ACCOUNTS_MIN } from '../system-health';
 import type { SystemHealth } from '../system-health/types';
 
 function newWorkPausedByOwnerSteering(brief: OverwatchBrief): boolean {
@@ -187,6 +187,24 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
       suggestedAction: {
         type: 'observe',
         message: 'Gateway throttling under sustained upstream 429s (AIMD adapting). Watching — escalate if it persists across wakes or tips into a wedge.',
+      },
+    });
+  } else if (tokens.gatewayAdmissionStarved && tokens.accountsAvailable > ADMISSION_STARVATION_IDLE_ACCOUNTS_MIN) {
+    // WI-3565 (2026-07-09): the admission-STARVATION mode `gatewayWedged`/`gatewaySustainedThrottle`
+    // both miss — a deep queue sitting BELOW the live ceiling (paced by a lower per-account/provider
+    // floor) with idle healthy accounts unused. This is what let a 24-deep queue at maxConcurrent=2
+    // run 50 real minutes with zero alarm. Escalate (not observe/nudge): the fix is a live config
+    // change (operator:rate_limit_config) overwatch has no primitive to make itself (D-001).
+    out.push({
+      kind: 'gateway-admission-starved',
+      severity: 'critical',
+      subject: 'inference gateway',
+      detail: `Inference gateway admission backlog sustained deep vs its live ceiling for ≥5min with ${tokens.accountsAvailable} idle healthy account(s) unused — the queue isn't draining even though the pool has spare capacity.`,
+      suggestedAction: {
+        type: 'escalate',
+        target: 'owner',
+        message:
+          `Admission starvation: ${tokens.accountsAvailable} idle account(s) available but the live admission ceiling is starving the queue. Raise the provider floor: operator:rate_limit_config { providerFloors: { anthropic: { maxConcurrent: <higher> } } } (mirrors the 2026-07-09 manual mitigation). Overwatch cannot flip live rate-limit config itself (D-001).`,
       },
     });
   }
@@ -426,6 +444,7 @@ export function mapSystemHealthToBrief(health: SystemHealth, potSlug: string): O
       accountsAvailable: tokens.accountsAvailable,
       gatewayWedged: tokens.gateway?.wedge ?? false,
       gatewaySustainedThrottle: tokens.gateway?.sustainedThrottle ?? false,
+      gatewayAdmissionStarved: tokens.gateway?.admissionStarved ?? false,
     };
   }
 

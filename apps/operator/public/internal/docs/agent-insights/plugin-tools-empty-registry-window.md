@@ -74,4 +74,4 @@ returns repo data; `repomix.pack` dispatches.
   cold child-spawn probe finishes late; tools registered so far are live,
   the rest arrive in the background), not workspace scoping.
 
-Plan: `plugin-system-hive-port-2026-06-11` (P-011/P-012).
+Plan: `plugin-system-pot-port-2026-06-11` (P-011/P-012).

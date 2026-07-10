@@ -38,7 +38,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    rubricId: z.string().min(1).max(120).describe('slug, e.g. "hive-coordination-health"'),
+    rubricId: z.string().min(1).max(120).describe('slug, e.g. "pot-coordination-health"'),
     characteristic: z.string().min(1).max(120).describe('umbrella domain, e.g. "hive-coordination"'),
     title: hardText(LIMITS.SHORT_TITLE),
     description: hardText(8000).optional(),

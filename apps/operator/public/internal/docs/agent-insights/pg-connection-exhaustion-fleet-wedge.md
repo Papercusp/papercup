@@ -86,7 +86,7 @@ The improvement-watchdog used to classify these exhaustion errors as **per-tool 
 bugs** (low-bar, fires at n≥2) because the error *shape* recurs identically — so a single
 wedge spammed `Tool X returns a structural error` EIs across every PG-backed tool
 (EI-1331/1332/1323/1337/1342/1344 + the coord-probe canary EI-1333), several of which the
-Queen then triaged to the auto-implement fix queue (which would "fix" working tools).
+Mug then triaged to the auto-implement fix queue (which would "fix" working tools).
 Fixed in `packages/operator-core/lib/harness/improvements/watchdog.ts`:
 `classifyToolError` + the SQL `CASE` in `collectToolErrorSignals` classify
 connection-exhaustion / DB-unavailable messages (`INFRA_TRANSIENT_MESSAGE_PATTERN`) as

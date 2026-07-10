@@ -36,7 +36,9 @@ vi.mock('../left-sidebar/LocalHivesControl', () => ({
 
 // nuqs ?hivesCtl boolean — a per-test store with a spy setter.
 const nuqs = vi.hoisted(() => ({ open: false, set: vi.fn() }));
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   useQueryState: () => [nuqs.open, nuqs.set],
   parseAsBoolean: { withDefault: () => ({}) },
 }));

@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { resolveShimNode, ensureBundledNodeLinked } from './papercusp-files';
+import { resolveShimNode, ensureBundledNodeLinked, ensureGhLinked } from './papercusp-files';
 
 let tmp: string;
 let origExecPath: string;
@@ -171,5 +171,84 @@ describe('ensureBundledNodeLinked', () => {
 
     expect(await ensureBundledNodeLinked(home)).toBe(true);
     expect(await fs.realpath(dest)).toBe(await fs.realpath(bundled));
+  });
+});
+
+/**
+ * WI-3626: `gh auth setup-git` bakes WHICHEVER path `buildGithubLoginSpec` resolved
+ * verbatim into `~/.gitconfig`'s credential helper. Without a stable shim, that
+ * resolution falls to an app-bundle-relative path which dangles the instant the app
+ * is renamed/replaced (confirmed live: `Papercusp.app` → `Papercusp Server.app`).
+ * ensureGhLinked keeps `~/.papercusp/bin/gh` pointed at the CURRENT bundle's gh —
+ * refreshed every boot, unlike ensureAgentClisLinked's link-once-if-missing — so an
+ * app rename between boots re-points the symlink instead of reproducing the bug.
+ */
+describe('ensureGhLinked', () => {
+  it('links ~/.papercusp/bin/gh → the bundled gh when resolvable via PAPERCUSP_SIDECAR_BIN', async () => {
+    const bundled = path.join(tmp, 'sidecar', 'bin', 'gh');
+    await touch(bundled);
+    vi.stubEnv('PAPERCUSP_SIDECAR_BIN', path.dirname(bundled));
+    const home = path.join(tmp, 'home');
+    const binDir = path.join(home, '.papercusp', 'bin');
+
+    expect(await ensureGhLinked(home, binDir)).toBe(true);
+    const dest = path.join(binDir, 'gh');
+    expect(await fs.realpath(dest)).toBe(await fs.realpath(bundled));
+  });
+
+  it('is a no-op (false) when no bundled gh is resolvable this run', async () => {
+    disableBundledAnchors();
+    vi.spyOn(process, 'cwd').mockReturnValue(path.join(tmp, 'no-bundle-cwd'));
+    const home = path.join(tmp, 'home');
+    const binDir = path.join(home, '.papercusp', 'bin');
+
+    expect(await ensureGhLinked(home, binDir)).toBe(false);
+    await expect(fs.access(path.join(binDir, 'gh'))).rejects.toThrow();
+  });
+
+  it('is idempotent (false, no write) once already pointed at the current bundle', async () => {
+    const bundled = path.join(tmp, 'sidecar', 'bin', 'gh');
+    await touch(bundled);
+    vi.stubEnv('PAPERCUSP_SIDECAR_BIN', path.dirname(bundled));
+    const home = path.join(tmp, 'home');
+    const binDir = path.join(home, '.papercusp', 'bin');
+
+    expect(await ensureGhLinked(home, binDir)).toBe(true); // first run creates it
+    expect(await ensureGhLinked(home, binDir)).toBe(false); // second run: already correct
+  });
+
+  it('THE REGRESSION: re-points the symlink when the app bundle was renamed between boots', async () => {
+    const oldBundled = path.join(tmp, 'Papercusp.app', 'Contents', 'Resources', 'sidecar', 'bin', 'gh');
+    await touch(oldBundled);
+    vi.stubEnv('PAPERCUSP_SIDECAR_BIN', path.dirname(oldBundled));
+    const home = path.join(tmp, 'home');
+    const binDir = path.join(home, '.papercusp', 'bin');
+    expect(await ensureGhLinked(home, binDir)).toBe(true); // first boot: old bundle
+
+    // Simulate an app rename: the old bundle is gone, a new one exists at a
+    // DIFFERENT path (Papercusp.app -> Papercusp Server.app).
+    await fs.rm(path.dirname(path.dirname(path.dirname(path.dirname(oldBundled)))), { recursive: true, force: true });
+    const newBundled = path.join(tmp, 'Papercusp Server.app', 'Contents', 'Resources', 'sidecar', 'bin', 'gh');
+    await touch(newBundled);
+    vi.stubEnv('PAPERCUSP_SIDECAR_BIN', path.dirname(newBundled));
+
+    expect(await ensureGhLinked(home, binDir)).toBe(true); // second boot: re-points
+    const dest = path.join(binDir, 'gh');
+    expect(await fs.realpath(dest)).toBe(await fs.realpath(newBundled));
+  });
+
+  it('does not clobber an existing link when this run cannot resolve a source (dev box)', async () => {
+    const bundled = path.join(tmp, 'sidecar', 'bin', 'gh');
+    await touch(bundled);
+    vi.stubEnv('PAPERCUSP_SIDECAR_BIN', path.dirname(bundled));
+    const home = path.join(tmp, 'home');
+    const binDir = path.join(home, '.papercusp', 'bin');
+    await ensureGhLinked(home, binDir); // establish a working link
+
+    disableBundledAnchors();
+    vi.spyOn(process, 'cwd').mockReturnValue(path.join(tmp, 'no-bundle-cwd'));
+    expect(await ensureGhLinked(home, binDir)).toBe(false); // no source this run — leave it alone
+    const dest = path.join(binDir, 'gh');
+    expect(await fs.realpath(dest)).toBe(await fs.realpath(bundled)); // still the old, still-valid link
   });
 });

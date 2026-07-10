@@ -77,7 +77,7 @@ const rubricData = {
     },
   ],
   ratingScale: ['healthy', 'degraded', 'broken', 'unknown'],
-  methodRef: 'hive-coordination-health-runbook',
+  methodRef: 'pot-coordination-health-runbook',
   description: 'How well the loop is turning.',
 };
 
@@ -127,7 +127,7 @@ describe('reads — a rubric-template plan resolves as a Rubric', () => {
     expect(r!.criteria).toHaveLength(1);
     expect(r!.criteria[0].key).toBe('placement-health');
     expect(r!.criteria[0].ratingScale).toContain('n/a');
-    expect(r!.methodRef).toBe('hive-coordination-health-runbook');
+    expect(r!.methodRef).toBe('pot-coordination-health-runbook');
   });
 
   it('listRubrics includes it; a draft plan maps to a proposed rubric', async () => {
@@ -161,12 +161,12 @@ describe('reads — a rubric-template plan resolves as a Rubric', () => {
 describe('writes — propose / ratify author + promote a rubric-template plan', () => {
   it('propose creates a PROPOSED rubric (draft plan) with criteria + default rating scale', async () => {
     const r = await rubrics.proposeRubric({
-      rubricId: 'hive-coordination-health',
+      rubricId: 'pot-coordination-health',
       characteristic: 'hive-coordination',
       title: 'Hive coordination health',
       description: 'How well the placement/ideation/observation loop is turning.',
       criteria: sampleCriteria,
-      methodRef: 'hive-coordination-health-runbook',
+      methodRef: 'pot-coordination-health-runbook',
       by: 'su-test',
     });
     expect(r.status).toBe('proposed');
@@ -176,9 +176,9 @@ describe('writes — propose / ratify author + promote a rubric-template plan', 
     expect(r.criteria[1].ratingScale).toContain('n/a'); // per-criterion override round-trips
     expect(r.proposedBy).toBe('su-test'); // the plan owner
     expect(r.ratifiedBy).toBeNull(); // not yet active
-    expect(r.methodRef).toBe('hive-coordination-health-runbook');
+    expect(r.methodRef).toBe('pot-coordination-health-runbook');
     // it lands as a queryable rubric-template plan, not a duplicate
-    expect((await rubrics.listRubrics({})).map((x) => x.rubricId)).toEqual(['hive-coordination-health']);
+    expect((await rubrics.listRubrics({})).map((x) => x.rubricId)).toEqual(['pot-coordination-health']);
   });
 
   it('ratify flips proposed → active (ratifiedBy = the plan owner, identity collapsed to one field)', async () => {

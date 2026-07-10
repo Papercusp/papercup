@@ -7,8 +7,39 @@
  */
 
 import { z } from 'zod';
+import { statSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { getJob, readJobOutput } from './bash-jobs';
+import { getJob, readJobOutput, scratchDir } from './bash-jobs';
+
+/** Tail this many bytes of a stranded job's log when the in-memory registry
+ *  missed but the file survived on disk (EI-8855). */
+export const STRANDED_LOG_TAIL_BYTES = 8_000;
+
+/**
+ * EI-8855: the in-memory job registry (bash-jobs.ts) assumes "the operator is one
+ * long-lived process" — false on a shared dev box where a DIFFERENT agent's
+ * routine `systemctl --user restart papercup-*-api.service` (a common, documented
+ * workflow — see repo-conventions § two-port model) kills the WHOLE service cgroup,
+ * wiping every in-flight capability:bash background job's registry entry AND the
+ * job's own child process in one shot. The caller then sees a bare "unknown_bash_id"
+ * indistinguishable from a typo'd id or a truly-vanished job. Since the log path is
+ * DETERMINISTIC from `stateDir` + `bash_id` (no registry needed), we can check
+ * whether that file exists on disk even after the in-memory entry is gone, and
+ * report the REAL diagnosis (stranded by a restart, not "wrong id") plus the
+ * output the job DID produce before it died — instead of a dead end. */
+export function strandedJobLookup(bashId: string, stateDir: string | undefined): { logPath: string; sizeBytes: number; tail: string } | null {
+  const logPath = join(scratchDir(stateDir), `bash-${bashId}.log`);
+  try {
+    const st = statSync(logPath);
+    if (!st.isFile()) return null;
+    const fd = readFileSync(logPath, 'utf8');
+    const tail = fd.length > STRANDED_LOG_TAIL_BYTES ? fd.slice(-STRANDED_LOG_TAIL_BYTES) : fd;
+    return { logPath, sizeBytes: st.size, tail };
+  } catch {
+    return null;
+  }
+}
 
 /** Max length of an agent-supplied `filter` regex (ReDoS surface bound). */
 const MAX_FILTER_LEN = 200;
@@ -56,7 +87,8 @@ export default defineTool({
     'Read new output from a background shell job (started by capability:bash run_in_background:true). Returns output since the last read plus status (running/completed/failed/…) and exit code.',
   guidance: {
     when: 'Poll a background job started by capability:bash. Call repeatedly to drain output as it runs; the final call after status leaves "running" gives the tail + exit code.',
-    notWhen: 'For a foreground command — its output is in the capability:bash result directly.',
+    notWhen:
+      'For a foreground command — its output is in the capability:bash result directly. Note: on a shared dev box, ANY agent restarting the operator (:3070/:3170) kills every other agent\'s in-flight background jobs — a miss reporting `reason: "stranded_by_operator_restart"` (with a log tail) means that happened, not a wrong id; re-run capability:bash rather than treating it as a tool bug.',
     chaining: 'capability:bash { run_in_background:true } → capability:bash_output { bash_id } (repeat) → capability:bash_kill to stop early.',
     seeAlso: [
       'capability:bash (start the command)',
@@ -79,6 +111,26 @@ export default defineTool({
   async handler(args, ctx) {
     const job = getJob(args.bash_id);
     if (!job) {
+      const stranded = strandedJobLookup(args.bash_id, ctx.stateDir);
+      if (stranded) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                reason: 'stranded_by_operator_restart',
+                advice:
+                  'This job STARTED (its log file exists on disk) but its in-memory tracking is gone — almost always because the operator process that ran it restarted or was killed mid-job (a routine, common event on a shared dev box: any agent restarting :3070/:3170 kills every OTHER agent\'s in-flight background jobs too, per repo-conventions § two-port model). It is NOT a wrong bash_id and not necessarily a code bug in your command. The job\'s process is gone — re-run capability:bash if you still need the result; for a long job, expect it may not survive a shared restart.',
+                log_path: stranded.logPath,
+                total_bytes_written: stranded.sizeBytes,
+                output_tail: stranded.tail,
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
       return {
         content: [
           {
@@ -93,7 +145,6 @@ export default defineTool({
         isError: true,
       };
     }
-    void ctx;
     // Cursor advances over the FULL chunk (matching native BashOutput); the filter
     // only narrows what's RETURNED, so non-matching lines aren't re-shown next read.
     const fullChunk = readJobOutput(job, args.peek ?? false);

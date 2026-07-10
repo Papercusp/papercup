@@ -45,7 +45,7 @@ describe('operator:rate_limit_config', () => {
   });
 
   it('set rejects a role without operator-config write authority (e.g. bee)', async () => {
-    await expect(call({ op: 'set', maxSimultaneousAgents: 4 }, 'cup')).rejects.toThrow(/operator, architect, or queen/);
+    await expect(call({ op: 'set', maxSimultaneousAgents: 4 }, 'cup')).rejects.toThrow(/operator, architect, or mug/);
     expect(writeM).not.toHaveBeenCalled();
   });
 

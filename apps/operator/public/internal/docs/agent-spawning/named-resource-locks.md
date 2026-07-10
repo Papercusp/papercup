@@ -78,7 +78,7 @@ logged warning. Currently registered:
   with an exclusive in flight? Returns `allow | warn | block`.
 
 **Role access (2026-06-25):** `locks:acquire_resource` previously used
-`agentRoles: [...SU_ROLES, 'bee']`. Changed to `agentRoles: [...AGENT_ROLES]`:
+`agentRoles: [...SU_ROLES, 'cup']`. Changed to `agentRoles: [...AGENT_ROLES]`:
 every built-in role can now acquire named-resource locks (shared or exclusive).
 Non-SU roles that need to use a shared resource (e.g. a worker running a build
 that depends on the dev server being up) can now hold a shared lock and

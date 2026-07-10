@@ -62,7 +62,7 @@ export default defineTool({
     }
 
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('release:checkpoint-config set requires operator, architect, or queen role');
+      throw new Error('release:checkpoint-config set requires operator, architect, or mug role');
     }
     const patch: Partial<ReleaseCheckpointConfig> = {};
     if (args.stallReds !== undefined) patch.stallReds = args.stallReds;

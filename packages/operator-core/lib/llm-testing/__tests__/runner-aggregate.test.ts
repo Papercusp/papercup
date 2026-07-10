@@ -128,14 +128,14 @@ describe('scenario registry', () => {
       // overwatch persona boundaries (overwatch-role-2026-06-15 B-11)
       'overwatch-OW01-nudge-not-replace',
       'overwatch-OW02-observe-not-idea',
-      // sentinel voice→Queen handoff (sentinel-as-claude-tui-2026-06-22)
+      // sentinel voice→Mug handoff (sentinel-as-claude-tui-2026-06-22)
       'sn-S01-handoff-planning-ask',
       'sn-S02-no-handoff-trivial',
       // sentinel P2 hive-knowledge scenarios
       'sn-H01-fleet-status',
       'sn-H02-plans-and-blocked',
-      'sn-H03-queen-explainer',
-      'sn-H04-assign-to-queen',
+      'sn-H03-mug-explainer',
+      'sn-H04-assign-to-mug',
       // sentinel P3 handoff-depth scenarios
       'sn-H05-urgent-handoff',
       'sn-H06-respect-no-handoff',

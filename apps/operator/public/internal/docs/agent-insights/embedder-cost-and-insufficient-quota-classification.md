@@ -52,7 +52,7 @@ it's the documented org-TPM burner. It is budget-gated:
 owner-set `budgetUsd`.
 
 For scale: the agent fleet spends on the order of **$1k/day on opus**
-(the queen). Tens of dollars/month on OpenAI embeddings is a rounding
+(the mug). Tens of dollars/month on OpenAI embeddings is a rounding
 error against that — diagnose a "high embedding bill" as a bench/dev
 artifact first, not a production-recall regression.
 

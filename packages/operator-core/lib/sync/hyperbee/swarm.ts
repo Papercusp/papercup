@@ -1138,6 +1138,150 @@ export function parseDhtBootstrap(raw: string | undefined): DhtBootstrapNode[] |
 }
 
 /**
+ * WI-3604 (split-DHT-universe recurrence guard). The DHT universe this
+ * process's shared swarm actually resolved to, at construction time:
+ * `'isolated'` (a custom bootstrap list, e.g. the fed-a/fed-b rig DHT),
+ * `'public'` (no `PAPERCUSP_DHT_BOOTSTRAP` set — the real public DHT), or
+ * `'misconfigured'` (the env var WAS set but resolved to zero usable
+ * bootstrap nodes — {@link parseDhtBootstrap}'s all-malformed case — which
+ * silently falls back to the PUBLIC DHT, the exact "isolated federation
+ * quietly breaks" failure this guards against).
+ */
+export type DhtUniverseState =
+  | { mode: 'isolated'; bootstrap: DhtBootstrapNode[] }
+  | { mode: 'public' }
+  | { mode: 'misconfigured'; envValue: string };
+
+/** Pure classifier: given the raw `PAPERCUSP_DHT_BOOTSTRAP` value, resolve
+ * which DHT universe a swarm constructed with it would join. Exported for
+ * unit testing (no I/O). */
+export function resolveDhtUniverseState(envBootstrapRaw: string | undefined): DhtUniverseState {
+  const trimmed = envBootstrapRaw?.trim();
+  if (!trimmed) return { mode: 'public' };
+  const bootstrap = parseDhtBootstrap(trimmed);
+  if (bootstrap?.length) return { mode: 'isolated', bootstrap };
+  return { mode: 'misconfigured', envValue: trimmed };
+}
+
+/** Result of comparing this process's resolved {@link DhtUniverseState}
+ * against the operator's DECLARED expectation (see
+ * {@link readExpectedDhtBootstrap}). `ok:true` also covers "no expectation
+ * configured" — an unconfigured expectation can't be violated. */
+export interface DhtUniverseAssertion {
+  ok: boolean;
+  detail: string;
+}
+
+function bootstrapKey(nodes: DhtBootstrapNode[]): string {
+  return nodes
+    .map((n) => `${n.host}:${n.port}`)
+    .sort()
+    .join(',');
+}
+
+/**
+ * Pure comparator: does `actual` (this process's resolved DHT universe)
+ * match `expectedBootstrapRaw` (the operator's declared expectation, e.g.
+ * "this box should always join the isolated rig DHT")? This is the WI-3604
+ * recurrence guard for the 2026-07-09 Mac VM incident: a Server.app instance
+ * launched WITHOUT `PAPERCUSP_DHT_BOOTSTRAP` (a macOS LaunchAgent's
+ * `EnvironmentVariables` are not inherited by a manual app relaunch) silently
+ * joined the PUBLIC DHT while every peer expected the isolated rig DHT —
+ * severing the federation plane with no loud error. Exported for unit
+ * testing (no I/O — callers read the expected value via
+ * {@link readExpectedDhtBootstrap} first).
+ */
+export function assertDhtUniverse(
+  actual: DhtUniverseState,
+  expectedBootstrapRaw: string | undefined,
+): DhtUniverseAssertion {
+  const expectedTrimmed = expectedBootstrapRaw?.trim();
+  if (!expectedTrimmed) {
+    return { ok: true, detail: 'no expected DHT bootstrap configured — assertion skipped' };
+  }
+  const expected = parseDhtBootstrap(expectedTrimmed);
+  if (!expected?.length) {
+    // The EXPECTATION itself is unparsable — don't false-positive on a bad
+    // config; just say so.
+    return {
+      ok: true,
+      detail: `expected DHT bootstrap ("${expectedTrimmed}") is unparsable — assertion skipped`,
+    };
+  }
+  const expectedKey = bootstrapKey(expected);
+  if (actual.mode === 'public') {
+    return {
+      ok: false,
+      detail:
+        `expected isolated DHT bootstrap ${expectedKey} but this process resolved to the ` +
+        `PUBLIC DHT — PAPERCUSP_DHT_BOOTSTRAP is likely unset/not-inherited on this host`,
+    };
+  }
+  if (actual.mode === 'misconfigured') {
+    return {
+      ok: false,
+      detail:
+        `expected isolated DHT bootstrap ${expectedKey} but PAPERCUSP_DHT_BOOTSTRAP resolved to ` +
+        `no usable nodes ("${actual.envValue}") — this process fell back to the PUBLIC DHT`,
+    };
+  }
+  const actualKey = bootstrapKey(actual.bootstrap);
+  if (actualKey !== expectedKey) {
+    return {
+      ok: false,
+      detail: `expected isolated DHT bootstrap ${expectedKey} but this process resolved to ${actualKey}`,
+    };
+  }
+  return { ok: true, detail: `DHT bootstrap matches expected isolated universe (${expectedKey})` };
+}
+
+/**
+ * Read the operator's DECLARED expected DHT bootstrap, independent of
+ * whatever `PAPERCUSP_DHT_BOOTSTRAP` this process happened to actually
+ * inherit. An env-var-only "expected" value can't catch a whole env block
+ * being skipped by a non-LaunchAgent-mediated launch (the 2026-07-09
+ * incident) — if the real var can silently go missing, an "expected" var set
+ * the SAME way would too. So this prefers `PAPERCUSP_EXPECTED_DHT_BOOTSTRAP`
+ * but falls back to a marker FILE
+ * (`PAPERCUSP_EXPECTED_DHT_BOOTSTRAP_FILE` or `~/.papercusp/expected-dht-bootstrap`)
+ * that a provisioning/install script writes independently of this process's
+ * own launch-time environment — the one detection path that would have
+ * caught that incident. Best-effort: a missing file is not an error.
+ */
+export function readExpectedDhtBootstrap(): string | undefined {
+  const envVal = process.env.PAPERCUSP_EXPECTED_DHT_BOOTSTRAP?.trim();
+  if (envVal) return envVal;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fs = require('node:fs') as typeof import('node:fs');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const os = require('node:os') as typeof import('node:os');
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const path = require('node:path') as typeof import('node:path');
+    const filePath =
+      process.env.PAPERCUSP_EXPECTED_DHT_BOOTSTRAP_FILE?.trim() ||
+      path.join(os.homedir(), '.papercusp', 'expected-dht-bootstrap');
+    const contents = fs.readFileSync(filePath, 'utf8').trim();
+    return contents || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+let _dhtUniverseAssertion: DhtUniverseAssertion | null = null;
+
+/** The DHT-universe assertion computed once, alongside the shared swarm's
+ * construction (see {@link getSharedSwarm}). `null` before the shared swarm
+ * has been constructed at least once in this process. */
+export function getDhtUniverseAssertion(): DhtUniverseAssertion | null {
+  return _dhtUniverseAssertion;
+}
+
+export function _resetDhtUniverseAssertionForTests(): void {
+  _dhtUniverseAssertion = null;
+}
+
+/**
  * Constructor options for the shared Hyperswarm — the DoS resource ceiling
  * (P-001 of hyperswarm-dos-hardening). `maxPeers` caps total concurrent peer
  * connections; `bootstrap` (when `PAPERCUSP_DHT_BOOTSTRAP` is set) points the
@@ -1194,23 +1338,28 @@ export async function getSharedSwarm(): Promise<HyperswarmLike> {
   // resolved bootstrap empty → hyperdht's `opts.bootstrap || BOOTSTRAP_NODES` quietly uses
   // the public DHT → isolated 2-machine federation breaks via public-DHT NAT hairpin) was
   // invisible. Loud-warn that exact case so it never has to be re-diagnosed by packet capture.
-  const envBootstrap = process.env.PAPERCUSP_DHT_BOOTSTRAP?.trim();
-  if (opts.bootstrap?.length) {
+  const dhtUniverse = resolveDhtUniverseState(process.env.PAPERCUSP_DHT_BOOTSTRAP);
+  if (dhtUniverse.mode === 'isolated') {
     // Informational (console.info, not warn) so the fail-on-console test gate stays
     // a defect signal — still captured in the operator's stdout log for observability.
-    console.info(
-      `[swarm] DHT bootstrap = ISOLATED ${opts.bootstrap.map((b) => `${b.host}:${b.port}`).join(',')}`,
-    );
-  } else if (envBootstrap) {
+    console.info(`[swarm] DHT bootstrap = ISOLATED ${bootstrapKey(dhtUniverse.bootstrap)}`);
+  } else if (dhtUniverse.mode === 'misconfigured') {
     // The genuine misconfig (env set but resolved empty) — keep this LOUD (console.warn):
     // it is a real defect signal, and it never fires in clean tests (they don't set the var).
     console.warn(
-      `[swarm] ⚠ PAPERCUSP_DHT_BOOTSTRAP is set ("${envBootstrap}") but resolved to NO bootstrap — ` +
+      `[swarm] ⚠ PAPERCUSP_DHT_BOOTSTRAP is set ("${dhtUniverse.envValue}") but resolved to NO bootstrap — ` +
         `this swarm will join the PUBLIC DHT, so isolated 2-machine federation is BROKEN ` +
         `(public-DHT NAT hairpin). Check parseDhtBootstrap + that the var reaches THIS process before first swarm use.`,
     );
   } else {
     console.info('[swarm] DHT bootstrap = PUBLIC DHT (no PAPERCUSP_DHT_BOOTSTRAP set)');
+  }
+  // WI-3604: compute + memoize the split-DHT-universe recurrence-guard
+  // assertion once, alongside the shared swarm's construction — reflects the
+  // actual env this process resolved at THIS boot.
+  _dhtUniverseAssertion = assertDhtUniverse(dhtUniverse, readExpectedDhtBootstrap());
+  if (!_dhtUniverseAssertion.ok) {
+    console.warn(`[swarm] ⚠ DHT universe mismatch: ${_dhtUniverseAssertion.detail}`);
   }
   let dht: unknown;
   if (opts.dhtHost) {

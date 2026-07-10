@@ -4,11 +4,17 @@
 import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * /settings/omp — full configuration surface for the omp (oh-my-pi)
- * agent backend. Mirrors `omp config list` / `omp config set`.
+ * agent backend. Mirrors `omp config list` / `omp config set`, plus (WI-3449,
+ * 2026-07-10 settings audit) the engineer-collaborator INTEGRATION panel that
+ * used to live on its own `/settings/omp-integration` page — owner asked for
+ * the two merged into one, since both are "the omp settings page" to a user.
  *
  * Layout:
- * - Search bar at the top (filters across all sections).
- * - Each section ([providers], [tools], [memory], …) is a collapsible
+ * - Integration panel first (install/uninstall the papercusp-su MCP wiring +
+ *   omp-su wrapper) — a fixed section, not a collapsible one, since it's a
+ *   one-time setup action rather than a config value to search/edit.
+ * - Search bar (filters across all `omp config` sections below).
+ * - Each config section ([providers], [tools], [memory], …) is a collapsible
  *   group. Web-search section starts open (the user's stated entry
  *   point) plus any section that has search matches.
  * - Each setting renders as the right input type (boolean toggle,
@@ -16,11 +22,12 @@ import { Tooltip } from '@/app/harness/Tooltip';
  * - Edits debounce to a single POST; success/failure surfaces inline.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryState, parseAsString, parseAsArrayOf } from 'nuqs';
 import { Checkbox } from '../../harness/Checkbox';
 import { Select } from '../../harness/Select';
 import { DraftNumberInput } from '@/lib/forms';
+import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 
 interface OmpSetting {
   key: string;
@@ -167,6 +174,8 @@ export default function OmpSettingsPage(): JSX.Element {
         </p>
       </header>
 
+      <OmpIntegrationPanel />
+
       <div style={S.searchRow}>
         <input
           type="search"
@@ -217,6 +226,197 @@ export default function OmpSettingsPage(): JSX.Element {
         })}
       </div>
     </div>
+  );
+}
+
+/**
+ * Engineer-collaborator wiring for OMP (formerly the standalone
+ * `/settings/omp-integration` page, P-012 of
+ * desktop-app-install-integration-2026-05-23; merged here 2026-07-10,
+ * WI-3449). Reads state from GET /api/desktop/install/omp-integration;
+ * POST installs/re-installs, DELETE uninstalls. Phase 1
+ * (papercusp-files) runs automatically at sidecar boot when
+ * PAPERCUSP_DESKTOP=1; this panel is purely for the opt-in OMP-config
+ * wiring (Phase 2).
+ */
+interface OmpIntegrationState {
+  ompAgentDir: string;
+  mcpJsonPath: string;
+  legacyContextPath: string;
+  legacyExtensionPath: string;
+  ompAgentDirExists: boolean;
+  ompBinaryPath: string | null;
+  mcpServerInstalled: boolean;
+  wrapperInstalled: boolean;
+  wrapperPath: string;
+  legacyBlockPresent: boolean;
+  pathWarning: string | null;
+}
+
+interface OmpIntegrationResponseBody extends OmpIntegrationState {
+  ok: boolean;
+  supported?: boolean;
+  reason?: string;
+  changed?: boolean;
+  actions?: string[];
+  error?: string;
+}
+
+type OmpIntegrationActionState = 'idle' | 'installing' | 'uninstalling';
+
+function OmpIntegrationPanel() {
+  const [state, setState] = useState<OmpIntegrationState | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [action, setAction] = useState<OmpIntegrationActionState>('idle');
+  const [actionResult, setActionResult] = useState<{ kind: 'ok' | 'error'; message: string; actions?: string[] } | null>(null);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
+
+  const refresh = useCallback(async () => {
+    setLoadError(null);
+    try {
+      const r = await fetch('/api/desktop/install/omp-integration');
+      const d = (await r.json()) as OmpIntegrationResponseBody;
+      if (!d.ok) throw new Error(d.error ?? 'failed to load');
+      setState(d);
+    } catch (err) {
+      setLoadError((err as Error).message ?? String(err));
+    }
+  }, []);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  const install = useCallback(async () => {
+    setAction('installing');
+    setActionResult(null);
+    try {
+      const r = await fetch('/api/desktop/install/omp-integration', { method: 'POST' });
+      const d = (await r.json()) as OmpIntegrationResponseBody;
+      if (!d.ok) throw new Error(d.error ?? 'install failed');
+      const actions = d.actions ?? [];
+      setActionResult({
+        kind: 'ok',
+        message: d.changed === false
+          ? 'Already installed — no changes needed.'
+          : `Installed (${actions.length} action${actions.length === 1 ? '' : 's'}).`,
+        actions,
+      });
+      await refresh();
+    } catch (err) {
+      setActionResult({ kind: 'error', message: (err as Error).message ?? String(err) });
+    } finally {
+      setAction('idle');
+    }
+  }, [refresh]);
+
+  const uninstall = useCallback(async () => {
+    if (!await askConfirm({
+      title: 'Uninstall OMP integration?',
+      body: 'This removes the papercusp-su MCP entry and the omp-su wrapper.',
+      confirmLabel: 'Uninstall',
+      destructive: true,
+    })) return;
+    setAction('uninstalling');
+    setActionResult(null);
+    try {
+      const r = await fetch('/api/desktop/install/omp-integration', { method: 'DELETE' });
+      const d = (await r.json()) as OmpIntegrationResponseBody;
+      if (!d.ok) throw new Error(d.error ?? 'uninstall failed');
+      const actions = d.actions ?? [];
+      setActionResult({
+        kind: 'ok',
+        message: actions.length === 0 ? 'Nothing to uninstall.' : `Uninstalled (${actions.length} action${actions.length === 1 ? '' : 's'}).`,
+        actions,
+      });
+      await refresh();
+    } catch (err) {
+      setActionResult({ kind: 'error', message: (err as Error).message ?? String(err) });
+    } finally {
+      setAction('idle');
+    }
+  }, [askConfirm, refresh]);
+
+  return (
+    <section style={{ ...S.section, padding: '14px 16px', marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {confirmEl}
+      <div>
+        <h2 style={{ fontSize: 14, margin: 0 }}>Engineer-collaborator integration</h2>
+        <p className="pc-settings-intro" style={{ marginBottom: 0, marginTop: 4 }}>
+          Wires Papercusp into your local OMP (oh-my-pi) install so <code>omp-su</code> launches OMP in
+          engineer-collaborator mode (playbook + coordination extension + this operator as an MCP server).
+          Plain <code>omp</code> stays vanilla.
+        </p>
+      </div>
+
+      {loadError && (
+        <div role="alert" style={{ color: 'var(--bad, #c00)' }}>Failed to load state: {loadError}</div>
+      )}
+
+      {state && (
+        <>
+          <section style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '6px 16px', alignItems: 'center' }}>
+            <strong>OMP detected:</strong>
+            <span>{state.ompBinaryPath ? <code>{state.ompBinaryPath}</code> : <em style={{ color: 'var(--muted)' }}>Not found on PATH</em>}</span>
+
+            <strong>OMP agent dir:</strong>
+            <span>
+              <code>{state.ompAgentDir}</code>{' '}
+              {state.ompAgentDirExists ? <span style={{ color: 'var(--good, #060)' }}>✓ exists</span> : <em style={{ color: 'var(--muted)' }}>missing</em>}
+            </span>
+
+            <strong>MCP server in mcp.json:</strong>
+            <span>{state.mcpServerInstalled ? <span style={{ color: 'var(--good, #060)' }}>✓ installed</span> : <em style={{ color: 'var(--muted)' }}>not installed</em>}</span>
+
+            <strong>omp-su wrapper:</strong>
+            <span>
+              <code>{state.wrapperPath}</code>{' '}
+              {state.wrapperInstalled ? <span style={{ color: 'var(--good, #060)' }}>✓ installed</span> : <em style={{ color: 'var(--muted)' }}>not installed</em>}
+            </span>
+
+            <strong>Legacy CLAUDE.md block:</strong>
+            <span>{state.legacyBlockPresent ? <em style={{ color: 'var(--warn, #b80)' }}>present — will be stripped on install</em> : <span>none</span>}</span>
+          </section>
+
+          {state.pathWarning && (
+            <div role="alert" style={{ color: 'var(--warn, #b80)' }}>{state.pathWarning}</div>
+          )}
+
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              onClick={install}
+              disabled={action !== 'idle'}
+              className="pc-button-primary"
+            >
+              {action === 'installing' ? 'Installing…' : (state.mcpServerInstalled || state.wrapperInstalled ? 'Re-install' : 'Install')}
+            </button>
+            <button
+              type="button"
+              onClick={uninstall}
+              disabled={action !== 'idle' || (!state.mcpServerInstalled && !state.wrapperInstalled)}
+              className="pc-button"
+            >
+              {action === 'uninstalling' ? 'Uninstalling…' : 'Uninstall'}
+            </button>
+            <button type="button" onClick={() => void refresh()} disabled={action !== 'idle'} className="pc-button">
+              Refresh
+            </button>
+          </div>
+
+          {actionResult && (
+            <div role="status" style={{ color: actionResult.kind === 'error' ? 'var(--bad, #c00)' : 'var(--text)' }}>
+              <div>{actionResult.message}</div>
+              {actionResult.actions && actionResult.actions.length > 0 && (
+                <ul style={{ marginTop: 4 }}>
+                  {actionResult.actions.map((a, i) => (
+                    <li key={i}><code>{a}</code></li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 

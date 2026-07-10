@@ -848,7 +848,7 @@ body.has-left-sidebar .pc-header {
 .pc-owsb__footnote { font-size: 10px; line-height: 1.4; color: var(--fg-mute, #7f9bb4); padding: 0 2px; }
 .pc-owsb__footnote strong { color: var(--fg-dim, #b9d4e8); font-weight: 700; }
 
-/* MugTab (steering panel) + QueenHeartbeat + ModelTiersOverride */
+/* MugTab (steering panel) + MugHeartbeat + ModelTiersOverride */
 .pc-queen { --queen-accent: var(--warn, #fbbf24); display: flex; flex-direction: column; gap: 8px; padding: 9px 9px 14px; min-height: 0; }
 .pc-queen__placeholder { color: var(--fg-mute, #7f9bb4); font-size: 11px; padding: 7px 2px; }
 /* Flex row (was a 4-col grid that wrapped the 5th child — Crown/identity/hive/
@@ -916,7 +916,7 @@ body.has-left-sidebar .pc-header {
 .pc-queen__directive:focus { outline: none; border-color: color-mix(in srgb, var(--accent), transparent 42%); }
 .pc-queen__directive-actions { display: flex; align-items: center; gap: 7px; }
 
-/* QueenHeartbeat (Queen status indicator) */
+/* MugHeartbeat (Mug status indicator) */
 .pc-qh { display: flex; flex-direction: column; gap: 5px; padding: 9px 10px; border-radius: 10px; border: 1px solid var(--qh-accent, var(--border)); background: var(--bg-2); }
 .pc-qh--live { --qh-accent: color-mix(in srgb, var(--good), transparent 45%); background: color-mix(in srgb, var(--good), transparent 91%); }
 .pc-qh--ok { --qh-accent: color-mix(in srgb, var(--good), transparent 60%); background: color-mix(in srgb, var(--good), transparent 94.5%); }

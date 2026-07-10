@@ -32,10 +32,12 @@ const flagMock = vi.fn(() => true);
 vi.mock('@/lib/flag-hooks', () => ({ useFlag: () => flagMock() }));
 
 // Self-contained nuqs stand-in (no NuqsAdapter needed): useState-backed.
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', async () => {
   const React = await import('react');
   const builder = (def: unknown) => ({ __default: def, withDefault: (d: unknown) => ({ __default: d }) });
   return {
+    ...nuqsParsers,
     parseAsString: builder(null),
     parseAsInteger: builder(null),
     parseAsBoolean: builder(null),

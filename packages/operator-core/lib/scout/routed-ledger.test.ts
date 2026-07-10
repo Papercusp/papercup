@@ -84,7 +84,7 @@ describe('gradeRoutedIdea (C-2 seam logic)', () => {
 
 describe('hiveFromPatternRefs (D-003 target-hive derivation, P-002)', () => {
   it('extracts the @<hive> suffix from a rubric pattern ref', () => {
-    expect(hiveFromPatternRefs(['rubric:hive-coordination-health#wake-latency@papercusp'])).toBe('papercusp');
+    expect(hiveFromPatternRefs(['rubric:pot-coordination-health#wake-latency@papercusp'])).toBe('papercusp');
   });
   it('returns the first ref that carries a hive tag', () => {
     expect(
@@ -95,7 +95,7 @@ describe('hiveFromPatternRefs (D-003 target-hive derivation, P-002)', () => {
     expect(hiveFromPatternRefs(['wi:F-1', 'sig:abc123'])).toBeUndefined();
   });
   it('undefined for a rubric ref with no @hive suffix', () => {
-    expect(hiveFromPatternRefs(['rubric:hive-coordination-health#wake-latency'])).toBeUndefined();
+    expect(hiveFromPatternRefs(['rubric:pot-coordination-health#wake-latency'])).toBeUndefined();
   });
   it('undefined / empty inputs', () => {
     expect(hiveFromPatternRefs(undefined)).toBeUndefined();

@@ -5,7 +5,7 @@ URL: /internal/docs/agent-insights/multi-peer-convergence-flake-is-load-not-logi
 
 ## TL;DR
 
-If the green-checkpoint (or a hive bee's `test:affected`) goes red on:
+If the green-checkpoint (or a pot cup's `test:affected`) goes red on:
 
 ```
 lib/harness/git-sync/multi-peer-convergence.test.ts
@@ -83,7 +83,7 @@ real \~135 box load, which a quiet box can't manufacture. The *negative* claim �
 * **Do NOT weaken the assertions.** The `maxRounds: 20` / 8-pass resolver bounds
   ARE the no-ping-pong proof (P-004) — shrinking them to dodge the timeout would
   delete the property the test exists to verify.
-* A real fix (owner / B-02 lane, `shared-hive-hardening-2026-06-13`) would make
+* A real fix (owner / B-02 lane, `shared-pot-hardening-2026-06-13`) would make
   the heavy real-git tests **not strand an unhandled rejection on teardown** — so
   a load timeout fails cleanly as *itself* instead of reddening the whole run and
   mis-pointing the next investigator at a phantom convergence bug. That needs a

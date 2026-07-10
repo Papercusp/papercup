@@ -34,9 +34,9 @@ Vendored at `~/.papercusp/bench-harnesses/swarmbench` (RUC-GSAI/YuLan-SwarmIntel
   * `random` — no LLM (deterministic; the mechanics spike + unit-test shape).
   * `openai` — SwarmBench's NATIVE decentralized flow: each agent an independent OpenAI-compatible call. This
     is the **`su-independent`** arm (peer self-organization, local view only).
-  * `queen` / `queen-random` — **control-inversion**: a custom loop gathers all agents' AGGREGATED LOCAL obs
+  * `mug` / `mug-random` — **control-inversion**: a custom loop gathers all agents' AGGREGATED LOCAL obs
     (`env.obs(agent)` per agent — NOT `env.obs(None)`, which is the global grid and would *cheat* the local-only
-    premise, D-001) and one coordinator decides all N actions. This is the **`hive-realqueen`** arm.
+    premise, D-001) and one coordinator decides all N actions. This is the **`pot-realqueen`** arm.
 * **`swarmbench-live.ts`** = the `RunSwarmSim` port (shells the python, parses the result; injected exec for
   tests). **`swarmbench-backlog.ts`** = the driver on the generic `makePoolBacklogDriver` (one scenario = one
   `perTask` → canonical `HiveBacklogResult`, sim score on `attempt.armMeta`) + `buildSwarmBenchReport`
@@ -60,17 +60,17 @@ Live full-sweep findings (plan D-001) — applicable to ANY in-sim, multi-round 
   retry → STAY → the round proceeds.
 * **The decentralized arm is gateway-starved under fleet contention.** The `su-independent` arm fires **N
   concurrent calls/round** (10 agents × 100 rounds); against a gateway the SWE-Pro xbench fleet has
-  saturated, rounds stall and it banks \~0 real scenarios while flooding the shared gateway. The `hive` queen
+  saturated, rounds stall and it banks \~0 real scenarios while flooding the shared gateway. The `pot` mug
   (**1 aggregated-local call/round**) is gateway-efficient and completed 15/15 with real data. **So run the
   call-heavy decentralized arm in a QUIET gateway window (low fleet load), not concurrently with the fleet.**
   This is an infra asymmetry (centralized = fewer calls = robust to shared rate limits), not a
-  SwarmBench-intrinsic result — label it as such. Queen-arm scores from the real run: Flocking 5.0±0.58
+  SwarmBench-intrinsic result — label it as such. Mug-arm scores from the real run: Flocking 5.0±0.58
   (genuine coordination), Pursuit 0.67, Foraging/Synchronization/Transport 0.
 
 ## The honest framing (don't skip)
 
 SwarmBench is coordination-NATIVE (the score *is* collaboration quality; a single agent can't shortcut it) and
 unsaturated — so it's the right suite to demo multi-agent value, unlike metr-hcast (which opus-4.8 saturated).
-But the "hive" arm is a SwarmBench-specific aggregated-local coordinator, **not** the production Queen-over-backlog
+But the "pot" arm is a SwarmBench-specific aggregated-local coordinator, **not** the production Mug-over-backlog
 (D-005). Report it as a coordination-topology A/B on opus-4.8 — *does centralizing decentralized-local info beat
-peer self-organization* — not as "our production Queen ran SwarmBench". Plan: `benchmark-suite-swarmbench-2026-06-17`.
+peer self-organization* — not as "our production Mug ran SwarmBench". Plan: `benchmark-suite-swarmbench-2026-06-17`.

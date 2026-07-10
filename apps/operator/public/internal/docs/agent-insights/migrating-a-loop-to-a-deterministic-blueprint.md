@@ -54,15 +54,15 @@ Two program shapes, discriminated by the gate (no schema field):
 5. **Hybrid loops** (det → agent → det, e.g. regret / transfer / prompt-ablation /
    iq-battery): the agent leg stays **INTERNAL to the op** (Option A), NOT an
    `orchestrator:spawn-roles` step. Two reasons (D-009 / D-013): (a) those loops'
-   "agents" are governed `llmCall`s (regret/transfer/ablation) or fleet bees that
-   already route through `spawnAgentInHarness → bee:spawn → spawnInvokeOnce` —
+   "agents" are governed `llmCall`s (regret/transfer/ablation) or fleet cups that
+   already route through `spawnAgentInHarness → cup:spawn → spawnInvokeOnce` —
    **the one governed chokepoint** — so there is NO ungoverned second spawn path to
    "close"; (b) `spawn-roles` is for **role fan-out** (vote's per-lens voters): its
    agents take a harness *role/persona*. A loop whose agent takes a *brief* (a corpus
    case, a transcript continuation) doesn't fit that contract — keep the spawn inside
    the op. So "deterministic step" = deterministic *top level* (the gate logic), with
    internal governed spawns, NOT "no spawns." iq-battery is the worked hybrid:
-   `iq-battery:gen` op wraps `runIqBatteryGen` (cadence-tick + the gen-0 bee runner).
+   `iq-battery:gen` op wraps `runIqBatteryGen` (cadence-tick + the gen-0 cup runner).
 
 ## Gotchas
 
@@ -142,7 +142,7 @@ Two program shapes, discriminated by the gate (no schema field):
   `budgetUsd`). Read the action; don't assume flag+governor.
 - **A `system:blueprint-run` fire spawns into the FIRING install by default — override
   via a `launchInstallSlug`-family payload key when the routine must launch work into a
-  DIFFERENT named install/hive than the one whose routine fired.** `handleBlueprintRun`
+  DIFFERENT named install/pot than the one whose routine fired.** `handleBlueprintRun`
   builds its durable-spawn `installSlug` (and the idempotency key) from `ctx.installSlug`
   unless the routine's `payload_template` sets one of `launchInstallSlug` / `hiveSlug` /
   `hiveInstallSlug` / `targetInstallSlug` (checked in that order; first non-blank string

@@ -46,8 +46,8 @@ export interface OperatorTargetOpts {
    * route honors an EXPLICIT `body.role` (resolves `${role}:converse` + that
    * role's prompt set — operator-converse.ts ~L85). Defaults to `operator`;
    * the registered `sentinel` target passes `sentinel` so Sentinel-specific
-   * behavior — notably `<handoff_to_queen>` (sentinel-as-claude-tui) — is
-   * exercisable. `<handoff_to_queen>` is honored ONLY for role==='sentinel'
+   * behavior — notably `<handoff_to_mug>` (sentinel-as-claude-tui) — is
+   * exercisable. `<handoff_to_mug>` is honored ONLY for role==='sentinel'
    * (converse.ts ~L512), so the operator target can never trigger it.
    */
   role?: 'operator' | 'papercup';

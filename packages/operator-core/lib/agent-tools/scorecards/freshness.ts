@@ -22,11 +22,11 @@ export default defineTool({
   description:
     'Has the Overwatch emitted a COMPLETE scorecard for a rubric since a given time (its last wake)? The emission-freshness check (monitor-the-monitor): returns status = fresh (a COMPLETE scorecard landed in-window) | partial-only (scorecards landed but ALL incomplete — a silent truncation) | stale (NOTHING landed — a silent emission gap), plus emitted / complete / count / partialCount, lastEmittedAt, lastCompleteAt, and latestMissingKeys (what is unrated right now). Reads scorecards:list (P-013); a "complete" scorecard rates every rubric criterion.',
   guidance: {
-    when: 'You want to know whether the Overwatch is actually emitting COMPLETE scorecards, not just whether it emitted anything — monitor-the-monitor. Did a complete hive-coordination-health scorecard land since the last wake (status fresh), or is it silently skipping (stale) / truncating to partials (partial-only)? Pass `since` = the last wake for a precise check.',
+    when: 'You want to know whether the Overwatch is actually emitting COMPLETE scorecards, not just whether it emitted anything — monitor-the-monitor. Did a complete pot-coordination-health scorecard land since the last wake (status fresh), or is it silently skipping (stale) / truncating to partials (partial-only)? Pass `since` = the last wake for a precise check.',
     notWhen:
       'You want the scorecard ROWS + their ratings — scorecards:list. You want a criterion\'s rating TREND over time — rubrics:trend. You are FILING a scorecard — improvements:capture { lane: "observation", observation: { rubricRef, ratings } }.',
     chaining:
-      'scorecards:freshness { rubricRef: "hive-coordination-health", since } → status stale/partial-only ⇒ the Overwatch missed or truncated → scorecards:list { rubricRef, since } to see what (if anything) it emitted, or check latestMissingKeys for which criteria were dropped.',
+      'scorecards:freshness { rubricRef: "pot-coordination-health", since } → status stale/partial-only ⇒ the Overwatch missed or truncated → scorecards:list { rubricRef, since } to see what (if anything) it emitted, or check latestMissingKeys for which criteria were dropped.',
     seeAlso: [
       'scorecards:list (the raw scorecards behind the freshness view)',
       'rubrics:trend (per-criterion trend over time)',
@@ -36,7 +36,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    rubricRef: z.string().describe('the rubric to check freshness for, e.g. "hive-coordination-health"'),
+    rubricRef: z.string().describe('the rubric to check freshness for, e.g. "pot-coordination-health"'),
     sourceHive: z.string().optional().describe('restrict to scorecards from one source-hive'),
     since: z
       .string()

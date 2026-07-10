@@ -49,7 +49,9 @@ vi.mock('@papercusp/sync', () => ({
   },
 }));
 
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   useQueryState: (key: string) => {
     const setter = vi.fn((v: unknown) => {
       H.nuqs[key] = typeof v === 'function' ? (v as (p: unknown) => unknown)(H.nuqs[key]) : v;

@@ -44,7 +44,7 @@ This is not a bug in your code; it is a property of the schema. If you write a r
 2. Do not assume one domain "is the right one" — both are valid.
 3. If you need a single answer, unify the results on the client side or add a migration to stamp both domains the same way.
 
-The workspace split is tracked under [EI-295](/) and the unification plan is in [local-hive-orchestration D-013](/).
+The workspace split is tracked under [EI-295](/) and the unification plan is in [local-pot-orchestration D-013](/).
 
 ## Related
 
@@ -52,4 +52,4 @@ The workspace split is tracked under [EI-295](/) and the unification plan is in 
 * `lib/plan-items/claims.ts` — renewal routine that touches both domains
 * `lib/plan-items/liveness.ts` — shared-resolver (partial fix candidate)
 * EI-295 — the issue tracking full unification
-* local-hive-orchestration D-013 — the unification roadmap
+* local-pot-orchestration D-013 — the unification roadmap

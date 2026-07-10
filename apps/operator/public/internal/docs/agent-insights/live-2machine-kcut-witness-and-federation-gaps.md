@@ -1,13 +1,13 @@
 # Live 2-machine K-CUT re-key witness — the working recipe + the federation gaps (WI-560)
 URL: /internal/docs/agent-insights/live-2machine-kcut-witness-and-federation-gaps
 
-How to run the live fed-a/fed-b K0→K1→K-revoke→K-CUT re-key cut-off witness on the linux-test-vm rig, what actually works, and the remaining live blocker for JOINER-side epoch-key receipt: live announce→admit still needs a gh-ATTESTED device announce, absent on the gh-unauthed VMs — so admit fed-b via the owner approval path (seed the pending-join + hive:membership_decide). Current joinHiveAsView now records the owner's hive pubkey and re-keys joined member substrates in place, so post-startup view joins no longer require a joiner restart just to move member substrates onto the hive topic. Owner-side K-CUT is fully verifiable on fed-a regardless. Discovered 2026-06-24 running WI-560; refreshed 2026-06-25 after EI-681 join-hive fixes.
+How to run the live fed-a/fed-b K0→K1→K-revoke→K-CUT re-key cut-off witness on the linux-test-vm rig, what actually works, and the remaining live blocker for JOINER-side epoch-key receipt: live announce→admit still needs a gh-ATTESTED device announce, absent on the gh-unauthed VMs — so admit fed-b via the owner approval path (seed the pending-join + pot:membership_decide). Current joinHiveAsView now records the owner's pot pubkey and re-keys joined member substrates in place, so post-startup view joins no longer require a joiner restart just to move member substrates onto the pot topic. Owner-side K-CUT is fully verifiable on fed-a regardless. Discovered 2026-06-24 running WI-560; refreshed 2026-06-25 after EI-681 join-pot fixes.
 
 import { Aside } from '@astrojs/starlight/components';
 
-The C-001 read-plane re-key flip (`papercusp-hive-rekey`) is owner-gated on a **live
+The C-001 read-plane re-key flip (`papercusp-pot-rekey`) is owner-gated on a **live
 2-machine K-CUT witness** (WI-560; see
-[hive-rekey-flip-readiness](/internal/docs/agent-insights/hive-rekey-flip-readiness)).
+[pot-rekey-flip-readiness](/internal/docs/agent-insights/pot-rekey-flip-readiness)).
 This page is what running it on the `scripts/linux-test-vm` rig actually taught: the
 re-key **mechanism** is green end-to-end at the authoritative OWNER layer, and the only
 thing standing between that and the joiner-side confirmation is **federation transport**,
@@ -19,27 +19,27 @@ hardcoded ports goes stale after any restart — don't trust it across a reboot.
 
 ## The witness, owner-side (this part WORKS, fully on fed-a)
 
-Mechanism map (all gated on `papercusp-hive-rekey`, ON on the rig):
+Mechanism map (all gated on `papercusp-pot-rekey`, ON on the rig):
 
 * **K0 admit/grant** — owner admits a member ⇒ `upsertHiveMember` ⇒
   `grantEpochKeysToMembers` wraps epoch `[0..current]` to the new device (owner-self-gated
-  on `loadHivePubkey`). `hive-membership-admission.ts` + `hive-epoch-boundary-wiring.ts`.
+  on `loadHivePubkey`). `pot-membership-admission.ts` + `pot-epoch-boundary-wiring.ts`.
   **Reconnect path (BUG B, D-028 layer 3):** `ownerAdmitOrPend`'s `already_member` branch
   now also calls `reconcileEpochKeysForCurrentMembers({ refederate: true, onlyDevices: <this
   member's devices> })` on reconnect — a member that missed its original federated grant
   (joined-after-grant, forward-only cursor, or re-session) has its keys re-sent automatically.
   Best-effort (a re-grant hiccup never fails admission).
-* **K1 owner re-key** — a benign boundary that KEEPS everyone: `hive-set-listing.ts`
+* **K1 owner re-key** — a benign boundary that KEEPS everyone: `pot-set-listing.ts`
   go-private ⇒ `advanceEpochOnHiveBoundary` with **no cutOff** ⇒ epoch++ wrapped to ALL
   current members.
-* **K-revoke** — `hive:ban_member` ⇒ `hive-revoke-contributor.ts`
+* **K-revoke** — `pot:ban_member` ⇒ `pot-revoke-contributor.ts`
   `revokeHiveContributor` ⇒ `advanceEpochOnHiveBoundary(cutOffPubkeys=[target device])`
-  ⇒ epoch++ wrapped to **remaining members only**. Ban is Hive-native (owner = holds the
-  hive key via `loadHivePubkey`), **NOT gh-repo-admin** — no GitHub token needed to ban.
+  ⇒ epoch++ wrapped to **remaining members only**. Ban is Pot-native (owner = holds the
+  pot key via `loadHivePubkey`), **NOT gh-repo-admin** — no GitHub token needed to ban.
 * **K-CUT** — the revoked device simply has no row at the new epoch; no such row exists to
   author or federate, so it can never reach the cut member.
 
-Verified live on fed-a (fresh isolated hive `wi560k-hive`, member ← a public repo), epoch
+Verified live on fed-a (fresh isolated pot `wi560k-pot`, member ← a public repo), epoch
 × device wrap matrix:
 
 | epoch | owner device | revoked device | event                     |
@@ -49,7 +49,7 @@ Verified live on fed-a (fresh isolated hive `wi560k-hive`, member ← a public r
 | 2     | ✓            | **✗**          | ban → cut                 |
 
 The owner-side cut is the thing the flag actually gates, and it composes with the already
--green hermetic content read-cut witness (`hive-epoch-read-cut-witness.test.ts`).
+-green hermetic content read-cut witness (`pot-epoch-read-cut-witness.test.ts`).
 
 ## Gap 1 — admitting the joiner: the live announce→admit needs gh attestation
 
@@ -67,38 +67,38 @@ pending-join on the OWNER (the part the gh gap blocks) then admit through the re
 fed.sh a sql "INSERT INTO harness_shared.hive_pending_joins
  (workspace_id,harness_slug,github_user_id,github_username,device_attestations,status,
   requested_at,origin,created_at,updated_at)
- VALUES ('default','<hive-home>',<joiner_gh_id>,'<login>',
+ VALUES ('default','<pot-home>',<joiner_gh_id>,'<login>',
   '[{\"device_pubkey\":\"<joiner_device_b64>\",\"gist_id\":\"manual\",\"gist_url\":\"\",
      \"device_label\":\"fed-b\",\"created_at\":0,\"signature_by_device\":\"\"}]'::jsonb,
   'pending',(extract(epoch from now())*1000)::bigint,'local',
   (extract(epoch from now())*1000)::bigint,(extract(epoch from now())*1000)::bigint)"
 # admit through the PRODUCTION verb (runs approvePendingJoin → upsertHiveMember → grant)
-fed.sh a mcp hive:membership_decide '{"hive":"<hive-home>","githubUserId":<id>,"decision":"approve","workspace":"default"}'
+fed.sh a mcp pot:membership_decide '{"pot":"<pot-home>","githubUserId":<id>,"decision":"approve","workspace":"default"}'
 ```
 
 The grant/cut path is 100% production code; only the *discovery* of the device is shortcut
 (the gh-attestation concern is orthogonal to the re-key mechanism). The real fix for live
 admission is restoring gh auth on the VMs (WI-757).
 
-## Current behavior (2026-06-25) — join-hive now re-keys members in place
+## Current behavior (2026-06-25) — join-pot now re-keys members in place
 
 The original WI-560 witness found that a view-join performed after operator startup
 left joined member substrates on their per-repo `gh:<repo_id>` topics while the owner
-served the hive on the hive-pubkey topic. That part is now fixed in
+served the pot on the pot-pubkey topic. That part is now fixed in
 `packages/operator-core/lib/harness/join-hive.ts`:
 
 * `joinHiveAsView` accepts or resolves the owner's `hivePubkey` from discovery.
-* It writes a remote hive identity with `upsertRemoteHiveIdentity`, using a
+* It writes a remote pot identity with `upsertRemoteHiveIdentity`, using a
   non-signing `remote:<hiveId>` keychain id so the joiner can resolve the same
-  hive topic without pretending to own the hive.
+  pot topic without pretending to own the pot.
 * After stamping `hive_slug` on the joined members, it calls
   `rekeyHarness(workspaceId, memberSlug)` for each successful join. That re-resolves
-  the substrate binding in place onto the owner's hive-pubkey topic; a joiner
+  the substrate binding in place onto the owner's pot-pubkey topic; a joiner
   operator restart is no longer required solely to move post-startup joins onto
-  the hive topic.
+  the pot topic.
 
 The remaining live-rig blocker is therefore narrower: the owner still has to
-announce the hive/home identity on the shared topic, and the gh-unauthed VMs still
+announce the pot/home identity on the shared topic, and the gh-unauthed VMs still
 cannot produce the attested live announce path. Use the owner approval path below
 for membership grant/cut testing until VM gh auth is restored.
 
@@ -109,16 +109,16 @@ This was the second blocker observed on 2026-06-24 before EI-681 landed:
 * **Repo-bound MEMBER harnesses federate fine without gh auth** — they rendezvous on the
   public repo topic (`shared_repo_binding_cache.harness_topic`). On the rig fed-b actively
   peers hello-world / fixawitness / spoon-knife members + a freshly-joined member clone.
-* **The repo-LESS hive HOME needs the gh-auth-bound announce** (`local-announce-identity` →
+* **The repo-LESS pot HOME needs the gh-auth-bound announce** (`local-announce-identity` →
   `resolveLocalAnnounceIdentity` throws when gh-unauthed ⇒ `boot.ts` keeps it local-only;
   see [substrate-swarm-self-heal-no-restart](/internal/docs/agent-insights/substrate-swarm-self-heal-no-restart)
   * the [restart runbook §6](/internal/docs/agent-insights/federation-rig-restart-runbook)).
 * **`hive_epoch_keys` (and `hive_members`) federate over the HOME log** (the A-003
-  hive-home seam), NOT the member topic. So even when the joiner peers the member, the
+  pot-home seam), NOT the member topic. So even when the joiner peers the member, the
   epoch keys never arrive.
 * **A joiner only peered a HOME its operator booted at STARTUP.** Before EI-681,
   `joinHiveAsView` cloned the member harnesses but did not materialize the remote
-  hive identity or re-key member substrates after stamping `hive_slug`, so a hive
+  pot identity or re-key member substrates after stamping `hive_slug`, so a pot
   view-joined after startup stayed on member repo topics until a restart.
 
 ### To complete the live joiner-side receipt
@@ -126,9 +126,9 @@ This was the second blocker observed on 2026-06-24 before EI-681 landed:
 1. Restore gh auth on the OWNER VM with its **correct historical identity** (host
    `gh auth token` piped over ssh — runbook §6; reversible, no restart) so the home
    announces.
-2. Re-publish the hive (a go-private K1 WITHDRAWS it — re-`discovery:set_pot public` after).
+2. Re-publish the pot (a go-private K1 WITHDRAWS it — re-`discovery:set_pot public` after).
 3. Re-run the join/discovery path with the current driver. `joinHiveAsView` now
-   records the remote hive identity and calls `rekeyHarness` for joined members in
+   records the remote pot identity and calls `rekeyHarness` for joined members in
    place; only restart the joiner if you need to recover from an already-wedged old
    run or to pick up a new deploy.
 
@@ -138,24 +138,24 @@ encryption on) the AEAD content read-cut.
 
 ## WI-887: epoch key reconcile self-heal
 
-A member admitted while `papercusp-hive-rekey` was dark — or admitted after an epoch advanced before they were known to the owner — permanently lacks the epoch keys minted before them unless explicitly healed. `hive-epoch-boundary-wiring.ts` now has two complement paths:
+A member admitted while `papercusp-pot-rekey` was dark — or admitted after an epoch advanced before they were known to the owner — permanently lacks the epoch keys minted before them unless explicitly healed. `pot-epoch-boundary-wiring.ts` now has two complement paths:
 
-* **`reconcileEpochKeysForCurrentMembers`** — wraps epochs `[0..current]` to every LIVE (non-revoked) member device. Called via the `onMemberApplied` hook (hive-members projection) to heal the moment a membership op lands. 'no-fresh-members' when the hive has no live device. **New params (BUG B, D-028 layer 3):** `refederate?: boolean` re-stamps existing rows so the mig-411 AFTER INSERT OR UPDATE capture trigger re-federates them (vs default write-once gap-fill); `onlyDevices?: readonly string[]` restricts the re-grant to a specific device set (the reconnecting member's devices) rather than the whole hive — used by `ownerAdmitOrPend`'s reconnect path.
-* **`reconcileOwnedHiveEpochKeys`** (WI-887 sweep) — GAP-AWARE: enumerates every hive the box knows (`harness_shared.hives`), checks whether any live device is missing the current epoch key, and only then calls `reconcileEpochKeysForCurrentMembers`. NO crypto on the steady state (the perf-anti-pattern guard). Owner-only (self-gates via `loadHivePubkey` null check), C-001-safe (revoked devices excluded), idempotent. Host on in-process periodic checks or call once at owner boot.
+* **`reconcileEpochKeysForCurrentMembers`** — wraps epochs `[0..current]` to every LIVE (non-revoked) member device. Called via the `onMemberApplied` hook (pot-members projection) to heal the moment a membership op lands. 'no-fresh-members' when the pot has no live device. **New params (BUG B, D-028 layer 3):** `refederate?: boolean` re-stamps existing rows so the mig-411 AFTER INSERT OR UPDATE capture trigger re-federates them (vs default write-once gap-fill); `onlyDevices?: readonly string[]` restricts the re-grant to a specific device set (the reconnecting member's devices) rather than the whole pot — used by `ownerAdmitOrPend`'s reconnect path.
+* **`reconcileOwnedHiveEpochKeys`** (WI-887 sweep) — GAP-AWARE: enumerates every pot the box knows (`harness_shared.pots`), checks whether any live device is missing the current epoch key, and only then calls `reconcileEpochKeysForCurrentMembers`. NO crypto on the steady state (the perf-anti-pattern guard). Owner-only (self-gates via `loadHivePubkey` null check), C-001-safe (revoked devices excluded), idempotent. Host on in-process periodic checks or call once at owner boot.
 
 **On the rig:** after seeding `hive_members` via the owner approval path (Gap 1 recipe), call `reconcileOwnedHiveEpochKeys` on fed-a if any member device shows missing epoch rows. It backfills without advancing the epoch — safe to call even mid-witness.
 
 ## Adjacent bug observed (historical — fixed 2026-06-26)
 
-**FIXED by WI-892:** All 11 hive write-tools (`create`, `create_from_repo`, `ban_member`,
+**FIXED by WI-892:** All 11 pot write-tools (`create`, `create_from_repo`, `ban_member`,
 `add_member`, `membership_decide`, `leave`, …) now route through `resolveConcreteWorkspaceId`
 (skips `'*'`/blank, falls back to `activeWorkspaceId()` = `'default'`). The
-`workspace_id='*'` sentinel no longer leaks into hive\_members writes, so the MCP path and
+`workspace_id='*'` papercup no longer leaks into hive\_members writes, so the MCP path and
 the HTTP route are now equivalent. No `workspace:"default"` workaround needed for these tools.
 
-*Original finding (2026-06-24):* `hive:create_from_repo` via the **superuser MCP** failed
+*Original finding (2026-06-24):* `pot:create_from_repo` via the **superuser MCP** failed
 `member_create_failed / hive_not_found` because the MCP session resolved
-`ctx.workspaceId='*'` while hives live in `default`; the HTTP route
+`ctx.workspaceId='*'` while pots live in `default`; the HTTP route
 (`activeWorkspaceId()='default'`) worked. Same EI-3409 class. The versioned `fed.sh` driver
-sets `FED_MCP_WS=default` as a safety net for any non-hive tools not yet using
-`resolveConcreteWorkspaceId` — keep it in place for non-hive MCP calls.
+sets `FED_MCP_WS=default` as a safety net for any non-pot tools not yet using
+`resolveConcreteWorkspaceId` — keep it in place for non-pot MCP calls.

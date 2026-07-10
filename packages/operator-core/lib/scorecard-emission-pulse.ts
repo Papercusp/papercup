@@ -2,7 +2,7 @@
  * scorecard-emission-pulse — the SCHEDULED rubric-emission floor
  * (rubric-scorecard adoption step 1, WI-2374, 2026-07-04).
  *
- * overwatch/scorecard-backstop.ts guarantees a `hive-coordination-health`
+ * overwatch/scorecard-backstop.ts guarantees a `pot-coordination-health`
  * scorecard per overwatch TURN — but it is a turn-END seam: it only fires when an
  * overwatch launch finishes. When the supervisor is STOPPED (kettle:pause) or
  * its wake loop dies, no turns end → no agent cards AND no floors, and the
@@ -218,7 +218,7 @@ export async function runScorecardEmissionPulse(
     const toolUtil = await toolUtilizationGrade();
     const ratings = synthesizeCoordinationScorecard(health, toolUtil);
     await capture({
-      title: 'hive-coordination-health scorecard (scheduled pulse floor)',
+      title: 'pot-coordination-health scorecard (scheduled pulse floor)',
       kind: 'change',
       lane: 'observation',
       sourceRole: 'system',

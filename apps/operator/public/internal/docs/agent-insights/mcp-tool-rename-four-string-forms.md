@@ -1,22 +1,22 @@
 # Renaming an MCP tool (defineTool) touches FOUR distinct string forms, not just the colon token
 URL: /internal/docs/agent-insights/mcp-tool-rename-four-string-forms
 
-A defineTool group/verb rename (e.g. fleet:spawn -> bee:spawn) is referenced in the codebase as four DIFFERENT string encodings of the same identity — colon (group:verb), MCP-projection underscore (mcp__<server>__group_verb), dot module-path (group.verb), and slash file-path (agent-tools/group/verb) — plus a separate GROUP-PREFIX classification gate. A naive `sed 's/old:verb/new:verb/'` only catches the first form and silently leaves the other three (and the prefix-classifier rule) stale.
+A defineTool group/verb rename (e.g. fleet:spawn -> cup:spawn) is referenced in the codebase as four DIFFERENT string encodings of the same identity — colon (group:verb), MCP-projection underscore (mcp__<server>__group_verb), dot module-path (group.verb), and slash file-path (agent-tools/group/verb) — plus a separate GROUP-PREFIX classification gate. A naive `sed 's/old:verb/new:verb/'` only catches the first form and silently leaves the other three (and the prefix-classifier rule) stale.
 
 ## What
 
 Renaming a `defineTool` tool's `group`/`verb` (e.g. WI-1764's `fleet:spawn` →
-`bee:spawn`, a deliberate no-alias breaking rename) is NOT a single find/replace.
+`cup:spawn`, a deliberate no-alias breaking rename) is NOT a single find/replace.
 The same tool identity is encoded in the codebase FOUR different ways, and a
 rename that only fixes the colon form leaves the other three silently stale:
 
 1. **Colon token** — `group:verb` (e.g. `fleet:spawn`). Appears in tool
    guidance strings, `allowedTools` arrays, verb-lists, and most test
-   assertions. This is the form a naive `sed 's/fleet:spawn/bee:spawn/'`
+   assertions. This is the form a naive `sed 's/fleet:spawn/cup:spawn/'`
    catches — and ONLY this form.
 2. **MCP-projection underscore** — `mcp__<server>__group_verb` (e.g.
    `mcp__agentmcp__fleet_spawn`). Shows up in chat-surface `allowedTools`
-   lists and role-prompt assertions (e.g. a Queen persona's allowed-tools
+   lists and role-prompt assertions (e.g. a Mug persona's allowed-tools
    check). The colon-keyed sed **skips this entirely** — it's a different
    delimiter (`_` not `:`) inside a different prefix (`mcp__<server>__`).
 3. **Dot module-path** — `group.verb` (e.g. `fleet.spawn`). Used by
@@ -27,14 +27,14 @@ rename that only fixes the colon form leaves the other three silently stale:
    `agent-tools/fleet/spawn`). This is the tool's OWN source file location
    (`packages/operator-core/lib/agent-tools/<group>/<verb>.ts`) plus every
    module that imports it by that path. A group rename means the file itself
-   moves (`agent-tools/fleet/spawn.ts` → `agent-tools/bee/spawn.ts`) and every
+   moves (`agent-tools/fleet/spawn.ts` → `agent-tools/cup/spawn.ts`) and every
    import statement referencing the old path must move with it.
 
 ## The semantic gate (not just a string form — a CLASSIFICATION rule)
 
 Beyond the four string encodings, `capability-category-map.ts` classifies
 tools by **group-prefix regex** (e.g. `^fleet:` → `agent-lifecycle`). A group
-rename (`fleet` → `bee`) that doesn't add a matching `^bee:` rule makes the
+rename (`fleet` → `cup`) that doesn't add a matching `^cup:` rule makes the
 renamed tool classify to `null` — which typically means **never-auto** in
 whatever policy consumes that category, and trips a coverage test (this
 project's P-090 coverage test) that asserts every registered tool classifies
@@ -61,8 +61,8 @@ to a known category.
 
 ## How this was verified
 
-The WI-1764 `fleet:spawn` → `bee:spawn` rename that surfaced this lesson was
-confirmed complete via: `bee/spawn.test.ts`, `capability-category-map.test.ts`,
+The WI-1764 `fleet:spawn` → `cup:spawn` rename that surfaced this lesson was
+confirmed complete via: `cup/spawn.test.ts`, `capability-category-map.test.ts`,
 the orchestrator's `invoke.test.ts`, and `tools-md-sync` (the guidance-sync
 test every tool addition/rename must pass, per `CLAUDE.md`'s "Adding a tool"
 section) — all green after fixing all four forms + the classifier rule.

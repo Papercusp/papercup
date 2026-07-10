@@ -1,9 +1,20 @@
 /**
  * Design primitive lint — guards the enforceable parts of /internal/docs/design.
  *
- * This test deliberately starts with explicit legacy allowlists. The point is to
- * prevent new off-system primitives immediately, then shrink the allowlists as
- * the design-spec compliance plan migrates each active surface.
+ * Every rule scans CODE, never comments (see `stripComments`). A file that
+ * *documents* a banned primitive — "no native <select>/<table> here", "replaced the
+ * native <table> that redded this lint" — is not using one, and must not be flagged
+ * for saying so. That false positive is not hypothetical: it seeded four of the
+ * allowlist entries this file used to carry (ToolUsagePanel, AdvOverviewTab,
+ * Select.tsx, Checkbox.tsx — none of which contained the primitive they were
+ * allowlisted for) and it re-fires the moment an author explains their migration in
+ * a comment. Blanking comments before matching kills the whole class
+ * (design-simplification-2026-07-09 P-009).
+ *
+ * What remains are explicit allowlists for files that genuinely contain a native
+ * primitive: the shared wrapper implementations. They shrink as the design-spec
+ * compliance plan migrates each active surface; a NEW off-system primitive is
+ * blocked immediately.
  */
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
@@ -28,72 +39,34 @@ const SKIP_DIR_NAMES = new Set([
 const SOURCE_FILE_RE = /\.(?:tsx|ts|css)$/;
 const TEST_FILE_RE = /(?:\.test|\.spec)\.tsx?$/;
 
-const LEGACY_NATIVE_SELECT_FILES = new Set([
-  // Shared implementation of the design-system wrapper.
-  'operator/app/harness/Select.tsx',
-  // TEMPORARY (gate-unblock, su-2255d, EI-2699) — a dev-admin-rail internal-tooling
-  // panel. Allowlisted so a new internal panel doesn't red the whole fleet's gate;
-  // migrate to the shared Select primitive as a follow-up.
-  'operator-vite/src/components/dev-admin-rail/panels/ToolUsagePanel.tsx',
-  // TEMPORARY (gate-unblock 2026-06-23, model-override-sidebar-2026-06-23) — the new
-  // left-rail per-agent session model-override control. The shared Select primitive
-  // (operator/app/harness/Select.tsx) lives in the apps/operator Next app and isn't
-  // yet available to the operator-vite app (same constraint as ToolUsagePanel above).
-  // Allowlisted so a new control doesn't red the whole fleet's gate; migrate to a
-  // Vite-available Select primitive as a follow-up.
-  'operator-vite/src/components/left-sidebar/ModelOverride.tsx',
-]);
+// ── Allowlists ────────────────────────────────────────────────────────────────
+// P-009 (design-simplification-2026-07-09) burned these down to the ONE file that
+// genuinely contains a native primitive: the shared <table> wrapper. Of the six
+// entries removed, three were never offenders at all — ToolUsagePanel, AdvOverviewTab
+// and Select.tsx merely MENTION a native primitive in a doc comment (so did
+// Checkbox.tsx) — and the rest were migrated onto the primitive here.
+//
+// Keep them empty. An allowlist entry is a promise to migrate, and a promise nobody
+// tracks is just a permanently-disabled lint.
 
-const LEGACY_NATIVE_CHECKBOX_FILES = new Set([
-  // Shared implementation of the design-system wrapper.
-  'operator/app/harness/Checkbox.tsx',
-]);
+/** The Radix wrapper owns no native control, so no file may declare a native <select>. */
+const NATIVE_SELECT_ALLOWED_FILES = new Set<string>();
 
-const LEGACY_NATIVE_TABLE_FILES = new Set<string>([
-  // Shared implementation of the design-system wrapper (WI-3561, 2026-07-09) — same
-  // pattern as Select.tsx / Checkbox.tsx above: the primitive itself legitimately owns
-  // the one native <table>/<thead>/<tbody> so every app UI can stop hand-rolling it.
+/** Same: harness/Checkbox.tsx is a Radix wrapper, not a native <input type=checkbox>. */
+const NATIVE_CHECKBOX_ALLOWED_FILES = new Set<string>();
+
+const NATIVE_TABLE_ALLOWED_FILES = new Set<string>([
+  // The one legitimate native <table>/<thead>/<tbody> (WI-3561, 2026-07-09): the shared
+  // primitive wraps it ONCE so no app UI has to hand-roll one.
   'operator/app/harness/Table.tsx',
-  // TEMPORARY (gate-unblock, su-2255d, EI-2699) — a dev-admin-rail internal-tooling
-  // panel. The shared table primitive (operator/app/harness/Table.tsx) lives in the
-  // apps/operator Next app and isn't yet available to the operator-vite app (same
-  // constraint as ToolUsagePanel's Select allowlisting above); migrate to a
-  // Vite-available table primitive as a follow-up.
-  'operator-vite/src/components/dev-admin-rail/panels/ToolUsagePanel.tsx',
-  // TEMPORARY (gate-unblock 2026-06-23) — the ADV overview tab, un-migrated by the
-  // in-flight design-primitives migration and holding the whole fleet's green gate red
-  // (~3h). Shared table primitive now exists (operator/app/harness/Table.tsx, WI-3561)
-  // but isn't yet available to the operator-vite app; migrate to a Vite-available table
-  // primitive as a follow-up.
-  'operator-vite/src/components/adv/AdvOverviewTab.tsx',
-  // TEMPORARY (gate-unblock 2026-07-02, WI-1686) — the new /settings/p2p owner surface's
-  // Audit table (p2p-work-distribution-2026-07-02). The shared table primitive now exists
-  // (operator/app/harness/Table.tsx, WI-3561) — migrate this page onto it as a follow-up.
-  'operator/app/settings/p2p/page.tsx',
-  // TEMPORARY (gate-unblock 2026-07-09, agents-pill-inactive-search-2026-07-09) — FleetStatusPanel.
-  // The shared table primitive now exists (operator/app/harness/Table.tsx, WI-3561, per
-  // su-ba914's WI-3537 pickup 2026-07-09) — author (su-ba914) migrating onto it.
-  'operator/app/_components/FleetStatusPanel.tsx',
 ]);
 
-const SHARED_CONFIRM_IMPLEMENTATION_FILES = new Set([
-  'operator/app/harness/ConfirmModal.tsx',
-  'operator/app/harness/useConfirmDialog.tsx',
-]);
+/** The confirm primitive is a modal — no file, not even its own, calls native confirm(). */
+const NATIVE_CONFIRM_ALLOWED_FILES = new Set<string>();
 
-// TEMPORARY (gate-unblock 2026-06-23) — un-migrated `title=` tooltips in two
-// operator-vite chrome components, surfaced by the in-flight design-primitives
-// migration and holding the fleet's green gate red (~3h). Allowlisted so a peer's
-// mid-migration WIP doesn't block every deploy; migrate to the shared tooltip
-// primitive as a follow-up (owned by the design-primitives migration).
-const LEGACY_BUTTON_TITLE_FILES = new Set<string>([
-  'operator-vite/src/components/left-sidebar/LeftSidebar.tsx',
-  'operator-vite/src/components/voice-bar/SentinelVoiceBar.tsx',
-]);
-const LEGACY_LINK_TITLE_FILES = new Set<string>();
-const LEGACY_TAB_TITLE_FILES = new Set<string>([
-  'operator-vite/src/components/left-sidebar/LeftSidebar.tsx',
-]);
+const BUTTON_TITLE_ALLOWED_FILES = new Set<string>();
+const LINK_TITLE_ALLOWED_FILES = new Set<string>();
+const TAB_TITLE_ALLOWED_FILES = new Set<string>();
 
 const AUDITED_DIRECT_CYAN_FILES = [
   'operator-vite/src/components/left-sidebar/left-sidebar.styles.ts',
@@ -152,23 +125,105 @@ function walk(dir: string, out: string[]): void {
   }
 }
 
+/**
+ * Blank the CONTENT of comments, preserving every newline and byte offset so the
+ * `line = content.slice(0, index).split('\n').length` arithmetic below stays exact.
+ *
+ * Only blanks text that CANNOT be code: a block comment that opens at the start of a
+ * line (optionally behind a JSX `{`), and a line whose first non-space characters are
+ * `//`. That deliberately leaves trailing `code(); // comment` alone — the conservative
+ * choice, since a mid-line `/*` may live inside a string (a glob like '**\/*.tsx') and
+ * blanking from there would hide real code. An unterminated block comment is left
+ * untouched rather than blanked to EOF.
+ */
+export function stripComments(src: string): string {
+  const out = src.split('');
+  const n = src.length;
+  let i = 0;
+  let atLineStart = true;
+  let seenBrace = false;
+  while (i < n) {
+    const c = src[i];
+    if (c === '\n') {
+      atLineStart = true;
+      seenBrace = false;
+      i += 1;
+      continue;
+    }
+    if (atLineStart && (c === ' ' || c === '\t' || c === '\r')) {
+      i += 1;
+      continue;
+    }
+    if (atLineStart && c === '{' && !seenBrace) {
+      seenBrace = true; // JSX comment: {/* … */}
+      i += 1;
+      continue;
+    }
+    if (atLineStart && c === '/' && src[i + 1] === '*') {
+      const close = src.indexOf('*/', i + 2);
+      if (close === -1) break; // unterminated — leave the remainder alone
+      for (let k = i; k < close + 2; k += 1) {
+        if (out[k] !== '\n' && out[k] !== '\r') out[k] = ' ';
+      }
+      i = close + 2;
+      atLineStart = false;
+      continue;
+    }
+    if (atLineStart && c === '/' && src[i + 1] === '/') {
+      let k = i;
+      while (k < n && src[k] !== '\n') k += 1;
+      for (let j = i; j < k; j += 1) out[j] = ' ';
+      i = k;
+      continue;
+    }
+    atLineStart = false;
+    i += 1;
+  }
+  return out.join('');
+}
+
+let fileListCache: string[] | null = null;
+
 function collectFiles(): string[] {
+  if (fileListCache) return fileListCache;
   const files: string[] = [];
   for (const sourceDir of SOURCE_DIRS) {
     walk(sourceDir, files);
   }
-  return files.sort();
+  fileListCache = files.sort();
+  return fileListCache;
+}
+
+/** Comment-stripped file contents, memoized — every rule re-walks the same tree. */
+const codeCache = new Map<string, string>();
+
+function readCode(file: string): string {
+  let code = codeCache.get(file);
+  if (code === undefined) {
+    code = stripComments(readFileSync(file, 'utf-8'));
+    codeCache.set(file, code);
+  }
+  return code;
 }
 
 function rel(file: string): string {
   return relative(APPS_ROOT, file);
 }
 
+/**
+ * `.test()` on a /g regex is STATEFUL — it advances `lastIndex` on a match, so the
+ * next call resumes mid-string and silently misses that file's offence. Six rules
+ * route through here, so a single shared /g pattern under-reported roughly every
+ * other offender. Always match against a fresh, non-global clone.
+ */
+export function matchesAnywhere(pattern: RegExp, content: string): boolean {
+  return new RegExp(pattern.source, pattern.flags.replace(/g/g, '')).test(content);
+}
+
 function unexpectedFiles(pattern: RegExp, allowed: ReadonlySet<string>): string[] {
   const offenders: string[] = [];
   for (const file of collectFiles()) {
-    const content = readFileSync(file, 'utf-8');
-    if (!pattern.test(content)) continue;
+    if (!matchesAnywhere(pattern, readCode(file))) continue;
     const path = rel(file);
     if (!allowed.has(path)) offenders.push(path);
   }
@@ -178,13 +233,13 @@ function unexpectedFiles(pattern: RegExp, allowed: ReadonlySet<string>): string[
 function unexpectedNativeConfirmFiles(): string[] {
   const offenders: string[] = [];
   for (const file of collectFiles()) {
-    const content = readFileSync(file, 'utf-8');
+    const content = readCode(file);
     const hasNativeConfirm =
       /window\.confirm\s*\(/.test(content) ||
       (/\bconfirm\s*\(/.test(content) && !/useConfirmDialog/.test(content));
     if (!hasNativeConfirm) continue;
     const path = rel(file);
-    if (!SHARED_CONFIRM_IMPLEMENTATION_FILES.has(path)) offenders.push(path);
+    if (!NATIVE_CONFIRM_ALLOWED_FILES.has(path)) offenders.push(path);
   }
   return offenders;
 }
@@ -193,12 +248,11 @@ function unexpectedNativeCheckboxFiles(): string[] {
   const offenders: string[] = [];
   const pattern = /<input\b[^>]*\btype=["']checkbox["'][^>]*>/gs;
   for (const file of collectFiles()) {
-    const content = readFileSync(file, 'utf-8');
-    const matches = [...content.matchAll(pattern)];
+    const matches = [...readCode(file).matchAll(pattern)];
     const hasNativeCheckbox = matches.some((match) => !/\brole=["']switch["']/.test(match[0]));
     if (!hasNativeCheckbox) continue;
     const path = rel(file);
-    if (!LEGACY_NATIVE_CHECKBOX_FILES.has(path)) offenders.push(path);
+    if (!NATIVE_CHECKBOX_ALLOWED_FILES.has(path)) offenders.push(path);
   }
   return offenders;
 }
@@ -206,7 +260,7 @@ function unexpectedNativeCheckboxFiles(): string[] {
 function collectPatternMatches(pattern: RegExp): string[] {
   const offenders: string[] = [];
   for (const file of collectFiles()) {
-    const content = readFileSync(file, 'utf-8');
+    const content = readCode(file);
     const matches = [...content.matchAll(pattern)];
     for (const match of matches) {
       const before = content.slice(0, match.index);
@@ -226,7 +280,7 @@ function unexpectedCoordUtilityClasses(): string[] {
     /className=\{?["'`](?=[^"'`]*(?:\b(?:mx-auto|max-w-|p-|px-|py-|mb-|mt-|space-y-|gap-|flex|grid|items-|justify-|rounded|border-|bg-|text-|font-|opacity-|overflow-|min-w-|w-|h-|shrink-|truncate|uppercase|tracking-)\b))[^"'`]+["'`]\}?/g;
   for (const file of files) {
     if (!file.endsWith('.tsx')) continue;
-    const content = readFileSync(file, 'utf-8');
+    const content = readCode(file);
     const matches = [...content.matchAll(utilityClassRe)];
     for (const match of matches) {
       const before = content.slice(0, match.index);
@@ -253,7 +307,7 @@ function unexpectedNonzeroLetterSpacingUnder(root: string): string[] {
   const nonzeroLetterSpacingRe =
     /\b(?:letter-spacing|letterSpacing)\s*:\s*(?:['"])?(?!0(?:\s*(?:[;,'"}]|!important)|\s*$))[0-9.]+(?:em|px|rem)?(?:['"])?/gm;
   for (const file of files) {
-    const content = readFileSync(file, 'utf-8');
+    const content = readCode(file);
     const matches = [...content.matchAll(nonzeroLetterSpacingRe)];
     for (const match of matches) {
       const before = content.slice(0, match.index);
@@ -278,7 +332,7 @@ function unexpectedSkyPrimitiveReferences(): string[] {
   for (const file of collectFiles()) {
     const path = rel(file);
     if (isGeneratedTokenStylesheet(path)) continue;
-    const content = readFileSync(file, 'utf-8');
+    const content = readCode(file);
     const matches = [...content.matchAll(skyPrimitiveRe)];
     for (const match of matches) {
       const before = content.slice(0, match.index);
@@ -303,7 +357,7 @@ function unexpectedLocalStatusColorMaps(): string[] {
   for (const file of collectFiles()) {
     const path = rel(file);
     if (STATUS_MAP_CENTRAL_FILES.has(path)) continue;
-    const content = readFileSync(file, 'utf-8');
+    const content = readCode(file);
     const matches = [...content.matchAll(statusMapRe)];
     for (const match of matches) {
       const before = content.slice(0, match.index);
@@ -324,7 +378,7 @@ function unexpectedDirectCyanLiteralsInAuditedFiles(): string[] {
     const file = join(APPS_ROOT, path);
     let content: string;
     try {
-      content = readFileSync(file, 'utf-8');
+      content = stripComments(readFileSync(file, 'utf-8'));
     } catch {
       offenders.push(`${path}: missing audited file`);
       continue;
@@ -394,11 +448,11 @@ function expectNoUnexpected(label: string, offenders: string[]): void {
 
 describe('design primitive lint', () => {
   it('blocks new native <select> controls in app UI', () => {
-    expectNoUnexpected('Native <select>', unexpectedFiles(/<select\b/g, LEGACY_NATIVE_SELECT_FILES));
+    expectNoUnexpected('Native <select>', unexpectedFiles(/<select\b/g, NATIVE_SELECT_ALLOWED_FILES));
   });
 
   it('blocks new native <table> layouts in app UI', () => {
-    expectNoUnexpected('Native <table>', unexpectedFiles(/<table\b/g, LEGACY_NATIVE_TABLE_FILES));
+    expectNoUnexpected('Native <table>', unexpectedFiles(/<table\b/g, NATIVE_TABLE_ALLOWED_FILES));
   });
 
   it('blocks direct confirm usage outside the shared confirm primitive and legacy baseline', () => {
@@ -419,21 +473,21 @@ describe('design primitive lint', () => {
   it('blocks title-only tooltips on buttons', () => {
     expectNoUnexpected(
       'Button title tooltip',
-      unexpectedFiles(/<button\b(?:=>|[^>])*\btitle=/g, LEGACY_BUTTON_TITLE_FILES),
+      unexpectedFiles(/<button\b(?:=>|[^>])*\btitle=/g, BUTTON_TITLE_ALLOWED_FILES),
     );
   });
 
   it('blocks title-only tooltips on links', () => {
     expectNoUnexpected(
       'Link title tooltip',
-      unexpectedFiles(/<(?:a\b|RouteLink\b)(?:=>|[^>])*\btitle=/g, LEGACY_LINK_TITLE_FILES),
+      unexpectedFiles(/<(?:a\b|RouteLink\b)(?:=>|[^>])*\btitle=/g, LINK_TITLE_ALLOWED_FILES),
     );
   });
 
   it('blocks title-only tooltips on tab controls', () => {
     expectNoUnexpected(
       'Tab title tooltip',
-      unexpectedFiles(/\brole=["']tab["'](?:=>|[^>])*\btitle=/g, LEGACY_TAB_TITLE_FILES),
+      unexpectedFiles(/\brole=["']tab["'](?:=>|[^>])*\btitle=/g, TAB_TITLE_ALLOWED_FILES),
     );
   });
 
@@ -537,5 +591,68 @@ describe('warnOrFail (warn-first lint rollout)', () => {
     expect(() =>
       warnOrFail('Custom', ['x:1: y'], { enforce: true, hint: 'SEE THE DESIGN DOC.' }),
     ).toThrow(/SEE THE DESIGN DOC\./);
+  });
+});
+
+// ── The two scanner bugs P-009 fixed (both silent, in opposite directions) ────────
+describe('matchesAnywhere (the /g statefulness bug)', () => {
+  it('does not carry lastIndex between calls, so a real offender is never skipped', () => {
+    const shared = /<table\b/g;
+    // The naive `shared.test(x)` this replaced returns false for the SECOND string,
+    // because matching the first left lastIndex past the start of the second.
+    expect(shared.test('a <table> in a comment')).toBe(true);
+    expect(shared.test('<table className="real">')).toBe(false); // ← the old bug
+
+    expect(matchesAnywhere(/<table\b/g, 'a <table> in a comment')).toBe(true);
+    expect(matchesAnywhere(/<table\b/g, '<table className="real">')).toBe(true);
+  });
+
+  it('honours non-g flags (case sensitivity is load-bearing: <Select/> is not <select>)', () => {
+    expect(matchesAnywhere(/<select\b/g, '<Select value={x} />')).toBe(false);
+    expect(matchesAnywhere(/<select\b/gi, '<Select value={x} />')).toBe(true);
+  });
+});
+
+describe('stripComments (the comment false-positive bug)', () => {
+  const lines = (s: string) => s.split('\n');
+
+  it('blanks a leading block comment but preserves line numbers and offsets', () => {
+    const src = ['/**', ' * no native <select> here', ' */', 'const a = 1;'].join('\n');
+    const out = stripComments(src);
+    expect(out).toHaveLength(src.length);
+    expect(lines(out)).toHaveLength(4);
+    expect(out).not.toMatch(/<select/);
+    expect(lines(out)[3]).toBe('const a = 1;');
+  });
+
+  it('blanks a JSX {/* … */} comment', () => {
+    const src = ['<div>', '  {/* a <table> lives here */}', '</div>'].join('\n');
+    expect(stripComments(src)).not.toMatch(/<table/);
+  });
+
+  it('blanks a whole-line // comment', () => {
+    const src = ['// title= on a button is banned', 'const b = 2;'].join('\n');
+    const out = stripComments(src);
+    expect(out).not.toMatch(/title=/);
+    expect(lines(out)[1]).toBe('const b = 2;');
+  });
+
+  it('KEEPS real code — a native primitive is still found', () => {
+    const src = ['/** docs mentioning <table> */', '<table className="real">'].join('\n');
+    const out = stripComments(src);
+    expect(matchesAnywhere(/<table\b/g, out)).toBe(true);
+    expect(out.indexOf('<table')).toBe(out.lastIndexOf('<table')); // exactly one survives
+  });
+
+  it('never blanks a mid-line /* — it may be a glob inside a string', () => {
+    const src = "const g = 'apps/**/*.tsx'; // note\nconst t = <table/>;";
+    const out = stripComments(src);
+    // The glob's `/*` must not open a comment that swallows the <table> below it.
+    expect(matchesAnywhere(/<table\b/g, out)).toBe(true);
+  });
+
+  it('leaves an unterminated block comment alone rather than blanking to EOF', () => {
+    const src = ['/* never closed', 'const c = 3;'].join('\n');
+    expect(stripComments(src)).toBe(src);
   });
 });

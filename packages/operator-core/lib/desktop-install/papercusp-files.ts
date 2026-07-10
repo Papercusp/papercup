@@ -952,6 +952,59 @@ async function ensureAgentClisLinked(home: string, binDir: string): Promise<stri
 }
 
 /**
+ * Ensure `~/.papercusp/bin/gh` is a symlink to the currently-bundled `gh` CLI
+ * (WI-3626). `buildGithubLoginSpec` (endpoint-route/routes/desktop/setup-pty-
+ * commands.ts) resolves `gh` to sign in + run `gh auth setup-git`, which bakes
+ * WHICHEVER path it resolved verbatim into `credential.https://github.com.helper`
+ * in the user's `~/.gitconfig`. Without this shim, that resolution falls through
+ * to an app-bundle-relative path (`<cwd>/bin/gh`, i.e. inside
+ * `/Applications/Papercusp.app/Contents/Resources/sidecar/`) — which dangles the
+ * instant the app is renamed or replaced (confirmed live on the Mac VM: the
+ * bundle is now `Papercusp Server.app` / `Papercusp GUI.app`, no `Papercusp.app`
+ * — EI-8793 rounds 1-2). `~/.papercusp/bin/gh` never moves, so gitconfig
+ * referencing THAT path instead survives every future rename.
+ *
+ * Unlike `ensureAgentClisLinked` (link-once-if-missing — a user's own claude/
+ * codex install rarely moves), this REFRESHES every boot: an app rename
+ * between boots must re-point the symlink at the new bundle's gh, or the shim
+ * itself would just reproduce the same dangling-path bug one level removed.
+ * Idempotent (a no-op once already pointed correctly) + best-effort (a dev box
+ * with no bundled gh in this run leaves any prior link untouched — never
+ * removes a working link just because THIS run can't resolve a source).
+ */
+export async function ensureGhLinked(home: string, binDir: string): Promise<boolean> {
+  const dest = path.join(binDir, 'gh');
+  const sidecarBin = process.env.PAPERCUSP_SIDECAR_BIN;
+  const candidates = [
+    sidecarBin ? path.join(sidecarBin, 'gh') : '',
+    path.join(process.cwd(), 'bin', 'gh'),
+    path.join(process.cwd(), '..', 'bin', 'gh'),
+  ].filter(Boolean);
+  let resolved: string | null = null;
+  for (const c of candidates) {
+    if (await pathExists(c)) {
+      resolved = c;
+      break;
+    }
+  }
+  if (!resolved) return false; // no bundled gh visible this run — leave any prior link alone
+  try {
+    const current = await fs.readlink(dest);
+    if (current === resolved) return false; // already correct — no-op
+  } catch {
+    /* not a symlink yet (missing, or a plain file/broken link) — fall through to (re)create */
+  }
+  try {
+    await fs.mkdir(path.dirname(dest), { recursive: true });
+    await fs.rm(dest, { force: true });
+    await fs.symlink(resolved, dest);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The BUNDLED node, resolved cwd-independently (a subset of resolveShimNode's
  * anchors — the two that don't depend on a launcher path). `null` when this
  * process can't see it (an extracted dev-source operator whose env lacks
@@ -1333,6 +1386,11 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   // `psu → <agent>` launches out of the box — without this, a fresh install
   // where claude lives in ~/.local/bin makes psu exit immediately (can't exec it).
   await ensureAgentClisLinked(home, paths.binDir);
+
+  // WI-3626: keep ~/.papercusp/bin/gh symlinked to the current bundle's gh so
+  // buildGithubLoginSpec's `gh auth setup-git` bakes a stable, app-rename-proof
+  // path into ~/.gitconfig's credential helper instead of an app-bundle path.
+  await ensureGhLinked(home, paths.binDir);
 
   // WI-3334: link the bundled node into ~/.local/bin so the psu/ptool shims'
   // `exec node` resolves even when the shim itself fell back to bare `node`

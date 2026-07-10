@@ -5,7 +5,7 @@ When you add a source to the attention/Queue feed (plans:attention), the naive "
 
 ## What
 
-The operator's **Queue** (the `plans:attention` feed → `packages/operator-core/lib/attention/`) is the unified, categorized list of things **awaiting a human decision/action**. When you fold a new "disposition channel" into it (B-14 / queen-autonomy-policy D-011 added improvements, standing-approvals, conversations, Scout grading), the mechanical part is easy — a new `AttentionKind` + `ATTENTION_KIND_CATEGORY` entry + `AttentionRef` variant + a pure adapter in `adapters.ts` + a best-effort source fetch in `agent-tools/plans/attention.ts` + tests.
+The operator's **Queue** (the `plans:attention` feed → `packages/operator-core/lib/attention/`) is the unified, categorized list of things **awaiting a human decision/action**. When you fold a new "disposition channel" into it (B-14 / mug-autonomy-policy D-011 added improvements, standing-approvals, conversations, Scout grading), the mechanical part is easy — a new `AttentionKind` + `ATTENTION_KIND_CATEGORY` entry + `AttentionRef` variant + a pure adapter in `adapters.ts` + a best-effort source fetch in `agent-tools/plans/attention.ts` + tests.
 
 The **non-obvious trap** is *what to surface*. The naive move — "list every open row from the channel's store" — **floods the human Queue** (the improvements/issues backlog alone is 100+ open rows). That is exactly what the Queue must NOT be.
 

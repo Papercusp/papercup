@@ -12,7 +12,9 @@ import { cleanup, render, screen } from '@testing-library/react';
 
 // nuqs: useQueryState needs the adapter context — stub it. The two params the
 // component uses (rstatus, rsort) both default; return a stable [default, noop].
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   useQueryState: (key: string) => [key === 'rsort' ? 'lastRun' : 'all', vi.fn()],
   parseAsStringEnum: () => ({ withDefault: (d: unknown) => d }),
 }));

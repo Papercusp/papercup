@@ -26,6 +26,27 @@ export async function readCredentials(): Promise<Credentials> {
 export async function writeCredentials(creds: Credentials): Promise<Credentials> {
   const next: Credentials = { ...creds, updated_at: new Date().toISOString() };
   await writeOperatorState('operator_credentials', next);
+
+  // Fire the `secret_change` backup trigger — /settings/backups renders it as
+  // "After secret change" and it is ON by default (event_triggers_json), but
+  // NOTHING emitted it, so the checkbox was inert (settings-audit 2026-07-09).
+  // Emitted here rather than at the two call sites (the credentials route and
+  // the setup:save_key tool) so every credential write is covered by one
+  // chokepoint. Best-effort + errors swallowed, mirroring branch-actions:
+  // backup unavailability must never fail a credential save. Fires AFTER the
+  // write so the snapshot captures the new secret (cf. `pre_destructive`,
+  // which deliberately snapshots BEFORE its op).
+  try {
+    const [{ triggerSnapshotEvent }, { activeWorkspaceId }] = await Promise.all([
+      import('./backup'),
+      import('./workspace-registry'),
+    ]);
+    await triggerSnapshotEvent(activeWorkspaceId(), 'secret_change', {
+      op: 'credentials_write',
+      keys: Object.keys(creds).filter((k) => k !== 'updated_at'), // names only — never values
+    }).catch(() => { /* ignore */ });
+  } catch { /* backup module not loaded — fine */ }
+
   return next;
 }
 

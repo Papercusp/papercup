@@ -48,7 +48,7 @@ loop (the dedicated `reschedule_interval_sec` + `target_owner_id` columns). The 
 computes `next_fire_at` from whichever recurrence is present (`schedule-next.ts`; RRULE takes precedence
 over cron when both appear). A cron-kind routine carrying neither a cron nor an rrule nor a loop
 interval is a one-shot: it fires once at its explicit `next_fire_at` and is deactivated
-(`active = FALSE`) on claim — used for self-declared wakes (e.g. `hive-wake`, a plan-schedule fire, the
+(`active = FALSE`) on claim — used for self-declared wakes (e.g. `pot-wake`, a plan-schedule fire, the
 pot's `pot-wake`); a plan-schedule one-shot also un-arms its owning plan. The loop kind is
 the engine-managed replacement for Claude `/loop`: instead of spawning a role or running a system action,
 its fire delivers a warm `coord` wake to a pinned session, and the routine parks at

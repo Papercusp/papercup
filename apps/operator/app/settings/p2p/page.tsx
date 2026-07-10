@@ -32,6 +32,7 @@ import { toast } from 'sonner';
 import { useLexicon } from '@/lib/useLexicon';
 import { Select } from '../../harness/Select';
 import { Checkbox } from '../../harness/Checkbox';
+import { Table } from '../../harness/Table';
 
 /* ── Wire types — mirror operator-core/lib/p2p/settings.ts, kept local per the
  *    client wire-type decoupling convention. ── */
@@ -663,62 +664,73 @@ export default function P2pSettingsPage() {
               <p style={muteStyle}>No capability grants on {t('pot', { lower: true })} {hive} yet.</p>
             ) : (
               <div style={{ overflowX: 'auto', marginBottom: 10 }}>
-                <table style={{ borderCollapse: 'collapse', fontSize: 12, minWidth: 560 }}>
-                  <thead>
-                    <tr>
-                      {['grantee', 'preset', 'capabilities', 'epoch', 'wake cap/h', 'status', ''].map((h, i) => (
-                        <th key={i} style={{ textAlign: 'left', padding: '4px 10px', color: 'var(--fg-mute)', fontWeight: 600 }}>
-                          {h}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {grantRows.map((g) => (
-                      <tr key={`${g.granteeKind}:${g.granteeRef}:${g.grantorGithubUserId}`} style={{ borderTop: '1px solid var(--border)', opacity: g.status === 'revoked' ? 0.55 : 1 }}>
-                        <td style={{ padding: '4px 10px', whiteSpace: 'nowrap' }}>
+                <Table<PeerGrant>
+                  style={{ minWidth: 560 }}
+                  rows={grantRows}
+                  getRowKey={(g) => `${g.granteeKind}:${g.granteeRef}:${g.grantorGithubUserId}`}
+                  rowStyle={(g) => (g.status === 'revoked' ? { opacity: 0.55 } : undefined)}
+                  columns={[
+                    {
+                      key: 'grantee',
+                      header: 'grantee',
+                      cellStyle: { whiteSpace: 'nowrap' },
+                      render: (g) => (
+                        <>
                           {g.granteeKind}:<strong>{g.granteeRef}</strong>
-                        </td>
-                        <td style={{ padding: '4px 10px' }}>{g.preset ?? '—'}</td>
-                        <td style={{ padding: '4px 10px' }}>
-                          <code style={{ fontSize: 11 }}>{g.capabilities.join(', ')}</code>
-                        </td>
-                        <td style={{ padding: '4px 10px', fontVariantNumeric: 'tabular-nums' }}>{g.grantorEpoch}</td>
-                        <td style={{ padding: '4px 10px' }}>{g.wakeRateCapPerHour ?? '—'}</td>
-                        <td style={{ padding: '4px 10px' }}>
-                          {g.status === 'revoked' ? <span style={redBadge}>revoked</span> : <span style={okBadge}>active</span>}
-                        </td>
-                        <td style={{ padding: '4px 10px' }}>
-                          {g.status === 'active' && (
-                            <button
-                              type="button"
-                              style={btnStyle}
-                              disabled={busy}
-                              onClick={() =>
-                                toast(`Revoke ${g.granteeKind}:${g.granteeRef}? In-flight foreign work winds down (M16).`, {
-                                  action: {
-                                    label: 'Revoke',
-                                    onClick: () =>
-                                      void (async () => {
-                                        try {
-                                          await setGrant({ action: 'revoke', potSlug: hive, granteeKind: g.granteeKind, granteeRef: g.granteeRef });
-                                          toast.success(`Revoked ${g.granteeRef}.`);
-                                        } catch (e) {
-                                          toast.error(`Couldn't revoke: ${e instanceof Error ? e.message : 'failed'}`);
-                                        }
-                                      })(),
-                                  },
-                                })
-                              }
-                            >
-                              Revoke
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                        </>
+                      ),
+                    },
+                    { key: 'preset', header: 'preset', render: (g) => g.preset ?? '—' },
+                    {
+                      key: 'capabilities',
+                      header: 'capabilities',
+                      render: (g) => <code style={{ fontSize: 11 }}>{g.capabilities.join(', ')}</code>,
+                    },
+                    {
+                      key: 'epoch',
+                      header: 'epoch',
+                      cellStyle: { fontVariantNumeric: 'tabular-nums' },
+                      render: (g) => g.grantorEpoch,
+                    },
+                    { key: 'wakeCap', header: 'wake cap/h', render: (g) => g.wakeRateCapPerHour ?? '—' },
+                    {
+                      key: 'status',
+                      header: 'status',
+                      render: (g) =>
+                        g.status === 'revoked' ? <span style={redBadge}>revoked</span> : <span style={okBadge}>active</span>,
+                    },
+                    {
+                      key: 'actions',
+                      header: '',
+                      render: (g) =>
+                        g.status === 'active' ? (
+                          <button
+                            type="button"
+                            style={btnStyle}
+                            disabled={busy}
+                            onClick={() =>
+                              toast(`Revoke ${g.granteeKind}:${g.granteeRef}? In-flight foreign work winds down (M16).`, {
+                                action: {
+                                  label: 'Revoke',
+                                  onClick: () =>
+                                    void (async () => {
+                                      try {
+                                        await setGrant({ action: 'revoke', potSlug: hive, granteeKind: g.granteeKind, granteeRef: g.granteeRef });
+                                        toast.success(`Revoked ${g.granteeRef}.`);
+                                      } catch (e) {
+                                        toast.error(`Couldn't revoke: ${e instanceof Error ? e.message : 'failed'}`);
+                                      }
+                                    })(),
+                                },
+                              })
+                            }
+                          >
+                            Revoke
+                          </button>
+                        ) : null,
+                    },
+                  ]}
+                />
               </div>
             )}
             <AddGrantForm
@@ -810,31 +822,32 @@ export default function P2pSettingsPage() {
           <p style={muteStyle}>No P2P audit events yet. Kill-switch flips, starter-profile applies, grant changes and refusal receipts land here.</p>
         ) : (
           <div style={{ overflowX: 'auto' }}>
-            <table style={{ borderCollapse: 'collapse', fontSize: 12, minWidth: 480 }}>
-              <thead>
-                <tr>
-                  {['when', 'actor', 'action', 'details'].map((h) => (
-                    <th key={h} style={{ textAlign: 'left', padding: '4px 10px', color: 'var(--fg-mute)', fontWeight: 600 }}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {auditRows.map((r) => (
-                  <tr key={r.id} style={{ borderTop: '1px solid var(--border)' }}>
-                    <td style={{ padding: '4px 10px', whiteSpace: 'nowrap' }}>{fmtTs(r.ts)}</td>
-                    <td style={{ padding: '4px 10px' }}>{r.actor}</td>
-                    <td style={{ padding: '4px 10px' }}>
-                      <code style={{ fontSize: 11.5 }}>{r.action}</code>
-                    </td>
-                    <td style={{ padding: '4px 10px', color: 'var(--fg-mute)', maxWidth: 380, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {r.details ? JSON.stringify(r.details) : ''}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <Table<AuditRow>
+              style={{ minWidth: 480 }}
+              rows={auditRows}
+              getRowKey={(r) => r.id}
+              columns={[
+                { key: 'when', header: 'when', cellStyle: { whiteSpace: 'nowrap' }, render: (r) => fmtTs(r.ts) },
+                { key: 'actor', header: 'actor', render: (r) => r.actor },
+                {
+                  key: 'action',
+                  header: 'action',
+                  render: (r) => <code style={{ fontSize: 11.5 }}>{r.action}</code>,
+                },
+                {
+                  key: 'details',
+                  header: 'details',
+                  cellStyle: {
+                    color: 'var(--fg-mute)',
+                    maxWidth: 380,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  },
+                  render: (r) => (r.details ? JSON.stringify(r.details) : ''),
+                },
+              ]}
+            />
           </div>
         )}
       </section>

@@ -1,19 +1,19 @@
 # Arm-call-site risk tier — use the ceiling, not fail-safe critical
 URL: /internal/docs/agent-insights/arm-call-site-risk-tier-proxy
 
-When planReversibleArm runs without a declared riskTier (the common case — bees never pass decision.riskTier), deriving the risk from the category's effective ceiling is what makes tripwires actually arm. Defaulting to 'critical' silently prevents every tripwire from firing.
+When planReversibleArm runs without a declared riskTier (the common case — cups never pass decision.riskTier), deriving the risk from the category's effective ceiling is what makes tripwires actually arm. Defaulting to 'critical' silently prevents every tripwire from firing.
 
 ## What
 
 The autonomy system has two separate decider-gate calls for a reversible action:
 
-1. **The chokepoint** — `resolveAutonomyDecision` run by the Queen before dispatching.
+1. **The chokepoint** — `resolveAutonomyDecision` run by the Mug before dispatching.
    It has the action's `riskTier` (from the ranked item's economics) so it can correctly
    decide `auto` for a `low`-risk action in `work-prioritization` (ceiling=`low`).
 
 2. **The arm-call-site** — `planReversibleArm` run inside the verb handler after the
    chokepoint already said `auto`. It calls `resolveAutonomyDecision` **again** — but
-   bees never pass `decision.riskTier`, so the decider's D-002 fail-safe fires: `critical`.
+   cups never pass `decision.riskTier`, so the decider's D-002 fail-safe fires: `critical`.
    With ceiling=`low`, `critical > low` → gated → `planReversibleArm` returns null →
    **no tripwire is ever armed** (EI-570: `harness_shared.autonomy_tripwires` was empty
    for the entire fleet despite 39 policy auto-takes).

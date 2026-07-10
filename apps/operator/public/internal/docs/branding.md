@@ -24,7 +24,7 @@ The public-release default is the **classic / Pot** lexicon (the cup theme). The
 
 ## Classic Identity
 
-Classic assets stay in their existing locations and must not be overwritten by Hive work:
+Classic assets stay in their existing locations and must not be overwritten by the-hive-skin work:
 
 | Surface                     | Path                                                       |
 | --------------------------- | ---------------------------------------------------------- |

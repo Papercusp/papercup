@@ -57,7 +57,7 @@ function deps(): CaptureDeps & { created: CreateIssueInput[] } {
 
 const SCORECARD = {
   scope: 'papercusp' as const,
-  rubricRef: 'hive-coordination-health',
+  rubricRef: 'pot-coordination-health',
   sourceHive: 'papercusp',
   ratings: {
     'end-to-end-flow': { rating: 'healthy', evidence: '8 completions/hr last window (hive_throughput_ticks)' },
@@ -70,13 +70,13 @@ describe('observation schema v2 — capture-core WRITE (P-001)', () => {
   it('stores the structured v2 payload for a rubric-graded observation', async () => {
     const d = deps();
     const res = await captureImprovement(
-      { title: 'hive-coordination-health scorecard', kind: 'change', lane: 'observation', payloadExtra: { observation: SCORECARD } },
+      { title: 'pot-coordination-health scorecard', kind: 'change', lane: 'observation', payloadExtra: { observation: SCORECARD } },
       d,
     );
     expect(res.created).toBe(true);
     const payload = d.created[0].payload as Record<string, any>;
     expect(payload.lane).toBe('observation');
-    expect(payload.observation.rubricRef).toBe('hive-coordination-health');
+    expect(payload.observation.rubricRef).toBe('pot-coordination-health');
     expect(payload.observation.sourceHive).toBe('papercusp');
     expect(payload.observation.ratings['end-to-end-flow']).toEqual({
       rating: 'healthy',
@@ -92,7 +92,7 @@ describe('observation schema v2 — capture-core WRITE (P-001)', () => {
           title: 'bad scorecard',
           kind: 'change',
           lane: 'observation',
-          payloadExtra: { observation: { rubricRef: 'hive-coordination-health', ratings: { 'end-to-end-flow': { rating: 'broken', evidence: '' } } } },
+          payloadExtra: { observation: { rubricRef: 'pot-coordination-health', ratings: { 'end-to-end-flow': { rating: 'broken', evidence: '' } } } },
         },
         d,
       ),
@@ -164,12 +164,12 @@ describe('observation schema v2 — read-items SURFACE (P-001 → P-006 seam)', 
   it('surfaces candidate.observation (ratings + sourceHive) for the Scout digest', () => {
     const issue = existing({
       id: 'EI-200',
-      title: 'hive-coordination-health scorecard',
+      title: 'pot-coordination-health scorecard',
       payload: { lane: 'observation', observation: SCORECARD } as unknown as EngineerIssue['payload'],
     });
     const c = issueToCandidate(issue);
     expect(c.observation).toBeDefined();
-    expect(c.observation?.rubricRef).toBe('hive-coordination-health');
+    expect(c.observation?.rubricRef).toBe('pot-coordination-health');
     expect(c.observation?.sourceHive).toBe('papercusp');
     expect(c.observation?.ratings?.['watchdog-determinism']).toEqual({ rating: 'degraded', evidence: 'EI-1607 throttle still live' });
   });

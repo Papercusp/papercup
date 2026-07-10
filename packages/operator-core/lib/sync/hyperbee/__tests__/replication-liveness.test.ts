@@ -12,6 +12,7 @@ import {
   dropReplicationLogState,
   dropReplicationLiveness,
   setReplicationStallRecoveryReporterForTests,
+  setDhtUniverseAssertion,
   _resetReplicationLivenessForTests,
   SAMPLING_STALE_AFTER_MS,
   SWARM_CHURN_TOLERANCE_MS,
@@ -406,6 +407,73 @@ describe('read-time verdicts + registry lifecycle', () => {
     expect(getReplicationLiveness({ harnessSlug: HS, nowMs: now })[0]!.logs).toHaveLength(0);
     dropReplicationLiveness(WS, 'harness-b'); // handle close
     expect(getReplicationLiveness({ harnessSlug: 'harness-b', nowMs: now })).toHaveLength(0);
+  });
+});
+
+describe('WI-3604: DHT-universe mismatch axis (split-DHT-universe outage class)', () => {
+  it('a flagged harness reads dht_universe_mismatch on every log — not no_replicator/frozen', () => {
+    const now = 1_000_000;
+    // A log that WOULD otherwise read 'frozen' (replicator attached, ingest stalled past grace).
+    sampleReplicationLiveness(
+      WS,
+      HS,
+      { keyHex: KEY, knownLength: 10, mergedPosition: 5, peersCount: 1 },
+      { graceMs: GRACE, nowMs: now },
+    );
+    sampleReplicationLiveness(
+      WS,
+      HS,
+      { keyHex: KEY, knownLength: 10, mergedPosition: 5, peersCount: 1 },
+      { graceMs: GRACE, nowMs: now + GRACE + 1, onStallEpisode: () => {} },
+    );
+    setDhtUniverseAssertion(WS, HS, { ok: false, detail: 'joined the PUBLIC DHT, expected isolated' });
+    const [h] = getReplicationLiveness({ nowMs: now + GRACE + 1, graceMs: GRACE, harnessSlug: HS });
+    expect(h!.dhtUniverseMismatch).toBe(true);
+    expect(h!.dhtUniverseDetail).toMatch(/PUBLIC DHT/);
+    expect(h!.logs[0]!.verdict).toBe('dht_universe_mismatch');
+    expect(h!.counts.dhtUniverseMismatch).toBe(1);
+    expect(h!.counts.frozen).toBe(0);
+    expect(h!.counts.noReplicator).toBe(0);
+  });
+
+  it('surfaces the mismatch even with ZERO sampled logs (flag set before any admission)', () => {
+    setDhtUniverseAssertion(WS, 'harness-empty', { ok: false, detail: 'mismatch, no logs yet' });
+    const [h] = getReplicationLiveness({ harnessSlug: 'harness-empty' });
+    expect(h!.dhtUniverseMismatch).toBe(true);
+    expect(h!.logs).toHaveLength(0);
+    expect(h!.counts.dhtUniverseMismatch).toBe(0);
+  });
+
+  it('ok:true clears a previously-recorded mismatch (re-join after the fix)', () => {
+    setDhtUniverseAssertion(WS, HS, { ok: false, detail: 'mismatch' });
+    expect(getReplicationLiveness({ harnessSlug: HS })[0]!.dhtUniverseMismatch).toBe(true);
+    setDhtUniverseAssertion(WS, HS, { ok: true, detail: 'matches' });
+    expect(getReplicationLiveness({ harnessSlug: HS })).toHaveLength(0);
+  });
+
+  it('feeds assessHarnessSubstrateHealth as a distinct unhealthy reason', () => {
+    const now = 1_000_000;
+    sampleReplicationLiveness(
+      WS,
+      HS,
+      { keyHex: KEY, knownLength: 5, mergedPosition: 5, peersCount: 1 },
+      { graceMs: GRACE, nowMs: now },
+    );
+    setDhtUniverseAssertion(WS, HS, { ok: false, detail: 'joined the PUBLIC DHT' });
+    const [h] = getReplicationLiveness({ nowMs: now, graceMs: GRACE, harnessSlug: HS });
+    const result = assessHarnessSubstrateHealth({
+      flagEnabled: true,
+      handlePresent: true,
+      replicationLiveness: {
+        noReplicator: h!.counts.noReplicator,
+        frozen: h!.counts.frozen,
+        samplingStale: h!.counts.samplingStale,
+        dhtUniverseMismatch: h!.counts.dhtUniverseMismatch,
+      },
+    });
+    expect(result.verdict).toBe('unhealthy');
+    expect(result.reasons.join(' ')).toMatch(/DHT-universe mismatch/);
+    expect(result.reasons.join(' ')).not.toMatch(/WI-183 class/);
   });
 });
 

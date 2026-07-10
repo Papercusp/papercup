@@ -24,7 +24,7 @@ Concrete case (workspace-scoped-coordination, `WORKSPACE_COORDINATION`): the
 brain re-key (`workspace-brain-scope.ts`) collapses per-(workspace,install) state
 to one row per workspace when ON. `control-state.test.ts` ("is per (workspace,
 install)") and `scout-cycle.test.ts` ("defaults installSlug to 'op'") asserted
-the per-hive OFF contract → broke on graduation.
+the per-pot OFF contract → broke on graduation.
 
 **The fix (per failing legacy test).** Pin the flag to its OFF value so the test
 deterministically exercises the legacy/kill-switch path it was written for —

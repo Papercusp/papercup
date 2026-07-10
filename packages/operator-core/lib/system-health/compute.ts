@@ -1047,7 +1047,7 @@ async function collectSuFleet(ctx: HealthCtx): Promise<HealthPanel<SuFleetHealth
  * PURE: did a SETTLED Overwatch wake skip its mandated scorecard? (monitor-the-monitor,
  * hive-loop-supervision 2026-06-21). True when the supervisor is alive, its last wake is
  * older than the grace (so the turn — whose END emits the scorecard — has completed),
- * and no COMPLETE hive-coordination-health scorecard landed since that wake. The grace
+ * and no COMPLETE pot-coordination-health scorecard landed since that wake. The grace
  * kills the mid-turn false positive (a just-woken Overwatch hasn't emitted yet).
  */
 export function overwatchScorecardSkipped(args: {
@@ -1202,7 +1202,7 @@ async function collectOverwatch(ctx: HealthCtx): Promise<HealthPanel<OverwatchPa
     const lastWakeAt = cs.lastWakeAt ? new Date(cs.lastWakeAt).getTime() : null;
     const nextFireAt = cs.nextWakeAt ? new Date(cs.nextWakeAt).getTime() : null;
     // Monitor-the-monitor (hive-loop-supervision 2026-06-21): is the Overwatch actually
-    // emitting its every-wake hive-coordination-health scorecard? Check freshness SINCE
+    // emitting its every-wake pot-coordination-health scorecard? Check freshness SINCE
     // its last wake (not a generic lookback). Best-effort — a read error leaves emission
     // null + skipped false, never blocking the panel.
     let scorecardEmission: OverwatchPanelHealth['scorecardEmission'] = null;
@@ -1211,7 +1211,7 @@ async function collectOverwatch(ctx: HealthCtx): Promise<HealthPanel<OverwatchPa
       try {
         const { checkScorecardFreshness } = await import('../scorecard-freshness');
         const f = await checkScorecardFreshness({
-          rubricRef: 'hive-coordination-health',
+          rubricRef: 'pot-coordination-health',
           sourceHive: cs.potSlug ?? undefined,
           since: new Date(lastWakeAt).toISOString(),
         });

@@ -14,7 +14,7 @@ different consumer action and a different trust surface:
 | `blueprint`     | **fork**    | **Yes** — clones the project remote + any bundled plugin code           | Supply chain + review gate (this page)                                               |
 | `plugin`        | **install** | **Yes** — installs a distributable plugin (a pack *with* a runtime)     | Supply chain (this page)                                                             |
 | `tool-pack`     | **install** | **Yes** — installs a runtime-less code-tool pack, registering MCP tools | Supply chain (this page)                                                             |
-| `learning-pack` | **install** | No code — seeds curated learnings into a hive's shared memory           | Injected agent context + review gate (this page)                                     |
+| `learning-pack` | **install** | No code — seeds curated learnings into a pot's shared memory            | Injected agent context + review gate (this page)                                     |
 
 > The `snapshot` kind was **retired**
 > (`retire-snapshots-instance-spec-2026-06-09`, D-005). It is no longer in
@@ -41,7 +41,7 @@ compute). **Unconstrained, that is a classic supply-chain risk** — a published
 listing could ship a plugin that reads secrets or exfiltrates over the network.
 
 A `learning-pack` pulls *no executable code*, but it injects curated learnings
-into a hive's shared memory — i.e. content that lands in agent context. That is
+into a pot's shared memory — i.e. content that lands in agent context. That is
 a different risk (prompt injection), addressed by the review gate below rather
 than by capability-gating.
 
@@ -127,7 +127,7 @@ it does **not** cover **prompt-injection** risk from content that lands in agent
 context. So the two **instruction-carrying** kinds now carry a **pre-publication
 review gate**:
 
-* A **learning-pack** injects curated learnings into a hive's shared memory.
+* A **learning-pack** injects curated learnings into a pot's shared memory.
 * A **blueprint** runs agent roles.
 
 `REVIEW_POLICY_KINDS = ['learning-pack', 'blueprint']`. At publish, a listing of

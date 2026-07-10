@@ -52,7 +52,7 @@ export default defineTool({
     if (args.op === 'get') return json({ policy: await readScalePolicy() });
 
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('accounts:scale_policy set requires operator, architect, or queen role');
+      throw new Error('accounts:scale_policy set requires operator, architect, or mug role');
     }
     const patch: Partial<ScalePolicy> = {};
     if (args.windowMs !== undefined) patch.windowMs = args.windowMs;

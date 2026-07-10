@@ -54,7 +54,7 @@ import { BenchmarkTrend, type BenchmarkTrendInstance } from './BenchmarkTrend';
 import type { BakeoffTrendRow } from '@papercusp/operator-core/lib/pot-eval/bakeoff-trend';
 import { EkgPanel } from './EkgPanel';
 import { RedQueenPanel } from './RedQueenPanel';
-import { QueenWakeEfficiencyPanel } from './QueenWakeEfficiencyPanel';
+import { MugWakeEfficiencyPanel } from './MugWakeEfficiencyPanel';
 import { DemandPanel } from './DemandPanel';
 import { ExperimentsPanel } from './ExperimentsPanel';
 import { Select } from '@/app/harness/Select';
@@ -866,7 +866,7 @@ function ApiaryView() {
 
       <BakeoffTrendView />
 
-      <QueenWakeEfficiencyPanel />
+      <MugWakeEfficiencyPanel />
 
       <EkgPanel />
 

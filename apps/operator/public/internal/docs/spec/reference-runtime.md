@@ -16,7 +16,7 @@ and the `apps/papercup` reference install is retired to `_retired/papercup/`.
 PathContains
 
 `libs/papercusp/packages/harness`The substrate: blueprint prompts (`blueprints/*/prompts/`), role/identity templates (`identity/`), and `bin/` scripts (e.g. `bin/supervisor.sh`). Iterations boot from the per-blueprint DBOS/director pipeline — the standalone `run.sh` run-loop is retired.
-`libs/papercusp/packages/harness/blueprints/coding`The HIVE/Queen blueprint (`id: coding`, `kind: 'hive'`) — the minimal single-role operator that surveys the blackboard and decides its own next wake. The judgment layer over the fleet.
+`libs/papercusp/packages/harness/blueprints/coding`The POT/Mug blueprint (`id: coding`, `kind: 'pot'`) — the minimal single-role operator that surveys the blackboard and decides its own next wake. The judgment layer over the fleet.
 `libs/papercusp/packages/harness/blueprints/coding-factory`The default coding harness (`id: coding-factory`) — a per-feature director driving scoper → architect → worker → validator → reviewer → documenter → curator, with opt-in quality gates (tester / security / crosscheck / ui-qa).
 `packages/plugin-sdk` (`@papercusp/plugin-sdk`)TypeScript types for plugin authors. `PapercuspPlugin`, `UiContribution`, `Capability`, etc.
 `packages/plugin-loader` (`@papercusp/plugin-loader`)Discovers plugins, validates manifests, applies migrations, registers routines, mounts hooks/tabs/routes, enforces capabilities.

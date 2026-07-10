@@ -32,7 +32,7 @@ coding-factory blueprint
 and runs scoper → architect → worker → validator → reviewer →
 documenter → curator — with debugger excluded from
 the spine. (The coding id was reused by the 2026-06-18 rename
-for the Hive/Queen blueprint — kind: hive, only
+for the Pot/Mug blueprint — kind: pot, only
 DONE/ESCALATE/IDLE edges — so it
 carries no scoper→…→curator spine; look at coding-factory,
 not coding, for the pipeline.) Two refinements the registry
@@ -50,7 +50,7 @@ On a terminal DONE the finalize recipe runs
 curator → postCuratorOutputs → documenter → archive — i.e.
 curator precedes documenter, opposite of the registry list order. A
 planner role id exists since 2026-06-09, but it is an
-interactive plan-authoring session (hive-agent-tabs), not this
+interactive plan-authoring session (pot-agent-tabs), not this
 spec-level Planner pipeline role. Full current registry:
 Roles — the operational
 reference.

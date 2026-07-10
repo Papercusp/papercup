@@ -1,7 +1,7 @@
 # Adding a tool/flag? Update its registry guards — or the green-checkpoint goes red (deterministically)
 URL: /internal/docs/agent-insights/tool-registry-guards-deterministic-gate-reds
 
-A new tool with expose:{ipc:true} must be added to EXPECTED_IPC_ELIGIBLE (ipc-allowlist.test.ts); a tool's `args` must be a plain/strict z.object — `.passthrough()` (and `.refine()`/ZodEffects) drop additionalProperties:false and trip the tool-input-schema-rejection guard; a new dark flag needs KNOWN_DARK_FLAGS. These are DETERMINISTIC green-checkpoint reds (they fail local + checkpoint identically), distinct from env-flaky timing reds — and they're a recurring deploy-gate whack-a-mole. Real case: sentinel:converse violated TWO guards at once.
+A new tool with expose:{ipc:true} must be added to EXPECTED_IPC_ELIGIBLE (ipc-allowlist.test.ts); a tool's `args` must be a plain/strict z.object — `.passthrough()` (and `.refine()`/ZodEffects) drop additionalProperties:false and trip the tool-input-schema-rejection guard; a new dark flag needs KNOWN_DARK_FLAGS. These are DETERMINISTIC green-checkpoint reds (they fail local + checkpoint identically), distinct from env-flaky timing reds — and they're a recurring deploy-gate whack-a-mole. Real case: papercup:converse violated TWO guards at once.
 
 When the green-checkpoint goes red, triage the failure into two classes — the fix
 (and the owner) differ:

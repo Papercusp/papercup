@@ -63,7 +63,7 @@ export default defineTool({
 
     // set — operator-config write authority only (mirrors operator:rate_limit_config); the SU read path is open.
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('improvements:set-watchdog-tunables set requires operator, architect, or queen role');
+      throw new Error('improvements:set-watchdog-tunables set requires operator, architect, or mug role');
     }
     const keys = Object.keys(args.tunables);
     if (keys.length === 0) throw new Error('set requires at least one tunable');

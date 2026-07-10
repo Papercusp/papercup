@@ -1,7 +1,7 @@
 # How the papercusp-workspace + papercup-self-registration boot path works
 URL: /internal/docs/agent-insights/dogfood-bootstrap
 
-Two fire-and-forget bootstrap helpers run on every operator boot to make Papercusp dogfood itself — sentinel workspace ensure + papercup repo auto-register. Idempotent + non-disruptive to existing installs.
+Two fire-and-forget bootstrap helpers run on every operator boot to make Papercusp dogfood itself — papercup workspace ensure + papercup repo auto-register. Idempotent + non-disruptive to existing installs.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -14,7 +14,7 @@ Two helpers make Papercusp dogfood itself:
    registry. Idempotent.
 2. **`registerPapercupHarness()`** — if running from the papercup
    source repo, auto-registers it as a harness named `papercup`
-   inside that sentinel workspace, `state: private`. Idempotent
+   inside that papercup workspace, `state: private`. Idempotent
    * no-op for packaged installs.
 
 Together: Papercusp dogfoods itself.
@@ -39,7 +39,7 @@ boot-time caller** of `ensurePapercuspWorkspace()` / `registerPapercupHarness()`
 in the operator source — they are exercised only by the one-shot driver
 `apps/operator/scripts/run-dogfood-bootstrap.ts` (npm `verify:dogfood-bootstrap`)
 and their unit tests. Run the driver manually to flip dogfooding on; the rest of
-this page (sentinel name, the scoped-write trick, `detectPapercupRoot`) is still
+this page (papercup name, the scoped-write trick, `detectPapercupRoot`) is still
 accurate.
 
 **Update (2026-06, papercup→papercusp B-merge):** `register-papercup.ts` is now
@@ -47,10 +47,10 @@ accurate.
 `detectPapercupRoot` keep the legacy `Papercup` spelling on purpose). The driver now
 runs a **third** helper, `ensurePapercuspHive()`
 (`packages/operator-core/lib/harness/ensure-papercusp-hive.ts`), shipping Papercusp as a
-shared **hive** (slug `papercusp`). Because `papercusp` is that MERGED operator-home
-hive, `registerPapercupHarness` keeps `LEGACY_STANDALONE_HARNESS_SLUG = 'papercup'`
-(the pre-merge standalone slug, deliberately distinct from the hive) but **skips
-re-creating a separate `papercup` harness** once the merged `papercusp` hive exists — so
+shared **pot** (slug `papercusp`). Because `papercusp` is that MERGED operator-home
+pot, `registerPapercupHarness` keeps `LEGACY_STANDALONE_HARNESS_SLUG = 'papercup'`
+(the pre-merge standalone slug, deliberately distinct from the pot) but **skips
+re-creating a separate `papercup` harness** once the merged `papercusp` pot exists — so
 a post-merge boot no longer dumps a duplicate `papercup` into the dropdown. The
 "two helpers" framing below is therefore now **three**.
 
@@ -62,14 +62,14 @@ They do different things:
   `~/.papercusp-workspaces/registry.json` (file-backed) — the user's
   list of workspaces.
 * **`registerPapercupHarness`** writes to PG
-  (`harness_shared.harness_registry`) **scoped to** the sentinel
+  (`harness_shared.harness_registry`) **scoped to** the papercup
   workspace (not the active workspace) — the harness list within
   that workspace.
 
 Splitting them keeps each helper testable in isolation. The bootstrap
-calls them in order: sentinel ensure → register papercup as harness.
+calls them in order: papercup ensure → register papercup as harness.
 
-## The "scoped to the sentinel workspace, not active" trick
+## The "scoped to the papercup workspace, not active" trick
 
 When you have multiple workspaces, the harness registry is per-
 workspace: each workspace has its own list of harnesses. The
@@ -83,7 +83,7 @@ at — usually `default`. Bad: pollutes the user's workspace.
 The fix (commit `b53185ee`): add an optional `workspaceId` param to
 `saveHarnessRegistry()` (additive, 100% back-compat across 52 call
 sites). The dogfood bootstrap passes `PAPERCUSP_WORKSPACE_ID`
-explicitly so the write lands in the sentinel workspace regardless
+explicitly so the write lands in the papercup workspace regardless
 of which one is active.
 
 A symmetric `wsOverride?` was already on `readOperatorState`; this
@@ -111,7 +111,7 @@ result.
 
 ## When you touch this code
 
-* **Renaming the sentinel** (`papercusp-workspace` → anything else)?
+* **Renaming the papercup** (`papercusp-workspace` → anything else)?
   Bad idea: many future surfaces (Cupboard, plan dogfood docs,
   multi-machine reconciliation) hardcode the name as a stable
   reference. The constant is in `papercusp-workspace.ts` for the
@@ -150,14 +150,14 @@ Sample output:
 === STEP 1: ensurePapercuspWorkspace ===
 workspace entry: id=papercusp-workspace, name=papercusp-workspace, createdAt=...
 workspaces total: 6, current: default
-✓ sentinel 'papercusp-workspace' present in registry
+✓ papercup 'papercusp-workspace' present in registry
 === STEP 2: registerPapercupHarness ===
 state: already-registered
 path: /home/marsh-office/papercupai-workspace/papercup
 === STEP 3: verify PG row ===
 harness_registry@papercusp-workspace: 1 projects
   - papercup  →  /home/marsh-office/papercupai-workspace/papercup
-✓ papercup registered in sentinel workspace
+✓ papercup registered in papercup workspace
 === PASS — dogfooding flipped on ===
 ```
 

@@ -137,8 +137,8 @@ couldn't reach.** Two dispatches fired and **both genuinely auto-resolved**,
 each with an evidence-backed resolution + a fails-before/passes-after regression
 guard:
 
-* **EI-75** (worker `49130510`) — root-caused to EI-317, live-DB repro (bee
-  coord writes 0 → 191 across 33 bees), regression test in
+* **EI-75** (worker `49130510`) — root-caused to EI-317, live-DB repro (cup
+  coord writes 0 → 191 across 33 cups), regression test in
   `prompt-build.test.ts`; ideaLifecycle → `applied`.
 * **EI-201** (worker `3f4c8aa2`) — source-invariant Cargo `mod patch_regression`
   guarding the vendored-wry toplevel-walk, `cargo test … patch_regression → ok`;
@@ -178,7 +178,7 @@ appear in neither `spawned_agents` nor `agent_runs_consolidated` — invisible i
 recovery/retry-safe) before the fire and `finishSpawn`s it after (`done`, or
 `failed`+error if the fire exhausts retries), and `buildLaunchSpawnRequest` (the
 implement seam) opts in — deliberately NOT the `defaultFire` durable branch, since
-hive launches record their own queen/bee rows and would otherwise double-count in
+pot launches record their own mug/cup rows and would otherwise double-count in
 fleet:tree. Close criterion (re-verify post-deploy): the next durably-fired
 implement worker shows a `spawned_agents` row (child\_role=worker,
 parent\_role=operator, item\_id=EI-NNN) and appears in `fleet:tree`.
@@ -198,7 +198,7 @@ seam — passes `spawnRecord`. **(Correction, current code:** the general-purpos
 launch records a `spawned_agents` row via `durableSpawnFireImpl`, with the same
 `parent?.role ?? 'operator'` fallback, and `recordSpawn`'s stable `durable-spawn:<key>`
 id keeps re-fires idempotent. The earlier staging note's "deliberately NOT the
-`defaultFire` durable branch" no longer holds — both record. The queen→mug rename
+`defaultFire` durable branch" no longer holds — both record. The mug→mug rename
 also landed here: `defaultFire`'s singleton-admission branch is now keyed on
 `role === 'mug'` alone.**)** So: durably-fired implement
 workers are now visible in `spawned_agents` / `fleet:tree`, and the

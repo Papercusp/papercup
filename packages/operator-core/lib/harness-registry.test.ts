@@ -1,8 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   canonicalizeLegacyPapercup,
   hiveMemberHarnessScopes,
   resolveHarnessContentPath,
+  isEphemeralForeignProject,
+  ephemeralForeignHarnessSlug,
+  sweepOrphanedEphemeralForeignHarnesses,
   type ProjectEntry,
 } from './harness-registry';
 
@@ -150,5 +153,80 @@ describe('resolveHarnessContentPath', () => {
 
   it('returns undefined for an unregistered slug', () => {
     expect(resolveHarnessContentPath({ projects: [] }, 'nope')).toBeUndefined();
+  });
+});
+
+/**
+ * WI-1937 D-001 option B: ephemeral P-104 foreign-clone registry rows. Pure
+ * helper coverage + the orchestration of the orphan sweep (leader-required
+ * test (c) — deps injected so this stays unit-testable without PG, mirroring
+ * `checkLive`'s existing injection).
+ */
+describe('isEphemeralForeignProject / ephemeralForeignHarnessSlug', () => {
+  it('isEphemeralForeignProject is true only for a row with ephemeral_foreign:true', () => {
+    expect(isEphemeralForeignProject({ ephemeral_foreign: true })).toBe(true);
+    expect(isEphemeralForeignProject({ ephemeral_foreign: false })).toBe(false);
+    expect(isEphemeralForeignProject({})).toBe(false);
+  });
+
+  it('ephemeralForeignHarnessSlug derives a stable, offer-scoped slug', () => {
+    expect(ephemeralForeignHarnessSlug('offer-42')).toBe('foreign-offer-42');
+    // one row per offer — the slug IS the per-offer claim (registry slug uniqueness).
+    expect(ephemeralForeignHarnessSlug('offer-42')).toBe(ephemeralForeignHarnessSlug('offer-42'));
+    expect(ephemeralForeignHarnessSlug('offer-99')).not.toBe(ephemeralForeignHarnessSlug('offer-42'));
+  });
+});
+
+describe('sweepOrphanedEphemeralForeignHarnesses (WI-1937 leader-required test (c): catches a simulated leak)', () => {
+  const ephemeralRow = (offerId: string): ProjectEntry => ({
+    slug: ephemeralForeignHarnessSlug(offerId),
+    path: `/tmp/foreign/${offerId}/repo`,
+    ephemeral_foreign: true,
+    foreign_offer_id: offerId,
+  });
+
+  it('removes a row whose p2p_foreign_workspaces record is GONE (checkLive → null)', async () => {
+    const loadRegistry = vi.fn(async () => ({ projects: [ephemeralRow('offer-1')] }) as never);
+    const deregister = vi.fn(async () => true);
+    const checkLive = vi.fn(async () => null);
+    const res = await sweepOrphanedEphemeralForeignHarnesses(undefined, checkLive, { loadRegistry, deregister });
+    expect(res).toEqual({ swept: 1, removed: ['offer-1'] });
+    expect(deregister).toHaveBeenCalledWith('offer-1', undefined);
+  });
+
+  it('removes a row whose p2p_foreign_workspaces record is already REAPED', async () => {
+    const loadRegistry = vi.fn(async () => ({ projects: [ephemeralRow('offer-2')] }) as never);
+    const deregister = vi.fn(async () => true);
+    const checkLive = vi.fn(async () => ({ state: 'reaped' }));
+    const res = await sweepOrphanedEphemeralForeignHarnesses(undefined, checkLive, { loadRegistry, deregister });
+    expect(res).toEqual({ swept: 1, removed: ['offer-2'] });
+  });
+
+  it('leaves a LIVE (active/provisioning) row alone — not every ephemeral row is a leak', async () => {
+    const loadRegistry = vi.fn(async () => ({ projects: [ephemeralRow('offer-3')] }) as never);
+    const deregister = vi.fn(async () => true);
+    const checkLive = vi.fn(async () => ({ state: 'active' }));
+    const res = await sweepOrphanedEphemeralForeignHarnesses(undefined, checkLive, { loadRegistry, deregister });
+    expect(res).toEqual({ swept: 1, removed: [] });
+    expect(deregister).not.toHaveBeenCalled();
+  });
+
+  it('skips a malformed row with no foreign_offer_id rather than guessing', async () => {
+    const malformed: ProjectEntry = { slug: 'foreign-mystery', path: '/tmp/x', ephemeral_foreign: true };
+    const loadRegistry = vi.fn(async () => ({ projects: [malformed] }) as never);
+    const deregister = vi.fn(async () => true);
+    const checkLive = vi.fn(async () => null);
+    const res = await sweepOrphanedEphemeralForeignHarnesses(undefined, checkLive, { loadRegistry, deregister });
+    expect(res).toEqual({ swept: 1, removed: [] });
+    expect(deregister).not.toHaveBeenCalled();
+  });
+
+  it('ignores non-ephemeral rows entirely', async () => {
+    const loadRegistry = vi.fn(async () => ({ projects: [{ slug: 'real-harness', path: '/repos/real' }] }) as never);
+    const deregister = vi.fn(async () => true);
+    const checkLive = vi.fn(async () => null);
+    const res = await sweepOrphanedEphemeralForeignHarnesses(undefined, checkLive, { loadRegistry, deregister });
+    expect(res).toEqual({ swept: 0, removed: [] });
+    expect(checkLive).not.toHaveBeenCalled();
   });
 });

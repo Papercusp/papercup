@@ -19,7 +19,9 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 const nuqsState: Record<string, unknown> = { lview: 'improvements', lane: 'all', how: true, tab: null, grade: null, lhive: '' };
 // Capture the setter per key so tests can assert the hive picker writes ?lhive.
 const nuqsSetters: Record<string, ReturnType<typeof vi.fn>> = {};
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   useQueryState: (key: string) => {
     const setter = (nuqsSetters[key] ??= vi.fn((v: unknown) => { nuqsState[key] = v; }));
     return [nuqsState[key], setter];

@@ -1,7 +1,7 @@
 # \"We hit the rate limit\" is usually account-routing, not real capacity
 URL: /internal/docs/agent-insights/rate-limit-is-usually-account-routing-not-capacity
 
-Papercusp runs LLM inference over a POOL of many Anthropic accounts behind an inference gateway with a per-account rate governor, so a true usage/quota wall is rare. Agents keep mis-reading a routing/config fault as exhaustion ('we hit the account limit', 'session limit', 'exceeded max wait', a 429) and give up. Several faults masquerade as a limit: (1) the account-aware routing is gated behind INFERENCE_GATEWAY + INFERENCE_GATEWAY_MULTI_ACCOUNT flags — OFF → spawned bees get no PAPERCUSP_ACCOUNT_ID → the governor keys the account-BLIND global anthropic:opus bucket → one account's 429 pauses it fleet-wide even with 6 idle accounts ('rate-limit pause exceeded max wait', exit 1, ~30ms, $0); (2) the gateway pools only some accounts — selectSpawnAccount pins a bee to a healthy account via x-papercusp-account, but if that account isn't in the gateway's pool the header is ignored and it falls back to its exhausted active() account, so the bee HANGS at $0. Verify with dev:rate_governor_status / accounts:status / the bee's /proc env / the gateway /healthz before concluding a limit.
+Papercusp runs LLM inference over a POOL of many Anthropic accounts behind an inference gateway with a per-account rate governor, so a true usage/quota wall is rare. Agents keep mis-reading a routing/config fault as exhaustion ('we hit the account limit', 'session limit', 'exceeded max wait', a 429) and give up. Several faults masquerade as a limit: (1) the account-aware routing is gated behind INFERENCE_GATEWAY + INFERENCE_GATEWAY_MULTI_ACCOUNT flags — OFF → spawned cups get no PAPERCUSP_ACCOUNT_ID → the governor keys the account-BLIND global anthropic:opus bucket → one account's 429 pauses it fleet-wide even with 6 idle accounts ('rate-limit pause exceeded max wait', exit 1, ~30ms, $0); (2) the gateway pools only some accounts — selectSpawnAccount pins a cup to a healthy account via x-papercusp-account, but if that account isn't in the gateway's pool the header is ignored and it falls back to its exhausted active() account, so the cup HANGS at $0. Verify with dev:rate_governor_status / accounts:status / the cup's /proc env / the gateway /healthz before concluding a limit.
 
 ## The mistake this prevents
 
@@ -20,7 +20,7 @@ Papercusp routes **all** model calls through an **inference gateway** backed by 
 many Anthropic accounts** (several Max subscriptions + a funded API key). A **rate
 governor** paces and tracks **each account separately** (`anthropic:opus@<id>` buckets, not
 just a global `anthropic:opus`). Aggregate capacity far exceeds any single account's limit,
-so a genuine quota wall is rare. A spawned bee is supposed to be pinned to an available
+so a genuine quota wall is rare. A spawned cup is supposed to be pinned to an available
 account (`selectSpawnAccount` → `PAPERCUSP_ACCOUNT_ID` → `x-papercusp-account` header) and
 the governor keys that account's bucket.
 
@@ -29,7 +29,7 @@ the governor keys that account's bucket.
 **1. Account-blind governor (the routing is flag-gated OFF).** In `operator-spawn.ts`,
 `selectSpawnAccount` only runs when **both** `FLAGS.INFERENCE_GATEWAY` **and**
 `FLAGS.INFERENCE_GATEWAY_MULTI_ACCOUNT` are on — and both default to `false`. With them off,
-a spawned bee gets **no** `PAPERCUSP_ACCOUNT_ID`, so the spawn governor
+a spawned cup gets **no** `PAPERCUSP_ACCOUNT_ID`, so the spawn governor
 (`orchestrator-runner.ts`) keys the **account-blind global `anthropic:opus` bucket**. One
 account's 429 then pauses that bucket **fleet-wide**, and every opus spawn fails
 `agent governor: rate-limit pause exceeded max wait` (exit 1, \~30 ms, **$0**) **even with
@@ -38,13 +38,13 @@ dies in tens of ms, and `dev:rate_governor_status` shows the **global** `anthrop
 bucket paused while `anthropic:opus@<someaccount>` is not.
 
 **2. The gateway pools only some accounts.** Even with the flags on, `selectSpawnAccount`
-pins the bee to a **healthy** account (e.g. `aviynw10`) via `x-papercusp-account`, **but the
+pins the cup to a **healthy** account (e.g. `aviynw10`) via `x-papercusp-account`, **but the
 gateway only routes to accounts in its own pool.** If the pinned account isn't pooled, the
 header is unknown → the gateway **falls back to its single `active()` account** — which may
-be exhausted (`/healthz` → `unified.rejected: true`, high `upstream429`). The bee's request
+be exhausted (`/healthz` → `unified.rejected: true`, high `upstream429`). The cup's request
 then **hangs at $0** (alive, `status=running`, no model call) instead of failing fast. Tell:
-the bee is alive but has **zero** `agent_usage_samples`, and the gateway `/healthz`
-`accountId` ≠ the bee's pinned `PAPERCUSP_ACCOUNT_ID`.
+the cup is alive but has **zero** `agent_usage_samples`, and the gateway `/healthz`
+`accountId` ≠ the cup's pinned `PAPERCUSP_ACCOUNT_ID`.
 
 **3. The bare/header-less 429 stuck-loop (a TRANSIENT throttle read as exhaustion).** Anthropic
 returns two shapes of `429`, and they mean opposite things — read the headers, not just the
@@ -54,7 +54,7 @@ status. A **quota** wall carries `anthropic-ratelimit-*` (unified util/reset) an
 `retry-after`, and `x-should-retry: true`** — is a **short transient BURST throttle**: capacity
 exists, Anthropic is literally telling you to retry in a moment. The gateway's 429 handler used to
 treat the bare form as a **no-op** (no `penalize`, no failover), so the gateway **stayed on the
-momentarily-throttled account and 429-looped every caller** — each bee's `claude` CLI then
+momentarily-throttled account and 429-looped every caller** — each cup's `claude` CLI then
 retry-looped into a **$0 hang** (alive, no model call) while the six other accounts sat idle (the
 "aviynw10 stuck-loop", 2026-06-17). Fixed in `gateway.ts`: a bare 429 now gets a SHORT bounded
 penalty (`BARE_429_FAILOVER_BACKOFF_MS`, \~15 s — tuned to the transient duration, NOT the multi-hour
@@ -90,7 +90,7 @@ governor buckets, and they otherwise self-expire only at `paused_until`):
 shows up as a 429).** Faults 1–4 are config/routing faults where idle capacity exists. This is the one
 case where the pool *is* (transiently) all-throttled at once — AND the only one that never reaches the
 debugger as a rate-limit string at all, so it slips past this whole doc's framing. The shape: a blueprint
-spawn (queen/worker) is recorded **`infra_loss: "<label> returned HTTP 200 but the agent produced no turn
+spawn (mug/worker) is recorded **`infra_loss: "<label> returned HTTP 200 but the agent produced no turn
 (ok=false, exitCode=1, timedOut=false, outLen=18) — launcher host dead/unstable; recorded failed, not
 retried (host stability is the fix)"`** (`durable-spawn.ts`, the HTTP-200-but-no-turn classifier). The
 label sends you hunting a phantom host bug — **the host is fine.** The flight-recorder transcript
@@ -155,7 +155,7 @@ flaky proxy, and/or a per-egress-IP rate cap. Reproduce + measure any fix with t
   `sustainedlyLimited:false`)? If several are idle, you are **not** capacity-gated.
 * **`harness_shared.spawned_agents.error_message`** for the failing spawn — `exceeded max
   wait` (governor, fault #1) vs `account 'X' paced/paused` vs `session limit`.
-* **The bee's `/proc/<pid>/environ`** — `PAPERCUSP_ACCOUNT_ID`, `ANTHROPIC_BASE_URL`,
+* **The cup's `/proc/<pid>/environ`** — `PAPERCUSP_ACCOUNT_ID`, `ANTHROPIC_BASE_URL`,
   `ANTHROPIC_CUSTOM_HEADERS: x-papercusp-account` — which account/gateway did it **actually**
   use?
 * **The gateway `/healthz`** (`:8788`) — its `accountId` + `unified.rejected`: is it stuck
@@ -186,13 +186,13 @@ There are **two** governor singletons in **two** processes, and they are not the
   the gateway: the operator cap is **agent-concurrency**; the gateway gate is **per-request
   concurrency** — copying `cap=1` would throttle the gateway to one in-flight HTTP request.
   Instead (2026-06-17) the gateway became a **resilient retrying proxy** — the practical fix that
-  matters more than AIMD: on a throttle it doesn't just forward the error (bees have a tiny CLI retry
+  matters more than AIMD: on a throttle it doesn't just forward the error (cups have a tiny CLI retry
   budget that exhausts → `$0` fail), it **internally retries across the pool before responding**
   (`INTERNAL_RETRY_MAX_ATTEMPTS`): a transient/bare 429 → pace + rotate + short backoff; a **529** →
   short backoff; a **usage/session CAP** → `peekBody` the non-200 body (`classifyHttpError` → its meter
   is invisible in headers, util can read 0 on a capped account) → pause-to-reset + rotate to a healthy
-  account (the bee classifies `usage_limit` as a no-retry wall, so the gateway MUST route around it
-  itself). Net: a bee egresses opus through heavy 429 churn (seen: 497 upstream-429 / 409 failovers on
+  account (the cup classifies `usage_limit` as a no-retry wall, so the gateway MUST route around it
+  itself). Net: a cup egresses opus through heavy 429 churn (seen: 497 upstream-429 / 409 failovers on
   one run) and still completes.
 
 ## The fix levers
@@ -202,19 +202,19 @@ There are **two** governor singletons in **two** processes, and they are not the
 * **Pool all accounts in the gateway** (not just 1–2) so the `x-papercusp-account` header can
   route to any of them and it never falls back to one exhausted account (fixes #2).
 * **Gateway resilient retry** (2026-06-17, `gateway.ts`) — internally retries/rotates across the pool
-  on every throttle shape (bare-429, transient-429, 529, usage/session cap via `peekBody`) so a bee
+  on every throttle shape (bare-429, transient-429, 529, usage/session cap via `peekBody`) so a cup
   never sees a wall it won't retry (fixes #3 + the session-cap case).
 * **SPAWN-side governor must not veto what the gateway can serve** (`dbos/orchestrator-runner.ts`,
   2026-06-17). A SECOND governor gates spawn ADMISSION (per-account bucket, `PAPERCUSP_AGENT_GOVERNOR=1`):
   when that bucket was paused past `maxWait` it failed the spawn `$0` with **"agent governor: rate-limit
   pause exceeded max wait"** — even with five idle accounts. Fix: when gateway egress is configured
   (`extraEnv.ANTHROPIC_BASE_URL` set), **proceed** and let the gateway's failover route to a healthy
-  account instead of hard-failing. Tell: a bee dies in under 1s, `$0`, that exact `error_message`.
+  account instead of hard-failing. Tell: a cup dies in under 1s, `$0`, that exact `error_message`.
 * **Not every bench `$0` is rate-limit** — the su-independent driver's `collectTask`
   (`external-bench/su-independent-backlog.ts`) used to read the diff/cost IMMEDIATELY after
-  `placeFifoBatch` with no wait → empty diff + `$0` + `infra-failed` while the bee was STILL running
-  (orphaning a live opus bee). Fix: poll `spawned_agents.status` to terminal before extracting (the
-  real-Queen arm's DRIVER polls-until-drained; this arm didn't). Tell: bee `status=running` with a
+  `placeFifoBatch` with no wait → empty diff + `$0` + `infra-failed` while the cup was STILL running
+  (orphaning a live opus cup). Fix: poll `spawned_agents.status` to terminal before extracting (the
+  real-Mug arm's DRIVER polls-until-drained; this arm didn't). Tell: cup `status=running` with a
   fresh heartbeat + climbing gateway requests, yet the launcher already recorded `infra-failed`.
 
 ## If you BUILD on the LLM
@@ -230,4 +230,4 @@ that has plenty of headroom.
   bucket (raw-OAuth vs claude-code CLI) in the llm-testing lane.
 * The shared **`ACCOUNT_ROUTING_NOTE`** clause (orchestrator `prompt-build.ts`, re-exported
   to operator-core's `renderAccountRoutingNote`) now primes **every** agent prompt — the
-  spawned-bee base, the operator-launched-role base, and the su playbooks — with this.
+  spawned-cup base, the operator-launched-role base, and the su playbooks — with this.

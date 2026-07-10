@@ -76,7 +76,7 @@ sees the holder's **declared** `coord:declare-intent` one-liner (and a flag when
 the contended path is in their `current_files`). **Declare a real intent** so
 your locks explain themselves.
 
-**Role access (2026-06-25):** `locks:acquire` changed from `agentRoles: [...SU_ROLES, 'bee']` to `agentRoles: [...AGENT_ROLES]`. Every built-in role
+**Role access (2026-06-25):** `locks:acquire` changed from `agentRoles: [...SU_ROLES, 'cup']` to `agentRoles: [...AGENT_ROLES]`. Every built-in role
 can now acquire file locks (and therefore appear as lock holders with intent
 enrichment). Blocked peers from any role now see holder intent; conversely, any
 role's auto-acquire hook stamps the generic `'PreToolUse:Edit'` intent — all the

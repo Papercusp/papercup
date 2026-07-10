@@ -10,7 +10,16 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { sqlMock } = vi.hoisted(() => ({ sqlMock: vi.fn(async () => [] as unknown[]) }));
+// Declare the mock's PARAMETERS, not just its return: `vi.fn(async () => …)` is a
+// zero-arg signature, so `sqlMock.mock.calls` types as `[][]` and `.flat()` collapses
+// to `never[]`. Every `typeof v === 'string'` guard below then narrows `never` (which
+// has no properties) and TS rejects `.startsWith` / `.includes` — 5 errors that had
+// nothing to do with the assertions themselves. Typing the rest args as `unknown[]`
+// gives `.flat()` an `unknown[]`, which those guards narrow correctly. (WI-3616 drive-by:
+// these 5 were the entire operator-core typecheck overage, 228 vs baseline 224.)
+const { sqlMock } = vi.hoisted(() => ({
+  sqlMock: vi.fn(async (..._args: unknown[]) => [] as unknown[]),
+}));
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<Record<string, unknown>>()), getOrgPg: () => ({ sql: sqlMock }) }));
 vi.mock('../../workspace-registry', async (orig) => ({ ...(await orig<Record<string, unknown>>()), activeWorkspaceId: () => 'default' }));
 vi.mock('../../harness/operator-home-harness', async (orig) => ({ ...(await orig<Record<string, unknown>>()), operatorHomeHarnessSlug: () => 'home-harness' }));
@@ -83,7 +92,7 @@ describe('routines:set', () => {
   it('rejects a role without operator-config write authority (e.g. bee)', async () => {
     await expect(
       setTool.handler({ name: 'git-sync', active: false } as never, { role: 'cup' } as never),
-    ).rejects.toThrow(/operator, architect, or queen/i);
+    ).rejects.toThrow(/operator, architect, or mug/i);
   });
 
   it('accepts the queen (operator-equivalent, EI-2204)', async () => {

@@ -12,7 +12,6 @@ const SETTINGS_PAGES = [
   '/settings/profile',
   '/settings/backups',
   '/settings/voice',
-  '/settings/oracle',
   '/settings/shortcuts',
   '/settings/personalization',
   '/settings/mobile',

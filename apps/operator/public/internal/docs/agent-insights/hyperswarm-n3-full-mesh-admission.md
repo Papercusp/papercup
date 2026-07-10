@@ -11,7 +11,7 @@ all three logs, but peers 1 and 2 sit at `admitted.size === 2` (own + peer 0)
 indefinitely — 90s+ gates time out. Steering/data appended by peer 1 never
 reaches peer 2.
 
-Hit live by `swarm-full-loop.integration.test.ts` (shared-hive-loop-e2e P-008):
+Hit live by `swarm-full-loop.integration.test.ts` (shared-pot-loop-e2e P-008):
 `runFullLoop: Swarm(s) 1,2 never reached full mesh`.
 
 ## Why

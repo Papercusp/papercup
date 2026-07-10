@@ -5,10 +5,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../hive-control-policy', () => ({
-  readHiveControlPolicy: vi.fn(),
-  writeHiveControlPolicy: vi.fn(),
-  setHiveControlPolicy: vi.fn(),
-  HIVE_CONTROL_DEFAULTS: { breakerThreshold: 3, recoveryDebounceMs: 300_000, dormancyGraceMs: 600_000, infraBreakerThreshold: 12 },
+  readPotControlPolicy: vi.fn(),
+  writePotControlPolicy: vi.fn(),
+  setPotControlPolicy: vi.fn(),
+  POT_CONTROL_DEFAULTS: { breakerThreshold: 3, recoveryDebounceMs: 300_000, dormancyGraceMs: 600_000, infraBreakerThreshold: 12 },
 }));
 vi.mock('../../gateway-control/control-harness', () => ({
   runControlMutation: vi.fn(async (spec: any, opts: any = {}) => {
@@ -20,9 +20,9 @@ vi.mock('../../gateway-control/control-harness', () => ({
   }),
 }));
 
-import { readHiveControlPolicy, writeHiveControlPolicy } from '../../hive-control-policy';
-const readM = vi.mocked(readHiveControlPolicy);
-const writeM = vi.mocked(writeHiveControlPolicy);
+import { readPotControlPolicy, writePotControlPolicy } from '../../hive-control-policy';
+const readM = vi.mocked(readPotControlPolicy);
+const writeM = vi.mocked(writePotControlPolicy);
 const tool = (await import('./control-policy')).default;
 type Out = { content: { text: string }[] };
 const body = (o: unknown) => JSON.parse((o as Out).content[0]!.text);
@@ -39,7 +39,7 @@ describe('pot:control_policy', () => {
     expect(b).toMatchObject({ effective: { breakerThreshold: 3, infraBreakerThreshold: 12 }, overrides: {} });
   });
   it('is operator-authority gated', async () => {
-    await expect(tool.handler({ op: 'set', breakerThreshold: 5 } as never, { role: 'cup' } as never)).rejects.toThrow(/operator, architect, or queen/i);
+    await expect(tool.handler({ op: 'set', breakerThreshold: 5 } as never, { role: 'cup' } as never)).rejects.toThrow(/operator, architect, or mug/i);
     expect(writeM).not.toHaveBeenCalled();
   });
   it('requires at least one field', async () => {

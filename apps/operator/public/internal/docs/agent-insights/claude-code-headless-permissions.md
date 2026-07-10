@@ -155,7 +155,7 @@ exist in a given CLI build is a no-op, never an error, so carrying both names co
 and survives either generation.
 
 **Default-deny everywhere (owner mandate 2026-07-02).** The deny is now applied to *every*
-Claude agent, not just fleet/bee sessions:
+Claude agent, not just fleet/cup sessions:
 
 * **psu** — `suLaunchArgs`, `roleLaunchArgs`, and `resumeArgsFor` all deny by default
   (`...(allowSubagents ? [] : [NO_SUBAGENTS_DENY_FLAG])`). The old default-OFF `--no-subagents`
@@ -171,7 +171,7 @@ Claude agent, not just fleet/bee sessions:
   `FLEET_DISALLOWED_TOOLS`. No headless opt-in — the opt-in is a psu-launch surface only.
 * **Wake-executor resumes** — `resumeCommandFor` re-arms `noSubagentToolsDenyFlag()` every
   wake, alongside the scheduler deny: CLI `--disallowedTools` does NOT survive into a resume,
-  so without this a woken bee silently regained its subagent tool (the same persistence gap
+  so without this a woken cup silently regained its subagent tool (the same persistence gap
   the scheduler lockout documents).
 
 **Lesson for the next rename:** a deny-list entry that matches nothing fails *silently* —

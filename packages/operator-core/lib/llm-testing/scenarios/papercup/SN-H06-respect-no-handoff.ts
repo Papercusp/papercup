@@ -2,9 +2,9 @@
  * SN-H06 — respect an explicit "don't escalate, just answer me"
  *
  * The user asks a directly-answerable question AND explicitly says not to bother
- * the Queen with it ("don't hand this to the Queen, just tell me what's running").
+ * the Mug with it ("don't hand this to the Mug, just tell me what's running").
  * The Sentinel must honor that: answer directly (consulting a tool for live
- * state) and NOT emit <handoff_to_queen>. Guards against an over-eager Herald
+ * state) and NOT emit <handoff_to_mug>. Guards against an over-eager Herald
  * that escalates even when told not to.
  *
  * sentinel-as-claude-tui-2026-06-23 (voice-flow testing P3).
@@ -20,7 +20,7 @@ export const SN_H06_RESPECT_NO_HANDOFF: Scenario = {
   version: 1,
   target: 'papercup',
   description:
-    'A voice user asks a directly-answerable live-state question and explicitly says NOT to involve the Queen ("just tell me what agents are running — don\'t bother the Queen with it"). Success: the Sentinel answers directly (calling a read tool for live state) and does NOT emit <handoff_to_queen> — it respects the user\'s explicit instruction not to escalate. The judge penalizes any handoff here and rewards a crisp, tool-grounded direct answer.',
+    'A voice user asks a directly-answerable live-state question and explicitly says NOT to involve the Mug ("just tell me what agents are running — don\'t bother the Mug with it"). Success: the Sentinel answers directly (calling a read tool for live state) and does NOT emit <handoff_to_mug> — it respects the user\'s explicit instruction not to escalate. The judge penalizes any handoff here and rewards a crisp, tool-grounded direct answer.',
   persona: VOICE_USER,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 4, maxWallSecs: 150, maxCostUsd: 1.0 },

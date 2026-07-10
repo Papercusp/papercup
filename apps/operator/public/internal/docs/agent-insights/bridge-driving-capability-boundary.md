@@ -25,7 +25,7 @@ you which surfaces need real input or the committed Playwright suite instead.
   Column filters: set `?wif=state:passed` and COUNT the visible rows — they
   filter correctly and you can verify it.
 * **Tool / API-level mutations** — seed/verify via the operator's own API or
-  direct SQL into an isolated DB; the hive-create dialog (native-setter input
+  direct SQL into an isolated DB; the pot-create dialog (native-setter input
   fill) and the worker-chat send both drive end-to-end. Verify the result in the
   DB.
 

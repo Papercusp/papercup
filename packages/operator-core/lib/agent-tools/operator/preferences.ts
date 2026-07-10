@@ -41,7 +41,7 @@ export default defineTool({
       return { content: [{ type: 'text', text: JSON.stringify({ entries }) }] };
     }
     if (!isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error(`operator:preferences ${args.op} requires operator, architect, or queen role`);
+      throw new Error(`operator:preferences ${args.op} requires operator, architect, or mug role`);
     }
     if (args.op === 'append') {
       await appendPreferenceEntry(args.entry);

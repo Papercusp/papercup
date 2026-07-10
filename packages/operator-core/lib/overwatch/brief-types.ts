@@ -100,6 +100,13 @@ export interface OverwatchTokenHealth {
   gatewayWedged: boolean;
   /** Gateway sustained-throttling — AIMD cut concurrency / fail-fast shedding (capacity pressure). */
   gatewaySustainedThrottle: boolean;
+  /** WI-3565 (2026-07-09 admission-starvation incident): CONFIRMED sustained (≥5min) admission
+   *  backlog deep vs the LIVE ceiling — distinct from `gatewayWedged`/`gatewaySustainedThrottle`,
+   *  which both need inFlight AT the ceiling. A starved queue can sit BELOW the ceiling the whole
+   *  time (paced by a lower per-account/provider floor), so those never fire. Combined with
+   *  `accountsAvailable` in the anomaly detector: idle healthy capacity + a starved queue is the
+   *  actionable "nothing alarmed for 50min" bug this closes. */
+  gatewayAdmissionStarved: boolean;
 }
 
 /** Plans + escalations health (`plans:*`, `coord:escalations`). */
@@ -159,6 +166,7 @@ export type AnomalyKind =
   | 'escalation-aging' // an escalation has aged past the attention threshold
   | 'gateway-wedge' // the inference gateway is WEDGED (slots pinned + frozen counter) — B-GW-5
   | 'gateway-throttle' // the gateway is sustained-throttling (AIMD cut concurrency / fail-fast shed)
+  | 'gateway-admission-starved' // WI-3565: deep admission backlog BELOW the live ceiling, idle healthy accounts unused, sustained ≥5min
   | 'invalid-model-config' // autonomous-role spawns are failing because saved model overrides point at an unavailable model
   | 'observation-dark'; // the observation lane is flat while agents are running
 
@@ -285,6 +293,7 @@ export function emptyOverwatchBrief(potSlug: string): OverwatchBrief {
       accountsAvailable: 0,
       gatewayWedged: false,
       gatewaySustainedThrottle: false,
+      gatewayAdmissionStarved: false,
     },
     plans: { active: 0, stalledItems: 0, agingEscalations: 0 },
     observations: { laneCount: 0, recentByRole: {} },
@@ -516,7 +525,7 @@ export function renderOverwatchBrief(brief: OverwatchBrief, caps?: Partial<Overw
   out.push(
     `- paused buckets: ${t.pausedBuckets.length ? t.pausedBuckets.join(', ') : 'none'} · ` +
       `${t.gatewayFailovers} failover(s) · ${t.gw429s} 429(s) · ${t.accountsAvailable} account(s) available` +
-      `${t.gatewayWedged ? ' · ⚠ GATEWAY WEDGED' : t.gatewaySustainedThrottle ? ' · gateway throttling' : ''}`,
+      `${t.gatewayWedged ? ' · ⚠ GATEWAY WEDGED' : t.gatewaySustainedThrottle ? ' · gateway throttling' : t.gatewayAdmissionStarved ? ' · ⚠ ADMISSION STARVED (idle accounts unused)' : ''}`,
   );
 
   const p = brief.plans;

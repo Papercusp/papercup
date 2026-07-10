@@ -104,7 +104,7 @@ A successful write returns e.g.
 ## Provenance
 
 First hit 2026-06-29 (su-2183d): the `papercusp-su` MCP dropped after the stability/throttle
-work landed, leaving two cosmetic hive-plan writes (`set-now` + `set-plan-status`
+work landed, leaving two cosmetic pot-plan writes (`set-now` + `set-plan-status`
 draft→shipped) stuck. Completing them via this admin-API + superuser-token path produced
 authoritative `revision.seq` bumps and a clean `oldStatus:"draft" → newStatus:"shipped"`,
 confirmed by an authenticated read — with no markdown hand-editing.

@@ -20,7 +20,9 @@ vi.mock('@papercusp/sync', () => ({
   useSyncQuery: () => ({ data: H.accounts, loading: H.loading, error: null }),
 }));
 
+import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 vi.mock('nuqs', () => ({
+  ...nuqsParsers,
   parseAsString: {},
   useQueryState: () => [H.expanded, H.setExpanded],
 }));

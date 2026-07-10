@@ -290,13 +290,10 @@ function failAllSessions(state: ChannelState): void {
 }
 
 function handleReq(state: ChannelState, v: ReqFrame): void {
-  if (process.env.HGDEBUG) console.error('[HGDEBUG] handleReq invoked', v);
   const refuse = (reason: string): void => {
-    if (process.env.HGDEBUG) console.error('[HGDEBUG] refusing', reason);
     try {
       state.messages?.refuse.send({ id: v.id, reason });
-    } catch (e) {
-      if (process.env.HGDEBUG) console.error('[HGDEBUG] refuse send threw', e);
+    } catch {
       /* best-effort */
     }
   };
@@ -343,7 +340,6 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
 }
 
 function handleRefuse(state: ChannelState, v: RefuseFrame): void {
-  if (process.env.HGDEBUG) console.error('[HGDEBUG] handleRefuse invoked', v);
   const d = state.clientSessions.get(v.id);
   if (!d) return;
   state.clientSessions.delete(v.id);
@@ -368,17 +364,6 @@ function handleEndToClient(state: ChannelState, v: EndFrame): void {
 /** Get-or-create the channel + its six message slots for (mux, topic).
  *  Idempotent per muxer (both `wireHiveGitServe` and `openHiveGitFetchDuplex`
  *  share the SAME channel via this). */
-let __hgDebugMuxCounter = 0;
-const __hgDebugMuxIds = new WeakMap<object, number>();
-function __hgDebugMuxId(mux: object): number {
-  let id = __hgDebugMuxIds.get(mux);
-  if (id === undefined) {
-    id = ++__hgDebugMuxCounter;
-    __hgDebugMuxIds.set(mux, id);
-  }
-  return id;
-}
-
 function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
   const states = statesFor(mux as unknown as object);
   const topicHex = topic.toString('hex');
@@ -386,20 +371,16 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
   if (state) return state;
   state = newState();
   states.set(topicHex, state);
-  if (process.env.HGDEBUG) console.error('[HGDEBUG] ensureChannel: calling createChannel', { topicHex, muxId: __hgDebugMuxId(mux as unknown as object) });
   const channel = mux.createChannel({
     protocol: HIVE_GIT_PROTOCOL,
     id: topic,
     onopen: () => {
-      if (process.env.HGDEBUG) console.error('[HGDEBUG] onopen fired', { topicHex, muxId: __hgDebugMuxId(mux as unknown as object) });
       markOpened(state!);
     },
     onclose: () => {
-      if (process.env.HGDEBUG) console.error('[HGDEBUG] onclose fired', { topicHex });
       failAllSessions(state!);
     },
   });
-  if (process.env.HGDEBUG) console.error('[HGDEBUG] createChannel returned', { topicHex, channel: !!channel });
   if (!channel) {
     // Defensive: a (protocol,id) collision on this muxer from outside this
     // module (shouldn't happen — HIVE_GIT_PROTOCOL is private to it). Leave
@@ -416,7 +397,6 @@ function ensureChannel(mux: Protomux, topic: Buffer): ChannelState {
     endToClient: channel.addMessage<EndFrame>({ encoding: endEncoding, onmessage: (v) => handleEndToClient(state!, v) }),
   };
   channel.open();
-  if (process.env.HGDEBUG) console.error('[HGDEBUG] channel.open() called', { topicHex });
   return state;
 }
 
@@ -462,15 +442,12 @@ function resolveMuxStream(socket: unknown, topic: Buffer): { mux: Protomux; open
   // pairs with) whichever topic the remote just opened.
   if (!hiveGitPairedMuxers.has(mux)) {
     hiveGitPairedMuxers.add(mux);
-    if (process.env.HGDEBUG) console.error('[HGDEBUG] registering mux.pair()', { alreadyUserData: !!(muxStream as { userData?: unknown }).userData, muxId: __hgDebugMuxId(mux as unknown as object) });
     try {
       mux.pair({ protocol: HIVE_GIT_PROTOCOL }, (id: Buffer | null) => {
-        if (process.env.HGDEBUG) console.error('[HGDEBUG] pair() notify fired', { hasId: !!id, muxId: __hgDebugMuxId(mux as unknown as object) });
         if (!id) return;
         ensureChannel(mux, id);
       });
-    } catch (e) {
-      if (process.env.HGDEBUG) console.error('[HGDEBUG] mux.pair() threw', e);
+    } catch {
       // pair() unsupported on this muxer build — connect-time channels still
       // pair the normal (non-lazy) way when both sides create first.
     }
@@ -489,15 +466,11 @@ function resolveMuxStream(socket: unknown, topic: Buffer): { mux: Protomux; open
  */
 export function wireHiveGitServe(socket: unknown, topic: Buffer, config: HiveGitServeConfig): void {
   try {
-    if (process.env.HGDEBUG) console.error('[HGDEBUG] wireHiveGitServe called');
     const { mux, opened } = resolveMuxStream(socket, topic);
-    if (process.env.HGDEBUG) console.error('[HGDEBUG] wireHiveGitServe resolved mux', { hasOpened: !!opened });
     const register = (): void => {
       try {
-        if (process.env.HGDEBUG) console.error('[HGDEBUG] wireHiveGitServe register() running');
         ensureChannel(mux, topic).serverConfig = config;
-      } catch (e) {
-        if (process.env.HGDEBUG) console.error('[HGDEBUG] wireHiveGitServe register() threw', e);
+      } catch {
         /* best-effort */
       }
     };
@@ -524,12 +497,9 @@ export async function openHiveGitFetchDuplex(
   topic: Buffer,
   req: { repoKey: string; peerGithubUserId?: number },
 ): Promise<Duplex> {
-  if (process.env.HGDEBUG) console.error('[HGDEBUG] openHiveGitFetchDuplex called');
   const { mux, opened } = resolveMuxStream(socket, topic);
-  if (process.env.HGDEBUG) console.error('[HGDEBUG] openHiveGitFetchDuplex resolved mux', { hasOpened: !!opened });
   if (opened && typeof opened.then === 'function') await opened.catch(() => {});
   const state = ensureChannel(mux, topic);
-  if (process.env.HGDEBUG) console.error('[HGDEBUG] openHiveGitFetchDuplex got state', { hasChannel: !!state.channel });
   if (!state.channel || !state.messages) {
     const d = new FrameDuplex(
       () => {},
@@ -538,9 +508,7 @@ export async function openHiveGitFetchDuplex(
     d.destroy(new Error('hive-git: could not open the serve channel'));
     return d;
   }
-  if (process.env.HGDEBUG) console.error('[HGDEBUG] openHiveGitFetchDuplex awaiting waitOpened...');
   await waitOpened(state);
-  if (process.env.HGDEBUG) console.error('[HGDEBUG] openHiveGitFetchDuplex waitOpened resolved, sending req');
   const messages = state.messages;
   const id = state.nextClientId++;
   const duplex = new FrameDuplex(

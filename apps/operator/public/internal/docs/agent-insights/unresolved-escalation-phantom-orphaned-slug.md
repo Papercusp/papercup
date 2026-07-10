@@ -143,7 +143,7 @@ Verify recovery, then resolve `fixed` (no manual clear needed if already null):
 
 The "self-clears within one sweep" story above assumes the stall **recovered**. It does **not** hold
 when the verdict stays `stalled` because of `persistentReap` (`reaped_count ≥ 3`) or a frozen HEAD on
-a **semi-dead / low-traffic hive** whose git-sync is permanently wedged by WI-1415 (e.g. `oddsmith`,
+a **semi-dead / low-traffic pot** whose git-sync is permanently wedged by WI-1415 (e.g. `oddsmith`,
 2026-07-08: `reaped_count=44`, `wd_error_sweeps=74`, no successful sync in \~16h). Here
 `evaluateGitSyncStall` keeps returning `stalled=true`, so the git-sync-stall-watchdog's healthy branch
 (the self-clear) **never runs**, and its alarm is one-shot (`if (watchdogAlerted) continue`) — so the
@@ -172,7 +172,7 @@ phase), the disk notes ARE written — and `harness:escalation` (disk-backed) th
 resolution — while the PG `harness_escalations` row the improvement-watchdog's
 `collectEscalationSignals` actually reads is **never touched**: `escalation` stays set,
 `supervisor_notes` stays `''`, and it re-fires next tick. This is exactly how EI-8787 "resolved"
-`shared-hive-test`/`git-sync-watchdog` yet it immediately re-dispatched as EI-8788. **Always verify
+`shared-pot-test`/`git-sync-watchdog` yet it immediately re-dispatched as EI-8788. **Always verify
 the fix on the PG row, not the disk view:** `SELECT COALESCE(escalation,'')<>'' AS has_esc,
 COALESCE(supervisor_notes,'')<>'' AS has_notes FROM harness_shared.harness_escalations WHERE
 harness_slug=... AND phase=...` — a resolved row must show `has_esc=false` (cleared) and/or

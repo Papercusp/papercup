@@ -53,29 +53,29 @@ export interface SpawnRequest {
 }
 
 /**
- * `<handoff_to_queen>` — the SENTINEL'S placement seam (sentinel-herald Phase 4,
+ * `<handoff_to_mug>` — the SENTINEL'S placement seam (sentinel-herald Phase 4,
  * P-014). The Sentinel/Herald never places work itself (its capability envelope
  * denies cup:spawn/placement by design); instead it SUGGESTS + HANDS OFF: it
- * files a HIGH-PRIORITY work_item the user asked for and nudges the Queen, who is
+ * files a HIGH-PRIORITY work_item the user asked for and nudges the Mug, who is
  * the placer. This is the structured twin of `<spawn>` — same parse-server-side,
  * dispatch-side-effect shape — but honored ONLY for role==='sentinel' (the
  * operator path never reads it). The Sentinel must NOT emit `<spawn>`.
  *
- *   <handoff_to_queen summary="…" harness="…" feature="…" tier="low|medium|high"
- *                     urgent="true" capability="…">
+ *   <handoff_to_mug summary="…" harness="…" feature="…" tier="low|medium|high"
+ *                   urgent="true" capability="…">
  */
 export interface HandoffRequest {
   /** What the user wants done — becomes the work_item title/summary. Required. */
   summary: string;
-  /** Harness slug the request is about (sets the work_item scope + Queen context).
-   *  null → workspace-scope / the Queen resolves the home harness. */
+  /** Harness slug the request is about (sets the work_item scope + Mug context).
+   *  null → workspace-scope / the Mug resolves the home harness. */
   harness: string | null;
-  /** Feature/chunk the conversation is about, carried so the Queen picks up where
+  /** Feature/chunk the conversation is about, carried so the Mug picks up where
    *  the conversation is (work_item context). null when unscoped. */
   featureId: string | null;
   /** Action tier the Sentinel self-classified (the user-facing approval tier,
    *  P-015): 'low' → just file + nudge; 'medium'/'high' → surface for approval
-   *  via the standing-approval system before the Queen acts. The SERVER
+   *  via the standing-approval system before the Mug acts. The SERVER
    *  re-resolves the authoritative tier from `capability` when present; this is
    *  the brain's hint / the fallback when no capability is named. Default 'high'
    *  (user-asked work is high-priority by default — the persona contract). */
@@ -85,7 +85,7 @@ export interface HandoffRequest {
    *  tier-table (resolveActualTier) rather than trusting the brain's `tier`. null
    *  when the request is generic. */
   capability: string | null;
-  /** Urgent → the work_item is filed `urgent` (wakes the Queen NOW via the
+  /** Urgent → the work_item is filed `urgent` (wakes the Mug NOW via the
    *  hive urgent-wake, not her slow cadence) and the nudge escalates. */
   urgent: boolean;
 }
@@ -118,7 +118,7 @@ export interface ParsedOperatorTurn {
   /** Spawn requests emitted this turn. Empty array when none. */
   spawns: SpawnRequest[];
   /**
-   * `<handoff_to_queen>` requests emitted this turn (sentinel-herald P-014).
+   * `<handoff_to_mug>` requests emitted this turn (sentinel-herald P-014).
    * Empty array when none. The converse dispatch honors these ONLY when the
    * turn's role is 'sentinel' — the operator path ignores them (it spawns
    * directly via `spawns`). Parallel handoffs in one turn are allowed.
@@ -165,11 +165,16 @@ const CONTINUE_RE = /<continue\s*\/?>/i;
 // role required; feature/chunk/extras optional. Multiple <spawn> tags per
 // turn are allowed (parallel fan-out: "review these three plans").
 const SPAWN_RE = /<spawn\s+([^>]+?)\s*\/?>/gi;
-// <handoff_to_queen summary="…" harness="…" feature="…" tier="…" urgent="true"
+// <handoff_to_mug summary="…" harness="…" feature="…" tier="…" urgent="true"
 //  capability="…"> — self-closing. summary required; the rest optional. Multiple
 // per turn allowed (the Sentinel can hand off a small batch). Same attr-bag shape
 // as <spawn>. (sentinel-herald P-014.)
-const HANDOFF_RE = /<handoff_to_queen\s+([^>]+?)\s*\/?>/gi;
+// DUAL-ACCEPT (cup-lexicon-full-rename-2026-07-09 P-006): the prompt now emits
+// `<handoff_to_mug>`, but a live session that already holds the OLD prompt text
+// in-context for the rest of its lifetime may still emit `<handoff_to_queen>` —
+// parse both. Drop the old alternative once no old-prompt sessions remain
+// (Slice H / P-010 cleanup sweep).
+const HANDOFF_RE = /<handoff_to_(?:mug|queen)\s+([^>]+?)\s*\/?>/gi;
 // <delegate_deep summary="…" brief="…" harness="…"> — self-closing. summary
 // required; the rest optional. Multiple per turn allowed; the dispatch lane caps
 // actual concurrency.
@@ -181,9 +186,10 @@ const DELEGATE_DEEP_RE = /<delegate_deep\s+([^>]+?)\s*\/?>/gi;
 // raw JSON into the chat bubble.
 const REPORT_RE = /<report>([\s\S]*?)<\/report>/i;
 const REPORT_STRIP_RE = /<report>[\s\S]*?<\/report>/gi;
-// Strip a self-closing <spawn …>/<handoff_to_queen …> from the no-<say> prose
-// fallback so a stray control tag never leaks as raw text into the chat bubble.
-const CONTROL_TAG_STRIP_RE = /<(?:spawn|handoff_to_queen|delegate_deep)\s+[^>]*?\/?>/gi;
+// Strip a self-closing <spawn …>/<handoff_to_mug …>/<handoff_to_queen …> (dual-accept,
+// see HANDOFF_RE) from the no-<say> prose fallback so a stray control tag never leaks
+// as raw text into the chat bubble.
+const CONTROL_TAG_STRIP_RE = /<(?:spawn|handoff_to_mug|handoff_to_queen|delegate_deep)\s+[^>]*?\/?>/gi;
 
 /**
  * Validate a raw `<report>` JSON body into a `ParsedReport`, or null when
@@ -385,19 +391,20 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
     });
   }
 
-  // <handoff_to_queen …> — the Sentinel's file-and-nudge placement seam
-  // (sentinel-herald P-014). Collect every tag in the turn. Like <spawn>, a
-  // missing required attr (here `summary`) drops the tag with a warn. `tier`
-  // is constrained to low|medium|high (anything else falls back to 'high', the
-  // user-asked-work default); `urgent` is a boolean-ish attr ("true"/"1"/"yes").
+  // <handoff_to_mug …> (dual-accept: also <handoff_to_queen …>, see HANDOFF_RE) —
+  // the Sentinel's file-and-nudge placement seam (sentinel-herald P-014). Collect
+  // every tag in the turn. Like <spawn>, a missing required attr (here `summary`)
+  // drops the tag with a warn. `tier` is constrained to low|medium|high (anything
+  // else falls back to 'high', the user-asked-work default); `urgent` is a
+  // boolean-ish attr ("true"/"1"/"yes").
   let handoffMatch: RegExpExecArray | null;
   HANDOFF_RE.lastIndex = 0;
   while ((handoffMatch = HANDOFF_RE.exec(raw)) !== null) {
     const attrs = parseAttrs(handoffMatch[1]);
     const summary = (attrs['summary'] ?? '').trim();
     if (!summary) {
-       
-      console.warn('[operator-converse] dropped malformed <handoff_to_queen>: missing summary', {
+
+      console.warn('[operator-converse] dropped malformed <handoff_to_mug>: missing summary', {
         attrs,
       });
       continue;
