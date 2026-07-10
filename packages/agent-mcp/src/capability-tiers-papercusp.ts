@@ -39,6 +39,19 @@ const EXACT: Record<string, CapabilityTier> = {
   // SU plan-tracking (agent-plan-tracking-2026-05-20.md)
   'plans:read': 'low',
   'plans:write': 'medium',
+  // code:run recipe reads (code-recipes-2026-06-21): list/get/search/candidates were
+  // mis-tagged 'intel:read' (a copy-paste reuse of the actual intel-panel-reads
+  // capability, which is legitimately 'high' because it surfaces every agent's
+  // prompt+activity — see 'intel:read' below). A recipe read is a cheap, non-sensitive
+  // lookup over harness_shared.code_recipes with no such exposure, but inheriting
+  // 'high' tier (a) denied it the dispatch ok-on-abort read-completion exemption (the
+  // EI-99/EI-111 class: a load-induced slow-but-COMPLETED read gets reported as a false
+  // watchdog 'timeout' instead of returning its result — this is what produced the
+  // EI-9359 recipes:search false-timeout flood) and (b) mislabeled it `destructive:true`
+  // in the capability palette (toolDefinitionToCapability: tier==='high' ⇒ destructive).
+  // Split into its own low-tier capability, same fix shape as EI-99/EI-111.
+  'recipes:read': 'low',
+  'plans:write': 'medium',
   // SU file-lock coordination (su-agent-coordination-v3-2026-05-14.md)
   'locks:read': 'low',
   'locks:write': 'medium',

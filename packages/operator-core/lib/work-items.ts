@@ -1524,6 +1524,30 @@ export interface LifecycleAliasInfo {
 }
 
 /**
+ * EI-9360: issue-family lifecycle requests that mean "durably gated" (owner-authority-only
+ * or an external blocker) — the issue-family CHECK has no native representation for these
+ * (ISSUE_STATE_ALIASES collapses them to 'open'), so without this fix a caller who correctly
+ * marked an item needs_human/blocked got back ok:true with the item STILL in the default
+ * claimable pool: `scheduler:get_next`/`claim_next` would keep offering it to any fleet whose
+ * claim spec didn't defensively exclude it (observed live in the M4 DRAIN battery — a foreign
+ * fleet's fallback claim-spec picked up an owner-gated "rotate the production credential" item).
+ * The only prior mitigation was a caller manually chaining `work_items:release{claimHold:true}`
+ * — correct, but non-discoverable and easy to forget. Auto-applying the EXISTING WI-2797
+ * self-select claim hold here makes the gate durable + harness-wide by DEFAULT: the item is
+ * excluded from `claim_next`/`scheduler:get_next` self-selection but stays otherwise normal
+ * (visible, commentable, directly claimable by id — e.g. by the owner or whoever resolves the
+ * gate). Scoped to the issue family only (the family this alias-collapse affects).
+ */
+const OWNER_GATE_ALIAS_REQUESTS = new Set([
+  'blocked',
+  'needs-human',
+  'needs_human',
+  'needshuman',
+  'needs human',
+  'need-human',
+]);
+
+/**
  * setWorkItemState wrapped to ALWAYS report the alias/no-op discriminator (EI-7712,
  * extending the EI-7125/WI-2573 onAlias plumbing that only fired for the ONE mismatch
  * class `normalizeWorkItemState` itself detects). This compares the ACTUAL persisted
@@ -1552,6 +1576,30 @@ export async function setWorkItemStateWithAliasInfo(
   });
   const appliedState = workItem ? workItem.state : null;
   const aliased = appliedState !== null && appliedState !== requestedState;
+  // EI-9360: a caller who asked for an owner-gate dialect state (blocked/needs-human/…)
+  // that collapsed to 'open' gets the gate made durable automatically — see
+  // OWNER_GATE_ALIAS_REQUESTS above. Best-effort: never fails/blocks the primary write.
+  let autoHeld = false;
+  if (
+    workItem &&
+    workItem.family === 'issue' &&
+    onAliasInfo &&
+    onAliasInfo.resolved === 'open' &&
+    OWNER_GATE_ALIAS_REQUESTS.has(onAliasInfo.requested.trim().toLowerCase())
+  ) {
+    // Awaited (not fire-and-forget): callers rely on `aliased:true` meaning the item is
+    // ALREADY durably parked by the time this resolves, not eventually.
+    try {
+      const held = await setWorkItemClaimHold(id, true, {
+        harness: opts.harness,
+        by: opts.by,
+        reason: onAliasInfo.requested,
+      });
+      autoHeld = held?.applicable === true;
+    } catch {
+      /* best-effort — never fail the primary lifecycle write over the hold */
+    }
+  }
   return {
     workItem,
     aliased,
@@ -1560,7 +1608,7 @@ export async function setWorkItemStateWithAliasInfo(
     ...(aliased
       ? {
           aliasNote: onAliasInfo
-            ? `requested state '${onAliasInfo.requested}' has no distinct representation for this item's family — recorded as '${onAliasInfo.resolved}' instead.`
+            ? `requested state '${onAliasInfo.requested}' has no distinct representation for this item's family — recorded as '${onAliasInfo.resolved}' instead.${autoHeld ? ` It has been auto-parked (claim hold) out of claim_next/scheduler:get_next self-selection until released — see work_items:release{claimHold:false}.` : ''}`
             : `requested state '${requestedState}' was not applied verbatim — recorded as '${appliedState}' instead.`,
         }
       : {}),

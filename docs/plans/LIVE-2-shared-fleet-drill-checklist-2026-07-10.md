@@ -102,6 +102,42 @@ executing.
    remains deliberately deferred). A stale SKIP reason (one whose blocking WI has since landed)
    is a drill bug, not a pass.
 
+## Multi-account leg — aviynw ↔ papercupai (owner-directed, added 2026-07-10 by su-15179, WI-3965)
+
+`[owner:Avi 2026-07-10, verbatim]`: *"i approve all i unblock all the gates. You should have
+access to both the aviynw account and the papercupai account you can do the communication
+between them so that we have a multi account test"* — recorded as fact
+`owner-unblocks-all-gates-multi-account-test-2026-07-10`. This adds a **cross-ACCOUNT** leg to
+the drill, distinct from step 2's WI-3546 (which proves multi-device **same**-identity): here
+the two rig sides announce **different `github_user_id`s** (aviynw vs papercupai), so every
+federation surface crosses an **owner boundary** — the Phase-9 / D-013 multi-owner trust
+surfaces get their first live, two-account exercise.
+
+Run AFTER the same-identity legs pass (steps 1–7), so an identity-boundary failure is
+attributable to the account boundary and not to a still-broken substrate:
+
+- **MA-0 (setup)**: verify which machine holds which credential (`[swarm] joined topic …
+  announcing as github_user_id=…` in each side's log); re-auth one side to the second account
+  if both currently announce the same id. Record the two ids in the run log.
+- **MA-1 (connect)**: swarm connect with distinct announced identities — assert BOTH sides log
+  the peer with the *other* account's id (not a same-id dedupe or a silent identity coercion).
+- **MA-2 (coord)**: `coord:send { scope:'hive' }` in each direction across the account
+  boundary; assert delivery + `origin='remote'` row on the receiving side, AND that the
+  envelope's verified author id is the sender's account (no id spoofing/blending).
+- **MA-3 (events)**: federated `events:emit`/`events:await` round-trip in both directions.
+- **MA-4 (work distribution)**: OFFER published by account A, PULL + SPAWN by account B —
+  the foreign session must run under the WI-1937 **deny-all** `ROLE_ENVELOPES['foreign-session']`
+  envelope; assert the metering ledger attributes spend/contribution to the correct account.
+- **MA-5 (negative)**: a pull attempt against a grant NOT extended to that account → loud
+  refusal + receipt (not silent drop, not success). This is the leg that proves the account
+  boundary is real, not decorative.
+
+**Sign-off note:** the owner's 2026-07-10 blanket unblock above IS the owner sign-off the
+NO-GO section's "capability grants beyond deny-all need fresh owner sign-off" bullet asks for,
+for THIS drill's scope — but MA-4 still runs deny-all by default; widening an envelope beyond
+deny-all during the drill should be a deliberate, logged step citing that fact key, not an
+ambient default.
+
 ## Cutover / GO-NO-GO criteria
 
 **GO** requires ALL of:
@@ -115,6 +151,8 @@ executing.
   zero FAIL, zero unexplained SKIP.
 - Adversarial legs (step 8) all pass — especially cross-machine FED-REAP, the one property
   the single-box drill cannot exercise.
+- Multi-account legs MA-1..MA-5 all pass (owner-directed 2026-07-10, WI-3965) — especially
+  MA-5 (non-granted-account refusal), the multi-owner analogue of FED-REAP.
 
 **NO-GO** triggers on any of:
 - Any FAIL on a leg the ledger above marks wired/passed.
