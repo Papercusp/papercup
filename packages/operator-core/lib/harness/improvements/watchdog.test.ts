@@ -622,6 +622,15 @@ describe('hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010)'
     expect(stalledFeatureSignalsFromRows([])).toEqual([]);
   });
 
+  it('stalled-feature: blueprint-less harnesses are expected manual work, not stalled dispatch', () => {
+    expect(
+      stalledFeatureSignalsFromRows([
+        { harness_slug: 'papercup', feature_id: 'F-NO-BP', updated_ts: Date.now() - 30 * HOUR, blueprint_wired: false },
+        { harness_slug: 'wired', feature_id: 'F-WIRED', updated_ts: Date.now() - 30 * HOUR, blueprint_wired: true },
+      ]).map((signal) => signal.key),
+    ).toEqual(['stalled:wired']);
+  });
+
   it('orphaned-spawn: lingering past-reclaim running rows collapse to ONE signal with samples', () => {
     const signals = orphanedSpawnSignalsFromRows(
       [

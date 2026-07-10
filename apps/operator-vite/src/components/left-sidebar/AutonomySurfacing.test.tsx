@@ -76,20 +76,24 @@ describe('AutonomySurfacing rendering', () => {
     expect(screen.queryByText('Code edits')).toBeNull(); // categories only listed when armed
   });
 
-  it('summarizes the policy + lists active categories when armed', () => {
+  it('summarizes automatic coverage without exposing cryptic category ceilings', () => {
     H.armed = true;
     H.policy = POLICY;
     render(<AutonomySurfacing {...makeProps()} />, { wrapper: Wrap });
-    expect(screen.getByText('Autonomy on')).toBeTruthy();
-    expect(screen.getByText('Code edits')).toBeTruthy();
-    expect(screen.getByText('Research')).toBeTruthy();
-    expect(screen.queryByText('Deploy')).toBeNull(); // never-auto ⇒ not in the active list
+    expect(screen.getByText('2/3 automatic')).toBeTruthy();
+    expect(screen.getByText('2 of 3 categories')).toBeTruthy();
+    const meter = screen.getByRole('progressbar', { name: 'Automatic decision coverage' });
+    expect(meter.getAttribute('aria-valuenow')).toBe('2');
+    expect(meter.getAttribute('aria-valuemax')).toBe('3');
+    expect(screen.queryByText('Code edits')).toBeNull();
+    expect(screen.queryByText('Research')).toBeNull();
   });
 
   it('displays the live breaker threshold (not a hardcoded 3)', () => {
     H.policy = POLICY;
     render(<AutonomySurfacing {...makeProps({ breakerThreshold: 5 })} />, { wrapper: Wrap });
-    expect(screen.getByText('5 failures')).toBeTruthy();
+    expect(screen.getByText('5')).toBeTruthy();
+    expect(screen.getByText('failed attempts')).toBeTruthy();
     expect(screen.getByText('Retry limit')).toBeTruthy();
   });
 
@@ -111,7 +115,14 @@ describe('AutonomySurfacing rendering', () => {
     render(<AutonomySurfacing {...props} />, { wrapper: Wrap });
     fireEvent.click(screen.getByRole('button', { name: 'Parallel' }));
     expect(props.onSetDecomposition).toHaveBeenCalledWith('parallel');
-    fireEvent.click(screen.getByRole('button', { name: 'System' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Workspace' }));
+    expect(props.onSetDecomposition).toHaveBeenCalledWith(null);
+  });
+
+  it('shows a direct workspace reset when parallelism is customized', () => {
+    const props = makeProps({ decomposition: 'parallel' });
+    render(<AutonomySurfacing {...props} />, { wrapper: Wrap });
+    fireEvent.click(screen.getByRole('button', { name: 'Use workspace parallelism' }));
     expect(props.onSetDecomposition).toHaveBeenCalledWith(null);
   });
 });

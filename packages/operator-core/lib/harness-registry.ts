@@ -223,6 +223,16 @@ export async function loadHarnessRegistry(
 }
 
 /**
+ * Return whether a registered project is a real Hive. Watchdogs use this
+ * narrow registry predicate before acting on persisted started bits so a
+ * deleted/typo slug cannot keep re-arming a wake forever.
+ */
+export async function isRegisteredHive(workspaceId: string, slug: string): Promise<boolean> {
+  const registry = await loadHarnessRegistry(workspaceId);
+  return registry.projects.some((project) => project.slug === slug && project.harness_kind === 'hive');
+}
+
+/**
  * The registry's uniqueness invariant: `slug` is the primary key. Every
  * insert path guards with `projects.some(p => p.slug === …)` and every update
  * path replaces in place (`projects.map`), so a duplicate slug is always a

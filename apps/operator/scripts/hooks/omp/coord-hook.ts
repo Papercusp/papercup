@@ -1305,6 +1305,10 @@ export function formatBusyRefusal(busy: BusyEntry[]): string {
   lines.push('');
   lines.push('Options: (1) wait and retry, (2) work on something else,');
   lines.push('(3) call locks:acquire with wait={max_sec:300} to queue.');
+  const paths = busy.slice(0, 5).map((b) => b.path);
+  lines.push(
+    `If locks:acquire is not on this client surface, use tools:invoke {name:"locks:acquire", args:{paths:${JSON.stringify(paths)}, intent:"<your intent>", wake_on_grant:true}} and end this turn.`,
+  );
   return lines.join('\n');
 }
 

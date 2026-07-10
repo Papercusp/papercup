@@ -14,20 +14,29 @@ const getFlag = vi.fn();
 vi.mock('@papercusp/flags/server', () => ({ getFlag: (...a: unknown[]) => getFlag(...a) }));
 
 const getOverwatchStarted = vi.fn();
+const setOverwatchStarted = vi.fn();
 // K1 (workspace-scoped-coordination P-004 — Phase C): listGuardedOverwatches now
 // consumes the DE-DUPED supervisor set (listStartedWorkspaceOverwatches), the exact
 // mirror of the Queen watchdog consuming listStartedWorkspaceLoops.
 const listStartedWorkspaceOverwatches = vi.fn();
 vi.mock('./control-state', () => ({
   getOverwatchStarted: (...a: unknown[]) => getOverwatchStarted(...a),
+  setOverwatchStarted: (...a: unknown[]) => setOverwatchStarted(...a),
   listStartedWorkspaceOverwatches: (...a: unknown[]) => listStartedWorkspaceOverwatches(...a),
 }));
 
 const declareOverwatchTimeWake = vi.fn();
+const clearOverwatchTimeWake = vi.fn();
 const overwatchLivenessCheck = vi.fn();
 vi.mock('./liveness', () => ({
   declareOverwatchTimeWake: (...a: unknown[]) => declareOverwatchTimeWake(...a),
+  clearOverwatchTimeWake: (...a: unknown[]) => clearOverwatchTimeWake(...a),
   overwatchLivenessCheck: (...a: unknown[]) => overwatchLivenessCheck(...a),
+}));
+
+const isRegisteredHive = vi.fn();
+vi.mock('../harness-registry', () => ({
+  isRegisteredHive: (...a: unknown[]) => isRegisteredHive(...a),
 }));
 
 // Fake PG: collect INSERTs into `fires`, serve the mid-turn read + count read.
@@ -69,6 +78,7 @@ beforeEach(() => {
   getFlag.mockResolvedValue(true); // flag ON by default in tests
   getOverwatchStarted.mockResolvedValue(true);
   listStartedWorkspaceOverwatches.mockResolvedValue([{ workspaceId: WS, installSlug: SLUG }]);
+  isRegisteredHive.mockResolvedValue(true);
   declareOverwatchTimeWake.mockImplementation(async (_sql: unknown, opts: { at: Date }) => ({ at: opts.at, clamped: false }));
   unarmed();
 });
@@ -162,6 +172,15 @@ describe('overwatchWatchdogSweep (every condition gates)', () => {
   it('no guarded overwatches → nothing', async () => {
     listStartedWorkspaceOverwatches.mockResolvedValue([]);
     expect(await overwatchWatchdogSweep({ now: NOW })).toHaveLength(0);
+  });
+
+  it('missing registry Hive → self-clears the started bit and wake instead of re-arming', async () => {
+    isRegisteredHive.mockResolvedValue(false);
+    const res = await overwatchWatchdogSweep({ now: NOW });
+    expect(res).toEqual([{ outcome: 'skipped', reason: 'started Overwatch Hive missing from registry; self-cleared' }]);
+    expect(setOverwatchStarted).toHaveBeenCalledWith(WS, SLUG, false);
+    expect(clearOverwatchTimeWake).toHaveBeenCalledWith(fakeSql, SLUG, { workspaceId: WS });
+    expect(declareOverwatchTimeWake).not.toHaveBeenCalled();
   });
 
   it('flag off → nothing (the load-bearing gate)', async () => {

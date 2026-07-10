@@ -34,8 +34,9 @@ import { FLAGS } from "@papercusp/flags";
 import {
   getOverwatchStarted,
   listStartedWorkspaceOverwatches,
+  setOverwatchStarted,
 } from "./control-state";
-import { declareOverwatchTimeWake, overwatchLivenessCheck } from "./liveness";
+import { clearOverwatchTimeWake, declareOverwatchTimeWake, overwatchLivenessCheck } from "./liveness";
 
 // ── tunables (env-overridable, mirroring the hive watchdog) ───────────────────
 
@@ -83,6 +84,35 @@ export async function listGuardedOverwatches(): Promise<
     return await listStartedWorkspaceOverwatches();
   } catch {
     return [];
+  }
+}
+
+/** Validate the install dimension before the watchdog acts on persisted state.
+ * The workspace sentinel is synthetic; every other slug must be a registered
+ * Hive. Registry failures are unknown and therefore fail safe for retry. */
+async function registeredOverwatchState(workspaceId: string, installSlug: string): Promise<boolean | null> {
+  if (installSlug === workspaceId) return true;
+  try {
+    const { isRegisteredHive } = await import('../harness-registry');
+    return await isRegisteredHive(workspaceId, installSlug);
+  } catch {
+    return null;
+  }
+}
+
+async function alertMissingStartedOverwatch(workspaceId: string, installSlug: string): Promise<void> {
+  try {
+    const { resolveBrainOwner } = await import('../harness/routines/wake-brain-action');
+    const owner = await resolveBrainOwner(workspaceId).catch(() => null);
+    if (!owner) return;
+    const { wakeRecipients } = await import('../agent-tools/coordination/inbox-wake');
+    await wakeRecipients([owner], {
+      summary: `⚠️ Self-cleared started Overwatch "${installSlug}" because its Hive is missing from the workspace registry.`,
+      source: 'overwatch-watchdog:missing-harness',
+      workspaceId,
+    });
+  } catch (e) {
+    console.warn(`[overwatch-watchdog] missing-harness alert failed: ${e instanceof Error ? e.message : e}`);
   }
 }
 
@@ -285,6 +315,15 @@ export async function overwatchWatchdogSweep(
     const { sql } = getOrgPg();
     const now = opts.now ?? Date.now();
     for (const { workspaceId, installSlug } of guarded) {
+      const registryState = await registeredOverwatchState(workspaceId, installSlug);
+      if (registryState === null) continue;
+      if (!registryState) {
+        await setOverwatchStarted(workspaceId, installSlug, false);
+        await clearOverwatchTimeWake(sql, installSlug, { workspaceId });
+        await alertMissingStartedOverwatch(workspaceId, installSlug);
+        results.push({ outcome: 'skipped', reason: 'started Overwatch Hive missing from registry; self-cleared' });
+        continue;
+      }
       const live = await overwatchLivenessCheck(sql, installSlug, {
         now,
         workspaceId,

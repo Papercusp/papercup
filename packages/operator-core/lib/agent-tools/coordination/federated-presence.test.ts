@@ -4,7 +4,7 @@
  * and the query is exercised with an injected fake sql.
  */
 import { describe, expect, it } from 'vitest';
-import { mapSharedPresenceRow, mapSessionPresenceRow, queryFederatedPresenceRows } from './federated-presence';
+import { dedupeSharedPresenceRows, mapSharedPresenceRow, mapSessionPresenceRow, queryFederatedPresenceRows } from './federated-presence';
 
 const NOW = 1_700_000_000_000;
 
@@ -78,6 +78,21 @@ describe('queryFederatedPresenceRows — filtering', () => {
   it('filters by workspace AND harness', async () => {
     const r = await queryFederatedPresenceRows(fakeSql(rows), { workspaceId: 'ws-1', harnessSlug: 'a' });
     expect(r.map((x) => x.github_user_id)).toEqual([1]);
+  });
+});
+
+describe('dedupeSharedPresenceRows — machine roster identity', () => {
+  it('coalesces repeated announces by GitHub identity + machine and keeps the freshest row', () => {
+    const duplicate = { ...row, last_seen_ms: NOW - 60_000 };
+    const freshest = { ...row, last_seen_ms: NOW - 1_000, intent: 'fresh announce' };
+    const otherHost = { ...row, machine_label: 'desktop-2', last_seen_ms: NOW - 2_000 };
+    const out = dedupeSharedPresenceRows([duplicate, freshest, otherHost]);
+    expect(out).toHaveLength(2);
+    expect(out.find((r) => r.machine_label === 'thinkpad')).toMatchObject({
+      intent: 'fresh announce',
+      last_seen_ms: NOW - 1_000,
+    });
+    expect(out.find((r) => r.machine_label === 'desktop-2')).toBeDefined();
   });
 });
 

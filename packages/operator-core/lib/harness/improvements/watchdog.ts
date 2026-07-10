@@ -1644,7 +1644,13 @@ export async function collectCircuitOpenSignals(
 // the plan's "issues:create (tagged, deduped)" sink, on the improvements
 // surface the papercusp-internal loop already routes to.
 
-interface StalledFeatureRow { harness_slug: string; feature_id: string; updated_ts: number | string }
+interface StalledFeatureRow {
+  harness_slug: string;
+  feature_id: string;
+  updated_ts: number | string;
+  /** SQL supplies this; omitted by older pure callers for backwards compatibility. */
+  blueprint_wired?: boolean;
+}
 /** Pure: stalled dispatchable features → ONE aggregate signal per harness. */
 export function stalledFeatureSignalsFromRows(
   rows: StalledFeatureRow[],
@@ -1654,6 +1660,9 @@ export function stalledFeatureSignalsFromRows(
   const nowMs = opts.nowMs ?? Date.now();
   const byHarness = new Map<string, { ids: string[]; oldestMs: number }>();
   for (const r of rows) {
+    // A harness with no projected blueprint has no autonomous dispatch path.
+    // Its backlog is expected manual/fleet work, not a stalled pipeline.
+    if (r.blueprint_wired === false) continue;
     const g = byHarness.get(r.harness_slug) ?? { ids: [], oldestMs: nowMs };
     g.ids.push(r.feature_id);
     const ms = Number(r.updated_ts);
@@ -1700,7 +1709,12 @@ export async function collectStalledFeatureSignals(
   const reg = await sql<{ t: string | null }[]>`SELECT to_regclass('dbos.workflow_status') AS t`;
   const hasDbos = Boolean(reg[0]?.t);
   const rows = await sql<StalledFeatureRow[]>`
-    SELECT w.harness_slug, w.feature_id, w.updated_ts
+    SELECT w.harness_slug, w.feature_id, w.updated_ts,
+           EXISTS (
+             SELECT 1 FROM harness_shared.blueprints b
+              WHERE b.workspace_id = w.workspace_id
+                AND b.harness_slug = w.harness_slug
+           ) AS blueprint_wired
       FROM harness_shared.work_items w
      WHERE w.workspace_id = ${workspaceId}
        AND w.item_kind = 'feature'

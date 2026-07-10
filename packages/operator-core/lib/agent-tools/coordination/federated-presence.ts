@@ -70,6 +70,25 @@ export interface FederatedPresenceOpts {
 }
 
 /**
+ * `shared_presence` is a machine-level roster, so repeated announces for the
+ * same GitHub identity on the same host must render as one peer. The synthetic
+ * owner id is also keyed by this pair; retaining duplicates makes the roster
+ * look larger while still addressing one endpoint. Keep the freshest row when
+ * a reconnect/reannounce leaves multiple records behind.
+ */
+export function dedupeSharedPresenceRows(rows: readonly SharedPresenceDbRow[]): SharedPresenceDbRow[] {
+  const byIdentityAndHost = new Map<string, SharedPresenceDbRow>();
+  for (const row of rows) {
+    const key = `${row.github_user_id}\0${row.machine_label}`;
+    const previous = byIdentityAndHost.get(key);
+    if (!previous || row.last_seen_ms > previous.last_seen_ms) {
+      byIdentityAndHost.set(key, row);
+    }
+  }
+  return [...byIdentityAndHost.values()];
+}
+
+/**
  * Map one shared_presence row to a unified presence record. Pure — the synthetic
  * `ownerId` (`fed:<gh>@<machine>`) is distinct from any local su-<uuid> so the
  * two rosters never collide on merge.
@@ -126,7 +145,7 @@ export async function queryFederatedPresenceRows(
     FROM harness_shared.shared_presence
     WHERE device_pubkey <> ''
   `) as Array<Record<string, unknown>>;
-  return rows
+  const filtered = rows
     .map((r) => ({
       workspace_id: String(r.workspace_id ?? ''),
       harness_slug: String(r.harness_slug ?? ''),
@@ -141,6 +160,7 @@ export async function queryFederatedPresenceRows(
     .filter((r) => (opts.workspaceId ? r.workspace_id === opts.workspaceId : true))
     .filter((r) => (opts.harnessSlug ? r.harness_slug === opts.harnessSlug : true))
     .filter((r) => (opts.potSlug ? r.pot_slug === opts.potSlug : true));
+  return dedupeSharedPresenceRows(filtered);
 }
 
 /**

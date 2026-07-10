@@ -30,8 +30,8 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { declareHiveTimeWake, getHiveTimeWake, readHiveWakeState } from './wake';
-import { getHiveStarted, listStartedWorkspaceLoops } from './started';
+import { clearHiveTimeWake, declareHiveTimeWake, getHiveTimeWake, readHiveWakeState } from './wake';
+import { getHiveStarted, listStartedWorkspaceLoops, setHiveStarted } from './started';
 
 // ── tunables (env-overridable, like the wake floor) ──────────────────────────
 
@@ -61,6 +61,36 @@ export function watchdogDemandSleepSec(): number {
 export function watchdogStaleSec(): number {
   const n = Number(process.env.PAPERCUSP_POT_WATCHDOG_STALE_SEC ?? process.env.PAPERCUSP_HIVE_WATCHDOG_STALE_SEC ?? 900);
   return Number.isFinite(n) && n >= 30 ? n : 900;
+}
+
+/** Validate the install dimension before a watchdog acts on persisted state.
+ * The workspace sentinel is synthetic by design; every other slug must still
+ * be a registered Hive. A registry read failure is unknown, not proof of a
+ * missing Hive, so callers fail safe and retry on the next sweep. */
+async function registeredHiveState(workspaceId: string, installSlug: string): Promise<boolean | null> {
+  if (installSlug === workspaceId) return true;
+  try {
+    const { isRegisteredHive } = await import('../harness-registry');
+    return await isRegisteredHive(workspaceId, installSlug);
+  } catch {
+    return null;
+  }
+}
+
+async function alertMissingStartedHive(workspaceId: string, installSlug: string): Promise<void> {
+  try {
+    const { resolveBrainOwner } = await import('../harness/routines/wake-brain-action');
+    const owner = await resolveBrainOwner(workspaceId).catch(() => null);
+    if (!owner) return;
+    const { wakeRecipients } = await import('../agent-tools/coordination/inbox-wake');
+    await wakeRecipients([owner], {
+      summary: `⚠️ Self-cleared started Hive "${installSlug}" because it is missing from the workspace registry.`,
+      source: 'hive-watchdog:missing-harness',
+      workspaceId,
+    });
+  } catch (e) {
+    console.warn(`[hive-watchdog] missing-hive alert failed: ${e instanceof Error ? e.message : e}`);
+  }
 }
 
 // ── P-008: the pure liveness read ────────────────────────────────────────────
@@ -468,6 +498,15 @@ export async function hiveWatchdogSweep(opts: { now?: number } = {}): Promise<Fa
     const { sql } = getOrgPg();
     const now = opts.now ?? Date.now();
     for (const { workspaceId, installSlug } of started) {
+      const registryState = await registeredHiveState(workspaceId, installSlug);
+      if (registryState === null) continue;
+      if (!registryState) {
+        await setHiveStarted(workspaceId, installSlug, false, { deliberate: true });
+        await clearHiveTimeWake(sql, installSlug, { workspaceId });
+        await alertMissingStartedHive(workspaceId, installSlug);
+        results.push({ outcome: 'skipped', reason: 'started Hive missing from registry; self-cleared' });
+        continue;
+      }
       const live = await hiveLivenessCheck(sql, installSlug, { workspaceId, now });
       if (live.armed) continue;
       // Stale gate: a just-finished turn belongs to the turn-end seam; a fresh

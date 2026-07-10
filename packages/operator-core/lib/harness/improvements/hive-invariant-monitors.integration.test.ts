@@ -44,6 +44,16 @@ async function insertFeature(
   fid: string,
   opts: { ageHours: number; sourcePlan?: string; takenBy?: string },
 ) {
+  // EI-9019: this fixture represents a harness WITH a wired blueprint. The
+  // collector must still report its stale dispatchable features; blueprint-
+  // less harnesses are covered separately as expected manual work.
+  await db.adminSql.unsafe(
+    `INSERT INTO harness_shared.blueprints
+       (workspace_id, harness_slug, blueprint_id, version, resolved, content_hash)
+     VALUES ($1, $2, 'coding', '0.1.0', '{}'::jsonb, 'watchdog-test')
+     ON CONFLICT (workspace_id, harness_slug) DO NOTHING`,
+    [WS, slug],
+  );
   const ts = Date.now() - opts.ageHours * HOUR;
   const metadata = opts.sourcePlan ? JSON.stringify({ source_plan: opts.sourcePlan }) : null;
   await db.adminSql.unsafe(

@@ -148,6 +148,8 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
     expect(reason).toContain('refactoring the auth module');
     expect(reason).toContain('[focused on this file]');
     expect(reason).toContain('wake_on_grant');
+    expect(reason).toContain('tools:invoke {name:"locks:acquire"');
+    expect(reason).toContain('paths:["sub/held.ts"]');
     // A deny must NOT have cached any lock (nothing to release).
     expect(fs.existsSync(join(cache, 'tu-busy.lock'))).toBe(false);
   });

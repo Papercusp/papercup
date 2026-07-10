@@ -586,5 +586,9 @@ lines.append('Options: locks:acquire {paths, intent, wake_on_grant:true} to queu
              'and SLEEP — end your turn and you are re-invoked when the lock is '
              'granted (no polling). Or pivot to other work meanwhile; the wake '
              'arrives either way.')
+paths = [b.get('path') for b in busy[:5] if b.get('path')]
+lines.append('If locks:acquire is not on this client surface, use '
+             'tools:invoke {name:"locks:acquire", args:{paths:' + json.dumps(paths) +
+             ', intent:"<your intent>", wake_on_grant:true}} and end this turn.')
 deny('\n'.join(lines))
 PYEOF

@@ -12,10 +12,12 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 const getHiveTimeWake = vi.fn();
 const readHiveWakeState = vi.fn();
 const declareHiveTimeWake = vi.fn();
+const clearHiveTimeWake = vi.fn();
 vi.mock('./wake', () => ({
   getHiveTimeWake: (...a: unknown[]) => getHiveTimeWake(...a),
   readHiveWakeState: (...a: unknown[]) => readHiveWakeState(...a),
   declareHiveTimeWake: (...a: unknown[]) => declareHiveTimeWake(...a),
+  clearHiveTimeWake: (...a: unknown[]) => clearHiveTimeWake(...a),
 }));
 
 const getHiveStarted = vi.fn();
@@ -23,10 +25,17 @@ const listStartedHives = vi.fn();
 // K1 (workspace-scoped-coordination P-003): the watchdog liveness loops consume
 // the de-duped workspace-loop set; OFF it is byte-identical to listStartedHives.
 const listStartedWorkspaceLoops = vi.fn();
+const setHiveStarted = vi.fn();
 vi.mock('./started', () => ({
   getHiveStarted: (...a: unknown[]) => getHiveStarted(...a),
   listStartedHives: (...a: unknown[]) => listStartedHives(...a),
   listStartedWorkspaceLoops: (...a: unknown[]) => listStartedWorkspaceLoops(...a),
+  setHiveStarted: (...a: unknown[]) => setHiveStarted(...a),
+}));
+
+const isRegisteredHive = vi.fn();
+vi.mock('../harness-registry', () => ({
+  isRegisteredHive: (...a: unknown[]) => isRegisteredHive(...a),
 }));
 
 const getDefaultWakeMode = vi.fn();
@@ -97,6 +106,7 @@ beforeEach(() => {
   getDefaultWakeMode.mockResolvedValue('auto');
   resolveBrainOwner.mockResolvedValue(null);
   wakeRecipients.mockResolvedValue({ targets: [], keys: [], woken: 0, staged: 1 });
+  isRegisteredHive.mockResolvedValue(true);
   declareHiveTimeWake.mockImplementation(async (_sql: unknown, opts: { at: Date }) => ({
     at: opts.at,
     clamped: false,
@@ -240,6 +250,15 @@ describe('hiveWatchdogSweep (P-011 / D-003: every condition gates)', () => {
   it('no started hives → nothing', async () => {
     listStartedWorkspaceLoops.mockResolvedValue([]);
     expect(await hiveWatchdogSweep({ now: NOW })).toHaveLength(0);
+  });
+
+  it('missing registry hive → self-clears the started bit and wake, then alerts instead of re-arming', async () => {
+    isRegisteredHive.mockResolvedValue(false);
+    const res = await hiveWatchdogSweep({ now: NOW });
+    expect(res).toEqual([{ outcome: 'skipped', reason: 'started Hive missing from registry; self-cleared' }]);
+    expect(setHiveStarted).toHaveBeenCalledWith(WS, SLUG, false, { deliberate: true });
+    expect(clearHiveTimeWake).toHaveBeenCalledWith(fakeSql, SLUG, { workspaceId: WS });
+    expect(declareHiveTimeWake).not.toHaveBeenCalled();
   });
 
   it('armed → no fire', async () => {

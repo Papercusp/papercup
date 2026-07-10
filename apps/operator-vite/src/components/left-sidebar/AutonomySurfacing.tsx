@@ -22,10 +22,9 @@
  */
 import { useQueryState, parseAsBoolean } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { ChevronDown, ChevronRight, ExternalLink, GitBranch, ShieldCheck, ShieldAlert } from 'lucide-react';
+import { ChevronDown, ChevronRight, ExternalLink, GitBranch, RotateCcw, Shield, ShieldCheck } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
-import OverridableSetting from '../override/OverridableSetting';
 
 export const DECOMP_MODES = ['serial', 'balanced', 'parallel'] as const;
 export type DecompMode = (typeof DECOMP_MODES)[number];
@@ -44,15 +43,6 @@ interface PolicyRow {
   locked: boolean;
   label: string;
 }
-
-const CEILING_SHORT: Record<string, string> = {
-  'never-auto': 'none',
-  trivial: 'trivial',
-  low: 'low',
-  moderate: 'mod',
-  high: 'high',
-  critical: 'crit',
-};
 
 /** Defensive: only rows that look like a decoded PolicyRow (a string ceiling) — a
  *  misconfigured/empty query never throws into the panel. Pure. */
@@ -90,8 +80,8 @@ export default function AutonomySurfacing({
 
   const rows = policyRows(policyQ.data);
   const { total, active, locked } = summarizePolicy(rows);
-  const activeRows = rows.filter((r) => r.effectiveCeiling !== 'never-auto');
   const breaker = breakerThreshold ?? 3;
+  const coverage = armed && total > 0 ? Math.round((active / total) * 100) : 0;
 
   return (
     <section className="pc-queen__section">
@@ -103,41 +93,45 @@ export default function AutonomySurfacing({
         aria-label={open ? 'Collapse decision style' : 'Expand decision style'}
       >
         {open ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
-        {armed ? <ShieldAlert size={12} aria-hidden /> : <ShieldCheck size={12} aria-hidden />}
+        {armed ? <ShieldCheck size={12} aria-hidden /> : <Shield size={12} aria-hidden />}
         <span className="pc-queen__section-title">Decision style</span>
-        <span className={`pc-queen__count${armed ? ' pc-queen__count--on' : ''}`}>{armed ? 'Autonomy on' : 'Manual'}</span>
+        <span className={`pc-queen__count${armed ? ' pc-queen__count--on' : ''}`}>
+          {armed ? (policyQ.loading && total === 0 ? 'Loading' : `${active}/${total} automatic`) : 'Manual'}
+        </span>
       </button>
 
       {open && (
         <div className="pc-queen__knobs">
-          {/* Autonomy ceilings — read-through to /settings/autonomy */}
+          {/* Compact read-through to /settings/autonomy. Detailed category
+              ceilings stay on the dedicated settings surface. */}
           <div className="pc-queen__knob">
             <div className="pc-queen__knobhead">
-              <span className="pc-queen__knoblabel">Autonomy</span>
-              <span className="pc-queen__count">{armed ? `${active}/${total} enabled` : 'Off'}</span>
+              <span className="pc-queen__knoblabel">Automatic decisions</span>
             </div>
-            <div className={`pc-queen__scope${armed ? ' pc-queen__scope--restricted' : ''}`}>
-              {policyQ.loading && rows.length === 0 ? (
-                'Loading autonomy policy…'
-              ) : !armed ? (
-                <>Every decision requires you.</>
-              ) : active > 0 ? (
-                <><strong>{active}</strong> categories can run automatically · {locked} locked.</>
-              ) : (
-                <>Autonomy is on, but no categories can run automatically yet.</>
-              )}
+            <div className={`pc-queen__autonomy${armed ? ' pc-queen__autonomy--on' : ''}`}>
+              <div
+                className="pc-queen__autonomy-meter"
+                role="progressbar"
+                aria-label="Automatic decision coverage"
+                aria-valuemin={0}
+                aria-valuemax={total || 1}
+                aria-valuenow={armed ? active : 0}
+              >
+                <span style={{ width: `${coverage}%` }} />
+              </div>
+              <div className="pc-queen__autonomy-meta">
+                <span>
+                  {policyQ.loading && total === 0
+                    ? 'Loading policy…'
+                    : !armed
+                      ? 'Manual approval'
+                      : total > 0
+                        ? `${active} of ${total} categories`
+                        : 'No automatic categories'}
+                </span>
+                {armed && locked > 0 && <span>{locked} locked</span>}
+              </div>
             </div>
-            {armed && activeRows.length > 0 && (
-              <ul className="pc-queen__catlist">
-                {activeRows.slice(0, 8).map((r) => (
-                  <li key={r.category} className="pc-queen__cat">
-                    <span className="pc-queen__catlabel" title={r.category}>{r.label}</span>
-                    <span className="pc-queen__catceil">{CEILING_SHORT[r.effectiveCeiling] ?? r.effectiveCeiling}</span>
-                  </li>
-                ))}
-                {activeRows.length > 8 && <li className="pc-queen__cat pc-queen__cat--more">+{activeRows.length - 8} more</li>}
-              </ul>
-            )}
             <button type="button" className="pc-queen__chip" onClick={onManageAutonomy} disabled={busy}>
               <ExternalLink size={11} aria-hidden /> Autonomy settings
             </button>
@@ -147,18 +141,23 @@ export default function AutonomySurfacing({
           <div className="pc-queen__knob">
             <div className="pc-queen__knobhead">
               <span className="pc-queen__knoblabel">Retry limit</span>
-              <span className="pc-queen__count">{breaker} failures</span>
             </div>
-            <div className="pc-queen__scope">
-              Stops placing an item after <strong>{breaker}</strong> failed attempts.
+            <div className="pc-queen__stat">
+              <strong>{breaker}</strong>
+              <span>failed attempts</span>
             </div>
           </div>
 
           {/* Decomposition aggressiveness (advisory, writable) */}
-          <div className="pc-queen__knob">
+          <div className={`pc-queen__knob${decomposition != null ? ' pc-queen__knob--custom' : ''}`}>
             <div className="pc-queen__knobhead">
               <GitBranch size={11} aria-hidden />
-              <OverridableSetting label="Parallelism" isOverridden={decomposition != null} badgeStyle="inline" />
+              <span className="pc-queen__knoblabel">Parallelism</span>
+              {decomposition != null && (
+                <button type="button" className="pc-queen__knobreset" onClick={() => onSetDecomposition(null)} disabled={busy} aria-label="Use workspace parallelism" title="Use workspace parallelism">
+                  <RotateCcw size={11} aria-hidden />
+                </button>
+              )}
             </div>
             <div className="pc-queen__seg" role="group" aria-label="Decomposition aggressiveness">
               <button
@@ -168,7 +167,7 @@ export default function AutonomySurfacing({
                 disabled={busy}
                 aria-pressed={decomposition == null}
               >
-                System
+                Workspace
               </button>
               {DECOMP_MODES.map((m) => (
                 <button
@@ -184,7 +183,7 @@ export default function AutonomySurfacing({
               ))}
             </div>
             <span className="pc-queen__hint">
-              {decomposition != null ? DECOMP_HINT[decomposition] : 'Use the workspace setting'}
+              {decomposition != null ? DECOMP_HINT[decomposition] : 'Workspace setting'}
             </span>
           </div>
         </div>

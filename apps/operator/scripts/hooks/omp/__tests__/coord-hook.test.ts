@@ -2554,6 +2554,9 @@ describe('formatBusyRefusal (file-locking #2)', () => {
     expect(out).toContain('"editing"');
     expect(out).toContain('2026-05-20T10:00:00Z');
     expect(out).toMatch(/Options.*\(1\).*\(2\).*\(3\)/s);
+    expect(out).toContain('tools:invoke {name:"locks:acquire"');
+    expect(out).toContain('paths:["a.ts"]');
+    expect(out).toContain('wake_on_grant:true');
   });
 
   it('truncates after 5 entries with a "... and N more" line', () => {
