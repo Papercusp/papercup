@@ -68,7 +68,10 @@ export async function ensureBenchSchema(client: Client, schema: string = BENCH_S
     CREATE INDEX IF NOT EXISTS memory_canonical_user_id_idx
       ON ${schema}.memory_canonical ((payload->>'user_id'))
   `);
-  for (const vec of ['memory_vec_openai', 'memory_vec_local']) {
+  // One vec table per embedding SPACE — must mirror the production set
+  // (migration 534 added memory_vec_gemma). Omitting a space makes a bench run
+  // in that mode fail on a missing relation instead of measuring it.
+  for (const vec of ['memory_vec_openai', 'memory_vec_local', 'memory_vec_gemma']) {
     await client.query(`
       CREATE TABLE IF NOT EXISTS ${schema}.${vec} (
         memory_id uuid PRIMARY KEY REFERENCES ${schema}.memory_canonical(id) ON DELETE CASCADE,
