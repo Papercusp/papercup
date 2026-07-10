@@ -235,7 +235,31 @@ pstree -ap "$PID" | rg 'ghostty|zellij|pui|psu|claude|codex|omp'
 
 If that tree contains the Papercup/Mug dock or agent TUIs, do **not**
 kill or restart the shell for routine verification. Use an isolated,
-dock-suppressed second instance instead:
+dock-suppressed second instance instead.
+
+**Prefer the packaged entrypoint over hand-deriving this** (EI-9005):
+`scripts/verify-tauri-headless.sh` boots exactly this isolated-instance +
+§15.4 Xvfb/VirtualGL recipe as one command — its own devUrl port
+(auto-picked, no collision with a peer's run), its own operator sidecar,
+`PAPERCUSP_NATIVE_TERMINAL=0` already set, the real-GPU GL check already
+done, and a scoped teardown (never leaks an Xvfb display — the WI-2115
+lesson). Live-verified 2026-07-10 (isolated bridge PID resolved distinct
+from the live fleet's own bridge; DOM check passed; clean teardown, no
+orphaned processes or display).
+
+```sh
+scripts/verify-tauri-headless.sh -- bash -c '
+  tauri-agent-tools check --pid "$VERIFY_TAURI_PID" \
+    --selector body --no-errors'
+```
+
+`scripts/verify-tauri-headless.sh --boot-only` prints a source-able env
+(`VERIFY_TAURI_PID`/`PORT`/`DISPLAY`) plus a stop script for a multi-step
+interactive session — see the script's own header for the full interface.
+
+The manual recipe below is kept for reference / when the script doesn't
+fit (e.g. driving a **release build** with no dev bridge — §15.4 still
+applies directly for that case):
 
 ```sh
 cd papercusp-desktop
