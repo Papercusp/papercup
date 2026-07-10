@@ -38,7 +38,8 @@ import {
   localAvailable,
   isOpenAiEmbedInCooldown,
 } from '../memory/configure';
-import { buildGemmaEmbedder, buildLocalEmbedder, type EmbedFn, type ResolvedEmbedder } from '@papercusp/memory';
+import type { EmbedFn, ResolvedEmbedder } from '@papercusp/memory';
+import { buildSidecarAwareEmbedder } from '../memory/embed-sidecar-wiring';
 
 // Exported for embed-space-self-check.ts (WI-3644): the expected vector width.
 export const EMBEDDER_DIM = 384;
@@ -116,9 +117,11 @@ export async function resolveBackfillEmbedder(): Promise<ResolvedEmbedder> {
     localInstalled: localAvailable,
     isOpenAiRecentlyExhausted: isOpenAiEmbedInCooldown,
     buildOpenAi: buildAdmissionGovernedOpenAiEmbedder,
-    buildLocal: buildLocalEmbedder,
+    // Sidecar-first local legs (P-004): shared warm model when the host runs
+    // the embed sidecar, bit-identical in-process fallback otherwise.
+    buildLocal: () => buildSidecarAwareEmbedder('local', 'document'),
     // Prose backfill is STORAGE, so EmbeddingGemma gets the document prompt.
-    buildGemma: async () => buildGemmaEmbedder({ kind: 'document' }),
+    buildGemma: () => buildSidecarAwareEmbedder('gemma', 'document'),
   });
 }
 

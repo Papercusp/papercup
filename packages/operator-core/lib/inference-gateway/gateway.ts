@@ -2241,9 +2241,24 @@ export function createInferenceGateway(deps: GatewayDeps) {
       use_responses_lite: false,
     });
     return {
+      // Mirror of the ChatGPT backend's Codex model catalog so the Codex CLI
+      // `/model` picker offers the full current lineup when routed THROUGH the
+      // gateway. A custom `model_provider` (our gateway) can't fetch the
+      // account's model catalog the way native ChatGPT-login does — so whatever
+      // we return HERE *is* the picker. A short/stale list silently caps every
+      // gateway-routed Codex agent to just these models (owner-reported
+      // 2026-07-10: only gpt-5 / gpt-5.5 were offered through the gateway while
+      // the same account showed the full lineup natively). Keep in sync with the
+      // upstream catalog; ordering is by descending `priority`. Follow-up: source
+      // this live from upstream so it can't go stale again.
       models: [
-        model('gpt-5.5', 'GPT-5.5', 'Frontier model for complex coding, research, and real-world work.', 9),
-        model('gpt-5', 'GPT-5', 'General-purpose coding and reasoning model.', 8),
+        model('gpt-5.6-sol', 'gpt-5.6-sol', 'Latest frontier agentic coding model.', 15),
+        model('gpt-5.6-terra', 'gpt-5.6-terra', 'Balanced agentic coding model for everyday work.', 14),
+        model('gpt-5.6-luna', 'gpt-5.6-luna', 'Fast and affordable agentic coding model.', 13),
+        model('gpt-5.5', 'gpt-5.5', 'Frontier model for complex coding, research, and real-world work.', 12),
+        model('gpt-5.4', 'gpt-5.4', 'Strong model for everyday coding.', 11),
+        model('gpt-5.4-mini', 'gpt-5.4-mini', 'Small, fast, and cost-efficient model for simpler coding tasks.', 10),
+        model('gpt-5.3-codex-spark', 'gpt-5.3-codex-spark', 'Ultra-fast coding model.', 9),
       ],
     };
   }

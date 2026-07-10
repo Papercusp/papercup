@@ -25,8 +25,6 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   configureMemory,
-  buildLocalEmbedder,
-  buildGemmaEmbedder,
   registerMemoryBackend,
   ClaudeFileMemoryBackend,
   CLAUDE_FILE_BACKEND_NAME,
@@ -39,6 +37,7 @@ import {
 } from '@papercusp/memory';
 import { readCredentials } from '../credentials';
 import { loadVoicePrefs } from '../voice-prefs';
+import { buildSidecarAwareEmbedder } from './embed-sidecar-wiring';
 import { embedAdmission, headersToRecord, EmbedBudgetExhaustedError } from './embed-admission';
 import { clearEmbedExhaustionAlertIfActive, maybeEscalateEmbedExhaustion } from './embed-exhaustion-alert';
 import { getHarnessAdminUrl } from '../embedded-pg-discovery';
@@ -472,10 +471,13 @@ async function buildEmbedderForMode(mode: 'openai' | 'local' | 'gemma'): Promise
   if (mode === 'gemma') {
     // EmbeddingGemma-300m @ MRL-384. Storage / the re-embed pass use the
     // document prompt (search's query embedder uses the query prompt).
-    return buildGemmaEmbedder({ kind: 'document' });
+    // Sidecar-first (P-004): shared warm model when the host runs the embed
+    // sidecar; bit-identical in-process fallback otherwise (D-002/D-003).
+    return buildSidecarAwareEmbedder('gemma', 'document');
   }
-  // local — BGE-small, worker-thread isolated, inline fallback.
-  return buildLocalEmbedder();
+  // local — BGE-small, worker-thread isolated, inline fallback; sidecar-first
+  // under the same P-004 seam.
+  return buildSidecarAwareEmbedder('local', 'document');
 }
 
 /**
@@ -572,9 +574,11 @@ async function resolveEmbedder(): Promise<ResolvedEmbedder> {
     resolveKey: resolveOpenAiKey,
     localInstalled: localAvailable,
     buildOpenAi: buildOpenAiEmbedder,
-    buildLocal: buildLocalEmbedder,
+    // Sidecar-first local legs (P-004) — shared warm model when available,
+    // bit-identical in-process fallback otherwise.
+    buildLocal: () => buildSidecarAwareEmbedder('local', 'document'),
     // Storage/mem0 embed with the document prompt (search uses the query prompt).
-    buildGemma: async () => buildGemmaEmbedder({ kind: 'document' }),
+    buildGemma: () => buildSidecarAwareEmbedder('gemma', 'document'),
     isOpenAiRecentlyExhausted: isOpenAiEmbedInCooldown,
   });
 }

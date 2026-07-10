@@ -35,7 +35,7 @@
  */
 
 import type { Embedder } from '@papercusp/search';
-import { buildGemmaEmbedder, buildLocalEmbedder } from '@papercusp/memory';
+import { buildSidecarAwareEmbedder } from '../../memory/embed-sidecar-wiring';
 import { embedAdmission, headersToRecord, retryAfterMs } from '../../memory/embed-admission';
 import {
   resolveEmbedderWith,
@@ -90,11 +90,13 @@ export async function buildQueryEmbedder(): Promise<Embedder | null> {
       localInstalled: localAvailable,
       isOpenAiRecentlyExhausted: isOpenAiEmbedInCooldown,
       buildOpenAi: buildAdmissionGovernedOpenAiEmbedder,
-      buildLocal: buildLocalEmbedder,
+      // Sidecar-first local legs (P-004): shared warm model when the host
+      // runs the embed sidecar, bit-identical in-process fallback otherwise.
+      buildLocal: () => buildSidecarAwareEmbedder('local', 'query'),
       // This is the QUERY embedder, so EmbeddingGemma gets the query prompt
       // (its dual-encoder is trained so query-prompt vectors match the
       // document-prompt vectors written on the storage side).
-      buildGemma: async () => buildGemmaEmbedder({ kind: 'query' }),
+      buildGemma: () => buildSidecarAwareEmbedder('gemma', 'query'),
     });
     if (resolved.mode === 'disabled') return null;
     return resolved.embed;

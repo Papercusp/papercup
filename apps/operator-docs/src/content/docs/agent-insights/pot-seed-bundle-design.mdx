@@ -21,7 +21,7 @@ documents:
 > [`pot-seed-bundle-2026-07-04`](/project-docs?harness=papercusp&path=docs%2Fplans%2Fhive-seed-bundle-2026-07-04.md).
 > Author: su-0824a, 2026-07-04 (AUTO). This memo is the **design** (why + the
 > interface/manifest/state-machine spec); for **operations** — cutting a seed,
-> debugging a restore, the `HIVE_SEED_BUNDLE` kill-switch, every failure mode, and the
+> debugging a restore, the `POT_SEED_BUNDLE` kill-switch, every failure mode, and the
 > cold-join canary — see the
 > [seed-bundle runbook](/internal/docs/agent-insights/pot-seed-bundle-runbook).
 > Decisions D-001…D-009 in the plan are binding; this expands them.
@@ -31,7 +31,7 @@ documents:
 A **packaged** Papercusp install today pays two serial waits: the app download,
 then a first-boot **dogfood join** that is genuinely heavy:
 
-- **Git.** `bootstrap-papercusp-pot.ts` clones `github.com/Papercusp/papercup` —
+- **Git.** `bootstrap-papercusp-hive.ts` clones `github.com/Papercusp/papercup` —
   a **~5 GB tree + ~6.2 GB `.git` + 27 submodules** (the module header states the
   repo is "far too large to bundle"; submodules init best-effort in the background
   after the pot appears).
@@ -68,8 +68,8 @@ system degrades to today's cold path (D-007).
 > (emitted by `cut-seed-cli --emit-epoch-key`). `bundled-epoch-key-provider.ts`
 > resolves that key **offline**, so a FRESH packaged install decrypts the seed —
 > both the encrypted git bundles and the epoch-encrypted corestore content
-> (`HIVE_REKEY` default-ON) — with **no federation join / admission at all**. This
-> is wired live in `bootstrap-papercusp-pot.ts` via `epoch-key-provider-chain.ts`,
+> (`POT_REKEY` default-ON) — with **no federation join / admission at all**. This
+> is wired live in `bootstrap-papercusp-hive.ts` via `epoch-key-provider-chain.ts`,
 > which tries the FEDERATED member provider first (PG-wrapped `hive_epoch_keys`,
 > holds all granted epochs `[0..cur]`, stays correct after a re-key) and falls back
 > to the bundled provider — so an online member is unchanged while a cold install
@@ -302,7 +302,7 @@ worst-case coverage is preserved even though most installs take the seeded fast 
 - **P-005** lands the git-seed encryption + the Q-4 pot-policy nod.
 - **P-006** builds the release-time cutter + Tauri bundled-resource embedding and
   **measures** Q-1.
-- **P-007** wires restore-before-join into `bootstrap-papercusp-pot.ts` (unchanged
+- **P-007** wires restore-before-join into `bootstrap-papercusp-hive.ts` (unchanged
   join after).
 - **P-008** the fallback + canary. **P-009** a second (test-rig) consumer to prove
   genericity. **P-010** the fresh-install E2E (cold vs seeded, delta-only assertion +

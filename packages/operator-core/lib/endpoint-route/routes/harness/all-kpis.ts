@@ -7,6 +7,7 @@
  * Ported from app/api/harness/all/kpis/route.ts. `auth: 'public'`.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import os from 'node:os';
 import { routeWithWorkspace } from '../../../route-workspace';
 import { loadHarnessRegistry } from '../../../harness-registry';
 import { defineTool } from '@papercusp/agent-mcp';
