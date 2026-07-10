@@ -65,8 +65,21 @@ const overrideCache = new Map<
   string,
   { flags: Partial<Record<FlagKey, boolean>>; ts: number }
 >();
-const OVERRIDE_CACHE_TTL_MS = 5_000;
+const DEFAULT_OVERRIDE_CACHE_TTL_MS = 5_000;
 const DEFAULT_FLAG_BACKEND_TIMEOUT_MS = 2_000;
+
+// How long a loaded override map is served from the per-cacheKey cache before a
+// re-read. The default 5s is the cross-process propagation fallback for a
+// `flags:set` (processes on the SSE change bus also get pushed invalidation, so
+// for them this is purely a churn knob). Env-overridable so a high-throughput
+// process — e.g. the bg-host, where the override read was a top pgbouncer
+// transaction-churn driver (~225K calls, WI-3800) — can trade a few extra
+// seconds of flag-flip latency for far fewer catalog round-trips. 0 disables
+// the cache (always re-read). Mirrors PAPERCUSP_FLAG_BACKEND_TIMEOUT_MS.
+function overrideCacheTtlMs(): number {
+  const raw = Number(process.env.PAPERCUSP_FLAG_OVERRIDE_CACHE_TTL_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_OVERRIDE_CACHE_TTL_MS;
+}
 
 function currentCacheKey(): string {
   return overrideStore?.cacheKey?.() ?? '';
