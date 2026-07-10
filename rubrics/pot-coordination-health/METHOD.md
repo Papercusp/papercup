@@ -87,7 +87,9 @@ docs/tool-summaries), and the DRIFT MARKERS (what a big drift looks like).
 - **Model.** Scout generates grounded, systemic, evidence-backed ideas from the
   observation/change-feed corpus, AND spans diverse themes (low duplication, broad coverage of
   the friction surface) rather than converging on one theme.
-- **Method.** Read recent Scout ideas (`scout_ticks`, `routed_ideas`); judge each for grounding
+- **Method.** ACTIVITY GATE first: no scout cycle in the window (`scout_ticks` empty) means
+  rate `unknown` with `idle:`-prefixed evidence (the stage did not run). Then read recent
+  Scout ideas (`scout_ticks`, `routed_ideas`); judge each for grounding
   (cites real evidence), systemic value (root-cause not symptom), and novelty. Cluster the last
   batch by theme — a healthy batch spreads; a degraded one converges (e.g. 5 of 8 on one queue
   theme, near-duplicate ideas). 0 ideas with a non-empty corpus AND zero budget spent is
@@ -113,8 +115,9 @@ docs/tool-summaries), and the DRIFT MARKERS (what a big drift looks like).
 
 - **Model.** The Queen starts/pursues the right plans in priority order and does NOT
   auto-materialize plans that are not ready (she does not force-start a draft).
-- **Method.** Look at started plans across member harnesses and the Queen's plan-selection
-  reasoning. Signal is limited when Scout is not routing plans — assess what she does with what
+- **Method.** ACTIVITY GATE first: if the Queen did not wake in the window, rate `unknown`
+  with `idle:`-prefixed evidence. Then look at started plans across member harnesses and the
+  Queen's plan-selection reasoning. Signal is limited when Scout is not routing plans — assess what she does with what
   is available; she should respect plan readiness (draft vs ready) and not auto-start.
 - **Drift markers.** Starts unready/draft plans; ignores a high-priority ready plan; or churns
   on a dying system's plans. Low evidence is `unknown`, not `broken`.
@@ -126,9 +129,11 @@ docs/tool-summaries), and the DRIFT MARKERS (what a big drift looks like).
   each bee's topic-subscriptions TIGHTLY (its own item + plan topics) to avoid chatter.
 - **Method.** Observe a parallel seed: did she batch-place concurrent bees on disjoint work? Is
   file/topic affinity overlap minimized? Are per-bee topic subscriptions narrow? Only
-  observable when a parallel-ready frontier exists.
+  observable when a parallel-ready frontier exists — when none exists (or no placements
+  happened in the window), rate `unknown` with `idle:`-prefixed evidence.
 - **Drift markers.** Serializes genuinely-parallel work; places overlapping bees that collide on
-  locks; over-broad topic subscriptions causing chatter. Idle is `unknown`, not `broken`.
+  locks; over-broad topic subscriptions causing chatter. Idle is `unknown` with `idle:`
+  evidence, not `broken`.
 
 ### 6. `bee-execution` — bees complete real, verified work
 

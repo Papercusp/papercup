@@ -377,16 +377,16 @@ describe('resolveNamedQueryV2 — learning.experiments (experiment-registry-invo
   });
 });
 
-describe('resolveNamedQueryV2 — learning.queenWakeEfficiency (queen-brief-cache B-06 / P-010)', () => {
+describe('resolveNamedQueryV2 — learning.mugWakeEfficiency (queen-brief-cache B-06 / P-010)', () => {
   beforeEach(() => {
     vi.resetModules();
   });
 
   it('is registered in knownQueryNamesV2', () => {
-    expect(knownQueryNamesV2()).toContain('learning.queenWakeEfficiency');
+    expect(knownQueryNamesV2()).toContain('learning.mugWakeEfficiency');
   });
 
-  it('passes the queenWakeEfficiency aggregate through as data[0]', async () => {
+  it('passes the mugWakeEfficiency aggregate through as data[0]', async () => {
     const agg = {
       wakes: 3,
       cachedWakes: 2,
@@ -402,12 +402,12 @@ describe('resolveNamedQueryV2 — learning.queenWakeEfficiency (queen-brief-cach
       samples: [],
     };
     vi.doMock('../pot/mug-wake-efficiency', () => ({
-      queenWakeEfficiency: vi.fn(async () => agg),
-      EMPTY_QUEEN_WAKE_EFFICIENCY: { wakes: 0 },
+      mugWakeEfficiency: vi.fn(async () => agg),
+      EMPTY_MUG_WAKE_EFFICIENCY: { wakes: 0 },
     }));
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
     const { resolveNamedQueryV2: r } = await import('./index');
-    const rows = (await r('learning.queenWakeEfficiency', {})) as Array<{ wakes: number; cacheHitRatio: number }>;
+    const rows = (await r('learning.mugWakeEfficiency', {})) as Array<{ wakes: number; cacheHitRatio: number }>;
     expect(rows).toHaveLength(1);
     expect(rows[0].wakes).toBe(3);
     expect(rows[0].cacheHitRatio).toBe(0.8);
@@ -417,14 +417,14 @@ describe('resolveNamedQueryV2 — learning.queenWakeEfficiency (queen-brief-cach
 
   it('degrades to the empty aggregate when the read throws (pre-migration / no PG) — never a 500', async () => {
     vi.doMock('../pot/mug-wake-efficiency', () => ({
-      queenWakeEfficiency: vi.fn(async () => {
+      mugWakeEfficiency: vi.fn(async () => {
         throw Object.assign(new Error('relation "agent_usage_samples" does not exist'), { code: '42P01' });
       }),
-      EMPTY_QUEEN_WAKE_EFFICIENCY: { wakes: 0, cacheHitRatio: 0, avgTurns: null, samples: [] },
+      EMPTY_MUG_WAKE_EFFICIENCY: { wakes: 0, cacheHitRatio: 0, avgTurns: null, samples: [] },
     }));
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
     const { resolveNamedQueryV2: r } = await import('./index');
-    const rows = (await r('learning.queenWakeEfficiency', {})) as Array<{ wakes: number }>;
+    const rows = (await r('learning.mugWakeEfficiency', {})) as Array<{ wakes: number }>;
     expect(rows).toHaveLength(1);
     expect(rows[0].wakes).toBe(0);
     vi.doUnmock('../pot/mug-wake-efficiency');

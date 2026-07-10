@@ -2,7 +2,7 @@
  * MugWakeEfficiencyPanel — the Benchmark view's Mug per-wake efficiency
  * (queen-brief-cache-assembly-2026-06-13 B-06 / P-010, D-016/D-018).
  *
- * Renders the `learning.queenWakeEfficiency` sync query: the live Mug's
+ * Renders the `learning.mugWakeEfficiency` sync query: the live Mug's
  * per-wake prompt efficiency — the cache-hit ratio (Win-1, the frozen-prefix
  * cache paying off), avg turns/wake (Win-2, the precomputed brief eliminating
  * survey round-trips), the cachedWakes "the cache is real" signal (P-003), and
@@ -33,7 +33,7 @@ function compact(n: number): string {
 export function MugWakeEfficiencyPanel() {
   const t = useLexicon();
   const sync = useSyncQuery<MugWakeEfficiency>({
-    queryName: 'learning.queenWakeEfficiency',
+    queryName: 'learning.mugWakeEfficiency',
     args: {},
     staleTime: 30_000,
   });

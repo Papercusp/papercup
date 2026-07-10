@@ -2,7 +2,7 @@
 //
 // MugWakeEfficiencyPanel render coverage (queen-brief-cache-assembly-2026-06-13
 // B-06 / P-010, D-016/D-018): the Benchmark view's live-Queen per-wake efficiency.
-// Mounts against a realistic `learning.queenWakeEfficiency` aggregate (useSyncQuery
+// Mounts against a realistic `learning.mugWakeEfficiency` aggregate (useSyncQuery
 // mocked — the pinned sibling pattern, see EkgPanel.test.tsx) and pins the headline
 // stats (cache-hit ratio, cached wakes, turns/wake, cost), the rollup, the recent
 // per-wake strip, the no-wakes empty state, and the defensive fallback. Guards
