@@ -38,9 +38,11 @@ psu --no-picker --agent=claude --harness=<slug> --no-plan \
   --role=planner
 ```
 
-A new-plan kickoff always appends `--role=planner` (launch-su.ts:150) — the launched session *is* the Planner role/persona, so the dock panes it as a typed Planner pane (and the deferred row records `role: 'planner'` for the same reason).
+A new-plan kickoff always appends `--role=planner` (launch-su.ts:164) — the launched session *is* the Planner role/persona, so the dock panes it as a typed Planner pane (and the deferred row records `role: 'planner'` for the same reason).
 
-The `--agent=` token reflects the **configured backend** (claude unless `/settings/agent` overrides it) — `--agent=omp` would just be one such pick. The New-plan button sends *no* agent, so the route resolves it via `effectiveBackend(readAgentConfig())` (launch-su.ts:74-77), following the global setting rather than a hardcoded value.
+The `--agent=` token reflects the **configured backend** (claude unless `/settings/agent` overrides it) — `--agent=omp` would just be one such pick. The New-plan button sends *no* agent, so the route resolves it via `effectiveBackend(readAgentConfig())` (launch-su.ts:77-78), following the global setting rather than a hardcoded value.
+
+Since WI-1282 (su-context-size-variants), the route also accepts an optional `context_size: 'full' | 'trimmed'` in the launch body, validated by `isSuContextSize` and forwarded as `--context-size=<full|trimmed>` on the `psu` argv (right after `--model=`, before `--resume-session=`). Omitted ⇒ no flag is passed and each client (`claude`/`codex`/`omp`) keeps its own native default. This is orthogonal to kickoffs — it sizes the *superuser tool catalog* the session boots with, not the kickoff brief.
 
 The New-plan button launches with `defer_spawn: true` (PlansClient.tsx:662). Instead of spawning an OS terminal, the server records a pending `adv_sessions` "workbench launch" row carrying this same argv as `launchArgv`, then wakes the pui dock-driver — which reactively opens a pane that *runs* the launcher (launch-su.ts:155-181). The `exec psu …` form below is the non-deferred terminal path:
 

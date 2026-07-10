@@ -48,10 +48,11 @@ asked as menu check-ins ("want me to X or Y?" is banned). For open-ended
 directives the agent arms an engine loop (`loop:arm`) so the work recurs across
 turns instead of stopping to ask "what next?".
 
-What still stops an AUTO session: nothing owner-shaped. The one hard rail is
-data integrity — never destroying a **peer's** uncommitted work (tree-wide
-destructive git ops on the shared checkout). Genuinely unresolvable
-product-direction forks become disclosed assumptions, not pauses.
+What still stops an AUTO session: nothing owner-shaped, except the genuinely
+owner-walled actions (credentials, capital arming, category-1/irreversible
+ops) and the one hard data rail — never destroying a **peer's** uncommitted
+work (tree-wide destructive git ops on the shared checkout). Genuinely
+unresolvable product-direction forks become disclosed assumptions, not pauses.
 
 ## IDEATE — "invent net-new, don't just patch"
 
@@ -71,10 +72,15 @@ disclosed, not just filed.
 
 DRAIN sets the *objective*: take a work-item backlog and drive every item to a
 terminal state (done / resolved / deprecated / needs\_human), usually by leading
-a fleet. The operating loop: triage + rank first · capacity preflight · canary
-launch, then the fleet · feed by claim-spec (never hand-assignment) · a leader
-monitor loop each wake · wind down with a residue report. Completion integrity
-outranks burn-down speed — nothing goes terminal without evidence.
+a fleet. **Kickoff question (mandatory):** before draining, read the live
+queue (`work_items:completion_stats` + a pile/age breakdown) and ask *which*
+pile to drain, with concrete numbers from the data ("9 stale 'Loop iteration'
+items, 2 canary items — a kind, a harness, oldest-first, or everything?") — do
+not assume the whole backlog. Then the operating loop: triage + rank first ·
+capacity preflight · canary launch, then the fleet · feed by claim-spec (never
+hand-assignment) · a leader monitor loop each wake · wind down with a residue
+report. Completion integrity outranks burn-down speed — nothing goes terminal
+without evidence.
 
 ## COLD AUTO — AUTO across fresh-context wakes
 

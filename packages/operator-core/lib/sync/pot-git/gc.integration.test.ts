@@ -1,12 +1,12 @@
 /**
- * gc.integration.test.ts — bounded hive-git namespace retention against a REAL
+ * gc.integration.test.ts — bounded pot-git namespace retention against a REAL
  * temp bare repo (git on PATH, no network).
  *
  * Proves: per-namespace retention keeps work + sigrefs + newest published refs,
  * removes older refs without losing staging-reachable objects, and archives a
  * departed namespace before pruning it from the live namespace tree.
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/gc.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/gc.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -63,7 +63,7 @@ async function hasRef(repo: string, ref: string): Promise<boolean> {
   return r.code === 0;
 }
 
-describe('hive-git gc (real bare repo)', () => {
+describe('pot-git gc (real bare repo)', () => {
   let root: string;
   let repo: string;
   const memberA = dev();

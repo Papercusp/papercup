@@ -1,5 +1,5 @@
 /**
- * hive-git/handoff-token.ts — the sha-token authority handoff + park-token
+ * pot-git/handoff-token.ts — the sha-token authority handoff + park-token
  * protocol (Phase 7 G-0 / G-0b, cross-machine-coord-parity-and-trust-2026-07-01
  * / P-033, P-037; D-011 holes 1+2).
  *
@@ -59,7 +59,7 @@ export const HANDOFF_REF = 'refs/rad/handoff';
 export const HANDOFF_TOKEN_SCHEMA_VERSION = 1;
 
 /** Domain-separation tag for handoff-token signatures (hive-policy idiom). */
-export const HANDOFF_TOKEN_SIG_DOMAIN = 'papercusp-hive-git-handoff-token-v1';
+export const HANDOFF_TOKEN_SIG_DOMAIN = 'papercusp-pot-git-handoff-token-v1';
 
 /** A member head the integrator could not integrate yet (3-way conflict). */
 export interface ParkedHead {
@@ -144,7 +144,7 @@ async function hashBlob(repoPath: string, content: string, runGit: RunGit): Prom
     const f = join(dir, 'blob');
     await writeFile(f, content, 'utf8');
     const r = await runGit(['hash-object', '-w', '-t', 'blob', f], repoPath);
-    if (r.code !== 0) throw new Error(`hive-git: hash-object failed: ${r.stderr.trim()}`);
+    if (r.code !== 0) throw new Error(`pot-git: hash-object failed: ${r.stderr.trim()}`);
     return r.stdout.trim();
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
@@ -176,7 +176,7 @@ export async function publishHandoffToken(
     ts: fields.nowMs,
   };
   if (!isHandoffTokenPayload(payload)) {
-    throw new Error('hive-git: publishHandoffToken called with a malformed payload');
+    throw new Error('pot-git: publishHandoffToken called with a malformed payload');
   }
   const sig = (await sign(handoffTokenSigningBytes(payload))).toString('base64');
   const signed: SignedHandoffToken = { ...payload, sig };

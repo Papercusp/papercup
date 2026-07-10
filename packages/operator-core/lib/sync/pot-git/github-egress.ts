@@ -1,9 +1,9 @@
 /**
- * hive-git/github-egress.ts — the EGRESS half of the GitHub bridge
+ * pot-git/github-egress.ts — the EGRESS half of the GitHub bridge
  * (github-bridge-hive-egress-2026-07-02 P-001; design S-1/S-2/S-4, D-001/D-002).
  *
  * Publishes the hive's COMPUTED CANONICAL refs (the integrator's staging, the
- * green-gated release ref, release tags) from the hive-git bare store OUT to the
+ * green-gated release ref, release tags) from the pot-git bare store OUT to the
  * GitHub remote — the D-009 "GitHub is the release channel, not the transport"
  * boundary made concrete. Device namespaces NEVER egress (S-2: noise + privacy);
  * only the refs the integrator/release layers computed.
@@ -69,7 +69,7 @@ export interface EgressTag {
 }
 
 export interface EgressInput {
-  /** The hive-git bare repo (storage.ts hiveGitRepoPath). */
+  /** The pot-git bare repo (storage.ts hiveGitRepoPath). */
   repoPath: string;
   /**
    * The push destination URL — resolved by the CALLER via resolveForkPushTarget

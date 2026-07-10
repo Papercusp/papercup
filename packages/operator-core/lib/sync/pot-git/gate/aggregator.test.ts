@@ -3,7 +3,7 @@
  * green ONLY at full trusted-pass coverage; one fail / missing shard / unknown
  * coverage ⇒ not green — and the incremental contract: a pass recorded at an
  * OLDER staging sha counts when the shard's inputsHash is unchanged.
- * Run: cd packages/operator-core && npx vitest run lib/sync/hive-git/gate/aggregator.test.ts
+ * Run: cd packages/operator-core && npx vitest run lib/sync/pot-git/gate/aggregator.test.ts
  */
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';

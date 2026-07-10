@@ -1,7 +1,7 @@
 /**
  * leg-d-integration-chain.integration.test.ts — P-305 (Leg D integration,
  * p2p-git-live-activation-2026-07-09) end-to-end chain against REAL
- * Postgres + a REAL bare hive-git repo: the integrator (P-203) computes +
+ * Postgres + a REAL bare pot-git repo: the integrator (P-203) computes +
  * publishes canonical staging from real member namespace heads, a below-steer
  * head lands in the REAL `harness_shared.hive_integration_requests` queue
  * with a visible (queryable) receipt, and the resulting signed staging-advance
@@ -21,7 +21,7 @@
  * three against real infra is exactly Leg D's acceptance bar
  * (p2p-git-live-activation-2026-07-09 P-305).
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/leg-d-integration-chain.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/leg-d-integration-chain.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';

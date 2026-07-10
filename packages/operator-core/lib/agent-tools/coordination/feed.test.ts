@@ -280,15 +280,18 @@ describe('filters', () => {
 });
 
 describe('WI-3880: before_ts deepening past the first RAW_SURFACE_FETCH_CAP window', () => {
-  /** A stateful mock keyed on (surface, beforeId) — robust to whatever order
-   *  the four surfaces happen to be invoked in within a round (unlike chained
+  /** Drive `readLinesBoundedCursor` from a per-surface sequence of pages, keyed
+   *  on CALL INDEX per surface — robust to whatever order the four surfaces
+   *  happen to be invoked in within a round (unlike chained
    *  `mockImplementationOnce`, which is a single FIFO queue shared across every
-   *  surface calling the same mock function). */
-  function statefulLineMock(
+   *  surface calling the same mock function). The last page in a surface's
+   *  sequence repeats for any further calls (defaults to empty+exhausted for a
+   *  surface with no sequence at all). */
+  function setLineRounds(
     rounds: Partial<Record<CoordSurface, { rows: { id: number; envelope: CoordEnvelope }[]; exhausted: boolean }[]>>,
-  ) {
+  ): void {
     const callIndex = new Map<CoordSurface, number>();
-    return vi.fn(async (s: CoordSurface) => {
+    mockLog.readLinesBoundedCursor.mockImplementation(async (s: CoordSurface) => {
       const pages = rounds[s] ?? [{ rows: [], exhausted: true }];
       const i = callIndex.get(s) ?? 0;
       callIndex.set(s, i + 1);
@@ -300,7 +303,7 @@ describe('WI-3880: before_ts deepening past the first RAW_SURFACE_FETCH_CAP wind
     const m3 = env({ msg_id: 'm3', ts: '2026-06-23T12:00:03.000Z' });
     const m2 = env({ msg_id: 'm2', ts: '2026-06-23T12:00:02.000Z' });
     const m1 = env({ msg_id: 'm1', ts: '2026-06-23T12:00:01.000Z' });
-    mockLog.readLinesBoundedCursor = statefulLineMock({
+    setLineRounds({
       messages: [
         { rows: [{ id: 3, envelope: m3 }, { id: 2, envelope: m2 }], exhausted: false }, // round 1: not exhausted
         { rows: [{ id: 1, envelope: m1 }], exhausted: true }, // round 2 (beforeId=2): exhausted
@@ -326,7 +329,7 @@ describe('WI-3880: before_ts deepening past the first RAW_SURFACE_FETCH_CAP wind
     // Every call returns exactly one row, never exhausted — a pathological
     // surface that could in principle loop forever chasing `limit`.
     let nextId = 1000;
-    mockLog.readLinesBoundedCursor = vi.fn(async (s: CoordSurface) => {
+    mockLog.readLinesBoundedCursor.mockImplementation(async (s: CoordSurface) => {
       if (s !== 'messages') return { rows: [], exhausted: true };
       const id = nextId--;
       return { rows: [{ id, envelope: env({ msg_id: `m${id}`, ts: '2026-06-23T12:00:00.000Z' }) }], exhausted: false };
@@ -343,7 +346,7 @@ describe('WI-3880: before_ts deepening past the first RAW_SURFACE_FETCH_CAP wind
   });
 
   it('never enters the deepening path when before_ts is omitted, even if a surface reports itself unexhausted', async () => {
-    mockLog.readLinesBoundedCursor = vi.fn(async (s: CoordSurface) =>
+    mockLog.readLinesBoundedCursor.mockImplementation(async (s: CoordSurface) =>
       s === 'messages'
         ? { rows: [{ id: 1, envelope: env({ msg_id: 'only' }) }], exhausted: false }
         : { rows: [], exhausted: true },

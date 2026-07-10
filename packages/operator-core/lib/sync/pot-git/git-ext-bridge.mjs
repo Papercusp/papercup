@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * git-ext-bridge.mjs — the `ext::` transport helper for hive-git fetch (Phase 7
+ * git-ext-bridge.mjs — the `ext::` transport helper for pot-git fetch (Phase 7
  * G-2, cross-machine-coord-parity-and-trust-2026-07-01 / P-026).
  *
  * `git fetch "ext::node <this> <sockPath>" …` spawns THIS process as the

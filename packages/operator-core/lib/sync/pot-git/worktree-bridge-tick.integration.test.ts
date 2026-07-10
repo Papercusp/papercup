@@ -4,7 +4,7 @@
  * watermark, with the continue-on-reject / stop-on-fetch-failure batch
  * contract (see worktree-bridge-tick.ts's module header).
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/worktree-bridge-tick.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/worktree-bridge-tick.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';

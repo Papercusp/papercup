@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
-import type { ScopeId } from '../hive-git/scope-repo';
+import type { ScopeId } from '../pot-git/scope-repo';
 import {
   admitScopedAnnounce,
   computeRedisclosure,

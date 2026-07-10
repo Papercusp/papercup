@@ -1,5 +1,5 @@
 /**
- * hive-git/worktree-bridge.ts — the staging→worktree bridge (Phase 7 G-7,
+ * pot-git/worktree-bridge.ts — the staging→worktree bridge (Phase 7 G-7,
  * cross-machine-coord-parity-and-trust-2026-07-01 / P-031, D-010/D-011).
  *
  * WHAT THIS IS: the receiver-side glue that turns a SIGNED staging-advance
@@ -30,7 +30,7 @@
  *
  * Injectable seams (all of it tests offline against real repos + a socket
  * duplex, no swarm): `openDuplex` dials the per-fetch stream (prod: a
- * `papercusp/hive-git` Protomux sub-stream on an existing hive connection —
+ * `papercusp/pot-git` Protomux sub-stream on an existing hive connection —
  * leader-held wiring; tests: a unix socket). Omit `openDuplex` when the
  * objects are already local (the integrator's own machine).
  *
@@ -58,7 +58,7 @@ import { type WorktreeAdvanceResult, advanceWorktree } from './worktree-advance'
 export const WORKTREE_STAGING_REF = 'refs/hive/staging';
 
 export interface WorktreeBridgeConfig {
-  /** The local hive-git bare mirror for this (hive, managed repo) — G-1. */
+  /** The local pot-git bare mirror for this (hive, managed repo) — G-1. */
   bareRepoPath: string;
   /** The machine's working tree that follows canonical staging. */
   worktreePath: string;

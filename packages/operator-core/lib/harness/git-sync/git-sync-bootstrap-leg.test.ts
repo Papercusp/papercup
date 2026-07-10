@@ -64,11 +64,11 @@ const {
 
 vi.mock('../../harness-registry', () => ({ loadHarnessRegistry: loadHarnessRegistryMock }));
 vi.mock('../../hive-membership-store', () => ({ listHiveMembers: listHiveMembersMock }));
-vi.mock('../../sync/hive-git/storage', () => ({
+vi.mock('../../sync/pot-git/storage', () => ({
   hiveGitRepoPath: hiveGitRepoPathMock,
   listNamespaces: listNamespacesMock,
 }));
-vi.mock('../../sync/hive-git/bootstrap', () => ({ bootstrapFromPeer: bootstrapFromPeerMock }));
+vi.mock('../../sync/pot-git/bootstrap', () => ({ bootstrapFromPeer: bootstrapFromPeerMock }));
 vi.mock('../usage-actor', () => ({ resolveUsageActor: resolveUsageActorMock }));
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();

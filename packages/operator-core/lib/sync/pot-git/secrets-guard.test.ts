@@ -4,7 +4,7 @@
  * secret-assignment rule is entropy-gated (placeholders pass), clean code is
  * clean, and the secret is masked in the finding.
  *
- * Run: cd packages/operator-core && npx vitest run lib/sync/hive-git/secrets-guard.test.ts
+ * Run: cd packages/operator-core && npx vitest run lib/sync/pot-git/secrets-guard.test.ts
  */
 import { describe, expect, it } from 'vitest';
 import {

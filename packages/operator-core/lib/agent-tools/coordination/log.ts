@@ -95,6 +95,8 @@ export const coordLog: CoordEventLog = {
   readEventsBounded: (surface, opts) => impl.readEventsBounded(surface, opts),
   readLinesBounded: (surface, opts) => impl.readLinesBounded(surface, opts),
   getEvent: (surface, msgId) => impl.getEvent(surface, msgId),
+  readEventsBoundedCursor: (surface, opts) => impl.readEventsBoundedCursor(surface, opts),
+  readLinesBoundedCursor: (surface, opts) => impl.readLinesBoundedCursor(surface, opts),
 };
 
 /**

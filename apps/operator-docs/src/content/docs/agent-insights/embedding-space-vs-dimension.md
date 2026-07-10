@@ -1,21 +1,30 @@
 ---
 title: Vectors have a SPACE, not just a dimension — switching the embedder silently invalidates every stored vector
-description: EMBEDDER_DIM===384 is asserted everywhere; the embedding SPACE was asserted nowhere. Flipping memoryEmbedderMode makes stored vectors (OpenAI-384) and query vectors (BGE-384) structurally valid and semantically incomparable — no error, just noise. Migration 530's `<col>_mode` discriminator + a space-aware backfill predicate make the sweep self-healing.
+description: EMBEDDER_DIM===384 is asserted everywhere; the embedding SPACE was asserted nowhere. Flipping memoryEmbedderMode makes stored vectors (OpenAI-384) and query vectors (BGE-384) structurally valid and semantically incomparable — no error, just noise. Migration 530's `<col>_mode` discriminator + a space-aware backfill predicate make the sweep self-healing. The 2026-07-10 bake-off sharpened the rule: the space is model + runtime + quantization + pooling + prompts, and truncation without MRL keeps recall while destroying hard-negative calibration.
 discovered: 2026-07-09
-tags: [embeddings, semantic-search, memory, mem0, pgvector, embed-backfill, migrations, silent-failure]
+tags: [embeddings, semantic-search, memory, mem0, pgvector, embed-backfill, migrations, silent-failure, harrier, gemma, embed-sidecar, bake-off]
+plans: [shared-embedding-sidecar-and-enrichment-2026-07-10]
 status: active
 ---
 
 ## The trap
 
-`memoryEmbedderMode` (`auto | openai | local | disabled`) picks the embedder **at
-runtime**. All available embedders produce **384-dimensional** vectors:
+`memoryEmbedderMode` (`auto | openai | local | gemma | harrier | disabled`) picks the
+embedder **at runtime**. Until 2026-07-10 every available embedder produced
+**384-dimensional** vectors, so no dimension check could ever catch a mix-up:
 
 | mode | model | dims |
 | --- | --- | --- |
 | `openai` | `text-embedding-3-small`, requested with `dimensions: 384` | 384 |
 | `local` | `Xenova/bge-small-en-v1.5` (BGE-ONNX) | 384 |
 | `gemma` | `onnx-community/embeddinggemma-300m-ONNX`, natively 768 → MRL-truncated to 384 + L2-renormalized (migration 534; the default since 2026-07-10) | 384 |
+| `harrier` | `onnx-community/harrier-oss-v1-0.6b-ONNX`, native 1024, last-token pooling + L2 norm baked into the ONNX graph (migration 547 `memory_vec_harrier`; selectable since 2026-07-10) | 1024 |
+
+`harrier` is the first mode with different native dims, which retired the flat
+`EMBEDDER_DIM === 384` assumption (`reembed.ts` now carries a per-mode
+`MODE_DIMS` map — without it every harrier re-embed row silently counted as an
+error). A 1024-vs-384 mix-up at least fails loudly; every 384-vs-384 mix-up is
+still silent, and that remains the normal case.
 
 `gemma` makes the trap sharper, not softer: its vectors are *born* 768-dim and only
 look like the others after Matryoshka truncation, and it uses asymmetric task
@@ -37,6 +46,72 @@ Nothing throws. Search returns confident, plausible-looking noise.
 `harness_shared.operator_turns` for a row **by its own exact text** ranked that row
 **#6574 of 8383** (cosine distance `1.0336` — near-orthogonal to itself). After the
 fix, the same probe returns distance `0.0000`.
+
+## The space is the whole pipeline — measured (P-006 bake-off, 2026-07-10)
+
+The embedder bake-off (`packages/operator-core/lib/memory/bench/embedder-eval-cli.ts`,
+frozen gold set v1: 114 docs, 150 queries incl. 30 hard-negatives; report
+`.papercusp/bench-reports/embedder-eval-2026-07-10-19-23-46.json`) turned "the mode
+IS the space" into four sharper, measured claims.
+
+### Same weights ≠ same space: runtime + quantization are space-defining
+
+`ollama:embeddinggemma:300m` (GGUF-quantized, llama.cpp, 100% GPU) scored
+**quality-identical** to our ONNX-CPU gemma — R@1 `.8083` on both, MRR `.8763` vs
+`.8677`, rejection-margin `.1486` vs `.1576`. Same model card, indistinguishable
+quality — and the vectors are **mutually incomparable**: a different quantization
+and inference stack land points in a different space. Quality parity tells you
+NOTHING about vector compatibility. A "cheap" runtime migration (say, for the GPU
+speedup) is therefore a full re-embed of every surface, exactly like a model
+change. Ollama showed no quality win, so the runtime stayed.
+
+### Truncation without MRL keeps recall but destroys calibration
+
+Gemma is Matryoshka-trained, so truncation is a supported operation — the D-001
+dim sweep found 768/512/384 within noise (R@1 `.817`/`.825`/`.808`), degrading
+only from 256 down (`.775`; 128 → `.667`). Harrier has **no documented MRL**.
+Truncating its native 1024 to 384 (truncate-then-renormalize) looked fine on
+recall — R@1 `.8583`, still above gemma — but the hard-negative **rejection
+margin collapsed to `.0705`**, less than half gemma's `.1576` (harrier@1024:
+`.1293`). Recall@k alone would have said "ship it"; only the rejection metric
+caught that truncated-harrier can no longer tell *close* from *wrong*. Rule: a
+truncated leg is its own space AND its own quality question — eval it with a
+hard-negative/rejection metric, never recall alone. This is why the prose/registry
+surfaces stay gemma even though harrier@1024 clearly won the memory-side eval
+(R@1 `.8833`, MRR `.9286`, at ~4× CPU latency).
+
+### Pooling can live inside the ONNX graph — and then your pooling code is dead weight
+
+The `onnx-community/harrier-oss-v1-0.6b-ONNX` export bakes last-token pooling +
+L2 normalization INTO the graph (a sentence-transformers head): the model's sole
+output is `sentence_embedding` — there is no `last_hidden_state`. transformers.js's
+`FeatureExtractionPipeline` assumes `last_hidden_state` and dies with the cryptic
+`Cannot read properties of undefined (reading 'data')` under EVERY pooling
+setting. The fix was not JS-side pooling (impossible — token states are never
+exposed) but reading the named graph output directly: `embedViaWorker` gained an
+`output` option (tokenize → run the model → return `out['sentence_embedding']`),
+which `buildHarrierEmbedder` uses. Corollary: pooling + normalization placement
+is part of the space — two exports of the "same model" that pool differently are
+different spaces, and an export can hard-code that choice out of your hands.
+
+### Two adoption gates that are not quality gates
+
+- **License (D-005):** shipped defaults must be MIT/Apache-class. jina-v5 and
+  SFR-Embedding-2_R are CC-BY-NC → disqualified regardless of leaderboard rank;
+  harrier-oss is MIT → admissible.
+- **Leaderboard ≠ our-domain rank:** harrier's MMTEB 69.0 vs gemma's ≈61
+  translated to +.075 R@1 on OUR gold set — real, but far smaller than the
+  leaderboard gap implies (ceiling effects: gemma already scores R@3 `.9417`
+  here). Adoption decisions run on the P-001 eval, never on MTEB deltas.
+
+### The sidecar is NOT a space change (D-002)
+
+The shared embed sidecar (`:3384`) wraps the SAME `@papercusp/memory` builders —
+model, task prompts, MRL truncation, ORT thread caps — so its vectors are
+**bit-identical** to in-process (live-pinned 10/10 identical for gemma, exact-equal
+both kinds for harrier). Consolidating processes onto it requires no re-embed.
+Envs, wire contract, spawn/adopt and fallback semantics:
+`agent-insights/embed-sidecar-runbook`.
 
 ## Why it could never self-heal
 
@@ -61,8 +136,8 @@ Downstream consumers of `buildQueryEmbedder()` — `coord:ask`'s knowledge tier,
 `recipes/candidates.ts`, `cupboard/tool-find.ts`, `sessions:search` semantic mode.
 
 **mem0's memories were immune.** They already store vectors in **per-mode tables**
-(`memory_vec_openai` / `memory_vec_local`) over one mode-independent
-`memory_canonical`. The prose surfaces simply never inherited that discipline. Switching
+(`memory_vec_openai` / `memory_vec_local` / `memory_vec_gemma` /
+`memory_vec_harrier`) over one mode-independent `memory_canonical`. The prose surfaces simply never inherited that discipline. Switching
 mem0 modes is therefore non-destructive and reversible — but still needs a **re-embed**,
 because the target table only holds vectors written in *its* space.
 

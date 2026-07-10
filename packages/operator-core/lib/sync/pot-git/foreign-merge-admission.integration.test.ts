@@ -8,7 +8,7 @@
  * gate). Errors / empty chain / non-foreign ref / over-long range fail CLOSED.
  * Real git, injected resolution seam (no PG).
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/foreign-merge-admission.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/foreign-merge-admission.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';

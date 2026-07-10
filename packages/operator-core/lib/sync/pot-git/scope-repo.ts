@@ -1,8 +1,8 @@
 /**
- * hive-git/scope-repo.ts — per-scope bare-repo provisioning (FS-D3, ratified
+ * pot-git/scope-repo.ts — per-scope bare-repo provisioning (FS-D3, ratified
  * D-017; p2p-work-distribution-2026-07-02 P-006 §6 / P-108 option (b)).
  *
- * A FederationScope's git-plane unit is its OWN bare repo under the hive-git
+ * A FederationScope's git-plane unit is its OWN bare repo under the pot-git
  * root — NOT ref-filtering inside the hive repo. Rationale (D-017/D-018): git's
  * transport then structurally cannot leak sibling scopes' refs (upload-pack
  * inside one repo advertises only that repo), M14/H16 hold by construction,
@@ -91,7 +91,7 @@ export function parseScopeRefSegment(segment: string): ScopeId | null {
 }
 
 /**
- * WI-3641: the wire `repoKey` a hive-git-serve requester sends
+ * WI-3641: the wire `repoKey` a pot-git-serve requester sends
  * (serve-wiring.ts's `ReqFrame.repoKey`) to fetch a `scopes/` repo. The wire
  * transport's `repoKey` is a single hiveGitRepoPath-style path component (no
  * `/`, storage.ts's `assertSafeComponent`) — reusing `scopeRefSegment`'s

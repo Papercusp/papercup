@@ -149,7 +149,7 @@ describe('loadRoleCapabilities', () => {
     });
 
     test('sentinel CANNOT place/execute: carved OUT of cup:spawn + DENIED fs-write/bash at the envelope', async () => {
-      const { default: spawn } = await import('../../../agent-tools/bee/spawn.js');
+      const { default: spawn } = await import('../../../agent-tools/cup/spawn.js');
       expect(spawn.agentRoles).not.toContain('papercup');
       // ...but the Queen (operator) still spawns it.
       expect(spawn.agentRoles).toContain('operator');
@@ -220,7 +220,7 @@ describe('loadRoleCapabilities', () => {
     });
 
     test('overwatch is carved OUT of placement/optimization (cup:spawn + gym:judge — D-001/D-002)', async () => {
-      const { default: spawn } = await import('../../../agent-tools/bee/spawn.js');
+      const { default: spawn } = await import('../../../agent-tools/cup/spawn.js');
       expect(spawn.agentRoles).not.toContain('kettle'); // placement is the Queen's; it NUDGES her
       const { default: judge } = await import('../../../agent-tools/gym/judge.js');
       expect(judge.agentRoles).not.toContain('kettle'); // not a gym evaluator (gates on harness:read it holds)

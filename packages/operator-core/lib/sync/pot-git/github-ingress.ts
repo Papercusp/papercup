@@ -1,5 +1,5 @@
 /**
- * hive-git/github-ingress.ts — the INGRESS half of the GitHub bridge
+ * pot-git/github-ingress.ts — the INGRESS half of the GitHub bridge
  * (github-bridge-hive-egress-2026-07-02 P-002; design S-3/S-4, D-001).
  *
  * GITHUB-AS-A-MEMBER (S-3): fetches the GitHub origin branch(es) into a
@@ -47,8 +47,8 @@ import {
   writeNamespaceRef,
 } from './storage';
 
-/** Domain-separation tag for the synthetic device derivation (hive-git idiom). */
-export const GITHUB_ORIGIN_DEVICE_DOMAIN = 'papercusp-hive-git-github-origin-v1';
+/** Domain-separation tag for the synthetic device derivation (pot-git idiom). */
+export const GITHUB_ORIGIN_DEVICE_DOMAIN = 'papercusp-pot-git-github-origin-v1';
 
 /** The private landing area for ingress fetches — never read by anything else,
  *  always safe to clobber (the bootstrap-quarantine posture). */
@@ -88,7 +88,7 @@ export function githubOriginNamespaceKey(remoteUrl: string): string {
 }
 
 export interface IngressInput {
-  /** The hive-git bare repo (storage.ts hiveGitRepoPath). */
+  /** The pot-git bare repo (storage.ts hiveGitRepoPath). */
   repoPath: string;
   /** The GitHub remote to ingress from (a local path works — tests). */
   remoteUrl: string;

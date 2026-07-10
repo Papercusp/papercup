@@ -87,7 +87,7 @@ import {
   type LeaseHolderRow,
   type MonitorIncident,
   type PresenceRow,
-} from '../../shared-hive-loop/fleet-monitors';
+} from '../../shared-pot-loop/fleet-monitors';
 import { sendMessage, readInbox, appendAck, readAckedMsgIds } from '../../agent-tools/coordination/messages';
 import { listHandoffs, acceptHandoff } from '../../agent-tools/coordination/handoffs';
 import { listEscalations } from '../../agent-tools/coordination/escalations';

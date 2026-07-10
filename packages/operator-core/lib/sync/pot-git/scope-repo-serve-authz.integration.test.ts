@@ -17,7 +17,7 @@
  *      any hive member (unknown to `resolveGithubUserIdForDevicePubkey`) is
  *      refused — signed-but-non-member.
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/scope-repo-serve-authz.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/scope-repo-serve-authz.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { rm, mkdtemp } from 'node:fs/promises';
@@ -173,7 +173,7 @@ async function connectPair(
   const clientDuplex = frameWrap(clientSocket);
   wireAllCorked(clientDuplex, () => {
     // Symmetric wiring, matching real production (swarm.ts wires both fns on
-    // every connection, both sides) — required so the server's own hive-git
+    // every connection, both sides) — required so the server's own pot-git
     // channels pair correctly on this shared muxer (WI-3583 diagnosis).
     wireHiveGitServe(clientDuplex, TOPIC, { potHomeSlug: HIVE, workspaceId: WORKSPACE_ID });
     if (clientDevice && signAsClient) {

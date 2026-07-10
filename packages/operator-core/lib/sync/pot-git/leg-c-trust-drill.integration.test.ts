@@ -3,7 +3,7 @@
  * 2026-07-09 / P-304, "Leg C trust"): the TAMPER drill against real bare
  * repos + real ed25519 keys, no network transport involved.
  *
- * SCOPE NOTE: the drill script's SKIP census (hive-git-drill.sh) parks LEG C
+ * SCOPE NOTE: the drill script's SKIP census (pot-git-drill.sh) parks LEG C
  * behind "needs LEG B's live fetch path" — true for a genuine cross-machine
  * run, but per WI-3497's checkpoint the announce→fetch WIRING itself
  * (P-201/202/204/205) is code-complete; only the 2-machine RIG is blocked on
@@ -32,7 +32,7 @@
  *   3. a rollback (an older, validly-signed-but-superseded sigrefs snapshot)
  *      is refused by the G-4b monotonic version guard alone.
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/leg-c-trust-drill.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/leg-c-trust-drill.integration.test.ts
  *
  * (Cup-sandbox note: this cup's own capability_bash cannot run the
  * integration config here — testcontainers' baseline-schema global setup
@@ -72,7 +72,7 @@ async function mintCommit(repoPath: string, msg: string): Promise<string> {
   return c.stdout.trim();
 }
 
-describe('hive-git Leg C trust drill (P-304): tamper / rollback / non-member refusals', () => {
+describe('pot-git Leg C trust drill (P-304): tamper / rollback / non-member refusals', () => {
   let root: string;
 
   beforeAll(async () => {

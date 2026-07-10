@@ -4,7 +4,7 @@
  * ff AND dirty∩incoming=∅; never rewind; diverged/dirty are surfaced, never
  * clobbered. The git-apply half lives in worktree-advance.integration.test.ts.
  *
- * Run: cd packages/operator-core && npx vitest run lib/sync/hive-git/worktree-advance.test.ts
+ * Run: cd packages/operator-core && npx vitest run lib/sync/pot-git/worktree-advance.test.ts
  */
 import { describe, expect, it } from 'vitest';
 import { type AdvanceDecisionInput, decideAdvance, parseStatusPorcelainZ } from './worktree-advance';

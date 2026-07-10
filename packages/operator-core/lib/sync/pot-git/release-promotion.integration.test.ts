@@ -4,7 +4,7 @@
  * proof satisfying the crefs rule (threshold DISTINCT allow-listed signers over
  * exactly that sha), and only fast-forward.
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/release-promotion.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/release-promotion.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -49,7 +49,7 @@ async function commit(repo: string, files: Record<string, string>, parent?: stri
   }
 }
 
-describe('hive-git release promotion (G-5b, real bare repo)', () => {
+describe('pot-git release promotion (G-5b, real bare repo)', () => {
   let root: string;
   let repo: string;
   const integ = identity(); // integrator device

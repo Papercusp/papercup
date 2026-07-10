@@ -656,7 +656,7 @@ import './routines/set';
 import './git_sync/run';
 // WI-1555 — the owner ratify surface for the multi-owner integration-requests queue
 // (lib/sync/pot-git/integration-requests.ts had no exposed verb until this tool).
-import './hive_git/integration_requests';
+import './pot_git/integration_requests';
 // schedule-inventory-and-ephemeral-tier-2026-06-26 P-002 — central read-only inventory of every cadence:
 import './schedule/inventory';
 // live-configurability-audit-2026-06-20 P-020 — runtime dispatch telemetry-buffer sizing:
@@ -846,10 +846,10 @@ import './fleet/admit';
 import './fleet/governor';
 // cup:spawn — the operator→bee launch verb over the same durable nursery
 // (Brief 4, agent-briefs-2026-06-05; renamed from fleet:spawn per WI-1764 #3 so
-// the namespace encodes the substrate: bee:* = the autonomous queen↔bee loop,
+// the namespace encodes the substrate: cup:* = the autonomous mug↔cup loop,
 // fleet:* = visible desktop su members). chat <spawn> tags, the operator brain's
 // tool call, and the admin HTTP trigger all land in spawnAgentInHarness.
-import './bee/spawn';
+import './cup/spawn';
 // fleet:assignments — the canonical "who's on what" state query over the
 // fleet_assignment view (state-not-chat-fleet-state-2026-06-05 D-002).
 import './fleet/assignments';

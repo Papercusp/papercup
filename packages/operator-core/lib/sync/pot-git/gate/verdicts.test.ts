@@ -77,7 +77,7 @@ describe('gate verdict facts (DG-1)', () => {
   it('signing bytes are domain-tagged and field-order-stable', async () => {
     const v = await signGateVerdict(FIELDS, sign);
     const bytes = gateVerdictSigningBytes(v).toString('utf8');
-    expect(bytes.startsWith('papercusp-hive-git-gate-verdict-v1\n')).toBe(true);
+    expect(bytes.startsWith('papercusp-pot-git-gate-verdict-v1\n')).toBe(true);
     // key order is FIXED by the composer, not the input object
     const { ts, sig, ...rest } = v;
     const reordered = { ts, sig, ...rest } as GateVerdict;

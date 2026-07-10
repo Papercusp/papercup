@@ -1,5 +1,5 @@
 /**
- * hive-git/release-promotion.ts — the SLOW leg of the two-speed gate (Phase 7
+ * pot-git/release-promotion.ts — the SLOW leg of the two-speed gate (Phase 7
  * G-5b, cross-machine-coord-parity-and-trust-2026-07-01 / P-034; D-010/D-011).
  *
  * TWO SPEEDS:
@@ -54,7 +54,7 @@ export const RELEASE_REF = 'refs/heads/release';
 export const GREEN_ATTESTATION_SCHEMA_VERSION = 2;
 
 /** Domain-separation tag for green-attestation signatures (hive-policy idiom). */
-export const GREEN_ATTESTATION_SIG_DOMAIN = 'papercusp-hive-git-green-attestation-v1';
+export const GREEN_ATTESTATION_SIG_DOMAIN = 'papercusp-pot-git-green-attestation-v1';
 
 /**
  * One identity's signed claim "staging sha S passed the green gate". Produced

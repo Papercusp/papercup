@@ -15,7 +15,7 @@
  * Owns its schema (applies mig 441 verbatim to a throwaway DB); does not touch
  * the dev DB.
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/integration-requests.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/integration-requests.integration.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';

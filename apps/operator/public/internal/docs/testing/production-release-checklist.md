@@ -36,13 +36,28 @@ green/red. A v1 release requires:
    durable Attention-panel escalation — best-effort, once per hold (2026-07-09,
    `platform-ops-batch-2026-07-09` P-002); a still-red gate on later ticks
    relies on the durable escalation's rising-urgency tiers, not a repeat push.
+   Since 2026-07-10 (`stale-candidate re-triage`), a red is not taken at face
+   value first: because the gate always judges a *quiet* commit ≥240s old
+   (never the live tip), the checkpoint re-runs the named failing files at the
+   current tip and classifies the verdict — `stale-candidate` (the files now
+   PASS at tip; a peer already fixed it) auto-refires the gate on the newer
+   tip (bounded by `PAPERCUSP_GATE_AUTO_REFIRE_CAP`, default 2 attempts)
+   instead of holding red on already-fixed work; `real-red` (the failures
+   reproduce at tip) holds the gate exactly as before. Read a hung
+   `consecutiveReds` count together with the verdict's `retriage.classification`
+   before assuming it's a genuine break.
 2. **The green pin has advanced past the release commit** —
    `deploy.greenPinSha` includes the commit you intend to ship;
    `dev:pipeline_position` confirms `committed → staging → main (gate
    green) → deployed`.
 3. **`:3070` is actually running that pin** — `deploy.deployedSha ===
    deploy.greenPinSha` (or trigger `release:deploy { op: 'trigger',
-   confirm: true }` to promote a green-but-stalled pin).
+   confirm: true }` to promote a green-but-stalled pin). Since 2026-07-10
+   a **deploy-staleness alarm** fires (`warn` then `urgent`) when the
+   deployed pin is BOTH old (`PAPERCUSP_DEPLOY_STALE_HOURS`, default 6h)
+   AND far behind tip (`PAPERCUSP_DEPLOY_STALE_COMMITS`, default 20 commits)
+   — a green gate that never gets promoted is otherwise silent; don't rely
+   on "the gate is green" alone as proof the pin is current.
 4. **Core canonical-framework suites pass** (see §2) — Vitest unit +
    integration, Playwright E2E critical-journey specs, the Cargo/Rust
    native suite (desktop shell), and the LLM scenario suite's *behavioral*

@@ -1,5 +1,5 @@
 /**
- * hive-git/github-ingress-admission.ts — the CODE-PLANE admission gate for the
+ * pot-git/github-ingress-admission.ts — the CODE-PLANE admission gate for the
  * GitHub ingress leg (github-bridge-hive-egress-2026-07-02 P-005; design S-6).
  *
  * THE HOLE THIS CLOSES (the ingress twin of pr-host/contribution-admission):
@@ -56,7 +56,7 @@ export function githubUserIdFromEmail(email: string): number | null {
 }
 
 export interface AdmissionInput {
-  /** The hive-git bare repo. */
+  /** The pot-git bare repo. */
   repoPath: string;
   /** The last ADMITTED github-origin head (null = first ingress → baseline). */
   lastAdmitted: string | null;

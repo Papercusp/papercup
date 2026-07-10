@@ -3,7 +3,7 @@
  * Acceptance pinned here: a lower/equal (epoch, seq) is rejected, a valid
  * strictly-higher one is accepted, a bad signature is rejected. No git needed.
  *
- * Run: cd packages/operator-core && npx vitest run lib/sync/hive-git/staging-advance.test.ts
+ * Run: cd packages/operator-core && npx vitest run lib/sync/pot-git/staging-advance.test.ts
  */
 import { describe, expect, it } from 'vitest';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';

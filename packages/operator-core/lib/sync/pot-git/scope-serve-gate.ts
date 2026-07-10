@@ -1,5 +1,5 @@
 /**
- * hive-git/scope-serve-gate.ts — the ROSTER SERVE-GATE for per-scope bare repos
+ * pot-git/scope-serve-gate.ts — the ROSTER SERVE-GATE for per-scope bare repos
  * (P-006 §5.3 / P-108 D-018 option (b); ratified D-017).
  *
  * A scope repo's git bytes may be served ONLY to a verified member of that
@@ -27,7 +27,7 @@
 import { type ScopeId, formatScopeId, parseScopeRepoPath } from './scope-repo';
 
 /** Cache-bypassing scope-membership read (structurally identical to the
- *  hyperbee layer's `IsScopeMember`; declared locally so hive-git does not
+ *  hyperbee layer's `IsScopeMember`; declared locally so pot-git does not
  *  import from the hyperbee layer — `roster.predicate` satisfies both). */
 export type ScopeMemberPredicate = (
   scope: ScopeId,

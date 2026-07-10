@@ -1,12 +1,12 @@
 /**
- * hive-git/github-fork-egress.ts — the FORK-PR contribution leg of the GitHub
+ * pot-git/github-fork-egress.ts — the FORK-PR contribution leg of the GitHub
  * bridge (github-bridge-hive-egress-2026-07-02 P-004; design S-5c, D-001).
  *
  * A namespace-publishing joiner WITHOUT origin write (the fork-PR contributor
  * of the legacy flow) has their work reach the GitHub upstream the SAME way it
  * always has: fork → branch → human-reviewed PR. This module egresses a
  * RATIFIED integration-request head (integration-requests.ts G-5c — the owner
- * has already said "integrate this exact sha") from the hive-git bare store as
+ * has already said "integrate this exact sha") from the pot-git bare store as
  * exactly that: push the head to the contributor's OWN fork, open a PR
  * fork→upstream. D-007/D-007b semantics unchanged — this NEVER pushes the
  * upstream directly.
@@ -51,7 +51,7 @@ export interface ForkEgressRequest {
 }
 
 export interface ForkEgressInput {
-  /** The hive-git bare repo (storage.ts hiveGitRepoPath). */
+  /** The pot-git bare repo (storage.ts hiveGitRepoPath). */
   repoPath: string;
   potSlug: string;
   /** The ratified integration request to egress. */
@@ -98,7 +98,7 @@ export async function egressRatifiedRequestAsForkPr(input: ForkEgressInput): Pro
   }
   const have = await runGit(['cat-file', '-e', `${req.headSha}^{commit}`], input.repoPath);
   if (have.code !== 0) {
-    return { ok: false, refused: 'sha_missing', error: `head ${req.headSha} not present in the hive-git store` };
+    return { ok: false, refused: 'sha_missing', error: `head ${req.headSha} not present in the pot-git store` };
   }
 
   const branch = forkEgressBranch(input.potSlug, req.devicePubkey, req.headSha);

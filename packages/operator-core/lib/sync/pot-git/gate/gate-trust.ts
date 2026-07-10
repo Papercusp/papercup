@@ -1,5 +1,5 @@
 /**
- * hive-git/gate/gate-trust.ts — DG-4: gate-trust resolution + the spot-check
+ * pot-git/gate/gate-trust.ts — DG-4: gate-trust resolution + the spot-check
  * policy (cross-machine-coord-parity-and-trust-2026-07-01 Phase 8 P-047,
  * D-011).
  *
@@ -30,7 +30,7 @@ import { createHash } from 'node:crypto';
 import type { GateVerdict } from './verdicts';
 
 /** Domain-separation tag for the spot-check selection ranking. */
-export const SPOT_CHECK_SELECT_DOMAIN = 'papercusp-hive-git-gate-spot-check-v1';
+export const SPOT_CHECK_SELECT_DOMAIN = 'papercusp-pot-git-gate-spot-check-v1';
 
 export interface GateTrustDeps {
   /** Map a SIGNER device pubkey → its admitted member (null = unadmitted).

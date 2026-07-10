@@ -1,5 +1,5 @@
 /**
- * hive-git/worktree-advance.ts — ff-only worktree advance (Phase 7 G-7c/G-7b,
+ * pot-git/worktree-advance.ts — ff-only worktree advance (Phase 7 G-7c/G-7b,
  * cross-machine-coord-parity-and-trust-2026-07-01 / P-040 + P-036, D-010/D-011).
  *
  * THE INVARIANT (G-7c, hole 4): a machine's working tree advances to a new

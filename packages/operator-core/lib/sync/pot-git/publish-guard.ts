@@ -1,5 +1,5 @@
 /**
- * hive-git/publish-guard.ts — the OWN-NAMESPACE sibling of
+ * pot-git/publish-guard.ts — the OWN-NAMESPACE sibling of
  * foreign-mirror-quarantine.ts's admission checks (Phase 7 G-10,
  * p2p-git-live-activation-2026-07-09 / P-205).
  *
@@ -44,7 +44,7 @@ export interface PublishGuardCaps {
 }
 
 export interface PublishGuardInput {
-  /** The bare hive-git repo (storage.ts's `hiveGitRepoPath`). */
+  /** The bare pot-git repo (storage.ts's `hiveGitRepoPath`). */
   repoPath: string;
   /** The namespace's PREVIOUSLY published head (null on a device's first-ever
    *  publish — the whole history reachable from `toOid` is judged). */

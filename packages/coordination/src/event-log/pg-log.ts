@@ -460,8 +460,14 @@ export class PgCoordLog implements CoordEventLog {
     `;
     const exhausted = rows.length <= limit;
     const page = rows.slice(0, limit);
+    // `id` is bigserial (int8); postgres-js returns int8 columns as a STRING
+    // (not a JS number) to avoid precision loss outside Number.MAX_SAFE_INTEGER.
+    // Normalize to a real number here — this table will never approach 2^53
+    // rows — so a caller's round-tripped `beforeId` (typeof === 'number') binds
+    // correctly on the next call instead of silently failing the `typeof
+    // opts.beforeId === 'number'` guard above and dropping the cursor filter.
     return {
-      rows: page.map((r) => ({ id: r.id, envelope: parseBody(r.body) })),
+      rows: page.map((r) => ({ id: Number(r.id), envelope: parseBody(r.body) })),
       exhausted,
     };
   }
@@ -492,8 +498,9 @@ export class PgCoordLog implements CoordEventLog {
     `;
     const exhausted = rows.length <= limit;
     const page = rows.slice(0, limit);
+    // See the same Number(...) normalization note in readEventsBoundedCursor.
     return {
-      rows: page.map((r) => ({ id: r.id, envelope: parseBody(r.body) })),
+      rows: page.map((r) => ({ id: Number(r.id), envelope: parseBody(r.body) })),
       exhausted,
     };
   }

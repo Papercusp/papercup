@@ -5,7 +5,7 @@
  * (valid / tampered / wrong-device), monotonic version, the rollback guard, and
  * the fetched-head reconciliation that closes the transitive-relay tamper hole.
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/sigrefs.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/sigrefs.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -33,7 +33,7 @@ async function mintCommit(repoPath: string, msg: string): Promise<string> {
   return c.stdout.trim();
 }
 
-describe('hive-git sigrefs (real bare repo, injected signer)', () => {
+describe('pot-git sigrefs (real bare repo, injected signer)', () => {
   let root: string;
   let repo: string;
   const kp = generateEd25519KeypairDer();

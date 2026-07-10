@@ -1,5 +1,5 @@
 /**
- * hive-git/gate/hermeticity.ts — DG-6: what a machine must OFFER to run a shard
+ * pot-git/gate/hermeticity.ts — DG-6: what a machine must OFFER to run a shard
  * from `(stagingSha, shard)`, and which coverage silently narrows off the dev
  * box (cross-machine-coord-parity-and-trust-2026-07-01 Phase 8 P-049, D-011).
  *

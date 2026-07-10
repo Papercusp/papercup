@@ -27,7 +27,7 @@
  * nothing is ever served or disclosed — the machinery is live but dark, no flag.
  */
 
-import { formatScopeId, type ScopeId } from '../hive-git/scope-repo';
+import { formatScopeId, type ScopeId } from '../pot-git/scope-repo';
 import type { SignedAnnounce } from './announce';
 import { ScopeCoreRegistry, type ScopeCoreRefusal } from './scope-cores';
 import type { ScopeRoster } from '../../p2p/scope-roster';

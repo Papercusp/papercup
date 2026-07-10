@@ -1,10 +1,10 @@
 /**
- * storage.integration.test.ts — the G-1 hive-git store against a REAL temp bare
+ * storage.integration.test.ts — the G-1 pot-git store against a REAL temp bare
  * repo (git on PATH, no network). Proves the per-device-namespace + shared-ODB
  * model end to end: init, write/read/delete namespaced refs, list namespaces +
  * their refs, the device→hex namespace mapping, and the path-safety guards.
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/storage.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/storage.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -45,7 +45,7 @@ async function mintCommit(repoPath: string, msg: string): Promise<string> {
   return c.stdout.trim();
 }
 
-describe('hive-git storage (real bare repo)', () => {
+describe('pot-git storage (real bare repo)', () => {
   let root: string;
   let repoPath: string;
   const devA = devicePubkey();

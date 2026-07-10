@@ -8,7 +8,7 @@
  * device dials a REAL fetch end to end, and that an unknown device fails soft
  * (never throws) exactly like `openHiveGitFetchDuplex`'s own contract.
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/peer-dial-registry.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/peer-dial-registry.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { rm, mkdtemp } from 'node:fs/promises';
@@ -163,7 +163,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 15000): Promise<voi
   }
 }
 
-describe('hive-git peer-dial-registry (WI-3583: device_pubkey -> live socket, over the hive-git-hello channel)', () => {
+describe('pot-git peer-dial-registry (WI-3583: device_pubkey -> live socket, over the pot-git-hello channel)', () => {
   let root: string;
   let serverRepo: string;
   let clientRepo: string;
@@ -234,7 +234,7 @@ describe('hive-git peer-dial-registry (WI-3583: device_pubkey -> live socket, ov
     // EVERY peer connection (both the dialer and the acceptor side), never
     // just one. A client that wires wireHiveGitDial WITHOUT wireHiveGitServe
     // (this test's earlier, asymmetric fixture) has no `pair()` notifier
-    // registered for POT_GIT_PROTOCOL — so the server's own hive-git-serve
+    // registered for POT_GIT_PROTOCOL — so the server's own pot-git-serve
     // channel's incoming "open" control frame (also on this shared muxer)
     // hits protomux's unregistered-protocol fallback and gets REJECTED,
     // which was starving the SEPARATE hello channel's own pairing on the
@@ -303,7 +303,7 @@ describe('hive-git peer-dial-registry (WI-3583: device_pubkey -> live socket, ov
   });
 });
 
-describe('hive-git peer-dial-registry unit-level (no swarm — direct registry manipulation)', () => {
+describe('pot-git peer-dial-registry unit-level (no swarm — direct registry manipulation)', () => {
   afterAll(() => {
     _testing.reset();
   });

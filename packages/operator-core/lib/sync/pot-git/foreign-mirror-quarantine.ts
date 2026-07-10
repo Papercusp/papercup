@@ -1,5 +1,5 @@
 /**
- * hive-git/foreign-mirror-quarantine.ts — leg (iii) of P-109, the
+ * pot-git/foreign-mirror-quarantine.ts — leg (iii) of P-109, the
  * OUTCOME-INDEPENDENT half (leader ratification 2026-07-03: quarantine +
  * admission build now; the PUBLISH-TARGET wiring waits for final Q6 / lane C's
  * FS-D3+RC-D1 sign-off).

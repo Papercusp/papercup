@@ -1,5 +1,5 @@
 /**
- * hive-git/foreign-merge-admission.ts — the CANONICAL-MERGE admission gate for
+ * pot-git/foreign-merge-admission.ts — the CANONICAL-MERGE admission gate for
  * FOREIGN-marked refs (p2p-work-distribution-2026-07-02 P-110; finding X2).
  *
  * THE HOLE THIS CLOSES (the foreign-work twin of github-ingress-admission):

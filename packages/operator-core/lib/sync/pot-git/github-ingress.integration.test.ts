@@ -4,7 +4,7 @@
  * origin ingresses into the synthetic github-origin namespace — FF-only + CAS,
  * non-FF origin rewrites reported (never applied) unless allowNonFF.
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/github-ingress.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/github-ingress.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';

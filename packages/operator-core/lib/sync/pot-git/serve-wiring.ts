@@ -1,7 +1,7 @@
 /**
- * hive-git/serve-wiring.ts — wires `serveUploadPack` (fetch-transport.ts, G-2)
+ * pot-git/serve-wiring.ts — wires `serveUploadPack` (fetch-transport.ts, G-2)
  * onto the shared per-harness Hyperswarm connection, so a peer member can
- * fetch this device's namespace over the `papercusp/hive-git` Protomux channel
+ * fetch this device's namespace over the `papercusp/pot-git` Protomux channel
  * (P-201, p2p-git-live-activation-2026-07-09). Until this module, the channel
  * was documented (fetch-transport.ts's header) but had no live caller — every
  * fetch ran over a plain test socket pair.
@@ -311,8 +311,8 @@ function waitOpened(state: ChannelState): Promise<void> {
  *  never a silent hang) — `fetchOverDuplex`/`serveUploadPack` both treat a
  *  destroyed duplex as a failed (nonzero) result, never a thrown exception. */
 function failAllSessions(state: ChannelState): void {
-  for (const d of state.serverSessions.values()) d.destroy(new Error('hive-git: serve channel closed'));
-  for (const d of state.clientSessions.values()) d.destroy(new Error('hive-git: serve channel closed'));
+  for (const d of state.serverSessions.values()) d.destroy(new Error('pot-git: serve channel closed'));
+  for (const d of state.clientSessions.values()) d.destroy(new Error('pot-git: serve channel closed'));
   state.serverSessions.clear();
   state.clientSessions.clear();
 }
@@ -428,7 +428,7 @@ function handleRefuse(state: ChannelState, v: RefuseFrame): void {
   const d = state.clientSessions.get(v.id);
   if (!d) return;
   state.clientSessions.delete(v.id);
-  d.destroy(new Error(`hive-git serve refused: ${v.reason}`));
+  d.destroy(new Error(`pot-git serve refused: ${v.reason}`));
 }
 function handleDataToServer(state: ChannelState, v: DataFrame): void {
   state.serverSessions.get(v.id)?.pushChunk(v.chunk);
@@ -567,14 +567,14 @@ export function wireHiveGitServe(socket: unknown, topic: Buffer, config: PotGitS
       register();
     }
   } catch {
-    /* best-effort — hive-git serve is additive, never breaks the swarm connection */
+    /* best-effort — pot-git serve is additive, never breaks the swarm connection */
   }
 }
 
 /**
  * CLIENT side (consumed by P-202's announce→fetch driver + worktree-bridge's
  * `openDuplex` seam): request a fetch duplex for `repoKey` from the peer on
- * the other end of `socket`'s connection, on `topic`'s hive-git channel.
+ * the other end of `socket`'s connection, on `topic`'s pot-git channel.
  * Resolves a Duplex immediately after the request is sent (never rejects —
  * a refusal/drop destroys the returned duplex instead, matching
  * `fetchOverDuplex`'s fail-soft "never throws" contract).
@@ -592,7 +592,7 @@ export async function openHiveGitFetchDuplex(
       () => {},
       () => {},
     );
-    d.destroy(new Error('hive-git: could not open the serve channel'));
+    d.destroy(new Error('pot-git: could not open the serve channel'));
     return d;
   }
   await waitOpened(state);

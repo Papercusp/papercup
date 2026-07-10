@@ -23,7 +23,7 @@ import {
   type ScopedSessionLike,
   type ScopedStoreLike,
 } from './scope-cores';
-import type { ScopeId } from '../hive-git/scope-repo';
+import type { ScopeId } from '../pot-git/scope-repo';
 import type { ScopedLogDisclosure } from './scope-disclosure';
 
 const SCOPE_A: ScopeId = { kind: 'fleet', ownerGithubUserId: 42, slug: 'widgets' };

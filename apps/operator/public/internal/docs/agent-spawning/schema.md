@@ -118,7 +118,16 @@ A fresh `heartbeat_at` only proves the *supervisor* is alive, not that the cup i
 * a **generating** cup — heartbeat fresh **and** `last_output_at` moving; and
 * a **wedged** cup — heartbeat fresh but `last_output_at` stale past `WEDGE_SILENT_MS` (10 min), i.e. alive-but-silent (hung network call, stuck rate-limit loop).
 
-`isPossiblyWedged` flags the latter for display/triage. A flag-gated **wedge-reaper** (`reapWedgedLocalSpawns`, `PAPERCUSP_WEDGE_REAP_MS`, default 30 min) cancels such a spawn — it routes through `cancelSubtree`, so the row lands at `status='cancelled'` (claims + locks released), not `'failed'`. A spawn that has emitted **no** output is never flagged — absence of signal is not evidence of a wedge.
+`isPossiblyWedged` flags the latter for display/triage. A flag-gated **wedge-reaper** (`reapWedgedLocalSpawns`, `PAPERCUSP_WEDGE_REAP_MS`, default 30 min) cancels such a spawn — it routes through `cancelSubtree`, so the row lands at `status='cancelled'` (claims + locks released), not `'failed'`. A spawn that has emitted **no** output is never flagged by this path — absence of signal is not evidence of a wedge (see the EI-8839 second signal below for the one exception: a never-streamed row is reclaimed when its recorded child process is separately proven dead).
+
+### Ceiling-jam reclaim — two signals (`reclaimCeilingJamDebits`, EI-7204 + EI-8839)
+
+A periodic sweep, separate from the heartbeat/`pid` orphan reclaim above, frees `spawned_agents` rows stuck `running`/`restarting` behind a reused-pid false-alive (a genuinely dead child whose `pid` was recycled by another live process, so the heartbeat/proc-liveness sweep reads it as alive forever). `classifyCeilingJamRow` judges each old-enough, "supervised bee" candidate row against two independent signals and reclaims (`status='failed'`) on either:
+
+* **`stream-silent`** (the original EI-7204 signal) — the row DID stream output once (`last_output_at` is set) but has gone silent past `CEILING_JAM_SILENT_MS`.
+* **`proc-dead`** (EI-8839, 2026-07-09) — the row has **never** streamed (`last_output_at IS NULL`, previously left alone entirely per EI-8528) but is same-host with a recorded `pid` that `isSpawnProcessAlive` proves is `/proc`-confirmed dead. This closes an orphaned-admission-debit jam without waiting for the next operator restart's boot reconcile, while still leaving a genuinely-live never-streamed cup (the EI-8528 case) or a row that can't be liveness-checked locally (different host, no recorded `pid`) untouched.
+
+Each verdict writes its own `error_message` reason (`spawn-ceiling-jam — no stream activity...` vs `spawn-ceiling-jam — recorded child process confirmed dead...`) so the two paths stay distinguishable in the row history.
 
 ### Idempotent spawn admission — `idempotency_key` (migration 219)
 

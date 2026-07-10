@@ -38,7 +38,7 @@ const propMaxLength = (tool: { args: unknown }, prop: string): unknown => {
 
 describe('brief-carrying fields are normalized to LIMITS.BRIEF', () => {
   it('cup:spawn { brief } is a softText — no hard maxLength (clamped handler-side to LIMITS.BRIEF)', async () => {
-    const tool = (await import('./bee/spawn')).default as unknown as { args: unknown };
+    const tool = (await import('./cup/spawn')).default as unknown as { args: unknown };
     // softText never advertises a maxLength (JSON-Schema-representable); the
     // cap is enforced by clampText(args.brief, LIMITS.BRIEF) in the handler.
     expect(propMaxLength(tool, 'brief')).toBeUndefined();

@@ -105,7 +105,7 @@ import { ScopeFederation } from './scope-federation';
 import { getScopeRoster } from '../../p2p/scope-roster';
 import { PgFleetDirectory } from '../../p2p/fleet-directory';
 import { bumpRefusedOpCounter } from '../../p2p/receipts';
-import { formatScopeId, type ScopeId } from '../hive-git/scope-repo';
+import { formatScopeId, type ScopeId } from '../pot-git/scope-repo';
 import { offloadReplicationToSidecar } from './substrate-replication-offload';
 import {
   buildAnnounce,

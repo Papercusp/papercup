@@ -1,5 +1,5 @@
 /**
- * hive-git/gate/scheduling.ts — DG-3: shard scheduling for the distributed
+ * pot-git/gate/scheduling.ts — DG-3: shard scheduling for the distributed
  * test gate (cross-machine-coord-parity-and-trust-2026-07-01 Phase 8 P-046,
  * D-011).
  *
@@ -42,7 +42,7 @@ import { createHash } from 'node:crypto';
 import type { ShardLayer } from './shards';
 
 /** Domain tag for the per-machine rendezvous pull ranking. */
-export const SHARD_PULL_RANK_DOMAIN = 'papercusp-hive-git-gate-shard-pull-v1';
+export const SHARD_PULL_RANK_DOMAIN = 'papercusp-pot-git-gate-shard-pull-v1';
 
 /** One (shard, current-inputs) target the aggregation round wants covered. */
 export interface ShardRunTarget {

@@ -20,8 +20,8 @@
  * instead) — safe to re-run from the top.
  */
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
-import { gcHiveGitRepo } from '../../sync/hive-git/gc';
-import { hiveGitRepoPath } from '../../sync/hive-git/storage';
+import { gcHiveGitRepo } from '../../sync/pot-git/gc';
+import { hiveGitRepoPath } from '../../sync/pot-git/storage';
 import { getHiveGitMode } from '../git-sync/hive-git-mode';
 
 registerSystemAction('hive-git-gc', async (ctx: SystemActionCtx) => {

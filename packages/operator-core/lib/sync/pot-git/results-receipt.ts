@@ -1,5 +1,5 @@
 /**
- * hive-git/results-receipt.ts — the RC-1 results-channel receipt shape
+ * pot-git/results-receipt.ts — the RC-1 results-channel receipt shape
  * (p2p-work-distribution-2026-07-02 P-108, ratified D-018; design
  * docs/plans/DESIGN-P-108-results-channel-2026-07-02.md §4).
  *

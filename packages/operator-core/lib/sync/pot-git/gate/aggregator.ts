@@ -1,5 +1,5 @@
 /**
- * hive-git/gate/aggregator.ts — DG-5: the distributed test gate's AGGREGATION
+ * pot-git/gate/aggregator.ts — DG-5: the distributed test gate's AGGREGATION
  * verdict (cross-machine-coord-parity-and-trust-2026-07-01 Phase 8 P-048,
  * D-011).
  *

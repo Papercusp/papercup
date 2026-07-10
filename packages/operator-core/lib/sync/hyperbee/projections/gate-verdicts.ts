@@ -32,7 +32,7 @@ import { resolveAuthorCommsTier } from '../comms-tier-gate';
 import {
   type GateVerdict,
   verifyGateVerdictWithId,
-} from '../../hive-git/gate/verdicts';
+} from '../../pot-git/gate/verdicts';
 import type { CommsTier } from '../../../trust/comms-trust';
 
 /** Wire-shape of a federated gate_verdicts row. Defensive on every field. */

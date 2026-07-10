@@ -136,6 +136,60 @@ cap). No cliff/leak has been attributed to it yet.
 
 ## Known limitations (standing, document-honestly)
 
+### 0. ACTIVE REGRESSION (2026-07-10): admit-after-connect never attaches a replicator (EI-8895) — gate currently RED
+
+The public-release checklist below (current as of 2026-07-02) is **stale**: the
+live-federation gate went RED again on 2026-07-10. Two regressions were found
+this week; treat this row as the up-to-date status, not the "No open
+release-critical blocker" callout further down.
+
+* **EI-8895 / `connected_never_replicated` (WI-183 class) — ACTIVE, root-caused, fix not yet landed.**
+  A log admitted **after** a swarm connection is already up never gets its
+  replicator attached — admission was only ever a DB write, not an attach
+  trigger. Symptom: `coord_event_log` remote-origin rows freeze completely
+  (observed stuck at count=147, `max_ts` 2026-07-10 10:32 EDT, cursor
+  `ef7a8160` at pos=0 for 2h+). Conclusively diagnosed by the coord-lane lead
+  (su-bce8d8e6, WI-3549 checkpoint 19:40Z 2026-07-10); confirmed not a
+  disk/ENOSPC issue. A candidate fix + deterministic in-process repro test
+  (`wi183-attach-on-late-admit.integration.test.ts`) exist; the fix is to
+  iterate already-connected peers and (re)attach replication on completing a
+  NEW log's announce→attest→admit, not just persist the admission. **A prior
+  blind live-rig fix attempt already failed** — the sanctioned path is
+  repro-first (verify the candidate test in-process) before any live-rig
+  change. Tracked by plan `p2p-live-federation-crack-2026-07-10` (P-001
+  critical path); owner-authorized fleet `p2p-blocker-crack-sonnet5` cracking
+  it as of 19:5x Z.
+* **iMac hive membership absent — ACTIVE, second live blocker.** The iMac's
+  `hives` table is empty (no admitted remote log), so even once EI-8895 lands,
+  replication cannot resume until membership is restored through the existing
+  typed surfaces. Tracked as P-002 of the same plan (`git-live-activation`
+  P-003 umbrella item).
+* **WI-3646 (hive\_slug federation regression) — FIXED + live-rig verified 2026-07-09/10.**
+  `hive:create` from an existing harness never wrote `hive_slug` onto the
+  owner's source-harness registry row, so `potHomeSlugForHarness` /
+  `resolveHiveSwarmBinding` returned null and the harness never swarm-bound —
+  silent zero federation of the owner's own content. Root cause was three
+  stacked instances of the same "missing-slug field silently dropped" bug
+  class (`packages/operator-core/lib/agent-tools/hive/_create.ts`,
+  `_create_from_repo.ts`, `harness/create.ts`). Fixed + regression-tested (53 +
+  98 + 3 tests) and live-rig re-verified (content/plan/coord/concurrent-LWW/
+  coord-controlplane scenarios all converge end-to-end).
+* **WI-3869 (`coord_event_log` unbounded surface scan) — FIXED 2026-07-10.** A
+  per-surface read with no `LIMIT`/cursor full-scanned the entire event log on
+  every call, degrading `coord:presence`/`fleet:status`/`coord:orient` as the
+  log grows (one query observed running 130s, causing 55s presence timeouts
+  and a live fleet rendering as empty/"looks paused" in the UI even though
+  members were alive). Fixed in
+  `packages/operator-core/lib/agent-tools/coordination/feed.ts` with a bounded
+  `LIMIT` + id-cursor window; regression-pinned in `feed.test.ts` (18/18,
+  asserts every raw per-surface read carries a bounded numeric limit).
+
+Both WI-3646 and WI-3869 tests are wired into the affected-test gate via the
+existing `hive/**/*.test.ts`, `harness/**/*.test.ts`, and
+`coordination/**/*.test.ts` domain globs in
+`packages/operator-core/lib/testing-domains-registry.ts` — no additional
+registration was needed.
+
 ### 1. Coordination control plane — BRIDGED for pot-scoped sends (updated 2026-07-01)
 
 The original Brief-7 finding ("a wake fired on A does not wake a live agent on
@@ -544,6 +598,15 @@ exits 0). CI is no longer red on this.
 > RESOLVED — both mechanisms (WI-1378 stale cross-process cache resolve;
 > WI-1544 join-time binding race) are fixed and the full 8-scenario matrix went
 > green first-poll with no restart (m1783013203).
+>
+> **⚠️ STALE as of 2026-07-10 — see § 0 above.** The gate went RED again this
+> week: EI-8895 (admit-after-connect never attaches a replicator) is an ACTIVE
+> release-critical blocker, plus a second live blocker (iMac hive membership
+> absent). WI-3646 (hive\_slug regression) and WI-3869 (coord\_event\_log scan)
+> are separate regressions found and fixed the same week. Do not treat this
+> callout as current status — track `p2p-live-federation-crack-2026-07-10` /
+> `shared-hive-release-testing/RELEASE-READINESS.md` for the live GO/NO-GO
+> state.
 >
 > **Hetzner is GONE — the owner-wall callout is OBSOLETE (2026-07-03, D-001 of
 > `shared-pot-p2p-release-readiness-2026-07-03`).** Access to the Hetzner

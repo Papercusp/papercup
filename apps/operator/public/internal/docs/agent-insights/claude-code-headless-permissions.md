@@ -60,9 +60,9 @@ this first.
 --permission-mode dontAsk
 --allowed-tools "mcp__papercusp Read Edit Write Bash Glob Grep WebFetch WebSearch"
 --disallowed-tools CronCreate CronDelete CronList ScheduleWakeup \
-  EnterWorktree ExitWorktree Workflow Task Agent RemoteTrigger PushNotification \
-  Monitor "Bash(sudo:*)" "Bash(git push:*)"
---disallowedTools=Task,Agent
+  EnterWorktree ExitWorktree Workflow Task Agent Workflow RemoteTrigger PushNotification \
+  Monitor "Bash(sudo:*)" "Bash(git push:*)" "Bash(rtk git push:*)"
+--disallowedTools=Task,Agent,Workflow
 ```
 
 Allow-list is one space-joined arg (claude splits it); deny patterns are
@@ -178,6 +178,33 @@ Claude agent, not just fleet/cup sessions:
 there's no error, no warning, just a tool that still works. The only way to know is the
 live-side-effect test pattern below, run against the tool you're actually trying to close,
 not just the scheduler tools this doc originally checked.
+
+## Update 2026-07-05: `Workflow` — a SEPARATE fan-out tool slipped the guard
+
+`Task`/`Agent` were not the only fan-out surface. A `psu --resume` session with subagents
+denied was still able to fan out via **`Workflow`** — a distinct, top-level multi-agent
+orchestration tool, not a rename of the subagent-launch tool, so the `Task`/`Agent` deny
+never matched it. `no-subagent-deny.ts`'s shared list is now
+`NO_SUBAGENT_TOOLS_DENY = ['Task', 'Agent', 'Workflow']`, so `noSubagentToolsDenyFlag()`
+(the unconditional exec-boundary deny) and `FLEET_DISALLOWED_TOOLS` (which spreads
+`NO_SUBAGENT_TOOLS_DENY`) both close it too — `FLEET_DISALLOWED_TOOLS` already listed
+`Workflow` on its own line (Layer-A), so it now appears twice in the rendered
+`--disallowed-tools` argv; a repeated deny entry is harmless (same as denying an
+absent tool name — a no-op, not an error).
+
+## Update 2026-07-06 (WI-3159): `Bash(rtk git push:*)` — a token-filter hook rewrite evaded the push deny
+
+`Bash(git push:*)` is evaluated against the **post-PreToolUse-hook** `updatedInput` — so
+when the `rtk` token-filter hook rewrites the shell command (`git push …` → `rtk git push
+…`) before the deny-pattern match runs, the rewritten command no longer starts with `git`
+and the `Bash(git push:*)` prefix match never fires (proven live: the non-rewritten
+control command was denied correctly, isolating this as pure pattern evasion, not a
+broken match). `rtk` is on the dev box `PATH` today (a manual vector), and any fleet
+`rtk`-hook rollout would make the evasion automatic. `FLEET_DISALLOWED_TOOLS` now also
+denies `Bash(rtk git push:*)`. The repo pre-push hook (per "No-push" above) remains the
+real enforcement; this closes the specific `rtk` variant of the documented
+command-string evadability — it does not make the Bash-pattern layer exhaustive against
+every possible rewrite.
 
 ## How to re-verify (don't trust the docs here)
 

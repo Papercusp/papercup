@@ -35,7 +35,7 @@ PostgresError: column "owner_author_pubkey" of relation "harness_plans" does not
 ```
 
 That exception is thrown *inside* `drainQueuedEpochContent`'s per-op loop
-(`pot-epoch-op-gate.ts`), which wraps every re-apply in a **deliberately silent**
+(`hive-epoch-op-gate.ts`), which wraps every re-apply in a **deliberately silent**
 `catch {}` (documented as "a re-apply failure must not abort the merge pass" — correct
 production behavior for resilience, but it means a genuine schema bug downstream
 degrades to a silent no-op rather than a loud failure). The work\_item op (a different
@@ -51,7 +51,7 @@ indication of *why*.
    engineer\_issues noise (many past joiner incidents are already `resolved`/`closed`).
 2. Ran the specific failing test 6× back-to-back — instantly showed it's
    deterministic, not racy, at this commit.
-3. Read `pot-epoch-op-gate.ts::drainQueuedEpochContent` and found the silent
+3. Read `hive-epoch-op-gate.ts::drainQueuedEpochContent` and found the silent
    `catch {}` — the signal that whatever failed here would never surface a reason.
 4. Temporarily added a `console.error` inside that catch (and on the success path),
    re-ran once, got the real Postgres error, then reverted the debug instrumentation.

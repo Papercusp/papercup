@@ -2086,6 +2086,44 @@ describe('findUntrackedSession (resume a non-psu session by searching the agent 
   it('returns null for an unknown UUID with no matching file', () => {
     expect(findUntrackedSession(UUID, { home })).toBeNull();
   });
+
+  it('WI-3884: finds a TRACKED codex rollout under su-codex-homes (older than the resumable window) — carries adv id + codexHome + psuTracked', () => {
+    // The rollout lives ONLY in the per-session tracked home — the shared
+    // ~/.codex store has no copy (tracked launches never write there). This is
+    // the owner-hit case: adv row #11582 was outside the 30-row resumable
+    // window, so resolveTrackedResumeSession never scanned this home.
+    const codexHome = join(home, '.papercusp', 'su-codex-homes', 'session-11582');
+    const dir = join(codexHome, 'sessions', '2026', '07', '10');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `rollout-2026-07-10T14-25-16-${UUID}.jsonl`), `{"type":"meta","cwd":"/home/me/tracked-proj"}\n`);
+    expect(findUntrackedSession(UUID, { home })).toEqual({
+      agent: 'codex', sessionId: UUID, cwd: '/home/me/tracked-proj', untracked: true,
+      psuTracked: true, id: 11582, codexHome,
+    });
+  });
+
+  it('WI-3884: a malformed tracked-home dir name still resolves (adv id null, codexHome kept)', () => {
+    const codexHome = join(home, '.papercusp', 'su-codex-homes', 'session-not-a-number');
+    const dir = join(codexHome, 'sessions', '2026', '07', '10');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `rollout-2026-07-10T00-00-00-${UUID}.jsonl`), `{"type":"meta","cwd":"/home/me/odd"}\n`);
+    expect(findUntrackedSession(UUID, { home })).toEqual({
+      agent: 'codex', sessionId: UUID, cwd: '/home/me/odd', untracked: true,
+      psuTracked: true, id: null, codexHome,
+    });
+  });
+
+  it('WI-3884: the shared ~/.codex store wins over the tracked-home scan (a raw session stays a raw resume)', () => {
+    const shared = join(home, '.codex', 'sessions', '2026', '07', '10');
+    mkdirSync(shared, { recursive: true });
+    writeFileSync(join(shared, `rollout-2026-07-10T01-00-00-${UUID}.jsonl`), `{"type":"meta","cwd":"/home/me/raw"}\n`);
+    const trackedDir = join(home, '.papercusp', 'su-codex-homes', 'session-99', 'sessions', '2026', '07', '10');
+    mkdirSync(trackedDir, { recursive: true });
+    writeFileSync(join(trackedDir, `rollout-2026-07-10T01-00-00-${UUID}.jsonl`), `{"type":"meta","cwd":"/home/me/tracked"}\n`);
+    expect(findUntrackedSession(UUID, { home })).toEqual({
+      agent: 'codex', sessionId: UUID, cwd: '/home/me/raw', untracked: true,
+    });
+  });
 });
 
 describe('session-owner index (identity-split fix 2026-07-02 — untracked resume keeps its born SID)', () => {

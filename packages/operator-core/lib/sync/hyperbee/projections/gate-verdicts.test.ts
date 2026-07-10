@@ -11,7 +11,7 @@ import {
   generateEd25519KeypairDer,
   signWithPrivateKeyDer,
 } from '../../../identity/ed25519';
-import { gateVerdictId, signGateVerdict } from '../../hive-git/gate/verdicts';
+import { gateVerdictId, signGateVerdict } from '../../pot-git/gate/verdicts';
 import {
   _testing,
   gateVerdictFromWireRow,

@@ -6,11 +6,23 @@ A kind:'pot' harness can be repo-LESS — its code lives in a MEMBER repo (e.g. 
 ## The shape
 
 A `kind:'pot'` harness can be **repo-less**: it has no git working tree of its
-own; its code/docs/tests live in a **member** repo. papercusp (the operator-home
-pot, `PAPERCUSP_HIVE_HOME_SLUG`) is repo-less — its member is **papercup**, which
-carries the actual checkout. Anything that resolves a harness to on-disk files or
-runs its automation must account for this, or the pot looks broken even though its
-data is intact. Three facets, all fixed 2026-06-19:
+own; its code/docs/tests live in a **member** repo. Anything that resolves a
+harness to on-disk files or runs its automation must account for this, or the
+pot looks broken even though its data is intact. Three facets, all fixed
+2026-06-19:
+
+> **Update (2026-06-20 — Option-B merge):** papercusp itself is no longer the
+> running example of a repo-less pot. The operator-home pot and its dogfood
+> repo (`papercup`) were merged into **ONE** registry entry, marked
+> `self_repo: true` (`ProjectEntry.self_repo` in `harness-registry.ts`) — the
+> home pot now IS its own checkout, not a repo-less state dir borrowing a
+> separate member. `resolveHarnessContentPath` short-circuits for a
+> `self_repo` hive: it returns the harness's **own** `project.path` and never
+> looks for a member, so a stray project that set `hive_slug` to the home pot
+> can't hijack its docs/tests/source reads. Everything below (facets #1-3)
+> still applies in full to a genuinely repo-less pot (a fresh `pot:create`
+> without `linkExisting`/`requiresRepo`) — papercusp is just no longer that
+> example.
 
 ## 1. Repo-backed surfaces resolve the MEMBER repo
 
@@ -19,8 +31,11 @@ Docs and Tests read a harness's on-disk repo. For a repo-less pot the registry
 
 **Fix:** `resolveHarnessContentPath(reg, slug)` in
 `packages/operator-core/lib/harness-registry.ts` returns, for a `kind:'pot'`
-harness, its **member repo's** path (else `project.path` for a normal repo
-harness). Applied at every repo-backed resolver:
+harness, its **member repo's** path — UNLESS the pot itself is `self_repo`
+(the Option-B merge case above), in which case it returns the pot's own
+`project.path` directly and skips the member lookup entirely. For a normal
+repo harness (not a pot at all) it likewise falls straight through to
+`project.path`. Applied at every repo-backed resolver:
 
 * docs MCP tools — `agent-tools/docs/{outline,search,get}.ts`
 * docs HTTP endpoint — `harness/docs/harness-repo.ts` `resolveHarnessRepoRoot`

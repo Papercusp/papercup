@@ -1,5 +1,5 @@
 /**
- * hive-git/ref-announce-tick.ts — P-202: the RUNTIME DRIVER for ref
+ * pot-git/ref-announce-tick.ts — P-202: the RUNTIME DRIVER for ref
  * announcements (p2p-git-live-activation-2026-07-09 P-202).
  *
  * Every piece already exists as a pure library: `ref-announce.ts` (G-3
@@ -30,13 +30,13 @@
  *
  * `runRefAnnounceReceiveTick` — given the pending inbound announcements the
  * caller collected off the P-009 fed-event log since its watermark (oldest
- * first, one entry per `hive-git:ref-announce` fed_event row not yet
+ * first, one entry per `pot-git:ref-announce` fed_event row not yet
  * processed):
  *   1. Runs `handleRefAnnouncement` per announcement, threading a per-device
  *      budget map (persisted by the caller across ticks — the same idiom
  *      `github-bridge-tick`'s caller persists `last_admitted`) and the
  *      caller's `openStream` transport seam (prod: a per-fetch Protomux
- *      sub-stream on the `papercusp/hive-git` channel — wired separately;
+ *      sub-stream on the `papercusp/pot-git` channel — wired separately;
  *      P-201's serve plane is its server half. Tests: a socketpair, exactly
  *      like `ref-announce.integration.test.ts`).
  *   2. A rejected/failed announcement never throws or halts the batch — every
@@ -216,7 +216,7 @@ export interface RefAnnounceReceiveTickInput {
   budgetConfig?: AnnounceBudgetConfig;
   nowMs?: number;
   /** Open a per-fetch duplex to the ANNOUNCING peer (prod: a Protomux
-   *  sub-stream on the `papercusp/hive-git` channel — P-201's serve plane is
+   *  sub-stream on the `papercusp/pot-git` channel — P-201's serve plane is
    *  its server half; wired separately). Only called when a fetch is
    *  actually needed (mirrors `HandleRefAnnouncementOpts.openStream`). */
   openStream: (peerDevicePubkeyBase64: string) => Promise<Duplex> | Duplex;

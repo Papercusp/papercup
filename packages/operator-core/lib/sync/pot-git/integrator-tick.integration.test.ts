@@ -3,7 +3,7 @@
  * temp bare repo (git on PATH, no network, no PG — `resolveTier`/`sql` are
  * faked so the trust-gate leg never touches Postgres).
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/integrator-tick.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/integrator-tick.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -68,7 +68,7 @@ function fakeSql(): never {
   return fn as never;
 }
 
-describe('hive-git integrator-tick (real bare repo, faked trust + swarm seams)', () => {
+describe('pot-git integrator-tick (real bare repo, faked trust + swarm seams)', () => {
   let root: string;
   let repo: string;
   const integrator = makeDevice();

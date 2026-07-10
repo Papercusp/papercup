@@ -174,6 +174,15 @@ export default function KPIsPage() {
       <div className="pc-installed-ops-header pc-kpi-topbar" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
         <h1 style={{ fontSize: 24, fontWeight: 700, margin: 0 }}>Substrate KPIs</h1>
         <div className="pc-kpi-refresh-row" style={{ fontSize: 12, color: 'var(--fg-mute)' }}>
+          {error && (
+            <span
+              className="pc-kpi-stale-warning"
+              title={`Last refresh failed: ${error}`}
+              style={{ color: 'tomato', marginRight: 12 }}
+            >
+              ⚠ showing stale data — refresh failed
+            </span>
+          )}
           {lastFetched && <>Updated {formatRel(new Date(lastFetched).toISOString())}</>}
           <button
             className="pc-kpi-refresh-button"

@@ -7,7 +7,7 @@
  *   heads reconcile → A mirrors B. Replay → stale-version. Tampered relay head
  *   → mismatch flagged. Forged announce → bad-signature.
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/ref-announce.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/ref-announce.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -45,7 +45,7 @@ async function mintCommit(repoPath: string, msg: string): Promise<string> {
   return c.stdout.trim();
 }
 
-describe('hive-git ref announcements (announcement-driven fetch, real repos)', () => {
+describe('pot-git ref announcements (announcement-driven fetch, real repos)', () => {
   let root: string;
   let serverRepo: string; // device B's repo (also the relay we fetch FROM)
   let mirrorRepo: string; // device A's local mirror

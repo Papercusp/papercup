@@ -11,7 +11,7 @@
  *  - P-038 (ff leg): a signed advance within a valid higher epoch is still
  *    rejected unless it fast-forwards the last accepted staging.
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/handoff-token.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/handoff-token.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -63,7 +63,7 @@ async function isAncestor(repo: string, anc: string, desc: string): Promise<bool
   return (await defaultRunGit(['merge-base', '--is-ancestor', anc, desc], repo)).code === 0;
 }
 
-describe('hive-git handoff token + park tokens (G-0/G-0b, real bare repo)', () => {
+describe('pot-git handoff token + park tokens (G-0/G-0b, real bare repo)', () => {
   let root: string;
   let repo: string;
   const oldAuth = device(); // outgoing integrator authority

@@ -26,7 +26,13 @@ import { fetchPresenceTier1, mergeTier1, type PresenceTier1Joins } from './prese
 import { fetchPresenceFleet, type FleetMembership } from './presence-fleet';
 import { createHash } from 'node:crypto';
 import { toStableRosterRow, deltaEligibleProjection, type RosterRow } from './presence-payload';
-import { fetchWakeability, deriveSessionState, isHardStale, type WakeabilitySignals } from './presence-wakeability';
+import {
+  fetchWakeability,
+  deriveSessionState,
+  isHardStale,
+  overrideIntentStaleForSessionState,
+  type WakeabilitySignals,
+} from './presence-wakeability';
 import { deriveContextPressure } from './context-pressure';
 import { writeWatermark } from './watermarks';
 import { getTxPool, readGranularHolders } from '../locks/su-lock-store';
@@ -315,12 +321,19 @@ export async function assemblePresenceSnapshot(
     // wake-await, so a dead row would otherwise stay `parked`; the DEAD-ceiling
     // check forces an hour-cold heartbeat to `ended` even while wakeable.
     const hardStale = isHardStale(r.heartbeatAt ? Date.parse(r.heartbeatAt) : null, nowMs);
+    const sessionState: RosterRow['sessionState'] = recordedLiveOnly
+      ? 'recorded'
+      : deriveSessionState({ stale: !!r.stale, wakeable: w.wakeable, liveTurn: w.liveTurn, hardStale });
     return {
       ...r,
       wakeable: w.wakeable,
-      sessionState: recordedLiveOnly
-        ? 'recorded'
-        : deriveSessionState({ stale: !!r.stale, wakeable: w.wakeable, liveTurn: w.liveTurn, hardStale }),
+      sessionState,
+      // EI-9262: sessionState (wakeability + activity end-marker) converges to
+      // parked/ended far faster than the 30-minute intentStale activity clock —
+      // the instant it does, the declared intent must read as unreliable too, so
+      // a reader never sees a fresh-looking "still working on X" for an agent
+      // that has already stopped taking turns.
+      intentStale: overrideIntentStaleForSessionState(r.intentStale ?? null, sessionState),
     };
   };
 

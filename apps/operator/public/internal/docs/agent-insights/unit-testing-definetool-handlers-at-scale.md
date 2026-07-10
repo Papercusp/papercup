@@ -99,5 +99,7 @@ Plan `whole-app-test-coverage-breadth-2026-06-14` (D-028/D-034/D-035/D-040).
 Example tests: `agent-tools/plans/set-schedule.test.ts` (mock-source-layer),
 `agent-tools/ui/get_state.test.ts` (sql-template mock),
 `agent-tools/improvements/learning-loops.test.ts` (dual sql usage),
-`agent-tools/locks/acquire.test.ts` (outcome-branch coverage of a 690+-loc handler,
-now also covering the WI-1550 lock-event-emission fan-out).
+`agent-tools/locks/acquire.test.ts` (outcome-branch coverage of a 700+-loc handler,
+covering the WI-1550 lock-event-emission fan-out AND the EI-9033
+`pending_edit`/apply-on-grant guardrails — reject-without-`wake_on_grant`,
+reject-multi-path, and the queued-ticket happy path).

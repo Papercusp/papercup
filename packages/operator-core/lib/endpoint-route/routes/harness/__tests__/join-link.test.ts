@@ -168,6 +168,12 @@ describe('handleJoinLink', () => {
       github_remote: 'https://github.com/Papercusp/papercup',
       github_repository_id: 12345,
       joined_via_link: true,
+      // WI-3891: stamped so isRegisteredHive()/isHiveProject() (probe:emit,
+      // pot:get, pot:list) recognize this joiner-side clone as a real hive
+      // member — mirrors bootstrap-papercusp-hive.ts's self-admit pattern.
+      harness_kind: 'hive',
+      remote_hive: true,
+      self_repo: true,
     });
     expect(deps.scaffold).toHaveBeenCalledWith('my-harness');
   });
@@ -187,6 +193,9 @@ describe('handleJoinLink', () => {
       github_remote: 'https://github.com/Papercusp/papercup',
       github_repository_id: 12345,
       joined_via_link: true,
+      harness_kind: 'hive',
+      remote_hive: true,
+      self_repo: true,
     });
   });
 
@@ -202,11 +211,39 @@ describe('handleJoinLink', () => {
       github_repository_id: 777,
       joined_via_link: false,
       hive_slug: 'some-hive',
+      harness_kind: 'hive',
+      remote_hive: true,
+      self_repo: true,
     };
     const reg = { projects: [full] };
     const next = mutator(reg);
     // Same object back — existing coords (even divergent ones) are never clobbered.
     expect(next).toBe(reg);
+  });
+
+  it('WI-3891: BACKFILLS harness_kind/remote_hive/self_repo onto a pre-fix row that already has the older coords', async () => {
+    const deps = makeDeps();
+    await handleJoinLink(VALID_INPUT, deps);
+
+    const mutator = (deps.mutateRegistry as ReturnType<typeof vi.fn>).mock.calls[0]![0];
+    // A row registered by the OLD join-link.ts (before WI-3891) — fully
+    // "self-describing" by the old definition, but missing the hive-kind
+    // stamp that probe:emit / pot:get / pot:list need.
+    const preFixRow = {
+      slug: 'my-harness',
+      path: '/existing/clone',
+      github_remote: 'https://github.com/Papercusp/papercup',
+      github_repository_id: 12345,
+      joined_via_link: true,
+    };
+    const next = mutator({ projects: [preFixRow] });
+    expect(next.projects).toHaveLength(1);
+    expect(next.projects[0]).toEqual({
+      ...preFixRow,
+      harness_kind: 'hive',
+      remote_hive: true,
+      self_repo: true,
+    });
   });
 
   it('does NOT register harness when cloneDir is missing', async () => {

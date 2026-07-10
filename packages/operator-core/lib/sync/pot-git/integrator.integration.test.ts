@@ -6,7 +6,7 @@
  * (containing both parents), a conflicting divergence is SKIPPED + reported, and
  * a re-run with no new work is a no-op (idempotent).
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/integrator.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/integrator.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -52,7 +52,7 @@ async function contains(repo: string, staging: string, sha: string): Promise<boo
   return r.code === 0;
 }
 
-describe('hive-git integrator (real bare repo)', () => {
+describe('pot-git integrator (real bare repo)', () => {
   let root: string;
   let repo: string;
   const integ = dev();

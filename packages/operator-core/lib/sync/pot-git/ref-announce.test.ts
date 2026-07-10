@@ -3,7 +3,7 @@
  * acceptance ordering (self → membership → sig → version fence → budget), the
  * fixed-window budget, and the fetch-skip decision. No git, no I/O.
  *
- * Run: cd packages/operator-core && npx vitest run lib/sync/hive-git/ref-announce.test.ts
+ * Run: cd packages/operator-core && npx vitest run lib/sync/pot-git/ref-announce.test.ts
  */
 import { describe, expect, it } from 'vitest';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';

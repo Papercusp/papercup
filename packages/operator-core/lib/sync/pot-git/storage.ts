@@ -1,5 +1,5 @@
 /**
- * hive-git/storage.ts — the per-hive bare-repo store with per-device ref
+ * pot-git/storage.ts — the per-hive bare-repo store with per-device ref
  * namespaces (cross-machine-coord-parity-and-trust-2026-07-01 Phase 7 G-1,
  * D-010/D-011). The Radicle-Heartwood storage model, adapted:
  *
@@ -74,7 +74,7 @@ export function potGitRoot(): string {
   return (
     process.env.PAPERCUSP_POT_GIT_ROOT ||
     process.env.PAPERCUSP_HIVE_GIT_ROOT || // legacy env name — dual-accept until callers migrate
-    join(homedir(), '.papercusp', 'hive-git')
+    join(homedir(), '.papercusp', 'pot-git')
   );
 }
 
@@ -82,7 +82,7 @@ export function potGitRoot(): string {
  *  hostile hive slug or repo key can't escape the storage root. */
 function assertSafeComponent(v: string, what: string): void {
   if (!v || v.includes('/') || v.includes('\\') || v.includes('..') || v.includes('\0')) {
-    throw new Error(`hive-git: unsafe ${what} path component: ${JSON.stringify(v)}`);
+    throw new Error(`pot-git: unsafe ${what} path component: ${JSON.stringify(v)}`);
   }
 }
 
@@ -104,7 +104,7 @@ export function hiveGitRepoPath(potHomeSlug: string, repoKey: string): string {
 export function deviceNamespaceKey(devicePubkeyBase64: string): string {
   const raw = Buffer.from(devicePubkeyBase64, 'base64');
   if (raw.length !== 32) {
-    throw new Error(`hive-git: device pubkey must be raw-32 Ed25519 (got ${raw.length} bytes)`);
+    throw new Error(`pot-git: device pubkey must be raw-32 Ed25519 (got ${raw.length} bytes)`);
   }
   return raw.toString('hex');
 }
@@ -112,7 +112,7 @@ export function deviceNamespaceKey(devicePubkeyBase64: string): string {
 /** The full namespaced ref path: `refs/namespaces/<devHex>/<ref>` where `ref`
  *  is a normal ref like `refs/heads/work` or `refs/rad/sigrefs`. */
 export function namespaceRefPath(devicePubkeyBase64: string, ref: string): string {
-  if (!ref.startsWith('refs/')) throw new Error(`hive-git: ref must start with refs/ (got ${ref})`);
+  if (!ref.startsWith('refs/')) throw new Error(`pot-git: ref must start with refs/ (got ${ref})`);
   return `refs/namespaces/${deviceNamespaceKey(devicePubkeyBase64)}/${ref}`;
 }
 
@@ -140,7 +140,7 @@ export async function ensurePotGitRepo(
   if (await pathExists(join(repoPath, 'HEAD'))) return repoPath; // already a bare repo
   await mkdir(repoPath, { recursive: true });
   const r = await runGit(['init', '--bare', '-q', repoPath], potGitRoot());
-  if (r.code !== 0) throw new Error(`hive-git: init --bare failed for ${repoPath}: ${r.stderr.trim()}`);
+  if (r.code !== 0) throw new Error(`pot-git: init --bare failed for ${repoPath}: ${r.stderr.trim()}`);
   return repoPath;
 }
 
@@ -160,7 +160,7 @@ export async function writeNamespaceRef(
     ? ['update-ref', full, sha, expectedOld]
     : ['update-ref', full, sha];
   const r = await runGit(args, repoPath);
-  if (r.code !== 0) throw new Error(`hive-git: update-ref ${full} failed: ${r.stderr.trim()}`);
+  if (r.code !== 0) throw new Error(`pot-git: update-ref ${full} failed: ${r.stderr.trim()}`);
 }
 
 /** Read a device's namespaced ref → its sha, or null if the ref does not exist. */
@@ -187,7 +187,7 @@ export async function deleteNamespaceRef(
   const r = await runGit(['update-ref', '-d', full], repoPath);
   // update-ref -d on a nonexistent ref exits nonzero with "not found" — treat as done.
   if (r.code !== 0 && !/does not exist|not found|no such ref/i.test(r.stderr)) {
-    throw new Error(`hive-git: update-ref -d ${full} failed: ${r.stderr.trim()}`);
+    throw new Error(`pot-git: update-ref -d ${full} failed: ${r.stderr.trim()}`);
   }
 }
 

@@ -4,7 +4,7 @@ import {
   decideAdvance,
   parseStatusPorcelainZ,
   type AdvanceDecisionInput,
-} from './hive-git/worktree-advance';
+} from './pot-git/worktree-advance';
 
 function decide(input: Partial<AdvanceDecisionInput> = {}) {
   return decideAdvance({

@@ -1,7 +1,7 @@
 /**
  * hermeticity.test.ts — DG-6 (P-049): the pure capability/coverage model the
  * scheduler (DG-3) and aggregator (DG-5) consume.
- * Run: cd packages/operator-core && npx vitest run lib/sync/hive-git/gate/hermeticity.test.ts
+ * Run: cd packages/operator-core && npx vitest run lib/sync/pot-git/gate/hermeticity.test.ts
  */
 import { describe, expect, it } from 'vitest';
 import {

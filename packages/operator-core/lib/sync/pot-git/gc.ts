@@ -1,5 +1,5 @@
 /**
- * hive-git/gc.ts — bounded namespace retention for the per-hive bare repo
+ * pot-git/gc.ts — bounded namespace retention for the per-hive bare repo
  * (cross-machine-coord-parity-and-trust-2026-07-01 / P-042 G-9).
  *
  * The store keeps one shared ODB with many device namespaces. Retention must

@@ -18,7 +18,7 @@
  * fault, so every entry point returns the value UNCHANGED on any error and is a
  * no-op for tags without a redactable field or values with no secret.
  */
-import { scanTextForSecrets, type SecretFinding } from '../hive-git/secrets-guard';
+import { scanTextForSecrets, type SecretFinding } from '../pot-git/secrets-guard';
 
 export const REDACTED_CONTENT_LINE = '[REDACTED secret-bearing content]';
 

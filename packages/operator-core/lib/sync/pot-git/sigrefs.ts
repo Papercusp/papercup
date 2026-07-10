@@ -1,5 +1,5 @@
 /**
- * hive-git/sigrefs.ts — device-signed ref snapshots (Phase 7 G-4/G-4b,
+ * pot-git/sigrefs.ts — device-signed ref snapshots (Phase 7 G-4/G-4b,
  * cross-machine-coord-parity-and-trust-2026-07-01 / P-028, P-039; D-010/D-011).
  *
  * The Radicle `refs/rad/sigrefs` model, adapted. A device periodically signs a

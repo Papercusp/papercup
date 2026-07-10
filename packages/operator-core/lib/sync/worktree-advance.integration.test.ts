@@ -3,8 +3,8 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { defaultRunGit } from './hive-git/storage';
-import { advanceWorktree } from './hive-git/worktree-advance';
+import { defaultRunGit } from './pot-git/storage';
+import { advanceWorktree } from './pot-git/worktree-advance';
 
 async function git(args: string[], cwd: string) {
   const result = await defaultRunGit(args, cwd);

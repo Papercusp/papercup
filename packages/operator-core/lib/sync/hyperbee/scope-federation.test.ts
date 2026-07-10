@@ -18,7 +18,7 @@ import { createHash } from 'node:crypto';
 import { ScopeFederation, type ScopeFederationRefusal } from './scope-federation';
 import { ScopeCoreRegistry, type ScopedStoreLike, type ScopedSessionLike } from './scope-cores';
 import type { ScopeRoster } from '../../p2p/scope-roster';
-import type { ScopeId } from '../hive-git/scope-repo';
+import type { ScopeId } from '../pot-git/scope-repo';
 import type { SignedAnnounce } from './announce';
 import { packScopedLog } from './scope-disclosure';
 import type { AnnounceConnectionContext } from './swarm';

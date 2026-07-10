@@ -83,6 +83,21 @@ turn that will just re-arm the same await unless your dispatch is what it's wait
 is (like `modes`) derived fresh outside the byte-stable snapshot, so it is **not** etag-tracked —
 a `since:`-short-circuited read can be stale on it, same caveat as liveness.
 
+**Staging a member's bench yourself? Use `fleet:bench`, not a hand-written events:await ask.**
+(fleet-reliability-verification-2026-07-10 P-006.) The `parkedOn` read above is *derived* —
+it tells you a member is parked, but says nothing about whether the leader can trust it (a
+member might silently forget to register, or their session might have no resumable wake
+handle). `fleet:bench { member, wakeEvent, stagedAssignment }` closes that gap: the LEADER
+registers the await *for* the member (`captureWakeHandleForOwner(member)` +
+`registerAwait`), tags the row's note with the staged assignment, and reports
+`registered:false` immediately if no resumable session exists for that member — a bench
+miss caught at stage time instead of discovered only when `events:emit`'s `woken` count
+comes up short. `fleet:bench { list: true }` is the query half — the same
+`listParkedAwaitsForSubscribers` read filtered to bench-tagged rows, with the staged
+assignment restored from the note. Replaces the night-shift workaround of asking a member
+to `events:await` on their own and *also* directed-waking everyone as a fallback because
+there was no way to confirm who actually registered.
+
 ## coord:dispatch — assign + wake + confirm, in ONE call
 
 `coord:dispatch { to, planSlug?, items?[], note }` (`tools/dispatch.ts`) replaces the

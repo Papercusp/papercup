@@ -87,7 +87,7 @@ describe('scopeRepoPath', () => {
     else process.env.PAPERCUSP_HIVE_GIT_ROOT = OLD_ROOT;
   });
 
-  it('nests under the hive-git root (serve backstop coverage)', () => {
+  it('nests under the pot-git root (serve backstop coverage)', () => {
     process.env.PAPERCUSP_HIVE_GIT_ROOT = '/tmp/hg-test-root';
     const p = scopeRepoPath('papercusp', SCOPE);
     expect(p).toBe(join(potGitRoot(), 'papercusp', 'scopes', 'fleet-279242982', 'p2p-dist.git'));

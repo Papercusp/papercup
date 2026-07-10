@@ -126,6 +126,37 @@ export function deriveSessionState(input: {
 }
 
 /**
+ * PURE: force `intentStale` TRUE the instant `sessionState` is confirmed
+ * non-live (`parked` | `ended`), overriding the 30-minute activity heuristic
+ * (INTENT_STALE_SEC in presence-tier1.ts) — EI-9262.
+ *
+ * The gap: a killed/exited agent's `sessionState` flips to `parked`/`ended`
+ * (via wakeability + the hardStale ceiling above) LONG before its
+ * `lastActiveSecAgo` crosses the 30-minute `intentStale` threshold — the real
+ * repro was `state: parked` at ~10 minutes cold. A reader that trusts
+ * `intentStale` alone (rather than cross-checking `sessionState`) sees a
+ * fresh-looking declared intent ("P-016: …") for an agent that is no longer
+ * taking turns, and can be misled into standing down a takeover that should
+ * proceed, or into thinking dead work is still being handled.
+ *
+ * `sessionState` is the higher-fidelity, faster-converging signal (a live
+ * inbox-wake await + a recent-activity end-marker, vs. a flat 30-minute
+ * clock), so the moment it says NOT live, the declared intent must read as
+ * unreliable too — collapsing the exposure window from up to 30 minutes down
+ * to `sessionState`'s own (much smaller) computation lag. `recorded` is left
+ * alone: it means authoritatively-live-per-session-log (not yet
+ * inbox-registered), not idle/dead, and its `intent` is always the empty
+ * synthesized placeholder anyway.
+ */
+export function overrideIntentStaleForSessionState(
+  intentStale: boolean | null,
+  sessionState: SessionState | null,
+): boolean | null {
+  if (sessionState === 'parked' || sessionState === 'ended') return true;
+  return intentStale;
+}
+
+/**
  * IO seam: two batch queries keyed by `ownerIds` (the LOCAL roster — federated
  * `fed:…` ids never match these local tables, so passing them just wastes a
  * comparison; the caller omits them and treats federated rows as state-unknown).

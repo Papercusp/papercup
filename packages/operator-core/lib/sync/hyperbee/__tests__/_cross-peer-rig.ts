@@ -27,7 +27,9 @@ import { join } from 'node:path';
 import type postgres from 'postgres';
 import createTestnet from 'hyperdht/testnet.js';
 import Hyperswarm from 'hyperswarm';
+import type Corestore from 'corestore';
 import { bootHarnessSubstrate, type BootedHarnessHandle } from '../boot';
+import type { RemoteLog } from '../peer-log';
 import { type HyperswarmLike } from '../swarm';
 import type { OpEnvelope } from '../op-envelope-types';
 import { _resetCacheForTests, closeHarnessStore } from '../corestore';
@@ -210,6 +212,16 @@ export async function bootPresencePeer(opts: {
    *  alongside presence + coord-messages — lets a caller prove another table's
    *  crossing over the same real rig. */
   extraProjections?: TableProjection<unknown>[];
+  /** WI-3893: passthrough to `bootHarnessSubstrate` — lets a caller intercept a
+   *  remote-log open (e.g. hand back a broken/non-attaching stub for the FIRST
+   *  admission, then the real `openRemoteLog` on repair) to prove the WI-3684
+   *  repair-on-detect path genuinely reconnects over the real wire. Omitted =
+   *  the real `openRemoteLog` (today's behavior, byte-identical). */
+  openRemoteLogOverride?: (store: Corestore, keyHex: string) => Promise<RemoteLog>;
+  /** WI-3893: passthrough — shrinks the connected_never_replicated /
+   *  no_replicator / frozen grace window so a test doesn't need minutes of
+   *  real wall-clock time to observe an alarm. Omitted = the 3-minute default. */
+  replicationStallGraceMs?: number;
 }): Promise<PresencePeer> {
   const root = makeWorkspaceRoot(opts.rootPrefix);
   let handle: BootedHarnessHandle | undefined;
@@ -230,6 +242,10 @@ export async function bootPresencePeer(opts: {
     reverifyIntervalMs: 0,
     loadRevokedOverride: async () => new Set(),
     announceIdentityOverride: opts.identity.override,
+    ...(opts.openRemoteLogOverride ? { openRemoteLogOverride: opts.openRemoteLogOverride } : {}),
+    ...(opts.replicationStallGraceMs !== undefined
+      ? { replicationStallGraceMs: opts.replicationStallGraceMs }
+      : {}),
   });
   cleanups.push(async () => {
     await handle?.close();

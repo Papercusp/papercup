@@ -1,5 +1,5 @@
 /**
- * hive-git/integration-requests.ts — the multi-owner integration-requests queue
+ * pot-git/integration-requests.ts — the multi-owner integration-requests queue
  * (Phase 7 G-5c, cross-machine-coord-parity-and-trust-2026-07-01 / P-035;
  * D-010/D-011). Writer/reader for `harness_shared.hive_integration_requests`
  * (mig 441) + the tier GATE the integrator calls before merging member heads.

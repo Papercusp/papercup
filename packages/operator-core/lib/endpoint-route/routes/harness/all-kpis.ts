@@ -11,6 +11,7 @@ import os from 'node:os';
 import { routeWithWorkspace } from '../../../route-workspace';
 import { loadHarnessRegistry } from '../../../harness-registry';
 import { defineTool } from '@papercusp/agent-mcp';
+import { filterSafeSchemaNames } from './all-kpis-safe-schema-name';
 
 export default defineTool({
   method: 'GET',
@@ -61,9 +62,8 @@ export default defineTool({
         presence.filter((r) => r.table_name === 'executed_actions').map((r) => r.table_schema),
       );
 
-      const SAFE_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-      const messagesSchemas = [...hasMessages].filter((s) => SAFE_RE.test(s));
-      const executedActionsSchemas = [...hasExecutedActions].filter((s) => SAFE_RE.test(s));
+      const messagesSchemas = filterSafeSchemaNames(hasMessages);
+      const executedActionsSchemas = filterSafeSchemaNames(hasExecutedActions);
 
       if (messagesSchemas.length > 0) {
         const sqlText = messagesSchemas

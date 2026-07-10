@@ -1,5 +1,5 @@
 /**
- * hive-git/peer-dial-registry.ts — WI-3583 (p2p-git-live-activation-2026-07-09
+ * pot-git/peer-dial-registry.ts — WI-3583 (p2p-git-live-activation-2026-07-09
  * Phase-3 prerequisite): the missing device-pubkey → live-swarm-socket
  * resolution that P-204's worktree-bridge-tick and P-202's ref-announce
  * receive-tick both documented as a KNOWN LIMITATION — `openHiveGitFetchDuplex`
@@ -8,11 +8,11 @@
  * I'd dial to fetch from it". This module is that registry.
  *
  * WHY A SEPARATE tiny channel/protocol instead of extending serve-wiring.ts's
- * existing six-slot hive-git fetch channel: `serveUploadPack`'s wire format
+ * existing six-slot pot-git fetch channel: `serveUploadPack`'s wire format
  * (P-201, su-164d8's lane, mid-fix at the time this was written) is a stable
  * req/refuse/data/end contract with no notion of peer identity — bolting a
  * HELLO onto it would be a wire-format change to another lane's in-flight
- * file, and every future consumer of THIS registry (any hive-git driver that
+ * file, and every future consumer of THIS registry (any pot-git driver that
  * needs "dial device X") stays decoupled from serve-wiring.ts's own evolution.
  * Instead this mirrors `authority-rpc-swarm-transport.ts`'s OWN precedent
  * exactly: a dedicated HELLO channel addressing peers by `device_pubkey`,
@@ -21,7 +21,7 @@
  * — never throws, never disturbs the shared connection handler).
  *
  * Protocol: ONE Protomux channel per (muxer, hive topic), protocol
- * `papercusp/hive-git-hello`, ONE message slot (`hello { device_pubkey }`)
+ * `papercusp/pot-git-hello`, ONE message slot (`hello { device_pubkey }`)
  * sent by BOTH sides immediately once the channel opens (symmetric — either
  * peer may later dial the other). On receipt, the (topic, device_pubkey) →
  * socket mapping is recorded; on channel close it is removed, so a dropped
@@ -62,7 +62,7 @@ import { openHiveGitFetchDuplex } from './serve-wiring';
  *  signature to THIS hive's topic so a captured hello can't be replayed to
  *  claim the same device on a different hive's channel. */
 function helloSignContext(topic: Buffer): Buffer {
-  return Buffer.concat([Buffer.from('papercusp/hive-git-hello:v1:'), topic]);
+  return Buffer.concat([Buffer.from('papercusp/pot-git-hello:v1:'), topic]);
 }
 
 // TEMP debug trace (WI-3583 diagnosis) — writes to a file, NOT console.error,
@@ -82,7 +82,7 @@ function dbg(...args: unknown[]): void {
   }
 }
 
-export const POT_GIT_HELLO_PROTOCOL = 'papercusp/hive-git-hello';
+export const POT_GIT_HELLO_PROTOCOL = 'papercusp/pot-git-hello';
 
 // ─── wire frame ────────────────────────────────────────────────────────────
 
@@ -337,7 +337,7 @@ function resolveMuxStream(socket: unknown): { mux: Protomux; opened?: Promise<un
 // ─── public API ─────────────────────────────────────────────────────────────
 
 /**
- * Register this connection on the hive-git dial-hello channel for `topic`:
+ * Register this connection on the pot-git dial-hello channel for `topic`:
  * announce OUR device_pubkey to the peer and learn THEIRS. Fire-and-forget,
  * NEVER throws (mirrors `wireHiveGitServe`'s contract) — a wiring bug here
  * must never crash the shared swarm connection handler. Call once per
@@ -390,7 +390,7 @@ export function resolvePotGitPeerSocket(topic: Buffer, devicePubkeyBase64: strin
 /**
  * WI-3641: the VERIFIED device_pubkey bound to `socket` (this specific live
  * connection), or `undefined` if no signature-verified hello has been
- * received on it yet (not connected via hive-git-hello at all, hello still
+ * received on it yet (not connected via pot-git-hello at all, hello still
  * in flight, or a forged hello was dropped — all indistinguishable from "not
  * verified", matching this module's fail-soft contract throughout). This is
  * the one thing safe to feed an authorization decision (e.g.
@@ -404,7 +404,7 @@ export function resolveVerifiedDevicePubkeyForSocket(socket: unknown): string | 
 
 /**
  * Build (or fail soft) a live fetch Duplex to `devicePubkeyBase64` on
- * `topic`'s hive-git channel — the real cross-machine `openDuplex` seam
+ * `topic`'s pot-git channel — the real cross-machine `openDuplex` seam
  * `worktree-bridge-tick.ts` / `ref-announce-tick.ts` document as a KNOWN
  * LIMITATION when omitted. No live connection to that device yet ⇒ an
  * immediately-destroyed Duplex (fail-soft, matches `openHiveGitFetchDuplex`'s
@@ -435,7 +435,7 @@ export async function openHiveGitDuplexToDevice(
     d.on('error', () => {
       /* fail-soft: caller reads `.destroyed`, never the error event */
     });
-    d.destroy(new Error(`hive-git: no live connection to device ${devicePubkeyBase64.slice(0, 12)}…`));
+    d.destroy(new Error(`pot-git: no live connection to device ${devicePubkeyBase64.slice(0, 12)}…`));
     return d;
   }
   return openHiveGitFetchDuplex(socket, topic, req);

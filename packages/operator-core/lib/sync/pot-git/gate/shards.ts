@@ -1,5 +1,5 @@
 /**
- * hive-git/gate/shards.ts — DG-2: the distributed test gate's shard manifest +
+ * pot-git/gate/shards.ts — DG-2: the distributed test gate's shard manifest +
  * per-shard input hash (cross-machine-coord-parity-and-trust-2026-07-01 Phase 8
  * P-045, D-011).
  *
@@ -49,7 +49,7 @@ import { type RunGit, defaultRunGit } from '../storage';
 export const SHARD_SCHEMA_VERSION = 1;
 
 /** Domain-separation tag hashed into every shard inputsHash. */
-export const SHARD_INPUTS_HASH_DOMAIN = 'papercusp-hive-git-gate-shard-inputs-v1';
+export const SHARD_INPUTS_HASH_DOMAIN = 'papercusp-pot-git-gate-shard-inputs-v1';
 
 /** Root-level files (repo-relative) hashed into EVERY shard: they pin external
  *  dependency versions / the workspace graph itself for all workspaces. */

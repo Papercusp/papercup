@@ -5,7 +5,7 @@
  * originClaim (D-017 n2) → canonical import under the refs/foreign tracking
  * ref → P-110 gate at the merge boundary (the X2 invariant, both verdicts).
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/foreign-publish.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/foreign-publish.integration.test.ts
  */
 import { execFile } from 'node:child_process';
 import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
@@ -61,7 +61,7 @@ const sign = (bytes: Buffer): Promise<Buffer> =>
 beforeAll(async () => {
   base = await mkdtemp(join(tmpdir(), 'foreign-publish-it-'));
   oldRoot = process.env.PAPERCUSP_HIVE_GIT_ROOT;
-  process.env.PAPERCUSP_HIVE_GIT_ROOT = join(base, 'hive-git-root');
+  process.env.PAPERCUSP_HIVE_GIT_ROOT = join(base, 'pot-git-root');
 
   // The canonical repo with a staging line.
   canonical = join(base, 'canonical');

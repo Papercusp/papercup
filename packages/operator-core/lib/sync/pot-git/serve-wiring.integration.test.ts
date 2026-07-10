@@ -31,7 +31,7 @@
  * `protomux`/`corestore`) reproduces the REAL connection's framing and the
  * hang disappears (confirmed via the same standalone repro).
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/serve-wiring.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/serve-wiring.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { rm, mkdtemp } from 'node:fs/promises';
@@ -70,7 +70,7 @@ async function mintCommit(repoPath: string, msg: string): Promise<string> {
   return c.stdout.trim();
 }
 
-describe('hive-git serve-wiring (P-201: serveUploadPack over the papercusp/hive-git Protomux channel)', () => {
+describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-git Protomux channel)', () => {
   let root: string;
   let serverRepo: string;
   let clientRepo: string;

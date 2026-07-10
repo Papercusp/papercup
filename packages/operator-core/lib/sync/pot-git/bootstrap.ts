@@ -1,5 +1,5 @@
 /**
- * hive-git/bootstrap.ts — cold-clone bootstrap for a new joiner (Phase 7 G-8,
+ * pot-git/bootstrap.ts — cold-clone bootstrap for a new joiner (Phase 7 G-8,
  * cross-machine-coord-parity-and-trust-2026-07-01 / P-032, D-010/D-011).
  *
  * A NEW machine joining a hive has an EMPTY local mirror. Because every device

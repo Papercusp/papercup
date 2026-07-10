@@ -6,7 +6,7 @@
  * egress, both directions, plus the fork-PR contribution leg. Testcontainers-
  * free: temp bare repos, GitHub API seams stubbed (pr-host shapes).
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/github-bridge-roundtrip.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/github-bridge-roundtrip.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';

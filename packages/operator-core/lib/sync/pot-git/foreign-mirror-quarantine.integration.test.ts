@@ -7,7 +7,7 @@
  * objects never touch the target repo's ODB. Real git, injected registry
  * seams (no PG).
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/foreign-mirror-quarantine.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/foreign-mirror-quarantine.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';

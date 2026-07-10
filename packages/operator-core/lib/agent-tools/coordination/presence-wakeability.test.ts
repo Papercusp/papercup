@@ -7,7 +7,12 @@
  * whether a coordinator sees an agent as live | parked | ended.
  */
 import { describe, it, expect } from 'vitest';
-import { deriveSessionState, isHardStale, PRESENCE_DEAD_MS } from './presence-wakeability';
+import {
+  deriveSessionState,
+  isHardStale,
+  overrideIntentStaleForSessionState,
+  PRESENCE_DEAD_MS,
+} from './presence-wakeability';
 
 describe('deriveSessionState', () => {
   it('not wakeable → ended (no live await; a wake reaches nobody — relaunch only)', () => {
@@ -48,6 +53,41 @@ describe('deriveSessionState', () => {
     expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: false, hardStale: false })).toBe('parked');
     // omitted hardStale defaults to false
     expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: false })).toBe('parked');
+  });
+});
+
+describe('overrideIntentStaleForSessionState (EI-9262)', () => {
+  it('forces intentStale TRUE the moment sessionState is parked, even when the 30m activity clock says fresh', () => {
+    // The reported repro: killed ~10m ago, well under the 30m intentStale
+    // threshold, but sessionState has already converged to parked.
+    expect(overrideIntentStaleForSessionState(false, 'parked')).toBe(true);
+    expect(overrideIntentStaleForSessionState(null, 'parked')).toBe(true);
+  });
+
+  it('forces intentStale TRUE for ended too', () => {
+    expect(overrideIntentStaleForSessionState(false, 'ended')).toBe(true);
+    expect(overrideIntentStaleForSessionState(null, 'ended')).toBe(true);
+  });
+
+  it('leaves intentStale untouched for live (a running turn is never intent-stale)', () => {
+    expect(overrideIntentStaleForSessionState(false, 'live')).toBe(false);
+    expect(overrideIntentStaleForSessionState(null, 'live')).toBe(null);
+  });
+
+  it('leaves intentStale untouched for recorded (authoritatively live, not yet inbox-registered)', () => {
+    expect(overrideIntentStaleForSessionState(false, 'recorded')).toBe(false);
+    expect(overrideIntentStaleForSessionState(null, 'recorded')).toBe(null);
+  });
+
+  it('leaves intentStale untouched for an unknown (null) sessionState — e.g. a federated row', () => {
+    expect(overrideIntentStaleForSessionState(true, null)).toBe(true);
+    expect(overrideIntentStaleForSessionState(false, null)).toBe(false);
+    expect(overrideIntentStaleForSessionState(null, null)).toBe(null);
+  });
+
+  it('an already-true intentStale stays true for parked/ended (idempotent)', () => {
+    expect(overrideIntentStaleForSessionState(true, 'parked')).toBe(true);
+    expect(overrideIntentStaleForSessionState(true, 'ended')).toBe(true);
   });
 });
 

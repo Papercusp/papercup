@@ -1,5 +1,5 @@
 /**
- * hive-git/fetch-transport.ts — native git protocol-v2 fetch over an injected
+ * pot-git/fetch-transport.ts — native git protocol-v2 fetch over an injected
  * duplex (Phase 7 G-2, cross-machine-coord-parity-and-trust-2026-07-01 / P-026,
  * D-010/D-011).
  *
@@ -10,7 +10,7 @@
  * transport CORE, pure over an injected `Duplex`:
  *
  *   - PROD: the duplex is a PER-FETCH Protomux sub-stream on the existing hive
- *     swarm connection (the `papercusp/hive-git` channel family — wired
+ *     swarm connection (the `papercusp/pot-git` channel family — wired
  *     separately, the way presence-gossip wires its chassis). One stream per
  *     fetch so it opens/closes independently of the shared socket.
  *   - TESTS: the duplex is a plain socket pair — so the whole path (real
@@ -44,7 +44,7 @@ const EXT_BRIDGE_PATH = join(dirname(fileURLToPath(import.meta.url)), 'git-ext-b
 
 /** Protomux protocol id for the per-fetch git streams (the wiring opens one
  *  channel of this protocol per in-flight fetch, keyed by the hive topic). */
-export const POT_GIT_PROTOCOL = 'papercusp/hive-git';
+export const POT_GIT_PROTOCOL = 'papercusp/pot-git';
 
 /** Default per-fetch wall-clock ceiling (ms) — a stuck upload-pack/fetch is
  *  killed so a hostile or wedged peer can't pin a stream open forever. */
@@ -59,14 +59,14 @@ export interface TransportResult {
   timedOut: boolean;
 }
 
-/** Guard: only ever serve upload-pack for a repo INSIDE our hive-git root — a
+/** Guard: only ever serve upload-pack for a repo INSIDE our pot-git root — a
  *  defense-in-depth backstop so a wiring bug can't turn this into an arbitrary
  *  repo-read oracle for a peer. The (hive, repo) → path mapping already sanitizes
  *  components (storage.hiveGitRepoPath), this re-checks the resolved path. */
 function assertServeableRepo(repoPath: string): void {
   const root = potGitRoot();
   if (repoPath !== root && !repoPath.startsWith(root.endsWith('/') ? root : `${root}/`)) {
-    throw new Error(`hive-git: refusing to serve a repo outside the hive-git root: ${repoPath}`);
+    throw new Error(`pot-git: refusing to serve a repo outside the pot-git root: ${repoPath}`);
   }
 }
 
@@ -80,7 +80,7 @@ function assertScopeServeAuthorized(repoPath: string, grant?: ScopeRepoServeGran
   if (!isScopeRepoFamilyPath(repoPath)) return;
   if (!grant || !isIssuedScopeServeGrant(grant) || grant.repoPath !== repoPath) {
     throw new Error(
-      `hive-git: refusing to serve scope repo without a roster-verified serve grant: ${repoPath}`,
+      `pot-git: refusing to serve scope repo without a roster-verified serve grant: ${repoPath}`,
     );
   }
 }
@@ -185,7 +185,7 @@ export function fetchOverDuplex(
     // Never let a stream error crash the host — attached SYNCHRONOUSLY, before
     // any await, so an already-destroyed/decoy duplex (the documented
     // DIAL-REGISTRY GAP idiom several callers use — a pre-destroyed stub
-    // returned when there's no live dial path yet: hive-git-gc-action /
+    // returned when there's no live dial path yet: pot-git-gc-action /
     // git-sync-action's bootstrap+ref-announce legs, peer-dial-registry.ts's
     // openHiveGitDuplexToDevice) can never emit an unhandled 'error' event.
     // Below (in the real `server.on('connection', ...)` path) a SECOND

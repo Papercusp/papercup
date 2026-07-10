@@ -1,5 +1,5 @@
 /**
- * hive-git/ref-announce.ts — G-3 ref announcements (Phase 7,
+ * pot-git/ref-announce.ts — G-3 ref announcements (Phase 7,
  * cross-machine-coord-parity-and-trust-2026-07-01 / P-027; D-010).
  *
  * The announcement rail: how a peer LEARNS a device's namespace advanced,
@@ -52,12 +52,12 @@ export const REF_ANNOUNCE_SCHEMA_VERSION = 1;
 
 /** Domain-separation tag (the staging-advance idiom) — a ref-announce signature
  *  can never be replayed as a sigrefs blob / staging advance / handoff token. */
-export const REF_ANNOUNCE_SIG_DOMAIN = 'papercusp-hive-git-ref-announce-v1';
+export const REF_ANNOUNCE_SIG_DOMAIN = 'papercusp-pot-git-ref-announce-v1';
 
 /** The hive-wide rendezvous key (P-009 rail): senders
  *  `events:emit { event: REF_ANNOUNCE_EVENT_KEY, scope: 'hive', payload: SignedRefAnnouncement }`,
  *  every member holds an events:await on the same key. */
-export const REF_ANNOUNCE_EVENT_KEY = 'hive-git:ref-announce';
+export const REF_ANNOUNCE_EVENT_KEY = 'pot-git:ref-announce';
 
 /** The signed announcement payload (fixed field order = the signing order). */
 export interface RefAnnouncePayload {
@@ -127,7 +127,7 @@ export async function buildRefAnnouncement(
   const sigrefsOid = await readNamespaceRef(repoPath, devicePubkeyBase64, SIGREFS_REF, runGit);
   const stored = await readSigrefs(repoPath, devicePubkeyBase64, runGit);
   if (!sigrefsOid || !stored) {
-    throw new Error('hive-git: buildRefAnnouncement requires a stored sigrefs (run buildSigrefs first)');
+    throw new Error('pot-git: buildRefAnnouncement requires a stored sigrefs (run buildSigrefs first)');
   }
   const payload: RefAnnouncePayload = {
     v: REF_ANNOUNCE_SCHEMA_VERSION,

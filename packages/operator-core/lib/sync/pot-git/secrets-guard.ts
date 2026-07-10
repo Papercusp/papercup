@@ -1,5 +1,5 @@
 /**
- * hive-git/secrets-guard.ts — refuse to publish a commit whose changed content
+ * pot-git/secrets-guard.ts — refuse to publish a commit whose changed content
  * carries a secret (Phase 7 G-10, cross-machine-coord-parity-and-trust-2026-07-01
  * / P-043; D-011). The sibling of run-git-sync.ts's oversized-blob guard: that
  * one blocks a blob GitHub would reject; this one blocks a blob no one should

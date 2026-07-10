@@ -7,7 +7,7 @@
  *   git fetch (client) → ext bridge → unix sock → clientConn ⇄ srvConn →
  *   serveUploadPack → git upload-pack (server).
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/fetch-transport.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/fetch-transport.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { rm } from 'node:fs/promises';
@@ -68,7 +68,7 @@ function makeLink(serverRepo: string, sockPath: string): { server: Server; dialC
   };
 }
 
-describe('hive-git fetch transport (real upload-pack ↔ fetch over a duplex)', () => {
+describe('pot-git fetch transport (real upload-pack ↔ fetch over a duplex)', () => {
   let root: string;
   let serverRepo: string;
   let clientRepo: string;
@@ -138,13 +138,13 @@ describe('hive-git fetch transport (real upload-pack ↔ fetch over a duplex)', 
     expect(await readNamespaceRef(clientRepo, devA, 'refs/heads/work')).toBe(sha2);
   });
 
-  it('serveUploadPack refuses a repo outside the hive-git root (defense in depth)', async () => {
+  it('serveUploadPack refuses a repo outside the pot-git root (defense in depth)', async () => {
     const outside = await mkdtemp(join(tmpdir(), 'hgoutside-'));
     try {
       // A throwaway duplex — the guard should fire before any git runs.
       const res = await serveUploadPack(outside, new PassThrough());
       expect(res.code).toBe(-1);
-      expect(res.stderr).toMatch(/outside the hive-git root/);
+      expect(res.stderr).toMatch(/outside the pot-git root/);
     } finally {
       await rm(outside, { recursive: true, force: true });
     }

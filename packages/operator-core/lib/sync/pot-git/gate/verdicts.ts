@@ -1,5 +1,5 @@
 /**
- * hive-git/gate/verdicts.ts — DG-1: the distributed test gate's VERDICT FACT
+ * pot-git/gate/verdicts.ts — DG-1: the distributed test gate's VERDICT FACT
  * (cross-machine-coord-parity-and-trust-2026-07-01 Phase 8 P-044, D-011).
  *
  * A verdict is one runner device's signed, content-addressed claim:
@@ -37,7 +37,7 @@ import { verifyEd25519 } from '../../../identity/ed25519';
 export const GATE_VERDICT_SCHEMA_VERSION = 1;
 
 /** Domain-separation tag for verdict signatures (green-attestation idiom). */
-export const GATE_VERDICT_SIG_DOMAIN = 'papercusp-hive-git-gate-verdict-v1';
+export const GATE_VERDICT_SIG_DOMAIN = 'papercusp-pot-git-gate-verdict-v1';
 
 export type GateVerdictOutcome = 'pass' | 'fail';
 

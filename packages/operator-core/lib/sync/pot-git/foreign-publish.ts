@@ -1,5 +1,5 @@
 /**
- * hive-git/foreign-publish.ts — P-109 leg (iii): the PUBLISH wiring from a
+ * pot-git/foreign-publish.ts — P-109 leg (iii): the PUBLISH wiring from a
  * foreign workspace clone into the RESULTS CHANNEL, and the canonical-side
  * IMPORT (p2p-work-distribution-2026-07-02; ratified D-017/D-018 — option
  * (b), per-scope bare repos; Q6 FINAL).

@@ -1,5 +1,5 @@
 /**
- * hive-git/integrator.ts — the staging integrator (Phase 7 G-5/G-5b/G-5d,
+ * pot-git/integrator.ts — the staging integrator (Phase 7 G-5/G-5b/G-5d,
  * cross-machine-coord-parity-and-trust-2026-07-01 / P-029, P-034, P-038;
  * D-010/D-011).
  *
@@ -100,7 +100,7 @@ async function commitMerge(
   for (const p of parents) args.push('-p', p);
   args.push('-m', message);
   const r = await runGit(args, repoPath);
-  if (r.code !== 0) throw new Error(`hive-git: commit-tree (merge) failed: ${r.stderr.trim()}`);
+  if (r.code !== 0) throw new Error(`pot-git: commit-tree (merge) failed: ${r.stderr.trim()}`);
   return r.stdout.trim();
 }
 

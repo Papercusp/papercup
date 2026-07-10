@@ -4,7 +4,7 @@
  * transport (two bare repos + a socket duplex, the fetch-transport link
  * pattern). No swarm.
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/bootstrap.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/bootstrap.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';

@@ -1,5 +1,5 @@
 /**
- * hive-git/worktree-bridge-tick.ts — P-204: the RUNTIME DRIVER for the
+ * pot-git/worktree-bridge-tick.ts — P-204: the RUNTIME DRIVER for the
  * worktree bridge (p2p-git-live-activation-2026-07-09 P-204).
  *
  * Every piece already exists as a pure library: `staging-advance.ts` (G-5d
@@ -11,7 +11,7 @@
  * (D-003: no new scheduler — the caller rides the existing `system:git-sync`
  * tick, mode-gated to `hiveGit.mode != legacy`).
  *
- * ONE TICK: given the pending inbound `hive-git:staging-advance` announcements
+ * ONE TICK: given the pending inbound `pot-git:staging-advance` announcements
  * the caller collected off the P-009 fed-event log since its watermark
  * (`STAGING_ADVANCE_EVENT_KEY`, OLDEST FIRST — normally just one, since
  * `integrator-tick.ts` only ever emits on an actual advance, but a sparse
@@ -56,7 +56,7 @@ import {
 import { type StagingAdvanceBridgeResult, type WorktreeBridgeConfig, handleStagingAdvance } from './worktree-bridge';
 
 export interface WorktreeBridgeTickInput {
-  /** The local hive-git bare mirror for this (hive, managed repo) — G-1. */
+  /** The local pot-git bare mirror for this (hive, managed repo) — G-1. */
   bareRepoPath: string;
   /** The machine's working tree that follows canonical staging. */
   worktreePath: string;

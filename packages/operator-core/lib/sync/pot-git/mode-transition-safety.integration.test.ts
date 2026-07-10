@@ -7,7 +7,7 @@
  *
  * `bootstrap.integration.test.ts` already proves bootstrapFromPeer's own
  * re-run-only-seeds-new-namespaces contract at the pure-function level, and
- * `hive-git-gc-action.test.ts` proves the routine wiring self-gates gc to a
+ * `pot-git-gc-action.test.ts` proves the routine wiring self-gates gc to a
  * no-op on `legacy`. THIS suite proves the two real, wired legs compose
  * safely across a mode cycle against one real bare repo + real transport:
  *
@@ -26,7 +26,7 @@
  *   legacy   — no further p2p leg call; the final snapshot must exactly match
  *              the post-p2p-only state (nothing happens without a call).
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/mode-transition-safety.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/mode-transition-safety.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -89,7 +89,7 @@ async function snapshot(repoPath: string): Promise<Record<string, Array<{ ref: s
   return out;
 }
 
-describe('hive-git mode-transition safety (legacy → bridged → p2p-only → legacy)', () => {
+describe('pot-git mode-transition safety (legacy → bridged → p2p-only → legacy)', () => {
   let root: string;
   let peerRepo: string;
   let joinerRepo: string;

@@ -1,7 +1,7 @@
 # Seed-bundle runbook — cut/restore model, the flag, failure modes + the cold-join canary
 URL: /internal/docs/agent-insights/pot-seed-bundle-runbook
 
-The AS-BUILT operational runbook for the installer-shipped seed-bundle: how a seed is cut and restored, the restore-before-join state machine, the HIVE_SEED_BUNDLE kill-switch, the encrypted-git deferral, every failure mode and its cold-path fallback, and the cold-join canary + E2E acceptance that keep the cold path proven.
+The AS-BUILT operational runbook for the installer-shipped seed-bundle: how a seed is cut and restored, the restore-before-join state machine, the POT_SEED_BUNDLE kill-switch, the encrypted-git deferral, every failure mode and its cold-path fallback, and the cold-join canary + E2E acceptance that keep the cold path proven.
 
 > **Status: AS-BUILT (plan `pot-seed-bundle-2026-07-04`, P-001…P-011 landed).** This
 > is the operational companion to the
@@ -31,9 +31,9 @@ the feature flag off, takes the identical **cold** path.
 | Corestore provider    | `sync/hyperbee/seed-provider-corestore.ts`                                    | cut = copy each author core at its current length; restore = drop-in before boot. Blocks stay **epoch-ciphertext**.                                                                     |
 | Git provider          | `sync/hyperbee/seed-provider-git.ts`                                          | cut = a `git bundle` set; restore = clone-from-bundle, re-point origin to GitHub, wire submodules; a later `fetch` = delta only.                                                        |
 | Cut CLI               | `apps/operator/lib/release/cut-seed-cli.ts`                                   | `pickGitEncryption()` selects the git-seal key (below). Run at release-build time **on the owner box**.                                                                                 |
-| Restore entry         | `sync/hyperbee/restore-pot-seed.ts`                                           | `resolveSeedDir()` (escape hatch / override / autodetect) + `onlyKinds` scoped restore.                                                                                                 |
+| Restore entry         | `sync/hyperbee/restore-hive-seed.ts`                                          | `resolveSeedDir()` (escape hatch / override / autodetect) + `onlyKinds` scoped restore.                                                                                                 |
 | Deferred git          | `sync/hyperbee/deferred-git-restore.ts`                                       | resolves the epoch key **post-admission** and re-restores the encrypted git store.                                                                                                      |
-| Boot wiring           | `harness/bootstrap-papercusp-pot.ts`                                          | `seedBundleEnabled()` gate → `defaultRestoreHiveSeed` (pre-join) → join → `defaultRestoreDeferredGitSeed` (post-admission).                                                             |
+| Boot wiring           | `harness/bootstrap-papercusp-hive.ts`                                         | `seedBundleEnabled()` gate → `defaultRestoreHiveSeed` (pre-join) → join → `defaultRestoreDeferredGitSeed` (post-admission).                                                             |
 | Cold-path guard       | `sync/hyperbee/cold-join-canary.ts` + `cold-join-executor.ts`                 | forces a periodic REAL cold join so the seeded path never lets the cold path bit-rot.                                                                                                   |
 | E2E acceptance        | `sync/hyperbee/seed-e2e-measurement.ts`                                       | pure cold-vs-seeded verdict (usable / join-exercised / delta-only / faster).                                                                                                            |
 | Bundled epoch key     | `sync/hyperbee/bundled-epoch-key-provider.ts` + `epoch-key-provider-chain.ts` | WI-3232/3288 "offline pot": an `EpochKeyProvider` that reads the epoch key straight from the seed's `epoch-keys.json` (no admission needed), chained as the member provider's fallback. |
@@ -41,7 +41,7 @@ the feature flag off, takes the identical **cold** path.
 
 ## Restore-before-join state machine
 
-1. **`seedBundleEnabled()`** — the `FLAGS.HIVE_SEED_BUNDLE` master gate (below). OFF ⇒
+1. **`seedBundleEnabled()`** — the `FLAGS.POT_SEED_BUNDLE` master gate (below). OFF ⇒
    skip everything, pure cold join.
 2. **`resolveSeedDir()`** — resolves the bundled seed dir: `PAPERCUSP_NO_SEED` escape
    hatch → `PAPERCUSP_SEED_DIR` override → Tauri bundled-resource autodetect
@@ -101,12 +101,25 @@ snapshotting, the pre-cut refresh appends a **fresh head `__snapshot__`** (via
 window; without that fresh snapshot `computeSparseFrom` finds nothing to compact from and
 the cut silently ships FULL instead (a safe degrade, not a corruption).
 
-**OPT-IN and gated:** a sparse seed is only restorable once the shipped reader has
-`FLAGS.SUBSTRATE_LOG_SNAPSHOT` **ON** (P-005) — with it off the restore tries to fold from
-an absent block 0 and fails. That flag is currently dark (`KNOWN_DARK_FLAGS`,
-hardware-unverified for real cross-machine convergence), so release cuts stay on the
-**default full cut** until P-005 lands + is verified; `--sparse` is for testing the
-mechanism ahead of that. `--sparse` is incompatible with `--no-corestore` /
+**OPT-IN and gated:** a sparse seed is only restorable once the shipped reader seeds its
+fold cursor from the head `__snapshot__` instead of folding from an absent block 0.
+
+> **Update (2026-07-10, WI-3370 split).** That gate used to be the single boolean
+> `FLAGS.SUBSTRATE_LOG_SNAPSHOT`, which is what this section originally named. WI-3370
+> split it into two: the **reader** leg (`FLAGS.SUBSTRATE_LOG_SNAPSHOT_READER`,
+> `seedCursorFromSnapshots` in `boot.ts`) — the one this sparse-cut path actually
+> depends on — is now **default ON**, since seeding from an already-shipped seed's
+> snapshot is unambiguously safe and is exactly what the
+> `seed-history-trim-public-builds-2026-07-07` sparse public-build seed needs to
+> restore. `FLAGS.SUBSTRATE_LOG_SNAPSHOT` still exists but now gates only the
+> **producer** — this box's own periodic log-compaction (P-005), whose real-wire
+> replay-cost saving is still hardware-unverified — and stays dark
+> (`DARK_FLAGS`/`case:'incomplete'`) for that reason. The producer flag has no bearing
+> on restoring a seed cut by `cut-seed-cli`, which snapshots at cut time regardless.
+> Net: the reader-side gate this section describes is live by default; only the
+> unrelated own-log-compaction producer stays dark.
+
+`--sparse` is incompatible with `--no-corestore` /
 `--reuse-corestore` (a reused corestore is grafted as-cut, already-sparse-or-not).
 
 ## The offline "full pot" — a bundled epoch key + log admission with NO swarm join (WI-3232 / WI-3288)
@@ -126,7 +139,7 @@ real admission" path:
 * **`cut-seed-cli --emit-epoch-key`** additionally writes `epoch-keys.json`
   (`{ "<pot>": { "<epoch>": "<base64 32-byte key>" } }`) into the seed dir — the pot
   epoch key shipped **readable** inside the installer. `bundled-epoch-key-provider.ts`
-  reads it lazily (only on first `keyForEpoch`, cached) and `pot-epoch-boot-deps.ts`
+  reads it lazily (only on first `keyForEpoch`, cached) and `hive-epoch-boot-deps.ts`
   chains it (`chainEpochKeyProviders`) as the **fallback** alongside the member
   (PG-wrapped, post-admission) provider — so `buildHiveRekeyBootDeps` now resolves a key
   even with **no local device identity at all**. Fail-closed by contract: a missing file /
@@ -145,9 +158,9 @@ never-joining box still decrypt and project the pot's real content from the seed
 A box that *does* join later is unaffected — the member provider (or the online cold
 clone) simply supersedes the bundled fallback once admission completes.
 
-## The kill-switch — `FLAGS.HIVE_SEED_BUNDLE`
+## The kill-switch — `FLAGS.POT_SEED_BUNDLE`
 
-* Key `papercusp-pot-seed-bundle`, **DEFAULT ON** (not in `KNOWN_DARK_FLAGS` —
+* Key `papercusp-hive-seed-bundle`, **DEFAULT ON** (not in `KNOWN_DARK_FLAGS` —
   finished work never ships dark). Flip at `/admin/features`.
 * Read once at each restore call site via `seedBundleEnabled()` (fail-**open** to ON:
   a flag-read hiccup must not silently force cold, and the restore is
@@ -202,11 +215,11 @@ reference harness; no numbers are fabricated in-process).
 
 ## Quick reference — env + flags
 
-| Knob                                          | Effect                                                                                                                                                                            |
-| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `FLAGS.HIVE_SEED_BUNDLE` (default ON)         | master kill-switch; OFF ⇒ cold path                                                                                                                                               |
-| `PAPERCUSP_NO_SEED=1`                         | per-launch escape hatch ⇒ cold path                                                                                                                                               |
-| `PAPERCUSP_SEED_DIR=<dir>`                    | override the seed dir (must contain `manifest.json`)                                                                                                                              |
-| `PAPERCUSP_COLD_JOIN_CANARY_INTERVAL_SEC=<n>` | opt into the cold-join canary (default 0 = off)                                                                                                                                   |
-| `cut-seed-cli --sparse`                       | P-004: ship only the head-snapshot suffix of each corestore (needs `FLAGS.SUBSTRATE_LOG_SNAPSHOT` ON to restore — dark until P-005 lands)                                         |
-| `cut-seed-cli --emit-epoch-key`               | WI-3232/3288: bundle the pot epoch key readable (`epoch-keys.json`) so an offline box that never joins can still decrypt + admit the seed's content (alpha-only trust relaxation) |
+| Knob                                          | Effect                                                                                                                                                                                                                                                                |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FLAGS.POT_SEED_BUNDLE` (default ON)          | master kill-switch; OFF ⇒ cold path                                                                                                                                                                                                                                   |
+| `PAPERCUSP_NO_SEED=1`                         | per-launch escape hatch ⇒ cold path                                                                                                                                                                                                                                   |
+| `PAPERCUSP_SEED_DIR=<dir>`                    | override the seed dir (must contain `manifest.json`)                                                                                                                                                                                                                  |
+| `PAPERCUSP_COLD_JOIN_CANARY_INTERVAL_SEC=<n>` | opt into the cold-join canary (default 0 = off)                                                                                                                                                                                                                       |
+| `cut-seed-cli --sparse`                       | P-004: ship only the head-snapshot suffix of each corestore (needs `FLAGS.SUBSTRATE_LOG_SNAPSHOT_READER` ON to restore — default ON since the WI-3370 2026-07-10 split; the sibling `FLAGS.SUBSTRATE_LOG_SNAPSHOT` producer flag stays dark but doesn't gate restore) |
+| `cut-seed-cli --emit-epoch-key`               | WI-3232/3288: bundle the pot epoch key readable (`epoch-keys.json`) so an offline box that never joins can still decrypt + admit the seed's content (alpha-only trust relaxation)                                                                                     |

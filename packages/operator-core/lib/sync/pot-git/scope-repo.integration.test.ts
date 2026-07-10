@@ -1,6 +1,6 @@
 /**
  * scope-repo integration — ensureScopeRepo against real git in a temp root
- * (the storage.ts integration pattern: env-pinned hive-git root, no swarm).
+ * (the storage.ts integration pattern: env-pinned pot-git root, no swarm).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, access } from 'node:fs/promises';

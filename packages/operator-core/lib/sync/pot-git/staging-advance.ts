@@ -1,5 +1,5 @@
 /**
- * hive-git/staging-advance.ts — signed, epoch-fenced staging advances (Phase 7
+ * pot-git/staging-advance.ts — signed, epoch-fenced staging advances (Phase 7
  * G-5d, cross-machine-coord-parity-and-trust-2026-07-01 / P-038; D-011 hole 2).
  *
  * THE HOLE THIS CLOSES (integrator fencing): the lock-authority lease is a
@@ -42,14 +42,14 @@ export const STAGING_ADVANCE_SCHEMA_VERSION = 1;
  * HIVE_POLICY_SIG_DOMAIN) so a staging-advance signature can never be replayed
  * as a different signed artifact (sigrefs blob, handoff token, …).
  */
-export const STAGING_ADVANCE_SIG_DOMAIN = 'papercusp-hive-git-staging-advance-v1';
+export const STAGING_ADVANCE_SIG_DOMAIN = 'papercusp-pot-git-staging-advance-v1';
 
 /** The hive-wide rendezvous key (P-009 rail, the ref-announce.ts idiom): the
  *  integrator tick (integrator-tick.ts, P-203) fires
  *  `events:emit { event: STAGING_ADVANCE_EVENT_KEY, scope: 'hive', payload: SignedStagingAdvance }`
  *  after a successful integration pass; every member's worktree-bridge driver
  *  (worktree-bridge.ts, P-204) holds an events:await on the same key. */
-export const STAGING_ADVANCE_EVENT_KEY = 'hive-git:staging-advance';
+export const STAGING_ADVANCE_EVENT_KEY = 'pot-git:staging-advance';
 
 /** A fencing pair: the authority lease epoch + the per-epoch advance sequence. */
 export interface EpochSeq {
@@ -135,7 +135,7 @@ export async function signStagingAdvance(
     ts: fields.nowMs,
   };
   if (!isStagingAdvancePayload(payload)) {
-    throw new Error('hive-git: signStagingAdvance called with a malformed payload');
+    throw new Error('pot-git: signStagingAdvance called with a malformed payload');
   }
   const sig = (await sign(stagingAdvanceSigningBytes(payload))).toString('base64');
   return { ...payload, sig };

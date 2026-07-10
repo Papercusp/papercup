@@ -35,7 +35,7 @@ import type { SwarmHandle } from './swarm';
 import type { SignedAnnounce } from './announce';
 import type { AdmissionResult } from './read-admission';
 import type { SwarmBinding } from './derive-swarm-topic';
-import type { ScopeId } from '../hive-git/scope-repo';
+import type { ScopeId } from '../pot-git/scope-repo';
 import type { ScopeFederation } from './scope-federation';
 
 /** The subset of the IPC client this proxy needs (injectable for tests). */

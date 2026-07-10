@@ -3,7 +3,7 @@
  * over real bare repos + a unix-socket duplex (mirrors
  * ref-announce.integration.test.ts's rig).
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/ref-announce-tick.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/ref-announce-tick.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';

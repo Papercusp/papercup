@@ -4,7 +4,7 @@
  * temp bare repo (git on PATH, no network). Mirrors gc.integration.test.ts's
  * fixture conventions.
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/publish-guard.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/publish-guard.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -42,7 +42,7 @@ async function commit(repo: string, files: Record<string, string>, parent?: stri
   }
 }
 
-describe('hive-git publish-guard (real bare repo)', () => {
+describe('pot-git publish-guard (real bare repo)', () => {
   let root: string;
   let repo: string;
 

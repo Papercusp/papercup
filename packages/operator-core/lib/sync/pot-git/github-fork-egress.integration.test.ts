@@ -5,7 +5,7 @@
  * local bare "fork", secrets-gated by the P-001 egress path. GitHub API seams
  * (ensureFork, openPr) are stubbed.
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/github-fork-egress.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/github-fork-egress.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';

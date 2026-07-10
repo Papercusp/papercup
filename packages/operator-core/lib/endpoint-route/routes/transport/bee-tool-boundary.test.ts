@@ -74,7 +74,7 @@ const CANNOT_CAP: Array<{ path: string }> = [
   { path: '../../../agent-tools/curation/feed.js' }, // curation:read
 ];
 const CANNOT_ROLE: Array<{ path: string }> = [
-  { path: '../../../agent-tools/bee/spawn.js' }, // work_items:write held, but allowlist filters bee
+  { path: '../../../agent-tools/cup/spawn.js' }, // work_items:write held, but allowlist filters bee
   { path: '../../../agent-tools/gym/judge.js' }, // harness:read held, but allowlist filters bee
   { path: '../../../agent-tools/gym/signals.js' }, // harness:read held, but allowlist filters bee
 ];

@@ -237,3 +237,43 @@ not observed to diverge in practice (the fold's `sourceLogKeyHex` total order
 already prevents the fold itself from flip-flopping), but a future smell-test
 pass should treat "the merge fold and the PG guard use a different equal-key
 tiebreak" as the same class of risk this whole doc is about.
+
+## FURTHER REFINED (EI-8210 — mig 517 regressed, mig 528 restores, `fed_hlc` stamping)
+
+D-001 (above) made `stamp_local_federated_write()`'s INSERT branch stamp
+**both** `fed_ts` AND `fed_hlc` on a local write, so the ordering key the fold
+and the PG guard both read is always populated. Migration **517**
+(`517-fix-stamp-local-federated-write-mask.sql`, WI-183/WI-2845/WI-2853) fixed
+an UNRELATED bug in the SAME trigger function — a same-op double-apply
+re-stamping `work_items.updated_ts` on every replay and false-positiving a
+"real content change", flipping an already-`origin='remote'` row back to
+`'local'` — but the `CREATE OR REPLACE` that shipped that fix rewrote the whole
+function body from an older copy and **silently dropped the `fed_hlc :=
+harness_shared.hlc_now()` stamp on the local-INSERT branch**, regressing it
+back to fed\_ts-only (the pre-D-001 shape). A local `INSERT` after mig 517
+landed stamped `fed_ts` but left `fed_hlc` **NULL**.
+
+Migration 477's `capture_hive_members_outbox` (a stamp-regime table, unlike
+`work_items`) threads a captured row's `fed_ts`/`fed_hlc` straight into the
+outbox op's `ts`/`hlc`; with `fed_hlc` NULL, every `hive_members` admission/
+revocation capture fell back to the drain clock instead of the author's real
+ordering key — reopening the exact drain-interleave divergence class from the
+top of this doc (the "## Fix" section, migration 314/490), just on a
+different table.
+
+Migration **528** (`528-restore-fed-hlc-insert-stamp.sql`) restores the
+`fed_hlc` stamp on the local-INSERT branch (and adds the missing
+`hlc_recv()` causal-advance call on a remote INSERT that carries an HLC,
+matching the UPDATE branch's existing recv-advance) while KEEPING mig 517's
+`work_items`-only `updated_ts`/`ts` double-apply mask intact — the two fixes
+are orthogonal (one is which columns count as "content changed", the other is
+which columns get stamped on a genuine local write) and mig 528 is careful not
+to re-regress the other.
+
+**Smell-test addendum:** a `CREATE OR REPLACE FUNCTION` on this trigger is a
+recurring risk point — mig 517 proves a *well-intentioned, narrowly-scoped*
+fix to one branch can silently regress a DIFFERENT branch's D-001 stamping if
+the replacement body isn't diffed against the full prior function. Any future
+edit to `stamp_local_federated_write()` should diff against the CURRENT
+`CREATE OR REPLACE` (not an older migration) and confirm both branches still
+stamp `fed_hlc`, not just `fed_ts`.

@@ -5,7 +5,7 @@
  * CHANGED when they do (own dir, a transitive dep dir, a root input file);
  * gitlink boundaries fall back to the submodule pointer OID.
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/gate/shards.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/gate/shards.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';

@@ -28,7 +28,7 @@
  * epochs decimal digits). Pack/parse round-trip here; parse is FAIL-CLOSED.
  */
 
-import { type ScopeId, formatScopeId, parseScopeId } from '../hive-git/scope-repo';
+import { type ScopeId, formatScopeId, parseScopeId } from '../pot-git/scope-repo';
 
 /** One scoped-log declaration (the parsed form of a wire entry). */
 export interface ScopedLogDisclosure {

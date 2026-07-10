@@ -251,6 +251,18 @@ export async function handleJoinLink(
               github_remote: `https://github.com/${link.github}`,
               github_repository_id: link.repoId,
               joined_via_link: true,
+              // WI-3891: without these three, isRegisteredHive()/isHiveProject()
+              // (harness-registry.ts / hive/_resolve.ts) never recognize this
+              // entry — so probe:emit refuses harness_not_federated and
+              // pot:get/pot:list report hive_not_found, even though
+              // git-sync-reconcile.ts's isGitSyncMember already treats a
+              // joined_via_link entry as a real federating member. Mirrors the
+              // established self-admit pattern (bootstrap-papercusp-hive.ts's
+              // defaultSelfAdmitCanonical): a real repo checkout that is a
+              // joiner-side hive member, never its own home.
+              harness_kind: 'hive',
+              remote_hive: true,
+              self_repo: true,
             },
           ],
         };
@@ -258,7 +270,10 @@ export async function handleJoinLink(
       if (
         existing.github_remote &&
         typeof existing.github_repository_id === 'number' &&
-        existing.joined_via_link !== undefined
+        existing.joined_via_link !== undefined &&
+        existing.harness_kind === 'hive' &&
+        existing.remote_hive === true &&
+        existing.self_repo === true
       ) {
         return reg; // already self-describing — nothing to do
       }
@@ -274,6 +289,11 @@ export async function handleJoinLink(
                   ? {}
                   : { github_repository_id: link.repoId }),
                 ...(p.joined_via_link === undefined ? { joined_via_link: true } : {}),
+                // WI-3891 backfill: heal a pre-fix row (registered before this
+                // change shipped) the same way a fresh join stamps it now.
+                ...(p.harness_kind === 'hive' ? {} : { harness_kind: 'hive' as const }),
+                ...(p.remote_hive === true ? {} : { remote_hive: true as const }),
+                ...(p.self_repo === true ? {} : { self_repo: true as const }),
               },
         ),
       };

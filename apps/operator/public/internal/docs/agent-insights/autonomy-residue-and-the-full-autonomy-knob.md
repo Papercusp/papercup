@@ -1,7 +1,7 @@
-# The autonomy gate has a RESIDUE the per-category ceilings can't reach — QUEEN_FULL_AUTONOMY is the only lift
+# The autonomy gate has a RESIDUE the per-category ceilings can't reach — MUG_FULL_AUTONOMY is the only lift
 URL: /internal/docs/agent-insights/autonomy-residue-and-the-full-autonomy-knob
 
-Raising all 14 autonomy ceilings to critical does NOT make the Mug fully autonomous — a set of CATEGORICAL hard-gates (authority owner, irreversible, protected-lock, unmapped) plus graduation asks still force gated, independent of the ceiling. That is the residue. And it is TWO surfaces, not one — the DECISION gate (decider.ts, may she auto-decide?) and the IMPLEMENT TCB (improvements/policy.ts, may the loop auto-implement protected-path code?). The single reversible owner flag QUEEN_FULL_AUTONOMY (scope autonomy per-workspace, default OFF, fail-dark) lifts BOTH. Verify the live policy before assuming protected==locked; a new staging flag is not flippable via flags-set until the deploy carries it.
+Raising all 14 autonomy ceilings to critical does NOT make the Mug fully autonomous — a set of CATEGORICAL hard-gates (authority owner, irreversible, protected-lock, unmapped) plus graduation asks still force gated, independent of the ceiling. That is the residue. And it is TWO surfaces, not one — the DECISION gate (decider.ts, may she auto-decide?) and the IMPLEMENT TCB (improvements/policy.ts, may the loop auto-implement protected-path code?). The single reversible owner flag MUG_FULL_AUTONOMY (scope autonomy per-workspace, default OFF, fail-dark) lifts BOTH. Verify the live policy before assuming protected==locked; a new staging flag is not flippable via flags-set until the deploy carries it.
 
 When an agent is asked "make the Mug fully autonomous," the obvious move is to
 raise every per-category ceiling to `critical` (`autonomy:policy_set`). **That is
@@ -57,9 +57,9 @@ Agents conflate these. They are different mechanisms:
 The implement TCB is the bootstrapping safety rail — it stops the loop from
 auto-editing its own safety machinery. The decision gate never touches it.
 
-## 3. QUEEN\_FULL\_AUTONOMY lifts BOTH — one reversible flag
+## 3. MUG\_FULL\_AUTONOMY lifts BOTH — one reversible flag
 
-`FLAGS.QUEEN_FULL_AUTONOMY` (`papercusp-mug-full-autonomy`, default OFF,
+`FLAGS.MUG_FULL_AUTONOMY` (`papercusp-queen-full-autonomy`, default OFF,
 fail-dark, scope `autonomy:<ws>` — the SAME key the arming flag uses, so one flip
 covers both surfaces) is the owner's reversible full-autonomy grant
 (mug-autonomy-and-selffeed-fix-2026-06-15 D-006). When ON:

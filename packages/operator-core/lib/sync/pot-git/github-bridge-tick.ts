@@ -40,7 +40,7 @@ export const BRIDGE_REMOTE_STAGING_REF = 'refs/heads/staging';
 export interface BridgeTickInput {
   potHomeSlug: string;
   workspaceId: string;
-  /** The member repo key under the hive-git root (usually the member slug). */
+  /** The member repo key under the pot-git root (usually the member slug). */
   repoKey: string;
   /** Registry coords: the upstream GitHub remote (read + candidate push). */
   githubRemote?: string;

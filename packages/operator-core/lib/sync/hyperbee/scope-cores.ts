@@ -36,7 +36,7 @@
  * recorded high-water is refused (replayed pre-revocation disclosure).
  */
 
-import { formatScopeId, type ScopeId } from '../hive-git/scope-repo';
+import { formatScopeId, type ScopeId } from '../pot-git/scope-repo';
 import type { ScopedLogDisclosure } from './scope-disclosure';
 import type { IsScopeMember } from './scope-disclosure';
 

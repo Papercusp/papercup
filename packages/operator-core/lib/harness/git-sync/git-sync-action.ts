@@ -42,20 +42,20 @@ import { gitSyncEligibility, type GitSyncEligibility } from './git-sync-eligibil
 import { getHiveGitMode, type HiveGitMode } from './hive-git-mode';
 import { parseGithubUrl } from '../clone-github';
 import { fetchRepoPushPermission } from '../github-repo-permissions';
-import { runGithubBridgeTick } from '../../sync/hive-git/github-bridge-tick';
-import { runIntegratorTick } from '../../sync/hive-git/integrator-tick';
-import { runWorktreeBridgeTick } from '../../sync/hive-git/worktree-bridge-tick';
-import { runRefAnnouncePublishTick, runRefAnnounceReceiveTick } from '../../sync/hive-git/ref-announce-tick';
+import { runGithubBridgeTick } from '../../sync/pot-git/github-bridge-tick';
+import { runIntegratorTick } from '../../sync/pot-git/integrator-tick';
+import { runWorktreeBridgeTick } from '../../sync/pot-git/worktree-bridge-tick';
+import { runRefAnnouncePublishTick, runRefAnnounceReceiveTick } from '../../sync/pot-git/ref-announce-tick';
 import {
   REF_ANNOUNCE_EVENT_KEY,
   isSignedRefAnnouncement,
   type SignedRefAnnouncement,
   type AnnounceBudgetState,
-} from '../../sync/hive-git/ref-announce';
-import { STAGING_ADVANCE_EVENT_KEY, isSignedStagingAdvance, type SignedStagingAdvance, type EpochSeq } from '../../sync/hive-git/staging-advance';
-import { hiveGitRepoPath, listNamespaces } from '../../sync/hive-git/storage';
-import { bootstrapFromPeer } from '../../sync/hive-git/bootstrap';
-import { openHiveGitDuplexToDevice } from '../../sync/hive-git/peer-dial-registry';
+} from '../../sync/pot-git/ref-announce';
+import { STAGING_ADVANCE_EVENT_KEY, isSignedStagingAdvance, type SignedStagingAdvance, type EpochSeq } from '../../sync/pot-git/staging-advance';
+import { hiveGitRepoPath, listNamespaces } from '../../sync/pot-git/storage';
+import { bootstrapFromPeer } from '../../sync/pot-git/bootstrap';
+import { openHiveGitDuplexToDevice } from '../../sync/pot-git/peer-dial-registry';
 import { Duplex } from 'node:stream';
 import { listHiveMembers } from '../../hive-membership-store';
 import { resolveUsageActor } from '../usage-actor';

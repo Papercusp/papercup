@@ -4,7 +4,7 @@
  * github-origin head from integration; unknown authors are reported, never
  * blocked; errors fail CLOSED. Real git, injected revocation seam (no PG).
  *
- * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/hive-git/github-ingress-admission.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/github-ingress-admission.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';

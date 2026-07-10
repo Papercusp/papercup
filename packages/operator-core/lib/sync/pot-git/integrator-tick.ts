@@ -1,5 +1,5 @@
 /**
- * hive-git/integrator-tick.ts — P-203: the RUNTIME DRIVER for the staging
+ * pot-git/integrator-tick.ts — P-203: the RUNTIME DRIVER for the staging
  * integrator (p2p-git-live-activation-2026-07-09 P-203).
  *
  * Every OTHER piece of the integrator already exists as a pure library:
@@ -48,7 +48,7 @@ import { signStagingAdvance, type SignedStagingAdvance } from './staging-advance
 export interface IntegratorTickInput {
   potHomeSlug: string;
   workspaceId: string;
-  /** The (hive, managed repo) key under the hive-git root — matches
+  /** The (hive, managed repo) key under the pot-git root — matches
    *  `hiveGitRepoPath` / `BridgeTickInput.repoKey`'s convention. */
   repoKey: string;
   /** The current verified member device set (sigrefs-verified upstream — same
