@@ -475,7 +475,16 @@ const CC_HOOK_FILES = [
   'posttooluse-objective-title.sh',
   'pretooluse-bash-resource-gate.sh',
   'workitem-verify-nudge.sh',
+  // Shared python lib, NOT a hook: statusline-fleet.sh + posttooluse-objective-title.sh
+  // `import pc_tty` off their own dirname to resolve the terminal they title. Omit it and
+  // both raise ImportError, fail OPEN, and the packaged app silently stops setting the
+  // terminal title (WI-3665 — the EI-8191 shape: fail-open is indistinguishable from
+  // success). It is imported, never executed, so installClaudeHooks installs it 0644.
+  'pc_tty.py',
 ] as const;
+
+/** Hook files that are LIBRARIES, not executables — installed 0644, never chmod +x. */
+const CC_HOOK_LIB_FILES: ReadonlySet<string> = new Set(['pc_tty.py']);
 
 /**
  * Candidate DIRS for the CC hook sources — the bundled sidecar layout first
@@ -1191,8 +1200,10 @@ async function installClaudeHooks(
     try {
       const data = await fs.readFile(path.join(srcDir, name));
       const dst = path.join(destDir, name);
-      await fs.writeFile(dst, data, { mode: 0o755 });
-      await fs.chmod(dst, 0o755);
+      // Libraries are imported, not exec'd — 0644. Hooks stay 0755.
+      const mode = CC_HOOK_LIB_FILES.has(name) ? 0o644 : 0o755;
+      await fs.writeFile(dst, data, { mode });
+      await fs.chmod(dst, mode);
       installed.push(name);
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;

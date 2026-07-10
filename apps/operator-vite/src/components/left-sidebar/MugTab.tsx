@@ -392,9 +392,15 @@ export default function MugTab({ active }: { active: boolean }) {
     enqueue({ includeUnplannedWork: on });
   };
   const togglePause = () => {
-    const next = !live().pauseNewWork;
+    const active = pauseStateLabel(live(), Date.now()).active;
+    const next = !active;
     overlay({ pauseNewWork: next, pausedUntil: null });
     enqueue({ pauseNewWork: next, pausedUntil: null });
+  };
+  const pauseFor = (minutes: number) => {
+    const until = Date.now() + Math.round(minutes) * 60_000;
+    overlay({ pauseNewWork: false, pausedUntil: until });
+    enqueue({ pauseNewWork: false, pausedUntil: until });
   };
   const pauseForMinutes = () => {
     const n = Number(pauseMins);
@@ -402,13 +408,7 @@ export default function MugTab({ active }: { active: boolean }) {
       setErr('Enter a positive number of minutes.');
       return;
     }
-    const until = Date.now() + Math.round(n) * 60_000;
-    overlay({ pauseNewWork: false, pausedUntil: until });
-    enqueue({ pauseNewWork: false, pausedUntil: until });
-  };
-  const clearPause = () => {
-    overlay({ pauseNewWork: false, pausedUntil: null });
-    enqueue({ pauseNewWork: false, pausedUntil: null });
+    pauseFor(n);
   };
   const setModelTiers = (mt: ModelTier[] | null) => {
     overlay({ modelTiers: mt });
@@ -565,31 +565,37 @@ export default function MugTab({ active }: { active: boolean }) {
       {/* Queen heartbeat — is she alive? (owner-priority, queen-heartbeat-2026-06-16) */}
       <MugHeartbeat homeSlug={home} />
 
-      {/* 1 — Pause new work (TOPMOST, owner-review round 2) */}
+      {/* 1 — New-work flow */}
       <section className="pc-queen__section pc-queen__section--pause">
         <div className="pc-queen__section-head">
-          <span className="pc-queen__section-title">Pause new work</span>
-          <span className={`pc-queen__pausebadge${pause.active ? ' pc-queen__pausebadge--on' : ''}`}>{pause.label}</span>
+          <span className="pc-queen__section-title">New work</span>
+          <span className={`pc-queen__pausebadge${pause.active ? ' pc-queen__pausebadge--on' : ''}`}>
+            {pause.active ? pause.label : 'Accepting'}
+          </span>
         </div>
         <button
           type="button"
-          className={`pc-queen__btn pc-queen__btn--block${view.pauseNewWork ? ' pc-queen__btn--stop' : ' pc-queen__btn--go'}`}
+          className={`pc-queen__btn pc-queen__btn--block${pause.active ? ' pc-queen__btn--stop' : ' pc-queen__btn--go'}`}
           onClick={togglePause}
           disabled={controlsBusy}
         >
-          {view.pauseNewWork ? <Play size={12} aria-hidden /> : <Pause size={12} aria-hidden />}
-          {view.pauseNewWork ? 'Resume new work' : 'Pause indefinitely'}
+          {pause.active ? <Play size={12} aria-hidden /> : <Pause size={12} aria-hidden />}
+          {pause.active ? 'Resume' : 'Pause until resumed'}
         </button>
+        <div className="pc-queen__quick-pause" role="group" aria-label="Pause new work for">
+          {[15, 30, 60].map((minutes) => (
+            <button key={minutes} type="button" className="pc-queen__chip" onClick={() => pauseFor(minutes)} disabled={controlsBusy}>
+              {minutes === 60 ? '1 hour' : `${minutes} min`}
+            </button>
+          ))}
+        </div>
         <div className="pc-queen__pausefor">
           <label className="pc-queen__duration">
-            <span className="pc-queen__presetlabel">for</span>
+            <span className="pc-queen__presetlabel">Custom</span>
             <input type="number" min={1} className="pc-queen__mins" value={pauseMins} onChange={(e) => setPauseMins(e.target.value)} aria-label="Pause duration in minutes" />
             <span className="pc-queen__presetlabel">min</span>
           </label>
-          <button type="button" className="pc-queen__chip" onClick={pauseForMinutes} disabled={controlsBusy}>apply</button>
-          {view.pausedUntil != null && (
-            <button type="button" className="pc-queen__chip" onClick={clearPause} disabled={controlsBusy}>clear</button>
-          )}
+          <button type="button" className="pc-queen__chip" onClick={pauseForMinutes} disabled={controlsBusy}>Pause</button>
         </div>
       </section>
 
@@ -611,19 +617,17 @@ export default function MugTab({ active }: { active: boolean }) {
       {mugView === 'work' && (
         <>
       <section className="pc-queen__section">
-        <div className="pc-queen__section-head">
-          <ListChecks size={12} aria-hidden />
-          <span className="pc-queen__section-title">Loose work</span>
-          <span className="pc-queen__count">{view.includeUnplannedWork ? 'included' : 'excluded'}</span>
-        </div>
-        <label className="pc-queen__planlabel" style={{ cursor: 'pointer', padding: '2px 0' }}>
+        <label className="pc-queen__setting-row">
+          <span className="pc-queen__setting-copy">
+            <span className="pc-queen__section-title">Include loose work</span>
+            <span className="pc-queen__hint">Work that is not attached to a plan</span>
+          </span>
           <Checkbox
-            className="pc-queen__check"
+            className="pc-queen__switch"
             checked={view.includeUnplannedWork}
             onChange={() => setIncludeUnplannedWork(!view.includeUnplannedWork)}
             ariaLabel="Work non-plan work items"
           />
-          <span className="pc-queen__planslug">Items outside plans</span>
         </label>
       </section>
 
@@ -748,8 +752,8 @@ export default function MugTab({ active }: { active: boolean }) {
       <section className="pc-queen__section">
         <div className="pc-queen__section-head">
           <CalendarClock size={12} aria-hidden />
-          <span className="pc-queen__section-title">Scheduled routines</span>
-          <span className="pc-queen__count">next 30 days</span>
+          <span className="pc-queen__section-title">Routines</span>
+          <span className="pc-queen__count">30 days</span>
         </div>
         <ScheduledRoutinesPane
           onSelect={(slug) =>
@@ -774,19 +778,19 @@ function DirectiveEditor({ initial, onSave, busy }: { initial: string; onSave: (
   return (
     <section className="pc-queen__section">
       <div className="pc-queen__section-head">
-        <span className="pc-queen__section-title">Focus directive</span>
-        <span className="pc-queen__count">in every wake brief</span>
+        <span className="pc-queen__section-title">Priority</span>
+        <span className="pc-queen__count">{initial.trim() ? 'set' : 'not set'}</span>
       </div>
       <textarea
         className="pc-queen__directive"
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder="e.g. Only work the steering + benchmark plans; convert their items to work-items, place those, start nothing new."
+        placeholder="What should Mug prioritize?"
         rows={3}
       />
       <div className="pc-queen__directive-actions">
         <button type="button" className="pc-queen__btn pc-queen__btn--save" onClick={() => onSave(text)} disabled={busy || !dirty}>
-          {busy ? 'Saving…' : dirty ? 'Save directive' : 'Saved'}
+          {busy ? 'Saving…' : dirty ? 'Save' : 'Saved'}
         </button>
         {dirty && (
           <button type="button" className="pc-queen__chip" onClick={() => setText(initial)} disabled={busy}>revert</button>

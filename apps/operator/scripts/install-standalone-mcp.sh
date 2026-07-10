@@ -926,7 +926,8 @@ if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" ]; then
   # (they resolve it off their own dirname, so it MUST land beside them). Copy it BEFORE
   # its importers: a hook that lands without pc_tty.py raises ImportError, fails open, and
   # silently stops setting the terminal title — the exact WI-3665 failure, reintroduced.
-  # install-hooks-parity.test.ts fails if a hooks/cc file ever stops being copied here.
+  # apps/operator/lib/tty-title-target.test.ts fails if any hooks/cc file stops being copied
+  # here (or into the desktop sidecar / desktop installer — all three paths are guarded).
   if [ -f "${CC_HOOK_SRC_DIR}/pc_tty.py" ]; then
     cp "${CC_HOOK_SRC_DIR}/pc_tty.py" "${CC_HOOK_DEST_DIR}/pc_tty.py"
     chmod 644 "${CC_HOOK_DEST_DIR}/pc_tty.py"

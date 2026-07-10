@@ -595,6 +595,37 @@ export async function whoIsDoingWhat(
   };
 }
 
+/**
+ * EI-8995 (one liveness verdict): last recorded tool invocation per coord owner —
+ * the "real work" freshness signal the member-verdict derivation fuses with
+ * presence/wakeability. Top-1 per owner via DISTINCT ON over the
+ * `tool_invocations (coord_owner_id, invoked_at DESC)` partial index — ONE bounded
+ * read for a whole fleet, replacing the manual canary protocol's per-member
+ * "check tool_invocations" query. Best-effort: any failure returns an empty map
+ * (verdicts degrade to the presence-only states; the read never throws).
+ */
+export async function lastToolCallAtByOwner(coordOwnerIds: string[]): Promise<Map<string, string>> {
+  const ids = [...new Set(coordOwnerIds.filter((id) => !!id && !id.startsWith('fed:')))];
+  if (ids.length === 0) return new Map();
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ coord_owner_id: string; invoked_at: string | Date }[]>`
+      SELECT DISTINCT ON (coord_owner_id) coord_owner_id, invoked_at
+        FROM harness_shared.tool_invocations
+       WHERE coord_owner_id = ANY(${ids}::text[])
+       ORDER BY coord_owner_id, invoked_at DESC
+    `;
+    const out = new Map<string, string>();
+    for (const r of rows) {
+      const iso = toIso(r.invoked_at);
+      if (iso) out.set(r.coord_owner_id, iso);
+    }
+    return out;
+  } catch {
+    return new Map();
+  }
+}
+
 /** Claims keyed by holder ownerId — the roster's per-agent enrichment. */
 export function claimsByAgent(rows: FleetAssignmentRow[]): Map<string, AgentClaim[]> {
   const map = new Map<string, AgentClaim[]>();

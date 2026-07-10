@@ -25,12 +25,19 @@ import {
 import { recordedLiveOwnerIds } from '../../adv-sessions';
 import {
   groupByAgent,
+  lastToolCallAtByOwner,
   listFleetAssignments,
   orphanedClaims,
   stalledClaims,
   summarizeOrphan,
   type AgentAssignment,
 } from '../../fleet/assignments';
+import {
+  getAllWakeModeOverrides,
+  getDefaultWakeMode,
+  resolveWakeModeFrom,
+  type WakeMode,
+} from '../coordination/wake-mode';
 import {
   getAllPlanItemCoverage,
   compactCoverage,
@@ -92,11 +99,116 @@ export async function reconcileWakeability<T extends AgentAssignment & { session
   return agents;
 }
 
+/**
+ * EI-8995 (one liveness verdict instead of three half-truths): the SINGLE derived
+ * per-member lifecycle state a leader makes relaunch/re-steer decisions on. Fuses
+ * the three signals that previously took a three-query join — heartbeat liveness
+ * (`alive`), session state (`sessionState`, EI-6077), and REAL-work freshness
+ * (last recorded tool invocation — the canary-first protocol's "a join event is
+ * NOT liveness; verify a first turn" check, now a field):
+ *
+ *   dead            — session authoritatively ended, or no liveness evidence.
+ *   stalled         — alive but not producing: a claim not advancing (the per-claim
+ *                     stall signal) or holding work with no tool call in the window.
+ *   speaking        — a tool call within the fresh window: REALLY working right now.
+ *                     Outranks `stalled`: a speaking member with one stalled ITEM is a
+ *                     re-steer (the item is in stalled[]), not a relaunch.
+ *   first-turn-done — has completed real work (≥1 recorded tool call) but is not
+ *                     currently fresh — between wakes / drained.
+ *   joined          — coord presence registered, ZERO tool calls yet (boot window;
+ *                     a join event is NOT liveness — this state names that
+ *                     explicitly instead of leaving it to protocol memory).
+ *   booted          — a live session that has not yet registered coord presence
+ *                     (the bootstrap gap before `joined`).
+ */
+export type MemberVerdict = 'booted' | 'joined' | 'first-turn-done' | 'speaking' | 'stalled' | 'dead';
+
+/** A tool call within this window ⇒ `speaking` (really working right now). */
+export const VERDICT_SPEAKING_FRESH_MS = 5 * 60_000;
+/** Holding work-items with no tool call for this long ⇒ `stalled` (member-level). */
+export const VERDICT_STALL_MS = 15 * 60_000;
+
+/** Pure derivation — unit-tests without PG (the DI seam is decorateMemberVerdicts). */
+export function deriveMemberVerdict(
+  a: {
+    present: boolean;
+    alive: boolean;
+    sessionState?: SessionState | null;
+    /** The per-claim progress-stall rollup (AgentAssignment.stalled). */
+    stalled: boolean;
+    /** Work-item claims held (AgentAssignment.load). */
+    load: number;
+    /** Last recorded tool invocation (epoch ms), or null = none ever. */
+    lastToolCallAtMs: number | null;
+  },
+  nowMs: number = Date.now(),
+): MemberVerdict {
+  if (a.sessionState === 'ended' || !a.alive) return 'dead';
+  const last = a.lastToolCallAtMs;
+  if (last != null && nowMs - last <= VERDICT_SPEAKING_FRESH_MS) return 'speaking';
+  // Member-level stall: not speaking AND (an item isn't advancing, or it holds work
+  // and went quiet). `last == null` with load is NOT stalled — it has never taken a
+  // turn, so it is still in the boot window (joined), not wedged mid-work.
+  if (a.stalled || (a.load > 0 && last != null && nowMs - last > VERDICT_STALL_MS)) return 'stalled';
+  if (last != null) return 'first-turn-done';
+  if (a.sessionState === 'recorded' || !a.present) return 'booted';
+  return 'joined';
+}
+
+/**
+ * Stamp each agent row with the derived `verdict`, its `wakeMode` (auto|manual —
+ * a MANUAL member silently STAGES directed wakes for owner release, which a
+ * leader cannot see anywhere else on this surface), and `lastToolCallAt`.
+ * Batch reads: ONE tool-invocations top-1-per-owner query + ONE wake-mode
+ * overrides read for the whole fleet. Exported with injectable fetchers so it
+ * unit-tests without PG (the reconcileWakeability pattern). Mutates in place;
+ * call AFTER reconcileWakeability so `sessionState` is already settled.
+ */
+export async function decorateMemberVerdicts<
+  T extends AgentAssignment & {
+    sessionState?: SessionState | null;
+    verdict?: MemberVerdict;
+    wakeMode?: WakeMode;
+    lastToolCallAt?: string | null;
+  },
+>(
+  agents: T[],
+  fetchLastToolCalls: (ownerIds: string[]) => Promise<Map<string, string>> = lastToolCallAtByOwner,
+  fetchWakeModeOverrides: () => Promise<Map<string, WakeMode>> = getAllWakeModeOverrides,
+  fetchDefaultWakeMode: () => Promise<WakeMode> = getDefaultWakeMode,
+  nowMs: number = Date.now(),
+): Promise<T[]> {
+  if (agents.length === 0) return agents;
+  const [lastCalls, overrides, defaultMode] = await Promise.all([
+    fetchLastToolCalls(agents.map((a) => a.agentId)),
+    fetchWakeModeOverrides(),
+    fetchDefaultWakeMode(),
+  ]);
+  for (const a of agents) {
+    const iso = lastCalls.get(a.agentId) ?? null;
+    const lastMs = iso ? Date.parse(iso) : null;
+    a.lastToolCallAt = iso;
+    a.verdict = deriveMemberVerdict(
+      {
+        present: a.present,
+        alive: a.alive,
+        sessionState: a.sessionState,
+        stalled: a.stalled,
+        load: a.load,
+        lastToolCallAtMs: Number.isFinite(lastMs as number) ? lastMs : null,
+      },
+      nowMs,
+    );
+    a.wakeMode = resolveWakeModeFrom(overrides.get(a.agentId) ?? null, defaultMode);
+  }
+  return agents;
+}
+
 export default defineTool({
   name: 'fleet:assignments',
   profile: 'engineer',
   description:
-    'The canonical "who\'s on what" query: per-agent presence + plan-item + work-item claims unified (claim-primary, holder liveness AND progress joined). The result\'s top-level `self` is YOUR own ownerId and your own agent row is stamped `isSelf:true`, so you can tell which agent in the list is THIS session. Each live agent carries its ordered work-list — `doing` (head-of-line), `queued`, `load` — the externalized per-bee TodoWrite the Queen reads for placement. The single LIVE source for "is X really being worked": surfaces `orphaned` (live lease, DEAD holder) AND `stalled` (live holder, NO progress in window) claims — both reclaimable, neither "covered" — plus per-claim `activity` (free|reserved|alive|progressing|stalled|dead) and declared-but-unclaimed intents. Read this, not a stale coord broadcast.',
+    'The canonical "who\'s on what" query: per-agent presence + plan-item + work-item claims unified (claim-primary, holder liveness AND progress joined). The result\'s top-level `self` is YOUR own ownerId and your own agent row is stamped `isSelf:true`, so you can tell which agent in the list is THIS session. Each live agent carries its ordered work-list — `doing` (head-of-line), `queued`, `load` — the externalized per-bee TodoWrite the Queen reads for placement. The single LIVE source for "is X really being worked": surfaces `orphaned` (live lease, DEAD holder) AND `stalled` (live holder, NO progress in window) claims — both reclaimable, neither "covered" — plus per-claim `activity` (free|reserved|alive|progressing|stalled|dead) and declared-but-unclaimed intents. Each agent row also carries the SINGLE derived lifecycle `verdict` (booted|joined|first-turn-done|speaking|stalled|dead — heartbeat + session state + tool-call freshness fused; THE field for relaunch/re-steer decisions, EI-8995) and its `wakeMode` (auto|manual — a manual member silently STAGES directed wakes for owner release). Read this, not a stale coord broadcast.',
   guidance: {
     when: 'Answering "who\'s running / what is agent X doing / X\'s ordered work-list / how loaded is X / is anyone on plan P". The state query AND the placement-decision read — use it instead of scanning coord:inbox or replaying lifecycle messages.',
     notWhen:
@@ -201,6 +313,10 @@ export default defineTool({
     // (see reconcileWakeability above) — best-effort, a query failure just leaves
     // today's heartbeat-only `alive` and an absent `sessionState` (state unknown).
     await reconcileWakeability(agents).catch(() => {});
+    // EI-8995: stamp the single derived per-member `verdict` (+ wakeMode +
+    // lastToolCallAt) — AFTER reconcileWakeability so sessionState is settled.
+    // Best-effort: a failure leaves the rows verdict-less, never breaks the read.
+    await decorateMemberVerdicts(agents).catch(() => {});
     const orphans = orphanedClaims(rows);
     // agent-activity-liveness-truth P-002/P-005: a live-but-not-progressing holder
     // is NOT "covered" — surface stalled claims as reclaimable alongside orphans, so

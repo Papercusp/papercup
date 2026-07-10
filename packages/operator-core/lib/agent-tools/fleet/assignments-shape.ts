@@ -57,6 +57,12 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
       // "really runnable" from "just looks alive" without a second coord:presence
       // call. null when the wakeability read was unavailable (state unknown).
       sessionState: typeof r.sessionState === "string" ? r.sessionState : null,
+      // EI-8995: the single derived lifecycle verdict (booted|joined|first-turn-
+      // done|speaking|stalled|dead) + the member's wake mode (a MANUAL member
+      // silently stages directed wakes) — the leader's relaunch/re-steer read,
+      // kept at EVERY tier (two short strings; the monitor loop runs trimmed).
+      verdict: typeof r.verdict === "string" ? r.verdict : null,
+      wakeMode: typeof r.wakeMode === "string" ? r.wakeMode : null,
       intent: clip(r.intent, c.intent),
       plan: r.declaredPlanSlug ?? null,
       fleet: r.fleetSlug ?? null,
@@ -69,6 +75,8 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
     return {
       ...base,
       label: r.label ?? null,
+      // EI-8995: the raw freshness timestamp behind `verdict` (standard+ only).
+      lastToolCallAt: typeof r.lastToolCallAt === "string" ? r.lastToolCallAt : null,
       orphaned: r.orphaned === true,
       stalled: r.stalled === true,
       declaredUnclaimed: r.declaredUnclaimed === true,

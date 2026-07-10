@@ -41,6 +41,7 @@ interface CoordPresenceDbRow {
   started_at: string;
   heartbeat_at: string;
   last_active_at: string | null;
+  intent_declared_at: string | null;
   agent_role: string | null;
   pot_slug: string | null;
   compaction_limit: number | null;
@@ -86,6 +87,7 @@ function toRecord(r: CoordPresenceDbRow, now: number): PresenceRecord {
     startedAt: r.started_at,
     heartbeatAt: r.heartbeat_at,
     lastActiveAt: r.last_active_at,
+    intentDeclaredAt: r.intent_declared_at,
     agentRole: r.agent_role,
     potSlug: r.pot_slug,
     compactionLimit: r.compaction_limit,
@@ -111,14 +113,14 @@ export class PgPresenceStore implements PresenceStore {
       INSERT INTO harness_shared.coord_presence
         (owner_id, owner_label, workspace_id, source, intent,
          current_plan_slug, current_files, host, pid,
-         agent_role, pot_slug, heartbeat_at, last_active_at)
+         agent_role, pot_slug, heartbeat_at, last_active_at, intent_declared_at)
       VALUES (
         ${identity.ownerId}, ${identity.ownerLabel},
         ${identity.workspaceId ?? 'default'}, ${identity.source},
         ${input.intent ?? ''}, ${input.currentPlanSlug ?? null},
         ${JSON.stringify(input.currentFiles ?? [])}::text::jsonb,
         ${input.host ?? ''}, ${input.pid ?? null},
-        ${input.agentRole ?? null}, ${input.potSlug ?? null}, now(), now()
+        ${input.agentRole ?? null}, ${input.potSlug ?? null}, now(), now(), now()
       )
       ON CONFLICT (owner_id) DO UPDATE SET
         owner_label       = EXCLUDED.owner_label,
@@ -132,7 +134,15 @@ export class PgPresenceStore implements PresenceStore {
         agent_role        = COALESCE(EXCLUDED.agent_role, harness_shared.coord_presence.agent_role),
         pot_slug          = COALESCE(EXCLUDED.pot_slug, harness_shared.coord_presence.pot_slug),
         heartbeat_at      = now(),
-        last_active_at    = now()
+        last_active_at    = now(),
+        -- EI-8988: only advance when the intent TEXT actually changes — a
+        -- re-declare of the same string (or a row from before this column
+        -- existed) must not look like a fresh declaration.
+        intent_declared_at = CASE
+          WHEN EXCLUDED.intent IS DISTINCT FROM harness_shared.coord_presence.intent
+            THEN now()
+          ELSE COALESCE(harness_shared.coord_presence.intent_declared_at, now())
+        END
     `;
   }
 
@@ -228,7 +238,7 @@ export class PgPresenceStore implements PresenceStore {
       SELECT cp.owner_id, cp.owner_label, cp.workspace_id, cp.source,
              cp.intent, cp.current_plan_slug, cp.current_files,
              cp.host, cp.pid, cp.started_at, cp.heartbeat_at,
-             cp.last_active_at, cp.agent_role, cp.pot_slug, cp.compaction_limit,
+             cp.last_active_at, cp.intent_declared_at, cp.agent_role, cp.pot_slug, cp.compaction_limit,
              cp.context_tokens, cp.context_estimated_at,
              pus.user_id, pus.revoked_at
         FROM harness_shared.coord_presence cp
@@ -249,7 +259,7 @@ export class PgPresenceStore implements PresenceStore {
       SELECT cp.owner_id, cp.owner_label, cp.workspace_id, cp.source,
              cp.intent, cp.current_plan_slug, cp.current_files,
              cp.host, cp.pid, cp.started_at, cp.heartbeat_at,
-             cp.last_active_at, cp.agent_role, cp.pot_slug, cp.compaction_limit,
+             cp.last_active_at, cp.intent_declared_at, cp.agent_role, cp.pot_slug, cp.compaction_limit,
              cp.context_tokens, cp.context_estimated_at,
              pus.user_id, pus.revoked_at
         FROM harness_shared.coord_presence cp
@@ -315,7 +325,8 @@ export async function ensureCoordPresenceTable(sql: Sql): Promise<void> {
     )
   `;
   // presence-v2 (migration 277) columns the store reads/writes — added in place
-  // for a pre-v2 table left in the reused test container.
+  // for a pre-v2 table left in the reused test container. intent_declared_at
+  // (EI-8988) added the same way.
   await sql`
     ALTER TABLE harness_shared.coord_presence
       ADD COLUMN IF NOT EXISTS last_active_at   timestamptz,
@@ -323,7 +334,8 @@ export async function ensureCoordPresenceTable(sql: Sql): Promise<void> {
       ADD COLUMN IF NOT EXISTS pot_slug         text,
       ADD COLUMN IF NOT EXISTS compaction_limit integer,
       ADD COLUMN IF NOT EXISTS context_tokens   integer,
-      ADD COLUMN IF NOT EXISTS context_estimated_at timestamptz
+      ADD COLUMN IF NOT EXISTS context_estimated_at timestamptz,
+      ADD COLUMN IF NOT EXISTS intent_declared_at timestamptz
   `;
   await sql`
     CREATE TABLE IF NOT EXISTS harness_shared.power_user_sessions (

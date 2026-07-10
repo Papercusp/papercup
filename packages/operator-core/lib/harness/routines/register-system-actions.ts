@@ -281,3 +281,10 @@ import './cargo-test-action';
 // legacy hives); armed by upsertHiveGitGcRoutine at the mode-flip-off-legacy
 // call site (hive-git-gc-routine.ts) — no bespoke reconcile sweep needed.
 import './hive-git-gc-action';
+// critical-process-supervisor-2026-07-04 P-002 (EI-7021 design): `system:supervision-reconcile`
+// — the failed-unit reconciler, a bespoke ephemeral (tier:'ephemeral', 60s) operator-HOME cadence
+// (same reasoning as hive-git-gc-action's deviation from the generic per-install triggers.schedule
+// path — see supervision-reconcile-action.ts). Restarts a down systemd-user SUPERVISED_PROCESSES
+// entry when FLAGS.SUPERVISOR_AUTO_RESTART (default ON) && entry.autoRestart, with uniform
+// flap-damping; report-only otherwise. Seeded ACTIVE by seed-supervision-reconcile-routine.ts.
+import './supervision-reconcile-action';

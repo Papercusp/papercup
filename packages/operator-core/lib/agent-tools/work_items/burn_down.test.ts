@@ -108,6 +108,80 @@ describe('work_items:burn_down', () => {
     });
   });
 
+  it('omits closedSince/openedSince when `since` is not passed', () => {
+    const result = buildBurnDownResult(
+      [item({ id: 'WI-done', state: 'done', updatedAt: '2026-07-05T20:10:00.000Z' })],
+      new Set(),
+      { harness: 'papercusp' },
+    );
+    expect(result.closedSince).toBeUndefined();
+    expect(result.openedSince).toBeUndefined();
+  });
+
+  it('itemizes closedSince (terminal, updatedAt>since) and openedSince (createdAt>since), newest first', () => {
+    const result = buildBurnDownResult(
+      [
+        item({
+          id: 'WI-closed-old',
+          state: 'done',
+          createdAt: '2026-07-01T00:00:00.000Z',
+          updatedAt: '2026-07-05T20:05:00.000Z', // before since — not in closedSince
+        }),
+        item({
+          id: 'WI-closed-new',
+          state: 'resolved',
+          createdAt: '2026-07-01T00:00:00.000Z',
+          updatedAt: '2026-07-05T20:20:00.000Z',
+        }),
+        item({
+          id: 'WI-closed-newer',
+          state: 'dropped',
+          createdAt: '2026-07-01T00:00:00.000Z',
+          updatedAt: '2026-07-05T20:25:00.000Z',
+        }),
+        item({
+          id: 'WI-opened-new',
+          state: 'open',
+          createdAt: '2026-07-05T20:22:00.000Z',
+          updatedAt: '2026-07-05T20:22:00.000Z',
+        }),
+        item({
+          id: 'WI-opened-old',
+          state: 'open',
+          createdAt: '2026-07-01T00:00:00.000Z',
+          updatedAt: '2026-07-01T00:00:00.000Z',
+        }),
+      ],
+      new Set(),
+      { harness: 'papercusp', since: '2026-07-05T20:15:00.000Z' },
+    );
+    expect(result.closedSince?.rows.map((r) => r.id)).toEqual(['WI-closed-newer', 'WI-closed-new']);
+    expect(result.closedSince?.total).toBe(2);
+    expect(result.closedSince?.truncated).toBe(false);
+    expect(result.openedSince?.rows.map((r) => r.id)).toEqual(['WI-opened-new']);
+    expect(result.openedSince?.total).toBe(1);
+  });
+
+  it('caps closedSince/openedSince at DELTA_ROW_CAP and reports truncated + true total', () => {
+    const items = Array.from({ length: 35 }, (_, i) =>
+      item({
+        id: `WI-closed-${i}`,
+        state: 'done',
+        createdAt: '2026-07-01T00:00:00.000Z',
+        updatedAt: new Date(Date.parse('2026-07-05T20:15:01.000Z') + i * 1000).toISOString(),
+      }),
+    );
+    const result = buildBurnDownResult(items, new Set(), {
+      harness: 'papercusp',
+      since: '2026-07-05T20:15:00.000Z',
+    });
+    expect(result.closedSince?.rows).toHaveLength(30);
+    expect(result.closedSince?.total).toBe(35);
+    expect(result.closedSince?.truncated).toBe(true);
+    // newest first: the last-created row (i=34) should be first.
+    expect(result.closedSince?.rows[0]?.id).toBe('WI-closed-34');
+  });
+
   it('derives live owners from non-stale fresh presence rows', () => {
     const live = liveOwnersFromPresence(
       [

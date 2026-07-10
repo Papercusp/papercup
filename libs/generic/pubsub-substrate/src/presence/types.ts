@@ -58,6 +58,15 @@ export interface PresenceRecord {
    *  distinct from heartbeatAt, which the 60s keepalive bumps (D-003). null
    *  until the row's first activity write (pre-existing rows). */
   lastActiveAt: string | null;
+  /** When the CURRENT `intent` STRING was declared — distinct from lastActiveAt,
+   *  which also bumps on activity that never touches the intent text (tool
+   *  dispatch via touchActivity, an inbox-read heartbeat). Only a `write()` whose
+   *  intent value actually CHANGES advances this; a re-write with the same text,
+   *  touchHeartbeat/touchActivity/heartbeat never do. This is what lets a reader
+   *  tell "genuinely busy, stale intent text" (fresh activity, old
+   *  intentDeclaredAt — EI-8988's drift case) apart from "actually idle" (both
+   *  old). null until the row's first write. */
+  intentDeclaredAt: string | null;
   /** Durable agent role (human/su/bee/principal/…). null when unresolved. */
   agentRole: string | null;
   /** The agent's home Hive slug (null = standalone / no hive). */

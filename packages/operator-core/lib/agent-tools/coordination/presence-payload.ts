@@ -65,6 +65,15 @@ export type RosterRow = UnifiedPresenceRecord &
       /** Derived from lastActiveSecAgo: the declared intent is stale (the agent
        *  is process-alive but genuinely idle past the threshold). null = unknown. */
       intentStale: boolean | null;
+      /** Seconds since the CURRENT `intent` string was declared (EI-8988) —
+       *  distinct from lastActiveSecAgo, which also moves on activity that never
+       *  touches the intent text. null = unknown (federated/never-declared). */
+      intentAgeSec: number | null;
+      /** Derived: the agent is genuinely active (fresh lastActiveSecAgo) but its
+       *  intent TEXT is old (intentAgeSec past the divergence threshold) — a
+       *  declared-vs-derived drift signal distinct from intentStale (which only
+       *  fires when the agent is ALSO idle). null = unknown. */
+      intentDivergent: boolean | null;
       /** P-001: live | parked | ended (null for a federated/unknown row). */
       sessionState: SessionState | null;
       /** P-001: a live inbox-wake await exists → a wake will be delivered. */
@@ -112,6 +121,10 @@ export const PRESENCE_IDENTITY_FIELDS = [
 /** STATE lane — discrete transitions; the delta-eligible payload (with IDENTITY). */
 export const PRESENCE_STATE_FIELDS = [
   'intent',
+  // EI-8988: when `intent` was last declared — stable (byte-identical) until the
+  // intent text itself changes, exactly like `intent`, so it belongs beside it in
+  // STATE, not LIVENESS (unlike the derived intentAgeSec, which churns every read).
+  'intentDeclaredAt',
   'currentPlanSlug',
   'currentView',
   'currentFiles',
@@ -132,6 +145,10 @@ export const PRESENCE_STATE_FIELDS = [
 export const PRESENCE_LIVENESS_FIELDS = [
   'lastActiveSecAgo',
   'intentStale',
+  // EI-8988: both derived from a churning "seconds since" clock, same lane as
+  // lastActiveSecAgo/intentStale — never delta-eligible.
+  'intentAgeSec',
+  'intentDivergent',
   'stale',
   'sessionState',
   'wakeable',
@@ -226,6 +243,9 @@ export function toStableRosterRow(row: RosterRow): Record<string, unknown> {
     // actively progressed (idle past the threshold though its process still beats),
     // so a reader must not treat its work as "handled". Always present for a reader.
     intentStale: (liveness.intentStale as boolean | null | undefined) ?? null,
+    // EI-8988: declared-vs-derived divergence signal, always present for a reader.
+    intentAgeSec: (liveness.intentAgeSec as number | null | undefined) ?? null,
+    intentDivergent: (liveness.intentDivergent as boolean | null | undefined) ?? null,
     // P-001: the coordinator's "can I hand this agent work?" signals. Emitted as
     // explicit nulls for a federated/unknown row (its await lives on its home
     // instance, so we cannot derive them locally) rather than omitted, so the

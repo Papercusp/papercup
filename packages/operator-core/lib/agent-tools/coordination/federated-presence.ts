@@ -96,6 +96,9 @@ export function mapSharedPresenceRow(
     // federation boundary. pot_slug IS available (shared_presence is hive-keyed,
     // mig 187) — it's the federated leg of the P-004 hive-scoped read.
     lastActiveAt: null,
+    // Same federation-boundary gap as lastActiveAt: we get only last_seen, not
+    // when the intent text itself last changed (EI-8988).
+    intentDeclaredAt: null,
     agentRole: null,
     potSlug: row.pot_slug,
     stale: row.last_seen_ms < ctx.now - ctx.staleMs,
@@ -163,6 +166,8 @@ export function mapSessionPresenceRow(
     startedAt: iso,
     heartbeatAt: iso,
     lastActiveAt: iso,
+    // Session-grain rows carry only last_seen, same approximation as lastActiveAt.
+    intentDeclaredAt: iso,
     agentRole: row.kind,
     potSlug: row.pot_slug,
     stale: row.last_seen_ms < ctx.now - ctx.staleMs,

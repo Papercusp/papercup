@@ -21,6 +21,9 @@ interface StoredRow {
   heartbeatAt: number;
   /** Last genuine-activity time (ms); null until first activity (D-003). */
   lastActiveAt: number | null;
+  /** When the current intent STRING was last set (ms); only advances when a
+   *  write()'s intent value actually changes (EI-8988). */
+  intentDeclaredAt: number | null;
 }
 
 export interface InMemoryPresenceStoreOptions {
@@ -45,12 +48,18 @@ export class InMemoryPresenceStore implements PresenceStore {
       agentRole: input.agentRole ?? existing?.input.agentRole ?? null,
       potSlug: input.potSlug ?? existing?.input.potSlug ?? null,
     };
+    // intentDeclaredAt only advances when the intent TEXT actually changes
+    // (EI-8988) — a re-declare with the same string, or an existing row's
+    // first activity, must not look like a fresh declaration.
+    const intentChanged = (merged.intent ?? '') !== (existing?.input.intent ?? '');
+    const intentDeclaredAt = intentChanged ? t : (existing?.intentDeclaredAt ?? t);
     this.rows.set(identity.ownerId, {
       identity,
       input: merged,
       startedAt: existing?.startedAt ?? t,
       heartbeatAt: t,
       lastActiveAt: t, // a write IS activity
+      intentDeclaredAt,
     });
   }
 
@@ -83,6 +92,7 @@ export class InMemoryPresenceStore implements PresenceStore {
         startedAt: t,
         heartbeatAt: t,
         lastActiveAt: t,
+        intentDeclaredAt: null, // create-if-absent has no declared intent yet
       });
     }
   }
@@ -136,6 +146,7 @@ export class InMemoryPresenceStore implements PresenceStore {
       startedAt: new Date(r.startedAt).toISOString(),
       heartbeatAt: new Date(r.heartbeatAt).toISOString(),
       lastActiveAt: r.lastActiveAt != null ? new Date(r.lastActiveAt).toISOString() : null,
+      intentDeclaredAt: r.intentDeclaredAt != null ? new Date(r.intentDeclaredAt).toISOString() : null,
       agentRole: r.input.agentRole ?? null,
       potSlug: r.input.potSlug ?? null,
       compactionLimit: null,

@@ -299,20 +299,48 @@ describe('every hook pins format=json on its LIVE glance read (EI-7029 / WI-3665
   });
 });
 
-describe('install parity — every hooks/cc file reaches the installed runtime dir', () => {
-  it('the installer copies pc_tty.py (its importers fail open without it — silently)', () => {
-    const sh = readFileSync(INSTALLER, 'utf8');
-    expect(sh).toContain('pc_tty.py');
+describe('install parity — hooks/cc reaches ALL THREE deploy paths', () => {
+  // A hook that ships without the lib it imports raises ImportError, fails OPEN, and silently
+  // stops setting the title. There are three independent copy paths and each one has its own
+  // way of leaving a file behind (a `*.sh` glob, an explicit allowlist, a cp list) — so each
+  // gets its own assertion. This is the guard for the EI-8191 / WI-3665 shape.
+  const SIDECAR_BUILD = resolve(__dirname, '../../../papercusp-desktop/bin/build-desktop-sidecar.sh');
+  const DESKTOP_INSTALL = resolve(
+    __dirname,
+    '../../../packages/operator-core/lib/desktop-install/papercusp-files.ts',
+  );
+  const hookFiles = execFileSync('ls', [HOOKS_CC], { encoding: 'utf8' })
+    .split('\n')
+    .map((f) => f.trim())
+    .filter((f) => f.endsWith('.sh') || f.endsWith('.py'));
+
+  it('the repo actually has hook files + the shared lib (guards a vacuous suite)', () => {
+    expect(hookFiles).toContain('pc_tty.py');
+    expect(hookFiles).toContain('statusline-fleet.sh');
   });
 
-  it('no hooks/cc file is left behind by the installer', () => {
+  it('1/3 install-standalone-mcp.sh copies every hooks/cc file', () => {
     const sh = readFileSync(INSTALLER, 'utf8');
-    const files = execFileSync('ls', [HOOKS_CC], { encoding: 'utf8' })
-      .split('\n')
-      .map((f) => f.trim())
-      .filter((f) => f.endsWith('.sh') || f.endsWith('.py'));
-    expect(files.length).toBeGreaterThan(0);
-    const missing = files.filter((f) => !sh.includes(f));
-    expect(missing, `hooks/cc files never copied by install-standalone-mcp.sh: ${missing.join(', ')}`).toEqual([]);
+    const missing = hookFiles.filter((f) => !sh.includes(f));
+    expect(missing, `never copied by install-standalone-mcp.sh: ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('2/3 build-desktop-sidecar.sh ships the *.py libs, not just *.sh', () => {
+    const sh = readFileSync(SIDECAR_BUILD, 'utf8');
+    // `cp -a .../*.sh` alone would silently drop pc_tty.py from every packaged app.
+    expect(sh).toMatch(/\*\.py/);
+  });
+
+  it('3/3 the desktop installer allowlists every hooks/cc file', () => {
+    const ts = readFileSync(DESKTOP_INSTALL, 'utf8');
+    const list = ts.slice(ts.indexOf('const CC_HOOK_FILES'), ts.indexOf('] as const;'));
+    const missing = hookFiles.filter((f) => !list.includes(f));
+    expect(missing, `absent from CC_HOOK_FILES: ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('a python lib is installed non-executable (imported, never exec\'d)', () => {
+    const ts = readFileSync(DESKTOP_INSTALL, 'utf8');
+    expect(ts).toContain('CC_HOOK_LIB_FILES');
+    expect(ts).toContain('0o644');
   });
 });

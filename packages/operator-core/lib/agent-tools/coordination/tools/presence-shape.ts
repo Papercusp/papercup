@@ -45,6 +45,9 @@ export function shapeCoordPresence(data: unknown, tier: PresenceTier): unknown {
       claims: claimed.length,
       lastActiveSecAgo: r.lastActiveSecAgo ?? null,
       intentStale: r.intentStale ?? null,
+      // EI-8988: fresh activity + old intent text — the "busy but drifted" signal,
+      // cheap enough (one bool) to keep even in the trimmed tier.
+      intentDivergent: r.intentDivergent ?? null,
       fleet: r.fleetSlug ?? null,
       isSelf: r.isSelf === true,
     };

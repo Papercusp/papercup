@@ -43,6 +43,19 @@ export interface BurnDownParkedRow extends BurnDownRow {
   aliasedState?: string;
 }
 
+/** Lean itemized row for the `since`-bounded closed/opened lists — EI-8990. */
+export interface BurnDownDeltaRow {
+  id: string;
+  kind: string;
+  title: string;
+  state: string;
+  harness: string | null;
+  ts: string;
+}
+
+/** Cap on itemized closedSince/openedSince rows (each list independently). */
+const DELTA_ROW_CAP = 30;
+
 export interface BurnDownResult {
   ok: true;
   harness: string;
@@ -68,6 +81,14 @@ export interface BurnDownResult {
     parked: number;
     unclaimed: number;
   };
+  /** EI-8990: itemized (not just counted) terminal transitions since `since` —
+   *  omitted entirely when `since` is not passed. Capped at DELTA_ROW_CAP,
+   *  newest first; `truncated` names the true total when capped. */
+  closedSince?: { rows: BurnDownDeltaRow[]; total: number; truncated: boolean };
+  /** EI-8990: work-items CREATED since `since` (any state) — the "opened" half
+   *  of the burn-down delta a monitor loop otherwise has to re-derive by diffing
+   *  two full work_items:list snapshots. Same capping as closedSince. */
+  openedSince?: { rows: BurnDownDeltaRow[]; total: number; truncated: boolean };
 }
 
 function hasClaimHold(item: WorkItem): boolean {
@@ -133,16 +154,28 @@ export function buildBurnDownResult(
   const inFlight: BurnDownRow[] = [];
   const parked: BurnDownParkedRow[] = [];
   const unclaimed: BurnDownRow[] = [];
+  // EI-8990: itemized since-bounded deltas — only populated (and only cost
+  // anything) when `since` is passed. Sorted newest-first before capping so a
+  // truncated list still shows the most-recent transitions, not an arbitrary
+  // prefix of listWorkItems's own ordering.
+  const closedRows: BurnDownDeltaRow[] = [];
+  const openedRows: BurnDownDeltaRow[] = [];
 
   for (const item of items) {
     const row = toRow(item, item.assignee ? liveOwners.has(item.assignee) : undefined);
     const state = item.state;
+    if (hasSince && Date.parse(item.createdAt) > sinceMs) {
+      openedRows.push({ id: item.id, kind: item.kind, title: item.title, state, harness: item.harness, ts: item.createdAt });
+    }
     if (TERMINAL_STATES.has(state)) {
       terminal.total += 1;
       if (state in terminal && typeof terminal[state as keyof typeof terminal] === 'number') {
         (terminal[state as 'done' | 'passed' | 'resolved' | 'closed' | 'deprecated' | 'dropped']) += 1;
       }
-      if (hasSince && Date.parse(item.updatedAt) > sinceMs) terminal.delta += 1;
+      if (hasSince && Date.parse(item.updatedAt) > sinceMs) {
+        terminal.delta += 1;
+        closedRows.push({ id: item.id, kind: item.kind, title: item.title, state, harness: item.harness, ts: item.updatedAt });
+      }
       continue;
     }
 
@@ -173,6 +206,12 @@ export function buildBurnDownResult(
     unclaimed.push(row);
   }
 
+  const sortNewestFirst = (a: BurnDownDeltaRow, b: BurnDownDeltaRow) => Date.parse(b.ts) - Date.parse(a.ts);
+  const capDelta = (rows: BurnDownDeltaRow[]) => {
+    const sorted = [...rows].sort(sortNewestFirst);
+    return { rows: sorted.slice(0, DELTA_ROW_CAP), total: sorted.length, truncated: sorted.length > DELTA_ROW_CAP };
+  };
+
   return {
     ok: true,
     harness: opts.harness,
@@ -188,6 +227,7 @@ export function buildBurnDownResult(
       parked: parked.length,
       unclaimed: unclaimed.length,
     },
+    ...(hasSince ? { closedSince: capDelta(closedRows), openedSince: capDelta(openedRows) } : {}),
   };
 }
 
@@ -211,7 +251,7 @@ export default defineTool({
   name: 'work_items:burn_down',
   profile: 'engineer',
   description:
-    'One-call leader census for a harness work queue: terminal counts, in-flight rows with assignee liveness, parked rows (blocked/needs-human/claimHold), and unclaimed rows. Replaces hand-joining work_items:list with coord:presence for drain/fleet leader wakes.',
+    'One-call leader census for a harness work queue: terminal counts, in-flight rows with assignee liveness, parked rows (blocked/needs-human/claimHold), and unclaimed rows. Pass `since` to also get closedSince/openedSince — itemized (not just counted) terminal transitions and newly-created items, capped + newest-first. Replaces hand-joining work_items:list with coord:presence for drain/fleet leader wakes.',
   guidance: {
     when:
       'You are leading a drain/fleet/Queen pass and need to know what is done, actively held by a live or dead assignee, intentionally parked, and still unclaimed.',
@@ -240,7 +280,7 @@ export default defineTool({
       .string()
       .datetime()
       .optional()
-      .describe('optional ISO timestamp; terminal.delta counts terminal items updated after it'),
+      .describe('optional ISO timestamp; terminal.delta counts terminal items updated after it, and closedSince/openedSince are itemized around it'),
     includeChildren: z
       .boolean()
       .optional()
@@ -276,6 +316,38 @@ export default defineTool({
       parked: z.number(),
       unclaimed: z.number(),
     }),
+    closedSince: z
+      .object({
+        rows: z.array(
+          z.object({
+            id: z.string(),
+            kind: z.string(),
+            title: z.string(),
+            state: z.string(),
+            harness: z.string().nullable(),
+            ts: z.string(),
+          }),
+        ),
+        total: z.number(),
+        truncated: z.boolean(),
+      })
+      .optional(),
+    openedSince: z
+      .object({
+        rows: z.array(
+          z.object({
+            id: z.string(),
+            kind: z.string(),
+            title: z.string(),
+            state: z.string(),
+            harness: z.string().nullable(),
+            ts: z.string(),
+          }),
+        ),
+        total: z.number(),
+        truncated: z.boolean(),
+      })
+      .optional(),
   }),
   async handler(args, ctx) {
     const [items, presence] = await Promise.all([

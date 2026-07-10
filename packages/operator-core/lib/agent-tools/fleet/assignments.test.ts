@@ -7,8 +7,16 @@
  * composeDispatch pattern: extract the pure/DI-testable core, mock the IO seam).
  */
 import { describe, expect, it } from 'vitest';
-import { reconcileWakeability } from './assignments';
+import {
+  reconcileWakeability,
+  deriveMemberVerdict,
+  decorateMemberVerdicts,
+  VERDICT_SPEAKING_FRESH_MS,
+  VERDICT_STALL_MS,
+  type MemberVerdict,
+} from './assignments';
 import type { AgentAssignment } from '../../fleet/assignments';
+import type { WakeMode } from '../coordination/wake-mode';
 import type { SessionState, WakeabilitySignals } from '../coordination/presence-wakeability';
 
 function baseAgent(overrides: Partial<AgentAssignment> = {}): AgentAssignment & {
@@ -115,5 +123,144 @@ describe('reconcileWakeability (EI-6077)', () => {
     const out = await reconcileWakeability([], fetchFn);
     expect(out).toEqual([]);
     expect(called).toBe(false);
+  });
+});
+
+// ─────────────────── EI-8995: the single derived member verdict ───────────────────
+
+const NOW = 1_800_000_000_000;
+
+function verdictInput(overrides: Partial<Parameters<typeof deriveMemberVerdict>[0]> = {}) {
+  return {
+    present: true,
+    alive: true,
+    sessionState: 'live' as SessionState,
+    stalled: false,
+    load: 0,
+    lastToolCallAtMs: null as number | null,
+    ...overrides,
+  };
+}
+
+describe('deriveMemberVerdict (EI-8995)', () => {
+  it('sessionState ended → dead, regardless of a warm heartbeat', () => {
+    expect(deriveMemberVerdict(verdictInput({ sessionState: 'ended', alive: true }), NOW)).toBe('dead');
+  });
+
+  it('heartbeat-dead → dead', () => {
+    expect(deriveMemberVerdict(verdictInput({ alive: false, sessionState: null }), NOW)).toBe('dead');
+  });
+
+  it('fresh tool call → speaking (really working right now)', () => {
+    const last = NOW - VERDICT_SPEAKING_FRESH_MS + 1_000;
+    expect(deriveMemberVerdict(verdictInput({ lastToolCallAtMs: last }), NOW)).toBe('speaking');
+  });
+
+  it('speaking OUTRANKS a stalled claim: a live member with one stuck ITEM is a re-steer, not a relaunch', () => {
+    const last = NOW - 60_000;
+    expect(deriveMemberVerdict(verdictInput({ stalled: true, load: 2, lastToolCallAtMs: last }), NOW)).toBe(
+      'speaking',
+    );
+  });
+
+  it('holding work + quiet past the stall window → stalled (the member-level wedge)', () => {
+    const last = NOW - VERDICT_STALL_MS - 60_000;
+    expect(deriveMemberVerdict(verdictInput({ load: 1, lastToolCallAtMs: last }), NOW)).toBe('stalled');
+  });
+
+  it('per-claim stall rollup (not speaking) → stalled even when idle-loaded recently', () => {
+    const last = NOW - VERDICT_SPEAKING_FRESH_MS - 60_000;
+    expect(deriveMemberVerdict(verdictInput({ stalled: true, lastToolCallAtMs: last }), NOW)).toBe('stalled');
+  });
+
+  it('worked before, quiet now, holding nothing → first-turn-done (between wakes / drained)', () => {
+    const last = NOW - VERDICT_STALL_MS - 60_000;
+    expect(deriveMemberVerdict(verdictInput({ load: 0, lastToolCallAtMs: last }), NOW)).toBe('first-turn-done');
+  });
+
+  it('present but ZERO tool calls ever → joined (a join event is NOT liveness)', () => {
+    expect(deriveMemberVerdict(verdictInput({ lastToolCallAtMs: null }), NOW)).toBe('joined');
+  });
+
+  it('claims at boot with no tool call yet is joined, NOT stalled (never wedge-flag a boot window)', () => {
+    expect(deriveMemberVerdict(verdictInput({ load: 3, lastToolCallAtMs: null }), NOW)).toBe('joined');
+  });
+
+  it('recorded-live but not coord-registered → booted (the pre-join bootstrap gap)', () => {
+    expect(
+      deriveMemberVerdict(verdictInput({ sessionState: 'recorded' as SessionState, lastToolCallAtMs: null }), NOW),
+    ).toBe('booted');
+    expect(deriveMemberVerdict(verdictInput({ present: false, sessionState: null }), NOW)).toBe('booted');
+  });
+});
+
+describe('decorateMemberVerdicts (EI-8995)', () => {
+  function memberAgent(overrides: Partial<AgentAssignment> = {}): AgentAssignment & {
+    sessionState?: SessionState | null;
+    verdict?: MemberVerdict;
+    wakeMode?: WakeMode;
+    lastToolCallAt?: string | null;
+  } {
+    return {
+      agentId: 'su-member-1',
+      label: null,
+      name: null,
+      present: true,
+      alive: true,
+      heartbeatAt: new Date(NOW).toISOString(),
+      intent: '',
+      declaredPlanSlug: null,
+      fleetSlug: 'f-1',
+      fleetRole: 'member',
+      claims: [],
+      orphaned: false,
+      stalled: false,
+      declaredUnclaimed: false,
+      doing: null,
+      queued: [],
+      load: 0,
+      sessionState: 'live',
+      ...overrides,
+    };
+  }
+
+  it('stamps verdict + lastToolCallAt from the batch fetch, wakeMode from override ?? default', async () => {
+    const lastIso = new Date(NOW - 30_000).toISOString();
+    const [speaking, manual] = await decorateMemberVerdicts(
+      [memberAgent(), memberAgent({ agentId: 'su-member-2' })],
+      async () => new Map([['su-member-1', lastIso]]),
+      async () => new Map<string, WakeMode>([['su-member-2', 'manual']]),
+      async () => 'auto',
+      NOW,
+    );
+    expect(speaking.verdict).toBe('speaking');
+    expect(speaking.lastToolCallAt).toBe(lastIso);
+    expect(speaking.wakeMode).toBe('auto'); // no override → the global default
+    expect(manual.verdict).toBe('joined'); // no tool call ever
+    expect(manual.lastToolCallAt).toBeNull();
+    expect(manual.wakeMode).toBe('manual'); // per-agent override wins
+  });
+
+  it('a manual GLOBAL default stamps manual on members with no override — the silently-staged-wakes read', async () => {
+    const [out] = await decorateMemberVerdicts(
+      [memberAgent()],
+      async () => new Map(),
+      async () => new Map<string, WakeMode>(),
+      async () => 'manual',
+      NOW,
+    );
+    expect(out.wakeMode).toBe('manual');
+  });
+
+  it('empty input is a no-op (never calls any fetcher)', async () => {
+    let called = 0;
+    const out = await decorateMemberVerdicts(
+      [],
+      async () => ((called += 1), new Map()),
+      async () => ((called += 1), new Map()),
+      async () => ((called += 1), 'auto' as WakeMode),
+    );
+    expect(out).toEqual([]);
+    expect(called).toBe(0);
   });
 });

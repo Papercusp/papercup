@@ -81,6 +81,34 @@ export function computeIntentStale(
   return lastActiveSecAgo > thresholdSec;
 }
 
+/** How much older `intentAgeSec` may run past `lastActiveSecAgo` before the gap
+ *  itself counts as drift (EI-8988) — a busy agent (fresh lastActiveSecAgo) whose
+ *  declared intent TEXT hasn't been touched in a while. Deliberately smaller than
+ *  INTENT_STALE_SEC: intentStale answers "is this agent idle"; intentDivergent
+ *  answers "is this agent active but possibly on undeclared work" — a narrower,
+ *  earlier-firing signal. Default 15m; env-overridable. */
+export const INTENT_DIVERGENCE_SEC = (() => {
+  const v = Number(process.env.PAPERCUSP_INTENT_DIVERGENCE_SEC ?? 15 * 60);
+  return Number.isFinite(v) && v > 0 ? v : 15 * 60;
+})();
+
+/**
+ * Pure: does the declared intent TEXT look stale relative to the agent's own
+ * genuine activity — i.e. it's doing real work (lastActiveSecAgo fresh) but the
+ * intent string hasn't been re-declared in a while (intentAgeSec old)? This is
+ * the "declared-vs-derived divergence" EI-8988 asks for: a useful drift signal
+ * distinct from intentStale (which only fires when the agent is ALSO idle).
+ * null when either side is unknown (can't judge a federated/never-active peer).
+ */
+export function computeIntentDivergent(
+  intentAgeSec: number | null,
+  lastActiveSecAgo: number | null,
+  thresholdSec: number = INTENT_DIVERGENCE_SEC,
+): boolean | null {
+  if (intentAgeSec == null || lastActiveSecAgo == null) return null;
+  return intentAgeSec - lastActiveSecAgo > thresholdSec;
+}
+
 /**
  * IO seam: one batch query each for claims / model / active-awaits + the
  * wake-mode overrides, all keyed by ownerId. Returns the join-derived
@@ -140,19 +168,31 @@ export async function fetchPresenceTier1(
  * record. Records with no enrichment entry (e.g. federated peers) get
  * lastActiveSecAgo only; the join fields stay absent.
  */
-export function mergeTier1<T extends { ownerId: string; lastActiveAt: string | null }>(
+export function mergeTier1<
+  T extends { ownerId: string; lastActiveAt: string | null; intentDeclaredAt?: string | null },
+>(
   records: T[],
   joins: Map<string, PresenceTier1Joins>,
   nowMs: number,
-): Array<T & { lastActiveSecAgo: number | null; intentStale: boolean | null } & Partial<PresenceTier1Joins>> {
+): Array<
+  T & {
+    lastActiveSecAgo: number | null;
+    intentStale: boolean | null;
+    intentAgeSec: number | null;
+    intentDivergent: boolean | null;
+  } & Partial<PresenceTier1Joins>
+> {
   return records.map((r) => {
     const lastActiveSecAgo = computeLastActiveSecAgo(r.lastActiveAt, nowMs);
+    const intentAgeSec = computeLastActiveSecAgo(r.intentDeclaredAt ?? null, nowMs);
     return {
       ...r,
       ...(joins.get(r.ownerId) ?? {}),
       // Derived AFTER the joins spread so neither the record nor a join can shadow it.
       lastActiveSecAgo,
       intentStale: computeIntentStale(lastActiveSecAgo),
+      intentAgeSec,
+      intentDivergent: computeIntentDivergent(intentAgeSec, lastActiveSecAgo),
     };
   });
 }

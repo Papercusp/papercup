@@ -48,6 +48,7 @@ const MAXIMAL_ROW: RosterRow = {
   harnessSlug: 'papercup',
   // — state —
   intent: 'doing things',
+  intentDeclaredAt: '2026-06-14T00:50:00.000Z',
   currentPlanSlug: 'plan-x',
   currentView: 'harness/papercup',
   currentFiles: ['a.ts'],
@@ -60,6 +61,8 @@ const MAXIMAL_ROW: RosterRow = {
   // — liveness —
   lastActiveSecAgo: 42,
   intentStale: false,
+  intentAgeSec: 600,
+  intentDivergent: false,
   stale: false,
   sessionState: 'live',
   wakeable: true,
@@ -77,6 +80,7 @@ const LOCAL_BASE: UnifiedPresenceRecord = {
   workspaceId: 'ws',
   source: 'omp-hook-session',
   intent: 'reviewing the fold',
+  intentDeclaredAt: '2026-06-14T00:59:00.000Z',
   currentPlanSlug: 'presence-v2-2026-06-14',
   currentFiles: ['presence.ts'],
   host: 'box',
@@ -105,7 +109,7 @@ describe('partitionPresenceRow', () => {
     const { identity, state, liveness } = partitionPresenceRow(MAXIMAL_ROW);
     expect(identity).toMatchObject({ ownerId: 'su-x', model: 'opus', potSlug: 'papercup-hive' });
     expect(state).toMatchObject({ intent: 'doing things', claimedItems: ['P-001'], wakeMode: 'auto' });
-    expect(liveness).toEqual({ lastActiveSecAgo: 42, intentStale: false, stale: false, sessionState: 'live', wakeable: true, onDesktop: true, viewerAttached: true });
+    expect(liveness).toEqual({ lastActiveSecAgo: 42, intentStale: false, intentAgeSec: 600, intentDivergent: false, stale: false, sessionState: 'live', wakeable: true, onDesktop: true, viewerAttached: true });
     // raw timestamps live in no lane
     expect(identity).not.toHaveProperty('heartbeatAt');
     expect(state).not.toHaveProperty('lastActiveAt');
@@ -118,6 +122,7 @@ describe('partitionPresenceRow', () => {
       workspaceId: 'ws',
       source: 'federated',
       intent: 'remote work',
+      intentDeclaredAt: null,
       currentPlanSlug: null,
       currentFiles: [],
       host: 'thinkpad',
@@ -175,6 +180,8 @@ describe('byte-stability (D-006)', () => {
     expect(emitted).toHaveProperty('startedAt'); // stable identity timestamp — kept
     expect(emitted).toHaveProperty('lastActiveSecAgo');
     expect(emitted).toHaveProperty('intentStale'); // stale-ownership signal, always emitted
+    expect(emitted).toHaveProperty('intentAgeSec'); // EI-8988: seconds since intent text last changed
+    expect(emitted).toHaveProperty('intentDivergent'); // EI-8988: fresh activity + old intent text
     // P-001 wakeability signals are always emitted (null when un-derived).
     expect(emitted).toHaveProperty('sessionState');
     expect(emitted).toHaveProperty('wakeable');

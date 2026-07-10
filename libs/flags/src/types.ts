@@ -1434,6 +1434,12 @@ export const FLAGS = {
   // env-configured width like before this feature. No-op outside Tauri
   // (isTauri() false ⇒ the component never mounts).
   TERMINAL_DIVIDER: "papercusp-terminal-divider",
+  // critical-process-supervisor-2026-07-04 P-002 (EI-7021 design, D-003): master switch for the
+  // failed-unit reconciler's ACTUAL `systemctl --user restart <unit>` action. DEFAULT ON (derived
+  // FLAG_DEFAULTS — repo rule: finished work never ships dark; restart of a dead critical process
+  // IS the feature). OFF ⇒ report-only everywhere — probes + notifications still run, nothing is
+  // ever restarted. No `process.env.PAPERCUSP_*` gate (`lint:env-feature-gates`).
+  SUPERVISOR_AUTO_RESTART: "papercusp-supervisor-auto-restart",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
