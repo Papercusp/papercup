@@ -222,3 +222,31 @@ describe('loop:checkpoint — the P-006 walls merge (commitments cleared explici
     expect(written).not.toContain('## Walls');
   });
 });
+
+describe('pickUnreadCursor — P-007 fleet-member-dx (EI-9035)', () => {
+  it('never-settled watermark + a real inbox read ⇒ the read is the cursor (the old permanent "inbox not evaluated" case)', async () => {
+    const { pickUnreadCursor } = await import('./checkpoint');
+    expect(pickUnreadCursor('', '2026-07-10T03:00:00.000Z')).toBe('2026-07-10T03:00:00.000Z');
+    expect(pickUnreadCursor(null, '2026-07-10T03:00:00.000Z')).toBe('2026-07-10T03:00:00.000Z');
+  });
+
+  it('a mid-turn read AFTER the last settle narrows the window to post-read arrivals', async () => {
+    const { pickUnreadCursor } = await import('./checkpoint');
+    expect(
+      pickUnreadCursor('2026-07-10T01:00:00.000Z', '2026-07-10T03:00:00.000Z'),
+    ).toBe('2026-07-10T03:00:00.000Z');
+  });
+
+  it('a stale read BEFORE the last settle defers to the watermark', async () => {
+    const { pickUnreadCursor } = await import('./checkpoint');
+    expect(
+      pickUnreadCursor('2026-07-10T03:00:00.000Z', '2026-07-10T01:00:00.000Z'),
+    ).toBe('2026-07-10T03:00:00.000Z');
+  });
+
+  it('neither cursor ⇒ null (the gate blocks — fail-safe toward settling, unchanged)', async () => {
+    const { pickUnreadCursor } = await import('./checkpoint');
+    expect(pickUnreadCursor('', null)).toBeNull();
+    expect(pickUnreadCursor(undefined, undefined)).toBeNull();
+  });
+});

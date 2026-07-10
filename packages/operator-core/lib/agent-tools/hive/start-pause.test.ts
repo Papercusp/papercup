@@ -18,6 +18,11 @@ vi.mock('../../hive/started', () => ({
   anyHivePlacementStarted: (...a: unknown[]) => anyHivePlacementStarted(...a),
 }));
 
+const isWorkspaceCoordinationOn = vi.fn();
+vi.mock('../../workspace-brain-scope', () => ({
+  isWorkspaceCoordinationOn: (...a: unknown[]) => isWorkspaceCoordinationOn(...a),
+}));
+
 const armDefaults = vi.fn();
 vi.mock('../../hive/wake-defaults', () => ({
   armDefaultHiveWakeSubscriptions: (...a: unknown[]) => armDefaults(...a),
@@ -74,6 +79,7 @@ beforeEach(() => {
   beeRows = [];
   armDefaults.mockResolvedValue({ rules: 3, added: 0 });
   requestUrgentHiveWake.mockResolvedValue({ fired: true, coalesced: false });
+  isWorkspaceCoordinationOn.mockResolvedValue(false);
   // Default: pausing THIS hive leaves none started → the workspace loop idles.
   anyHivePlacementStarted.mockResolvedValue(false);
 });
@@ -97,6 +103,25 @@ describe('pot:start (P-005 / D-006)', () => {
     expect(requestUrgentHiveWake).toHaveBeenCalledWith(
       expect.objectContaining({ harness: 'my-hive', workspaceId: 'ws-1' }),
     );
+  });
+
+  it('rejects a second started install when workspace coordination collapses wake state to one sentinel', async () => {
+    isWorkspaceCoordinationOn.mockResolvedValue(true);
+    anyHivePlacementStarted.mockResolvedValue(true);
+
+    const out = await call(hiveStart as never, { harness: 'bogus-install' });
+
+    expect(out).toEqual({
+      ok: false,
+      error: 'workspace_install_conflict',
+      message: 'Workspace coordination already has another started install; pause it before starting this install.',
+      workspace: 'ws-1',
+      harness: 'bogus-install',
+    });
+    expect(setHivePlacementStarted).not.toHaveBeenCalled();
+    expect(setHiveStarted).not.toHaveBeenCalled();
+    expect(armDefaults).not.toHaveBeenCalled();
+    expect(requestUrgentHiveWake).not.toHaveBeenCalled();
   });
 });
 

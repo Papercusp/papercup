@@ -728,6 +728,33 @@ async function injectPsuHostWake(
   return injectWarm();
 }
 
+/**
+ * Re-verify the interactive host after a failed socket write before parking the
+ * delivery. A bg-host/desktop freeze can leave the discovery record and socket
+ * path present while the first connect attempt races a host restart or a
+ * transiently wedged socket. Re-reading discovery is cheap and, importantly,
+ * can pick up a host that rebound the socket under the same owner. The delivery
+ * remains durable and parked if the bounded second attempt also misses, so the
+ * normal parked-row recheck still provides the later retry.
+ */
+async function injectPsuHostWakeWithReverify(
+  d: DeliveryWork,
+  warmText: string,
+  findPsuHost: (ownerId: string) => { sock: string } | null,
+  injectPsuHost: typeof injectIntoHost,
+  deps: ExecuteWakeDeps,
+): Promise<WakeOutcome | null> {
+  let host = findPsuHost(d.subscriberId);
+  for (let attempt = 0; host && attempt < 2; attempt += 1) {
+    const outcome = await injectPsuHostWake(d, host.sock, warmText, injectPsuHost, deps);
+    if (outcome) return outcome;
+    // Re-read the owner-scoped discovery record after a miss. Do not reuse the
+    // first host object: a live psu host may have rebound its control socket.
+    host = findPsuHost(d.subscriberId);
+  }
+  return null;
+}
+
 /** Execute one wake delivery attempt. Never throws — every failure is an outcome. */
 export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): Promise<WakeOutcome> {
   const getSession = deps.getSession ?? getAdvSession;
@@ -750,11 +777,14 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // live session by ownerId and needs no resumable handle (EI-152: handle-less
       // always-armed inbox-wakes were parking even with a live socket available,
       // because the socket inject below sat under this early-return).
-      const psuHost = findPsuHost(d.subscriberId);
-      if (psuHost) {
-        const outcome = await injectPsuHostWake(d, psuHost.sock, wakeTurnText(d), injectPsuHost, deps);
-        if (outcome) return outcome;
-      }
+      const outcome = await injectPsuHostWakeWithReverify(
+        d,
+        wakeTurnText(d),
+        findPsuHost,
+        injectPsuHost,
+        deps,
+      );
+      if (outcome) return outcome;
       // No injectable socket: presence fresh → park (a one-time inbox nudge
       // reaches it, engine.ts); gone/stale → degrade straight to a durable
       // coord inbox delivery instead of dropping outright (P-001).
@@ -803,11 +833,14 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // authoritative "alive + injectable" signal — self-validating (host pid alive
     // + socket present) — so inject the wake turn in place; on any miss fall
     // through to the normal channels.
-    const psuHost = findPsuHost(d.subscriberId);
-    if (psuHost) {
-      const outcome = await injectPsuHostWake(d, psuHost.sock, text, injectPsuHost, deps);
-      if (outcome) return outcome;
-    }
+    const outcome = await injectPsuHostWakeWithReverify(
+      d,
+      text,
+      findPsuHost,
+      injectPsuHost,
+      deps,
+    );
+    if (outcome) return outcome;
 
     if (isAlive && pidKnown) {
       // Channel 1: one of our managed ptys? (pid match — /adv-spawned sessions).

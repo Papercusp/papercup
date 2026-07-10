@@ -76,6 +76,7 @@ function makeDeps(overrides: Partial<ResolveEmbedderDeps> = {}): {
   deps: ResolveEmbedderDeps;
   buildOpenAi: ReturnType<typeof vi.fn>;
   buildLocal: ReturnType<typeof vi.fn>;
+  buildGemma: ReturnType<typeof vi.fn>;
   resolveKey: ReturnType<typeof vi.fn>;
   localInstalled: ReturnType<typeof vi.fn>;
 } {

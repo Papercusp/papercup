@@ -506,6 +506,30 @@ describe('executeWake — the liveness ladder', () => {
     expect(out).toMatchObject({ kind: 'park' });
   });
 
+  it('re-verifies the owner host after a socket miss and retries a rebound socket', async () => {
+    const findPsuHost = vi
+      .fn()
+      .mockReturnValueOnce({ sock: '/tmp/psu-pty/stale.sock' })
+      .mockReturnValueOnce({ sock: '/tmp/psu-pty/rebound.sock' });
+    const injectPsuHost = vi
+      .fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({
+        findPsuHost: findPsuHost as never,
+        injectPsuHost: injectPsuHost as never,
+      }),
+    );
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    expect(findPsuHost).toHaveBeenCalledTimes(2);
+    expect(injectPsuHost).toHaveBeenNthCalledWith(1, '/tmp/psu-pty/stale.sock', expect.objectContaining({ mode: 'turn' }));
+    expect(injectPsuHost).toHaveBeenNthCalledWith(2, '/tmp/psu-pty/rebound.sock', expect.objectContaining({ mode: 'turn' }));
+  });
+
   it('exited claude with a native id → DETACHED headless `-p` turn (never a pty — a TTY stdin makes `-p` hang)', async () => {
     const spawnDetached = vi.fn(() => 4321);
     const spawnManagedPty = vi.fn(() => ({ id: 'pty-new' }));

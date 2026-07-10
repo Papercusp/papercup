@@ -53,6 +53,7 @@ vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 import ThrottleSection, {
   effectiveCadence,
   effectiveMax,
+  formatCadence,
   idleEnabled,
   throttleActiveCount,
 } from './ThrottleSection';
@@ -93,6 +94,12 @@ describe('ThrottleSection pure helpers', () => {
     expect(effectiveMax(20, 8)).toBe(8);
     expect(effectiveMax(4, null)).toBe(4); // system unknown ⇒ the override alone
   });
+  it('formats cadence in human-sized units', () => {
+    expect(formatCadence(45)).toBe('45 sec');
+    expect(formatCadence(60)).toBe('1 min');
+    expect(formatCadence(90)).toBe('1.5 min');
+    expect(formatCadence(300)).toBe('5 min');
+  });
   it('idleEnabled defaults ON; only explicit false suppresses', () => {
     expect(idleEnabled(null, 'gym')).toBe(true);
     expect(idleEnabled({}, 'scout')).toBe(true);
@@ -114,14 +121,14 @@ describe('ThrottleSection rendering + writes', () => {
   it('defaults to a compact summary', () => {
     render(<ThrottleSection {...makeProps()} />, { wrapper: ClosedWrap });
     expect(screen.getByText('Limits')).toBeTruthy();
-    expect(screen.queryByLabelText('Wake cadence floor (seconds)')).toBeNull();
+    expect(screen.queryByLabelText('Custom time between wakes in minutes')).toBeNull();
   });
 
   it('renders all knobs with the system defaults in the hints', () => {
     render(<ThrottleSection {...makeProps()} />, { wrapper: Wrap });
     expect(screen.getByText('Limits')).toBeTruthy();
-    expect(screen.getByText('defaults')).toBeTruthy();
-    expect(screen.getByLabelText('Wake cadence floor (seconds)')).toBeTruthy();
+    expect(screen.getByText('Workspace')).toBeTruthy();
+    expect(screen.getByLabelText('Custom time between wakes in minutes')).toBeTruthy();
     expect(screen.getByLabelText('Max concurrent contributor')).toBeTruthy();
     expect(screen.getByLabelText('Cap contributor at model tier')).toBeTruthy();
     expect(screen.getByRole('checkbox', { name: 'Gym idle activity' })).toBeTruthy();
@@ -131,7 +138,7 @@ describe('ThrottleSection rendering + writes', () => {
   it('a cadence preset chip writes that floor', () => {
     const props = makeProps();
     render(<ThrottleSection {...props} />, { wrapper: Wrap });
-    fireEvent.click(screen.getByRole('button', { name: '2m' }));
+    fireEvent.click(screen.getByRole('button', { name: '2 min' }));
     expect(props.onSetCadenceFloor).toHaveBeenCalledWith(120);
   });
 
@@ -144,12 +151,20 @@ describe('ThrottleSection rendering + writes', () => {
     expect(props.onSetMaxBees).toHaveBeenCalledWith(4);
   });
 
-  it('clearing the cadence input commits null (clear override)', () => {
+  it('custom minutes commit to the seconds-based steering seam', () => {
     const props = makeProps({ cadenceFloorSec: 300 });
     render(<ThrottleSection {...props} />, { wrapper: Wrap });
-    const input = screen.getByLabelText('Wake cadence floor (seconds)');
-    fireEvent.change(input, { target: { value: '' } });
+    const input = screen.getByLabelText('Custom time between wakes in minutes');
+    expect((input as HTMLInputElement).value).toBe('5');
+    fireEvent.change(input, { target: { value: '2.5' } });
     fireEvent.blur(input);
+    expect(props.onSetCadenceFloor).toHaveBeenCalledWith(150);
+  });
+
+  it('resets custom wake timing directly to the workspace value', () => {
+    const props = makeProps({ cadenceFloorSec: 300 });
+    render(<ThrottleSection {...props} />, { wrapper: Wrap });
+    fireEvent.click(screen.getByRole('button', { name: 'Use workspace wake timing' }));
     expect(props.onSetCadenceFloor).toHaveBeenCalledWith(null);
   });
 
@@ -179,6 +194,6 @@ describe('ThrottleSection rendering + writes', () => {
 
   it('shows the active count when knobs are set', () => {
     render(<ThrottleSection {...makeProps({ cadenceFloorSec: 120, maxBees: 4 })} />, { wrapper: Wrap });
-    expect(screen.getByText('2 active')).toBeTruthy();
+    expect(screen.getByText('2 custom')).toBeTruthy();
   });
 });

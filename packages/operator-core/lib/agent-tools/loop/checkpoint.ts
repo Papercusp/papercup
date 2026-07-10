@@ -50,6 +50,19 @@ import { continuationGateFromReads } from '../coordination/tools/continuation-ga
  * (colon registry name + underscore transport variant). Best-effort: any
  * failure returns null (the gate then fails safe toward settling, as before).
  */
+/** P-007 pure cursor pick: the LATER of the turn-END settle watermark and the
+ *  owner's last inbox READ — either alone counts; neither ⇒ null (the gate then
+ *  blocks, fail-safe toward settling). ISO strings compare lexicographically. */
+export function pickUnreadCursor(
+  wmTs: string | null | undefined,
+  readTs: string | null | undefined,
+): string | null {
+  const a = wmTs || null;
+  const b = readTs || null;
+  if (a && b) return b > a ? b : a;
+  return b ?? a;
+}
+
 export async function lastInboxReadAt(ownerId: string): Promise<string | null> {
   try {
     const { sql } = getOrgPg();
@@ -241,9 +254,8 @@ export default defineTool({
         // "inbox not evaluated"; and a mid-turn read after the last settle correctly
         // narrows "unread" to what arrived AFTER that read. Neither cursor available ⇒
         // stays null (blocking — fail safe toward settling, unchanged).
-        const wmTs = wm?.messages_since_ts || null;
         const readTs = await lastInboxReadAt(ownerId);
-        const sinceTs = readTs && (!wmTs || readTs > wmTs) ? readTs : wmTs;
+        const sinceTs = pickUnreadCursor(wm?.messages_since_ts, readTs);
         if (sinceTs) {
           const unread = await readInbox(ownerId, { since_ts: sinceTs, excludeOwn: true });
           unreadInbox = unread.length;

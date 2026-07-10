@@ -39,6 +39,11 @@ const h = vi.hoisted(() => ({
   // truthy project) so every pre-existing test keeps firing unchanged; tests for
   // the new skip flip this to null.
   resolveProject: vi.fn(async (_slug: string, _ws?: string): Promise<{ slug: string } | null> => ({ slug: 'h' })),
+  goneTargetSkipValue: { value: null as string | null },
+  setHiveStarted: vi.fn(async (_workspaceId: string, _installSlug: string, _started: boolean) => {}),
+  setOverwatchStarted: vi.fn(async (_workspaceId: string, _installSlug: string, _started: boolean) => {}),
+  resolveBrainOwner: vi.fn(async (_workspaceId: string) => 'owner-1' as string | null),
+  wakeRecipients: vi.fn(async (..._args: unknown[]) => ({ woken: 1 })),
 }));
 
 vi.mock('@dbos-inc/dbos-sdk', () => {
@@ -90,6 +95,10 @@ vi.mock('../inference-gateway/observability', () => ({
   gatewayWholesaleThrottled: vi.fn(async () => h.gatewayThrottled.value),
 }));
 vi.mock('../harness-core', () => ({ resolveProject: h.resolveProject }));
+vi.mock('../hive/started', () => ({ setHiveStarted: h.setHiveStarted }));
+vi.mock('../overwatch/control-state', () => ({ setOverwatchStarted: h.setOverwatchStarted }));
+vi.mock('../harness/routines/wake-brain-action', () => ({ resolveBrainOwner: h.resolveBrainOwner }));
+vi.mock('../agent-tools/coordination/inbox-wake', () => ({ wakeRecipients: h.wakeRecipients }));
 
 import {
   durableSpawnFire,
@@ -130,11 +139,32 @@ beforeEach(() => {
   h.agentConfig.value = null;
   h.pgRunOutputRows.value = [];
   h.activeQueenRows.value = [];
+  h.goneTargetSkipValue.value = null;
+  h.setHiveStarted.mockClear();
+  h.setOverwatchStarted.mockClear();
+  h.resolveBrainOwner.mockReset();
+  h.resolveBrainOwner.mockResolvedValue('owner-1');
+  h.wakeRecipients.mockClear();
   h.sql.mockReset();
   h.sql.mockImplementation(async (...args: unknown[]): Promise<unknown[]> => {
     const strings = args[0] as TemplateStringsArray | string | undefined;
     const text = Array.isArray(strings) ? strings.join(' ') : String(strings);
     if (text.includes('FROM harness_shared.spawned_agents')) return h.activeQueenRows.value as unknown[];
+    if (text.includes('INSERT INTO harness_shared.operator_settings') && text.includes('RETURNING value')) {
+      const previous = Number(h.goneTargetSkipValue.value);
+      if (Number.isFinite(previous) && previous < 0) return [{ value: String(previous) }];
+      const next = Number.isFinite(previous) && previous > 0 ? previous + 1 : 1;
+      h.goneTargetSkipValue.value = String(next);
+      return [{ value: String(next) }];
+    }
+    if (text.includes('DELETE FROM harness_shared.operator_settings')) {
+      h.goneTargetSkipValue.value = null;
+      return [];
+    }
+    if (text.includes('UPDATE harness_shared.operator_settings')) {
+      h.goneTargetSkipValue.value = '-3';
+      return [];
+    }
     return h.pgRunOutputRows.value as unknown[];
   });
   (h.sql as typeof h.sql & { begin: (cb: (tx: typeof h.sql) => unknown) => unknown }).begin = vi.fn(
@@ -354,6 +384,59 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     });
     expect(h.loopbackFetch).toHaveBeenCalledTimes(1);
     expect(h.finishSpawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('WI-3682: escalates and clears the Mug started bit after three consecutive gone-target skips', async () => {
+    h.resolveProject.mockResolvedValue(null);
+    const input = {
+      ...IMPL,
+      url: 'http://x/api/harness/gone-hive/invoke?role=mug&ws=ws',
+      spawnRecord: { workspaceId: 'ws', harnessSlug: 'gone-hive', childRole: 'mug' },
+    };
+
+    await durableSpawnFireImpl({ ...input, idempotencyKey: 'gone-mug-1' });
+    await durableSpawnFireImpl({ ...input, idempotencyKey: 'gone-mug-2' });
+    expect(h.setHiveStarted).not.toHaveBeenCalled();
+    await durableSpawnFireImpl({ ...input, idempotencyKey: 'gone-mug-3' });
+
+    expect(h.setHiveStarted).toHaveBeenCalledWith('ws', 'gone-hive', false);
+    expect(h.wakeRecipients).toHaveBeenCalledWith(['owner-1'], expect.objectContaining({
+      source: 'durable-spawn:gone-target',
+      workspaceId: 'ws',
+    }));
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('auto-cleared'));
+
+    // The negative marker makes the detector idempotent while already cleared;
+    // queued replays must not wake/escalate the owner on every cycle.
+    await durableSpawnFireImpl({ ...input, idempotencyKey: 'gone-mug-4' });
+    expect(h.setHiveStarted).toHaveBeenCalledTimes(1);
+    expect(h.wakeRecipients).toHaveBeenCalledTimes(1);
+  });
+
+  it('WI-3682: maps the Kettle control role to the Overwatch started bit', async () => {
+    h.resolveProject.mockResolvedValue(null);
+    const input = {
+      ...IMPL,
+      url: 'http://x/api/harness/gone-hive/invoke?role=kettle&ws=ws',
+      spawnRecord: { workspaceId: 'ws', harnessSlug: 'gone-hive', childRole: 'kettle' },
+    };
+    await durableSpawnFireImpl({ ...input, idempotencyKey: 'gone-kettle-1' });
+    await durableSpawnFireImpl({ ...input, idempotencyKey: 'gone-kettle-2' });
+    await durableSpawnFireImpl({ ...input, idempotencyKey: 'gone-kettle-3' });
+    expect(h.setOverwatchStarted).toHaveBeenCalledWith('ws', 'gone-hive', false);
+    expect(h.setHiveStarted).not.toHaveBeenCalled();
+  });
+
+  it('WI-3682: an existing target resets a prior gone-target streak before firing', async () => {
+    h.goneTargetSkipValue.value = '2';
+    const input = {
+      ...IMPL,
+      url: 'http://x/api/harness/hive/invoke?role=mug&ws=ws',
+      spawnRecord: { workspaceId: 'ws', harnessSlug: 'hive', childRole: 'mug' },
+    };
+    await durableSpawnFireImpl(input);
+    expect(h.goneTargetSkipValue.value).toBeNull();
+    expect(h.loopbackFetch).toHaveBeenCalledTimes(1);
   });
 
   it('does not pre-gate Codex/OpenAI control-plane spawns on a Claude gateway throttle', async () => {

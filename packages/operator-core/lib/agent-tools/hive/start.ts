@@ -21,10 +21,11 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolvePotHomeSlug } from '../../hive/wake';
-import { setHiveStarted, setHivePlacementStarted } from '../../hive/started';
+import { anyHivePlacementStarted, setHiveStarted, setHivePlacementStarted } from '../../hive/started';
 import { armDefaultHiveWakeSubscriptions } from '../../hive/wake-defaults';
 import { setDefaultWakeMode } from '../coordination/wake-mode';
 import { requestUrgentHiveWake } from '../../hive/urgent-wake';
+import { isWorkspaceCoordinationOn } from '../../workspace-brain-scope';
 import { softText, clampText, LIMITS } from '../limits';
 
 export default defineTool({
@@ -66,6 +67,30 @@ export default defineTool({
               ok: false,
               error: 'no_home_harness',
               message: 'Pass `harness` (or set PAPERCUSP_POT_HOME_SLUG) — the started state is per-pot.',
+            }),
+          },
+        ],
+      };
+    }
+
+    // WI-3681: workspace coordination intentionally collapses the Queen's
+    // wake routine to one workspace-sentinel row. A second started install
+    // would overwrite that row's launchInstallSlug and silently redirect the
+    // real workspace's wake to the bogus install. Reject the conflicting
+    // start before any state or wake writes; callers can pause the existing
+    // install first, or keep workspace coordination scoped to one install.
+    if (await isWorkspaceCoordinationOn() && (await anyHivePlacementStarted(workspaceId, installSlug))) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: 'workspace_install_conflict',
+              message:
+                'Workspace coordination already has another started install; pause it before starting this install.',
+              workspace: workspaceId,
+              harness: installSlug,
             }),
           },
         ],

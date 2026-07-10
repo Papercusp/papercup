@@ -144,6 +144,149 @@ function parseInvokeTarget(input: DurableSpawnFireInput): { role: string; harnes
   }
 }
 
+/**
+ * A gone target is normally a harmless stale queued fire.  Repeated gone-target
+ * skips are different: they mean a control loop is still armed for a harness
+ * that no longer exists.  Keep the detector durable because queued fires can be
+ * handled by different operator processes (or after a restart).
+ */
+export const DURABLE_SPAWN_GONE_TARGET_SKIP_THRESHOLD = 3;
+const GONE_TARGET_SKIP_KEY_PREFIX = 'durable_spawn_gone_target_skips:';
+
+export function durableSpawnGoneTargetSkipThreshold(): number {
+  const raw = Number(process.env.PAPERCUSP_DURABLE_SPAWN_GONE_TARGET_SKIP_THRESHOLD ?? DURABLE_SPAWN_GONE_TARGET_SKIP_THRESHOLD);
+  return Number.isFinite(raw) && raw >= 1 ? Math.max(1, Math.floor(raw)) : DURABLE_SPAWN_GONE_TARGET_SKIP_THRESHOLD;
+}
+
+function goneTargetSkipKey(target: { role: string; harnessSlug: string; workspaceId: string }): string {
+  return `${GONE_TARGET_SKIP_KEY_PREFIX}${encodeURIComponent(target.workspaceId)}:${encodeURIComponent(target.harnessSlug)}:${encodeURIComponent(target.role)}`;
+}
+
+async function noteGoneTargetSkip(
+  target: { role: string; harnessSlug: string; workspaceId: string },
+): Promise<{ count: number; escalated: boolean } | null> {
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const key = goneTargetSkipKey(target);
+    const rows = await getOrgPg().sql<Array<{ value?: string }>>`
+      INSERT INTO harness_shared.operator_settings (key, value, description, updated_at, workspace_id)
+      VALUES (
+        ${key}, '1',
+        ${'Durable-spawn gone-target detector streak. A negative value means the started bit was auto-cleared after escalation.'},
+        ${Date.now()}, ${target.workspaceId}
+      )
+      ON CONFLICT (key) DO UPDATE SET
+        value = CASE
+          WHEN harness_shared.operator_settings.value ~ '^-\\d+$' THEN harness_shared.operator_settings.value
+          WHEN harness_shared.operator_settings.value ~ '^\\d+$' THEN (harness_shared.operator_settings.value::int + 1)::text
+          ELSE '1'
+        END,
+        updated_at = EXCLUDED.updated_at
+      RETURNING value
+    `;
+    const value = String(rows[0]?.value ?? '1');
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return { count: 1, escalated: false };
+    return parsed < 0
+      ? { count: Math.abs(Math.trunc(parsed)), escalated: true }
+      : { count: Math.max(1, Math.trunc(parsed)), escalated: false };
+  } catch (e) {
+    // The detector must never turn a harmless stale fire into a failed workflow.
+    console.warn(
+      `[durable-spawn] gone-target streak write failed (${target.workspaceId}/${target.harnessSlug}/${target.role}): ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+    return null;
+  }
+}
+
+async function clearGoneTargetSkip(target: { role: string; harnessSlug: string; workspaceId: string }): Promise<void> {
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    await getOrgPg().sql`
+      DELETE FROM harness_shared.operator_settings
+       WHERE key = ${goneTargetSkipKey(target)}`;
+  } catch (e) {
+    console.warn(
+      `[durable-spawn] gone-target streak reset failed (${target.workspaceId}/${target.harnessSlug}/${target.role}): ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+  }
+}
+
+async function markGoneTargetSkipEscalated(
+  target: { role: string; harnessSlug: string; workspaceId: string },
+  count: number,
+): Promise<void> {
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    await getOrgPg().sql`
+      UPDATE harness_shared.operator_settings
+         SET value = ${String(-Math.max(1, Math.trunc(count)))}, updated_at = ${Date.now()}
+       WHERE key = ${goneTargetSkipKey(target)}`;
+  } catch (e) {
+    console.warn(
+      `[durable-spawn] gone-target escalation marker failed (${target.workspaceId}/${target.harnessSlug}/${target.role}): ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+  }
+}
+
+/** Stop the armed control loop after a confirmed repeated gone-target streak. */
+async function escalateGoneTargetSkip(
+  input: DurableSpawnFireInput,
+  target: { role: string; harnessSlug: string; workspaceId: string },
+  count: number,
+  detail: string,
+): Promise<void> {
+  let cleared = false;
+  try {
+    if (target.role === 'mug') {
+      const { setHiveStarted } = await import('../hive/started');
+      await setHiveStarted(target.workspaceId, target.harnessSlug, false);
+      cleared = true;
+    } else if (target.role === 'kettle') {
+      const { setOverwatchStarted } = await import('../overwatch/control-state');
+      await setOverwatchStarted(target.workspaceId, target.harnessSlug, false);
+      cleared = true;
+    }
+  } catch (e) {
+    console.warn(
+      `[durable-spawn] gone-target auto-clear failed (${input.label ?? input.idempotencyKey}): ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+  }
+
+  const summary =
+    `⚠️ Durable-spawn skipped ${count} consecutive fires for missing ${target.role} target ` +
+    `"${target.harnessSlug}" in workspace ${target.workspaceId}: ${detail}. ` +
+    (cleared ? 'The started bit was auto-cleared; inspect the harness lifecycle.' : 'The started bit could not be auto-cleared; inspect the harness lifecycle.');
+  try {
+    const { resolveBrainOwner } = await import('../harness/routines/wake-brain-action');
+    const owner = await resolveBrainOwner(target.workspaceId).catch(() => null);
+    if (owner) {
+      const { wakeRecipients } = await import('../agent-tools/coordination/inbox-wake');
+      await wakeRecipients([owner], {
+        summary,
+        source: 'durable-spawn:gone-target',
+        workspaceId: target.workspaceId,
+      });
+    }
+  } catch (e) {
+    console.warn(
+      `[durable-spawn] gone-target owner alert failed (${input.label ?? input.idempotencyKey}): ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+  }
+  if (cleared) await markGoneTargetSkipEscalated(target, count);
+  console.warn(`[durable-spawn] ${summary}`);
+}
+
 function parseInvokeResultBody(bodyText: string): {
   ok?: unknown;
   rawStdoutTail?: unknown;
@@ -433,8 +576,29 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
   // spawned_agents row is recorded, same as the gateway-dispatch-gate skip below.
   const goneCheck = await shouldSkipForGoneTarget(input);
   if (goneCheck.skip) {
-    console.warn(`[durable-spawn] skipped ${input.label ?? input.idempotencyKey}: ${goneCheck.detail}`);
+    const target = parseInvokeTarget(input);
+    const streak = target ? await noteGoneTargetSkip(target) : null;
+    const count = streak?.count ?? 1;
+    console.warn(
+      `[durable-spawn] skipped ${input.label ?? input.idempotencyKey}: ${goneCheck.detail} ` +
+        `(consecutive gone-target skips: ${count})`,
+    );
+    if (
+      target &&
+      (target.role === 'mug' || target.role === 'kettle') &&
+      streak &&
+      !streak.escalated &&
+      streak.count >= durableSpawnGoneTargetSkipThreshold()
+    ) {
+      await escalateGoneTargetSkip(input, target, streak.count, goneCheck.detail ?? 'target harness is missing');
+    }
     return;
+  }
+  const target = parseInvokeTarget(input);
+  if (target && (target.role === 'mug' || target.role === 'kettle')) {
+    // A target that exists again closes the prior gone-target streak, even if
+    // this particular fire later fails for an unrelated transient reason.
+    await clearGoneTargetSkip(target);
   }
 
   // WI-2376: avoid launching autonomous agents into a known all-account gateway
