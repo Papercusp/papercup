@@ -297,6 +297,70 @@ const announceTopicStateByMuxer = new WeakMap<object, Map<string, TopicAnnounceS
 const announcePairedMuxers = new WeakSet<object>();
 const guardCountedSockets = new WeakSet<object>();
 
+/**
+ * EI-1599 — content-replication peer accounting. `announceTopicStateByMuxer`
+ * is a WeakMap (keyed by muxer, for GC) and therefore NOT enumerable, so it
+ * cannot answer "how many peers is hive X actually content-syncing with" —
+ * exactly the gap findings-M/EI-1599 flagged once Brief H (A-002) made the
+ * announce channel per-topic instead of per-muxer. These plain (non-weak)
+ * side-structures mirror topic-gossip.ts's `channels: Set<...>` /
+ * `openChannelCount` pattern for the SHARED content substrate swarm: a topic's
+ * entry is added when its (muxer, topic) announce channel OPENS and removed
+ * when it CLOSES, so the count only ever reflects live, paired peers — never
+ * unbounded (a dead/rekeyed connection's entry is always reclaimed on close).
+ */
+const contentPeerMuxersByTopic = new Map<string, Set<object>>();
+/** ms-epoch of the last inbound signed-announce frame received on a topic's
+ *  content-announce channel — the most recent evidence of live content-sync
+ *  activity with SOME peer on that hive. This is a RECEIVE-side proxy (an
+ *  announce arrived), not an admission/merge timestamp — admission is the
+ *  caller's business (`onAnnounce`), which this module doesn't see the result
+ *  of. Callers should label it accordingly (e.g. "last synced with a peer",
+ *  not "last merged"). */
+const lastContentAnnounceRecvMsByTopic = new Map<string, number>();
+
+function trackContentPeerOpen(topicHex: string, mux: object): void {
+  let set = contentPeerMuxersByTopic.get(topicHex);
+  if (!set) {
+    set = new Set();
+    contentPeerMuxersByTopic.set(topicHex, set);
+  }
+  set.add(mux);
+}
+
+function trackContentPeerClose(topicHex: string, mux: object): void {
+  const set = contentPeerMuxersByTopic.get(topicHex);
+  if (!set) return;
+  set.delete(mux);
+  if (set.size === 0) contentPeerMuxersByTopic.delete(topicHex);
+}
+
+/**
+ * EI-1599: the number of DISTINCT live peers whose content-announce channel is
+ * currently OPEN for `topicHex` — i.e. peers this hive is actually content-
+ * replicating with, not merely reachable-for-discovery. Omit `topicHex` for
+ * the total across every topic (mirrors topic-gossip.ts's `openChannelCount`).
+ * Unlike `reachablePeersForHive` (the hive-directory's discovery/announce-
+ * topic count) or the shared swarm's raw `connectionCount`/`liveConnectionCount`
+ * (process-global across every hive sharing the singleton swarm — see the
+ * A-002 header above), this is scoped to ONE hive's content topic.
+ */
+export function contentPeerCountForTopic(topicHex?: string): number {
+  if (topicHex) return contentPeerMuxersByTopic.get(topicHex)?.size ?? 0;
+  let n = 0;
+  for (const set of contentPeerMuxersByTopic.values()) n += set.size;
+  return n;
+}
+
+/**
+ * EI-1599: ms-epoch of the last inbound signed-announce frame received on
+ * `topicHex`'s content-announce channel, or `null` if none has ever been
+ * received (including "no peer has ever paired on this topic").
+ */
+export function lastContentAnnounceRecvMs(topicHex: string): number | null {
+  return lastContentAnnounceRecvMsByTopic.get(topicHex) ?? null;
+}
+
 // ── WI-1544 (defect iii): periodic announce re-flush ──
 // The announce exchange is ONE-SHOT per (muxer, topic): `sentKeys` dedups
 // forever, and the receive side never re-requests. So any single loss — a
@@ -464,10 +528,16 @@ function createAnnounceChannel(
       announceDebug(
         `open topic=${channelId.toString('hex').slice(0, 16)} entries=${state.entries.size}`,
       );
+      // EI-1599: this (muxer, topic) pairing succeeded — count this peer
+      // toward the topic's content-replication peer count until it closes.
+      trackContentPeerOpen(channelId.toString('hex'), mux as object);
       flushTopicAnnounces(state); // send ALL local logs' announces on this topic
     },
     onclose: () => {
       announceDebug(`close mux=${muxId} topic=${channelId.toString('hex').slice(0, 16)}`);
+      // EI-1599: this peer's content-announce channel is gone — stop
+      // counting it (a dead/rekeyed connection never inflates the count).
+      trackContentPeerClose(channelId.toString('hex'), mux as object);
     },
   });
   if (!channel) {
@@ -483,6 +553,9 @@ function createAnnounceChannel(
       announceDebug(
         `recv topic=${channelId.toString('hex').slice(0, 16)} log=${frame.log_core_key.slice(0, 12)}...`,
       );
+      // EI-1599: a frame arrived on this topic — record it as the most recent
+      // live content-sync activity, regardless of what admission decides.
+      lastContentAnnounceRecvMsByTopic.set(channelId.toString('hex'), Date.now());
       // A-003 (a′): deliver an inbound announce to EVERY local harness that
       // admits on this topic (send-only harnesses register no onAnnounce).
       // P-006 §5.2/§5.3: hand each a per-connection context — `send` for a

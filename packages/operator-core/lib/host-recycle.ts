@@ -26,17 +26,24 @@
  * sustained outage — but it's needless SIGABRT churn during every
  * high-load restart). The only lever available at this layer is to not
  * START the risky native close in the first place when we already know the
- * loop is critically saturated: `closeSubstrate()` is skipped (not merely
- * bounded) whenever `isSaturated()` reads true at drain time, trading a
- * (pre-existing, already-accepted per this file's own header) socket-lingers-
- * until-peer-timeout cost for avoiding the crash entirely. A full native-level
- * fix needs an attached debugger / core dump on a live repro, which is out of
- * scope for a headless fix — tracked as a follow-up.
+ * loop is under pressure: `closeSubstrate()` is skipped (not merely bounded)
+ * whenever `isSaturated()` reads true at drain time, trading a (pre-existing,
+ * already-accepted per this file's own header) socket-lingers-until-peer-
+ * timeout cost for avoiding the crash entirely. A full native-level fix needs
+ * an attached debugger / core dump on a live repro, which is out of scope for
+ * a headless fix — tracked as a follow-up.
+ *
+ * WI-3848 (a peer's live crash sample) showed this can fire at p95 as low as
+ * ~400-700ms — BELOW event-loop-lag-monitor's default 600ms 'critical'
+ * threshold for some of that range. So `isSaturated` defaults to
+ * `isLoopElevated` (the 'elevated' OR 'critical' band, default >=120ms p95),
+ * not the narrower `isLoopSaturated` ('critical' only, >=600ms) — the skip is
+ * cheap and the observed crash range starts well below 'critical'.
  */
 
 import { closeAllBootedHarnesses } from './sync/hyperbee/boot-all';
 import { markShuttingDown } from './shutdown-state';
-import { isLoopSaturated } from './event-loop-lag-monitor';
+import { isLoopElevated } from './event-loop-lag-monitor';
 
 /** The slice of `@hono/node-server`'s server this helper needs. */
 export interface RecycleServerLike {
@@ -58,10 +65,13 @@ export interface GracefulRecycleOpts {
   /** Test seam — defaults to `closeAllBootedHarnesses`. */
   closeSubstrate?: () => Promise<unknown>;
   /**
-   * Test seam — defaults to `isLoopSaturated` (event-loop-lag-monitor.ts).
-   * WI-3795: when the loop is ALREADY critically saturated at the moment the
-   * drain starts, skip attempting the substrate close entirely (see the
-   * WI-3795 note below `closeSubstrate` in this file's header doc).
+   * Test seam — defaults to `isLoopElevated` (event-loop-lag-monitor.ts): the
+   * 'elevated' OR 'critical' band (default p95 >=120ms), NOT the narrower
+   * 'critical'-only `isLoopSaturated` (default >=600ms). WI-3795/WI-3848: when
+   * the loop is ALREADY under pressure at the moment the drain starts, skip
+   * attempting the substrate close entirely (see the WI-3795/WI-3848 note
+   * below `closeSubstrate` in this file's header doc — live crash evidence
+   * showed this can fire below the 'critical' threshold).
    */
   isSaturated?: () => boolean;
 }
@@ -77,7 +87,7 @@ export function gracefulHostRecycle(opts: GracefulRecycleOpts): void {
   const recycleExitCode = opts.recycleExitCode ?? 75;
   const exit = opts.exit ?? ((code: number) => process.exit(code));
   const closeSubstrate = opts.closeSubstrate ?? closeAllBootedHarnesses;
-  const isSaturated = opts.isSaturated ?? isLoopSaturated;
+  const isSaturated = opts.isSaturated ?? isLoopElevated;
 
   let exited = false;
   const exitOnce = (code: number) => {
@@ -90,16 +100,17 @@ export function gracefulHostRecycle(opts: GracefulRecycleOpts): void {
   (hardExit as { unref?: () => void }).unref?.();
 
   // Substrate teardown starts immediately, concurrent with the HTTP drain —
-  // UNLESS the loop is already critically saturated (WI-3795): starting the
+  // UNLESS the loop is already under pressure (WI-3795/WI-3848): starting the
   // native P2P-substrate close under that condition is what triggers the
-  // Napi::Error/SIGABRT crash, and a bounded/caught wrapper here can't
-  // prevent it (the throw escapes below the JS layer). Skipping the attempt
-  // trades the same pre-existing "sockets linger until peer timeout" cost
-  // this file already accepts for a clean exit instead of a crash.
+  // Napi::Error/SIGABRT crash (observed as low as p95 ~400-700ms, below the
+  // 'critical' band), and a bounded/caught wrapper here can't prevent it (the
+  // throw escapes below the JS layer). Skipping the attempt trades the same
+  // pre-existing "sockets linger until peer timeout" cost this file already
+  // accepts for a clean exit instead of a crash.
   const substrateDown = (async () => {
     if (isSaturated()) {
       console.warn(
-        '[host-recycle] event loop critically saturated at drain time — skipping substrate teardown to avoid the WI-3795 Napi::Error/SIGABRT race (sockets will linger until peer timeout, same as an abandoned-on-crash exit)',
+        '[host-recycle] event loop under pressure at drain time — skipping substrate teardown to avoid the WI-3795/WI-3848 Napi::Error/SIGABRT race (sockets will linger until peer timeout, same as an abandoned-on-crash exit)',
       );
       return;
     }

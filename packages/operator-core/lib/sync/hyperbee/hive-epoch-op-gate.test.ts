@@ -6,6 +6,7 @@ import {
   type EpochKeyResolver,
 } from './hive-epoch-op-gate';
 import { PendingEpochContent } from './pending-epoch-content';
+import { EpochKeyUnavailableError } from './hive-epoch-key-provider';
 import type { HiveEpochCrypto, EpochKey } from './hive-epoch-crypto';
 import type { OpEnvelope } from './op-envelope-types';
 import type { LocalWriteOp } from './boot';
@@ -35,10 +36,17 @@ function fakeCrypto(): HiveEpochCrypto {
 }
 
 const KEY_OK: EpochKeyResolver = async () => 'K' as unknown as EpochKey;
-const KEY_MISSING: EpochKeyResolver = async () => {
-  throw new Error('EpochKeyUnavailable'); // a member whose wrapped row hasn't arrived
-};
 const HIVE = 'hello-world-hive';
+// A genuine key-absence (no wrapped row for this device at all) — real production
+// resolvers (hive-epoch-key-provider.ts) throw exactly this type on a null blob.
+const KEY_MISSING: EpochKeyResolver = async () => {
+  throw new EpochKeyUnavailableError(HIVE, 0);
+};
+// A TRANSIENT failure of the resolve path itself (PG deadlock/timeout/keychain fault) —
+// distinct from a genuine absence: the key may already be sitting in PG (WI-898 F1).
+const KEY_TRANSIENT: EpochKeyResolver = async () => {
+  throw new Error('connection terminated unexpectedly'); // e.g. a PG blip on the wrapped-key SELECT
+};
 
 const localOp = (over: Partial<LocalWriteOp> = {}): LocalWriteOp =>
   ({ type: 'put', table: 'harness-features', hbKey: 'F-1', value: { title: 'hi' }, ts: 0, writerPubkey: 'author1', ...over }) as LocalWriteOp;
@@ -87,6 +95,21 @@ describe('hive-epoch-op-gate', () => {
     expect(out).toBe(false);
     expect(inner).not.toHaveBeenCalled();
     expect(pending.size()).toBe(1); // deferred; a removed member's never drains = forever cut
+  });
+
+  it('WI-898 F1: a TRANSIENT resolveKey failure (not EpochKeyUnavailableError) ⇒ RETHROWS, never deferred', async () => {
+    const pending = new PendingEpochContent();
+    const gate = buildEpochDecryptGate({ crypto: fakeCrypto(), resolveKey: KEY_TRANSIENT, potId: HIVE, pending });
+    const inner = vi.fn(async () => true);
+    await expect(
+      gate(inner)({ type: 'put', table: 'harness-features', hbKey: 'F-2', value: { __rekey: 'YWJj' }, epoch: 5 } as OpEnvelope),
+    ).rejects.toThrow('connection terminated unexpectedly');
+    expect(inner).not.toHaveBeenCalled();
+    // NOT deferred: the key may already be in PG, so parking it in the pending buffer
+    // (whose only recovery is a future key-arrival event that will never re-fire) would
+    // strand the content until a process restart. Rethrowing lets read-merge's
+    // applyRecordingWinner treat this as transient and retry WITHOUT advancing the cursor.
+    expect(pending.size()).toBe(0);
   });
 
   it('have key but decrypt fails (wrong key / tampered AAD) ⇒ DROP (not deferred)', async () => {

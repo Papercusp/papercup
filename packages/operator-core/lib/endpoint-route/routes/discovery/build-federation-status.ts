@@ -11,13 +11,20 @@
  *   - `hives[].reachablePeers` is `reachablePeersForHive` — peers on THIS hive's
  *     ANNOUNCE/discovery topic (who could find + join it), NOT content-replication
  *     peers. Owned + non-private only; a private hive never announces → 0.
+ *   - `hives[].contentPeers` (EI-1599, composes onto Brief H/A-002) is
+ *     `contentPeersForHive` — the TRUE per-hive content-replication peer count:
+ *     peers whose content-announce channel is open on this hive's OWN content
+ *     topic, i.e. actually syncing hive content right now. `hives[].lastContentSyncMs`
+ *     is the ms-epoch of the last inbound announce seen on that topic (`null` =
+ *     none yet) — a receive-side "still active" signal, NOT an admission/merge
+ *     timestamp. Both are 0/null for a hive with no minted identity yet.
  *   - `substrate` is the install-wide local boot health (getInProcessSubstrateStatus),
  *     i.e. "is my federation infrastructure up", NOT a per-peer sync claim.
- *   - `substrate.drain` (EI-1618/EI-1599) is the install-wide SYNC-health signal:
- *     how many booted harnesses have content CAPTURED in `substrate_outbox` but not
- *     yet drained to the federation log (the EI-681 silent-stall class). It only ever
- *     reports a STALL, never a positive "synced" (the shared swarm has no clean
- *     per-hive count to back a positive claim — see findings-M).
+ *   - `substrate.drain` (EI-1618) is the install-wide SYNC-health signal: how many
+ *     booted harnesses have content CAPTURED in `substrate_outbox` but not yet
+ *     drained to the federation log (the EI-681 silent-stall class). It only ever
+ *     reports a STALL, never a positive "synced" — that gap is what `hives[].contentPeers`
+ *     / `lastContentSyncMs` above now fill in at the per-hive level (see findings-M).
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { getHiveDirectory } from '../../../hive-directory-deps';
@@ -47,6 +54,12 @@ export interface OwnedHiveStatusRow {
   memberCount: number;
   /** Peers on this hive's announce topic (discovery reach). 0 for private/unwired. */
   reachablePeers: number;
+  /** EI-1599: TRUE content-replication peer count on this hive's own content
+   *  topic (not discovery). 0 for a hive with no minted identity yet. */
+  contentPeers: number;
+  /** EI-1599: ms-epoch of the last content-sync activity seen on this hive's
+   *  content topic, or `null` if none yet / no minted identity. */
+  lastContentSyncMs: number | null;
 }
 
 export interface FederationStatus {
@@ -103,6 +116,11 @@ export async function buildFederationStatus(): Promise<FederationStatus> {
       // reachablePeersForHive: 0 for a private hive (never announced) or one not
       // yet registered in the directory — honest, not a hidden failure.
       reachablePeers: h.visibility === 'private' ? 0 : dir.reachablePeersForHive(h.potId),
+      // EI-1599: content-replication reach is NOT gated on visibility — a
+      // private hive still content-syncs with its members over its own topic,
+      // it just never ANNOUNCES on the discovery topic (reachablePeers above).
+      contentPeers: dir.contentPeersForHive(h.potId),
+      lastContentSyncMs: dir.lastContentSyncAtForHive(h.potId),
     }));
   } catch {
     hives = [];

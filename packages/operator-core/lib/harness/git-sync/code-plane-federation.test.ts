@@ -161,11 +161,34 @@ async function makeSuperWithSub(
 const headOf = (dir: string): Promise<string> => git(['rev-parse', 'HEAD'], dir);
 const tipOf = (bare: string, ref: string): Promise<string> => git(['rev-parse', ref], bare);
 
+// Git identity for EVERY commit these tests make — including the ones runGitSync
+// makes INSIDE a submodule checkout, which configRepo() never reached. Without this
+// the submodule commit fell back to the host's GLOBAL git identity: present for a
+// dev-box user, ABSENT on a fresh box (CI runner / packaged install / new laptop),
+// where runGitSync then failed with "Author identity unknown" and the sync returned
+// 'error'. The four GIT_*_{NAME,EMAIL} env vars give any child git process an
+// identity regardless of per-repo config — the standard hermetic-git-in-CI approach.
+const GIT_IDENTITY_ENV = {
+  GIT_AUTHOR_NAME: 'AH integration',
+  GIT_AUTHOR_EMAIL: 'ah-it@example.com',
+  GIT_COMMITTER_NAME: 'AH integration',
+  GIT_COMMITTER_EMAIL: 'ah-it@example.com',
+} as const;
+const savedGitIdentity: Record<string, string | undefined> = {};
+
 beforeAll(async () => {
+  for (const [k, v] of Object.entries(GIT_IDENTITY_ENV)) {
+    savedGitIdentity[k] = process.env[k];
+    process.env[k] = v;
+  }
   tmpRoot = await mkdtemp(join(tmpdir(), 'ah-codeplane-'));
 });
 
 afterAll(async () => {
+  for (const [k, v] of Object.entries(savedGitIdentity)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
   await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
 });
 

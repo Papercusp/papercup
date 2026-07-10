@@ -11,8 +11,16 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { detectFromRepo, detectionToOverride, splitTestCommandArgv } from './detect-from-repo';
 import { resolveAndValidate } from '../agent-tools/blueprint/_resolve';
+
+// detectFromRepo VERIFIES a detected `npm test` by actually running it. A release
+// SOURCE bundle ships without npm (packaged installs have none by design), so the
+// "pass" case below cannot produce a verified=true run there. Its twin — the FAILING
+// verify case — still passes without npm (npm-absent IS a failing run). Gate only the
+// success case on npm's presence, rather than skipping the whole file.
+const NPM_AVAILABLE = spawnSync('npm', ['--version'], { stdio: 'ignore' }).status === 0;
 
 const created: string[] = [];
 
@@ -38,7 +46,7 @@ const pkg = (extra: Record<string, unknown> = {}) =>
   JSON.stringify({ name: 'fix', version: '1.0.0', ...extra }, null, 2);
 
 describe('detectFromRepo — test command', () => {
-  it('detects a node test command and VERIFIES it by running it (pass)', () => {
+  it.skipIf(!NPM_AVAILABLE)('detects a node test command and VERIFIES it by running it (pass)', () => {
     const root = fixture({
       'package.json': pkg({ scripts: { test: 'node -e "process.exit(0)"' } }),
       'package-lock.json': '{}',

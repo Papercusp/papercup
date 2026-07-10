@@ -18,6 +18,7 @@ import {
   type DrainedEpoch,
 } from '../hive-epoch-op-gate';
 import { PendingEpochContent } from '../pending-epoch-content';
+import { EpochKeyUnavailableError } from '../hive-epoch-key-provider';
 import type { OpEnvelope } from '../op-envelope-types';
 import type { HiveEpochCrypto, EpochKey } from '../hive-epoch-crypto';
 import type { LocalWriteOp } from '../boot';
@@ -198,9 +199,11 @@ describe('decrypt-gate DEFER → drain CONVERGE — the end-to-end ship-gate gua
     } as OpEnvelope;
 
     // A REMAINING member whose epoch-3 key hasn't arrived yet (resolver rejects until it does).
+    // WI-898 F1: the gate only defers a GENUINE absence — throw the real typed error real
+    // resolvers (hive-epoch-key-provider.ts) use, not a generic Error.
     let keyAvailable = false;
     const resolveKey = async () => {
-      if (!keyAvailable) throw new Error('EpochKeyUnavailable');
+      if (!keyAvailable) throw new EpochKeyUnavailableError(HIVE, 3);
       return 'K' as unknown as EpochKey;
     };
     const pending = new PendingEpochContent();
@@ -248,7 +251,7 @@ describe('decrypt-gate DEFER → drain CONVERGE — the end-to-end ship-gate gua
     } as OpEnvelope;
     let keyAvailable = false;
     const resolveKey = async () => {
-      if (!keyAvailable) throw new Error('EpochKeyUnavailable');
+      if (!keyAvailable) throw new EpochKeyUnavailableError(HIVE, 1);
       return 'K' as unknown as EpochKey;
     };
     const pending = new PendingEpochContent();

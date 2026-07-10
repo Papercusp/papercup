@@ -114,7 +114,17 @@ describe('GET /api/discovery/federation-status (G-004)', () => {
     expect(status).toBe(200);
     expect(body.ok).toBe(true);
     expect(body.hives).toEqual([
-      { potId: 'pub', title: 'Pub', visibility: 'public', memberCount: 1, reachablePeers: 3 },
+      {
+        potId: 'pub',
+        title: 'Pub',
+        visibility: 'public',
+        memberCount: 1,
+        reachablePeers: 3,
+        // EI-1599: no hivePubkey on the fixture (no minted identity) → honest 0/null,
+        // regardless of the (unset) contentPeers/lastContentSyncMs seams.
+        contentPeers: 0,
+        lastContentSyncMs: null,
+      },
     ]);
     expect(body.substrate).toEqual({
       active: true,
@@ -139,7 +149,42 @@ describe('GET /api/discovery/federation-status (G-004)', () => {
 
     const { body } = await call('http://127.0.0.1/api/discovery/federation-status');
     expect(body.hives).toEqual([
-      { potId: 'priv', title: 'Secret', visibility: 'private', memberCount: 0, reachablePeers: 0 },
+      {
+        potId: 'priv',
+        title: 'Secret',
+        visibility: 'private',
+        memberCount: 0,
+        reachablePeers: 0,
+        contentPeers: 0,
+        lastContentSyncMs: null,
+      },
+    ]);
+  });
+
+  it('EI-1599: reports the real per-hive content-peer count + last-sync ts for a minted, private hive (NOT gated on visibility)', async () => {
+    const HIVE_PUBKEY = 'b'.repeat(44); // base64-ish placeholder, only used as a map key here
+    const LAST_SYNC = NOW - 5_000;
+    const dir = configureHiveDirectoryForTest({
+      ...fakeDeps(0), // discovery reach stays 0 — this hive is private, never announces
+      contentPeers: () => 2,
+      lastContentSyncMs: () => LAST_SYNC,
+    });
+    dir.registerLocalHive(ownedDesc({ potId: 'priv', visibility: 'private', hivePubkey: HIVE_PUBKEY }));
+    listOwnedHiveMeta.mockResolvedValue([
+      { potId: 'priv', title: 'Secret', description: 'd', visibility: 'private', memberTopics: [], createdAt: NOW },
+    ]);
+
+    const { body } = await call('http://127.0.0.1/api/discovery/federation-status');
+    expect(body.hives).toEqual([
+      {
+        potId: 'priv',
+        title: 'Secret',
+        visibility: 'private',
+        memberCount: 0,
+        reachablePeers: 0, // private hive never announces on the discovery topic
+        contentPeers: 2, // ...but it DOES content-sync with its members
+        lastContentSyncMs: LAST_SYNC,
+      },
     ]);
   });
 

@@ -31,6 +31,41 @@ function slugToSchema(slug: string): string {
   return 'harness_' + slug.replace(/-/g, '_').toLowerCase();
 }
 
+// Cache of harness schemas verified to exist, so the recipient-existence check
+// on the hot coord-message path can skip its `information_schema.schemata`
+// catalog scan. That EXISTS probe was a top-3 driver of pgbouncer transaction
+// churn (~605K calls, 2026-07-10, WI-3800) despite being logically near-static:
+// a `harness_<slug>` schema, once created, persists for the life of the harness.
+// Positive results are cached with a short TTL so a rare teardown is re-observed
+// within the window; misses and negatives are never cached, so a freshly-created
+// recipient is seen on the very next send. Keyed by schema name (process-local).
+const schemaExistsCache = new Map<string, number>(); // schema → epoch-ms the cached "exists" expires
+const SCHEMA_EXISTS_TTL_MS = Number(process.env.PAPERCUSP_SCHEMA_EXISTS_TTL_MS ?? 300_000);
+
+async function harnessSchemaExists(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  schema: string,
+): Promise<boolean> {
+  const now = Date.now();
+  const cachedUntil = schemaExistsCache.get(schema);
+  if (cachedUntil !== undefined && cachedUntil > now) return true;
+  const rows = await sql<{ exists: boolean }[]>`
+    SELECT EXISTS (
+      SELECT 1 FROM information_schema.schemata WHERE schema_name = ${schema}
+    ) AS exists
+  `;
+  const exists = rows[0]?.exists === true;
+  if (exists) schemaExistsCache.set(schema, now + SCHEMA_EXISTS_TTL_MS);
+  else schemaExistsCache.delete(schema);
+  return exists;
+}
+
+/** Test-only: clear the harness-schema existence cache between cases (it is
+ *  module-scoped and otherwise persists across tests). */
+export function __resetSchemaExistsCacheForTest(): void {
+  schemaExistsCache.clear();
+}
+
 function isValidProjectSlug(s: string): boolean {
   return /^[a-z0-9][a-z0-9-]{1,63}$/.test(s);
 }
@@ -393,12 +428,7 @@ async function doSendMessage(
   const missingRecipients: string[] = [];
   for (const recipient of action.to) {
     const schema = slugToSchema(recipient);
-    const exists = await sql<{ exists: boolean }[]>`
-      SELECT EXISTS (
-        SELECT 1 FROM information_schema.schemata WHERE schema_name = ${schema}
-      ) AS exists
-    `;
-    if (!exists[0]?.exists) missingRecipients.push(recipient);
+    if (!(await harnessSchemaExists(sql, schema))) missingRecipients.push(recipient);
   }
   if (missingRecipients.length > 0) {
     return {

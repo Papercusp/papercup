@@ -150,7 +150,7 @@ describe('gracefulHostRecycle', () => {
       expect(exit).toHaveBeenCalledExactlyOnceWith(75);
     });
 
-    it('defaults isSaturated to the real event-loop-lag monitor, which reads false absent a running monitor (no behavior change when unconfigured)', async () => {
+    it('defaults isSaturated to the real event-loop-lag monitor (isLoopElevated), which reads false absent a running monitor (no behavior change when unconfigured)', async () => {
       const exit = vi.fn();
       const closeSubstrate = vi.fn(() => Promise.resolve());
       const { server, drain } = makeServer();

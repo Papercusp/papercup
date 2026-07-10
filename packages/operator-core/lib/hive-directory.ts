@@ -31,6 +31,7 @@ import {
   deriveInviteTopic,
   hiveTopicAsHex,
 } from './sync/hyperbee/derive-hive-topic';
+import { deriveHiveFederationTopic } from './sync/hyperbee/derive-swarm-topic';
 import {
   buildHiveAnnounce,
   verifyHiveAnnounce,
@@ -174,6 +175,22 @@ export interface HiveDirectoryDeps {
    *  an invite publish on a box also browsing the global directory). Omit `topicHex`
    *  for the legacy all-topics total. Optional/additive: omitted seams report 0. */
   reachablePeers?(topicHex?: string): number;
+  /**
+   * EI-1599: how many peers are actually CONTENT-replicating on a topic right
+   * now (prod: `swarm.ts`'s `contentPeerCountForTopic`, wired to the SHARED
+   * content substrate swarm — distinct from `reachablePeers` above, which is
+   * the hive-directory's own discovery/announce-gossip topic). Optional/
+   * additive: an omitted seam reports 0 (honest — "unknown" would be a lie
+   * that could read as "confirmed zero peers", so this deliberately can't be
+   * told apart from a truly-zero-peer hive without the seam wired; callers
+   * that need to distinguish "not wired" from "wired, zero peers" should gate
+   * on whether the wiring ran, not on this return value alone).
+   */
+  contentPeers?(topicHex: string): number;
+  /** EI-1599: ms-epoch of the last content-sync activity (an inbound signed-
+   *  announce) seen on a topic (prod: `swarm.ts`'s `lastContentAnnounceRecvMs`).
+   *  `null`/omitted ⇒ none observed. Optional/additive. */
+  lastContentSyncMs?(topicHex: string): number | null;
   /** Load the cached discovered set (prod: PG). Optional — omit for in-memory only. */
   loadCache?(): Promise<DiscoveredHive[]>;
   /** Persist the discovered set (prod: PG). Optional. */
@@ -239,6 +256,45 @@ export class HiveDirectory {
     const topic = this.topicForLocalHive(desc); // null = private (never announces)
     if (!topic) return 0;
     return this.reachablePeers(hiveTopicAsHex(topic));
+  }
+
+  /** The hive's CONTENT-substrate topic (deriveSwarmTopic, keyed by hivePubkey)
+   *  — distinct from `topicForLocalHive`'s discovery/announce topic. `null` for
+   *  a hive with no minted identity yet (nothing has ever joined its content
+   *  swarm, so honestly nothing to report). */
+  private contentTopicForLocalHive(desc: LocalHiveDescriptor): Buffer | null {
+    if (!desc.hivePubkey) return null;
+    try {
+      return deriveHiveFederationTopic(desc.hivePubkey);
+    } catch {
+      return null;
+    }
+  }
+
+  /** EI-1599: TRUE per-hive content-replication peer count — peers whose
+   *  content-announce channel is open on THIS hive's content topic, i.e.
+   *  actually syncing hive content, not merely discoverable. 0 for an unknown
+   *  hive, a hive with no minted identity, or when the `contentPeers` seam
+   *  isn't wired (see the deps doc comment on why that's not distinguished
+   *  from a genuine zero). Composes onto Brief H's per-topic announce-channel
+   *  discrimination (A-002) via `swarm.ts`'s `contentPeerCountForTopic`. */
+  contentPeersForHive(potId: string): number {
+    const desc = this.owned.get(potId);
+    if (!desc) return 0;
+    const topic = this.contentTopicForLocalHive(desc);
+    if (!topic) return 0;
+    return this.deps.contentPeers?.(hiveTopicAsHex(topic)) ?? 0;
+  }
+
+  /** EI-1599: ms-epoch of the last content-sync activity observed on this
+   *  hive's content topic, or `null` when unknown/none-yet (unminted identity,
+   *  the seam isn't wired, or no announce has ever been received). */
+  lastContentSyncAtForHive(potId: string): number | null {
+    const desc = this.owned.get(potId);
+    if (!desc) return null;
+    const topic = this.contentTopicForLocalHive(desc);
+    if (!topic) return null;
+    return this.deps.lastContentSyncMs?.(hiveTopicAsHex(topic)) ?? null;
   }
 
   /** Hydrate the in-memory set from the PG cache (offline listing before the swarm reconnects). */

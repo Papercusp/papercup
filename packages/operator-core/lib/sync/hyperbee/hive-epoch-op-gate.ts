@@ -27,6 +27,7 @@ import type { PendingEpochContent } from './pending-epoch-content';
 import type { EpochKeyProvider } from './hive-epoch-serving';
 import { encryptOpPayload, decryptOpPayload } from './hive-epoch-serving';
 import { BASELINE_EPOCH } from './hive-epoch-state';
+import { EpochKeyUnavailableError } from './hive-epoch-key-provider';
 
 /** Resolve the epoch key for `(potId, epoch)` on THIS peer: owner derives, member
  *  unwraps. Rejects (EpochKeyUnavailableError) on a member whose wrapped row hasn't
@@ -209,6 +210,25 @@ export function buildEpochDecryptGate(
       try {
         key = await deps.resolveKey(deps.potId, op.epoch);
       } catch (e) {
+        // WI-898 F1: only a GENUINE absence (EpochKeyUnavailableError — no wrapped row
+        // for this device at all, thrown on a null blob) means "key not yet local /
+        // never will be" → defer. Any OTHER throw here is a TRANSIENT failure of the
+        // resolve path itself (a PG deadlock/timeout/connection blip on the wrapped-key
+        // SELECT under the held merge lock, or a keychain fault in derive/unwrap) — the
+        // key for this epoch may already be sitting in PG. Deferring THAT is wrong: a
+        // deferred op's merge cursor still advances past it (read-merge.ts) and there is
+        // no steady-state re-fold, so the pending buffer + its key-arrival drain hook are
+        // the ONLY recovery — but a key that's already present will never re-arrive to
+        // trigger that drain, so the content strands until a process restart resets the
+        // cursor (observed live: EI-9057-class re-files aside, this is the WI-893 Lane D
+        // finding). RE-THROW instead: the membership guard already gets this right
+        // (applyRecordingWinner, read-merge.ts) — a throw here propagates there, is
+        // treated as transient, and is retried next pass WITHOUT the cursor advancing
+        // (winner not recorded) until MAX_APPLY_THROWS, mirroring the correct path.
+        if (!(e instanceof EpochKeyUnavailableError)) {
+          trace('epoch_resolve_transient', `${where} hive=${deps.potId} rethrow (not a genuine key-absence): ${(e as Error)?.message ?? e}`);
+          throw e;
+        }
         // key not yet local (remaining member waiting; or removed member forever) → defer.
         trace('epoch_defer', `${where} hive=${deps.potId} no-key-yet: ${(e as Error)?.message ?? e}`);
         deps.pending.defer(op, deps.potId, op.epoch);

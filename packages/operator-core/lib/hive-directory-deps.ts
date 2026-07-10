@@ -32,6 +32,7 @@ import { verifyAttestation } from './identity/attest';
 import { signWithDeviceKey } from './identity/sign-with-device-key';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { HiveDirectory, type DiscoveredHive, type HiveDirectoryDeps, type SignedHiveAnnounce } from './hive-directory';
+import { contentPeerCountForTopic, lastContentAnnounceRecvMs } from './sync/hyperbee/swarm';
 
 let _singleton: HiveDirectory | null = null;
 let _transport: ((topicHex: string, frame: SignedHiveAnnounce) => Promise<void>) | null = null;
@@ -79,6 +80,13 @@ function productionDeps(): HiveDirectoryDeps {
     // G-001: thread the announce topic through so the count is the announce's own
     // topic, not every joined topic.
     reachablePeers: (topicHex) => _reachablePeers?.(topicHex) ?? 0,
+    // EI-1599: unlike `reachablePeers` (the directory-gossip instance created per
+    // boot wiring), the CONTENT substrate's per-topic announce-channel accounting
+    // lives as process-global module state in swarm.ts (every harness's
+    // `joinHarnessSwarm` call feeds the SAME shared swarm) — no injection/wiring
+    // needed, these are always live once ANY content swarm join has happened.
+    contentPeers: (topicHex) => contentPeerCountForTopic(topicHex),
+    lastContentSyncMs: (topicHex) => lastContentAnnounceRecvMs(topicHex),
     // PG offline cache (migration 182, hive_directory_cache state table). Reads/
     // writes via getOrgPg (admin, RLS-bypass) like the rest of operator-state.
     // Best-effort — a cache failure must never break ingest/listing.
