@@ -1,5 +1,5 @@
 /**
- * Hyperbee → PG projection for `harness_shared.hive_reports` — the moderation report
+ * Hyperbee → PG projection for `harness_shared.pot_reports` — the moderation report
  * queue federated member→owner (Brief EN-3 / P-MOD; migration 318).
  *
  * Mirrors projections/hive-settings.ts (scope column `harness_slug` = Hive home_slug).
@@ -76,7 +76,7 @@ async function writeToPg(
   const fedTs = provenance?.ts ?? null;
   const fedHlc = provenance?.fedHlc ?? null;
   await sql`
-    INSERT INTO harness_shared.hive_reports
+    INSERT INTO harness_shared.pot_reports
       (workspace_id, harness_slug, report_id, reporter_github_user_id, reporter_github_username,
        target_kind, target_ref, report_reason, status, author_pubkey, origin, fed_ts, fed_hlc)
     VALUES
@@ -97,7 +97,7 @@ async function writeToPg(
     -- in ONE order space via fed_order_key() -- an op's real HLC when it has one,
     -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,
     -- so the guard never rejects what the in-process merge fold would pick).
-    WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.hive_reports.fed_hlc, harness_shared.hive_reports.fed_ts)
+    WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.pot_reports.fed_hlc, harness_shared.pot_reports.fed_ts)
   `;
 }
 
@@ -112,7 +112,7 @@ async function deleteFromPg(
   const ts = delTs ?? null;
   const hlc = delHlc ?? null;
   await sql`
-    DELETE FROM harness_shared.hive_reports
+    DELETE FROM harness_shared.pot_reports
     WHERE workspace_id = ${opts.workspaceId}
       AND harness_slug = ${opts.harnessSlug}
       AND report_id = ${key}

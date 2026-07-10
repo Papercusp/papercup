@@ -9,7 +9,7 @@
  * Scoped to ONE sending Hive (workspace_id, potSlug). The row stores the full
  * wire envelope (incl. from/to Hive pubkeys + sig) so a pending row reconstructs
  * exactly the bytes the peer verifies. Local-only (does NOT federate). Storage:
- * harness_shared.cross_hive_outbox (migration 196).
+ * harness_shared.cross_pot_outbox (migration 196).
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
@@ -73,7 +73,7 @@ export class PgCrossHiveOutbox implements CrossHiveOutbox {
     const s = pg(this.sql);
     const now = Date.now();
     await s.unsafe(
-      `INSERT INTO harness_shared.cross_hive_outbox
+      `INSERT INTO harness_shared.cross_pot_outbox
          (workspace_id, pot_slug, id, from_hive_pubkey, to_hive_pubkey, kind,
           subject, body, correlation_id, sig, created_at, attempt_count, last_attempt_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,0,0)
@@ -99,7 +99,7 @@ export class PgCrossHiveOutbox implements CrossHiveOutbox {
     const s = pg(this.sql);
     const rows = (await s.unsafe(
       `SELECT id, from_hive_pubkey, to_hive_pubkey, kind, subject, body, correlation_id, sig
-         FROM harness_shared.cross_hive_outbox
+         FROM harness_shared.cross_pot_outbox
         WHERE workspace_id = $1 AND pot_slug = $2
         ORDER BY created_at ASC, id ASC`,
       [this.workspaceId, this.potSlug],
@@ -117,7 +117,7 @@ export class PgCrossHiveOutbox implements CrossHiveOutbox {
     const rows = (await s.unsafe(
       `SELECT id, from_hive_pubkey, to_hive_pubkey, kind, subject, body, correlation_id, sig,
               attempt_count, last_attempt_at
-         FROM harness_shared.cross_hive_outbox
+         FROM harness_shared.cross_pot_outbox
         WHERE workspace_id = $1 AND pot_slug = $2
         ORDER BY created_at ASC, id ASC`,
       [this.workspaceId, this.potSlug],
@@ -133,7 +133,7 @@ export class PgCrossHiveOutbox implements CrossHiveOutbox {
   async markDelivered(id: string): Promise<void> {
     const s = pg(this.sql);
     await s.unsafe(
-      `DELETE FROM harness_shared.cross_hive_outbox
+      `DELETE FROM harness_shared.cross_pot_outbox
         WHERE workspace_id = $1 AND pot_slug = $2 AND id = $3`,
       [this.workspaceId, this.potSlug, id],
     );
@@ -148,7 +148,7 @@ export class PgCrossHiveOutbox implements CrossHiveOutbox {
     const s = pg(this.sql);
     const now = Date.now();
     await s.unsafe(
-      `UPDATE harness_shared.cross_hive_outbox
+      `UPDATE harness_shared.cross_pot_outbox
           SET attempt_count = attempt_count + 1, last_attempt_at = $4
         WHERE workspace_id = $1 AND pot_slug = $2 AND id = $3`,
       [this.workspaceId, this.potSlug, id, now],

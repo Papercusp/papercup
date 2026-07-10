@@ -40,7 +40,7 @@ function dev(pk: string): DeviceAttestationEntry {
 }
 function memberRow(over: Partial<HiveMemberRow> = {}): HiveMemberRow {
   return {
-    hive_home_slug: HIVE,
+    pot_home_slug: HIVE,
     github_user_id: 7,
     github_username: 'octo',
     device_attestations: [dev('pk-a')],
@@ -58,13 +58,13 @@ beforeAll(async () => {
     await db.sql.unsafe(readFileSync(join(SQL_DIR, m), 'utf8'));
   }
   // D-001 (mig 314): the fed_hlc ordering column the projection now writes.
-  await db.sql.unsafe(`ALTER TABLE harness_shared.hive_members ADD COLUMN IF NOT EXISTS fed_hlc TEXT`);
+  await db.sql.unsafe(`ALTER TABLE harness_shared.pot_members ADD COLUMN IF NOT EXISTS fed_hlc TEXT`);
 });
 afterAll(async () => {
   await db?.cleanup();
 });
 afterEach(async () => {
-  await db.sql.unsafe('TRUNCATE harness_shared.hive_members, harness_shared.hives CASCADE');
+  await db.sql.unsafe('TRUNCATE harness_shared.pot_members, harness_shared.hives CASCADE');
   reconcileEpochKeysForCurrentMembers.mockReset().mockResolvedValue({ applied: true, newEpoch: 1, distributed: 1 });
   isHiveRekeyEnabledMock.mockReset().mockResolvedValue(true);
   _resetBootHistoryForTests();
@@ -82,7 +82,7 @@ describe('hive-members projection — pure helpers', () => {
   it('isHiveMemberRow / decodeValue accept a valid row, reject malformed', () => {
     expect(_testing.decodeValue(memberRow())).not.toBeNull();
     expect(_testing.decodeValue({ ...memberRow(), github_user_id: 0 })).toBeNull();
-    expect(_testing.decodeValue({ ...memberRow(), hive_home_slug: '' })).toBeNull();
+    expect(_testing.decodeValue({ ...memberRow(), pot_home_slug: '' })).toBeNull();
     expect(_testing.decodeValue({ ...memberRow(), device_attestations: 'nope' })).toBeNull();
   });
   it('composeKey is the github_user_id', () => {
@@ -101,10 +101,10 @@ describe('hive-members projection — writeToPg / deleteFromPg (real PG)', () =>
     expect([...(await loadRevokedHivePubkeys(WS, HIVE, db.sql))]).toEqual(['bad-pk']);
   });
 
-  it('drops a cross-Hive op (hive_home_slug != the projection scope)', async () => {
+  it('drops a cross-Hive op (pot_home_slug != the projection scope)', async () => {
     await seedHive();
     await seedHive('beta');
-    await proj().writeToPg(memberRow({ hive_home_slug: 'beta', github_user_id: 9 }), { ts: 1, origin: 'remote', authorPubkey: 'peer' });
+    await proj().writeToPg(memberRow({ pot_home_slug: 'beta', github_user_id: 9 }), { ts: 1, origin: 'remote', authorPubkey: 'peer' });
     expect(await getHiveMember(WS, HIVE, 9, db.sql)).toBeNull(); // demuxed out
     expect(await getHiveMember(WS, 'beta', 9, db.sql)).toBeNull(); // this projection is bound to HIVE
   });

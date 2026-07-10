@@ -1,5 +1,5 @@
 /**
- * hive-settings-store — PG access to harness_shared.hive_settings, per-Hive
+ * hive-settings-store — PG access to harness_shared.pot_settings, per-Hive
  * settings that federate as first-class Hive state (shared-hive-federation-2026-06-08
  * P-005; migration 186).
  *
@@ -87,7 +87,7 @@ export async function setHiveSetting(input: SetHiveSettingInput, sql?: Sql): Pro
   const value = input.value === undefined ? null : JSON.stringify(input.value);
   const now = Date.now();
   const rows = (await s.unsafe(
-    `INSERT INTO harness_shared.hive_settings (${COLS})
+    `INSERT INTO harness_shared.pot_settings (${COLS})
        VALUES ($1, $2, $3, $4, $5, $5)
      ON CONFLICT (workspace_id, harness_slug, setting_key) DO UPDATE SET
        value = EXCLUDED.value,
@@ -107,7 +107,7 @@ export async function getHiveSetting(
 ): Promise<HiveSettingRecord | null> {
   const s = pg(sql);
   const rows = (await s.unsafe(
-    `SELECT ${COLS} FROM harness_shared.hive_settings
+    `SELECT ${COLS} FROM harness_shared.pot_settings
       WHERE workspace_id = $1 AND harness_slug = $2 AND setting_key = $3 LIMIT 1`,
     [workspaceId, potHomeSlug, settingKey],
   )) as unknown as HiveSettingDbRow[];
@@ -122,7 +122,7 @@ export async function listHiveSettings(
 ): Promise<HiveSettingRecord[]> {
   const s = pg(sql);
   const rows = (await s.unsafe(
-    `SELECT ${COLS} FROM harness_shared.hive_settings
+    `SELECT ${COLS} FROM harness_shared.pot_settings
       WHERE workspace_id = $1 AND harness_slug = $2 ORDER BY setting_key`,
     [workspaceId, potHomeSlug],
   )) as unknown as HiveSettingDbRow[];
@@ -138,7 +138,7 @@ export async function deleteHiveSetting(
 ): Promise<boolean> {
   const s = pg(sql);
   const rows = (await s.unsafe(
-    `DELETE FROM harness_shared.hive_settings
+    `DELETE FROM harness_shared.pot_settings
       WHERE workspace_id = $1 AND harness_slug = $2 AND setting_key = $3 RETURNING setting_key`,
     [workspaceId, potHomeSlug, settingKey],
   )) as unknown as Array<{ setting_key: string }>;

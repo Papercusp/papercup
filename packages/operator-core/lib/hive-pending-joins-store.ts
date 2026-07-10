@@ -1,5 +1,5 @@
 /**
- * hive-pending-joins-store — PG access to harness_shared.hive_pending_joins, the
+ * hive-pending-joins-store — PG access to harness_shared.pot_pending_joins, the
  * approval-mode admission queue (Brief EN-3 / P-MEMBER; migration 318).
  *
  * The sibling of hive-membership-store.ts at the same Hive grain. Under
@@ -127,7 +127,7 @@ export async function recordPendingJoin(
   sql?: Sql,
 ): Promise<PendingJoinRecord> {
   const rows = (await pg(sql).unsafe(
-    `INSERT INTO harness_shared.hive_pending_joins
+    `INSERT INTO harness_shared.pot_pending_joins
        (workspace_id, harness_slug, github_user_id, github_username,
         display_name, avatar_url, device_attestations, status)
      VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb, 'pending')
@@ -161,7 +161,7 @@ export async function getPendingJoin(
   sql?: Sql,
 ): Promise<PendingJoinRecord | null> {
   const rows = (await pg(sql).unsafe(
-    `SELECT ${COLS} FROM harness_shared.hive_pending_joins
+    `SELECT ${COLS} FROM harness_shared.pot_pending_joins
       WHERE workspace_id = $1 AND harness_slug = $2 AND github_user_id = $3 LIMIT 1`,
     [workspaceId, potHomeSlug, githubUserId],
   )) as unknown as PendingJoinPgRow[];
@@ -181,10 +181,10 @@ export async function listPendingJoins(
   const status = opts.status === undefined ? 'pending' : opts.status;
   const rows = (await pg(sql).unsafe(
     status == null
-      ? `SELECT ${COLS} FROM harness_shared.hive_pending_joins
+      ? `SELECT ${COLS} FROM harness_shared.pot_pending_joins
            WHERE workspace_id = $1 AND harness_slug = $2
            ORDER BY requested_at ASC`
-      : `SELECT ${COLS} FROM harness_shared.hive_pending_joins
+      : `SELECT ${COLS} FROM harness_shared.pot_pending_joins
            WHERE workspace_id = $1 AND harness_slug = $2 AND status = $3
            ORDER BY requested_at ASC`,
     status == null ? [workspaceId, potHomeSlug] : [workspaceId, potHomeSlug, status],
@@ -208,7 +208,7 @@ export async function setPendingJoinDecision(
   sql?: Sql,
 ): Promise<PendingJoinRecord | null> {
   const rows = (await pg(sql).unsafe(
-    `UPDATE harness_shared.hive_pending_joins
+    `UPDATE harness_shared.pot_pending_joins
         SET status = $4,
             decided_at = (EXTRACT(EPOCH FROM now()) * 1000)::bigint,
             decided_by_github_user_id = $5,

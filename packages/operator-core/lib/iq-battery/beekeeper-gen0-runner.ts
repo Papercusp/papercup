@@ -173,11 +173,11 @@ const dryRunJudge: JudgeLlmCall = async () => ({
 /** Pre-flight: fail loud with a clear message if the beekeeper schema isn't applied on the live PG. */
 async function assertSchema(sql: postgres.Sql): Promise<void> {
   const rows = await sql<{ ok: boolean }[]>`
-    SELECT to_regclass('harness_shared.beekeeper_runs') IS NOT NULL
+    SELECT to_regclass('harness_shared.cup_keeper_runs') IS NOT NULL
        AND to_regclass('iq_battery_cases') IS NOT NULL AS ok`;
   if (!rows[0]?.ok) {
     throw new Error(
-      'beekeeper/iq-battery schema missing on the live org PG — apply migrations 179 + 180 (db:migrate) before running the baseline.',
+      'beekeeper/iq-battery schema missing on the live org PG — apply migrations 179 + 180 (renamed to cup_keeper_* in migration 555) before running the baseline.',
     );
   }
 }
@@ -239,10 +239,10 @@ async function loadSeededCorpus(
   return corpus;
 }
 
-/** Transfer the freshly-recorded beekeeper_scores → iq_battery_metrics (the recurrence + Tests-tab source). */
+/** Transfer the freshly-recorded cup_keeper_scores → iq_battery_metrics (the recurrence + Tests-tab source). */
 async function transferMetrics(sql: postgres.Sql, instanceId: string): Promise<number> {
   const runs = await sql<{ run_id: string; case_id: string; case_variant: string }[]>`
-    SELECT run_id, case_id, case_variant FROM harness_shared.beekeeper_runs WHERE instance_id = ${instanceId}`;
+    SELECT run_id, case_id, case_variant FROM harness_shared.cup_keeper_runs WHERE instance_id = ${instanceId}`;
   let transferred = 0;
   for (const run of runs) {
     const scores = await sql<
@@ -257,7 +257,7 @@ async function transferMetrics(sql: postgres.Sql, instanceId: string): Promise<n
       }[]
     >`
       SELECT success, tokens_per_task, time_to_green_secs, first_attempt_pass, recurrence, escalation, recall_hit
-        FROM harness_shared.beekeeper_scores WHERE run_id = ${run.run_id} LIMIT 1`;
+        FROM harness_shared.cup_keeper_scores WHERE run_id = ${run.run_id} LIMIT 1`;
     const s = scores[0];
     if (!s) continue;
     // Idempotent transfer (D-005): iq_battery_metrics.run_id is a UUID column but the beekeeper

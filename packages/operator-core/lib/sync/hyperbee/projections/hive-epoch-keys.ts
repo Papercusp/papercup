@@ -1,5 +1,5 @@
 /**
- * Hyperbee → PG projection for `harness_shared.hive_epoch_keys` — the per-member
+ * Hyperbee → PG projection for `harness_shared.pot_epoch_keys` — the per-member
  * WRAPPED epoch keys of the read-plane re-key (Brief RE-KEY / C-001 / Move 2, P-005).
  * Mirrors projections/hive-settings.ts exactly (a workspace-owned key riding the Hive
  * peer-log, demuxed by the Hive home `harness_slug`), with the same D-001 LWW guard
@@ -82,7 +82,7 @@ async function writeToPg(
   const fedHlc = provenance?.fedHlc ?? null; // D-001 ordering key
   const now = Date.now();
   await sql`
-    INSERT INTO harness_shared.hive_epoch_keys
+    INSERT INTO harness_shared.pot_epoch_keys
       (workspace_id, harness_slug, epoch, member_device_pubkey, wrapped_key,
        author_pubkey, origin, fed_ts, fed_hlc, created_at, updated_at)
     VALUES
@@ -99,7 +99,7 @@ async function writeToPg(
     -- in ONE order space via fed_order_key() -- an op's real HLC when it has one,
     -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,
     -- so the guard never rejects what the in-process merge fold would pick).
-    WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.hive_epoch_keys.fed_hlc, harness_shared.hive_epoch_keys.fed_ts)
+    WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.pot_epoch_keys.fed_hlc, harness_shared.pot_epoch_keys.fed_ts)
   `;
   // Drain J's pending-epoch-content buffer for this (hive, epoch).
   opts.onEpochKeyApplied?.(row.harness_slug, row.epoch);
@@ -121,7 +121,7 @@ async function deleteFromPg(
   const ts = delTs ?? null;
   const hlc = delHlc ?? null;
   await sql`
-    DELETE FROM harness_shared.hive_epoch_keys
+    DELETE FROM harness_shared.pot_epoch_keys
     WHERE workspace_id = ${opts.workspaceId}
       AND harness_slug = ${opts.harnessSlug}
       AND epoch = ${epoch}

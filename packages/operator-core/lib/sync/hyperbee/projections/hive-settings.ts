@@ -1,5 +1,5 @@
 /**
- * Hyperbee → PG projection for `harness_shared.hive_settings` — per-Hive settings
+ * Hyperbee → PG projection for `harness_shared.pot_settings` — per-Hive settings
  * federated as first-class Hive state (shared-hive-federation-2026-06-08 P-005).
  *
  * Mirrors projections/harness-plans.ts (the closest analog: a workspace-owned key
@@ -74,7 +74,7 @@ async function writeToPg(
   // workspace_id is the LOCAL projection's bound workspace. created_at is set on
   // first insert + preserved on update; only value/provenance/updated_at move.
   await sql`
-    INSERT INTO harness_shared.hive_settings
+    INSERT INTO harness_shared.pot_settings
       (workspace_id, harness_slug, setting_key, value, author_pubkey, origin, fed_ts, fed_hlc, created_at, updated_at)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.setting_key}, ${row.value},
@@ -90,7 +90,7 @@ async function writeToPg(
     -- in ONE order space via fed_order_key() -- an op's real HLC when it has one,
     -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,
     -- so the guard never rejects what the in-process merge fold would pick).
-    WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.hive_settings.fed_hlc, harness_shared.hive_settings.fed_ts)
+    WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.pot_settings.fed_hlc, harness_shared.pot_settings.fed_ts)
   `;
 }
 
@@ -105,7 +105,7 @@ async function deleteFromPg(
   const ts = delTs ?? null;
   const hlc = delHlc ?? null;
   await sql`
-    DELETE FROM harness_shared.hive_settings
+    DELETE FROM harness_shared.pot_settings
     WHERE workspace_id = ${opts.workspaceId}
       AND harness_slug = ${opts.harnessSlug}
       AND setting_key = ${key}

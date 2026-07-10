@@ -3,7 +3,7 @@
  * (hybrid-bee-scheduler-work-stealing-2026-06-22 — the spec-handoff layer that makes get_next usable).
  *
  *   setClaimSpec  — the Queen validates (validateClaimSpec) + stores a bee's versioned claim spec
- *                   (mig 372 `bee_claim_specs`), upserting and bumping the revision.
+ *                   (mig 555 `cup_claim_specs`, renamed from mig 372 `bee_claim_specs`), upserting and bumping the revision.
  *   getClaimSpec  — loads a bee's spec; DEFAULT_CLAIM_SPEC when none is set OR a stored spec no
  *                   longer validates (tolerate a stale spec rather than wedge the bee).
  *   getNextForBee — the bee's get_next: load the bee's spec → getNextWorkItem(spec, bee, opts).

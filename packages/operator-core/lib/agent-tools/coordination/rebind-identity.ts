@@ -242,15 +242,15 @@ export async function rebindIdentity(
   //    spec (if the Queen already re-set one) wins over the ghost's.
   await run('claim-spec', async (r) => {
     const dropped = await sql<Array<{ bee_id: string }>>`
-      DELETE FROM harness_shared.bee_claim_specs fspec
-       USING harness_shared.bee_claim_specs tspec
+      DELETE FROM harness_shared.cup_claim_specs fspec
+       USING harness_shared.cup_claim_specs tspec
        WHERE fspec.bee_id = ${f} AND tspec.bee_id = ${t}
          AND tspec.workspace_id = fspec.workspace_id
        RETURNING fspec.bee_id
     `;
     r.dropped = dropped.length;
     const moved = await sql<Array<{ bee_id: string }>>`
-      UPDATE harness_shared.bee_claim_specs SET bee_id = ${t}
+      UPDATE harness_shared.cup_claim_specs SET bee_id = ${t}
        WHERE bee_id = ${f} RETURNING bee_id
     `;
     r.moved = moved.length;

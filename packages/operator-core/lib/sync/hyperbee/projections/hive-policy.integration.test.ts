@@ -35,7 +35,7 @@ const HOME = 'alpha';
 // (no triggers — writeToPg is a plain upsert) to avoid the capture/stamp function chain,
 // exactly as the hive-members projection test does for its table.
 const HIVE_POLICY_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.hive_policy (
+  CREATE TABLE IF NOT EXISTS harness_shared.pot_policy (
     workspace_id text NOT NULL, harness_slug text NOT NULL,
     policy_json text NOT NULL, owner_pubkey text NOT NULL, signature text NOT NULL,
     policy_version integer NOT NULL DEFAULT 1, author_pubkey text,
@@ -58,7 +58,7 @@ afterAll(async () => {
   await db?.cleanup();
 });
 afterEach(async () => {
-  await db.sql.unsafe('TRUNCATE harness_shared.hive_policy, harness_shared.hives CASCADE');
+  await db.sql.unsafe('TRUNCATE harness_shared.pot_policy, harness_shared.hives CASCADE');
 });
 
 async function seedHive(pubkeyBase64 = ownerKp.pubkeyBase64) {

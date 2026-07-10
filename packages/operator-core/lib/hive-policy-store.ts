@@ -1,5 +1,5 @@
 /**
- * hive-policy-store — PG read/write for harness_shared.hive_policy, the owner-signed
+ * hive-policy-store — PG read/write for harness_shared.pot_policy, the owner-signed
  * federated Hive policy record (shared-hive-owner-enforcement-2026-06-19 EN-1;
  * migration 317).
  *
@@ -100,7 +100,7 @@ export async function getHivePolicy(
 ): Promise<ResolvedHivePolicy | null> {
   const s = pg(sql);
   const rows = (await s.unsafe(
-    `SELECT ${READ_COLS} FROM harness_shared.hive_policy
+    `SELECT ${READ_COLS} FROM harness_shared.pot_policy
       WHERE workspace_id = $1 AND harness_slug = $2 LIMIT 1`,
     [workspaceId, potHomeSlug],
   )) as unknown as HivePolicyDbRow[];
@@ -166,7 +166,7 @@ export async function upsertHivePolicyRow(
   const s = pg(sql);
   const now = Date.now();
   const rows = (await s.unsafe(
-    `INSERT INTO harness_shared.hive_policy
+    `INSERT INTO harness_shared.pot_policy
        (workspace_id, harness_slug, policy_json, owner_pubkey, signature, policy_version, created_at, updated_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
      ON CONFLICT (workspace_id, harness_slug) DO UPDATE SET
@@ -197,7 +197,7 @@ export async function deleteHivePolicy(
 ): Promise<boolean> {
   const s = pg(sql);
   const rows = (await s.unsafe(
-    `DELETE FROM harness_shared.hive_policy
+    `DELETE FROM harness_shared.pot_policy
       WHERE workspace_id = $1 AND harness_slug = $2 RETURNING harness_slug`,
     [workspaceId, potHomeSlug],
   )) as unknown as Array<{ harness_slug: string }>;

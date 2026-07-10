@@ -1,12 +1,12 @@
 /**
- * hive-membership-store — PG access to harness_shared.hive_members, the per-Hive
+ * hive-membership-store — PG access to harness_shared.pot_members, the per-Hive
  * contributor/device admission record (shared-hive-federation-2026-06-08 P-006,
  * D-004; migration 185).
  *
  * The Hive-grain analog of the per-harness contributor access
  * (load-revoked-pubkeys.ts + write-contributor-row.ts). A contributor/device
  * joins the HIVE once and thereby its harnesses, so admission keys on the Hive
- * (workspace_id, hive_home_slug) instead of a harness slug. The read-admission
+ * (workspace_id, pot_home_slug) instead of a harness slug. The read-admission
  * decider + verifyBinding are REUSED unchanged — only the source of the
  * revoked-set union changes.
  *
@@ -86,7 +86,7 @@ function parseAttestations(v: DeviceAttestationEntry[] | string | null): DeviceA
 function rowToRecord(r: HiveMemberPgRow): HiveMemberRecord {
   return {
     workspaceId: r.workspace_id,
-    potHomeSlug: r.hive_home_slug,
+    potHomeSlug: r.pot_home_slug,
     githubUserId: Number(r.github_user_id),
     githubUsername: r.github_username,
     displayName: r.display_name,
@@ -122,7 +122,7 @@ function assertStorableWorkspaceId(workspaceId: string, op: string): void {
   }
 }
 
-const COLS = `workspace_id, hive_home_slug, github_user_id, github_username,
+const COLS = `workspace_id, pot_home_slug, github_user_id, github_username,
   display_name, avatar_url, device_attestations, revoked_pubkeys, binding_status`;
 
 /**
@@ -136,8 +136,8 @@ export async function loadRevokedHivePubkeys(
   sql?: Sql,
 ): Promise<Set<string>> {
   const rows = (await pg(sql).unsafe(
-    `SELECT revoked_pubkeys FROM harness_shared.hive_members
-      WHERE workspace_id = $1 AND hive_home_slug = $2`,
+    `SELECT revoked_pubkeys FROM harness_shared.pot_members
+      WHERE workspace_id = $1 AND pot_home_slug = $2`,
     [workspaceId, potHomeSlug],
   )) as unknown as Array<{ revoked_pubkeys: string[] | null }>;
   const set = new Set<string>();
@@ -161,7 +161,7 @@ export async function listWorkspaceMembers(
   const rows = (await pg(sql).unsafe(
     `SELECT ${COLS} FROM (
        SELECT DISTINCT ON (github_user_id) ${COLS}, joined_at
-         FROM harness_shared.hive_members
+         FROM harness_shared.pot_members
         WHERE workspace_id = $1
         ORDER BY github_user_id, joined_at DESC
      ) m
@@ -179,8 +179,8 @@ export async function getHiveMember(
   sql?: Sql,
 ): Promise<HiveMemberRecord | null> {
   const rows = (await pg(sql).unsafe(
-    `SELECT ${COLS} FROM harness_shared.hive_members
-      WHERE workspace_id = $1 AND hive_home_slug = $2 AND github_user_id = $3 LIMIT 1`,
+    `SELECT ${COLS} FROM harness_shared.pot_members
+      WHERE workspace_id = $1 AND pot_home_slug = $2 AND github_user_id = $3 LIMIT 1`,
     [workspaceId, potHomeSlug, githubUserId],
   )) as unknown as HiveMemberPgRow[];
   return rows[0] ? rowToRecord(rows[0]) : null;
@@ -193,8 +193,8 @@ export async function listHiveMembers(
   sql?: Sql,
 ): Promise<HiveMemberRecord[]> {
   const rows = (await pg(sql).unsafe(
-    `SELECT ${COLS} FROM harness_shared.hive_members
-      WHERE workspace_id = $1 AND hive_home_slug = $2 ORDER BY joined_at ASC`,
+    `SELECT ${COLS} FROM harness_shared.pot_members
+      WHERE workspace_id = $1 AND pot_home_slug = $2 ORDER BY joined_at ASC`,
     [workspaceId, potHomeSlug],
   )) as unknown as HiveMemberPgRow[];
   return rows.map(rowToRecord);
@@ -367,11 +367,11 @@ export async function upsertHiveMember(
 ): Promise<HiveMemberRecord> {
   assertStorableWorkspaceId(input.workspaceId, 'upsertHiveMember');
   const rows = (await pg(sql).unsafe(
-    `INSERT INTO harness_shared.hive_members
-       (workspace_id, hive_home_slug, github_user_id, github_username,
+    `INSERT INTO harness_shared.pot_members
+       (workspace_id, pot_home_slug, github_user_id, github_username,
         display_name, avatar_url, device_attestations, revoked_pubkeys, binding_status)
      VALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8::text[], $9)
-     ON CONFLICT (workspace_id, hive_home_slug, github_user_id) DO UPDATE SET
+     ON CONFLICT (workspace_id, pot_home_slug, github_user_id) DO UPDATE SET
        github_username = EXCLUDED.github_username,
        display_name = EXCLUDED.display_name,
        avatar_url = EXCLUDED.avatar_url,
@@ -380,15 +380,15 @@ export async function upsertHiveMember(
            FROM (
              SELECT DISTINCT ON (t.att->>'device_pubkey') t.att AS att, t.ord AS ord
                FROM jsonb_array_elements(
-                      harness_shared.hive_members.device_attestations || EXCLUDED.device_attestations
+                      harness_shared.pot_members.device_attestations || EXCLUDED.device_attestations
                     ) WITH ORDINALITY AS t(att, ord)
               ORDER BY t.att->>'device_pubkey', t.ord DESC
            ) merged
           WHERE NOT (merged.att->>'device_pubkey' = ANY (
-                  harness_shared.hive_members.revoked_pubkeys || EXCLUDED.revoked_pubkeys))
+                  harness_shared.pot_members.revoked_pubkeys || EXCLUDED.revoked_pubkeys))
        ),
        revoked_pubkeys = ARRAY(
-         SELECT DISTINCT unnest(harness_shared.hive_members.revoked_pubkeys || EXCLUDED.revoked_pubkeys)
+         SELECT DISTINCT unnest(harness_shared.pot_members.revoked_pubkeys || EXCLUDED.revoked_pubkeys)
        ),
        binding_status = EXCLUDED.binding_status
      RETURNING ${COLS}`,
@@ -497,12 +497,12 @@ export async function addRevokedHivePubkeys(
   }
   // array_cat + dedupe via a fresh distinct set in SQL keeps it a single round-trip.
   const rows = (await pg(sql).unsafe(
-    `UPDATE harness_shared.hive_members
+    `UPDATE harness_shared.pot_members
         SET revoked_pubkeys = (
           SELECT array_agg(DISTINCT k)
           FROM unnest(revoked_pubkeys || $4::text[]) AS k
         )
-      WHERE workspace_id = $1 AND hive_home_slug = $2 AND github_user_id = $3
+      WHERE workspace_id = $1 AND pot_home_slug = $2 AND github_user_id = $3
       RETURNING ${COLS}`,
     [workspaceId, potHomeSlug, ownerGithubUserId, pubkeys],
   )) as unknown as HiveMemberPgRow[];
@@ -525,8 +525,8 @@ export async function removeHiveMember(
 ): Promise<number> {
   assertStorableWorkspaceId(workspaceId, 'removeHiveMember');
   const res = await pg(sql).unsafe(
-    `DELETE FROM harness_shared.hive_members
-      WHERE workspace_id = $1 AND hive_home_slug = $2 AND github_user_id = $3`,
+    `DELETE FROM harness_shared.pot_members
+      WHERE workspace_id = $1 AND pot_home_slug = $2 AND github_user_id = $3`,
     [workspaceId, potHomeSlug, githubUserId],
   );
   return Number((res as unknown as { count?: number }).count ?? 0);
@@ -535,7 +535,7 @@ export async function removeHiveMember(
 /**
  * Delete ALL of a Hive's member admission rows (the membership-teardown leg for an
  * OWNER dissolving a local hive — G24, shared-hive-public-release-2026-06-22).
- * Without this, a dissolved hive's members lingered in harness_shared.hive_members
+ * Without this, a dissolved hive's members lingered in harness_shared.pot_members
  * and kept federating. The mig-189 capture trigger fires per-row AFTER DELETE, so
  * each LOCAL-origin row federates a `del` tombstone (remote-origin rows are removed
  * locally; their federation is owned by their source peer — the trigger's echo
@@ -548,8 +548,8 @@ export async function removeAllHiveMembers(
 ): Promise<number> {
   assertStorableWorkspaceId(workspaceId, 'removeAllHiveMembers');
   const res = await pg(sql).unsafe(
-    `DELETE FROM harness_shared.hive_members
-      WHERE workspace_id = $1 AND hive_home_slug = $2`,
+    `DELETE FROM harness_shared.pot_members
+      WHERE workspace_id = $1 AND pot_home_slug = $2`,
     [workspaceId, potHomeSlug],
   );
   return Number((res as unknown as { count?: number }).count ?? 0);

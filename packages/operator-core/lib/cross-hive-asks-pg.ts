@@ -13,7 +13,7 @@
  * idempotent no-op (store-and-forward redelivers).
  *
  * Scoped to ONE asking Hive (workspace_id, hive_slug). Local-only (does NOT
- * federate). Storage: harness_shared.cross_hive_asks (migration 231), mirroring
+ * federate). Storage: harness_shared.cross_pot_asks (migration 231), mirroring
  * the cross_hive_outbox (migration 196) conventions. Pass an optional `sql` so
  * integration tests use a per-file test schema; production omits it and the
  * shared org pool is used.
@@ -200,7 +200,7 @@ export class PgCrossHiveAsks {
     if (direction !== 'out' && direction !== 'in') throw new Error(`invalid cross_hive_asks direction: ${direction}`);
     const s = pg(this.sql);
     const rows = (await s.unsafe(
-      `INSERT INTO harness_shared.cross_hive_asks
+      `INSERT INTO harness_shared.cross_pot_asks
          (workspace_id, pot_slug, peer_pubkey, direction, kind, subject, body, correlation_id, state, asked_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued',$9)
        ON CONFLICT (workspace_id, pot_slug, correlation_id) DO NOTHING
@@ -226,7 +226,7 @@ export class PgCrossHiveAsks {
   async getById(id: string): Promise<CrossHiveAsk | null> {
     const s = pg(this.sql);
     const rows = (await s.unsafe(
-      `SELECT ${SELECT_COLS} FROM harness_shared.cross_hive_asks
+      `SELECT ${SELECT_COLS} FROM harness_shared.cross_pot_asks
         WHERE workspace_id=$1 AND pot_slug=$2 AND id=$3`,
       [this.workspaceId, this.potSlug, id],
     )) as unknown as AskRow[];
@@ -236,7 +236,7 @@ export class PgCrossHiveAsks {
   async getByCorrelationId(correlationId: string): Promise<CrossHiveAsk | null> {
     const s = pg(this.sql);
     const rows = (await s.unsafe(
-      `SELECT ${SELECT_COLS} FROM harness_shared.cross_hive_asks
+      `SELECT ${SELECT_COLS} FROM harness_shared.cross_pot_asks
         WHERE workspace_id=$1 AND pot_slug=$2 AND correlation_id=$3`,
       [this.workspaceId, this.potSlug, correlationId],
     )) as unknown as AskRow[];
@@ -264,7 +264,7 @@ export class PgCrossHiveAsks {
       params.push(filter.kind);
       where.push(`kind=$${params.length}`);
     }
-    let q = `SELECT ${SELECT_COLS} FROM harness_shared.cross_hive_asks
+    let q = `SELECT ${SELECT_COLS} FROM harness_shared.cross_pot_asks
               WHERE ${where.join(' AND ')}
               ORDER BY created_at DESC, id DESC`;
     if (typeof filter.limit === 'number' && filter.limit > 0) {
@@ -288,7 +288,7 @@ export class PgCrossHiveAsks {
       where.push(`direction=$${params.length}`);
     }
     const rows = (await pg(this.sql).unsafe(
-      `SELECT state, COUNT(*)::int AS n FROM harness_shared.cross_hive_asks
+      `SELECT state, COUNT(*)::int AS n FROM harness_shared.cross_pot_asks
         WHERE ${where.join(' AND ')} GROUP BY state`,
       params as never[],
     )) as unknown as { state: string; n: number }[];
@@ -317,7 +317,7 @@ export class PgCrossHiveAsks {
     sinceMs: number,
   ): Promise<number> {
     const rows = (await pg(this.sql).unsafe(
-      `SELECT COUNT(*)::int AS n FROM harness_shared.cross_hive_asks
+      `SELECT COUNT(*)::int AS n FROM harness_shared.cross_pot_asks
         WHERE workspace_id=$1 AND pot_slug=$2 AND peer_pubkey=$3 AND direction=$4
           AND created_at > to_timestamp($5::double precision / 1000.0)`,
       [this.workspaceId, this.potSlug, peerPubkey, direction, sinceMs],
@@ -340,7 +340,7 @@ export class PgCrossHiveAsks {
         throw new CrossHiveAskTransitionError(cur.state, to, id);
       }
       const rows = (await tx.unsafe(
-        `UPDATE harness_shared.cross_hive_asks
+        `UPDATE harness_shared.cross_pot_asks
             SET state=$4, updated_at=now()
           WHERE workspace_id=$1 AND pot_slug=$2 AND id=$3
           RETURNING ${SELECT_COLS}`,
@@ -374,7 +374,7 @@ export class PgCrossHiveAsks {
   async expireStale(opts: { olderThanMs: number }): Promise<number> {
     const cutoff = new Date(Date.now() - opts.olderThanMs).toISOString();
     const rows = (await pg(this.sql).unsafe(
-      `UPDATE harness_shared.cross_hive_asks
+      `UPDATE harness_shared.cross_pot_asks
           SET state='expired', updated_at=now()
         WHERE workspace_id=$1 AND pot_slug=$2
           AND state IN ('queued','sent')
@@ -408,7 +408,7 @@ export class PgCrossHiveAsks {
         return { outcome: 'conflict' as const, ask: cur };
       }
       const rows = (await tx.unsafe(
-        `UPDATE harness_shared.cross_hive_asks
+        `UPDATE harness_shared.cross_pot_asks
             SET state=$4, reply_body=$5, reply_ts=now(), updated_at=now()
           WHERE workspace_id=$1 AND pot_slug=$2 AND id=$3
           RETURNING ${SELECT_COLS}`,
@@ -420,7 +420,7 @@ export class PgCrossHiveAsks {
 
   private async getByIdTx(tx: Sql | TransactionSql, id: string): Promise<CrossHiveAsk | null> {
     const rows = (await tx.unsafe(
-      `SELECT ${SELECT_COLS} FROM harness_shared.cross_hive_asks
+      `SELECT ${SELECT_COLS} FROM harness_shared.cross_pot_asks
         WHERE workspace_id=$1 AND pot_slug=$2 AND id=$3 FOR UPDATE`,
       [this.workspaceId, this.potSlug, id],
     )) as unknown as AskRow[];
@@ -429,7 +429,7 @@ export class PgCrossHiveAsks {
 
   private async getByCorrelationTx(tx: Sql | TransactionSql, correlationId: string): Promise<CrossHiveAsk | null> {
     const rows = (await tx.unsafe(
-      `SELECT ${SELECT_COLS} FROM harness_shared.cross_hive_asks
+      `SELECT ${SELECT_COLS} FROM harness_shared.cross_pot_asks
         WHERE workspace_id=$1 AND pot_slug=$2 AND correlation_id=$3 FOR UPDATE`,
       [this.workspaceId, this.potSlug, correlationId],
     )) as unknown as AskRow[];

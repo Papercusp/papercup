@@ -71,7 +71,7 @@ export async function runIqBatteryGen(
     (async (codeSha: string) => {
       const { sql } = getOrgPg();
       const rows = await sql<{ one: number }[]>`
-        SELECT 1 AS one FROM harness_shared.beekeeper_instances
+        SELECT 1 AS one FROM harness_shared.cup_keeper_instances
          WHERE workspace_id = ${input.workspaceId} AND code_sha = ${codeSha} AND genome_id IS NULL
          LIMIT 1`;
       return rows.length > 0;

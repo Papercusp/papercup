@@ -2,7 +2,7 @@
  * A-003 (shared-pot-release-testing Brief I) — the JOINER projection-binding fix.
  *
  * A joiner boots a MEMBER harness; the hive_members / hive_settings ops it reads
- * off the shared Hive topic carry the HIVE-HOME slug (hive_home_slug / harness_slug
+ * off the shared Hive topic carry the HIVE-HOME slug (pot_home_slug / harness_slug
  * = the Hive home). Before this fix the member-slug-bound projections dropped them
  * — the member list/settings never reached the joiner, and
  * `loadRevokedHivePubkeys(<home>)` was empty so a revoked member was never refused
@@ -50,7 +50,7 @@ function memberOp(over: Record<string, unknown> = {}, ts = 100): OpEnvelope {
     table: 'hive-members',
     hbKey: '7',
     value: {
-      hive_home_slug: HOME,
+      pot_home_slug: HOME,
       github_user_id: 7,
       github_username: 'octo',
       device_attestations: [dev('pk-a')],
@@ -98,7 +98,7 @@ afterAll(async () => {
 });
 afterEach(async () => {
   await db.adminSql.unsafe(
-    'TRUNCATE harness_shared.hive_members, harness_shared.hive_settings, harness_shared.hives CASCADE',
+    'TRUNCATE harness_shared.pot_members, harness_shared.pot_settings, harness_shared.hives CASCADE',
   );
 });
 
@@ -140,7 +140,7 @@ describe('A-003 — hive_members/hive_settings reach a member-booted joiner', ()
     await memberBoundApply()(memberOp({ revoked_pubkeys: ['bad-pk'] }));
     expect([...(await loadRevokedHivePubkeys(WS, HOME, db.adminSql))]).toEqual([]);
     // With the fix, the revoked pubkey reaches the union boot.ts seeds/refreshes from.
-    await db.adminSql.unsafe('TRUNCATE harness_shared.hive_members CASCADE');
+    await db.adminSql.unsafe('TRUNCATE harness_shared.pot_members CASCADE');
     await joinerApply()(memberOp({ revoked_pubkeys: ['bad-pk'] }));
     expect([...(await loadRevokedHivePubkeys(WS, HOME, db.adminSql))]).toEqual(['bad-pk']);
   });
@@ -149,7 +149,7 @@ describe('A-003 — hive_members/hive_settings reach a member-booted joiner', ()
     await seedHive(HOME);
     await seedHive('other-hive');
     const apply = joinerApply(); // bound to HOME
-    await apply(memberOp({ hive_home_slug: 'other-hive', github_user_id: 9 }));
+    await apply(memberOp({ pot_home_slug: 'other-hive', github_user_id: 9 }));
     await apply(settingsOp({ harness_slug: 'other-hive' }));
     expect(await getHiveMember(WS, HOME, 9, db.adminSql)).toBeNull(); // not under our home
     expect(await getHiveMember(WS, 'other-hive', 9, db.adminSql)).toBeNull(); // and not blindly accepted

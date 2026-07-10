@@ -1,5 +1,5 @@
 /**
- * hive-reports-store — PG access to harness_shared.hive_reports, the moderation
+ * hive-reports-store — PG access to harness_shared.pot_reports, the moderation
  * report queue (Brief EN-3 / P-MOD; migration 318).
  *
  * Any admitted MEMBER files a report against content or another member; the report
@@ -93,7 +93,7 @@ const COLS = `workspace_id, harness_slug, report_id, reporter_github_user_id,
 export async function fileReport(input: FileReportInput, sql?: Sql): Promise<ReportRecord> {
   const reportId = input.reportId ?? randomUUID();
   const rows = (await pg(sql).unsafe(
-    `INSERT INTO harness_shared.hive_reports
+    `INSERT INTO harness_shared.pot_reports
        (workspace_id, harness_slug, report_id, reporter_github_user_id,
         reporter_github_username, target_kind, target_ref, report_reason, status)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'open')
@@ -123,7 +123,7 @@ export async function getReport(
   sql?: Sql,
 ): Promise<ReportRecord | null> {
   const rows = (await pg(sql).unsafe(
-    `SELECT ${COLS} FROM harness_shared.hive_reports
+    `SELECT ${COLS} FROM harness_shared.pot_reports
       WHERE workspace_id = $1 AND harness_slug = $2 AND report_id = $3 LIMIT 1`,
     [workspaceId, potHomeSlug, reportId],
   )) as unknown as ReportPgRow[];
@@ -143,10 +143,10 @@ export async function listReports(
   const status = opts.status === undefined ? 'open' : opts.status;
   const rows = (await pg(sql).unsafe(
     status == null
-      ? `SELECT ${COLS} FROM harness_shared.hive_reports
+      ? `SELECT ${COLS} FROM harness_shared.pot_reports
            WHERE workspace_id = $1 AND harness_slug = $2
            ORDER BY created_at DESC`
-      : `SELECT ${COLS} FROM harness_shared.hive_reports
+      : `SELECT ${COLS} FROM harness_shared.pot_reports
            WHERE workspace_id = $1 AND harness_slug = $2 AND status = $3
            ORDER BY created_at DESC`,
     status == null ? [workspaceId, potHomeSlug] : [workspaceId, potHomeSlug, status],
@@ -168,7 +168,7 @@ export async function countReportsSince(
   sql?: Sql,
 ): Promise<number> {
   const rows = (await pg(sql).unsafe(
-    `SELECT count(*)::int AS n FROM harness_shared.hive_reports
+    `SELECT count(*)::int AS n FROM harness_shared.pot_reports
       WHERE workspace_id = $1 AND harness_slug = $2 AND reporter_github_user_id = $3
         AND created_at >= $4`,
     [workspaceId, potHomeSlug, reporterGithubUserId, sinceMs],
@@ -185,7 +185,7 @@ export async function setReportStatus(
   sql?: Sql,
 ): Promise<ReportRecord | null> {
   const rows = (await pg(sql).unsafe(
-    `UPDATE harness_shared.hive_reports
+    `UPDATE harness_shared.pot_reports
         SET status = $4, updated_at = (EXTRACT(EPOCH FROM now()) * 1000)::bigint
       WHERE workspace_id = $1 AND harness_slug = $2 AND report_id = $3
       RETURNING ${COLS}`,

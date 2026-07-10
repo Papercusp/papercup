@@ -20,7 +20,7 @@ export class BeekeeperStorePg implements BeekeeperStore {
     // genome_id makes its rows distinct (NULLs never match in a UNIQUE constraint), so
     // that target never fired and the INSERT hit the instance_id PK instead.
     await this.sql`
-      INSERT INTO harness_shared.beekeeper_instances
+      INSERT INTO harness_shared.cup_keeper_instances
         (instance_id, workspace_id, code_sha, genome_id, memory_snapshot_id, battery_slice_id)
       VALUES
         (${manifest.instanceId}, ${manifest.workspaceId}, ${manifest.codeSha},
@@ -48,7 +48,7 @@ export class BeekeeperStorePg implements BeekeeperStore {
     // RESETS the row to a fresh attempt — clear the terminal fields finishRun will repopulate —
     // rather than colliding on the run_id PK.
     await this.sql`
-      INSERT INTO harness_shared.beekeeper_runs
+      INSERT INTO harness_shared.cup_keeper_runs
         (run_id, instance_id, case_id, case_variant, case_title)
       VALUES
         (${r.runId}, ${r.instanceId}, ${r.caseId}, ${r.caseVariant}, ${r.caseTitle})
@@ -71,7 +71,7 @@ export class BeekeeperStorePg implements BeekeeperStore {
     fields: { terminalState: string; deterministicSignals: unknown; traceRef?: string; elapsedMs: number }
   ): Promise<void> {
     await this.sql`
-      UPDATE harness_shared.beekeeper_runs
+      UPDATE harness_shared.cup_keeper_runs
       SET
         terminal_state = ${fields.terminalState},
         deterministic_signals = ${JSON.stringify(fields.deterministicSignals)},
@@ -86,7 +86,7 @@ export class BeekeeperStorePg implements BeekeeperStore {
     // Idempotent re-run (D-005): the score PK is (run_id, rubric_hash). Re-judging the same
     // run under the same rubric OVERWRITES the prior score rather than colliding on the PK.
     await this.sql`
-      INSERT INTO harness_shared.beekeeper_scores
+      INSERT INTO harness_shared.cup_keeper_scores
         (run_id, judge_model, rubric_hash, judge_temp, weights,
          success, tokens_per_task, time_to_green_secs, first_attempt_pass,
          recurrence, escalation, recall_hit,

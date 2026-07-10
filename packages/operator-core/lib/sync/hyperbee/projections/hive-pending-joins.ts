@@ -1,5 +1,5 @@
 /**
- * Hyperbee → PG projection for `harness_shared.hive_pending_joins` — the approval-mode
+ * Hyperbee → PG projection for `harness_shared.pot_pending_joins` — the approval-mode
  * admission queue federated across a Hive's peers (Brief EN-3 / P-MEMBER; migration 318).
  *
  * Mirrors projections/hive-settings.ts (the freshest per-Hive template — scope column
@@ -90,7 +90,7 @@ async function writeToPg(
   const fedTs = provenance?.ts ?? null;
   const fedHlc = provenance?.fedHlc ?? null;
   await sql`
-    INSERT INTO harness_shared.hive_pending_joins
+    INSERT INTO harness_shared.pot_pending_joins
       (workspace_id, harness_slug, github_user_id, github_username, display_name, avatar_url,
        device_attestations, status, reason, requested_at, decided_at, decided_by_github_user_id,
        author_pubkey, origin, fed_ts, fed_hlc)
@@ -117,7 +117,7 @@ async function writeToPg(
     -- in ONE order space via fed_order_key() -- an op's real HLC when it has one,
     -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,
     -- so the guard never rejects what the in-process merge fold would pick).
-    WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.hive_pending_joins.fed_hlc, harness_shared.hive_pending_joins.fed_ts)
+    WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.pot_pending_joins.fed_hlc, harness_shared.pot_pending_joins.fed_ts)
   `;
 }
 
@@ -133,7 +133,7 @@ async function deleteFromPg(
   const ts = delTs ?? null;
   const hlc = delHlc ?? null;
   await sql`
-    DELETE FROM harness_shared.hive_pending_joins
+    DELETE FROM harness_shared.pot_pending_joins
     WHERE workspace_id = ${opts.workspaceId}
       AND harness_slug = ${opts.harnessSlug}
       AND github_user_id = ${userId}

@@ -88,7 +88,7 @@ export interface RegisterAllOpts {
    * `harnessSlug`.
    *
    * Why: those two tables demux on the hive-HOME slug (the op carries
-   * `hive_home_slug`/`harness_slug` = the Hive's home), but a JOINER boots a
+   * `pot_home_slug`/`harness_slug` = the Hive's home), but a JOINER boots a
    * MEMBER harness, so a member-slug-bound projection drops every hive-home-scoped
    * op the member's merge reads off the shared Hive topic — the member-list +
    * settings never reach the joiner, AND `loadRevokedHivePubkeys(<home>)` finds an

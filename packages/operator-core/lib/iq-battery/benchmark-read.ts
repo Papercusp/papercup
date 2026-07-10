@@ -5,9 +5,9 @@
  * The apiary / IQ-battery runs a fixed task corpus against the bee fleet and judges
  * each run (composite + d1/d2/d3) — the YARDSTICK that says whether the improvements
  * loop + the gym actually make the agents better over time (D-004). This reader rolls
- * the canonical beekeeper tables (instances → runs → scores, migration 180/201) into
+ * the canonical cup_keeper tables (instances → runs → scores, migration 555 renamed from 180/201) into
  * one summary row PER INSTANCE (= one benchmark generation), newest-first, so the UI
- * can show the trend. The legacy `iq_battery_metrics` table is NOT used — beekeeper_scores
+ * can show the trend. The legacy `iq_battery_metrics` table is NOT used — cup_keeper_scores
  * is the source of truth.
  *
  * Pure SQL over an injected `Sql` (mirrors the gym control-plane readers); the scope is
@@ -68,9 +68,9 @@ export async function readApiaryInstanceSummaries(
       avg(s.tokens_per_task) FILTER (WHERE s.success)                    AS mean_tokens,
       avg(CASE WHEN s.escalation THEN 1.0 ELSE 0.0 END)                  AS escalation_rate,
       avg(CASE WHEN s.first_attempt_pass THEN 1.0 ELSE 0.0 END)         AS first_attempt_rate
-    FROM harness_shared.beekeeper_instances i
-    JOIN harness_shared.beekeeper_runs r   ON r.instance_id = i.instance_id
-    LEFT JOIN harness_shared.beekeeper_scores s ON s.run_id = r.run_id
+    FROM harness_shared.cup_keeper_instances i
+    JOIN harness_shared.cup_keeper_runs r   ON r.instance_id = i.instance_id
+    LEFT JOIN harness_shared.cup_keeper_scores s ON s.run_id = r.run_id
     WHERE i.workspace_id = ${q.workspaceId}
     GROUP BY i.instance_id, i.code_sha, i.created_at
     ORDER BY i.created_at DESC

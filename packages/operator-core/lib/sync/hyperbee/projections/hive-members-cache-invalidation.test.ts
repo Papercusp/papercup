@@ -26,7 +26,7 @@ const fakeSql = ((_s: TemplateStringsArray, ..._v: unknown[]) => Promise.resolve
 
 const OPTS = { workspaceId: 'ws', harnessSlug: 'hive-home', sql: fakeSql };
 const ROW: HiveMemberRow = {
-  hive_home_slug: 'hive-home',
+  pot_home_slug: 'hive-home',
   github_user_id: 7,
   github_username: 'alice',
   device_attestations: [],
@@ -51,7 +51,7 @@ describe('WI-259 P-003 — hive_members apply invalidates the P-002 member-set c
 
   it('a cross-Hive op (slug mismatch, dropped before apply) does NOT invalidate', async () => {
     const proj = buildHiveMembersProjection(OPTS);
-    await proj.writeToPg({ ...ROW, hive_home_slug: 'other-hive' }, undefined);
+    await proj.writeToPg({ ...ROW, pot_home_slug: 'other-hive' }, undefined);
     expect(invalidateHiveMemberDeviceSet).not.toHaveBeenCalled();
   });
 

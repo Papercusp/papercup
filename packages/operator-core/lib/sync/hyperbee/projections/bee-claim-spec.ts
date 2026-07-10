@@ -21,7 +21,7 @@ import { resolveAuthorCommsTier } from '../comms-tier-gate';
 import { commsTierAtLeast, FALLBACK_COMMS_TIER, type CommsTier } from '../../../trust/comms-trust';
 import { isIdOnlySelector } from '../../../scheduler/claim-spec';
 
-/** Wire-shape of a federated bee_claim_specs row. Defensive on every field. */
+/** Wire-shape of a federated cup_claim_specs row. Defensive on every field. */
 export interface BeeClaimSpecRow {
   /** The hive HOME slug — the per-harness projection guard key. */
   harness_slug: string;
@@ -128,7 +128,7 @@ async function writeToPg(
   // integration.test.ts).
   const idOnly = isIdOnlySelector(row.spec as { view?: { filter?: unknown } });
   await sql`
-    INSERT INTO harness_shared.bee_claim_specs
+    INSERT INTO harness_shared.cup_claim_specs
       (workspace_id, bee_id, spec, revision, updated_by, harness_slug,
        origin, author_pubkey, fed_ts, fed_hlc, updated_at, id_only)
     VALUES
@@ -150,7 +150,7 @@ async function writeToPg(
     -- in ONE order space via fed_order_key() -- an op's real HLC when it has one,
     -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,
     -- so the guard never rejects what the in-process merge fold would pick).
-    WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.bee_claim_specs.fed_hlc, harness_shared.bee_claim_specs.fed_ts)
+    WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.cup_claim_specs.fed_hlc, harness_shared.cup_claim_specs.fed_ts)
   `;
 }
 
@@ -165,7 +165,7 @@ async function deleteFromPg(
   const ts = delTs ?? null;
   const hlc = delHlc ?? null;
   await sql`
-    DELETE FROM harness_shared.bee_claim_specs
+    DELETE FROM harness_shared.cup_claim_specs
     WHERE workspace_id = ${opts.workspaceId}
       AND harness_slug = ${opts.harnessSlug}
       AND bee_id = ${key}

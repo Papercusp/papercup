@@ -1,5 +1,5 @@
 /**
- * hive-epoch-keys-store — local PG read/write for `harness_shared.hive_epoch_keys`
+ * hive-epoch-keys-store — local PG read/write for `harness_shared.pot_epoch_keys`
  * (Brief RE-KEY / Move 2, P-005). Mirrors hive-settings-store: the LOCAL write/read
  * path; federation is the capture trigger's job (mig 316). The wrapped key crosses +
  * is stored as base64 TEXT; this module is the Uint8Array↔base64 boundary.
@@ -91,7 +91,7 @@ export async function putWrappedKeys(
     // origin='local' + fed_ts/fed_hlc left NULL → the BEFORE stamp trigger (mig 214/314)
     // stamps them + the AFTER capture trigger federates. created_at/updated_at default.
     await s.unsafe(
-      `INSERT INTO harness_shared.hive_epoch_keys
+      `INSERT INTO harness_shared.pot_epoch_keys
          (workspace_id, harness_slug, epoch, member_device_pubkey, wrapped_key, author_pubkey, origin)
        VALUES ($1, $2, $3, $4, $5, $6, 'local')
        ON CONFLICT (workspace_id, harness_slug, epoch, member_device_pubkey) ${conflict}`,
@@ -112,7 +112,7 @@ export async function getWrappedKey(
 ): Promise<string | null> {
   const s = pg(sql);
   const rows = (await s.unsafe(
-    `SELECT wrapped_key FROM harness_shared.hive_epoch_keys
+    `SELECT wrapped_key FROM harness_shared.pot_epoch_keys
       WHERE workspace_id = $1 AND harness_slug = $2 AND epoch = $3 AND member_device_pubkey = $4
       LIMIT 1`,
     [workspaceId, potHomeSlug, epoch, memberDevicePubkey],
