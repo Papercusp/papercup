@@ -37,6 +37,11 @@ describe('Button', () => {
     expect(screen.getByRole('button').className).toBe('pc-btn pc-btn-lg pc-btn-primary');
   });
 
+  it('maps size="mini" to pc-btn-mini, before the variant class (Operator suggestion-card scale)', () => {
+    render(<Button size="mini" variant="destructive">Label</Button>);
+    expect(screen.getByRole('button').className).toBe('pc-btn pc-btn-mini pc-btn-destructive');
+  });
+
   it('composes size + variant with a caller className', () => {
     render(<Button size="lg" variant="primary" className="extra">Label</Button>);
     expect(screen.getByRole('button').className).toBe('pc-btn pc-btn-lg pc-btn-primary extra');

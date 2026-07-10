@@ -26,6 +26,7 @@
  */
 import {
   buildGemmaEmbedder,
+  buildHarrierEmbedder,
   buildLocalEmbedder,
   buildSidecarFirstEmbedder,
   resolveEmbedSidecarUrl,
@@ -57,14 +58,15 @@ export async function resolveProcessSidecarUrl(deps: SidecarWiringDeps = default
 }
 
 /**
- * Build a local embedder ('gemma' | 'local'/BGE) for `kind`, served by the
- * shared sidecar when one is configured/spawnable and in-process otherwise.
- * Drop-in replacement for the direct `buildGemmaEmbedder({kind})` /
- * `buildLocalEmbedder()` calls at the cascade seams — same EmbedFn shape,
- * same vectors, same dims.
+ * Build a local embedder ('gemma' | 'local'/BGE | 'harrier') for `kind`,
+ * served by the shared sidecar when one is configured/spawnable and
+ * in-process otherwise. Drop-in replacement for the direct
+ * `buildGemmaEmbedder({kind})` / `buildLocalEmbedder()` /
+ * `buildHarrierEmbedder({kind})` calls at the cascade seams — same EmbedFn
+ * shape, same vectors, same dims.
  */
 export async function buildSidecarAwareEmbedder(
-  model: 'gemma' | 'local',
+  model: 'gemma' | 'local' | 'harrier',
   kind: GemmaEmbedKind,
   deps: SidecarWiringDeps = defaultDeps,
 ): Promise<EmbedFn> {
@@ -73,9 +75,15 @@ export async function buildSidecarAwareEmbedder(
     model,
     kind,
     url,
-    // BGE is symmetric — buildLocalEmbedder has no kind knob; gemma is the
-    // asymmetric dual-encoder, so kind picks its task prompt (both sides of
-    // this fallback match what the sidecar does server-side, by construction).
-    fallback: model === 'gemma' ? () => buildGemmaEmbedder({ kind }) : () => buildLocalEmbedder(),
+    // BGE is symmetric — buildLocalEmbedder has no kind knob; gemma and
+    // harrier are asymmetric dual-encoders, so kind picks their task prompt
+    // (both sides of this fallback match what the sidecar does server-side,
+    // by construction).
+    fallback:
+      model === 'gemma'
+        ? () => buildGemmaEmbedder({ kind })
+        : model === 'harrier'
+          ? () => buildHarrierEmbedder({ kind })
+          : () => buildLocalEmbedder(),
   });
 }

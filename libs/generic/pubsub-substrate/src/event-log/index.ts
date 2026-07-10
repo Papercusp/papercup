@@ -14,6 +14,8 @@ export {
   type LineSurface,
   type EventSurface,
   type ReadLinesOpts,
+  type CoordLogCursorRow,
+  type CoordLogCursorPage,
 } from './types';
 export { FsCoordLog, type FsCoordLogOptions } from './fs-log';
 export { InMemoryCoordLog } from './memory-log';

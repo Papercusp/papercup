@@ -5,30 +5,36 @@
  * union → tag → filter → histogram → sort → page pipeline is exercised deterministically
  * with no PG. Each describe pins one behavior of the read.
  *
- * Surface→reader mapping under test (feed.ts): messages/plan-events ⇒ coordLog.readLines;
- * escalations/handoffs ⇒ coordLog.readEvents.
+ * Surface→reader mapping under test (feed.ts, WI-3869): messages/plan-events ⇒
+ * coordLog.readLinesBounded; escalations/handoffs ⇒ coordLog.readEventsBounded — the
+ * BOUNDED (ORDER BY id DESC LIMIT n) methods, not the unbounded full-scan readLines/
+ * readEvents (WI-3869 replaced those call sites precisely because the unbounded scan
+ * degraded coord:presence/fleet:status/coord:orient as the log grows).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CoordEnvelope, CoordKind } from '@papercusp/coordination/core';
 
 // Mock the coordLog seam — also keeps the real ./log (and its getOrgPg/PG import) out of the test.
 vi.mock('./log', () => ({
-  coordLog: { readLines: vi.fn(), readEvents: vi.fn() },
+  coordLog: { readLinesBounded: vi.fn(), readEventsBounded: vi.fn() },
 }));
 
 import { readCoordFeed, type CoordSurface, DEFAULT_FEED_LIMIT, MAX_FEED_LIMIT } from './feed';
 import { coordLog } from './log';
 
 const mockLog = coordLog as unknown as {
-  readLines: ReturnType<typeof vi.fn>;
-  readEvents: ReturnType<typeof vi.fn>;
+  readLinesBounded: ReturnType<typeof vi.fn>;
+  readEventsBounded: ReturnType<typeof vi.fn>;
 };
 
-/** Configure the four surfaces' contents. messages/plan-events resolve via readLines,
- *  escalations/handoffs via readEvents — a single per-surface map drives both. */
+/** Configure the four surfaces' contents. messages/plan-events resolve via
+ *  readLinesBounded, escalations/handoffs via readEventsBounded — a single
+ *  per-surface map drives both (the mock ignores the bound options, same as
+ *  the old unbounded double did — the pipeline behavior under test is
+ *  identical, only the underlying seam call changed per WI-3869). */
 function setSurfaces(data: Partial<Record<CoordSurface, CoordEnvelope[]>>): void {
-  mockLog.readLines.mockImplementation(async (s: CoordSurface) => data[s] ?? []);
-  mockLog.readEvents.mockImplementation(async (s: CoordSurface) => data[s] ?? []);
+  mockLog.readLinesBounded.mockImplementation(async (s: CoordSurface) => data[s] ?? []);
+  mockLog.readEventsBounded.mockImplementation(async (s: CoordSurface) => data[s] ?? []);
 }
 
 function env(p: Partial<CoordEnvelope> = {}): CoordEnvelope {
@@ -51,9 +57,43 @@ describe('union + surface tagging + broadcast flag', () => {
     expect(total).toBe(4);
     const bySurface = Object.fromEntries(rows.map((r) => [r.msg_id, r.surface]));
     expect(bySurface).toEqual({ a: 'messages', b: 'plan-events', c: 'escalations', d: 'handoffs' });
-    // line surfaces went through readLines; event surfaces through readEvents
-    expect(mockLog.readLines.mock.calls.map((c) => c[0]).sort()).toEqual(['messages', 'plan-events']);
-    expect(mockLog.readEvents.mock.calls.map((c) => c[0]).sort()).toEqual(['escalations', 'handoffs']);
+    // line surfaces went through readLinesBounded; event surfaces through readEventsBounded
+    expect(mockLog.readLinesBounded.mock.calls.map((c) => c[0]).sort()).toEqual(['messages', 'plan-events']);
+    expect(mockLog.readEventsBounded.mock.calls.map((c) => c[0]).sort()).toEqual(['escalations', 'handoffs']);
+  });
+
+  it('WI-3869: every raw per-surface read is BOUNDED (never the unbounded full-scan) and pushes down kinds/since_ts/plan_slug', async () => {
+    setSurfaces({
+      messages: [env({ msg_id: 'a' })],
+      'plan-events': [env({ msg_id: 'b', kind: 'plan_event' })],
+      escalations: [env({ msg_id: 'c', kind: 'escalation' })],
+      handoffs: [env({ msg_id: 'd', kind: 'handoff' })],
+    });
+    await readCoordFeed({
+      kinds: ['message', 'escalation'] as CoordKind[],
+      since_ts: '2026-06-23T00:00:00.000Z',
+      plan_slug: 'plan-a',
+    });
+    // Every bounded call carries a numeric, non-unbounded limit — this is the
+    // regression guard: a caller that reverts to coordLog.readLines/readEvents
+    // (no `limit` arg at all) fails this assertion immediately.
+    for (const call of [...mockLog.readLinesBounded.mock.calls, ...mockLog.readEventsBounded.mock.calls]) {
+      const [, opts] = call as [CoordSurface, { limit?: number }];
+      expect(typeof opts?.limit).toBe('number');
+      expect(opts!.limit!).toBeGreaterThan(0);
+    }
+    // Line reads push down kinds + sinceTs + planSlug (readLinesBounded supports all three).
+    const lineCall = mockLog.readLinesBounded.mock.calls.find((c) => c[0] === 'messages')!;
+    expect(lineCall[1]).toMatchObject({
+      kinds: ['message', 'escalation'],
+      sinceTs: '2026-06-23T00:00:00.000Z',
+      planSlug: 'plan-a',
+    });
+    // Event reads push down kinds only (readEventsBounded has no sinceTs/planSlug param).
+    const eventCall = mockLog.readEventsBounded.mock.calls.find((c) => c[0] === 'escalations')!;
+    expect(eventCall[1]).toMatchObject({ kinds: ['message', 'escalation'] });
+    expect(eventCall[1]).not.toHaveProperty('sinceTs');
+    expect(eventCall[1]).not.toHaveProperty('planSlug');
   });
 
   it('derives broadcast from a ["*"] recipient', async () => {

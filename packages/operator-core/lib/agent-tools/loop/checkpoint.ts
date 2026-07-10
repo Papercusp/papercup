@@ -39,6 +39,11 @@ import { readInbox } from '../coordination/messages';
 import { readWatermark } from '../coordination/watermarks';
 import { continuationGateFromReads } from '../coordination/tools/continuation-gate';
 import { provenanceLintField } from '../../carry-surface-provenance-lint';
+import { withBoundedTimeout } from '../../bounded-timeout';
+
+/** The continuation hint is advisory; it must never consume the checkpoint
+ * tool's 60s transport budget when coordination reads are degraded. */
+export const CONTINUATION_READ_BUDGET_MS = 5_000;
 
 /**
  * P-007 (fleet-member-dx-improvements-2026-07-10, EI-9035): the owner's most
@@ -240,12 +245,12 @@ export default defineTool({
     // failure omits the leg (which the gate treats as blocking ⇒ it recommends settling, never a
     // false "continue"). An unresolvable inbox cursor also stays null (blocking) rather than
     // counting all history as unread.
-    let continuation: ReturnType<typeof continuationGateFromReads> | undefined;
-    try {
-      const pres = await getPresence(ownerId).catch(() => null);
-      let unreadInbox: number | null = null;
-      try {
-        const wm = await readWatermark(ownerId);
+    const continuationRead = await withBoundedTimeout(
+      async () => {
+        const pres = await getPresence(ownerId).catch(() => null);
+        let unreadInbox: number | null = null;
+        try {
+          const wm = await readWatermark(ownerId);
         // messages_since_ts advances at turn-END, so this counts messages addressed to you
         // that arrived since your last settle (excludeOwn + non-notify by filterInbox default
         // = real interrupts, not ambient).
@@ -255,23 +260,28 @@ export default defineTool({
         // "inbox not evaluated"; and a mid-turn read after the last settle correctly
         // narrows "unread" to what arrived AFTER that read. Neither cursor available ⇒
         // stays null (blocking — fail safe toward settling, unchanged).
-        const readTs = await lastInboxReadAt(ownerId);
-        const sinceTs = pickUnreadCursor(wm?.messages_since_ts, readTs);
-        if (sinceTs) {
-          const unread = await readInbox(ownerId, { since_ts: sinceTs, excludeOwn: true });
-          unreadInbox = unread.length;
+          const readTs = await lastInboxReadAt(ownerId);
+          const sinceTs = pickUnreadCursor(wm?.messages_since_ts, readTs);
+          if (sinceTs) {
+            const unread = await readInbox(ownerId, { since_ts: sinceTs, excludeOwn: true });
+            unreadInbox = unread.length;
+          }
+        } catch {
+          unreadInbox = null;
         }
-      } catch {
-        unreadInbox = null;
-      }
-      continuation = continuationGateFromReads({
-        contextTokens: pres?.contextTokens,
-        compactionLimit: pres?.compactionLimit,
-        unreadInbox,
-      });
-    } catch {
-      continuation = undefined;
-    }
+        return continuationGateFromReads({
+          contextTokens: pres?.contextTokens,
+          compactionLimit: pres?.compactionLimit,
+          unreadInbox,
+        });
+      },
+      {
+        fallback: undefined,
+        timeoutMs: CONTINUATION_READ_BUDGET_MS,
+        label: 'loop:checkpoint continuation reads',
+      },
+    );
+    const continuation = continuationRead.value;
 
     // WI-3801: warn-only nudge — undefined (no field) on a clean/cleared write.
     const provenanceLint = stored !== null ? provenanceLintField(stored) : undefined;

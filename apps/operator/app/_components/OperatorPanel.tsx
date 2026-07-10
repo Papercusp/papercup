@@ -26,6 +26,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { useFancyEffectsEnabled } from '@/lib/visual-effects';
 import { MarkdownPreview } from './MarkdownEditor';
 import { LazyDetails } from './LazyDetails';
+import { Button } from '../harness/Button';
 import { Select } from '../harness/Select';
 import { Tooltip } from '../harness/Tooltip';
 import { usePromptDialog } from '../harness/usePromptDialog';
@@ -1918,9 +1919,9 @@ export function OperatorPanel(): ReactElement | null {
                             <div className="operator-entry__buttons">
                               {/* Auto-fire countdown: Keep for review turns it into a regular pending card; otherwise the timer fires the same Accept flow. */}
                               {s.status === 'pending' && s.auto_dispatch && (
-                                <button type="button" className="operator-mini-btn operator-mini-btn--ghost" onClick={() => undoCancelSuggestion(s.id)}>
+                                <Button size="mini" variant="ghost" onClick={() => undoCancelSuggestion(s.id)}>
                                   Keep for review
-                                </button>
+                                </Button>
                               )}
 
                               {/* High-risk send_directive: gate Accept behind a preview-and-confirm strip. */}
@@ -1936,32 +1937,32 @@ export function OperatorPanel(): ReactElement | null {
                                     <span>Picked up at the next scan tick (~30s). Estimated agent time: 2–5 min.</span>
                                   </div>
                                   <div className="operator-confirm-strip__actions">
-                                    <button
-                                      type="button"
-                                      className="operator-mini-btn operator-mini-btn--danger"
+                                    <Button
+                                      size="mini"
+                                      variant="destructive"
                                       onClick={() => dispatchSuggestion(s.id)}
                                     >
                                       Accept
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="operator-mini-btn operator-mini-btn--ghost"
+                                    </Button>
+                                    <Button
+                                      size="mini"
+                                      variant="ghost"
                                       onClick={() => setConfirmingDispatch((prev) => {
                                         const { [s.id]: _removed, ...rest } = prev;
                                         return rest;
                                       })}
                                     >
                                       Cancel
-                                    </button>
+                                    </Button>
                                   </div>
                                 </div>
                               )}
 
                               {/* Default Accept button — visible on every pending card except auto-fire (countdown) and the high-risk-confirm sub-flow. */}
                               {s.status === 'pending' && !s.auto_dispatch && !(s.action === 'send_directive' && s.actualTier === 'high' && confirmingDispatch[s.id]) && (
-                                <button
-                                  type="button"
-                                  className={`operator-mini-btn ${s.actualTier === 'high' ? 'operator-mini-btn--danger' : 'operator-mini-btn--primary'}`}
+                                <Button
+                                  size="mini"
+                                  variant={s.actualTier === 'high' ? 'destructive' : 'primary'}
                                   onClick={() => {
                                     if (s.action === 'send_directive' && s.actualTier === 'high') {
                                       setConfirmingDispatch((prev) => ({ ...prev, [s.id]: true }));
@@ -1971,14 +1972,14 @@ export function OperatorPanel(): ReactElement | null {
                                   }}
                                 >
                                   {(s.failedAttempts ?? 0) > 0 ? 'Retry Accept →' : 'Accept →'}
-                                </button>
+                                </Button>
                               )}
 
                               {/* Ignore button — visible on every pending card. */}
                               {s.status === 'pending' && !(s.action === 'send_directive' && s.actualTier === 'high' && confirmingDispatch[s.id]) && (
-                                <button type="button" className="operator-mini-btn operator-mini-btn--ghost" onClick={() => dismissSuggestion(s.id)}>
+                                <Button size="mini" variant="ghost" onClick={() => dismissSuggestion(s.id)}>
                                   Ignore
-                                </button>
+                                </Button>
                               )}
                             </div>
                           </div>

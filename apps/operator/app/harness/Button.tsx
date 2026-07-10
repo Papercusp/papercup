@@ -7,10 +7,13 @@ import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
  * Button — the operator's one button primitive.
  *
  * Two ORTHOGONAL axes (design-simplification P-015 folded the old parallel
- * `.pc-button` CTA recipe into these):
+ * `.pc-button` CTA recipe into these; P-015 part 2 folded the Operator panel's
+ * `.operator-mini-btn` recipe into the `mini` size — see globals.css `.pc-btn-mini`):
  *
  *   size    — 'sm' (default) the 26px chrome/toolbar scale
  *             'lg'           the 40px page-CTA scale
+ *             'mini'         the ~30px pill-shaped suggestion-card action scale
+ *                             (Operator panel's accept/ignore/keep-for-review row)
  *   variant — 'neutral' (default) the plain surface
  *             'accent'           soft accent tint — the usual page CTA
  *             'primary'          filled accent — the one true CTA on a page
@@ -33,7 +36,7 @@ import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
  * baseline already styles it. See /docs/design for the form-control matrix.
  */
 export type ButtonVariant = 'neutral' | 'accent' | 'primary' | 'destructive' | 'ghost';
-export type ButtonSize = 'sm' | 'lg';
+export type ButtonSize = 'sm' | 'lg' | 'mini';
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
@@ -55,6 +58,7 @@ const VARIANT_CLASS: Record<ButtonVariant, string | null> = {
 const SIZE_CLASS: Record<ButtonSize, string | null> = {
   sm: null,
   lg: 'pc-btn-lg',
+  mini: 'pc-btn-mini',
 };
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(

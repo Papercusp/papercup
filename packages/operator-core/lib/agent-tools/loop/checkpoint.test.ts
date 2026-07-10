@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const setLoopCarryNote = vi.fn();
 const getLoopCarryNote = vi.fn();
 const getLoopStatus = vi.fn();
+const withBoundedTimeout = vi.fn(async () => ({ value: undefined, degraded: false, elapsedMs: 0 }));
 // Mock the STORE fns; a sentinel renderCarryNote keeps the routing tests about ROUTING
 // (structured → render, raw → passthrough), not renderCarryNote's exact output. The pure
 // walls machinery (splitCarryNoteWalls / withCarryNoteWalls / normalizeWallEntries) stays
@@ -43,6 +44,9 @@ vi.mock('../../hive/wake', () => ({
 // (most tests): no armed routine found (null) ⇒ falls through to the old arg/ctx/home-hive
 // chain, preserving every pre-existing test's behavior unchanged.
 vi.mock('../../harness/routines/loop', () => ({ getLoopStatus: (...a: unknown[]) => getLoopStatus(...a) }));
+vi.mock('../../bounded-timeout', () => ({
+  withBoundedTimeout: (...a: unknown[]) => withBoundedTimeout(...a),
+}));
 
 const tool = (await import('./checkpoint')).default;
 
@@ -57,6 +61,7 @@ beforeEach(() => {
   setLoopCarryNote.mockResolvedValue('stored-note');
   getLoopCarryNote.mockResolvedValue(null); // default: no prior note ⇒ no walls to carry
   getLoopStatus.mockResolvedValue(null); // default: no armed routine found
+  withBoundedTimeout.mockResolvedValue({ value: undefined, degraded: false, elapsedMs: 0 });
 });
 
 describe('loop:checkpoint — the loop carry-note producer', () => {
@@ -155,6 +160,20 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
 
   it('rejects an empty call (nothing to write) at the args boundary', () => {
     expect(() => parse({})).toThrow();
+  });
+
+  it('bounds advisory continuation reads well below the tool transport timeout', async () => {
+    const { CONTINUATION_READ_BUDGET_MS } = await import('./checkpoint');
+    await call({ next: 'x' });
+    expect(CONTINUATION_READ_BUDGET_MS).toBe(5_000);
+    expect(withBoundedTimeout).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({
+        fallback: undefined,
+        timeoutMs: CONTINUATION_READ_BUDGET_MS,
+        label: 'loop:checkpoint continuation reads',
+      }),
+    );
   });
 });
 

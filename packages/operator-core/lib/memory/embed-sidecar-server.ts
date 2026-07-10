@@ -42,8 +42,10 @@
 import * as http from 'node:http';
 import {
   buildGemmaEmbedder,
+  buildHarrierEmbedder,
   buildLocalEmbedder,
   GEMMA_MODEL,
+  HARRIER_MODEL,
   LOCAL_EMBEDDER_MODEL,
   type GemmaEmbedKind,
 } from '@papercusp/memory';
@@ -60,9 +62,10 @@ const MAX_BODY_BYTES = 16 * 1024 * 1024;
 
 type EmbedFn = (text: string) => Promise<number[]>;
 
-/** Models this sidecar serves. 'gemma' is asymmetric (kind selects the task
- *  prompt); 'local' (BGE-small) is symmetric — kind is accepted and ignored. */
-export const EMBED_SIDECAR_MODELS = ['gemma', 'local'] as const;
+/** Models this sidecar serves. 'gemma' and 'harrier' are asymmetric (kind
+ *  selects the task prompt — harrier prefixes queries only, docs are raw);
+ *  'local' (BGE-small) is symmetric — kind is accepted and ignored. */
+export const EMBED_SIDECAR_MODELS = ['gemma', 'local', 'harrier'] as const;
 export type EmbedSidecarModel = (typeof EMBED_SIDECAR_MODELS)[number];
 
 export interface EmbedRequest {
@@ -84,6 +87,7 @@ export const EMBED_SIDECAR_RUNTIME = 'node-onnx-worker';
 const MODEL_REVS: Record<EmbedSidecarModel, string> = {
   gemma: GEMMA_MODEL,
   local: LOCAL_EMBEDDER_MODEL,
+  harrier: HARRIER_MODEL,
 };
 
 /**
@@ -128,6 +132,9 @@ const defaultBuilders: EmbedderBuilders = {
   // BGE is symmetric: one embedder serves both kinds (buildLocalEmbedder has
   // no kind knob), so both registry slots resolve to the same closure.
   local: () => buildLocalEmbedder(),
+  // harrier-oss-0.6b @ native-1024 (P-014): pooling+normalize live in the
+  // ONNX graph itself; kind picks the instruct-vs-raw prompt.
+  harrier: (kind) => Promise.resolve(buildHarrierEmbedder({ kind })),
 };
 
 export interface EmbedSidecarOptions {

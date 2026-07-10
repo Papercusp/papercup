@@ -23,6 +23,21 @@
 /** One day in ms — the unit `daysToReview` is reported in. */
 const DAY_MS = 86_400_000;
 
+/**
+ * Resolution cooldown for dark-flag-age findings (EI-9190, twin of EI-427 /
+ * insight-staleness's DEFAULT_INSIGHT_RESOLUTION_COOLDOWN_MS). Unlike the deploy-lag
+ * case this isn't about a scanned tree lagging staging — it's that the underlying
+ * state (dark count, review-by) genuinely does NOT change between watchdog ticks
+ * unless a human edits libs/flags/src/types.ts. Without a cooldown, every 15-min
+ * tick after a resolution (a peer reviewed the set and found nothing to change, or
+ * just pushed review-by out) re-evaluates the SAME unchanged inputs and re-fires a
+ * near-duplicate finding (observed: resolved 11:06Z, re-fired 12:31Z, ~85min /
+ * ~6 ticks later, reporting the identical review-by + count). 24h comfortably
+ * outlasts that churn while still letting a genuinely stale review re-surface within
+ * a day of the cooldown lapsing.
+ */
+export const DEFAULT_DARK_FLAG_AGE_RESOLUTION_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
 /** Inputs the pure detector reasons over (the collector reads them from @papercusp/flags). */
 export interface DarkFlagAgeInput {
   /** DARK_FLAGS.size — the current count of consciously default-OFF flags. */
@@ -37,6 +52,11 @@ export interface DarkFlagAgeInput {
   reviewWithinDays?: number;
   /** Emit when darkCount >= watermark - this ("at/near the watermark"). Default 2. */
   nearWatermarkSlack?: number;
+  /**
+   * Suppression window (ms) after a resolved dup before this same-state finding may
+   * re-file (EI-9190). Default DEFAULT_DARK_FLAG_AGE_RESOLUTION_COOLDOWN_MS.
+   */
+  resolutionCooldownMs?: number;
 }
 
 /** The structured metric carried on the finding (also rendered into `body`). */
@@ -67,6 +87,17 @@ export interface DarkFlagAgeFinding {
   findingClass: 'flags:dark-flag-age';
   /** Structured detail (also embedded in `body`). */
   metric: DarkFlagAgeMetric;
+  /**
+   * Newest evidence timestamp (EI-9190 — the watchdog.ts resolution-cooldown feed
+   * keys off this). Always 'now': a live-state re-evaluation, so its evidence is
+   * always fresh relative to any prior resolution.
+   */
+  latestAt: string;
+  /**
+   * Suppression window after a resolved dup (EI-9190) — see
+   * DEFAULT_DARK_FLAG_AGE_RESOLUTION_COOLDOWN_MS.
+   */
+  resolutionCooldownMs: number;
 }
 
 /**
@@ -130,6 +161,11 @@ export function detectDarkFlagAge(input: DarkFlagAgeInput): DarkFlagAgeFinding[]
       scope: 'operator' as const,
       findingClass: 'flags:dark-flag-age' as const,
       metric,
+      // EI-9190: same-state re-evaluation is always "fresh" relative to any prior
+      // resolution, so latestAt is always 'now' — the cooldown below is what
+      // actually suppresses the near-duplicate re-file.
+      latestAt: new Date(input.now).toISOString(),
+      resolutionCooldownMs: input.resolutionCooldownMs ?? DEFAULT_DARK_FLAG_AGE_RESOLUTION_COOLDOWN_MS,
     },
   ];
 }

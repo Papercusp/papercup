@@ -21,6 +21,12 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 
 export default defineTool({
   name: 'tools:invoke',
+  // The target runs through its own projected dispatcher and therefore owns
+  // the authoritative deadline. Keep this wrapper outside the longest agent-
+  // tool deadline (600s) so its default 60s watchdog cannot abort first and
+  // turn a successfully-completed target into the misleading
+  // "handler returned but signal had aborted" timeout (EI-9242).
+  timeoutSec: 660,
   description:
     'Call ANY tool in the full ~550-tool catalog by name, even one not in your loaded tool list. ' +
     'Pass the exact tool name (colon form, e.g. "flags:set") and its arguments object. The call is ' +

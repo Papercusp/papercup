@@ -396,7 +396,12 @@ export default function AgentsRunningPill() {
  *  previews that agent's plan/work-item in the detail strip; clicking pins it. */
 export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: number }) {
   const [pinned, setPinned] = useState<string | null>(null);
-  const [hovered, setHovered] = useState<string | null>(null);
+  // Keep the most recently previewed agent selected after the pointer leaves the
+  // roster. The detail strip sits directly above the inactive-sessions control;
+  // clearing hover on mouse-leave made that whole section blink out while the
+  // user moved toward it. Falling back to the first visible agent also keeps the
+  // strip mounted before the first hover and across push-driven roster refreshes.
+  const [previewed, setPreviewed] = useState<string | null>(null);
   const [inspecting, setInspecting] = useState<RosterAgent | null>(null);
   // Shared-hive per-machine tabs: THIS machine ("Local") first, then each connected
   // machine. Only shown when >1 machine is present; otherwise the whole roster renders
@@ -413,7 +418,7 @@ export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: 
   );
   const groups = useMemo(() => groupByFleet(shown), [shown]);
   const total = shown.length;
-  const activeId = hovered ?? pinned;
+  const activeId = pinned ?? previewed ?? shown[0]?.ownerId ?? null;
   const active = useMemo(() => {
     for (const g of groups) {
       const a = g.agents.find((x) => x.ownerId === activeId);
@@ -423,16 +428,14 @@ export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: 
   }, [groups, activeId]);
 
   return (
-    // onMouseLeave lives on the WHOLE roster (not just the scroll list) so moving
-    // the cursor from a row DOWN into the detail pane — to reach its Live-thinking
-    // button — doesn't count as "left the list" and dismiss the preview. It clears
-    // only when the cursor leaves the entire roster.
+    // The last preview remains selected when the pointer leaves. This keeps the
+    // detail strip mounted while the user moves into it or the inactive-session
+    // section below it.
     <div
       className="pc-agents-roster"
       role="group"
       aria-label={`${total} agents running`}
       data-testid="agents-roster"
-      onMouseLeave={() => setHovered(null)}
     >
       {showTabs && (
         <div className="pc-agents-roster__tabs" role="tablist" data-testid="agents-machine-tabs">
@@ -479,7 +482,7 @@ export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: 
                 data-liveness={a.liveness}
                 role="button"
                 tabIndex={0}
-                onMouseEnter={() => setHovered(a.ownerId)}
+                onMouseEnter={() => setPreviewed(a.ownerId)}
                 onClick={() => {
                   // Click an agent → open its live thinking (bee run-log or the
                   // interactive session's transcript); otherwise pin its detail.

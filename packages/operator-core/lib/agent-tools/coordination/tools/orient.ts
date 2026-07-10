@@ -234,6 +234,26 @@ export interface OrientResult {
 }
 
 /**
+ * EI-9130: did this orient's bespoke cursor-delta legs (fleetDelta / planEvents /
+ * fleetCatchUp — none of which ride the formal `_meta.delta` protocol) actually SERVE a
+ * narrowed/unchanged response? Pure + exported so it's directly unit-testable against a
+ * composeOrient result without re-deriving the per-leg logic. The handler stamps
+ * `ctx.metadata({ deltaServed: true })` when this is true (see dispatch-stack.ts's
+ * recordTelemetry, which folds an explicit stamp like this ahead of its own derivation
+ * from `_meta.delta.mode`) — the generic breadcrumb that makes a delta rollout's live win
+ * directly queryable (`metadata_json->>'deltaServed'`) instead of only inferable.
+ */
+export function orientServedDelta(
+  result: Pick<OrientResult, 'fleetDelta' | 'planEvents' | 'fleetCatchUp'>,
+): boolean {
+  return (
+    result.fleetDelta?.baseline === false ||
+    result.planEvents?.unchanged === true ||
+    result.fleetCatchUp?.unchanged === true
+  );
+}
+
+/**
  * Pure composition over an injected `call`, run SEQUENTIALLY. The first three reads are
  * the core orientation (always run); the memory/plan-events/declare folds are the
  * additive session-bootstrap, each gated by its input and BEST-EFFORT. `ownerId` scopes
@@ -844,6 +864,14 @@ export default defineTool({
       } catch { /* fail-soft */ }
     }
     const out = { ...(self ? { self } : {}), ...(modes ? { modes } : {}), ...(recovery ? { recovery } : {}), ...(result as object) };
+    // EI-9130: stamp the generic delta-served breadcrumb when at least one of orient's
+    // bespoke cursor-delta legs actually narrowed/unchanged its response — see
+    // orientServedDelta's doc comment + dispatch-stack.ts's recordTelemetry. Never
+    // stamped `false`: absence already reads as "no delta mechanism engaged" (flag off,
+    // no cursor, or a baseline/first read), same convention as the formal protocol.
+    if (orientServedDelta(result)) {
+      ctx.metadata?.({ deltaServed: true });
+    }
     // `{ data }` envelope (tool-data-shape ratchet P-003) so payload-tier
     // shaping + format-aware serialization apply. On the MCP transport this is
     // behavior-equivalent to the prior raw-JSON text (the re-encode path

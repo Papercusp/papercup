@@ -214,6 +214,23 @@ describe('<AgentsRunningPill>', () => {
     expect(detail.textContent).toContain('F-1'); // its work item
   });
 
+  it('keeps the detail strip mounted before hover and after leaving the roster', () => {
+    nuqs.open = true;
+    render(<Pill />);
+
+    // A stable default is visible immediately, so the area above inactive
+    // sessions never collapses while push-driven roster data refreshes.
+    expect(screen.getByTestId('agent-detail')).toBeTruthy();
+
+    fireEvent.mouseEnter(screen.getByTestId('agent-row-b1'));
+    expect(screen.getByTestId('agent-detail').textContent).toContain('F-1');
+    fireEvent.mouseLeave(screen.getByTestId('agents-roster'));
+
+    // Moving toward the detail/inactive-session controls retains the last
+    // preview instead of making the section disappear and reappear.
+    expect(screen.getByTestId('agent-detail').textContent).toContain('F-1');
+  });
+
   it('clicking an agent row pins it', () => {
     nuqs.open = true;
     render(<Pill />);

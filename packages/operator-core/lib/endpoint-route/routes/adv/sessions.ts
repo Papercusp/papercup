@@ -42,6 +42,64 @@ import {
 
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
 
+/**
+ * Await `factory()` — the query-embedder ACQUISITION (buildQueryEmbedder → the
+ * resolveEmbedder cascade → a local-ONNX sidecar spawn / pipeline cold-start) —
+ * but give up after `budgetMs` → resolve `null` (BM25-only degrade), or when
+ * `signal` aborts → reject (the route watchdog / a client that gave up → 408).
+ *
+ * This is the layer `runHybridSearch`'s own `embedTimeoutMs` cannot reach: that
+ * bounds the embed CALL, but the interactive handler builds the embedder BEFORE
+ * calling the engine, and on 2026-07-10 (OpenAI embed quota exhausted → the
+ * cascade falls to the local ONNX leg) that construction alone ran 15–30s per
+ * query and blocked the whole search to the 30s watchdog + 408 — never reaching
+ * the engine where the embed budget lives (WI-3860). Bounding it here degrades a
+ * cold acquisition to BM25 (~20ms, real keyword hits) instead.
+ *
+ * The losing construction is NOT cancelled (no cancel seam on the cascade) — it
+ * runs on to warm the process-memoized pipeline so a LATER query can get
+ * semantic once the model is hot — but its eventual settle is swallowed so a
+ * build that finishes after we've degraded never surfaces as an unhandled
+ * rejection. A construction that itself throws degrades to null too
+ * (buildQueryEmbedder already catches internally; this is belt-and-suspenders).
+ * Mirror of hybrid.ts's `embedWithBudget`, one layer out.
+ */
+async function acquireEmbedderWithin<T>(
+  factory: () => Promise<T | null>,
+  budgetMs: number,
+  signal: AbortSignal | undefined,
+): Promise<T | null> {
+  const p = factory();
+  return await new Promise<T | null>((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
+      fn();
+    };
+    function onAbort(): void {
+      // A route-abort must REJECT (→ the route stack's aborted path returns the
+      // 408), never degrade to a silent BM25 result.
+      finish(() => reject(signal!.reason ?? new Error('aborted')));
+    }
+    if (signal) {
+      if (signal.aborted) { onAbort(); return; }
+      signal.addEventListener('abort', onAbort);
+    }
+    if (budgetMs > 0) {
+      timer = setTimeout(() => finish(() => resolve(null)), budgetMs);
+    }
+    // Swallow the orphaned settle after we've resolved/rejected (no cancel seam).
+    p.then(
+      (v) => finish(() => resolve(v)),
+      () => finish(() => resolve(null)),
+    );
+  });
+}
+
 async function readOmpMemoryConfig(): Promise<Record<string, unknown>> {
   const wanted = new Set([
     'memory.backend',
@@ -430,15 +488,27 @@ const searchTranscripts = defineTool({
     const { advSessionsByTranscriptHandles } = await import('../../../adv-sessions');
 
     const sources = SEARCH_SOURCES.filter((s) => s.name === 'session_turn');
-    const embedder = await buildQueryEmbedder();
     const { sql } = getOrgPg();
-    // Interactive-search embed budget: this is a HUMAN typing in the desktop
-    // pill, so a slow/cold query-embedder must not block the result. If the
-    // embed exceeds this the engine degrades to BM25-only (which is ~20ms and
-    // returns real keyword hits) rather than blocking to the 30s watchdog and
-    // 408ing (2026-07-10: OpenAI embed quota exhausted → local ONNX cold
-    // embed ran 15–30s per query; BM25 alone was 20ms). Env-tunable.
-    const embedTimeoutMs = Number(process.env.PAPERCUSP_TRANSCRIPT_EMBED_BUDGET_MS) || 4000;
+    // Interactive-search embed budget — a HUMAN is typing in the desktop pill,
+    // so a slow/cold query-embedder must not block the result. The budget covers
+    // BOTH the embedder ACQUISITION (buildQueryEmbedder → the resolveEmbedder
+    // cascade → a local-ONNX sidecar spawn / pipeline cold-start — where a query
+    // hung 15–30s on 2026-07-10 with OpenAI embed quota exhausted, WI-3860) AND
+    // the embed CALL (bounded inside runHybridSearch via embedTimeoutMs). Either
+    // exceeding it degrades to BM25-only (~20ms, real keyword hits) instead of
+    // blocking to the 30s watchdog + 408. The orphaned acquisition keeps warming
+    // the process-memoized pipeline so a LATER query can get semantic once hot;
+    // a route-abort (signal) still outranks the budget and rejects (→ 408).
+    // Env-tunable.
+    const embedBudgetMs = Number(process.env.PAPERCUSP_TRANSCRIPT_EMBED_BUDGET_MS) || 4000;
+    const embedDeadlineAt = Date.now() + embedBudgetMs;
+    // Bound the embedder CONSTRUCTION (the cold-start seam runHybridSearch's
+    // embedTimeoutMs can't reach — it happens BEFORE the engine is called).
+    const embedder = await acquireEmbedderWithin(buildQueryEmbedder, embedBudgetMs, signal);
+    // Whatever's left of the budget bounds the embed CALL inside runHybridSearch.
+    // Floor at 250ms so an acquisition that finished near the deadline still lets
+    // a NOW-warm embedder return (~20ms) rather than being handed a 0ms budget.
+    const embedTimeoutMs = Math.max(250, embedDeadlineAt - Date.now());
     // The route watchdog's signal is threaded into the engine so a timed-out
     // search stops running instead of grinding all sources to completion
     // after the 408 already went out (2026-07-09 incident: 34–69s server

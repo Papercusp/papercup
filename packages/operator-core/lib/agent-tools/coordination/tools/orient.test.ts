@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import { composeOrient } from './orient';
+import { composeOrient, orientServedDelta } from './orient';
 import type { InnerCall } from '../../_compound-dispatch';
 
 const foldFactsMock = vi.hoisted(() => vi.fn(async () => []));
@@ -851,6 +851,65 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
     const cursor = vi.fn(async () => { throw new Error('pg down'); });
     const r = await composeOrient({}, call, 'me', undefined, undefined, undefined, undefined, cursor);
     expect(r.fleetCatchUp).toEqual({ fleet: 'backend', total: 1, recent: CATCHUP_V1 });
+  });
+
+  describe('EI-9130 orientServedDelta — generic delta-served breadcrumb', () => {
+    it('true when fleetDelta actually served transitions (baseline:false)', async () => {
+      const { call } = fakeCall({
+        ...CORE,
+        'fleet:assignments': () => ({
+          ok: true,
+          summary: { agents: 1 },
+          agents: [{ agentId: 'me', verdict: 'stalled', sessionState: 'live', claims: 1 }],
+          orphaned: [],
+          stalled: [],
+        }),
+      });
+      const cursor = vi.fn(async () => ({
+        committed: { members: { me: { v: 'speaking', s: 'live', c: 1 } }, orphaned: 0, stalled: 0 },
+        baseline: false,
+      }));
+      const r = await composeOrient({ mode: 'monitor' }, call, 'me', undefined, undefined, cursor);
+      expect(orientServedDelta(r)).toBe(true);
+    });
+
+    it('true when plan-events resolved unchanged', async () => {
+      const { call } = fakeCall({ ...CORE, 'coord:plan-events': () => ({ events: EVENTS_V1, total: 7 }) });
+      const cursor = vi.fn(async () => ({ committed: { ids: ['e1'] }, baseline: false }));
+      const r = await composeOrient({}, call, 'me', undefined, undefined, undefined, cursor);
+      expect(orientServedDelta(r)).toBe(true);
+    });
+
+    it('true when fleet catch-up resolved unchanged', async () => {
+      const { call } = fakeCall({
+        ...CORE,
+        'coord:whoami': () => ({ fleetSlug: 'backend' }),
+        'coord:catch-up': () => ({ total: 9, rows: CATCHUP_V1 }),
+      });
+      const cursor = vi.fn(async () => ({ committed: { ids: ['c1'] }, baseline: false }));
+      const r = await composeOrient({}, call, 'me', undefined, undefined, undefined, undefined, cursor);
+      expect(orientServedDelta(r)).toBe(true);
+    });
+
+    it('false on a baseline (first) read — nothing was actually narrowed', async () => {
+      const { call } = fakeCall({ ...CORE });
+      const cursor = vi.fn(async () => ({ committed: null, baseline: true }));
+      const r = await composeOrient({ mode: 'monitor' }, call, 'me', undefined, undefined, cursor);
+      expect(orientServedDelta(r)).toBe(false);
+    });
+
+    it('false when no cursor mechanism is engaged at all (flag off / pre-P-004 shape)', async () => {
+      const { call } = fakeCall({ ...CORE });
+      const r = await composeOrient({}, call, 'me');
+      expect(orientServedDelta(r)).toBe(false);
+    });
+
+    it('false when plan-events changed (full delivery, no unchanged marker)', async () => {
+      const { call } = fakeCall({ ...CORE, 'coord:plan-events': () => ({ events: EVENTS_V2, total: 2 }) });
+      const cursor = vi.fn(async () => ({ committed: { ids: ['e1'] }, baseline: false }));
+      const r = await composeOrient({}, call, 'me', undefined, undefined, undefined, cursor);
+      expect(orientServedDelta(r)).toBe(false);
+    });
   });
 
   // WI-3818: fleet:assignments (`me`) and coord:glance (`fleetHealth`) fan out to

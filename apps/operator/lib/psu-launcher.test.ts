@@ -88,6 +88,8 @@ import {
   runLaunchPreflight,
   normalizeModelSpec,
   validateModelSpec,
+  cloudModelBackendHint,
+  validateAgentModelPair,
   autoCompactWindowEnv,
   isFleetMemberLaunch,
   COMPACTION_LIMIT_1M_LEADER,
@@ -1909,6 +1911,40 @@ describe('validateModelSpec ⟷ validateCloudModelSpec PARITY (WI-1993 drift gua
       expect(b.ok, s).toBe(a.ok);
       expect(b.message ?? null, s).toBe(a.message ?? null);
     }
+  });
+});
+
+describe('cloud model-family/backend coupling (owner Luna→Claude incident 2026-07-10)', () => {
+  it('recognizes native Codex and Claude model families', () => {
+    expect(cloudModelBackendHint('gpt-5.6-luna:high')).toBe('codex');
+    expect(cloudModelBackendHint('gpt-5.6-terra:high')).toBe('codex');
+    expect(cloudModelBackendHint('o3')).toBe('codex');
+    expect(cloudModelBackendHint('sonnet[1m]:high')).toBe('claude');
+    expect(cloudModelBackendHint('claude-fable-5:xhigh')).toBe('claude');
+    expect(cloudModelBackendHint('future-provider/model-1')).toBeNull();
+  });
+
+  it('infers Codex from the exact Luna spec when --agent is omitted', () => {
+    const parsed = parseArgs(['--no-picker', '--model=gpt-5.6-luna:high']);
+    expect(parsed.agent).toBe('codex');
+    expect(parsed.model).toBe('gpt-5.6-luna:high');
+  });
+
+  it('rejects an explicit native backend mismatch regardless of flag order', () => {
+    expect(() => parseArgs(['--agent=claude', '--model=gpt-5.6-luna:high'])).toThrow(
+      /belongs to the `codex` backend/,
+    );
+    expect(() => parseArgs(['--model=gpt-5.6-luna:high', '--agent=claude'])).toThrow(
+      /belongs to the `codex` backend/,
+    );
+    expect(() => parseArgs(['--agent=codex', '--model=opus:high'])).toThrow(
+      /belongs to the `claude` backend/,
+    );
+  });
+
+  it('keeps explicit OMP valid for cloud families because OMP is multi-provider', () => {
+    expect(validateAgentModelPair('omp', 'gpt-5.6-luna:high')).toEqual({ ok: true });
+    expect(parseArgs(['--agent=omp', '--model=gpt-5.6-luna:high']).agent).toBe('omp');
   });
 });
 

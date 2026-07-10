@@ -3729,7 +3729,7 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-btn,
-.operator-mini-btn,
+.pc-btn-mini,
 .operator-budget-option {
   appearance: none;
   border: 1px solid rgba(var(--operator-arc), 0.22);
@@ -3755,8 +3755,8 @@ body.h-harness-top-collapsed .pc-header {
 
 .operator-btn:hover,
 .operator-btn:focus-visible,
-.operator-mini-btn:hover,
-.operator-mini-btn:focus-visible,
+.pc-btn-mini:hover,
+.pc-btn-mini:focus-visible,
 .operator-budget-option:hover,
 .operator-budget-option:focus-visible {
   border-color: rgba(var(--operator-arc), 0.48);
@@ -3835,7 +3835,7 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-btn--primary,
-.operator-mini-btn--primary {
+.pc-btn-mini.pc-btn-primary {
   color: var(--bg-deep);
   border-color: rgba(var(--operator-gold), 0.58);
   background: linear-gradient(90deg, rgba(var(--operator-gold), 0.46), transparent 20% 80%, rgba(var(--operator-gold), 0.32)),
@@ -4304,7 +4304,7 @@ body.h-harness-top-collapsed .pc-header {
   margin-top: 11px;
 }
 
-.operator-mini-btn {
+.pc-btn-mini {
   min-height: 27px;
   padding: 0 9px;
   color: color-mix(in oklab, var(--fg), white 3%);
@@ -4735,16 +4735,10 @@ body.h-harness-top-collapsed .pc-header {
   scrollbar-color: rgb(from var(--accent-strong) r g b / 0.30) transparent;
 }
 
-.operator-mini-btn--danger {
+.pc-btn-mini.pc-btn-destructive {
   color: #fff7f7;
   border-color: rgba(248, 113, 113, 0.54);
   background: linear-gradient(90deg, rgba(var(--operator-gold), 0.070), rgba(248, 113, 113, 0.22));
-}
-
-.operator-mini-btn--auto {
-  color: color-mix(in oklab, var(--warn), white 20%);
-  border-color: rgba(var(--operator-gold), 0.48);
-  background: rgba(var(--operator-gold), 0.15);
 }
 
 .operator-confirm-strip {
@@ -4840,7 +4834,7 @@ body.h-harness-top-collapsed .pc-header {
   flex-wrap: wrap;
 }
 
-.operator-mini-btn:disabled {
+.pc-btn-mini:disabled {
   opacity: 0.58;
   cursor: not-allowed;
   border-color: rgba(148, 163, 184, 0.24);
@@ -4896,9 +4890,9 @@ body.h-harness-top-collapsed .pc-header {
   color: color-mix(in oklab, var(--bad), white 30%);
 }
 
-.operator-mini-btn,
+.pc-btn-mini,
 .operator-entry__link,
-.operator-entry__buttons .operator-mini-btn {
+.operator-entry__buttons .pc-btn-mini {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -4909,7 +4903,7 @@ body.h-harness-top-collapsed .pc-header {
   min-height: 34px;
 }
 
-.operator-entry__buttons .operator-mini-btn--danger {
+.operator-entry__buttons .pc-btn-mini.pc-btn-destructive {
   box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.14);
 }
 
@@ -5771,14 +5765,14 @@ body.h-harness-top-collapsed .pc-header {
   justify-content: flex-end;
 }
 
-.operator-mini-btn--ghost {
+.pc-btn-mini.pc-btn-ghost {
   color: color-mix(in oklab, var(--fg-dim), white 18%);
   border-color: rgba(var(--operator-gold), 0.22);
   background: rgba(255, 255, 255, 0.026);
 }
 
-.operator-mini-btn--ghost:hover,
-.operator-mini-btn--ghost:focus-visible {
+.pc-btn-mini.pc-btn-ghost:hover,
+.pc-btn-mini.pc-btn-ghost:focus-visible {
   color: #f4fdff;
   border-color: rgba(var(--operator-arc), 0.30);
   background: rgba(var(--operator-arc), 0.060);
@@ -6056,13 +6050,13 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-btn,
-.operator-mini-btn,
+.pc-btn-mini,
 .operator-budget-option {
   box-shadow: 0 0 0 1px rgba(var(--operator-gold), 0.030);
 }
 
 .operator-btn--primary,
-.operator-mini-btn--primary {
+.pc-btn-mini.pc-btn-primary {
   background: linear-gradient(90deg, rgba(var(--operator-gold), 0.58), transparent 20% 80%, rgba(var(--operator-gold), 0.38)),
     linear-gradient(0deg, rgba(var(--operator-arc), 0.92), rgba(var(--operator-arc), 0.92));
   box-shadow: 0 0 28px rgba(var(--operator-arc), 0.32),
@@ -6294,7 +6288,7 @@ body.h-harness-top-collapsed .pc-header {
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.060), 0 0 10px rgba(248, 113, 113, 0.12);
 }
 
-.operator-mini-btn,
+.pc-btn-mini,
 .operator-feed-pills button,
 .operator-kind,
 .operator-tier,
@@ -7010,7 +7004,7 @@ body.h-harness-top-collapsed .pc-header {
     linear-gradient(90deg, transparent, rgba(var(--operator-arc), 0.30));
 }
 
-.operator-mini-btn,
+.pc-btn-mini,
 .operator-feed-pills button {
   border-color: rgba(var(--operator-arc), 0.20);
   background:
@@ -7020,7 +7014,7 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-btn--primary,
-.operator-mini-btn--primary {
+.pc-btn-mini.pc-btn-primary {
   filter: saturate(0.95);
 }
 /* Operator panel clarity pass: closer to transparent FUI glass, less blocky alert fill. */
@@ -7300,7 +7294,7 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-panel__metrics span,
-.operator-mini-btn,
+.pc-btn-mini,
 .operator-feed-pills button,
 .operator-kind,
 .operator-tier,
@@ -7328,7 +7322,7 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-btn--primary,
-.operator-mini-btn--primary {
+.pc-btn-mini.pc-btn-primary {
   color: var(--accent-ink);
   background: linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.96), rgb(from var(--accent-strong) r g b / 0.96));
   box-shadow: 0 16px 32px color-mix(in srgb, var(--accent-deep), transparent 78%);
@@ -8113,7 +8107,7 @@ body.h-harness-top-collapsed .pc-header {
 
 /* Operator button rounding pass: match Papercusp rounded frost controls. */
 .operator-panel .operator-btn,
-.operator-panel .operator-mini-btn,
+.operator-panel .pc-btn-mini,
 .operator-panel .operator-feed-pills button,
 .operator-panel .operator-entry__link,
 .operator-panel .operator-budget-option {
@@ -8127,8 +8121,8 @@ body.h-harness-top-collapsed .pc-header {
 
 .operator-panel .operator-btn:hover,
 .operator-panel .operator-btn:focus-visible,
-.operator-panel .operator-mini-btn:hover,
-.operator-panel .operator-mini-btn:focus-visible,
+.operator-panel .pc-btn-mini:hover,
+.operator-panel .pc-btn-mini:focus-visible,
 .operator-panel .operator-feed-pills button:hover,
 .operator-panel .operator-feed-pills button:focus-visible,
 .operator-panel .operator-entry__link:hover,
@@ -8142,7 +8136,7 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-panel .operator-btn--primary,
-.operator-panel .operator-mini-btn--primary {
+.operator-panel .pc-btn-mini.pc-btn-primary {
   border-color: rgb(from var(--accent-strong) r g b / 0.42);
   background: linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.94), rgb(from var(--accent-strong) r g b / 0.94));
   box-shadow: 0 15px 30px color-mix(in srgb, var(--accent-deep), transparent 78%);
@@ -8262,7 +8256,7 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-panel .operator-btn,
-.operator-panel .operator-mini-btn,
+.operator-panel .pc-btn-mini,
 .operator-panel .operator-feed-pills button,
 .operator-panel .operator-entry__link,
 .operator-panel .operator-budget-option {
@@ -8273,7 +8267,7 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-panel .operator-btn:hover,
-.operator-panel .operator-mini-btn:hover,
+.operator-panel .pc-btn-mini:hover,
 .operator-panel .operator-feed-pills button:hover,
 .operator-panel .operator-entry__link:hover,
 .operator-panel .operator-budget-option:hover {
@@ -8284,7 +8278,7 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-panel .operator-btn:focus-visible,
-.operator-panel .operator-mini-btn:focus-visible,
+.operator-panel .pc-btn-mini:focus-visible,
 .operator-panel .operator-feed-pills button:focus-visible,
 .operator-panel .operator-entry__link:focus-visible,
 .operator-panel .operator-budget-option:focus-visible {
@@ -8295,7 +8289,7 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-panel .operator-btn--primary,
-.operator-panel .operator-mini-btn--primary {
+.operator-panel .pc-btn-mini.pc-btn-primary {
   border-color: rgb(from var(--accent-strong) r g b / 0.34);
   box-shadow: 0 12px 26px color-mix(in srgb, var(--accent-deep), transparent 82%);
 }
@@ -8328,7 +8322,7 @@ body.h-harness-top-collapsed .pc-header {
     color-mix(in srgb, var(--bg-1), transparent 26%);
 }
 
-.operator-mini-btn--danger {
+.pc-btn-mini.pc-btn-destructive {
   border-color: rgb(from var(--rose-400) r g b / 0.22);
   background: rgb(from var(--rose-400) r g b / 0.070);
   color: color-mix(in oklab, var(--bad), white 22%);
@@ -8336,7 +8330,7 @@ body.h-harness-top-collapsed .pc-header {
 
 /* Operator usability fix: keep the primary action clearly discoverable. */
 .operator-panel .operator-btn--primary,
-.operator-panel .operator-mini-btn--primary {
+.operator-panel .pc-btn-mini.pc-btn-primary {
   color: var(--accent-ink);
   border-color: rgb(from var(--accent-strong) r g b / 0.42);
   background: linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.94), rgb(from var(--accent-strong) r g b / 0.94));
@@ -8345,8 +8339,8 @@ body.h-harness-top-collapsed .pc-header {
 
 .operator-panel .operator-btn--primary:hover,
 .operator-panel .operator-btn--primary:focus-visible,
-.operator-panel .operator-mini-btn--primary:hover,
-.operator-panel .operator-mini-btn--primary:focus-visible {
+.operator-panel .pc-btn-mini.pc-btn-primary:hover,
+.operator-panel .pc-btn-mini.pc-btn-primary:focus-visible {
   color: var(--accent-ink);
   border-color: color-mix(in srgb, var(--accent-cool), transparent 42%);
   background: linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.98), rgb(from var(--accent-strong) r g b / 0.98));
@@ -8487,7 +8481,7 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-panel .operator-btn,
-.operator-panel .operator-mini-btn,
+.operator-panel .pc-btn-mini,
 .operator-panel .operator-feed-pills button,
 .operator-panel .operator-entry__link,
 .operator-panel .operator-budget-option {
@@ -8497,13 +8491,13 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-panel .operator-btn--primary,
-.operator-panel .operator-mini-btn--primary {
+.operator-panel .pc-btn-mini.pc-btn-primary {
   border-color: rgb(from var(--accent-strong) r g b / 0.38);
 }
 
 /* Operator final usability guard: primary actions must remain obvious after simplification. */
 .operator-panel .operator-btn--primary,
-.operator-panel .operator-mini-btn--primary {
+.operator-panel .pc-btn-mini.pc-btn-primary {
   color: var(--accent-ink);
   border-color: rgb(from var(--accent-strong) r g b / 0.42);
   background: linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.94), rgb(from var(--accent-strong) r g b / 0.94));
@@ -8512,8 +8506,8 @@ body.h-harness-top-collapsed .pc-header {
 
 .operator-panel .operator-btn--primary:hover,
 .operator-panel .operator-btn--primary:focus-visible,
-.operator-panel .operator-mini-btn--primary:hover,
-.operator-panel .operator-mini-btn--primary:focus-visible {
+.operator-panel .pc-btn-mini.pc-btn-primary:hover,
+.operator-panel .pc-btn-mini.pc-btn-primary:focus-visible {
   color: var(--accent-ink);
   border-color: color-mix(in srgb, var(--accent-cool), transparent 42%);
   background: linear-gradient(0deg, rgb(from var(--accent-strong) r g b / 0.98), rgb(from var(--accent-strong) r g b / 0.98));
@@ -9040,7 +9034,7 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-btn,
-.operator-mini-btn,
+.pc-btn-mini,
 .operator-budget-option {
   border-color: rgba(var(--operator-arc), 0.25) !important;
   background: linear-gradient(0deg, rgba(255,255,255,0.072), rgba(255,255,255,0.072)),
@@ -9050,8 +9044,8 @@ body.h-harness-top-collapsed .pc-header {
 
 .operator-btn:hover,
 .operator-btn:focus-visible,
-.operator-mini-btn:hover,
-.operator-mini-btn:focus-visible,
+.pc-btn-mini:hover,
+.pc-btn-mini:focus-visible,
 .operator-budget-option:hover,
 .operator-budget-option:focus-visible,
 .operator-feed-pills button:hover,
@@ -9065,7 +9059,7 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-btn--primary,
-.operator-mini-btn--primary,
+.pc-btn-mini.pc-btn-primary,
 .operator-feed-pills button.is-active {
   color: #eaffff !important;
   border-color: rgba(45, 212, 191, 0.52) !important;
@@ -9075,7 +9069,7 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-btn--close:hover,
-.operator-mini-btn--danger,
+.pc-btn-mini.pc-btn-destructive,
 .operator-entry--tier-high {
   border-color: rgb(from var(--rose-400) r g b / 0.58) !important;
   background: linear-gradient(0deg, rgb(from var(--rose-400) r g b / 0.20), rgb(from var(--rose-400) r g b / 0.20)),
@@ -9376,7 +9370,7 @@ body.h-harness-top-collapsed .pc-header {
   box-shadow: inset 0 0 0 1px rgb(from var(--accent-strong) r g b / 0.08);
 }
 
-.operator-entry__buttons .operator-mini-btn {
+.operator-entry__buttons .pc-btn-mini {
   --operator-mini-accent: rgba(148, 163, 184, 0.48);
   --operator-mini-fill: rgba(148, 163, 184, 0.070);
   border-color: color-mix(in oklab, var(--operator-mini-accent), transparent 42%) !important;
@@ -9384,7 +9378,7 @@ body.h-harness-top-collapsed .pc-header {
     color-mix(in srgb, var(--bg), transparent 18%) !important;
 }
 
-.operator-entry__buttons .operator-mini-btn::before,
+.operator-entry__buttons .pc-btn-mini::before,
 .operator-entry__link::before {
   content: "×";
   margin-right: 5px;
@@ -9394,27 +9388,27 @@ body.h-harness-top-collapsed .pc-header {
   line-height: 1;
 }
 
-.operator-entry__buttons .operator-mini-btn--primary,
+.operator-entry__buttons .pc-btn-mini.pc-btn-primary,
 .operator-entry__link {
   --operator-mini-accent: rgba(45, 212, 191, 0.78);
   --operator-mini-fill: rgba(45, 212, 191, 0.16);
 }
 
-.operator-entry__buttons .operator-mini-btn--primary::before,
+.operator-entry__buttons .pc-btn-mini.pc-btn-primary::before,
 .operator-entry__link::before {
   content: "→";
 }
 
-.operator-entry__buttons .operator-mini-btn--danger {
+.operator-entry__buttons .pc-btn-mini.pc-btn-destructive {
   --operator-mini-accent: rgb(from var(--rose-400) r g b / 0.82);
   --operator-mini-fill: rgb(from var(--rose-400) r g b / 0.15);
 }
 
-.operator-entry__buttons .operator-mini-btn--danger::before {
+.operator-entry__buttons .pc-btn-mini.pc-btn-destructive::before {
   content: "!";
 }
 
-.operator-entry__buttons .operator-mini-btn--ghost {
+.operator-entry__buttons .pc-btn-mini.pc-btn-ghost {
   --operator-mini-accent: color-mix(in srgb, var(--accent-soft), transparent 52%);
   --operator-mini-fill: color-mix(in srgb, var(--accent-soft), transparent 95%);
 }
@@ -11735,19 +11729,19 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   opacity: 0.18;
 }
 
-.operator-entry__buttons:has(.operator-mini-btn--primary) {
+.operator-entry__buttons:has(.pc-btn-mini.pc-btn-primary) {
   border-color: rgba(45, 212, 191, 0.18);
   box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.08),
     0 12px 24px rgba(0,0,0,0.18);
 }
 
-.operator-entry__buttons:has(.operator-mini-btn--danger) {
+.operator-entry__buttons:has(.pc-btn-mini.pc-btn-destructive) {
   border-color: rgb(from var(--rose-400) r g b / 0.22);
   box-shadow: 0 0 0 1px rgb(from var(--rose-400) r g b / 0.08),
     0 12px 24px rgba(0,0,0,0.18);
 }
 
-.operator-entry--pending .operator-entry__buttons .operator-mini-btn--primary {
+.operator-entry--pending .operator-entry__buttons .pc-btn-mini.pc-btn-primary {
   box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.14),
     0 0 22px rgba(45, 212, 191, 0.12) !important;
 }
@@ -11873,13 +11867,13 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
     inset 0 1px 0 rgba(255,255,255,0.08);
 }
 
-.operator-entry__buttons .operator-mini-btn {
+.operator-entry__buttons .pc-btn-mini {
   position: relative;
   z-index: 1;
   border-color: color-mix(in oklab, var(--operator-mini-accent), transparent 34%) !important;
 }
 
-.operator-entry__buttons .operator-mini-btn--danger {
+.operator-entry__buttons .pc-btn-mini.pc-btn-destructive {
   background: linear-gradient(0deg, rgb(from var(--rose-400) r g b / 0.25), rgb(from var(--rose-400) r g b / 0.25)),
     color-mix(in srgb, var(--bg-deep), transparent 12%) !important;
   box-shadow: 0 0 0 1px rgb(from var(--rose-400) r g b / 0.13),
@@ -11928,15 +11922,15 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   pointer-events: none;
 }
 
-.operator-entry__buttons:has(.operator-mini-btn--danger) .operator-mini-btn--ghost {
+.operator-entry__buttons:has(.pc-btn-mini.pc-btn-destructive) .pc-btn-mini.pc-btn-ghost {
   opacity: 0.74;
   border-color: color-mix(in srgb, var(--accent-soft), transparent 82%) !important;
   background: rgba(255,255,255,0.018) !important;
   box-shadow: 0 6px 14px rgba(0,0,0,0.12) !important;
 }
 
-.operator-entry__buttons:has(.operator-mini-btn--danger) .operator-mini-btn--ghost:hover,
-.operator-entry__buttons:has(.operator-mini-btn--danger) .operator-mini-btn--ghost:focus-visible {
+.operator-entry__buttons:has(.pc-btn-mini.pc-btn-destructive) .pc-btn-mini.pc-btn-ghost:hover,
+.operator-entry__buttons:has(.pc-btn-mini.pc-btn-destructive) .pc-btn-mini.pc-btn-ghost:focus-visible {
   opacity: 1;
   border-color: color-mix(in srgb, var(--accent-soft), transparent 68%) !important;
 }
@@ -11969,7 +11963,7 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   opacity: 0.72;
 }
 
-.operator-entry__buttons:has(.operator-mini-btn)::after {
+.operator-entry__buttons:has(.pc-btn-mini)::after {
   content: "Actions";
   order: -1;
   position: relative;
@@ -11983,12 +11977,12 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   opacity: 0.62;
 }
 
-.operator-entry__buttons:has(.operator-mini-btn--danger)::after {
+.operator-entry__buttons:has(.pc-btn-mini.pc-btn-destructive)::after {
   color: rgb(from var(--rose-400) r g b / 0.86);
   opacity: 0.84;
 }
 
-.operator-entry__buttons:has(.operator-mini-btn--primary)::after {
+.operator-entry__buttons:has(.pc-btn-mini.pc-btn-primary)::after {
   color: rgba(45, 212, 191, 0.82);
   opacity: 0.80;
 }
@@ -18083,7 +18077,7 @@ body:has(.operator-panel) {
   border-radius: 18px;
 }
 
-.operator-entry__buttons:has(.operator-mini-btn)::after,
+.operator-entry__buttons:has(.pc-btn-mini)::after,
 .operator-entry__buttons:has(.operator-confirm-strip)::after {
   content: "";
   order: -1;
@@ -18099,17 +18093,17 @@ body:has(.operator-panel) {
   opacity: 0.95;
 }
 
-.operator-entry__buttons:has(.operator-mini-btn--danger) {
+.operator-entry__buttons:has(.pc-btn-mini.pc-btn-destructive) {
   --operator-card-action-tone: rgb(from var(--rose-400) r g b / 0.84);
   background: linear-gradient(0deg, rgb(from var(--rose-400) r g b / 0.09), rgb(from var(--rose-400) r g b / 0.09)),
     color-mix(in srgb, var(--bg), transparent 30%);
 }
 
-.operator-entry__buttons:has(.operator-mini-btn--primary) {
+.operator-entry__buttons:has(.pc-btn-mini.pc-btn-primary) {
   --operator-card-action-tone: rgba(45, 212, 191, 0.78);
 }
 
-.operator-entry__buttons .operator-mini-btn {
+.operator-entry__buttons .pc-btn-mini {
   transition:
     border-color 160ms ease,
     box-shadow 160ms ease,
@@ -18117,22 +18111,22 @@ body:has(.operator-panel) {
     background-color 160ms ease;
 }
 
-.operator-entry__buttons .operator-mini-btn:hover,
-.operator-entry__buttons .operator-mini-btn:focus-visible {
+.operator-entry__buttons .pc-btn-mini:hover,
+.operator-entry__buttons .pc-btn-mini:focus-visible {
   transform: translateY(-1px);
 }
 
-.operator-entry__buttons .operator-mini-btn--danger {
+.operator-entry__buttons .pc-btn-mini.pc-btn-destructive {
   box-shadow: 0 0 0 1px rgb(from var(--rose-400) r g b / 0.22),
     0 0 22px rgb(from var(--rose-400) r g b / 0.18) !important;
 }
 
-.operator-entry__buttons .operator-mini-btn--ghost {
+.operator-entry__buttons .pc-btn-mini.pc-btn-ghost {
   opacity: 0.72;
 }
 
-.operator-entry__buttons .operator-mini-btn--ghost:hover,
-.operator-entry__buttons .operator-mini-btn--ghost:focus-visible {
+.operator-entry__buttons .pc-btn-mini.pc-btn-ghost:hover,
+.operator-entry__buttons .pc-btn-mini.pc-btn-ghost:focus-visible {
   opacity: 1;
 }
 
@@ -18317,37 +18311,37 @@ body:has(.operator-panel) {
   opacity: 0.10;
 }
 
-.operator-entry__buttons .operator-mini-btn {
+.operator-entry__buttons .pc-btn-mini {
   min-height: 30px;
   padding-inline: 11px;
   border-radius: 999px !important;
 }
 
-.operator-entry__buttons .operator-mini-btn--danger {
+.operator-entry__buttons .pc-btn-mini.pc-btn-destructive {
   border-color: rgb(from var(--rose-400) r g b / 0.58) !important;
   background: radial-gradient(circle at 24% 14%, rgba(255,255,255,0.22), transparent 34%),
     linear-gradient(0deg, rgb(from var(--rose-400) r g b / 0.34), rgb(from var(--rose-400) r g b / 0.34)) !important;
 }
 
-.operator-entry__buttons .operator-mini-btn--primary {
+.operator-entry__buttons .pc-btn-mini.pc-btn-primary {
   border-color: rgba(45, 212, 191, 0.52) !important;
   background: radial-gradient(circle at 24% 14%, rgba(255,255,255,0.22), transparent 34%),
     linear-gradient(0deg, rgba(45, 212, 191, 0.34), rgba(45, 212, 191, 0.34)) !important;
 }
 
-.operator-entry__buttons .operator-mini-btn--ghost {
+.operator-entry__buttons .pc-btn-mini.pc-btn-ghost {
   border-color: color-mix(in srgb, var(--accent-soft), transparent 82%) !important;
   background: rgba(255,255,255,0.014) !important;
   box-shadow: none !important;
 }
 
-.operator-entry__buttons:has(.operator-mini-btn--danger) .operator-mini-btn--ghost {
+.operator-entry__buttons:has(.pc-btn-mini.pc-btn-destructive) .pc-btn-mini.pc-btn-ghost {
   transform: scale(0.96);
   transform-origin: right center;
 }
 
-.operator-entry__buttons:has(.operator-mini-btn--danger) .operator-mini-btn--ghost:hover,
-.operator-entry__buttons:has(.operator-mini-btn--danger) .operator-mini-btn--ghost:focus-visible {
+.operator-entry__buttons:has(.pc-btn-mini.pc-btn-destructive) .pc-btn-mini.pc-btn-ghost:hover,
+.operator-entry__buttons:has(.pc-btn-mini.pc-btn-destructive) .pc-btn-mini.pc-btn-ghost:focus-visible {
   transform: translateY(-1px) scale(1);
 }
 
@@ -18403,10 +18397,10 @@ body:has(.operator-panel) {
     0 0 14px color-mix(in oklab, var(--operator-life-accent), transparent 58%);
 }
 
-.operator-entry__buttons .operator-mini-btn::before,
+.operator-entry__buttons .pc-btn-mini::before,
 .operator-entry__link::before,
-.operator-entry__buttons .operator-mini-btn--primary::before,
-.operator-entry__buttons .operator-mini-btn--danger::before {
+.operator-entry__buttons .pc-btn-mini.pc-btn-primary::before,
+.operator-entry__buttons .pc-btn-mini.pc-btn-destructive::before {
   content: "" !important;
   display: inline-block;
   flex: 0 0 auto;
@@ -18423,12 +18417,12 @@ body:has(.operator-panel) {
     0 0 12px color-mix(in oklab, var(--operator-mini-accent), transparent 66%);
 }
 
-.operator-entry__buttons .operator-mini-btn--primary::before,
+.operator-entry__buttons .pc-btn-mini.pc-btn-primary::before,
 .operator-entry__link::before {
   border-radius: 3px;
 }
 
-.operator-entry__buttons .operator-mini-btn--danger::before {
+.operator-entry__buttons .pc-btn-mini.pc-btn-destructive::before {
   width: 9px;
   height: 9px;
   border-radius: 2px;
@@ -18438,13 +18432,13 @@ body:has(.operator-panel) {
     0 0 16px rgb(from var(--rose-400) r g b / 0.42);
 }
 
-.operator-entry__buttons:has(.operator-mini-btn--danger) {
+.operator-entry__buttons:has(.pc-btn-mini.pc-btn-destructive) {
   box-shadow: 0 0 0 1px rgb(from var(--rose-400) r g b / 0.14),
     0 14px 24px rgba(0,0,0,0.24),
     0 0 26px rgb(from var(--rose-400) r g b / 0.12) !important;
 }
 
-.operator-entry__buttons:has(.operator-mini-btn--primary) {
+.operator-entry__buttons:has(.pc-btn-mini.pc-btn-primary) {
   box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.14),
     0 14px 24px rgba(0,0,0,0.22),
     0 0 24px rgba(45, 212, 191, 0.10) !important;
@@ -19009,15 +19003,15 @@ body:has(.operator-panel) {
     color-mix(in srgb, var(--bg-deep), transparent 22%) !important;
 }
 
-.operator-entry__buttons .operator-mini-btn {
+.operator-entry__buttons .pc-btn-mini {
   min-width: 88px;
   min-height: 32px;
   padding-inline: 12px;
   font-weight: 800;
 }
 
-.operator-entry__buttons .operator-mini-btn--primary,
-.operator-entry__buttons .operator-mini-btn--danger {
+.operator-entry__buttons .pc-btn-mini.pc-btn-primary,
+.operator-entry__buttons .pc-btn-mini.pc-btn-destructive {
   box-shadow: 0 0 0 1px color-mix(in oklab, var(--operator-mini-accent), transparent 70%),
     0 0 22px color-mix(in oklab, var(--operator-mini-accent), transparent 78%) !important;
 }
@@ -19071,7 +19065,7 @@ body:has(.operator-panel) {
     justify-content: stretch;
   }
 
-  .operator-entry__buttons .operator-mini-btn {
+  .operator-entry__buttons .pc-btn-mini {
     flex: 1 1 112px;
   }
 }
@@ -19151,7 +19145,7 @@ body:has(.operator-panel) {
 }
 
 .operator-panel__actions .operator-btn::after,
-.operator-entry__buttons .operator-mini-btn::after,
+.operator-entry__buttons .pc-btn-mini::after,
 .operator-delegates__actions button::after {
   content: "";
   position: absolute;
@@ -19170,8 +19164,8 @@ body:has(.operator-panel) {
 
 .operator-panel__actions .operator-btn:hover::after,
 .operator-panel__actions .operator-btn:focus-visible::after,
-.operator-entry__buttons .operator-mini-btn:hover::after,
-.operator-entry__buttons .operator-mini-btn:focus-visible::after,
+.operator-entry__buttons .pc-btn-mini:hover::after,
+.operator-entry__buttons .pc-btn-mini:focus-visible::after,
 .operator-delegates__actions button:hover::after,
 .operator-delegates__actions button:focus-visible::after {
   opacity: 0.58;
@@ -19277,17 +19271,17 @@ body:has(.operator-panel) {
   border-radius: 16px;
 }
 
-.operator-entry__buttons .operator-mini-btn--ghost {
+.operator-entry__buttons .pc-btn-mini.pc-btn-ghost {
   color: color-mix(in oklab, var(--fg-dim), white 16%) !important;
 }
 
-.operator-entry__buttons:has(.operator-mini-btn--primary) .operator-mini-btn--ghost,
-.operator-entry__buttons:has(.operator-mini-btn--danger) .operator-mini-btn--ghost {
+.operator-entry__buttons:has(.pc-btn-mini.pc-btn-primary) .pc-btn-mini.pc-btn-ghost,
+.operator-entry__buttons:has(.pc-btn-mini.pc-btn-destructive) .pc-btn-mini.pc-btn-ghost {
   opacity: 0.62;
 }
 
-.operator-entry__buttons:has(.operator-mini-btn--primary) .operator-mini-btn--primary,
-.operator-entry__buttons:has(.operator-mini-btn--danger) .operator-mini-btn--danger {
+.operator-entry__buttons:has(.pc-btn-mini.pc-btn-primary) .pc-btn-mini.pc-btn-primary,
+.operator-entry__buttons:has(.pc-btn-mini.pc-btn-destructive) .pc-btn-mini.pc-btn-destructive {
   flex-grow: 1;
 }
 
@@ -19698,7 +19692,7 @@ body:has(.operator-panel) {
     padding: 3px;
   }
 
-  .operator-entry__buttons .operator-mini-btn {
+  .operator-entry__buttons .pc-btn-mini {
     min-width: 0;
     min-height: 30px;
     flex: 1 1 calc(50% - 6px);
@@ -19928,12 +19922,12 @@ body:has(.operator-panel) {
   border-color: color-mix(in oklab, var(--operator-card-action-tone), transparent 70%) !important;
 }
 
-.operator-entry__buttons .operator-mini-btn {
+.operator-entry__buttons .pc-btn-mini {
   font-weight: 780;
 }
 
-.operator-entry__buttons .operator-mini-btn--primary,
-.operator-entry__buttons .operator-mini-btn--danger {
+.operator-entry__buttons .pc-btn-mini.pc-btn-primary,
+.operator-entry__buttons .pc-btn-mini.pc-btn-destructive {
   min-width: 104px;
 }
 
@@ -20040,7 +20034,7 @@ body:has(.operator-panel) {
     margin-left: 0;
   }
 
-  .operator-confirm-strip__actions .operator-mini-btn {
+  .operator-confirm-strip__actions .pc-btn-mini {
     flex: 1 1 96px;
   }
 }
@@ -20945,13 +20939,13 @@ body:has(.operator-panel) {
     color-mix(in srgb, var(--bg-deeper), transparent 42%) !important;
 }
 
-.operator-entry.operator-entry--suggestion .operator-mini-btn {
+.operator-entry.operator-entry--suggestion .pc-btn-mini {
   min-height: 30px;
   border-radius: 999px !important;
   transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease, background 140ms ease;
 }
 
-.operator-entry.operator-entry--suggestion .operator-mini-btn--primary {
+.operator-entry.operator-entry--suggestion .pc-btn-mini.pc-btn-primary {
   border-color: rgba(45, 212, 191, 0.42) !important;
   background: radial-gradient(circle at 20% 16%, rgba(255,255,255,0.18), transparent 32%),
     linear-gradient(0deg, rgba(45, 212, 191, 0.26), rgba(45, 212, 191, 0.26)) !important;
@@ -20959,7 +20953,7 @@ body:has(.operator-panel) {
     0 0 22px rgba(45, 212, 191, 0.13) !important;
 }
 
-.operator-entry.operator-entry--suggestion .operator-mini-btn--danger {
+.operator-entry.operator-entry--suggestion .pc-btn-mini.pc-btn-destructive {
   border-color: rgb(from var(--rose-400) r g b / 0.44) !important;
   background: radial-gradient(circle at 20% 16%, rgba(255,255,255,0.16), transparent 32%),
     linear-gradient(0deg, rgb(from var(--rose-400) r g b / 0.22), rgb(from var(--rose-400) r g b / 0.22)) !important;
@@ -20967,14 +20961,14 @@ body:has(.operator-panel) {
     0 0 22px rgb(from var(--rose-400) r g b / 0.12) !important;
 }
 
-.operator-entry.operator-entry--suggestion .operator-mini-btn--ghost {
+.operator-entry.operator-entry--suggestion .pc-btn-mini.pc-btn-ghost {
   border-color: rgba(148, 163, 184, 0.24) !important;
   color: rgba(203, 213, 225, 0.82) !important;
   background: color-mix(in srgb, var(--bg-popover), transparent 66%) !important;
 }
 
-.operator-entry.operator-entry--suggestion .operator-mini-btn:hover,
-.operator-entry.operator-entry--suggestion .operator-mini-btn:focus-visible {
+.operator-entry.operator-entry--suggestion .pc-btn-mini:hover,
+.operator-entry.operator-entry--suggestion .pc-btn-mini:focus-visible {
   transform: translateY(-1px);
 }
 
@@ -21395,22 +21389,22 @@ body:has(.operator-panel) {
   box-shadow: 0 8px 18px rgba(0,0,0,0.14) !important;
 }
 
-.operator-entry.operator-entry--suggestion .operator-mini-btn {
+.operator-entry.operator-entry--suggestion .pc-btn-mini {
   font-weight: 790 !important;
 }
 
-.operator-entry.operator-entry--suggestion .operator-mini-btn--primary,
-.operator-entry.operator-entry--suggestion .operator-mini-btn--danger {
+.operator-entry.operator-entry--suggestion .pc-btn-mini.pc-btn-primary,
+.operator-entry.operator-entry--suggestion .pc-btn-mini.pc-btn-destructive {
   min-width: 92px;
 }
 
-.operator-entry.operator-entry--suggestion .operator-mini-btn--ghost {
+.operator-entry.operator-entry--suggestion .pc-btn-mini.pc-btn-ghost {
   min-width: 74px;
   opacity: 0.82;
 }
 
-.operator-entry.operator-entry--suggestion .operator-mini-btn--ghost:hover,
-.operator-entry.operator-entry--suggestion .operator-mini-btn--ghost:focus-visible {
+.operator-entry.operator-entry--suggestion .pc-btn-mini.pc-btn-ghost:hover,
+.operator-entry.operator-entry--suggestion .pc-btn-mini.pc-btn-ghost:focus-visible {
   opacity: 1;
   border-color: rgba(203, 213, 225, 0.38) !important;
   background: color-mix(in srgb, var(--bg-raised-high), transparent 52%) !important;
@@ -21580,24 +21574,24 @@ body:has(.operator-panel) {
   position: relative;
 }
 
-.operator-entry.operator-entry--suggestion .operator-entry__buttons:has(.operator-mini-btn--primary),
-.operator-entry.operator-entry--suggestion .operator-entry__buttons:has(.operator-mini-btn--danger) {
+.operator-entry.operator-entry--suggestion .operator-entry__buttons:has(.pc-btn-mini.pc-btn-primary),
+.operator-entry.operator-entry--suggestion .operator-entry__buttons:has(.pc-btn-mini.pc-btn-destructive) {
   border-color: color-mix(in oklab, var(--operator-card-tone), transparent 68%) !important;
 }
 
-.operator-entry.operator-entry--suggestion .operator-mini-btn--primary,
-.operator-entry.operator-entry--suggestion .operator-mini-btn--danger {
+.operator-entry.operator-entry--suggestion .pc-btn-mini.pc-btn-primary,
+.operator-entry.operator-entry--suggestion .pc-btn-mini.pc-btn-destructive {
   color: #f8fcff !important;
 }
 
-.operator-entry.operator-entry--suggestion .operator-mini-btn--primary:hover,
-.operator-entry.operator-entry--suggestion .operator-mini-btn--primary:focus-visible {
+.operator-entry.operator-entry--suggestion .pc-btn-mini.pc-btn-primary:hover,
+.operator-entry.operator-entry--suggestion .pc-btn-mini.pc-btn-primary:focus-visible {
   box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.22),
     0 0 26px rgba(45, 212, 191, 0.22) !important;
 }
 
-.operator-entry.operator-entry--suggestion .operator-mini-btn--danger:hover,
-.operator-entry.operator-entry--suggestion .operator-mini-btn--danger:focus-visible {
+.operator-entry.operator-entry--suggestion .pc-btn-mini.pc-btn-destructive:hover,
+.operator-entry.operator-entry--suggestion .pc-btn-mini.pc-btn-destructive:focus-visible {
   box-shadow: 0 0 0 1px rgb(from var(--rose-400) r g b / 0.22),
     0 0 26px rgb(from var(--rose-400) r g b / 0.18) !important;
 }
@@ -21768,12 +21762,12 @@ body:has(.operator-panel) {
     color-mix(in srgb, var(--bg-deepest), transparent 32%) !important;
 }
 
-.operator-entry.operator-entry--suggestion .operator-mini-btn {
+.operator-entry.operator-entry--suggestion .pc-btn-mini {
 }
 
-.operator-entry.operator-entry--suggestion .operator-mini-btn--primary::before,
-.operator-entry.operator-entry--suggestion .operator-mini-btn--danger::before,
-.operator-entry.operator-entry--suggestion .operator-mini-btn--ghost::before {
+.operator-entry.operator-entry--suggestion .pc-btn-mini.pc-btn-primary::before,
+.operator-entry.operator-entry--suggestion .pc-btn-mini.pc-btn-destructive::before,
+.operator-entry.operator-entry--suggestion .pc-btn-mini.pc-btn-ghost::before {
   content: "";
   width: 6px;
   height: 6px;
@@ -21785,15 +21779,15 @@ body:has(.operator-panel) {
   opacity: 0.72;
 }
 
-.operator-entry.operator-entry--suggestion .operator-mini-btn--primary::before {
+.operator-entry.operator-entry--suggestion .pc-btn-mini.pc-btn-primary::before {
   box-shadow: 0 0 10px rgba(45, 212, 191, 0.58);
 }
 
-.operator-entry.operator-entry--suggestion .operator-mini-btn--danger::before {
+.operator-entry.operator-entry--suggestion .pc-btn-mini.pc-btn-destructive::before {
   box-shadow: 0 0 10px rgb(from var(--rose-400) r g b / 0.52);
 }
 
-.operator-entry.operator-entry--suggestion .operator-mini-btn--ghost::before {
+.operator-entry.operator-entry--suggestion .pc-btn-mini.pc-btn-ghost::before {
   opacity: 0.42;
   box-shadow: none;
 }
@@ -22100,7 +22094,7 @@ body:has(.operator-panel) {
   flex-wrap: wrap;
 }
 
-.operator-entry.operator-entry--suggestion .operator-mini-btn {
+.operator-entry.operator-entry--suggestion .pc-btn-mini {
   max-width: 100%;
   min-height: 30px;
   white-space: nowrap;

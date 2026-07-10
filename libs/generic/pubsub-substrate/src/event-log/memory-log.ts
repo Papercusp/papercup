@@ -12,27 +12,47 @@
 import type { CoordEnvelope } from '../core/envelope';
 import type {
   CoordEventLog,
+  CoordLogCursorPage,
   EventSurface,
   LineSurface,
 } from './types';
 
+/** An envelope tagged with its (synthetic, monotonic) append-order id — see
+ *  `nextSeq`. Kept internal: `readLines`/`readEvents`/`readEventsBounded`/
+ *  `readLinesBounded` still return bare `CoordEnvelope[]` (unchanged contract);
+ *  only the new `*BoundedCursor` reads expose the id. */
+interface Seq {
+  id: number;
+  envelope: CoordEnvelope;
+}
+
 export class InMemoryCoordLog implements CoordEventLog {
-  private lines = new Map<LineSurface, CoordEnvelope[]>();
-  private events = new Map<EventSurface, Map<string, CoordEnvelope>>();
+  private lines = new Map<LineSurface, Seq[]>();
+  private events = new Map<EventSurface, Map<string, Seq>>();
+  // WI-3880: one monotonic counter across every surface/kind, assigned at
+  // first-write time — the true, stable append-order cursor for this backend
+  // (a re-put of an existing event msg_id keeps its ORIGINAL id, mirroring
+  // PgCoordLog's ON CONFLICT upsert, which never changes the row's bigserial id).
+  private seq = 0;
+  private nextSeq(): number {
+    this.seq += 1;
+    return this.seq;
+  }
 
   async appendLine(surface: LineSurface, _writerKey: string, line: CoordEnvelope): Promise<void> {
     const arr = this.lines.get(surface) ?? [];
-    arr.push(line);
+    arr.push({ id: this.nextSeq(), envelope: line });
     this.lines.set(surface, arr);
   }
 
   async readLines(surface: LineSurface): Promise<CoordEnvelope[]> {
-    return [...(this.lines.get(surface) ?? [])];
+    return (this.lines.get(surface) ?? []).map((r) => r.envelope);
   }
 
   async putEvent(surface: EventSurface, msgId: string, record: CoordEnvelope): Promise<void> {
-    const m = this.events.get(surface) ?? new Map<string, CoordEnvelope>();
-    m.set(msgId, record);
+    const m = this.events.get(surface) ?? new Map<string, Seq>();
+    const existing = m.get(msgId);
+    m.set(msgId, { id: existing?.id ?? this.nextSeq(), envelope: record });
     this.events.set(surface, m);
   }
 
@@ -41,20 +61,23 @@ export class InMemoryCoordLog implements CoordEventLog {
     records: ReadonlyArray<{ msgId: string; record: CoordEnvelope }>,
   ): Promise<void> {
     if (records.length === 0) return;
-    const m = this.events.get(surface) ?? new Map<string, CoordEnvelope>();
-    for (const { msgId, record } of records) m.set(msgId, record);
+    const m = this.events.get(surface) ?? new Map<string, Seq>();
+    for (const { msgId, record } of records) {
+      const existing = m.get(msgId);
+      m.set(msgId, { id: existing?.id ?? this.nextSeq(), envelope: record });
+    }
     this.events.set(surface, m);
   }
 
   async readEvents(surface: EventSurface): Promise<CoordEnvelope[]> {
-    return [...(this.events.get(surface)?.values() ?? [])];
+    return [...(this.events.get(surface)?.values() ?? [])].map((r) => r.envelope);
   }
 
   async readEventsBounded(
     surface: EventSurface,
     opts: { limit: number; kinds?: string[] },
   ): Promise<CoordEnvelope[]> {
-    const all = [...(this.events.get(surface)?.values() ?? [])];
+    const all = [...(this.events.get(surface)?.values() ?? [])].map((r) => r.envelope);
     const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
     const filtered = kinds && kinds.length ? all.filter((r) => kinds.includes(r.kind)) : all;
     // Newest-first (insertion order = append order), bounded — mirrors PgCoordLog.
@@ -66,7 +89,7 @@ export class InMemoryCoordLog implements CoordEventLog {
     surface: LineSurface,
     opts: { limit: number; sinceTs?: string; planSlug?: string; kinds?: string[] },
   ): Promise<CoordEnvelope[]> {
-    const all = this.lines.get(surface) ?? [];
+    const all = (this.lines.get(surface) ?? []).map((r) => r.envelope);
     const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
     const filtered = all.filter(
       (r) =>
@@ -80,6 +103,43 @@ export class InMemoryCoordLog implements CoordEventLog {
   }
 
   async getEvent(surface: EventSurface, msgId: string): Promise<CoordEnvelope | null> {
-    return this.events.get(surface)?.get(msgId) ?? null;
+    return this.events.get(surface)?.get(msgId)?.envelope ?? null;
+  }
+
+  async readEventsBoundedCursor(
+    surface: EventSurface,
+    opts: { limit: number; kinds?: string[]; beforeId?: number },
+  ): Promise<CoordLogCursorPage> {
+    const all = [...(this.events.get(surface)?.values() ?? [])];
+    const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
+    let candidates = kinds && kinds.length ? all.filter((r) => kinds.includes(r.envelope.kind)) : all;
+    if (typeof opts.beforeId === 'number') candidates = candidates.filter((r) => r.id < opts.beforeId!);
+    candidates = [...candidates].sort((a, b) => b.id - a.id); // newest-first
+    const limit = Math.max(1, Math.floor(opts.limit) || 1);
+    return {
+      rows: candidates.slice(0, limit),
+      exhausted: candidates.length <= limit,
+    };
+  }
+
+  async readLinesBoundedCursor(
+    surface: LineSurface,
+    opts: { limit: number; sinceTs?: string; planSlug?: string; kinds?: string[]; beforeId?: number },
+  ): Promise<CoordLogCursorPage> {
+    const all = this.lines.get(surface) ?? [];
+    const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
+    let candidates = all.filter(
+      (r) =>
+        (!kinds || !kinds.length || kinds.includes(r.envelope.kind)) &&
+        (!opts.sinceTs || (typeof r.envelope.ts === 'string' && r.envelope.ts > opts.sinceTs)) &&
+        (!opts.planSlug || r.envelope.plan_slug === opts.planSlug) &&
+        (typeof opts.beforeId !== 'number' || r.id < opts.beforeId),
+    );
+    candidates = [...candidates].sort((a, b) => b.id - a.id); // newest-first
+    const limit = Math.max(1, Math.floor(opts.limit) || 1);
+    return {
+      rows: candidates.slice(0, limit),
+      exhausted: candidates.length <= limit,
+    };
   }
 }

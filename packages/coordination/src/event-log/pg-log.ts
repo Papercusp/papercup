@@ -37,6 +37,7 @@ import type { Sql } from 'postgres';
 import type { CoordEnvelope } from '@papercusp/pubsub-substrate/core';
 import type {
   CoordEventLog,
+  CoordLogCursorPage,
   EventSurface,
   LineSurface,
   ReadLinesOpts,

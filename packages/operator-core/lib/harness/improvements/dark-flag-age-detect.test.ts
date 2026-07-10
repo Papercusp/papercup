@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { detectDarkFlagAge, type DarkFlagAgeInput } from './dark-flag-age-detect';
+import {
+  DEFAULT_DARK_FLAG_AGE_RESOLUTION_COOLDOWN_MS,
+  detectDarkFlagAge,
+  type DarkFlagAgeInput,
+} from './dark-flag-age-detect';
 
 const DAY = 86_400_000;
 // A fixed reference clock so review-by deltas are exact (ISO round-trips ms precisely).
@@ -84,5 +88,21 @@ describe('dark-flag-age detector (enforce-system-on-generic-work P-013)', () => 
     const reviewBy = inDays(5);
     const findings = detectDarkFlagAge(healthy({ darkCount: 21, reviewBy }));
     expect(findings[0].metric).toEqual({ darkCount: 21, watermark: 22, reviewBy, daysToReview: 5 });
+  });
+
+  // EI-9190: the watchdog re-fired a near-duplicate ~85min after the prior instance
+  // was resolved, reporting the identical review-by + count. A resolutionCooldownMs
+  // stamped on the finding is what lets watchdog.ts's partitionSignalsByKnownKeys
+  // suppress that same-state re-file (see watchdog.ts partitionSignalsByKnownKeys).
+  it('stamps latestAt as `now` and a default resolutionCooldownMs (EI-9190)', () => {
+    const findings = detectDarkFlagAge(healthy({ reviewBy: inDays(5) }));
+    expect(findings).toHaveLength(1);
+    expect(findings[0].latestAt).toBe(new Date(NOW).toISOString());
+    expect(findings[0].resolutionCooldownMs).toBe(DEFAULT_DARK_FLAG_AGE_RESOLUTION_COOLDOWN_MS);
+  });
+
+  it('honors a custom resolutionCooldownMs override', () => {
+    const findings = detectDarkFlagAge(healthy({ reviewBy: inDays(5), resolutionCooldownMs: 60_000 }));
+    expect(findings[0].resolutionCooldownMs).toBe(60_000);
   });
 });

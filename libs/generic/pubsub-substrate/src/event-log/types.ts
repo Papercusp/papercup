@@ -99,4 +99,47 @@ export interface CoordEventLog {
 
   /** Read one per-event record by msg_id, or null. */
   getEvent(surface: EventSurface, msgId: string): Promise<CoordEnvelope | null>;
+
+  /**
+   * Read per-event records, id-CURSOR bounded — the true incremental-
+   * pagination sibling of {@link readEventsBounded} (WI-3880, fast-follow of
+   * WI-3869). `readEventsBounded` always returns a fixed-size window off the
+   * newest end with no way to page past it; this returns each row's storage-
+   * layer `id` (the surface's true monotonic append-order cursor) alongside
+   * its envelope, and `opts.beforeId`, when set, reads only rows strictly
+   * OLDER than it (`id < beforeId`) — so a caller can walk arbitrarily deep
+   * into history by re-calling with the previous page's oldest `id`.
+   * `exhausted: true` means there is nothing older left in this surface (the
+   * caller has reached the beginning); `false` means more may exist even if
+   * this page came back short (e.g. every remaining row was filtered out by
+   * `kinds` — re-call with the new cursor to keep walking). PgCoordLog gives
+   * an exact, persistent cursor; the fs/in-memory doubles synthesize one from
+   * their (deterministic, but call-scoped) read order — see each impl.
+   */
+  readEventsBoundedCursor(
+    surface: EventSurface,
+    opts: { limit: number; kinds?: string[]; beforeId?: number },
+  ): Promise<CoordLogCursorPage>;
+
+  /** The line-surface sibling of {@link readEventsBoundedCursor}. */
+  readLinesBoundedCursor(
+    surface: LineSurface,
+    opts: { limit: number; sinceTs?: string; planSlug?: string; kinds?: string[]; beforeId?: number },
+  ): Promise<CoordLogCursorPage>;
+}
+
+/** One id-cursor-bounded row: the envelope plus the storage row id it lives at
+ *  (see {@link CoordEventLog.readEventsBoundedCursor}). */
+export interface CoordLogCursorRow {
+  id: number;
+  envelope: CoordEnvelope;
+}
+
+/** A page returned by a `*BoundedCursor` read. */
+export interface CoordLogCursorPage {
+  /** Newest-first, bounded to the requested limit. */
+  rows: CoordLogCursorRow[];
+  /** True when nothing older than `rows`' oldest id remains in this surface
+   *  (post-filter — see {@link CoordEventLog.readEventsBoundedCursor}). */
+  exhausted: boolean;
 }

@@ -251,7 +251,7 @@ export const FEED_KIND_COLOR: Record<string, string> = {
   message: 'var(--accent-strong, #7dd3fc)',
   ack: 'var(--fg-mute, #7f9bb4)',
   notify: 'var(--warn, #fbbf24)',
-  broadcast: `var(--advconv-accent-strong, ${CATEGORICAL.pink400.hex})`,
+  broadcast: CATEGORICAL.pink400.hex,
   handoff: CATEGORICAL.violet400.hex,
   handoff_accepted: CATEGORICAL.violet300.hex,
   escalation: 'var(--bad, #f87171)',

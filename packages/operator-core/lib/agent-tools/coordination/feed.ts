@@ -98,6 +98,30 @@ export interface ReadCoordFeedOpts {
 export const DEFAULT_FEED_LIMIT = 100;
 export const MAX_FEED_LIMIT = 500;
 
+// WI-3869: the raw per-surface fetch is bounded, never a full-table scan. Each
+// surface's readLines/readEvents used to run an unbounded `ORDER BY id ASC`
+// (no LIMIT) over the WHOLE coord_event_log surface partition — fine when the
+// log was small, but as it accumulates this degrades into a multi-minute scan
+// (observed: a single query ran 130s, causing coord:presence/fleet:status/
+// coord:orient to time out and render a live fleet as empty/paused). Switched
+// to the already-existing readLinesBounded/readEventsBounded (ORDER BY id DESC
+// LIMIT n, riding the coord_event_log_surface_id index) — the same bounded
+// primitive escalations.ts and plan-events.ts already use for this table.
+// RAW_SURFACE_FETCH_CAP matches the hard clamp those methods already enforce
+// internally (1000), so this introduces no NEW truncation ceiling, just stops
+// asking for more than the store would ever honor unbounded.
+//
+// Trade-off (disclosed, not silent): `before_ts` pagination and the `total`/
+// `byKind` histogram are now scoped to the most-recent RAW_SURFACE_FETCH_CAP
+// rows per surface, not the surface's entire history. Every realistic caller
+// (coord:feed's default page, coord:orient's fleet-catch-up fold, coord:catch-
+// up's audience backlog) wants recent activity and comfortably fits inside
+// this window (MAX_FEED_LIMIT is 500, well under the 1000/surface raw cap).
+// Deep historical pagination past that window would need a true incremental
+// id-cursor read (a larger follow-up, not required to close the availability
+// regression this fixes) — tracked as WI-3880 if that's ever actually needed.
+const RAW_SURFACE_FETCH_CAP = 1000;
+
 const LINE_SURFACES = ['messages', 'plan-events'] as const;
 const EVENT_SURFACES = ['escalations', 'handoffs'] as const;
 
@@ -141,6 +165,12 @@ function matchesText(env: CoordEnvelope, needle: string): boolean {
  * returned when the page was capped (more rows exist) — pass it back as
  * `before_ts` to fetch the next (older) page; `null` when the stream is
  * exhausted.
+ *
+ * (WI-3869) The raw per-surface read behind this is bounded to the most recent
+ * RAW_SURFACE_FETCH_CAP rows per surface — `before_ts`/`nextCursor` paginate
+ * within that window, not the surface's entire history; `total`/`byKind` are
+ * likewise scoped to the fetched window. See the RAW_SURFACE_FETCH_CAP comment
+ * above for why, and the sizing rationale.
  */
 export async function readCoordFeed(
   opts: ReadCoordFeedOpts = {},
@@ -149,13 +179,26 @@ export async function readCoordFeed(
 
   // Union every surface. Tag each envelope with its origin surface.
   const tagged: CoordFeedRow[] = [];
+  // Push kinds/since_ts/plan_slug down to the store where the bounded methods
+  // support it — fewer rows fetched+held in memory, not just a bounded count.
+  const kindsForPushdown = opts.kinds && opts.kinds.length > 0 ? opts.kinds : undefined;
   const lineReads = LINE_SURFACES.map(async (surface) => {
-    for (const env of await coordLog.readLines(surface)) {
+    const envs = await coordLog.readLinesBounded(surface, {
+      limit: RAW_SURFACE_FETCH_CAP,
+      ...(kindsForPushdown ? { kinds: kindsForPushdown } : {}),
+      ...(opts.since_ts ? { sinceTs: opts.since_ts } : {}),
+      ...(opts.plan_slug ? { planSlug: opts.plan_slug } : {}),
+    });
+    for (const env of envs) {
       tagged.push({ ...env, surface, broadcast: isBroadcast(env.to) });
     }
   });
   const eventReads = EVENT_SURFACES.map(async (surface) => {
-    for (const env of await coordLog.readEvents(surface)) {
+    const envs = await coordLog.readEventsBounded(surface, {
+      limit: RAW_SURFACE_FETCH_CAP,
+      ...(kindsForPushdown ? { kinds: kindsForPushdown } : {}),
+    });
+    for (const env of envs) {
       tagged.push({ ...env, surface, broadcast: isBroadcast(env.to) });
     }
   });

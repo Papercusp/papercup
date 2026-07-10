@@ -422,6 +422,13 @@ export function parseArgs(argv) {
     // Bare positional id after `--resume` (ergonomic `psu --resume 42` form).
     else if (!a.startsWith('--') && out.resume && !out.resumeId) out.resumeId = a;
   }
+  // Model-family/backend coupling: a supplied native cloud model selects its
+  // backend when --agent is omitted, and an explicit mismatch fails before any
+  // wrapper/terminal opens. OMP stays exempt because it is multi-provider.
+  const hintedBackend = cloudModelBackendHint(out.model);
+  if (!out.agent && hintedBackend) out.agent = hintedBackend;
+  const pairing = validateAgentModelPair(out.agent, out.model);
+  if (!pairing.ok) throw new Error(pairing.message);
   return out;
 }
 
@@ -2312,6 +2319,39 @@ export function isFleetMemberLaunch(args) {
  *  the full OPEN set of ids, so this list is used ONLY to spot an obviously-misspelled short alias
  *  (validateModelSpec) — never to gate full/provider ids. */
 export const KNOWN_CLOUD_ALIASES = ['opus', 'sonnet', 'haiku', 'fable'];
+
+/** Native backend hint for unambiguous cloud model families. Unknown model ids
+ * stay open-set and return null; explicit OMP remains valid for either family. */
+export function cloudModelBackendHint(model) {
+  if (!model) return null;
+  const withoutEffort = String(model).trim().replace(/:(low|medium|high|xhigh|max)$/i, '');
+  const base = withoutEffort.replace(/\[[^\]]+\]$/, '');
+  if (/^ollama(-cc)?\//i.test(base) || /\bornith\b/i.test(base)) return null;
+  if (
+    /^(luna|terra|sol)$/i.test(base) ||
+    /^gpt(?:[-_.]|\d)/i.test(base) ||
+    /^o\d(?:[-_.]|$)/i.test(base) ||
+    /(?:^|[-_.\/])codex(?:[-_.\/]|$)/i.test(base)
+  ) return 'codex';
+  if (
+    /^(opus|sonnet|haiku|fable)$/i.test(base) ||
+    /^claude(?:[-_.\/]|$)/i.test(base) ||
+    /^anthropic[.\/]claude(?:[-_.\/]|$)/i.test(base)
+  ) return 'claude';
+  return null;
+}
+
+/** Reject a native cloud model paired with the other native CLI. */
+export function validateAgentModelPair(agent, model) {
+  const hintedBackend = cloudModelBackendHint(model);
+  if (!agent || agent === 'omp' || !hintedBackend || agent === hintedBackend) return { ok: true };
+  return {
+    ok: false,
+    message:
+      `model \`${model}\` belongs to the \`${hintedBackend}\` backend, but this launch requested ` +
+      `\`--agent=${agent}\`. Pass \`--agent=${hintedBackend}\`, or omit \`--agent\` and let psu infer it.`,
+  };
+}
 
 /** Damerau optimal-string-alignment distance: Levenshtein PLUS adjacent transpositions as a single
  *  edit — so a swap typo (`fabel`↔`fable`) is distance 1, without widening the substitution radius

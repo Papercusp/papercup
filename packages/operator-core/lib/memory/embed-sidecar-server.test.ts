@@ -48,6 +48,10 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
       builds.push(`local:${kind}`);
       return async (text: string) => [text.length, 3];
     },
+    harrier: async (kind) => {
+      builds.push(`harrier:${kind}`);
+      return async (text: string) => [text.length, kind === 'query' ? 4 : 5];
+    },
   };
 
   async function boot(): Promise<void> {
@@ -129,6 +133,7 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
           throw new Error('worker exploded');
         },
         local: fakeBuilders.local,
+        harrier: fakeBuilders.harrier,
       },
     });
     baseUrl = `http://127.0.0.1:${await handle.listening}`;
@@ -162,6 +167,7 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
           return [1];
         },
         local: fakeBuilders.local,
+        harrier: fakeBuilders.harrier,
       },
     });
     baseUrl = `http://127.0.0.1:${await handle.listening}`;

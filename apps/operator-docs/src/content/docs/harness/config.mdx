@@ -120,12 +120,31 @@ form.
 | `checkpoints.*` | retired — `CHECKPOINT` finalizes as escalation; milestone gates are `needs-human` plan items |
 | `branchIsolation.*` / lane worktrees | retired with the run-loop — see [Worktrees & isolation](/internal/docs/harness/worktrees) |
 
-`coding-factory` is **not** a retired spine: it is the live per-feature coding
-pipeline blueprint — the fallback resolved when a harness has no blueprint of its
-own (`blueprint-run-action.ts`'s `codingFallback()` →
+:::caution[Update (2026-06-24): coding-factory is now RETIRED — NOT ACTIVE]
+As of 2026-06-24 the `coding-factory` blueprint.yaml itself carries an explicit
+RETIRED/dormant `description:` — its `director` autoloop last fired 2026-05-01
+and nothing currently instantiates it. Do **not** treat it as the
+active/default coding harness, and do not wire new work to it; it is kept
+intact for a possible future revival (re-enable instantiation + restore the
+director dispatch), not a live pipeline agents should spawn into today. The
+code path below (`codingFallback()`) still technically resolves to it — that
+line hasn't been updated to match the blueprint's own retirement — but per the
+owner it is not the pipeline in active use. The **coding** (Pot) blueprint's
+Mug + self-pulling `cup`s is the live model; see
+[coding-pot cup vs coding-factory scoper](/internal/docs/agent-insights/coding-pot-cup-vs-coding-factory-scoper)
+and
+[two dispatch models](/internal/docs/agent-insights/two-dispatch-models-mug-cup-vs-coding-factory)
+for the full detail. The worker/typecheck/debugger **params** documented above
+still exist on the blueprint and are still what a coding-factory pipeline (if
+ever revived) would tune — that part of this page is unaffected.
+:::
+
+`coding-factory`'s declared params notwithstanding, it is the fallback resolved
+when a harness has no blueprint of its own
+(`blueprint-run-action.ts`'s `codingFallback()` →
 `loadBuiltinBlueprint('coding-factory')`), and the `extends:` target emitted by
-`harness:generate-from-repo` for a detected repo. Its worker/typecheck/debugger
-params above are what a real coding pipeline tunes.
+`harness:generate-from-repo` for a detected repo — those code paths are
+unchanged even though the blueprint is now dormant in practice.
 
 ## Related
 

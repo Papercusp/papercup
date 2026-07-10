@@ -206,6 +206,33 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // breach it, but leaves ZERO headroom — see EI-9140's 2026-07-10 review (types.ts)
   // for the standing capacity note to the owner.
   'papercusp-substrate-log-snapshot',
+  // 2026-07-10 (WI-3796) — NOT a new post-inversion darkening: the SEVENTH instance of
+  // the same bug-fix class as papercusp-watchdog-auto-close / papercusp-substrate-sidecar /
+  // papercusp-reclaim-stalled / papercusp-psu-end-user / papercusp-plan-part-federation /
+  // papercusp-substrate-log-snapshot above. papercusp-git-sync-derived-attribution's OWN
+  // code comment (libs/flags/src/types.ts, git-sync-dx-hardening-2026-06-17 P-004) has
+  // ALWAYS said "DEFAULT OFF: it rewrites the commit hot path... Owner flips post-review"
+  // but was never actually added to DARK_FLAGS, so it silently derived default-ON both
+  // before AND after the P-011 inversion. Confirmed via direct PG check: no override row
+  // for it in workspace papercusp-workspace (harness_shared.operator_flag_overrides). HIGH
+  // blast radius: gates DERIVED per-agent commit attribution in git-sync-action.ts /
+  // run-git-sync.ts — the mechanism every fleet agent depends on to land work. Adding it
+  // here restores its always-intended default-OFF. This SEVENTH instance, together with
+  // papercusp-doc-steward below, breaches the prior DARK_FLAGS_HIGH_WATERMARK of 22 with
+  // zero graduation candidates ready — raised to 24 (see types.ts's 2026-07-10 watermark-
+  // raise note) under this session's standing AUTO-mode grant rather than left live
+  // pending a synchronous sign-off. Count 22 → 23.
+  'papercusp-git-sync-derived-attribution',
+  // 2026-07-10 (WI-3796) — the EIGHTH instance of the same bug-fix class, alongside
+  // papercusp-git-sync-derived-attribution immediately above. papercusp-doc-steward's OWN
+  // code comment (libs/flags/src/types.ts, docs-corpus-audit WS2 P-008) has ALWAYS said
+  // "DEFAULT OFF: it auto-edits the doc corpus (owner-authority surface) + spawns an agent
+  // per drift — flip ON after the owner-verified end-to-end check" but was never actually
+  // added to DARK_FLAGS, so it silently derived default-ON both before AND after the P-011
+  // inversion. Confirmed via direct PG check: no override row for it in workspace
+  // papercusp-workspace. Adding it here restores its always-intended default-OFF. Count
+  // 23 → 24 — AT the raised DARK_FLAGS_HIGH_WATERMARK (24); see types.ts for the raise note.
+  'papercusp-doc-steward',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -359,7 +386,13 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // above), SIXTH instance of the EI-7230-class bug; split off a new default-ON reader
     // sibling flag (papercusp-substrate-log-snapshot-reader, not in this count) so the
     // producer alone goes dark. Count 21 → 22 — AT DARK_FLAGS_HIGH_WATERMARK (22).
-    expect(offCount).toBe(22);
+    // 2026-07-10 (WI-3796) — papercusp-git-sync-derived-attribution +
+    // papercusp-doc-steward: BUG-FIX correction, SEVENTH + EIGHTH instances of the
+    // EI-7230-class bug (own comments always said dark, never actually added — see
+    // PRE_INVERSION_DEFAULT_OFF above). Breached the prior watermark of 22 with zero
+    // graduation candidates ready, so DARK_FLAGS_HIGH_WATERMARK was raised 22→24 (see
+    // types.ts's 2026-07-10 watermark-raise note). Count 22 → 24.
+    expect(offCount).toBe(24);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {

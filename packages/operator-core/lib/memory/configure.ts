@@ -32,6 +32,7 @@ import {
   HybridBackend,
   Mem0Backend,
   invalidateMemoryClient,
+  HARRIER_NATIVE_DIMS,
   type EmbedFn,
   type ResolvedEmbedder,
 } from '@papercusp/memory';
@@ -424,7 +425,7 @@ export async function localAvailable(): Promise<boolean> {
 /** Every embedder preference, in ONE place: the env parser, the return type,
  *  and tests all derive from this. A hand-copied subset drifts the moment a
  *  leg is added or a default flips (it did, when 'gemma' became the default). */
-export const EMBEDDER_PREFERENCES = ['auto', 'openai', 'local', 'gemma', 'disabled'] as const;
+export const EMBEDDER_PREFERENCES = ['auto', 'openai', 'local', 'gemma', 'harrier', 'disabled'] as const;
 export type EmbedderPreference = (typeof EMBEDDER_PREFERENCES)[number];
 
 const isEmbedderPreference = (v: string | undefined): v is EmbedderPreference =>
@@ -462,7 +463,7 @@ export async function readEmbedderPreference(): Promise<EmbedderPreference> {
  * Build an embedder for an explicit mode. Throws if that mode's
  * credentials/packages aren't available (the re-embed pass surfaces it).
  */
-async function buildEmbedderForMode(mode: 'openai' | 'local' | 'gemma'): Promise<EmbedFn> {
+async function buildEmbedderForMode(mode: 'openai' | 'local' | 'gemma' | 'harrier'): Promise<EmbedFn> {
   if (mode === 'openai') {
     const key = await resolveOpenAiKey();
     if (!key) throw new Error('openai_api_key not configured');
@@ -474,6 +475,12 @@ async function buildEmbedderForMode(mode: 'openai' | 'local' | 'gemma'): Promise
     // Sidecar-first (P-004): shared warm model when the host runs the embed
     // sidecar; bit-identical in-process fallback otherwise (D-002/D-003).
     return buildSidecarAwareEmbedder('gemma', 'document');
+  }
+  if (mode === 'harrier') {
+    // harrier-oss-0.6b @ native-1024 (P-014) — selectable, never in the
+    // 'auto' tail; documents embed raw (only queries carry the instruct
+    // prefix), same sidecar-first seam.
+    return buildSidecarAwareEmbedder('harrier', 'document');
   }
   // local — BGE-small, worker-thread isolated, inline fallback; sidecar-first
   // under the same P-004 seam.
@@ -487,7 +494,7 @@ async function buildEmbedderForMode(mode: 'openai' | 'local' | 'gemma'): Promise
  * production `resolveEmbedder` wires the real implementations.
  */
 export interface ResolveEmbedderDeps {
-  readPreference: () => Promise<'auto' | 'openai' | 'local' | 'gemma' | 'disabled'>;
+  readPreference: () => Promise<'auto' | 'openai' | 'local' | 'gemma' | 'harrier' | 'disabled'>;
   resolveKey: () => Promise<string>;
   localInstalled: () => Promise<boolean>;
   buildOpenAi: (key: string) => EmbedFn;
@@ -495,6 +502,9 @@ export interface ResolveEmbedderDeps {
   /** EmbeddingGemma-300m @ MRL-384 (the default local embedder). Gated by the
    *  same `localInstalled` (shares the @huggingface/transformers package). */
   buildGemma: () => Promise<EmbedFn>;
+  /** harrier-oss-0.6b @ native-1024 (P-014, selectable only — never the
+   *  'auto' tail). Gated by the same `localInstalled`. */
+  buildHarrier: () => Promise<EmbedFn>;
   /** EI-3381: is OpenAI embedding in its post-failure cooldown (a recent hard quota/billing
    *  stop, or a fully-exhausted retry budget)? Only consulted by the 'auto' cascade — a
    *  user-FORCED 'openai' preference still tries the key regardless (that's an explicit
@@ -548,6 +558,16 @@ export async function resolveEmbedderWith(deps: ResolveEmbedderDeps): Promise<Re
     return { mode: 'disabled', reason: 'gemma_forced_but_transformers_not_installed' };
   }
 
+  if (preference === 'harrier') {
+    // harrier-oss-0.6b (P-014): explicit selection only — the 'auto' tail
+    // below never reaches it. Its OWN space at NATIVE 1024 dims (mode
+    // 'harrier' → memory_vec_harrier, migration 547). Same transformers gate.
+    if (await deps.localInstalled()) {
+      return { mode: 'harrier', dims: HARRIER_NATIVE_DIMS, embed: await deps.buildHarrier() };
+    }
+    return { mode: 'disabled', reason: 'harrier_forced_but_transformers_not_installed' };
+  }
+
   // 'auto': prefer local while OpenAI is in its post-failure cooldown (EI-3381) — a sustained
   // single-key exhaustion must not keep re-trying a key we just learned is unusable when a
   // local embedder can serve the request instead.
@@ -579,6 +599,7 @@ async function resolveEmbedder(): Promise<ResolvedEmbedder> {
     buildLocal: () => buildSidecarAwareEmbedder('local', 'document'),
     // Storage/mem0 embed with the document prompt (search uses the query prompt).
     buildGemma: () => buildSidecarAwareEmbedder('gemma', 'document'),
+    buildHarrier: () => buildSidecarAwareEmbedder('harrier', 'document'),
     isOpenAiRecentlyExhausted: isOpenAiEmbedInCooldown,
   });
 }
