@@ -39,13 +39,24 @@
  * defense-in-depth addition on top of EI-8824 (the actual silent-loss bug, already
  * fixed) and EI-8885 (checkpointAgeMs on work_items:get) — belt-and-suspenders so a
  * FUTURE silent-loss bug class is caught at write time, not discovered post-compaction.
+ *
+ * EI-9325: a plain replace-on-write (not append, not a clear) that shrinks a
+ * substantial prior checkpoint by more than half gets a non-blocking `shrinkWarning`
+ * on the result — the caller-side footgun this was filed against is a rewrite that
+ * INTENDED to preserve prior content verbatim (e.g. prepending a new section by hand)
+ * but instead wrote a placeholder/marker line, silently truncating a detailed
+ * checkpoint with no built-in signal that data was lost. Uses
+ * `setWorkItemCheckpointWithPrior`, which surfaces the prior length for FREE (the row
+ * is already SELECTed FOR UPDATE inside the write transaction to build the journal
+ * ring) — no extra round-trip, so the existing "plain replace never pre-reads"
+ * contract (see the append-mode tests) is unaffected.
  */
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { setWorkItemCheckpoint, getWorkItemCheckpoint } from '../../work-item-checkpoint';
+import { setWorkItemCheckpoint, setWorkItemCheckpointWithPrior, getWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { getWorkItem, markFeatureProgress, markIssueProgress } from '../../work-items';
 import { runBulk, bulkContent } from '../_bulk';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
@@ -99,7 +110,9 @@ export default defineTool({
     "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` " +
     'joins instead (EI-9036). ' +
     'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, verified, storedHead, by | error }], counts }. ' +
-    'Writes are verify-read; fails loudly on an invisible write (checkpoint_verify_failed).',
+    'Writes are verify-read; fails loudly on an invisible write (checkpoint_verify_failed). A plain replace-on-write ' +
+    'that shrinks a substantial checkpoint by more than half gets a non-blocking `shrinkWarning` (EI-9325) — usually ' +
+    'an accidental placeholder/truncated paste, not an intentional rewrite.',
   guidance: {
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your ' +
@@ -187,10 +200,25 @@ export default defineTool({
         // workspace_id='*' row that no concrete-workspace read (work_items:get's
         // getWorkItemCheckpoint, which never resolves to '*') can ever see. Same
         // bug class as EI-3409/WI-892; resolveConcreteWorkspaceId is the fix.
-        const stored = await setWorkItemCheckpoint(
-          { harness, workItemId: it.id, workspaceId },
-          checkpointToStore,
-        );
+        //
+        // EI-9325: a PLAIN replace (not append, not a clear) is the shrink-risk case
+        // this footgun report described — the caller means to paste the FULL prior
+        // content verbatim (e.g. prepending a new section by hand) and instead writes
+        // a placeholder/marker line, silently truncating a detailed checkpoint. Use
+        // the *WithPrior variant ONLY on that path: it costs no extra round-trip (the
+        // row is already SELECTed FOR UPDATE inside the same write transaction to
+        // build the journal ring) and gives us the prior length for free to warn on.
+        // append mode already reads + folds the prior text explicitly above, so it
+        // can't hit this failure mode; a clear has no "shrink" to warn about either.
+        let priorLength: number | null = null;
+        let stored: string | null;
+        if (!wantsAppend && checkpointToStore && checkpointToStore.length > 0) {
+          const res = await setWorkItemCheckpointWithPrior({ harness, workItemId: it.id, workspaceId }, checkpointToStore);
+          stored = res.stored;
+          priorLength = res.priorLength;
+        } else {
+          stored = await setWorkItemCheckpoint({ harness, workItemId: it.id, workspaceId }, checkpointToStore);
+        }
         // agent-activity-liveness-truth P-001 (D-001/D-004): a non-clear checkpoint write
         // is REAL item-scoped progress — credit it so the item reads as `progressing`, not
         // `stalled`. Fire-and-forget + fail-soft (each swallows errors and no-ops on the
@@ -244,6 +272,20 @@ export default defineTool({
           // WI-3801: warn-only nudge — an untagged owner-attributed imperative in this
           // checkpoint, undefined (no field) on the overwhelming common clean case.
           ...(stored !== null ? { provenanceLint: provenanceLintField(stored) } : {}),
+          // EI-9325: warn-only nudge — a plain replace-on-write that shrank the
+          // checkpoint by more than half, off a substantial prior checkpoint, usually
+          // means an accidental placeholder/truncated paste rather than an
+          // intentional rewrite. Never blocks; undefined on every clean write
+          // (the overwhelming common case) or when there's nothing suspicious to flag.
+          ...(stored !== null && priorLength !== null && priorLength > 500 && stored.length < priorLength * 0.5
+            ? {
+                shrinkWarning:
+                  `This write is ${stored.length} chars, down from ${priorLength} chars previously stored. ` +
+                  `If you meant to PRESERVE the prior content (e.g. prepending a new section), verify you pasted ` +
+                  `it verbatim rather than a placeholder/marker — a large shrink like this usually means accidental ` +
+                  `truncation (EI-9325). If the shrink is intentional, ignore this.`,
+              }
+            : {}),
         };
       },
       { keyOf: (it) => ({ id: it.id }) },

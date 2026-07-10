@@ -203,6 +203,45 @@ export function codexHomeForAdvSession(advSessionId: number): string {
  *  (engine.ts coalesceDeliveries), so the raw `payload.timeout` is gone — look
  *  inside the union (the latest fire AND any folded event) or the marker would be
  *  silently dropped and the agent told the event FIRED when it actually TIMED OUT. */
+/** WI-3940: default upper bound on each rematerialize-on-miss PG call in the
+ *  wake resume leg. Generous for a healthy restore (a 2.6MB session restores
+ *  in well under a second) while bounding the WI-2009 wedged-connection class. */
+export const REMATERIALIZE_TIMEOUT_MS = 30_000;
+
+/** WI-3940: race a wake-hot-path promise against a timer. Resolves the value,
+ *  or `null` on TIMEOUT or REJECTION (both logged) — never throws, never
+ *  hangs. The rematerialize seams are fail-soft on rejection, but a wedged PG
+ *  connection HANGS past every try/catch; this is what actually bounds the
+ *  wake pipeline. The timer is unref'd so it never holds the process open;
+ *  the underlying promise is abandoned on expiry, not cancelled. */
+export function withWakeTimeout<T>(p: Promise<T>, label: string, ms: number): Promise<T | null> {
+  return new Promise<T | null>((resolve) => {
+    let settled = false;
+    const t = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      console.warn(`[wake-executor] ${label} timed out after ${ms}ms — proceeding without it (WI-3940)`);
+      resolve(null);
+    }, ms);
+    t.unref?.();
+    p.then(
+      (v) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(t);
+        console.warn(`[wake-executor] ${label} failed: ${(e as Error)?.message ?? e}`);
+        resolve(null);
+      },
+    );
+  });
+}
+
 function payloadIsTimeout(payload: unknown): boolean {
   if (payload == null || typeof payload !== 'object') return false;
   const p = payload as {
@@ -635,6 +674,13 @@ export interface ExecuteWakeDeps {
   collectSessionFiles?: typeof defaultCollectSessionFiles;
   rematerializeSession?: typeof defaultRematerializeSession;
   findArchivedSessionIdForAdv?: typeof defaultFindArchivedSessionIdForAdv;
+  /** WI-3940: upper bound (ms) on each rematerialize-on-miss PG call in the
+   *  resume leg. The seams above are fail-soft on REJECTION, but a WEDGED PG
+   *  connection HANGS past every try/catch and stalls the whole wake pipeline
+   *  (the WI-2009 hung-await class — a1a71's gate-unwedge flagged this hot
+   *  path). On expiry the wake logs and proceeds down the normal miss path;
+   *  the underlying query is abandoned, not cancelled. Injected for tests. */
+  rematerializeTimeoutMs?: number;
   /** su-cold-auto-mode-2026-07-03 Phase 2 (P-005/P-006/P-007): the cold-auto MASTER
    *  GATE, resolved by the caller (the P-007 flag lands Phase 3). DEFAULT ()=>false ⇒
    *  the psu-host cold fork stays DORMANT — every loop wake injects the warm
@@ -787,6 +833,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const collectSessionFiles = deps.collectSessionFiles ?? defaultCollectSessionFiles;
   const rematerializeSession = deps.rematerializeSession ?? defaultRematerializeSession;
   const findArchivedSessionIdForAdv = deps.findArchivedSessionIdForAdv ?? defaultFindArchivedSessionIdForAdv;
+  const rematerializeTimeoutMs = deps.rematerializeTimeoutMs ?? REMATERIALIZE_TIMEOUT_MS;
 
   try {
     const handle = d.wakeHandle;
@@ -948,10 +995,20 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // nothing was ever archived.
       let sid: string | null = (fresh?.sessionId ?? handle.sessionId) || null;
       if (!existsSync(home) || !findCodexRolloutSessionId(home)) {
-        if (!sid) sid = await findArchivedSessionIdForAdv(handle.advSessionId);
+        // WI-3940: every PG call on this leg is time-bounded — a wedged
+        // connection must degrade to the normal miss path, never stall the wake.
+        if (!sid) {
+          sid = await withWakeTimeout(
+            findArchivedSessionIdForAdv(handle.advSessionId),
+            `archived-session-id lookup for adv #${handle.advSessionId}`,
+            rematerializeTimeoutMs,
+          );
+        }
         if (sid) {
-          const r = await rematerializeSession({ sourceKind: 'codex', sessionId: sid, targetRoot: home }).catch(
-            () => null,
+          const r = await withWakeTimeout(
+            rematerializeSession({ sourceKind: 'codex', sessionId: sid, targetRoot: home }),
+            `rematerialize codex/${sid}`,
+            rematerializeTimeoutMs,
           );
           if (r?.ok && r.written) {
             console.log(`[wake-executor] rematerialized codex/${sid}: ${r.written} file(s) → ${home}`);
@@ -971,8 +1028,13 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         try {
           const have = await collectSessionFiles({ sourceKind: 'omp', sessionId: sid, sessionRoot: ompSessionsRoot() });
           if (!have.length) {
-            const r = await rematerializeSession({ sourceKind: 'omp', sessionId: sid });
-            if (r.ok && r.written) console.log(`[wake-executor] rematerialized omp/${sid}: ${r.written} file(s)`);
+            // WI-3940: time-bounded — see the codex leg.
+            const r = await withWakeTimeout(
+              rematerializeSession({ sourceKind: 'omp', sessionId: sid }),
+              `rematerialize omp/${sid}`,
+              rematerializeTimeoutMs,
+            );
+            if (r?.ok && r.written) console.log(`[wake-executor] rematerialized omp/${sid}: ${r.written} file(s)`);
           }
         } catch (e) {
           console.warn(`[wake-executor] omp rematerialize check failed: ${(e as Error)?.message ?? e}`);
@@ -1052,8 +1114,13 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         try {
           const have = await collectSessionFiles({ sourceKind: 'claude', sessionId: sid, sessionRoot: cfgDir });
           if (!have.length) {
-            const r = await rematerializeSession({ sourceKind: 'claude', sessionId: sid, targetRoot: cfgDir });
-            if (r.ok && r.written) {
+            // WI-3940: time-bounded — see the codex leg.
+            const r = await withWakeTimeout(
+              rematerializeSession({ sourceKind: 'claude', sessionId: sid, targetRoot: cfgDir }),
+              `rematerialize claude/${sid}`,
+              rematerializeTimeoutMs,
+            );
+            if (r?.ok && r.written) {
               console.log(`[wake-executor] rematerialized claude/${sid}: ${r.written} file(s) → ${cfgDir}`);
             }
           }

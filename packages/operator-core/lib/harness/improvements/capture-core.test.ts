@@ -477,3 +477,83 @@ describe('captureImprovement — signal provenance (frontier P-002 / D-002)', ()
     expect(res.alreadyDecided).toBeUndefined();
   });
 });
+
+describe('captureImprovement — P-011 semantic candidate widening (shared-embedding-sidecar-and-enrichment-2026-07-10)', () => {
+  const semDeps = (
+    d: ReturnType<typeof deps>,
+    verdict: { hard: Array<{ id: string; similarity: number }>; soft: Array<{ id: string; similarity: number }> } | null,
+    issues: EngineerIssue[],
+  ): CaptureDeps & { created: CreateIssueInput[] } => ({
+    ...d,
+    findSemanticDupes: async () =>
+      verdict === null
+        ? null
+        : {
+            hard: verdict.hard.map((c) => ({ ...c, title: 't', state: 'open', harness: null })),
+            soft: verdict.soft.map((c) => ({ ...c, title: 't', state: 'open', harness: null })),
+            thresholds: { hard: 0.93, soft: 0.85 },
+          },
+    getIssue: async (id) => issues.find((i) => i.id === id) ?? null,
+  });
+
+  it('a HARD semantic hit declines the capture even when the lexical net misses it', async () => {
+    const worded = existing({ id: 'EI-50', title: 'agents keep refiling identical tool bugs' });
+    const d = semDeps(deps({ found: [] }), { hard: [{ id: 'EI-50', similarity: 0.95 }], soft: [] }, [worded]);
+    const res = await captureImprovement({ title: 'duplicate friction reports flood the queue', kind: 'bug' }, d);
+    expect(res.created).toBe(false);
+    expect(res.reason).toBe('likely-duplicate');
+    expect(res.possibleDuplicates[0]).toMatchObject({ id: 'EI-50', semantic: 'hard', similarity: 0.95 });
+  });
+
+  it('a SOFT semantic hit is advisory-only: surfaced in possibleDuplicates, capture still created', async () => {
+    const worded = existing({ id: 'EI-51', title: 'similar-ish friction wording' });
+    const d = semDeps(deps({ found: [] }), { hard: [], soft: [{ id: 'EI-51', similarity: 0.87 }] }, [worded]);
+    const res = await captureImprovement({ title: 'a completely differently worded capture', kind: 'change' }, d);
+    expect(res.created).toBe(true);
+    expect(res.possibleDuplicates).toEqual([
+      expect.objectContaining({ id: 'EI-51', semantic: 'soft', similarity: 0.87 }),
+    ]);
+  });
+
+  it('a null verdict (guard disabled / embedder down) leaves the lexical behavior unchanged', async () => {
+    const d = semDeps(deps({ found: [] }), null, []);
+    const res = await captureImprovement({ title: 'anything at all', kind: 'bug' }, d);
+    expect(res.created).toBe(true);
+    expect(res.possibleDuplicates).toEqual([]);
+  });
+
+  it('origin discipline holds: a drill-origin semantic hit never widens an organic capture', async () => {
+    const drill = existing({ id: 'EI-52', title: 'drill row', signalOrigin: 'drill' });
+    const d = semDeps(deps({ found: [] }), { hard: [{ id: 'EI-52', similarity: 0.97 }], soft: [] }, [drill]);
+    const res = await captureImprovement({ title: 'an organic capture', kind: 'bug' }, d);
+    expect(res.created).toBe(true);
+    expect(res.possibleDuplicates).toEqual([]);
+  });
+
+  it('a lexically-caught candidate keeps its lexical score and gains no semantic flag', async () => {
+    const same = existing({ id: 'EI-53', title: 'docs search returns stale results' });
+    const d = semDeps(
+      deps({ found: [same] }),
+      { hard: [{ id: 'EI-53', similarity: 0.96 }], soft: [] },
+      [same],
+    );
+    const res = await captureImprovement({ title: 'docs search returns stale results', kind: 'bug' }, d);
+    expect(res.created).toBe(false);
+    expect(res.possibleDuplicates[0].semantic).toBeUndefined();
+    expect(res.possibleDuplicates[0].similarity).toBe(1);
+  });
+
+  it('observations still skip the semantic net entirely (recurrence IS the signal)', async () => {
+    let called = false;
+    const d = {
+      ...deps(),
+      findSemanticDupes: async () => {
+        called = true;
+        return null;
+      },
+    };
+    const res = await captureImprovement({ title: 'x', kind: 'change', lane: 'observation' }, d);
+    expect(res.created).toBe(true);
+    expect(called).toBe(false);
+  });
+});

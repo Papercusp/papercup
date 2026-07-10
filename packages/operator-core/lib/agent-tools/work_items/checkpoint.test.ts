@@ -14,10 +14,12 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 
 const setWorkItemCheckpoint = vi.fn();
+const setWorkItemCheckpointWithPrior = vi.fn();
 const getWorkItemCheckpoint = vi.fn();
 const getWorkItem = vi.fn();
 vi.mock('../../work-item-checkpoint', () => ({
   setWorkItemCheckpoint: (...a: unknown[]) => setWorkItemCheckpoint(...a),
+  setWorkItemCheckpointWithPrior: (...a: unknown[]) => setWorkItemCheckpointWithPrior(...a),
   getWorkItemCheckpoint: (...a: unknown[]) => getWorkItemCheckpoint(...a),
 }));
 vi.mock('../../work-items', () => ({
@@ -61,8 +63,20 @@ const one = async (x: unknown, ctx: unknown = baseCtx) => (await env(x, ctx)).re
 
 beforeEach(() => {
   setWorkItemCheckpoint.mockReset();
+  setWorkItemCheckpointWithPrior.mockReset();
   getWorkItemCheckpoint.mockReset();
   getWorkItem.mockReset();
+  // EI-9325: checkpoint.ts routes every PLAIN replace-on-write (non-append,
+  // non-clear) through setWorkItemCheckpointWithPrior instead of setWorkItemCheckpoint
+  // now, to get the prior length for free. Default it to delegate straight through to
+  // the (still separately mockable) setWorkItemCheckpoint fn with priorLength:0 (no
+  // shrink signal) — so every EXISTING test that only configures
+  // setWorkItemCheckpoint.mockResolvedValue(...) keeps working unchanged. Tests that
+  // specifically exercise the shrinkWarning override this mock directly.
+  setWorkItemCheckpointWithPrior.mockImplementation(async (ref: unknown, checkpoint: string | null | undefined) => ({
+    stored: await setWorkItemCheckpoint(ref, checkpoint),
+    priorLength: 0,
+  }));
   // The write now ALWAYS keys by the item's canonical harness (EI-8805), so it looks
   // the item up on every call. Default the lookup to a miss; tests that assert the
   // canonical harness override it. A resolved-null default keeps the `.catch(...)`
@@ -347,6 +361,70 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(getWorkItemCheckpoint).toHaveBeenCalledTimes(1);
       expect(setWorkItemCheckpoint).toHaveBeenCalledWith(expect.anything(), 'brand new note');
       expect(r.ok).toBe(true);
+    });
+  });
+
+  describe('EI-9325: shrinkWarning nudge on a suspicious plain-replace shrink', () => {
+    it('warns when a plain replace shrinks a substantial prior checkpoint by more than half', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+      const stored = '[PRIOR CONTENT PRESERVED — omitted for size]';
+      setWorkItemCheckpointWithPrior.mockResolvedValue({ stored, priorLength: 23608 });
+      getWorkItemCheckpoint.mockResolvedValue(stored); // verify-read echoes the write
+      const r = await one({ id: 'WI-7', checkpoint: stored });
+      expect(r.ok).toBe(true);
+      expect(r.shrinkWarning).toBeDefined();
+      expect(r.shrinkWarning).toContain('23608 chars previously stored');
+      expect(r.shrinkWarning).toContain('EI-9325');
+    });
+
+    it('does NOT warn on a plain replace that is not a big shrink', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+      const stored = 'a fresh, reasonably detailed note';
+      setWorkItemCheckpointWithPrior.mockResolvedValue({ stored, priorLength: 40 });
+      getWorkItemCheckpoint.mockResolvedValue(stored);
+      const r = await one({ id: 'WI-7', checkpoint: stored });
+      expect(r.ok).toBe(true);
+      expect(r.shrinkWarning).toBeUndefined();
+    });
+
+    it('does NOT warn when the prior checkpoint was small (not "substantial")', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+      // Prior was only 100 chars — shrinking to 10 is not the "detailed record
+      // accidentally truncated" failure mode this nudge targets.
+      setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: 'x', priorLength: 100 });
+      getWorkItemCheckpoint.mockResolvedValue('x');
+      const r = await one({ id: 'WI-7', checkpoint: 'x' });
+      expect(r.ok).toBe(true);
+      expect(r.shrinkWarning).toBeUndefined();
+    });
+
+    it('does NOT warn on a clear (nothing to compare)', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+      setWorkItemCheckpoint.mockResolvedValue(null);
+      const r = await one({ id: 'WI-7' }); // blank checkpoint ⇒ clear
+      expect(r.ok).toBe(true);
+      expect(r.cleared).toBe(true);
+      expect(r.shrinkWarning).toBeUndefined();
+      // A clear never touches the *WithPrior path (nothing to warn about).
+      expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
+    });
+
+    it('does NOT warn on append mode (append reads + folds the prior explicitly; can\'t hit this failure mode)', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+      getWorkItemCheckpoint.mockResolvedValueOnce('P'.repeat(5000));
+      setWorkItemCheckpoint.mockImplementation(async (_key: unknown, text: string) => text);
+      const r = await one({ id: 'WI-7', checkpoint: 'short addendum', append: true });
+      expect(r.ok).toBe(true);
+      expect(r.shrinkWarning).toBeUndefined();
+      expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
+    });
+
+    it('the default suite delegate (no override) never produces a shrinkWarning — priorLength:0 never trips the threshold', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+      setWorkItemCheckpoint.mockResolvedValue('anything at all');
+      const r = await one({ id: 'WI-7', checkpoint: 'anything at all' });
+      expect(r.ok).toBe(true);
+      expect(r.shrinkWarning).toBeUndefined();
     });
   });
 });

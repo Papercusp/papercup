@@ -209,7 +209,11 @@ describe('terminateForeignOperator (EI-9002)', () => {
     const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], {
       stdio: 'ignore',
     });
-    await new Promise((r) => setTimeout(r, 100)); // let it actually start
+    // Poll until child is actually alive, rather than fixed timeout (WI-3220: fixes flakiness on slow systems).
+    const deadline = Date.now() + 2000;
+    while (!serve.pidAlive(child.pid!) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
     expect(serve.pidAlive(child.pid!)).toBe(true);
     await expect(serve.terminateForeignOperator(child.pid!, { graceMs: 2000 })).resolves.toBe(true);
     expect(serve.pidAlive(child.pid!)).toBe(false);
@@ -225,7 +229,11 @@ describe('terminateForeignOperator (EI-9002)', () => {
       ['-e', "process.on('SIGTERM', () => {}); setTimeout(() => {}, 30000)"],
       { stdio: 'ignore' },
     );
-    await new Promise((r) => setTimeout(r, 200)); // let the SIGTERM handler install
+    // Poll until child is actually alive, rather than fixed timeout (WI-3220: fixes flakiness on slow systems).
+    const deadline = Date.now() + 2000;
+    while (!serve.pidAlive(child.pid!) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
     expect(serve.pidAlive(child.pid!)).toBe(true);
     await expect(
       serve.terminateForeignOperator(child.pid!, { graceMs: 300, killWaitMs: 3000 }),

@@ -920,7 +920,7 @@ describe('resolveNamedQueryV2 — hive.steering (queen-steering-panel-2026-06-15
     getOwnerSteering: (ws: string, slug: string) => Promise<typeof DEFAULT>;
   }) {
     vi.doMock('../agent-tools/pot/_resolve', () => ({
-      listHives: vi.fn(typeof opts.hives === 'function' ? opts.hives : async () => opts.hives),
+      listPots: vi.fn(typeof opts.hives === 'function' ? opts.hives : async () => opts.hives),
     }));
     vi.doMock('../owner-steering', () => ({
       getOwnerSteering: vi.fn(opts.getOwnerSteering),
@@ -945,7 +945,7 @@ describe('resolveNamedQueryV2 — hive.steering (queen-steering-panel-2026-06-15
     };
     const getOwnerSteering = vi.fn(async (_ws: string, slug: string) => bySlug[slug] ?? DEFAULT);
     vi.doMock('../agent-tools/pot/_resolve', () => ({
-      listHives: vi.fn(async () => [{ slug: 'papercup-hive' }, { slug: 'other-hive' }]),
+      listPots: vi.fn(async () => [{ slug: 'papercup-hive' }, { slug: 'other-hive' }]),
     }));
     vi.doMock('../owner-steering', () => ({ getOwnerSteering, DEFAULT_OWNER_STEERING: DEFAULT }));
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
@@ -974,7 +974,7 @@ describe('resolveNamedQueryV2 — hive.steering (queen-steering-panel-2026-06-15
     unmockSteeringDeps();
   });
 
-  it('degrades to [] when listHives throws (pre-migration / registry unavailable) — never a 500', async () => {
+  it('degrades to [] when listPots throws (pre-migration / registry unavailable) — never a 500', async () => {
     mockSteeringDeps({
       hives: async () => {
         throw new Error('hive registry unavailable');

@@ -26,12 +26,14 @@
 
 import {
   createIssue,
+  getIssue,
   searchIssues,
   type EngineerIssue,
   type IssueSeverity,
   type IssueSource,
   type CreateIssueInput,
 } from '../../issues-engineer';
+import { findSemanticDupes, type SemanticDupeResult } from '../../agent-tools/work_items/semantic-dupe-guard';
 import { IMPROVEMENT_TOPIC, OBSERVATION_TOPIC, issueToCandidate } from './read-items';
 import {
   validateObservationRatings,
@@ -152,6 +154,11 @@ export interface PossibleDuplicate {
   state: string;
   severity: string;
   similarity: number;
+  /** P-011: present when this candidate arrived via the EMBEDDING net (its
+   *  title never crossed the lexical DUP_THRESHOLD — a differently-worded
+   *  refile). `similarity` is then the cosine, not titleSimilarity. 'hard'
+   *  may decline the capture like a lexical dup; 'soft' is advisory-only. */
+  semantic?: 'hard' | 'soft';
 }
 
 export interface CaptureImprovementResult {
@@ -183,6 +190,11 @@ export interface CaptureDeps {
    *  falls back to the real getRubric; injectable so tests can stub it (or omit it → PG-free
    *  tests skip the gate via the load-error catch). Returns null for an unknown rubric. */
   loadRubric?: (rubricId: string) => Promise<{ criteria: { key: string }[] } | null>;
+  /** P-011 semantic-widening seams. OPTIONAL — default to the real P-008 work-item
+   *  dupe guard (itself vitest-inert + fail-open) and the real getIssue; injectable
+   *  so tests drive the widening without PG or an embedder. */
+  findSemanticDupes?: (input: { title: string; summary?: string }) => Promise<SemanticDupeResult | null>;
+  getIssue?: (id: string) => Promise<EngineerIssue | null>;
 }
 
 const defaultDeps: CaptureDeps = { searchIssues, createIssue, loadRubric: getRubric };
@@ -230,15 +242,58 @@ export async function captureImprovement(
     ? ([] as EngineerIssue[])
     : await deps.searchIssues(input.title, 20).catch(() => [] as EngineerIssue[]);
   const candidates = searched.filter((i) => effectiveOrigin(i.signalOrigin) === origin);
+
+  // P-011 (shared-embedding-sidecar-and-enrichment-2026-07-10): semantic
+  // candidate WIDENING. The lexical searchIssues + titleSimilarity net misses
+  // a differently-worded refile of the same friction (the P-008 dupe-storm
+  // class). Improvements ARE work-items, so the migration-551 vectors already
+  // cover them: cosine-band the capture via the shared work-item dupe guard,
+  // hydrate the hits into full EngineerIssues, and let them ride the SAME
+  // origin / watchdogKey / dedupScope / alreadyDecided rails as lexical
+  // candidates. Fail-open (null verdict ⇒ lexical-only) and vitest-inert via
+  // the guard itself. A 'hard' hit may DECLINE like a lexical dup; 'soft' is
+  // advisory-only (surfaced, never blocks).
+  const semanticBand = new Map<string, { similarity: number; band: 'hard' | 'soft' }>();
+  if (!isObservation) {
+    try {
+      const sem = await (deps.findSemanticDupes ?? findSemanticDupes)({
+        title: input.title,
+        ...(input.body ? { summary: input.body } : {}),
+      });
+      if (sem) {
+        for (const band of ['hard', 'soft'] as const) {
+          for (const c of sem[band]) if (!semanticBand.has(c.id)) semanticBand.set(c.id, { similarity: c.similarity, band });
+        }
+        const known = new Set(candidates.map((i) => i.id));
+        const fetchIssue = deps.getIssue ?? getIssue;
+        for (const id of [...semanticBand.keys()].filter((i) => !known.has(i)).slice(0, 6)) {
+          const issue = await fetchIssue(id).catch(() => null);
+          if (issue && effectiveOrigin(issue.signalOrigin) === origin) candidates.push(issue);
+          else semanticBand.delete(id);
+        }
+      }
+    } catch {
+      /* fail-open: the lexical verdict stands */
+    }
+  }
+
   const possibleDuplicates: PossibleDuplicate[] = candidates
-    .map((i) => ({
-      id: i.id,
-      title: i.title,
-      state: i.state,
-      severity: i.severity,
-      similarity: Math.round(titleSimilarity(input.title, i.title) * 100) / 100,
-    }))
-    .filter((d) => d.similarity >= DUP_THRESHOLD)
+    .map((i) => {
+      const lexical = Math.round(titleSimilarity(input.title, i.title) * 100) / 100;
+      const sem = semanticBand.get(i.id);
+      // A candidate the lexical net already catches keeps its lexical score and
+      // blocking behavior; the semantic flag marks ONLY net-new semantic catches.
+      const semanticOnly = sem && lexical < DUP_THRESHOLD;
+      return {
+        id: i.id,
+        title: i.title,
+        state: i.state,
+        severity: i.severity,
+        similarity: semanticOnly ? Math.round(sem.similarity * 100) / 100 : lexical,
+        ...(semanticOnly ? { semantic: sem.band } : {}),
+      };
+    })
+    .filter((d) => d.similarity >= DUP_THRESHOLD || d.semantic !== undefined)
     .sort((a, b) => b.similarity - a.similarity)
     .slice(0, 5);
 
@@ -269,12 +324,16 @@ export async function captureImprovement(
     const k = p && typeof p === 'object' ? (p as Record<string, unknown>).watchdogKey : undefined;
     return typeof k === 'string' ? k : null;
   };
+  // P-011: a soft semantic hit is advisory-only — visible in possibleDuplicates,
+  // never eligible to decline the capture (mirrors the create-time work-item
+  // guard's soft band → similarOpen contract).
+  const blockEligible = possibleDuplicates.filter((d) => d.semantic !== 'soft');
   const compatible = input.watchdogKey
-    ? possibleDuplicates.filter((d) => {
+    ? blockEligible.filter((d) => {
         const ck = candidateKeyOf(d.id);
         return ck == null || ck === input.watchdogKey;
       })
-    : possibleDuplicates;
+    : blockEligible;
 
   let blockingDuplicates: PossibleDuplicate[];
   let declineReason: 'likely-duplicate' | 'stale-evidence' = 'likely-duplicate';

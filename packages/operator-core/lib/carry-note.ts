@@ -345,16 +345,39 @@ export async function setCarryNote(
   note: string | null | undefined,
   opts?: { journal?: boolean },
 ): Promise<string | null> {
+  return (await setCarryNoteWithPrior(ref, note, opts)).stored;
+}
+
+/** The prior note's length alongside the write result — EI-9325: the row is
+ *  already locked + read (for the journal ring) inside {@link setCarryNoteWithPrior}'s
+ *  transaction, so surfacing the PRIOR note's length here is free (no extra
+ *  round-trip). Lets a caller warn (never block) on a suspicious shrink — a
+ *  replace-on-write dramatically shorter than what was there before usually means
+ *  an accidental placeholder/truncated paste, not an intentional rewrite. */
+export interface SetCarryNoteResult {
+  stored: string | null;
+  /** chars in the PRIOR note before this write replaced it (0 if none existed). */
+  priorLength: number;
+}
+
+/** Same semantics as {@link setCarryNote}, plus the prior note's length (EI-9325) —
+ *  free, since the row is already SELECTed FOR UPDATE to build the journal ring. */
+export async function setCarryNoteWithPrior(
+  ref: CarryNoteRef | string,
+  note: string | null | undefined,
+  opts?: { journal?: boolean },
+): Promise<SetCarryNoteResult> {
   const journalEnabled = opts?.journal ?? true;
   const { ws, scope } = resolveRef(ref);
   const { sql } = getOrgPg();
   const trimmed = (note ?? '').trim();
   const now = Date.now();
   return (await sql.begin(async (tx) => {
-    const rows = await tx<{ journal: unknown }[]>`
-      SELECT journal FROM harness_shared.carry_notes
+    const rows = await tx<{ journal: unknown; note: string | null }[]>`
+      SELECT journal, note FROM harness_shared.carry_notes
        WHERE workspace_id = ${ws} AND scope = ${scope} FOR UPDATE`;
     const prevJournal = normalizeJournal(rows[0]?.journal);
+    const priorLength = (rows[0]?.note ?? '').length;
     // journaling ON: append (blank ⇒ unchanged ring); OFF: never keep a ring.
     const journal = journalEnabled ? appendCarryJournal(prevJournal, trimmed, now) : [];
     const noteCol = trimmed.length > 0 ? trimmed : null;
@@ -362,15 +385,15 @@ export async function setCarryNote(
     if (noteCol === null && journal.length === 0) {
       // Nothing to store (cleared with no surviving journal) — delete the row.
       await tx`DELETE FROM harness_shared.carry_notes WHERE workspace_id = ${ws} AND scope = ${scope}`;
-      return null;
+      return { stored: null, priorLength };
     }
     await tx`
       INSERT INTO harness_shared.carry_notes (workspace_id, scope, note, journal, updated_ts)
       VALUES (${ws}, ${scope}, ${noteCol}, ${JSON.stringify(journal)}::text::jsonb, ${now})
       ON CONFLICT (workspace_id, scope) DO UPDATE
         SET note = EXCLUDED.note, journal = EXCLUDED.journal, updated_ts = EXCLUDED.updated_ts`;
-    return noteCol;
-  })) as string | null;
+    return { stored: noteCol, priorLength };
+  })) as SetCarryNoteResult;
 }
 
 /** Read the current carry-note (the full `note` column), or null when none/cleared. */

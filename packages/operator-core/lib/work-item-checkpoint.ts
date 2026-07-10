@@ -23,7 +23,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveConcreteWorkspaceId } from './workspace-registry';
-import { setCarryNote, getCarryNote, workItemScope } from './carry-note';
+import { setCarryNote, setCarryNoteWithPrior, getCarryNote, workItemScope } from './carry-note';
 
 export interface WorkItemCheckpointRef {
   /**
@@ -55,6 +55,39 @@ function checkpointScopeHarness(harness: string | null | undefined): string {
   return harness && harness !== CHECKPOINT_WILDCARD_HARNESS ? harness : CHECKPOINT_WILDCARD_HARNESS;
 }
 
+/** P-008 (autonomous-loop-prod-audit-2026-07-02): a checkpoint IS progress — bump
+ *  the work item's progress anchor so the stale-claims STALLED leg (holder alive,
+ *  last_progress_at > window) never frees a claim from a bee that is checkpointing.
+ *  Best-effort: the checkpoint write must not fail on a progress-bump hiccup. Shared
+ *  by {@link setWorkItemCheckpoint} and {@link setWorkItemCheckpointWithPrior}. */
+async function bumpCheckpointProgressAnchor(ref: WorkItemCheckpointRef, ws: string): Promise<void> {
+  try {
+    const { sql } = getOrgPg();
+    // Feature-family progress anchor keys on a concrete harness_slug. A harness-null
+    // item (issue-family EI) has no feature row, so skip this UPDATE — the
+    // engineer_issues UPDATE below is its progress anchor (EI-8805).
+    if (ref.harness && ref.harness !== CHECKPOINT_WILDCARD_HARNESS) {
+      await sql`
+        UPDATE harness_shared.work_items
+           SET last_progress_at = now()
+         WHERE workspace_id = ${ws} AND harness_slug = ${ref.harness} AND feature_id = ${ref.workItemId}`;
+    }
+    // Issue-family rows live in engineer_issues and do not yet have a separate
+    // last_progress_at column. Refresh assigned_at for claimed, open issues so
+    // checkpoint progress keeps the same stale-claim anchor alive.
+    await sql`
+      UPDATE harness_shared.engineer_issues
+         SET assigned_at = now(), updated_at = now()
+       WHERE workspace_id = ${ws}
+         AND issue_id = ${ref.workItemId}
+         AND assignee IS NOT NULL
+         AND assignee <> ''
+         AND state = 'open'`;
+  } catch {
+    /* best-effort */
+  }
+}
+
 /**
  * Write (or clear) a work-item's checkpoint. Delegates to the shared carry-note
  * store under {@link workItemScope}. Returns the stored checkpoint (trimmed) or
@@ -64,6 +97,27 @@ export async function setWorkItemCheckpoint(
   ref: WorkItemCheckpointRef,
   checkpoint: string | null | undefined,
 ): Promise<string | null> {
+  return (await setWorkItemCheckpointWithPrior(ref, checkpoint)).stored;
+}
+
+/** A checkpoint write's result plus the PRIOR checkpoint's length (EI-9325) — free,
+ *  since the row is already SELECTed FOR UPDATE inside {@link setCarryNoteWithPrior}'s
+ *  transaction. Lets a caller (work_items:checkpoint) warn — never block — on a
+ *  suspicious shrink: a plain replace-on-write dramatically shorter than what was
+ *  stored before usually means an accidental placeholder/truncated paste rather than
+ *  an intentional rewrite. */
+export interface WorkItemCheckpointWithPriorResult {
+  stored: string | null;
+  /** chars in the PRIOR checkpoint before this write replaced it (0 if none existed). */
+  priorLength: number;
+}
+
+/** Same semantics + same progress-anchor bump as {@link setWorkItemCheckpoint}, plus
+ *  the prior checkpoint's length. */
+export async function setWorkItemCheckpointWithPrior(
+  ref: WorkItemCheckpointRef,
+  checkpoint: string | null | undefined,
+): Promise<WorkItemCheckpointWithPriorResult> {
   // EI-9013: canonicalize the workspace AT THE SUBSTRATE — a caller that passes
   // the unscoped-session wildcard '*' (or nothing) must never key a row under a
   // literal '*' workspace (the EI-8824 class) or read from one. Fixing this here
@@ -78,43 +132,13 @@ export async function setWorkItemCheckpoint(
   // graceful degradation, mig 281 semantics), byte-identical to the pre-P-001 store.
   // The scope harness is CANONICALIZED (EI-8805) so a harness-null item keys under
   // one namespace on every write/read seam.
-  const stored = await setCarryNote(
+  const { stored, priorLength } = await setCarryNoteWithPrior(
     { scope: workItemScope(checkpointScopeHarness(ref.harness), ref.workItemId), workspaceId: ws },
     checkpoint,
     { journal: false },
   );
-  // P-008 (autonomous-loop-prod-audit-2026-07-02): a checkpoint IS progress — bump
-  // the work item's progress anchor so the stale-claims STALLED leg (holder alive,
-  // last_progress_at > window) never frees a claim from a bee that is checkpointing.
-  // Best-effort: the checkpoint write must not fail on a progress-bump hiccup.
-  if (stored !== null) {
-    try {
-      const { sql } = getOrgPg();
-      // Feature-family progress anchor keys on a concrete harness_slug. A harness-null
-      // item (issue-family EI) has no feature row, so skip this UPDATE — the
-      // engineer_issues UPDATE below is its progress anchor (EI-8805).
-      if (ref.harness && ref.harness !== CHECKPOINT_WILDCARD_HARNESS) {
-        await sql`
-          UPDATE harness_shared.work_items
-             SET last_progress_at = now()
-           WHERE workspace_id = ${ws} AND harness_slug = ${ref.harness} AND feature_id = ${ref.workItemId}`;
-      }
-      // Issue-family rows live in engineer_issues and do not yet have a separate
-      // last_progress_at column. Refresh assigned_at for claimed, open issues so
-      // checkpoint progress keeps the same stale-claim anchor alive.
-      await sql`
-        UPDATE harness_shared.engineer_issues
-           SET assigned_at = now(), updated_at = now()
-         WHERE workspace_id = ${ws}
-           AND issue_id = ${ref.workItemId}
-           AND assignee IS NOT NULL
-           AND assignee <> ''
-           AND state = 'open'`;
-    } catch {
-      /* best-effort */
-    }
-  }
-  return stored;
+  if (stored !== null) await bumpCheckpointProgressAnchor(ref, ws);
+  return { stored, priorLength };
 }
 
 /**
