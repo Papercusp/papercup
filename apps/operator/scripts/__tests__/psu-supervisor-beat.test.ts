@@ -6,6 +6,7 @@
  * holds psu open), no-op without ownerId, and fail-soft on a down operator.
  */
 import { describe, test, expect, vi } from 'vitest';
+import { hostname } from 'node:os';
 import { startSupervisorBeat, SUPERVISOR_BEAT_MS } from '../psu-launcher.mjs';
 
 interface FakeTimer {
@@ -45,7 +46,15 @@ describe('startSupervisorBeat', () => {
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('http://127.0.0.1:9999/api/agent-mcp/console/bootstrap-su/heartbeat');
     expect((init.headers as Record<string, string>).authorization).toBe('Bearer tok-1');
-    expect(JSON.parse(String(init.body))).toEqual({ ownerId: 'su-test-session' });
+    // pid/host were added to the beat body (agent-liveness-heartbeat-hardening
+    // follow-on, coord:presence liveness parity) so the presence roster can tell
+    // sessions on the same ownerId apart by process/host — pid is process-specific,
+    // so match it structurally rather than pinning an exact number.
+    expect(JSON.parse(String(init.body))).toEqual({
+      ownerId: 'su-test-session',
+      pid: expect.any(Number),
+      host: hostname(),
+    });
 
     fire();
     await flush();

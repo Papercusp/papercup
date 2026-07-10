@@ -238,9 +238,46 @@ async function columnExists(sql: Sql, table: string, column: string): Promise<bo
   return rows[0]?.present === true;
 }
 
+/**
+ * WI-3937: incremental per-(workspace,surface) cache state for `readLines`.
+ * `coord_event_log` LINE surfaces are append-only with a monotonic bigserial
+ * `id`, so after ONE full read the cache only ever needs the `id > watermark`
+ * delta — see the readLines doc comment for the full rationale + safety rails.
+ */
+interface ReadLinesCacheEntry {
+  /** Highest `id` folded into `rows` (the delta watermark). */
+  maxId: number;
+  /** The surface's envelopes in `id ASC` order (append order). Treated as
+   *  READ-ONLY by contract; readLines returns a fresh array copy per call. */
+  rows: CoordEnvelope[];
+  /** ids of the most recent rows (overlap-window dedupe — commit-order race). */
+  recentIds: Set<number>;
+  /** When the last FULL read ran — TTL'd so GC deletions eventually fold out. */
+  fullReadAtMs: number;
+}
+
+/** How far below the watermark the delta re-reads (commit-order race guard):
+ *  a row whose bigserial `id` was assigned before our snapshot but whose
+ *  transaction COMMITTED after it would otherwise be skipped forever. Rows are
+ *  written by short single-statement INSERTs, so in-flight-id depth is tiny;
+ *  1000 is orders of magnitude of headroom at ~1000× less cost than the old
+ *  full-surface read. */
+const READLINES_CACHE_OVERLAP_IDS = 1_000;
+/** Full re-read cadence — bounds how long a GC-DELETED row can linger in the
+ *  cache (deletes don't advance the id watermark). LINE surfaces are GC'd
+ *  rarely (escalation GC targets EVENT surfaces), so 5 min is conservative. */
+const READLINES_CACHE_FULL_REFRESH_MS = 5 * 60_000;
+/** Kill switch: PAPERCUSP_COORD_READLINES_CACHE=0 restores the always-full read. */
+function readLinesCacheEnabled(): boolean {
+  return process.env.PAPERCUSP_COORD_READLINES_CACHE !== '0';
+}
+
 export class PgCoordLog implements CoordEventLog {
   /** Construction-time fallback scope; the per-call resolver (F-C1) overrides it. */
   private readonly fallbackWs: string;
+
+  /** WI-3937 readLines incremental cache, keyed `${workspace}::${surface}`. */
+  private readonly readLinesCache = new Map<string, ReadLinesCacheEntry>();
 
   constructor(private readonly opts: PgCoordLogOptions) {
     this.fallbackWs = opts.workspaceId ?? DEFAULT_COORD_WORKSPACE;

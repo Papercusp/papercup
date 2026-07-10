@@ -77,7 +77,12 @@ vi.mock('./rerank', () => ({
 
 // embedder: scripted per-test (null = no embedder available).
 const buildQueryEmbedder = vi.fn(async () => null as unknown);
-vi.mock('./embedder', () => ({ buildQueryEmbedder }));
+// interactiveEmbedAcquireBudgetMs: semantic.ts calls this to compute the
+// acquisition budget it passes to buildQueryEmbedder / embedTimeoutMs (EI-9334)
+// — a fixed stand-in is fine here since the handler-level tests never assert
+// on the budget value itself, only on buildQueryEmbedder's scripted return.
+const interactiveEmbedAcquireBudgetMs = vi.fn(() => 4000);
+vi.mock('./embedder', () => ({ buildQueryEmbedder, interactiveEmbedAcquireBudgetMs }));
 
 const CTX = (over: Record<string, unknown> = {}) => ({
   tx: (() => {}) as never,
