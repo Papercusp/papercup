@@ -12,7 +12,7 @@
  * Phase 2 (A4): hover a row → preview its plans/work-items; click → live
  * inspector / jump to the item / reach the session.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { Popover } from '@/app/harness/Popover';
@@ -418,14 +418,36 @@ export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: 
   );
   const groups = useMemo(() => groupByFleet(shown), [shown]);
   const total = shown.length;
-  const activeId = pinned ?? previewed ?? shown[0]?.ownerId ?? null;
+  // Sticky detail selection (WI-3881): the explicitly pinned/hovered agent wins,
+  // then whoever we were ALREADY showing (if still present), then the first row.
+  // Resolving through this fallback chain means a live-roster refresh that briefly
+  // drops the selected agent — e.g. its heartbeat ages to 'stale' for one push, so
+  // it is filtered out of `running` (see the `liveness !== 'stale'` filter above) —
+  // no longer collapses `active` to null. That null was what made the detail strip
+  // disappear and reappear on every refresh; now it stays mounted, falling through
+  // to the last-shown agent (or the first row) instead of blanking.
+  const lastShownIdRef = useRef<string | null>(null);
   const active = useMemo(() => {
-    for (const g of groups) {
-      const a = g.agents.find((x) => x.ownerId === activeId);
-      if (a) return { agent: a, color: g.color };
-    }
-    return null;
-  }, [groups, activeId]);
+    const findIn = (id: string | null) => {
+      if (!id) return null;
+      for (const g of groups) {
+        const a = g.agents.find((x) => x.ownerId === id);
+        if (a) return { agent: a, color: g.color };
+      }
+      return null;
+    };
+    return (
+      findIn(pinned) ??
+      findIn(previewed) ??
+      findIn(lastShownIdRef.current) ??
+      (shown[0] ? findIn(shown[0].ownerId) : null)
+    );
+  }, [groups, shown, pinned, previewed]);
+  // Remember whoever the strip is currently showing, so the next refresh prefers
+  // to keep showing them (sticky) rather than snapping back to the first row.
+  useEffect(() => {
+    if (active) lastShownIdRef.current = active.agent.ownerId;
+  }, [active]);
 
   return (
     // The last preview remains selected when the pointer leaves. This keeps the

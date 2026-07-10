@@ -39,7 +39,7 @@
  *      wrong guess surfaces via the existing `git-sync-error` escalation,
  *      D-002 of the plan)
  */
-import type { HiveGitMode } from './hive-git-mode';
+import type { PotGitMode } from './hive-git-mode';
 
 export interface PushDecisionInput {
   /** True for a joiner-side member clone (read-only by design). */
@@ -50,11 +50,11 @@ export interface PushDecisionInput {
   permissionsPush?: boolean | null;
   /**
    * The member's hive git mode (github-bridge-hive-egress P-003; resolved via
-   * `getHiveGitMode` from the federated hive_settings). `bridged`/`p2p-only`
+   * `getPotGitMode` from the federated hive_settings). `bridged`/`p2p-only`
    * force commit-only; `legacy`/null/undefined (incl. every non-hive member)
    * preserves the pre-bridge decision table exactly.
    */
-  hiveGitMode?: HiveGitMode | null;
+  hiveGitMode?: PotGitMode | null;
 }
 
 export interface PushDecision {

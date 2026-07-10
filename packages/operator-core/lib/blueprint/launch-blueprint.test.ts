@@ -88,7 +88,7 @@ describe('installedAwareLaunchResolver (D-007 / WI-1146)', () => {
 const computeQueenWakeBrief = vi.fn(
   async (_ws: string, _slug: string, _opts?: { wokeBy?: string }) => 'QUEEN-BRIEF::floor+carrynote',
 );
-vi.mock('../hive/queen-brief-launch', () => ({
+vi.mock('../pot/mug-brief-launch', () => ({
   computeQueenWakeBrief: (...a: unknown[]) =>
     computeQueenWakeBrief(...(a as [string, string, { wokeBy?: string }?])),
 }));

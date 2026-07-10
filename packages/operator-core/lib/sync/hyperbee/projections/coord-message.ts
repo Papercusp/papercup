@@ -98,6 +98,32 @@ function composeKey(row: CoordMessageRow): string {
   return row.msg_id;
 }
 
+/**
+ * WI-3914 (write-side twin of WI-3912's read-side backstop): `isCoordMessageRow`
+ * validates the WIRE-LEVEL `msg_id`/`ts` (which become the row's own COLUMNS,
+ * always present by construction) but never validated that the nested `body`
+ * (the CoordEnvelope itself) independently carries its OWN `ts`/`msg_id` keys —
+ * a peer can wire-validly send a `body` missing them (observed live: a
+ * deliberate P-059 test probe, coord_event_log id 458510, did exactly this) and
+ * it federates straight into storage. Every CoordEnvelope reader downstream
+ * (feed.ts's compareByTsThenId) assumes those keys always exist. Normalize HERE,
+ * at the write boundary — using the SAME already-validated wire fields the
+ * column itself is stamped from — so a malformed remote envelope can no longer
+ * reach storage at all (closes the class ahead of WI-3912's read-side backstop,
+ * which stays as defense-in-depth for any row written before this landed).
+ * Never overrides a value the body already carries.
+ */
+function normalizeBodyTsMsgId(row: CoordMessageRow): Record<string, unknown> {
+  const hasTs = typeof row.body?.ts === 'string' && row.body.ts.length > 0;
+  const hasMsgId = typeof row.body?.msg_id === 'string' && row.body.msg_id.length > 0;
+  if (hasTs && hasMsgId) return row.body;
+  return {
+    ...row.body,
+    ts: hasTs ? row.body.ts : new Date(row.ts).toISOString(),
+    msg_id: hasMsgId ? row.body.msg_id : row.msg_id,
+  };
+}
+
 async function writeToPg(
   opts: CoordMessageProjectionOpts,
   row: CoordMessageRow,
@@ -283,6 +309,8 @@ async function writeToPg(
   const origin = provenance?.origin ?? 'local';
   const fedTs = provenance?.ts ?? row.ts ?? null;
   const fedHlc = provenance?.fedHlc ?? null;
+  // WI-3914: see normalizeBodyTsMsgId's doc-comment.
+  const body = normalizeBodyTsMsgId(row);
   // workspace_id is the LOCAL projection's bound workspace; id is a fresh local
   // bigserial. ON CONFLICT targets the partial fed unique index (ws, msg_id)
   // over the federated subset — msg_id is globally unique so this updates the one
@@ -293,7 +321,7 @@ async function writeToPg(
        ts, origin, author_pubkey, fed_ts, fed_hlc)
     VALUES
       (${opts.workspaceId}, ${row.surface}, ${row.writer_key}, ${row.msg_id},
-       ${JSON.stringify(row.body)}::text::jsonb, ${row.harness_slug},
+       ${JSON.stringify(body)}::text::jsonb, ${row.harness_slug},
        to_timestamp(${row.ts} / 1000.0), ${origin}, ${authorPubkey}, ${fedTs}, ${fedHlc})
     ON CONFLICT (workspace_id, msg_id)
       WHERE harness_slug IS NOT NULL AND (body->>'notify_kind') IS NULL
@@ -562,4 +590,5 @@ export const _testing = {
   decodeValue,
   isCoordMessageRow,
   FEDERATED_SURFACES,
+  normalizeBodyTsMsgId,
 };

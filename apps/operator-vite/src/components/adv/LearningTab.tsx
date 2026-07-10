@@ -49,7 +49,7 @@ import type { InsightsSnapshot, MemoryHealth } from '@papercusp/operator-core/li
 import type { ScoutSnapshot, ScoutRoutedItem } from '@papercusp/operator-core/lib/sync-resolver/learning-scout-read';
 import type { HiveLearningsSnapshot } from '@papercusp/operator-core/lib/sync-resolver/learning-hive-read';
 import type { HiveThroughputSnapshot } from '@papercusp/operator-core/lib/sync-resolver/learning-hive-throughput-read';
-import type { HiveSoakReportSnapshot } from '@papercusp/operator-core/lib/hive/soak-report';
+import type { PotSoakReportSnapshot } from '@papercusp/operator-core/lib/pot/soak-report';
 import type { InstallAction, InstallReview } from '@papercusp/operator-core/lib/learning-packs/manage';
 import { BenchmarkTrend, type BenchmarkTrendInstance } from './BenchmarkTrend';
 import type { BakeoffTrendRow } from '@papercusp/operator-core/lib/pot-eval/bakeoff-trend';
@@ -1288,7 +1288,7 @@ function formatDurationMs(ms: number | null | undefined): string {
 function ThroughputView() {
   const t = useLexicon();
   const sync = useSyncQuery<HiveThroughputSnapshot>({ queryName: 'learning.hiveThroughput', args: {}, staleTime: 30_000 });
-  const soak = useSyncQuery<HiveSoakReportSnapshot>({ queryName: 'learning.soakReport', args: {}, staleTime: 60_000 });
+  const soak = useSyncQuery<PotSoakReportSnapshot>({ queryName: 'learning.soakReport', args: {}, staleTime: 60_000 });
   const hives = sync.data?.[0]?.hives ?? [];
   const soakByHive = new Map((soak.data?.[0]?.hives ?? []).map((report) => [report.potSlug, report]));
 

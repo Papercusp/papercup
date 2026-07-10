@@ -55,7 +55,7 @@
  * structural marker no fixed system role uses). See `isLoopArmOwnerRole` / `isLoopArmOwnerLoop`.
  */
 import { getOrgPg } from '@papercusp/db-org';
-import { recentWatchdogFires, claimWatchdogFire } from '../../hive/watchdog';
+import { recentWatchdogFires, claimWatchdogFire } from '../../pot/watchdog';
 import { activeWorkspaceId } from '../../workspace-registry';
 
 /** Breach threshold (env-overridable; <=0 disables the sweep). */

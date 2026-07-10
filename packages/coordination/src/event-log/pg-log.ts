@@ -76,10 +76,35 @@ export interface PgCoordLogOptions {
  * cast from (not an auto-parsed object) under the prod handle's options
  * (`prepare: false`), so parse a string defensively — same posture as
  * PgPresenceStore's `parseFiles`.
+ *
+ * WI-3912: also BACKSTOPS `ts`/`msg_id` from the row's own NOT-NULL columns
+ * when `body` itself is missing/blank them. Every LOCAL write path
+ * (appendLine/putEvent/putEvents) stamps the columns FROM the envelope, so
+ * body and column agree by construction for local rows — but a FEDERATED
+ * remote row folds whatever the peer sent as `body` verbatim (fold-apply
+ * does not re-validate CoordEnvelope shape), so a malformed/incomplete
+ * remote envelope (observed live: coord_event_log id 458510, a deliberate
+ * `origin=remote` test probe body with no `ts`/`msg_id` at all) can land in
+ * the log with a body that violates the CoordEnvelope contract. Every
+ * reader downstream (feed.ts's `compareByTsThenId`, which calls
+ * `.localeCompare` on `a.ts`/`a.msg_id` unconditionally) assumed that
+ * contract always holds — ONE such row made `coord:feed` throw a
+ * `TypeError: Cannot read properties of undefined (reading 'localeCompare')`
+ * on EVERY call reading it, not just a request touching that row specially
+ * (it's within the default recent-window read). Filling the gap here, at
+ * the read boundary, fixes the whole reader-side CLASS (any current or
+ * future malformed row, local or remote) in one place instead of hardening
+ * every consumer's sort/compare call individually.
  */
-function parseBody(v: unknown): CoordEnvelope {
-  if (typeof v === 'string') return JSON.parse(v) as CoordEnvelope;
-  return v as CoordEnvelope;
+function parseBody(v: unknown, fallback?: { ts?: unknown; msg_id?: unknown }): CoordEnvelope {
+  const parsed = (typeof v === 'string' ? JSON.parse(v) : v) as Record<string, unknown>;
+  if ((typeof parsed.ts !== 'string' || !parsed.ts) && fallback?.ts != null) {
+    parsed.ts = fallback.ts instanceof Date ? fallback.ts.toISOString() : String(fallback.ts);
+  }
+  if ((typeof parsed.msg_id !== 'string' || !parsed.msg_id) && fallback?.msg_id != null) {
+    parsed.msg_id = String(fallback.msg_id);
+  }
+  return parsed as CoordEnvelope;
 }
 
 /**
@@ -289,12 +314,12 @@ export class PgCoordLog implements CoordEventLog {
     const sql = this.opts.getSql();
     // `filesBack` is an fs-rotation hint; a single table has no rotation, so
     // we read everything (the interface explicitly allows ignoring it).
-    const rows = await sql<{ body: unknown }[]>`
-      SELECT body FROM harness_shared.coord_event_log
+    const rows = await sql<{ body: unknown; ts: Date; msg_id: string }[]>`
+      SELECT body, ts, msg_id FROM harness_shared.coord_event_log
        WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
        ORDER BY id ASC
     `;
-    return rows.map((r) => parseBody(r.body));
+    return rows.map((r) => parseBody(r.body, r));
   }
 
   async putEvent(surface: EventSurface, msgId: string, record: CoordEnvelope): Promise<void> {
@@ -354,12 +379,12 @@ export class PgCoordLog implements CoordEventLog {
   async readEvents(surface: EventSurface): Promise<CoordEnvelope[]> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
-    const rows = await sql<{ body: unknown }[]>`
-      SELECT body FROM harness_shared.coord_event_log
+    const rows = await sql<{ body: unknown; ts: Date; msg_id: string }[]>`
+      SELECT body, ts, msg_id FROM harness_shared.coord_event_log
        WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
        ORDER BY id ASC
     `;
-    return rows.map((r) => parseBody(r.body));
+    return rows.map((r) => parseBody(r.body, r));
   }
 
   async readEventsBounded(
@@ -375,20 +400,20 @@ export class PgCoordLog implements CoordEventLog {
     const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
     const rows =
       kinds && kinds.length
-        ? await sql<{ body: unknown }[]>`
-            SELECT body FROM harness_shared.coord_event_log
+        ? await sql<{ body: unknown; ts: Date; msg_id: string }[]>`
+            SELECT body, ts, msg_id FROM harness_shared.coord_event_log
              WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
                AND body->>'kind' = ANY(${kinds}::text[])
              ORDER BY id DESC
              LIMIT ${limit}
           `
-        : await sql<{ body: unknown }[]>`
-            SELECT body FROM harness_shared.coord_event_log
+        : await sql<{ body: unknown; ts: Date; msg_id: string }[]>`
+            SELECT body, ts, msg_id FROM harness_shared.coord_event_log
              WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
              ORDER BY id DESC
              LIMIT ${limit}
           `;
-    return rows.map((r) => parseBody(r.body));
+    return rows.map((r) => parseBody(r.body, r));
   }
 
   async readLinesBounded(
@@ -408,8 +433,8 @@ export class PgCoordLog implements CoordEventLog {
     const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
     const sinceTs = typeof opts.sinceTs === 'string' && opts.sinceTs ? opts.sinceTs : null;
     const planSlug = typeof opts.planSlug === 'string' && opts.planSlug ? opts.planSlug : null;
-    const rows = await sql<{ body: unknown }[]>`
-      SELECT body FROM harness_shared.coord_event_log
+    const rows = await sql<{ body: unknown; ts: Date; msg_id: string }[]>`
+      SELECT body, ts, msg_id FROM harness_shared.coord_event_log
        WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
          ${kinds && kinds.length ? sql`AND body->>'kind' = ANY(${kinds}::text[])` : sql``}
          ${sinceTs ? sql`AND body->>'ts' > ${sinceTs}` : sql``}
@@ -417,18 +442,18 @@ export class PgCoordLog implements CoordEventLog {
        ORDER BY id DESC
        LIMIT ${limit}
     `;
-    return rows.map((r) => parseBody(r.body));
+    return rows.map((r) => parseBody(r.body, r));
   }
 
   async getEvent(surface: EventSurface, msgId: string): Promise<CoordEnvelope | null> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
-    const rows = await sql<{ body: unknown }[]>`
-      SELECT body FROM harness_shared.coord_event_log
+    const rows = await sql<{ body: unknown; ts: Date; msg_id: string }[]>`
+      SELECT body, ts, msg_id FROM harness_shared.coord_event_log
        WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface} AND msg_id = ${msgId}
        LIMIT 1
     `;
-    return rows.length > 0 ? parseBody(rows[0].body) : null;
+    return rows.length > 0 ? parseBody(rows[0].body, rows[0]) : null;
   }
 
   /**
@@ -450,8 +475,8 @@ export class PgCoordLog implements CoordEventLog {
     const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
     const beforeId =
       typeof opts.beforeId === 'number' && Number.isFinite(opts.beforeId) ? Math.floor(opts.beforeId) : null;
-    const rows = await sql<{ id: number; body: unknown }[]>`
-      SELECT id, body FROM harness_shared.coord_event_log
+    const rows = await sql<{ id: number; body: unknown; ts: Date; msg_id: string }[]>`
+      SELECT id, body, ts, msg_id FROM harness_shared.coord_event_log
        WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
          ${kinds && kinds.length ? sql`AND body->>'kind' = ANY(${kinds}::text[])` : sql``}
          ${beforeId !== null ? sql`AND id < ${beforeId}` : sql``}
@@ -467,7 +492,7 @@ export class PgCoordLog implements CoordEventLog {
     // correctly on the next call instead of silently failing the `typeof
     // opts.beforeId === 'number'` guard above and dropping the cursor filter.
     return {
-      rows: page.map((r) => ({ id: Number(r.id), envelope: parseBody(r.body) })),
+      rows: page.map((r) => ({ id: Number(r.id), envelope: parseBody(r.body, r) })),
       exhausted,
     };
   }
@@ -486,8 +511,8 @@ export class PgCoordLog implements CoordEventLog {
     const planSlug = typeof opts.planSlug === 'string' && opts.planSlug ? opts.planSlug : null;
     const beforeId =
       typeof opts.beforeId === 'number' && Number.isFinite(opts.beforeId) ? Math.floor(opts.beforeId) : null;
-    const rows = await sql<{ id: number; body: unknown }[]>`
-      SELECT id, body FROM harness_shared.coord_event_log
+    const rows = await sql<{ id: number; body: unknown; ts: Date; msg_id: string }[]>`
+      SELECT id, body, ts, msg_id FROM harness_shared.coord_event_log
        WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
          ${kinds && kinds.length ? sql`AND body->>'kind' = ANY(${kinds}::text[])` : sql``}
          ${sinceTs ? sql`AND body->>'ts' > ${sinceTs}` : sql``}
@@ -500,7 +525,7 @@ export class PgCoordLog implements CoordEventLog {
     const page = rows.slice(0, limit);
     // See the same Number(...) normalization note in readEventsBoundedCursor.
     return {
-      rows: page.map((r) => ({ id: Number(r.id), envelope: parseBody(r.body) })),
+      rows: page.map((r) => ({ id: Number(r.id), envelope: parseBody(r.body, r) })),
       exhausted,
     };
   }

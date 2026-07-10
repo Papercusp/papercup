@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
-import { resolvePotHomeSlug } from '../../hive/wake';
-import { readHiveSoakReport, MAX_SOAK_WINDOW_HOURS, MIN_SOAK_WINDOW_HOURS } from '../../hive/soak-report';
+import { resolvePotHomeSlug } from '../../pot/wake';
+import { readPotSoakReport, MAX_SOAK_WINDOW_HOURS, MIN_SOAK_WINDOW_HOURS } from '../../pot/soak-report';
 
 export default defineTool({
   name: 'loop:soak-report',
@@ -33,7 +33,7 @@ export default defineTool({
         content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'no hive home harness resolved' }) }],
       };
     }
-    const report = await readHiveSoakReport(potSlug, { windowHours: args.windowHours });
+    const report = await readPotSoakReport(potSlug, { windowHours: args.windowHours });
     return {
       content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, report }) }],
     };

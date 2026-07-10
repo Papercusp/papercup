@@ -21,10 +21,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const createHiveFromRepo = vi.fn();
 const createHiveHarness = vi.fn();
 
-vi.mock('../../../agent-tools/hive/_create_from_repo', () => ({
+vi.mock('../../../agent-tools/pot/_create_from_repo', () => ({
   createHiveFromRepo: (...a: unknown[]) => createHiveFromRepo(...a),
 }));
-vi.mock('../../../agent-tools/hive/_create', () => ({
+vi.mock('../../../agent-tools/pot/_create', () => ({
   createHiveHarness: (...a: unknown[]) => createHiveHarness(...a),
 }));
 vi.mock('../../../workspace-registry', () => ({

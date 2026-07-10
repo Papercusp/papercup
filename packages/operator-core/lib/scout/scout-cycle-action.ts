@@ -104,7 +104,7 @@ export function makeScoutCycleAction(
       if (delta == null) {
         try {
           const [{ resolvePotHomeSlug }, { operatorHomeHarnessSlug }] = await Promise.all([
-            import('../hive/wake'),
+            import('../pot/wake'),
             import('../harness/operator-home-harness'),
           ]);
           const home = resolvePotHomeSlug(null, null) ?? operatorHomeHarnessSlug();

@@ -18,11 +18,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn() }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'default') }));
 vi.mock('../../flag-audit', () => ({ recordFlagAudit: vi.fn() }));
-vi.mock('../../hive/contribute-upstream', () => ({ contributeUpstream: vi.fn() }));
-vi.mock('../../hive/enable-platform-mode', () => ({ PLATFORM_SELF_HIVE_SLUG: 'papercusp-self' }));
+vi.mock('../../pot/contribute-upstream', () => ({ contributeUpstream: vi.fn() }));
+vi.mock('../../pot/enable-platform-mode', () => ({ PLATFORM_SELF_HIVE_SLUG: 'papercusp-self' }));
 
 import { resolveAgentIdentity } from '../coordination/identity';
-import { contributeUpstream } from '../../hive/contribute-upstream';
+import { contributeUpstream } from '../../pot/contribute-upstream';
 import { recordFlagAudit } from '../../flag-audit';
 const ident = vi.mocked(resolveAgentIdentity);
 const contribM = vi.mocked(contributeUpstream);

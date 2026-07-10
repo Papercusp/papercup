@@ -134,7 +134,7 @@ describe('resolveHiveSwarmBinding — JOINED (remote) Hive (EI-681)', () => {
   });
 });
 
-// A-003 (shared-hive-release-testing Brief I): the joiner-rebind GATE. Boot uses
+// A-003 (shared-pot-release-testing Brief I): the joiner-rebind GATE. Boot uses
 // this to decide whether a member harness must bind its hive_members/hive_settings
 // projections to the HIVE-HOME slug — true (the home slug) ONLY in the joiner
 // topology (the home is a `remote_hive` VIEW), null for an owner's own hive (whose

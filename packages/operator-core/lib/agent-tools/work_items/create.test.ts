@@ -8,7 +8,10 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'me' }) }));
+vi.mock('../coordination/identity', () => ({
+  resolveAgentIdentity: () => ({ ownerId: 'me' }),
+  resolveSelfLiteral: (value: string | undefined, callerOwnerId: string) => (value === 'self' ? callerOwnerId : value),
+}));
 vi.mock('./_create-core', () => ({ createOneWorkItem: vi.fn() }));
 
 import { createOneWorkItem } from './_create-core';

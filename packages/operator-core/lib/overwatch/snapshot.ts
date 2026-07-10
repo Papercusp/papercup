@@ -26,7 +26,7 @@ import { getOrgPg } from "@papercusp/db-org";
 import { FLAGS } from "@papercusp/flags";
 import { getFlag } from "@papercusp/flags/server";
 import { activeWorkspaceId } from "../workspace-registry";
-import { resolvePotHomeSlug } from "../hive/wake";
+import { resolvePotHomeSlug } from "../pot/wake";
 import { lastSystemHealth, runSystemHealthTick } from "../system-health";
 import { mapSystemHealthToBrief, withAnomalies } from "./compute-brief";
 import {

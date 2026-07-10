@@ -236,7 +236,7 @@ describe('G24 — pot:dissolve tears down ALL of a hive\'s hive_members rows (+ 
 
   it('dissolve.ts wires the removeAllHiveMembers teardown leg (static guard)', () => {
     const dissolveSrc = readFileSync(
-      join(dirname(fileURLToPath(import.meta.url)), '../agent-tools/hive/dissolve.ts'),
+      join(dirname(fileURLToPath(import.meta.url)), '../agent-tools/pot/dissolve.ts'),
       'utf8',
     );
     // G24 fix: dissolve now references hive_members teardown — it imports + calls

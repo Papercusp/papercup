@@ -6,7 +6,7 @@
  * QUEUE, DON'T INTEGRATE: a namespace work head published by a member device
  * whose verified author sits BELOW the 'steer' comms tier is not auto-merged
  * by the integrator — it lands in `harness_shared.hive_integration_requests`
- * instead (see `lib/sync/hive-git/integration-requests.ts`). Until this tool,
+ * instead (see `lib/sync/pot-git/integration-requests.ts`). Until this tool,
  * `ratifyIntegrationRequest` / `listIntegrationRequests` had NO exposed verb
  * (grep showed only the module + its tests calling them), so a queued head
  * had no promotion path — safe (nothing auto-integrates) but incomplete (the
@@ -80,7 +80,7 @@ export default defineTool({
   async handler(args, ctx) {
     const { activeWorkspaceId } = await import('../../workspace-registry');
     const { listIntegrationRequests, ratifyIntegrationRequest } = await import(
-      '../../sync/hive-git/integration-requests'
+      '../../sync/pot-git/integration-requests'
     );
     const principalWs = ctx?.principal?.workspaceId;
     const ws = args.workspaceId ?? (principalWs && principalWs !== '*' ? principalWs : activeWorkspaceId());

@@ -27,7 +27,7 @@ import { insertHiveIfAbsent } from '../../hive-store';
 import { defaultRunGit, ensurePotGitRepo } from './storage';
 import { fetchOverDuplex } from './fetch-transport';
 import { wireHiveGitServe } from './serve-wiring';
-import { setHiveGitMode, getHiveGitMode } from '../../harness/git-sync/hive-git-mode';
+import { setPotGitMode, getPotGitMode } from '../../harness/git-sync/hive-git-mode';
 import { wireHiveGitDial, resolvePotGitPeerSocket, openHiveGitDuplexToDevice, _testing } from './peer-dial-registry';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
 
@@ -204,8 +204,8 @@ describe('pot-git peer-dial-registry (WI-3583: device_pubkey -> live socket, ove
     clientRepo = await ensurePotGitRepo(HIVE, 'repo-1-mirror');
     sha = await mintCommit(serverRepo, 'work 1');
     await defaultRunGit(['update-ref', 'refs/heads/work', sha], serverRepo);
-    await setHiveGitMode(WORKSPACE_ID, HIVE, 'bridged');
-    expect(await getHiveGitMode(WORKSPACE_ID, HIVE)).toBe('bridged');
+    await setPotGitMode(WORKSPACE_ID, HIVE, 'bridged');
+    expect(await getPotGitMode(WORKSPACE_ID, HIVE)).toBe('bridged');
 
     sockPath = join(root, 'link.sock');
     server = createServer({ allowHalfOpen: true }, (srvConn) => {
@@ -251,7 +251,7 @@ describe('pot-git peer-dial-registry (WI-3583: device_pubkey -> live socket, ove
     } catch {
       /* ignore */
     }
-    await setHiveGitMode(WORKSPACE_ID, HIVE, null);
+    await setPotGitMode(WORKSPACE_ID, HIVE, null);
     delete process.env.PAPERCUSP_HIVE_GIT_ROOT;
     await rm(root, { recursive: true, force: true });
 

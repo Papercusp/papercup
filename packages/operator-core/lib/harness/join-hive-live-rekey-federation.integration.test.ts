@@ -16,7 +16,7 @@
  * per-member loop and is never skipped when there are zero members) — so this
  * test passes `memberLinks: []` and proves ONLY the home-view leg, which is
  * also the exact leg the 2026-07-03 live differential pinned failing
- * (shared-hive-release-testing/RELEASE-READINESS.md: "B's
+ * (shared-pot-release-testing/RELEASE-READINESS.md: "B's
  * default::hello-world-hive hive_epoch_keys rows undrained while every
  * member-scope row drained"). The per-member 2c leg is structurally identical
  * (same `rekeyHarness` call) and is exercised elsewhere; re-proving it here

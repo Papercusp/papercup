@@ -39,7 +39,7 @@ import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { registerSystemAction, type SystemActionCtx } from '../routines/system-actions';
 import { runCheckpointedStep } from '../../dbos/checkpointed-step';
 import { gitSyncEligibility, type GitSyncEligibility } from './git-sync-eligibility';
-import { getHiveGitMode, type HiveGitMode } from './hive-git-mode';
+import { getPotGitMode, type PotGitMode } from './hive-git-mode';
 import { parseGithubUrl } from '../clone-github';
 import { fetchRepoPushPermission } from '../github-repo-permissions';
 import { runGithubBridgeTick } from '../../sync/pot-git/github-bridge-tick';
@@ -1046,7 +1046,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
   // recorded), never escalate.
   const gate = await runCheckpointedStep(
     'git-sync:eligibility',
-    async (): Promise<GitSyncEligibility & { hiveGitMode?: HiveGitMode }> => {
+    async (): Promise<GitSyncEligibility & { hiveGitMode?: PotGitMode }> => {
       await patchRoutineMetadata(slug, { fire_started_at: Date.now() });
       const { gate: g, entry } = await gitSyncRuntimeGate(slug);
       if (!g.eligible) {
@@ -1060,11 +1060,11 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
       // github-bridge P-003 (S-5, run-time half): re-consult the hive's git mode
       // EVERY tick — a hive flipped legacy→bridged must stop origin-pushing without
       // a routine re-seed (the seeded trigger_config.push predates the flip). Only
-      // resolved for hive members (hive_slug) / self_repo hive homes; getHiveGitMode
+      // resolved for hive members (hive_slug) / self_repo hive homes; getPotGitMode
       // is fail-open: absent/junk/store-error all read 'legacy' (today's behavior).
       const potHomeSlug = entry ? entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined) : undefined;
       if (potHomeSlug && workspaceId) {
-        const mode = await getHiveGitMode(workspaceId, potHomeSlug);
+        const mode = await getPotGitMode(workspaceId, potHomeSlug);
         if (mode !== 'legacy') return { ...g, hiveGitMode: mode };
       }
       return g;

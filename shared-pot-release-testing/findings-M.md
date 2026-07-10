@@ -223,7 +223,7 @@ builds on:)
   Papercusp_integrated.deb`, A=papercupai :18754 / B=aviynw :23498, real embedded-PG +
   live Hyperswarm federation). Evidence (preserved in-tree — the pair was torn down
   after the witnesses, so the raw curl output is captured durably here):
-  `shared-hive-release-testing/evidence-M-g004-backend-live.txt`.
+  `shared-pot-release-testing/evidence-M-g004-backend-live.txt`.
   - **A (owner)** `GET /api/discovery/federation-status` →
     `substrate {active, bootedHarnesses:2, healthy:2}` + 2 owned public pots
     (`spoon-knife-pot`, `hello-world-pot`) each **`reachablePeers: 1`**.

@@ -1,0 +1,295 @@
+/**
+ * provisionPotLearningLoop (per-hive-learning-loops-2026-06-14 P-020). PG-free:
+ * a fake template-tag Sql records the writes. Pins the two load-bearing claims:
+ *   (1) a DARK gym row (enabled:false, budget:null) keyed to the pot's OWN slug;
+ *   (2) an INACTIVE scout routine under the pot's install_slug (NOT @singleton)
+ *       carrying a payload_template budget (legacy per-pot when the flag is
+ *       off, workspace-papercup when WORKSPACE_COORDINATION is on);
+ * and that the returned `undo` removes exactly both rows.
+ */
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+import type { Sql } from 'postgres';
+
+const h = vi.hoisted(() => ({
+  isWorkspaceCoordinationOn: vi.fn(async () => false),
+}));
+
+vi.mock('../workspace-brain-scope', async (importActual) => {
+  const actual = await importActual<typeof import('../workspace-brain-scope')>();
+  return { ...actual, isWorkspaceCoordinationOn: h.isWorkspaceCoordinationOn };
+});
+
+import {
+  provisionPotLearningLoop,
+  teardownPotLearningLoop,
+  potScoutRoutineId,
+  staggeredPotScoutCron,
+  POT_SCOUT_CADENCE_MIN,
+  DEFAULT_POT_SCOUT_MAX_COST_USD,
+  POT_SCOUT_ROUTINE_NAME,
+  SCOUT_CYCLE_TARGET_ROLE,
+} from './provision-learning-loop';
+
+/** A fake `sql` template tag that records each call's reconstructed text + values. */
+function makeFakeSql(): { sql: Sql; calls: Array<{ text: string; values: unknown[] }> } {
+  const calls: Array<{ text: string; values: unknown[] }> = [];
+  const tag = (strings: TemplateStringsArray, ...values: unknown[]) => {
+    calls.push({ text: strings.join('?').replace(/\s+/g, ' ').trim(), values });
+    if (strings.join(' ').includes('SELECT id FROM harness_shared.routines')) {
+      return Promise.resolve([] as unknown[]);
+    }
+    return Promise.resolve([] as unknown[]);
+  };
+  return { sql: tag as unknown as Sql, calls };
+}
+
+beforeEach(() => {
+  h.isWorkspaceCoordinationOn.mockReset().mockResolvedValue(false);
+});
+
+describe('potScoutRoutineId', () => {
+  it('sanitizes the install_slug into a routines id', () => {
+    expect(potScoutRoutineId('My-Pot.1')).toBe('rt_my_hive_1_scout_cycle');
+  });
+});
+
+describe('staggeredPotScoutCron (P-050 — deterministic per-pot cron offset)', () => {
+  /** Parse a 6-field "S M,M+30 * * * *" cron into its second + the two minute fields. */
+  function parse(cron: string): { second: number; minutes: number[] } {
+    const [sec, mins] = cron.split(' ');
+    return { second: Number(sec), minutes: mins.split(',').map(Number) };
+  }
+
+  it('produces a 6-field seconds-resolution cron firing twice an hour, 30 min apart', () => {
+    const { second, minutes } = parse(staggeredPotScoutCron('alpha'));
+    expect(second).toBeGreaterThanOrEqual(0);
+    expect(second).toBeLessThan(60);
+    expect(minutes).toHaveLength(2);
+    const [m0, m1] = minutes;
+    expect(m0).toBeGreaterThanOrEqual(0);
+    expect(m0).toBeLessThan(POT_SCOUT_CADENCE_MIN);
+    expect(m1 - m0).toBe(POT_SCOUT_CADENCE_MIN); // the second fire is exactly +30 min
+  });
+
+  it('is STABLE / idempotent — the same slug always yields the same cron', () => {
+    expect(staggeredPotScoutCron('pot-acme')).toBe(staggeredPotScoutCron('pot-acme'));
+    // Independent of how many times we ask (no clock / no randomness).
+    const once = staggeredPotScoutCron('pot-acme');
+    for (let i = 0; i < 5; i++) expect(staggeredPotScoutCron('pot-acme')).toBe(once);
+  });
+
+  it('gives two DIFFERENT slugs DISTINCT offsets (the anti-burst guarantee)', () => {
+    // The load-bearing P-050 claim: distinct hives fire at distinct cron boundaries.
+    expect(staggeredPotScoutCron('pot-acme')).not.toBe(staggeredPotScoutCron('pot-beta'));
+    expect(staggeredPotScoutCron('alpha')).not.toBe(staggeredPotScoutCron('omega'));
+  });
+
+  it('scatters a realistic fleet across many distinct (minute,second) slots — no mass collision', () => {
+    const slugs = Array.from({ length: 50 }, (_, i) => `pot-${i}`);
+    const offsets = new Set(slugs.map((s) => staggeredPotScoutCron(s).split(' ').slice(0, 2).join(' ')));
+    // 1800 slots in the window ⇒ 50 hives should spread to (near-)all distinct boundaries.
+    expect(offsets.size).toBeGreaterThanOrEqual(48);
+  });
+});
+
+describe('provisionPotLearningLoop', () => {
+  it('writes a DARK gym row + an INACTIVE scout routine keyed to the pot slug', async () => {
+    const { sql, calls } = makeFakeSql();
+    const res = await provisionPotLearningLoop({ sql, workspaceId: 'w1', potSlug: 'alpha', now: 123 });
+
+    expect(res.ok).toBe(true);
+    expect(res.gymAutoloop).toBe(true);
+    expect(res.scoutRoutine).toBe(true);
+    expect(res.scoutRoutineId).toBe('rt_alpha_scout_cycle');
+    expect(res.scoutMaxCostUsd).toBe(DEFAULT_POT_SCOUT_MAX_COST_USD);
+
+    // setAutoloop does a getAutoloop SELECT then an INSERT; the scout routine is one INSERT.
+    const gymInsert = calls.find((c) => c.text.includes('INSERT INTO harness_shared.gym_autoloop_config'));
+    expect(gymInsert).toBeTruthy();
+    // The DARK row: enabled false, budget null, keyed to the pot's own slug + ws.
+    expect(gymInsert!.values).toContain('alpha');
+    expect(gymInsert!.values).toContain('w1');
+    expect(gymInsert!.values).toContain(false); // enabled:false
+    expect(gymInsert!.values).toContain(null); // budget:null
+
+    const routineInsert = calls.find((c) => c.text.includes('INSERT INTO harness_shared.routines'));
+    expect(routineInsert).toBeTruthy();
+    expect(routineInsert!.values).toContain('rt_alpha_scout_cycle');
+    expect(routineInsert!.values).toContain('alpha'); // flag OFF: install_slug = the pot's OWN slug
+    expect(routineInsert!.values).not.toContain('@singleton');
+    expect(routineInsert!.values).toContain(POT_SCOUT_ROUTINE_NAME);
+    expect(routineInsert!.values).toContain(SCOUT_CYCLE_TARGET_ROLE);
+    // active is a literal `false` in the SQL text (not interpolated) — INACTIVE.
+    expect(routineInsert!.text).toMatch(/'skip', 'skip-old', false, now\(\)/);
+    // The per-pot budget rides payload_template.budget.maxCostUsd.
+    const payload = routineInsert!.values.find(
+      (v) => typeof v === 'string' && v.includes('maxCostUsd'),
+    ) as string;
+    expect(JSON.parse(payload)).toEqual({ budget: { maxCostUsd: DEFAULT_POT_SCOUT_MAX_COST_USD } });
+
+    // P-050: the cron defaults to the DETERMINISTIC per-pot stagger (not the
+    // legacy fixed :05/:35), a stable function of the pot slug.
+    const cron = routineInsert!.values.find((v) => typeof v === 'string' && v.includes('"cron"')) as string;
+    expect(JSON.parse(cron)).toEqual({ cron: staggeredPotScoutCron('alpha') });
+  });
+
+  it('staggers the scout cron PER-POT — two hives provision DISTINCT cron offsets (P-050)', async () => {
+    const cronFor = async (potSlug: string): Promise<string> => {
+      const { sql, calls } = makeFakeSql();
+      await provisionPotLearningLoop({ sql, workspaceId: 'w1', potSlug });
+      const routineInsert = calls.find((c) => c.text.includes('INSERT INTO harness_shared.routines'));
+      const cron = routineInsert!.values.find((v) => typeof v === 'string' && v.includes('"cron"')) as string;
+      return JSON.parse(cron).cron as string;
+    };
+    const acme = await cronFor('pot-acme');
+    const beta = await cronFor('pot-beta');
+    expect(acme).not.toBe(beta); // distinct boundaries ⇒ no shared-boundary burst
+    // ...and idempotent: re-provisioning the same pot lays down the SAME cron.
+    expect(await cronFor('pot-acme')).toBe(acme);
+  });
+
+  it('flag ON writes ONE workspace-papercup Scout routine instead of a per-pot routine', async () => {
+    h.isWorkspaceCoordinationOn.mockResolvedValue(true);
+    const { sql, calls } = makeFakeSql();
+    const res = await provisionPotLearningLoop({
+      sql,
+      workspaceId: 'workspace-a',
+      potSlug: 'pot-a',
+    });
+
+    expect(res.scoutRoutineId).toBe('rt_workspace_a_scout_cycle');
+    const routineInsert = calls.find((c) => c.text.includes('INSERT INTO harness_shared.routines'));
+    expect(routineInsert).toBeTruthy();
+    expect(routineInsert!.values).toContain('rt_workspace_a_scout_cycle');
+    expect(routineInsert!.values).toContain('workspace-a');
+    expect(routineInsert!.values).not.toContain('pot-a');
+    const cron = routineInsert!.values.find((v) => typeof v === 'string' && v.includes('"cron"')) as string;
+    expect(JSON.parse(cron)).toEqual({ cron: staggeredPotScoutCron('workspace-a') });
+  });
+
+  it('honors a per-pot budget + cron override', async () => {
+    const { sql, calls } = makeFakeSql();
+    const res = await provisionPotLearningLoop({
+      sql,
+      workspaceId: 'w1',
+      potSlug: 'beta',
+      scoutMaxCostUsd: 0.25,
+      scoutCron: '0 0 * * * *',
+    });
+    expect(res.scoutMaxCostUsd).toBe(0.25);
+    const routineInsert = calls.find((c) => c.text.includes('INSERT INTO harness_shared.routines'));
+    const payload = routineInsert!.values.find(
+      (v) => typeof v === 'string' && v.includes('maxCostUsd'),
+    ) as string;
+    expect(JSON.parse(payload)).toEqual({ budget: { maxCostUsd: 0.25 } });
+    const cron = routineInsert!.values.find((v) => typeof v === 'string' && v.includes('"cron"')) as string;
+    expect(JSON.parse(cron)).toEqual({ cron: '0 0 * * * *' });
+  });
+
+  it('undo deletes both rows (best-effort, never throws)', async () => {
+    const { sql, calls } = makeFakeSql();
+    const res = await provisionPotLearningLoop({ sql, workspaceId: 'w1', potSlug: 'gamma' });
+    calls.length = 0; // isolate the undo's writes
+    await res.undo();
+
+    const gymDelete = calls.find((c) => c.text.includes('DELETE FROM harness_shared.gym_autoloop_config'));
+    const routineDelete = calls.find((c) => c.text.includes('DELETE FROM harness_shared.routines'));
+    expect(gymDelete).toBeTruthy();
+    expect(gymDelete!.values).toContain('gamma');
+    expect(routineDelete).toBeTruthy();
+    expect(routineDelete!.values).toContain('gamma');
+    expect(routineDelete!.values).toContain(POT_SCOUT_ROUTINE_NAME);
+  });
+
+  it('undo swallows a delete error (rollback must not throw)', async () => {
+    // A sql that rejects every DELETE — undo must still resolve (a create rollback
+    // can never throw, or it masks the original failure).
+    const tag = (strings: TemplateStringsArray) => {
+      const text = strings.join(' ');
+      if (text.includes('DELETE')) return Promise.reject(new Error('pg down'));
+      return Promise.resolve([] as unknown[]);
+    };
+    const res = await provisionPotLearningLoop({ sql: tag as unknown as Sql, workspaceId: 'w1', potSlug: 'delta' });
+    await expect(res.undo()).resolves.toBeUndefined();
+  });
+});
+
+describe('teardownPotLearningLoop (P-021 — the pot:dissolve inverse)', () => {
+  it('deletes the gym row, the scout routine, AND the gym:<pot>/scout:<pot> governor registrants', async () => {
+    const { sql, calls } = makeFakeSql();
+    const res = await teardownPotLearningLoop({ sql, workspaceId: 'w1', potSlug: 'alpha' });
+
+    expect(res).toEqual({
+      potSlug: 'alpha',
+      gymAutoloop: true,
+      scoutRoutine: true,
+      governorRegistrants: true,
+      gitSyncRoutines: true,
+    });
+
+    const gymDelete = calls.find((c) => c.text.includes('DELETE FROM harness_shared.gym_autoloop_config'));
+    expect(gymDelete).toBeTruthy();
+    expect(gymDelete!.values).toContain('alpha');
+    expect(gymDelete!.values).toContain('w1');
+
+    const scoutDelete = calls.find(
+      (c) => c.text.includes('DELETE FROM harness_shared.routines') && c.values.includes(POT_SCOUT_ROUTINE_NAME),
+    );
+    expect(scoutDelete).toBeTruthy();
+    expect(scoutDelete!.values).toContain('alpha');
+
+    // P-007 (git-sync-dx-hardening): the git-sync pipeline routines for this install are
+    // ALSO reaped on dissolve (by target_role), scoped to this pot's install_slug.
+    const gitSyncDelete = calls.find(
+      (c) => c.text.includes('DELETE FROM harness_shared.routines') && c.text.includes('target_role'),
+    );
+    expect(gitSyncDelete).toBeTruthy();
+    expect(gitSyncDelete!.text).toContain('system:git-sync');
+    expect(gitSyncDelete!.values).toContain('alpha');
+    expect(gitSyncDelete!.values).toContain('w1');
+
+    // The governor registrant deletes — keyed gym:<pot> + blender:<pot>, plus
+    // the legacy pre-rename scout:<pot> row (WI-2932 expand; drops at S2).
+    const govDeletes = calls.filter((c) =>
+      c.text.includes('DELETE FROM harness_shared.learning_governor_loops'),
+    );
+    expect(govDeletes).toHaveLength(3);
+    const govLoopIds = govDeletes.flatMap((c) => c.values);
+    expect(govLoopIds).toContain('gym:alpha');
+    expect(govLoopIds).toContain('blender:alpha');
+    expect(govLoopIds).toContain('scout:alpha');
+  });
+
+  it('is best-effort per-removal: a failing gym delete does NOT block the scout/governor removals', async () => {
+    // The gym_autoloop_config delete rejects; the others still run + report.
+    const tag = (strings: TemplateStringsArray) => {
+      const text = strings.join(' ');
+      if (text.includes('gym_autoloop_config')) return Promise.reject(new Error('pg down'));
+      return Promise.resolve([] as unknown[]);
+    };
+    const res = await teardownPotLearningLoop({
+      sql: tag as unknown as Sql,
+      workspaceId: 'w1',
+      potSlug: 'beta',
+    });
+    expect(res.gymAutoloop).toBe(false); // the failed removal
+    expect(res.scoutRoutine).toBe(true); // unaffected
+    expect(res.governorRegistrants).toBe(true); // unaffected
+  });
+
+  it('reports a governor-registrant delete failure without throwing', async () => {
+    const tag = (strings: TemplateStringsArray) => {
+      const text = strings.join(' ');
+      if (text.includes('learning_governor_loops')) return Promise.reject(new Error('pg down'));
+      return Promise.resolve([] as unknown[]);
+    };
+    const res = await teardownPotLearningLoop({
+      sql: tag as unknown as Sql,
+      workspaceId: 'w1',
+      potSlug: 'gamma',
+    });
+    expect(res.gymAutoloop).toBe(true);
+    expect(res.scoutRoutine).toBe(true);
+    expect(res.governorRegistrants).toBe(false);
+  });
+});

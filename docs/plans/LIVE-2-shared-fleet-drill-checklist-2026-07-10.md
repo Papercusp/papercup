@@ -14,7 +14,7 @@ LIVE-2 is the **work-distribution acceptance drill** (offer → pull → spawn �
 metering → revoke/reap), run as a genuine **shared-fleet, cross-machine** scenario — i.e.
 the grantor/offeror on one machine and the puller/executor on a *different* machine, over
 the real hive-swarm + coord federation substrate. It is tracked as row **#17** of
-`shared-hive-release-testing/RELEASE-READINESS.md` ("LIVE-2 work-distribution acceptance
+`shared-pot-release-testing/RELEASE-READINESS.md` ("LIVE-2 work-distribution acceptance
 drill"), spec = P-305 of `p2p-work-distribution-2026-07-02` (re-homed local per D-001 — no
 Hetzner). It is distinct from LIVE-1 (P-059), which proves the underlying parity/coordination
 layer (wake bridge, receipts, events, presence gossip, claim-spec federation) — LIVE-2 rides

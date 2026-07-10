@@ -3244,31 +3244,31 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // ── learning.queenWakeEfficiency — the Benchmark view's Queen per-wake efficiency ──
+  // ── learning.mugWakeEfficiency — the Benchmark view's Queen per-wake efficiency ──
   //
   // The live Queen's per-wake prompt efficiency (queen-brief-cache-assembly-2026-06-13 B-06 /
-  // P-010, D-016/D-018) over harness_shared.agent_usage_samples role='queen' (queenWakeEfficiency):
+  // P-010, D-016/D-018) over harness_shared.agent_usage_samples role='queen' (mugWakeEfficiency):
   // cache-hit ratio (Win-1 frozen-prefix cache), avg turns/wake (Win-2 round-trip elimination),
   // cachedWakes (the "cache is real" signal, P-003), and token/cost totals. Workspace-wide (all
   // Queen wakes). PG failure OR a not-yet-applied migration (272 turn_count) degrades to the empty
   // aggregate — the panel renders its no-wakes state, never a 500. Returns a 1-element array (client
   // reads data[0]). NOT table-backed — refreshes on mount + the panel's manual invalidate() (the
   // metric is sparse, mirroring learning.ekg / learning.redQueen).
-  'learning.queenWakeEfficiency': {
+  'learning.mugWakeEfficiency': {
     resolve: async () => {
-      const { queenWakeEfficiency, EMPTY_QUEEN_WAKE_EFFICIENCY } = await import('../hive/queen-wake-efficiency');
+      const { mugWakeEfficiency, EMPTY_MUG_WAKE_EFFICIENCY } = await import('../pot/mug-wake-efficiency');
       try {
         const { activeWorkspaceId } = await import('../workspace-registry');
-        return [await queenWakeEfficiency(activeWorkspaceId(), { limit: 50 })];
+        return [await mugWakeEfficiency(activeWorkspaceId(), { limit: 50 })];
       } catch (err) {
         // 42P01 (undefined table) / 42703 ("column does not exist", pre-mig-272 turn_count) are the
         // expected pre-boot-apply states, not worth a warn — degrade silently to the empty aggregate.
         const code = (err as { code?: string })?.code;
         const msg = err instanceof Error ? err.message : String(err);
         if (code !== '42P01' && code !== '42703' && !/does not exist/i.test(msg)) {
-          console.warn('[learning.queenWakeEfficiency] read failed:', msg);
+          console.warn('[learning.mugWakeEfficiency] read failed:', msg);
         }
-        return [EMPTY_QUEEN_WAKE_EFFICIENCY];
+        return [EMPTY_MUG_WAKE_EFFICIENCY];
       }
     },
   },
@@ -3594,16 +3594,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           ? (args as { windowHours: number }).windowHours
           : undefined;
       try {
-        const { listHives } = await import('../agent-tools/hive/_resolve');
+        const { listPots } = await import('../agent-tools/pot/_resolve');
         const { activeWorkspaceId } = await import('../workspace-registry');
-        const { readHiveSoakReport } = await import('../hive/soak-report');
+        const { readPotSoakReport } = await import('../pot/soak-report');
         const ws = activeWorkspaceId();
-        const homes = hive ? [{ slug: hive }] : await listHives(ws).catch(() => []);
+        const homes = hive ? [{ slug: hive }] : await listPots(ws).catch(() => []);
         const reports = (
           await Promise.all(
             homes.map(async (home) => {
               try {
-                return await readHiveSoakReport(home.slug, { windowHours });
+                return await readPotSoakReport(home.slug, { windowHours });
               } catch {
                 return null;
               }
@@ -4066,24 +4066,24 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // UI also periodically refetches to keep lastWakeAt / the countdown fresh.
   'hive.controlState': {
     resolve: async () => {
-      const { listHives } = await import('../agent-tools/hive/_resolve');
-      const { getHivePlacementStarted } = await import('../hive/started');
-      const { recentWatchdogFires } = await import('../hive/watchdog');
-      const { summarizeOpenPlacements, latestQueenWakeAt } = await import('../hive/placement-watchdog');
+      const { listPots } = await import('../agent-tools/pot/_resolve');
+      const { getPotPlacementStarted } = await import('../pot/started');
+      const { recentWatchdogFires } = await import('../pot/watchdog');
+      const { summarizeOpenPlacements, latestMugWakeAt } = await import('../pot/placement-watchdog');
       const { activeWorkspaceId } = await import('../workspace-registry');
       const ws = activeWorkspaceId();
-      const hives = await listHives(ws).catch(() => []);
+      const hives = await listPots(ws).catch(() => []);
       return Promise.all(
         hives.map(async (hv) => {
           // lastWakeAt = the MORE RECENT of the recordHiveWake ledger AND the Queen's
           // REAL queen-spawn wakes. The wake-brain Queen never calls recordHiveWake, so
           // without the real-spawn read the heartbeat shows "Paused/Stalled" while she
           // is alive (the visibility regression). ISO strings sort chronologically.
-          const realWake = await latestQueenWakeAt(ws, hv.slug).catch(() => null);
+          const realWake = await latestMugWakeAt(ws, hv.slug).catch(() => null);
           const lastWakeAt = [realWake, hv.wake?.lastWakeAt ?? null].filter(Boolean).sort().at(-1) ?? null;
           return {
             slug: hv.slug,
-            started: await getHivePlacementStarted(ws, hv.slug).catch(() => false),
+            started: await getPotPlacementStarted(ws, hv.slug).catch(() => false),
             nextFireAt: hv.wake?.nextFireAt ?? null,
             lastWakeAt,
             watchdogFires24h: await recentWatchdogFires(ws, hv.slug).catch(() => 0),
@@ -4109,11 +4109,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // table→query map (covers a federated steering write from a peer Swarm).
   'hive.steering': {
     resolve: async () => {
-      const { listHives } = await import('../agent-tools/hive/_resolve');
+      const { listPots } = await import('../agent-tools/pot/_resolve');
       const { getOwnerSteering, DEFAULT_OWNER_STEERING } = await import('../owner-steering');
       const { activeWorkspaceId } = await import('../workspace-registry');
       const ws = activeWorkspaceId();
-      const hives = await listHives(ws).catch(() => []);
+      const hives = await listPots(ws).catch(() => []);
       // Throttle defaults (queen-steering-panel P-006, D-006): the SYSTEM defaults
       // the 👑-tab shows beside each session override for its default-vs-override
       // badge — so the UI never hardcodes them. Same numbers the live seams clamp
@@ -4121,13 +4121,13 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // Fail-soft: a read failure degrades each default to null (UI shows "—").
       const throttleDefaults = await (async () => {
         try {
-          const [{ hiveWakeFloorSec }, { getCachedRateLimitConfig }, { placementConfig }] = await Promise.all([
-            import('../hive/wake'),
+          const [{ potWakeFloorSec }, { getCachedRateLimitConfig }, { placementConfig }] = await Promise.all([
+            import('../pot/wake'),
             import('../rate-limit-config'),
-            import('../hive/placement-watchdog'),
+            import('../pot/placement-watchdog'),
           ]);
           return {
-            cadenceFloorSec: hiveWakeFloorSec(),
+            cadenceFloorSec: potWakeFloorSec(),
             maxBees: getCachedRateLimitConfig().maxSimultaneousAgents,
             // P-009 read-through (su-4d71b): the live cursed-item breaker threshold
             // the autonomy-surfacing UI shows read-only (PAPERCUSP_POT_PLACEMENT_BREAKER).
@@ -4146,7 +4146,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const homeSlug = await (async () => {
         try {
           const [{ resolvePotHomeSlug }, { operatorHomeHarnessSlug }] = await Promise.all([
-            import('../hive/wake'),
+            import('../pot/wake'),
             import('../harness/operator-home-harness'),
           ]);
           return resolvePotHomeSlug(null, null) ?? operatorHomeHarnessSlug();
@@ -4223,7 +4223,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         workspace?: string;
       };
       const { activeWorkspaceId } = await import('../workspace-registry');
-      const { resolvePotHomeSlug } = await import('../hive/wake');
+      const { resolvePotHomeSlug } = await import('../pot/wake');
       const { PgCrossHiveAsks } = await import('../cross-hive-asks-pg');
       const ws = workspace ?? activeWorkspaceId();
       const homeSlug = resolvePotHomeSlug();

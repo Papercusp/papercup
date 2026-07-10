@@ -30,7 +30,14 @@ interface ClaimItem {
  * error (claim_conflict + holder, not_found, or not_claimable) rather than a
  * phantom "not found".
  */
-async function claimOne(it: ClaimItem, claimerDefault: string): Promise<BulkItemResult> {
+async function claimOne(itRaw: ClaimItem, claimerDefault: string): Promise<BulkItemResult> {
+  // EI-9274: a literal `'self'` assignee is treated identically to an OMITTED one
+  // (resolved to the caller) — including for the implicit-identity guards below, so
+  // `assignee: 'self'` under a loopback/ephemeral identity is refused the same way an
+  // omitted assignee would be, instead of bypassing the guard and silently orphaning
+  // the claim under an unmatchable literal "self" ownerId (previously stored verbatim —
+  // WI-3881).
+  const it: ClaimItem = { ...itRaw, assignee: itRaw.assignee === 'self' ? undefined : itRaw.assignee };
   if (!it.assignee && claimerDefault === SUPERUSER_FALLBACK_CLIENT_ID) {
     return {
       ok: false,
@@ -106,7 +113,7 @@ export default defineTool({
   args: z
     .object({
       id: z.string().min(1).optional().describe('single-claim shorthand: the work-item id'),
-      assignee: z.string().max(120).optional().describe('default: you. Applies to the inline id / every id in `ids`.'),
+      assignee: z.string().max(120).optional().describe('default: you (also resolves the literal "self" to you). Applies to the inline id / every id in `ids`.'),
       ids: z.array(z.string().min(1)).min(1).max(200).optional().describe('claim MANY items for the same `assignee` (homogeneous)'),
       items: z
         .array(

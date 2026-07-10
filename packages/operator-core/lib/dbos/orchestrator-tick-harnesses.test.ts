@@ -9,17 +9,17 @@ vi.mock('../dev-data', async (orig) => ({
   ...(await orig<typeof import('../dev-data')>()),
   listAllHarnesses: vi.fn(),
 }));
-vi.mock('../hive/started', async (orig) => ({
-  ...(await orig<typeof import('../hive/started')>()),
-  listStartedHives: vi.fn(),
+vi.mock('../pot/started', async (orig) => ({
+  ...(await orig<typeof import('../pot/started')>()),
+  listStartedPots: vi.fn(),
 }));
 
 import { resolveTickHarnesses } from './orchestrator-loop';
 import { listAllHarnesses } from '../dev-data';
-import { listStartedHives } from '../hive/started';
+import { listStartedPots } from '../pot/started';
 
 const mockAll = vi.mocked(listAllHarnesses);
-const mockStarted = vi.mocked(listStartedHives);
+const mockStarted = vi.mocked(listStartedPots);
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -59,7 +59,7 @@ describe('resolveTickHarnesses — placement gated on the Start-Hive bit (#3)', 
     expect(await resolveTickHarnesses('ws')).toEqual([]);
   });
 
-  test('a listStartedHives failure → fail-safe (place nothing)', async () => {
+  test('a listStartedPots failure → fail-safe (place nothing)', async () => {
     process.env.PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES = '*';
     mockAll.mockResolvedValue({ harnesses: [{ slug: 'papercup' }] } as never);
     mockStarted.mockRejectedValue(new Error('db down'));

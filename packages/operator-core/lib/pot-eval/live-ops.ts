@@ -2,12 +2,12 @@
  * live-ops.ts — the CONCRETE {@link LiveHiveOps} binding (P-063 / D-011): the ~15 injected IO ops
  * `makeLiveHivePorts` orchestrates, wired to the real seams. This is the "wire-to-reality" layer the
  * orchestration's fakes stand in for — git/fs, the Queen-seat create, the member register + schema
- * scaffold, the HFC seed insert + block edges, hive start/pause, surveyHive, the placement /
+ * scaffold, the HFC seed insert + block edges, hive start/pause, surveyPot, the placement /
  * spawn-row reads, the live capture (`captureRunData`), and the throwaway-hive teardown.
  *
  * Verifiability boundary (the same b459e drew for ground-truth-live.ts):
- *   - The fs/exec ops + every lifecycle op call ALREADY-TESTED seams (createHiveHarness,
- *     scaffoldHarnessSchema, setHiveStarted, surveyHive, syncFeatureBlockEdges, dropHarnessSchema).
+ *   - The fs/exec ops + every lifecycle op call ALREADY-TESTED seams (createPotHarness,
+ *     scaffoldHarnessSchema, setPotStarted, surveyPot, syncFeatureBlockEdges, dropHarnessSchema).
  *   - The DB-read ops (placements in-flight, run stats, spawn rows) + the capture read synthetic
  *     rows in integration tests — NO LLM spend.
  *   - The ONE genuinely owner-gated, real-LLM seam is `driveToCompletion`'s real Queen (P-051): the
@@ -23,25 +23,25 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { createHiveHarness } from '../agent-tools/hive/_create';
+import { createPotHarness } from '../agent-tools/pot/_create';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../harness-registry';
 import { scaffoldHarnessSchema, dropHarnessSchema } from '../scaffold-harness-schema';
 import { removeHarnessFromWorkspace } from '../harness-membership';
-import { setHiveStarted } from '../hive/started';
-import { requestUrgentHiveWake } from '../hive/urgent-wake';
-import { clearHiveTimeWake } from '../hive/wake';
+import { setPotStarted } from '../pot/started';
+import { requestUrgentPotWake } from '../pot/urgent-wake';
+import { clearPotTimeWake } from '../pot/wake';
 import { cancelSubtree } from '../fleet/nursery';
 import { listFleetAssignments } from '../fleet/assignments';
-import { teardownHiveLearningLoop } from '../hive/provision-learning-loop';
+import { teardownPotLearningLoop } from '../pot/provision-learning-loop';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
-import { surveyHive } from '../hive/survey';
+import { surveyPot } from '../pot/survey';
 import { syncFeatureBlockEdges } from '../dbos/feature-blockers-edges';
 import { liveAcceptancePorts } from './outcome-metrics';
 import { collectGroundTruth, runBaselineSuite, type GroundTruthCtx } from './ground-truth';
 import { liveGroundTruthPortsFromSql } from './ground-truth-live';
 import { SEED_APP_DIR } from './scenarios';
-import { queenWakeEfficiency, queenWakeSampleRows, type QueenWakeEfficiency } from '../hive/queen-wake-efficiency';
-import { beeWakeEfficiency, beeWakeSampleRows, type BeeWakeEfficiency } from '../hive/bee-wake-efficiency';
+import { mugWakeEfficiency, mugWakeSampleRows, type MugWakeEfficiency } from '../pot/mug-wake-efficiency';
+import { cupWakeEfficiency, cupWakeSampleRows, type CupWakeEfficiency } from '../pot/cup-wake-efficiency';
 import type { HiveScenario } from './scenario';
 import type { LiveHiveOps, LiveRunStats } from './live-ports';
 import { packLiveRunCapture, type BehaviorEkgFields, type LiveRunCapture, type SpawnRunRow } from './live-capture';
@@ -103,8 +103,8 @@ type QueenEkg = Pick<
   'queenCacheReadTokens' | 'queenCacheCreationTokens' | 'queenInputTokens' | 'queenWakes' | 'queenTurns' | 'queenWakesWithTurns'
 >;
 
-/** Map a {@link QueenWakeEfficiency} aggregate onto the eval's queen EKG fields. Pure. */
-export function queenEkgFromEfficiency(eff: QueenWakeEfficiency): QueenEkg {
+/** Map a {@link MugWakeEfficiency} aggregate onto the eval's queen EKG fields. Pure. */
+export function queenEkgFromEfficiency(eff: MugWakeEfficiency): QueenEkg {
   return {
     queenCacheReadTokens: eff.totalCacheReadTokens,
     queenCacheCreationTokens: eff.totalCacheCreationTokens,
@@ -118,14 +118,14 @@ export function queenEkgFromEfficiency(eff: QueenWakeEfficiency): QueenEkg {
 /**
  * Read the Queen per-wake efficiency for a throwaway hive home (B-06 / P-010-P-011): the
  * `role='queen'` agent_usage_samples scoped to `hiveHome` — unique per run, so this is exact
- * attribution, no time window — aggregated by {@link queenWakeEfficiency} (over the passed `sql`)
+ * attribution, no time window — aggregated by {@link mugWakeEfficiency} (over the passed `sql`)
  * and mapped to the eval's queen EKG fields. Exported so the integration test exercises the real SQL.
  */
 export async function readQueenEkg(sql: postgres.Sql, input: { workspaceId: string; hiveHome: string }): Promise<QueenEkg> {
-  const eff = await queenWakeEfficiency(input.workspaceId, {
+  const eff = await mugWakeEfficiency(input.workspaceId, {
     harnessSlug: input.hiveHome,
     limit: 500, // a whole run's Queen wakes — well above the default 50 so attribution isn't truncated
-    deps: { fetchSamples: (q) => queenWakeSampleRows(sql, q) },
+    deps: { fetchSamples: (q) => mugWakeSampleRows(sql, q) },
   });
   return queenEkgFromEfficiency(eff);
 }
@@ -136,8 +136,8 @@ type BeeEkg = Pick<
   'beeCarriedReadTokens' | 'beeCacheReadTokens' | 'beeCacheCreationTokens' | 'beeInputTokens' | 'beeWarmInjects'
 >;
 
-/** Map a {@link BeeWakeEfficiency} aggregate onto the eval's bee EKG fields. Pure. */
-export function beeEkgFromEfficiency(eff: BeeWakeEfficiency): BeeEkg {
+/** Map a {@link CupWakeEfficiency} aggregate onto the eval's bee EKG fields. Pure. */
+export function beeEkgFromEfficiency(eff: CupWakeEfficiency): BeeEkg {
   return {
     beeCarriedReadTokens: eff.totalCarriedReadTokens,
     beeCacheReadTokens: eff.totalCacheReadTokens,
@@ -155,15 +155,15 @@ export function beeEkgFromEfficiency(eff: BeeWakeEfficiency): BeeEkg {
  * Read the per-bee warm-inject carry efficiency for a throwaway run (P-015): the `role='bee'`
  * agent_usage_samples grouped by session_id, scoped to the MEMBER clone slug (where the bees work —
  * a bee's sample carries `harness_slug = harnessSlugFromProjectDir(projectDir)` = the member), so
- * attribution is exact (the slug is unique per run). Aggregated by {@link beeWakeEfficiency} over the
+ * attribution is exact (the slug is unique per run). Aggregated by {@link cupWakeEfficiency} over the
  * passed `sql` and mapped to the eval's bee EKG fields. Exported so the integration test exercises
  * the real SQL.
  */
 export async function readBeeEkg(sql: postgres.Sql, input: { workspaceId: string; member: string }): Promise<BeeEkg> {
-  const eff = await beeWakeEfficiency(input.workspaceId, {
+  const eff = await cupWakeEfficiency(input.workspaceId, {
     harnessSlug: input.member,
     limit: 500, // a whole run's bee wakes across the member-clone sessions (above the default 200)
-    deps: { fetchSamples: (q) => beeWakeSampleRows(sql, q) },
+    deps: { fetchSamples: (q) => cupWakeSampleRows(sql, q) },
   });
   return beeEkgFromEfficiency(eff);
 }
@@ -254,7 +254,7 @@ export function liveHiveOps(deps: LiveHiveOpsDeps): LiveHiveOps {
 
     async createHive({ slug, workspaceId }) {
       // Idle (no wakeInSeconds — driveToCompletion starts it), repo-less, no learning-pack seed.
-      const res = await createHiveHarness({ slug, workspaceId, learningPack: null });
+      const res = await createPotHarness({ slug, workspaceId, learningPack: null });
       if (!res.ok) {
         throw new Error(`hive-eval createHive('${slug}') failed: ${res.error ?? 'unknown'} ${res.message ?? ''}`.trim());
       }
@@ -262,7 +262,7 @@ export function liveHiveOps(deps: LiveHiveOpsDeps): LiveHiveOps {
 
     async registerMember({ member, clonePath, hiveHome, workspaceId }) {
       // Register the hermetic clone as a (non-hive) MEMBER harness with `hive_slug` → the home so
-      // surveyHive scans it; then scaffold its schema. We set hive_slug DIRECTLY (not addHarnessToHive)
+      // surveyPot scans it; then scaffold its schema. We set hive_slug DIRECTLY (not addHarnessToHive)
       // so the throwaway clone never gets a git-sync routine seeded — it must not federate/push.
       const reg = await loadHarnessRegistry(workspaceId);
       if (!reg.projects.some((p) => p.slug === member)) {
@@ -292,14 +292,14 @@ export function liveHiveOps(deps: LiveHiveOpsDeps): LiveHiveOps {
 
     async startHive({ hiveHome, workspaceId, kickoff }) {
       // The core of pot:start: persist started=true (the watchdog's liveness bit) + wake the Queen.
-      await setHiveStarted(workspaceId, hiveHome, true);
-      await requestUrgentHiveWake({ reason: kickoff, harness: hiveHome, workspaceId });
+      await setPotStarted(workspaceId, hiveHome, true);
+      await requestUrgentPotWake({ reason: kickoff, harness: hiveHome, workspaceId });
     },
 
-    pauseHive: ({ hiveHome, workspaceId }) => setHiveStarted(workspaceId, hiveHome, false),
+    pauseHive: ({ hiveHome, workspaceId }) => setPotStarted(workspaceId, hiveHome, false),
 
     async survey({ hiveHome, workspaceId }) {
-      const s = await surveyHive(workspaceId, hiveHome);
+      const s = await surveyPot(workspaceId, hiveHome);
       return { plans: s.plans, frontier: s.frontier };
     },
 
@@ -323,9 +323,9 @@ export function liveHiveOps(deps: LiveHiveOpsDeps): LiveHiveOps {
       // (the orphan re-spin this benchmark must never produce). We now cancel every live bee subtree,
       // SIGTERM the local processes, and tear down the learning loops — the same closure pot:dissolve
       // delivers. Best-effort throughout (teardown must not mask the run's outcome).
-      await setHiveStarted(workspaceId, hiveHome, false).catch(() => {});
+      await setPotStarted(workspaceId, hiveHome, false).catch(() => {});
       const sql = sqlClient();
-      await clearHiveTimeWake(sql, hiveHome).catch(() => {});
+      await clearPotTimeWake(sql, hiveHome).catch(() => {});
 
       // Cancel every live bee in the hive (+ its subtree): mark cancelled, release claims/locks NOW,
       // notify, and SIGTERM the running process so it stops making edits. Mirrors pot:dissolve step 2.
@@ -354,7 +354,7 @@ export function liveHiveOps(deps: LiveHiveOpsDeps): LiveHiveOps {
 
       // Tear down the per-hive learning loops (dark gym autoloop row + inactive scout routine + the
       // gym:<hive>/scout:<hive> governor registrants) — the D-022 re-spin source. Best-effort.
-      await teardownHiveLearningLoop({ sql, workspaceId, potSlug: hiveHome }).catch((e) => {
+      await teardownPotLearningLoop({ sql, workspaceId, potSlug: hiveHome }).catch((e) => {
         console.warn(`[hive-eval] dissolve learning-loop teardown failed (${hiveHome}): ${e instanceof Error ? e.message : e}`);
       });
 

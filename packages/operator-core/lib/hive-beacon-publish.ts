@@ -57,7 +57,7 @@ export function defaultBeaconSignalSources(): BeaconSignalSources {
 
     liveAgents: async (workspaceId, potSlug) => {
       const { listFleetAssignments } = await import('./fleet/assignments');
-      const { liveAgentCountByHarness } = await import('./agent-tools/hive/_resolve');
+      const { liveAgentCountByHarness } = await import('./agent-tools/pot/_resolve');
       const rows = await listFleetAssignments({ workspaceId });
       return liveAgentCountByHarness(rows).get(potSlug) ?? 0;
     },

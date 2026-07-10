@@ -66,10 +66,10 @@ import {
   type ProjectEntry,
 } from '../../harness-registry';
 import {
-  createHiveFromRepo,
-  type CreateHiveFromRepoDeps,
-} from '../../agent-tools/hive/_create_from_repo';
-import { addHarnessToHive } from '../../agent-tools/hive/_add-member';
+  createPotFromRepo,
+  type CreatePotFromRepoDeps,
+} from '../../agent-tools/pot/_create_from_repo';
+import { addHarnessToPot } from '../../agent-tools/pot/_add-member';
 import { joinHiveAsView, type JoinHiveDeps } from '../join-hive';
 import {
   GIT_SYNC_SEED_ACTIVE_CREATOR,
@@ -259,7 +259,7 @@ describe('S1: pot:create_from_repo seeds the MEMBER routine, never the home', ()
   /** Composition deps: only the externally-bound seams are faked (clone /
    *  lookup / blueprint / publish / harness-create), exactly the unit-test
    *  pattern — but registry + seeding run their REAL PG paths. */
-  function makeDeps(fixtureRepo: string, over: Partial<CreateHiveFromRepoDeps> = {}): CreateHiveFromRepoDeps {
+  function makeDeps(fixtureRepo: string, over: Partial<CreatePotFromRepoDeps> = {}): CreatePotFromRepoDeps {
     return {
       lookup: async () => ({
         kind: 'none',
@@ -272,7 +272,7 @@ describe('S1: pot:create_from_repo seeds the MEMBER routine, never the home', ()
         defaultBranch: 'main',
       }),
       buildBlueprint: async (slug) => ({ ok: true, blueprint: { id: slug, extends: 'coding' } }),
-      createHive: async (o) => {
+      createPot: async (o) => {
         // The real createHiveHarness registers the home entry — mirror that
         // through the REAL registry so the home is visible to later scenarios.
         const homeDir = join(tmpRoot, `${o.slug}-home`);
@@ -291,7 +291,7 @@ describe('S1: pot:create_from_repo seeds the MEMBER routine, never the home', ()
         await mutateHarnessRegistry(
           (r) => ({
             ...r,
-            projects: [...r.projects, { slug: a.slug, path: a.path, hive_slug: a.hive }],
+            projects: [...r.projects, { slug: a.slug, path: a.path, hive_slug: a.pot }],
           }),
           WS1,
         );
@@ -314,7 +314,7 @@ describe('S1: pot:create_from_repo seeds the MEMBER routine, never the home', ()
 
   it('creates a system:git-sync row for the member (creator defaults: active, probed push, branch, jittered cron) and NO row for the home', async () => {
     const fixtureRepo = await makeWorkRepo(`s1-${REPO}`);
-    const r = await createHiveFromRepo({ githubUrl: URL, workspaceId: WS1 }, makeDeps(fixtureRepo));
+    const r = await createPotFromRepo({ githubUrl: URL, workspaceId: WS1 }, makeDeps(fixtureRepo));
 
     expect(r.ok).toBe(true);
     if (!r.ok || !('created' in r)) throw new Error('expected created');
@@ -364,7 +364,7 @@ describe('S1: pot:create_from_repo seeds the MEMBER routine, never the home', ()
         await mutateHarnessRegistry(
           (r) => ({
             ...r,
-            projects: [...r.projects, { slug: a.slug, path: a.path, hive_slug: a.hive }],
+            projects: [...r.projects, { slug: a.slug, path: a.path, hive_slug: a.pot }],
           }),
           WS1,
         );
@@ -374,7 +374,7 @@ describe('S1: pot:create_from_repo seeds the MEMBER routine, never the home', ()
         await seedGitSyncRoutineForMember({
           workspaceId: WS1,
           installSlug: a.slug,
-          entry: { slug: a.slug, path: a.path, hive_slug: a.hive },
+          entry: { slug: a.slug, path: a.path, hive_slug: a.pot },
           joinerSide: false,
         });
         return { ok: true };
@@ -383,7 +383,7 @@ describe('S1: pot:create_from_repo seeds the MEMBER routine, never the home', ()
       // the network probe pinned — the upgrade path now REACHES the probe
       // (the pinned-gap era short-circuited at routine_exists before it).
     });
-    const r = await createHiveFromRepo(
+    const r = await createPotFromRepo(
       { githubUrl: `https://github.com/acme/${REPO_B}`, slug: REPO_B, workspaceId: WS1 },
       deps,
     );
@@ -910,7 +910,7 @@ describe('S5: re-running add-member / the spine never clobbers a human-edited ro
 
     // Re-add: DEFAULT seams (real registry, real lazy-imported spine). The
     // spine's non-clobber check returns BEFORE the github probe, so no network.
-    const r = await addHarnessToHive({
+    const r = await addHarnessToPot({
       workspaceId: WS1,
       potHomeSlug: HOME,
       memberHarnessSlug: MEMBER,

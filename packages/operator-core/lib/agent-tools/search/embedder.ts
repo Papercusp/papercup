@@ -82,7 +82,17 @@ function buildAdmissionGovernedOpenAiEmbedder(key: string): Embedder {
   };
 }
 
-export async function buildQueryEmbedder(): Promise<Embedder | null> {
+/** The query embedder PLUS its resolved mode + dims. Consumers whose stored
+ *  vectors carry a space discriminator (migration 530/548 `<col>_mode`) need
+ *  the mode to filter `WHERE <col>_mode = <active>` — cosine against a
+ *  foreign-space vector is meaningless (embedding-space-vs-dimension). */
+export interface ResolvedQueryEmbedder {
+  mode: 'openai' | 'local' | 'gemma' | 'harrier';
+  dims: number;
+  embed: Embedder;
+}
+
+export async function buildQueryEmbedderResolved(): Promise<ResolvedQueryEmbedder | null> {
   try {
     const resolved = await resolveEmbedderWith({
       readPreference: readEmbedderPreference,
@@ -97,12 +107,21 @@ export async function buildQueryEmbedder(): Promise<Embedder | null> {
       // (its dual-encoder is trained so query-prompt vectors match the
       // document-prompt vectors written on the storage side).
       buildGemma: () => buildSidecarAwareEmbedder('gemma', 'query'),
+      // harrier-oss (P-014, selectable only): queries carry the instruct
+      // prefix; documents embed raw. Native 1024 — a vector(384) surface
+      // must check `dims` before ranking against it.
+      buildHarrier: () => buildSidecarAwareEmbedder('harrier', 'query'),
     });
     if (resolved.mode === 'disabled') return null;
-    return resolved.embed;
+    return { mode: resolved.mode, dims: resolved.dims, embed: resolved.embed };
   } catch {
     // Mirrors the prior local-mode behavior: a pipeline load failure (package missing,
     // model fetch failed, …) degrades to BM25-only rather than throwing.
     return null;
   }
+}
+
+export async function buildQueryEmbedder(): Promise<Embedder | null> {
+  const resolved = await buildQueryEmbedderResolved();
+  return resolved ? resolved.embed : null;
 }

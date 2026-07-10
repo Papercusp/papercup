@@ -231,11 +231,11 @@ async function collectQueen(ctx: HealthCtx): Promise<HealthPanel<QueenHealth>> {
       return { status: 'unknown', summary: 'no hive registered in this workspace', metrics: [], data };
     }
     const { sql } = getOrgPg();
-    const { hiveLivenessCheck, hiveMidTurn, hiveDemandCheck, recentWatchdogFires } = await import('../hive/watchdog');
+    const { potLivenessCheck, potMidTurn, potDemandCheck, recentWatchdogFires } = await import('../pot/watchdog');
     const [live, midTurn, demand, watchdogFires24h] = await Promise.all([
-      hiveLivenessCheck(sql, potSlug, { workspaceId: ws, now }),
-      hiveMidTurn(potSlug).catch(() => false),
-      hiveDemandCheck(ws).catch(() => ({ demand: false, todoItems: 0, startedPlans: 0 })),
+      potLivenessCheck(sql, potSlug, { workspaceId: ws, now }),
+      potMidTurn(potSlug).catch(() => false),
+      potDemandCheck(ws).catch(() => ({ demand: false, todoItems: 0, startedPlans: 0 })),
       recentWatchdogFires(ws, potSlug).catch(() => 0),
     ]);
     let decisionsWindow = { total: 0, auto: 0, gated: 0 };
@@ -264,8 +264,8 @@ async function collectQueen(ctx: HealthCtx): Promise<HealthPanel<QueenHealth>> {
     // Fail-soft: usage unreadable ⇒ leave 0, the detector simply won't fire.
     let consecutiveZeroTokenWakes = 0;
     try {
-      const { queenWakeEfficiency } = await import('../hive/queen-wake-efficiency');
-      const eff = await queenWakeEfficiency(ws, { harnessSlug: potSlug, limit: 10 });
+      const { mugWakeEfficiency } = await import('../pot/mug-wake-efficiency');
+      const eff = await mugWakeEfficiency(ws, { harnessSlug: potSlug, limit: 10 });
       consecutiveZeroTokenWakes = countLeadingZeroTokenWakes(eff.samples);
     } catch { /* usage unreadable — leave 0 (fail-soft) */ }
 
@@ -438,19 +438,19 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
         // K1 (workspace-scoped-coordination P-003 / D-002): the ONE central-dispatcher
         // Queen's work-feed spans ALL the workspace's hives when WORKSPACE_COORDINATION
         // is ON — so the Health/Overwatch work-feed counts the cross-hive backlog, not
-        // one representative hive. OFF (the dark default) ⇒ the single-hive surveyHive,
+        // one representative hive. OFF (the dark default) ⇒ the single-hive surveyPot,
         // byte-identical to today.
         const { isWorkspaceCoordinationOn } = await import('../workspace-brain-scope');
         if (await isWorkspaceCoordinationOn()) {
-          const { surveyWorkspace } = await import('../hive/survey');
+          const { surveyWorkspace } = await import('../pot/survey');
           const ws_survey = await surveyWorkspace(ws, { fallbackHome: potSlug });
-          frontier = ws_survey.crossHive.frontier.length;
-          frontierStuck = countStuckFrontier(ws_survey.crossHive.frontier);
-          frontierBlocked = ws_survey.crossHive.frontierBlocked;
-          startedPlans = ws_survey.crossHive.plans.length;
+          frontier = ws_survey.crossPot.frontier.length;
+          frontierStuck = countStuckFrontier(ws_survey.crossPot.frontier);
+          frontierBlocked = ws_survey.crossPot.frontierBlocked;
+          startedPlans = ws_survey.crossPot.plans.length;
         } else {
-          const { surveyHive } = await import('../hive/survey');
-          const survey = await surveyHive(ws, potSlug);
+          const { surveyPot } = await import('../pot/survey');
+          const survey = await surveyPot(ws, potSlug);
           frontier = survey.frontier.length;
           frontierStuck = countStuckFrontier(survey.frontier);
           frontierBlocked = survey.frontierBlocked;
@@ -606,9 +606,9 @@ async function collectWatchdog(ctx: HealthCtx): Promise<HealthPanel<WatchdogHeal
     let fires24h = 0, livenessArmed = false, staleForMs: number | null = null;
     if (potSlug) {
       const { sql } = getOrgPg();
-      const { hiveLivenessCheck, recentWatchdogFires } = await import('../hive/watchdog');
+      const { potLivenessCheck, recentWatchdogFires } = await import('../pot/watchdog');
       const [live, fires] = await Promise.all([
-        hiveLivenessCheck(sql, potSlug, { workspaceId: ws, now }),
+        potLivenessCheck(sql, potSlug, { workspaceId: ws, now }),
         recentWatchdogFires(ws, potSlug).catch(() => 0),
       ]);
       fires24h = fires;
@@ -1307,11 +1307,11 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
   let potSlug: string | null = null;
   let started = false;
   try {
-    const { listHives } = await import('../agent-tools/hive/_resolve');
-    const { getHiveStarted } = await import('../hive/started');
-    const hives = await listHives(ws);
+    const { listPots } = await import('../agent-tools/pot/_resolve');
+    const { getPotStarted } = await import('../pot/started');
+    const hives = await listPots(ws);
     for (const h of hives) {
-      if (await getHiveStarted(ws, h.slug).catch(() => false)) { potSlug = h.slug; started = true; break; }
+      if (await getPotStarted(ws, h.slug).catch(() => false)) { potSlug = h.slug; started = true; break; }
     }
     if (!potSlug && hives.length > 0) potSlug = hives[0].slug;
   } catch { /* registry unreadable — queen/work-feed degrade to 'unknown' */ }
@@ -1319,7 +1319,7 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
   let openPlacements: HealthCtx['openPlacements'] = null;
   if (potSlug) {
     try {
-      const { summarizeOpenPlacements } = await import('../hive/placement-watchdog');
+      const { summarizeOpenPlacements } = await import('../pot/placement-watchdog');
       // K1 (workspace-scoped-coordination P-003 / D-006): the one workspace Queen
       // drives placements across ALL the workspace's hives, so when
       // WORKSPACE_COORDINATION is ON the open-placement panel SPANS every hive
@@ -1330,8 +1330,8 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
       let scopeSlugs = [potSlug];
       if (on) {
         try {
-          const { listHives } = await import('../agent-tools/hive/_resolve');
-          const all = (await listHives(ws)).map((h) => h.slug);
+          const { listPots } = await import('../agent-tools/pot/_resolve');
+          const all = (await listPots(ws)).map((h) => h.slug);
           if (all.length > 0) scopeSlugs = all;
         } catch { /* registry unreadable → fall back to the representative hive */ }
       }

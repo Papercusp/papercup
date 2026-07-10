@@ -1,5 +1,5 @@
 /**
- * _convergence-fuzz-rig.ts — Brief D (shared-hive-release-testing): a REUSABLE,
+ * _convergence-fuzz-rig.ts — Brief D (shared-pot-release-testing): a REUSABLE,
  * deterministic, seed-controlled fuzz harness for the substrate's eventual-
  * consistency contract. Given a random universe of federated writes across many
  * content types + many peers receiving them in arbitrary (seeded) orders with

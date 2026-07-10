@@ -145,8 +145,25 @@ export async function maybeTriggerCanonicalJoinOnIngest(
   const trigger =
     deps.trigger ??
     (() => {
-      void import('./harness/bootstrap-papercusp-hive')
-        .then((m) => m.startBootstrapPapercuspHive().done.catch(() => {}))
+      // WI-1423: this ingest-fired retrigger is the ONE trigger path that used to
+      // bypass the DOGFOOD_PAPERCUSP_POT flag gate the other two callers (the boot
+      // path in host-bootstrap.ts and the wizard's /api/desktop/bootstrap-pot/start)
+      // already apply — a box merely overhearing the canonical announce on the
+      // unconditionally-wired global directory topic (boot-all.ts) could silently
+      // auto-join production even with the feature flag off. Mirror the sibling
+      // gate here too; bootstrapPapercuspHive's own dogfoodHiveDisabled() env
+      // kill-switch is the hard backstop for test-frame isolation regardless of
+      // flag state.
+      void Promise.all([
+        import('@papercusp/flags/server').then((m) => m.getFlag),
+        import('@papercusp/flags').then((m) => m.FLAGS),
+      ])
+        .then(async ([getFlag, FLAGS]) => {
+          const on = await getFlag(FLAGS.DOGFOOD_PAPERCUSP_POT, 'system').catch(() => false);
+          if (!on) return;
+          const { startBootstrapPapercuspHive } = await import('./harness/bootstrap-papercusp-hive');
+          await startBootstrapPapercuspHive().done.catch(() => {});
+        })
         .catch(() => {});
     });
   trigger();

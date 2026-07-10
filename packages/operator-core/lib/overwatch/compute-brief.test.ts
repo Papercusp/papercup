@@ -40,7 +40,7 @@ const owner = vi.hoisted(() => ({
 vi.mock('@papercusp/db-org', () => ({
   getOrgPg: () => ({ sql: () => Promise.resolve(owner.ownerRows) }),
 }));
-vi.mock('../hive/placement-watchdog', () => ({
+vi.mock('../pot/placement-watchdog', () => ({
   resolveQueenOwner: owner.resolveQueenOwner,
 }));
 vi.mock('../agent-tools/coordination/messages', () => ({

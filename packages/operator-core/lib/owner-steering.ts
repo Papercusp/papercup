@@ -507,7 +507,7 @@ export async function idleActivityAllowed(
   try {
     let home = potHomeSlug?.trim() || null;
     if (!home) {
-      const { resolvePotHomeSlug } = await import('./hive/wake');
+      const { resolvePotHomeSlug } = await import('./pot/wake');
       home = resolvePotHomeSlug();
     }
     if (!home) return true;

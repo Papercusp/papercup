@@ -12,6 +12,7 @@
  * NOT stored here — they live in the separate papercusp_su DB.
  */
 
+import { hostname } from 'node:os';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import {
@@ -36,6 +37,25 @@ const store = new PgPresenceStore({
   ensureSchema: async () => {},
 });
 
+// WI-3898 P1 (coord:presence liveness parity): `coord_presence.host`/`.pid` have
+// existed in the schema since mig 277 (coord-presence-v2-columns) and the
+// PresenceInput/PgPresenceStore write path has always accepted them — but NO
+// caller ever passed them, so every row's host/pid silently sat at their column
+// defaults ('' / null) forever (confirmed via `grep -rn 'writePresence(' `: the
+// only in-repo call site, declare-intent.ts, never sets host/pid). This is a
+// pure WRITE-PATH gap, not a schema gap — no migration needed. Cache the local
+// hostname once (stable for the process lifetime, cheap enough to skip a
+// per-write syscall) and default BOTH from the CURRENT process unless a caller
+// explicitly overrides — safe because writePresence's own ON CONFLICT clause is
+// non-coalescing (host/pid are unconditionally EXCLUDED.host/EXCLUDED.pid on
+// every write already), so this changes what gets written, never HOW it's
+// written. This is scoped to EI-9262/WI-3898 remedy #1's pid/host half only
+// (verified-process-liveness plumbing); the `suspect`/`draining` SessionState
+// and the confirmLiveness UX hint (#2/#3) are deliberately NOT touched here —
+// they are breaking/UX changes to a hot shared path that need their own
+// dedicated pass per the item's own staged-rollout note.
+const LOCAL_HOSTNAME = hostname();
+
 /**
  * Upsert the caller's presence row — "set my presence to exactly this".
  * Always bumps heartbeat_at AND last_active_at (a declared write is genuine
@@ -58,7 +78,11 @@ export async function writePresence(
       potSlug = null; // best-effort: presence must write even if hive lookup fails
     }
   }
-  await store.write(identity, { ...input, agentRole, potSlug });
+  // WI-3898 P1: stamp the CURRENT process's host/pid unless the caller passed
+  // its own (tests / a future cross-process caller may still override).
+  const host = input.host ?? LOCAL_HOSTNAME;
+  const pid = input.pid ?? process.pid;
+  await store.write(identity, { ...input, agentRole, potSlug, host, pid });
 
   // Fleet membership (named-su-agent-fleets-2026-06-29 P-005): the SOFT presence label,
   // sourced from env at registration (PAPERCUSP_FLEET_SLUG / PAPERCUSP_FLEET_ROLE), the

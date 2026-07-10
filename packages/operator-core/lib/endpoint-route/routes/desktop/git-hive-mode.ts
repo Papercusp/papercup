@@ -3,7 +3,7 @@
  *
  * Ops lever for the per-hive `hiveGit.mode` seam (p2p-git-live-activation-2026-07-09
  * P-306, WI-3500) — the runbook (hive-git-p2p-ops-runbook-2026-07-09) documents the
- * mode flip as a direct `setHiveGitMode`/`getHiveGitMode` call with NO admin route,
+ * mode flip as a direct `setPotGitMode`/`getPotGitMode` call with NO admin route,
  * because activation is structural (no flag gates the drivers themselves). That
  * still left NO operator-reachable lever to actually flip/verify/rollback a real
  * hive's mode outside a raw SQL statement against the hive's home box — this route
@@ -23,7 +23,7 @@
  * git mode.
  */
 import { defineTool } from '@papercusp/agent-mcp';
-import { getHiveGitMode, setHiveGitMode, HIVE_GIT_MODES, type HiveGitMode } from '../../../harness/git-sync/hive-git-mode';
+import { getPotGitMode, setPotGitMode, POT_GIT_MODES, type PotGitMode } from '../../../harness/git-sync/hive-git-mode';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-id-constant';
 
 const JSON_HEADERS: Record<string, string> = { 'content-type': 'application/json' };
@@ -42,7 +42,7 @@ export default [
       const slug = (url.searchParams.get('slug') ?? '').trim();
       if (!slug) return json({ ok: false, error: 'missing_slug' }, 400);
       const ws = url.searchParams.get('workspace')?.trim() || DEFAULT_WORKSPACE_ID;
-      const mode = await getHiveGitMode(ws, slug);
+      const mode = await getPotGitMode(ws, slug);
       return json({ ok: true, slug, workspaceId: ws, mode }, 200);
     },
   }),
@@ -67,12 +67,12 @@ export default [
 
       const rawMode = body.mode;
       const clearing = rawMode == null || rawMode === '';
-      if (!clearing && !HIVE_GIT_MODES.includes(rawMode as HiveGitMode)) {
-        return json({ ok: false, error: 'invalid_mode', expected: HIVE_GIT_MODES }, 400);
+      if (!clearing && !POT_GIT_MODES.includes(rawMode as PotGitMode)) {
+        return json({ ok: false, error: 'invalid_mode', expected: POT_GIT_MODES }, 400);
       }
 
       try {
-        await setHiveGitMode(ws, slug, clearing ? null : (rawMode as HiveGitMode));
+        await setPotGitMode(ws, slug, clearing ? null : (rawMode as PotGitMode));
       } catch (e) {
         return json(
           { ok: false, error: 'mode_write_failed', message: e instanceof Error ? e.message : String(e) },
@@ -80,7 +80,7 @@ export default [
         );
       }
 
-      const after = await getHiveGitMode(ws, slug);
+      const after = await getPotGitMode(ws, slug);
       return json({ ok: true, slug, workspaceId: ws, mode: after, cleared: clearing }, 200);
     },
   }),

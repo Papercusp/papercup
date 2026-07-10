@@ -46,7 +46,7 @@ export interface EnsurePapercuspHiveResult {
   reason?: string;
 }
 
-/** A `createHiveHarness`-shaped result (the only fields this helper reads). */
+/** A `createPotHarness`-shaped result (the only fields this helper reads). */
 interface CreateHiveLike {
   ok: boolean;
   error?: string;
@@ -120,15 +120,15 @@ export async function ensurePapercuspHive(
   const createHive =
     deps.createHive ??
     (async (o) => {
-      const { createHiveHarness } = await import('../agent-tools/hive/_create');
-      return createHiveHarness(o);
+      const { createPotHarness } = await import('../agent-tools/pot/_create');
+      return createPotHarness(o);
     });
   const res = await createHive({
     slug: PAPERCUSP_HIVE_SLUG,
     workspaceId: PAPERCUSP_WORKSPACE_ID,
     createdBy: 'system:dogfood-bootstrap',
     // B-merge (owner-directed papercup→papercusp): papercusp IS its own repo. Link the
-    // detected repo root in place as the hive home (createHiveHarness existingPath mode),
+    // detected repo root in place as the hive home (createPotHarness existingPath mode),
     // so there is ONE 'papercusp' entry (harness_kind:'hive', path=repo) and no separate
     // 'papercup' member harness. resolveHarnessContentPath returns this path (no member).
     existingPath: root,

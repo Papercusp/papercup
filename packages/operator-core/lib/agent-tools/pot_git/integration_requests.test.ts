@@ -36,7 +36,7 @@ beforeEach(() => {
   listIntegrationRequests = vi.fn(async () => [SAMPLE_ROW]);
   ratifyIntegrationRequest = vi.fn(async () => true);
   vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId }));
-  vi.doMock('../../sync/hive-git/integration-requests', () => ({
+  vi.doMock('../../sync/pot-git/integration-requests', () => ({
     listIntegrationRequests,
     ratifyIntegrationRequest,
   }));
@@ -44,7 +44,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.doUnmock('../../workspace-registry');
-  vi.doUnmock('../../sync/hive-git/integration-requests');
+  vi.doUnmock('../../sync/pot-git/integration-requests');
 });
 
 async function tool() {

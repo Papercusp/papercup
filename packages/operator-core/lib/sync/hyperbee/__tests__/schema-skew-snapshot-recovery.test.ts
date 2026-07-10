@@ -1,5 +1,5 @@
 /**
- * schema-skew-snapshot-recovery.test.ts — Brief F (shared-hive-release-testing)
+ * schema-skew-snapshot-recovery.test.ts — Brief F (shared-pot-release-testing)
  * Scenario 7, caveat C2 (raised in findings-F.md): the SNAPSHOT-COMPACTION ×
  * SCHEMA-SKEW interaction.
  *

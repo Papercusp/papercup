@@ -126,19 +126,19 @@ import './discovery/pots';
 import './discovery/set_pot';
 // autoloop-pot-operator-rebuild-2026-06-05 P0 — the Pot operator's self-declared
 // wake surface (declare-wake / wake / status):
-import './hive/declare_wake';
-import './hive/wake';
-import './hive/status';
+import './pot/declare_wake';
+import './pot/wake';
+import './pot/status';
 // queen-brief-cache B-06 / P-010 — the Queen's per-wake efficiency read surface:
-import './hive/mug_efficiency';
+import './pot/mug_efficiency';
 // queen-autonomous-execution B-08 — the Queen's plan-aware placement survey:
-import './hive/survey';
-import './hive/start';
-import './hive/pause';
+import './pot/survey';
+import './pot/start';
+import './pot/pause';
 // queen-steering-panel-2026-06-15 B-01 — owner steering controls for the Queen
 // (focus directive / eligible plans / new-work pause); hive_settings-backed (C-1).
-import './hive/set_steering';
-import './hive/get_steering';
+import './pot/set_steering';
+import './pot/get_steering';
 // overwatch-role-2026-06-15 B-07 — the autonomous system-health supervisor's
 // control surface (start/pause its loop), sibling to pot:start/pause:
 import './overwatch/start';
@@ -151,13 +151,13 @@ import './overwatch/declare_wake';
 // `kettle:start` in THIS process finds a wired waker, not the fail-soft no-op).
 import '../overwatch/loop';
 // hive-tool-namespace-2026-06-08 — local hive lifecycle (read + create/dissolve/update):
-import './hive/list';
-import './hive/get';
-import './hive/create';
+import './pot/list';
+import './pot/get';
+import './pot/create';
 // EI-1582 — the agent-facing producer for hive_slug (wire a harness in as a member):
-import './hive/add_member';
+import './pot/add_member';
 // hive-from-github-url-2026-06-11 P-006 — create a Hive FROM a GitHub URL:
-import './hive/create_from_repo';
+import './pot/create_from_repo';
 // per-hive-learning-loops-2026-06-14 P-071 — opt INTO platform mode ("Papercusp inside Papercusp"):
 import './platform/enable';
 // per-hive-learning-loops-2026-06-14 P-072 — send a local improvement UPSTREAM (fork-PR + Comb learning-pack):
@@ -166,30 +166,30 @@ import './platform/contribute';
 import './platform/fork_gc';
 // pr-system-completion-dogfood PR-5 (item 2) — assert the fork→PR dogfood loop round-tripped (WI shipped + linked PR):
 import './platform/dogfood_verify';
-import './hive/dissolve';
+import './pot/dissolve';
 // pot:obliterate — the HARD delete: dissolve + purge the harness_shared rows dissolve leaves behind.
-import './hive/obliterate';
+import './pot/obliterate';
 // shared-hive-hardening-2026-06-13 P-012 — a joiner cleanly LEAVES a shared hive:
-import './hive/leave';
-import './hive/update';
+import './pot/leave';
+import './pot/update';
 // cross-hive-boundary-2026-06-08 P-002 — owner cross-Hive capability grants:
-import './hive/cross_grant';
+import './pot/cross_grant';
 // hive-network-surface-2026-06-11 P-005 (B-07) — owner beacon-publish consent:
-import './hive/beacon_consent';
+import './pot/beacon_consent';
 // hive-network-surface-2026-06-11 P-003 (B-04) — front-door cross-Hive ask tools:
-import './hive/ask';
-import './hive/request_work';
-import './hive/asks';
+import './pot/ask';
+import './pot/request_work';
+import './pot/asks';
 // shared-hive-owner-enforcement-2026-06-19 (EN-3) — the claimed owner's control surface:
 // P-MEMBER approval-mode (membership_pending / membership_decide) + P-MOD report→queue→
 // takedown / ban (report / moderation_queue / moderation_resolve / takedown / ban_member).
-import './hive/membership_pending';
-import './hive/membership_decide';
-import './hive/report';
-import './hive/moderation_queue';
-import './hive/moderation_resolve';
-import './hive/takedown';
-import './hive/ban_member';
+import './pot/membership_pending';
+import './pot/membership_decide';
+import './pot/report';
+import './pot/moderation_queue';
+import './pot/moderation_resolve';
+import './pot/takedown';
+import './pot/ban_member';
 // hive-network-surface-2026-06-11 P-006 (B-08) — the aggregate Network board
 // (C-3 rows) over the capability-tier ladder; the agent twin of the
 // `network.board` named sync query that backs the dock Network tab:
@@ -686,7 +686,7 @@ import './work_items/reclaim-config';
 import './coordination/handoff-config';
 import './coordination/session-reaper-config';
 // live-configurability-audit-2026-06-20 P-015 — hive placement-watchdog control policy:
-import './hive/control-policy';
+import './pot/control-policy';
 // live-configurability-audit-2026-06-20 P-016 — green-checkpoint / release thresholds:
 import './release/checkpoint-config';
 // live-configurability-audit-2026-06-20 P-022 — runtime Scout workspace spend-ceiling override:
@@ -1119,7 +1119,7 @@ import './storage/prune';
 // `backgroundWorkspaceIds()` names (per-window-workspace-context P-020) —
 // under the shared-operator model a non-global workspace's pot must still
 // wake on its subscribed events.
-import { registerHiveWakeRules } from '../hive/wake';
+import { registerPotWakeRules } from '../pot/wake';
 import { backgroundWorkspaceIds } from '../workspace-registry';
 // EI-307: projecting the persisted hive-wake subscriptions into the in-memory
 // reaction matcher is REQUEST-SERVING work, not a background loop — it must run on
@@ -1133,7 +1133,7 @@ import { backgroundWorkersEnabled, reactionMatcherShouldArm } from '../backgroun
 try {
   if (reactionMatcherShouldArm()) {
     for (const ws of backgroundWorkspaceIds()) {
-      void registerHiveWakeRules(ws).catch(() => {});
+      void registerPotWakeRules(ws).catch(() => {});
     }
   }
 } catch {
@@ -1145,10 +1145,10 @@ try {
 // turn-end hook, so it may sit started with no wake armed forever. Arm the
 // watchdog fallback for each such hive. Fail-soft; never blocks boot.
 // Gated like the wake-rule registration above (EI-312 leg 1).
-import { hiveBootCheck } from '../hive/watchdog';
+import { potBootCheck } from '../pot/watchdog';
 try {
   if (backgroundWorkersEnabled()) {
-    void hiveBootCheck()
+    void potBootCheck()
       .then((results) => {
         for (const r of results) {
           if (r.outcome === 'armed' || r.outcome === 'staged') {

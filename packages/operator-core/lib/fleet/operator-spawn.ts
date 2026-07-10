@@ -93,7 +93,7 @@ async function ownerMaxBeesCeiling(workspaceId: string): Promise<number | null> 
   try {
     const [{ getOwnerSteering, effectiveMaxBees }, { resolvePotHomeSlug }] = await Promise.all([
       import('../owner-steering'),
-      import('../hive/wake'),
+      import('../pot/wake'),
     ]);
     const home = resolvePotHomeSlug();
     if (!home) return null;
@@ -639,7 +639,7 @@ async function readEffectiveSpawnTierConfig(workspaceId: string): Promise<{
   try {
     const [{ getOwnerSteering }, { resolvePotHomeSlug }] = await Promise.all([
       import('../owner-steering'),
-      import('../hive/wake'),
+      import('../pot/wake'),
     ]);
     const home = resolvePotHomeSlug();
     if (home) session = await getOwnerSteering(workspaceId, home);

@@ -20,6 +20,7 @@ import postgres, { type Sql } from 'postgres';
 import { PgCoordLog, ensureCoordEventLogTable } from '@papercusp/coordination/event-log';
 import { describeCoordEventLogConformance } from '@papercusp/coordination/event-log/conformance';
 import { connectionString } from '../../../memory/mem0-connection';
+import { PG_BIGINT_AS_NUMBER_TYPES } from '@papercusp/db-org';
 
 let sql: Sql | null = null;
 let pgOk = false;
@@ -31,6 +32,11 @@ try {
     connection: { search_path: 'harness_shared, public' },
     prepare: false,
     max: 4,
+    // EI-9265: this handle must mirror getOrgPg()'s bigint→Number coercion
+    // exactly — the drift that let a bigserial cursor (coord_event_log.id)
+    // silently come back as a string in THIS client while production's
+    // getOrgPg() client already coerced it correctly.
+    types: PG_BIGINT_AS_NUMBER_TYPES,
   });
   await sql`SELECT 1`;
   await ensureCoordEventLogTable(sql);
@@ -190,5 +196,76 @@ describeCoordEventLogConformance(
     });
     expect((await log.getEvent('escalations', 'ei1576'))?.from).toBe('b');
     await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${TEST_WS}`;
+  });
+});
+
+// WI-3912: coord:feed (feed.ts's compareByTsThenId) crashed on EVERY call with
+// "Cannot read properties of undefined (reading 'localeCompare')" because a
+// FEDERATED remote row (coord_event_log id 458510, live prod) had a `body`
+// with no `ts`/`msg_id` keys — the fold-apply path for remote rows stores
+// whatever shape a peer sent verbatim, unlike the local write paths
+// (appendLine/putEvent) which always stamp both from the envelope. Pins the
+// pg-log.ts `parseBody` fix: every read method backstops body.ts/body.msg_id
+// from the row's own NOT-NULL `ts`/`msg_id` columns when body omits them.
+(pgOk ? describe : describe.skip)('parseBody backstops ts/msg_id from row columns (WI-3912)', () => {
+  const insertMalformedRow = async (): Promise<void> => {
+    // Bypass appendLine on purpose — simulates a federated remote row whose
+    // body was folded in verbatim without CoordEnvelope validation (the
+    // actual live root cause), not a row this package's own write path could
+    // ever produce.
+    await sql!`
+      INSERT INTO harness_shared.coord_event_log (workspace_id, surface, msg_id, body, ts)
+      VALUES (${TEST_WS}, 'messages', 'wi3912-malformed', '{"summary": "no ts or msg_id in body"}'::jsonb, '2026-07-09T22:19:21.700Z'::timestamptz)
+    `;
+  };
+
+  afterAll(async () => {
+    await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${TEST_WS}`;
+  });
+
+  it('readLines backstops ts/msg_id instead of returning undefined', async () => {
+    await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${TEST_WS}`;
+    await insertMalformedRow();
+    const log = new PgCoordLog({ getSql: () => sql!, ensureSchema: async () => {}, workspaceId: TEST_WS });
+    const [row] = await log.readLines('messages');
+    expect(row?.ts).toBe('2026-07-09T22:19:21.700Z');
+    expect(row?.msg_id).toBe('wi3912-malformed');
+  });
+
+  it('readLinesBounded backstops ts/msg_id', async () => {
+    await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${TEST_WS}`;
+    await insertMalformedRow();
+    const log = new PgCoordLog({ getSql: () => sql!, ensureSchema: async () => {}, workspaceId: TEST_WS });
+    const [row] = await log.readLinesBounded('messages', { limit: 10 });
+    expect(row?.ts).toBe('2026-07-09T22:19:21.700Z');
+    expect(row?.msg_id).toBe('wi3912-malformed');
+  });
+
+  it('readLinesBoundedCursor backstops ts/msg_id (the coord:feed read path)', async () => {
+    await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${TEST_WS}`;
+    await insertMalformedRow();
+    const log = new PgCoordLog({ getSql: () => sql!, ensureSchema: async () => {}, workspaceId: TEST_WS });
+    const page = await log.readLinesBoundedCursor('messages', { limit: 10 });
+    expect(page.rows).toHaveLength(1);
+    expect(page.rows[0]?.envelope.ts).toBe('2026-07-09T22:19:21.700Z');
+    expect(page.rows[0]?.envelope.msg_id).toBe('wi3912-malformed');
+    // The actual live crash: sorting rows via a real (ts, msg_id) comparator
+    // (feed.ts's compareByTsThenId shape) must never throw on this row.
+    expect(() =>
+      [...page.rows].sort(
+        (a, b) => a.envelope.ts.localeCompare(b.envelope.ts) || a.envelope.msg_id.localeCompare(b.envelope.msg_id),
+      ),
+    ).not.toThrow();
+  });
+
+  it('a well-formed body is left untouched (no column override of a present value)', async () => {
+    await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${TEST_WS}`;
+    const log = new PgCoordLog({ getSql: () => sql!, ensureSchema: async () => {}, workspaceId: TEST_WS });
+    await log.appendLine('messages', 'agent', {
+      ts: '2026-01-01T00:00:00.000Z', msg_id: 'well-formed', kind: 'message', from: 'agent', to: ['*'],
+    });
+    const [row] = await log.readLines('messages');
+    expect(row?.ts).toBe('2026-01-01T00:00:00.000Z');
+    expect(row?.msg_id).toBe('well-formed');
   });
 });

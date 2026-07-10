@@ -1,5 +1,5 @@
 /**
- * A-003 (shared-hive-release-testing Brief I) — the JOINER projection-binding fix.
+ * A-003 (shared-pot-release-testing Brief I) — the JOINER projection-binding fix.
  *
  * A joiner boots a MEMBER harness; the hive_members / hive_settings ops it reads
  * off the shared Hive topic carry the HIVE-HOME slug (hive_home_slug / harness_slug

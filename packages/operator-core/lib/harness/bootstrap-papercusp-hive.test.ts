@@ -15,6 +15,7 @@ import {
   __resetBootstrapInFlight,
   seedTargetDirs,
   defaultSetHomeWorkspace,
+  dogfoodHiveDisabled,
   PAPERCUP_DOGFOOD_REPO_URL,
   GIT_SEED_RETRY_DELAYS_MS,
   type BootstrapPapercuspHiveDeps,
@@ -135,6 +136,46 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     expect(deps.initSubmodules).toHaveBeenCalledWith('/clones/papercusp', expect.any(Object));
     expect(res.state).toBe('cloned-and-created');
     expect(res.path).toBe('/clones/papercusp');
+  });
+
+  // WI-1423: fresh .deb test-rig frames (Hetzner brief-3/4) auto-wired into the
+  // PRODUCTION papercusp hive at boot with no way to opt out. This is the hard,
+  // synchronous, flag-independent kill-switch — see dogfoodHiveDisabled() for the
+  // full rationale (it closes the gap the ingest-retrigger flag check alone can't,
+  // since it must work even before the flag store is reachable).
+  describe('WI-1423 dogfoodHiveDisabled() test-frame kill-switch', () => {
+    it('unset ⇒ false (dogfood bootstrap proceeds normally)', () => {
+      expect(dogfoodHiveDisabled({})).toBe(false);
+    });
+
+    it('PAPERCUSP_DISABLE_DOGFOOD_HIVE=1 ⇒ true', () => {
+      expect(dogfoodHiveDisabled({ PAPERCUSP_DISABLE_DOGFOOD_HIVE: '1' })).toBe(true);
+    });
+
+    it('any other value (e.g. "true", "0") ⇒ false — only the literal "1" disables', () => {
+      expect(dogfoodHiveDisabled({ PAPERCUSP_DISABLE_DOGFOOD_HIVE: 'true' })).toBe(false);
+      expect(dogfoodHiveDisabled({ PAPERCUSP_DISABLE_DOGFOOD_HIVE: '0' })).toBe(false);
+    });
+
+    it('bootstrapPapercuspHive short-circuits BEFORE any network/registry call when disabled', async () => {
+      const prev = process.env.PAPERCUSP_DISABLE_DOGFOOD_HIVE;
+      process.env.PAPERCUSP_DISABLE_DOGFOOD_HIVE = '1';
+      try {
+        const deps = spyDeps();
+        const res = await bootstrapPapercuspHive(deps);
+        expect(res).toEqual({
+          state: 'skipped',
+          slug: null,
+          reason: 'dogfood hive disabled (PAPERCUSP_DISABLE_DOGFOOD_HIVE=1)',
+        });
+        expect(deps.loadRegistry).not.toHaveBeenCalled();
+        expect(deps.clone).not.toHaveBeenCalled();
+        expect(deps.ensureHive).not.toHaveBeenCalled();
+      } finally {
+        if (prev === undefined) delete process.env.PAPERCUSP_DISABLE_DOGFOOD_HIVE;
+        else process.env.PAPERCUSP_DISABLE_DOGFOOD_HIVE = prev;
+      }
+    });
   });
 
   it('P-005 latch: already joined the canonical hive (hives row keyed on the baked pubkey) → already-present, NO re-join', async () => {

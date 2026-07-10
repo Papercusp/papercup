@@ -14,10 +14,10 @@ vi.mock('@papercusp/db-org', () => ({
 }));
 
 import {
-  coerceHiveGitMode,
-  getHiveGitMode,
-  setHiveGitMode,
-  HIVE_GIT_MODE_SETTING_KEY,
+  coercePotGitMode,
+  getPotGitMode,
+  setPotGitMode,
+  POT_GIT_MODE_SETTING_KEY,
 } from './hive-git-mode';
 
 /** Fake postgres client: `unsafe` resolves the given rows (or rejects). */
@@ -32,52 +32,52 @@ const fakeSql = (rows: unknown[] | Error): Sql =>
 const settingRow = (value: unknown) => ({
   workspace_id: 'ws',
   harness_slug: 'shop-hive',
-  setting_key: HIVE_GIT_MODE_SETTING_KEY,
+  setting_key: POT_GIT_MODE_SETTING_KEY,
   value: JSON.stringify(value),
   created_at: 1,
   updated_at: 1,
 });
 
-describe('coerceHiveGitMode — junk-safe', () => {
+describe('coercePotGitMode — junk-safe', () => {
   it('passes the two non-default modes through', () => {
-    expect(coerceHiveGitMode('bridged')).toBe('bridged');
-    expect(coerceHiveGitMode('p2p-only')).toBe('p2p-only');
+    expect(coercePotGitMode('bridged')).toBe('bridged');
+    expect(coercePotGitMode('p2p-only')).toBe('p2p-only');
   });
 
   it("everything else — junk strings, objects, null, undefined — reads as 'legacy'", () => {
     for (const junk of ['legacy', 'turbo', '', 'BRIDGED', 0, 1, true, null, undefined, {}, ['bridged']]) {
-      expect(coerceHiveGitMode(junk)).toBe('legacy');
+      expect(coercePotGitMode(junk)).toBe('legacy');
     }
   });
 });
 
-describe('getHiveGitMode — federated read, fail-open to legacy', () => {
+describe('getPotGitMode — federated read, fail-open to legacy', () => {
   it('reads a stored mode', async () => {
-    expect(await getHiveGitMode('ws', 'shop-hive', fakeSql([settingRow('bridged')]))).toBe('bridged');
-    expect(await getHiveGitMode('ws', 'shop-hive', fakeSql([settingRow('p2p-only')]))).toBe('p2p-only');
+    expect(await getPotGitMode('ws', 'shop-hive', fakeSql([settingRow('bridged')]))).toBe('bridged');
+    expect(await getPotGitMode('ws', 'shop-hive', fakeSql([settingRow('p2p-only')]))).toBe('p2p-only');
   });
 
   it("absent row → 'legacy'", async () => {
-    expect(await getHiveGitMode('ws', 'shop-hive', fakeSql([]))).toBe('legacy');
+    expect(await getPotGitMode('ws', 'shop-hive', fakeSql([]))).toBe('legacy');
   });
 
   it("malformed stored value → 'legacy' (never a silent push-stop on junk)", async () => {
-    expect(await getHiveGitMode('ws', 'shop-hive', fakeSql([settingRow('turbo')]))).toBe('legacy');
+    expect(await getPotGitMode('ws', 'shop-hive', fakeSql([settingRow('turbo')]))).toBe('legacy');
   });
 
   it("store failure → 'legacy' (fail-open: a PG blip must not flip a legacy hive commit-only)", async () => {
-    expect(await getHiveGitMode('ws', 'shop-hive', fakeSql(new Error('pg down')))).toBe('legacy');
+    expect(await getPotGitMode('ws', 'shop-hive', fakeSql(new Error('pg down')))).toBe('legacy');
   });
 
   it("no injected sql + unreachable PG → 'legacy' (the default-resolver path in unit-shaped envs)", async () => {
-    expect(await getHiveGitMode('ws', 'shop-hive')).toBe('legacy');
+    expect(await getPotGitMode('ws', 'shop-hive')).toBe('legacy');
   });
 });
 
-describe('setHiveGitMode — writes validate, never coerce', () => {
+describe('setPotGitMode — writes validate, never coerce', () => {
   it('rejects a junk mode BEFORE touching the store', async () => {
     await expect(
-      setHiveGitMode('ws', 'shop-hive', 'turbo' as never, fakeSql([])),
+      setPotGitMode('ws', 'shop-hive', 'turbo' as never, fakeSql([])),
     ).rejects.toThrow(/unknown mode 'turbo'/);
   });
 });

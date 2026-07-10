@@ -25,7 +25,7 @@ const FOREIGN = {
 };
 
 function mockSources(directed: { in: unknown[]; out: unknown[] }) {
-  vi.doMock('../agent-tools/hive/_resolve', () => ({
+  vi.doMock('../agent-tools/pot/_resolve', () => ({
     listHives: vi.fn(async () => []),
     liveAgentCountByHarness: vi.fn(() => new Map()),
   }));
@@ -46,7 +46,7 @@ function mockSources(directed: { in: unknown[]; out: unknown[] }) {
       }
     },
   }));
-  vi.doMock('../hive/wake', () => ({ resolvePotHomeSlug: () => 'home' }));
+  vi.doMock('../pot/wake', () => ({ resolvePotHomeSlug: () => 'home' }));
   vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));
 }
 
@@ -97,7 +97,7 @@ describe('buildNetworkBoard — directed grants (B-05 integration)', () => {
 function mockSourcesWithAsks(askRows: unknown[] | (() => never)) {
   // Two foreign peers so per-peer aggregation (not a global tally) is observable.
   const foreign = (pubkey: string) => ({ ...FOREIGN, potId: `hid-${pubkey}`, hivePubkey: pubkey });
-  vi.doMock('../agent-tools/hive/_resolve', () => ({
+  vi.doMock('../agent-tools/pot/_resolve', () => ({
     listHives: vi.fn(async () => []),
     liveAgentCountByHarness: vi.fn(() => new Map()),
   }));
@@ -121,7 +121,7 @@ function mockSourcesWithAsks(askRows: unknown[] | (() => never)) {
       }
     },
   }));
-  vi.doMock('../hive/wake', () => ({ resolvePotHomeSlug: () => 'home' }));
+  vi.doMock('../pot/wake', () => ({ resolvePotHomeSlug: () => 'home' }));
   vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));
   return listCalls;
 }

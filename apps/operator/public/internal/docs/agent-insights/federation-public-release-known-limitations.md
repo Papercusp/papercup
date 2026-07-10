@@ -473,7 +473,7 @@ needed. This limitation is closed.
 
 The post-min-bar backlog was given explicit verdicts under
 `shared-pot-p2p-release-readiness-2026-07-03` P-011 (full table:
-`shared-hive-release-testing/RELEASE-READINESS.md`). The standing
+`shared-pot-release-testing/RELEASE-READINESS.md`). The standing
 ship-with-limitation rows, each with an accountable tracker:
 
 * **No un-revoke path (G8, WI-1855) — SHIP-WITH-LIMITATION, ratified.** Revocation
@@ -605,7 +605,7 @@ exits 0). CI is no longer red on this.
 > absent). WI-3646 (hive\_slug regression) and WI-3869 (coord\_event\_log scan)
 > are separate regressions found and fixed the same week. Do not treat this
 > callout as current status — track `p2p-live-federation-crack-2026-07-10` /
-> `shared-hive-release-testing/RELEASE-READINESS.md` for the live GO/NO-GO
+> `shared-pot-release-testing/RELEASE-READINESS.md` for the live GO/NO-GO
 > state.
 >
 > **Hetzner is GONE — the owner-wall callout is OBSOLETE (2026-07-03, D-001 of

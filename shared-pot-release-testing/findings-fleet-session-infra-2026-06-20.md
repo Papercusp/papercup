@@ -166,7 +166,7 @@ one-off**:
 
 **Net effect on my loop (concrete impact, supports prioritizing your infra WI):** I completed all my
 solo-reachable work (PR-1, PR-3 live E2E, S0 test hardening) but was **forced into file-based coord**
-via `shared-hive-release-testing/*.md` for everything coordination-dependent — peer consensus
+via `shared-pot-release-testing/*.md` for everything coordination-dependent — peer consensus
 (plan-claim-guard), owner sign-offs (PR-2 seam), handoff scanning. It works but is async + invisible to
 the real queue; I **could not claim queue items** (so I avoided all unassigned work to prevent
 double-work) or `memory:remember` durable facts. **Strong +1 on both your proposed WIs** — interactive

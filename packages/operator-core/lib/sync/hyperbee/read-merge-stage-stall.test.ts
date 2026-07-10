@@ -7,8 +7,16 @@
  * as the send-side drain's `append()` — NAMES ITSELF in the journal (scope =
  * source log key, stage = table::key) instead of the merge pass just going
  * silent. Pins: a still-pending `apply()` past the stall threshold logs the
- * named line; the merge pass itself is otherwise unaffected (this is an
- * observability side-channel, never a timeout).
+ * named line.
+ *
+ * WI-3896 UPDATE (2026-07-10): `logIfStageStalls` itself is still purely an
+ * observability side-channel (it never times out `p`) — but `applyRecording
+ * Winner` NOW ALSO races the same `apply(env)` against a separate, longer,
+ * HARD bound (`MERGE_APPLY_TIMEOUT_MS`, default 45s — see
+ * read-merge-apply-timeout.test.ts) that funnels a timeout into the existing
+ * WI-255 quarantine counter. This file's tests only advance fake timers to
+ * `STAGE_STALL_LOG_MS + 1` (well under that 45s bound), so they exercise
+ * exactly the logging side-channel and remain valid unchanged.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { createMergeCursor, mergeAdmittedLogsIncremental, type AdmittedLog } from './read-merge';

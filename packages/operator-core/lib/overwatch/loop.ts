@@ -61,7 +61,7 @@ import { computeOverwatchBrief } from "./compute-brief";
 import { renderOverwatchBrief } from "./brief-types";
 import { registerOverwatchWaker } from "./wake-bridge";
 import { agentProducedTurn } from "../fleet/invoke-outcome";
-import { resolvePotHomeSlug } from "../hive/wake";
+import { resolvePotHomeSlug } from "../pot/wake";
 import { operatorHomeHarnessSlug } from "../harness/operator-home-harness";
 
 const operatorBase = operatorApiBase;

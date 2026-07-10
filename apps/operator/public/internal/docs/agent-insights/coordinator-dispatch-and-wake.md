@@ -73,6 +73,19 @@ separate `coord:whoami` call (`self-marker.ts`).
 > membership questions. `coord:glance` gives a one-line fleet headline. `coord:presence` stays the
 > dispatch-focused door documented here.
 
+**`intentStale` is now forced by `sessionState`, not just the 30-min activity clock.** As of
+2026-07-10 (EI-9262), `overrideIntentStaleForSessionState` (`presence-wakeability.ts`, applied in
+`presence-snapshot.ts`) forces a row's `intentStale` to `true` the instant `sessionState` reads
+`parked` or `ended` — overriding the separate `INTENT_STALE_SEC` (30-minute) activity heuristic.
+The gap it closes: a killed/exited agent's `sessionState` can flip to `parked`/`ended` (via the
+wakeability + hard-stale-ceiling checks above) **long before** `lastActiveSecAgo` crosses the
+30-minute `intentStale` threshold — a reader trusting `intentStale` alone (not cross-checking
+`sessionState`) could see a fresh-looking declared intent for an agent no longer taking turns, and
+stand down a takeover that should proceed. `recorded` rows are left alone (authoritatively-live,
+not idle/dead — their `intent` is an empty placeholder anyway). **So: never read `intentStale` in
+isolation — a `parked`/`ended` `sessionState` already means "treat the intent as stale", by
+construction.**
+
 **A `parked` row can be deliberately benched, not just idle — check `parkedOn`.** As of
 2026-07-10 (WI-3715), `coord:presence` stamps each active row with `parkedOn: string[]` when the
 agent is parked on a real `events:await` key (the same derivation `fleet:assignments` already

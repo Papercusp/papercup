@@ -12,7 +12,11 @@
  * The cut-off member is simply absent from `remaining`, so it gets no wrapped row → it
  * replicates future ciphertext it can never unwrap = the C-001 read cut.
  *
- * DARK behind `papercusp-hive-rekey`: enabled=false ⇒ no-op (today's PG-only revoke).
+ * Gated by `papercusp-hive-rekey`: enabled=false ⇒ no-op (PG-only revoke, no read cut).
+ * STATUS (2026-07-10): this flag is DEFAULT-ON (not in DARK_FLAGS) and confirmed LIVE
+ * in production (flags:get → true) — the C-001 read-cut is active today, not dark. See
+ * shared-pot-release-testing/RELEASE-READINESS.md row #2/#11. The gate stays in the code
+ * as a kill-switch (owner can flip off if the re-key misbehaves), not as a staged-dark flag.
  * Every PG/crypto seam is injectable for hermetic unit tests (no PG, no real crypto).
  */
 import type { Sql } from 'postgres';
@@ -33,7 +37,8 @@ import { loadHivePubkey } from '../../identity/hive-keypair';
 /**
  * Is the read-plane re-key (papercusp-hive-rekey) on? The SHARED flag resolver for the
  * boundary trigger (produce side, here) AND the apply-side decrypt-gate (`rekeyOn`).
- * Default flag = false (the whole re-key is dark until cutover).
+ * Default flag = true (DEFAULT-ON, not in DARK_FLAGS) — live in production as of
+ * 2026-07-10; kept as a runtime kill-switch, not a staged-dark cutover gate.
  */
 export async function isHiveRekeyEnabled(): Promise<boolean> {
   return getFlag(FLAGS.POT_REKEY, 'system');

@@ -18,7 +18,7 @@
 import { useSyncQuery } from '@papercusp/sync';
 import { Crown, RefreshCw } from 'lucide-react';
 import { useLexicon } from '@/lib/useLexicon';
-import type { QueenWakeEfficiency } from '@papercusp/operator-core/lib/hive/queen-wake-efficiency';
+import type { MugWakeEfficiency } from '@papercusp/operator-core/lib/pot/mug-wake-efficiency';
 
 /** A [0,1] ratio → integer percent. */
 const pct = (r: number): string => `${Math.round((Number.isFinite(r) ? r : 0) * 100)}%`;
@@ -32,7 +32,7 @@ function compact(n: number): string {
 
 export function MugWakeEfficiencyPanel() {
   const t = useLexicon();
-  const sync = useSyncQuery<QueenWakeEfficiency>({
+  const sync = useSyncQuery<MugWakeEfficiency>({
     queryName: 'learning.queenWakeEfficiency',
     args: {},
     staleTime: 30_000,

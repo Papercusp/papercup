@@ -1,5 +1,5 @@
 /**
- * multi-peer-scale.test.ts — Brief F (shared-hive-release-testing) Scenarios 6 + 3:
+ * multi-peer-scale.test.ts — Brief F (shared-pot-release-testing) Scenarios 6 + 3:
  * SCALE (many peers, large history) and LONG-OFFLINE BACKFILL.
  *
  * The bench runner (perf/) measures these with real OS processes; merge-scaling.

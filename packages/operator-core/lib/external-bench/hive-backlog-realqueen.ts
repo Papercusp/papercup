@@ -14,10 +14,10 @@
  * THIS driver measures the ACTUAL Queen. It boots ONE hive holding the WHOLE backlog as N member
  * harnesses (one cloned bench task each, blueprint `external-bench`), then:
  *   - HIVE_REALQUEEN_ARM ('hive-realqueen'): `startHive` → the REAL Queen PERSONA AGENT wakes
- *     (`requestUrgentHiveWake` → `fireLaunchBlueprint('hive')`). She surveys the multi-member frontier,
+ *     (`requestUrgentPotWake` → `fireLaunchBlueprint('hive')`). She surveys the multi-member frontier,
  *     ranks + places a capped bee fleet, the placement-watchdog (hive/placement-watchdog.ts) detects
  *     stuck/dead bees → fires recovery wakes → she RE-PLACES, attaches situational briefs, and declares
- *     her own adaptive wakes. The driver only POLLS surveyHive + countHivePlacementsInFlight until
+ *     her own adaptive wakes. The driver only POLLS surveyPot + countHivePlacementsInFlight until
  *     drained, then `pauseHive` to bound spend. The driver does NOT place — the Queen does.
  *   - FIFO_NOQUEEN_ARM ('fifo-noqueen'): the SAME boot, but the Queen NEVER wakes (no `startHive`).
  *     The driver runs the scripted `planFifoPlacement` loop over the same members + same fleet cap —
@@ -149,10 +149,10 @@ export interface RealQueenBacklogOps {
     budget: GenerationBudget;
     workspaceId: string;
   }): Promise<RealQueenEnrolled>;
-  /** START the REAL Queen over the whole hive (setHiveStarted + requestUrgentHiveWake → the queen agent). */
+  /** START the REAL Queen over the whole hive (setHiveStarted + requestUrgentPotWake → the queen agent). */
   startRealQueen(input: { hiveHome: string; kickoff: string; workspaceId: string }): Promise<void>;
   /**
-   * RE-WAKE the Queen for ANOTHER survey→place cycle (requestUrgentHiveWake only — the hive is already
+   * RE-WAKE the Queen for ANOTHER survey→place cycle (requestUrgentPotWake only — the hive is already
    * started). The initial startRealQueen wakes her ONCE; on the staging host (:3170, DBOS routines off)
    * her first session can exit after a single survey without placing the whole frontier (observed: a
    * Queen ran 156s, placed 0 bees, exited `done`). The driver re-wakes her each poll while there is a
@@ -164,12 +164,12 @@ export interface RealQueenBacklogOps {
    * Run ONE placement-watchdog sweep over the bench hive (the real eviction/re-placement backstop).
    * The watchdog normally rides the 30s routinesTick, but the staging operator (:3170) runs with
    * routines DISABLED (PAPERCUSP_DBOS_ROUTINES=0) — so the driver fires the sweep itself each poll,
-   * scoped to the bench hive only (reconcileOneHive), to deliver the SAME stuck-bee detection →
+   * scoped to the bench hive only (reconcileOnePot), to deliver the SAME stuck-bee detection →
    * recovery-wake → Queen re-placement the live hive gets, without enabling global staging routines.
    * Real-Queen arm only (no-op for FIFO). Best-effort — a sweep error must not abort the drive.
    */
   reconcileWatchdog(input: { hiveHome: string; workspaceId: string }): Promise<void>;
-  /** surveyHive's ready-frontier + started-plan counts (the drained inputs) across all members. */
+  /** surveyPot's ready-frontier + started-plan counts (the drained inputs) across all members. */
   survey(input: { hiveHome: string; workspaceId: string }): Promise<{ frontierLen: number; plansLen: number }>;
   /** Placements still in flight = the drain terminator. For the hive arm: hive_placements non-terminal.
    *  For the FIFO arm: members placed (cupId set) whose feature is non-terminal & bee not terminal. */
@@ -665,7 +665,7 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
 
     async startRealQueen({ hiveHome, kickoff }) {
       // The core of pot:start: persist started=true (the watchdog's liveness bit) + wake the Queen agent.
-      // `liveHiveOps.startHive` === setHiveStarted(true) + requestUrgentHiveWake → fireLaunchBlueprint('hive').
+      // `liveHiveOps.startHive` === setHiveStarted(true) + requestUrgentPotWake → fireLaunchBlueprint('hive').
       const ops = await liveOps();
       await ops.startHive({ hiveHome, workspaceId: ws, kickoff });
     },
@@ -674,23 +674,23 @@ export function realQueenBacklogOps(opts: RealQueenBacklogOpts): RealQueenBacklo
       // Another urgent wake → another fireLaunchBlueprint('hive') → a fresh Queen session that surveys +
       // places the still-ready frontier. The hive is already started (startRealQueen did setHiveStarted);
       // this is the re-wake the disabled auto-routine would have delivered. Same call pot:start uses.
-      const { requestUrgentHiveWake } = await import('../hive/urgent-wake');
-      await requestUrgentHiveWake({ reason, harness: hiveHome, workspaceId: ws });
+      const { requestUrgentPotWake } = await import('../pot/urgent-wake');
+      await requestUrgentPotWake({ reason, harness: hiveHome, workspaceId: ws });
     },
 
     async reconcileWatchdog({ hiveHome }) {
       // Drive ONE placement-watchdog sweep for THIS hive (staging routines are off → no auto sweep).
-      // reconcileOneHive resolves the Queen owner, derives each placed bee's liveness, and fires the
+      // reconcileOnePot resolves the Queen owner, derives each placed bee's liveness, and fires the
       // recovery wakes / breaker escalations / stranded-blocker escalations — the real eviction +
       // re-placement loop, scoped to the bench hive (NOT the global listStartedHives sweep).
       const sql = await sqlClient();
-      const { reconcileOneHive, placementConfig } = await import('../hive/placement-watchdog');
-      await reconcileOneHive(sql, ws, hiveHome, placementConfig(), Date.now());
+      const { reconcileOnePot, placementConfig } = await import('../pot/placement-watchdog');
+      await reconcileOnePot(sql, ws, hiveHome, placementConfig(), Date.now());
     },
 
     async survey({ hiveHome }) {
-      const { surveyHive } = await import('../hive/survey');
-      const s = await surveyHive(ws, hiveHome);
+      const { surveyPot } = await import('../pot/survey');
+      const s = await surveyPot(ws, hiveHome);
       return { frontierLen: s.frontier.length, plansLen: s.plans.length };
     },
 

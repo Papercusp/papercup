@@ -14,8 +14,8 @@ vi.mock('../../../harness/git-sync/hive-git-mode', async () => {
   );
   return {
     ...actual,
-    getHiveGitMode: (...a: unknown[]) => getModeMock(...a),
-    setHiveGitMode: (...a: unknown[]) => setModeMock(...a),
+    getPotGitMode: (...a: unknown[]) => getModeMock(...a),
+    setPotGitMode: (...a: unknown[]) => setModeMock(...a),
   };
 });
 

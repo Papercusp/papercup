@@ -1,5 +1,5 @@
 /**
- * cold-boot-resume.test.ts — Brief F (shared-hive-release-testing) Scenario 2:
+ * cold-boot-resume.test.ts — Brief F (shared-pot-release-testing) Scenario 2:
  * restart / cold boot. A public hive runs for weeks across process restarts; a
  * peer killed mid-sync must reboot, RESUME from its persisted state, and converge
  * with NO loss or corruption. No prior test closes a booted substrate and reopens

@@ -1,5 +1,5 @@
 /**
- * n-peer-scale-churn.test.ts — Brief N (shared-hive-release-testing continuation):
+ * n-peer-scale-churn.test.ts — Brief N (shared-pot-release-testing continuation):
  * N-peer (3+) scale, join/leave churn under load, and backfill-at-size.
  *
  * WHY THIS FILE EXISTS. The live proof + most integration coverage is 2-peer; the

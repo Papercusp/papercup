@@ -21,7 +21,7 @@ import {
   verifyDogfoodRoundTrip,
   defaultReadReviewReport,
 } from '../../pr-host/dogfood-roundtrip';
-import { PLATFORM_SELF_HIVE_SLUG } from '../../hive/enable-platform-mode';
+import { PLATFORM_SELF_POT_SLUG } from '../../pot/enable-platform-mode';
 
 const text = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -58,13 +58,13 @@ export default defineTool({
       .min(1)
       .max(150)
       .optional()
-      .describe(`The member harness the PR contributes to (default the self-hive member ${PLATFORM_SELF_HIVE_SLUG}).`),
+      .describe(`The member harness the PR contributes to (default the self-hive member ${PLATFORM_SELF_POT_SLUG}).`),
     workspace: z.string().max(120).optional().describe('Workspace id (default: active workspace).'),
   }),
   async handler(args, ctx) {
     const workspaceId =
       args.workspace ?? ctx?.workspaceId ?? ctx?.principal?.workspaceId ?? activeWorkspaceId();
-    const harnessSlug = args.harnessSlug ?? PLATFORM_SELF_HIVE_SLUG;
+    const harnessSlug = args.harnessSlug ?? PLATFORM_SELF_POT_SLUG;
     try {
       const verdict = await verifyDogfoodRoundTrip({
         workspaceId,

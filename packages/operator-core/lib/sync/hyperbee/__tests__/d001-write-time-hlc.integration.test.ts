@@ -1,5 +1,5 @@
 /**
- * d001-write-time-hlc.integration.test.ts — Brief J (shared-hive-release-testing),
+ * d001-write-time-hlc.integration.test.ts — Brief J (shared-pot-release-testing),
  * the LOCAL-vs-REMOTE half of the D-001 fix that the comparator change alone does
  * NOT close (findings-J "the crux").
  *

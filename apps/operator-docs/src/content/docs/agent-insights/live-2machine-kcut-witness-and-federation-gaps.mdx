@@ -13,9 +13,12 @@ documents:
   - packages/operator-core/lib/hive-set-listing.ts
   - packages/operator-core/lib/agent-tools/hive/ban_member.ts
   - packages/operator-core/lib/harness/join-hive.ts
+  - packages/operator-core/lib/sync/hyperbee/boot.ts
+  - packages/operator-core/lib/sync/hyperbee/boot-all.ts
   - papercusp-desktop/scripts/linux-test-vm/fed.sh
 plans:
   - shared-pot-rekey-2026-06-19
+  - shared-hive-public-release-2026-06-22
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -151,6 +154,56 @@ This was the second blocker observed on 2026-06-24 before EI-681 landed:
 Then the joiner replicates the owner's home log and ends up holding epoch 0..K-1 (the keys
 it legitimately had) but **never the post-ban epoch** — the live K-CUT, and (with content
 encryption on) the AEAD content read-cut.
+
+## Gap 3 — fresh-joiner bootstrap-admission deadlock (WI-779/WI-780, both resolved)
+
+Two DEEPER transport-layer findings from the same fed-a/fed-b rig session, upstream of
+Gaps 1-2 (both fixed; captured here so the next agent hitting "peers connect but nothing
+merges" doesn't have to re-diagnose from scratch):
+
+**WI-779 — substrate boot timeout under concurrent multi-harness load.** The swarm/DHT
+layer peers fine (`peer_connected` fires on the pot topic) but
+`sync/hyperbee/boot.ts`'s per-harness hyperbee-substrate boot (log-replication layer) hit
+its 30s timeout and never came up when many cross-workspace harnesses booted at once (a
+healthy baseline was 2 harnesses in ~6.1s). Roster + features never merge because the
+substrate that would carry them never finishes booting. Root-caused as a boot-concurrency
+/ serialization issue in `boot-all.ts`'s per-harness boot fan-out, not a DHT reachability
+problem — fixed as part of the same investigation that unblocked WI-780 below.
+
+**WI-780 — owner-log bootstrap-admission deadlock (the actual "roster never arrives"
+cause).** Even once WI-779's substrate boot succeeded and swarm peering was bidirectional,
+a **fresh joiner's `hive_members` roster is empty**, and `boot.ts`'s
+`resolveSameHiveMember` → `classifySameHiveMember` only admits an announcing peer's frame
+if `memberDevices.includes(devicePubkey)` — i.e. it needs the roster to already contain
+the announcer. For the OWNER's own announce this is circular: the roster that would admit
+the owner lives in the owner's own log, which the joiner will never merge until it admits
+the owner. Every owner announce buffers in `pendingPeers` and retries forever — a genuine
+bootstrap deadlock, not a crypto/admission/cursor bug (crypto, epoch-K0 wrap, and
+admission were all separately verified working on the rig before this was isolated).
+
+Fix (security-scoped, landed via WI-797): bootstrap-admit the OWNER's home log via the
+existing `hive-announce.ts` binding of `owner_device_pubkey` ↔ `hive_pubkey`. At join
+time the joiner already has the hive_pubkey; persist the matching owner device as the
+hive's trusted bootstrap identity, then add a pre-check in `resolveSameHiveMember`: if the
+frame's `device_pubkey` matches that hive's stored owner device AND the frame's hive
+matches the joined `hive_pubkey`, admit unconditionally — **scoped to exactly that one
+owner device**, never widened to arbitrary peers (widening it would reopen the WI-259
+membership guard as an over-admission hole). Adversarial coverage added alongside the fix:
+an owner bootstrapping on an empty roster, a non-owner peer with an empty roster still
+correctly `miss`-buffering, and a peer that spoofs the owner's `github_user_id` on a
+different device still correctly refused.
+
+A second, unrelated bug was masking the fix's effect during verification: **WI-808** — the
+peer-log wire envelope was dropping the new epoch op field, so federated content arrived
+with `epoch=NULL` and was silently passthrough-dropped even after roster+epoch-K0 legs
+went green. See
+[peerlogop-wire-envelope-drops-new-opfields](/internal/docs/agent-insights/peerlogop-wire-envelope-drops-new-opfields)
+for that finding in full.
+
+Both are **resolved and live-verified** (2026-06-25, on the gh-attested fed-a/fed-b rig:
+`WI-21` created on fed-a federated to fed-b end-to-end — `epoch_gate_seen → epoch_applied
+→ work_items WI-21 origin=remote` on the joiner). Full history:
+`shared-hive-public-release-2026-06-22` plan, decisions D-008/D-009/D-013.
 
 ## WI-887: epoch key reconcile self-heal
 

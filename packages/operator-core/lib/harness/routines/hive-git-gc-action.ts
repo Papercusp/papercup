@@ -22,7 +22,7 @@
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { gcHiveGitRepo } from '../../sync/pot-git/gc';
 import { hiveGitRepoPath } from '../../sync/pot-git/storage';
-import { getHiveGitMode } from '../git-sync/hive-git-mode';
+import { getPotGitMode } from '../git-sync/hive-git-mode';
 
 registerSystemAction('hive-git-gc', async (ctx: SystemActionCtx) => {
   const cfg = ctx.triggerConfig ?? {};
@@ -33,7 +33,7 @@ registerSystemAction('hive-git-gc', async (ctx: SystemActionCtx) => {
     return;
   }
 
-  const mode = await getHiveGitMode(ctx.workspaceId, potHomeSlug);
+  const mode = await getPotGitMode(ctx.workspaceId, potHomeSlug);
   if (mode === 'legacy') {
     // Self-gate: nothing publishes into the hive-git namespace tree for a legacy hive.
     return;

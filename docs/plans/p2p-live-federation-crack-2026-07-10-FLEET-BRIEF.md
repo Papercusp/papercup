@@ -26,5 +26,5 @@
 - Plan (your work queue): `p2p-live-federation-crack-2026-07-10` (7 lanes P-001..P-007).
 - Umbrella plans (reference): `p2p-git-live-activation-2026-07-09`, `p2p-rest-lanes-2026-07-09`.
 - Leader handoff: `docs/plans/p2p-rest-LEADER-HANDOFF-2026-07-10.md`.
-- Ledger: `shared-hive-release-testing/RELEASE-READINESS.md`, `federation-public-release-known-limitations.mdx` §2.
+- Ledger: `shared-pot-release-testing/RELEASE-READINESS.md`, `federation-public-release-known-limitations.mdx` §2.
 - Diagnosis toolkit: `agent-insights/shared-hive-federation-diagnosis-toolkit`.

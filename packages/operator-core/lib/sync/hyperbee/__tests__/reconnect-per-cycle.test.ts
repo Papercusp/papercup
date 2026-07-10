@@ -1,5 +1,5 @@
 /**
- * reconnect-per-cycle.test.ts — Brief F (shared-hive-release-testing) Scenario 1,
+ * reconnect-per-cycle.test.ts — Brief F (shared-pot-release-testing) Scenario 1,
  * the per-cycle half. `swarm-chaos.test.ts` exercises the REAL Hyperswarm transport
  * under kill/reconnect churn and asserts convergence ONCE after all churn (+ no dup,
  * admission/revocation under churn). It does NOT assert that NO OPS ARE MISSED across

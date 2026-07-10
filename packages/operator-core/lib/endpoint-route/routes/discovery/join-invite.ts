@@ -8,7 +8,7 @@
  * directory topic derived from the secret so the invite hive's announce is
  * ingested + listed in the Hives panel. Idempotent (the gossip topic join is).
  *
- * G-002 honest-join (shared-hive-release-testing brief L): joining the topic is
+ * G-002 honest-join (shared-pot-release-testing brief L): joining the topic is
  * NOT the same as the hive existing on it. A withdrawn / wrong / offline-owner
  * invite parses identically to a good one (SECRET_RE accepts any 32–128 hex) and
  * the bare subscribe always "succeeds" — so the route used to return

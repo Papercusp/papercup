@@ -4,7 +4,7 @@
  * load-bearing FALSE-POSITIVE rate against healthy controls. "Measure, don't assume."
  *
  * - **Liveness (P-064):** simulates the placement watchdog's sweep cadence over a synthetic clock,
- *   driving the real pure deciders `deriveBeeLiveness` + `evaluatePlacement`, and finds the first
+ *   driving the real pure deciders `deriveCupLiveness` + `evaluatePlacement`, and finds the first
  *   tick a stalled bee turns into a `recover` (the recovery wake) → the detection LATENCY against
  *   the real `RECLAIM_STALE_MS`/`WEDGE_SILENT_MS` thresholds.
  * - **Behavioral (P-065):** runs a pluggable {@link BehavioralDetector} over the off-brief corpus.
@@ -17,7 +17,7 @@
  * functions; only the seeded inputs + the synthetic clock are the harness's.
  */
 import { RECLAIM_STALE_MS, WEDGE_SILENT_MS } from '../fleet/spawn-reclaim';
-import { deriveBeeLiveness, evaluatePlacement, placementConfig, type PlacementConfig } from '../hive/placement-watchdog';
+import { deriveCupLiveness, evaluatePlacement, placementConfig, type PlacementConfig } from '../pot/placement-watchdog';
 import { detectDrift, type DriftOptions } from '../fleet-ekg/drift';
 import type { SessionVector } from '../fleet-ekg/features';
 import {
@@ -27,7 +27,7 @@ import {
   shouldWakeOnChurn,
   DEFAULT_BEHAVIORAL_WAKE_POLICY,
   type BehavioralWakePolicy,
-} from '../hive/behavioral-supervision';
+} from '../pot/behavioral-supervision';
 import { casesForFamily, type SupervisionCase, type SupervisionFamily, type BehavioralSeed, type ChannelBehavior } from './supervision-scenarios';
 
 /** The placement watchdog runs on the 30s routinesTick — the model of its sweep cadence. */
@@ -99,7 +99,7 @@ function lastEventAt(behavior: ChannelBehavior, now: number): number {
  *  REAL deciders: a non-`live` bee is no live holder, so a non-terminal unit → `recover`. */
 function needsRecoveryAt(c: SupervisionCase, now: number, cfg: PlacementConfig): boolean {
   const seed = c.liveness!;
-  const liveness = deriveBeeLiveness({
+  const liveness = deriveCupLiveness({
     status: seed.status,
     heartbeatAtMs: lastEventAt(seed.heartbeat, now),
     lastOutputAtMs: lastEventAt(seed.output, now),
@@ -142,7 +142,7 @@ export function measureLivenessDetection(opts: { cfg?: PlacementConfig; cases?: 
     const detected = latencyMs != null;
     return { caseId: c.id, misbehaving: c.misbehaving, detected, verdict: verdictOf(c.misbehaving, detected), latencyMs };
   });
-  return summarize('liveness', 'placement-watchdog (deriveBeeLiveness/evaluatePlacement)', outcomes);
+  return summarize('liveness', 'placement-watchdog (deriveCupLiveness/evaluatePlacement)', outcomes);
 }
 
 /** The expected recovery latency for each hung kind — the threshold rounded up to the next sweep.

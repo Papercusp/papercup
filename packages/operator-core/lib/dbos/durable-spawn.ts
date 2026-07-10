@@ -246,8 +246,8 @@ async function escalateGoneTargetSkip(
   let cleared = false;
   try {
     if (target.role === 'mug') {
-      const { setHiveStarted } = await import('../hive/started');
-      await setHiveStarted(target.workspaceId, target.harnessSlug, false);
+      const { setPotStarted } = await import('../pot/started');
+      await setPotStarted(target.workspaceId, target.harnessSlug, false);
       cleared = true;
     } else if (target.role === 'kettle') {
       const { setOverwatchStarted } = await import('../overwatch/control-state');

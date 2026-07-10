@@ -91,4 +91,4 @@ sidecar child, and its console output lands in `serve.log` prefixed
 
 Related: the WI-183 stale-DHT-announce zombie-window mechanism (root cause the
 detector exists to catch) is written up on WI-183 / ledger row 13 of
-`shared-hive-release-testing/RELEASE-READINESS.md`.
+`shared-pot-release-testing/RELEASE-READINESS.md`.

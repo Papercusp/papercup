@@ -90,6 +90,8 @@ function mapAwait(r: any): AwaitRow {
     minSleepSec: r.min_sleep_sec != null ? Number(r.min_sleep_sec) : null,
     urgency: r.urgency ?? false,
     payloadFilter: parseJsonb(r.payload_filter),
+    scopeKind: r.scope_kind ?? null,
+    scopeRef: r.scope_ref ?? null,
   };
 }
 
@@ -300,6 +302,7 @@ export async function listParkedAwaitsForSubscribers(
        AND subscriber_id = ANY(${ids as string[]}::text[])
        AND fired_at IS NULL AND cancelled_at IS NULL
        AND event_key NOT LIKE ${INBOX_WAKE_KEY_PREFIX + '%'}
+       AND policy <> 'announce'
        AND (expires_ts IS NULL OR expires_ts > now())
      ORDER BY created_at DESC
      LIMIT 500
@@ -322,6 +325,7 @@ export async function listActiveAwaitsForKey(eventKey: string): Promise<AwaitRow
     SELECT * FROM harness_shared.event_awaits
      WHERE workspace_id = ${ws} AND event_key = ${eventKey}
        AND fired_at IS NULL AND cancelled_at IS NULL
+       AND policy <> 'announce'
      ORDER BY created_at ASC
   `;
   return rows.map(mapAwait);
@@ -350,6 +354,7 @@ export async function countActiveAwaitsByPrefixes(prefixes: readonly string[]): 
         ON a.workspace_id = ${ws}
        AND a.event_key LIKE p.prefix || '%'
        AND a.fired_at IS NULL AND a.cancelled_at IS NULL
+       AND a.policy <> 'announce'
      GROUP BY p.prefix
   `;
   for (const r of rows as unknown as Array<{ prefix: string; n: number }>) {
@@ -386,6 +391,7 @@ export async function fireAwaitsForKey(input: {
      WHERE workspace_id = ${ws} AND event_key = ${input.eventKey}
        AND once = true AND fired_at IS NULL AND cancelled_at IS NULL
        AND payload_filter IS NULL
+       AND policy <> 'announce'
     RETURNING *
   `;
 
@@ -399,6 +405,7 @@ export async function fireAwaitsForKey(input: {
      WHERE workspace_id = ${ws} AND event_key = ${input.eventKey}
        AND once = true AND fired_at IS NULL AND cancelled_at IS NULL
        AND payload_filter IS NOT NULL
+       AND policy <> 'announce'
   `;
   const onceFilterMatchedIds = onceFilterCandidates
     .filter((r: any) => payloadMatchesFilter(parseJsonb(r.payload_filter), input.payload))
@@ -421,6 +428,7 @@ export async function fireAwaitsForKey(input: {
      WHERE workspace_id = ${ws} AND event_key = ${input.eventKey}
        AND once = false AND cancelled_at IS NULL
        AND (expires_ts IS NULL OR expires_ts > now())
+       AND policy <> 'announce'
   `;
   const standingRows = standingCandidates.filter((r: any) =>
     payloadMatchesFilter(parseJsonb(r.payload_filter), input.payload),
@@ -440,6 +448,7 @@ export async function fireAwaitsForKey(input: {
        AND event_key LIKE '%*%'
        AND fired_at IS NULL AND cancelled_at IS NULL
        AND (once = true OR expires_ts IS NULL OR expires_ts > now())
+       AND policy <> 'announce'
   `;
   // WI-3309/EI-8413: `event_key` is schema NOT NULL in real Postgres (a NULL/undefined
   // value can never satisfy the `LIKE '%*%'` filter above either), so this guard only
@@ -784,4 +793,108 @@ export async function wakeMeter(input: {
     channel: r.channel ?? null,
     count: Number(r.count),
   }));
+}
+
+// ── Announced gate events (EI-9270, fleet-member-native-guidance-2026-07-10 P-010) ──
+// An announcement is a policy='announce' row in THIS table (no parallel surface):
+// an emitter-side declaration "this key WILL fire — await it", discoverable via
+// events:catalog / coord:orient, and LATCHED (fired_at stamped by the real emit)
+// so a late registrant is told the gate already opened instead of sleeping forever.
+// Every delivery path above excludes policy='announce'; only the functions below
+// touch these rows.
+
+/** Register (or refresh) the announcement for a key. One ACTIVE announcement per
+ *  key: re-announcing updates note/scope/expiry in place instead of duplicating. */
+export async function registerAnnouncement(input: {
+  subscriberId: string;
+  eventKey: string;
+  note?: string | null;
+  scopeKind: 'fleet' | 'plan' | 'harness' | 'global';
+  scopeRef?: string | null;
+  /** Seconds until the DECLARATION lapses (sweeper marks it fired_reason='expired'); null = standing. */
+  expiresSec?: number | null;
+}): Promise<AwaitRow> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const expiresTs = input.expiresSec != null ? new Date(Date.now() + input.expiresSec * 1000).toISOString() : null;
+  const existing = await sql`
+    SELECT id FROM harness_shared.event_awaits
+     WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${input.eventKey}
+       AND cancelled_at IS NULL AND fired_at IS NULL
+     ORDER BY created_at DESC LIMIT 1
+  `;
+  if (existing.length > 0) {
+    const rows = await sql`
+      UPDATE harness_shared.event_awaits
+         SET note = ${input.note ?? null}, scope_kind = ${input.scopeKind}, scope_ref = ${input.scopeRef ?? null},
+             expires_ts = ${expiresTs}, subscriber_id = ${input.subscriberId}
+       WHERE id = ${Number(existing[0].id)}
+      RETURNING *
+    `;
+    return mapAwait(rows[0]);
+  }
+  const rows = await sql`
+    INSERT INTO harness_shared.event_awaits
+      (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts,
+       once, min_sleep_sec, urgency, payload_filter, scope_kind, scope_ref)
+    VALUES
+      (${ws}, ${input.subscriberId}, ${input.eventKey}, 'announce', ${input.note ?? null}, NULL,
+       'expire', ${expiresTs}, false, NULL, false, NULL, ${input.scopeKind}, ${input.scopeRef ?? null})
+    RETURNING *
+  `;
+  return mapAwait(rows[0]);
+}
+
+/** Announcements (any state except cancelled) for one exact key — the events:await
+ *  registration-time LATCH read. fired_reason='event' = the gate genuinely fired;
+ *  'expired' = the declaration lapsed unfired (NOT a latch). */
+export async function findAnnouncementsForKey(eventKey: string): Promise<AwaitRow[]> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const rows = await sql`
+    SELECT * FROM harness_shared.event_awaits
+     WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${eventKey}
+       AND cancelled_at IS NULL
+     ORDER BY created_at DESC
+     LIMIT 5
+  `;
+  return rows.map(mapAwait);
+}
+
+/** Emit-time latch: stamp fired_at on the key's unfired announcement rows (kept,
+ *  never consumed/delivered). Returns how many were latched. */
+export async function stampAnnouncementsFired(eventKey: string): Promise<number> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const rows = await sql`
+    UPDATE harness_shared.event_awaits
+       SET fired_at = now(), fired_reason = 'event'
+     WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${eventKey}
+       AND fired_at IS NULL AND cancelled_at IS NULL
+    RETURNING id
+  `;
+  return rows.length;
+}
+
+/** ACTIVE announcements (not cancelled, not lapsed) — the discovery read for
+ *  events:catalog / coord:orient. The set is tiny (index-backed, migration 548);
+ *  callers filter visibility in JS via announcementVisibleTo (announce-key.ts). */
+export async function listActiveAnnouncements(input: {
+  /** true (default) = only gates that have NOT fired yet; false includes latched ones. */
+  unfiredOnly?: boolean;
+  limit?: number;
+} = {}): Promise<AwaitRow[]> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const unfiredOnly = input.unfiredOnly !== false;
+  const rows = await sql`
+    SELECT * FROM harness_shared.event_awaits
+     WHERE workspace_id = ${ws} AND policy = 'announce'
+       AND cancelled_at IS NULL
+       AND (expires_ts IS NULL OR expires_ts > now())
+       AND (${!unfiredOnly} OR fired_at IS NULL)
+     ORDER BY created_at DESC
+     LIMIT ${Math.min(input.limit ?? 100, 200)}
+  `;
+  return rows.map(mapAwait);
 }

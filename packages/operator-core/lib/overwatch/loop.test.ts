@@ -49,7 +49,7 @@ vi.mock('../autoloop', async () => ({
 }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
 const resolvePotHomeSlug = vi.fn();
-vi.mock('../hive/wake', () => ({ resolvePotHomeSlug: (...a: unknown[]) => resolvePotHomeSlug(...a) }));
+vi.mock('../pot/wake', () => ({ resolvePotHomeSlug: (...a: unknown[]) => resolvePotHomeSlug(...a) }));
 const operatorHomeHarnessSlug = vi.fn();
 vi.mock('../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: (...a: unknown[]) => operatorHomeHarnessSlug(...a) }));
 

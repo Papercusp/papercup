@@ -17,7 +17,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { listHiveRosterSnapshot, renderRosterSnapshot } from './hive-roster';
 import { getSpawnHandoffContext } from '../handoff-context';
 import { getWorkItemCheckpoint } from '../work-item-checkpoint';
-import { computeBeeWakeDossier } from '../hive/bee-wake-dossier';
+import { computeCupWakeDossier } from '../pot/cup-wake-dossier';
 import { activeWorkspaceId } from '../workspace-registry';
 import type { SpawnHydrationDeps } from './spawn-hydration';
 
@@ -41,11 +41,11 @@ export function productionSpawnHydrationDeps(): SpawnHydrationDeps {
     // world-state + plan item + blocks + topics + comments + the hive-roster snapshot,
     // so the (re)spawned agent opens already-briefed. Flag-gated on CUP_WAKE_DOSSIER
     // (default on, P-009). FAIL-SOFT: a flag-read fault or a null dossier ⇒ no section
-    // (the agent falls back to its read tools). computeBeeWakeDossier needs a concrete
+    // (the agent falls back to its read tools). computeCupWakeDossier needs a concrete
     // workspaceId — the spawn paths thread it; activeWorkspaceId() is the safety floor.
     getDossier: async ({ harness, workItemId, workspaceId }) => {
       if (!(await getFlag(FLAGS.CUP_WAKE_DOSSIER, 'system'))) return null;
-      return computeBeeWakeDossier({ workspaceId: workspaceId ?? activeWorkspaceId(), harness, workItemId });
+      return computeCupWakeDossier({ workspaceId: workspaceId ?? activeWorkspaceId(), harness, workItemId });
     },
   };
 }

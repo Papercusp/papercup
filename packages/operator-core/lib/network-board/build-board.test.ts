@@ -4,7 +4,7 @@
 // here without a database.
 
 import { describe, expect, it } from 'vitest';
-import type { HiveDescriptor } from '../agent-tools/hive/_resolve';
+import type { PotDescriptor } from '../agent-tools/pot/_resolve';
 import type { UnifiedPresenceRecord } from '../agent-tools/coordination/federated-presence';
 import type { DiscoveredHive } from '../hive-directory';
 import type { HiveStatusBeacon } from '../hive-beacon';
@@ -12,7 +12,7 @@ import type { FleetAssignmentRow } from '../fleet/assignments';
 import { assembleNetworkBoard, watchOwnersByHarness, type NetworkBoardInputs } from './build-board';
 
 // ── fixture factories ──────────────────────────────────────────────
-function hive(slug: string, over: Partial<HiveDescriptor> = {}): HiveDescriptor {
+function hive(slug: string, over: Partial<PotDescriptor> = {}): PotDescriptor {
   return {
     slug,
     path: `/hives/${slug}`,

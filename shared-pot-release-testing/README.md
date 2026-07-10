@@ -110,7 +110,7 @@ Desktop UI verification: follow `/internal/docs/testing` + `testing/agent-e2e`
 ## Deliverables (every brief)
 
 1. **New tests** (in the right framework, teeth-verified) closing the gaps in scope.
-2. **A findings report** `shared-hive-release-testing/findings-<brief>.md`: every
+2. **A findings report** `shared-pot-release-testing/findings-<brief>.md`: every
    bug (with repro + severity), every gap closed, every gap left open (with why).
 3. **A release-readiness verdict for your dimension**: GREEN (ready) / YELLOW
    (ready with caveats — list them) / RED (blockers — list them).

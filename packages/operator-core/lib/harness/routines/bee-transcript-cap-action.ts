@@ -22,7 +22,7 @@ import {
   runCupTranscriptCapSweep,
   type CupTranscriptCaps,
   type CupTranscriptMetrics,
-} from '../../hive/bee-transcript-cap';
+} from '../../pot/cup-transcript-cap';
 
 /** Fail-soft on-disk transcript size: count JSONL entries in the cup's session file
  *  (`<sessionClaudeConfigDir(owner)>/projects/**\/<sessionId>.jsonl`). 0 on any miss —
@@ -67,8 +67,8 @@ async function listCupsProd(workspaceId: string): Promise<CupTranscriptMetrics[]
   }
 
   // Per-session carry (best-effort): the warm-inject task count + peak carried tokens.
-  const { beeWakeEfficiency } = await import('../../hive/bee-wake-efficiency');
-  const eff = await beeWakeEfficiency(workspaceId).catch(() => null);
+  const { cupWakeEfficiency } = await import('../../pot/cup-wake-efficiency');
+  const eff = await cupWakeEfficiency(workspaceId).catch(() => null);
   const bySession = new Map<string, { tasks: number; carried: number }>();
   for (const s of eff?.perSession ?? []) {
     bySession.set(s.sessionId, { tasks: s.wakes.length, carried: s.peakCacheReadTokens });

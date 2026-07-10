@@ -181,14 +181,14 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
     );
   };
   const queenNotifyPorts: QueenNotifyPorts = {
-    // resolveQueenOwner takes workspaceId explicitly (no ALS needed); the routine's
+    // resolveMugOwner takes workspaceId explicitly (no ALS needed); the routine's
     // ctx workspace is where the hive's adv_sessions / coord live (NOT the DEFAULT
     // plan workspace the drafts are pinned to).
     resolveQueenOwner: async () => {
       const { getOrgPg } = await import('@papercusp/db-org');
-      const { resolveQueenOwner } = await import('../hive/placement-watchdog');
+      const { resolveMugOwner } = await import('../pot/placement-watchdog');
       const { sql } = getOrgPg();
-      return resolveQueenOwner(sql, workspaceId, harnessSlug);
+      return resolveMugOwner(sql, workspaceId, harnessSlug);
     },
     send: queenSend,
   };

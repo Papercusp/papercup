@@ -1,5 +1,5 @@
 /**
- * binding-service-authority.integration.test.ts — Brief AI (shared-hive-release-testing)
+ * binding-service-authority.integration.test.ts — Brief AI (shared-pot-release-testing)
  *
  * Release-grade end-to-end + ADVERSARIAL coverage of the provisional→claimed
  * shared-hive ownership AUTHORITY model against real Postgres. Prior tests

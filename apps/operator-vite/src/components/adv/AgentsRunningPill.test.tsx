@@ -231,6 +231,29 @@ describe('<AgentsRunningPill>', () => {
     expect(screen.getByTestId('agent-detail').textContent).toContain('F-1');
   });
 
+  it('keeps the detail strip mounted when the previewed agent drops out of a live-roster refresh (WI-3881)', () => {
+    nuqs.open = true;
+    const { rerender } = render(<Pill />);
+
+    // Preview a specific agent — the strip now tracks it.
+    fireEvent.mouseEnter(screen.getByTestId('agent-row-b1'));
+    expect(screen.getByTestId('agent-detail').textContent).toContain('gizmo');
+
+    // A push-driven refresh where that agent's heartbeat aged to 'stale', so it
+    // is filtered out of the running roster (and thus out of the strip's
+    // previewed selection). Before the sticky-fallback fix this collapsed
+    // `active` to null and the strip disappeared until the next push.
+    H.active = [
+      agent({ ownerId: 'q1', agent: 'queen', role: 'queen', fleetSlug: null }),
+      agent({ ownerId: 'b2', agent: 'nova', role: 'bee', fleetSlug: 'atlas-fleet', fleetColor: '#d8b4fe', liveness: 'live', feature: 'F-9' }),
+    ];
+    rerender(<Pill />);
+
+    // The strip must NOT vanish — it stays mounted, falling back to a still-present
+    // agent instead of blanking (the disappear/reappear bug).
+    expect(screen.getByTestId('agent-detail')).toBeTruthy();
+  });
+
   it('clicking an agent row pins it', () => {
     nuqs.open = true;
     render(<Pill />);

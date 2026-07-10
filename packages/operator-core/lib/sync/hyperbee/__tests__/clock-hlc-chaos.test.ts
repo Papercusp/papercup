@@ -1,5 +1,5 @@
 /**
- * clock-hlc-chaos.test.ts — Brief AC (shared-hive-release-testing): the
+ * clock-hlc-chaos.test.ts — Brief AC (shared-pot-release-testing): the
  * CLOCK/TIME-CHAOS robustness audit of the HLC clock-of-record (`HlcClock` +
  * `fed_hlc`, mig-314) that D-001 just shipped to production as the S0 LWW-ordering
  * fix. PG-FREE property + exhaustive unit layer over the PURE HLC core

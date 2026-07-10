@@ -13,7 +13,10 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { EVENT_CATALOG, renderCatalog, familyKeyPrefix, type CatalogRow } from '../../events/await/catalog';
-import { countActiveAwaitsByPrefixes } from '../../events/await/store';
+import { countActiveAwaitsByPrefixes, listActiveAnnouncements } from '../../events/await/store';
+import { announcementVisibleTo } from '../../events/await/announce-key';
+import { resolveAgentIdentity } from '../coordination/identity';
+import { getPresence } from '../coordination/presence';
 
 export default defineTool({
   name: 'events:catalog',
@@ -47,8 +50,12 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('default true — attach `live_awaiters` (current registered-await count) per family. Pass false to skip the extra DB read on a hot path that only needs the static catalog.'),
+    announced: z
+      .boolean()
+      .optional()
+      .describe("default true — also list ANNOUNCED gate events (EI-9270: dynamic, leader-declared keys — events:emit { announce:true }) visible to your fleet/plan/harness (+ global), each with fired/latched state and live_awaiters. Pass false to skip."),
   }),
-  async handler(args) {
+  async handler(args, ctx) {
     let rows = renderCatalog();
     if (args.family) rows = rows.filter((r) => r.family === args.family);
     if (args.awaitable_now) rows = rows.filter((r) => r.awaitable_now);
@@ -73,6 +80,58 @@ export default defineTool({
       }
     }
 
+    // ── Announced gate events (EI-9270): dynamic, leader-declared keys — the catalog's
+    // "announced" section, scoped to the reader's fleet/plan/harness (+ global). The
+    // static registry above answers "what does the SYSTEM emit"; this answers "what did
+    // a LEADER declare for my lane". BEST-EFFORT: any failure omits the section.
+    let announced:
+      | Array<{
+          event: string;
+          note: string | null;
+          scope: string;
+          announced_by: string;
+          fired: boolean;
+          fired_at: string | null;
+          expires_ts: string | null;
+          live_awaiters?: number;
+        }>
+      | undefined;
+    if (args.announced !== false) {
+      try {
+        const anns = await listActiveAnnouncements({ unfiredOnly: false, limit: 100 });
+        if (anns.length > 0) {
+          let reader: { fleetSlug?: string | null; planSlug?: string | null; harnessSlug?: string | null } = {};
+          try {
+            const identity = resolveAgentIdentity(ctx);
+            const p = (await getPresence(identity.ownerId)) as
+              | { fleetSlug?: string | null; currentPlanSlug?: string | null }
+              | null;
+            const ctxHarnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
+            reader = {
+              fleetSlug: p?.fleetSlug ?? null,
+              planSlug: p?.currentPlanSlug ?? null,
+              harnessSlug: typeof ctxHarnessRaw === 'string' && ctxHarnessRaw !== '*' ? ctxHarnessRaw : null,
+            };
+          } catch { /* unresolvable reader → global-only visibility */ }
+          const visible = anns.filter((a) => announcementVisibleTo(a, reader)).slice(0, 25);
+          let counts: Map<string, number> | null = null;
+          try {
+            counts = await countActiveAwaitsByPrefixes(visible.map((a) => a.eventKey));
+          } catch { /* omit live_awaiters */ }
+          announced = visible.map((a) => ({
+            event: a.eventKey,
+            note: a.note,
+            scope: a.scopeKind ? `${a.scopeKind}${a.scopeRef ? ':' + a.scopeRef : ''}` : 'global',
+            announced_by: a.subscriberId,
+            fired: !!a.firedAt && a.firedReason === 'event',
+            fired_at: a.firedReason === 'event' ? a.firedAt : null,
+            expires_ts: a.expiresTs,
+            ...(counts ? { live_awaiters: counts.get(a.eventKey) ?? 0 } : {}),
+          }));
+        }
+      } catch { /* best-effort — never break catalog discovery */ }
+    }
+
     const rowsOut: CatalogRow[] = rows;
     return {
       content: [
@@ -82,6 +141,7 @@ export default defineTool({
             ok: true,
             count: rowsOut.length,
             total: EVENT_CATALOG.length,
+            ...(announced && announced.length > 0 ? { announced } : {}),
             note:
               'Awaiting beats polling: pick a family, events:await its key (or its sugar verb), then END YOUR TURN — you are re-invoked when it fires. awaitable_now:false = the emitter is being wired (Phase 2); the key shape is stable. live_awaiters:0 means nobody is currently registered on that key — a events:emit against it would reach no one.',
             families: rowsOut,

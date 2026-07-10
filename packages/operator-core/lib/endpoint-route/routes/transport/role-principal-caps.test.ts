@@ -201,8 +201,8 @@ describe('loadRoleCapabilities', () => {
       expect(caps.has('messages:write')).toBe(true); // messages:send
       // The two-gate other half — the read+nudge tools must allowlist overwatch, else the
       // caps are INERT (the bee/scanner/sentinel lesson). One representative per gate kind:
-      const { default: hiveStatus } = await import('../../../agent-tools/hive/status.js');
-      expect(hiveStatus.agentRoles).toContain('kettle'); // via COORD_ROLES
+      const { default: potStatus } = await import('../../../agent-tools/pot/status.js');
+      expect(potStatus.agentRoles).toContain('kettle'); // via COORD_ROLES
       const { default: governor } = await import('../../../agent-tools/dev/rate_governor_status.js');
       expect(governor.agentRoles).toContain('kettle'); // explicit allowlist
       const { default: notifications } = await import('../../../agent-tools/operator/notifications_recent.js');

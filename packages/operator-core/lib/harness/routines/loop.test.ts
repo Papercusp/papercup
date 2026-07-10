@@ -36,13 +36,18 @@ describe('buildLoopWakePrompt — instructs VALID work-item states (EI-6978)', (
     expect(prompt).not.toContain('in_progress → completed');
   });
 
-  it('directs terminal completion through work_items:complete { state:\'done\' }', () => {
+  it('directs terminal completion through work_items:complete, never a bare "done" assertion', () => {
+    // fleet-member-native-guidance-2026-07-10 P-008: the exact call signature
+    // (`state:'done'`) is now the persona's + the tool's own guidance to state, not
+    // re-spelled in the wake prompt — the prompt just points at the contract.
     expect(prompt).toContain('work_items:complete');
-    expect(prompt).toContain("state:'done'");
+    expect(prompt).toContain('never a bare "done" assertion');
   });
 
-  it('marks in-flight work via a valid state (in_progress)', () => {
-    expect(prompt).toContain("state:'in_progress'");
+  it('does not prescribe a specific mid-work state literal (delegated to work_items:set_state\'s own EI-7478 aliasing guidance)', () => {
+    // The prompt no longer mentions in_progress at all — it would be redundant with
+    // (and risked drifting from) the tool's own description of issue-family state aliasing.
+    expect(prompt).not.toContain("state:'in_progress'");
   });
 
   it('substitutes the template vars (no unreplaced {goal}/{harness}/{ownerId})', () => {
@@ -60,14 +65,14 @@ describe('buildLoopWakePrompt — kind guidance is not hardcoded to task (EI-767
     expect(prompt).not.toContain("kind:'task'");
   });
 
-  it('tells the agent to pick kind by what the unit IS, with change as the coding-work example', () => {
-    expect(prompt).toContain("kind:'change'");
-    expect(prompt).toMatch(/picking `kind` by what the unit IS/);
-    expect(prompt).toMatch(/`task` ONLY for/);
+  it('tells the agent to pick kind by what the unit IS (fleet-member-native-guidance P-008: delegated to the persona\'s member-loop contract, not re-spelled per-wake)', () => {
+    expect(prompt).toMatch(/pick `kind` by what it IS/);
+    expect(prompt).toContain('Working as a fleet MEMBER — the member operating loop');
   });
 
-  it('the step-3 in_progress-alias note no longer pins kind:\'task\' specifically (generalized to bug/change/task)', () => {
-    expect(prompt).toContain('a bug/change/task item is issue-family');
+  it('the kind/state mechanics (bug/change/task, the in_progress alias) are no longer spelled out per-wake — the persona + tool guidance own them now', () => {
+    expect(prompt).not.toContain('a bug/change/task item is issue-family');
+    expect(prompt).not.toContain("kind:'change'");
   });
 });
 
@@ -131,10 +136,11 @@ describe('buildLoopWakePrompt (the per-wake template, P-008)', () => {
     expect(p).toContain('300'); // the interval
     expect(p).toContain('papercusp'); // the harness
     expect(p).toContain('ship the widget'); // the goal
-    // the locked atomic create+self-assign contract (B-LOOP-4 / su-1ec26)
-    expect(p).toContain('work_items:create');
+    // fleet-member-native-guidance-2026-07-10 P-008: the create+self-assign contract
+    // (B-LOOP-4 / su-1ec26) now lives natively in the persona's member-loop section —
+    // the wake prompt POINTS at it instead of re-spelling the call signature.
+    expect(p).toContain('Working as a fleet MEMBER — the member operating loop');
     expect(p).toContain('assign_to');
-    expect(p).toContain('set_state');
     // how to stop (don't spin on empty wakes)
     expect(p).toContain('loop:end');
     // every placeholder was substituted
@@ -182,7 +188,7 @@ describe('buildLoopWakePrompt (the per-wake template, P-008)', () => {
     const workDefault = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g' });
     const workExplicit = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g', mode: 'work' });
     expect(workExplicit).toBe(workDefault);
-    expect(workDefault).toContain('work_items:create');
+    expect(workDefault).toContain('Working as a fleet MEMBER — the member operating loop');
   });
 
   it('the monitor mode composes with the cold/gated addenda like the work mode does', () => {

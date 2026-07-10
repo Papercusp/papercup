@@ -19,8 +19,8 @@
  */
 
 import type { CrossHiveKind } from '../cross-hive-boundary';
-import type { HiveDescriptor } from '../agent-tools/hive/_resolve';
-import { listHives, liveAgentCountByHarness } from '../agent-tools/hive/_resolve';
+import type { PotDescriptor } from '../agent-tools/pot/_resolve';
+import { listPots, liveAgentCountByHarness } from '../agent-tools/pot/_resolve';
 import { listFleetAssignments, type FleetAssignmentRow } from '../fleet/assignments';
 import type { UnifiedPresenceRecord } from '../agent-tools/coordination/federated-presence';
 import { listFederatedPresence } from '../agent-tools/coordination/federated-presence';
@@ -28,7 +28,7 @@ import type { DiscoveredHive } from '../hive-directory';
 import { getHiveDirectory } from '../hive-directory-deps';
 import { loadDirectedCrossHiveGrants } from '../cross-hive-grants';
 import { PgCrossHiveAsks } from '../cross-hive-asks-pg';
-import { resolvePotHomeSlug } from '../hive/wake';
+import { resolvePotHomeSlug } from '../pot/wake';
 import { activeWorkspaceId } from '../workspace-registry';
 import { classifyNetworkTier } from './tier-classifier';
 import type { NetworkAsks, NetworkBoardRow } from './types';
@@ -37,7 +37,7 @@ export interface NetworkBoardInputs {
   /** This Swarm's home-hive slug → its row is tier 1; other own hives are tier 2. */
   homeSlug: string | null;
   /** Own `kind:'hive'` projects (pot:list). */
-  hives: HiveDescriptor[];
+  hives: PotDescriptor[];
   /** Distinct live agents per hive home-slug (one batched fleet read). */
   liveAgentsBySlug: Map<string, number>;
   /**
@@ -244,7 +244,7 @@ export async function buildNetworkBoard(
   const homeSlug = opts.homeSlug !== undefined ? opts.homeSlug : resolvePotHomeSlug();
 
   const [hives, fleetRows, federatedPeers] = await Promise.all([
-    listHives(ws).catch(() => [] as HiveDescriptor[]),
+    listPots(ws).catch(() => [] as PotDescriptor[]),
     listFleetAssignments({ workspaceId: ws }).catch(() => []),
     listFederatedPresence({ workspaceId: ws }).catch(() => [] as UnifiedPresenceRecord[]),
   ]);

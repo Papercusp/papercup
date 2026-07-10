@@ -462,8 +462,8 @@ const invoke = defineTool({
     // (D-006). Distinct from MUG_BRIEF (the kickoff / Queen→bee overlay).
     let queenWakeBrief = typeof (body as any)?.queenBrief === 'string' ? ((body as any).queenBrief as string) : '';
     if (canonicalRole === 'mug' && !queenWakeBrief.trim()) {
-      const { computeQueenWakeBrief } = await import('../../../hive/queen-brief-launch');
-      queenWakeBrief = (await computeQueenWakeBrief(activeWorkspaceId(), project.slug, { wokeBy: kickoff })) ?? '';
+      const { computeMugWakeBrief } = await import('../../../pot/mug-brief-launch');
+      queenWakeBrief = (await computeMugWakeBrief(activeWorkspaceId(), project.slug, { wokeBy: kickoff })) ?? '';
     }
     if (queenWakeBrief.trim()) env.MUG_WAKE_BRIEF = queenWakeBrief;
     // BENCH-SCOPED, FAIL-CLOSED OPUS PIN (P-033 Fix 2). A per-invocation model spec threaded by
@@ -572,9 +572,9 @@ const invoke = defineTool({
     // the fallback sleep (never an immediate re-invoke, D-004). Fire-and-forget
     // off the response path; the module is fail-soft by contract.
     if (isHiveLaunch) {
-      void import('../../../hive/watchdog')
-        .then(({ hiveTurnEndCheck }) =>
-          hiveTurnEndCheck({ workspaceId: activeWorkspaceId(), installSlug: project.slug }),
+      void import('../../../pot/watchdog')
+        .then(({ potTurnEndCheck }) =>
+          potTurnEndCheck({ workspaceId: activeWorkspaceId(), installSlug: project.slug }),
         )
         .then((res) => {
           if (res.outcome === 'armed' || res.outcome === 'staged') {

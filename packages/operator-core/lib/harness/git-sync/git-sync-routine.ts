@@ -16,7 +16,7 @@ import { parseGithubUrl } from '../clone-github';
 import { fetchRepoPushPermission } from '../github-repo-permissions';
 import { computeNextFireAt } from '../routines/cron';
 import { decideGitSyncPush, type PushDecision, type PushDecisionInput } from './decide-git-sync-push';
-import { getHiveGitMode, type HiveGitMode } from './hive-git-mode';
+import { getPotGitMode, type PotGitMode } from './hive-git-mode';
 import {
   gitSyncEligibility,
   gitSyncCronForKey,
@@ -158,9 +158,9 @@ export interface SeedGitSyncRoutineDeps {
   fetchPushPermission?: (owner: string, repo: string) => Promise<boolean | null>;
   /** B-02's push decider (default decideGitSyncPush — pure). */
   decidePush?: (i: PushDecisionInput) => PushDecision;
-  /** github-bridge P-003: per-hive mode resolver (default getHiveGitMode — reads
+  /** github-bridge P-003: per-hive mode resolver (default getPotGitMode — reads
    *  the federated hive_settings; junk/absent/error all read as 'legacy'). */
-  resolveHiveGitMode?: (workspaceId: string, potHomeSlug: string) => Promise<HiveGitMode>;
+  resolveHiveGitMode?: (workspaceId: string, potHomeSlug: string) => Promise<PotGitMode>;
   getRoutine?: typeof getGitSyncRoutine;
   upsert?: typeof upsertGitSyncRoutine;
 }
@@ -254,9 +254,9 @@ export async function seedGitSyncRoutineForMember(
     // (member checkouts) or the entry's own slug on a self_repo hive home (the
     // Option-B merged shape); a non-hive member is 'legacy' without a lookup.
     const potHomeSlug = opts.entry.hive_slug ?? (opts.entry.self_repo ? opts.entry.slug : undefined);
-    let hiveGitMode: HiveGitMode = 'legacy';
+    let hiveGitMode: PotGitMode = 'legacy';
     if (potHomeSlug) {
-      const resolveMode = deps.resolveHiveGitMode ?? getHiveGitMode;
+      const resolveMode = deps.resolveHiveGitMode ?? getPotGitMode;
       hiveGitMode = await resolveMode(opts.workspaceId, potHomeSlug);
     }
 

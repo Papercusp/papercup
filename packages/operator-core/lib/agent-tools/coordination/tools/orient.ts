@@ -38,6 +38,8 @@ import { shapeOrient } from './orient-shape';
 import { classifyOwnerDriveMode } from '../agent-drive-mode';
 import { withholdQueenLoopControl, QUEEN_LOOP_WITHHELD_REASON } from '../queen-loop-facts';
 import { readOwnerPresence } from '../../../power-user-sessions';
+import { listActiveAnnouncements } from '../../../events/await/store';
+import { announcementVisibleTo } from '../../../events/await/announce-key';
 import { activeWorkspaceId, resolveConcreteWorkspaceId } from '../../../workspace-registry';
 import { getModes } from '../../../modes/store';
 import { modeById } from '../../../modes/registry';
@@ -201,6 +203,16 @@ export interface OrientResult {
    *  !== false; null on a failed fold. Folded so agents don't re-call coord:glance
    *  right after orient (compaction-fold-audit-2026-07-06 — 44%+ did). */
   fleetHealth?: { bees?: unknown; wake?: unknown; governor?: unknown } | null;
+  /** EI-9270: declared-but-unfired ANNOUNCED gate events visible to this caller's
+   *  fleet/plan/harness (+ global) — "what should I events:await", with zero leader
+   *  messages. Absent when none are visible (or on a monitor tick). */
+  announcedGates?: Array<{
+    event: string;
+    note: string | null;
+    scope: string;
+    announcedBy: string;
+    expires_ts: string | null;
+  }>;
   /** A fleet LEADER's per-member health brief (fleet:leader-brief) — folded automatically
    *  on a MONITOR tick when the caller resolves (via their launch-env fleet membership)
    *  to a fleet leader: the lever that collapses "monitor orient + a separate
@@ -549,8 +561,8 @@ export async function composeOrient(
   // after orient (compaction-fold-audit-2026-07-06 — 44%+ did). Both gated + BEST-EFFORT:
   // a non-fleet caller or any failure degrades to absent/null. EI-8300: skipped entirely
   // on a monitor tick (both legs). (fleet-messaging-integrate-and-land P-006)
+  let fleetSlug: string | null = null; // hoisted: the announced-gates fold below reuses it (EI-9270)
   if (!monitor && (args.includeFleetCatchUp !== false || args.includeFleetHealth !== false)) {
-    let fleetSlug: string | null = null;
     try {
       const who = (await call('coord:whoami', {})) as { fleetSlug?: string | null } | undefined;
       fleetSlug = who?.fleetSlug ?? null;
@@ -600,6 +612,40 @@ export async function composeOrient(
       const g = glanceResult.value;
       result.fleetHealth = g ? { bees: g.bees, wake: g.wake, governor: g.governor } : null;
     }
+  }
+
+  // ── Announced gate events (EI-9270) — declared-but-unfired gates visible to this
+  // caller's fleet/plan/harness (+ global): the zero-message "what should I await".
+  // BEST-EFFORT (absent on any failure) + skipped on a monitor tick. TIME-BOUNDED:
+  // a hung PG read degrades to absent within its own short budget (a discovery
+  // nicety must never stall orientation — the WI-3818 bounded-leg contract).
+  if (!monitor) {
+    try {
+      const annsResult = await withBoundedTimeout(listActiveAnnouncements({ unfiredOnly: true, limit: 50 }), {
+        fallback: [] as Awaited<ReturnType<typeof listActiveAnnouncements>>,
+        timeoutMs: 1_500,
+        label: 'orient:announcedGates',
+      });
+      const anns = annsResult.value ?? [];
+      const visible = anns
+        .filter((a) =>
+          announcementVisibleTo(a, {
+            fleetSlug,
+            planSlug: args.planSlug ?? null,
+            harnessSlug: args.harness ?? null,
+          }),
+        )
+        .slice(0, 8);
+      if (visible.length > 0) {
+        result.announcedGates = visible.map((a) => ({
+          event: a.eventKey,
+          note: a.note,
+          scope: a.scopeKind ? `${a.scopeKind}${a.scopeRef ? ':' + a.scopeRef : ''}` : 'global',
+          announcedBy: a.subscriberId,
+          expires_ts: a.expiresTs,
+        }));
+      }
+    } catch { /* best-effort — never break orientation */ }
   }
 
   // ── recipes:search — surface reusable code:run RECIPES relevant to this turn's intent,

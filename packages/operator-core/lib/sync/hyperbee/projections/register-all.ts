@@ -82,7 +82,7 @@ export interface RegisterAllOpts {
    */
   ownLogKeyHex?: string;
   /**
-   * A-003 (shared-hive-release-testing Brief I): the HIVE-HOME slug to scope the
+   * A-003 (shared-pot-release-testing Brief I): the HIVE-HOME slug to scope the
    * two hive-home-grained projections — `hive_members` + `hive_settings` — to,
    * INSTEAD of `harnessSlug`. The other ~16 projections always stay on
    * `harnessSlug`.

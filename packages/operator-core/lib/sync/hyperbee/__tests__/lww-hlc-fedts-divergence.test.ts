@@ -1,5 +1,5 @@
 /**
- * lww-hlc-fedts-divergence.test.ts — Brief D/J (shared-hive-release-testing),
+ * lww-hlc-fedts-divergence.test.ts — Brief D/J (shared-pot-release-testing),
  * finding D-001. Now PROVES the SHIPPED FIX (migration 314 + the projection
  * `fed_hlc` guard): two honest peers folding a contested key in opposite orders
  * CONVERGE, because the PG guard now orders by the same HLC key the merge fold

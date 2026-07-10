@@ -1,5 +1,5 @@
 /**
- * visibility-content-topic-separation.test.ts — Brief E (shared-hive-release-testing),
+ * visibility-content-topic-separation.test.ts — Brief E (shared-pot-release-testing),
  * membership lifecycle & visibility. The automated half of FINDING E-001:
  *
  *   "public → private withdraws DIRECTORY discovery, NOT CONTENT federation."

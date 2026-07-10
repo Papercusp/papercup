@@ -1,5 +1,5 @@
 /**
- * idempotency-replay-audit.test.ts — Brief AG (shared-hive-release-testing):
+ * idempotency-replay-audit.test.ts — Brief AG (shared-pot-release-testing):
  * the IDEMPOTENCY / DETERMINISM / REPLAY audit over the REAL incremental merge
  * core (`mergeAdmittedLogsIncremental` + `createMergeCursor`) and a faithful
  * in-memory transcription of the projections' PG LWW guard

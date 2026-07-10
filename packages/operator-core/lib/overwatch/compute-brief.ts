@@ -524,14 +524,14 @@ export async function computeOverwatchBrief(workspaceId: string, potSlug: string
       console.warn(`[overwatch-brief] could not read owner steering for '${potSlug}' — pause-aware anomaly suppression disabled:`, e instanceof Error ? e.message : e);
     }
     // Resolve the Queen's coord owner so the overwatch can address a nudge to her
-    // (it lands in her next wake brief's inbox — the SAME resolveQueenOwner the
+    // (it lands in her next wake brief's inbox — the SAME resolveMugOwner the
     // Queen's own brief reads, so addressing it delivers). Fail-soft: any error
     // leaves coordOwner null → the persona escalates Queen-drift instead of nudging.
     try {
       const { getOrgPg } = await import('@papercusp/db-org');
-      const { resolveQueenOwner } = await import('../hive/placement-watchdog');
+      const { resolveMugOwner } = await import('../pot/placement-watchdog');
       const { sql } = getOrgPg();
-      brief.queen.coordOwner = await resolveQueenOwner(sql, workspaceId, potSlug);
+      brief.queen.coordOwner = await resolveMugOwner(sql, workspaceId, potSlug);
     } catch (e) {
       console.warn(`[overwatch-brief] could not resolve the Queen coord owner for '${potSlug}' — nudges will escalate:`, e instanceof Error ? e.message : e);
     }

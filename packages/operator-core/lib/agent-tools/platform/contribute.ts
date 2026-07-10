@@ -33,8 +33,8 @@ import { hardText, LIMITS } from '../limits';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { contributeUpstream } from '../../hive/contribute-upstream';
-import { PLATFORM_SELF_HIVE_SLUG } from '../../hive/enable-platform-mode';
+import { contributeUpstream } from '../../pot/contribute-upstream';
+import { PLATFORM_SELF_POT_SLUG } from '../../pot/enable-platform-mode';
 
 const text = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -86,7 +86,7 @@ export default defineTool({
       .max(100)
       .regex(/^[a-z0-9][a-z0-9-]*$/, 'slug must be lowercase alphanumeric + dashes')
       .optional()
-      .describe(`Base slug of the self-hive (default ${PLATFORM_SELF_HIVE_SLUG}; member = <base>, home = <base>-hive).`),
+      .describe(`Base slug of the self-hive (default ${PLATFORM_SELF_POT_SLUG}; member = <base>, home = <base>-hive).`),
 
     // ── learning-pack path ──
     packId: z

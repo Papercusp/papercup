@@ -19,7 +19,7 @@ import { existsSync } from 'node:fs';
 import { getOrgPg } from '@papercusp/db-org';
 import { loadHarnessRegistry } from './harness-registry';
 import { resolveHiveReleaseEnv } from './harness/routines/hive-release-env';
-import { getHiveGitMode, type HiveGitMode } from './harness/git-sync/hive-git-mode';
+import { getPotGitMode, type PotGitMode } from './harness/git-sync/hive-git-mode';
 import { gitPipelineSnapshot, type GitPipelineSnapshot } from './git-pipeline-stats';
 import { DEFAULT_WORKSPACE_ID } from './workspace-id-constant';
 
@@ -117,7 +117,7 @@ export interface GitPipelineHiveRow {
   lastDeployStatus: string | null;
   // ── github bridge (github-bridge-hive-egress-2026-07-02 P-009) ──
   /** The hive's federated `hiveGit.mode` (legacy = no bridge, today's behavior). */
-  hiveGitMode: HiveGitMode;
+  hiveGitMode: PotGitMode;
   /** Newest bridge tick state; null on legacy hives / before the first tick. */
   bridge: GitPipelineBridgeState | null;
 }
@@ -163,7 +163,7 @@ function lastGreenShaOf(recent: GitPipelineSnapshot['recent']): string | null {
 async function buildRow(
   slug: string,
   env: Awaited<ReturnType<typeof resolveHiveReleaseEnv>>,
-  hiveGitMode: HiveGitMode,
+  hiveGitMode: PotGitMode,
   bridge: GitPipelineBridgeState | null,
 ): Promise<GitPipelineHiveRow> {
   const root = env.env.PAPERCUSP_INTEGRATION_ROOT ?? '';
@@ -225,7 +225,7 @@ export async function gitPipelineHiveRows(workspaceId: string = DEFAULT_WORKSPAC
     if (!env.enabled || env.isOperatorHome) continue;
     // P-009: the bridge cell — mode read is fail-open-to-legacy (never throws);
     // the bridge-state PG read runs only on non-legacy hives (legacy = zero cost).
-    const hiveGitMode = await getHiveGitMode(workspaceId, p.slug);
+    const hiveGitMode = await getPotGitMode(workspaceId, p.slug);
     const bridge =
       hiveGitMode === 'legacy'
         ? null

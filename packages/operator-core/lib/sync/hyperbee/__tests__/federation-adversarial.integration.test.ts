@@ -679,7 +679,7 @@ describe('federation adversarial — admission + revocation gate the data plane'
   it(
     'C-001 (release gap): a removed member can no longer WRITE, but STILL READS new content (write-only revocation)',
     async () => {
-      // Demonstrates finding C-001 (shared-hive-release-testing/findings-C.md):
+      // Demonstrates finding C-001 (shared-pot-release-testing/findings-C.md):
       // revoking a member drops its log from OTHER peers' admitted sets (so its
       // WRITES stop propagating hive-wide), but does NOT stop the removed member
       // from READING — its own admission of the owner's log is untouched and

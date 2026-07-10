@@ -9,7 +9,7 @@ Owner directive: get shared-pot P2P **fully working and ready for PUBLIC release
 **We no longer have Hetzner access — every proof must run locally** (plan decision D-001).
 Your job is VERIFICATION + the fixes it forces: drive every open release criterion to
 green-with-evidence on the local rigs, and feed the final GO/NO-GO
-(`shared-hive-release-testing/RELEASE-READINESS.md`).
+(`shared-pot-release-testing/RELEASE-READINESS.md`).
 
 ## First move (each member)
 

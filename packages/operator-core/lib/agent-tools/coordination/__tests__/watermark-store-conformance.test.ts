@@ -13,6 +13,7 @@ import postgres, { type Sql } from 'postgres';
 import { PgWatermarkStore, ensureCoordWatermarksTable } from '@papercusp/coordination/watermark-store';
 import { describeWatermarkStoreConformance } from '@papercusp/coordination/watermark-store/conformance';
 import { connectionString } from '../../../memory/mem0-connection';
+import { PG_BIGINT_AS_NUMBER_TYPES } from '@papercusp/db-org';
 
 let sql: Sql | null = null;
 let pgOk = false;
@@ -24,6 +25,8 @@ try {
     connection: { search_path: 'harness_shared, public' },
     prepare: false,
     max: 4,
+    // EI-9265: mirror getOrgPg()'s bigint→Number coercion exactly.
+    types: PG_BIGINT_AS_NUMBER_TYPES,
   });
   await sql`SELECT 1`;
   await ensureCoordWatermarksTable(sql);

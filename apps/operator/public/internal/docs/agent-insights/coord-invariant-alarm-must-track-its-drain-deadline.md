@@ -64,6 +64,20 @@ EI-6910's removal of `staleEscalationHours`) so the alarm and the sweep deadline
 never drift apart and reopen the gap. The DEPTH check (`> wakeQueueDepthMax`) is
 unchanged — that's a genuine bloat backstop, independent of age.
 
+## Scope note: not every check in this file is an age/backlog alarm
+
+As of 2026-07-10 (EI-8999, `system:claim-integrity-sweep`), the same file also runs a THIRD,
+structurally different kind of check — deliberately NOT the age-drain-deadline pattern above.
+Claim integrity (a work-item's `taken_by` desynced from its plan-item's live claim lease, or a
+durable plan-item assignment with no live lease backing it) is a **live double-placement risk
+right now**, not a slow backlog leak — so instead of filing a deduped backlog bug on an age
+threshold, it fires a **LOUD, directed, woken alarm** to the holder + its fleet leader
+immediately on detection (and still files a deduped improvement as the durable audit trail /
+catch-all when nobody is reachable to wake). There is no "drain deadline" to tie an alarm
+threshold to here — the violation itself, the instant it's observed, is the actionable signal.
+Don't generalize the rule-of-thumb below to this check; it is the one exception the file's own
+header comment calls out.
+
 ## Rule of thumb
 
 If a coord-invariant AGE/backlog alarm has an in-pass auto-remediation, its

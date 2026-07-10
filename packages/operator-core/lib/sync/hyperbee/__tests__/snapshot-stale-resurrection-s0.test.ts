@@ -9,7 +9,7 @@ import {
 import type { OwnLog, PeerLogOp } from '../peer-log';
 
 /**
- * Brief Z (shared-hive-release-testing) — H-Z1: the stale-PUT-after-DELETE
+ * Brief Z (shared-pot-release-testing) — H-Z1: the stale-PUT-after-DELETE
  * RESURRECTION S0, made permanent by snapshot-seeded folds.
  *
  * read-merge.ts documents put-after-del as a "KNOWN BOUNDED TRANSIENT" (line ~466):

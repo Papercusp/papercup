@@ -8,7 +8,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/recall-reads-shape.test.ts
  */
 import { describe, expect, it } from "vitest";
-import { SURVEY_TIER_CAPS, shapeHiveSurvey } from "./hive/survey-shape";
+import { SURVEY_TIER_CAPS, shapePotSurvey } from "./pot/survey-shape";
 import { MEMORY_SEARCH_TIER_CAPS, shapeMemoryHit } from "./memory/search";
 
 function ranked(i: number) {
@@ -23,7 +23,7 @@ function ranked(i: number) {
   };
 }
 
-describe("shapeHiveSurvey (P-024)", () => {
+describe("shapePotSurvey (P-024)", () => {
   const single = {
     ok: true,
     home: "papercusp-hive",
@@ -36,7 +36,7 @@ describe("shapeHiveSurvey (P-024)", () => {
   };
 
   it("caps rows per view, collapses why to the top reason, drops the ranker spec at trimmed", () => {
-    const out = shapeHiveSurvey(single, "trimmed") as Record<string, unknown>;
+    const out = shapePotSurvey(single, "trimmed") as Record<string, unknown>;
     const plans = out.plans as Record<string, unknown>[];
     expect(plans).toHaveLength(SURVEY_TIER_CAPS.trimmed.rows + 1); // + notice
     expect(plans.at(-1)!.id).toBe("(truncated)");
@@ -47,7 +47,7 @@ describe("shapeHiveSurvey (P-024)", () => {
     expect(String(out.ranker_note)).toContain('payloadTier:"full"');
     expect(out.counts).toEqual(single.counts); // true totals survive
     // standard keeps the ranker + two reasons
-    const std = shapeHiveSurvey(single, "standard") as Record<string, unknown>;
+    const std = shapePotSurvey(single, "standard") as Record<string, unknown>;
     expect(std.ranker).toEqual(single.ranker);
     expect((std.plans as Record<string, unknown>[])[0].why).toHaveLength(2);
   });
@@ -75,7 +75,7 @@ describe("shapeHiveSurvey (P-024)", () => {
       ],
       ranker: { features: [] },
     };
-    const out = shapeHiveSurvey(ws, "trimmed") as Record<string, unknown>;
+    const out = shapePotSurvey(ws, "trimmed") as Record<string, unknown>;
     const cross = out.crossHive as { plans: unknown[] };
     expect(cross.plans).toHaveLength(SURVEY_TIER_CAPS.trimmed.rows + 1);
     const per = (out.perHive as Record<string, unknown>[])[0];
@@ -85,7 +85,7 @@ describe("shapeHiveSurvey (P-024)", () => {
 
   it("error envelopes pass through untouched", () => {
     const err = { ok: false, error: "no_home_harness" };
-    expect(shapeHiveSurvey(err, "trimmed")).toBe(err);
+    expect(shapePotSurvey(err, "trimmed")).toBe(err);
   });
 });
 

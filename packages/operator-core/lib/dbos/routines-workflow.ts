@@ -387,8 +387,8 @@ async function routinesTickImpl(): Promise<void> {
   // Fail-soft inside the module; one durable step so a crash mid-sweep resumes.
   await DBOS.runStep(
     async () => {
-      const { hiveWatchdogSweep } = await import('../hive/watchdog');
-      const results = await hiveWatchdogSweep();
+      const { potWatchdogSweep } = await import('../pot/watchdog');
+      const results = await potWatchdogSweep();
       for (const res of results) {
         if (res.outcome === 'armed' || res.outcome === 'staged') {
           console.warn(`[hive-watchdog] tick ${res.outcome} a fallback wake: ${res.reason}`);
@@ -407,8 +407,8 @@ async function routinesTickImpl(): Promise<void> {
   // RECOVERY_SEC<=0. Debounced + fail-soft inside the module.
   await DBOS.runStep(
     async () => {
-      const { pausedHiveRecoverySweep } = await import('../hive/watchdog');
-      const results = await pausedHiveRecoverySweep();
+      const { pausedPotRecoverySweep } = await import('../pot/watchdog');
+      const results = await pausedPotRecoverySweep();
       for (const res of results) {
         if (res.outcome === 'resumed' || res.outcome === 'alerted' || res.outcome === 'error') {
           console.warn(`[hive-watchdog] paused-recovery ${res.outcome}: ${res.installSlug} — ${res.reason}`);
@@ -446,8 +446,8 @@ async function routinesTickImpl(): Promise<void> {
   // module; one durable step so a crash mid-sweep resumes.
   await DBOS.runStep(
     async () => {
-      const { reconcileHivePlacements } = await import('../hive/placement-watchdog');
-      const results = await reconcileHivePlacements();
+      const { reconcilePotPlacements } = await import('../pot/placement-watchdog');
+      const results = await reconcilePotPlacements();
       for (const res of results) {
         if (res.decision === 'recover' || res.decision === 'breaker' || res.decision === 'stranded') {
           console.warn(
@@ -619,12 +619,12 @@ async function routinesTickImpl(): Promise<void> {
       // K1 (workspace-scoped-coordination P-003): one throughput tick per
       // workspace loop when WORKSPACE_COORDINATION is ON; the raw per-hive set
       // (byte-identical) when OFF.
-      const [{ listStartedWorkspaceLoops }, { recordHiveThroughputTick }] = await Promise.all([
-        import('../hive/started'),
-        import('../hive/throughput'),
+      const [{ listStartedWorkspaceLoops }, { recordPotThroughputTick }] = await Promise.all([
+        import('../pot/started'),
+        import('../pot/throughput'),
       ]);
       for (const { workspaceId, installSlug } of await listStartedWorkspaceLoops()) {
-        await recordHiveThroughputTick({ workspaceId, potSlug: installSlug }).catch(() => {});
+        await recordPotThroughputTick({ workspaceId, potSlug: installSlug }).catch(() => {});
       }
     },
     { name: 'pot-throughput-tick' },

@@ -70,7 +70,7 @@ import { Duplex } from 'node:stream';
 import { join } from 'node:path';
 import Protomux, { type ProtomuxChannel } from 'protomux';
 import c, { type CompactEncoding, type CompactEncodingState } from 'compact-encoding';
-import { getHiveGitMode, type HiveGitMode } from '../../harness/git-sync/hive-git-mode';
+import { getPotGitMode, type PotGitMode } from '../../harness/git-sync/hive-git-mode';
 import { hiveGitRepoPath, pathExists } from './storage';
 import { isScopeRepoFamilyPath, parseScopeRepoWireKey, scopeRepoPath } from './scope-repo';
 import { POT_GIT_PROTOCOL, serveUploadPack } from './fetch-transport';
@@ -328,9 +328,9 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
   void (async () => {
     const cfg = state.serverConfig;
     if (!cfg) return refuse('not-serving');
-    let mode: HiveGitMode;
+    let mode: PotGitMode;
     try {
-      mode = await getHiveGitMode(cfg.workspaceId, cfg.potHomeSlug);
+      mode = await getPotGitMode(cfg.workspaceId, cfg.potHomeSlug);
     } catch {
       mode = 'legacy';
     }

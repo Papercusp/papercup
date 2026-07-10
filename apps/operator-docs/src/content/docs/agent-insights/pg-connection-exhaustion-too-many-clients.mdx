@@ -127,6 +127,39 @@ not a band-aid. The structural hardening shipped in plan
 Validated end-to-end: **300 concurrent callers → 5 backends, 0 rejected** (the
 bounded pool queues the excess instead of exhausting PG).
 
+## A SECOND exhaustion class (2026-07-10, WI-3816): the ClientWrite zombie
+
+Raising the ceiling and bounding the pools (above) fixes exhaustion from too many
+*legitimate* connections. There is a structurally different way to run out of
+slots even with a correctly-sized, bounded pool: a backend whose **query already
+completed** but whose **client is gone / not reading** (a dead network peer, a
+killed agent process, a stalled MCP transport) is not the same as a hung query —
+`pg_cancel_backend` does nothing to it (there is no in-flight query to cancel),
+so it sits at `ClientWrite` in `pg_stat_activity` and **holds its pool slot
+forever**, until an operator manually `pg_terminate_backend`s it. This was the
+root cause of a **4-hour fleet-wide MCP-timeout outage** (the aftermath of
+WI-3792): the pool wasn't oversubscribed by count, it was full of zombies.
+
+The fix (`buildConnectionOptions` / `buildClient` in
+`libs/papercusp/libs/db/src/connection.ts`) sets **`client_connection_check_interval`**
+(default 30s, `PAPERCUSP_DB_CLIENT_CHECK_INTERVAL`-overridable, seconds) on every
+non-pooled connection — a `PGC_USERSET` GUC settable as a libpq startup param (no
+`postgresql.conf` edit needed), which makes the backend **itself** poll its socket
+and notice/abort when the client is gone, instead of waiting for an operator to
+find and kill it by hand. It defaults to **off (0)** on every stock PG install
+(embedded or native), so it must be set explicitly — this incident is exactly why.
+Alongside it, the same non-pooled path now tightens the OS-level TCP keepalive
+probe (`tcp_keepalives_idle=30`, `_interval=10`, `_count=3`) so a **network-level**
+dead peer (not just an app-level unresponsive one) is caught quickly too — PG's own
+default keepalive idle time (2h) is far too slow to matter for this failure mode.
+
+**Diagnostic signal to add to the OS-level checklist above:** a `pg_stat_activity`
+row stuck in `state = 'idle'` / `wait_event_type = 'Client'` (or `ClientWrite`) for
+an implausibly long time, with **no corresponding live TCP peer** in the `ss -tnp`
+output from the diagnose section, is this class — not a hung query, not a raw
+count-exhaustion. `pg_terminate_backend(pid)` on that pid recovers the slot
+immediately if you're mid-outage on an unpatched install.
+
 ## Gotcha — don't write a plan as a raw file during the outage
 
 While PG is down the `plans:*` tools fail too. If you write a plan `.md` straight

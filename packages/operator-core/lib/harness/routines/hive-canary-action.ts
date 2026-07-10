@@ -34,7 +34,7 @@
  * Queen anyway (usually true for a busy Hive — hence "usually passes" — but
  * not guaranteed, and the exact "DBOS pipelines: NONE / no autoloop_state
  * rows" forensics a missed canary reports). Fixed by calling the same
- * `requestUrgentHiveWake` bypass `work_items:create`'s `urgent` flag uses,
+ * `requestUrgentPotWake` bypass `work_items:create`'s `urgent` flag uses,
  * right after a NEW canary is actually inserted — mirrors the existing
  * hive-home resolution used a few lines below for the pause check.
  *
@@ -45,7 +45,7 @@ import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { captureImprovement } from '../improvements/capture-core';
 import { getOwnerSteering, isPausedNow } from '../../owner-steering';
-import { requestUrgentHiveWake } from '../../hive/urgent-wake';
+import { requestUrgentPotWake } from '../../pot/urgent-wake';
 
 /** Terminal-enough statuses: the loop carried the canary to a verdict. */
 const CANARY_TERMINAL = new Set(['passed', 'deprecated', 'failed']);
@@ -296,7 +296,7 @@ registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
       // coalesce) so the canary is woken-for promptly instead of relying on
       // incidental unrelated Hive demand.
       try {
-        const wake = await requestUrgentHiveWake({
+        const wake = await requestUrgentPotWake({
           reason: `hive-canary: queued today's canary ${plan.queueId} in ${installSlug}`,
           harness: potHomeSlug,
           workspaceId,

@@ -43,6 +43,19 @@ vi.mock('protomux', () => ({
   },
 }));
 
+// WI-1423: the default ingest-retrigger trigger() now gates on the DOGFOOD_PAPERCUSP_POT
+// flag (mirroring the boot-path + wizard callers) before it dynamically imports and calls
+// startBootstrapPapercuspHive — see the "default trigger" describe block below.
+const wi1423Mocks = vi.hoisted(() => ({
+  startBootstrapPapercuspHive: vi.fn(() => ({ progressId: 'test', done: Promise.resolve({ state: 'skipped', slug: null }) })),
+  getFlag: vi.fn(async () => true),
+}));
+vi.mock('./harness/bootstrap-papercusp-hive', () => ({
+  startBootstrapPapercuspHive: wi1423Mocks.startBootstrapPapercuspHive,
+}));
+vi.mock('@papercusp/flags/server', () => ({ getFlag: wi1423Mocks.getFlag }));
+vi.mock('@papercusp/flags', () => ({ FLAGS: { DOGFOOD_PAPERCUSP_POT: 'papercusp-dogfood-papercusp-hive' } }));
+
 const { wireHiveDirectoryAtBoot, maybeTriggerCanonicalJoinOnIngest, __resetCanonicalJoinIngestTrigger } =
   await import('./hive-directory-boot');
 const { HiveDirectory } = await import('./hive-directory');
@@ -477,5 +490,46 @@ describe('maybeTriggerCanonicalJoinOnIngest (WI-1585 ingest retrigger)', () => {
     expect(fired).toBe(1);
     await maybeTriggerCanonicalJoinOnIngest({ hive_pubkey: 'CANON==' }, deps(1_070_000)); // +70s — past the window
     expect(fired).toBe(2);
+  });
+
+  // WI-1423: the DEFAULT trigger() (no deps.trigger override — exercises the real
+  // production closure) must gate on DOGFOOD_PAPERCUSP_POT like its sibling callers,
+  // closing the ungated auto-join-into-production path a test-rig frame could hit
+  // merely by overhearing the canonical announce on the (unconditionally-wired)
+  // global directory topic.
+  describe('default trigger (WI-1423 flag gate)', () => {
+    beforeEach(() => {
+      wi1423Mocks.startBootstrapPapercuspHive.mockClear();
+      wi1423Mocks.getFlag.mockClear();
+    });
+
+    it('flag ON → the default trigger calls startBootstrapPapercuspHive', async () => {
+      wi1423Mocks.getFlag.mockResolvedValue(true);
+      await maybeTriggerCanonicalJoinOnIngest(
+        { hive_pubkey: 'CANON==' },
+        { baked: () => BAKED, getHiveByPubkey: async () => null, nowMs: () => 1_000_000 },
+      );
+      await vi.waitFor(() => expect(wi1423Mocks.startBootstrapPapercuspHive).toHaveBeenCalledTimes(1));
+    });
+
+    it('flag OFF → the default trigger never calls startBootstrapPapercuspHive', async () => {
+      wi1423Mocks.getFlag.mockResolvedValue(false);
+      await maybeTriggerCanonicalJoinOnIngest(
+        { hive_pubkey: 'CANON==' },
+        { baked: () => BAKED, getHiveByPubkey: async () => null, nowMs: () => 1_000_000 },
+      );
+      await vi.waitFor(() => expect(wi1423Mocks.getFlag).toHaveBeenCalledTimes(1));
+      expect(wi1423Mocks.startBootstrapPapercuspHive).not.toHaveBeenCalled();
+    });
+
+    it('flag read throws → fails closed (no auto-join)', async () => {
+      wi1423Mocks.getFlag.mockRejectedValue(new Error('flag store unreachable'));
+      await maybeTriggerCanonicalJoinOnIngest(
+        { hive_pubkey: 'CANON==' },
+        { baked: () => BAKED, getHiveByPubkey: async () => null, nowMs: () => 1_000_000 },
+      );
+      await vi.waitFor(() => expect(wi1423Mocks.getFlag).toHaveBeenCalledTimes(1));
+      expect(wi1423Mocks.startBootstrapPapercuspHive).not.toHaveBeenCalled();
+    });
   });
 });

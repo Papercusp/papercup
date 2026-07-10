@@ -20,14 +20,14 @@ vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
 vi.mock('./hive-roster', () => ({ listHiveRosterSnapshot: vi.fn(), renderRosterSnapshot: vi.fn() }));
 vi.mock('../handoff-context', () => ({ getSpawnHandoffContext: vi.fn() }));
 vi.mock('../work-item-checkpoint', () => ({ getWorkItemCheckpoint: vi.fn() }));
-vi.mock('../hive/bee-wake-dossier', () => ({ computeBeeWakeDossier: vi.fn() }));
+vi.mock('../pot/cup-wake-dossier', () => ({ computeCupWakeDossier: vi.fn() }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-floor') }));
 
 import { getFlag } from '@papercusp/flags/server';
 import { listHiveRosterSnapshot, renderRosterSnapshot } from './hive-roster';
 import { getSpawnHandoffContext } from '../handoff-context';
 import { getWorkItemCheckpoint } from '../work-item-checkpoint';
-import { computeBeeWakeDossier } from '../hive/bee-wake-dossier';
+import { computeCupWakeDossier } from '../pot/cup-wake-dossier';
 import { productionSpawnHydrationDeps } from './spawn-hydration-deps';
 import type { SpawnHydrationDeps } from './spawn-hydration';
 
@@ -36,7 +36,7 @@ const listRoster = vi.mocked(listHiveRosterSnapshot);
 const renderRoster = vi.mocked(renderRosterSnapshot);
 const handoff = vi.mocked(getSpawnHandoffContext);
 const checkpoint = vi.mocked(getWorkItemCheckpoint);
-const dossier = vi.mocked(computeBeeWakeDossier);
+const dossier = vi.mocked(computeCupWakeDossier);
 
 type ProductionDeps = Required<Pick<SpawnHydrationDeps, 'getHandoff' | 'getRoster' | 'getCheckpoint' | 'getDossier'>>;
 const deps = () => productionSpawnHydrationDeps() as ProductionDeps;

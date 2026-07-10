@@ -43,9 +43,9 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { listStartedHives } from '../hive/started';
-import { resolveQueenOwner } from '../hive/placement-watchdog';
-import { recentWatchdogFires, recordFire } from '../hive/watchdog';
+import { listStartedPots } from '../pot/started';
+import { resolveMugOwner } from '../pot/placement-watchdog';
+import { recentWatchdogFires, recordFire } from '../pot/watchdog';
 import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 import { promotePlanItems } from '../plan-workitem-promotion-run';
 
@@ -199,7 +199,7 @@ export async function scoutReadyAutostartSweep(): Promise<ScoutReadyAutostartRes
   const results: ScoutReadyAutostartResult[] = [];
   if (!scoutReadyAutostartEnabled()) return results;
   try {
-    const started = await listStartedHives();
+    const started = await listStartedPots();
     if (started.length === 0) return results;
     const { sql } = getOrgPg();
     for (const { workspaceId, installSlug } of started) {
@@ -238,7 +238,7 @@ export async function scoutReadyAutostartSweep(): Promise<ScoutReadyAutostartRes
           const alreadyFired =
             (await recentWatchdogFires(workspaceId, installSlug, 1, 'scout-ready-decompose')) > 0;
           if (!alreadyFired) {
-            const queenOwner = await resolveQueenOwner(sql, workspaceId, installSlug);
+            const queenOwner = await resolveMugOwner(sql, workspaceId, installSlug);
             if (queenOwner) {
               await fireDecomposeWake(workspaceId, queenOwner, itemless);
               await recordFire({

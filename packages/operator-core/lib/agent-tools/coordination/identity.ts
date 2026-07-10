@@ -231,6 +231,21 @@ export function isEphemeralMcpCallIdentity(ownerId: string | null | undefined): 
   return Boolean(ownerId) && EPHEMERAL_MCP_CALL_RE.test(ownerId as string);
 }
 
+/**
+ * EI-7766/EI-9274: many work-item write tools accept an `assignee`/`assign_to` that
+ * names a concrete ownerId — but the literal `'self'` is a natural guess many callers
+ * make (mirroring the `self` convention already honored elsewhere, e.g. search/sessions
+ * tools). Left unresolved, a literal `'self'` is stored VERBATIM as the assignee,
+ * producing an unmatchable claim (no agent is ever actually named "self") that later
+ * surfaces as a permanently orphaned claim — nothing can ever reclaim it since no live
+ * session ever heartbeats as ownerId "self" (observed live: WI-3881, EI-9274). Originally
+ * fixed only in work_items:create's assign_to (EI-7766); this shared helper lets every
+ * claim/assign surface resolve the same literal consistently.
+ */
+export function resolveSelfLiteral(value: string | undefined, callerOwnerId: string): string | undefined {
+  return value === 'self' ? callerOwnerId : value;
+}
+
 /** Cosmetic short form for owner labels. Never used for identity. */
 function shortId(id: string): string {
   if (id.startsWith('pus-')) return id.slice(0, 12);

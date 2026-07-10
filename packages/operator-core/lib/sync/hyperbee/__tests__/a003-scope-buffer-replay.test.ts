@@ -1,5 +1,5 @@
 /**
- * a003-scope-buffer-replay.test.ts — A-003 (shared-hive-release-testing Brief I)
+ * a003-scope-buffer-replay.test.ts — A-003 (shared-pot-release-testing Brief I)
  * regression: the receive-side slug-scope BUFFER that lets a JOINER admit the
  * OWNER's hive-home log once the joiner's hive-home binding resolves.
  *

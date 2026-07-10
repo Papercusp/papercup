@@ -240,6 +240,41 @@ describe('coord_event_log federation (real PG)', () => {
     expect(await db.sql`SELECT 1 FROM harness_shared.coord_event_log WHERE workspace_id=${WS} AND msg_id='m-peer'`).toHaveLength(0);
   });
 
+  it("WI-3914: writeToPg normalizes a remote body missing its own ts/msg_id from the (always-valid) wire fields", async () => {
+    // The exact live root cause of WI-3912 (coord:feed crashed on every call):
+    // `isCoordMessageRow` validates the WIRE-LEVEL msg_id/ts (which stamp the
+    // row's columns) but not that `body` independently carries those keys — a
+    // wire-valid row can still carry a `body` a downstream CoordEnvelope reader
+    // (feed.ts's compareByTsThenId) can't safely sort. `body` here has NEITHER
+    // key, mirroring the live probe (coord_event_log id 458510).
+    const proj = buildCoordMessageProjection({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql });
+    const malformed: CoordMessageRow = {
+      harness_slug: HARNESS, msg_id: 'wi3914-malformed', surface: 'messages', writer_key: 'peer-A',
+      body: { summary: 'no ts or msg_id in body' }, ts: 1_700_000_000_000,
+    };
+    await proj.writeToPg(malformed, { authorPubkey: 'peerPubA', origin: 'remote' });
+    const [row] = await db.sql<{ body: { ts?: unknown; msg_id?: unknown; summary?: unknown } }[]>`
+      SELECT body FROM harness_shared.coord_event_log WHERE workspace_id=${WS} AND msg_id='wi3914-malformed'`;
+    expect(row.body.ts).toBe(new Date(1_700_000_000_000).toISOString());
+    expect(row.body.msg_id).toBe('wi3914-malformed');
+    expect(row.body.summary).toBe('no ts or msg_id in body'); // rest of body untouched
+    await db.sql`DELETE FROM harness_shared.coord_event_log WHERE workspace_id=${WS} AND msg_id='wi3914-malformed'`;
+  });
+
+  it("WI-3914: writeToPg never overrides a body that already carries its own ts/msg_id", async () => {
+    const proj = buildCoordMessageProjection({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql });
+    const wellFormed: CoordMessageRow = {
+      harness_slug: HARNESS, msg_id: 'wi3914-well-formed', surface: 'messages', writer_key: 'peer-A',
+      body: envelope('wi3914-well-formed', { summary: 'already valid' }), ts: 1_700_000_000_000,
+    };
+    await proj.writeToPg(wellFormed, { authorPubkey: 'peerPubA', origin: 'remote' });
+    const [row] = await db.sql<{ body: { ts?: unknown; msg_id?: unknown } }[]>`
+      SELECT body FROM harness_shared.coord_event_log WHERE workspace_id=${WS} AND msg_id='wi3914-well-formed'`;
+    expect(row.body.ts).toBe(wellFormed.body.ts);
+    expect(row.body.msg_id).toBe('wi3914-well-formed');
+    await db.sql`DELETE FROM harness_shared.coord_event_log WHERE workspace_id=${WS} AND msg_id='wi3914-well-formed'`;
+  });
+
   it('two-peer convergence: a message sent on A lands on B (origin=remote) via the real reshape→decode→project chain', async () => {
     const dbB = await createFreshPgDb('coord_msg_fed_b');
     try {

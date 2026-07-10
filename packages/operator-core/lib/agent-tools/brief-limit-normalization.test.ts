@@ -63,7 +63,7 @@ describe('brief-carrying fields are normalized to LIMITS.BRIEF', () => {
   });
 
   it('pot:set-steering { directive } (surfaced in the Queen wake brief) hard-caps at LIMITS.BRIEF (was hardcoded 4000)', async () => {
-    const tool = (await import('./hive/set_steering')).default as unknown as { args: unknown };
+    const tool = (await import('./pot/set_steering')).default as unknown as { args: unknown };
     expect(propMaxLength(tool, 'directive')).toBe(LIMITS.BRIEF);
   });
 });

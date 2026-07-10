@@ -8,7 +8,7 @@ import { vi } from 'vitest';
 
 const recentWatchdogFires = vi.fn().mockResolvedValue(0);
 const recordFire = vi.fn().mockResolvedValue(undefined);
-vi.mock('./hive/watchdog', () => ({ recentWatchdogFires: (...a: unknown[]) => recentWatchdogFires(...a), recordFire: (...a: unknown[]) => recordFire(...a) }));
+vi.mock('./pot/watchdog', () => ({ recentWatchdogFires: (...a: unknown[]) => recentWatchdogFires(...a), recordFire: (...a: unknown[]) => recordFire(...a) }));
 
 const gitPipelineSnapshot = vi.fn().mockResolvedValue({});
 vi.mock('./git-pipeline-stats', () => ({ gitPipelineSnapshot: (...a: unknown[]) => gitPipelineSnapshot(...a) }));

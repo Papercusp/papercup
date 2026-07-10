@@ -17,7 +17,7 @@ import { listPresence } from '../agent-tools/coordination/presence';
 import { groupByAgent, listFleetAssignments } from './assignments';
 import { getWorkItem, listWorkItems, type WorkItem } from '../work-items';
 import { isAutoPickable, loadTrustedGithubUserIds } from '../work-items-admission';
-import { placementConfig } from '../hive/placement-watchdog';
+import { placementConfig } from '../pot/placement-watchdog';
 import type { PlacementBee, PlacementTask } from './placement-affinity';
 // Reuse the SAME readiness the survey + DBOS orchestrator dispatch by (D-007's
 // shared seam: filterReadyFrontier → selectReady over getFeatureBlockers). No
@@ -27,7 +27,7 @@ import {
   fetchHarnessBlockGraph,
   type HarnessBlockGraph,
   type FrontierRow,
-} from '../hive/survey';
+} from '../pot/survey';
 
 /** Feature/issue states that mean "settled" — never a placeable frontier item. */
 const TERMINAL_STATES = new Set([

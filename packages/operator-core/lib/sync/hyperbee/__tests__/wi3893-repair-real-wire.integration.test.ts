@@ -30,6 +30,19 @@
  * isn't backed by a real Hypercore session), an eventual `peersCount() > 0`
  * can ONLY be explained by the repair having genuinely re-established
  * replication over the wire — real Hyperswarm/Noise/testnet-DHT, not a mock.
+ *
+ * Boot-order note: `replication-liveness.ts`'s `repairHandlers` (and its
+ * liveness `registry`) are MODULE-LEVEL singletons keyed only by
+ * `(workspaceId, harnessSlug)` — correct in production (one harness process
+ * per machine, so the key is naturally unique per peer) but a genuine
+ * same-process-test artifact here: `bootPresencePeer` pins every caller to
+ * the SAME (workspaceId, harnessSlug) (so both simulated "machines" share one
+ * swarm topic), and each `bootHarnessSubstrate` call unconditionally
+ * OVERWRITES that key's repair handler with its own closure. Booting peer B
+ * (the one under test) LAST makes B's registration the one left active for
+ * the rest of the test — otherwise peer A's handler would intercept B's
+ * episodes and silently no-op them (A's `drainRepairQueue` skips any keyHex
+ * equal to A's OWN log key, which is exactly `aKey`).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -46,6 +59,10 @@ import {
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { openRemoteLog, type RemoteLog } from '../peer-log';
 import { listBootHistory } from '../boot-history';
+import {
+  setReplicationStallEpisodeReporterForTests,
+  setReplicationStallRecoveryReporterForTests,
+} from '../replication-liveness';
 
 afterEach(rigAfterEach);
 
@@ -71,6 +88,20 @@ describe('WI-3893 (P-007) — connected_never_replicated repair-on-detect reconn
   it(
     "peer B's broken first session for peer A's log is repaired into a real, live-attached replicator",
     async () => {
+      // Silence the default reporters (console.error + durable-EI lazy import)
+      // — this test asserts on the repair MECHANICS (session swap + boot
+      // event + real attach), not the diagnostic/escalation legs, and a real
+      // connected_never_replicated alarm firing is expected, not a test
+      // failure. Mirrors boot.test.ts's WI-3684 describe block. Pushed FIRST
+      // so it runs LAST (LIFO) — after each peer's `handle.close()` (which
+      // also reports recoveries through this same module-level seam).
+      setReplicationStallEpisodeReporterForTests(() => {});
+      setReplicationStallRecoveryReporterForTests(() => {});
+      cleanups.push(() => {
+        setReplicationStallEpisodeReporterForTests(null);
+        setReplicationStallRecoveryReporterForTests(null);
+      });
+
       const dbA: FreshPgDb = await createFreshPgDb('wi3893A');
       cleanups.push(() => dbA.cleanup());
       const dbB: FreshPgDb = await createFreshPgDb('wi3893B');
@@ -96,6 +127,18 @@ describe('WI-3893 (P-007) — connected_never_replicated repair-on-detect reconn
         },
       );
 
+      // Boot A FIRST, B SECOND: `replication-liveness.ts`'s repairHandlers map
+      // is keyed only by (workspaceId, harnessSlug), and both peers share that
+      // key here (see the boot-order note in the file header) — the LAST
+      // `bootHarnessSubstrate` call's handler registration wins for the rest
+      // of the test, so B (the peer under test) must boot last.
+      const peerA = await bootPresencePeer({
+        testnetBootstrap: testnet.bootstrap,
+        rootPrefix: 'wi3893-A-',
+        identity: idA,
+        sql: dbA.sql,
+        verify: (uid) => (uid === idB.userId ? 'verified' : 'fail'),
+      });
       const peerB = await bootPresencePeer({
         testnetBootstrap: testnet.bootstrap,
         rootPrefix: 'wi3893-B-',
@@ -104,13 +147,6 @@ describe('WI-3893 (P-007) — connected_never_replicated repair-on-detect reconn
         verify: (uid) => (uid === idA.userId ? 'verified' : 'fail'),
         openRemoteLogOverride: bOpenOverride,
         replicationStallGraceMs: 200,
-      });
-      const peerA = await bootPresencePeer({
-        testnetBootstrap: testnet.bootstrap,
-        rootPrefix: 'wi3893-A-',
-        identity: idA,
-        sql: dbA.sql,
-        verify: (uid) => (uid === idB.userId ? 'verified' : 'fail'),
       });
 
       const aKey = peerA.handle.ownLog.keyHex;

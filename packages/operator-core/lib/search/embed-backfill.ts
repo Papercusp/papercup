@@ -2,7 +2,9 @@
  * Embed-backfill worker for Plan 2B+C.
  *
  * Walks the prose surfaces (operator_turns, harness_escalations,
- * harness_brainstorm, harness_decisions, session_turns) looking for rows
+ * harness_brainstorm, harness_decisions, session_turns) and the work-item
+ * ledger's two kind-tables (engineer_issues, harness_features_consolidated —
+ * P-008, shared-embedding-sidecar-and-enrichment-2026-07-10) looking for rows
  * that lack a vector IN THE ACTIVE EMBEDDING SPACE, and fills them in
  * batches using the same OpenAI/local cascade mem0 uses (so embeddings
  * live in the same 384-D space as memories — future cross-pollination
@@ -48,7 +50,7 @@ const OPENAI_EMBEDDER_MODEL = 'text-embedding-3-small';
 // pushes bigger batches for throughput, a laptop keeps latency/memory down.
 const BATCH_SIZE = getResourceProfile().embedBatchSize;
 
-type ResolvedMode = 'openai' | 'local' | 'gemma' | 'disabled';
+type ResolvedMode = 'openai' | 'local' | 'gemma' | 'harrier' | 'disabled';
 
 interface BackfillStats {
   table: string;
@@ -122,6 +124,11 @@ export async function resolveBackfillEmbedder(): Promise<ResolvedEmbedder> {
     buildLocal: () => buildSidecarAwareEmbedder('local', 'document'),
     // Prose backfill is STORAGE, so EmbeddingGemma gets the document prompt.
     buildGemma: () => buildSidecarAwareEmbedder('gemma', 'document'),
+    // Required by the cascade seam since P-014 made harrier selectable; the
+    // sweep itself never STORES harrier vectors (native 1024 ≠ the vector(384)
+    // columns — the dims guard in runBackfillSweep skips the whole sweep), but
+    // an unresolvable preference must not throw and kill the periodic tick.
+    buildHarrier: () => buildSidecarAwareEmbedder('harrier', 'document'),
   });
 }
 
@@ -192,6 +199,24 @@ export const TARGETS: BackfillTarget[] = [
     embedCol: 'text_embedding',
     bodySql: `CASE WHEN length(text) >= 80 THEN left(text, 2000) ELSE '' END`,
     keyCols: ['workspace_id', 'source_kind', 'session_id', 'turn_idx'],
+  },
+  // P-008 (shared-embedding-sidecar-and-enrichment-2026-07-10): the work-item
+  // ledger's two kind-tables (migration 548). Embeds title + body/summary
+  // (body truncated to 2k chars, mirroring session_turns) so work_items:search
+  // gains a semantic leg and work_items:create can prescreen a new title
+  // against OPEN items by cosine similarity — the 2026-07-10 30-dupe
+  // bug-storm class (WI-3358..WI-3477) that lexical dedup missed.
+  {
+    table: 'harness_shared.engineer_issues',
+    embedCol: 'embedding',
+    bodySql: `COALESCE(title, '') || E'\\n' || left(COALESCE(body, ''), 2000)`,
+    keyCols: ['workspace_id', 'issue_id'],
+  },
+  {
+    table: 'harness_shared.harness_features_consolidated',
+    embedCol: 'embedding',
+    bodySql: `COALESCE(title, '') || E'\\n' || left(COALESCE(summary, ''), 2000)`,
+    keyCols: ['harness_slug', 'feature_id'],
   },
 ];
 
@@ -354,7 +379,12 @@ export async function runBackfillSweep(): Promise<BackfillStats[] | { skipped: s
   __sweepState.running = true;
   try {
     const resolved = await resolveBackfillEmbedder();
-    if (resolved.mode === 'disabled') {
+    // Skip entirely when disabled OR when the active embedder's dims don't fit
+    // the vector(384) columns (harrier is native 1024, memory-side only — the
+    // P-006 verdict keeps prose/registry surfaces on gemma). Without this
+    // guard a harrier preference would burn a full batch of ~4×-cost embeds
+    // per table per tick just to count every row as a dims-mismatch error.
+    if (resolved.mode === 'disabled' || resolved.dims !== EMBEDDER_DIM) {
       __sweepState.lastResult = TARGETS.map((t) => ({
         table: t.table,
         scanned: 0,

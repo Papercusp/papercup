@@ -1,5 +1,5 @@
 /**
- * n-peer-content-fanout.integration.test.ts — Brief N (shared-hive-release-testing):
+ * n-peer-content-fanout.integration.test.ts — Brief N (shared-pot-release-testing):
  * the REAL-WIRE leg of N-peer scale. The existing N-peer integration test
  * (`cross-peer-coordination-scale`) federates ONLY presence + drives the authority
  * election cascade; no integration test proves a CONTENT type fans out to ALL of

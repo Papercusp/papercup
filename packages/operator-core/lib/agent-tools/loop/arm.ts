@@ -25,7 +25,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { resolvePotHomeSlug } from '../../hive/wake';
+import { resolvePotHomeSlug } from '../../pot/wake';
 import { isParkedNextFire } from '@papercusp/db-org';
 import {
   materializeLoop,

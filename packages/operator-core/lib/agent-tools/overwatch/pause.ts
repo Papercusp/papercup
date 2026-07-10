@@ -20,7 +20,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { sendMessage } from '../coordination/messages';
 import { CUE_AUTHORITY_FIELD, hiveWideCueAuthority } from '../coordination/cue-authority';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { resolvePotHomeSlug } from '../../hive/wake';
+import { resolvePotHomeSlug } from '../../pot/wake';
 import { setOverwatchStarted } from '../../overwatch/control-state';
 import { clearOverwatchWake } from '../../overwatch/wake-bridge';
 

@@ -423,7 +423,7 @@ const create = defineTool({
 /**
  * P-010 (harnesses-tab-hive-model) — "new hive from blueprint": stand up a new
  * Hive home (a `kind:'hive'` harness running the pot/Queen blueprint). The thin
- * HTTP face over the canonical `createHiveHarness` primitive (hive-tool-namespace
+ * HTTP face over the canonical `createPotHarness` primitive (hive-tool-namespace
  * `pot:create`) so the CreateHarnessPicker's new-hive mode reaches it without an
  * MCP round-trip — reuses the team's transactional provision (no duplication).
  */
@@ -440,17 +440,17 @@ const createHive = defineTool({
     }
     // domain-generic-hive P-006: the picker's domain headings (work hive,
     // Comb-blueprint) pick a NON-default kind:'hive' blueprint. Absent ⇒
-    // createHiveHarness's default (the coding `hive`). createHiveHarness
+    // createPotHarness's default (the coding `hive`). createPotHarness
     // resolves + validates kind:'hive', so an invalid id surfaces as a 400.
     const blueprintId = typeof body.blueprintId === 'string' && body.blueprintId.trim() ? body.blueprintId.trim() : undefined;
-    const { createHiveHarness } = await import('../../../agent-tools/hive/_create');
+    const { createPotHarness } = await import('../../../agent-tools/pot/_create');
     const { activeWorkspaceId } = await import('../../../workspace-registry');
     // LINK-EXISTING ("every created Pot is a hive"): a `path` body field links an
     // existing local repo in place as the hive home (existingPath → use AS-IS, no
     // fresh dir, no delete-on-rollback). Otherwise fall through to the fresh-dir
     // path under `parentDir/slug`.
     const linkPath = typeof body.path === 'string' && body.path.trim() ? body.path.trim() : '';
-    const res = await createHiveHarness({
+    const res = await createPotHarness({
       slug,
       workspaceId: activeWorkspaceId(),
       ...(linkPath
@@ -483,7 +483,7 @@ const createHive = defineTool({
 /**
  * hive-from-github-url-2026-06-11 P-006 — "create a Hive from a GitHub URL":
  * the HTTP face the CreateHarnessPicker's GitHub-URL entry drives. Thin over
- * the canonical `createHiveFromRepo` composition (pot:create_from_repo) —
+ * the canonical `createPotFromRepo` composition (pot:create_from_repo) —
  * lookup (join offer) → clone → blueprint detection → home + member →
  * auto-publish (visibility derived from repo privacy, never sent by the client).
  * Long timeout: clone + the test-verify run.
@@ -511,9 +511,9 @@ const createHiveFromRepoRoute = defineTool({
     if (!githubUrl) {
       return Response.json({ error: 'githubUrl required', code: 'invalid_url' }, { status: 400 });
     }
-    const { createHiveFromRepo } = await import('../../../agent-tools/hive/_create_from_repo');
+    const { createPotFromRepo } = await import('../../../agent-tools/pot/_create_from_repo');
     const { activeWorkspaceId } = await import('../../../workspace-registry');
-    const res = await createHiveFromRepo({
+    const res = await createPotFromRepo({
       githubUrl,
       ...(typeof body.slug === 'string' && body.slug.trim() ? { slug: body.slug.trim() } : {}),
       ...(body.shallow !== undefined ? { shallow: body.shallow === true } : {}),

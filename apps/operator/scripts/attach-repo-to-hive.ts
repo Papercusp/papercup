@@ -9,14 +9,14 @@
  * EXISTING local repo to a hive. This script is that entry point (the basis for a
  * proper `pot:add-member` tool — the creation-path hardening).
  *
- * Drives the canonical `addHarnessToHive` helper (sets member.hive_slug, seeds the
+ * Drives the canonical `addHarnessToPot` helper (sets member.hive_slug, seeds the
  * member's system:git-sync best-effort, idempotent — never clobbers an existing
  * routine). Fully reversible (remove the member's hive_slug).
  *
  * Usage:
  *   npx tsx scripts/attach-repo-to-hive.ts <workspaceId> <potHomeSlug> <memberHarnessSlug>
  */
-import { addHarnessToHive } from '@papercusp/operator-core/lib/agent-tools/hive/_add-member';
+import { addHarnessToPot } from '@papercusp/operator-core/lib/agent-tools/pot/_add-member';
 
 async function main(): Promise<void> {
   const [workspaceId, potHomeSlug, memberHarnessSlug] = process.argv.slice(2);
@@ -25,7 +25,7 @@ async function main(): Promise<void> {
     process.exit(2);
   }
   console.log(`attaching repo harness '${memberHarnessSlug}' → hive '${potHomeSlug}' (ws=${workspaceId})…`);
-  const res = await addHarnessToHive({ workspaceId, potHomeSlug, memberHarnessSlug });
+  const res = await addHarnessToPot({ workspaceId, potHomeSlug, memberHarnessSlug });
   console.log(JSON.stringify(res, null, 1));
   process.exit(res.ok ? 0 : 1);
 }

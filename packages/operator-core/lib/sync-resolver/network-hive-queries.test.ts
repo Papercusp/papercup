@@ -39,7 +39,7 @@ describe('network.hive.* resolvers', () => {
     });
     vi.doMock('../cross-hive-asks-pg', () => ({ PgCrossHiveAsks: ctor }));
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-1' }));
-    vi.doMock('../hive/wake', () => ({ resolvePotHomeSlug: () => 'home-hive' }));
+    vi.doMock('../pot/wake', () => ({ resolvePotHomeSlug: () => 'home-hive' }));
     const { resolveNamedQueryV2: r } = await import('./index');
 
     const out = await r('network.hive.asks', { peerPubkey: 'pk-9', limit: 25 });
@@ -48,17 +48,17 @@ describe('network.hive.* resolvers', () => {
     expect(list).toHaveBeenCalledWith({ peerPubkey: 'pk-9', limit: 25 });
     vi.doUnmock('../cross-hive-asks-pg');
     vi.doUnmock('../workspace-registry');
-    vi.doUnmock('../hive/wake');
+    vi.doUnmock('../pot/wake');
   });
 
   it('network.hive.asks returns [] when no home hive is resolvable (no ledger to read)', async () => {
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-1' }));
-    vi.doMock('../hive/wake', () => ({ resolvePotHomeSlug: () => null }));
+    vi.doMock('../pot/wake', () => ({ resolvePotHomeSlug: () => null }));
     const { resolveNamedQueryV2: r } = await import('./index');
 
     expect(await r('network.hive.asks', {})).toEqual([]);
     vi.doUnmock('../workspace-registry');
-    vi.doUnmock('../hive/wake');
+    vi.doUnmock('../pot/wake');
   });
 
   it('network.hive.wakes projects listHiveWakes flat and threads hive + workspace', async () => {

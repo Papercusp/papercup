@@ -89,6 +89,7 @@ import {
   commentIssue,
   updateIssue,
   searchIssues,
+  semanticSearchIssues,
   promoteIssue,
   issuesScopeWorkspace,
   mergeIssuePayload,
@@ -693,10 +694,39 @@ export async function getWorkItemDetail(id: string, harness?: string): Promise<W
   };
 }
 
-/** Cross-kind full-text search over both kind-tables (parity with issues:search). */
+/** Width of the migration-548 embedding columns (= embed-backfill's
+ *  EMBEDDER_DIM). A local const — importing it would pull the whole embed
+ *  stack (configure/sidecar/admission) into this module's static graph; the
+ *  embedder itself is dynamic-imported inside the leg for the same reason. */
+const WORK_ITEM_EMBED_DIM = 384;
+
+/** Test seam for the P-008 semantic leg: the query-embedder resolver to use
+ *  (defaults to the real `buildQueryEmbedderResolved`). Injectable because the
+ *  real one lazy-loads an ONNX model — a unit test must never pay that. */
+export type QueryEmbedderResolver = () => Promise<{ mode: string; dims: number; embed: (t: string) => Promise<number[]> } | null>;
+
+/** Cross-kind full-text search over both kind-tables (parity with issues:search).
+ *
+ * P-008 (shared-embedding-sidecar-and-enrichment-2026-07-10): also runs a
+ * SEMANTIC leg — cosine top-k over the migration-548 embedding columns, space
+ * filtered to the active embedder mode — and merges the hits AFTER the lexical
+ * ones, deduped by id. Recall-additive only: a rephrased query ("agents keep
+ * filing the same bug") now finds items whose words never matched. The leg is
+ * strictly fail-open (no embedder / 548 absent / dims mismatch ⇒ lexical-only)
+ * and defaults OFF under vitest (an implicit model load in unrelated tests is
+ * the WI-3792 load-scar class) — pass `semantic: true` to force it there.
+ */
 export async function searchWorkItems(
   query: string,
-  opts: { harness?: string; kind?: WorkItemKind; limit?: number } = {},
+  opts: {
+    harness?: string;
+    kind?: WorkItemKind;
+    limit?: number;
+    /** Default on (off under VITEST); `false` = lexical-only. */
+    semantic?: boolean;
+    /** Test seam — see QueryEmbedderResolver. */
+    embedderResolver?: QueryEmbedderResolver;
+  } = {},
 ): Promise<WorkItem[]> {
   const limit = Math.min(opts.limit ?? 50, 200);
   const wantFeature = !opts.kind || familyOf(opts.kind) === 'feature';
@@ -723,6 +753,48 @@ export async function searchWorkItems(
        ORDER BY ts_rank(_search, websearch_to_tsquery('english', ${query})) DESC
        LIMIT ${limit}`;
     out.push(...rows.map(featureRowToWorkItem));
+  }
+
+  const semanticOn = opts.semantic ?? !process.env.VITEST;
+  if (semanticOn) {
+    try {
+      const resolve = opts.embedderResolver ?? (await import('./agent-tools/search/embedder')).buildQueryEmbedderResolved;
+      const resolved = await resolve();
+      // The embedding columns are vector(384); a query vector in another width
+      // (harrier@1024) can't rank against them — skip rather than SQL-error.
+      if (resolved && resolved.dims === WORK_ITEM_EMBED_DIM) {
+        const vec = await resolved.embed(query);
+        if (vec.length === WORK_ITEM_EMBED_DIM) {
+          const seen = new Set(out.map((w) => w.id));
+          const semLimit = Math.min(limit, 20);
+          if (wantIssue) {
+            let hits = (await semanticSearchIssues(vec, resolved.mode, semLimit)).map(issueToWorkItem);
+            if (opts.harness) hits = hits.filter((w) => w.harness === opts.harness);
+            if (opts.kind && familyOf(opts.kind) === 'issue') hits = hits.filter((w) => w.kind === opts.kind);
+            for (const w of hits) if (!seen.has(w.id)) { seen.add(w.id); out.push(w); }
+          }
+          if (wantFeature) {
+            const { sql } = getOrgPg();
+            const vecLit = `[${vec.join(',')}]`;
+            const rows = await sql<FeatureRowDb[]>`
+              SELECT ${sql.unsafe(FEATURE_COLS)}
+                FROM harness_shared.harness_features_consolidated
+               WHERE ${featureFamilyKindClause(sql, activeWorkspaceId())}
+                 AND workspace_id = ${activeWorkspaceId()}
+                 AND embedding IS NOT NULL
+                 AND embedding_mode = ${resolved.mode}
+                 AND ${opts.harness ? sql`harness_slug = ${opts.harness}` : sql`TRUE`}
+                 AND ${opts.kind && familyOf(opts.kind) === 'feature' ? sql`item_kind = ${opts.kind}` : sql`TRUE`}
+               ORDER BY embedding <=> ${vecLit}::vector
+               LIMIT ${semLimit}`;
+            for (const w of rows.map(featureRowToWorkItem)) if (!seen.has(w.id)) { seen.add(w.id); out.push(w); }
+          }
+        }
+      }
+    } catch {
+      // Fail-open (D-003 discipline): embedder down / migration 548 not applied /
+      // pgvector absent all degrade to the lexical result, never to an error.
+    }
   }
 
   return out.slice(0, limit);
@@ -791,9 +863,9 @@ export interface CreateWorkItemInput {
  *  failure must never break the write. */
 function maybeFireUrgentWake(input: CreateWorkItemInput, wi: WorkItem): void {
   if (!input.urgent) return;
-  void import('./hive/urgent-wake')
+  void import('./pot/urgent-wake')
     .then((m) =>
-      m.requestUrgentHiveWake({
+      m.requestUrgentPotWake({
         reason: `urgent work_item ${wi.id} (${wi.kind}) enqueued: ${wi.title}`,
         harness: wi.harness,
       }),

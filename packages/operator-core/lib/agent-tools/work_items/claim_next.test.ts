@@ -21,6 +21,7 @@ vi.mock('@papercusp/flags/server', () => ({
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => identity,
+  resolveSelfLiteral: (value: string | undefined, callerOwnerId: string) => (value === 'self' ? callerOwnerId : value),
 }));
 
 vi.mock('../../work-item-claim-lease-wiring', () => ({
@@ -103,6 +104,16 @@ describe('work_items:claim_next claim-spec bridge (WI-2971)', () => {
     await body({ harness: 'papercusp', assignee: 'su-other' });
 
     expect(getNextForBeeM).toHaveBeenCalledWith(expect.objectContaining({ cupId: 'su-other' }));
+    expect(claimNextM).not.toHaveBeenCalled();
+  });
+
+  // EI-9274: a literal `'self'` assignee must resolve to the caller ownerId, not be
+  // passed through verbatim as the scheduler bee id (which would produce an
+  // unmatchable, permanently orphaned claim — WI-3881).
+  it('EI-9274: resolves assignee:"self" to the caller ownerId as the scheduler bee id', async () => {
+    await body({ harness: 'papercusp', assignee: 'self' });
+
+    expect(getNextForBeeM).toHaveBeenCalledWith(expect.objectContaining({ cupId: 'su-me' }));
     expect(claimNextM).not.toHaveBeenCalled();
   });
 

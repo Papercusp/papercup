@@ -64,3 +64,38 @@ describe('coord-message projection', () => {
     expect([..._testing.FEDERATED_SURFACES].sort()).toEqual(['escalations', 'handoffs', 'messages']);
   });
 });
+
+// WI-3914: `isCoordMessageRow` validates the WIRE-LEVEL msg_id/ts (which stamp
+// the row's own columns) but never validated that the nested `body` itself
+// carries those keys — the write-side twin of WI-3912's read-side crash fix
+// (coord:feed's compareByTsThenId throwing on a body missing ts/msg_id).
+describe('normalizeBodyTsMsgId (WI-3914)', () => {
+  it('fills body.ts/body.msg_id from the wire-level fields when body has neither', () => {
+    const row: CoordMessageRow = { ...valid, body: { summary: 'no ts or msg_id in body' } };
+    const body = _testing.normalizeBodyTsMsgId(row);
+    expect(body.ts).toBe(new Date(row.ts).toISOString());
+    expect(body.msg_id).toBe(row.msg_id);
+    expect(body.summary).toBe('no ts or msg_id in body'); // rest of body untouched
+  });
+
+  it('fills only the missing key when body carries one but not the other', () => {
+    const tsOnly = _testing.normalizeBodyTsMsgId({ ...valid, body: { ts: '2020-01-01T00:00:00.000Z' } });
+    expect(tsOnly.ts).toBe('2020-01-01T00:00:00.000Z'); // kept, not overridden
+    expect(tsOnly.msg_id).toBe(valid.msg_id); // filled from wire
+
+    const msgIdOnly = _testing.normalizeBodyTsMsgId({ ...valid, body: { msg_id: 'peer-own-id' } });
+    expect(msgIdOnly.ts).toBe(new Date(valid.ts).toISOString());
+    expect(msgIdOnly.msg_id).toBe('peer-own-id'); // kept, not overridden
+  });
+
+  it('never overrides a body that already carries both — returns the SAME object reference', () => {
+    const body = _testing.normalizeBodyTsMsgId(valid);
+    expect(body).toBe(valid.body); // identity, not just equality: no unnecessary copy
+  });
+
+  it('treats an empty-string ts/msg_id as missing (not merely absent)', () => {
+    const body = _testing.normalizeBodyTsMsgId({ ...valid, body: { ts: '', msg_id: '' } });
+    expect(body.ts).toBe(new Date(valid.ts).toISOString());
+    expect(body.msg_id).toBe(valid.msg_id);
+  });
+});

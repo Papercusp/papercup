@@ -15,7 +15,7 @@ vi.mock('./work-items-events', () => ({
   emitWorkItemClaimedEvent: vi.fn(),
 }));
 
-vi.mock('./hive/urgent-wake', () => ({ requestUrgentHiveWake: vi.fn(async () => ({ fired: true, coalesced: false })) }));
+vi.mock('./pot/urgent-wake', () => ({ requestUrgentHiveWake: vi.fn(async () => ({ fired: true, coalesced: false })) }));
 
 const fakeSql = Object.assign(
   async () => [{ id: 'WI-9001' }],

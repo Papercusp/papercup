@@ -20,7 +20,7 @@ import type { OpEnvelope } from '../op-envelope-types';
  */
 
 /**
- * Brief Z (shared-hive-release-testing) — Z#4/Z#5: NUL-bearing federated op handling.
+ * Brief Z (shared-pot-release-testing) — Z#4/Z#5: NUL-bearing federated op handling.
  *
  * FINDING (LOW severity — the severe "permanent poison-pill stall" hypothesis was
  * REFUTED by this test; recorded accurately):

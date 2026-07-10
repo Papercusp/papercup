@@ -1,5 +1,5 @@
 /**
- * federation-threat-model.test.ts — shared-hive-release-testing Brief C
+ * federation-threat-model.test.ts — shared-pot-release-testing Brief C
  * (security/privacy threat model, the S0 public-release lane).
  *
  * The sibling `federation-adversarial.integration.test.ts` proves the data-plane

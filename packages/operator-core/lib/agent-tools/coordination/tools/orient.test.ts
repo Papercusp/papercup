@@ -8,8 +8,18 @@ vi.mock('../../../agent-facts/store', () => ({
   foldFacts: foldFactsMock,
 }));
 
+// EI-9270: the announced-gates fold reads the await store directly — mock it so
+// (a) fake-timer tests can't hang on a real PG connect, and (b) full-mode tests
+// don't pay the fold's real timeout budget. Default: no announcements.
+const listActiveAnnouncementsMock = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
+
+vi.mock('../../../events/await/store', () => ({
+  listActiveAnnouncements: listActiveAnnouncementsMock,
+}));
+
 beforeEach(() => {
   foldFactsMock.mockResolvedValue([]);
+  listActiveAnnouncementsMock.mockResolvedValue([]);
 });
 
 function fakeCall(handlers: Record<string, (args: Record<string, unknown>) => unknown>): {
@@ -909,6 +919,40 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
       const cursor = vi.fn(async () => ({ committed: { ids: ['e1'] }, baseline: false }));
       const r = await composeOrient({}, call, 'me', undefined, undefined, undefined, cursor);
       expect(orientServedDelta(r)).toBe(false);
+    });
+  });
+
+  // EI-9270: announced gate events — declared-but-unfired gates fold into orient,
+  // scoped to the caller's fleet/plan/harness (+ global), so a member learns what
+  // to events:await with zero leader messages.
+  describe('EI-9270 announced-gates fold', () => {
+    it('folds gates visible to the caller (own fleet + global), dropping other fleets', async () => {
+      listActiveAnnouncementsMock.mockResolvedValue([
+        { eventKey: 'fleet:backend:phase3-open', note: 'opens on verified green', scopeKind: 'fleet', scopeRef: 'backend', subscriberId: 'su-l', expiresTs: null },
+        { eventKey: 'fleet:frontend:phase2-open', note: null, scopeKind: 'fleet', scopeRef: 'frontend', subscriberId: 'su-l', expiresTs: null },
+        { eventKey: 'migration-freeze-lifted', note: 'system-wide', scopeKind: 'global', scopeRef: null, subscriberId: 'su-o', expiresTs: null },
+      ]);
+      const { call } = fakeCall({
+        ...CORE,
+        'coord:whoami': () => ({ fleetSlug: 'backend' }),
+        'coord:catch-up': () => ({ total: 0, rows: [] }),
+      });
+      const r = await composeOrient({}, call, 'me');
+      expect(r.announcedGates?.map((g) => g.event)).toEqual(['fleet:backend:phase3-open', 'migration-freeze-lifted']);
+      expect(r.announcedGates?.[0]).toMatchObject({ note: 'opens on verified green', scope: 'fleet:backend', announcedBy: 'su-l' });
+    });
+
+    it('absent when nothing is visible, and skipped entirely on a monitor tick', async () => {
+      listActiveAnnouncementsMock.mockResolvedValue([
+        { eventKey: 'fleet:frontend:phase2-open', note: null, scopeKind: 'fleet', scopeRef: 'frontend', subscriberId: 'su-l', expiresTs: null },
+      ]);
+      const { call } = fakeCall({ ...CORE });
+      const r = await composeOrient({}, call, 'me');
+      expect(r.announcedGates).toBeUndefined();
+      const before = listActiveAnnouncementsMock.mock.calls.length;
+      const monitor = await composeOrient({ mode: 'monitor' }, fakeCall({ ...CORE }).call, 'me');
+      expect(monitor.announcedGates).toBeUndefined();
+      expect(listActiveAnnouncementsMock.mock.calls.length).toBe(before); // monitor tick never reads
     });
   });
 

@@ -22,7 +22,7 @@
  * the debounce clock, the pass/fail recording, and the alerting shell.
  */
 
-import { recordFire, recentWatchdogFires } from '../../hive/watchdog';
+import { recordFire, recentWatchdogFires } from '../../pot/watchdog';
 
 /** Interval between forced cold joins. `<= 0` DISABLES the canary (the default —
  *  a cold join is too heavy to run on an ordinary host). A canary/release env sets

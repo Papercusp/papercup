@@ -28,7 +28,7 @@
  */
 import { gitPipelineSnapshot } from './git-pipeline-stats';
 import { computeDeployStatus, type DeployStateKind } from './release-deploy-launch';
-import { recentWatchdogFires, recordFire } from './hive/watchdog';
+import { recentWatchdogFires, recordFire } from './pot/watchdog';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 
 // ── tunable (env-overridable, like the other watchdog floors) ─────────────────

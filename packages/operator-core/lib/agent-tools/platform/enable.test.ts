@@ -17,14 +17,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn() }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'default') }));
 vi.mock('../../flag-audit', () => ({ recordFlagAudit: vi.fn() }));
-vi.mock('../../hive/enable-platform-mode', () => ({
+vi.mock('../../pot/enable-platform-mode', () => ({
   enablePlatformMode: vi.fn(),
   PAPERCUSP_CANONICAL_REPO_URL: 'https://github.com/example/papercusp',
   PLATFORM_SELF_HIVE_SLUG: 'papercusp-self',
 }));
 
 import { resolveAgentIdentity } from '../coordination/identity';
-import { enablePlatformMode } from '../../hive/enable-platform-mode';
+import { enablePlatformMode } from '../../pot/enable-platform-mode';
 import { recordFlagAudit } from '../../flag-audit';
 const ident = vi.mocked(resolveAgentIdentity);
 const enableM = vi.mocked(enablePlatformMode);

@@ -22,7 +22,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { resolvePotHomeSlug } from '../../hive/wake';
+import { resolvePotHomeSlug } from '../../pot/wake';
 import {
   getLoopCarryNote,
   normalizeWallEntries,

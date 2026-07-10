@@ -101,4 +101,27 @@ describe('work_items:claim handler (keyed-array)', () => {
     const b = await body({ id: 'WI-404' });
     expect(b.results[0]).toEqual({ ok: false, id: 'WI-404', error: "work_item 'WI-404' not found" });
   });
+
+  // EI-9274: a literal `'self'` assignee must resolve to the caller, not be stored
+  // verbatim (WI-3881 was permanently orphaned this way — no live agent is ever
+  // actually named "self").
+  it('EI-9274: assignee:"self" resolves to the caller ownerId, not the literal string', async () => {
+    const b = await body({ id: 'WI-1', assignee: 'self' });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(claimM).toHaveBeenCalledWith('WI-1', 'me', { harness: undefined });
+  });
+
+  it('EI-9274: assignee:"self" under the su-loopback fallback is refused the same as an omitted assignee', async () => {
+    identity.ownerId = 'su-loopback';
+    const b = await body({ id: 'WI-LOOPBACK-SELF', assignee: 'self' });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-LOOPBACK-SELF', error: 'missing_client_identity' });
+    expect(claimM).not.toHaveBeenCalled();
+  });
+
+  it('a concrete assignee ownerId literally named "self-service-bot" is passed through unchanged', async () => {
+    const b = await body({ id: 'WI-1', assignee: 'self-service-bot' });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(claimM).toHaveBeenCalledWith('WI-1', 'self-service-bot', { harness: undefined });
+  });
 });

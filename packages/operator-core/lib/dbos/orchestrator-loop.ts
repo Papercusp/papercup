@@ -76,7 +76,7 @@ import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 import { backgroundWorkspaceIds } from '../workspace-registry';
 import { runWithWorkspace } from '../workspace-als';
 import { listAllHarnesses } from '../dev-data';
-import { listStartedHives } from '../hive/started';
+import { listStartedPots } from '../pot/started';
 import { resolveProject } from '../harness-core';
 import { convertOpenIssuesToFeatures } from '../promote-issue';
 import { loadIssuesOrSeed, saveIssues } from '../harness-issues';
@@ -365,10 +365,10 @@ export async function resolveTickHarnesses(workspaceId: string): Promise<string[
   // Per-hive start-stop (2026-06-30): the gate is the candidate's OWN per-hive
   // started row. The old WORKSPACE_COORDINATION "widening" (the workspace sentinel
   // resolving started for EVERY hive) is gone — start/stop is now genuinely
-  // per-hive. `listStartedHives()` reads the raw per-hive rows; the workspace Queen
+  // per-hive. `listStartedPots()` reads the raw per-hive rows; the workspace Queen
   // LOOP liveness stays on the sentinel (watchdog/wake), unchanged.
   try {
-    const startedRows = (await listStartedHives()).filter((h) => h.workspaceId === workspaceId);
+    const startedRows = (await listStartedPots()).filter((h) => h.workspaceId === workspaceId);
     const startedSlugs = new Set(startedRows.map((h) => h.installSlug));
     return candidates.filter((slug) => startedSlugs.has(slug));
   } catch {

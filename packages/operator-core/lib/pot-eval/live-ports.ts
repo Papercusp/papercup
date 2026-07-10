@@ -20,7 +20,7 @@
 import { buildSubstrateCloneCommands, type GitCommand } from '../gym/clone';
 import type { HiveScenario } from './scenario';
 import { SEED_APP_DIR } from './scenarios';
-import type { HiveSurvey } from '../hive/survey';
+import type { PotSurvey } from '../pot/survey';
 import type { HiveRunPorts, HiveBootResult, DriveResult } from './run-harness';
 
 // ───────────────────────── seed-app → a pinned-SHA git repo (pure) ─────────────────────────
@@ -96,7 +96,7 @@ export function scenarioSeedPlan(scenario: HiveScenario): ScenarioSeedPlan {
 
 /** True when the Hive has drained the scenario: nothing ready, nothing started, nothing in flight. */
 export function isHiveDrained(
-  survey: Pick<HiveSurvey, 'plans' | 'frontier'>,
+  survey: Pick<PotSurvey, 'plans' | 'frontier'>,
   inFlightPlacements: number,
 ): boolean {
   return survey.frontier.length === 0 && survey.plans.length === 0 && inFlightPlacements <= 0;
@@ -147,7 +147,7 @@ export interface LiveHiveOps {
   /** Stop the Hive (setHiveStarted false) — bound spend at drain/timeout. */
   pauseHive(input: { hiveHome: string; workspaceId: string }): Promise<void>;
   /** surveyHive's two views (which plans/frontier remain) — the drained inputs. */
-  survey(input: { hiveHome: string; workspaceId: string }): Promise<Pick<HiveSurvey, 'plans' | 'frontier'>>;
+  survey(input: { hiveHome: string; workspaceId: string }): Promise<Pick<PotSurvey, 'plans' | 'frontier'>>;
   /** Count placements still in flight (hive_placements rows not yet `completed`). */
   countInFlightPlacements(input: { hiveHome: string; workspaceId: string }): Promise<number>;
   /** The run's measured cost + completion counts (spawned_agents + the member's work-items). */

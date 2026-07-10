@@ -152,7 +152,10 @@ the owner.
 
 **Loop cadence in AUTO mode.** Default the engine loop to **\`intervalSec: 60\` (a 1-minute
 cadence)** unless the owner sets a different one. If the work is fully BLOCKED until something
-else finishes (a deploy, a peer's task, a long external job), EXTEND the interval to match how
+else finishes (a deploy, a peer's task, a long external job), FIRST ask: does the blocker have a
+completion EVENT — or can its owner emit one (pair-emit: tell them the key you'll await)? If yes,
+\`events:await { event }\` and END YOUR TURN — a pushed wake beats every polled one. Only when no
+event exists for the condition, EXTEND the interval to match how
 fast that thing actually changes — re-\`loop:arm\` with a larger \`intervalSec\` so you don't
 burn empty wakes — but the instant the blocker clears and real work can proceed again, RESTORE
 the cadence to what it was before the block (back to 1m, or whatever the owner set). Remember

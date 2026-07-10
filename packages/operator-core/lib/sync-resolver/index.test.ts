@@ -401,7 +401,7 @@ describe('resolveNamedQueryV2 — learning.queenWakeEfficiency (queen-brief-cach
       turnsReportedWakes: 2,
       samples: [],
     };
-    vi.doMock('../hive/queen-wake-efficiency', () => ({
+    vi.doMock('../pot/mug-wake-efficiency', () => ({
       queenWakeEfficiency: vi.fn(async () => agg),
       EMPTY_QUEEN_WAKE_EFFICIENCY: { wakes: 0 },
     }));
@@ -411,12 +411,12 @@ describe('resolveNamedQueryV2 — learning.queenWakeEfficiency (queen-brief-cach
     expect(rows).toHaveLength(1);
     expect(rows[0].wakes).toBe(3);
     expect(rows[0].cacheHitRatio).toBe(0.8);
-    vi.doUnmock('../hive/queen-wake-efficiency');
+    vi.doUnmock('../pot/mug-wake-efficiency');
     vi.doUnmock('../workspace-registry');
   });
 
   it('degrades to the empty aggregate when the read throws (pre-migration / no PG) — never a 500', async () => {
-    vi.doMock('../hive/queen-wake-efficiency', () => ({
+    vi.doMock('../pot/mug-wake-efficiency', () => ({
       queenWakeEfficiency: vi.fn(async () => {
         throw Object.assign(new Error('relation "agent_usage_samples" does not exist'), { code: '42P01' });
       }),
@@ -427,7 +427,7 @@ describe('resolveNamedQueryV2 — learning.queenWakeEfficiency (queen-brief-cach
     const rows = (await r('learning.queenWakeEfficiency', {})) as Array<{ wakes: number }>;
     expect(rows).toHaveLength(1);
     expect(rows[0].wakes).toBe(0);
-    vi.doUnmock('../hive/queen-wake-efficiency');
+    vi.doUnmock('../pot/mug-wake-efficiency');
     vi.doUnmock('../workspace-registry');
   });
 });
@@ -919,7 +919,7 @@ describe('resolveNamedQueryV2 — hive.steering (queen-steering-panel-2026-06-15
     hives: Array<{ slug: string }> | (() => Promise<never>);
     getOwnerSteering: (ws: string, slug: string) => Promise<typeof DEFAULT>;
   }) {
-    vi.doMock('../agent-tools/hive/_resolve', () => ({
+    vi.doMock('../agent-tools/pot/_resolve', () => ({
       listHives: vi.fn(typeof opts.hives === 'function' ? opts.hives : async () => opts.hives),
     }));
     vi.doMock('../owner-steering', () => ({
@@ -929,7 +929,7 @@ describe('resolveNamedQueryV2 — hive.steering (queen-steering-panel-2026-06-15
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
   }
   function unmockSteeringDeps() {
-    vi.doUnmock('../agent-tools/hive/_resolve');
+    vi.doUnmock('../agent-tools/pot/_resolve');
     vi.doUnmock('../owner-steering');
     vi.doUnmock('../workspace-registry');
   }
@@ -944,7 +944,7 @@ describe('resolveNamedQueryV2 — hive.steering (queen-steering-panel-2026-06-15
       'other-hive': { ...DEFAULT, pauseNewWork: true },
     };
     const getOwnerSteering = vi.fn(async (_ws: string, slug: string) => bySlug[slug] ?? DEFAULT);
-    vi.doMock('../agent-tools/hive/_resolve', () => ({
+    vi.doMock('../agent-tools/pot/_resolve', () => ({
       listHives: vi.fn(async () => [{ slug: 'papercup-hive' }, { slug: 'other-hive' }]),
     }));
     vi.doMock('../owner-steering', () => ({ getOwnerSteering, DEFAULT_OWNER_STEERING: DEFAULT }));
@@ -962,7 +962,7 @@ describe('resolveNamedQueryV2 — hive.steering (queen-steering-panel-2026-06-15
       ['ws-test', 'other-hive'],
     ]);
 
-    vi.doUnmock('../agent-tools/hive/_resolve');
+    vi.doUnmock('../agent-tools/pot/_resolve');
     vi.doUnmock('../owner-steering');
     vi.doUnmock('../workspace-registry');
   });

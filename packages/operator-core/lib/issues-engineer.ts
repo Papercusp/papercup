@@ -20,6 +20,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { assertScopeWellFormed } from './work-item-scope';
+import { neutralizeToolCallTags } from './text-safety';
 import {
   PgTaggableStore,
   PgThreadStore,
@@ -368,13 +369,20 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
   // allow-scope-default: 'operator' is the explicit top-level issue scope (vs harness:<slug>), not a workspace.
   const scope = input.scope ?? 'operator';
   assertScopeWellFormed(scope);
+  // EI-9267: neutralize tool-call-lookalike tags (<invoke>/<parameter>/…) in the
+  // free-text title/body BEFORE they are stored — the single choke point every
+  // issue-family create path (improvements:capture, work_items:create) funnels
+  // through, so a pasted-in or planted fake tool-call block can never later be
+  // misread by a reading agent as a live continuation of its own tool stream.
+  const safeTitle = neutralizeToolCallTags(input.title);
+  const safeBody = neutralizeToolCallTags(input.body);
   const issue = await boundedOrgTxn(async (tx) => {
     const id = input.id ?? (await nextIssueId(tx));
     const rows = await tx<IssueRowDb[]>`
       INSERT INTO harness_shared.engineer_issues
         (workspace_id, issue_id, kind, scope, title, body, severity, source, state, assignee,
          assigned_by, assigned_at, payload, found_during, created_by, signal_origin, created_at, updated_at)
-      VALUES (${issuesScopeWorkspace()}, ${id}, ${input.kind ?? 'bug'}, ${scope}, ${input.title}, ${input.body ?? ''},
+      VALUES (${issuesScopeWorkspace()}, ${id}, ${input.kind ?? 'bug'}, ${scope}, ${safeTitle}, ${safeBody ?? ''},
               ${input.severity ?? 'minor'}, ${input.source ?? 'engineer'}, 'open', ${input.assignee ?? null},
               ${input.assignedBy ?? null}, ${input.assignedBy ? created : null},
               ${input.payload != null ? JSON.stringify(input.payload) : null}::text::jsonb, ${input.foundDuring ?? null},
@@ -1090,6 +1098,30 @@ export async function searchIssues(query: string, limit = 50): Promise<EngineerI
      WHERE workspace_id = ${issuesScopeWorkspace()}
        AND _search @@ websearch_to_tsquery('english', ${query})
      ORDER BY ts_rank(_search, websearch_to_tsquery('english', ${query})) DESC
+     LIMIT ${Math.min(limit, 200)}`;
+  return rows.map(toIssue);
+}
+
+/**
+ * Semantic (cosine top-k) search over the issue store — the P-008 leg
+ * (shared-embedding-sidecar-and-enrichment-2026-07-10) work_items:search
+ * merges with the lexical hits above. `mode` is the ACTIVE embedder mode the
+ * query vector was produced in: rows are filtered `embedding_mode = mode`
+ * (migration 548's space discriminator) so a stored vector from a different
+ * embedder is never ranked against — cosine across spaces is noise, not a
+ * weaker match (embedding-space-vs-dimension). Same workspace scoping as
+ * searchIssues. Throws when migration 548 (or pgvector) is absent — callers
+ * fail open to lexical-only.
+ */
+export async function semanticSearchIssues(vec: number[], mode: string, limit = 20): Promise<EngineerIssue[]> {
+  const { sql } = getOrgPg();
+  const vecLit = `[${vec.join(',')}]`;
+  const rows = await sql<IssueRowDb[]>`
+    SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
+     WHERE workspace_id = ${issuesScopeWorkspace()}
+       AND embedding IS NOT NULL
+       AND embedding_mode = ${mode}
+     ORDER BY embedding <=> ${vecLit}::vector
      LIMIT ${Math.min(limit, 200)}`;
   return rows.map(toIssue);
 }

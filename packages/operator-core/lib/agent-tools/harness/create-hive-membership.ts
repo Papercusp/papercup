@@ -22,7 +22,7 @@
  * or fs — mirrors the _add-member / fleet-selectors discipline.
  */
 import type { HarnessRegistry } from '../../harness-registry';
-import { isHiveProject } from '../hive/_resolve';
+import { isPotProject } from '../pot/_resolve';
 
 export type CreateHiveMembershipError = 'hive_not_found' | 'not_a_hive';
 
@@ -49,7 +49,7 @@ export function resolveCreateHiveMembership(
       message: `no pot '${potHomeSlug}' in this workspace`,
     };
   }
-  if (!isHiveProject(target)) {
+  if (!isPotProject(target)) {
     return {
       ok: false,
       error: 'not_a_hive',

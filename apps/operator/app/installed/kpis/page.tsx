@@ -9,7 +9,7 @@
  * multi-harness substrate. Refresh button or 30s auto-refresh.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { useLexicon } from '@/lib/useLexicon';
 import { formatUptime } from './format-uptime';
@@ -123,19 +123,35 @@ export default function KPIsPage() {
   // KPI refreshes, instead of jumping every 30s or re-polling for a value
   // that's trivially derivable client-side. UI-timer exception (no network).
   const [nowTick, setNowTick] = useState(() => Date.now());
+  // Guards against an out-of-order response: a manual Refresh click can
+  // overlap the 30s auto-refresh, and there's no guarantee the older
+  // request's response arrives first. Each refresh() call stamps its own
+  // id; a response only applies if it's still the most recent one in
+  // flight, and the previous in-flight request is aborted outright so it
+  // can't land at all.
+  const requestIdRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
   const refresh = useCallback(async () => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const requestId = ++requestIdRef.current;
+
     setError(null);
     try {
-      const r = await fetch('/api/harness/all/kpis', { cache: 'no-store' });
+      const r = await fetch('/api/harness/all/kpis', { cache: 'no-store', signal: controller.signal });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = (await r.json()) as KPIs;
+      if (requestIdRef.current !== requestId) return; // superseded by a newer refresh
       setData(j);
       setLastFetched(Date.now());
     } catch (e: any) {
+      if (e?.name === 'AbortError') return; // superseded — not a real failure
+      if (requestIdRef.current !== requestId) return;
       setError(String(e?.message ?? e));
     } finally {
-      setLoading(false);
+      if (requestIdRef.current === requestId) setLoading(false);
     }
   }, []);
 
@@ -147,7 +163,10 @@ export default function KPIsPage() {
     const id = setInterval(() => {
       if (document.visibilityState !== 'hidden') void refresh();
     }, 30_000);
-    return () => clearInterval(id);
+    return () => {
+      clearInterval(id);
+      abortRef.current?.abort();
+    };
   }, [refresh]);
 
   useEffect(() => {

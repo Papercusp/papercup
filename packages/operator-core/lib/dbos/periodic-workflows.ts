@@ -358,8 +358,8 @@ async function outboxBackstopGcTick(): Promise<void> {
     // WI-1634 (WI-900 M3 residual): exempt currently-started hives' undrained rows
     // from the 48h orphan reap — a started hive's drain may be legitimately halted
     // on a recoverable cause (e.g. an epoch key not yet local), not truly orphaned.
-    const { listStartedHives } = await import('../hive/started');
-    await runSubstrateOutboxBackstopGc({ startedHives: await listStartedHives() });
+    const { listStartedPots } = await import('../pot/started');
+    await runSubstrateOutboxBackstopGc({ startedHives: await listStartedPots() });
   }, { name: 'substrate-outbox-backstop-gc' });
 }
 const outboxBackstopGcWorkflow = idempotentRegisterWorkflow('outboxBackstopGc', () =>

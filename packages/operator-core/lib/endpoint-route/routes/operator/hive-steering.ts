@@ -34,7 +34,7 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOwnerSteering, DEFAULT_OWNER_STEERING } from '../../../owner-steering';
 import { activeWorkspaceId } from '../../../workspace-registry';
-import { resolvePotHomeSlug } from '../../../hive/wake';
+import { resolvePotHomeSlug } from '../../../pot/wake';
 
 export default defineTool({
   method: 'GET',

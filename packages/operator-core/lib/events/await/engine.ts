@@ -31,6 +31,7 @@ import {
   claimSpecificOnceAwaits,
   expireLapsedAwaits,
   fireAwaitsForKey,
+  stampAnnouncementsFired,
   fireTimedOutAwaits,
   insertDeliveries,
   lastWokenAtForSubscribers,
@@ -137,6 +138,14 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
   const fired = await fireAwaitsForKey({ eventKey: opts.key, reason: 'event', payload: opts.payload });
   const wakes = fired.filter((a) => a.policy === 'wake');
   const notifyAwaits = fired.filter((a) => a.policy === 'notify');
+
+  // EI-9270: latch any ANNOUNCED gate on this key (fired_at stamped, row kept) so a
+  // late registrant is told the gate already opened. Fail-soft — never break the emit.
+  try {
+    await stampAnnouncementsFired(opts.key);
+  } catch (e) {
+    log(`announce latch stamp failed for ${opts.key}: ${e instanceof Error ? e.message : e}`);
+  }
 
   // 2. Queue durable wake deliveries + kick the pump off the hot path.
   if (wakes.length > 0) {

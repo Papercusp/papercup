@@ -1,6 +1,6 @@
 /**
  * Unit tests for `system:hive-git-gc` (G-9, p2p-git-live-activation-2026-07-09 /
- * P-205). gcHiveGitRepo / getHiveGitMode are mocked — asserts config resolution,
+ * P-205). gcHiveGitRepo / getPotGitMode are mocked — asserts config resolution,
  * the hive-git-mode self-gate (no-op on legacy), repo-path resolution, and that
  * a missing repo_key skips the tick instead of throwing.
  */
@@ -19,16 +19,16 @@ const { gcMock, hiveGitRepoPathMock, getHiveGitModeMock } = vi.hoisted(() => ({
   hiveGitRepoPathMock: vi.fn((potHomeSlug: string, repoKey: string) => `/repos/${potHomeSlug}/${repoKey}`),
   getHiveGitModeMock: vi.fn(async (_ws: string, _hive: string) => 'legacy' as 'legacy' | 'bridged' | 'p2p-only'),
 }));
-vi.mock('../../sync/hive-git/gc', () => ({
+vi.mock('../../sync/pot-git/gc', () => ({
   gcHiveGitRepo: gcMock,
 }));
 
-vi.mock('../../sync/hive-git/storage', () => ({
+vi.mock('../../sync/pot-git/storage', () => ({
   hiveGitRepoPath: hiveGitRepoPathMock,
 }));
 
 vi.mock('../git-sync/hive-git-mode', () => ({
-  getHiveGitMode: getHiveGitModeMock,
+  getPotGitMode: getHiveGitModeMock,
 }));
 
 // Import AFTER the mocks so the module's registerSystemAction side-effect binds them.

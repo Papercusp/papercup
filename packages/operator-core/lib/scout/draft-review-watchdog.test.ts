@@ -8,9 +8,9 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { vi } from 'vitest';
 
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
-vi.mock('../hive/started', () => ({ listStartedHives: vi.fn() }));
-vi.mock('../hive/placement-watchdog', () => ({ resolveQueenOwner: vi.fn() }));
-vi.mock('../hive/watchdog', () => ({ recentWatchdogFires: vi.fn(), recordFire: vi.fn() }));
+vi.mock('../pot/started', () => ({ listStartedHives: vi.fn() }));
+vi.mock('../pot/placement-watchdog', () => ({ resolveQueenOwner: vi.fn() }));
+vi.mock('../pot/watchdog', () => ({ recentWatchdogFires: vi.fn(), recordFire: vi.fn() }));
 vi.mock('../agent-tools/coordination/inbox-wake', () => ({ wakeRecipients: vi.fn() }));
 const sendMessage = vi.fn().mockResolvedValue(undefined);
 vi.mock('../agent-tools/coordination/messages', () => ({ sendMessage: (...args: unknown[]) => sendMessage(...args) }));

@@ -225,7 +225,7 @@ export async function listStartedWorkspaceOverwatches(): Promise<
   // import of resolvePotHomeSlug keeps this module free of hive/wake.ts's
   // import-time side effects (the same lazy-import discipline hive/started.ts
   // uses for its own listStartedWorkspaceLoops).
-  const { resolvePotHomeSlug } = await import('../hive/wake');
+  const { resolvePotHomeSlug } = await import('../pot/wake');
   // A workspace-sentinel started row is not an install. Validate the seat
   // against the live harness registry before returning it to watchdogs; an
   // unvalidated synthetic slug strands the supervisor on a dead target.

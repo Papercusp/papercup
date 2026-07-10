@@ -1,5 +1,5 @@
 /**
- * schema-skew-rolling-upgrade.test.ts — Brief F (shared-hive-release-testing)
+ * schema-skew-rolling-upgrade.test.ts — Brief F (shared-pot-release-testing)
  * Scenario 7: schema-version skew across a ROLLING public upgrade.
  *
  * The existing `version-gate-merge.test.ts` proves the DROP half: an old peer

@@ -24,7 +24,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { loadHarnessRegistry, saveHarnessRegistry, type ProjectEntry } from '../../harness-registry';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { instanceEntryToConfig } from '../../deployment/instance-config';
-import { HIVE_KIND } from '../hive/_resolve';
+import { POT_KIND } from '../pot/_resolve';
 
 const text = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -80,7 +80,7 @@ export default defineTool({
         message: `No harness '${args.slug}' in this workspace. Use harness:list to see the harnesses.`,
       });
     }
-    if (reg.projects[idx].harness_kind === HIVE_KIND) {
+    if (reg.projects[idx].harness_kind === POT_KIND) {
       return text({
         ok: false,
         error: 'is_a_hive',

@@ -1,6 +1,6 @@
 /**
  * federated-column-completeness.integration.test.ts — the COLUMN-grain
- * federation-completeness guard (shared-hive-release-testing Brief B).
+ * federation-completeness guard (shared-pot-release-testing Brief B).
  *
  * THE GAP THIS CLOSES
  * -------------------
@@ -50,7 +50,7 @@
  * FEDERATION GAPS this pass surfaced — columns currently dropped that LOOK like
  * content (notably on `harness_features_consolidated`). They are allow-listed so
  * the guard is green/CI-safe, but each is an owner decision recorded in
- * `shared-hive-release-testing/findings-B.md` (B-002): federate it, or confirm
+ * `shared-pot-release-testing/findings-B.md` (B-002): federate it, or confirm
  * intentionally-local and drop the REVIEW tag.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';

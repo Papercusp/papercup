@@ -14,7 +14,7 @@ const requestUrgentHiveWake = vi.fn(async (_opts: { reason: string; harness: str
   fired: true,
   coalesced: false,
 }));
-vi.mock('./hive/urgent-wake', () => ({
+vi.mock('./pot/urgent-wake', () => ({
   requestUrgentHiveWake: (...a: Parameters<typeof requestUrgentHiveWake>) => requestUrgentHiveWake(...a),
 }));
 

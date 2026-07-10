@@ -48,13 +48,19 @@ export const REPLICATION_LIVENESS_TOPIC = 'replication-liveness';
  *     persist across a restart — WI-2105 class), so that era's unreplicated tail is
  *     stranded; logKeyHex = the DEAD prior-era key (so distinct dead eras page
  *     separately).
+ *   - 'drain_row_quarantined' (WI-3896) — ONE outbox row's per-stage (epoch-encrypt
+ *     / append) timeout recurred `ROW_QUARANTINE_THRESHOLD` times consecutively, so
+ *     that row is now permanently SKIPPED (left undrained on purpose) so it can no
+ *     longer wedge every later row behind it; logKeyHex = the harness's LIVE
+ *     own-log key (the row itself is named in `detail`).
  */
 export type StallEiEpisode = Omit<ReplicationStallEpisode, 'kind'> & {
   kind:
     | ReplicationStallEpisode['kind']
     | 'drain_stalled'
     | 'drain_backlog_stalled'
-    | 'drain_orphan_tail';
+    | 'drain_orphan_tail'
+    | 'drain_row_quarantined';
 };
 
 /** Stable, dedup-able title for one (harness, log, kind). */
@@ -67,7 +73,8 @@ export function replicationStallEiTitle(episode: {
     | 'connected_never_replicated'
     | 'drain_stalled'
     | 'drain_backlog_stalled'
-    | 'drain_orphan_tail';
+    | 'drain_orphan_tail'
+    | 'drain_row_quarantined';
 }): string {
   return (
     `[replication-liveness] ${episode.kind}: harness=${episode.harnessSlug} ` +
@@ -109,6 +116,17 @@ function buildReplicationStallBody(episode: StallEiEpisode): string {
           'keeps re-attempting; this EI turns the otherwise silent console-spam into a durable page. ' +
           'Root-cause: check whether this device holds the current epoch key (hive_epoch_keys) and ' +
           'whether appends are landing on the own log.'
+        : episode.kind === 'drain_row_quarantined'
+        ? 'the OUTBOX DRAIN for this harness hit ONE row whose per-stage (epoch-encrypt / append) ' +
+          'timeout recurred repeatedly for the SAME row id — that row always sorts first ' +
+          '(`ORDER BY id`), so it was wedging every later row behind it, not just itself ' +
+          '(WI-3896 class: the pass-level watchdog un-wedges the LOOP but not the BACKLOG when the ' +
+          'same poison row keeps leading every pass). It has now been QUARANTINED (permanently ' +
+          'skipped, left undrained ON PURPOSE — never falsely marked drained_at) so later rows drain ' +
+          'normally again. See `detail` above for the exact row id + table. Triage: check whether the ' +
+          'hang was LOAD-induced (host CPU pressure — may resolve if re-tried once load clears) or a ' +
+          'genuinely stale/dead-device row (e.g. keymat for a device that will never decrypt/apply) — ' +
+          'recovery is runbook-only: root-cause the specific row, then clear the quarantine to re-drain it.'
         : episode.kind === 'drain_orphan_tail'
         ? 'the OUTBOX DRAIN drained fed-scope rows into a PRIOR-era own-log key (log_core_key above) ' +
           'that no longer matches the live process’s log — the own-log keypair did NOT persist across ' +

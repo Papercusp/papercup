@@ -33,7 +33,7 @@ vi.mock('../coordination/identity', () => ({
 // harness/ctx value wins — it silently returned 'home-hive' regardless of what was passed.
 // Mirror the real resolvePotHomeSlug's precedence (explicit arg > ctx slug > 'home-hive'
 // env-fallback stand-in) so the mock actually honors the inputs it's given.
-vi.mock('../../hive/wake', () => ({
+vi.mock('../../pot/wake', () => ({
   resolvePotHomeSlug: vi.fn((explicit?: string | null, ctxSlug?: string | null) => {
     const concrete = (s?: string | null) => (s && s !== '*' ? s : undefined);
     return concrete(explicit) ?? concrete(ctxSlug) ?? 'home-hive';
@@ -150,7 +150,7 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
   });
 
   it('errors cleanly (no_harness) when no harness resolves anywhere — never writes an empty-namespace note', async () => {
-    const { resolvePotHomeSlug } = await import('../../hive/wake');
+    const { resolvePotHomeSlug } = await import('../../pot/wake');
     vi.mocked(resolvePotHomeSlug).mockReturnValueOnce(undefined as never);
     const out = await call({ next: 'x' }, { workspaceId: 'ws-1' });
     expect(out.isError).toBe(true);

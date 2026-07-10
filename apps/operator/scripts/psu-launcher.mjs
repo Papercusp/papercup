@@ -3342,7 +3342,18 @@ function spawnInherit({ wrapperBin, args = [], cwd, env }) {
   const child = spawn(wrapperBin, args, { cwd, env, stdio: 'inherit' });
   child.on('error', (e) => {
     console.error(`psu: failed to launch ${wrapperBin}: ${e.message}`);
-    console.error(`psu: is ${wrapperBin} on PATH? run apps/operator/scripts/install-standalone-mcp.sh`);
+    // WI-3884 follow-up: node's spawn reports ENOENT for a MISSING CWD with the
+    // exact same error as a missing binary — a resume whose recorded working
+    // directory was deleted looked like "codex not installed". Disambiguate.
+    if (cwd && !existsSync(cwd)) {
+      console.error(
+        `psu: the session's recorded working directory no longer exists: ${cwd} — ` +
+          `spawn fails with ENOENT even when ${wrapperBin} is installed. ` +
+          `Recreate it (mkdir -p '${cwd}') and re-run, or resume a different session.`,
+      );
+    } else {
+      console.error(`psu: is ${wrapperBin} on PATH? run apps/operator/scripts/install-standalone-mcp.sh`);
+    }
     process.exit(127);
   });
   child.on('exit', (code, signal) => {

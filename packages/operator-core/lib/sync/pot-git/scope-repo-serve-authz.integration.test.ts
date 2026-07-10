@@ -38,7 +38,7 @@ import { defaultRunGit } from './storage';
 import { ensureScopeRepo, scopeRepoWireKey } from './scope-repo';
 import { fetchOverDuplex } from './fetch-transport';
 import { wireHiveGitServe } from './serve-wiring';
-import { setHiveGitMode, getHiveGitMode } from '../../harness/git-sync/hive-git-mode';
+import { setPotGitMode, getPotGitMode } from '../../harness/git-sync/hive-git-mode';
 import { wireHiveGitDial, resolveVerifiedDevicePubkeyForSocket, resolvePotGitPeerSocket } from './peer-dial-registry';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
 
@@ -254,12 +254,12 @@ describe('scope-repo serve authorization gate (WI-3641: P-201 fail-closed deferr
     clientRepo = await (await import('./storage')).ensurePotGitRepo(HIVE, 'client-mirror');
     sha = await mintCommit(serverScopeRepo, 'scoped work 1');
     await defaultRunGit(['update-ref', 'refs/heads/work', sha], serverScopeRepo);
-    await setHiveGitMode(WORKSPACE_ID, HIVE, 'bridged');
-    expect(await getHiveGitMode(WORKSPACE_ID, HIVE)).toBe('bridged');
+    await setPotGitMode(WORKSPACE_ID, HIVE, 'bridged');
+    expect(await getPotGitMode(WORKSPACE_ID, HIVE)).toBe('bridged');
   });
 
   afterAll(async () => {
-    await setHiveGitMode(WORKSPACE_ID, HIVE, null);
+    await setPotGitMode(WORKSPACE_ID, HIVE, null);
     delete process.env.PAPERCUSP_HIVE_GIT_ROOT;
     await rm(root, { recursive: true, force: true });
 

@@ -10,8 +10,11 @@
  * emits here.
  */
 
-/** How a fired event reaches a subscriber (plan D-002). */
-export type AwaitPolicy = 'wake' | 'notify';
+/** How a fired event reaches a subscriber (plan D-002). `announce` (EI-9270) is
+ *  NOT a delivery policy: it marks an emitter-side DECLARATION row ("this gate
+ *  key WILL fire — await it") that never wakes anyone itself; every delivery
+ *  path excludes it, and the real emit stamps its `fired_at` as the LATCH. */
+export type AwaitPolicy = 'wake' | 'notify' | 'announce';
 
 /** What happens when an await's deadline passes without the event (D-009):
  *  `wake` = synthesize a timeout wake (the agent learns the event did NOT
@@ -89,6 +92,13 @@ export interface AwaitRow {
    *  rule's `when`), in ADDITION to the key/pattern match. null = no payload
    *  predicate (today's behavior, unchanged fast path). */
   payloadFilter: unknown | null;
+  /** EI-9270 (announced gate events): DISCOVERY scope of a policy='announce' row —
+   *  who sees the declaration in events:catalog / coord:orient ('fleet'|'plan'|
+   *  'harness'|'global'). null on ordinary awaits. The rendezvous plane itself
+   *  stays flat (WI-3575); this scopes visibility only. */
+  scopeKind: string | null;
+  /** The fleet/plan/harness slug for scopeKind; null for 'global' / ordinary rows. */
+  scopeRef: string | null;
 }
 
 export type DeliveryStatus = 'pending' | 'parked' | 'delivering' | 'delivered' | 'dropped' | 'dead';

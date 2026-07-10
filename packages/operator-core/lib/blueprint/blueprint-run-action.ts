@@ -155,8 +155,8 @@ const defaultFire: DeciderFireFn = ({ installSlug, workspaceId, role, kickoff })
   // skip the spawn (the resumed session IS this wake); not ⇒ today's path,
   // byte-identical. Mode+reason stamped for the A/B.
   void (async () => {
-    const { queenWarmWakeAttempt } = await import('../hive/queen-warm-session');
-    const attempt = await queenWarmWakeAttempt({ installSlug, workspaceId, role, ...(kickoff ? { kickoff } : {}) });
+    const { mugWarmWakeAttempt } = await import('../pot/mug-warm-session');
+    const attempt = await mugWarmWakeAttempt({ installSlug, workspaceId, role, ...(kickoff ? { kickoff } : {}) });
     if (attempt.decision) {
       void recordFire(installSlug, role, `wake-mode: ${attempt.decision.mode} — ${attempt.decision.reason}`, attempt.delivered ? 'ok' : 'attempt').catch(() => {});
     }

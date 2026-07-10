@@ -12,6 +12,7 @@ import { routeWithWorkspace } from '../../../route-workspace';
 import { loadHarnessRegistry } from '../../../harness-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 import { filterSafeSchemaNames } from './all-kpis-safe-schema-name';
+import { aggregateOpCounts, countActiveAutoloops, tallyDirectiveStatuses } from './all-kpis-aggregate';
 
 export default defineTool({
   method: 'GET',
@@ -75,7 +76,13 @@ export default defineTool({
         try {
           const r = await sql.unsafe(`SELECT sum(n)::int AS total FROM (${sqlText}) t`);
           messages24h = (r as any)[0]?.total ?? 0;
-        } catch { /* skip */ }
+        } catch (e) {
+          // A broken/timed-out messages-count query renders as 0 either way
+          // (KPI cards shouldn't 500 over one aggregate) — but log it so a
+          // genuinely-zero count is distinguishable from a silently failing
+          // one in the server logs.
+          console.error('[all-kpis] messages_24h aggregate failed:', e);
+        }
       }
 
       if (executedActionsSchemas.length > 0) {
@@ -89,11 +96,14 @@ export default defineTool({
           const r = await sql.unsafe(
             `SELECT op, sum(n)::int AS n FROM (${sqlText}) t GROUP BY op`,
           );
-          for (const row of r as any[]) {
-            executedActions24h += row.n;
-            opCounts24h[row.op] = (opCounts24h[row.op] ?? 0) + row.n;
+          const agg = aggregateOpCounts(r as any[]);
+          executedActions24h += agg.total;
+          for (const [op, n] of Object.entries(agg.byOp)) {
+            opCounts24h[op] = (opCounts24h[op] ?? 0) + n;
           }
-        } catch { /* skip */ }
+        } catch (e) {
+          console.error('[all-kpis] executed_actions_24h aggregate failed:', e);
+        }
       }
 
       if (messagesSchemas.length > 0) {
@@ -107,11 +117,12 @@ export default defineTool({
           const r = await sql.unsafe(
             `SELECT status, sum(n)::int AS n FROM (${sqlText}) t GROUP BY status`,
           );
-          for (const row of r as any[]) {
-            if (row.status === 'pending') directiveOpen += row.n;
-            else directiveAcked += row.n;
-          }
-        } catch { /* skip */ }
+          const tally = tallyDirectiveStatuses(r as any[]);
+          directiveOpen += tally.open;
+          directiveAcked += tally.acknowledged;
+        } catch (e) {
+          console.error('[all-kpis] directive status tally failed:', e);
+        }
       }
     }
 
@@ -146,9 +157,11 @@ export default defineTool({
           LIMIT 20
         `;
         lastFires = rows;
-        autoloopActive = rows.filter((r) => r.last_status === 'ok' || r.last_status === 'firing').length;
+        autoloopActive = countActiveAutoloops(rows);
       }
-    } catch { /* skip */ }
+    } catch (e) {
+      console.error('[all-kpis] autoloop_state query failed:', e);
+    }
 
     const body = {
       totals: {

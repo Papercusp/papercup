@@ -2816,7 +2816,7 @@ A “unit”-tier suite that is green on every dev box can still be **environmen
 
 [Section titled “The dev-box-parity PG recipe”](#the-dev-box-parity-pg-recipe)
 
-`scripts/ci-provision-pg.mjs` + a `pgvector/pgvector:pg16` service on `5432:5432` in `test-nightly.yml` / `test.yml`. The script mirrors the fresh-migrate strict gate exactly: the 3 framework roles (`harness_app`/`harness_admin`/`harness_zero`), the `papercusp` DB, the 3 baseline extensions (`pgcrypto`/`pg_trgm`/`vector`), then `applyPendingMigrations` from `embedded-postgres-server/src/migration-runner.js` — the REAL boot-path runner, fail-loud, idempotent (\~4s, 122 files). **No test env vars are set**: suites reach the service through the documented native-`:5432` default fallback, exactly like a dev box, and the testcontainers integration tier is untouched. An empty-but-schema-complete DB was proven sufficient (153/153 across 6 previously-failing suites) — the class needs schema, not seeded data.
+`scripts/ci-provision-pg.mjs` + a `pgvector/pgvector:pg18` service (bumped from `pg16` 2026-07-05, WI-2942, to match the shipped/embedded operator’s PostgreSQL 18.3 — see `libs/test-config/src/pg-container.ts`) on `5432:5432` in `test-nightly.yml` / `test.yml`. The script mirrors the fresh-migrate strict gate exactly: the 3 framework roles (`harness_app`/`harness_admin`/`harness_zero`), the `papercusp` DB, the 3 baseline extensions (`pgcrypto`/`pg_trgm`/`vector`), then `applyPendingMigrations` from `embedded-postgres-server/src/migration-runner.js` — the REAL boot-path runner, fail-loud, idempotent (\~4s, 122 files). **No test env vars are set**: suites reach the service through the documented native-`:5432` default fallback, exactly like a dev box, and the testcontainers integration tier is untouched. An empty-but-schema-complete DB was proven sufficient (153/153 across 6 previously-failing suites) — the class needs schema, not seeded data.
 
 ## Diagnosing a new CI-only red
 
@@ -4176,6 +4176,12 @@ When the ALARM threshold is set *lower* than the remediation’s DEADLINE, every
 
 Concretely for EI-8664: the wake-queue AGE alarm now fires on `oldest > pendingWakeStaleHours + WAKE_QUEUE_STALE_GRACE_MS` (24h + 1h), and the drift-prone separate `wakeQueueAgeHours` knob was removed outright (mirroring EI-6910’s removal of `staleEscalationHours`) so the alarm and the sweep deadline can never drift apart and reopen the gap. The DEPTH check (`> wakeQueueDepthMax`) is unchanged — that’s a genuine bloat backstop, independent of age.
 
+## Scope note: not every check in this file is an age/backlog alarm
+
+[Section titled “Scope note: not every check in this file is an age/backlog alarm”](#scope-note-not-every-check-in-this-file-is-an-agebacklog-alarm)
+
+As of 2026-07-10 (EI-8999, `system:claim-integrity-sweep`), the same file also runs a THIRD, structurally different kind of check — deliberately NOT the age-drain-deadline pattern above. Claim integrity (a work-item’s `taken_by` desynced from its plan-item’s live claim lease, or a durable plan-item assignment with no live lease backing it) is a **live double-placement risk right now**, not a slow backlog leak — so instead of filing a deduped backlog bug on an age threshold, it fires a **LOUD, directed, woken alarm** to the holder + its fleet leader immediately on detection (and still files a deduped improvement as the durable audit trail / catch-all when nobody is reachable to wake). There is no “drain deadline” to tie an alarm threshold to here — the violation itself, the instant it’s observed, is the actionable signal. Don’t generalize the rule-of-thumb below to this check; it is the one exception the file’s own header comment calls out.
+
 ## Rule of thumb
 
 [Section titled “Rule of thumb”](#rule-of-thumb)
@@ -4325,6 +4331,8 @@ So: **before dispatching, find a `parked` (or `live`) target. An `ended` target 
 **Self-identification.** A caller’s own row is stamped `isSelf:true`, and the top-level result carries `self: { ownerId, ownerLabel }` — so you can tell which roster row is you without a separate `coord:whoami` call (`self-marker.ts`).
 
 > `coord:roster { view }` (`tools/roster.ts`) is the newer unified read door — `view:"live"` is the same underlying model as `coord:presence`; `view:"history"` answers “who was ever here” for a roster with `ended` rows; `view:"claims"`/`view:"members"` cover `fleet:assignments`-shaped and membership questions. `coord:glance` gives a one-line fleet headline. `coord:presence` stays the dispatch-focused door documented here.
+
+**`intentStale` is now forced by `sessionState`, not just the 30-min activity clock.** As of 2026-07-10 (EI-9262), `overrideIntentStaleForSessionState` (`presence-wakeability.ts`, applied in `presence-snapshot.ts`) forces a row’s `intentStale` to `true` the instant `sessionState` reads `parked` or `ended` — overriding the separate `INTENT_STALE_SEC` (30-minute) activity heuristic. The gap it closes: a killed/exited agent’s `sessionState` can flip to `parked`/`ended` (via the wakeability + hard-stale-ceiling checks above) **long before** `lastActiveSecAgo` crosses the 30-minute `intentStale` threshold — a reader trusting `intentStale` alone (not cross-checking `sessionState`) could see a fresh-looking declared intent for an agent no longer taking turns, and stand down a takeover that should proceed. `recorded` rows are left alone (authoritatively-live, not idle/dead — their `intent` is an empty placeholder anyway). **So: never read `intentStale` in isolation — a `parked`/`ended` `sessionState` already means “treat the intent as stale”, by construction.**
 
 **A `parked` row can be deliberately benched, not just idle — check `parkedOn`.** As of 2026-07-10 (WI-3715), `coord:presence` stamps each active row with `parkedOn: string[]` when the agent is parked on a real `events:await` key (the same derivation `fleet:assignments` already used via `decorateParkedOn`, now surfaced here too via `listParkedAwaitsForSubscribers` + `buildParkedOnMap`). A `parkedOn` agent is intentionally waiting for a specific event to be pushed — not abandoned, and not necessarily the ideal dispatch target: waking it re-invokes a turn that will just re-arm the same await unless your dispatch is what it’s waiting on. `parkedOn` is (like `modes`) derived fresh outside the byte-stable snapshot, so it is **not** etag-tracked — a `since:`-short-circuited read can be stale on it, same caveat as liveness.
 
@@ -6466,6 +6474,120 @@ PGPASSWORD=harness_admin_pwd psql -U harness_admin -h localhost -d papercusp -tA
 
 `db:migrate { confirm:true }` drains correctly but reports `applied:false` unless `PAPERCUSP_ALLOW_DB_MIGRATE=1` is set in the serving operator’s env (the dev box doesn’t). See [staging-restart-does-not-boot-apply-migrations](/internal/docs/agent-insights/staging-restart-does-not-boot-apply-migrations) for the blessed direct path (`applyPendingMigrations` from `@papercusp/embedded-postgres-server` — idempotent, ledger-recording, NOT raw `psql -f`). If you do fall back to `psql -f`, INSERT the `schema_migrations` row (filename + `sha256sum` of the file + `now()`) in the **same transaction**, or the deploy re-runs it — and a re-run of un-guarded `GRANT`/`ALTER`/`POLICY` DDL can hit `lock_timeout` and roll back the whole deploy (see [migration-reapply-lock-guards](/internal/docs/agent-insights/migration-reapply-lock-guards)). A `CREATE OR REPLACE VIEW` body is idempotent, so a recorded re-run is harmless.
 
+# Embed sidecar runbook — one warm embedding model per host (:3384)
+
+> Ops guide for the shared local-embedding sidecar: activation envs (PAPERCUSP_EMBED_SIDECAR / _URL / _MODE / _PORT), the D-004 /embed + /healthz wire, spawn/adopt/respawn supervision, and the D-003 in-process fallback that makes it always safe to kill.
+
+## Why it exists
+
+[Section titled “Why it exists”](#why-it-exists)
+
+Every embedding consumer used to load its own in-process copy of the model — the staging host, each of \~7 release-cluster workers, desktop hosts, green-checkpoint vitest runs, bench CLIs. Cost per process: \~2.2GB duplicated model RSS, a model warm-load from \~2.8s (page-cached) to \~35s (cold on a loaded box, surfacing as `memory_timeout` on `memory:remember`), and a per-process ONNX thread pool (the WI-3792 spin-storm surface). The sidecar owns **one warm pipeline per host** and serves loopback HTTP.
+
+Measured on adoption (P-005, 2026-07-10): **+\~5ms per embed** over the wire (p50 47.3ms sidecar vs 42.5ms in-process) against a **2817ms cold-load avoided** per fresh process; consolidated server RSS 2.23GB total.
+
+## Space safety (D-002) — using the sidecar is never a re-embed
+
+[Section titled “Space safety (D-002) — using the sidecar is never a re-embed”](#space-safety-d-002--using-the-sidecar-is-never-a-re-embed)
+
+The server wraps the **same** `@papercusp/memory` builders the in-process path uses (`buildGemmaEmbedder` / `buildLocalEmbedder` / `buildHarrierEmbedder` — task prompts, MRL truncate+renormalize, WI-3792 ORT thread caps included), so sidecar vectors are **bit-identical** to in-process vectors. Live-pinned: 10/10 bit-identical for gemma; exact-equal for harrier, both kinds. Adopting or dropping the sidecar mid-stream can never mix embedding spaces (see `agent-insights/embedding-space-vs-dimension` for why that matters).
+
+## Activation — dark by default
+
+[Section titled “Activation — dark by default”](#activation--dark-by-default)
+
+| env                              | effect                                                                                                                                                          |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PAPERCUSP_EMBED_SIDECAR_URL`    | Explicit sidecar base URL — **wins over everything**. This process embeds through it (e.g. fleet workers pointed at one host-owned sidecar).                    |
+| `PAPERCUSP_EMBED_SIDECAR=1`      | Per-host opt-in: the first process that needs an embed lazily *ensures* the host-local sidecar (adopt-or-spawn, below).                                         |
+| `PAPERCUSP_EMBED_SIDECAR_MODE=1` | This process **is** the sidecar (the packaged divert in `serve.ts` / `hono-host.ts`). Also disables the opt-in inside the sidecar itself — the recursion guard. |
+| `PAPERCUSP_EMBED_SIDECAR_PORT`   | Port override. Default **3384** (mnemonic: the 384-dim space it serves).                                                                                        |
+
+With neither URL nor opt-in set, `resolveProcessSidecarUrl()` returns null and `buildSidecarFirstEmbedder` degenerates to the plain in-process embedder with zero per-call overhead — byte-for-byte the pre-sidecar behavior.
+
+Resolution order (`embed-sidecar-wiring.ts`): explicit URL → `ensureEmbedSidecar()` (when opted in) → null. All four production seams (memory configure cascade, agent-tools query embedder, embed-backfill, reembed) route through this one seam via `buildSidecarAwareEmbedder(model, kind)`.
+
+## The wire (D-004)
+
+[Section titled “The wire (D-004)”](#the-wire-d-004)
+
+```plaintext
+POST /embed   { model?: 'gemma'|'local'|'harrier',   // default 'gemma'
+                kind: 'query'|'document',
+                texts: string[] }
+           →  { vectors: number[][], dims, runtime: 'node-onnx-worker', modelRev }
+
+
+GET  /healthz → { ok, pid, uptimeMs, runtime,
+                  models: { '<model>:<kind>': 'cold'|'warming'|'warm'|'failed' } }
+```
+
+* The **server owns the space-defining knobs** — callers pass `kind`, never prompt text. `gemma` and `harrier` are asymmetric dual-encoders (`kind` picks the task prompt; harrier prefixes queries only, documents go raw); `local` (BGE-small) is symmetric — `kind` accepted and ignored.
+* Caps: ≤256 texts/call, ≤32k chars/text, 16MB body — violations get a specific 400, never an OOM.
+* **Single-flight FIFO**: concurrent requests serialize through one chain (the ONNX worker is one-at-a-time anyway) — fair ordering, bounded memory.
+* Binds **127.0.0.1 only** — vectors of private text cross this wire.
+* Boot: prints the `PAPERCUSP_EMBED_SIDECAR_READY port=N` handshake line **at listen**; gemma (document + query) warms in the background *after* listen, so the handshake never waits out a model load. A failed embedder build is **not memoized** — the next request for that `model:kind` retries the slot.
+
+Quick checks:
+
+```sh
+curl -s http://127.0.0.1:3384/healthz | jq .models
+curl -s -X POST http://127.0.0.1:3384/embed \
+  -H 'content-type: application/json' \
+  -d '{"model":"gemma","kind":"query","texts":["hello"]}' | jq '.dims, .modelRev'
+```
+
+Manual dev run (staging tree):
+
+```sh
+PAPERCUSP_EMBED_SIDECAR_PORT=3384 npx tsx apps/operator/bin/embed-sidecar.ts
+```
+
+## Spawn / adopt / respawn (`embed-sidecar-spawn.ts`)
+
+[Section titled “Spawn / adopt / respawn (embed-sidecar-spawn.ts)”](#spawn--adopt--respawn-embed-sidecar-spawnts)
+
+`ensureEmbedSidecar()` — the lazy front door consumers hit on first embed:
+
+1. Opt-in env not set → null (caller stays in-process). Never throws.
+2. Our own child already running → its URL.
+3. **`/healthz` answers on the fixed port → adopt the sibling.** The port is one per host; the first process to need the sidecar spawns it, everyone else rides along. This is what prevents doomed-EADDRINUSE spawn loops.
+4. Otherwise spawn: DEV runs `apps/operator/bin/embed-sidecar.ts` via tsx; PACKAGED re-execs the bundle with `PAPERCUSP_EMBED_SIDECAR_MODE=1`. Spawn env belts (EI-8810): `PAPERCUSP_HONO_PORT=0`, `PORT=0`, `PAPERCUSP_BACKGROUND_WORKERS=0` — a mode-divert miss must not boot a full host on the parent’s port or double-run single-writer background machinery. 10s startup timeout waiting for the READY line.
+
+Crash handling: exponential-backoff auto-respawn with a sliding-window circuit breaker — **5 crashes in 5 minutes → gives up** (embedding stays on the in-process fallback until an explicit `spawnEmbedSidecar()` or process restart). A respawn attempt also healthz-probes first and adopts a sibling instead of spawning. Benign client-disconnect errors (EPIPE) never tear down a healthy sidecar. Supervision state is surfaced in `dev:service_health` (`embedSidecarSupervisionStatus`: running / attempts-in-window / gaveUp).
+
+## Client fallback (D-003, `sidecar-embedder.ts`)
+
+[Section titled “Client fallback (D-003, sidecar-embedder.ts)”](#client-fallback-d-003-sidecar-embedderts)
+
+Embedding is **never ‘disabled’ by a sidecar outage** — worst case is exactly the pre-sidecar in-process behavior.
+
+* `buildSidecarFirstEmbedder`: tries the sidecar; **any** failure (connect refused, timeout, non-200, bad shape) marks it down for 30s (`DEFAULT_REPROBE_AFTER_MS`) — embeds in that window go straight to the fallback with zero sidecar round-trips. After the cooldown, the next **embed is the probe** — no separate healthz ping.
+* Per-embed budget 15s (`DEFAULT_SIDECAR_TIMEOUT_MS`) — deliberately generous: a freshly-spawned sidecar may still be warm-loading on its first request; a budget trip costs one cooldown on the fallback path, nothing more.
+* **Transition-only logging**: one line on down, one on up — never per-embed spam.
+* The fallback embedder is lazy-built at most once (a failed build is not memoized), so the sidecar-served happy path loads no local model.
+* Live-verified failover: `kill -9` the sidecar mid-traffic → zero failed memory ops, and (D-002) the exact same vectors from the fallback.
+* Batch consumers (embed-backfill) call `sidecarEmbedBatch` directly for the `texts[]` amortization the single-text `EmbedFn` seam can’t express.
+
+## Troubleshooting
+
+[Section titled “Troubleshooting”](#troubleshooting)
+
+| symptom                                            | read                                                                                                                                                             |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Port already answers when you expected to spawn    | A sibling process owns it — that is the design. Adopt (automatic); don’t kill it.                                                                                |
+| `gave up auto-respawn` in logs                     | Circuit breaker tripped (5 crashes / 5 min). Embedding still works in-process (D-003). Fix the crash cause, then explicit respawn or restart the owning process. |
+| `/healthz` slot shows `failed`                     | That `model:kind` build failed once; it retries on the next request — transient disk/download faults don’t brick the slot.                                       |
+| Sidecar killed / down                              | Clients log one down-transition and continue in-process; expect \~30s cooldowns between reprobes. Safe by design.                                                |
+| Packaged build boots a full host / EADDRINUSE loop | The `PAPERCUSP_EMBED_SIDECAR_MODE=1` divert was missed — see the EI-8810 spawn belts above and `agent-insights/esbuild-cli-self-exec-guard-kills-sidecar`.       |
+| `memory_timeout` on fresh workers under load       | The exact symptom the sidecar removes — check the worker actually has `PAPERCUSP_EMBED_SIDECAR_URL` or the opt-in env.                                           |
+
+## Verifying parity (the live proof recipe)
+
+[Section titled “Verifying parity (the live proof recipe)”](#verifying-parity-the-live-proof-recipe)
+
+Embed the same text through the wire and in-process; assert **exact** float equality (not cosine ≈ 1): `POST /embed {model, kind, texts:[t]}` vs `build<Model>Embedder({kind})(t)`. The P-005 and P-014 live verifications did exactly this — 10/10 bit-identical (gemma), exact-equal both kinds (harrier, dims 1024).
+
 # Never hardcode PG port — read embedded-pg.json
 
 > Embedded Postgres uses a discovered port written to ~/.papercusp/embedded-pg.json on desktop boot. Hardcoding :5432 or :16534 breaks on any machine that wasn't the one you wrote the code on.
@@ -6608,19 +6730,22 @@ Fixed by keying the `UPDATE` on the real **PRIMARY KEY** (composite where needed
 
 # Vectors have a SPACE, not just a dimension — switching the embedder silently invalidates every stored vector
 
-> EMBEDDER_DIM===384 is asserted everywhere; the embedding SPACE was asserted nowhere. Flipping memoryEmbedderMode makes stored vectors (OpenAI-384) and query vectors (BGE-384) structurally valid and semantically incomparable — no error, just noise. Migration 530's `<col>_mode` discriminator + a space-aware backfill predicate make the sweep self-healing.
+> EMBEDDER_DIM===384 is asserted everywhere; the embedding SPACE was asserted nowhere. Flipping memoryEmbedderMode makes stored vectors (OpenAI-384) and query vectors (BGE-384) structurally valid and semantically incomparable — no error, just noise. Migration 530's `<col>_mode` discriminator + a space-aware backfill predicate make the sweep self-healing. The 2026-07-10 bake-off sharpened the rule: the space is model + runtime + quantization + pooling + prompts, and truncation without MRL keeps recall while destroying hard-negative calibration.
 
 ## The trap
 
 [Section titled “The trap”](#the-trap)
 
-`memoryEmbedderMode` (`auto | openai | local | disabled`) picks the embedder **at runtime**. All available embedders produce **384-dimensional** vectors:
+`memoryEmbedderMode` (`auto | openai | local | gemma | harrier | disabled`) picks the embedder **at runtime**. Until 2026-07-10 every available embedder produced **384-dimensional** vectors, so no dimension check could ever catch a mix-up:
 
-| mode     | model                                                                                                                                          | dims |
-| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
-| `openai` | `text-embedding-3-small`, requested with `dimensions: 384`                                                                                     | 384  |
-| `local`  | `Xenova/bge-small-en-v1.5` (BGE-ONNX)                                                                                                          | 384  |
-| `gemma`  | `onnx-community/embeddinggemma-300m-ONNX`, natively 768 → MRL-truncated to 384 + L2-renormalized (migration 534; the default since 2026-07-10) | 384  |
+| mode      | model                                                                                                                                                                            | dims |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| `openai`  | `text-embedding-3-small`, requested with `dimensions: 384`                                                                                                                       | 384  |
+| `local`   | `Xenova/bge-small-en-v1.5` (BGE-ONNX)                                                                                                                                            | 384  |
+| `gemma`   | `onnx-community/embeddinggemma-300m-ONNX`, natively 768 → MRL-truncated to 384 + L2-renormalized (migration 534; the default since 2026-07-10)                                   | 384  |
+| `harrier` | `onnx-community/harrier-oss-v1-0.6b-ONNX`, native 1024, last-token pooling + L2 norm baked into the ONNX graph (migration 547 `memory_vec_harrier`; selectable since 2026-07-10) | 1024 |
+
+`harrier` is the first mode with different native dims, which retired the flat `EMBEDDER_DIM === 384` assumption (`reembed.ts` now carries a per-mode `MODE_DIMS` map — without it every harrier re-embed row silently counted as an error). A 1024-vs-384 mix-up at least fails loudly; every 384-vs-384 mix-up is still silent, and that remains the normal case.
 
 `gemma` makes the trap sharper, not softer: its vectors are *born* 768-dim and only look like the others after Matryoshka truncation, and it uses asymmetric task prompts (document vs query) — so a gemma-384 is incomparable with a BGE-384 *and* with a gemma vector embedded under the wrong prompt. Same rule as always: **the mode IS the space.** Switching to gemma re-embeds the corpus via `POST /api/user/memory/reembed { from: <old>, to: 'gemma' }` (Settings → Memory has buttons for it); mem0 writes land in `memory_vec_gemma`.
 
@@ -6629,6 +6754,43 @@ Every layer checks `vec.length !== EMBEDDER_DIM`. **No layer checked which model
 Nothing throws. Search returns confident, plausible-looking noise.
 
 **Measured 2026-07-09**, right after switching to `local`: searching `harness_shared.operator_turns` for a row **by its own exact text** ranked that row **#6574 of 8383** (cosine distance `1.0336` — near-orthogonal to itself). After the fix, the same probe returns distance `0.0000`.
+
+## The space is the whole pipeline — measured (P-006 bake-off, 2026-07-10)
+
+[Section titled “The space is the whole pipeline — measured (P-006 bake-off, 2026-07-10)”](#the-space-is-the-whole-pipeline--measured-p-006-bake-off-2026-07-10)
+
+The embedder bake-off (`packages/operator-core/lib/memory/bench/embedder-eval-cli.ts`, frozen gold set v1: 114 docs, 150 queries incl. 30 hard-negatives; report `.papercusp/bench-reports/embedder-eval-2026-07-10-19-23-46.json`) turned “the mode IS the space” into four sharper, measured claims.
+
+### Same weights ≠ same space: runtime + quantization are space-defining
+
+[Section titled “Same weights ≠ same space: runtime + quantization are space-defining”](#same-weights--same-space-runtime--quantization-are-space-defining)
+
+`ollama:embeddinggemma:300m` (GGUF-quantized, llama.cpp, 100% GPU) scored **quality-identical** to our ONNX-CPU gemma — R\@1 `.8083` on both, MRR `.8763` vs `.8677`, rejection-margin `.1486` vs `.1576`. Same model card, indistinguishable quality — and the vectors are **mutually incomparable**: a different quantization and inference stack land points in a different space. Quality parity tells you NOTHING about vector compatibility. A “cheap” runtime migration (say, for the GPU speedup) is therefore a full re-embed of every surface, exactly like a model change. Ollama showed no quality win, so the runtime stayed.
+
+### Truncation without MRL keeps recall but destroys calibration
+
+[Section titled “Truncation without MRL keeps recall but destroys calibration”](#truncation-without-mrl-keeps-recall-but-destroys-calibration)
+
+Gemma is Matryoshka-trained, so truncation is a supported operation — the D-001 dim sweep found 768/512/384 within noise (R\@1 `.817`/`.825`/`.808`), degrading only from 256 down (`.775`; 128 → `.667`). Harrier has **no documented MRL**. Truncating its native 1024 to 384 (truncate-then-renormalize) looked fine on recall — R\@1 `.8583`, still above gemma — but the hard-negative **rejection margin collapsed to `.0705`**, less than half gemma’s `.1576` (harrier\@1024: `.1293`). Recall\@k alone would have said “ship it”; only the rejection metric caught that truncated-harrier can no longer tell *close* from *wrong*. Rule: a truncated leg is its own space AND its own quality question — eval it with a hard-negative/rejection metric, never recall alone. This is why the prose/registry surfaces stay gemma even though harrier\@1024 clearly won the memory-side eval (R\@1 `.8833`, MRR `.9286`, at \~4× CPU latency).
+
+### Pooling can live inside the ONNX graph — and then your pooling code is dead weight
+
+[Section titled “Pooling can live inside the ONNX graph — and then your pooling code is dead weight”](#pooling-can-live-inside-the-onnx-graph--and-then-your-pooling-code-is-dead-weight)
+
+The `onnx-community/harrier-oss-v1-0.6b-ONNX` export bakes last-token pooling + L2 normalization INTO the graph (a sentence-transformers head): the model’s sole output is `sentence_embedding` — there is no `last_hidden_state`. transformers.js’s `FeatureExtractionPipeline` assumes `last_hidden_state` and dies with the cryptic `Cannot read properties of undefined (reading 'data')` under EVERY pooling setting. The fix was not JS-side pooling (impossible — token states are never exposed) but reading the named graph output directly: `embedViaWorker` gained an `output` option (tokenize → run the model → return `out['sentence_embedding']`), which `buildHarrierEmbedder` uses. Corollary: pooling + normalization placement is part of the space — two exports of the “same model” that pool differently are different spaces, and an export can hard-code that choice out of your hands.
+
+### Two adoption gates that are not quality gates
+
+[Section titled “Two adoption gates that are not quality gates”](#two-adoption-gates-that-are-not-quality-gates)
+
+* **License (D-005):** shipped defaults must be MIT/Apache-class. jina-v5 and SFR-Embedding-2\_R are CC-BY-NC → disqualified regardless of leaderboard rank; harrier-oss is MIT → admissible.
+* **Leaderboard ≠ our-domain rank:** harrier’s MMTEB 69.0 vs gemma’s ≈61 translated to +.075 R\@1 on OUR gold set — real, but far smaller than the leaderboard gap implies (ceiling effects: gemma already scores R\@3 `.9417` here). Adoption decisions run on the P-001 eval, never on MTEB deltas.
+
+### The sidecar is NOT a space change (D-002)
+
+[Section titled “The sidecar is NOT a space change (D-002)”](#the-sidecar-is-not-a-space-change-d-002)
+
+The shared embed sidecar (`:3384`) wraps the SAME `@papercusp/memory` builders — model, task prompts, MRL truncation, ORT thread caps — so its vectors are **bit-identical** to in-process (live-pinned 10/10 identical for gemma, exact-equal both kinds for harrier). Consolidating processes onto it requires no re-embed. Envs, wire contract, spawn/adopt and fallback semantics: `agent-insights/embed-sidecar-runbook`.
 
 ## Why it could never self-heal
 
@@ -6650,7 +6812,7 @@ Nothing throws. Search returns confident, plausible-looking noise.
 
 Downstream consumers of `buildQueryEmbedder()` — `coord:ask`’s knowledge tier, `recipes/candidates.ts`, `cupboard/tool-find.ts`, `sessions:search` semantic mode.
 
-**mem0’s memories were immune.** They already store vectors in **per-mode tables** (`memory_vec_openai` / `memory_vec_local`) over one mode-independent `memory_canonical`. The prose surfaces simply never inherited that discipline. Switching mem0 modes is therefore non-destructive and reversible — but still needs a **re-embed**, because the target table only holds vectors written in *its* space.
+**mem0’s memories were immune.** They already store vectors in **per-mode tables** (`memory_vec_openai` / `memory_vec_local` / `memory_vec_gemma` / `memory_vec_harrier`) over one mode-independent `memory_canonical`. The prose surfaces simply never inherited that discipline. Switching mem0 modes is therefore non-destructive and reversible — but still needs a **re-embed**, because the target table only holds vectors written in *its* space.
 
 ## The fix (WI-3616)
 
@@ -7889,7 +8051,7 @@ A live run (Brief 6 attempt-1, su-e7698: 2-frame, shared forceReFold `.deb`, rea
 
 [Section titled “10. Membership-lifecycle + residual trackers (P-011 verdicts, 2026-07-03)”](#10-membership-lifecycle--residual-trackers-p-011-verdicts-2026-07-03)
 
-The post-min-bar backlog was given explicit verdicts under `shared-pot-p2p-release-readiness-2026-07-03` P-011 (full table: `shared-hive-release-testing/RELEASE-READINESS.md`). The standing ship-with-limitation rows, each with an accountable tracker:
+The post-min-bar backlog was given explicit verdicts under `shared-pot-p2p-release-readiness-2026-07-03` P-011 (full table: `shared-pot-release-testing/RELEASE-READINESS.md`). The standing ship-with-limitation rows, each with an accountable tracker:
 
 * **No un-revoke path (G8, WI-1855) — SHIP-WITH-LIMITATION, ratified.** Revocation is one-way; un-banning a member has no sanctioned flow. WI-1855’s acceptance criteria (a built un-revoke flow OR this owner-ratified permanent-limitation row) is satisfied by this row, hence its `resolved` tracker state — no code shipped for un-revoke itself, this is a documented-and-accepted gap, not a fix. ⚠️ **CORRECTED + RATIFIED (2026-07-09, WI-3566, closing the P-003 rest-lanes audit finding):** this row previously stated the sanctioned workaround (re-invite as a fresh device/epoch) “must NOT retro-grant cut epochs” — **verified FALSE against the actual implementation, and that old caveat is now removed as simply wrong.** `grantEpochKeysToMembers` (`pot-epoch-boundary-wiring.ts`) is a ratified v1 correctness call (D-009, 2026-06-19/2026-07-04): ANY newly-admitted member — including a re-invited fresh device for a previously-revoked identity — is granted wrapped keys for **every** epoch `[0..current]`, by design (pinned by `seed-past-epoch-key-guarantee.test.ts`; a current-epoch-only policy is explicitly a *deferred future forward-secrecy policy*, not implemented, and not currently planned work). **Ratified (WI-3566, superseding the earlier “owner design decision needed” framing): un-revoke-via-reinvite IS, and is meant to be, a full history restore** — the returning member gets every epoch key minted during their ban, including the K-cut boundary epoch that revoked them, identically to any brand-new member. There is no guard distinguishing “returning previously-revoked identity” from “genuinely new member” at grant time, and none is planned — this is the accepted v1 behavior, not a gap awaiting a fix. Treat un-revoke-via-reinvite as **equivalent to inviting a brand-new member with full history access** — NOT as a partial/forward-only restore.
 * **Membership teardown doesn’t federate (G24/G27, WI-1857) — SHIP-WITH-LIMITATION, ratified.** Dissolve publishes no membership tombstone (peers’ rows orphan out by TTL) and a leaver’s `hive_members` row persists on peers. Pinned by `lifecycle-membership-teardown.gap.integration.test.ts`; the read-plane mitigation (epoch K-cut) is live-proven, so this is a hygiene gap, not a security hole. Same as WI-1855: `resolved` reflects this ratified doc row, not a built fix.
@@ -7927,7 +8089,7 @@ The post-min-bar backlog was given explicit verdicts under `shared-pot-p2p-relea
 
 > **✅ No open release-critical blocker (as of 2026-07-02).** Blocker #9 is RESOLVED — both mechanisms (WI-1378 stale cross-process cache resolve; WI-1544 join-time binding race) are fixed and the full 8-scenario matrix went green first-poll with no restart (m1783013203).
 >
-> **⚠️ STALE as of 2026-07-10 — see § 0 above.** The gate went RED again this week: EI-8895 (admit-after-connect never attaches a replicator) is an ACTIVE release-critical blocker, plus a second live blocker (iMac hive membership absent). WI-3646 (hive\_slug regression) and WI-3869 (coord\_event\_log scan) are separate regressions found and fixed the same week. Do not treat this callout as current status — track `p2p-live-federation-crack-2026-07-10` / `shared-hive-release-testing/RELEASE-READINESS.md` for the live GO/NO-GO state.
+> **⚠️ STALE as of 2026-07-10 — see § 0 above.** The gate went RED again this week: EI-8895 (admit-after-connect never attaches a replicator) is an ACTIVE release-critical blocker, plus a second live blocker (iMac hive membership absent). WI-3646 (hive\_slug regression) and WI-3869 (coord\_event\_log scan) are separate regressions found and fixed the same week. Do not treat this callout as current status — track `p2p-live-federation-crack-2026-07-10` / `shared-pot-release-testing/RELEASE-READINESS.md` for the live GO/NO-GO state.
 >
 > **Hetzner is GONE — the owner-wall callout is OBSOLETE (2026-07-03, D-001 of `shared-pot-p2p-release-readiness-2026-07-03`).** Access to the Hetzner machines is permanently lost (owner directive); the former “billing lock the owner can clear” framing no longer applies. **The LOCAL rig set is now the proof of record:** (i) the containerized 2-node matrix rig — `bin/local-matrix.sh`, the one-command wrapper over the same BYO-frames seam (`RIG_FRAME_IPS`) that produced m1783013203; (ii) the tower↔VM rig (`bin/vm-rig/` — a REAL kernel + network boundary, i.e. VM-grade, not just container-grade); (iii) the mac VM cross-platform witness; (iv) the single-box `two-instance-*-smoke.sh` suite. The `deb-hetzner-*` cloud provision paths are retired-not-deleted. Historical per-brief Hetzner runs remain valid evidence for the rows above.
 
@@ -10851,9 +11013,9 @@ export function stampOpHlc(op, clock = processHlc()) {
 
 If two federated cells end a converge() with DIFFERENT values for the same key (and `fixedPoint=true`), suspect an ordering-key mismatch between the merge fold and a projection’s PG LWW guard — they must use the SAME key.
 
-## REOPENED (D-001, 2026-06-19, shared-hive-release-testing Brief D)
+## REOPENED (D-001, 2026-06-19, shared-pot-release-testing Brief D)
 
-[Section titled “REOPENED (D-001, 2026-06-19, shared-hive-release-testing Brief D)”](#reopened-d-001-2026-06-19-shared-hive-release-testing-brief-d)
+[Section titled “REOPENED (D-001, 2026-06-19, shared-pot-release-testing Brief D)”](#reopened-d-001-2026-06-19-shared-pot-release-testing-brief-d)
 
 The 2026-06-14 fix closed the **drain-interleave** trigger but NOT the root cause: the merge fold orders by **HLC** and the PG guard orders by **fed\_ts = op.ts**, and these are still two different clocks. Seeding HLC from `op.ts` makes `HLC.physical ≥ op.ts` for one op, but the RECV seam (`observeRemoteHlc`, kept on purpose) advances a peer’s `HlcClock` ABOVE a later write’s `ts`. Then:
 
@@ -13030,6 +13192,22 @@ This was the second blocker observed on 2026-06-24 before EI-681 landed:
 
 Then the joiner replicates the owner’s home log and ends up holding epoch 0..K-1 (the keys it legitimately had) but **never the post-ban epoch** — the live K-CUT, and (with content encryption on) the AEAD content read-cut.
 
+## Gap 3 — fresh-joiner bootstrap-admission deadlock (WI-779/WI-780, both resolved)
+
+[Section titled “Gap 3 — fresh-joiner bootstrap-admission deadlock (WI-779/WI-780, both resolved)”](#gap-3--fresh-joiner-bootstrap-admission-deadlock-wi-779wi-780-both-resolved)
+
+Two DEEPER transport-layer findings from the same fed-a/fed-b rig session, upstream of Gaps 1-2 (both fixed; captured here so the next agent hitting “peers connect but nothing merges” doesn’t have to re-diagnose from scratch):
+
+**WI-779 — substrate boot timeout under concurrent multi-harness load.** The swarm/DHT layer peers fine (`peer_connected` fires on the pot topic) but `sync/hyperbee/boot.ts`’s per-harness hyperbee-substrate boot (log-replication layer) hit its 30s timeout and never came up when many cross-workspace harnesses booted at once (a healthy baseline was 2 harnesses in \~6.1s). Roster + features never merge because the substrate that would carry them never finishes booting. Root-caused as a boot-concurrency / serialization issue in `boot-all.ts`’s per-harness boot fan-out, not a DHT reachability problem — fixed as part of the same investigation that unblocked WI-780 below.
+
+**WI-780 — owner-log bootstrap-admission deadlock (the actual “roster never arrives” cause).** Even once WI-779’s substrate boot succeeded and swarm peering was bidirectional, a **fresh joiner’s `hive_members` roster is empty**, and `boot.ts`’s `resolveSameHiveMember` → `classifySameHiveMember` only admits an announcing peer’s frame if `memberDevices.includes(devicePubkey)` — i.e. it needs the roster to already contain the announcer. For the OWNER’s own announce this is circular: the roster that would admit the owner lives in the owner’s own log, which the joiner will never merge until it admits the owner. Every owner announce buffers in `pendingPeers` and retries forever — a genuine bootstrap deadlock, not a crypto/admission/cursor bug (crypto, epoch-K0 wrap, and admission were all separately verified working on the rig before this was isolated).
+
+Fix (security-scoped, landed via WI-797): bootstrap-admit the OWNER’s home log via the existing `hive-announce.ts` binding of `owner_device_pubkey` ↔ `hive_pubkey`. At join time the joiner already has the hive\_pubkey; persist the matching owner device as the hive’s trusted bootstrap identity, then add a pre-check in `resolveSameHiveMember`: if the frame’s `device_pubkey` matches that hive’s stored owner device AND the frame’s hive matches the joined `hive_pubkey`, admit unconditionally — **scoped to exactly that one owner device**, never widened to arbitrary peers (widening it would reopen the WI-259 membership guard as an over-admission hole). Adversarial coverage added alongside the fix: an owner bootstrapping on an empty roster, a non-owner peer with an empty roster still correctly `miss`-buffering, and a peer that spoofs the owner’s `github_user_id` on a different device still correctly refused.
+
+A second, unrelated bug was masking the fix’s effect during verification: **WI-808** — the peer-log wire envelope was dropping the new epoch op field, so federated content arrived with `epoch=NULL` and was silently passthrough-dropped even after roster+epoch-K0 legs went green. See [peerlogop-wire-envelope-drops-new-opfields](/internal/docs/agent-insights/peerlogop-wire-envelope-drops-new-opfields) for that finding in full.
+
+Both are **resolved and live-verified** (2026-06-25, on the gh-attested fed-a/fed-b rig: `WI-21` created on fed-a federated to fed-b end-to-end — `epoch_gate_seen → epoch_applied → work_items WI-21 origin=remote` on the joiner). Full history: `shared-hive-public-release-2026-06-22` plan, decisions D-008/D-009/D-013.
+
 ## WI-887: epoch key reconcile self-heal
 
 [Section titled “WI-887: epoch key reconcile self-heal”](#wi-887-epoch-key-reconcile-self-heal)
@@ -13710,7 +13888,7 @@ Any new comparison or LWW path that treats “has HLC” and “no HLC” with *
 
 [Section titled “Refs”](#refs)
 
-* EI-1698 (the finding + the proof-of-fix comment) · `shared-hive-release-testing/findings-Y.md`
+* EI-1698 (the finding + the proof-of-fix comment) · `shared-pot-release-testing/findings-Y.md`
 * WI-1672 (the follow-up exact-tie/node-id finding, found in P-015 federation testing) · mig-459 `hlc-node-id-total-order.sql`.
 * The recv ratchet ε-bound (`maxDriftMs`) hardening in `HlcClock.recv()` — same WI-1672 amplifier family, landed as defense-in-depth after the node-id fix.
 * Adjacent: D-001 `fed_hlc` ordering (`lww-hlc-fedts-divergence.test.ts`), mig-314, mig-458 (`fed_order_key()`), `hlc-stamp.ts`, `@papercusp/locks-core/hlc.ts`.
@@ -17117,6 +17295,14 @@ General rule
 
 Any time you spawn `invoke-once` (or otherwise boot the orchestrator’s `pg-bootstrap`) against a database other than the dev box’s native `:5432/papercusp`, set `PAPERCUSP_DATABASE_URL`. Setting `DATABASE_URL` alone is **not** sufficient — that var feeds `spawn-mcp` (the signed MCP URL), not the orchestrator’s state connection.
 
+## A THIRD DSN var: `HARNESS_DATABASE_URL` (the org-pg APP resolver)
+
+[Section titled “A THIRD DSN var: HARNESS\_DATABASE\_URL (the org-pg APP resolver)”](#a-third-dsn-var-harness_database_url-the-org-pg-app-resolver)
+
+As of 2026-07-02 (`gym-unwedge-scout-novelty-2026-07-02`, GYM-1 layer-2), pinning `DATABASE_URL`/`HARNESS_ADMIN_DATABASE_URL`/`PAPERCUSP_DATABASE_URL` is **still not enough** for a hermetic gym operator: `libs/db`’s `connection.ts` app-pool resolver (`resolveAppUrl` — see `libs/papercusp/libs/db/src/connection.ts`) consults **`HARNESS_DATABASE_URL` first and never falls back to `DATABASE_URL`**. Left unpinned, every `getOrgPg()` consumer (the org-pg app connection, distinct from the admin/orchestrator connections the rest of this doc covers) fell through to the hardcoded `harness_app:harness_app_pwd@localhost:5432` default and hit the **live native PG** with the wrong credentials — `password authentication failed` on boot. This was the real error behind a 12-day `gym-cycle:error` streak (masked by a detail-dropping recorder, fixed alongside it). `buildGymOperatorBootSpec` (`packages/operator-core/lib/gym/boot-spec.ts`) now also pins `HARNESS_DATABASE_URL: cfg.gymDatabaseUrl` — a **fourth** DSN key alongside the three above, not a replacement for any of them. **Rule of thumb, extended:** when hermetically sandboxing an orchestrator/gym boot, pin all four — `DATABASE_URL`, `HARNESS_ADMIN_DATABASE_URL`, `PAPERCUSP_DATABASE_URL`, **and** `HARNESS_DATABASE_URL` — each is read by a different resolver with its own fallback chain, and any one left unpinned falls through to a live-DB default.
+
+The same GYM-1 pass also found two adjacent hermeticity leaks worth knowing about even though they aren’t DSN vars: `PAPERCUSP_PGBOUNCER` (`maybePgbouncer()` defaults pooling ON for server-class hosts and silently rewrites even a correctly-pinned DSN’s host to the live `:6432` pooler — pin `PAPERCUSP_PGBOUNCER: '0'` to force the hermetic sandbox to dial its container directly) and `PAPERCUSP_MCP_PROXY_BASE` (leaks through the `...process.env` spread from the spawning bg-host and out-ranks the spawning process’s own port when the orchestrator signs a child’s `.mcp.json` URL, pointing every gym eval agent at the **live** `:3070` operator instead of the hermetic one — blank it explicitly).
+
 ## How it was isolated
 
 [Section titled “How it was isolated”](#how-it-was-isolated)
@@ -17597,7 +17783,7 @@ The boundary with the other autonomous roles: the **Mug** steers and places, the
 
 Two independent toggles, deliberately decoupled (D-015):
 
-1. **`PAPERCUP` feature flag** (`papercusp-papercup`, default **OFF**, mirrors `FLAGS.OVERWATCH`) — gates the **settings UI**. When on, the Papercup tab appears in the operator-vite left sidebar (`LeftSidebar.tsx` `TABS`, after Overwatch), with the exact OVERWATCH treatment: a `visibleTabs` filter + a `?lst=papercup` stale-deep-link snap-back to a default tab when the flag is off. Flipping the flag shows/hides the tab; it does **not** by itself repoint the brain.
+1. **`PAPERCUP` feature flag** (wire value `papercusp-sentinel` — kept pre-rename, not yet migrated to a `papercusp-papercup` key) — gates the **settings UI** (plus the `papercup` role registration and its autonomous wake-loop). When on, the Papercup tab appears in the operator-vite left sidebar (`LeftSidebar.tsx` `TABS`, after Overwatch), with the exact OVERWATCH treatment: a `visibleTabs` filter + a `?lst=papercup` stale-deep-link snap-back to a default tab when the flag is off. Flipping the flag shows/hides the tab; it does **not** by itself repoint the brain. **As of `voice-unified-sentinel-pipeline-2026-07-01` P-011 the runtime default flipped to ON** (the live-run proof landed 2026-06-24; the Papercup pane is now the one voice brain, so leaving it dark would mean a dead voice product) — flip it OFF via `/admin/features` to go dark. The sibling `PAPERCUP_PROACTIVE` flag (wire value `papercusp-sentinel-proactive`, also runtime-default ON) separately gates the server-side proactive “decide to speak” sweep described below.
 2. **`humanFacingRole` voice pref** (`'operator'` | `'papercup'`, default **`'operator'`**) — this is the real switch that **repoints the live brain**. It lives in the voice prefs (it is one of `VOICE_USER_OVERRIDE_KEYS`), and `resolveConfig → ElSessionConfig → start` sets `brainRole` from it. The ElevenLabs agent id / signed-URL are unchanged — only which persona + read-context the converse loop loads changes. The operator persona stays as a flagged migration fallback (D-006).
 
 The role threads end-to-end: `role?: string` (default `'operator'`) flows through `converse.ts` → `converse-prompt.ts` → the three persona loaders, and through the voice seam (`askOperator(question, conversationId, role)`) and the text/mobile paths (`operator-converse.ts` + device routes fall back to `humanFacingRole`; an explicit body `role` wins). So the Papercup persona is consistent across voice / text / mobile.
@@ -17621,7 +17807,7 @@ It is a **Papercup slice** of the mug-brief — escalations/anomalies/progress +
 
 [Section titled “Handoff to the Mug”](#handoff-to-the-mug)
 
-When the user says “do it,” the Papercup does **not** spawn a cup. It emits a `<handoff_to_mug>` tag (parsed in `operator-converse-tags.ts`, dispatched by `operator-papercup-handoff.ts`), which (D-003):
+When the user says “do it,” the Papercup does **not** spawn a cup. It emits a `<handoff_to_mug>` tag (parsed in `operator-converse-tags.ts`, dispatched by `dispatchSentinelHandoff` in `operator-sentinel-handoff.ts` — the file/function names kept their pre-rename `sentinel` spelling), which (D-003):
 
 1. files a **high-priority `work_item`** tagged `user-requested` (`work_items:create { priority: high }`), and
 2. **nudges the Mug** via `coord:send`/`escalate { to: mug, wake: true }`.
@@ -17632,7 +17818,7 @@ The Mug places it on her next wake — preserving the single-placer invariant wh
 
 [Section titled “The settings tab — live overrides over workspace defaults”](#the-settings-tab--live-overrides-over-workspace-defaults)
 
-`SentinelTab.tsx` is the left-sidebar “quick live overrides” surface; the full workspace settings hold the **defaults** (D-013). It is the **first consumer of the shared `<OverridableSetting>` primitive** (D-016 / D-020 — not a 9th hand-rolled badge/reset copy): each row shows an override-vs-workspace-default badge + a reset (↺), precedence override > workspace default. Settings surfaced: audience mode (engineer ↔ user-friendly, `audienceMode` `'engineer'`|`'novice'`, D-005), voice on/off, proactive nudges (`proactiveTicksEnabled`), speak-status cadence (`speakCadenceStatus`), and a do-not-disturb (`silenceVoice`). The override read/write reuses the **voice-prefs workspace-default vs per-user-override seam** (`mergeUserOverWorkspace` / `VOICE_USER_OVERRIDE_KEYS`, the same `/settings/user` pattern — no new store, D-014/A). The broader contract is documented in [the unified override-settings backbone](/internal/docs/agent-insights/override-settings-backbone).
+`PapercupTab.tsx` (renamed 2026-07-09 from `SentinelTab.tsx`) is the left-sidebar “quick live overrides” surface; the full workspace settings hold the **defaults** (D-013). It is the **first consumer of the shared `<OverridableSetting>` primitive** (D-016 / D-020 — not a 9th hand-rolled badge/reset copy): each row shows an override-vs-workspace-default badge + a reset (↺), precedence override > workspace default. Settings surfaced: audience mode (engineer ↔ user-friendly, `audienceMode` `'engineer'`|`'novice'`, D-005), voice on/off, proactive nudges (`proactiveTicksEnabled`), speak-status cadence (`speakCadenceStatus`), and a do-not-disturb (`silenceVoice`). The override read/write reuses the **voice-prefs workspace-default vs per-user-override seam** (`mergeUserOverWorkspace` / `VOICE_USER_OVERRIDE_KEYS`, the same `/settings/user` pattern — no new store, D-014/A). The broader contract is documented in [the unified override-settings backbone](/internal/docs/agent-insights/override-settings-backbone).
 
 > Gotcha that bit during the build: `silenceVoice` / `audienceMode` / `proactiveTicksEnabled` were surfaced by the tab but were **absent from `VOICE_USER_OVERRIDE_KEYS`** (and `silenceVoice` was missing from `DEFAULT_VOICE_PREFS`), so the tab’s overrides never reached the brain. If a new Papercup override doesn’t take effect, check that its key is in the override-key set first.
 
@@ -17657,7 +17843,7 @@ Guidance for the Papercup converse / voice path:
 * [Parsing tagged compact tool results](/internal/docs/agent-insights/compact-tool-result-formats) — the read-context tools return compact TOON, not always JSON.
 * [Coord injection protocol](/internal/docs/agent-insights/coord-injection-protocol) — the continuous `[coord]` push surface the brain reads.
 * [A streaming-chat error state must survive the stream close](/internal/docs/agent-insights/sse-chat-error-must-survive-stream-close) — the SSE discipline the converse/voice stream must honor.
-* [The unified override-settings backbone](/internal/docs/agent-insights/override-settings-backbone) — the contract the SentinelTab overrides conform to.
+* [The unified override-settings backbone](/internal/docs/agent-insights/override-settings-backbone) — the contract the PapercupTab overrides conform to.
 
 Plan: `papercup-herald-2026-06-21`.
 
@@ -18505,6 +18691,16 @@ Raising the ceiling is the immediate relief and is *correct for the hardware* �
 * **Connection-pressure watch** (periodic-workflows) warns past 85% saturation with the top `application_name` holders — the early signal this outage lacked.
 
 Validated end-to-end: **300 concurrent callers → 5 backends, 0 rejected** (the bounded pool queues the excess instead of exhausting PG).
+
+## A SECOND exhaustion class (2026-07-10, WI-3816): the ClientWrite zombie
+
+[Section titled “A SECOND exhaustion class (2026-07-10, WI-3816): the ClientWrite zombie”](#a-second-exhaustion-class-2026-07-10-wi-3816-the-clientwrite-zombie)
+
+Raising the ceiling and bounding the pools (above) fixes exhaustion from too many *legitimate* connections. There is a structurally different way to run out of slots even with a correctly-sized, bounded pool: a backend whose **query already completed** but whose **client is gone / not reading** (a dead network peer, a killed agent process, a stalled MCP transport) is not the same as a hung query — `pg_cancel_backend` does nothing to it (there is no in-flight query to cancel), so it sits at `ClientWrite` in `pg_stat_activity` and **holds its pool slot forever**, until an operator manually `pg_terminate_backend`s it. This was the root cause of a **4-hour fleet-wide MCP-timeout outage** (the aftermath of WI-3792): the pool wasn’t oversubscribed by count, it was full of zombies.
+
+The fix (`buildConnectionOptions` / `buildClient` in `libs/papercusp/libs/db/src/connection.ts`) sets **`client_connection_check_interval`** (default 30s, `PAPERCUSP_DB_CLIENT_CHECK_INTERVAL`-overridable, seconds) on every non-pooled connection — a `PGC_USERSET` GUC settable as a libpq startup param (no `postgresql.conf` edit needed), which makes the backend **itself** poll its socket and notice/abort when the client is gone, instead of waiting for an operator to find and kill it by hand. It defaults to **off (0)** on every stock PG install (embedded or native), so it must be set explicitly — this incident is exactly why. Alongside it, the same non-pooled path now tightens the OS-level TCP keepalive probe (`tcp_keepalives_idle=30`, `_interval=10`, `_count=3`) so a **network-level** dead peer (not just an app-level unresponsive one) is caught quickly too — PG’s own default keepalive idle time (2h) is far too slow to matter for this failure mode.
+
+**Diagnostic signal to add to the OS-level checklist above:** a `pg_stat_activity` row stuck in `state = 'idle'` / `wait_event_type = 'Client'` (or `ClientWrite`) for an implausibly long time, with **no corresponding live TCP peer** in the `ss -tnp` output from the diagnose section, is this class — not a hung query, not a raw count-exhaustion. `pg_terminate_backend(pid)` on that pid recovers the slot immediately if you’re mid-outage on an unpatched install.
 
 ## Gotcha — don’t write a plan as a raw file during the outage
 
@@ -22521,7 +22717,7 @@ The registry lives in whichever process runs the merge loop — under `papercusp
 * Edge-triggered once per latch; recovery (a real replicator attach) re-arms.
 * The axis never fires when the substrate/swarm never came up (`swarmConnections` undefined) — genuinely-offline peers must not page.
 
-Related: the WI-183 stale-DHT-announce zombie-window mechanism (root cause the detector exists to catch) is written up on WI-183 / ledger row 13 of `shared-hive-release-testing/RELEASE-READINESS.md`.
+Related: the WI-183 stale-DHT-announce zombie-window mechanism (root cause the detector exists to catch) is written up on WI-183 / ledger row 13 of `shared-pot-release-testing/RELEASE-READINESS.md`.
 
 # Repo-less pot data layer: member-repo resolution, per-pot outbox-drain, dead-executor reaper
 

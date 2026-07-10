@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -44,6 +44,7 @@ import {
   roleBootstrapBody,
   forkSeedPaths,
   findUntrackedSession,
+  findTrackedCodexHomeRollout,
   sessionOwnersRoot,
   recordSessionOwner,
   recoverSessionOwner,
@@ -2123,6 +2124,58 @@ describe('findUntrackedSession (resume a non-psu session by searching the agent 
     expect(findUntrackedSession(UUID, { home })).toEqual({
       agent: 'codex', sessionId: UUID, cwd: '/home/me/raw', untracked: true,
     });
+  });
+
+  it('WI-3884: a CLAUDE store hit wins over a codex tracked-home hit for the same uuid (lookup order pinned)', () => {
+    const projDir = join(home, '.claude', 'projects', '-a-dir');
+    mkdirSync(projDir, { recursive: true });
+    writeFileSync(join(projDir, `${UUID}.jsonl`), `{"sessionId":"${UUID}","cwd":"/home/me/claude-side"}\n`);
+    const trackedDir = join(home, '.papercusp', 'su-codex-homes', 'session-7', 'sessions', '2026', '07', '10');
+    mkdirSync(trackedDir, { recursive: true });
+    writeFileSync(join(trackedDir, `rollout-2026-07-10T01-00-00-${UUID}.jsonl`), `{"type":"meta","cwd":"/home/me/codex-side"}\n`);
+    expect(findUntrackedSession(UUID, { home })).toEqual({
+      agent: 'claude', sessionId: UUID, cwd: '/home/me/claude-side', untracked: true,
+    });
+  });
+
+  it('WI-3884: a SYMLINKED session dir under su-codex-homes is NOT followed (Dirent.isDirectory is lstat-like)', () => {
+    // A rollout reachable ONLY through a symlinked "session-666" must stay
+    // invisible — safeReaddir(withFileTypes) reports a symlink as
+    // isDirectory()===false, so the scan never recurses through it. Pins the
+    // no-follow property the WI-3859 pass established for archive collection.
+    const realElsewhere = join(home, 'elsewhere', 'sessions', '2026', '07', '10');
+    mkdirSync(realElsewhere, { recursive: true });
+    writeFileSync(join(realElsewhere, `rollout-2026-07-10T02-00-00-${UUID}.jsonl`), `{"type":"meta","cwd":"/x"}\n`);
+    const root = join(home, '.papercusp', 'su-codex-homes');
+    mkdirSync(root, { recursive: true });
+    symlinkSync(join(home, 'elsewhere'), join(root, 'session-666'));
+    expect(findUntrackedSession(UUID, { home })).toBeNull();
+  });
+
+  it('WI-3884: stray files / non-session dirs / homes without sessions/ are skipped without error', () => {
+    const root = join(home, '.papercusp', 'su-codex-homes');
+    mkdirSync(join(root, 'not-a-session-dir'), { recursive: true }); // wrong prefix
+    mkdirSync(join(root, 'session-11'), { recursive: true }); // no sessions/ subdir
+    writeFileSync(join(root, 'session-12'), 'a stray FILE, not a dir\n'); // file with the prefix
+    const good = join(root, 'session-13', 'sessions', '2026', '07', '10');
+    mkdirSync(good, { recursive: true });
+    writeFileSync(join(good, `rollout-2026-07-10T03-00-00-${UUID}.jsonl`), `{"type":"meta","cwd":"/home/me/ok"}\n`);
+    expect(findUntrackedSession(UUID, { home })).toEqual({
+      agent: 'codex', sessionId: UUID, cwd: '/home/me/ok', untracked: true,
+      psuTracked: true, id: 13, codexHome: join(root, 'session-13'),
+    });
+  });
+
+  it('WI-3884: findTrackedCodexHomeRollout degenerate inputs — null/empty id, missing root, uuid-suffix confusion', () => {
+    expect(findTrackedCodexHomeRollout(null as unknown as string, { home })).toBeNull();
+    expect(findTrackedCodexHomeRollout('', { home })).toBeNull();
+    expect(findTrackedCodexHomeRollout(UUID, { home })).toBeNull(); // no su-codex-homes at all
+    // A rollout for a DIFFERENT uuid that merely ENDS with the searched id's
+    // tail must not match — the filename match is `-<full id>.jsonl`.
+    const dir = join(home, '.papercusp', 'su-codex-homes', 'session-21', 'sessions', '2026', '07', '10');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `rollout-2026-07-10T04-00-00-ffffffff-ffff-7fff-8fff-${UUID.slice(-12)}.jsonl`), '{"cwd":"/x"}\n');
+    expect(findTrackedCodexHomeRollout(UUID, { home })).toBeNull();
   });
 });
 

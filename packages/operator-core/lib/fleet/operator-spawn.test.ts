@@ -62,7 +62,7 @@ vi.mock('../owner-steering', () => ({
   }),
   effectiveMaxBees: vi.fn((_steering: unknown, base: number) => base),
 }));
-vi.mock('../hive/wake', () => ({ resolvePotHomeSlug: vi.fn(() => 'papercusp') }));
+vi.mock('../pot/wake', () => ({ resolvePotHomeSlug: vi.fn(() => 'papercusp') }));
 vi.mock('../dbos/orchestrator-runner', () => ({ spawnInvokeOnceWithFallback: vi.fn() }));
 vi.mock('./spawn-tree', () => ({ recordSpawn: vi.fn(), finishSpawn: vi.fn() }));
 vi.mock('../inference-gateway/spawn-env', () => ({ resolveSpawnGatewayEnv: vi.fn(async () => ({})) }));

@@ -19,6 +19,7 @@ import postgres, { type Sql } from 'postgres';
 import { PgPresenceStore } from '@papercusp/coordination/presence';
 import { describePresenceConformance } from '@papercusp/coordination/presence/conformance';
 import { connectionString } from '../../../memory/mem0-connection';
+import { PG_BIGINT_AS_NUMBER_TYPES } from '@papercusp/db-org';
 
 let sql: Sql | null = null;
 
@@ -44,6 +45,10 @@ describePresenceConformance(
           connection: { search_path: 'harness_shared, public' },
           prepare: false,
           max: 4,
+          // EI-9265: mirror getOrgPg()'s bigint→Number coercion exactly —
+          // without it a bigserial column silently comes back as a string
+          // in THIS client only, masking/misrepresenting production behavior.
+          types: PG_BIGINT_AS_NUMBER_TYPES,
         });
         await sql`SELECT 1`;
         // Canonical schema, mirrored from lib/ensure-schema.ts. IF NOT

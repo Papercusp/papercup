@@ -103,7 +103,7 @@ A stale claim spec (below) is a **latent trap** that already bit one member, but
   - `fleet-leader-frictions-six-improvements-2026-07-10` — 6/6, status shipped.
   - No engineering work remained; I was in passive AUTO leader-watch (60s warm monitor).
 - **p2p readiness = NO-GO.** Root blocker **WI-3646** (cross-machine content-federation
-  regression, apply/projection stage). Ledger: `shared-hive-release-testing/RELEASE-READINESS.md`.
+  regression, apply/projection stage). Ledger: `shared-pot-release-testing/RELEASE-READINESS.md`.
 
 ### Owner-gated walls (carry forward — none resolvable by an agent)
 - **WI-3627** — foreign-session capability GRANTS beyond DEFAULT-DENY-ALL; owner
@@ -111,7 +111,7 @@ A stale claim spec (below) is a **latent trap** that already bit one member, but
 - **WI-3574** — OpenAI embedding quota exhausted; mem0 on BGE fallback; needs owner billing
   action. (system-watchdog re-alarmed "Durable memory degraded" 16:17Z.)
 - **Ledger walls 24/25/26/29** — code-signing certs, open-signup, multi-owner ban-lift,
-  arm64 hardware. Re-check: `sed -n 96,104p shared-hive-release-testing/RELEASE-READINESS.md`.
+  arm64 hardware. Re-check: `sed -n 96,104p shared-pot-release-testing/RELEASE-READINESS.md`.
 
 ## Open coordination threads
 - **su-7a3c4 (cup-lexicon-rename leader)** — ANSWERED. Their E5-hot cascade gate on my

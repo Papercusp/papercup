@@ -90,6 +90,34 @@ against a database other than the dev box's native `:5432/papercusp`, set
 feeds `spawn-mcp` (the signed MCP URL), not the orchestrator's state connection.
 </Aside>
 
+## A THIRD DSN var: `HARNESS_DATABASE_URL` (the org-pg APP resolver)
+
+As of 2026-07-02 (`gym-unwedge-scout-novelty-2026-07-02`, GYM-1 layer-2), pinning
+`DATABASE_URL`/`HARNESS_ADMIN_DATABASE_URL`/`PAPERCUSP_DATABASE_URL` is **still not enough**
+for a hermetic gym operator: `libs/db`'s `connection.ts` app-pool resolver
+(`resolveAppUrl` — see `libs/papercusp/libs/db/src/connection.ts`) consults
+**`HARNESS_DATABASE_URL` first and never falls back to `DATABASE_URL`**. Left unpinned, every
+`getOrgPg()` consumer (the org-pg app connection, distinct from the admin/orchestrator
+connections the rest of this doc covers) fell through to the hardcoded
+`harness_app:harness_app_pwd@localhost:5432` default and hit the **live native PG** with the
+wrong credentials — `password authentication failed` on boot. This was the real error behind a
+12-day `gym-cycle:error` streak (masked by a detail-dropping recorder, fixed alongside it).
+`buildGymOperatorBootSpec` (`packages/operator-core/lib/gym/boot-spec.ts`) now also pins
+`HARNESS_DATABASE_URL: cfg.gymDatabaseUrl` — a **fourth** DSN key alongside the three above, not a
+replacement for any of them. **Rule of thumb, extended:** when hermetically sandboxing an
+orchestrator/gym boot, pin all four — `DATABASE_URL`, `HARNESS_ADMIN_DATABASE_URL`,
+`PAPERCUSP_DATABASE_URL`, **and** `HARNESS_DATABASE_URL` — each is read by a different resolver
+with its own fallback chain, and any one left unpinned falls through to a live-DB default.
+
+The same GYM-1 pass also found two adjacent hermeticity leaks worth knowing about even though
+they aren't DSN vars: `PAPERCUSP_PGBOUNCER` (`maybePgbouncer()` defaults pooling ON for
+server-class hosts and silently rewrites even a correctly-pinned DSN's host to the live `:6432`
+pooler — pin `PAPERCUSP_PGBOUNCER: '0'` to force the hermetic sandbox to dial its container
+directly) and `PAPERCUSP_MCP_PROXY_BASE` (leaks through the `...process.env` spread from the
+spawning bg-host and out-ranks the spawning process's own port when the orchestrator signs a
+child's `.mcp.json` URL, pointing every gym eval agent at the **live** `:3070` operator instead
+of the hermetic one — blank it explicitly).
+
 ## How it was isolated
 
 A reproduction in `packages/operator-core/lib/gym/smoke.ts` built a client with the *exact* `pg-bootstrap`

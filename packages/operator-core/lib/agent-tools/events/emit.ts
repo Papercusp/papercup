@@ -17,6 +17,9 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { sendMessage } from '../coordination/messages';
 import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
+import { registerAnnouncement, countActiveAwaitsByPrefixes } from '../../events/await/store';
+import { buildAnnouncedKey, defaultAnnounceScope, type AnnounceScopeKind } from '../../events/await/announce-key';
+import { getPresence } from '../coordination/presence';
 import { softText, clampText, LIMITS } from '../limits';
 
 export default defineTool({
@@ -51,9 +54,93 @@ export default defineTool({
       .describe(
         "P-009 (cross-machine-coord-parity): 'hive' ALSO federates this event to every machine of the workspace's shared Hive — each peer re-fires the key into ITS local await store, so a REMOTE machine's events:await on the same key wakes (rendezvous beyond inbox-wake: lock grants, artifact-ready, staging-advanced). Requires a resolvable hive scope (the result reports federated: plus federation_error: when none). Omit/'local' = today's machine-local emit.",
       ),
+    announce: z
+      .boolean()
+      .optional()
+      .describe(
+        "EI-9270: DECLARE the gate instead of firing it — writes a discoverable, LATCHED announcement (\"this key WILL fire; await it\") that members find via events:catalog / coord:orient with zero messages. The event key is auto-prefixed from announceScope (fleet:<slug>:<gate>) so fleets' gates can't collide. Fire it later with a normal events:emit of the RETURNED key — that stamps the latch, so even an agent that registers AFTER the fire is told immediately. No wake, no notify, `to` not allowed.",
+      ),
+    announceScope: z
+      .enum(['fleet', 'plan', 'harness', 'global'])
+      .optional()
+      .describe(
+        "Discovery scope of the announcement (who SEES it): defaults to your narrowest context — your fleet, else your bound plan, else global. 'global' = visible to every agent (system-wide gates).",
+      ),
+    announceScopeRef: z
+      .string()
+      .max(120)
+      .optional()
+      .describe('The fleet/plan/harness slug for announceScope (defaults from your presence when omitted).'),
+    expiresSec: z
+      .number()
+      .int()
+      .positive()
+      .max(30 * 24 * 60 * 60)
+      .optional()
+      .describe('announce only: seconds until the DECLARATION lapses if never fired (visible in events:status; not a latch). Omit = standing until fired/cancelled.'),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
+
+    // ── EI-9270: announce = DECLARE, don't fire ─────────────────────────────
+    if (args.announce) {
+      if (args.to && args.to.length > 0) {
+        throw new Error("events:emit — `announce` declares a gate; it wakes/notifies no one, so `to` is not allowed. Fire the returned key later to deliver.");
+      }
+      // Default scope = the announcer's narrowest context (fleet → plan → global).
+      let kind = args.announceScope as AnnounceScopeKind | undefined;
+      let ref = args.announceScopeRef ?? null;
+      if (!kind || ((kind === 'fleet' || kind === 'plan') && !ref)) {
+        type PresenceLite = { fleetSlug?: string | null; currentPlanSlug?: string | null } | null;
+        let presence: PresenceLite = null;
+        try {
+          presence = (await getPresence(identity.ownerId)) as PresenceLite;
+        } catch { /* best-effort — fall through to global */ }
+        if (!kind) {
+          const d = defaultAnnounceScope({ fleetSlug: presence?.fleetSlug ?? null, planSlug: presence?.currentPlanSlug ?? null });
+          kind = d.kind;
+          ref = ref ?? d.ref;
+        } else if (kind === 'fleet') {
+          ref = ref ?? presence?.fleetSlug ?? null;
+        } else if (kind === 'plan') {
+          ref = ref ?? presence?.currentPlanSlug ?? null;
+        }
+      }
+      if (kind !== 'global' && !ref) {
+        throw new Error(`events:emit — announceScope '${kind}' needs a slug: pass announceScopeRef (your presence carries no ${kind} to default from).`);
+      }
+      const key = buildAnnouncedKey(args.event, { kind: kind!, ref: kind === 'global' ? null : ref });
+      const row = await registerAnnouncement({
+        subscriberId: identity.ownerId,
+        eventKey: key,
+        note: clampText(args.summary, LIMITS.ANNOTATION) ?? null,
+        scopeKind: kind!,
+        scopeRef: kind === 'global' ? null : ref,
+        expiresSec: args.expiresSec ?? null,
+      });
+      // Best-effort "who is already armed on this key" — the leader's readiness read.
+      let liveAwaiters: number | undefined;
+      try {
+        liveAwaiters = (await countActiveAwaitsByPrefixes([key])).get(key) ?? 0;
+      } catch { /* omit */ }
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: true,
+              announced: true,
+              event: key,
+              scope: { kind, ref: kind === 'global' ? null : ref },
+              expires_ts: row.expiresTs,
+              ...(liveAwaiters !== undefined ? { live_awaiters: liveAwaiters } : {}),
+              advice: `Gate DECLARED (not fired). Members discover it via events:catalog / coord:orient and events:await "${key}". Fire it later with events:emit { event: "${key}" } — the fire also LATCHES the announcement, so agents registering after the fire are told immediately.`,
+            }),
+          },
+        ],
+      };
+    }
+
     const result = await emitAwaitedEvent({
       key: args.event,
       summary: clampText(args.summary, LIMITS.ANNOTATION),

@@ -11,7 +11,7 @@ import { searchWorkItems, type WorkItemKind } from '../../work-items';
 export default defineTool({
   name: 'work_items:search',
   profile: 'engineer',
-  description: 'Full-text search work-items across kinds (feature/chunk/bug/change/task). Matches title + body/summary. Filter by harness or kind. Use to dedup before creating. Returns { ok, count, items } — NOTE the matches array is `items`, not `results` (unlike work_items:get/list, which use `results`); a code:run helper expecting `.results` on this tool silently sees [] (EI-5920).',
+  description: 'Search work-items across kinds (feature/chunk/bug/change/task): full-text over title + body/summary PLUS a semantic (embedding cosine) leg, so differently-worded matches surface too (P-008; semantic:false for lexical-only). Filter by harness or kind. Use to dedup before creating. Returns { ok, count, items } — NOTE the matches array is `items`, not `results` (unlike work_items:get/list, which use `results`); a code:run helper expecting `.results` on this tool silently sees [] (EI-5920).',
   guidance: {
     when: 'You want to find existing work-items by free text (e.g. dedup before filing, or locate a known issue/feature).',
     chaining: 'work_items:search (dedup) → work_items:create, or → work_items:get { id } for detail.',
@@ -35,12 +35,17 @@ export default defineTool({
         'built-in kind (feature, chunk, bug, change, task) OR a workspace-registered generic-kind datatype',
       ),
     limit: z.number().int().positive().max(200).optional(),
+    semantic: z
+      .boolean()
+      .optional()
+      .describe('default true: merge embedding-cosine hits after the lexical ones (fail-open). false = lexical-only.'),
   }),
   async handler(args) {
     const items = await searchWorkItems(args.query, {
       harness: args.harness,
       kind: args.kind as WorkItemKind | undefined,
       limit: args.limit,
+      semantic: args.semantic,
     });
     return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, count: items.length, items }) }] };
   },

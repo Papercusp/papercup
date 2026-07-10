@@ -133,7 +133,7 @@ vi.mock('@papercusp/flags/server', async (importActual) => ({
 const listStartedHivesMock = vi.fn(async () => [{ workspaceId: 'default', installSlug: 'papercup' }]);
 vi.mock('../../hive/started', () => ({ listStartedHives: (...a: unknown[]) => listStartedHivesMock(...(a as [])) }));
 const computeQueenWakeBriefMock = vi.fn(async (): Promise<string | null> => '## QUEEN WAKE BRIEF\n- frontier: wi-1');
-vi.mock('../../hive/queen-brief-launch', () => ({
+vi.mock('../../hive/mug-brief-launch', () => ({
   computeQueenWakeBrief: (...a: unknown[]) => computeQueenWakeBriefMock(...(a as [])),
 }));
 vi.mock('../../device-harnesses', () => ({

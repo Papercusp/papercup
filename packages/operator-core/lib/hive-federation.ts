@@ -119,7 +119,7 @@ export async function potHomeSlugForHarness(
 }
 
 /**
- * A-003 (shared-hive-release-testing Brief I): the HIVE-HOME slug a JOINER's
+ * A-003 (shared-pot-release-testing Brief I): the HIVE-HOME slug a JOINER's
  * member harness must bind its `hive_members` / `hive_settings` projections to,
  * else null (no rebind — today's behavior).
  *

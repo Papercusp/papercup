@@ -29,11 +29,11 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../');
  *  later moved/renamed plan file is skipped rather than reddening the suite. */
 const ACTIVE_PLANS = [
   // PR-system arc (the EI-479 origin)
-  'shared-hive-release-testing/PLAN-pr-system-completion-dogfood.md',
+  'shared-pot-release-testing/PLAN-pr-system-completion-dogfood.md',
   'apps/operator/docs/plans/papercusp-dogfood-phase7-pr-lifecycle-2026-05-24.md',
   'apps/operator/docs/plans/non-collaborator-join-fork-pr-2026-06-02.md',
   // In-flight federation / owner-enforcement / hive plans (verified clean 2026-06-20)
-  'shared-hive-release-testing/PLAN-owner-enforcement-layer.md',
+  'shared-pot-release-testing/PLAN-owner-enforcement-layer.md',
   'apps/operator/docs/plans/hive-from-github-url-2026-06-11.md',
   'apps/operator/docs/plans/shared-hive-federation-2026-06-08.md',
 ];

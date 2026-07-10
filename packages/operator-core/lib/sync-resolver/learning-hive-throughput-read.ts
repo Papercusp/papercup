@@ -15,23 +15,23 @@ import type { Sql } from 'postgres';
 import {
   isOperatingWell,
   normalizeThroughputRow,
-  type HiveThroughputTickRow,
+  type PotThroughputTickRow,
   type RawThroughputTickRow,
-} from '../hive/throughput';
+} from '../pot/throughput';
 
 /** One hive's throughput view: latest metrics + recent trend + health verdict. */
-export interface HiveThroughputView {
+export interface PotThroughputView {
   potSlug: string;
   /** The newest tick (the live cards), or null when none recorded. */
-  latest: HiveThroughputTickRow | null;
+  latest: PotThroughputTickRow | null;
   /** Recent ticks, newest-first, for the trend sparkline. */
-  recent: HiveThroughputTickRow[];
+  recent: PotThroughputTickRow[];
   /** The operating-well yardstick over the latest tick (false when none yet). */
   operatingWell: boolean;
 }
 
 export interface HiveThroughputSnapshot {
-  hives: HiveThroughputView[];
+  hives: PotThroughputView[];
 }
 
 const UNDEFINED_TABLE = '42P01';
@@ -68,7 +68,7 @@ export async function readHiveThroughputSnapshot(
   }
 
   // Group newest-first; the query is already DESC so insertion order is preserved.
-  const byHive = new Map<string, HiveThroughputTickRow[]>();
+  const byHive = new Map<string, PotThroughputTickRow[]>();
   for (const raw of rows) {
     const row = normalizeThroughputRow(raw);
     const list = byHive.get(row.potSlug);
@@ -76,7 +76,7 @@ export async function readHiveThroughputSnapshot(
     else byHive.set(row.potSlug, [row]);
   }
 
-  const hives: HiveThroughputView[] = [...byHive.entries()].map(([potSlug, ticks]) => {
+  const hives: PotThroughputView[] = [...byHive.entries()].map(([potSlug, ticks]) => {
     const latest = ticks[0] ?? null;
     return {
       potSlug,

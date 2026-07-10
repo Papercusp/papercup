@@ -804,7 +804,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     harnessSlug: slug,
   });
 
-  // ── A-003 (shared-hive-release-testing Brief I): joiner hive-home projection
+  // ── A-003 (shared-pot-release-testing Brief I): joiner hive-home projection
   // scope. ── When THIS harness is a member of a JOINED (remote_hive) Hive, its
   // `hive_members`/`hive_settings` projections must bind to the HIVE-HOME slug, not
   // the member slug — else the home-grained ops this member's merge reads off the

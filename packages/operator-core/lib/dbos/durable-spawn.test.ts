@@ -95,7 +95,7 @@ vi.mock('../inference-gateway/observability', () => ({
   gatewayWholesaleThrottled: vi.fn(async () => h.gatewayThrottled.value),
 }));
 vi.mock('../harness-core', () => ({ resolveProject: h.resolveProject }));
-vi.mock('../hive/started', () => ({ setHiveStarted: h.setHiveStarted }));
+vi.mock('../pot/started', () => ({ setHiveStarted: h.setHiveStarted }));
 vi.mock('../overwatch/control-state', () => ({ setOverwatchStarted: h.setOverwatchStarted }));
 vi.mock('../harness/routines/wake-brain-action', () => ({ resolveBrainOwner: h.resolveBrainOwner }));
 vi.mock('../agent-tools/coordination/inbox-wake', () => ({ wakeRecipients: h.wakeRecipients }));

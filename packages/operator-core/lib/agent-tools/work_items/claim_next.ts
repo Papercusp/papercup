@@ -12,7 +12,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import {
   CLAIM_STATES_ALLOWLIST,
@@ -61,7 +61,7 @@ export default defineTool({
   args: z.object({
     harness: z.string().min(1),
     kind: z.enum(['feature', 'chunk']).optional(),
-    assignee: z.string().max(120).optional().describe('default: you'),
+    assignee: z.string().max(120).optional().describe('default: you (also resolves the literal "self" to you)'),
     // WI-1912: clamped to the claimable allowlist — same wall as scheduler:get_next; a
     // free-string `states` let a caller widen past the resolver-owned blocked/cursed floors.
     states: z
@@ -89,7 +89,10 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
-    const assignee = args.assignee ?? ident.ownerId;
+    // EI-9274: resolve a literal `'self'` assignee the same as an omitted one (both →
+    // the caller) — previously stored verbatim, producing an unmatchable, permanently
+    // orphaned claim (WI-3881).
+    const assignee = resolveSelfLiteral(args.assignee, ident.ownerId) ?? ident.ownerId;
     // WI-2971: claim_next is an older public self-pull surface. In a fleet with a
     // leader-authored claim spec, letting this wrapper call the raw oldest-first primitive
     // bypasses the fleet lane and can hand feature/plan work to a bug-drain member. When the

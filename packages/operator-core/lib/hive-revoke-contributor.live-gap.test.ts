@@ -1,5 +1,5 @@
 /**
- * K-1 (shared-hive-release-testing Brief K) — Hive-scope revocation is a no-op
+ * K-1 (shared-pot-release-testing Brief K) — Hive-scope revocation is a no-op
  * beyond a local PG write.
  *
  * `revokeHiveContributor`'s default `realPublishRevocation` ONLY calls

@@ -150,6 +150,91 @@ export class DrainPassTimeoutError extends Error {
 }
 
 /**
+ * WI-3896 (tower outbox-drain wedge — the "papercusp substrate_merge_cursor
+ * never establishes" incident): `DRAIN_PASS_TIMEOUT_MS` bounds a whole PASS, but
+ * the `SELECT … ORDER BY id LIMIT batch` in `drainOutboxOnce` always re-fetches
+ * the SAME earliest-undrained rows first — so when ONE row's epoch-encrypt (or
+ * append) genuinely never settles, it is the leading row of EVERY pass, EVERY
+ * pass times out at the SAME row, and NOTHING behind it (in this or any later
+ * batch) ever gets a chance to drain. The pass-level watchdog un-wedges the
+ * LOOP, but not the BACKLOG — it just times out forever on the same poison row.
+ *
+ * This is a PER-ROW bound + quarantine on top of the pass-level one: each
+ * potentially-hanging per-row stage (epoch-encrypt, hypercore-append) races
+ * against `ROW_STAGE_TIMEOUT_MS` (well under `DRAIN_PASS_TIMEOUT_MS`, so a
+ * genuinely-poison row is caught and named LONG before it could exhaust the
+ * whole pass budget). `startOutboxDrain`'s loop counts CONSECUTIVE stage-
+ * timeouts for the SAME row id; after `ROW_QUARANTINE_THRESHOLD` in a row, that
+ * ONE row is quarantined (added to `quarantinedIds`, checked + skipped BEFORE
+ * any potentially-hanging stage on every future pass) so later rows are no
+ * longer blocked by it. The row is left undrained ON PURPOSE (never falsely
+ * marked `drained_at`) — quarantine is a triage decision, not a silent data
+ * drop; a human/agent can root-cause + manually clear it via the runbook.
+ *
+ * Generous relative to a normal write, even under host CPU saturation, so a
+ * transient (load-induced) slow row gets a couple of free retries before being
+ * treated as poison — mirrors `MERGE_APPLY_TIMEOUT_MS` in `read-merge.ts`,
+ * which bounds the analogous receive-side merge-apply hang the same way.
+ */
+export const ROW_STAGE_TIMEOUT_MS = 45_000;
+
+/** How many CONSECUTIVE same-row stage timeouts before that row is quarantined
+ *  (skipped from then on). Mirrors WI-255's `MAX_APPLY_THROWS` in read-merge.ts. */
+export const ROW_QUARANTINE_THRESHOLD = 3;
+
+/** Thrown when a single per-row stage (epoch-encrypt / hypercore-append) exceeds
+ *  `ROW_STAGE_TIMEOUT_MS`. Carries the row id so the caller's consecutive-timeout
+ *  counter can attribute the episode to the SAME poison row across passes. */
+export class RowStageTimeoutError extends Error {
+  constructor(readonly rowId: string | number, readonly stage: string, readonly timeoutMs: number) {
+    super(
+      `[outbox-drain] ROW STAGE TIMEOUT for row id=${rowId} at stage '${stage}': exceeded ` +
+        `${timeoutMs}ms (WI-3896 poison-row class). Quarantined after ${ROW_QUARANTINE_THRESHOLD} ` +
+        `consecutive occurrences on this same row.`,
+    );
+    this.name = 'RowStageTimeoutError';
+  }
+}
+
+/**
+ * Race `p` (a per-row stage — epoch-encrypt or append) against `timeoutMs`; on
+ * expiry throw `RowStageTimeoutError(rowId, stage)`. `p` is DETACHED on either
+ * path — a late resolution/rejection is swallowed so a slow-but-real write that
+ * eventually lands (this row was merely SLOW, not poison) can never surface as
+ * an unhandled rejection or double-count; the row itself stays undrained and is
+ * simply re-attempted (or, once quarantined, skipped) next pass — same
+ * at-least-once argument the pass-level `DrainPassTimeoutError` already relies
+ * on. `timeoutMs <= 0` disables the bound (falls back to the pass-level timeout
+ * alone, today's pre-WI-3896 behavior).
+ */
+async function raceRowStage<T>(
+  rowId: string | number,
+  stage: string,
+  p: Promise<T>,
+  timeoutMs: number,
+): Promise<T> {
+  if (timeoutMs <= 0) return p;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new RowStageTimeoutError(rowId, stage, timeoutMs)), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    p.catch(() => {}); // detach the (possibly zombie) write — never an unhandled rejection
+  }
+}
+
+/** Quarantined row ids already logged per scope (dedupe the skip warning so a
+ *  permanently-quarantined row doesn't spam the log every drain pass). Keyed
+ *  `${scope}:${id}` so distinct harnesses never collide on a numeric id. */
+const loggedQuarantinedRowIds = new Set<string>();
+
+/**
  * WI-3619 (WI-2009-class per-stage detector): when a drain pass hangs, the
  * PASS TIMEOUT watchdog names the PASS but not the STAGE — the journal says
  * "hung await (keychain unwrap / epoch-key resolution / append)" and the
@@ -221,6 +306,20 @@ export interface DrainOptions {
   /** Test seam: override the inline-GC max-batches bound (`OUTBOX_GC_MAX_BATCHES`).
    *  Production omits it. */
   _gcMaxBatches?: number;
+  /**
+   * WI-3896: row ids to unconditionally SKIP this pass — poison rows the
+   * caller's consecutive-stage-timeout counter has quarantined. Checked BEFORE
+   * any potentially-hanging stage (epoch-encrypt/append); logged once per row
+   * id then left undrained ON PURPOSE (never falsely marked `drained_at`) so a
+   * later rows in the SAME batch are unaffected and a human/agent can
+   * root-cause + manually clear it via the runbook. Ids are matched as strings.
+   */
+  quarantinedIds?: ReadonlySet<string>;
+  /** WI-3896: per-row stage timeout (ms) for epoch-encrypt/append — bounds ONE
+   *  row's hang so it can't wedge the whole pass for the full pass-level
+   *  timeout. Default `ROW_STAGE_TIMEOUT_MS`; `<= 0` disables the bound (today's
+   *  pre-WI-3896 behavior — only the pass-level watchdog applies). */
+  rowTimeoutMs?: number;
 }
 
 interface OutboxDbRow {
@@ -303,8 +402,25 @@ export async function drainOutboxOnce(
      ORDER BY id
      LIMIT ${batch}`);
 
+  const rowTimeoutMs = opts.rowTimeoutMs ?? ROW_STAGE_TIMEOUT_MS;
   let drained = 0;
   for (const r of rows) {
+    // WI-3896: a row the caller's consecutive-stage-timeout counter has already
+    // quarantined — skip it BEFORE any potentially-hanging stage so later rows
+    // in this same batch are never blocked by it. Left undrained ON PURPOSE.
+    if (opts.quarantinedIds?.has(String(r.id))) {
+      const logKey = `${scope}:${r.id}`;
+      if (!loggedQuarantinedRowIds.has(logKey)) {
+        loggedQuarantinedRowIds.add(logKey);
+
+        console.warn(
+          `[outbox-drain] skipping QUARANTINED poison row id=${r.id} table=${r.table_name} for ` +
+            `${scope} (WI-3896: repeated stage timeouts) — left undrained on purpose; a human/agent ` +
+            `must root-cause + manually clear it via the runbook. Later rows are unaffected.`,
+        );
+      }
+      continue;
+    }
     let op: ReturnType<typeof outboxRowToLocalWriteOp>;
     try {
       op = outboxRowToLocalWriteOp({
@@ -371,21 +487,24 @@ export async function drainOutboxOnce(
       op.value !== undefined &&
       shouldEncryptOpForRekey(op.table)
     ) {
-      const enc = await logIfStageStalls(
-        scope,
-        `epoch-encrypt (row id=${r.id} table=${r.table_name})`,
-        opts.epochEncrypt.encryptOp(op),
+      const encryptStage = `epoch-encrypt (row id=${r.id} table=${r.table_name})`;
+      const enc = await raceRowStage(
+        r.id,
+        encryptStage,
+        logIfStageStalls(scope, encryptStage, opts.epochEncrypt.encryptOp(op)),
+        rowTimeoutMs,
       );
       if (enc) op = { ...op, value: enc.value, epoch: enc.epoch };
     }
 
     // AT-LEAST-ONCE: append FIRST. If this throws we stop here, leaving this
     // row + all later rows undrained for the next pass to re-attempt.
-    await logIfStageStalls(
-      scope,
-      `hypercore-append (row id=${r.id} table=${r.table_name})`,
-      handle.append(op),
-    );
+    // WI-3896: bounded per-row (`rowTimeoutMs`) on top of `logIfStageStalls`'s
+    // observability-only stall log, so ONE genuinely-hung append can't wedge
+    // this pass for the full pass-level DRAIN_PASS_TIMEOUT_MS — see this row's
+    // consecutive-timeout handling in `startOutboxDrain`'s `drainSafely`.
+    const appendStage = `hypercore-append (row id=${r.id} table=${r.table_name})`;
+    await raceRowStage(r.id, appendStage, logIfStageStalls(scope, appendStage, handle.append(op)), rowTimeoutMs);
 
     // P-007: record this LOCAL plan write so a racing REMOTE plan op for the same
     // plan_slug is detected as a clobber (harness-plans.ts writeToPg fires
@@ -466,6 +585,14 @@ export interface StartDrainOptions {
    *  (`DRAIN_ORPHAN_CHECK_INTERVAL_MS`). A NEGATIVE value disables the detector.
    *  Production omits it. */
   _orphanCheckIntervalMs?: number;
+  /** WI-3896: override the per-row stage timeout (`ROW_STAGE_TIMEOUT_MS`) for
+   *  epoch-encrypt/append. `<= 0` disables the per-row bound (only the
+   *  pass-level watchdog applies — today's pre-WI-3896 behavior). Production
+   *  omits it. */
+  _rowTimeoutMs?: number;
+  /** WI-3896: override how many CONSECUTIVE same-row stage timeouts before that
+   *  row is quarantined (`ROW_QUARANTINE_THRESHOLD`). Production omits it. */
+  _rowQuarantineThreshold?: number;
   /**
    * WI-3684 send-side twin: fired when a drain pass fails with a Hypercore
    * `SESSION_CLOSED` error (own-log-fork-guard's `isSessionClosedError`) — the
@@ -484,10 +611,11 @@ export interface StartDrainOptions {
   /** Test seam: intercept ALL detector escalations (default = durable EI via
    *  `fileReplicationStallEi`). Receives the human detail + the episode `kind`
    *  ('drain_stalled' hung-pass | 'drain_backlog_stalled' no-progress |
-   *  'drain_orphan_tail' prior-era log). Production omits it. */
+   *  'drain_orphan_tail' prior-era log | 'drain_row_quarantined' poison row).
+   *  Production omits it. */
   _onStallEpisode?: (
     detail: string,
-    kind?: 'drain_stalled' | 'drain_backlog_stalled' | 'drain_orphan_tail',
+    kind?: 'drain_stalled' | 'drain_backlog_stalled' | 'drain_orphan_tail' | 'drain_row_quarantined',
   ) => void;
 }
 
@@ -573,12 +701,22 @@ export function startOutboxDrain(
   const escalatedOrphanKeys = new Set<string>();
   let lastOrphanCheckAt = 0;
 
+  // WI-3896 poison-row quarantine state. `rowTimeoutCounts` counts CONSECUTIVE
+  // stage timeouts per row id (a different row's timeout doesn't touch another
+  // row's count); once a row crosses `rowQuarantineThreshold` it moves into
+  // `quarantinedIds` (permanent for this process — threaded into every future
+  // `drainOutboxOnce` call so that row is skipped before any hanging stage).
+  const rowTimeoutCounts = new Map<string, number>();
+  const quarantinedIds = new Set<string>();
+  const rowTimeoutMs = opts._rowTimeoutMs ?? ROW_STAGE_TIMEOUT_MS;
+  const rowQuarantineThreshold = opts._rowQuarantineThreshold ?? ROW_QUARANTINE_THRESHOLD;
+
   /** WI-2009 stall escalation for BOTH detectors: loud console line (grep-able,
    *  mirrors the WI-1840 detector pattern) + durable EI (dedup'd per
    *  (harness, log, kind) while one stays open). Best-effort — never throws into
    *  the drain loop. */
   const escalateStall = (
-    kind: 'drain_stalled' | 'drain_backlog_stalled' | 'drain_orphan_tail',
+    kind: 'drain_stalled' | 'drain_backlog_stalled' | 'drain_orphan_tail' | 'drain_row_quarantined',
     detail: string,
     stalledForMs: number,
     // WI-2136: the log key the EI dedups on. Defaults to the LIVE own-log key
@@ -735,6 +873,11 @@ export function startOutboxDrain(
         if (batch !== undefined) drainOpts.batch = batch;
         if (fanout !== undefined) drainOpts.fanout = fanout;
         if (epochEncrypt !== undefined) drainOpts.epochEncrypt = epochEncrypt;
+        // WI-3896: thread the per-row bound + this process's standing quarantine
+        // set into every pass, so a previously-quarantined row stays skipped and
+        // any row currently hanging is bounded well under `passTimeoutMs`.
+        drainOpts.rowTimeoutMs = rowTimeoutMs;
+        drainOpts.quarantinedIds = quarantinedIds;
         // WI-2009 watchdog: race the pass against the timeout so ONE hung await
         // can never wedge the serialized loop forever (the live-VM permanence
         // signature). The abandoned zombie pass is swallowed — if it settles
@@ -785,6 +928,33 @@ export function startOutboxDrain(
             `WI-2009 permanence class; loop un-wedged, next tick re-attempts)`,
           passTimeoutMs,
         );
+      } else if (e instanceof RowStageTimeoutError) {
+        // WI-3896: a SINGLE row's stage (epoch-encrypt/append) timed out — bound
+        // well under passTimeoutMs so this is caught + attributed to the exact
+        // row LONG before the pass-level watchdog would even fire. Count
+        // CONSECUTIVE occurrences for this SAME row id; quarantine (permanent
+        // skip) once it crosses the threshold so later rows stop being blocked.
+        const key = String(e.rowId);
+        const n = (rowTimeoutCounts.get(key) ?? 0) + 1;
+        if (n >= rowQuarantineThreshold) {
+          rowTimeoutCounts.delete(key);
+          quarantinedIds.add(key);
+          const detail =
+            `outbox-drain for ${wantPayload}: row id=${e.rowId} (stage '${e.stage}') timed out ` +
+            `${n}× consecutively and is now QUARANTINED (permanently skipped — left undrained ON ` +
+            `PURPOSE, never falsely marked drained_at) so it can no longer wedge every row behind ` +
+            `it. Root-cause + manually clear via the runbook once resolved (WI-3896 class — check ` +
+            `whether this was LOAD-induced, in which case re-checking under lower host load first ` +
+            `is worth trying before assuming permanent poison).`;
+          console.error(`[outbox-drain] WI-3896 quarantine: ${detail}`);
+          escalateStall('drain_row_quarantined', detail, rowTimeoutMs * n);
+        } else {
+          rowTimeoutCounts.set(key, n);
+          console.error(
+            `[outbox-drain] row id=${e.rowId} stage '${e.stage}' for ${wantPayload} timed out ` +
+              `(${n}/${rowQuarantineThreshold} consecutive before quarantine) — next pass retries this row.`,
+          );
+        }
       } else if (isSessionClosedError(e)) {
         // WI-3684 send-side twin: the own-log session is PERMANENTLY closed
         // (Hypercore equivocation guard, or an explicit close) — every future

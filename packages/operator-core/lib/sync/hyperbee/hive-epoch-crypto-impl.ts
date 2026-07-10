@@ -1,6 +1,6 @@
 /**
  * hive-epoch-crypto-impl — the v1 CRYPTO FOUNDATION behind the `HiveEpochCrypto`
- * seam (shared-hive-release-testing Brief RE-KEY / C-001 / E-001 / Move 2).
+ * seam (shared-pot-release-testing Brief RE-KEY / C-001 / E-001 / Move 2).
  * su-ed300's half; K (su-313d1) owns the boundary/distribution/serving consumer.
  *
  * OWNER-GREENLIT (Avi, 2026-06-19): member-remove / go-private MUST cut a removed

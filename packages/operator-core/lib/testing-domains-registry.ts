@@ -1425,7 +1425,7 @@ defineTestDomain({
       label: 'Hive agent tools',
       description: 'The agent-facing hive lifecycle tools: pot:create / pot:add-member, discovery:pots, and harness create→hive-membership wiring.',
       globs: [
-        'packages/operator-core/lib/agent-tools/hive/**/*.test.ts',
+        'packages/operator-core/lib/agent-tools/pot/**/*.test.ts',
         'packages/operator-core/lib/agent-tools/discovery/pots.test.ts',
         'packages/operator-core/lib/agent-tools/harness/__tests__/create-hive-membership.test.ts',
       ],

@@ -14,7 +14,7 @@ import { dataConditionSchema } from '@papercusp/rules';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
-import { registerAwait } from '../../events/await/store';
+import { registerAwait, findAnnouncementsForKey } from '../../events/await/store';
 import { startAwaitSweeper } from '../../events/await/engine';
 import { isPattern, expandPatternMacro, assertUsablePattern } from '../../events/await/pattern';
 import { hardText, softText, clampText, LIMITS } from '../limits';
@@ -87,6 +87,37 @@ export default defineTool({
     const eventKey = patternAwait ? expandPatternMacro(args.event) : args.event;
     if (patternAwait) assertUsablePattern(eventKey);
 
+    // ── EI-9270: the announced-gate LATCH — if this exact key was DECLARED and has
+    // ALREADY fired, say so NOW instead of registering a wait that can never fire
+    // again (the await-after-emit race that stranded late joiners forever). A lapsed
+    // declaration (fired_reason='expired') is NOT a latch. Best-effort read.
+    let announcedGate: { note: string | null; announcedBy: string } | null = null;
+    if (!patternAwait) {
+      try {
+        const anns = await findAnnouncementsForKey(eventKey);
+        const latched = anns.find((a) => a.firedAt && a.firedReason === 'event');
+        if (latched) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  ok: true,
+                  already_fired: true,
+                  event: eventKey,
+                  fired_at: latched.firedAt,
+                  ...(latched.note ? { gate_note: latched.note } : {}),
+                  advice: `The announced gate "${eventKey}" ALREADY FIRED at ${latched.firedAt} — do not wait. Proceed with the work this gate was blocking now.`,
+                }),
+              },
+            ],
+          };
+        }
+        const declared = anns.find((a) => !a.firedAt);
+        if (declared) announcedGate = { note: declared.note, announcedBy: declared.subscriberId };
+      } catch { /* best-effort — never block a registration */ }
+    }
+
     // ── Capture the wake handle NOW (D-003) ────────────────────────────
     const { handle, note: handleNote } = await captureWakeHandleForOwner(identity.ownerId, {
       planRunId: args.plan_run_id,
@@ -112,6 +143,7 @@ export default defineTool({
             await_id: row.id,
             event: row.eventKey,
             ...(patternAwait ? { pattern: true } : {}),
+            ...(announcedGate ? { announced_gate: announcedGate } : {}),
             expires_ts: row.expiresTs,
             on_timeout: row.timeoutBehavior,
             wake_handle: handleNote,

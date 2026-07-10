@@ -67,7 +67,9 @@ glance at the error signature names the class.
 
 ## The dev-box-parity PG recipe
 
-`scripts/ci-provision-pg.mjs` + a `pgvector/pgvector:pg16` service on
+`scripts/ci-provision-pg.mjs` + a `pgvector/pgvector:pg18` service (bumped
+from `pg16` 2026-07-05, WI-2942, to match the shipped/embedded operator's
+PostgreSQL 18.3 — see `libs/test-config/src/pg-container.ts`) on
 `5432:5432` in `test-nightly.yml` / `test.yml`. The script mirrors the
 fresh-migrate strict gate exactly: the 3 framework roles
 (`harness_app`/`harness_admin`/`harness_zero`), the `papercusp` DB, the 3

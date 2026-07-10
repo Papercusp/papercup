@@ -38,15 +38,15 @@ import type { Sql } from 'postgres';
 import { getHiveSetting, setHiveSetting, deleteHiveSetting } from '../../hive-settings-store';
 
 /** Who pushes the GitHub remote for this hive (S-5 decision table input). */
-export type HiveGitMode = 'legacy' | 'bridged' | 'p2p-only';
+export type PotGitMode = 'legacy' | 'bridged' | 'p2p-only';
 
 /** The federated hive_settings key carrying the mode. */
-export const HIVE_GIT_MODE_SETTING_KEY = 'hiveGit.mode';
+export const POT_GIT_MODE_SETTING_KEY = 'hiveGit.mode';
 
-export const HIVE_GIT_MODES: readonly HiveGitMode[] = ['legacy', 'bridged', 'p2p-only'] as const;
+export const POT_GIT_MODES: readonly PotGitMode[] = ['legacy', 'bridged', 'p2p-only'] as const;
 
 /** Junk-safe coercion: anything that is not exactly a known mode is `legacy`. */
-export function coerceHiveGitMode(v: unknown): HiveGitMode {
+export function coercePotGitMode(v: unknown): PotGitMode {
   return v === 'bridged' || v === 'p2p-only' ? v : 'legacy';
 }
 
@@ -56,14 +56,14 @@ export function coerceHiveGitMode(v: unknown): HiveGitMode {
  * `legacy` (fail-open to today's behavior — a PG blip must not flip a healthy
  * legacy hive into silent commit-only mode).
  */
-export async function getHiveGitMode(
+export async function getPotGitMode(
   workspaceId: string,
   potHomeSlug: string,
   sql?: Sql,
-): Promise<HiveGitMode> {
+): Promise<PotGitMode> {
   try {
-    const rec = await getHiveSetting(workspaceId, potHomeSlug, HIVE_GIT_MODE_SETTING_KEY, sql);
-    return coerceHiveGitMode(rec?.value);
+    const rec = await getHiveSetting(workspaceId, potHomeSlug, POT_GIT_MODE_SETTING_KEY, sql);
+    return coercePotGitMode(rec?.value);
   } catch {
     return 'legacy';
   }
@@ -75,18 +75,18 @@ export async function getHiveGitMode(
  * the row so the hive reads as default-legacy again. Validates the mode —
  * unlike the read path, a WRITE with a junk value must throw, not coerce.
  */
-export async function setHiveGitMode(
+export async function setPotGitMode(
   workspaceId: string,
   potHomeSlug: string,
-  mode: HiveGitMode | null,
+  mode: PotGitMode | null,
   sql?: Sql,
 ): Promise<void> {
   if (mode === null) {
-    await deleteHiveSetting(workspaceId, potHomeSlug, HIVE_GIT_MODE_SETTING_KEY, sql);
+    await deleteHiveSetting(workspaceId, potHomeSlug, POT_GIT_MODE_SETTING_KEY, sql);
     return;
   }
-  if (!HIVE_GIT_MODES.includes(mode)) {
-    throw new Error(`setHiveGitMode: unknown mode '${String(mode)}' (expected ${HIVE_GIT_MODES.join(' | ')})`);
+  if (!POT_GIT_MODES.includes(mode)) {
+    throw new Error(`setPotGitMode: unknown mode '${String(mode)}' (expected ${POT_GIT_MODES.join(' | ')})`);
   }
-  await setHiveSetting({ workspaceId, potHomeSlug, settingKey: HIVE_GIT_MODE_SETTING_KEY, value: mode }, sql);
+  await setHiveSetting({ workspaceId, potHomeSlug, settingKey: POT_GIT_MODE_SETTING_KEY, value: mode }, sql);
 }

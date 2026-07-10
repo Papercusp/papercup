@@ -6,11 +6,11 @@ tags: [papercup, operator, voice, converse, read-context, handoff-to-mug, overri
 status: active
 documents:
   - apps/operator/prompts/sentinel.persona.md
-  - packages/operator-core/lib/sentinel/sentinel-context.ts
+  - packages/operator-core/lib/papercup/papercup-context.ts
   - packages/operator-core/lib/agent-tools/operator/converse-prompt.ts
   - packages/operator-core/lib/agent-tools/operator/converse.ts
   - packages/operator-core/lib/operator-sentinel-handoff.ts
-  - apps/operator-vite/src/components/left-sidebar/SentinelTab.tsx
+  - apps/operator-vite/src/components/left-sidebar/PapercupTab.tsx
 ---
 
 ## What the Papercup is
@@ -43,12 +43,20 @@ human-facing concierge brain onto the Papercup.
 
 Two independent toggles, deliberately decoupled (D-015):
 
-1. **`PAPERCUP` feature flag** (`papercusp-papercup`, default **OFF**, mirrors
-   `FLAGS.OVERWATCH`) — gates the **settings UI**. When on, the Papercup tab appears
-   in the operator-vite left sidebar (`LeftSidebar.tsx` `TABS`, after Overwatch),
-   with the exact OVERWATCH treatment: a `visibleTabs` filter + a `?lst=papercup`
-   stale-deep-link snap-back to a default tab when the flag is off. Flipping the
-   flag shows/hides the tab; it does **not** by itself repoint the brain.
+1. **`PAPERCUP` feature flag** (wire value `papercusp-sentinel` — kept pre-rename,
+   not yet migrated to a `papercusp-papercup` key) — gates the **settings UI**
+   (plus the `papercup` role registration and its autonomous wake-loop). When on,
+   the Papercup tab appears in the operator-vite left sidebar (`LeftSidebar.tsx`
+   `TABS`, after Overwatch), with the exact OVERWATCH treatment: a `visibleTabs`
+   filter + a `?lst=papercup` stale-deep-link snap-back to a default tab when the
+   flag is off. Flipping the flag shows/hides the tab; it does **not** by itself
+   repoint the brain. **As of `voice-unified-sentinel-pipeline-2026-07-01` P-011
+   the runtime default flipped to ON** (the live-run proof landed 2026-06-24; the
+   Papercup pane is now the one voice brain, so leaving it dark would mean a dead
+   voice product) — flip it OFF via `/admin/features` to go dark. The sibling
+   `PAPERCUP_PROACTIVE` flag (wire value `papercusp-sentinel-proactive`, also
+   runtime-default ON) separately gates the server-side proactive "decide to
+   speak" sweep described below.
 2. **`humanFacingRole` voice pref** (`'operator'` | `'papercup'`, default
    **`'operator'`**) — this is the real switch that **repoints the live brain**. It
    lives in the voice prefs (it is one of `VOICE_USER_OVERRIDE_KEYS`), and
@@ -96,7 +104,8 @@ EI-2032 auto-capture kill switch).
 
 When the user says "do it," the Papercup does **not** spawn a cup. It emits a
 `<handoff_to_mug>` tag (parsed in `operator-converse-tags.ts`, dispatched by
-`operator-papercup-handoff.ts`), which (D-003):
+`dispatchSentinelHandoff` in `operator-sentinel-handoff.ts` — the file/function
+names kept their pre-rename `sentinel` spelling), which (D-003):
 
 1. files a **high-priority `work_item`** tagged `user-requested`
    (`work_items:create { priority: high }`), and
@@ -115,7 +124,7 @@ session was away it surfaces the outcome via hindsight ("[While you were away]",
 
 ## The settings tab — live overrides over workspace defaults
 
-`SentinelTab.tsx` is the left-sidebar "quick live overrides" surface; the full
+`PapercupTab.tsx` (renamed 2026-07-09 from `SentinelTab.tsx`) is the left-sidebar "quick live overrides" surface; the full
 workspace settings hold the **defaults** (D-013). It is the **first consumer of the
 shared `<OverridableSetting>` primitive** (D-016 / D-020 — not a 9th hand-rolled
 badge/reset copy): each row shows an override-vs-workspace-default badge + a reset
@@ -176,6 +185,6 @@ Guidance for the Papercup converse / voice path:
 - [A streaming-chat error state must survive the stream close](/internal/docs/agent-insights/sse-chat-error-must-survive-stream-close)
   — the SSE discipline the converse/voice stream must honor.
 - [The unified override-settings backbone](/internal/docs/agent-insights/override-settings-backbone)
-  — the contract the SentinelTab overrides conform to.
+  — the contract the PapercupTab overrides conform to.
 
 Plan: `papercup-herald-2026-06-21`.

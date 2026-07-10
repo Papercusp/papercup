@@ -487,7 +487,7 @@ export function initAccountScaleObserver(deps: Partial<ScaleObserverDeps> = {}):
       try {
         const [{ getOwnerSteering, isAutoScaleOutEnabled }, { resolvePotHomeSlug }] = await Promise.all([
           import('../owner-steering'),
-          import('../hive/wake'),
+          import('../pot/wake'),
         ]);
         const home = resolvePotHomeSlug();
         return home ? isAutoScaleOutEnabled(await getOwnerSteering(ws, home)) : true;

@@ -629,6 +629,71 @@ function opIdent(groupKey: string, env: OpEnvelope): string {
 }
 
 /**
+ * WI-3896 (tower outbox/merge wedge — the "papercusp substrate_merge_cursor never
+ * establishes" incident): `apply(env)` is an unbounded PG write with NO existing
+ * bound — the P-012 doc-comment on `applyRecordingWinner` below already flagged
+ * this as a known gap ("the merge pass has no per-op timeout on it the way
+ * `readOpBoundedDetailed` does on the read side"). A genuinely wedged write (the
+ * live incident: an old iMac device's stale plan-parts, keyed ~ef7a8160, hung
+ * forever) freezes `mergeAdmittedLogsIncremental`'s `await applyRecordingWinner(...)`
+ * PERMANENTLY — unlike `outbox-drain.ts`'s send-side pass, which already races the
+ * whole pass against `DRAIN_PASS_TIMEOUT_MS`, NOTHING bounds this await, so the
+ * whole harness's incremental merge (and therefore its PG-persisted merge cursor)
+ * simply stops advancing forever, silently.
+ *
+ * Generous relative to a normal PG write — even under host CPU saturation — so a
+ * merely-SLOW write is never mistaken for poison: on timeout the (possibly still
+ * in-flight) write is DETACHED, not cancelled, and its eventual completion is
+ * harmless (the projection writer is idempotent/LWW-guarded, same at-least-once
+ * argument `outbox-drain.ts` already relies on for its own detached zombie passes).
+ */
+export const MERGE_APPLY_TIMEOUT_MS = 45_000;
+
+/**
+ * Thrown when a single `apply(env)` exceeds `MERGE_APPLY_TIMEOUT_MS`. Handled by
+ * `applyRecordingWinner`'s EXISTING WI-255 retry/quarantine counter identically to
+ * a throwing apply (same `MAX_APPLY_THROWS` budget) — a transient timeout (host
+ * load) gets a couple of free retries; a PERSISTENTLY-timing-out (poison) op is
+ * quarantined (winner recorded + dropped) exactly like a persistently-throwing one,
+ * so ONE unresolvable row can no longer wedge the whole merge loop forever.
+ */
+export class MergeApplyTimeoutError extends Error {
+  constructor(readonly groupKey: string, readonly timeoutMs: number) {
+    super(
+      `[read-merge] merge-apply TIMEOUT for ${groupKey}: exceeded ${timeoutMs}ms — a hung ` +
+        `projection write (WI-3896 class) is being treated as a transient failure (bounded ` +
+        `retry → quarantine after ${MAX_APPLY_THROWS} consecutive occurrences).`,
+    );
+    this.name = 'MergeApplyTimeoutError';
+  }
+}
+
+/**
+ * Race `p` against `timeoutMs`; on expiry throw `MergeApplyTimeoutError(groupKey)`.
+ * The (possibly still-pending) `p` is DETACHED on either path — its late
+ * resolution/rejection is swallowed so it can never surface as an unhandled
+ * rejection or double-count once we've moved on. `timeoutMs <= 0` disables the
+ * bound entirely (today's unbounded-await behavior; the STAGE_STALL_LOG_MS
+ * observability line from the caller's `logIfStageStalls` wrap still fires).
+ */
+async function raceApplyTimeout<T>(groupKey: string, p: Promise<T>, timeoutMs: number): Promise<T> {
+  if (timeoutMs <= 0) return p;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new MergeApplyTimeoutError(groupKey, timeoutMs)), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    p.catch(() => {}); // detach the (possibly zombie) write — never an unhandled rejection
+  }
+}
+
+/**
  * WI-255 — apply an op that has already passed the `beatsStored` LWW gate, then
  * record it as the winner ONLY if apply returned WITHOUT throwing.
  *
@@ -649,11 +714,15 @@ function opIdent(groupKey: string, env: OpEnvelope): string {
  * P-012 (fleet-reliability-verification-2026-07-10, named-hop pipeline
  * observability): `apply(env)` is an unbounded PG write (the projection
  * writer) with the SAME hang shape `outbox-drain.ts`'s send-side `append()`
- * had (a wedged connection/lock never resolves) — the merge pass has no
- * per-op timeout on it the way `readOpBoundedDetailed` does on the read side.
- * Wrapped with the shared `logIfStageStalls` (formalized out of WI-3619) so a
- * hung merge-apply NAMES ITSELF (scope = source log key, stage = table+key)
- * in the journal instead of the merge pass just going silent.
+ * had (a wedged connection/lock never resolves). Wrapped with the shared
+ * `logIfStageStalls` (formalized out of WI-3619) so a hung merge-apply NAMES
+ * ITSELF (scope = source log key, stage = table+key) in the journal at
+ * `STAGE_STALL_LOG_MS`, THEN (WI-3896) `raceApplyTimeout` bounds it at
+ * `MERGE_APPLY_TIMEOUT_MS` — the per-op timeout `readOpBoundedDetailed` already
+ * has on the read side, closing the gap this doc-comment used to flag as
+ * missing. A timeout is funneled into the SAME retry/quarantine counter below
+ * as a throw, so a persistently-hanging (poison) op converges to quarantine
+ * exactly like a persistently-throwing one — see `MergeApplyTimeoutError`.
  */
 async function applyRecordingWinner(
   cursor: MergeCursor,
@@ -661,11 +730,17 @@ async function applyRecordingWinner(
   env: OpEnvelope,
   apply: (op: OpEnvelope) => Promise<boolean>,
   scope = 'read-merge',
+  applyTimeoutMs: number = MERGE_APPLY_TIMEOUT_MS,
 ): Promise<boolean> {
   let ok: boolean;
   try {
-    ok = await logIfStageStalls(scope, `merge-apply (${groupKey})`, apply(env));
+    ok = await raceApplyTimeout(
+      groupKey,
+      logIfStageStalls(scope, `merge-apply (${groupKey})`, apply(env)),
+      applyTimeoutMs,
+    );
   } catch (err) {
+    const isTimeout = err instanceof MergeApplyTimeoutError;
     const throws = (cursor.applyThrows ??= new Map());
     const ident = opIdent(groupKey, env);
     const n = (throws.get(ident) ?? 0) + 1;
@@ -673,11 +748,14 @@ async function applyRecordingWinner(
       throws.set(ident, n); // transient — winner NOT recorded → retried next pass
       throw err;
     }
-    // Persistently poison — quarantine (record winner + drop) so it can't loop.
+    // Persistently poison (threw OR timed out `MAX_APPLY_THROWS` times running) —
+    // quarantine (record winner + drop) so it can't loop/wedge forever.
     throws.delete(ident);
     cursor.winners.set(groupKey, toMeta(env));
     console.error(
-      `[read-merge] WI-255 quarantine: op ${groupKey} (ts=${env.ts ?? 0}, src=${(env.sourceLogKeyHex ?? '').slice(0, 12)}) threw on apply ${n}× — recording winner + dropping to avoid a retry loop:`,
+      isTimeout
+        ? `[read-merge] WI-3896 quarantine: op ${groupKey} (ts=${env.ts ?? 0}, src=${(env.sourceLogKeyHex ?? '').slice(0, 12)}) timed out on apply (>${applyTimeoutMs}ms) ${n}× — this may be LOAD-induced (a legitimately slow write under host CPU pressure — re-check current load before assuming permanent poison) or a genuinely un-resolvable write (e.g. stale/dead-device keymat that will never decrypt/apply); recording winner + dropping to avoid a retry loop:`
+        : `[read-merge] WI-255 quarantine: op ${groupKey} (ts=${env.ts ?? 0}, src=${(env.sourceLogKeyHex ?? '').slice(0, 12)}) threw on apply ${n}× — recording winner + dropping to avoid a retry loop:`,
       err instanceof Error ? err.message : String(err),
     );
     return false;
@@ -698,6 +776,10 @@ export interface IncrementalMergeOpts {
   applyImpl?: (op: OpEnvelope) => Promise<boolean>;
   /** Per-op read timeout (ms) — same semantics as MergeOpts.getTimeoutMs. */
   getTimeoutMs?: number;
+  /** WI-3896: per-op APPLY timeout (ms) — bounds a single `apply(env)` write so a
+   *  hung one can't wedge the whole merge loop forever. Default `MERGE_APPLY_
+   *  TIMEOUT_MS`; `<= 0` disables the bound (today's unbounded-await behavior). */
+  applyTimeoutMs?: number;
   /**
    * Per-LOG per-PASS read budget (the old `maxOpsPerAuthor` reshaped). A pass
    * advances each log's cursor by at most this many ops; the remainder is
@@ -792,6 +874,7 @@ export async function mergeAdmittedLogsIncremental(
 ): Promise<IncrementalMergeResult> {
   const apply = opts?.applyImpl ?? applyHyperbeeOpToPg;
   const getTimeoutMs = opts?.getTimeoutMs ?? DEFAULT_GET_TIMEOUT_MS;
+  const applyTimeoutMs = opts?.applyTimeoutMs ?? MERGE_APPLY_TIMEOUT_MS;
   const budget = opts?.maxOpsPerPass ?? DEFAULT_MAX_OPS_PER_AUTHOR;
   const onCursorAdvance = opts?.onCursorAdvance;
 
@@ -884,7 +967,7 @@ export async function mergeAdmittedLogsIncremental(
           const groupKey = `${env.table}::${env.hbKey}`;
           const prev = cursor.winners.get(groupKey);
           if (prev && !beatsStored(env, prev)) continue; // stale row, never applied
-          if (await applyRecordingWinner(cursor, groupKey, env, apply, log.keyHex)) applied++;
+          if (await applyRecordingWinner(cursor, groupKey, env, apply, log.keyHex, applyTimeoutMs)) applied++;
         }
         continue;
       }
@@ -892,7 +975,7 @@ export async function mergeAdmittedLogsIncremental(
       const groupKey = `${env.table}::${env.hbKey}`;
       const prev = cursor.winners.get(groupKey);
       if (prev && !beatsStored(env, prev)) continue; // ts-guard: stale op, never applied
-      if (await applyRecordingWinner(cursor, groupKey, env, apply, log.keyHex)) applied++;
+      if (await applyRecordingWinner(cursor, groupKey, env, apply, log.keyHex, applyTimeoutMs)) applied++;
     }
     cursor.positions.set(log.keyHex, pos);
     // WI-2105 REV fix: persist this log's advanced cursor (persist-after-apply —

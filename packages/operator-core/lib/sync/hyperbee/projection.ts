@@ -54,7 +54,7 @@ export interface ProvenanceContext {
    */
   ts?: number;
   /**
-   * D-001 (shared-hive-release-testing Brief J): the op's HLC ordering key — the
+   * D-001 (shared-pot-release-testing Brief J): the op's HLC ordering key — the
    * SAME causal clock `lwwPick` orders the merge fold by. Writers persist it as
    * the table's `fed_hlc` column and guard their `ON CONFLICT …` with
    * `harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >=

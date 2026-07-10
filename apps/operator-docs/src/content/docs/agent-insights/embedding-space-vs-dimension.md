@@ -1,6 +1,6 @@
 ---
 title: Vectors have a SPACE, not just a dimension — switching the embedder silently invalidates every stored vector
-description: EMBEDDER_DIM===384 is asserted everywhere; the embedding SPACE was asserted nowhere. Flipping memoryEmbedderMode makes stored vectors (OpenAI-384) and query vectors (BGE-384) structurally valid and semantically incomparable — no error, just noise. Migration 530's `<col>_mode` discriminator + a space-aware backfill predicate make the sweep self-healing. The 2026-07-10 bake-off sharpened the rule: the space is model + runtime + quantization + pooling + prompts, and truncation without MRL keeps recall while destroying hard-negative calibration.
+description: "EMBEDDER_DIM===384 is asserted everywhere; the embedding SPACE was asserted nowhere. Flipping memoryEmbedderMode makes stored vectors (OpenAI-384) and query vectors (BGE-384) structurally valid and semantically incomparable — no error, just noise. Migration 530's `<col>_mode` discriminator + a space-aware backfill predicate make the sweep self-healing. The 2026-07-10 bake-off sharpened the rule: the space is model + runtime + quantization + pooling + prompts, and truncation without MRL keeps recall while destroying hard-negative calibration."
 discovered: 2026-07-09
 tags: [embeddings, semantic-search, memory, mem0, pgvector, embed-backfill, migrations, silent-failure, harrier, gemma, embed-sidecar, bake-off]
 plans: [shared-embedding-sidecar-and-enrichment-2026-07-10]

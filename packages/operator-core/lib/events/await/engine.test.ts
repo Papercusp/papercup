@@ -53,6 +53,8 @@ function awaitRow(over: Partial<AwaitRow> = {}): AwaitRow {
     once: true,
     minSleepSec: null,
     urgency: false,
+    scopeKind: null,
+    scopeRef: null,
     ...over,
   };
 }

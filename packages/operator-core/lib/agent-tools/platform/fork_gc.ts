@@ -20,7 +20,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { gcForksForUpstreams, DEFAULT_FORK_RETENTION_MS } from '../../harness/fork-gc';
-import { PAPERCUSP_CANONICAL_REPO_URL } from '../../hive/enable-platform-mode';
+import { PAPERCUSP_CANONICAL_REPO_URL } from '../../pot/enable-platform-mode';
 
 const text = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],

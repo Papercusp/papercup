@@ -24,7 +24,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { hiveArg } from '../_hive-scope';
 import { createOneWorkItem, type CreateOneWorkItemArgs } from './_create-core';
@@ -49,18 +49,6 @@ export function codeSmellsLikeCode(title: string, summary?: string): boolean {
       text,
     )
   );
-}
-
-/**
- * EI-7766: `assign_to` names a concrete ownerId — but the literal `'self'` is a
- * natural guess many callers make (the same convention already honored by `owner`
- * in search/sessions tools). Previously a literal `'self'` was stored VERBATIM as
- * the assignee, producing an unmatchable claim (no agent is ever actually named
- * "self") that later surfaces as an orphaned claim. Resolve it to the caller's
- * ownerId here so both the single-create and bulk-items paths get the same fix.
- */
-function resolveAssignTo(value: string | undefined, callerOwnerId: string): string | undefined {
-  return value === 'self' ? callerOwnerId : value;
 }
 
 /** One per-item create spec — the same per-item shape as the single-call fields. */
@@ -167,7 +155,7 @@ export default defineTool({
           ...it,
           harness: it.harness ?? args.harness,
           workspace: args.workspace,
-          assign_to: resolveAssignTo(it.assign_to, ident.ownerId) ?? (args.assign_all_to_self ? ident.ownerId : undefined),
+          assign_to: resolveSelfLiteral(it.assign_to, ident.ownerId) ?? (args.assign_all_to_self ? ident.ownerId : undefined),
           ...(it.plan_item ? { targetPlanItem: { slug: it.plan_item.slug, itemId: it.plan_item.item } } : {}),
         }))
       : [
@@ -184,7 +172,7 @@ export default defineTool({
             payload: args.payload,
             urgent: args.urgent,
             force: args.force,
-            assign_to: resolveAssignTo(args.assign_to, ident.ownerId) ?? (args.assign_all_to_self ? ident.ownerId : undefined),
+            assign_to: resolveSelfLiteral(args.assign_to, ident.ownerId) ?? (args.assign_all_to_self ? ident.ownerId : undefined),
             ...(args.plan_item ? { targetPlanItem: { slug: args.plan_item.slug, itemId: args.plan_item.item } } : {}),
           },
         ];
@@ -199,6 +187,8 @@ export default defineTool({
             error: res.error,
             ...(res.message !== undefined ? { message: res.message } : {}),
             ...(res.existing !== undefined ? { existing: res.existing } : {}),
+            // P-008: duplicate_semantic carries the cosine-matched OPEN items.
+            ...(res.similarOpen !== undefined ? { similarOpen: res.similarOpen } : {}),
           };
         }
         // WI-2874 non-blocking nudge: `task` is NON-CODE only. If a fresh task smells
@@ -210,7 +200,16 @@ export default defineTool({
                   'This looks like CODE work, but `task` is NON-CODE only (research / a decision / manual verification / ops). If it edits code, re-kind to `change` (or `feature` if pipeline-sized) via work_items:update.',
               }
             : {};
-        return { ok: true as const, id: res.workItem.id, title: spec.title, workItem: res.workItem, ...codeTaskWarning };
+        return {
+          ok: true as const,
+          id: res.workItem.id,
+          title: spec.title,
+          workItem: res.workItem,
+          ...codeTaskWarning,
+          // P-008 soft-band advisory: created fine, but these OPEN items are
+          // semantically close — check them before splitting the work.
+          ...(res.similarOpen !== undefined ? { similarOpen: res.similarOpen } : {}),
+        };
       },
       { keyOf: (spec) => ({ title: spec.title }) },
     );

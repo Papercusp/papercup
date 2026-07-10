@@ -1,5 +1,5 @@
 /**
- * convergence-fuzz.test.ts — Brief D (shared-hive-release-testing): the seeded
+ * convergence-fuzz.test.ts — Brief D (shared-pot-release-testing): the seeded
  * property-based convergence sweep over the REAL merge core + a faithful PG
  * `fed_ts`-guard transcription. See `_convergence-fuzz-rig.ts`.
  *

@@ -26,7 +26,7 @@ vi.mock('../coordination/identity', () => ({
   })),
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-1') }));
-vi.mock('../../hive/wake', () => ({ resolvePotHomeSlug: vi.fn(() => 'papercusp') }));
+vi.mock('../../pot/wake', () => ({ resolvePotHomeSlug: vi.fn(() => 'papercusp') }));
 vi.mock('../../harness/routines/loop', () => ({
   LOOP_INTERVAL_FLOOR_SEC: 60,
   buildLoopWakePrompt: vi.fn(() => 'kickoff-prompt'),
@@ -198,7 +198,7 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
   });
 
   it('fails loud with no_harness when neither args.harness nor ctx.harnessSlug nor a home hive resolves', async () => {
-    const { resolvePotHomeSlug } = await import('../../hive/wake');
+    const { resolvePotHomeSlug } = await import('../../pot/wake');
     vi.mocked(resolvePotHomeSlug).mockReturnValueOnce(null as never);
     const out = await tool.handler({ intervalSec: 120, goal: 'g' } as never, {} as never) as Out;
     const b = body(out);
@@ -214,7 +214,7 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
   // The fix routes BOTH args.harness and ctx.harnessSlug THROUGH resolvePotHomeSlug
   // (which skips '*' at each level) rather than `??`-chaining ctx.harnessSlug in first.
   it('EI-7734: routes ctx.harnessSlug through resolvePotHomeSlug\'s \'*\'-skip instead of short-circuiting a raw ?? chain on it', async () => {
-    const { resolvePotHomeSlug } = await import('../../hive/wake');
+    const { resolvePotHomeSlug } = await import('../../pot/wake');
     vi.mocked(resolvePotHomeSlug).mockReturnValueOnce('papercusp' as never);
     const out = await tool.handler({ intervalSec: 120, goal: 'g' } as never, { harnessSlug: '*' } as never) as Out;
     const b = body(out);

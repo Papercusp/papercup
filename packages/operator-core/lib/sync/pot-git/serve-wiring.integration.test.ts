@@ -49,12 +49,12 @@ import { insertHiveIfAbsent } from '../../hive-store';
 import { defaultRunGit, ensurePotGitRepo } from './storage';
 import { fetchOverDuplex } from './fetch-transport';
 import { wireHiveGitServe, openHiveGitFetchDuplex } from './serve-wiring';
-import { setHiveGitMode, getHiveGitMode } from '../../harness/git-sync/hive-git-mode';
+import { setPotGitMode, getPotGitMode } from '../../harness/git-sync/hive-git-mode';
 
 const WORKSPACE_ID = `ws-serve-wiring-${randomUUID().slice(0, 8)}`;
 const HIVE = `hive-serve-wiring-${randomUUID().slice(0, 8)}`;
 const TOPIC = Buffer.alloc(32, 7); // a fixed 32-byte stand-in for the hive topic
-// A fake-but-valid raw-32-byte Ed25519 pubkey — setHiveGitMode/setHiveSetting
+// A fake-but-valid raw-32-byte Ed25519 pubkey — setPotGitMode/setHiveSetting
 // enforce a real Hive row exists (getHiveBySlug), same fixture idiom as
 // hive-settings-store.integration.test.ts's own `pk()` helper.
 const FAKE_PUBKEY = Buffer.alloc(32, 9).toString('base64');
@@ -87,7 +87,7 @@ describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-gi
 
   beforeAll(async () => {
     // `wireHiveGitServe`'s internal mode-check (serve-wiring.ts) calls
-    // getHiveGitMode with NO sql override — it always reads through the
+    // getPotGitMode with NO sql override — it always reads through the
     // ambient getOrgPg() singleton (the one real pool in production). So a
     // Hive row created in an ISOLATED createOrgTestDb() container would be
     // invisible to it. Fix: env-route getOrgPg() itself at this throwaway
@@ -110,7 +110,7 @@ describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-gi
     _resetUrlCacheForTests();
     await _resetForTests();
 
-    // A Hive row must exist — setHiveSetting/setHiveGitMode enforce the
+    // A Hive row must exist — setHiveSetting/setPotGitMode enforce the
     // logical scope via getHiveBySlug (same fixture idiom as
     // hive-settings-store.integration.test.ts). No explicit `sql` — this
     // goes through the now env-routed getOrgPg(), same as production.
@@ -127,8 +127,8 @@ describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-gi
     clientRepo = await ensurePotGitRepo(HIVE, 'repo-1-mirror');
     sha = await mintCommit(serverRepo, 'work 1');
     await defaultRunGit(['update-ref', 'refs/heads/work', sha], serverRepo);
-    await setHiveGitMode(WORKSPACE_ID, HIVE, 'bridged');
-    expect(await getHiveGitMode(WORKSPACE_ID, HIVE)).toBe('bridged');
+    await setPotGitMode(WORKSPACE_ID, HIVE, 'bridged');
+    expect(await getPotGitMode(WORKSPACE_ID, HIVE)).toBe('bridged');
 
     sockPath = join(root, 'link.sock');
     // allowHalfOpen:true on BOTH ends — a FIN on one leg must not tear down the
@@ -164,7 +164,7 @@ describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-gi
     } catch {
       /* ignore */
     }
-    await setHiveGitMode(WORKSPACE_ID, HIVE, null);
+    await setPotGitMode(WORKSPACE_ID, HIVE, null);
     delete process.env.PAPERCUSP_HIVE_GIT_ROOT;
     await rm(root, { recursive: true, force: true });
 
@@ -198,7 +198,7 @@ describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-gi
   });
 
   it('a legacy-mode hive REFUSES — never serves a byte (mode re-checked live, no re-seed needed)', async () => {
-    await setHiveGitMode(WORKSPACE_ID, HIVE, 'legacy');
+    await setPotGitMode(WORKSPACE_ID, HIVE, 'legacy');
     try {
       const duplex = await openHiveGitFetchDuplex(clientNoise, TOPIC, { repoKey: 'repo-1' });
       const res = await fetchOverDuplex(
@@ -209,7 +209,7 @@ describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-gi
       );
       expect(res.code).not.toBe(0);
     } finally {
-      await setHiveGitMode(WORKSPACE_ID, HIVE, 'bridged');
+      await setPotGitMode(WORKSPACE_ID, HIVE, 'bridged');
     }
   });
 

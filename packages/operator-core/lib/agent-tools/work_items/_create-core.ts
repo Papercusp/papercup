@@ -22,6 +22,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { createWorkItem, getWorkItem, linkWorkItem, isWorkItemKind, type WorkItem, type WorkItemKind } from '../../work-items';
 import { planItemRef, PLAN_ITEM_KIND } from '../../issue-blocks-merge';
 import { findMirroredOpenItem } from './mirror-guard';
+import { findSemanticDupes, type SemanticDupeCandidate } from './semantic-dupe-guard';
 import { resolveHiveScope, HIVE_REQUIRED_DETAIL } from '../_hive-scope';
 import { getOrgPg } from '@papercusp/db-org';
 import { getGenericKindDatatype } from '../../datatype-registry-store';
@@ -69,8 +70,15 @@ export interface CreateOneWorkItemCtx {
 }
 
 export type CreateOneWorkItemResult =
-  | { ok: true; workItem: WorkItem }
-  | { ok: false; error: string; message?: string; existing?: { id: string; state: string } };
+  | { ok: true; workItem: WorkItem; similarOpen?: SemanticDupeCandidate[] }
+  | {
+      ok: false;
+      error: string;
+      message?: string;
+      existing?: { id: string; state: string };
+      /** duplicate_semantic only: the OPEN items the new title cosine-matched. */
+      similarOpen?: SemanticDupeCandidate[];
+    };
 
 /**
  * Create ONE work-item, applying the mirror-guard + workspace resolution + hive-scope
@@ -100,6 +108,34 @@ export async function createOneWorkItem(
           existing: mirror,
         };
       }
+    }
+    // P-008 semantic dupe prescreen (shared-embedding-sidecar-and-enrichment-2026-07-10):
+    // cosine-rank the new title+summary against OPEN items' migration-548 embeddings —
+    // the guard the 2026-07-10 30-dupe storm needed (differently-worded titles the
+    // EI-316 lexical mirror-guard above cannot see). Hard match refuses (force:true
+    // overrides, same contract as the mirror guard); soft match creates WITH an
+    // advisory `similarOpen`. STRICTLY fail-open: null = "no verdict" = proceed.
+    let similarOpen: SemanticDupeCandidate[] | undefined;
+    if (!args.force) {
+      const dupes = await findSemanticDupes({
+        title: args.title,
+        summary: args.summary,
+        harness: args.harness ?? ctx.harnessSlug ?? undefined,
+      });
+      if (dupes && dupes.hard.length > 0) {
+        const top = dupes.hard[0];
+        return {
+          ok: false,
+          error: 'duplicate_semantic',
+          message:
+            `semantically duplicates OPEN work-item ${top.id} "${top.title}" ` +
+            `(cosine similarity ${top.similarity.toFixed(3)} ≥ ${dupes.thresholds.hard}) — ` +
+            `work that item instead (work_items:claim ${top.id}), or pass force:true if this is genuinely distinct.`,
+          existing: { id: top.id, state: top.state },
+          similarOpen: dupes.hard,
+        };
+      }
+      if (dupes && dupes.soft.length > 0) similarOpen = dupes.soft;
     }
     // EI-728: route the write to the request's workspace. Precedence: explicit
     // `workspace` arg → the request's concrete workspace (ctx.workspaceId) →
@@ -201,7 +237,7 @@ export async function createOneWorkItem(
         // Non-fatal — coverage edge is best-effort.
       }
     }
-    return { ok: true, workItem };
+    return { ok: true, workItem, ...(similarOpen ? { similarOpen } : {}) };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }

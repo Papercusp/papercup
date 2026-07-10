@@ -23,8 +23,8 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import {
   enablePlatformMode,
   PAPERCUSP_CANONICAL_REPO_URL,
-  PLATFORM_SELF_HIVE_SLUG,
-} from '../../hive/enable-platform-mode';
+  PLATFORM_SELF_POT_SLUG,
+} from '../../pot/enable-platform-mode';
 
 const text = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -72,7 +72,7 @@ export default defineTool({
       .max(100)
       .regex(/^[a-z0-9][a-z0-9-]*$/, 'slug must be lowercase alphanumeric + dashes')
       .optional()
-      .describe(`Base slug for the self-hive (default ${PLATFORM_SELF_HIVE_SLUG}; home = <base>-hive).`),
+      .describe(`Base slug for the self-hive (default ${PLATFORM_SELF_POT_SLUG}; home = <base>-hive).`),
     runTests: z
       .boolean()
       .optional()

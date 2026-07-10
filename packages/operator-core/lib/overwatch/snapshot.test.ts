@@ -31,7 +31,7 @@ vi.mock('../system-health', () => ({
   runSystemHealthTick: h.runSystemHealthTick,
 }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: h.activeWorkspaceId }));
-vi.mock('../hive/wake', () => ({ resolvePotHomeSlug: h.resolvePotHomeSlug }));
+vi.mock('../pot/wake', () => ({ resolvePotHomeSlug: h.resolvePotHomeSlug }));
 vi.mock('./control-state', () => ({
   getOverwatchStarted: h.getOverwatchStarted,
   getOverwatchCadenceSec: h.getOverwatchCadenceSec,
