@@ -22,7 +22,8 @@ vi.mock('@papercusp/flags/client', () => ({ useFlag: () => H.armed }));
 
 import AutonomySurfacing, { policyRows, summarizePolicy } from './AutonomySurfacing';
 
-const Wrap = ({ children }: { children: ReactNode }) => <NuqsTestingAdapter>{children}</NuqsTestingAdapter>;
+const Wrap = ({ children }: { children: ReactNode }) => <NuqsTestingAdapter searchParams="?qAutonomy=true">{children}</NuqsTestingAdapter>;
+const ClosedWrap = ({ children }: { children: ReactNode }) => <NuqsTestingAdapter>{children}</NuqsTestingAdapter>;
 
 type Props = Parameters<typeof AutonomySurfacing>[0];
 function makeProps(over: Partial<Props> = {}): Props {
@@ -60,11 +61,18 @@ describe('AutonomySurfacing pure helpers', () => {
 });
 
 describe('AutonomySurfacing rendering', () => {
-  it('shows "not armed" when autonomy is disarmed and never lists categories', () => {
+  it('defaults to a compact Decision style summary', () => {
+    render(<AutonomySurfacing {...makeProps()} />, { wrapper: ClosedWrap });
+    expect(screen.getByText('Decision style')).toBeTruthy();
+    expect(screen.getByText('Manual')).toBeTruthy();
+    expect(screen.queryByText('Retry limit')).toBeNull();
+  });
+
+  it('shows Manual when autonomy is disarmed and never lists categories', () => {
     H.armed = false;
     H.policy = POLICY;
     render(<AutonomySurfacing {...makeProps()} />, { wrapper: Wrap });
-    expect(screen.getByText('not armed')).toBeTruthy();
+    expect(screen.getByText('Manual')).toBeTruthy();
     expect(screen.queryByText('Code edits')).toBeNull(); // categories only listed when armed
   });
 
@@ -72,7 +80,7 @@ describe('AutonomySurfacing rendering', () => {
     H.armed = true;
     H.policy = POLICY;
     render(<AutonomySurfacing {...makeProps()} />, { wrapper: Wrap });
-    expect(screen.getByText('armed')).toBeTruthy();
+    expect(screen.getByText('Autonomy on')).toBeTruthy();
     expect(screen.getByText('Code edits')).toBeTruthy();
     expect(screen.getByText('Research')).toBeTruthy();
     expect(screen.queryByText('Deploy')).toBeNull(); // never-auto ⇒ not in the active list
@@ -81,20 +89,20 @@ describe('AutonomySurfacing rendering', () => {
   it('displays the live breaker threshold (not a hardcoded 3)', () => {
     H.policy = POLICY;
     render(<AutonomySurfacing {...makeProps({ breakerThreshold: 5 })} />, { wrapper: Wrap });
-    expect(screen.getByText(/5/)).toBeTruthy();
-    expect(screen.getByText('Cursed-item breaker')).toBeTruthy();
+    expect(screen.getByText('5 failures')).toBeTruthy();
+    expect(screen.getByText('Retry limit')).toBeTruthy();
   });
 
   it('falls back to 3 when no live breaker value is supplied', () => {
     render(<AutonomySurfacing {...makeProps({ breakerThreshold: null })} />, { wrapper: Wrap });
-    expect(screen.getByText('Cursed-item breaker')).toBeTruthy();
+    expect(screen.getByText('Retry limit')).toBeTruthy();
     expect(screen.getByText('3')).toBeTruthy();
   });
 
-  it('"Manage autonomy policy" calls the navigate callback', () => {
+  it('Autonomy settings calls the navigate callback', () => {
     const props = makeProps();
     render(<AutonomySurfacing {...props} />, { wrapper: Wrap });
-    fireEvent.click(screen.getByRole('button', { name: /Manage autonomy policy/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Autonomy settings/i }));
     expect(props.onManageAutonomy).toHaveBeenCalledTimes(1);
   });
 
@@ -103,7 +111,7 @@ describe('AutonomySurfacing rendering', () => {
     render(<AutonomySurfacing {...props} />, { wrapper: Wrap });
     fireEvent.click(screen.getByRole('button', { name: 'Parallel' }));
     expect(props.onSetDecomposition).toHaveBeenCalledWith('parallel');
-    fireEvent.click(screen.getByRole('button', { name: 'Default' }));
+    fireEvent.click(screen.getByRole('button', { name: 'System' }));
     expect(props.onSetDecomposition).toHaveBeenCalledWith(null);
   });
 });

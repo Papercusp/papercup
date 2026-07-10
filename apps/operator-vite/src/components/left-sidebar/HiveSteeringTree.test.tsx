@@ -159,7 +159,7 @@ describe('<HiveSteeringTree> hive nodes', () => {
     expect(onToggleHive).toHaveBeenCalledWith('hive-a');
   });
 
-  it('fires onSetHivePlans(slug, false) from the per-hive "none" chip', () => {
+  it('fires onSetHivePlans(slug, false) from the per-hive Remove action', () => {
     const onSetHivePlans = vi.fn();
     render(
       <HiveSteeringTree
@@ -175,19 +175,18 @@ describe('<HiveSteeringTree> hive nodes', () => {
 });
 
 describe('<HiveSteeringTree> header chips + unassigned', () => {
-  it('fires onSetAllHives(true) from the header "all" chip', () => {
+  it('offers one All work escape hatch when focus is active', () => {
     const onSetAllHives = vi.fn();
     render(
-      <HiveSteeringTree {...makeProps({ tree: tree({ hives: [hive()] }), onSetAllHives })} />,
+      <HiveSteeringTree {...makeProps({ tree: tree({ hives: [hive({ checked: true, planMode: 'all' })] }), onSetAllHives })} />,
     );
-    fireEvent.click(screen.getByLabelText('Select every pot'));
-    expect(onSetAllHives).toHaveBeenCalledWith(true);
+    fireEvent.click(screen.getByLabelText('Clear work focus'));
+    expect(onSetAllHives).toHaveBeenCalledWith(false);
   });
 
-  it('disables the header clear chip when nothing is focused', () => {
+  it('hides the reset action when all work is already available', () => {
     render(<HiveSteeringTree {...makeProps({ tree: tree({ hives: [hive()] }) })} />);
-    const clearChip = screen.getByLabelText('Clear work focus') as HTMLButtonElement;
-    expect(clearChip.disabled).toBe(true);
+    expect(screen.queryByLabelText('Clear work focus')).toBeNull();
   });
 
   it('renders the unassigned (no-hive) plans section', () => {

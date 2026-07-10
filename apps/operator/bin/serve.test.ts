@@ -109,6 +109,7 @@ describe('writeJsonAtomic + readOperatorDiscovery', () => {
       pid: process.pid,
       startedAt: Date.now(),
       version: 'test',
+      sha: 'abc1234',
     };
     await serve.writeJsonAtomic(operatorJson(), disc);
 
@@ -118,11 +119,26 @@ describe('writeJsonAtomic + readOperatorDiscovery', () => {
       port: 3070,
       token: 'super-secret-token',
       pid: process.pid,
+      sha: 'abc1234',
     });
 
     // Credential files must not be world/group readable.
     expect(statSync(operatorJson()).mode & 0o777).toBe(0o600);
     expect(statSync(pcDir()).mode & 0o777).toBe(0o700);
+  });
+
+  it('defaults sha to null when the on-disk record predates the EI-9002 field', async () => {
+    const disc = {
+      httpUrl: 'http://127.0.0.1:3070',
+      port: 3070,
+      token: null,
+      pid: process.pid,
+      startedAt: Date.now(),
+      version: 'test',
+      // no `sha` key at all — an older serve build's discovery record.
+    };
+    await serve.writeJsonAtomic(operatorJson(), disc);
+    expect(serve.readOperatorDiscovery()?.sha).toBeNull();
   });
 
   it('returns null when the file is missing', () => {
@@ -133,6 +149,69 @@ describe('writeJsonAtomic + readOperatorDiscovery', () => {
     mkdirSync(pcDir(), { recursive: true });
     writeFileSync(operatorJson(), 'not-json{');
     expect(serve.readOperatorDiscovery()).toBeNull();
+  });
+});
+
+// EI-9002 recurrence guard: `serve --ensure` used to adopt ANY healthy
+// operator on the port with zero build-identity check — installing a new
+// version, relaunching, and getting a fully green boot while silently still
+// running the pre-update process forever (proven live on the Windows VM,
+// 2026-07-09: /api/health kept reporting the OLD sha+version from a process
+// older than the install itself). buildIdentityMismatch is the decision
+// function that now gates the reuse.
+describe('buildIdentityMismatch (EI-9002)', () => {
+  it('is false (reuse) when sha matches, even if version differs (e.g. dirty suffix drift)', () => {
+    expect(
+      serve.buildIdentityMismatch(
+        { sha: 'abc1234', version: '0.0.5' },
+        { sha: 'abc1234', version: '0.0.5-dirty' },
+      ),
+    ).toBe(false);
+  });
+
+  it('is true (mismatch) when both sides have a sha and they differ — the exact VM repro', () => {
+    expect(
+      serve.buildIdentityMismatch(
+        { sha: '5fd810f-wi3407v2', version: '0.0.3' },
+        { sha: '1a161ab-wi3407', version: '0.0.5' },
+      ),
+    ).toBe(true);
+  });
+
+  it('falls back to version comparison when either side has no sha', () => {
+    expect(
+      serve.buildIdentityMismatch({ sha: null, version: '0.0.3' }, { sha: null, version: '0.0.5' }),
+    ).toBe(true);
+    expect(
+      serve.buildIdentityMismatch({ sha: 'abc1234', version: '0.0.5' }, { sha: null, version: '0.0.5' }),
+    ).toBe(false);
+    expect(
+      serve.buildIdentityMismatch({ sha: null, version: '0.0.5' }, { sha: 'abc1234', version: '0.0.5' }),
+    ).toBe(false);
+  });
+
+  it('is false when neither side resolved anything precise (no signal to force a restart on)', () => {
+    expect(
+      serve.buildIdentityMismatch({ sha: null, version: 'unknown' }, { sha: null, version: 'unknown' }),
+    ).toBe(false);
+  });
+});
+
+describe('terminateForeignOperator (EI-9002)', () => {
+  it('is a no-op (never throws) for an already-dead pid', async () => {
+    await expect(serve.terminateForeignOperator(2 ** 30, { graceMs: 100 })).resolves.toBeUndefined();
+  });
+
+  it('SIGTERMs a live process and returns once it exits', async () => {
+    const { spawn } = await import('node:child_process');
+    // A short-lived child that ignores nothing (default SIGTERM handling → exits).
+    const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], {
+      stdio: 'ignore',
+    });
+    await new Promise((r) => setTimeout(r, 100)); // let it actually start
+    expect(serve.pidAlive(child.pid!)).toBe(true);
+    await serve.terminateForeignOperator(child.pid!, { graceMs: 2000 });
+    expect(serve.pidAlive(child.pid!)).toBe(false);
   });
 });
 

@@ -65,6 +65,7 @@ function makeHeavyRow(i: number): RosterRow {
     lastActiveSecAgo: 7,
     heartbeatAt: '2026-06-18T08:43:00.000Z',
     lastActiveAt: '2026-06-18T08:42:53.000Z',
+    intentDeclaredAt: '2026-06-18T08:42:53.000Z',
   };
 }
 
@@ -96,6 +97,7 @@ function makeIdleRow(i: number): RosterRow {
     lastActiveSecAgo: 0,
     heartbeatAt: '2026-06-18T08:43:00.000Z',
     lastActiveAt: '2026-06-18T08:43:00.000Z',
+    intentDeclaredAt: '2026-06-18T08:43:00.000Z',
   };
 }
 

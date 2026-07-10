@@ -62,7 +62,7 @@ function TriCheckbox({
 function PlanRow({ plan, potSlug, busy, onTogglePlan }: { plan: TreePlan; potSlug: string; busy: boolean; onTogglePlan: HiveSteeringTreeProps['onTogglePlan'] }) {
   return (
     <li className={`pc-queen__plan pc-queen__tree-plan${plan.checked ? ' pc-queen__plan--on' : ''}`}>
-      <div className="pc-queen__planlabel">
+      <label className="pc-queen__planlabel pc-queen__selection-label">
         <Checkbox
           className="pc-queen__check"
           checked={plan.checked}
@@ -71,7 +71,7 @@ function PlanRow({ plan, potSlug, busy, onTogglePlan }: { plan: TreePlan; potSlu
           ariaLabel={plan.title}
         />
         <span className="pc-queen__planslug" title={plan.slug}>{plan.title}</span>
-      </div>
+      </label>
       <span
         className="pc-queen__planstatus"
         data-status={plan.inActive ? (plan.startStatus === 'started' ? 'started' : plan.status ?? '') : 'stale'}
@@ -116,7 +116,7 @@ function HiveNode({
               {hasPlans ? (expanded ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />) : <span className="pc-queen__tree-caret-spacer" />}
             </button>
           </Collapsible.Trigger>
-          <div className="pc-queen__planlabel pc-queen__tree-hivelabel">
+          <label className="pc-queen__planlabel pc-queen__tree-hivelabel pc-queen__selection-label">
             <TriCheckbox
               checked={hive.checked}
               indeterminate={hive.planMode === 'some'}
@@ -125,7 +125,7 @@ function HiveNode({
               ariaLabel={`Toggle ${t('pot', { lower: true })} ${hive.slug}`}
             />
             <span className="pc-queen__tree-hivename" title={hive.slug}>{hive.label.trim()}</span>
-          </div>
+          </label>
           <span className="pc-queen__tree-hivemeta">
             {hive.checked
               ? hive.planMode === 'all'
@@ -138,8 +138,8 @@ function HiveNode({
           <Collapsible.Content className="pc-queen__tree-branch">
             {hive.checked && (
               <div className="pc-queen__tree-hiveactions">
-                <button type="button" className="pc-queen__chip" onClick={() => onSetHivePlans(hive.slug, true)} disabled={busy || hive.planMode === 'all'} aria-label={`Make every plan in ${hive.slug} eligible`}>all</button>
-                <button type="button" className="pc-queen__chip" onClick={() => onSetHivePlans(hive.slug, false)} disabled={busy} aria-label={`Remove ${hive.slug} from scope`}>none</button>
+                <button type="button" className="pc-queen__chip" onClick={() => onSetHivePlans(hive.slug, true)} disabled={busy || hive.planMode === 'all'} aria-label={`Make every plan in ${hive.slug} eligible`}>All plans</button>
+                <button type="button" className="pc-queen__chip" onClick={() => onSetHivePlans(hive.slug, false)} disabled={busy} aria-label={`Remove ${hive.slug} from scope`}>Remove</button>
               </div>
             )}
             <ul className={`pc-queen__plans pc-queen__tree-plans${hive.checked ? '' : ' pc-queen__tree-plans--off'}`}>
@@ -190,8 +190,9 @@ export default function HiveSteeringTree({
           {restricted ? `${checkedCount} ${hiveNoun(checkedCount)} focused` : 'all work'}
         </span>
         <span className="pc-queen__spacer" />
-        <button type="button" className="pc-queen__chip" onClick={() => onSetAllHives(true)} disabled={busy || tree.hives.length === 0} aria-label={`Select every ${t('pot', { lower: true })}`}>all</button>
-        <button type="button" className="pc-queen__chip" onClick={() => onSetAllHives(false)} disabled={busy || !restricted} aria-label="Clear work focus">clear</button>
+        {restricted && (
+          <button type="button" className="pc-queen__chip" onClick={() => onSetAllHives(false)} disabled={busy} aria-label="Clear work focus">All work</button>
+        )}
       </div>
 
       {illegalCount > 0 && (

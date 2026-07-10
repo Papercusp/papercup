@@ -43,6 +43,7 @@ function presenceRecord(over: {
     startedAt: now.toISOString(),
     heartbeatAt: recentHeartbeat,
     lastActiveAt: recentHeartbeat,
+    intentDeclaredAt: recentHeartbeat,
     agentRole: null,
     potSlug: null,
     stale: false,

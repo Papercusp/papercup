@@ -17,7 +17,7 @@ function pres(ownerId: string, stale: boolean): UnifiedPresenceRecord {
     ownerId, ownerLabel: ownerId, workspaceId: 'ws-1', source: 'omp-hook-session',
     intent: '', currentPlanSlug: null, currentFiles: [], host: '', pid: null,
     startedAt: '2026-06-22T19:00:00.000Z', heartbeatAt: '2026-06-22T19:00:00.000Z',
-    lastActiveAt: null, agentRole: 'su', potSlug: null, stale, userId: null, revoked: false,
+    lastActiveAt: null, intentDeclaredAt: null, agentRole: 'su', potSlug: null, stale, userId: null, revoked: false,
   };
 }
 

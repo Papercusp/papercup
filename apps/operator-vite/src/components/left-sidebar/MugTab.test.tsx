@@ -111,13 +111,13 @@ describe('MugTab (Colony sidebar, round 2)', () => {
       'CapacityDefaults',
       'ScheduleRoutines',
     ]);
-    expect(screen.getByText('Pause new work')).toBeTruthy();
-    expect(screen.getByText('Focus directive')).toBeTruthy();
+    expect(screen.getByText('New work')).toBeTruthy();
+    expect(screen.getByText('Priority')).toBeTruthy();
     expect(screen.getByLabelText('Pause duration in minutes')).toBeTruthy();
     expect(screen.queryByText('Eligible pot')).toBeNull();
 
     await openLane('Work');
-    expect(screen.queryByText('Pause new work')).toBeNull();
+    expect(screen.queryByText('New work')).toBeNull();
     expect(screen.getByText('pot')).toBeTruthy();
     expect(screen.getByText('Plans')).toBeTruthy();
     expect(screen.getByText('Plan A')).toBeTruthy();
@@ -182,11 +182,24 @@ describe('MugTab (Colony sidebar, round 2)', () => {
     expect(args.includeUnplannedWork).toBe(false);
   });
 
-  it('writes pauseNewWork:true on Pause indefinitely', async () => {
+  it('writes pauseNewWork:true on Pause until resumed', async () => {
     render(<MugTab active={true} />, { wrapper: Wrap });
-    fireEvent.click(screen.getByRole('button', { name: /Pause indefinitely/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Pause until resumed/i }));
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     expect(setSteeringBody().args.pauseNewWork).toBe(true);
+  });
+
+  it('resumes a timed pause from the same primary control', async () => {
+    H.steeringResult = {
+      data: [steering({ pauseNewWork: false, pausedUntil: Date.now() + 30 * 60_000 })],
+      loading: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<MugTab active={true} />, { wrapper: Wrap });
+    fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
+    await waitFor(() => expect(wroteRunTool()).toBe(true));
+    expect(setSteeringBody().args).toMatchObject({ pauseNewWork: false, pausedUntil: null });
   });
 
   it('accumulates fast back-to-back checkbox clicks without clobbering (owner bug 2026-06-16)', async () => {

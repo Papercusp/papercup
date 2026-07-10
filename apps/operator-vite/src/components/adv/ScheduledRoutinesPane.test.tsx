@@ -2,9 +2,9 @@
 /**
  * ScheduledRoutinesPane render coverage (scheduled-recurring-plans-2026-06-16
  * P-026) — the ops list of scheduled plans. Pins: the loading vs honest-empty
- * states, the count header, the armed-first/soonest-fire sort + per-plan
+ * states, the summary, the active-first/soonest-fire sort + per-plan
  * collapse to one row (the byPlan reducer keeps the soonest fire), the
- * armed/paused dot + last-run swatch, the relative-when label, and the onSelect
+ * explicit active/paused + last-run labels, the relative-when label, and the onSelect
  * click handler. The `plans.scheduledOccurrences` sync query is mocked.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -44,12 +44,12 @@ describe('<ScheduledRoutinesPane>', () => {
   it('shows the loading state while fetching with no data', () => {
     H.result = { data: [], loading: true };
     render(<ScheduledRoutinesPane />);
-    expect(screen.getByText(/loading…/)).toBeTruthy();
+    expect(screen.getByText(/Loading routines…/)).toBeTruthy();
   });
 
   it('shows the honest empty state when there are no occurrences', () => {
     render(<ScheduledRoutinesPane />);
-    expect(screen.getByText(/No scheduled plans in the next 30 days/)).toBeTruthy();
+    expect(screen.getByText(/No routines scheduled in the next 30 days/)).toBeTruthy();
   });
 
   it('renders the header count and one row per plan', () => {
@@ -58,9 +58,8 @@ describe('<ScheduledRoutinesPane>', () => {
       loading: false,
     };
     render(<ScheduledRoutinesPane />);
-    expect(screen.getByText('Scheduled plans')).toBeTruthy();
-    // count badge
-    expect(screen.getByText('2')).toBeTruthy();
+    expect(screen.getByText('2 scheduled')).toBeTruthy();
+    expect(screen.getByText('2 active')).toBeTruthy();
     expect(screen.getByText('Plan A')).toBeTruthy();
     expect(screen.getByText('Plan B')).toBeTruthy();
   });
@@ -77,8 +76,7 @@ describe('<ScheduledRoutinesPane>', () => {
     render(<ScheduledRoutinesPane />);
     // single row → one title node
     expect(screen.getAllByText('Plan A').length).toBe(1);
-    // count badge for distinct plans
-    expect(screen.getByText('1')).toBeTruthy();
+    expect(screen.getByText('1 scheduled')).toBeTruthy();
   });
 
   it('sorts armed plans before paused ones', () => {
@@ -95,22 +93,22 @@ describe('<ScheduledRoutinesPane>', () => {
     expect(items[1].textContent).toContain('Paused Plan');
   });
 
-  it('renders a last-run swatch only when lastOutcome is set', () => {
+  it('renders a readable last-run outcome', () => {
     H.result = {
       data: [occ({ lastOutcome: 'success', occurrenceMs: Date.now() + 2 * HOUR })],
       loading: false,
     };
     render(<ScheduledRoutinesPane />);
-    expect(screen.getByTitle('last run: success')).toBeTruthy();
+    expect(screen.getByText('Last: Success')).toBeTruthy();
   });
 
-  it('renders the armed indicator title and overdue label for past fires', () => {
+  it('renders the active state and overdue label for past fires', () => {
     H.result = {
       data: [occ({ scheduleActive: true, occurrenceMs: Date.now() - 1 * HOUR })],
       loading: false,
     };
     render(<ScheduledRoutinesPane />);
-    expect(screen.getByTitle('armed')).toBeTruthy();
+    expect(screen.getByText('Active')).toBeTruthy();
     expect(screen.getByText('overdue')).toBeTruthy();
   });
 

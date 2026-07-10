@@ -90,6 +90,9 @@ const LOCK_PATH = join(PAPERCUSP_DIR, lockFileNameForEnvId(ENV_OPERATOR_ID));
 // main.rs and forwarded to the sidecar's env — see build-info.ts's docblock);
 // reuse that single resolver instead of a second, divergent version read.
 const VERSION = getBuildInfo().version;
+// EI-9002: this process's own build sha, captured once at module load — the
+// build-identity half of the `--ensure` reuse decision below.
+const BUILD_SHA = getBuildInfo().sha;
 
 export interface OperatorDiscovery {
   /** Base HTTP origin of the operator API, e.g. http://127.0.0.1:3070 */
@@ -100,6 +103,11 @@ export interface OperatorDiscovery {
   pid: number;
   startedAt: number;
   version: string;
+  /** Short git sha this operator was built from (getBuildInfo().sha), or null
+   *  when unresolved. EI-9002: this is the ONLY field precise enough to tell
+   *  two builds sharing the same package.json `version` apart (a dev build,
+   *  or a version bump that didn't happen). */
+  sha: string | null;
 }
 
 function log(msg: string): void {
@@ -173,6 +181,7 @@ export function readOperatorDiscovery(): OperatorDiscovery | null {
         pid: j.pid,
         startedAt: Number(j.startedAt) || 0,
         version: typeof j.version === 'string' ? j.version : 'unknown',
+        sha: typeof j.sha === 'string' && j.sha ? j.sha : null,
       };
     }
   } catch {
@@ -192,6 +201,56 @@ async function httpAlive(httpUrl: string, timeoutMs = 1500): Promise<boolean> {
     return false;
   } finally {
     clearTimeout(t);
+  }
+}
+
+/**
+ * (EI-9002) True when `existing` (a running operator's discovery record) is
+ * from a DIFFERENT build than the ensuring process's own `mine` build info —
+ * i.e. `--ensure` must NOT adopt it silently.
+ *
+ * Prefer sha comparison when BOTH sides resolved one: sha is the precise
+ * build identity (two dev builds can share the same package.json `version`).
+ * Fall back to version when a sha is unavailable on either side — still
+ * catches the common case (an actual version bump) even without git info.
+ * Neither field being available (both unknown) is NOT treated as a mismatch:
+ * there's no signal to distinguish on, so we preserve the pre-fix reuse
+ * behavior rather than force a needless restart on every ensure.
+ */
+export function buildIdentityMismatch(
+  existing: Pick<OperatorDiscovery, 'sha' | 'version'>,
+  mine: { sha: string | null; version: string },
+): boolean {
+  if (existing.sha && mine.sha) return existing.sha !== mine.sha;
+  return existing.version !== mine.version;
+}
+
+/**
+ * (EI-9002) Gracefully terminate a FOREIGN running operator (SIGTERM, wait up
+ * to `graceMs` for it to exit, SIGKILL fallback) so `--ensure` can cold-start
+ * a fresh one instead of silently adopting a stale build. Never throws — a
+ * process that's already gone (ESRCH on the initial kill) is a no-op success.
+ */
+export async function terminateForeignOperator(
+  pid: number,
+  opts: { graceMs?: number } = {},
+): Promise<void> {
+  const graceMs = opts.graceMs ?? 5000;
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch {
+    return; // already gone
+  }
+  const deadline = Date.now() + graceMs;
+  while (Date.now() < deadline && pidAlive(pid)) {
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  if (pidAlive(pid)) {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      /* raced to death */
+    }
   }
 }
 
@@ -712,13 +771,29 @@ async function main(): Promise<void> {
   const port = ENV_OPERATOR_ID ? honoPortHint : await resolveStickyPort(honoPortHint, hostname);
   const httpUrl = `http://${hostname}:${port}`;
 
-  // --ensure: reuse a healthy running operator and exit 0.
+  // --ensure: reuse a healthy running operator and exit 0 — UNLESS it's a
+  // DIFFERENT build (EI-9002). Before this check, an install-then-relaunch
+  // would find the OLD operator still alive+healthy on the port (a Windows
+  // taskkill of the desktop host never touches the inner WSL distro's node
+  // process) and adopt it silently: every readiness marker passed while the
+  // user kept running the pre-update build indefinitely. A mismatch now
+  // gracefully kills the foreign operator and falls through to a fresh
+  // cold-start below instead of returning early.
   if (ensure) {
     const existing = readOperatorDiscovery();
     if (existing && pidAlive(existing.pid) && (await httpAlive(existing.httpUrl))) {
-      log(`already running (pid ${existing.pid}) at ${existing.httpUrl} — reusing`);
-      process.stdout.write(JSON.stringify(existing) + '\n');
-      return;
+      if (!buildIdentityMismatch(existing, { sha: BUILD_SHA, version: VERSION })) {
+        log(`already running (pid ${existing.pid}) at ${existing.httpUrl} — reusing`);
+        process.stdout.write(JSON.stringify(existing) + '\n');
+        return;
+      }
+      log(
+        `refusing to adopt pid ${existing.pid} at ${existing.httpUrl}: build mismatch ` +
+          `(running sha=${existing.sha ?? 'unknown'} version=${existing.version}, ` +
+          `mine sha=${BUILD_SHA ?? 'unknown'} version=${VERSION}) — this is the silent ` +
+          `no-op-update bug (EI-9002); terminating the stale operator and cold-starting fresh`,
+      );
+      await terminateForeignOperator(existing.pid);
     }
   }
 
@@ -845,6 +920,7 @@ async function main(): Promise<void> {
           pid: process.pid,
           startedAt: Date.now(),
           version: VERSION,
+          sha: BUILD_SHA,
         };
         await writeJsonAtomic(OPERATOR_JSON, discovery);
         log(`wrote ${OPERATOR_JSON}`);

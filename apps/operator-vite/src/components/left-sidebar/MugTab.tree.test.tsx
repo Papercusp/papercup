@@ -108,16 +108,21 @@ describe('MugTab nested steering tree', () => {
     expect(screen.queryByText('Eligible plans')).toBeNull();
   });
 
-  it('select-all scopes only hives that currently have plans', async () => {
+  it('returns to all work from the focused-state escape hatch', async () => {
+    H.steeringResult = {
+      data: [{ ...steering(), eligibleHives: ['pot-a'], eligiblePlans: ['plan-a'] }],
+      loading: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
     render(<MugTab active={true} />, { wrapper: Wrap });
     await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Toggle pot pot-a' })).toBeTruthy());
 
-    fireEvent.click(screen.getByRole('button', { name: 'Select every pot' }));
+    fireEvent.click(screen.getByLabelText('Clear work focus'));
 
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     const { args } = setSteeringBody();
-    expect(args.eligibleHives).toEqual(['papercup-hive', 'pot-a']);
-    expect(args.eligibleHives).not.toContain('pot-b');
+    expect(args.eligibleHives).toEqual([]);
     expect(args.eligiblePlans).toEqual([]);
   });
 

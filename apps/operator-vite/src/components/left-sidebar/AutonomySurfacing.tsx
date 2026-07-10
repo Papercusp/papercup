@@ -31,9 +31,9 @@ export const DECOMP_MODES = ['serial', 'balanced', 'parallel'] as const;
 export type DecompMode = (typeof DECOMP_MODES)[number];
 const DECOMP_LABEL: Record<DecompMode, string> = { serial: 'Serial', balanced: 'Balanced', parallel: 'Parallel' };
 const DECOMP_HINT: Record<DecompMode, string> = {
-  serial: 'one lane at a time — slow, cheap, low-collision',
-  balanced: 'a few parallel lanes — the default cadence',
-  parallel: 'max parallel lanes — fast, more spend + contention',
+  serial: 'One workstream at a time',
+  balanced: 'A few workstreams at once',
+  parallel: 'Use as much safe parallelism as possible',
 };
 
 /* Wire type for the `autonomy.policy` row — kept local per the client wire-type
@@ -84,7 +84,7 @@ export default function AutonomySurfacing({
   onSetDecomposition: (mode: DecompMode | null) => void;
   onManageAutonomy: () => void;
 }) {
-  const [open, setOpen] = useQueryState('qAutonomy', parseAsBoolean.withDefault(true));
+  const [open, setOpen] = useQueryState('qAutonomy', parseAsBoolean.withDefault(false));
   const policyQ = useSyncQuery<PolicyRow>({ queryName: 'autonomy.policy', args: {}, staleTime: 30_000 });
   const armed = useFlag(FLAGS.MUG_AUTONOMY_ARMED);
 
@@ -100,12 +100,12 @@ export default function AutonomySurfacing({
         className="pc-queen__collapse"
         onClick={() => void setOpen(!open)}
         aria-expanded={open}
-        aria-label={open ? 'Collapse autonomy and decomposition' : 'Expand autonomy and decomposition'}
+        aria-label={open ? 'Collapse decision style' : 'Expand decision style'}
       >
         {open ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
         {armed ? <ShieldAlert size={12} aria-hidden /> : <ShieldCheck size={12} aria-hidden />}
-        <span className="pc-queen__section-title">Autonomy &amp; decomposition</span>
-        <span className={`pc-queen__count${armed ? ' pc-queen__count--on' : ''}`}>{armed ? 'armed' : 'not armed'}</span>
+        <span className="pc-queen__section-title">Decision style</span>
+        <span className={`pc-queen__count${armed ? ' pc-queen__count--on' : ''}`}>{armed ? 'Autonomy on' : 'Manual'}</span>
       </button>
 
       {open && (
@@ -113,18 +113,18 @@ export default function AutonomySurfacing({
           {/* Autonomy ceilings — read-through to /settings/autonomy */}
           <div className="pc-queen__knob">
             <div className="pc-queen__knobhead">
-              <span className="pc-queen__knoblabel">Autonomy ceilings</span>
-              <span className="pc-queen__count">surfacing · read-only</span>
+              <span className="pc-queen__knoblabel">Autonomy</span>
+              <span className="pc-queen__count">{armed ? `${active}/${total} enabled` : 'Off'}</span>
             </div>
             <div className={`pc-queen__scope${armed ? ' pc-queen__scope--restricted' : ''}`}>
               {policyQ.loading && rows.length === 0 ? (
                 'Loading autonomy policy…'
               ) : !armed ? (
-                <>Autonomy is <strong>disarmed</strong> — nothing auto-runs; every decision routes to you regardless of the ceilings below.</>
+                <>Every decision requires you.</>
               ) : active > 0 ? (
-                <><strong>{active}</strong> of {total} categories can auto-run · {locked} locked. She may auto-decide at each category&rsquo;s effective ceiling (reversible, not owner-only).</>
+                <><strong>{active}</strong> categories can run automatically · {locked} locked.</>
               ) : (
-                <>Armed, but <strong>nothing auto-runs yet</strong> — no category has both a raised ceiling and an earned level. {locked} locked.</>
+                <>Autonomy is on, but no categories can run automatically yet.</>
               )}
             </div>
             {armed && activeRows.length > 0 && (
@@ -139,27 +139,26 @@ export default function AutonomySurfacing({
               </ul>
             )}
             <button type="button" className="pc-queen__chip" onClick={onManageAutonomy} disabled={busy}>
-              <ExternalLink size={11} aria-hidden /> Manage autonomy policy
+              <ExternalLink size={11} aria-hidden /> Autonomy settings
             </button>
           </div>
 
           {/* Cursed-item breaker (read-only) */}
           <div className="pc-queen__knob">
             <div className="pc-queen__knobhead">
-              <span className="pc-queen__knoblabel">Cursed-item breaker</span>
-              <span className="pc-queen__count">read-only</span>
+              <span className="pc-queen__knoblabel">Retry limit</span>
+              <span className="pc-queen__count">{breaker} failures</span>
             </div>
             <div className="pc-queen__scope">
-              A work-item is <strong>cursed</strong> (dropped from the frontier) after <strong>{breaker}</strong> failed placements.
+              Stops placing an item after <strong>{breaker}</strong> failed attempts.
             </div>
-            <span className="pc-queen__hint">System value (PAPERCUSP_POT_PLACEMENT_BREAKER, default 3). A reaper-reclaim of a still-alive bee no longer counts (F-FIX-038).</span>
           </div>
 
           {/* Decomposition aggressiveness (advisory, writable) */}
           <div className="pc-queen__knob">
             <div className="pc-queen__knobhead">
               <GitBranch size={11} aria-hidden />
-              <OverridableSetting label="Decomposition" isOverridden={decomposition != null} badgeStyle="inline" />
+              <OverridableSetting label="Parallelism" isOverridden={decomposition != null} badgeStyle="inline" />
             </div>
             <div className="pc-queen__seg" role="group" aria-label="Decomposition aggressiveness">
               <button
@@ -169,7 +168,7 @@ export default function AutonomySurfacing({
                 disabled={busy}
                 aria-pressed={decomposition == null}
               >
-                Default
+                System
               </button>
               {DECOMP_MODES.map((m) => (
                 <button
@@ -185,7 +184,7 @@ export default function AutonomySurfacing({
               ))}
             </div>
             <span className="pc-queen__hint">
-              {decomposition != null ? DECOMP_HINT[decomposition] : 'Advisory — guides how aggressively she splits work into parallel lanes (surfaced in her wake brief).'}
+              {decomposition != null ? DECOMP_HINT[decomposition] : 'Use the workspace setting'}
             </span>
           </div>
         </div>

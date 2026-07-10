@@ -44,6 +44,7 @@ function fedPeer(over: Partial<UnifiedPresenceRecord> = {}): UnifiedPresenceReco
     startedAt: '2026-06-11T00:00:00.000Z',
     heartbeatAt: '2026-06-11T00:00:00.000Z',
     lastActiveAt: null,
+    intentDeclaredAt: null,
     agentRole: null,
     potSlug: null,
     stale: false,

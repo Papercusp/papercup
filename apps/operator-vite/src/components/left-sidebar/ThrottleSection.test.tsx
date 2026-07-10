@@ -57,7 +57,8 @@ import ThrottleSection, {
   throttleActiveCount,
 } from './ThrottleSection';
 
-const Wrap = ({ children }: { children: ReactNode }) => <NuqsTestingAdapter>{children}</NuqsTestingAdapter>;
+const Wrap = ({ children }: { children: ReactNode }) => <NuqsTestingAdapter searchParams="?qThrottle=true">{children}</NuqsTestingAdapter>;
+const ClosedWrap = ({ children }: { children: ReactNode }) => <NuqsTestingAdapter>{children}</NuqsTestingAdapter>;
 
 type Props = Parameters<typeof ThrottleSection>[0];
 function makeProps(over: Partial<Props> = {}): Props {
@@ -110,9 +111,15 @@ describe('ThrottleSection pure helpers', () => {
 });
 
 describe('ThrottleSection rendering + writes', () => {
+  it('defaults to a compact summary', () => {
+    render(<ThrottleSection {...makeProps()} />, { wrapper: ClosedWrap });
+    expect(screen.getByText('Limits')).toBeTruthy();
+    expect(screen.queryByLabelText('Wake cadence floor (seconds)')).toBeNull();
+  });
+
   it('renders all knobs with the system defaults in the hints', () => {
     render(<ThrottleSection {...makeProps()} />, { wrapper: Wrap });
-    expect(screen.getByText('Throttle')).toBeTruthy();
+    expect(screen.getByText('Limits')).toBeTruthy();
     expect(screen.getByText('defaults')).toBeTruthy();
     expect(screen.getByLabelText('Wake cadence floor (seconds)')).toBeTruthy();
     expect(screen.getByLabelText('Max concurrent contributor')).toBeTruthy();
@@ -124,7 +131,7 @@ describe('ThrottleSection rendering + writes', () => {
   it('a cadence preset chip writes that floor', () => {
     const props = makeProps();
     render(<ThrottleSection {...props} />, { wrapper: Wrap });
-    fireEvent.click(screen.getByRole('button', { name: '120s' }));
+    fireEvent.click(screen.getByRole('button', { name: '2m' }));
     expect(props.onSetCadenceFloor).toHaveBeenCalledWith(120);
   });
 

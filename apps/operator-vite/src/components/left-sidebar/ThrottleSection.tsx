@@ -162,7 +162,7 @@ export default function ThrottleSection({
   onSetAutoScaleOut: (enabled: boolean) => void;
 }) {
   const t = useLexicon();
-  const [open, setOpen] = useQueryState('qThrottle', parseAsBoolean.withDefault(true));
+  const [open, setOpen] = useQueryState('qThrottle', parseAsBoolean.withDefault(false));
   const baselineQ = useSyncQuery<ModelTier>({ queryName: 'agentConfig.modelTiersBaseline', args: {}, staleTime: 60_000 });
   const tiers = baselineQ.data ?? [];
 
@@ -181,11 +181,11 @@ export default function ThrottleSection({
         className="pc-queen__collapse"
         onClick={() => void setOpen(!open)}
         aria-expanded={open}
-        aria-label={open ? 'Collapse throttle' : 'Expand throttle'}
+        aria-label={open ? 'Collapse limits' : 'Expand limits'}
       >
         {open ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
         <Gauge size={12} aria-hidden />
-        <span className="pc-queen__section-title">Throttle</span>
+        <span className="pc-queen__section-title">Limits</span>
         <span className={`pc-queen__count${activeCount > 0 ? ' pc-queen__count--on' : ''}`}>
           {activeCount > 0 ? `${activeCount} active` : 'defaults'}
         </span>
@@ -197,7 +197,7 @@ export default function ThrottleSection({
           <div className="pc-queen__knob">
             <div className="pc-queen__knobhead">
               <Gauge size={11} aria-hidden />
-              <OverridableSetting label="Wake cadence floor" isOverridden={cadenceFloorSec != null} badgeStyle="inline" />
+              <OverridableSetting label="Time between wakes" isOverridden={cadenceFloorSec != null} badgeStyle="inline" />
             </div>
             <div className="pc-queen__knobrow">
               <DraftNumberInput value={cadenceFloorSec} ariaLabel="Wake cadence floor (seconds)" min={1} busy={busy} onCommit={onSetCadenceFloor} />
@@ -210,7 +210,7 @@ export default function ThrottleSection({
                   onClick={() => onSetCadenceFloor(p)}
                   disabled={busy}
                 >
-                  {p}s
+                  {p < 60 ? `${p}s` : p === 60 ? '1m' : `${p / 60}m`}
                 </button>
               ))}
               {cadenceFloorSec != null && (
@@ -218,7 +218,7 @@ export default function ThrottleSection({
               )}
             </div>
             <span className="pc-queen__hint">
-              ≥ {cadenceEff}s between wakes{cadenceFloorSec != null && cadenceFloorSec < sysCadence ? ` (system min ${sysCadence}s)` : ''}
+              At least {cadenceEff}s between wakes{cadenceFloorSec != null && cadenceFloorSec < sysCadence ? ` · system minimum ${sysCadence}s` : ''}
             </span>
           </div>
 
@@ -226,7 +226,7 @@ export default function ThrottleSection({
           <div className="pc-queen__knob">
             <div className="pc-queen__knobhead">
               <Users size={11} aria-hidden />
-              <OverridableSetting label={`Max concurrent ${t('contributor', { plural: true, lower: true })}`} isOverridden={maxBees != null} badgeStyle="inline" />
+              <OverridableSetting label={`Concurrent ${t('contributor', { plural: true, lower: true })}`} isOverridden={maxBees != null} badgeStyle="inline" />
             </div>
             <div className="pc-queen__knobrow">
               <DraftNumberInput value={maxBees} ariaLabel={`Max concurrent ${t('contributor', { plural: true, lower: true })}`} min={1} busy={busy} onCommit={onSetMaxBees} />
@@ -248,7 +248,7 @@ export default function ThrottleSection({
           <div className="pc-queen__knob">
             <div className="pc-queen__knobhead">
               <Cpu size={11} aria-hidden />
-              <OverridableSetting label={`Cap ${t('contributor', { plural: true, lower: true })} at tier`} isOverridden={!!beeTier} badgeStyle="inline" />
+              <OverridableSetting label={`Highest ${t('contributor', { lower: true })} tier`} isOverridden={!!beeTier} badgeStyle="inline" />
             </div>
             <Select
               className="pc-queen__select"
@@ -257,19 +257,19 @@ export default function ThrottleSection({
               ariaLabel={`Cap ${t('contributor', { plural: true, lower: true })} at model tier`}
               onChange={(value) => onSetBeeTierCap(value === '_none' ? null : value)}
               options={[
-                { value: '_none', label: 'No cap (any tier)' },
+                { value: '_none', label: 'Any tier' },
                 ...tiers.map((tier) => ({ value: tier.name, label: `${tier.name} · ${tier.spec}` })),
               ]}
             />
-            <span className="pc-queen__hint">A ceiling — {t('contributor', { plural: true, lower: true })} never run above this tier. Finer per-tier models: the Model tiers section above.</span>
+            <span className="pc-queen__hint">Workers never use a tier above this selection.</span>
           </div>
 
           {/* Idle activities */}
           <div className="pc-queen__knob">
             <div className="pc-queen__knobhead">
               <Moon size={11} aria-hidden />
-              <span className="pc-queen__knoblabel">Idle activities</span>
-              <span className="pc-queen__count">when she has nothing to place</span>
+              <span className="pc-queen__knoblabel">Background work</span>
+              <span className="pc-queen__count">when idle</span>
             </div>
             <div className="pc-queen__toggles">
               {IDLE_KINDS.map((kind) => {
@@ -278,29 +278,27 @@ export default function ThrottleSection({
                 const label = kind === 'scout' ? t('scout') : IDLE_LABEL[kind];
                 return (
                   <label key={kind} className={`pc-queen__toggle${on ? '' : ' pc-queen__toggle--off'}`}>
-                    <Checkbox className="pc-queen__check" checked={on} disabled={busy} ariaLabel={`${label} idle activity`} onChange={(c) => onToggleIdle(kind, c)} />
+                    <Checkbox className="pc-queen__switch" checked={on} disabled={busy} ariaLabel={`${label} idle activity`} onChange={(c) => onToggleIdle(kind, c)} />
                     <span>{label}</span>
                   </label>
                 );
               })}
             </div>
-            <span className="pc-queen__hint">On by default — uncheck to stop that idle spend.</span>
           </div>
 
           {/* Auto scale-out */}
           <div className="pc-queen__knob">
             <div className="pc-queen__knobhead">
               <TrendingUp size={11} aria-hidden />
-              <span className="pc-queen__knoblabel">Auto scale-out</span>
+              <span className="pc-queen__knoblabel">Grow account pool</span>
               <span className={`pc-queen__knobbadge${autoScaleOut === false ? ' pc-queen__knobbadge--on' : ''}`}>
                 {autoScaleOut === false ? 'disabled' : 'default'}
               </span>
             </div>
-            <label className="pc-queen__toggle">
-              <Checkbox className="pc-queen__check" checked={autoScaleOut !== false} disabled={busy} ariaLabel="Auto scale-out the account pool" onChange={(c) => onSetAutoScaleOut(c)} />
-              <span>Auto-add accounts on sustained exhaustion</span>
+            <label className="pc-queen__toggle pc-queen__toggle--row">
+              <span>Add accounts when capacity runs out</span>
+              <Checkbox className="pc-queen__switch" checked={autoScaleOut !== false} disabled={busy} ariaLabel="Auto scale-out the account pool" onChange={(c) => onSetAutoScaleOut(c)} />
             </label>
-            <span className="pc-queen__hint">On by default. Off ⇒ no automatic account-pool growth (manual scale-out still works).</span>
           </div>
         </div>
       )}

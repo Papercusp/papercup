@@ -124,6 +124,7 @@ export function synthesizeRecordedRosterRows(
       // ended_at IS NULL is the authoritative liveness signal).
       heartbeatAt: r.startedAt,
       lastActiveAt: null,
+      intentDeclaredAt: null, // no declared intent yet — unaddressable-until-registered
       agentRole: r.role,
       // adv_sessions carries no hive attribution yet → the synthesized leg is
       // workspace/all-scope only (P-002 adds hive_slug to the recording so the
