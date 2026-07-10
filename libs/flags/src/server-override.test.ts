@@ -44,12 +44,14 @@ beforeEach(() => {
   initFlagBackend(null);
   setFlagOverridesForTest(null);
   delete process.env[ENV_KEY];
+  delete process.env.PAPERCUSP_FLAG_OVERRIDE_CACHE_TTL_MS;
 });
 
 afterEach(() => {
   initFlagOverrideStore(null);
   setFlagOverridesForTest(null);
   delete process.env[ENV_KEY];
+  delete process.env.PAPERCUSP_FLAG_OVERRIDE_CACHE_TTL_MS;
 });
 
 describe('flag override store', () => {
@@ -122,6 +124,17 @@ describe('flag override store', () => {
     await getFlag(KEY, 'u');
     await getFlag(KEY, 'u');
     expect(loads()).toBe(1);
+  });
+
+  it('the read-cache TTL is env-configurable — TTL=0 disables caching so every getFlag re-reads (WI-3800: lets a high-throughput process tune down its override-read churn)', async () => {
+    process.env.PAPERCUSP_FLAG_OVERRIDE_CACHE_TTL_MS = '0';
+    const { store, loads } = makeFakeStore({ [KEY]: true });
+    initFlagOverrideStore(store); // clears the cache
+    await getFlag(KEY, 'u');
+    await getFlag(KEY, 'u');
+    await getFlag(KEY, 'u');
+    // TTL 0 ⇒ the cache entry is never within-window ⇒ each call re-hits the store.
+    expect(loads()).toBe(3);
   });
 
   it('partitions the read-cache per scope — no cross-workspace bleed', async () => {
