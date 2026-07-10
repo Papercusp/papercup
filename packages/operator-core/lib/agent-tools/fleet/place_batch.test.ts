@@ -6,6 +6,7 @@ import placeBatchTool, {
   currentFilesFromLivePresence,
   groupPlacementsForTopicSubscribe,
   type ExecuteBatchDeps,
+  type PlacementResult,
 } from './place_batch';
 import type { PlacementDecision, BatchPlacementPlan } from '../../fleet/batch-placement';
 import type { PlacementTask } from '../../fleet/placement-affinity';
@@ -72,7 +73,7 @@ describe('groupPlacementsForTopicSubscribe — EI-1611 same-plan cohort grouping
     const placements = [
       { task: 'WI-1', action: 'spawned', spawn_id: 's-fresh', reason: 'r' },
       { task: 'WI-2', action: 'injected', bee: 's-bee', rank: 0, reason: 'r' },
-    ];
+    ] as PlacementResult[];
     expect(groupPlacementsForTopicSubscribe(decisions, placements)).toEqual([
       { topic: 'plan:p-x', planSlug: 'p-x', ownerIds: ['s-bee', 's-fresh'] },
     ]);
@@ -80,7 +81,7 @@ describe('groupPlacementsForTopicSubscribe — EI-1611 same-plan cohort grouping
 
   it('a lone placement on its plan is NOT a group (needs >=2 distinct bees)', () => {
     const decisions = [{ task: task('WI-1', { planSlug: 'p-x' }), disposition: 'spawn', reason: 'r' }] as PlacementDecision[];
-    const placements = [{ task: 'WI-1', action: 'spawned', spawn_id: 's-fresh', reason: 'r' }];
+    const placements = [{ task: 'WI-1', action: 'spawned', spawn_id: 's-fresh', reason: 'r' }] as PlacementResult[];
     expect(groupPlacementsForTopicSubscribe(decisions, placements)).toEqual([]);
   });
 
@@ -92,7 +93,7 @@ describe('groupPlacementsForTopicSubscribe — EI-1611 same-plan cohort grouping
     const placements = [
       { task: 'WI-1', action: 'spawned', spawn_id: 's-a', reason: 'r' },
       { task: 'WI-2', action: 'spawned', spawn_id: 's-b', reason: 'r' },
-    ];
+    ] as PlacementResult[];
     expect(groupPlacementsForTopicSubscribe(decisions, placements)).toEqual([]);
   });
 
@@ -104,7 +105,7 @@ describe('groupPlacementsForTopicSubscribe — EI-1611 same-plan cohort grouping
     const placements = [
       { task: 'WI-1', action: 'spawned', spawn_id: 's-fresh', reason: 'r' },
       { task: 'WI-2', action: 'unplaced', reason: 'no headroom' },
-    ];
+    ] as PlacementResult[];
     // Only ONE bee actually landed on plan p-x this batch — not a group.
     expect(groupPlacementsForTopicSubscribe(decisions, placements)).toEqual([]);
   });
@@ -121,7 +122,7 @@ describe('groupPlacementsForTopicSubscribe — EI-1611 same-plan cohort grouping
       { task: 'WI-2', action: 'spawned', spawn_id: 's-2', reason: 'r' },
       { task: 'WI-3', action: 'spawned', spawn_id: 's-3', reason: 'r' },
       { task: 'WI-4', action: 'spawned', spawn_id: 's-4', reason: 'r' },
-    ];
+    ] as PlacementResult[];
     expect(groupPlacementsForTopicSubscribe(decisions, placements).map((g) => g.topic)).toEqual(['plan:p-a', 'plan:p-b']);
   });
 });

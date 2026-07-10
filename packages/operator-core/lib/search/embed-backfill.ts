@@ -228,6 +228,16 @@ export const TARGETS: BackfillTarget[] = [
     bodySql: `COALESCE(title, '') || E'\\n' || left(COALESCE(content, ''), 2000)`,
     keyCols: ['source_key', 'slug', 'anchor'],
   },
+  // P-010 (shared-embedding-sidecar-and-enrichment-2026-07-10): the plan
+  // store (migration 553). plans:search gains a semantic leg and plans:new's
+  // similar_exists token guard gains cosine confirmation — the token matcher
+  // false-flagged topically-adjacent but distinct efforts.
+  {
+    table: 'harness_shared.harness_plans',
+    embedCol: 'embedding',
+    bodySql: `COALESCE(title, '') || E'\\n' || left(COALESCE(content, ''), 2000)`,
+    keyCols: ['workspace_id', 'harness_slug', 'plan_slug'],
+  },
 ];
 
 /**

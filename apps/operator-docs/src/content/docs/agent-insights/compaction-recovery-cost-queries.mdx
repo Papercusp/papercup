@@ -77,10 +77,14 @@ WHERE tool_name = 'coord:orient'
 ```
 
 <Aside type="caution">
-As of 2026-07-05 this reads ~1 `afterCompaction` orient out of ~950 — the flag
-is new and adoption is near-zero. That gap **is** the finding: the lever exists
-but isn't being used yet. Re-run after the prompt guidance propagates through a
-deploy to confirm it climbs.
+As of 2026-07-05 this read ~1 `afterCompaction` orient out of ~950 — the flag
+was new and adoption was near-zero.
+
+**Update 2026-07-10:** adoption climbed sharply once the prompt guidance
+propagated through a deploy — 521 of 903 `coord:orient` calls in the trailing
+2 days carried `afterCompaction` (194 distinct agents), vs. the ~0.1% at
+discovery. The lever went from "exists but unused" to majority-adopted in five
+days; re-run periodically to confirm it holds as new agent cohorts spawn.
 </Aside>
 
 ## 3. Self-recall usage — is `sessions:search` actually being reached for?
@@ -103,10 +107,15 @@ ORDER BY calls DESC;
 ```
 
 <Aside type="note">
-`sessions:*` are new tools; expect zero rows until the feature is exercised on
-the port your telemetry aggregates (`:3070` serves green `main`, not staging
-edits). Non-zero, growing `self_recall` is the success signal — agents
-retrieving instead of re-deriving.
+At discovery (2026-07-05) `sessions:*` were new tools and expected zero rows
+until exercised on the port telemetry aggregates (`:3070` serves green `main`,
+not staging edits).
+
+**Update 2026-07-10:** real usage now, over the trailing 7 days —
+`sessions:search` 79 calls / 19 agents (38 `session:'self'`, 55
+`mode:'verbatim'`), `sessions:read` 64 calls / 6 agents, `sessions:list` 5
+calls / 2 agents. Non-zero, growing `self_recall` is the success signal —
+agents retrieving instead of re-deriving.
 </Aside>
 
 ## 4. The lossy-substring-grep tail should shrink
@@ -128,6 +137,13 @@ WHERE invoked_at >= now() - interval '30 days'
 GROUP BY day
 ORDER BY day;
 ```
+
+<Aside type="note">
+**Update 2026-07-10:** over the trailing 7 days, `omp:sessions op=search` and
+`dev:claude_session op=search` both read 0, against 79 `sessions:search`
+calls — the deprecated lossy-grep tail has fully drained onto the indexed
+path.
+</Aside>
 
 ## Caveats — what tool_invocations does NOT capture
 

@@ -123,8 +123,8 @@ describe('sendCrossPotAsk (composition)', () => {
     expect(res.correlationId).toBe('corr-1');
     expect(res.state).toBe('sent');
     expect(res.delivered).toBe(true);
-    expect(res.answeredEvent).toBe('cross-pot:answered:corr-1');
-    expect(res.declinedEvent).toBe('cross-pot:declined:corr-1');
+    expect(res.answeredEvent).toBe('cross-hive:answered:corr-1');
+    expect(res.declinedEvent).toBe('cross-hive:declined:corr-1');
     // envelope id === correlation id (so the peer reply correlates back)
     expect(fb.sends).toEqual([{ to: 'peer-pub', kind: 'ask', id: 'corr-1', subject: 's', body: 'b' }]);
     expect(fs.rows).toHaveLength(1);
@@ -218,7 +218,7 @@ describe('pot:ask / pot:request_work / pot:asks (tools)', () => {
       await tool.handler({ pot: 'home', peerPotPubkey: 'peer-pub', subject: 's', body: 'b', workspace: 'ws-1' }, ROOT_CTX),
     );
     expect(res.ok).toBe(true);
-    expect((res.answeredEvent as string).startsWith('cross-pot:answered:')).toBe(true);
+    expect((res.answeredEvent as string).startsWith('cross-hive:answered:')).toBe(true);
     expect(fb.sends[0]).toMatchObject({ to: 'peer-pub', kind: 'ask' });
     expect(fs.rows[0]).toMatchObject({ kind: 'ask', direction: 'out', state: 'sent' });
   });

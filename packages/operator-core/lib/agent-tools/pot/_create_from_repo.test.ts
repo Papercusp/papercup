@@ -571,7 +571,7 @@ describe('defaultCreateMember failure-detail passthrough (WI-1861)', () => {
  * fix in `_create.ts`, which is a distinct branch this bug bypasses entirely).
  */
 describe('defaultCreateMember translates `hive` to harness:create’s real `pot` field (WI-3646 follow-up)', () => {
-  it('passes pot (not pot) through to harness:create, so hive_slug actually gets stamped', async () => {
+  it('passes pot (not hive) through to harness:create, so hive_slug actually gets stamped', async () => {
     vi.resetModules();
     let capturedArgs: Record<string, unknown> | undefined;
     vi.doMock('../harness/create', () => ({

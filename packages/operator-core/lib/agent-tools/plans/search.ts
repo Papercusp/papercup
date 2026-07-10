@@ -18,6 +18,7 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { listPlanRowsMatchingAnyToken, syntheticPlanPath, VALID_PLAN_SLUG } from './source';
 import { parsePlan } from './parser';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
+import { semanticPlanHits } from './semantic-dedup';
 import { harnessArg, harnessScopedCtx, HARNESS_ALL, isAllHarnessSentinel } from '../_harness-scope';
 
 /**
@@ -41,6 +42,13 @@ const argsSchema = z.object({
   includeArchived: z.boolean().optional().describe('Search archived plans too. Default true (the dispersal problem was *unfindable*).'),
   includeLegacy: z.boolean().optional().describe('Search legacy plans (prose only). Default true.'),
   harness: harnessArg,
+  semantic: z
+    .boolean()
+    .optional()
+    .describe(
+      'Merge embedding-cosine hits after the lexical results (up to 3 extras, marked semantic:true). ' +
+        'Default on (off under vitest); false = lexical-only.',
+    ),
 });
 
 interface Hit {
@@ -271,10 +279,43 @@ export default defineTool({
     hits.sort((a, b) => b.score - a.score);
     const trimmed = hits.slice(0, limit);
 
+    // P-010 (shared-embedding-sidecar-and-enrichment-2026-07-10): recall-
+    // additive semantic leg over the migration-553 plan embeddings. Extras are
+    // APPENDED after the lexical hits (never displacing them), capped at 3,
+    // marked semantic:true — a rephrased topic query now finds plans whose
+    // slug/title/content words never matched. Strictly fail-open; inert under
+    // vitest unless semantic:true is forced (WI-3792 load-scar class).
+    const merged: Array<Hit & { semantic?: true; similarity?: number }> = [...trimmed];
+    let semanticHitCount = 0;
+    const semanticOn = args.semantic ?? !process.env.VITEST;
+    if (semanticOn) {
+      try {
+        const sem = await semanticPlanHits(args.query, { ...opts, includeArchived, limit: limit * 2 });
+        if (sem?.length) {
+          const seen = new Set(merged.map((h) => h.plan));
+          for (const h of sem) {
+            if (seen.has(h.slug)) continue;
+            merged.push({
+              plan: h.slug,
+              score: 0,
+              semantic: true,
+              similarity: Math.round(h.similarity * 1000) / 1000,
+              matches: [{ scope: 'title', snippet: h.title ?? h.slug }],
+            });
+            semanticHitCount += 1;
+            if (semanticHitCount >= Math.min(3, limit)) break;
+          }
+        }
+      } catch {
+        // fail-open: the lexical result stands.
+      }
+    }
+
     ctxAny.metadata?.({
       query: args.query,
       scopes,
       count: trimmed.length,
+      ...(semanticHitCount > 0 ? { semanticHitCount } : {}),
       ...(truncated ? { truncatedCandidates: true } : {}),
       ...(crossHarnessHit ? { crossHarnessHit: true } : {}),
     });
@@ -283,7 +324,8 @@ export default defineTool({
       content: [{
         type: 'text' as const,
         text: JSON.stringify({
-          hits: trimmed,
+          hits: merged,
+          ...(semanticHitCount > 0 ? { semanticHitCount } : {}),
           // No silent caps: the candidate prefilter hit its ceiling — ranking
           // covered the first CANDIDATE_LIMIT matching plans only. Narrow the
           // query (or scope by harness) for exhaustive coverage.

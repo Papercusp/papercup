@@ -16,6 +16,17 @@ import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 
 import type { RunReport, SingleRunReport } from '@papercusp/testing-shell/llm';
 
+/**
+ * EI-9319: postgres.js's `sql.json()` param type is a structural JSONValue
+ * (readonly index signature of JSONValue|undefined|function) that our plain
+ * interfaces (PersonaTraits, etc.) and `unknown`-typed helper returns don't
+ * structurally satisfy, even though they ARE valid JSON at runtime — this repo
+ * uses `sql.json()` deliberately here (fresh non-getOrgPg pool; see
+ * agent-insights/postgres-js-jsonb-binding "NOT affected" list), so the fix is
+ * a narrow escape hatch at the call site, not a rewrite to ::jsonb casting.
+ */
+type JSONValueCompat = Parameters<ReturnType<typeof postgres>['json']>[0];
+
 let pool: ReturnType<typeof postgres> | null = null;
 function db() {
   if (!pool) {
@@ -68,16 +79,16 @@ async function persistSingleRun(
       ${s.runId}, ${s.scenarioId}, ${s.scenarioVersion}, 'operator', ${scenarioHash},
       ${s.identityHash}, ${matrixGroupId ?? null}, ${s.matrixIndex ?? null},
       ${rubricVersion}, ${s.sutModel}, ${s.judgeModel},
-      ${s.personaId}, ${sql.json(s.personaTraits)},
+      ${s.personaId}, ${sql.json(s.personaTraits as unknown as JSONValueCompat)},
       ${s.workspaceMode}, ${s.transportMode},
       ${r.status === 'passed' ? 'passed' : r.status === 'errored' ? 'errored' : 'failed'},
       ${s.startedAt}, ${s.finishedAt},
       ${s.totalCostUsd}, ${s.capBreaches},
       ${sql.json(r.judge.scores)}, ${sql.json(findingsCount)},
-      ${transcriptRawBytes}, ${sql.json(normalizeTurns(s.turns))},
-      ${sql.json({ toolInvocations: s.toolInvocations, continueChainRows: s.continueChainRows, ...(s.variantId ? { variantId: s.variantId } : {}) })},
-      ${sql.json({ asserts: 'see-scenario', violations: r.violations })},
-      ${sql.json({ scores: r.judge.scores, findings: r.judge.findings, notes: r.judge.notes, judgeOverruledAssert: r.judge.judgeOverruledAssert, costUsd: r.judge.costUsd })}
+      ${transcriptRawBytes}, ${sql.json(normalizeTurns(s.turns) as unknown as JSONValueCompat)},
+      ${sql.json({ toolInvocations: s.toolInvocations, continueChainRows: s.continueChainRows, ...(s.variantId ? { variantId: s.variantId } : {}) } as unknown as JSONValueCompat)},
+      ${sql.json({ asserts: 'see-scenario', violations: r.violations } as unknown as JSONValueCompat)},
+      ${sql.json({ scores: r.judge.scores, findings: r.judge.findings, notes: r.judge.notes, judgeOverruledAssert: r.judge.judgeOverruledAssert, costUsd: r.judge.costUsd } as unknown as JSONValueCompat)}
     )
   `;
 

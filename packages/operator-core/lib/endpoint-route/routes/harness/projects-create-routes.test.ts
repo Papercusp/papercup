@@ -22,10 +22,10 @@ const createHiveFromRepo = vi.fn();
 const createHiveHarness = vi.fn();
 
 vi.mock('../../../agent-tools/pot/_create_from_repo', () => ({
-  createHiveFromRepo: (...a: unknown[]) => createHiveFromRepo(...a),
+  createPotFromRepo: (...a: unknown[]) => createHiveFromRepo(...a),
 }));
 vi.mock('../../../agent-tools/pot/_create', () => ({
-  createHiveHarness: (...a: unknown[]) => createHiveHarness(...a),
+  createPotHarness: (...a: unknown[]) => createHiveHarness(...a),
 }));
 vi.mock('../../../workspace-registry', () => ({
   activeWorkspaceId: () => 'ws-test',

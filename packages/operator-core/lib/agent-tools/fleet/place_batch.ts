@@ -38,7 +38,7 @@ import type { PlacementTask } from '../../fleet/placement-affinity';
 import type { WakeMode } from '../coordination/wake-mode';
 import { softText, clampText, LIMITS } from '../limits';
 
-interface PlacementResult {
+export interface PlacementResult {
   task: string;
   action: 'spawned' | 'injected' | 'inject-raced' | 'unplaced' | 'deferred' | 'spawn-failed' | 'error';
   bee?: string;

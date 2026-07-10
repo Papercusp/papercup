@@ -195,7 +195,7 @@ describe('loop:soak-report', () => {
       resolvePotHomeSlug: vi.fn(() => 'papercusp'),
     }));
     vi.doMock('../../pot/soak-report', () => ({
-      readHiveSoakReport: vi.fn(async () => ({ potSlug: 'papercusp', ready: false, reasons: ['gate red'] })),
+      readPotSoakReport: vi.fn(async () => ({ potSlug: 'papercusp', ready: false, reasons: ['gate red'] })),
       MIN_SOAK_WINDOW_HOURS: 12,
       MAX_SOAK_WINDOW_HOURS: 24,
     }));
@@ -213,7 +213,7 @@ describe('loop:soak-report', () => {
       resolvePotHomeSlug: vi.fn(() => null),
     }));
     vi.doMock('../../pot/soak-report', () => ({
-      readHiveSoakReport: vi.fn(),
+      readPotSoakReport: vi.fn(),
       MIN_SOAK_WINDOW_HOURS: 12,
       MAX_SOAK_WINDOW_HOURS: 24,
     }));

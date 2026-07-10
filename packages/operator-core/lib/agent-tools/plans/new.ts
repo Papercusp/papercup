@@ -332,13 +332,45 @@ export default defineTool({
     // archived plans count as candidates (a superseded plan on the same
     // topic is exactly the "this exists, continue it instead" signal).
     // Best-effort: an index-read failure never blocks creation.
+    // P-010: token candidates cleared by cosine confirmation are surfaced on
+    // the success payload so the creator sees what was cleared (and can still
+    // continue one of them if the semantic verdict was wrong).
+    let semanticallyCleared: Array<{ slug: string; similarity: number }> = [];
     if (args.force !== true) {
       try {
         const rows = await listPlanIndexRows({
           ...(harnessSlug ? { harnessSlug } : {}),
           includeArchived: true,
         });
-        const similar = findSimilarPlans(dedupTokens(slug, args.title), rows);
+        let similar: Array<SimilarPlan & { similarity?: number }> = findSimilarPlans(
+          dedupTokens(slug, args.title),
+          rows,
+        );
+        // P-010 (shared-embedding-sidecar-and-enrichment-2026-07-10): cosine
+        // CONFIRMATION of the token verdict. The token matcher sees slug+title
+        // tokens only, so topically-adjacent but distinct efforts false-flag
+        // (it flagged this very plan's creation). A flagged candidate whose
+        // migration-553 vector is semantically distant from the proposed
+        // title+body is cleared; no verdict (embedder down, no stored vector,
+        // vitest) keeps the token refusal unchanged — fail-open both ways.
+        if (similar.length > 0) {
+          try {
+            const { confirmSimilarPlans } = await import('./semantic-dedup');
+            const res = await confirmSimilarPlans(
+              { title: args.title, body },
+              similar,
+              harnessSlug ? { harnessSlug } : {},
+            );
+            if (res.verdict) {
+              similar = res.kept;
+              if (res.dropped.length > 0) {
+                semanticallyCleared = res.dropped.map((d) => ({ slug: d.slug, similarity: d.similarity }));
+              }
+            }
+          } catch {
+            /* fail-open: the token verdict stands */
+          }
+        }
         if (similar.length > 0) {
           return {
             content: [
@@ -348,6 +380,7 @@ export default defineTool({
                   error: 'similar_exists',
                   slug,
                   similar,
+                  ...(semanticallyCleared.length > 0 ? { semanticallyCleared } : {}),
                   hint:
                     'Existing plans overlap this topic. Continue one of them (plans:get → set-now/add-item), or re-call with force: true if this is genuinely a new effort.',
                 }),
@@ -462,6 +495,7 @@ export default defineTool({
             slug: value.slug,
             filePath: result.filePath,
             revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+            ...(semanticallyCleared.length > 0 ? { semanticallyCleared } : {}),
             ...parseSummary,
           }),
         },
