@@ -86,7 +86,7 @@ function tryDecodePubkey(idOrSlug: string): Buffer | null {
 
 interface HiveRow {
   workspace_id: string;
-  home_slug: string;
+  pot_home_slug: string;
   public_key: Buffer | Uint8Array;
   keychain_id: string;
   title: string | null;
@@ -98,7 +98,7 @@ interface HiveRow {
 function rowToRecord(r: HiveRow): HiveRecord {
   return {
     workspaceId: r.workspace_id,
-    homeSlug: r.home_slug,
+    homeSlug: r.pot_home_slug,
     pubkeyBase64: Buffer.from(r.public_key).toString('base64'),
     keychainId: r.keychain_id,
     title: r.title,
@@ -112,9 +112,9 @@ function pg(sql?: Sql): Sql {
   return sql ?? getOrgPg().sql;
 }
 
-const COLS = `workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at`;
+const COLS = `workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at`;
 
-/** Get one Hive by its home-slug. */
+/** Get one Hive by its pot-home-slug. */
 export async function getHiveBySlug(
   workspaceId: string,
   homeSlug: string,
@@ -122,7 +122,7 @@ export async function getHiveBySlug(
 ): Promise<HiveRecord | null> {
   const s = pg(sql);
   const rows = (await s.unsafe(
-    `SELECT ${COLS} FROM harness_shared.hives WHERE workspace_id = $1 AND home_slug = $2 LIMIT 1`,
+    `SELECT ${COLS} FROM harness_shared.pots WHERE workspace_id = $1 AND pot_home_slug = $2 LIMIT 1`,
     [workspaceId, homeSlug],
   )) as unknown as HiveRow[];
   return rows[0] ? rowToRecord(rows[0]) : null;
@@ -138,7 +138,7 @@ export async function getHiveByPubkey(
   if (!buf) return null;
   const s = pg(sql);
   const rows = (await s.unsafe(
-    `SELECT ${COLS} FROM harness_shared.hives WHERE workspace_id = $1 AND public_key = $2 LIMIT 1`,
+    `SELECT ${COLS} FROM harness_shared.pots WHERE workspace_id = $1 AND public_key = $2 LIMIT 1`,
     [workspaceId, buf],
   )) as unknown as HiveRow[];
   return rows[0] ? rowToRecord(rows[0]) : null;
@@ -160,7 +160,7 @@ export async function getHive(
 export async function listHives(workspaceId: string, sql?: Sql): Promise<HiveRecord[]> {
   const s = pg(sql);
   const rows = (await s.unsafe(
-    `SELECT ${COLS} FROM harness_shared.hives WHERE workspace_id = $1 ORDER BY created_at DESC`,
+    `SELECT ${COLS} FROM harness_shared.pots WHERE workspace_id = $1 ORDER BY created_at DESC`,
     [workspaceId],
   )) as unknown as HiveRow[];
   return rows.map(rowToRecord);
@@ -181,9 +181,9 @@ export async function insertHiveIfAbsent(
   const pk = pubkeyToBytea(input.pubkeyBase64);
   const now = Date.now();
   const inserted = (await s.unsafe(
-    `INSERT INTO harness_shared.hives (${COLS})
+    `INSERT INTO harness_shared.pots (${COLS})
        VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
-     ON CONFLICT (workspace_id, home_slug) DO NOTHING
+     ON CONFLICT (workspace_id, pot_home_slug) DO NOTHING
      RETURNING ${COLS}`,
     [
       input.workspaceId,
@@ -226,16 +226,16 @@ export async function upsertRemoteHiveIdentity(
   const now = Date.now();
   const repairKeychainIds = (input.repairKeychainIds ?? []).filter(Boolean);
   const rows = (await s.unsafe(
-    `INSERT INTO harness_shared.hives (${COLS})
+    `INSERT INTO harness_shared.pots (${COLS})
        VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
-     ON CONFLICT (workspace_id, home_slug) DO UPDATE
+     ON CONFLICT (workspace_id, pot_home_slug) DO UPDATE
        SET public_key = EXCLUDED.public_key,
            keychain_id = EXCLUDED.keychain_id,
-           title = COALESCE(EXCLUDED.title, harness_shared.hives.title),
-           description = COALESCE(EXCLUDED.description, harness_shared.hives.description),
+           title = COALESCE(EXCLUDED.title, harness_shared.pots.title),
+           description = COALESCE(EXCLUDED.description, harness_shared.pots.description),
            updated_at = EXCLUDED.updated_at
-       WHERE harness_shared.hives.keychain_id LIKE 'remote:%'
-          OR harness_shared.hives.keychain_id = ANY($8::text[])
+       WHERE harness_shared.pots.keychain_id LIKE 'remote:%'
+          OR harness_shared.pots.keychain_id = ANY($8::text[])
      RETURNING ${COLS}`,
     [
       input.workspaceId,
@@ -270,11 +270,11 @@ export async function updateHiveMeta(
 ): Promise<HiveRecord | null> {
   const s = pg(sql);
   const rows = (await s.unsafe(
-    `UPDATE harness_shared.hives
+    `UPDATE harness_shared.pots
         SET title = COALESCE($3, title),
             description = COALESCE($4, description),
             updated_at = $5
-      WHERE workspace_id = $1 AND home_slug = $2
+      WHERE workspace_id = $1 AND pot_home_slug = $2
       RETURNING ${COLS}`,
     [workspaceId, homeSlug, meta.title ?? null, meta.description ?? null, Date.now()],
   )) as unknown as HiveRow[];
@@ -289,8 +289,8 @@ export async function deleteHive(
 ): Promise<boolean> {
   const s = pg(sql);
   const rows = (await s.unsafe(
-    `DELETE FROM harness_shared.hives WHERE workspace_id = $1 AND home_slug = $2 RETURNING home_slug`,
+    `DELETE FROM harness_shared.pots WHERE workspace_id = $1 AND pot_home_slug = $2 RETURNING pot_home_slug`,
     [workspaceId, homeSlug],
-  )) as unknown as Array<{ home_slug: string }>;
+  )) as unknown as Array<{ pot_home_slug: string }>;
   return rows.length > 0;
 }

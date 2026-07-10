@@ -89,7 +89,7 @@ export async function setClaimSpec(
   const idOnly = isIdOnlySelector(v.spec);
 
   // L9 (cross-machine-coord-parity-and-trust-2026-07-01 P-058, audit D-013):
-  // TOMBSTONE ON SCOPE-DOWNGRADE. bee_claim_specs is keyed (workspace_id, bee_id)
+  // TOMBSTONE ON SCOPE-DOWNGRADE. cup_claim_specs is keyed (workspace_id, bee_id)
   // with no hive component, so a plain upsert that RE-HOMES a bee's spec to a
   // different hive scope (H_old → H_new, or H_old → NULL/operator-local) re-homes
   // the LOCAL row but STRANDS the stale row on H_old's peers: the UPDATE capture
@@ -106,7 +106,7 @@ export async function setClaimSpec(
   // table's PK is unjustified risk for this LOW item; the tombstone is the real
   // strand fix.)
   const prior = (await sql`
-    SELECT harness_slug, revision FROM harness_shared.bee_claim_specs
+    SELECT harness_slug, revision FROM harness_shared.cup_claim_specs
      WHERE workspace_id = ${ws} AND bee_id = ${args.cupId} LIMIT 1`) as {
     harness_slug: string | null;
     revision: number;
@@ -119,9 +119,9 @@ export async function setClaimSpec(
     // together, so a bee never observes a no-spec window mid-re-home.
     const nextRev = Math.max(prior[0]!.revision + 1, v.spec.revision);
     const rows = (await sql.begin(async (tx) => {
-      await tx`DELETE FROM harness_shared.bee_claim_specs WHERE workspace_id = ${ws} AND bee_id = ${args.cupId}`;
+      await tx`DELETE FROM harness_shared.cup_claim_specs WHERE workspace_id = ${ws} AND bee_id = ${args.cupId}`;
       return (await tx`
-        INSERT INTO harness_shared.bee_claim_specs (workspace_id, bee_id, spec, revision, id_only, updated_by, harness_slug, updated_at)
+        INSERT INTO harness_shared.cup_claim_specs (workspace_id, bee_id, spec, revision, id_only, updated_by, harness_slug, updated_at)
         VALUES (${ws}, ${args.cupId}, ${JSON.stringify(v.spec)}::text::jsonb, ${nextRev}, ${idOnly}, ${args.updatedBy ?? null}, ${potSlug}, now())
         RETURNING revision`) as { revision: number }[];
     })) as unknown as { revision: number }[];
@@ -129,11 +129,11 @@ export async function setClaimSpec(
   }
 
   const rows = (await sql`
-    INSERT INTO harness_shared.bee_claim_specs (workspace_id, bee_id, spec, revision, id_only, updated_by, harness_slug, updated_at)
+    INSERT INTO harness_shared.cup_claim_specs (workspace_id, bee_id, spec, revision, id_only, updated_by, harness_slug, updated_at)
     VALUES (${ws}, ${args.cupId}, ${JSON.stringify(v.spec)}::text::jsonb, ${v.spec.revision}, ${idOnly}, ${args.updatedBy ?? null}, ${potSlug}, now())
     ON CONFLICT (workspace_id, bee_id) DO UPDATE SET
       spec = EXCLUDED.spec,
-      revision = GREATEST(harness_shared.bee_claim_specs.revision + 1, EXCLUDED.revision),
+      revision = GREATEST(harness_shared.cup_claim_specs.revision + 1, EXCLUDED.revision),
       id_only = EXCLUDED.id_only,
       updated_by = EXCLUDED.updated_by,
       harness_slug = EXCLUDED.harness_slug,
@@ -171,7 +171,7 @@ export async function getClaimSpec(
   const ws = args.workspaceId ?? DEFAULT_COORD_WORKSPACE;
   const sql = sqlOverride ?? getOrgPg().sql;
   const rows = (await sql`
-    SELECT spec FROM harness_shared.bee_claim_specs
+    SELECT spec FROM harness_shared.cup_claim_specs
      WHERE workspace_id = ${ws} AND bee_id = ${args.cupId} LIMIT 1`) as { spec: unknown }[];
   if (rows.length > 0) {
     const v = validateClaimSpec(rows[0]!.spec);
@@ -186,7 +186,7 @@ export async function getClaimSpec(
     const membership = await latestFleetMembership(ws, args.cupId);
     if (membership?.fleetSlug) {
       const frows = (await sql`
-        SELECT spec FROM harness_shared.bee_claim_specs
+        SELECT spec FROM harness_shared.cup_claim_specs
          WHERE workspace_id = ${ws} AND bee_id = ${fleetSpecBeeKey(membership.fleetSlug)} LIMIT 1`) as {
         spec: unknown;
       }[];
@@ -289,7 +289,7 @@ export async function getNextForBee(args: {
 /**
  * EI-7678: the READ counterpart to setClaimSpec — a bee's/fleet's claim spec was write-only
  * from the tool surface (verifying a live spec meant grepping source for the zod grammar, or a
- * raw `bee_claim_specs` query). Full record, not just the resolved spec: which row actually
+ * raw `cup_claim_specs` query). Full record, not just the resolved spec: which row actually
  * answered (a per-bee spec, an inherited fleet spec, or neither ⇒ DEFAULT_CLAIM_SPEC), plus its
  * revision/updatedBy/updatedAt/harnessSlug so a leader can confirm a re-steer actually landed
  * before relying on it.
@@ -322,7 +322,7 @@ export async function getClaimSpecRecord(
   const sql = sqlOverride ?? getOrgPg().sql;
   const rows = (await sql`
     SELECT spec, revision, updated_by, updated_at, harness_slug
-      FROM harness_shared.bee_claim_specs
+      FROM harness_shared.cup_claim_specs
      WHERE workspace_id = ${ws} AND bee_id = ${args.cupId} LIMIT 1`) as Array<{
     spec: unknown;
     revision: number;
@@ -349,7 +349,7 @@ export async function getClaimSpecRecord(
     if (membership?.fleetSlug) {
       const frows = (await sql`
         SELECT spec, revision, updated_by, updated_at, harness_slug
-          FROM harness_shared.bee_claim_specs
+          FROM harness_shared.cup_claim_specs
          WHERE workspace_id = ${ws} AND bee_id = ${fleetSpecBeeKey(membership.fleetSlug)} LIMIT 1`) as Array<{
         spec: unknown;
         revision: number;
@@ -404,7 +404,7 @@ export async function getClaimSpecHeadsForBees(
   const sql = sqlOverride ?? getOrgPg().sql;
   const rows = (await sql`
     SELECT DISTINCT ON (bee_id) bee_id, spec->>'specId' AS spec_id, revision
-      FROM harness_shared.bee_claim_specs
+      FROM harness_shared.cup_claim_specs
      WHERE bee_id = ANY(${beeIds})
        ${workspaceId ? sql`AND workspace_id = ${workspaceId}` : sql``}
      ORDER BY bee_id, revision DESC`) as Array<{ bee_id: string; spec_id: string | null; revision: number }>;

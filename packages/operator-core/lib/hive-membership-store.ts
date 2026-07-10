@@ -57,7 +57,7 @@ export interface UpsertHiveMemberInput {
 
 interface HiveMemberPgRow {
   workspace_id: string;
-  hive_home_slug: string;
+  pot_home_slug: string;
   github_user_id: string | number;
   github_username: string;
   display_name: string | null;
