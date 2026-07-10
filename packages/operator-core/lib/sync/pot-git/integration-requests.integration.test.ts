@@ -66,13 +66,22 @@ let db: FreshPgDb;
 beforeAll(async () => {
   db = await createFreshPgDb('intreq');
   await db.sql.unsafe(stripMeta(readFileSync(MIGRATION, 'utf8')));
-  // D-007 pot-rename: mig 441 creates hive_integration_requests.hive_slug; mig 523 renamed
-  // it → pot_slug (dual-write, table still hive_integration_requests); mig 554 (Slice H
-  // Phase 1) renames the TABLE itself to pot_integration_requests. Replaying only 441
-  // predates all of that, so apply 523's column patch + 554's table rename in-place.
+  // D-007 pot-rename: mig 441 creates hive_integration_requests.hive_slug (PK incl.
+  // hive_slug); mig 523 adds pot_slug (dual-write) AND swaps the PK to key on pot_slug
+  // instead (table still hive_integration_requests); mig 554 (Slice H Phase 1) renames the
+  // TABLE itself to pot_integration_requests. Replaying only 441 predates all of that, so
+  // apply 523's column-add + PK-swap + 554's table rename in-place. The PK swap is
+  // load-bearing: the accessor's `ON CONFLICT (workspace_id, pot_slug, repo_key,
+  // device_pubkey, head_sha)` targets a constraint over THAT exact column tuple — an
+  // ADD-COLUMN-only patch (no PK swap) leaves the PK on hive_slug and 554's later `RENAME
+  // CONSTRAINT hive_integration_requests_pkey TO pot_integration_requests_pkey` just
+  // renames the STILL-hive_slug-keyed PK, so ON CONFLICT has no matching constraint to
+  // target (found via WI-3465 integration-test verification 2026-07-10).
   await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests ADD COLUMN IF NOT EXISTS pot_slug text`);
   await db.sql.unsafe(`UPDATE harness_shared.hive_integration_requests SET pot_slug = hive_slug WHERE pot_slug IS NULL`);
   await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests ALTER COLUMN pot_slug SET NOT NULL`);
+  await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests DROP CONSTRAINT hive_integration_requests_pkey`);
+  await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests ADD CONSTRAINT hive_integration_requests_pkey PRIMARY KEY (workspace_id, pot_slug, repo_key, device_pubkey, head_sha)`);
   await db.sql.unsafe(stripMeta(readFileSync(MIGRATION_554, 'utf8')));
 }, 120_000);
 

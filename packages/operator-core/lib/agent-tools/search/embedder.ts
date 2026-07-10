@@ -40,6 +40,7 @@ import { embedAdmission, headersToRecord, retryAfterMs } from '../../memory/embe
 import {
   resolveEmbedderWith,
   readEmbedderPreference,
+  proseSurfacePreference,
   resolveOpenAiKey,
   localAvailable,
   isOpenAiEmbedInCooldown,
@@ -138,14 +139,10 @@ export async function buildQueryEmbedderResolved(
 ): Promise<ResolvedQueryEmbedder | null> {
   try {
     const acquire = resolveEmbedderWith({
-      // P-015 harrier default flip + P-006 verdict (mirrors
-      // resolveBackfillEmbedder): harrier is memory-side only — under a
-      // 'harrier' preference the QUERY side must keep ranking in the gemma
-      // space the vector(384) stored vectors live in, not dims-guard off.
-      readPreference: async () => {
-        const p = await readEmbedderPreference();
-        return p === 'harrier' ? 'gemma' : p;
-      },
+      // P-015 harrier default flip: the QUERY side must keep ranking in the
+      // gemma space the vector(384) stored vectors live in, not dims-guard
+      // off — see proseSurfacePreference (memory/configure.ts).
+      readPreference: async () => proseSurfacePreference(await readEmbedderPreference()),
       resolveKey: resolveOpenAiKey,
       localInstalled: localAvailable,
       isOpenAiRecentlyExhausted: isOpenAiEmbedInCooldown,

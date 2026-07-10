@@ -91,10 +91,16 @@ describe('Leg D chain (P-305): integrator-tick → real PG queue receipt → wor
     db = await createFreshPgDb('legd');
     await db.sql.unsafe(stripMeta(readFileSync(MIGRATION, 'utf8')));
     // mig 506/523 pot-rename + mig 554 (Slice H Phase 1) table rename predate a
-    // hand-applied 441 replay — align column shape + table name in-place.
+    // hand-applied 441 replay — align column shape + table name in-place. The PK swap
+    // (hive_slug -> pot_slug) is load-bearing: the accessor's ON CONFLICT targets a
+    // constraint over the pot_slug tuple; an ADD-COLUMN-only patch leaves the PK on
+    // hive_slug and 554's RENAME CONSTRAINT just renames the still-hive_slug-keyed PK
+    // (found via WI-3465 integration-test verification 2026-07-10).
     await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests ADD COLUMN IF NOT EXISTS pot_slug text`);
     await db.sql.unsafe(`UPDATE harness_shared.hive_integration_requests SET pot_slug = hive_slug WHERE pot_slug IS NULL`);
     await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests ALTER COLUMN pot_slug SET NOT NULL`);
+    await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests DROP CONSTRAINT hive_integration_requests_pkey`);
+    await db.sql.unsafe(`ALTER TABLE harness_shared.hive_integration_requests ADD CONSTRAINT hive_integration_requests_pkey PRIMARY KEY (workspace_id, pot_slug, repo_key, device_pubkey, head_sha)`);
     await db.sql.unsafe(stripMeta(readFileSync(MIGRATION_554, 'utf8')));
 
     root = await mkdtemp(join(tmpdir(), 'legd-'));

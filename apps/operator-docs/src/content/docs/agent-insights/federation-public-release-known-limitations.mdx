@@ -255,9 +255,37 @@ distinct device pubkeys, each needing its own membership admission.
 
 The dogfood per-owner pot solves the same-owner case (Solution C,
 `harness/papercusp-pot-share.ts`: a per-owner private identity gist + an
-owner-signed allowlist policy auto-admits the owner's login), but the
-**two-device data-merge has only been single-box-smoke-verified, never witnessed
-live with a real second device.** The stricter "private key never leaves the
+owner-signed allowlist policy auto-admits the owner's login).
+
+**UPDATE 2026-07-10 (WI-3546 / p2p-rest-lanes-2026-07-09 P-009): the two-device
+data-merge is now WITNESSED LIVE, BOTH directions, with a real second device** —
+superseding the prior "only single-box-smoke-verified, never witnessed live"
+gap. Rig: Linux tower (`main-server-Precision-7865-Tower-marsh-office`) ↔ mac VM
+(`aviweiss@172.31.44.2`), one owner identity, both device pubkeys admitted (the
+VM's registry row was backfilled to `harness_kind:'hive'` / `remote_hive:true`
+per **WI-3891** so `isRegisteredHive` flips true). A genuine coord write on each
+side federated and merged on the other, attributed by author pubkey + machine,
+verified by direct `psql` on BOTH boxes (not a peer report), sustained (paired
+markers ~3.5 min apart, no re-freeze):
+
+- **VM→tower:** tower `harness_shared.coord_event_log` rows **463624** (22:47:13Z)
+  + **463662** (22:50:45Z), `origin='remote'`, `author_pubkey ef7a8160…` (the VM's
+  writer log), payload = the VM-authored `VMREAL20260710-2246` markers — landing
+  **8h15m past the prior freeze** (id 458509, 10:32:45 EDT).
+- **tower→VM:** the VM's OWN `coord_event_log` rows **415** (22:47:19Z) + **419**
+  (22:50:51Z), `origin='remote'`, `author_pubkey 5b00878b…` (the tower's writer
+  log), payload = `coord:receipt` fed_events self-identifying
+  `machine:main-server-Precision-7865-Tower-marsh-office`, `delivered:true`.
+
+> **Do NOT use `probe:emit` / `harness_shared.federation_probes` hop-advance as
+> the live-federation discriminant (WI-3962).** `probe:emit` only stamps the
+> `federation_probes` side-table and `probe:record-hop` was never wired into the
+> real pipeline stages, so a probe stalls at `captured` forever regardless of
+> actual health — an unconditional false-NO-GO. Read live federation health from
+> fresh `origin='remote'` `coord_event_log` rows + `substrate_merge_cursor`
+> advancement, as above.
+
+The stricter "private key never leaves the
 creating device" remote-JOIN variant (share only the pubkey) is deliberately not
 built. The historical phase1b multi-device collision (contributor-file login-key
 overwrite) is *obsolete* — admission is now keyed by the stable numeric

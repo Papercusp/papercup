@@ -38,12 +38,13 @@ describe('queryNamesForTriggerEvent', () => {
     );
   });
 
-  it('maps hive_settings → hive.steering (the federated steering-write refresh, queen-steering-panel C-1)', () => {
-    // A steering write lands in hive_settings (owner-steering:* keys); the capture
+  it('maps pot_settings → hive.steering (the federated steering-write refresh, queen-steering-panel C-1)', () => {
+    // A steering write lands in pot_settings (owner-steering:* keys; renamed from
+    // hive_settings by WI-3953 cup-lexicon rename, migration 557); the capture
     // trigger fires this event so a FEDERATED write from a peer Swarm refreshes the
     // 👑 Queen tab's hive.steering query — the half pot:set-steering's explicit
     // notifySyncInvalidate does NOT cover (a remote write never runs that handler).
-    expect(queryNamesForTriggerEvent('harness_shared.hive_settings.changed')).toEqual(['hive.steering']);
+    expect(queryNamesForTriggerEvent('harness_shared.pot_settings.changed')).toEqual(['hive.steering']);
   });
 
   it('maps harness_plans → the schedule queries (data-sync-push-completion P-002)', () => {

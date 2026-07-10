@@ -113,8 +113,8 @@ export async function cleanupPlans(
   // Drop the synthetic Hive-home identity registerHarnessProject seeded, so a
   // run leaves no trace in harness_shared.hives either.
   await admin`
-    DELETE FROM harness_shared.hives
-     WHERE workspace_id = ${workspaceId} AND home_slug = ${harnessSlug}
+    DELETE FROM harness_shared.pots
+     WHERE workspace_id = ${workspaceId} AND pot_home_slug = ${harnessSlug}
   `.catch(() => {});
 }
 
@@ -148,11 +148,11 @@ export async function registerHarnessProject(
     ON CONFLICT DO NOTHING
   `;
   await admin`
-    INSERT INTO harness_shared.hives
-      (workspace_id, home_slug, public_key, keychain_id, created_at, updated_at)
+    INSERT INTO harness_shared.pots
+      (workspace_id, pot_home_slug, public_key, keychain_id, created_at, updated_at)
     VALUES
       (${workspaceId}, ${harnessSlug}, gen_random_bytes(32), ${'zzz-test-hive-' + harnessSlug}, 0, 0)
-    ON CONFLICT (workspace_id, home_slug) DO NOTHING
+    ON CONFLICT (workspace_id, pot_home_slug) DO NOTHING
   `;
 }
 

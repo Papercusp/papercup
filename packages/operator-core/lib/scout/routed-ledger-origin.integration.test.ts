@@ -15,7 +15,10 @@
  *    back with the grade — so an SU-originated idea earns a grade slot + priming;
  *  - created_by (migration 558, su-ideate-learning-substrate P-001): persisted for the
  *    su-ideate writer, NULL for scout writers, mapped to RoutedIdeaProvenance.createdBy,
- *    and NEVER erased by a provenance-less upsert (a re-route keeps the originator).
+ *    and NEVER erased by a provenance-less upsert (a re-route keeps the originator);
+ *  - getScoutLensOutcomes — the lens-weight LEARNER read (su-ideate-learning-substrate
+ *    P-002 / D-002 guard): its default origin='scout' report never counts a su-ideate
+ *    row even when that row carries a REAL CreativeLens.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../../test/_org-test-db';
@@ -26,7 +29,7 @@ vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
 // import — mock the SSE seam so it is a no-op under test.
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 
-const { recordRoutedIdea, readRoutedIdeas, gradeRoutedIdea } = await import('./routed-ledger');
+const { recordRoutedIdea, readRoutedIdeas, gradeRoutedIdea, getScoutLensOutcomes } = await import('./routed-ledger');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 const WS = 'ws-scout-origin-test';
@@ -119,5 +122,14 @@ describe('scout routed-ledger ORIGIN dimension (real PG, migration 470)', () => 
     const rows = await db.adminSql<{ created_by: string | null }[]>`
       SELECT created_by FROM harness_shared.scout_routed_ideas WHERE idea_id = 'EI-su-1'`;
     expect(rows[0]?.created_by).toBe('su-test-owner-1');
+  });
+
+  it("getScoutLensOutcomes' DEFAULT report never counts a REAL-lens su-ideate row (P-002 / D-002 guard)", async () => {
+    const report = await getScoutLensOutcomes({ workspaceId: WS, harnessSlug: HARNESS });
+    // Exactly ONE scout-origin 'analogical' idea exists in the fixture; the su-ideate row
+    // deliberately shares that REAL lens, so any origin leak into the lens-weight learner
+    // (the D-002 partition failing) would double these counts and skew the diversity floor.
+    expect(report.total).toBe(1);
+    expect(report.byLens.analogical.routed).toBe(1);
   });
 });

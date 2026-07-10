@@ -42,7 +42,7 @@ import { DEFAULT_MAX_OPS_PER_AUTHOR } from './read-merge';
 /** The tables backfilled, paired with their key column (the outbox `key` ==
  *  feature_id / issue_id / …, mirroring the capture trigger) and an OPTIONAL scope
  *  column (the column matched against this harness's slug; default `harness_slug`).
- *  A Hive-scoped table whose scope column is `hive_home_slug` (not `harness_slug`)
+ *  A Hive-scoped table whose scope column is `pot_home_slug` (not `harness_slug`)
  *  supplies it explicitly. */
 const BACKFILL_TARGETS: ReadonlyArray<readonly [table: string, keyCol: string, scopeCol?: string]> = [
   ['harness_features_consolidated', 'feature_id'],
@@ -57,14 +57,15 @@ const BACKFILL_TARGETS: ReadonlyArray<readonly [table: string, keyCol: string, s
   ['harness_plans', 'plan_slug'],
   // shared-hive-federation-2026-06-08 (P-005): per-Hive settings federate as Hive
   // state (key == setting_key), scoped to the Hive home harness slug.
-  ['hive_settings', 'setting_key'],
+  ['pot_settings', 'setting_key'],
   // shared-hive-federation-2026-06-08 (P-006): per-Hive admission records federate so
   // existing device-attestations + revocations reach a joining Swarm (not just
-  // post-online writes via the mig-189 trigger). hive_members' scope column is
-  // `hive_home_slug` (FK→hives), and for the Hive HOME harness harnessSlug ==
-  // hive_home_slug, so the same (workspace, slug) scoping holds — key == github_user_id
-  // (matches the trigger's TG_ARGV[0] + the projection composeKey).
-  ['hive_members', 'github_user_id', 'hive_home_slug'],
+  // post-online writes via the mig-189 trigger). pot_members' scope column is
+  // `pot_home_slug` (FK→pots; WI-3953 cup-lexicon rename, migration 557), and for
+  // the Hive HOME harness harnessSlug == pot_home_slug, so the same (workspace,
+  // slug) scoping holds — key == github_user_id (matches the trigger's TG_ARGV[0]
+  // + the projection composeKey).
+  ['pot_members', 'github_user_id', 'pot_home_slug'],
 ];
 
 /** substrate_meta key for the one-time-done marker. */
@@ -136,9 +137,9 @@ export async function backfillLocalState(
 
   for (const [tableName, keyCol, scopeColRaw] of BACKFILL_TARGETS) {
     // The column matched against this harness's slug. Default `harness_slug`; a
-    // Hive-scoped table (hive_members) overrides it to `hive_home_slug`. The outbox
+    // Hive-scoped table (pot_members) overrides it to `pot_home_slug`. The outbox
     // `harness_slug` written below stays ${harnessSlug} — which, for the Hive home
-    // harness, EQUALS the scoped hive_home_slug (mirrors the mig-189 trigger's bridge).
+    // harness, EQUALS the scoped pot_home_slug (mirrors the mig-189 trigger's bridge).
     const scopeCol = scopeColRaw ?? 'harness_slug';
     // Count the local rows for this (workspace, harness) so we can attribute
     // drops even when the budget runs out (the INSERT below stops at the budget).

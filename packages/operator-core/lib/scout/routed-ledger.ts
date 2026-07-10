@@ -33,17 +33,20 @@ import {
   type RoutedRail,
   type ScoutOutcomeReaders,
 } from './outcome-feedback';
-import { CREATIVE_LENSES, type CreativeLens } from './types';
+import { CREATIVE_LENSES, type CreativeLens, type SuIdeationLens } from './types';
 
 /** Input to {@link recordRoutedIdea} — the provenance P-007 persists at routing time. */
 export interface RecordRoutedIdeaInput {
   ideaId: string;
   /**
-   * The CreativeLens that produced the idea. For an `origin:'su-ideate'` row (P-005) there is
-   * no Scout lens, so the sentinel `'su-ideate'` is accepted — it never reaches lens-weight
-   * learning (those readers filter origin='scout'), so it cannot skew the diversity floor.
+   * The lens that produced the idea. Scout writers pass the CreativeLens of the ideator.
+   * An `origin:'su-ideate'` row (P-005) may carry a declared {@link SuIdeationLens}
+   * (su-ideate-learning-substrate P-002 — the su vocabulary is a superset of CreativeLens)
+   * or the sentinel `'su-ideate'` when the caller declared none. Either way su rows never
+   * reach Scout's lens-weight learning (those readers filter origin='scout' — D-002), so
+   * they cannot skew the diversity floor; the column is text, so this is type-only.
    */
-  lens: CreativeLens | 'su-ideate';
+  lens: SuIdeationLens | 'su-ideate';
   rail: RoutedRail;
   /** The Change Feed ref of the artifact created: "plan:<slug>" | "gym:<id>" | "wi:<id>". */
   routedRef: string;

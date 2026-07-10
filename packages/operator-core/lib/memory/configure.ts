@@ -431,6 +431,21 @@ export type EmbedderPreference = (typeof EMBEDDER_PREFERENCES)[number];
 const isEmbedderPreference = (v: string | undefined): v is EmbedderPreference =>
   !!v && (EMBEDDER_PREFERENCES as readonly string[]).includes(v);
 
+/**
+ * Map the MEMORY preference to the PROSE/SEARCH-surface preference (P-015
+ * harrier default flip + the P-006 verdict): harrier is memory-side only —
+ * its native 1024 dims don't fit the vector(384) prose columns, and
+ * harrier@384's rejection margin collapses (.0705 vs gemma .1576). Under a
+ * 'harrier' preference the prose surfaces would otherwise dims-guard OFF
+ * entirely (backfill sweep skips, query legs degrade to lexical-only), so
+ * the search side stays in the gemma space the 20k+ stored vectors live in.
+ * Used by `resolveBackfillEmbedder` and `buildQueryEmbedderResolved`; the
+ * mem0 memory side deliberately does NOT apply it.
+ */
+export function proseSurfacePreference(p: EmbedderPreference): EmbedderPreference {
+  return p === 'harrier' ? 'gemma' : p;
+}
+
 /** Read the live embedder preference (env override → persisted voice pref →
  *  'auto'). Exported as a seam for the `resolveEmbedder` cascade tests (GAP 4). */
 export async function readEmbedderPreference(): Promise<EmbedderPreference> {

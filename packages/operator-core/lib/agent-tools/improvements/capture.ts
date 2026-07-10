@@ -21,6 +21,7 @@ import { issueRef, linkIssue, type IssueSeverity } from '../../issues-engineer';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
 import { recordRoutedIdea } from '../../scout/routed-ledger';
+import { SU_IDEATION_LENSES, type SuIdeationLens } from '../../scout/types';
 import { resolveWorkItemRef } from '../../work-items';
 import { hardText, LIMITS } from '../limits';
 import { coerceCaptureKind } from './capture-coerce';
@@ -123,6 +124,34 @@ export default defineTool({
       .strict()
       .optional()
       .describe('structured fields for a lane:observation record (the one-line "what" is the title, the optional "why" is the body). Pass rubricRef+ratings (each {rating,evidence}) to file a RUBRIC-GRADED observation — check rubrics:list first to see if a rubric fits.'),
+    // ── IDEATE-pass provenance (su-ideate-learning-substrate-2026-07-10 P-002 / D-004:
+    // the ONE schema bump — the full shape is declared here so the tool contract never
+    // churns again; this item persists only `lens`, P-007 wires bet/cheapExperiment onto
+    // the created item's payload). Enrichment only, never a gate (D-005): absence changes
+    // nothing about the capture.
+    ideation: z
+      .object({
+        lens: z
+          .enum([...SU_IDEATION_LENSES] as [SuIdeationLens, ...SuIdeationLens[]])
+          .optional()
+          .describe(
+            "the generative stance that produced this idea — Scout's four creative lenses (analogical / first-principles / reframing / constraint-removal) + the su stances (risk-first = de-risk the riskiest assumption; user-value = backward from felt owner/user value; cost-leverage = small change, big recurring cost). Declaring it earns per-lens outcome feedback on YOUR ideas (P-004); omitted = recorded under the 'su-ideate' sentinel (no per-lens learning)",
+          ),
+        bet: z.string().max(2000).optional().describe('the bet — the concrete upside if the idea pans out (accepted now; persisted to the item payload by P-007)'),
+        cheapExperiment: z
+          .object({
+            hypothesis: z.string().min(1).max(2000).describe('what we believe will be true if the idea has merit'),
+            method: z.string().min(1).max(2000).describe('the cheap first test (what to run / build / measure)'),
+            falsifiableSignal: z.string().min(1).max(2000).describe('the observable that would prove the hypothesis WRONG'),
+          })
+          .optional()
+          .describe('the cheap falsifiable first experiment (ScoutExperiment shape, D-006 bettable-not-clever; accepted now; persisted by P-007)'),
+      })
+      .strict()
+      .optional()
+      .describe(
+        "IDEATE-pass provenance for an su session's kind:'feature' origination — stamps the routed-idea ledger row (origin='su-ideate') with your declared lens so grade→outcome→feedback learning attributes back to it. Never a gate: purely additive, ignored for lane:observation / non-feature kinds.",
+      ),
     }),
   ),
   async handler(args, ctx) {
@@ -183,7 +212,9 @@ export default defineTool({
             origin: 'su-ideate',
             createdBy: id.ownerId, // originator join key: grade→revise wakes + scope:'mine' reads (migration 558)
             ideaId: featureId,
-            lens: 'su-ideate', // sentinel — su-ideate rows are EXCLUDED from lens learning (D-009)
+            // P-002: the caller-declared su ideation lens, else the 'su-ideate' sentinel. Either
+            // way the row is origin-partitioned OUT of Scout's lens learning (D-009 / D-002).
+            lens: args.ideation?.lens ?? 'su-ideate',
             rail: 'improvement',
             routedRef: `wi:${featureId}`,
             harnessSlug: ledgerHarness,

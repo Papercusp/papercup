@@ -259,7 +259,7 @@ async function defaultLoadEpochKeyDevices(
   const { getOrgPg } = await import('@papercusp/db-org');
   const client = sql ?? getOrgPg().sql;
   const rows = (await client`
-    SELECT member_device_pubkey FROM harness_shared.hive_epoch_keys
+    SELECT member_device_pubkey FROM harness_shared.pot_epoch_keys
      WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND epoch = ${epoch}
   `) as unknown as Array<{ member_device_pubkey: string }>;
   return rows.map((r) => r.member_device_pubkey);

@@ -42,15 +42,17 @@ describe('voice-channel settings defaults (P-016)', () => {
   });
 });
 
-// WI-3664: "keep local the default". The default embedder is the local BGE-ONNX
-// engine, NOT 'auto' — 'auto' can pick the cloud key and thrashes on it (WI-3615),
-// and @huggingface/transformers is a hard dependency so 'local' is always usable.
-describe('embedder default (WI-3664 → EmbeddingGemma 2026-07-10)', () => {
-  it('defaults memoryEmbedderMode to gemma (EmbeddingGemma-300m), the local default', () => {
-    // Owner ask 2026-07-10: EmbeddingGemma-300m is the default local embedder
-    // (a quality upgrade over BGE 'local', still fully local). Not 'auto' (which
-    // would key-thrash, WI-3615) and not the cloud 'openai'.
-    expect(DEFAULT_VOICE_PREFS.memoryEmbedderMode).toBe('gemma');
+// WI-3664: "keep local the default". The default embedder is a LOCAL engine,
+// NOT 'auto' — 'auto' can pick the cloud key and thrashes on it (WI-3615),
+// and @huggingface/transformers is a hard dependency so local is always usable.
+describe('embedder default (WI-3664 → gemma → harrier P-015 2026-07-10)', () => {
+  it('defaults memoryEmbedderMode to harrier (harrier-oss-0.6b), the local default', () => {
+    // Owner decision P-015 2026-07-10: harrier-oss-0.6b is the default
+    // memory embedder (won the P-006 gold-set gate: R@1 .8833 vs gemma .8083),
+    // superseding the same-day gemma default; gemma stays selectable as the
+    // lighter option. Still local — not 'auto' (key-thrash, WI-3615), not
+    // cloud 'openai'. Memory-side only: prose/search surfaces stay gemma.
+    expect(DEFAULT_VOICE_PREFS.memoryEmbedderMode).toBe('harrier');
   });
 
   it('keeps the provider ack voice by default (P-002 — no behavior change)', () => {

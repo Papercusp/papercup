@@ -17,8 +17,8 @@ embedder **at runtime**. Until 2026-07-10 every available embedder produced
 | --- | --- | --- |
 | `openai` | `text-embedding-3-small`, requested with `dimensions: 384` | 384 |
 | `local` | `Xenova/bge-small-en-v1.5` (BGE-ONNX) | 384 |
-| `gemma` | `onnx-community/embeddinggemma-300m-ONNX`, natively 768 → MRL-truncated to 384 + L2-renormalized (migration 534; the default since 2026-07-10) | 384 |
-| `harrier` | `onnx-community/harrier-oss-v1-0.6b-ONNX`, native 1024, last-token pooling + L2 norm baked into the ONNX graph (migration 547 `memory_vec_harrier`; selectable since 2026-07-10) | 1024 |
+| `gemma` | `onnx-community/embeddinggemma-300m-ONNX`, natively 768 → MRL-truncated to 384 + L2-renormalized (migration 534; the SEARCH/prose-surface space, and the lighter memory option — ~4× faster embeds, ~2.4GB less RSS than harrier) | 384 |
+| `harrier` | `onnx-community/harrier-oss-v1-0.6b-ONNX`, native 1024, last-token pooling + L2 norm baked into the ONNX graph (migration 547 `memory_vec_harrier`; the MEMORY default since the 2026-07-10 P-015 owner flip — memory-side ONLY: the vector(384) prose surfaces stay gemma via the harrier→gemma readPreference fallback in `resolveBackfillEmbedder`/`buildQueryEmbedderResolved`, because harrier@384's rejection margin collapses, P-006) | 1024 |
 
 `harrier` is the first mode with different native dims, which retired the flat
 `EMBEDDER_DIM === 384` assumption (`reembed.ts` now carries a per-mode

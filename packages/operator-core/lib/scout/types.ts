@@ -50,6 +50,31 @@ export const CREATIVE_LENSES: readonly CreativeLens[] = [
 ] as const;
 
 /**
+ * The su IDEATE-pass lens vocabulary (su-ideate-learning-substrate-2026-07-10
+ * P-002 / D-004): Scout's four creative lenses PLUS three stances shaped by how
+ * an su session actually ideates (from lived friction inside the workspace, not
+ * from a corpus digest). TYPE-ONLY vocabulary — the ledger's `lens` column is
+ * text, and origin='su-ideate' rows never enter Scout's lens-weight learning
+ * (D-002 origin partition), so widening costs no migration and cannot skew the
+ * CreativeLens diversity floor. Per-su-lens win-rates are read-time (P-004).
+ *  - `risk-first`    — start from the riskiest assumption in the current work;
+ *                      ideate the thing that de-risks or falsifies it.
+ *  - `user-value`    — start from what the owner/user concretely feels; work
+ *                      backward from felt value to mechanism.
+ *  - `cost-leverage` — find where a small change moves a large recurring cost
+ *                      (time, tokens, toil) — the leverage-point stance.
+ */
+export type SuIdeationLens = CreativeLens | 'risk-first' | 'user-value' | 'cost-leverage';
+
+/** All su ideation lenses, stable order (the CreativeLens roster first). */
+export const SU_IDEATION_LENSES: readonly SuIdeationLens[] = [
+  ...CREATIVE_LENSES,
+  'risk-first',
+  'user-value',
+  'cost-leverage',
+] as const;
+
+/**
  * One meta-pattern category from the "state of the Hive" corpus digest. The four
  * friction lanes (P-003) plus `rubric-rating` — structured rubric measurements
  * grouped by rubric/source-hive (rubric-driven-observations-2026-06-20 P-006), so

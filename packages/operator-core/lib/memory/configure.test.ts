@@ -23,6 +23,7 @@ import {
   clearOpenAiEmbedHardExhaustion,
   __resetOpenAiEmbedCooldownForTest,
   EMBEDDER_PREFERENCES,
+  proseSurfacePreference,
   type ResolveEmbedderDeps,
 } from './configure';
 import {
@@ -518,11 +519,23 @@ describe('readEmbedderPreference — env override wiring (production seam)', () 
   it('an unrecognized env value is ignored (falls through to the persisted pref / default)', async () => {
     process.env.PAPERCUSP_MEMORY_EMBEDDER = 'bogus';
     // With no PG-backed voice prefs in this unit env the cascade lands on the
-    // voice-prefs DEFAULT (currently 'gemma'). The point is only that 'bogus'
+    // voice-prefs DEFAULT (currently 'harrier'). The point is only that 'bogus'
     // is NOT returned — so assert against the full preference union, never a
     // hand-copied subset that silently reds when a default flips.
     const pref = await readEmbedderPreference();
     expect(pref).not.toBe('bogus');
     expect(EMBEDDER_PREFERENCES).toContain(pref);
   });
+});
+
+describe('proseSurfacePreference — P-015 harrier is memory-side only', () => {
+  it('maps harrier → gemma (prose/search surfaces stay in the vector(384) gemma space)', () => {
+    expect(proseSurfacePreference('harrier')).toBe('gemma');
+  });
+
+  for (const v of EMBEDDER_PREFERENCES.filter((p) => p !== 'harrier')) {
+    it(`passes '${v}' through unchanged`, () => {
+      expect(proseSurfacePreference(v)).toBe(v);
+    });
+  }
 });
