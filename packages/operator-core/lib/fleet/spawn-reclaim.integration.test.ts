@@ -433,6 +433,46 @@ describe('reclaimOrphanedSpawns: prior-incarnation boot-id short-circuits the pi
     expect(r.reclaimed).toBe(0);
     expect(await statusOf('current-live')).toBe('running');
   });
+
+  // WI-3961: a LIVE cup (spawn-kind, scope-isolated OS child — see WI-1499)
+  // straddled a brief mid-run bg-host restart: it was launched under a PRIOR
+  // boot id, the restart bumped LAUNCHER_BOOT_ID out from under it, and its
+  // heartbeat then went stale before the periodic sweep next ran (heartbeat is
+  // only bumped BY this sweep / the boot reconcile, so any spawn older than
+  // RECLAIM_STALE_MS is a heartbeat-stale "candidate" regardless of real
+  // liveness). The OLD short-circuit reclaimed it on the boot-id mismatch alone,
+  // never checking /proc — a false positive that killed a real 5.5-minute
+  // in-flight run. The fix: a `spawn`-kind row gets the SAME liveness check as
+  // any other candidate before a boot-id mismatch is trusted; RE-ATTACH (never
+  // reclaimed) when its pid reads alive.
+  it('WI-3961: a STALE same-host spawn-kind row with a mismatched boot id is RE-ATTACHED (not reclaimed) when its pid reads ALIVE', async () => {
+    await insertSpawn('live-cup', 'running', 10 * 60, { pid: 4244, host: ME, bootId: 'boot-prior', runId: 'r-live-cup' });
+    alivePids.add(4244); // scope-isolated child survived the restart
+    const r = await reclaimOrphanedSpawns(db.sql, STALE_FAKE);
+    expect(r.reclaimed).toBe(0);
+    expect(r.spawnIds).toEqual([]);
+    expect(r.reattached).toEqual(['live-cup']);
+    expect(await statusOf('live-cup')).toBe('running'); // never touched — it never died
+    const [row] = await db.sql<{ launcher_boot_id: string; fresh: boolean }[]>`
+      SELECT launcher_boot_id, heartbeat_at > now() - interval '30 seconds' AS fresh
+        FROM harness_shared.spawned_agents WHERE spawn_id = 'live-cup'`;
+    expect(row.launcher_boot_id).toBe('boot-current'); // handed off — next sweep no longer sees a mismatch
+    expect(row.fresh).toBe(true);
+  });
+
+  // The `launch`-kind branch is UNCHANGED by WI-3961: a launch row's firing
+  // process IS the dead predecessor by construction (see the doc comment above
+  // reclaimOrphanedSpawns), so a boot-id mismatch stays unconditionally fatal
+  // for it regardless of what its stale, possibly-reused pid reads as.
+  it('WI-3961: a STALE same-host LAUNCH-kind row with a mismatched boot id is STILL reclaimed even when its pid reads alive', async () => {
+    await insertSpawn('zombie-launch', 'running', 10 * 60, { pid: 4245, host: ME, bootId: 'boot-prior', runId: 'launch-zombie' });
+    alivePids.add(4245); // reused pid false-alive — must not save it
+    const r = await reclaimOrphanedSpawns(db.sql, STALE_FAKE);
+    expect(r.reclaimed).toBe(1);
+    expect(r.spawnIds).toEqual(['zombie-launch']);
+    expect(r.reattached).toEqual([]);
+    expect(await statusOf('zombie-launch')).toBe('failed');
+  });
 });
 
 /**

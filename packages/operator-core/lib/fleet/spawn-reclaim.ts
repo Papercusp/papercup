@@ -228,12 +228,15 @@ export interface ReclaimResult {
    *  AND re-launched because its durable work-item is still non-terminal — i.e.
    *  the work survived the host restart. Empty for the periodic sweep. */
   relaunched?: string[];
-  /** Boot reconcile only (WI-1499): spawnIds that were NOT reclaimed because
-   *  their child process is confirmed still alive on this host (a scope-isolated
-   *  agent turn that survived the host/process restart) — RE-ATTACHED to this
+  /** spawnIds that were NOT reclaimed because their child process is confirmed
+   *  still alive on this host (a scope-isolated agent turn that survived a host/
+   *  process restart) despite a `launcher_boot_id` mismatch — RE-ATTACHED to this
    *  fresh incarnation (launcher_boot_id bumped + heartbeat refreshed) instead of
-   *  being flipped to `failed`. Empty for the periodic sweep (it already handles
-   *  same-host liveness via the `alive` bucket, just without a boot-id rewrite). */
+   *  being flipped to `failed`. Populated by BOTH the boot reconcile (WI-1499) and
+   *  the periodic sweep (WI-3961 — a mid-run boot-id mismatch, e.g. a brief
+   *  bg-host restart while a cup is in flight, is only PRESUMPTIVE for a `spawn`
+   *  kind row; this is the same liveness-checked re-attach, just at periodic-sweep
+   *  cadence instead of boot-only). */
   reattached?: string[];
   /** Durable claims freed alongside the reclaim (dead-holder release — see
    *  releaseClaimsOfDeadSpawns). */
@@ -463,18 +466,13 @@ export async function reclaimOrphanedSpawns(
   const deadChild: string[] = [];
   const hostGone: string[] = [];
   const priorBoot: string[] = [];
+  // WI-3961: alive rows recovered from a boot-id-mismatch candidate — a `spawn`
+  // kind row confirmed alive via /proc despite the mismatch (see below). These
+  // need their `launcher_boot_id` REWRITTEN (not just a heartbeat bump), or every
+  // future sweep re-hits the same mismatch branch for as long as the row runs.
+  const reattachBoot: string[] = [];
   for (const c of candidates) {
     const sameHost = c.launcher_host != null && c.launcher_host === me;
-    // EI-2186: a same-host row stamped with a DIFFERENT (non-null) boot id was
-    // launched by a dead prior incarnation of this operator — provably orphaned,
-    // immune to pid reuse (a rebooted host reassigns the same pids, which is how a
-    // stale `launch`-kind row's recorded pid read as "alive" and wedged the ceiling
-    // forever). This must short-circuit the pid liveness check below — otherwise the
-    // false-alive path bumps its heartbeat and it never becomes a candidate again.
-    if (sameHost && c.launcher_boot_id != null && c.launcher_boot_id !== LAUNCHER_BOOT_ID) {
-      priorBoot.push(c.spawn_id);
-      continue;
-    }
     // A `launch-%` run_id OR a `durable-spawn:%` spawn_id is an in-process loopback launch (the
     // firing operator holds the /invoke connection for the agent's run) → liveness = the firing
     // process exists. Otherwise it is an invoke-once bee child → strict invoke-once-cmdline check.
@@ -483,6 +481,32 @@ export async function reclaimOrphanedSpawns(
     // false-reclaimed — D-011.)
     const kind: 'spawn' | 'launch' =
       (c.run_id ?? '').startsWith('launch-') || c.spawn_id.startsWith('durable-spawn:') ? 'launch' : 'spawn';
+    // EI-2186: a same-host row stamped with a DIFFERENT (non-null) boot id was
+    // launched by a prior incarnation of this operator on this host. For a
+    // `launch`-kind row that is provably orphaned (its firing process IS the
+    // dead predecessor, by construction — see reconcileSpawnAdmissionOnBoot's
+    // doc comment) — immune to pid reuse (a rebooted host reassigns the same
+    // pids, which is how a stale `launch`-kind row's recorded pid used to read
+    // as "alive" and wedge the ceiling forever), so it short-circuits straight
+    // to priorBoot.
+    //
+    // A `spawn`-kind row is DIFFERENT (WI-3961, matching WI-1499's boot-reconcile
+    // fix): since bg-host-agent-spawn-scope-isolation-2026-07-02, a spawn is an
+    // actual OS child launched into its own systemd user scope and can OUTLIVE
+    // the operator process that launched it — including a brief mid-run bg-host
+    // restart that bumps LAUNCHER_BOOT_ID out from under a still-running cup. A
+    // boot-id mismatch alone is therefore only PRESUMPTIVE for a spawn row; verify
+    // via the same /proc liveness check used for the non-mismatched candidates
+    // below before treating it as dead. (This mirrors reconcileSpawnAdmissionOnBoot
+    // exactly, just at periodic-sweep cadence instead of boot-only.)
+    if (sameHost && c.launcher_boot_id != null && c.launcher_boot_id !== LAUNCHER_BOOT_ID) {
+      if (kind === 'spawn' && c.pid != null && isAlive(c.pid, kind)) {
+        reattachBoot.push(c.spawn_id);
+      } else {
+        priorBoot.push(c.spawn_id);
+      }
+      continue;
+    }
     if (sameHost && c.pid != null) {
       if (isAlive(c.pid, kind)) alive.push(c.spawn_id);
       else deadChild.push(c.spawn_id);
@@ -496,9 +520,21 @@ export async function reclaimOrphanedSpawns(
   // sweep nor the next reclaims them (their own host will resume heartbeating).
   if (alive.length > 0) await heartbeatSpawns(sql, alive);
 
+  // WI-3961: re-attach confirmed-alive boot-id-mismatched rows to THIS incarnation
+  // (boot id + heartbeat both refreshed) so they stop being a mismatch candidate —
+  // same effect as reconcileSpawnAdmissionOnBoot's re-attach, run inline here since
+  // the periodic sweep (unlike the boot reconcile) can hit this mid-run.
+  if (reattachBoot.length > 0) {
+    await sql`
+      UPDATE harness_shared.spawned_agents
+         SET launcher_boot_id = ${LAUNCHER_BOOT_ID}, heartbeat_at = now()
+       WHERE status IN ('running', 'restarting')
+         AND spawn_id = ANY(${reattachBoot}::text[])`;
+  }
+
   const reclaimable = [...deadChild, ...hostGone, ...priorBoot];
   if (reclaimable.length === 0) {
-    return { reclaimed: 0, spawnIds: [], workspaces: [] };
+    return { reclaimed: 0, spawnIds: [], workspaces: [], reattached: reattachBoot };
   }
 
   // Reclaim the confirmed-dead + unverifiable rows. The status guard keeps it
@@ -549,6 +585,7 @@ export async function reclaimOrphanedSpawns(
     reclaimed: rows.length,
     spawnIds: rows.map((r) => r.spawn_id),
     workspaces: [...new Set(rows.map((r) => r.workspace_id).filter(Boolean))],
+    reattached: reattachBoot,
     claimsReleased: {
       features: claimsReleased.features + backstop.features,
       issues: claimsReleased.issues + backstop.issues,
