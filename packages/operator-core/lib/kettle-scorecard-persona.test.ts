@@ -135,4 +135,21 @@ describe('kettle persona — the owner #1 pot-coordination-health scorecard mand
       expect(persona).toMatch(/rubrics:get\s*\{\s*rubricId\s*:/);
     }
   });
+
+  // EI-7624: `unknown` on a stage that merely did not RUN this wake must carry
+  // `idle:`-prefixed evidence (cause + last-activity age) — the rubric staleness calc
+  // excludes those, so a paused/starved fleet doesn't read as rubric-model drift.
+  // The grader copies the worked example VERBATIM (the EI-6365 anti-detour rule forbids
+  // consulting the store at emit time), so the example rows — not the rubric store —
+  // are the enforcement point. Before 2026-07-10 the example modeled BARE unknowns and
+  // every quiet wake polluted the drift signal on 8 criteria.
+  it('mandates the idle: evidence convention for did-not-run unknowns (EI-7624)', () => {
+    // The rule: idle evidence starts with `idle:` + cause + last-activity age.
+    expect(persona).toMatch(/START the evidence with `idle:`/);
+    expect(persona).toMatch(/staleness\s+calc excludes `idle:`-tagged unknowns/);
+    // The worked example models it — idle-stage rows carry the prefix inline.
+    expect(persona).toMatch(/evidence: 'idle: /);
+    // The every-turn completeness rule re-states the prefix requirement.
+    expect(persona).toMatch(/prefixed `idle:` when the stage simply did not run/);
+  });
 });
