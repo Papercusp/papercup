@@ -182,6 +182,52 @@ describe('utterance dispatch', () => {
   });
 });
 
+// voice-convergence-additive-wins-2026-07-10 P-001: both transport paths relay
+// the transcript into the pane through ONE uniform, source-tagged seam. The
+// tag is additive — a legacy 1-arg listener is unaffected — so this is a pure
+// observability win with no dispatch change.
+describe('transcriptSource seam (P-001)', () => {
+  it('tags local-engine utterances localWhisper (the default arm)', async () => {
+    const mod = await loadVoiceMode();
+    const got: Array<[string, string | undefined]> = [];
+    const unsub = mod.onFinalUtterance((t, src) => got.push([t, src]));
+    mod.__simulateUtterance('what is the build status');
+    unsub();
+    expect(got).toEqual([['what is the build status', 'localWhisper']]);
+  });
+
+  it('tags provider-engine utterances providerSTT through the same seam', async () => {
+    const mod = await loadVoiceMode();
+    const got: Array<[string, string | undefined]> = [];
+    const unsub = mod.onFinalUtterance((t, src) => got.push([t, src]));
+    mod.__simulateUtterance('deploy the operator', 'providerSTT');
+    unsub();
+    expect(got).toEqual([['deploy the operator', 'providerSTT']]);
+  });
+
+  it('is backward-compatible: a 1-arg listener still receives the text', async () => {
+    const mod = await loadVoiceMode();
+    const got: string[] = [];
+    const unsub = mod.onFinalUtterance((t) => got.push(t));
+    mod.__simulateUtterance('legacy listener', 'providerSTT');
+    unsub();
+    expect(got).toEqual(['legacy listener']);
+  });
+
+  it('delivers the tag to every subscribed listener', async () => {
+    const mod = await loadVoiceMode();
+    const a: Array<string | undefined> = [];
+    const b: Array<string | undefined> = [];
+    const unsubA = mod.onFinalUtterance((_t, src) => a.push(src));
+    const unsubB = mod.onFinalUtterance((_t, src) => b.push(src));
+    mod.__simulateUtterance('fan out', 'localWhisper');
+    unsubA();
+    unsubB();
+    expect(a).toEqual(['localWhisper']);
+    expect(b).toEqual(['localWhisper']);
+  });
+});
+
 describe('speak / cancelAllSpeech queue', () => {
   it('force-speaks through the browser engine and cancelAllSpeech stops it', async () => {
     const mod = await loadVoiceMode();

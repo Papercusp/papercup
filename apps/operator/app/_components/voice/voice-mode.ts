@@ -2074,10 +2074,16 @@ function onUtteranceFinal(text: string, transcriptSource: TranscriptSource = 'lo
  * Fires onUtteranceFinal as if a real STT engine had just produced
  * a transcript, exercising the full dispatch path (VoiceAppBridge →
  * stripWakeWordAndPrefix → parseOperatorIntent).
+ *
+ * `transcriptSource` defaults to the local engine (what the wake-word
+ * button simulates); tests drive the provider arm through the same seam.
  */
-export function __simulateUtterance(text: string): void {
+export function __simulateUtterance(
+  text: string,
+  transcriptSource: TranscriptSource = 'localWhisper',
+): void {
   setState({ lastTranscript: text });
-  onUtteranceFinal(text);
+  onUtteranceFinal(text, transcriptSource);
 }
 
 // Dev test seam (sentinel-tui-shared-backend §3): the most recent text routed to
