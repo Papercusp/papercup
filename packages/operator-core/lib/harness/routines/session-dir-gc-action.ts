@@ -15,15 +15,26 @@
  *   - `dry_run` — plan + log but remove nothing (handy to preview a first run).
  */
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
-import { runSessionDirGc, DEFAULT_RETENTION_MS } from '../../session-dir-gc';
+import { runSessionDirGc, DEFAULT_RETENTION_MS, LEGACY_RETENTION_MS } from '../../session-dir-gc';
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 
 registerSystemAction('session-dir-gc', async (ctx: SystemActionCtx) => {
   const cfg = ctx.triggerConfig ?? {};
   const retentionDays = Number(cfg.retention_days);
+  // No explicit knob → pick by the archive kill-switch (session-db-archive-
+  // retire-dirs P-012): archive ON = deletion is lossless (dirs live in
+  // session_archives) so 24h; archive OFF = deletion is lossy again → the
+  // legacy 7d window. NOTE: the daily cadence is now CODE-OWNED in
+  // dbos/periodic-workflows.ts (sessionDirGc, 04:35) — this routine action
+  // remains as a manual/admin lever only.
+  const archiveOn = await getFlag(FLAGS.SESSION_ARCHIVE_AT_END, 'system').catch(() => false);
   const retentionMs =
     Number.isFinite(retentionDays) && retentionDays > 0
       ? retentionDays * 24 * 60 * 60 * 1000
-      : DEFAULT_RETENTION_MS;
+      : archiveOn
+        ? DEFAULT_RETENTION_MS
+        : LEGACY_RETENTION_MS;
   const dryRun = cfg.dry_run === true;
 
   const result = await runSessionDirGc({ retentionMs, dryRun });

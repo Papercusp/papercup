@@ -66,10 +66,21 @@ import {
 } from '@papercusp/orchestrator/session-launch-dirs';
 
 /** Default retention: a not-live, not-resumable dir is collected once it has not
- *  been (re)materialized for this long. Generous on purpose — the protected-set
- *  already excludes everything in play, so this only delays collecting genuinely
- *  abandoned dirs, leaving a window for a human to resume a crashed session. */
-export const DEFAULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+ *  been (re)materialized for this long. With archive-at-death
+ *  (session-db-archive-retire-dirs P-012) deletion is LOSSLESS — every ended
+ *  session's files live in `harness_shared.session_archives` and
+ *  `rematerializeSession` restores them byte-exact on resume — so the old 7-day
+ *  "window for a human to resume a crashed session" rationale is obsolete. The
+ *  24h mtime gate that remains is only a materialization-race guard (a dir
+ *  created for a session that hasn't registered its adv row/presence yet must
+ *  never be swept). Callers running WITHOUT the archive flag ON should pass
+ *  {@link LEGACY_RETENTION_MS} instead — without an archive, deletion is lossy
+ *  and deserves the old generous window. */
+export const DEFAULT_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+/** The pre-archive retention (7d) — the safe window when archive-at-death is
+ *  DISABLED (kill-switch) and collecting a dir actually destroys data. */
+export const LEGACY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** How a root's child-dir name maps to the identity matched against a protected
  *  set: `owner` roots are named by the coord owner id verbatim; `session` roots

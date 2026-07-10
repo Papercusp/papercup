@@ -33,7 +33,12 @@ async function main(): Promise<void> {
   const { sql } = getOrgPg();
   const name = 'session-dir-gc';
   const id = `rt_${SLUG}_${name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
-  const triggerConfig = { cron: CRON, retention_days: 7 };
+  // No retention_days knob (session-db-archive-retire-dirs P-012): the action
+  // now picks retention by the SESSION_ARCHIVE_AT_END flag (24h lossless /
+  // 7d legacy). NOTE the daily cadence is CODE-OWNED in dbos/periodic-workflows
+  // (sessionDirGc, 04:35) — this seeded routine is a manual/admin lever only,
+  // which is why it stays INACTIVE by default.
+  const triggerConfig = { cron: CRON };
   await sql`
     INSERT INTO harness_shared.routines
       (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
