@@ -274,6 +274,24 @@ export async function collectSessionFiles(ref: SessionArchiveRef): Promise<Colle
   }
 }
 
+/** Newest archived native session id for an adv session — wake-executor
+ *  recovery (P-008) when the rollout was archived+deleted and the adv row
+ *  carries no native id (codex rows often don't; the id normally lives in the
+ *  on-disk rollout filename this lifecycle deletes). */
+export async function findArchivedSessionIdForAdv(advSessionId: number): Promise<string | null> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<{ session_id: string }>>`
+      SELECT session_id FROM harness_shared.session_archives
+       WHERE adv_session_id = ${advSessionId}
+       ORDER BY archived_at DESC
+       LIMIT 1`;
+    return rows[0]?.session_id ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** All rollout session ids present in a codex home (reconciler/backfill
  *  helper). Same uuid-tail rule as the ingest adapter's meta(). */
 export async function listCodexRolloutSessionIds(sessionRoot: string): Promise<string[]> {

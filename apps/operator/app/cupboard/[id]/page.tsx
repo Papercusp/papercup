@@ -48,6 +48,7 @@ import {
 import { COLORS, FONTS, RADIUS, SIZES } from '../cupboard-theme';
 import { CupboardErrorState } from '../CupboardErrorState';
 import { ClaimStatusBadge } from '../../_components/ClaimStatusBadge';
+import { Button } from '../../harness/Button';
 import { Tooltip } from '../../harness/Tooltip';
 import { toast } from 'sonner';
 
@@ -427,16 +428,14 @@ export default function CupboardDetailPage() {
             join is retired; nothing to act on). */}
         <div style={{ marginTop: SIZES.lg, display: 'flex', gap: 8 }}>
           {action && (
-          <button
+          <Button
+            size="lg"
+            variant="primary"
             onClick={handleAction}
             disabled={busy}
             data-testid="cupboard-detail-action"
             data-action={action}
-            className="pc-button"
             style={{
-              background: 'var(--accent)',
-              color: 'var(--accent-ink)',
-              borderColor: 'var(--accent-strong)',
               cursor: busy ? 'default' : 'pointer',
               opacity: busy ? 0.7 : 1,
             }}
@@ -446,18 +445,19 @@ export default function CupboardDetailPage() {
             ) : (
               <><ActionIcon action={action} /> {LISTING_ACTION_LABEL[action]}{action === 'install' ? ` ${kind}` : ''}</>
             )}
-          </button>
+          </Button>
           )}
           {/* Claim CTA (P-003): hive member rows only, while unclaimed. Shown
               to any viewer (O-1 per D-005) — the worker enforces maintain/admin
               and a refusal is surfaced honestly in the toast. */}
           {kind === 'harness' && !!listing.hive_pubkey && listing.claim_status === 'unclaimed' && (
             <Tooltip label="Claim vouches for this listing as a verified repo maintainer — a trust signal, not ownership of the code. GitHub enforces maintain/admin; without it the claim is refused and says so.">
-              <button
+              <Button
+                size="lg"
+                variant="accent"
                 onClick={() => void claimListing()}
                 disabled={claiming}
                 data-testid="cupboard-detail-claim"
-                className="pc-button"
                 style={{ opacity: claiming ? 0.7 : 1, cursor: claiming ? 'default' : 'pointer' }}
               >
                 {claiming ? (
@@ -465,18 +465,15 @@ export default function CupboardDetailPage() {
                 ) : (
                   <><ShieldCheck size={13} /> Claim</>
                 )}
-              </button>
+              </Button>
             </Tooltip>
           )}
           {repoSlug && (
-            <a
-              href={`https://github.com/${repoSlug}`}
-              target="_blank" rel="noopener noreferrer"
-              className="pc-button"
-              style={{ textDecoration: 'none' }}
-            >
-              <ExternalLink size={13} /> View on GitHub
-            </a>
+            <Button asChild size="lg" variant="accent">
+              <a href={`https://github.com/${repoSlug}`} target="_blank" rel="noopener noreferrer">
+                <ExternalLink size={13} /> View on GitHub
+              </a>
+            </Button>
           )}
         </div>
 

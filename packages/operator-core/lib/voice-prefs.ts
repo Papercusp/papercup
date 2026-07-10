@@ -476,6 +476,22 @@ export async function saveVoicePrefs(patch: Partial<VoicePrefs>): Promise<VoiceP
   const current = await loadVoicePrefs();
   const next = mergePrefs(current, patch);
   await writeOperatorState('operator_voice_prefs', next);
+  // EI-7279 bug class, memoryEmbedderMode flip point (found live 2026-07-10):
+  // the embedder cascade is only EVALUATED when the mem0 client is (re)built,
+  // and that client is cached for a 1-HOUR TTL. Without an explicit
+  // invalidation here, flipping the memory system in Settings left the OLD
+  // embedder live for up to an hour — writes kept landing in the old model's
+  // vec space with no error (verified: a post-flip memory:remember landed in
+  // memory_vec_local while prefs said 'gemma'). Dynamic import: @papercusp/
+  // memory must not be a static dep of this low-level prefs module.
+  if (patch.memoryEmbedderMode !== undefined && next.memoryEmbedderMode !== current.memoryEmbedderMode) {
+    try {
+      const { invalidateMemoryClient } = await import('@papercusp/memory');
+      invalidateMemoryClient();
+    } catch {
+      /* best-effort — worst case is the pre-fix 1h TTL behavior */
+    }
+  }
   return next;
 }
 

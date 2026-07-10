@@ -12,6 +12,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { MarkdownPreview } from './MarkdownEditor';
+import { Button } from '../harness/Button';
 import { Tooltip } from '../harness/Tooltip';
 
 interface Message {
@@ -239,24 +240,25 @@ export function SupportAgentPanel({ surface = 'operator' }: { surface?: 'public'
             fontSize: 14,
           }}
         />
-        <button
+        <Button
           type="submit"
+          size="lg"
+          variant="accent"
           disabled={busy || !input.trim() || capExceeded}
-          className="pc-button"
           style={{ padding: '10px 16px' }}
         >
           {busy ? '…' : 'Ask'}
-        </button>
+        </Button>
         <Tooltip label="Talk to a human via Support">
-          <button
-            type="button"
+          <Button
+            size="lg"
+            variant="accent"
             onClick={() => window.dispatchEvent(new CustomEvent('papercusp:open-support'))}
-            className="pc-button"
             style={{ padding: '10px 16px', background: 'var(--bg)' }}
             aria-label="Talk to a human via Support"
           >
             👤
-          </button>
+          </Button>
         </Tooltip>
       </form>
     </div>

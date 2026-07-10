@@ -854,7 +854,7 @@ body.has-left-sidebar .pc-header {
 .pc-queen__subtitle { flex: 0 1 auto; min-width: 0; font-size: 10px; color: var(--fg-mute, #7f9bb4); line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pc-queen__hive { font-size: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg-mute, #7f9bb4); padding: 2px 6px; border-radius: 999px; border: 1px solid var(--border, rgba(125, 211, 252, 0.2)); background: var(--bg-2, rgba(255, 255, 255, 0.04)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 94px; }
 .pc-queen__spacer { flex: 1; }
-.pc-queen__reset { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 700;  padding: 4px 7px; border-radius: 6px; cursor: pointer; color: var(--fg-dim, #b9d4e8); background: var(--bg-2, rgba(255, 255, 255, 0.04)); border: 1px solid var(--border, rgba(125, 211, 252, 0.2)); }
+.pc-queen__reset { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; white-space: nowrap; font-size: 10px; font-weight: 700;  padding: 4px 7px; border-radius: 6px; cursor: pointer; color: var(--accent-soft, #7dd3fc); background: color-mix(in srgb, var(--accent), transparent 93%); border: 1px solid color-mix(in srgb, var(--accent), transparent 68%); }
 .pc-queen__reset:hover:not(:disabled) { color: var(--fg, #e7f7ff); border-color: color-mix(in srgb, var(--queen-accent), transparent 52%); }
 .pc-queen__reset:disabled { opacity: 0.5; cursor: default; }
 .pc-queen__reset:focus-visible, .pc-queen__btn:focus-visible, .pc-queen__chip:focus-visible, .pc-queen__check:focus-visible, .pc-queen__switch:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }

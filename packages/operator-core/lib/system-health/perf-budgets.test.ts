@@ -176,4 +176,34 @@ describe('evaluatePerfSignals (per-thread SLO budgets)', () => {
     expect(v.inotifyTotalWatches).toBeNull();
     expect(v.psiCpuSome60).toBeNull();
   });
+
+  // ── session-dir population (session-db-archive-retire-dirs P-007) ─────────
+  // After archive-at-death, per-session dirs are capped ≈ live-session count.
+  // A rebound = the exit hook / hourly reconciler stopped archiving — the
+  // population the 2026-07-10 meltdown grew on. Warn-only (a stalled janitor
+  // is not itself a wedge).
+
+  it('warns when either session-dir population balloons (stalled archive lifecycle)', () => {
+    const claude = evaluatePerfSignals(
+      sig({ sessionDirs: { claudeOwnerDirs: 17_287, codexHomes: 120 } }),
+      NOW,
+    );
+    expect(claude.status).toBe('warn');
+    expect(claude.sessionDirs).toEqual({ claudeOwnerDirs: 17_287, codexHomes: 120 });
+    expect(claude.reasons.join(' ')).toMatch(/archive-at-death lifecycle stalled/);
+
+    const codex = evaluatePerfSignals(
+      sig({ sessionDirs: { claudeOwnerDirs: 80, codexHomes: 5_000 } }),
+      NOW,
+    );
+    expect(codex.status).toBe('warn');
+    expect(codex.reasons.join(' ')).toMatch(/codex per-session homes/);
+  });
+
+  it('healthy post-backfill populations stay ok; absent signal never alarms', () => {
+    const ok = evaluatePerfSignals(sig({ sessionDirs: { claudeOwnerDirs: 140, codexHomes: 60 } }), NOW);
+    expect(ok.status).toBe('ok');
+    const absent = evaluatePerfSignals(sig(), NOW);
+    expect(absent.sessionDirs).toBeNull();
+  });
 });

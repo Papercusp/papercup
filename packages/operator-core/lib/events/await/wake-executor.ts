@@ -45,6 +45,12 @@ import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-schedule
 import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-deny';
 import { readFleetClaudeToken } from '@papercusp/orchestrator/fleet-claude-token';
 import { getAdvSession } from '../../adv-sessions';
+import {
+  collectSessionFiles,
+  findArchivedSessionIdForAdv,
+  rematerializeSession,
+} from '../../session-archive';
+import { ompSessionsRoot } from '../../omp-sessions';
 import { findPtyByPid, killPty, spawnPty, writePty } from '../../pty-bridge';
 import {
   freshContextWarmInjectTarget,
@@ -922,9 +928,42 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     let codexSessionId: string | null = null;
     if (resumeAgent === 'codex') {
       const home = codexHomeForAdvSession(handle.advSessionId);
+      // Rematerialize-on-miss (session-db-archive-retire-dirs-2026-07-10
+      // P-008): archive-at-death deletes a dead session's rollout + sqlite
+      // once sha-verified in PG; a wake landing later pulls them back
+      // byte-exactly before codex resumes. No-op when the home is intact or
+      // nothing was ever archived.
+      let sid: string | null = (fresh?.sessionId ?? handle.sessionId) || null;
+      if (!existsSync(home) || !findCodexRolloutSessionId(home)) {
+        if (!sid) sid = await findArchivedSessionIdForAdv(handle.advSessionId);
+        if (sid) {
+          const r = await rematerializeSession({ sourceKind: 'codex', sessionId: sid, targetRoot: home }).catch(
+            () => null,
+          );
+          if (r?.ok && r.written) {
+            console.log(`[wake-executor] rematerialized codex/${sid}: ${r.written} file(s) → ${home}`);
+          }
+        }
+      }
       if (existsSync(home)) {
         codexHome = home;
-        codexSessionId = (fresh?.sessionId ?? handle.sessionId) || findCodexRolloutSessionId(home);
+        codexSessionId = sid || findCodexRolloutSessionId(home);
+      }
+    }
+    // omp keeps flat per-cwd transcripts under the shared sessions root — same
+    // rematerialize-on-miss before the thread resume (P-008).
+    if (resumeAgent === 'omp') {
+      const sid = fresh?.sessionId ?? handle.sessionId;
+      if (sid) {
+        try {
+          const have = await collectSessionFiles({ sourceKind: 'omp', sessionId: sid, sessionRoot: ompSessionsRoot() });
+          if (!have.length) {
+            const r = await rematerializeSession({ sourceKind: 'omp', sessionId: sid });
+            if (r.ok && r.written) console.log(`[wake-executor] rematerialized omp/${sid}: ${r.written} file(s)`);
+          }
+        } catch (e) {
+          console.warn(`[wake-executor] omp rematerialize check failed: ${(e as Error)?.message ?? e}`);
+        }
       }
     }
     const resume = resumeCommandFor(
@@ -991,6 +1030,24 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     const owner = fresh?.coordOwnerId ?? null;
     if (owner) {
       const cfgDir = sessionClaudeConfigDir(owner);
+      // Rematerialize-on-miss (P-008): the transcript may have been archived+
+      // deleted at death — restore it byte-exactly (sha-verified) so
+      // `--resume <sessionId>` finds the session file. FS-only when the file
+      // is already on disk; one PG read otherwise.
+      const sid = fresh?.sessionId ?? handle.sessionId;
+      if (resumeAgent === 'claude' && sid) {
+        try {
+          const have = await collectSessionFiles({ sourceKind: 'claude', sessionId: sid, sessionRoot: cfgDir });
+          if (!have.length) {
+            const r = await rematerializeSession({ sourceKind: 'claude', sessionId: sid, targetRoot: cfgDir });
+            if (r.ok && r.written) {
+              console.log(`[wake-executor] rematerialized claude/${sid}: ${r.written} file(s) → ${cfgDir}`);
+            }
+          }
+        } catch (e) {
+          console.warn(`[wake-executor] claude rematerialize check failed: ${(e as Error)?.message ?? e}`);
+        }
+      }
       if (existsSync(cfgDir)) env.CLAUDE_CONFIG_DIR = cfgDir;
     }
     // Fleet token (claude-credential-sync-2026-06-10 P-003): an autonomous wake

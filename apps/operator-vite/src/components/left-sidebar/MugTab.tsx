@@ -306,6 +306,11 @@ export default function MugTab({ active }: { active: boolean }) {
     { id: 'capacity', label: 'Capacity', value: capacityOverrideCount > 0 ? `${capacityOverrideCount} custom` : 'Defaults', icon: Gauge },
     { id: 'schedule', label: 'Schedule', value: 'Routines', icon: CalendarClock },
   ];
+  const activeLaneLabel = mugLanes.find((lane) => lane.id === mugView)?.label ?? '';
+  const activePaneHasOverrides =
+    (mugView === 'now' && (pause.active || !!view.directive?.trim())) ||
+    (mugView === 'work' && workIsFocused) ||
+    (mugView === 'capacity' && capacityOverrideCount > 0);
 
   // ── Nested hive→plan picker (steering-nested-hive-plan-tree-2026-06-17, P-002) ──
   const steeringTreeOn = useFlag(FLAGS.STEERING_POT_TREE);
@@ -455,23 +460,32 @@ export default function MugTab({ active }: { active: boolean }) {
     overlay({ directive });
     enqueue({ directive });
   };
-  const clearAll = () => {
-    overlay({
-      directive: null,
-      eligiblePlans: [],
-      eligibleHives: [],
-      includeUnplannedWork: true,
-      pauseNewWork: false,
-      pausedUntil: null,
-      modelTiers: null,
-      tierCeilings: null,
-      cadenceFloorSec: null,
-      maxBees: null,
-      idleActivities: null,
-      autoScaleOut: null,
-      decomposition: null,
-    });
-    enqueue({ clear: true });
+  const resetActivePane = () => {
+    if (mugView === 'now') {
+      const patch = { directive: null, pauseNewWork: false, pausedUntil: null };
+      overlay(patch);
+      enqueue(patch);
+      return;
+    }
+    if (mugView === 'work') {
+      const patch = { eligiblePlans: [], eligibleHives: [], includeUnplannedWork: true };
+      overlay(patch);
+      enqueue(patch);
+      return;
+    }
+    if (mugView === 'capacity') {
+      const patch = {
+        modelTiers: null,
+        tierCeilings: null,
+        cadenceFloorSec: null,
+        maxBees: null,
+        idleActivities: null,
+        autoScaleOut: null,
+        decomposition: null,
+      };
+      overlay(patch);
+      enqueue(patch);
+    }
   };
   // Steering writes are optimistic and serialized through enqueue(); keeping the
   // controls enabled lets the owner continue tuning the Queen immediately while
@@ -517,9 +531,17 @@ export default function MugTab({ active }: { active: boolean }) {
           </Tooltip>
         )}
         <span className="pc-queen__spacer" />
-        <button type="button" className="pc-queen__reset" onClick={clearAll} disabled={controlsBusy} aria-label="Clear all steering back to default">
-          <RotateCcw size={11} aria-hidden /> reset
-        </button>
+        {activePaneHasOverrides && (
+          <button
+            type="button"
+            className="pc-queen__reset"
+            onClick={resetActivePane}
+            disabled={controlsBusy}
+            aria-label={`Reset ${activeLaneLabel} controls`}
+          >
+            <RotateCcw size={11} aria-hidden /> Reset {activeLaneLabel}
+          </button>
+        )}
       </header>
 
       <div className="pc-queen__lanes" role="tablist" aria-label={`${t('brain')} controls`}>
@@ -605,7 +627,7 @@ export default function MugTab({ active }: { active: boolean }) {
 
       {/* 2 — Focus directive */}
       <DirectiveEditor
-        key={home}
+        key={`${home}:${view.directive ?? ''}`}
         initial={view.directive ?? ''}
         busy={controlsBusy}
         onSave={onSaveDirective}
@@ -715,7 +737,12 @@ export default function MugTab({ active }: { active: boolean }) {
       {/* Model tiers (session override, D-006 / #4) — now BELOW Steering scope (owner 2026-06-30) */}
       {mugView === 'capacity' && (
         <>
-      <ModelTiersOverride override={view.modelTiers ?? null} onWrite={setModelTiers} busy={controlsBusy} />
+      <ModelTiersOverride
+        key={(view.modelTiers ?? []).map((tier) => `${tier.name}:${tier.spec}`).join('|') || 'workspace'}
+        override={view.modelTiers ?? null}
+        onWrite={setModelTiers}
+        busy={controlsBusy}
+      />
 
       {/* 6 — Throttle knobs (P-007): cadence floor, max bees, model-tier pin (the
           bee role's tier ceiling), idle-activity gates, auto-scale-out. The live

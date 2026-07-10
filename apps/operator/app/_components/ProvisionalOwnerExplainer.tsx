@@ -19,6 +19,7 @@
 
 import { useEffect, type ReactNode } from 'react';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
+import { Button } from '@/app/harness/Button';
 import { Modal } from '@/app/harness/Modal';
 
 const FLAG_KEY = 'papercusp.provisionalOwner.shown.v1';
@@ -106,14 +107,14 @@ export function ProvisionalOwnerExplainer(props: ProvisionalOwnerExplainerProps)
           We won't show this again on this machine.
         </p>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
-          <button
-            type="button"
+          <Button
+            size="lg"
+            variant="primary"
             onClick={onClose}
-            className="pc-button-primary"
             data-testid="provisional-owner-explainer-dismiss"
           >
             Got it
-          </button>
+          </Button>
         </div>
       </div>
     </Modal>

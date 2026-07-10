@@ -24,6 +24,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { toast } from 'sonner';
 import MonacoEditor from '@monaco-editor/react';
 import { makeAjvResolver } from '@/lib/forms';
+import { Button } from './Button';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { Tooltip } from './Tooltip';
 import { Checkbox } from './Checkbox';
@@ -307,14 +308,14 @@ function PluginPanelCard({ plugin, harnessSlug, onChange }: {
           )}
         </div>
         <Tooltip label="Disable this plugin (config preserved)">
-          <button
+          <Button
+          size="lg"
           onClick={disable}
           disabled={busy}
-          className="pc-button"
           style={{ background: 'transparent', color: 'var(--bad)', border: '1px solid var(--border)', flex: '0 0 auto' }}
         >
           {busy ? 'Disabling…' : 'Disable'}
-        </button>
+        </Button>
         </Tooltip>
       </div>
 
@@ -335,14 +336,15 @@ function PluginPanelCard({ plugin, harnessSlug, onChange }: {
                     {a.label ?? a.description ?? ''}
                   </span>
                   <Tooltip label="Manually invoke this hook now">
-                    <button
+                    <Button
+                    size="lg"
+                    variant="accent"
                     onClick={() => invoke(id)}
                     disabled={invoking !== null}
-                    className="pc-button"
                     style={{ fontSize: 11, padding: '4px 10px', flex: '0 0 auto' }}
                   >
                     {invoking === id ? 'Invoking…' : 'Invoke'}
-                  </button>
+                  </Button>
                   </Tooltip>
                 </div>
               );
@@ -648,13 +650,13 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
           )}
           <div className="h-plugin-config-footer" style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
             <Tooltip label="Save plugin config changes">
-              <button
-              type="button"
+              <Button
+              size="lg"
+              variant="accent"
               onClick={onClickSave}
               disabled={isSubmitting || !dirty}
-              className="pc-button"
               style={{ fontSize: 12, padding: '4px 12px' }}
-            >{isSubmitting ? 'Saving…' : dirty ? 'Save' : 'No changes'}</button>
+            >{isSubmitting ? 'Saving…' : dirty ? 'Save' : 'No changes'}</Button>
             </Tooltip>
             <Tooltip label="Discard unsaved config changes">
               <button

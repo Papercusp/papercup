@@ -23,6 +23,7 @@
 import { useState } from 'react';
 import { usePathname } from '@/lib/router-compat/navigation';
 import { toast } from 'sonner';
+import { Button } from '@/app/harness/Button';
 import { Modal } from '@/app/harness/Modal';
 import { Tooltip } from '@/app/harness/Tooltip';
 
@@ -139,33 +140,24 @@ function OmpInstallHintModal(props: {
           {installCmd}
         </pre>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-          <button
-            type="button"
+          <Button
+            size="lg"
+            variant="accent"
             onClick={() => {
               void navigator.clipboard?.writeText(installCmd).then(
                 () => toast.success('Copied install command.'),
                 () => {/* clipboard unavailable — the <pre> is select-all */},
               );
             }}
-            className="pc-button"
           >
             Copy
-          </button>
-          <button
-            type="button"
-            onClick={onClose}
-            className="pc-button"
-          >
+          </Button>
+          <Button size="lg" variant="accent" onClick={onClose}>
             Close
-          </button>
-          <button
-            type="button"
-            onClick={onRetry}
-            disabled={busy}
-            className="pc-button-primary"
-          >
+          </Button>
+          <Button size="lg" variant="primary" onClick={onRetry} disabled={busy}>
             {busy ? 'Retrying…' : 'Retry'}
-          </button>
+          </Button>
         </div>
       </div>
     </Modal>

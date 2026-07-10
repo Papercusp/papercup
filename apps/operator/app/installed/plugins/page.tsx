@@ -261,29 +261,30 @@ export default function InstalledPluginsPage() {
                 )}
                 <div className="pc-marketplace-card-actions pc-installed-plugin-actions">
                   {updates[p.name] && (
-                    <Tooltip label={`Update v${updates[p.name].installed} → v${updates[p.name].available}${updates[p.name].capChange.added.length ? ` (new caps: ${updates[p.name].capChange.added.join(', ')})` : ''}`}><button
-                      className="pc-button"
+                    <Tooltip label={`Update v${updates[p.name].installed} → v${updates[p.name].available}${updates[p.name].capChange.added.length ? ` (new caps: ${updates[p.name].capChange.added.join(', ')})` : ''}`}><Button
+                      size="lg"
+                      variant="accent"
                       style={{ background: 'var(--accent, #22d3ee)', color: 'var(--accent-ink, #051827)' }}
                       onClick={() => update(p.name)}
                       disabled={busy === p.name}
-
                     >
                       {busy === p.name ? 'updating…' : `Update → v${updates[p.name].available}`}
-                    </button></Tooltip>
+                    </Button></Tooltip>
                   )}
-                  <RouteLink
-                    href={`/installed/plugins/${encodeURIComponent(p.name)}/permissions`}
-                    className="pc-button"
-                  >
-                    Permissions
-                  </RouteLink>
-                  <button
-                    className="pc-button danger pc-installed-plugin-uninstall"
+                  <Button asChild size="lg" variant="accent">
+                    <RouteLink href={`/installed/plugins/${encodeURIComponent(p.name)}/permissions`}>
+                      Permissions
+                    </RouteLink>
+                  </Button>
+                  <Button
+                    size="lg"
+                    variant="destructive"
+                    className="pc-installed-plugin-uninstall"
                     onClick={() => uninstall(p.name)}
                     disabled={busy === p.name}
                   >
                     {busy === p.name ? 'removing…' : 'Uninstall'}
-                  </button>
+                  </Button>
                 </div>
               </article>
             );

@@ -51,6 +51,7 @@ import {
 import { COLORS, FONTS, RADIUS, SIZES } from './cupboard-theme';
 import { ClaimStatusBadge, CLAIM_STATUS_COPY } from '../_components/ClaimStatusBadge';
 import { HowSharingWorks } from '../_components/HowSharingWorks';
+import { Button } from '../harness/Button';
 import { Tooltip } from '../harness/Tooltip';
 import { CupboardErrorState } from './CupboardErrorState';
 import { ToolsSection } from './ToolsSection';
@@ -846,26 +847,28 @@ export function ListingCard({
           have no primary action: per-harness join is retired. */}
       <div style={{ display: 'flex', gap: 8, marginTop: 'auto', paddingTop: 4 }}>
         {action && (
-        <button
+        <Button
+          size="lg"
+          variant="primary"
           onClick={onAction}
           data-testid="cupboard-action"
           data-action={action}
-          className="pc-button"
-          style={{ flex: 1, background: 'var(--accent)', color: 'var(--accent-ink)', borderColor: 'var(--accent-strong)' }}
+          style={{ flex: 1 }}
         >
           <ActionIcon action={action} /> {action === 'view-hive' ? `View ${t('pot')}` : LISTING_ACTION_LABEL[action]}
-        </button>
+        </Button>
         )}
         {repoSlug && (
-          <a
-            href={`https://github.com/${repoSlug}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="pc-button"
-            aria-label={`Open github.com/${repoSlug}`}
-          >
-            <ExternalLink size={13} />
-          </a>
+          <Button asChild size="lg" variant="accent">
+            <a
+              href={`https://github.com/${repoSlug}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={`Open github.com/${repoSlug}`}
+            >
+              <ExternalLink size={13} />
+            </a>
+          </Button>
         )}
       </div>
     </div>
@@ -1086,14 +1089,15 @@ export function HiveBrowseCard({ group, onOpen }: { group: HiveBrowseGroup; onOp
         )}
       </div>
       <div style={{ display: 'flex', gap: 8, marginTop: 'auto', paddingTop: 4, alignItems: 'center' }}>
-        <button
+        <Button
+          size="lg"
+          variant="primary"
           onClick={onOpen}
           data-testid="cupboard-hive-card-open"
-          className="pc-button"
-          style={{ flex: 1, background: 'var(--accent)', color: 'var(--accent-ink)', borderColor: 'var(--accent-strong)' }}
+          style={{ flex: 1 }}
         >
           <Hexagon size={13} /> View {t('pot')}
-        </button>
+        </Button>
         <Tooltip label={`Member-repo listings on this page of results — the ${t('pot', { lower: true })} may list more.`}>
           <span style={{ fontFamily: FONTS.ui, fontSize: 11, color: COLORS.textMuted, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
             <Users size={11} /> {group.members.length}
@@ -1333,22 +1337,20 @@ export function HiveRollupHeaderCard({
         </span>
       ) : joinable ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <button
+          <Button
+            size="lg"
+            variant="primary"
             onClick={() => void join()}
             disabled={joining}
             data-testid="cupboard-hive-join"
-            className="pc-button"
-            style={{
-              background: 'var(--accent)', color: 'var(--accent-ink)', borderColor: 'var(--accent-strong)',
-              opacity: joining ? 0.7 : 1, cursor: joining ? 'default' : 'pointer',
-            }}
+            style={{ opacity: joining ? 0.7 : 1, cursor: joining ? 'default' : 'pointer' }}
           >
             {joining ? (
               <><Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> Joining…</>
             ) : (
               <><Hexagon size={13} /> Join {t('pot', { lower: true })}</>
             )}
-          </button>
+          </Button>
           {joinMsg && (
             <span data-testid="cupboard-hive-join-msg" style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted }}>
               {joinMsg}
@@ -1376,14 +1378,15 @@ export function HiveRollupHeaderCard({
               className="pc-input"
               style={{ flex: 1, minWidth: 220, fontFamily: FONTS.mono, fontSize: 12 }}
             />
-            <button
+            <Button
+              size="lg"
+              variant="accent"
               onClick={() => void submitInvite()}
               disabled={!inviteLink.trim()}
               data-testid="cupboard-hive-invite-submit"
-              className="pc-button"
             >
               <KeyRound size={12} /> Join via invite
-            </button>
+            </Button>
           </div>
           {inviteMsg && (
             <span data-testid="cupboard-hive-invite-msg" style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted }}>
@@ -1396,11 +1399,12 @@ export function HiveRollupHeaderCard({
       {unclaimed.length > 0 && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <Tooltip label={`Claim vouches for the ${unclaimed.length === 1 ? 'listing' : 'listings'} as a verified repo maintainer — a trust signal, not ownership of the code. GitHub enforces maintain/admin; without it the claim is refused and says so.`}>
-            <button
+            <Button
+              size="lg"
+              variant="accent"
               onClick={() => void claimAll()}
               disabled={claiming}
               data-testid="cupboard-hive-claim"
-              className="pc-button"
               style={{ opacity: claiming ? 0.7 : 1, cursor: claiming ? 'default' : 'pointer' }}
             >
               {claiming ? (
@@ -1408,7 +1412,7 @@ export function HiveRollupHeaderCard({
               ) : (
                 <><ShieldCheck size={12} /> Claim {unclaimed.length === members.length ? 'listings' : `${unclaimed.length} unclaimed`}</>
               )}
-            </button>
+            </Button>
           </Tooltip>
         </div>
       )}

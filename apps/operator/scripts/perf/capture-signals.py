@@ -174,6 +174,26 @@ def inotify(budget_sec=8.0):
     }
 
 
+def session_dirs():
+    """Per-session dir populations (session-db-archive-retire-dirs P-007):
+    after archive-at-death lands these are capped ~ live-session count; a
+    rebound means the exit-hook / hourly reconciler stopped archiving — the
+    exact population the 2026-07-10 fs-watch meltdown grew on."""
+    home = os.path.expanduser("~")
+
+    def count(p):
+        try:
+            with os.scandir(p) as it:
+                return sum(1 for e in it if e.is_dir(follow_symlinks=False))
+        except Exception:
+            return None
+
+    return {
+        "claudeOwnerDirs": count(os.path.join(home, ".papercusp", "session-claude")),
+        "codexHomes": count(os.path.join(home, ".papercusp", "su-codex-homes")),
+    }
+
+
 def host_state(la):
     """stable | loaded | wedge-suspect — pure-local loadavg proxy. An agent run
     should overwrite with the real event-loop-lag verdict when available."""
@@ -216,6 +236,7 @@ def main():
             "kopia": kopia(),
             "psi": psi(),
             "inotify": inotify(),
+            "sessionDirs": session_dirs(),
             "_mcp_supplemented": {
                 "note": "Fill by an agent run keyed to capturedAt; not host-local.",
                 "toolLatency": None, "toolCallRate": None,

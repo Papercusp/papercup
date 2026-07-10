@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { SupportChatButton } from '@/app/_components/SupportChatButton';
 import { SupportAgentPanel } from '@/app/_components/SupportAgentPanel';
+import { Button } from '@/app/harness/Button';
 import { useLexicon } from '@/lib/useLexicon';
 import { type BoundLexicon } from '@papercusp/lexicon';
 import * as Collapsible from '@radix-ui/react-collapsible';

@@ -49,6 +49,14 @@ export interface PerfSignalsV1 {
       maxPerProcess?: { pid: number; comm: string; watches: number } | null;
       limits?: { maxUserWatches?: number | null } | null;
     } | null;
+    /** Per-session dir populations (session-db-archive-retire-dirs P-007).
+     *  After archive-at-death these are capped ≈ live-session count; a rebound
+     *  means the exit-hook/reconciler stopped archiving — the population the
+     *  2026-07-10 meltdown grew on. */
+    sessionDirs?: {
+      claudeOwnerDirs?: number | null;
+      codexHomes?: number | null;
+    } | null;
   };
 }
 
@@ -84,6 +92,11 @@ export interface PerfBudgets {
    *  cores). Meltdown 2026-07-10: 94.8; healthy: <1. */
   psiCpuSomeWarn: number;
   psiCpuSomeCrit: number;
+  /** Per-session dir population (either root) above this is a stalled
+   *  archive-at-death lifecycle (warn — the reconciler/exit-hook stopped).
+   *  Steady state post-backfill ≈ live sessions (~60) + churn; the pre-plan
+   *  backlog was 17k+ (session-db-archive-retire-dirs P-007). */
+  sessionDirsWarn: number;
   /** A capture older than this (ms) is STALE — don't threshold its numbers (avoid
    *  alarming on a briefly-old snapshot: the capture timer may have skipped a tick). */
   staleMs: number;
@@ -108,6 +121,7 @@ export const PERF_BUDGETS: PerfBudgets = {
   inotifyLimitCritFrac: 0.8,
   psiCpuSomeWarn: 40,
   psiCpuSomeCrit: 85,
+  sessionDirsWarn: 2_000,
   staleMs: 10 * 60_000,
   blindMs: 30 * 60_000,
 };
@@ -130,6 +144,8 @@ export interface PerfVerdict {
   inotifyMaxPerProc: { pid: number; comm: string; watches: number } | null;
   /** PSI cpu `some avg60` — %time ≥1 task starved for CPU. */
   psiCpuSome60: number | null;
+  /** Per-session dir populations (archive-at-death lifecycle gauge). */
+  sessionDirs: { claudeOwnerDirs: number | null; codexHomes: number | null } | null;
   ageMs: number | null;
   stale: boolean;
 }
@@ -156,6 +172,7 @@ export function evaluatePerfSignals(
     worstWorkerCpuPct: null, worstWorkerRssKb: null, closeWait: null,
     eventLoopLagP95Ms: null, operatorReachable: null,
     inotifyTotalWatches: null, inotifyMaxPerProc: null, psiCpuSome60: null,
+    sessionDirs: null,
     ageMs: null, stale: false,
   };
   if (!signals || signals.schemaVersion !== 'perf-signals-v1') return base;
@@ -172,12 +189,19 @@ export function evaluatePerfSignals(
   const inotifyMax = s.inotify?.maxPerProcess ?? null;
   const inotifyLimit = typeof s.inotify?.limits?.maxUserWatches === 'number' ? s.inotify.limits.maxUserWatches : null;
   const psiCpu = typeof s.psi?.cpu?.some?.avg60 === 'number' ? s.psi.cpu.some.avg60 : null;
+  const sessionDirs = s.sessionDirs
+    ? {
+        claudeOwnerDirs: typeof s.sessionDirs.claudeOwnerDirs === 'number' ? s.sessionDirs.claudeOwnerDirs : null,
+        codexHomes: typeof s.sessionDirs.codexHomes === 'number' ? s.sessionDirs.codexHomes : null,
+      }
+    : null;
   const v: PerfVerdict = {
     ...base,
     hostState: signals.hostState ?? null,
     worstWorkerCpuPct: worstCpu, worstWorkerRssKb: worstRss, closeWait,
     eventLoopLagP95Ms: lag, operatorReachable: reachable,
     inotifyTotalWatches: inotifyTotal, inotifyMaxPerProc: inotifyMax, psiCpuSome60: psiCpu,
+    sessionDirs,
     ageMs,
     stale: ageMs !== null && ageMs > budgets.staleMs,
   };
@@ -225,6 +249,16 @@ export function evaluatePerfSignals(
     warn.push(`inotify watches ${inotifyTotal} ≥ ${Math.round(budgets.inotifyLimitWarnFrac * 100)}% of max_user_watches ${inotifyLimit}`);
   }
   if (psiCpu !== null && psiCpu >= budgets.psiCpuSomeWarn) warn.push(`PSI cpu some avg60 ${psiCpu} ≥ ${budgets.psiCpuSomeWarn} — sustained CPU starvation pressure`);
+  for (const [label, n] of [
+    ['session-claude owner dirs', sessionDirs?.claudeOwnerDirs],
+    ['codex per-session homes', sessionDirs?.codexHomes],
+  ] as const) {
+    if (typeof n === 'number' && n >= budgets.sessionDirsWarn) {
+      warn.push(
+        `${n} ${label} ≥ ${budgets.sessionDirsWarn} — archive-at-death lifecycle stalled (check the session-archive exit hook + hourly reconciler; session-db-archive-retire-dirs P-007)`,
+      );
+    }
+  }
   if (s.gateway_8788_reachable === false) warn.push('inference gateway :8788 unreachable');
   if (warn.length) return { ...v, status: 'warn', reasons: warn };
   return { ...v, status: 'ok', reasons: [] };

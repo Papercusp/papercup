@@ -139,6 +139,105 @@ describe('MugTab (Colony sidebar, round 2)', () => {
     expect(screen.getByRole('tab', { name: /Capacity1 custom/i })).toBeTruthy();
   });
 
+  it('shows a reset only for the active customized pane and names its scope', async () => {
+    H.steeringResult = {
+      data: [steering({
+        directive: 'Prioritize benchmarks.',
+        eligibleHives: ['pot-a'],
+        maxBees: 2,
+      })],
+      loading: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<MugTab active={true} />, { wrapper: Wrap });
+    expect(screen.getByRole('button', { name: 'Reset Now controls' }).textContent).toContain('Reset Now');
+
+    await openLane('Work');
+    expect(screen.getByRole('button', { name: 'Reset Work controls' }).textContent).toContain('Reset Work');
+
+    await openLane('Capacity');
+    expect(screen.getByRole('button', { name: 'Reset Capacity controls' }).textContent).toContain('Reset Capacity');
+
+    await openLane('Schedule');
+    expect(screen.queryByRole('button', { name: /Reset .* controls/ })).toBeNull();
+  });
+
+  it('resets Now without clearing Work or Capacity settings', async () => {
+    H.steeringResult = {
+      data: [steering({ directive: 'Prioritize benchmarks.', pauseNewWork: true, eligibleHives: ['pot-a'], maxBees: 2 })],
+      loading: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<MugTab active={true} />, { wrapper: Wrap });
+    fireEvent.change(screen.getByPlaceholderText('What should Mug prioritize?'), { target: { value: 'Unsaved edit' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Reset Now controls' }));
+    await waitFor(() => expect(wroteRunTool()).toBe(true));
+    expect(setSteeringBody().args).toEqual({
+      hive: 'papercup-hive',
+      directive: null,
+      pauseNewWork: false,
+      pausedUntil: null,
+    });
+    expect((screen.getByPlaceholderText('What should Mug prioritize?') as HTMLTextAreaElement).value).toBe('');
+  });
+
+  it('resets Work without clearing Now or Capacity settings', async () => {
+    H.steeringResult = {
+      data: [steering({ directive: 'Keep this.', eligibleHives: ['pot-a'], eligiblePlans: ['plan-a'], includeUnplannedWork: false, maxBees: 2 })],
+      loading: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<MugTab active={true} />, { wrapper: Wrap });
+    await openLane('Work');
+    fireEvent.click(screen.getByRole('button', { name: 'Reset Work controls' }));
+    await waitFor(() => expect(wroteRunTool()).toBe(true));
+    expect(setSteeringBody().args).toEqual({
+      hive: 'papercup-hive',
+      eligiblePlans: [],
+      eligibleHives: [],
+      includeUnplannedWork: true,
+    });
+  });
+
+  it('resets Capacity without clearing Now or Work settings', async () => {
+    H.steeringResult = {
+      data: [steering({
+        directive: 'Keep this.',
+        eligibleHives: ['pot-a'],
+        modelTiers: [{ name: 'std', spec: 'opus' }],
+        tierCeilings: { bee: 'std' },
+        cadenceFloorSec: 120,
+        maxBees: 2,
+        idleActivities: { scout: false },
+        autoScaleOut: false,
+        decomposition: 'serial',
+      })],
+      loading: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<MugTab active={true} />, { wrapper: Wrap });
+    await openLane('Capacity');
+    fireEvent.click(screen.getByRole('button', { name: 'Expand models' }));
+    fireEvent.change(screen.getByLabelText('std model spec'), { target: { value: 'unsaved:model' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Reset Capacity controls' }));
+    await waitFor(() => expect(wroteRunTool()).toBe(true));
+    expect(setSteeringBody().args).toEqual({
+      hive: 'papercup-hive',
+      modelTiers: null,
+      tierCeilings: null,
+      cadenceFloorSec: null,
+      maxBees: null,
+      idleActivities: null,
+      autoScaleOut: null,
+      decomposition: null,
+    });
+    expect((screen.getByLabelText('std model spec') as HTMLInputElement).value).toBe('sonnet');
+  });
+
   it('renders the eligible-hives checkboxes from harnessProjects.lite sync data', async () => {
     render(<MugTab active={true} />, { wrapper: Wrap });
     await openLane('Work');
@@ -228,7 +327,7 @@ describe('MugTab (Colony sidebar, round 2)', () => {
 
     const std = await screen.findByLabelText('std model spec') as HTMLInputElement;
     fireEvent.change(std, { target: { value: 'opus:xhigh' } });
-    fireEvent.blur(std);
+    fireEvent.click(screen.getByRole('button', { name: 'Apply model change for std' }));
 
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     const { args } = setSteeringBody();
