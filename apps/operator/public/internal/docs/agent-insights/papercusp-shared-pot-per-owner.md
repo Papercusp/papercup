@@ -1,7 +1,7 @@
 # The dogfood papercusp pot is a PER-OWNER shared P2P pot (Solution C)
 URL: /internal/docs/agent-insights/papercusp-shared-pot-per-owner
 
-How a fresh install makes `papercusp` a P2P-shared pot that merges across the OWNER's own devices — per-owner identity in a private gist (never baked), an owner-signed allowlist policy as the admission gate, and the two bootstrap hook points. Gated by DOGFOOD_PAPERCUSP_HIVE_SHARE (default ON).
+How a fresh install makes `papercusp` a P2P-shared pot that merges across the OWNER's own devices — per-owner identity in a private gist (never baked), an owner-signed allowlist policy as the admission gate, and the two bootstrap hook points. Gated by DOGFOOD_PAPERCUSP_POT_SHARE (default ON).
 
 ## What this is
 
@@ -9,7 +9,10 @@ On a packaged desktop install, the `papercusp` dogfood pot isn't just cloned
 locally — it is set up as a **P2P-shared pot that merges data across the
 OWNER's own devices**, with **no secret baked into the binary**. This is
 "Solution C": a *per-owner* shared identity (a stranger who installs the app can
-never join your pot), gated by `DOGFOOD_PAPERCUSP_HIVE_SHARE` (default **ON**).
+never join your pot), gated by `DOGFOOD_PAPERCUSP_POT_SHARE` (default **ON**;
+the flag constant was renamed from `DOGFOOD_PAPERCUSP_HIVE_SHARE` in the
+hive→pot terminology sweep — the underlying runtime flag string,
+`papercusp-dogfood-papercusp-hive-share`, is unchanged).
 
 ## The two facts that shape the design
 
@@ -93,5 +96,6 @@ the gh token); no gh auth ⇒ the whole thing no-ops and retries next boot.
 * **2-device data-merge** can ONLY be witnessed with a real second device of the
   same GitHub login — it adopts the gist identity, gets auto-admitted by the
   allowlist, and federates. That's the part to check live.
-* The flag is `DOGFOOD_PAPERCUSP_HIVE_SHARE` (default ON). OFF ⇒ the share hooks
+* The flag is `DOGFOOD_PAPERCUSP_POT_SHARE` (default ON; see the rename note
+  above). OFF ⇒ the share hooks
   are a pure no-op (local-only pot, byte-identical to pre-C).

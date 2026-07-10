@@ -939,6 +939,24 @@ The effect: `classifyItemActivity` returns `'stalled'` (age = `Infinity`) whenev
 
 **What this means for you:** the “actively worked ≡ `progressing`” rule from §2 now holds uniformly across feature AND issue-family claims — checkpoint your issue-family work (`work_items:checkpoint`) the same way you would a feature, so its `last_progress_at` advances and it reads correctly as covered.
 
+## The sixth corollary: the reconciler was one-directional — a just-launched holder read as orphaned too (EI-8106, 2026-07-09)
+
+[Section titled “The sixth corollary: the reconciler was one-directional — a just-launched holder read as orphaned too (EI-8106, 2026-07-09)”](#the-sixth-corollary-the-reconciler-was-one-directional--a-just-launched-holder-read-as-orphaned-too-ei-8106-2026-07-09)
+
+`listFleetAssignments` (`fleet/assignments.ts`) already reconciled the view in one direction: `downgradeEndedHolders` catches a holder the view still believes `alive` whose `adv_sessions` row has since **ended** (§5’s dead-holder fix). But the SAME view can be wrong in the OTHER direction too, on a fresh agent’s **launch/bootstrap window**: `adv_sessions` can authoritatively record a session as LIVE before that session has registered coord presence or an inbox-wake await — so a heartbeat-only read sees no presence row yet and marks its just-taken claim `orphaned`, even though the holder is alive and about to start working.
+
+**The fix:** a new `upgradeRecordedLiveHolders` runs alongside `downgradeEndedHolders` on every `listFleetAssignments` read. For any row whose `agentId` appears in `recordedLiveOwnerIds` (a fresh, positive-evidence read of `adv_sessions`) and is NOT in the ended set, it forces `holderPresent`/ `holderAlive` true and — for an active claim — clears `orphaned`. Both reads (`endedRecordedOwnerIds`, `recordedLiveOwnerIds`) now run in parallel over every row’s `agentId`, not just the ones the view currently believes alive, so a just-launched holder that hasn’t yet shown up in presence is no longer misread as dead-and-reclaimable during its own bootstrap.
+
+**What this means for you:** the same rule as the rest of this doc, from the opposite direction — a claim that reads `orphaned` immediately after a fresh spawn is not automatically free; `fleet:assignments` now folds the session log both ways (ended → force-dead, recorded-live → force-alive) before you decide. If you still see a claim reading orphaned for a holder you know just launched, suspect a genuinely dead spawn (never reached `adv_sessions`) rather than assuming this reconciliation gap.
+
+## The seventh corollary: a genuinely-completed item can still read as free if `status` was never flipped (EI-8972, 2026-07-09)
+
+[Section titled “The seventh corollary: a genuinely-completed item can still read as free if status was never flipped (EI-8972, 2026-07-09)”](#the-seventh-corollary-a-genuinely-completed-item-can-still-read-as-free-if-status-was-never-flipped-ei-8972-2026-07-09)
+
+A cousin of the same “the signal you’re reading doesn’t mean what you think” class, on the claim POOL rather than liveness: `work_items:complete` records a structured completion (`terminal_owner` + `terminal_completion_ref`) but does not *require* the caller to also flip the top-level `state` to a terminal value — a caller that omits it gets a `stateWarning`, not a hard refusal. The row can therefore sit “genuinely done, but `status` still reads `'open'`” — and until this fix, that row stayed in the self-select claim pool (`claim_next` / `scheduler:get_next`), so a **different** agent could re-discover and re-do work a peer had already finished (observed live: WI-3646, completed + terminal-owned by one agent, re-claimed whole by another minutes later). `alreadyTerminallyCompletedExclusionSql` (`work-items.ts`) now pool-excludes any row carrying both `terminal_owner` and `terminal_completion_ref`, alongside the existing observation/needsHuman/ federation-detector/loop-noise exclusions — the row stays directly claimable BY ID (e.g. to formally flip its `state`), just not self-selectable fresh.
+
+**What this means for you:** `terminal_owner`/`terminal_completion_ref` being set is itself as strong a “this is actually settled” signal as a terminal `status` — don’t conclude an item is unclaimed/pickable from `status` alone if those fields are populated, and always flip `state` when you `work_items:complete` something so the pool and the status field agree.
+
 # Agent-first onboarding — architecture + runbook
 
 > Component map, endpoint contracts, test coverage, and the traps that bite agents working on the concierge → tutor onboarding flow.
@@ -3444,6 +3462,10 @@ Current status (2026-06-24): coding-factory is RETIRED — NOT ACTIVE
 
 `blueprints/coding-factory/blueprint.yaml` now carries an explicit RETIRED/dormant description: its `director` autoloop last fired 2026-05-01 and nothing currently instantiates it. Do **not** treat it as the active/default coding harness, and do not wire new work to it — it is kept intact for a possible future revival (re-enable instantiation + restore the director dispatch), not a live pipeline you can spawn into today. The PUSH-vs-PULL distinction below still explains the two models correctly and still applies if coding-factory is ever revived; the coding **POT** (`cup` + Mug, `scheduler:get_next`) is the live, actively-used model. If you were about to push a `FEATURE_ID` into a `scoper`/`architect`/… role expecting a running pipeline to pick it up, there currently isn’t one — use the coding-pot `cup` path instead.
 
+Terminology drift in comments, 2026-07 — not yet a role/field rename
+
+As of `autoloop-pot-operator-rebuild-2026-06-05`, `blueprints/coding/blueprint.yaml`’s own comments and description now call this the **“Hive” operator blueprint** — “the Queen in charge of the bee fleet” — and `operator-spawn.ts`’s factory-vs-self-pulling guard comments likewise say “coding-HIVE worker” / “bee”. This is comment-level renaming only so far: the blueprint’s actual `id: coding`, `kind: pot`, and `spine.decider: mug` are unchanged, and `blueprints/cup/blueprint.yaml` still names the worker role `cup` and its placer “the Mug.” So **`role="cup"` / `scheduler:set_claim_spec` / `scheduler:get_next` are still the literal tool-call surface** — treat “Hive”/“Queen”/“bee” in comments as a synonym for “coding pot”/“Mug”/“cup” until the `kind`/role identifiers themselves change.
+
 ## The two models (they share `cup:spawn`, but they are opposites)
 
 [Section titled “The two models (they share cup:spawn, but they are opposites)”](#the-two-models-they-share-cupspawn-but-they-are-opposites)
@@ -4288,6 +4310,8 @@ So: **before dispatching, find a `parked` (or `live`) target. An `ended` target 
 
 > `coord:roster { view }` (`tools/roster.ts`) is the newer unified read door — `view:"live"` is the same underlying model as `coord:presence`; `view:"history"` answers “who was ever here” for a roster with `ended` rows; `view:"claims"`/`view:"members"` cover `fleet:assignments`-shaped and membership questions. `coord:glance` gives a one-line fleet headline. `coord:presence` stays the dispatch-focused door documented here.
 
+**A `parked` row can be deliberately benched, not just idle — check `parkedOn`.** As of 2026-07-10 (WI-3715), `coord:presence` stamps each active row with `parkedOn: string[]` when the agent is parked on a real `events:await` key (the same derivation `fleet:assignments` already used via `decorateParkedOn`, now surfaced here too via `listParkedAwaitsForSubscribers` + `buildParkedOnMap`). A `parkedOn` agent is intentionally waiting for a specific event to be pushed — not abandoned, and not necessarily the ideal dispatch target: waking it re-invokes a turn that will just re-arm the same await unless your dispatch is what it’s waiting on. `parkedOn` is (like `modes`) derived fresh outside the byte-stable snapshot, so it is **not** etag-tracked — a `since:`-short-circuited read can be stale on it, same caveat as liveness.
+
 ## coord:dispatch — assign + wake + confirm, in ONE call
 
 [Section titled “coord:dispatch — assign + wake + confirm, in ONE call”](#coorddispatch--assign--wake--confirm-in-one-call)
@@ -4943,6 +4967,8 @@ This applies to **any** routine, not just green-checkpoint — a `system:git-syn
 **UPDATE 2026-07-09 — the reaper’s fast-orphan guard falsely reaped HEALTHY backlogged fires (WI-3519).** In this DBOS version `dbos.workflow_queue` holds **zero rows total** even for a never-dequeued `ENQUEUED` workflow — the `NOT EXISTS (... workflow_queue ...)` fast-orphan check the reaper used to gate on was therefore **vacuous** (always true), not an anomaly signal. Under queue-slot starvation (`routines-critical` concurrency=2, two slow-but-checkpointing fires under host CPU pressure) every OTHER waiting fire aged past the orphan window and got cancelled+requeued on **every** sweep — live evidence: `oddsmith` `reaped_count` hit 114, `quartermaster` hit 100, flapping the stall watchdog STALLED/RECOVERED across \~10 harnesses even though nothing was actually dead. Fix (`reapDeadExecutorWorkflows`, `dbos-executor-reaper.ts`): the fast-orphan branch now ALSO requires the **queue itself** to be dead — no sibling workflow on the same `queue_name` either actively `PENDING` with a recent `updated_at`, or recently drained to `SUCCESS`/`ERROR`, within the orphan window. (`CANCELLED` is deliberately excluded from that liveness check — the reaper’s own cancels bump `updated_at` and would self-mask a genuinely wedged queue.) A healthy backlog behind live workers is now left alone; the 60-min no-output window, explicit deadlines, and the dead-executor branch still backstop true wedges. **So: before treating a reaper `reaped_count` spike as evidence of a dead executor, check whether the queue had OTHER fires actively progressing at the time — a busy-but-alive queue is not a wedge.**
 
 **Also as of 2026-07-05/06 — a missing release-tooling checkout no longer crash-loops the routine.** `release-actions.ts` now calls `releaseToolingStatus(root, script)` before invoking `green-checkpoint.ts` / `deploy-cli.ts`: if the resolved integration/release root is missing `tsx` or the target script (a checkout that hasn’t materialized yet, or was wiped), the action logs a `skipped-no-tooling` pipeline event and returns cleanly instead of throwing — a symptom that used to look like “the routine fired but errored” now reads as an explicit, distinguishable skip reason in `harness_shared.pipeline_events`.
+
+**UPDATE 2026-07-10 — the reaper’s own tick could overlap itself + misreport timing (EI-3673).** `startExecutorReaper`’s tick function used to fire `reapDeadExecutorWorkflows(...)` fire-and-forget (`void promise.then(...)`) and return `undefined` synchronously, instead of returning the promise chain. That broke two things the `managedSetInterval` tick wrapper relies on: (1) re-entrancy — its `rec.running` guard only holds while it is actually awaiting the fn’s returned promise, so a slow reap pass (e.g. many queued queries right after a restart) could let a second tick start concurrently with the first instead of being skipped; (2) visibility — `schedule:inventory`’s `lastFireAt`/`fires` were stamped the instant `run()` returned, not when the reap actually finished, so recorded fire timing didn’t reflect real completion. `run` now returns the promise chain so the wrapper genuinely awaits it, fixing both (`dbos-executor-reaper.ts`, `startExecutorReaper`).
 
 ## Layer 2: the post-deploy 406 (main advances but :3070 stays stale)
 
@@ -6427,11 +6453,21 @@ Lumping all 429s into one “rate-limited, retrying” bucket once sent a multi-
 
 `buildOpenAiEmbedder` (`memory/configure.ts`) now distinguishes them: a 429 whose body matches `insufficient_quota` is treated like a 401 — **fail fast** (one attempt, no retry-budget burn), **don’t** `penalize()` the shared admission bucket (there’s no reset window to wait for), and throw a distinct `openai_embed_quota_exhausted`. `embedFailureReason` (`op-deadline.ts`) maps it to reason **`embed_quota_exhausted`** so the agent narrates *“OpenAI quota exhausted — check billing”* instead of *“rate-limited, retrying.”*
 
+### The sticky hard-exhaustion latch (WI-3615)
+
+[Section titled “The sticky hard-exhaustion latch (WI-3615)”](#the-sticky-hard-exhaustion-latch-wi-3615)
+
+A hard `insufficient_quota` billing stop fails **identically forever** until the key is fixed — so `markOpenAiEmbedFailure(now, { hard: true })` sets a **sticky latch** (`openAiEmbedHardExhaustedSinceMs`, no auto-expiry) in addition to the existing 60s soft cooldown (`EI-3381`, `PAPERCUSP_EMBED_FALLBACK_COOLDOWN_MS`). While the latch is set, `isOpenAiEmbedInCooldown()` keeps returning true so the `'auto'` cascade (`resolveEmbedderWith`) keeps preferring the local (BGE-ONNX) embedder — it never re-tries a key it has already proven dead. Before this, a hard-dead key thrashed forever on the 60s soft cooldown alone (fail → 60s local → re-try the same dead key → fail → repeat), reproduced live via `memory_vec_local` rows landing in successive 60s windows. The retry-budget-exhausted / daily-spend-cap paths (below) still set only the short, self-expiring cooldown — those failures are not necessarily permanent.
+
+The latch is cleared only by `clearOpenAiEmbedHardExhaustion()`, called from `POST /api/credentials` and `setup:save_key` when the `openai_api_key` credential is re-saved — the one event that plausibly means the key might work again. Both call sites also `invalidateMemoryClient()` so the very next memory call re-resolves the cascade immediately rather than riding the cached mem0 client’s 1-hour TTL (**EI-7279**: two back-to-back `memory:remember` probes both hard-failed with `embed_quota_exhausted` well inside one client lifetime before this fix forced an immediate rebuild).
+
+Our **own** daily spend cap (`EmbedBudgetExhaustedError`, below) is the same *sustained*-exhaustion shape as `insufficient_quota` in effect — it fails identically until UTC rollover — but the local embedder can still serve the request (it costs nothing against the OpenAI budget the cap protects). So the memory lane’s `adm.acquire()` catch now also calls `markOpenAiEmbedFailure()` (soft cooldown, not the hard latch) the moment the cap trips (**EI-7596**) — before this fix the cap threw *before* the retry loop’s own cooldown calls were ever reached, so the local-fallback cooldown never engaged and every `memory:remember`/`update` hard-failed for the rest of the day even with a working local embedder available.
+
 ## Cost reality: embedding is cents; the benchmark is the spender
 
 [Section titled “Cost reality: embedding is cents; the benchmark is the spender”](#cost-reality-embedding-is-cents-the-benchmark-is-the-spender)
 
-`text-embedding-3-small` is \~$0.02 per 1M tokens. The embeddable corpus is tiny — \~15k rows total (`memory_vec_openai` + `operator_turns` + the backfill tables) → embedding all of it **once ≈ $0.15**. Measured call rate is \~90 memory/search tool calls/day. Steady-state embedding is **cents/month.**
+`text-embedding-3-small` is \~$0.02 per 1M tokens. The embeddable corpus is small even including the largest target — `memory_vec_openai` + `operator_turns` + the backfill tables (`harness_escalations`, `harness_brainstorm`, `harness_decisions`, and — added session-search-scope-2026-07-05 — the episodic `session_turns` transcript index, selectively embedded for turns ≥80 chars, which is the single largest backlog at tens of thousands of rows) → embedding the whole corpus **once is still well under $1**. Measured call rate is \~90 memory/search tool calls/day. Steady-state embedding is **cents/month.**
 
 So if you see a surprising “$N on embeddings” bill, it is **not** production recall. The dominant embed spender is the **memory/search benchmark** (`lib/memory/bench` — `run-bench` / `precision-monitor` re-embeds the whole corpus × every backend variant × repeats per run). Those runs use **ephemeral scopes** they create and drop, so they leave **no rows** in `memory_precision_bench` — untraceable from the DB, but it’s the documented org-TPM burner. It is budget-gated: `iq-battery/cadence-tick` **refuses** an unattended run without an owner-set `budgetUsd`.
 
@@ -6474,7 +6510,7 @@ There are three OpenAI embed call sites. Two already used the governor; `embed-b
 2. **Wrong-row clobber** — a reused ctid could write one row’s embedding onto a different row.
 3. **A latent hot-loop** — the inner `while(true)` re-`SELECT`s `IS NULL` rows; a row whose embed *persistently* fails (e.g. every request 429s during a quota outage) is re-selected forever, spinning the loop and re-spending each pass.
 
-Fixed by keying the `UPDATE` on the real **PRIMARY KEY** (composite where needed: `operator_turns(id)`, `harness_escalations`/`harness_brainstorm` `(harness_slug,phase)`, `harness_decisions(harness_slug,line_hash)`) + guarding `AND embedCol IS NULL`, plus a **zero-progress break** (stop the sweep when a full batch embeds nothing — the remaining NULLs are persistent failures; the next tick retries).
+Fixed by keying the `UPDATE` on the real **PRIMARY KEY** (composite where needed: `operator_turns(id)`, `harness_escalations`/`harness_brainstorm` `(harness_slug,phase)`, `harness_decisions(harness_slug,line_hash)`) + guarding `AND embedCol IS NULL`, plus a **zero-progress break** (stop the sweep when a full batch embeds nothing — the remaining NULLs are persistent failures; the next tick retries). A fifth target added since — `session_turns` (the episodic transcript index, session-search-scope-2026-07-05, keyed `(workspace_id,source_kind,session_id,turn_idx)`) — was added PK-keyed from the start. A WI-2905 fairness cap now also bounds how many rows ONE target may consume per sweep, so `session_turns`’ much larger backlog can’t starve the other four tables of their share of the daily token budget.
 
 ## Runbook
 
@@ -6484,7 +6520,7 @@ Fixed by keying the `UPDATE` on the real **PRIMARY KEY** (composite where needed
 * **`embed_budget_exhausted`** → *our* daily cap tripped (a runaway, or a legitimate bulk re-embed). Check the once-per-day `[embed-admission] DAILY embed spend cap hit` log; raise `PAPERCUSP_EMBED_DAILY_TOKEN_CAP` if it’s real load.
 * **`embed_rate_limited`** (frequent) → a *true* transient 429. A fresh OpenAI key often starts at a **low TPM tier**; if it’s chronic, lower `PAPERCUSP_EMBED_ITPM` (default 600k) to match the key’s tier at platform.openai.com → Limits. 429s aren’t billed; search/memory degrade gracefully (BM25 / passthrough+retry).
 * **“Why did embeddings cost $N?”** → it’s almost certainly a benchmark run, not steady-state recall. Confirm steady-state with the memory/search tool-call rate in `tool_invocations`.
-* **Rotating the OpenAI key** → `POST /api/credentials` now invalidates the cached mem0 client on a key change, so it takes effect immediately (no ≤1h client-TTL wait).
+* **Rotating the OpenAI key** → `POST /api/credentials` (and `setup:save_key`) now invalidates the cached mem0 client on a key change, so it takes effect immediately (no ≤1h client-TTL wait) — and, if the fleet had been stuck on local via the WI-3615 sticky hard-exhaustion latch (`embed_quota_exhausted`), also clears that latch so the very next call re-tries OpenAI once instead of staying pinned to local until a hit-again re-latch.
 
 # Vectors have a SPACE, not just a dimension — switching the embedder silently invalidates every stored vector
 
@@ -6494,12 +6530,15 @@ Fixed by keying the `UPDATE` on the real **PRIMARY KEY** (composite where needed
 
 [Section titled “The trap”](#the-trap)
 
-`memoryEmbedderMode` (`auto | openai | local | disabled`) picks the embedder **at runtime**. Both available embedders produce **384-dimensional** vectors:
+`memoryEmbedderMode` (`auto | openai | local | disabled`) picks the embedder **at runtime**. All available embedders produce **384-dimensional** vectors:
 
-| mode     | model                                                      | dims |
-| -------- | ---------------------------------------------------------- | ---- |
-| `openai` | `text-embedding-3-small`, requested with `dimensions: 384` | 384  |
-| `local`  | `Xenova/bge-small-en-v1.5` (BGE-ONNX)                      | 384  |
+| mode     | model                                                                                                                                          | dims |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| `openai` | `text-embedding-3-small`, requested with `dimensions: 384`                                                                                     | 384  |
+| `local`  | `Xenova/bge-small-en-v1.5` (BGE-ONNX)                                                                                                          | 384  |
+| `gemma`  | `onnx-community/embeddinggemma-300m-ONNX`, natively 768 → MRL-truncated to 384 + L2-renormalized (migration 534; the default since 2026-07-10) | 384  |
+
+`gemma` makes the trap sharper, not softer: its vectors are *born* 768-dim and only look like the others after Matryoshka truncation, and it uses asymmetric task prompts (document vs query) — so a gemma-384 is incomparable with a BGE-384 *and* with a gemma vector embedded under the wrong prompt. Same rule as always: **the mode IS the space.** Switching to gemma re-embeds the corpus via `POST /api/user/memory/reembed { from: <old>, to: 'gemma' }` (Settings → Memory has buttons for it); mem0 writes land in `memory_vec_gemma`.
 
 Every layer checks `vec.length !== EMBEDDER_DIM`. **No layer checked which model produced the vector.** OpenAI-384 and BGE-384 are different vector spaces: cosine similarity between them is meaningless. So flipping the pref leaves every previously-stored vector structurally valid, non-null, correctly sized — and semantically incomparable with the query vector, which the *same pref* also selects.
 
@@ -6990,6 +7029,8 @@ Bundle-aware guard helper + an esbuild define (symmetric with the CJS banner fix
 * Library CLIs guard with `if (isCliEntry(import.meta.url)) { main()… }`. Outside the bundle (tsx/dev/test) the define is absent, so `tsx <file>.ts` still self-executes exactly as before.
 
 A regression guard (`lib/util/cli-entry.test.ts`) fails CI if any `operator-core/lib` file reintroduces a naive ESM self-exec guard. **New library CLI? Use `isCliEntry`, never a raw `import.meta.url`/`process.argv[1]` comparison.**
+
+**Symlink robustness follow-up (WI-1443).** Node realpaths the entry module’s `import.meta.url` by default while `process.argv[1]` preserves the path it was *invoked* through — so through a symlinked checkout (e.g. `papercup -> papercusp`) the naive `importMetaUrl === pathToFileURL(argv1).href` comparison is false and the CLI silently never runs (exit 0, no output — the same symptom class as the bundling bug, different cause). Both `isCliEntry()` (`cli-entry.ts`) AND `serve.ts`’s own `invokedDirectly` check (the real entry, which does NOT use `isCliEntry` — see above) now fall back to comparing the `realpathSync`’d forms of both sides when the direct comparison misses, under a try/catch (a non-file URL or a vanished path just means “not a direct CLI invocation”, never a throw).
 
 ## How to verify a sidecar boot fix fast
 
@@ -13356,6 +13397,22 @@ Two more robustness gaps in the SAME re-arm module this doc analyzes (`completio
 
 None of this touches the delivered-vs-survived accounting, the resume-exit observer, or the autoloop circuit — the warm-turn-death analysis above is unchanged.
 
+## Also since this doc (2026-07-09) — the exact `infra_loss` error string from the original incident now gets its own watchdog signal
+
+[Section titled “Also since this doc (2026-07-09) — the exact infra\_loss error string from the original incident now gets its own watchdog signal”](#also-since-this-doc-2026-07-09--the-exact-infra_loss-error-string-from-the-original-incident-now-gets-its-own-watchdog-signal)
+
+Item #7 above (“Observability is near-zero … the 429 itself is in the discarded subprocess stderr — logged nowhere”) is partially closed on the **failed-spawn** side (a related but distinct signal source from the loop-delivery path this doc analyzes). `watchdog.ts` `classifySpawnError` gained a new `'infra-loss'` class (EI-8667) that explicitly matches `infra_loss:` / `"returned HTTP <n> but the agent produced no turn"` / `"API Error: Request rejected"` — the *literal* error string quoted in this doc’s opening paragraph (`infra_loss: …/<role> returned HTTP 200 but the agent produced no turn (exitCode=1)`, from the 2026-06-23 429-storm incident). Previously that string fell through to the generic `'other'` class, burying a diagnosable gateway/rate-limit-stall pattern inside unrelated noise. It now keys its own `failed-spawns:infra-loss` watchdog signal instead. This is the spawn-tracking (`harness_shared.spawned_agents`) surface, not the loop wake-delivery surface `resume-turn-outcome.ts`/`loop-turn-outcome.ts` cover — the two overlap in the failure mode they both ultimately trace to (an upstream 429/gateway stall) but are separate collectors.
+
+## Also since this doc (2026-07-10) — `executeWake` gained rematerialize-on-miss for archived session files
+
+[Section titled “Also since this doc (2026-07-10) — executeWake gained rematerialize-on-miss for archived session files”](#also-since-this-doc-2026-07-10--executewake-gained-rematerialize-on-miss-for-archived-session-files)
+
+`wake-executor.ts` gained a **third, unrelated** pre-resume step (plan `session-db-archive-retire-dirs-2026-07-10` P-008, new module `session-archive.ts`) — noted here only so the `wake-executor.ts` anchor stays precise; it does not touch the delivered-vs-survived accounting this doc analyzes:
+
+* Since that plan’s P-002/P-003, PG (`harness_shared.session_archive_files` + `session_archives`) is the **canonical** archive of an ended CLI session’s on-disk files (zstd-compressed, sha256-verified) — `deleteArchivedSessionFiles()` may remove the local copy once the archive stamp is committed.
+* `executeWake` now checks, **immediately before** building the `resumeCommandFor(...)` invocation, whether the target session’s local files are still on disk and, if not, calls `rematerializeSession(...)` to pull them back byte-exactly from the PG archive before `claude --resume <uuid>` / `codex resume <uuid>` / the omp thread-resume runs. Wired for all three resume agents: `codex` (`codexHomeForAdvSession`, falling back to `findArchivedSessionIdForAdv` when no local session id is known), `omp` (`ompSessionsRoot()`), and `claude` (`sessionClaudeConfigDir(owner)`). Each check is FS-only (a no-op) when the file is already on disk; a miss costs one PG read + a decompress-and-write.
+* This closes a **different** turn-death class than the 429-storm this doc is about: a resume that would previously fail outright with “session not found” (because archive-at-death had deleted the local transcript) now transparently restores it first. It does not change when a delivery is marked `delivered` (still on `spawnDetached` returning a PID — see step 1 above), does not feed the turn-error taxonomy or the autoloop circuit, and is orthogonal to the resume-exit observer / reconcile stuck-park path this doc’s remediation roadmap covers.
+
 # The fed_hlc LWW comparator is non-transitive under MIXED HLC presence
 
 > lwwPick / the fed_hlc PG guard used to use "both-HLC → compare HLC, else → compare ts" — a rule that CYCLED when a no-HLC (pre-314) op sat between two skewed HLC ops, so the fold winner became order-dependent and peers could diverge (EI-1698). FIXED as of 2026-07-02 (compare in one HLC space, everywhere) — plus a follow-up exact-tie/node-id fix (WI-1672, mig-459) and a THIRD hardening, the HlcClock recv ratchet ε-bound (maxDriftMs) that stops one absurd remote stamp from poisoning a node's (and, re-propagated, the pot's) clock.
@@ -17518,13 +17575,13 @@ Voice-IN (`POST /api/operator/papercup-input`) does NOT use this buffer: it writ
 
 # The dogfood papercusp pot is a PER-OWNER shared P2P pot (Solution C)
 
-> How a fresh install makes `papercusp` a P2P-shared pot that merges across the OWNER's own devices — per-owner identity in a private gist (never baked), an owner-signed allowlist policy as the admission gate, and the two bootstrap hook points. Gated by DOGFOOD_PAPERCUSP_HIVE_SHARE (default ON).
+> How a fresh install makes `papercusp` a P2P-shared pot that merges across the OWNER's own devices — per-owner identity in a private gist (never baked), an owner-signed allowlist policy as the admission gate, and the two bootstrap hook points. Gated by DOGFOOD_PAPERCUSP_POT_SHARE (default ON).
 
 ## What this is
 
 [Section titled “What this is”](#what-this-is)
 
-On a packaged desktop install, the `papercusp` dogfood pot isn’t just cloned locally — it is set up as a **P2P-shared pot that merges data across the OWNER’s own devices**, with **no secret baked into the binary**. This is “Solution C”: a *per-owner* shared identity (a stranger who installs the app can never join your pot), gated by `DOGFOOD_PAPERCUSP_HIVE_SHARE` (default **ON**).
+On a packaged desktop install, the `papercusp` dogfood pot isn’t just cloned locally — it is set up as a **P2P-shared pot that merges data across the OWNER’s own devices**, with **no secret baked into the binary**. This is “Solution C”: a *per-owner* shared identity (a stranger who installs the app can never join your pot), gated by `DOGFOOD_PAPERCUSP_POT_SHARE` (default **ON**; the flag constant was renamed from `DOGFOOD_PAPERCUSP_HIVE_SHARE` in the hive→pot terminology sweep — the underlying runtime flag string, `papercusp-dogfood-papercusp-hive-share`, is unchanged).
 
 ## The two facts that shape the design
 
@@ -17578,7 +17635,7 @@ The owner’s GitHub login + token come from `resolveLocalGithubIdentity` (reads
 
 * **Single-device smoke** (what’s verifiable on one box): after the share step, `harness_shared.hive_policy` has the signed `{allowlist:[login], membership:'allowlist'}` row, and the `harness_registry` payload’s `hiveDirectoryMeta.papercusp` has `visibility:'invite'` + an `inviteSecret`. If a restart keeps the **same** inviteSecret, the gist persisted (the gh token has the `gist` scope and the fetch/adopt round-trips).
 * **2-device data-merge** can ONLY be witnessed with a real second device of the same GitHub login — it adopts the gist identity, gets auto-admitted by the allowlist, and federates. That’s the part to check live.
-* The flag is `DOGFOOD_PAPERCUSP_HIVE_SHARE` (default ON). OFF ⇒ the share hooks are a pure no-op (local-only pot, byte-identical to pre-C).
+* The flag is `DOGFOOD_PAPERCUSP_POT_SHARE` (default ON; see the rename note above). OFF ⇒ the share hooks are a pure no-op (local-only pot, byte-identical to pre-C).
 
 # Patching memory METADATA (scope / kind / workspace / anchors) — vec-safe, via memory:update
 
@@ -19064,6 +19121,44 @@ When you write code that runs on `getOrgPg()` (or any pooled `prepare:false` con
 * Connection config: `libs/papercusp/libs/db/src/connection.ts` (`getOrgPg`, `prepare: false`).
 * The routines host is `papercup-bg-host.service` (runs from the shared `papercup` tree, caches transpiles in `node_modules/.cache/jiti` — clear it if a code change isn’t picked up after a restart). `WI`/issue: EI-2549.
 
+# CREATE DATABASE must force postgres.js .simple() (not the version-fragile default)
+
+> Chronic "CREATE DATABASE cannot run inside a transaction block" is a postgres.js protocol bug, not a PG-version issue — force .simple().
+
+# CREATE DATABASE must force postgres.js `.simple()`
+
+[Section titled “CREATE DATABASE must force postgres.js .simple()”](#create-database-must-force-postgresjs-simple)
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+A DB-provisioning path chronically fails live with `PostgresError: CREATE DATABASE cannot run inside a transaction block`, while the integration test for the *same code* stays green — classic “works in test, fails live.” Seen as the gym autoloop `gym-cycle@gymloopharness` red for 45 consecutive fires (EI-9101).
+
+## Root cause
+
+[Section titled “Root cause”](#root-cause)
+
+`CREATE DATABASE` (also `DROP DATABASE`, `VACUUM`, `ALTER SYSTEM`) **cannot run under the extended (prepared) query protocol** — PostgreSQL treats that protocol as an implicit transaction and rejects the command with “cannot run inside a transaction block.”
+
+postgres.js chooses simple-vs-extended per query. For `sql.unsafe(query)`: `simple: 'simple' in options ? options.simple : args.length === 0`. So a **parameterless** `unsafe('CREATE DATABASE …')` uses the simple protocol *only because `args.length === 0`* — a version/bundling-fragile default. It works in the repo’s pinned `postgres@3.4.9` (test passes), but any path on the extended protocol (different version, bundling quirk, accidental parameter, pooler) reintroduces the error.
+
+## Fix — always force `.simple()`
+
+[Section titled “Fix — always force .simple()”](#fix--always-force-simple)
+
+```ts
+await maint.unsafe(`CREATE DATABASE "${dbName}"`).simple();
+```
+
+Matches what the operator boot already does for its own `CREATE DATABASE`. Guarantees the single-statement simple protocol regardless of postgres.js version. Swallow `42P04`/`duplicate_database` for idempotency; rethrow otherwise.
+
+## The trap: don’t blame the PG version
+
+[Section titled “The trap: don’t blame the PG version”](#the-trap-dont-blame-the-pg-version)
+
+Before EI-9101 this was misdiagnosed as a `pg16 → pg18` image skew and “fixed” by pinning the image to pg18. **A PostgreSQL major has no bearing on a transaction-block error** — the pin didn’t help and reds climbed 29 → 45. If you see “cannot run inside a transaction block,” the answer is the **query protocol** (`.simple()`), never the server version. And a green integration test proves the code correct *against that pinned postgres.js version*, not that a silent version-default it depends on is safe — make such defaults explicit.
+
 # Writing JSONB columns with postgres-js — use JSON.stringify::jsonb, not sql.json
 
 > In operator runtime code (getOrgPg) sql.json(obj) THROWS and a bare object param THROWS — bind JSONB as ${JSON.stringify(value)}::jsonb. The testcontainer client (_pg-helpers) binds JSONB differently, so integration tests can't faithfully test it; verify against the live host.
@@ -19224,7 +19319,7 @@ The real guard is the ESLint rule **`papercusp/no-bare-jsonb-cast`** (wired `err
 
 [Section titled “TL;DR”](#tldr)
 
-A shared pot’s `membership:'approval'` policy is enforced **on the OWNER side**, at the substrate admission seam (`boot.ts` `drainAdmissionQueue`), via **`admitAnnouncedPeerAsOwner`**, which resolves the peer’s Pot home + self-gates to the owner box and then routes the actual decision through **`ownerAdmitOrPend`** (both in `pot-membership-admission.ts`). When the owner admits a binding-verified peer’s announce it does NOT unconditionally trust-admit; it consults the owner-signed policy:
+A shared pot’s `membership:'approval'` policy is enforced **on the OWNER side**, at the substrate admission seam (`boot.ts` `drainAdmissionQueue`), via **`admitAnnouncedPeerAsOwner`**, which resolves the peer’s Pot home + self-gates to the owner box and then routes the actual decision through **`ownerAdmitOrPend`** (both in `hive-membership-admission.ts` — the file is still internally named `hive-*`; only the tool/UX-facing vocabulary re-keyed to “Pot”). When the owner admits a binding-verified peer’s announce it does NOT unconditionally trust-admit; it consults the owner-signed policy:
 
 * **already a member** → refresh the row (idempotent epoch re-grant on reconnect).
 * **not a member, open/allowlisted** → `upsertHiveMember` (trust-admit).
@@ -19261,7 +19356,7 @@ It gates ONLY the membership-UPSERT decision. **Core admission, the `revoked` se
 
 `drainAdmissionQueue` no longer calls `ownerAdmitOrPend` directly — it calls the testable extraction **`admitAnnouncedPeerAsOwner`**, fire-and-forget (`void (async () => …)()`) so the owner-admit I/O never blocks the merge-gated drain loop. That wrapper:
 
-1. **Resolves the Pot home** via `hiveHomeSlugForHarness` (a fresh `pot-federation` registry read: member slug → its `hive_slug`; a pot-home slug → itself) — **not** the boot-time projection slug, which is `undefined` on the owner’s own MEMBER boot (WI-280; using it there silently skipped registration before this fix).
+1. **Resolves the Pot home** via `potHomeSlugForHarness` (renamed from `hiveHomeSlugForHarness`; a fresh `hive-federation.ts` registry read: member slug → its `hive_slug`; a pot-home slug → itself) — **not** the boot-time projection slug, which is `undefined` on the owner’s own MEMBER boot (WI-280; using it there silently skipped registration before this fix).
 2. **Self-gates to the owner box** via `loadHivePubkey(workspaceId, hiveHomeSlug)` — only a box holding the Pot private key runs the admit/pend decision at all (`skip: 'not_owner'`); a pot with no resolvable home skips too (`skip: 'no_hive_home'`).
 3. Only then calls `ownerAdmitOrPend`, which is the branching logic this doc’s TL;DR describes (already-member refresh / policy-admit / pending / refuse).
 
@@ -19277,7 +19372,7 @@ It gates ONLY the membership-UPSERT decision. **Core admission, the `revoked` se
 
 [Section titled “Tests”](#tests)
 
-`pot-membership-admission.test.ts` (unit) + `pot-membership-admission.integration.test.ts` (real PG, incl. the `substrate_outbox` put that proves federation) cover all `ownerAdmitOrPend` branches end to end.
+`hive-membership-admission.test.ts` (unit) + `hive-membership-admission.integration.test.ts` (real PG, incl. the `substrate_outbox` put that proves federation) cover all `ownerAdmitOrPend` branches end to end.
 
 # Rubric method: pot-coordination-health (the 15-criteria scorecard)
 
@@ -19524,7 +19619,7 @@ When you find generic content trapped in an override, **move it to the generated
 
 [Section titled “The guard”](#the-guard)
 
-`pot-override-additive-guard.ts` (`additiveOverrideWarning(md)`) detects the smell — an override that re-states a base-owned section heading or embeds a `PAPERCUSP-SU:` splice marker — and the `pot-override-set` route surfaces it as a **non-blocking warning** (overrides are the owner’s to author; we flag, we don’t gate). If you’re adding a new generic section to the base, add its heading to `BASE_OWNED_HEADINGS` so the guard keeps catching copies of it.
+`hive-override-additive-guard.ts` (the file is still internally named `hive-*`; only the tool/UX-facing vocabulary re-keyed to “Pot” — `additiveOverrideWarning(md)`) detects the smell — an override that re-states a base-owned section heading or embeds a `PAPERCUSP-SU:` splice marker — and the `pot-override-set` route surfaces it as a **non-blocking warning** (overrides are the owner’s to author; we flag, we don’t gate). If you’re adding a new generic section to the base, add its heading to `BASE_OWNED_HEADINGS` so the guard keeps catching copies of it.
 
 ## Why it’s not flag- or materialization-sensitive
 
@@ -19549,25 +19644,27 @@ The su prompt is assembled by `renderSuPlaybook` on **both** paths — `su-bluep
 
 A common (and load-bearing) misread: “the Pot Mug RESUMES her prior session every wake (`claude --resume`), so she’s a forever-session with an unbounded growing transcript.” **This is wrong.** Verify before designing on it.
 
-The Mug’s **declared, event, watchdog, and manual wakes are ALL already fresh-per-wake** — each spawns a brand-new claude session with a fresh session id and **no carried transcript**. Historically the only path that `--resume`d the Mug was the *generic* wake-executor inbox/await delivery channel (a `coord:send` with `wake:true` to her owner id, or an `events:await` she registered — which her persona tells her not to use) — **that exception is now closed** (mug-brief-cache-assembly B-01/P-012, see Consequence below): `wake-executor.ts` detects a pot-operator session and routes even that path through the same fresh pot launch.
+(This page is scoped to the **Mug/hive-operator wake path** specifically — the **Overwatch/Kettle** role, a sibling live-launch tracked the same way in `adv_sessions`, is NOT part of this cutover: an ended Overwatch session still resumes via the generic Channel-2 `--resume` path in `wake-executor.ts`, same as a bee. `hiveInstallSlugFromLabel()` only matches a `hive · `label prefix, never `overwatch · `.)
+
+The Mug’s **declared, event, watchdog, and manual wakes are ALL already fresh-per-wake** — each spawns a brand-new claude session with a fresh session id and **no carried transcript**. Historically the only path that `--resume`d the Mug was the *generic* wake-executor inbox/await delivery channel (a `coord:send` with `wake:true` to her owner id, or an `events:await` she registered — which her persona tells her not to use) — **that exception is now closed** (mug-brief-cache-assembly B-01/P-012, see Consequence below): `wake-executor.ts` detects a hive-operator session (by its `hive · `labeled `adv_sessions` row) and routes even that path through the same fresh pot launch.
 
 ## The wake paths (ALL fresh — the last exception closed by P-012)
 
 [Section titled “The wake paths (ALL fresh — the last exception closed by P-012)”](#the-wake-paths-all-fresh--the-last-exception-closed-by-p-012)
 
-| Path              | Trigger                                                             | Mechanism                                                                                                                                | Session                                                           |
-| ----------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| Time wake         | `pot:declare-wake {inSeconds}`                                      | `pot-wake` routine → DBOS routinesTick → `system:blueprint-run` → `fireLaunchBlueprint('pot')` → `POST /harness/:slug/invoke?bpkind=pot` | **FRESH**                                                         |
-| Event wake        | `pot:declare-wake {events}`                                         | reaction rule → `pot:wake` tool → `fireLaunchBlueprint('pot')` → same invoke route                                                       | **FRESH**                                                         |
-| Watchdog recovery | turn-end / boot / 30s tick (`watchdog.ts armFallbackHiveWake`)      | `declareHiveTimeWake` → same routine                                                                                                     | **FRESH**                                                         |
-| Manual / user     | `pot:wake`                                                          | `fireLaunchBlueprint('pot')` → same invoke route                                                                                         | **FRESH**                                                         |
-| Inbox / await     | `coord:send {wake:true}` to her owner id, or her own `events:await` | await pump → `wake-executor.ts executeWake` → detects the `pot ·` label → `defaultFireHiveWake` → `fireLaunchBlueprint('pot')`           | **FRESH** (closed exception — was `--resume` before P-012 landed) |
+| Path              | Trigger                                                             | Mechanism                                                                                                                                                    | Session                                                           |
+| ----------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------- |
+| Time wake         | `pot:declare-wake {inSeconds}`                                      | `pot-wake` routine → DBOS routinesTick → `system:blueprint-run` → `fireLaunchBlueprint('pot')` → `POST /harness/:slug/invoke?bpkind=pot`                     | **FRESH**                                                         |
+| Event wake        | `pot:declare-wake {events}`                                         | reaction rule → `pot:wake` tool → `fireLaunchBlueprint('pot')` → same invoke route                                                                           | **FRESH**                                                         |
+| Watchdog recovery | turn-end / boot / 30s tick (`hive/watchdog.ts armFallbackHiveWake`) | `declareHiveTimeWake` → same routine                                                                                                                         | **FRESH**                                                         |
+| Manual / user     | `pot:wake`                                                          | `fireLaunchBlueprint('pot')` → same invoke route                                                                                                             | **FRESH**                                                         |
+| Inbox / await     | `coord:send {wake:true}` to her owner id, or her own `events:await` | await pump → `wake-executor.ts executeWake` → detects the `hive ·` label (`hiveInstallSlugFromLabel`) → `defaultFireHiveWake` → `fireLaunchBlueprint('pot')` | **FRESH** (closed exception — was `--resume` before P-012 landed) |
 
 ### Where “fresh” is decided
 
 [Section titled “Where “fresh” is decided”](#where-fresh-is-decided)
 
-`packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts` (the `/invoke?bpkind=pot` route): mints `nativeSessionId = randomUUID()` **fresh on every fire** and passes it as `PAPERCUSP_NATIVE_SESSION_ID`. Then `libs/papercusp/packages/orchestrator/src/invoke.ts` turns that into `claude --session-id <uuid>` — which **creates a new session**, never `--resume`. Because the uuid is freshly minted each fire, no transcript is ever continued.
+`packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts` (the `/invoke?bpkind=pot` route): mints `nativeSessionId = randomUUID()` **fresh on every fire** and passes it as `PAPERCUSP_NATIVE_SESSION_ID`. Then `libs/papercusp/packages/orchestrator/src/invoke.ts` turns that into `claude --session-id <uuid>` — which **creates a new session**, never `--resume`. Because the uuid is freshly minted each fire, no transcript is ever continued. (For a Codex-backend Mug the CLI accepts no forced session id, but the same freshly-minted uuid is still recorded as the transcript/roster key — the `--session-id`/no-transcript-carried argument holds identically for both backends.)
 
 The session id is *recorded* in `adv_sessions` so the **inbox/await** path (wake-executor) *could* later `claude --resume <that id>` — but that path resumes the LAST short fresh session (one turn), never a forever-transcript.
 
@@ -19582,7 +19679,7 @@ The misread conflates three true-but-unrelated facts: (a) the CUP forced session
 [Section titled “Consequence”](#consequence)
 
 * The Mug ALREADY re-derives her working state from durable world-state every scheduled wake — and it works. Her load-bearing cross-wake state lives in durable artifacts (work-item claims, `blocked_by` edges, priorities, the `pot:declare-wake` routine, presence, the decision ledger), not the transcript.
-* **The cutover has now landed** — the Mug is **uniformly** fresh-per-wake; the “one exception” row in the table above is closed. `wake-executor.ts executeWake` detects a pot-operator session by its `adv_sessions` label (`pot · <slug>/<role>`, `hiveInstallSlugFromLabel()`) and routes its ended-session wake through the SAME fresh pot launch (`defaultFireHiveWake` → `fireLaunchBlueprint(HIVE_BLUEPRINT_ID, ...)`, the wake text as kickoff) instead of `resumeCommandFor` — so an inbox-wake or an `events:await` firing on an ended Mug session no longer resumes a stale transcript. A wake-floor debounce (`withinWakeFloor`/`effectiveHiveWakeFloorSec`) collapses a burst of cup-wakes within the floor window to one fresh launch. On fire-failure: PARK, never resume (the always-armed time/watchdog wake re-surveys). All other (non-Mug) agents still resume as before. (mug-brief-cache-assembly B-01 / P-012, channel `pot-fresh-wake`.)
+* **The cutover has now landed** — the Mug is **uniformly** fresh-per-wake; the “one exception” row in the table above is closed. `wake-executor.ts executeWake` detects a hive-operator session by its `adv_sessions` label (`hive · <slug>/<role>`, `hiveInstallSlugFromLabel()`) and routes its ended-session wake through the SAME fresh pot launch (`defaultFireHiveWake` → `fireLaunchBlueprint(HIVE_BLUEPRINT_ID, ...)`, the wake text as kickoff) instead of `resumeCommandFor` — so an inbox-wake or an `events:await` firing on an ended Mug session no longer resumes a stale transcript. A wake-floor debounce (`withinWakeFloor`/`effectiveHiveWakeFloorSec`) collapses a burst of cup-wakes within the floor window to one fresh launch. On fire-failure: PARK, never resume (the always-armed time/watchdog wake re-surveys). All other (non-Mug) agents still resume as before. (mug-brief-cache-assembly B-01 / P-012, channel `pot-fresh-wake`.)
 
 ## How to verify
 
@@ -19593,6 +19690,14 @@ The misread conflates three true-but-unrelated facts: (a) the CUP forced session
 # HIVE_REKEY (C-001 read-plane re-key) flip-readiness — code-complete, owner-gated on the live 2-machine cut witness
 
 > The papercusp-pot-rekey flip is an ATTENDED security cutover, not a code task. The op-path is wired end-to-end (encrypt-on-write, decrypt-on-read, advance-on-boundary), the hermetic end-to-end content read-cut witness is green, and ~88 re-key tests pass. The ONE remaining gate is the live 2-machine K-CUT-on-content witness (WI-560, blocked on WI-559 peering). This is the exact flip surface (3 edits), the evidence, the residual risk, and the go/no-go the owner ratifies against.
+
+## Current behavior (2026-07-09) — the flip already happened; this page is HISTORICAL
+
+[Section titled “Current behavior (2026-07-09) — the flip already happened; this page is HISTORICAL”](#current-behavior-2026-07-09--the-flip-already-happened-this-page-is-historical)
+
+The flag graduated. `FLAGS.POT_REKEY` (the flag key was renamed from `HIVE_REKEY` → `POT_REKEY`; the runtime flag string is now `"papercusp-hive-rekey"`, was `"papercusp-pot-rekey"`) is now **DEFAULT ON** in `libs/flags/src/types.ts`, per the comment there: *“graduated 2026-06-29 via the P-011 flag-default inversion — NOT in DARK\_FLAGS: the live cut-off witness (P-008 / public-release GATE-1) passed cross-machine on the real binary (shared-hive-public-release D-014) and shipped in desktop alpha.2, so the gate condition is met.”* It no longer appears in `KNOWN_DARK_FLAGS` / `DARK_FLAG_CASE` in `libs/flags/src/production-defaults.test.ts` at all.
+
+So the **residual gate this page describes (the live 2-machine K-CUT witness, WI-560/WI-559) has since been satisfied** and the owner has already ratified the flip — the “3 edits” flip surface below was executed. v1 scope (new hives only; existing hives stay legacy-unencrypted) still applies as designed (D-003). The rest of this page is kept for the **historical evidence trail** (the witness detail, the flip mechanics, the residual-risk reasoning) — read it as “what got us to GO,” not as a still-pending decision.
 
 ## TL;DR — what the owner is deciding
 
@@ -19614,19 +19719,19 @@ All flag-gated on `papercusp-pot-rekey`; **OFF ⇒ byte-identical to today** (no
 
 | Concern                          | Where                                                           | Note                                                                                                                                                                         |
 | -------------------------------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Flag gate / crypto resolve       | `pot-epoch-serving.ts` `resolveHiveEpochCrypto(enabled)`        | `true` ⇒ real `createHiveEpochCrypto()` (sodium); `false` ⇒ fail-closed stub (never silent plaintext)                                                                        |
-| Boot composition (flag FIRST)    | `pot-epoch-boot-deps.ts` `buildHiveRekeyBootDeps`               | one cached flag read; `null` for OFF / non-pot / no-device — cheap off-path                                                                                                  |
+| Flag gate / crypto resolve       | `hive-epoch-serving.ts` `resolveHiveEpochCrypto(enabled)`       | `true` ⇒ real `createHiveEpochCrypto()` (sodium); `false` ⇒ fail-closed stub (never silent plaintext)                                                                        |
+| Boot composition (flag FIRST)    | `hive-epoch-boot-deps.ts` `buildHiveRekeyBootDeps`              | one cached flag read; `null` for OFF / non-pot / no-device — cheap off-path                                                                                                  |
 | Encrypt-on-write                 | `wire-outbox.ts` → `outbox-drain.ts` (`epochEncrypt.encryptOp`) | exclude-set: `shouldEncryptOpForRekey` encrypts all CONTENT, keeps admission/key/policy tags plaintext (`REKEY_PLAINTEXT_TAGS`), fail-closed (new tag defaults to encrypted) |
 | Decrypt-on-read                  | `boot.ts` `rekeyDeps.epochGate(enforcedApply)`                  | op carries its `epoch`; gate resolves epoch key → decrypt, else defers (pending-epoch buffer)                                                                                |
-| Advance-on-boundary (revoke)     | `pot-revoke-contributor.ts` → `advanceEpochOnHiveBoundary`      | wraps the new epoch key to REMAINING members only; revoked device excluded forever (K-CUT). Loud `rekey_boundary_skipped` boot event if it no-ops                            |
-| Advance-on-boundary (go-private) | `pot-set-listing.ts` → `advanceEpochOnHiveBoundary`             | re-keys to all current members (no cutOff)                                                                                                                                   |
+| Advance-on-boundary (revoke)     | `hive-revoke-contributor.ts` → `advanceEpochOnHiveBoundary`     | wraps the new epoch key to REMAINING members only; revoked device excluded forever (K-CUT). Loud `rekey_boundary_skipped` boot event if it no-ops                            |
+| Advance-on-boundary (go-private) | `hive-set-listing.ts` → `advanceEpochOnHiveBoundary`            | re-keys to all current members (no cutOff)                                                                                                                                   |
 | Deferred-content drain           | `boot.ts` `epochDrainQueue` / `onEpochKeyApplied`               | re-applies buffered content once a member’s key row arrives                                                                                                                  |
 
 ## Witness evidence (re-ran 2026-06-24, this checkout, staging)
 
 [Section titled “Witness evidence (re-ran 2026-06-24, this checkout, staging)”](#witness-evidence-re-ran-2026-06-24-this-checkout-staging)
 
-* **Hermetic end-to-end content read-cut witness — `pot-epoch-read-cut-witness.test.ts` 2/2 GREEN.** Drives the **REAL** XChaCha20-Poly1305 + Ed25519 sealed-box crypto through the **production op-path capabilities** (`buildEpochEncryptCapability` → federated op → `buildEpochDecryptGate` + `createEpochKeyProvider`) across the full lifecycle **K0 → K1 → K-revoke → K-CUT**:
+* **Hermetic end-to-end content read-cut witness — `hive-epoch-read-cut-witness.test.ts` 2/2 GREEN.** Drives the **REAL** XChaCha20-Poly1305 + Ed25519 sealed-box crypto through the **production op-path capabilities** (`buildEpochEncryptCapability` → federated op → `buildEpochDecryptGate` + `createEpochKeyProvider`) across the full lifecycle **K0 → K1 → K-revoke → K-CUT**:
 
   * K-CUT (revoked B): replicates the identical epoch-2 ciphertext bytes but the decrypt gate defers it forever (no epoch-2 key row ever arrives) AND B’s only held key (epoch 1) **fails the real AEAD** against the epoch-2 ciphertext → content read-cut, not mere key-denial.
   * K-CUT (remaining C): unwraps epoch-2 and decrypts the post-boundary content.
@@ -19678,7 +19783,7 @@ v1 encrypts **NEW pots only**; existing pots stay legacy-unencrypted + documente
 
 * The failure is `vitest-fail-on-console` tripping on a `console.error("[pot-rekey] owner admit failed … getOrgPg outside cell scope — wrap the call in rig.runAsCell()")`.
 * Root cause: the **WI-639/WI-280 membership-admission** fire-and-forget path (`admitAnnouncedPeerAsOwner`, `boot.ts:1128`) runs **outside** the composition-rig’s cell scope, so the test’s own `getOrgPg` mock (test line 50) throws. The `[pot-rekey]` prefix is only because the epoch re-grant lives inside `upsertHiveMember` — the admit block is **NOT** gated on HIVE\_REKEY.
-* Confirmed flag-independent: forcing the flag off still fails; the cached last run shows it already red while all 14 pot-epoch files were green.
+* Confirmed flag-independent: forcing the flag off still fails; the cached last run shows it already red while all 14 hive-epoch files were green.
 * Filed separately (see WI tracking); it does **not** change the flip decision.
 
 ## Go / No-Go
@@ -19722,7 +19827,7 @@ Never reboot to re-key. Leave the old topic and join the new one on the **same l
 
 * `boot.ts` exposes `handle.rekey(binding)` — closes the current `SwarmHandle` (leave old topic), then `joinForBinding(newBinding)` (join the new topic) with the SAME `store` / `ownLog` / `onAnnounce`. `swarm` is a live getter, not a boot-time snapshot.
 * `boot-all.ts` exposes `rekeyHarness(workspaceId, slug)` — re-resolves the binding via `defaultResolveSwarmBinding` (which calls `resolveHiveSwarmBinding` first, so a shared pot resolves the pot-pubkey topic) and calls `handle.rekey`. Falls back to `bootSingleHarness` when not yet booted.
-* The two “go shared” call sites use it: `join-pot.ts` step 2c (joiner) and `pot-publish-from-repo.ts` step 7 (owner).
+* The two “go shared” call sites use it: `join-hive.ts` step 2c (joiner) and `hive-publish-from-repo.ts` step 7 (owner) — both files are still internally named `hive-*`; only the tool/UX-facing vocabulary re-keyed to “Pot”.
 
 Because the streams are never torn down, the owner keeps serving its log core, and the new joiner’s block requests are answered immediately. `post-join-merge` flips to PASS (verified stable across repeated runs of the from-repo smoke).
 
@@ -19736,7 +19841,7 @@ For any Corestore/Hypercore peer multiplexed over a **shared, externally-created
 
 # Pot-scoped federation (re-key from harness → Pot identity)
 
-> How a shared project's substrate federates at POT scope, not harness scope — the Ed25519-pubkey topic re-key, per-Pot admission (revoked-pubkey union), Track A coord/presence, and Track B lock authority. Read before touching lib/pot-federation.ts, lib/authority/*, lib/sync/hyperbee/{boot,boot-all,wire-presence}.ts, or anything that resolves a swarm topic / lock authority. Includes the complete P-003 anchor inventory — every capture trigger, PEER_LOG_TAG_TO_TABLE tag, drain-routing site, and lib/authority scope-key. Plan — shared-pot-federation-2026-06-08.
+> How a shared project's substrate federates at POT scope, not harness scope — the Ed25519-pubkey topic re-key, per-Pot admission (revoked-pubkey union), Track A coord/presence, and Track B lock authority. Read before touching lib/hive-federation.ts, lib/authority/*, lib/sync/hyperbee/{boot,boot-all,wire-presence}.ts, or anything that resolves a swarm topic / lock authority. Includes the complete P-003 anchor inventory — every capture trigger, PEER_LOG_TAG_TO_TABLE tag, drain-routing site, and lib/authority scope-key. Plan — shared-pot-federation-2026-06-08.
 
 ## One paragraph
 
@@ -19758,7 +19863,7 @@ Vocabulary (the-hive-lexicon)
 
 [Section titled “Where the scope is resolved”](#where-the-scope-is-resolved)
 
-* **`lib/pot-federation.ts`** — `resolveHiveSwarmBinding(ws, harnessSlug)` returns `{ kind:'pot', hive_pubkey }` when the harness belongs to a **shared** Pot, else `null` (caller falls back to the per-harness gh/local binding). `hiveHomeSlugForHarness(ws, harnessSlug)` answers “which Pot is this harness in” (itself if it’s a `kind:'pot'` home, else its registry `hive_slug` member pointer) — shared by the topic re-key AND the admission/presence/authority seams.
+* **`lib/hive-federation.ts`** (the file is still internally named `hive-*` — only the tool/UX-facing brand vocabulary re-keyed to “Pot”; see the lexicon Aside above) — `resolveHiveSwarmBinding(ws, harnessSlug)` returns `{ kind:'hive', hive_pubkey }` when the harness belongs to a **shared** Pot, else `null` (caller falls back to the per-harness gh/local binding). `potHomeSlugForHarness(ws, harnessSlug)` (renamed from `hiveHomeSlugForHarness`) answers “which Pot is this harness in” (itself if it’s a `kind:'hive'` home, else its registry `hive_slug` member pointer) — shared by the topic re-key AND the admission/presence/authority seams.
 * **Gate — only a *shared* Pot federates.** “Shared” = the owner published the Pot to the directory as `public`/`invite` (`getOwnedHiveMeta(...).visibility`). A `private`/un-published Pot stays local-only and never announces on the DHT, so the re-key is a **dormant, zero-risk path** for today’s local pots (no privacy regression). The federation gate reuses directory visibility rather than minting a separate `federate` flag.
 
 ## Admission is per-Pot (P-006) — a UNION, fail-open
@@ -19768,11 +19873,11 @@ Vocabulary (the-hive-lexicon)
 A contributor/device joins the **Pot once** and is thereby admitted to all its member harnesses, instead of joining N harness swarms (D-004). The enforcement seam is in **`lib/sync/hyperbee/boot.ts`** (`bootHarnessSubstrateInner`): the revoked-pubkey set the harness boots with is the **UNION** of
 
 * the harness-scope revocations (`loadRevokedPubkeys`, the base set), and
-* the Pot-scope revocations (`loadRevokedHivePubkeys(ws, hiveHome)` from `lib/pot-membership-store.ts`) when `hiveHomeSlugForHarness` resolves a home —
+* the Pot-scope revocations (`loadRevokedHivePubkeys(ws, hiveHome)` from `lib/hive-membership-store.ts`) when `potHomeSlugForHarness` resolves a home —
 
 so a contributor revoked at the **Pot grain is refused on EVERY member harness**. The read-admission decider itself is unchanged. The pot lookup is **best-effort / fail-open**: a failure leaves the harness-scope set intact (you stay no-worse-than the pre-Pot behavior). Backing store: `hive_members` (mig 185) + the `hive_members` federation projection (mig 189). Membership is also **torn down on departure**: `pot:leave` (a member removing its own row, G27 — `removeHiveMember`) and `pot:dissolve` (the owner removing *all* members, G24 — `removeAllHiveMembers`) DELETE the relevant `hive_members` rows, which fire the **same mig-189 capture trigger** → a federated `del` membership tombstone, so peers’ read-merge drops the departed member (see `shared-pot-join-leave-lifecycle`).
 
-Membership **producers** (set `ProjectEntry.hive_slug`): `addHarnessToHive` / `removeHarnessFromHive` (`agent-tools/pot/_add-member.ts`) for an existing harness, and the `harness:create { pot }` create-time path (`agent-tools/harness/create-pot-membership.ts`). Until something sets `hive_slug`, a Pot has only its home and no members.
+Membership **producers** (set `ProjectEntry.hive_slug`): `addHarnessToHive` / `removeHarnessFromHive` (`agent-tools/hive/_add-member.ts`) for an existing harness, and the `harness:create { pot }` create-time path (`agent-tools/harness/create-hive-membership.ts`). Until something sets `hive_slug`, a Pot has only its home and no members.
 
 **Boot-storm robustness (2026-07-03, WI-1892/P-059).** `boot-all.ts`’s `bootSingleHarness` races each harness’s boot against a timeout (default 30s, now operator-tunable via `PAPERCUSP_SUBSTRATE_BOOT_TIMEOUT_MS`) — but a timed-out race does NOT unwind the underlying `bootHarness`: it keeps running detached, holding the corestore lock and (once it gets there) the joined swarm topic with no registered handle, so peers see a zombie endpoint that answers announces but never drains/replicates. Live-observed on a 35-substrate boot storm: 16/35 harnesses on one bg-host stuck this way. Until true cancellation lands, the raced boot promise is now retained and, if it settles AFTER the timeout, **adopted** — the handle is registered and the send-side wired exactly as the happy path would — unless a newer boot for the same key already won, in which case the late one is closed to release its corestore. Relevant here because this is the same boot path the per-Pot admission union (above) runs inside; a zombied boot under a large Pot (many member harnesses booting at once) is exactly the failure mode this guards.
 
@@ -19781,7 +19886,7 @@ Membership **producers** (set `ProjectEntry.hive_slug`): `addHarnessToHive` / `r
 [Section titled “Track A — coord content + presence”](#track-a--coord-content--presence)
 
 * **Content (messages / conversations / threads / work / plans / settings)** rides the **same peer-log P-004 re-keyed**, so it already federates Pot-scoped — no separate Track-A content work was needed (D-011). `hive_settings` federate as first-class Pot state via their own projection (mig 186).
-* **Presence is the write-side keystone (P-008).** Presence is ephemeral / high-frequency, so it federates via an **announce loop**, not a capture trigger: **`lib/sync/hyperbee/wire-presence.ts`** (`wirePresenceAnnounceForHarness` → `startPresenceAnnounceLoop`), wired per-harness from `boot-all.ts` after the substrate handle returns, **gated on a joined swarm** (a private harness has no peers → returns `null`). Each announce is **stamped with the harness’s home `hive_slug`** (resolved once via `hiveHomeSlugForHarness`) and projected into `shared_presence.hive_slug` (mig 187) — which is exactly what the Pot lock authority elects over.
+* **Presence is the write-side keystone (P-008).** Presence is ephemeral / high-frequency, so it federates via an **announce loop**, not a capture trigger: **`lib/sync/hyperbee/wire-presence.ts`** (`wirePresenceAnnounceForHarness` → `startPresenceAnnounceLoop`), wired per-harness from `boot-all.ts` after the substrate handle returns, **gated on a joined swarm** (a private harness has no peers → returns `null`). Each announce is **stamped with the harness’s home `hive_slug`** (resolved once via `potHomeSlugForHarness`) and projected into `shared_presence.hive_slug` (mig 187) — which is exactly what the Pot lock authority elects over.
   * **2026-07-03 (P-301):** each announced session is now also stamped with `fleet_slug`/`fleet_role`, batch-resolved via `fetchPresenceFleet(ownerIds)` (one lookup for the whole announce, not N) and folded into the dedup hash alongside `owner_id`/`intent`/`plan_slug`. This is what lets `@fleet:<slug>` pattern-awaits and fleet-membership lookups resolve a fleet’s members **across machines** over the same Pot-federated presence channel — best-effort (a lookup failure just leaves `fleet_slug`/`fleet_role` null; it never fails the announce).
 
 ## Track B — lock authority is the POT’s (P-009)
@@ -19886,14 +19991,16 @@ Legacy plan-item claims still append LWW-advisory to the own log (`orchestrator/
 
 [Section titled “Key files”](#key-files)
 
-| Concern                           | File                                                                             |
-| --------------------------------- | -------------------------------------------------------------------------------- |
-| Pot identity (keypair → topic)    | `lib/identity/pot-keypair.ts`, `lib/sync/hyperbee/derive-swarm-topic.ts`         |
-| Topic re-key / membership resolve | `lib/pot-federation.ts`                                                          |
-| Per-Pot admission union           | `lib/sync/hyperbee/boot.ts`, `lib/pot-membership-store.ts`                       |
-| Presence publisher (Track A)      | `lib/sync/hyperbee/wire-presence.ts`, `presence-announce.ts`                     |
-| Lock authority (Track B)          | `lib/authority/lock-authority.ts`, `lib/authority/file-lock-routing.ts`          |
-| Membership producers              | `agent-tools/pot/_add-member.ts`, `agent-tools/harness/create-pot-membership.ts` |
+| Concern                           | File                                                                               |
+| --------------------------------- | ---------------------------------------------------------------------------------- |
+| Pot identity (keypair → topic)    | `lib/identity/hive-keypair.ts`, `lib/sync/hyperbee/derive-swarm-topic.ts`          |
+| Topic re-key / membership resolve | `lib/hive-federation.ts`                                                           |
+| Per-Pot admission union           | `lib/sync/hyperbee/boot.ts`, `lib/hive-membership-store.ts`                        |
+| Presence publisher (Track A)      | `lib/sync/hyperbee/wire-presence.ts`, `presence-announce.ts`                       |
+| Lock authority (Track B)          | `lib/authority/lock-authority.ts`, `lib/authority/file-lock-routing.ts`            |
+| Membership producers              | `agent-tools/hive/_add-member.ts`, `agent-tools/harness/create-hive-membership.ts` |
+
+> Note (2026-07): the underlying files/functions/types still use the internal `hive-*`/`Hive` naming (`lib/hive-federation.ts`, `SwarmBinding.kind:'hive'`, `lib/identity/hive-keypair.ts`) — only the tool-facing vocabulary re-keyed to “Pot” (`pot:leave`, `pot:dissolve`, `pot:ask`, …) and one resolver was renamed (`hiveHomeSlugForHarness` → `potHomeSlugForHarness`). Don’t be surprised to grep “hive” inside a file this doc calls a “Pot” concern.
 
 See also: `substrate-write-side-stack`, `workspace-id-pin-and-harness-membership`, `phase1b-federation-limitations`, `vm-federation-separate-machine-proof` (why cross-machine needs two physical boxes), `packaged-two-instance-federation-merge` (the cross-machine substrate proof), and the plan `shared-pot-federation-2026-06-08`.
 
@@ -23293,7 +23400,7 @@ Fast triage
 
 [Section titled “Why it surfaced as a scary terminal “failed””](#why-it-surfaced-as-a-scary-terminal-failed)
 
-The dogfood bootstrap (`bootstrap-papercusp-pot.ts`) records `clone` / `submodules` `status:'error'` on **any** git/github failure, and the wizard surfaces that as a terminal failure. Inside a GitHub-centric wizard, a generic “failed” reads as “your GitHub sign-in didn’t take” — so users re-auth, which cannot fix a packet-level timeout.
+The dogfood bootstrap (`bootstrap-papercusp-hive.ts`) records `clone` / `submodules` `status:'error'` on **any** git/github failure, and the wizard surfaces that as a terminal failure. Inside a GitHub-centric wizard, a generic “failed” reads as “your GitHub sign-in didn’t take” — so users re-auth, which cannot fix a packet-level timeout.
 
 ## The fix (EI-3548) — classify + auto-retry
 
@@ -25087,6 +25194,8 @@ The rubric’s per-criterion `method` fields say *what* to check; these are the 
 
   `unknown` (with a one-line why) outranks guessing — but “transcript not scanned” is not a valid why for the deterministic criteria; the trace query above makes them always scannable.
 
+* **Link the scorecard to its motivating follow-up at file time** (WI-3594): when a scorecard identifies a concrete improvement to file, pass `observation.linkTo: [{ targetId, rel? }]` in the SAME `improvements:capture` call instead of a separate `work_items:link` round-trip afterward (easy to forget, silently orphaning the scorecard from the work it motivated). Surfaced in the ScorecardDetail UI’s `linkedItems`; best-effort — a bad `targetId` is reported, never fails the capture.
+
 * **Read the aggregate** — `rubrics:trend { rubricRef: 'su-agent-behavior' }`. The argument is `rubricRef`, not `rubricId` (invalid-input trap, hit on 07-06). Raw rows: `scorecards:list { rubricRef: 'su-agent-behavior' }`. Draw conclusions from N runs, not one — the rubric exists to prove things like “this persona change moved the failure rate”, which is a trend statement.
 
 ## Grader rules
@@ -26519,6 +26628,86 @@ This is purely a SPA/TypeScript change, so it ships via the operator-vite bundle
 [Section titled “Gotcha: multiple desktop instances / ports”](#gotcha-multiple-desktop-instances--ports)
 
 The dev box runs several desktops at once on different content ports — the `npm run dev` shell (`:3270`, working-tree dist), the fleet staging operator (`:3170`, the separate `papercup-staging` checkout), the green release (`:3070`, `papercup-release`). They serve DIFFERENT SPA builds. A fix in the canonical tree reaches `:3270` immediately (rebuild + reload) but `:3170`/`:3070` only after their own sync + rebuild/deploy. Confirm WHICH port the affected window is on (its address bar) before concluding a fix didn’t land — you may be looking at a stale build.
+
+# The terminal-title pipeline (and its two silent fail-open traps)
+
+> How the fleet 👑/👤 identity reaches an OS title bar across claude/codex/omp — and the two bugs that made it silently not, for a long time.
+
+The fleet identity you see in a terminal’s title bar — `👑 p2p-rest 🟪 · ⟳1m · ▶ · su-4d7a4 · 🔭 <objective>` — is rendered **once, server-side**, by `packages/operator-core/lib/agent-tools/coordination/status-display.ts` into `coord:glance`’s `display.title`. Every CLI hook is a dumb pipe that writes that string to the OS title as an OSC-0 escape (`ESC ] 0 ; <title> BEL`).
+
+Add a chip **there**, once, and every TUI picks it up. That part has worked since WI-1963.
+
+What had *not* worked: the title reaching the terminal at all. Two independent bugs, one per transport, each hidden by a **fail-open** path — which is the whole lesson here. A fail-open write and a successful write look identical from outside, so nothing detected either one. Both are fixed (WI-3665, 2026-07-09) and both are now guarded.
+
+## Trap 1 — `/dev/tty` is not the terminal you own
+
+[Section titled “Trap 1 — /dev/tty is not the terminal you own”](#trap-1--devtty-is-not-the-terminal-you-own)
+
+`/dev/tty` is the process’s **controlling** terminal. Claude Code spawns its `statusLine` command **setsid’d** — its own session, no controlling terminal:
+
+```plaintext
+pid=853874 ppid=853873 sid=853873 tty=?
+  /dev/tty -> ENXIO
+```
+
+So the open failed, the hook failed open, and the title write was a silent no-op on **every statusline tick**, for as long as that spawn mode has existed. The title was computed correctly the whole time; it just never landed. Claude’s own topic title then won the window uncontested.
+
+**The rule:** never write the title to `/dev/tty` alone. Use the shared resolver — `apps/operator/scripts/hooks/cc/pc_tty.py` (`write_osc_title`) for the shell hooks, or its TS twin `writeOscTitle` / `ttyCandidates` in `hooks/omp/coord-hook.ts`. Both try `$PAPERCUSP_TTY` (the terminal this session **owns**) before `/dev/tty`.
+
+`psu-launcher.mjs`’s `resolveOwnedTtyPath()` resolves that terminal at launch — psu is the process that attaches the agent to it, so psu is the only thing that knows — and exports it as `PAPERCUSP_TTY`. Env crosses the setsid boundary that a controlling terminal does not.
+
+Two non-obvious invariants:
+
+* **Re-derived per launch, never inherited.** `sanitizeInheritedEnv` keeps `PAPERCUSP_*`, so an agent session that owns a terminal and spawns a *headless* psu child would otherwise leak its `PAPERCUSP_TTY` down — and the bee would retitle the human’s window on every tool call. `runWrapper` recomputes it and `delete`s it when the launch owns no terminal.
+* **Do not “fix” this by walking `/proc` ancestry** to the nearest tty. It works, and it is wrong: ancestry crosses ownership boundaries. Measured on the dev box while diagnosing this, a bash under one agent’s session walks up to `claude tty_nr=34881` → `/dev/pts/65`, a *different* agent’s terminal.
+
+## Trap 2 — a hook that reads `coord:glance` must pin JSON
+
+[Section titled “Trap 2 — a hook that reads coord:glance must pin JSON”](#trap-2--a-hook-that-reads-coordglance-must-pin-json)
+
+`coord:glance` is **TOON-encoded by default**. A hook that doesn’t ask for JSON gets back `format: toon\nok: true\n…`, its `json.loads` / `JSON.parse` throws, the glance reads as `null`, and the render falls back to a bare session id — **no fleet, no crown**, silently.
+
+* python hooks: `&format=json` on the `/api/mcp` url
+* omp `callMcpTool`: `{ meta: { format: 'json' } }`
+
+This is the **EI-7029 class**. It was fixed in `statusline-fleet.sh` back in 2026-06 and never propagated, so **codex and omp rendered a crownless title from the day TOON became the default** until WI-3665. If you add a hook that reads a glance, pin the format.
+
+## One writer per title
+
+[Section titled “One writer per title”](#one-writer-per-title)
+
+Claude Code writes its own topic title (`✳ Claude Code`, then `⠐ <topic>`). Verified by capturing its pty output: **1 OSC-0 write by default, 0 with `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`.** Two writers on one title means last-writer-wins and the title flickers.
+
+`psu-launcher.mjs`’s `shouldSilenceClaudeTitle()` sets that env — but only when **all** hold: claude backend · this launch owns a terminal · the `statusLine` claude will actually load *is* our hook. A user with a personal statusLine keeps Claude’s title, because silencing the only writer would leave no title at all. (The installer likewise refuses to clobber a foreign `statusLine`; the two refusals must agree.)
+
+## `pc_tty.py` ships on three paths — miss one and the bug returns invisibly
+
+[Section titled “pc\_tty.py ships on three paths — miss one and the bug returns invisibly”](#pc_ttypy-ships-on-three-paths--miss-one-and-the-bug-returns-invisibly)
+
+It is `import`ed off the hooks’ own dirname, so it must land **beside** them everywhere:
+
+| path                                                            | how it copies             | the trap                                                             |
+| --------------------------------------------------------------- | ------------------------- | -------------------------------------------------------------------- |
+| `apps/operator/scripts/install-standalone-mcp.sh`               | explicit `cp` per file    | a new file is simply forgotten                                       |
+| `papercusp-desktop/bin/build-desktop-sidecar.sh`                | `cp -a .../*.sh`          | **the glob drops `.py`** — every packaged Mac/Windows app            |
+| `packages/operator-core/lib/desktop-install/papercusp-files.ts` | `CC_HOOK_FILES` allowlist | absent ⇒ never installed; also install it `0644` (a lib, not a hook) |
+
+A hook that lands without the lib it imports raises `ImportError`, **fails open**, and silently stops setting the title. That is the same shape as EI-8191 (“blank bottom statusline”).
+
+## Testing this
+
+[Section titled “Testing this”](#testing-this)
+
+`apps/operator/lib/objective-title-parity.test.ts` drives the hooks with **fixtures** — which bypass both the tty and the network. It therefore **cannot** catch either trap above, and didn’t.
+
+`apps/operator/lib/tty-title-target.test.ts` is the guard that can:
+
+* runs the real hooks under real **`setsid`**, reproducing Claude’s spawn mode, and asserts the escape reaches `$PAPERCUSP_TTY`;
+* asserts that with **no** owned terminal a hook writes **nothing** (the headless-bee invariant);
+* asserts `format=json` at the **request-construction site** for all three CLIs;
+* asserts install parity across **all three** copy paths.
+
+When you touch this pipeline, verify against a real window (`xprop -id <win> WM_NAME`), and reset the title to a sentinel first — otherwise a stale title reads as success.
 
 # "@papercusp/test-config" barrel import crashes esbuild with a misleading TextEncoder error
 
@@ -29791,6 +29980,12 @@ The Windows desktop lane (plan `windows-desktop-release-readiness-2026-06-11`) i
 21. **`papercup-runtime` periodically wedges: `wsl --exec` silently returns empty output + exit 1 (sometimes 0), no stderr, no diagnostic** — hit live during WI-3080 verification and reproduced again on 2026-07-06 (EI-8163): even a trivial probe (`wsl -d papercup-runtime --user papercup --exec whoami`) came back with zero stdout, empty stderr, exit
 
     1. **Recovery, verified live**: `wsl --terminate papercup-runtime` (exits 0) then immediately retry the same `--exec` call — it succeeds on the very next attempt (no boot delay observed). Root cause not pinned down (stale `wslhost.exe` session / hung distro init / a WSL2 utility-VM hiccup are all plausible); treat it as a transient utility-VM fault, not a broken distro state — `wsl --terminate` does not lose anything persistent inside the distro. **Practical rule**: if your first `--exec` probe in a session comes back empty with a nonzero exit and no stderr, don’t debug the command — `wsl --terminate papercup-runtime` and retry once before looking any further. `papercusp-desktop/bin/wsl-exec-retry.sh` wraps this pattern (detect empty+nonzero on the first attempt, terminate, retry once, surface the second attempt’s real exit code) for scripted/agent use over ssh.
+
+22. **A compound command inlined into `ssh ... 'wsl -d papercup-runtime -- bash -lc "..."'` silently mis-parses across FOUR re-splitting layers** (EI-9100, 2026-07-10) — distinct from the `--exec`-vs-`--` issue in §1 (that one is wsl.exe’s OWN arg handling; this one is everything UPSTREAM of it). The chain is: your local shell → ssh → Windows OpenSSH → **cmd.exe** (the default remote shell) → wsl.exe → bash. Any inline heredoc, pipe, or nested single-quote breaks at one of these boundaries with a confusing, boundary-specific error that never names the real cause:
+
+    * heredoc content mis-split by cmd.exe before reaching bash: `cat: '# WI-3328...': No such file or directory`
+    * a pipe meant for bash intercepted by cmd.exe instead: `'grep' is not recognized as an internal or external command`
+    * single-quote nesting breaking across the ssh→cmd.exe→wsl→bash boundary: `/bin/bash: -c: line 1: unexpected EOF while looking for matching ''` **The fix is never to inline multi-layer quoting for anything beyond a single bare command.** Instead: (1) write a plain script file locally, (2) `scp` it to the VM using a **Windows-style** destination path (`user@127.0.0.1:C:/Users/User/<file>` — NOT `/mnt/c/Users/User/<file>`, which fails with `scp: dest open "/mnt/c/...": No such file or directory` because the SSH server’s sftp-server is native Windows and does not resolve WSL-mount paths as its own root), (3) execute with ONE clean invocation and zero further nested quoting: `ssh ... wsl -d papercup-runtime --exec bash /mnt/c/Users/User/<script>.sh` (or `node ... .mjs`) — note this is where §1’s `--exec` (not `--`) still applies, one layer downstream of the fix this item is about.
 
 ## Where the artifacts live
 
@@ -38391,7 +38586,7 @@ Buttons are **flat**. The look is a solid or `color-mix`-tinted surface, a 1px b
 
 **Reach for the wrapper:** `<Button>` from `app/harness/Button.tsx` for emphasis variants; a bare `<button>` inherits the flat baseline. Token reference: [design tokens](/internal/docs/design/tokens#the-bluefrost-semantic-scale).
 
-**`/adv` enforcement:** the `/adv` shell ships flat buttons via per-component flat-button recipes rather than a single scoped strip-everything rule — `.pc-advpanel__iconbtn` (flat 28×28 frost icon button) and `.pc-advpanel__btn` (flat labeled frost button) in `app/adv/harnesses/adv-panel-chrome.css` are the canonical flat recipes panels reuse. (The body wrapper is `pc-adv-harnesses__body`, not the old `.pc-advshell__body`; the `pc-advshell__*` class family no longer exists in any live CSS or component — it survives only in stale e2e selectors. There is no scoped `box-shadow`-stripping backstop, so author buttons flat at the source.) The large top **tab strip** is page-level nav, a different category, and keeps its accent treatment.
+**`/adv` enforcement:** the `/adv` shell ships flat buttons via per-component flat-button recipes rather than a single scoped strip-everything rule — `.pc-advpanel__iconbtn` (flat 28×28 frost icon button) in `app/adv/harnesses/adv-panel-chrome.css` is the canonical flat *icon*-button recipe panels reuse. A flat **labeled** button is just `<Button>` (`app/harness/Button.tsx`) — the old `.pc-advpanel__btn` merely re-implemented its neutral look and was folded into the primitive (design-simplification P-015). (The body wrapper is `pc-adv-harnesses__body`, not the old `.pc-advshell__body`; the `pc-advshell__*` class family no longer exists in any live CSS or component — it survives only in stale e2e selectors. There is no scoped `box-shadow`-stripping backstop, so author buttons flat at the source.) The large top **tab strip** is page-level nav, a different category, and keeps its accent treatment.
 
 ## Soft rules (judgment calls)
 
@@ -40060,7 +40255,7 @@ If any of those, stop and switch to `useDebouncedSave`. HR1/HR2/HR3/HR6 still ap
 
 [Section titled “CSS-token lint catches undefined var(--X) references”](#css-token-lint-catches-undefined-var--x-references)
 
-Every `var(--X)` reference in a `.tsx` file must resolve to a token defined in `app/globals.css`, `app/_semantic.css`, or `app/_brand-primitives.css` — or be in the runtime-allowlist `RUNTIME_TOKENS` (in `app/_lints/css-tokens.test.ts`), a literal enumerated set of tokens a framework/component writes at runtime rather than defining in any CSS source — e.g. `--radix-select-trigger-width` (Radix Select), `--op-chat-w` (the chat sidebar’s chrome offset), `--left-sidebar-w`/`--dev-rail-w`/`--pc-env-bar-h` (layout rails that measure themselves in JS), Sonner’s per-toast `--toasts-before`/`--lift-amount`/`--front-toast-height`, `--mic-level` (voice input level), `--intro-index`/`--cup-index` (dev swarm identity artwork), and `--xy-handle-tx` (React Flow geometry). It’s a literal set, **not** a `--radix-*` wildcard, so a new runtime-written token — Radix or otherwise — still has to be added to `RUNTIME_TOKENS` explicitly.
+Every `var(--X)` reference in a `.tsx` file must resolve to a token defined in `app/globals.css`, `app/_semantic.css`, or `app/_brand-primitives.css` — or be in the runtime-allowlist `RUNTIME_TOKENS` (in `app/_lints/css-tokens.test.ts`), a literal enumerated set of tokens a framework/component writes at runtime rather than defining in any CSS source — e.g. `--radix-select-trigger-width` (Radix Select), `--left-sidebar-w`/`--dev-rail-w`/`--pc-env-bar-h` (layout rails that measure themselves in JS), Sonner’s per-toast `--toasts-before`/`--lift-amount`/`--front-toast-height`, `--mic-level` (voice input level), `--intro-index`/`--cup-index` (dev swarm identity artwork), and `--xy-handle-tx` (React Flow geometry). It’s a literal set, **not** a `--radix-*` wildcard, so a new runtime-written token — Radix or otherwise — still has to be added to `RUNTIME_TOKENS` explicitly.
 
 The lint also satisfies **component-local** custom properties: a `--name:` that is both defined and used inside the same `.tsx` (e.g. inside a styled-jsx `<style>` block) counts as defined without any global definition — the global CSS-source scan can’t see definitions that live in a `.tsx`, so the lint collects each file’s own `--name:` definitions and treats self-references as resolved.
 
@@ -40478,14 +40673,23 @@ The `:where(input:not([type]), input[type=text|number|email|search|tel|url|passw
 
 Buttons are flat — no 3D
 
-In-page buttons get a solid/tinted fill, a 1px border, and readable text — **no** embossed bevel, raised drop-shadow/glow, hover-lift, or “sheen” gradient. Hover/active changes colour, not elevation. See [Buttons](/internal/docs/design#buttons) for the recipe and anti-patterns (this is hard rule 9). On `/adv` a scoped `.pc-advshell__body` rule enforces it; the top tab strip is exempt.
+In-page buttons get a solid/tinted fill, a 1px border, and readable text — **no** embossed bevel, raised drop-shadow/glow, hover-lift, or “sheen” gradient. Hover/active changes colour, not elevation. See [Buttons](/internal/docs/design#buttons) for the recipe and anti-patterns (this is hard rule 9). There is no scoped backstop rule on `/adv` (the `.pc-advshell__*` family no longer exists) — author buttons flat at the source; the top tab strip is exempt.
 
 The native-button baseline and .pc-btn-\* CSS ARE in source CSS
 
-A native `<button>` baseline and the `.pc-btn-primary` / `.pc-btn-destructive` / `.pc-btn-ghost` variant rules **are present** in `globals.css`: the shared `:where(button:not(.pc-button), .pc-btn-primary, .pc-btn-destructive, .pc-btn-ghost)` block (`:679-755`) sets fill, a 1px border, `border-radius: 6px`, and hover/focus/disabled states, plus the per-variant colors (`.pc-btn-primary` `:718`, `.pc-btn-destructive` `:730`, `.pc-btn-ghost` `:742`). (A separate bare `button { font/color/cursor }` inheritance rule is at `:623`.) So applying a `.pc-btn-*` class to a native `<button>` **does** style it — `Button.tsx` / `SubmitButton.tsx` rely on exactly that. The wrappers add icon/spinner/sizing affordances on top; they are not the only styled path. *(An earlier version of this Aside claimed these rules had been dropped in the operator-vite migration; they are present.)*
+A native `<button>` baseline and the `.pc-btn-*` variant rules **are present** in `globals.css`: the shared `:where(button, .pc-btn)` block sets fill, a 1px border, `border-radius: 6px`, and hover/focus/disabled states, followed by the per-variant colors (`.pc-btn-accent`, `.pc-btn-primary`, `.pc-btn-destructive`, `.pc-btn-ghost`) and the one size class (`.pc-btn-lg`). So applying a `.pc-btn-*` class to a native `<button>` **does** style it — `Button.tsx` / `SubmitButton.tsx` rely on exactly that. Those rules are all specificity-0 `:where()`, so **source order** decides: the size and variant rules must stay *after* the baseline block.
 
-**What:** The `<Button>` wrapper at `app/harness/Button.tsx` is the styled entry point (it layers on the global native-`<button>` baseline — see the note above). It carries the neutral default look and adds three variants for the cases where more emphasis is needed:
+**What:** The `<Button>` wrapper at `app/harness/Button.tsx` is the styled entry point (it layers on the global native-`<button>` baseline — see the note above). It has **two orthogonal axes**, and every Button emits the `.pc-btn` base class:
 
+`size` — the scale:
+
+* `size="sm"` *(default)* — the 26px chrome/toolbar scale
+* `size="lg"` — the 40px page-CTA scale
+
+`variant` — the surface:
+
+* `variant="neutral"` *(default)* — the plain surface
+* `variant="accent"` — soft accent tint; the everyday page CTA
 * `variant="primary"` — filled accent for the page’s primary CTA
 * `variant="destructive"` — red tint for delete / clear / forget actions
 * `variant="ghost"` — transparent until hovered, for low-emphasis chrome
@@ -40496,6 +40700,9 @@ A native `<button>` baseline and the `.pc-btn-primary` / `.pc-btn-destructive` /
 * Use `<Button variant="primary">` for the **one** save/submit button on a page. Don’t sprinkle primary buttons everywhere; the variant is for the dominant action.
 * Use `<Button variant="destructive">` whenever the button triggers `useConfirmDialog({ destructive: true })` — the visual and the confirm modal both signal “this is dangerous.”
 * Use `<Button variant="ghost">` for icon-only buttons in toolbars or for “Cancel” in a modal footer where you want the primary button to dominate.
+* Reach for `size="lg"` only for page-level calls-to-action (empty states, 404, settings action rows), not for chrome.
+
+**Link-buttons use `asChild`** — never hand-write the classes onto an `<a>`. `asChild` (Radix `Slot`) renders the single child element instead of a `<button>`, merging the classes, handlers, and ref onto it, and never stamps the button-only `type` attribute onto a link:
 
 ```tsx
 import { Button } from '@/app/harness/Button';
@@ -40505,11 +40712,19 @@ import { Button } from '@/app/harness/Button';
 <Button variant="destructive" onClick={handleDelete}>Delete forever</Button>
 <Button>Cancel</Button>  {/* baseline neutral */}
 <Button variant="ghost"><X size={12}/></Button>
+
+
+{/* a link that looks like a button */}
+<Button asChild size="lg" variant="primary">
+  <RouteLink href="/cupboard">Browse the cupboard</RouteLink>
+</Button>
 ```
 
 The wrapper forwards refs and spreads all native button props. `type` defaults to `"button"` so you don’t accidentally submit a form.
 
-**The variant classes** (`.pc-btn-primary`, `.pc-btn-destructive`, `.pc-btn-ghost`) are applied by the wrapper **and have matching CSS rules** in `globals.css` (`:679-755`) — applying one to a bare native `<button>` reproduces the look. The wrapper adds icon/spinner/sizing affordances on top.
+There is no second button recipe
+
+A parallel `.pc-button` CTA recipe (plus `.pc-button.primary` / `.ghost` / `.danger`) used to live in `globals.css` alongside this one, and was hand-applied to links. It was folded into the `size`/`variant` axes above (design-simplification P-015) — `.pc-button` no longer exists. Don’t reintroduce a bespoke button recipe: add a variant, or a size, here.
 
 ## `<TextInput>` + `<TextArea>` wrappers
 
@@ -54821,6 +55036,10 @@ This page records the security model for **shared harnesses** (the peer-to-peer,
 
 **Build-state update (2026-06-25).** Read admission is intentionally **not** a repo-collaborator permission gate. The pure decider in `sync/hyperbee/read-admission.ts` admits a log only after announce signature verification, GitHub-gist attestation verification, and the `revoked_pubkeys` veto. Boot adds two Pot-specific scope wideners: an already-known Pot member can be admitted from the local `hive_members` projection via `trustedHiveMemberDeviceAdmission`, and a same-Pot cross-member announce whose membership has not federated yet is buffered as `pending` and retried within the boot grace window. GitHub collaborator/admin permission remains the authority for repo binding, revocation actions, push/PR/merge, and shipped verification; it is not the swarm read-admission allow-list.
 
+Build-state update (A-003 / a′) — slug-aware admission scope
+
+When one hive topic carries **multiple local harnesses’** log announces (a joiner’s member harness sharing the same topic as the hive-home log it rebinds from), the D-004 identity decider alone would let any identity-valid frame be admitted by **every** on-topic handler — since every harness registers all projections, a wrong-scope log could then cross-merge (e.g. the owner’s hive-home harness applying a member-log’s features into the hive-home schema). `announceSlugInScope` (`read-admission.ts`) is a pure, no-I/O predicate applied **after** the D-004 identity decision (`boot.ts`’s `onAnnounce`): it admits an inbound log only if its **signed** origin-slug is either this harness’s own slug, or the hive-home slug it rebinds (`joinerPotHomeSlug`). An absent origin-slug (legacy/single-harness peers, pre-dating the field) is admitted for backward compatibility. A scope miss returns `out_of_scope` — conclusive, never retried, distinct from the identity decider’s own `bad_sig`/`binding_invalid`/`revoked`/`pending`.
+
 ## What a shared harness is
 
 [Section titled “What a shared harness is”](#what-a-shared-harness-is)
@@ -65909,7 +66128,7 @@ Each role gets its own voice, stable across harnesses, browser sessions, and res
 
 * The runtime hashes the role name (e.g. `system:operator`, `orchestrator`) to a stable index into the available browser voices.
 * The assignment is persisted to localStorage (`papercusp.voice.config.v1`).
-* Users can override per role at `/settings/voice` with a Test button.
+* `assignVoiceToRole()` (`voice-mode.ts`) remains the programmatic override API, but as of the 2026-07-09 settings cleanup **the per-role/per-slug override UI (the role→voice table + per-slug composite-key overrides) was removed from `/settings/voice`** — there is no longer a Select-per-role or a “role @ slug” override table in the page. What remains at `/settings/voice` is a **“Test all N role voices”** button (`onTestAllRoles`) that plays each `KNOWN_ROLES` entry through its auto-assigned voice in sequence (with an ElevenLabs cost-confirm when that engine is selected) — a listen-only sanity check, not an override control.
 
 When the same role speaks (e.g. `system:operator` from two different harnesses), the same voice plays.
 
@@ -66024,7 +66243,7 @@ The realtime path (ElevenLabs Conv-AI shell relaying into the Sentinel pane, the
 
 * **Multi-lingual voice** (current default is `en-US`). v1.5.
 * **Voice-only login / lock-screen control**. Out of scope.
-* **Per-harness voice override** (currently per-role only). Possible v1.5 if useful.
+* **Per-harness voice override** (currently per-role only). A per-slug (`role@slug`) override table existed briefly in `/settings/voice` (a v1.5 experiment) but was removed in the 2026-07-09 settings cleanup along with the per-role override table — see “Per-role voices” above.
 
 # Voice mode v4
 

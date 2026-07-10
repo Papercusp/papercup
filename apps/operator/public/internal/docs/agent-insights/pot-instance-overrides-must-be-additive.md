@@ -51,7 +51,8 @@ override to the delta**:
 
 ## The guard
 
-`pot-override-additive-guard.ts` (`additiveOverrideWarning(md)`) detects the smell — an override that
+`hive-override-additive-guard.ts` (the file is still internally named `hive-*`;
+only the tool/UX-facing vocabulary re-keyed to "Pot" — `additiveOverrideWarning(md)`) detects the smell — an override that
 re-states a base-owned section heading or embeds a `PAPERCUSP-SU:` splice marker — and the
 `pot-override-set` route surfaces it as a **non-blocking warning** (overrides are the owner's to
 author; we flag, we don't gate). If you're adding a new generic section to the base, add its heading to

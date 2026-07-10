@@ -9,7 +9,8 @@ A shared pot's `membership:'approval'` policy is enforced **on the OWNER side**,
 substrate admission seam (`boot.ts` `drainAdmissionQueue`), via
 **`admitAnnouncedPeerAsOwner`**, which resolves the peer's Pot home + self-gates to the
 owner box and then routes the actual decision through **`ownerAdmitOrPend`** (both in
-`pot-membership-admission.ts`). When the owner admits a binding-verified peer's announce
+`hive-membership-admission.ts` — the file is still internally named `hive-*`;
+only the tool/UX-facing vocabulary re-keyed to "Pot"). When the owner admits a binding-verified peer's announce
 it does NOT unconditionally trust-admit; it consults the owner-signed policy:
 
 * **already a member** → refresh the row (idempotent epoch re-grant on reconnect).
@@ -64,7 +65,8 @@ approval/allowlist-policy pots, which are owner opt-in).
 extraction **`admitAnnouncedPeerAsOwner`**, fire-and-forget (`void (async () => …)()`) so
 the owner-admit I/O never blocks the merge-gated drain loop. That wrapper:
 
-1. **Resolves the Pot home** via `hiveHomeSlugForHarness` (a fresh `pot-federation`
+1. **Resolves the Pot home** via `potHomeSlugForHarness` (renamed from
+   `hiveHomeSlugForHarness`; a fresh `hive-federation.ts`
    registry read: member slug → its `hive_slug`; a pot-home slug → itself) — **not** the
    boot-time projection slug, which is `undefined` on the owner's own MEMBER boot (WI-280;
    using it there silently skipped registration before this fix).
@@ -91,6 +93,6 @@ omitted it; that list was incomplete.)
 
 ## Tests
 
-`pot-membership-admission.test.ts` (unit) + `pot-membership-admission.integration.test.ts`
+`hive-membership-admission.test.ts` (unit) + `hive-membership-admission.integration.test.ts`
 (real PG, incl. the `substrate_outbox` put that proves federation) cover all
 `ownerAdmitOrPend` branches end to end.

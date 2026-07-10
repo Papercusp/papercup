@@ -9,6 +9,13 @@ A common (and load-bearing) misread: "the Pot Mug RESUMES her prior session
 every wake (`claude --resume`), so she's a forever-session with an unbounded
 growing transcript." **This is wrong.** Verify before designing on it.
 
+(This page is scoped to the **Mug/hive-operator wake path** specifically — the
+**Overwatch/Kettle** role, a sibling live-launch tracked the same way in
+`adv_sessions`, is NOT part of this cutover: an ended Overwatch session still
+resumes via the generic Channel-2 `--resume` path in `wake-executor.ts`, same
+as a bee. `hiveInstallSlugFromLabel()` only matches a `hive · ` label prefix,
+never `overwatch · `.)
+
 The Mug's **declared, event, watchdog, and manual wakes are ALL already
 fresh-per-wake** — each spawns a brand-new claude session with a fresh session
 id and **no carried transcript**. Historically the only path that `--resume`d
@@ -16,18 +23,19 @@ the Mug was the *generic* wake-executor inbox/await delivery channel (a
 `coord:send` with `wake:true` to her owner id, or an `events:await` she
 registered — which her persona tells her not to use) — **that exception is now
 closed** (mug-brief-cache-assembly B-01/P-012, see Consequence below):
-`wake-executor.ts` detects a pot-operator session and routes even that path
-through the same fresh pot launch.
+`wake-executor.ts` detects a hive-operator session (by its `hive · ` labeled
+`adv_sessions` row) and routes even that path through the same fresh pot
+launch.
 
 ## The wake paths (ALL fresh — the last exception closed by P-012)
 
-| Path              | Trigger                                                             | Mechanism                                                                                                                                | Session                                                           |
-| ----------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| Time wake         | `pot:declare-wake {inSeconds}`                                      | `pot-wake` routine → DBOS routinesTick → `system:blueprint-run` → `fireLaunchBlueprint('pot')` → `POST /harness/:slug/invoke?bpkind=pot` | **FRESH**                                                         |
-| Event wake        | `pot:declare-wake {events}`                                         | reaction rule → `pot:wake` tool → `fireLaunchBlueprint('pot')` → same invoke route                                                       | **FRESH**                                                         |
-| Watchdog recovery | turn-end / boot / 30s tick (`watchdog.ts armFallbackHiveWake`)      | `declareHiveTimeWake` → same routine                                                                                                     | **FRESH**                                                         |
-| Manual / user     | `pot:wake`                                                          | `fireLaunchBlueprint('pot')` → same invoke route                                                                                         | **FRESH**                                                         |
-| Inbox / await     | `coord:send {wake:true}` to her owner id, or her own `events:await` | await pump → `wake-executor.ts executeWake` → detects the `pot ·` label → `defaultFireHiveWake` → `fireLaunchBlueprint('pot')`           | **FRESH** (closed exception — was `--resume` before P-012 landed) |
+| Path              | Trigger                                                             | Mechanism                                                                                                                                                    | Session                                                           |
+| ----------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------- |
+| Time wake         | `pot:declare-wake {inSeconds}`                                      | `pot-wake` routine → DBOS routinesTick → `system:blueprint-run` → `fireLaunchBlueprint('pot')` → `POST /harness/:slug/invoke?bpkind=pot`                     | **FRESH**                                                         |
+| Event wake        | `pot:declare-wake {events}`                                         | reaction rule → `pot:wake` tool → `fireLaunchBlueprint('pot')` → same invoke route                                                                           | **FRESH**                                                         |
+| Watchdog recovery | turn-end / boot / 30s tick (`hive/watchdog.ts armFallbackHiveWake`) | `declareHiveTimeWake` → same routine                                                                                                                         | **FRESH**                                                         |
+| Manual / user     | `pot:wake`                                                          | `fireLaunchBlueprint('pot')` → same invoke route                                                                                                             | **FRESH**                                                         |
+| Inbox / await     | `coord:send {wake:true}` to her owner id, or her own `events:await` | await pump → `wake-executor.ts executeWake` → detects the `hive ·` label (`hiveInstallSlugFromLabel`) → `defaultFireHiveWake` → `fireLaunchBlueprint('pot')` | **FRESH** (closed exception — was `--resume` before P-012 landed) |
 
 ### Where "fresh" is decided
 
@@ -37,6 +45,10 @@ every fire** and passes it as `PAPERCUSP_NATIVE_SESSION_ID`. Then
 `libs/papercusp/packages/orchestrator/src/invoke.ts` turns that into
 `claude --session-id <uuid>` — which **creates a new session**, never `--resume`.
 Because the uuid is freshly minted each fire, no transcript is ever continued.
+(For a Codex-backend Mug the CLI accepts no forced session id, but the same
+freshly-minted uuid is still recorded as the transcript/roster key — the
+`--session-id`/no-transcript-carried argument holds identically for both
+backends.)
 
 The session id is *recorded* in `adv_sessions` so the **inbox/await** path
 (wake-executor) *could* later `claude --resume <that id>` — but that path
@@ -60,8 +72,8 @@ scheduled-wake path.
   transcript.
 * **The cutover has now landed** — the Mug is **uniformly** fresh-per-wake;
   the "one exception" row in the table above is closed. `wake-executor.ts
-  executeWake` detects a pot-operator session by its `adv_sessions` label
-  (`pot · <slug>/<role>`, `hiveInstallSlugFromLabel()`) and routes its
+  executeWake` detects a hive-operator session by its `adv_sessions` label
+  (`hive · <slug>/<role>`, `hiveInstallSlugFromLabel()`) and routes its
   ended-session wake through the SAME fresh pot launch (`defaultFireHiveWake`
   → `fireLaunchBlueprint(HIVE_BLUEPRINT_ID, ...)`, the wake text as kickoff)
   instead of `resumeCommandFor` — so an inbox-wake or an `events:await` firing

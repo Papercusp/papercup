@@ -17,6 +17,7 @@ import { execSync, spawnSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadavg } from 'node:os';
 import { parseQuarantineWorkspaces } from './lib/quarantine.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -309,7 +310,31 @@ if (dry) process.exit(0);
 // not-greens whose identification re-run passed 8867/8867). A real
 // regression fails both runs; a load flake almost never fails twice in a
 // row. Default OFF so interactive `test:affected` keeps fail-fast feedback.
-const retryFailed = process.env.AFFECTED_RETRY_FAILED === '1';
+//
+// EI-9103 (2026-07-10): interactive `test:affected` was NOT exempt from the
+// same load-flake class the gate protects itself against — a fleet-load
+// verification sweep false-failed 4 operator-core suites purely on wall-clock
+// (60-80s, all pass in 6-8s isolated) because AFFECTED_RETRY_FAILED defaults
+// OFF here. Every agent running the MANDATED test:affected sweep on a loaded
+// box hit this and had to hand-triage (re-run + isolate) every time. Rather
+// than flip the default globally (which would silently retry away a genuine
+// regression on a quiet box too), auto-enable the SAME retry only when the
+// box is actually loaded enough to plausibly cause it — load1 above the
+// threshold the gate's own comment cites as its affected regime (70-95) with
+// headroom to catch it earlier. An explicit AFFECTED_RETRY_FAILED=0/1 always
+// wins (still lets a caller force fail-fast even on a loaded box, or force
+// retry on a quiet one).
+const AUTO_RETRY_LOAD1_THRESHOLD = 40;
+const explicitRetryFailed = process.env.AFFECTED_RETRY_FAILED;
+const currentLoad1 = loadavg()[0];
+const retryFailed =
+  explicitRetryFailed != null ? explicitRetryFailed === '1' : currentLoad1 > AUTO_RETRY_LOAD1_THRESHOLD;
+if (explicitRetryFailed == null && retryFailed) {
+  console.log(
+    `>>> load1=${currentLoad1.toFixed(0)} > ${AUTO_RETRY_LOAD1_THRESHOLD} — auto-enabling flake-absorbing retry ` +
+      `(EI-9103; set AFFECTED_RETRY_FAILED=0 to force fail-fast anyway)`,
+  );
+}
 
 // HARDEN-GATE (su-85e11 proposal, landed via brief 09 2026-06-10): when a
 // workspace fails under AFFECTED_RETRY_FAILED, prefer re-running just the

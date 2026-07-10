@@ -7,12 +7,21 @@ EMBEDDER_DIM===384 is asserted everywhere; the embedding SPACE was asserted nowh
 ## The trap
 
 `memoryEmbedderMode` (`auto | openai | local | disabled`) picks the embedder **at
-runtime**. Both available embedders produce **384-dimensional** vectors:
+runtime**. All available embedders produce **384-dimensional** vectors:
 
 | mode | model | dims |
 | --- | --- | --- |
 | `openai` | `text-embedding-3-small`, requested with `dimensions: 384` | 384 |
 | `local` | `Xenova/bge-small-en-v1.5` (BGE-ONNX) | 384 |
+| `gemma` | `onnx-community/embeddinggemma-300m-ONNX`, natively 768 → MRL-truncated to 384 + L2-renormalized (migration 534; the default since 2026-07-10) | 384 |
+
+`gemma` makes the trap sharper, not softer: its vectors are *born* 768-dim and only
+look like the others after Matryoshka truncation, and it uses asymmetric task
+prompts (document vs query) — so a gemma-384 is incomparable with a BGE-384 *and*
+with a gemma vector embedded under the wrong prompt. Same rule as always: **the
+mode IS the space.** Switching to gemma re-embeds the corpus via
+`POST /api/user/memory/reembed { from: <old>, to: 'gemma' }` (Settings → Memory
+has buttons for it); mem0 writes land in `memory_vec_gemma`.
 
 Every layer checks `vec.length !== EMBEDDER_DIM`. **No layer checked which model
 produced the vector.** OpenAI-384 and BGE-384 are different vector spaces: cosine

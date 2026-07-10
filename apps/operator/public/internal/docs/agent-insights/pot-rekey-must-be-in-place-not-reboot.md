@@ -58,8 +58,9 @@ untouched:
   binding via `defaultResolveSwarmBinding` (which calls `resolveHiveSwarmBinding`
   first, so a shared pot resolves the pot-pubkey topic) and calls
   `handle.rekey`. Falls back to `bootSingleHarness` when not yet booted.
-* The two "go shared" call sites use it: `join-pot.ts` step 2c (joiner) and
-  `pot-publish-from-repo.ts` step 7 (owner).
+* The two "go shared" call sites use it: `join-hive.ts` step 2c (joiner) and
+  `hive-publish-from-repo.ts` step 7 (owner) — both files are still internally
+  named `hive-*`; only the tool/UX-facing vocabulary re-keyed to "Pot".
 
 Because the streams are never torn down, the owner keeps serving its log core,
 and the new joiner's block requests are answered immediately. `post-join-merge`

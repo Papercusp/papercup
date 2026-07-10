@@ -351,3 +351,47 @@ not part of the rate-limit robustness thread:
 
 None of this touches the delivered-vs-survived accounting, the resume-exit observer, or the
 autoloop circuit — the warm-turn-death analysis above is unchanged.
+
+## Also since this doc (2026-07-09) — the exact `infra_loss` error string from the original incident now gets its own watchdog signal
+
+Item #7 above ("Observability is near-zero … the 429 itself is in the discarded subprocess
+stderr — logged nowhere") is partially closed on the **failed-spawn** side (a related but
+distinct signal source from the loop-delivery path this doc analyzes). `watchdog.ts`
+`classifySpawnError` gained a new `'infra-loss'` class (EI-8667) that explicitly matches
+`infra_loss:` / `"returned HTTP <n> but the agent produced no turn"` / `"API Error: Request
+rejected"` — the *literal* error string quoted in this doc's opening paragraph
+(`infra_loss: …/<role> returned HTTP 200 but the agent produced no turn (exitCode=1)`, from
+the 2026-06-23 429-storm incident). Previously that string fell through to the generic
+`'other'` class, burying a diagnosable gateway/rate-limit-stall pattern inside unrelated
+noise. It now keys its own `failed-spawns:infra-loss` watchdog signal instead. This is the
+spawn-tracking (`harness_shared.spawned_agents`) surface, not the loop wake-delivery surface
+`resume-turn-outcome.ts`/`loop-turn-outcome.ts` cover — the two overlap in the failure mode
+they both ultimately trace to (an upstream 429/gateway stall) but are separate collectors.
+
+## Also since this doc (2026-07-10) — `executeWake` gained rematerialize-on-miss for archived session files
+
+`wake-executor.ts` gained a **third, unrelated** pre-resume step (plan
+`session-db-archive-retire-dirs-2026-07-10` P-008, new module `session-archive.ts`) —
+noted here only so the `wake-executor.ts` anchor stays precise; it does not touch the
+delivered-vs-survived accounting this doc analyzes:
+
+* Since that plan's P-002/P-003, PG (`harness_shared.session_archive_files` +
+  `session_archives`) is the **canonical** archive of an ended CLI session's on-disk files
+  (zstd-compressed, sha256-verified) — `deleteArchivedSessionFiles()` may remove the local
+  copy once the archive stamp is committed.
+* `executeWake` now checks, **immediately before** building the `resumeCommandFor(...)`
+  invocation, whether the target session's local files are still on disk and, if not,
+  calls `rematerializeSession(...)` to pull them back byte-exactly from the PG archive
+  before `claude --resume <uuid>` / `codex resume <uuid>` / the omp thread-resume runs.
+  Wired for all three resume agents: `codex` (`codexHomeForAdvSession`, falling back to
+  `findArchivedSessionIdForAdv` when no local session id is known), `omp`
+  (`ompSessionsRoot()`), and `claude` (`sessionClaudeConfigDir(owner)`). Each check is
+  FS-only (a no-op) when the file is already on disk; a miss costs one PG read + a
+  decompress-and-write.
+* This closes a **different** turn-death class than the 429-storm this doc is about: a
+  resume that would previously fail outright with "session not found" (because
+  archive-at-death had deleted the local transcript) now transparently restores it first.
+  It does not change when a delivery is marked `delivered` (still on `spawnDetached`
+  returning a PID — see step 1 above), does not feed the turn-error taxonomy or the
+  autoloop circuit, and is orthogonal to the resume-exit observer / reconcile stuck-park
+  path this doc's remediation roadmap covers.

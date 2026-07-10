@@ -33,13 +33,53 @@ throw a distinct `openai_embed_quota_exhausted`. `embedFailureReason`
 agent narrates *"OpenAI quota exhausted — check billing"* instead of
 *"rate-limited, retrying."*
 
+### The sticky hard-exhaustion latch (WI-3615)
+
+A hard `insufficient_quota` billing stop fails **identically forever** until
+the key is fixed — so `markOpenAiEmbedFailure(now, { hard: true })` sets a
+**sticky latch** (`openAiEmbedHardExhaustedSinceMs`, no auto-expiry) in
+addition to the existing 60s soft cooldown (`EI-3381`,
+`PAPERCUSP_EMBED_FALLBACK_COOLDOWN_MS`). While the latch is set, `isOpenAiEmbedInCooldown()`
+keeps returning true so the `'auto'` cascade (`resolveEmbedderWith`) keeps
+preferring the local (BGE-ONNX) embedder — it never re-tries a key it has
+already proven dead. Before this, a hard-dead key thrashed forever on the
+60s soft cooldown alone (fail → 60s local → re-try the same dead key → fail
+→ repeat), reproduced live via `memory_vec_local` rows landing in
+successive 60s windows. The retry-budget-exhausted / daily-spend-cap paths
+(below) still set only the short, self-expiring cooldown — those failures
+are not necessarily permanent.
+
+The latch is cleared only by `clearOpenAiEmbedHardExhaustion()`, called from
+`POST /api/credentials` and `setup:save_key` when the `openai_api_key`
+credential is re-saved — the one event that plausibly means the key might
+work again. Both call sites also `invalidateMemoryClient()` so the very next
+memory call re-resolves the cascade immediately rather than riding the
+cached mem0 client's 1-hour TTL (**EI-7279**: two back-to-back
+`memory:remember` probes both hard-failed with `embed_quota_exhausted` well
+inside one client lifetime before this fix forced an immediate rebuild).
+
+Our **own** daily spend cap (`EmbedBudgetExhaustedError`, below) is the same
+*sustained*-exhaustion shape as `insufficient_quota` in effect — it fails
+identically until UTC rollover — but the local embedder can still serve the
+request (it costs nothing against the OpenAI budget the cap protects). So
+the memory lane's `adm.acquire()` catch now also calls
+`markOpenAiEmbedFailure()` (soft cooldown, not the hard latch) the moment
+the cap trips (**EI-7596**) — before this fix the cap threw *before* the
+retry loop's own cooldown calls were ever reached, so the local-fallback
+cooldown never engaged and every `memory:remember`/`update` hard-failed for
+the rest of the day even with a working local embedder available.
+
 ## Cost reality: embedding is cents; the benchmark is the spender
 
 `text-embedding-3-small` is \~$0.02 per 1M tokens. The embeddable corpus
-is tiny — \~15k rows total (`memory_vec_openai` + `operator_turns` + the
-backfill tables) → embedding all of it **once ≈ $0.15**. Measured call
-rate is \~90 memory/search tool calls/day. Steady-state embedding is
-**cents/month.**
+is small even including the largest target — `memory_vec_openai` +
+`operator_turns` + the backfill tables (`harness_escalations`,
+`harness_brainstorm`, `harness_decisions`, and — added
+session-search-scope-2026-07-05 — the episodic `session_turns` transcript
+index, selectively embedded for turns ≥80 chars, which is the single
+largest backlog at tens of thousands of rows) → embedding the whole corpus
+**once is still well under $1**. Measured call rate is \~90 memory/search
+tool calls/day. Steady-state embedding is **cents/month.**
 
 So if you see a surprising "$N on embeddings" bill, it is **not**
 production recall. The dominant embed spender is the **memory/search
@@ -115,7 +155,12 @@ needed: `operator_turns(id)`, `harness_escalations`/`harness_brainstorm`
 `(harness_slug,phase)`, `harness_decisions(harness_slug,line_hash)`) +
 guarding `AND embedCol IS NULL`, plus a **zero-progress break** (stop the
 sweep when a full batch embeds nothing — the remaining NULLs are
-persistent failures; the next tick retries).
+persistent failures; the next tick retries). A fifth target added since —
+`session_turns` (the episodic transcript index, session-search-scope-2026-07-05,
+keyed `(workspace_id,source_kind,session_id,turn_idx)`) — was added PK-keyed
+from the start. A WI-2905 fairness cap now also bounds how many rows ONE
+target may consume per sweep, so `session_turns`' much larger backlog can't
+starve the other four tables of their share of the daily token budget.
 
 ## Runbook
 
@@ -135,6 +180,10 @@ persistent failures; the next tick retries).
 * **"Why did embeddings cost $N?"** → it's almost certainly a benchmark
   run, not steady-state recall. Confirm steady-state with the
   memory/search tool-call rate in `tool_invocations`.
-* **Rotating the OpenAI key** → `POST /api/credentials` now invalidates
-  the cached mem0 client on a key change, so it takes effect immediately
-  (no ≤1h client-TTL wait).
+* **Rotating the OpenAI key** → `POST /api/credentials` (and
+  `setup:save_key`) now invalidates the cached mem0 client on a key change,
+  so it takes effect immediately (no ≤1h client-TTL wait) — and, if the
+  fleet had been stuck on local via the WI-3615 sticky hard-exhaustion latch
+  (`embed_quota_exhausted`), also clears that latch so the very next call
+  re-tries OpenAI once instead of staying pinned to local until a hit-again
+  re-latch.

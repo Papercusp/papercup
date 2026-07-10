@@ -35,13 +35,48 @@ this line prevents.
   and, when leading a fleet, **per-member wake-mode (auto vs manual)** (a manual
   member silently stages directives instead of delivering them).
 - **Unverified claims awaiting owner confirmation** — verbatim, in their own
-  slot. These are open commitments; prose dissolves them.
+  slot, SOURCE-TAGGED (see "Directive provenance" below). These are open
+  commitments; prose dissolves them.
 - **Owner-gated walls** — anything blocked on the owner (credentials, capital
-  arming, category-1 approvals) — verbatim, in their own slot.
-- Decisions made and why; standing instructions / preferences the user stated.
+  arming, category-1 approvals) — verbatim, in their own slot, SOURCE-TAGGED.
+- Decisions made and why; standing instructions / preferences the user stated —
+  SOURCE-TAGGED per "Directive provenance" below.
 - Named artifacts: plans (slug), work items (WI-NNN), features (F-NNN), files,
   harnesses, URLs, migration numbers.
 - Open questions, in-flight work, and the next concrete action.
+
+## Directive provenance — never manufacture an owner directive
+Attribution is the first metadata to rot under repeated compaction, and each
+re-read resolves ambiguity toward the higher-authority reading ("the owner
+must have said this") because that sounds like the safer thing to preserve.
+Left unchecked this is a telephone game that **manufactures owner directives
+out of the agent's own notes-to-self** — traced end-to-end in WI-3532
+(agent-managed-compaction-2026-07-01): an agent wrote "do NOT resolve WI-3532
+until the UI pass is done" as its OWN verification discipline; seven
+compactions later it rendered as "standing directive carried across
+compaction," then as "the owner set an explicit gate" — and the agent told the
+owner they had said something they never said. The same bug pointed at a
+risky action instead of a block manufactures false PERMISSION ("the owner
+approved X"), which is worse.
+
+- **Tag every directive you write to any carry surface** (this summary,
+  `work_items:checkpoint`, `facts:assert`, `loop:checkpoint`,
+  `session:request-compaction` notes) with its source: `[owner:<name> <date>]`
+  · `[self-imposed]` · `[peer:<sid>]` · `[inferred]`. An untagged imperative is
+  suspect — treat it as `[inferred]`, never as `[owner:…]`, until verified.
+- **A directive may enter the "owner-gated walls" / "unverified claims" slot
+  above ONLY if it is a literal quote from a human turn.** Re-summarizing a
+  PRIOR summary's claim is not re-verification — it is exactly how the rot
+  compounds. Self-authored discipline (a note-to-self, a caution you imposed
+  on your own work) goes in a separately-labelled, explicitly non-authoritative
+  slot — never the owner slot, however many compactions it has survived.
+- **Before you state "the owner said/wants/requires X" — especially as a gate
+  blocking work, or as permission for a risky action — verify it**, don't
+  trust a summary alone: `sessions:search { session:'self', mode:'verbatim',
+  query:'<the claimed directive>' }` against the surviving verbatim transcript
+  (see "The verbatim record SURVIVES" above). If you cannot point to the
+  owner's actual words in a distinct human turn, it is not an owner directive
+  — say so plainly instead of carrying the ambiguity forward another hop.
 
 ## Do NOT re-summarize — it is already in the system prompt, re-injected each turn
 The agent instructions / su playbook, the tool catalogue (full or trimmed), the

@@ -270,3 +270,56 @@ reporting-fidelity bug in what `classifyItemActivity` saw, not a reaper bug.
 now holds uniformly across feature AND issue-family claims — checkpoint your
 issue-family work (`work_items:checkpoint`) the same way you would a feature, so
 its `last_progress_at` advances and it reads correctly as covered.
+
+## The sixth corollary: the reconciler was one-directional — a just-launched holder read as orphaned too (EI-8106, 2026-07-09)
+
+`listFleetAssignments` (`fleet/assignments.ts`) already reconciled the view in
+one direction: `downgradeEndedHolders` catches a holder the view still believes
+`alive` whose `adv_sessions` row has since **ended** (§5's dead-holder fix). But
+the SAME view can be wrong in the OTHER direction too, on a fresh agent's
+**launch/bootstrap window**: `adv_sessions` can authoritatively record a session
+as LIVE before that session has registered coord presence or an inbox-wake await
+— so a heartbeat-only read sees no presence row yet and marks its just-taken
+claim `orphaned`, even though the holder is alive and about to start working.
+
+**The fix:** a new `upgradeRecordedLiveHolders` runs alongside
+`downgradeEndedHolders` on every `listFleetAssignments` read. For any row whose
+`agentId` appears in `recordedLiveOwnerIds` (a fresh, positive-evidence read of
+`adv_sessions`) and is NOT in the ended set, it forces `holderPresent`/
+`holderAlive` true and — for an active claim — clears `orphaned`. Both reads
+(`endedRecordedOwnerIds`, `recordedLiveOwnerIds`) now run in parallel over every
+row's `agentId`, not just the ones the view currently believes alive, so a
+just-launched holder that hasn't yet shown up in presence is no longer
+misread as dead-and-reclaimable during its own bootstrap.
+
+**What this means for you:** the same rule as the rest of this doc, from the
+opposite direction — a claim that reads `orphaned` immediately after a fresh
+spawn is not automatically free; `fleet:assignments` now folds the session log
+both ways (ended → force-dead, recorded-live → force-alive) before you decide.
+If you still see a claim reading orphaned for a holder you know just launched,
+suspect a genuinely dead spawn (never reached `adv_sessions`) rather than
+assuming this reconciliation gap.
+
+## The seventh corollary: a genuinely-completed item can still read as free if `status` was never flipped (EI-8972, 2026-07-09)
+
+A cousin of the same "the signal you're reading doesn't mean what you think"
+class, on the claim POOL rather than liveness: `work_items:complete` records a
+structured completion (`terminal_owner` + `terminal_completion_ref`) but does
+not *require* the caller to also flip the top-level `state` to a terminal
+value — a caller that omits it gets a `stateWarning`, not a hard refusal. The
+row can therefore sit "genuinely done, but `status` still reads `'open'`" —
+and until this fix, that row stayed in the self-select claim pool
+(`claim_next` / `scheduler:get_next`), so a **different** agent could
+re-discover and re-do work a peer had already finished (observed live:
+WI-3646, completed + terminal-owned by one agent, re-claimed whole by another
+minutes later). `alreadyTerminallyCompletedExclusionSql` (`work-items.ts`) now
+pool-excludes any row carrying both `terminal_owner` and
+`terminal_completion_ref`, alongside the existing observation/needsHuman/
+federation-detector/loop-noise exclusions — the row stays directly claimable
+BY ID (e.g. to formally flip its `state`), just not self-selectable fresh.
+
+**What this means for you:** `terminal_owner`/`terminal_completion_ref` being
+set is itself as strong a "this is actually settled" signal as a terminal
+`status` — don't conclude an item is unclaimed/pickable from `status` alone if
+those fields are populated, and always flip `state` when you
+`work_items:complete` something so the pool and the status field agree.

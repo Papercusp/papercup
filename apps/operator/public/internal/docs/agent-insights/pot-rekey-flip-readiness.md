@@ -3,6 +3,26 @@ URL: /internal/docs/agent-insights/pot-rekey-flip-readiness
 
 The papercusp-pot-rekey flip is an ATTENDED security cutover, not a code task. The op-path is wired end-to-end (encrypt-on-write, decrypt-on-read, advance-on-boundary), the hermetic end-to-end content read-cut witness is green, and ~88 re-key tests pass. The ONE remaining gate is the live 2-machine K-CUT-on-content witness (WI-560, blocked on WI-559 peering). This is the exact flip surface (3 edits), the evidence, the residual risk, and the go/no-go the owner ratifies against.
 
+## Current behavior (2026-07-09) — the flip already happened; this page is HISTORICAL
+
+The flag graduated. `FLAGS.POT_REKEY` (the flag key was renamed from `HIVE_REKEY`
+→ `POT_REKEY`; the runtime flag string is now `"papercusp-hive-rekey"`, was
+`"papercusp-pot-rekey"`) is now **DEFAULT ON** in `libs/flags/src/types.ts`, per
+the comment there: *"graduated 2026-06-29 via the P-011 flag-default inversion —
+NOT in DARK\_FLAGS: the live cut-off witness (P-008 / public-release GATE-1)
+passed cross-machine on the real binary (shared-hive-public-release D-014) and
+shipped in desktop alpha.2, so the gate condition is met."* It no longer appears
+in `KNOWN_DARK_FLAGS` / `DARK_FLAG_CASE` in
+`libs/flags/src/production-defaults.test.ts` at all.
+
+So the **residual gate this page describes (the live 2-machine K-CUT witness,
+WI-560/WI-559) has since been satisfied** and the owner has already ratified
+the flip — the "3 edits" flip surface below was executed. v1 scope (new hives
+only; existing hives stay legacy-unencrypted) still applies as designed (D-003).
+The rest of this page is kept for the **historical evidence trail** (the
+witness detail, the flip mechanics, the residual-risk reasoning) — read it as
+"what got us to GO," not as a still-pending decision.
+
 ## TL;DR — what the owner is deciding
 
 `papercusp-pot-rekey` (FLAGS.HIVE\_REKEY) is the master gate for the shared-pot **read-plane
@@ -31,17 +51,17 @@ All flag-gated on `papercusp-pot-rekey`; **OFF ⇒ byte-identical to today** (no
 
 | Concern                          | Where                                                           | Note                                                                                                                                                                         |
 | -------------------------------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Flag gate / crypto resolve       | `pot-epoch-serving.ts` `resolveHiveEpochCrypto(enabled)`        | `true` ⇒ real `createHiveEpochCrypto()` (sodium); `false` ⇒ fail-closed stub (never silent plaintext)                                                                        |
-| Boot composition (flag FIRST)    | `pot-epoch-boot-deps.ts` `buildHiveRekeyBootDeps`               | one cached flag read; `null` for OFF / non-pot / no-device — cheap off-path                                                                                                  |
+| Flag gate / crypto resolve       | `hive-epoch-serving.ts` `resolveHiveEpochCrypto(enabled)`       | `true` ⇒ real `createHiveEpochCrypto()` (sodium); `false` ⇒ fail-closed stub (never silent plaintext)                                                                        |
+| Boot composition (flag FIRST)    | `hive-epoch-boot-deps.ts` `buildHiveRekeyBootDeps`              | one cached flag read; `null` for OFF / non-pot / no-device — cheap off-path                                                                                                  |
 | Encrypt-on-write                 | `wire-outbox.ts` → `outbox-drain.ts` (`epochEncrypt.encryptOp`) | exclude-set: `shouldEncryptOpForRekey` encrypts all CONTENT, keeps admission/key/policy tags plaintext (`REKEY_PLAINTEXT_TAGS`), fail-closed (new tag defaults to encrypted) |
 | Decrypt-on-read                  | `boot.ts` `rekeyDeps.epochGate(enforcedApply)`                  | op carries its `epoch`; gate resolves epoch key → decrypt, else defers (pending-epoch buffer)                                                                                |
-| Advance-on-boundary (revoke)     | `pot-revoke-contributor.ts` → `advanceEpochOnHiveBoundary`      | wraps the new epoch key to REMAINING members only; revoked device excluded forever (K-CUT). Loud `rekey_boundary_skipped` boot event if it no-ops                            |
-| Advance-on-boundary (go-private) | `pot-set-listing.ts` → `advanceEpochOnHiveBoundary`             | re-keys to all current members (no cutOff)                                                                                                                                   |
+| Advance-on-boundary (revoke)     | `hive-revoke-contributor.ts` → `advanceEpochOnHiveBoundary`     | wraps the new epoch key to REMAINING members only; revoked device excluded forever (K-CUT). Loud `rekey_boundary_skipped` boot event if it no-ops                            |
+| Advance-on-boundary (go-private) | `hive-set-listing.ts` → `advanceEpochOnHiveBoundary`            | re-keys to all current members (no cutOff)                                                                                                                                   |
 | Deferred-content drain           | `boot.ts` `epochDrainQueue` / `onEpochKeyApplied`               | re-applies buffered content once a member's key row arrives                                                                                                                  |
 
 ## Witness evidence (re-ran 2026-06-24, this checkout, staging)
 
-* **Hermetic end-to-end content read-cut witness — `pot-epoch-read-cut-witness.test.ts` 2/2 GREEN.**
+* **Hermetic end-to-end content read-cut witness — `hive-epoch-read-cut-witness.test.ts` 2/2 GREEN.**
   Drives the **REAL** XChaCha20-Poly1305 + Ed25519 sealed-box crypto through the **production
   op-path capabilities** (`buildEpochEncryptCapability` → federated op → `buildEpochDecryptGate` +
   `createEpochKeyProvider`) across the full lifecycle **K0 → K1 → K-revoke → K-CUT**:
@@ -114,7 +134,7 @@ HEAD, but it is **flag-independent and not a re-key defect**:
   the epoch re-grant lives inside `upsertHiveMember` — the admit block is **NOT** gated on
   HIVE\_REKEY.
 * Confirmed flag-independent: forcing the flag off still fails; the cached last run shows it
-  already red while all 14 pot-epoch files were green.
+  already red while all 14 hive-epoch files were green.
 * Filed separately (see WI tracking); it does **not** change the flip decision.
 
 ## Go / No-Go
