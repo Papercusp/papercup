@@ -123,6 +123,12 @@ export interface UnitFlapState {
    *  again (mirrors `wasDown`'s transition-only notify shape, but tracked independently — a
    *  unit can be UP the whole time yet still have drifted Restart= policy). */
   restartDriftWarned: boolean;
+  /** P-004: consecutive DOWN ticks (resets to 0 the moment the unit is observed healthy again).
+   *  The systemd-user layer has no sub-tick probe cadence of its own (unlike the D-001 HTTP
+   *  probe's "3 consecutive 15s-spaced failures") — each reconciler tick IS one observation, so
+   *  this is a tick-count, not a time-based streak. Feeds P-004's `dev:service_health` supervision
+   *  block (`consecutiveProbeFailures` in the plan's shape). */
+  consecutiveDownTicks: number;
 }
 
 export function initialFlapState(unit: string): UnitFlapState {
@@ -135,6 +141,7 @@ export function initialFlapState(unit: string): UnitFlapState {
     gaveUp: false,
     wasDown: false,
     restartDriftWarned: false,
+    consecutiveDownTicks: 0,
   };
 }
 
@@ -189,6 +196,7 @@ export function decideReconcile(input: DecideInput): { action: ReconcileAction; 
     const wasDown = state.wasDown;
     if (state.healthySince == null) state.healthySince = now;
     state.wasDown = false;
+    state.consecutiveDownTicks = 0;
     // 5-minutes-continuously-healthy reset (independent of the transition notify below —
     // a unit that never flapped just never had anything to reset).
     if ((state.gaveUp || state.restarts.length > 0) && now - state.healthySince >= HEALTHY_RESET_MS) {
@@ -203,6 +211,7 @@ export function decideReconcile(input: DecideInput): { action: ReconcileAction; 
   state.healthySince = null;
   const justWentDown = !state.wasDown;
   state.wasDown = true;
+  state.consecutiveDownTicks += 1;
 
   if (!status) {
     return {
@@ -427,4 +436,58 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
   }
 
   return { checked: registry.length, actions, degraded: false };
+}
+
+// ── P-004: additive supervision snapshot (for dev:service_health) ──────────
+
+export type SupervisionFlapState = 'ok' | 'damping' | 'gave-up';
+
+export interface SupervisionStatusEntry {
+  name: string;
+  layer: SupervisionEntry['layer'];
+  autoRestart: boolean;
+  criticality: SupervisionEntry['criticality'];
+  /** Consecutive DOWN ticks as of the last reconciler run (0 = currently healthy or never
+   *  reconciled — see `UnitFlapState.consecutiveDownTicks`'s doc for why this is tick-counted
+   *  rather than time-windowed). */
+  consecutiveProbeFailures: number;
+  lastRestartAt: number | null;
+  /** Restart attempts within the trailing GIVE_UP_WINDOW_MS (10 minutes) as of `now`. */
+  restartsLast10m: number;
+  flapState: SupervisionFlapState;
+}
+
+/**
+ * P-004: fold the P-002 reconciler's per-unit flap state into the FULL supervised-process
+ * registry (every layer, not just systemd-user — a node-child/desktop-shell entry the
+ * reconciler doesn't itself track simply reports the registry's static fields + all-zero/`'ok'`
+ * counters, which is honest: this snapshot is additive/read-only, never a fabricated verdict).
+ * PURE given its inputs — the module-singleton `flapStateByUnit` is read, never mutated, so this
+ * is safe to call from a request handler on every `dev:service_health` invocation.
+ *
+ * Deliberately lives HERE (not folded into `service-health.ts`'s `probeAll` rollup) — flap state
+ * is owned by this module, and `service-health.ts` already exports `supervisedProcesses()` which
+ * THIS module imports; having `service-health.ts` import back from here would be a circular
+ * dependency for zero benefit. `dev:service_health`'s handler composes both directly instead
+ * (see `agent-tools/dev/service_health.ts`).
+ */
+export function supervisionSnapshot(
+  now: number = Date.now(),
+  registry: SupervisionEntry[] = supervisedProcesses(),
+): SupervisionStatusEntry[] {
+  return registry.map((entry) => {
+    const state = entry.unit ? flapStateByUnit.get(entry.unit) : undefined;
+    const restartsLast10m = state ? state.restarts.filter((t) => now - t < GIVE_UP_WINDOW_MS).length : 0;
+    const flapState: SupervisionFlapState = state?.gaveUp ? 'gave-up' : restartsLast10m > 0 ? 'damping' : 'ok';
+    return {
+      name: entry.name,
+      layer: entry.layer,
+      autoRestart: entry.autoRestart,
+      criticality: entry.criticality,
+      consecutiveProbeFailures: state?.consecutiveDownTicks ?? 0,
+      lastRestartAt: state?.lastRestartAt ?? null,
+      restartsLast10m,
+      flapState,
+    };
+  });
 }

@@ -82,6 +82,13 @@ export interface CoordLineSource {
   lifecycle?: string;
   /** Ambient classification tag (`service-health`/…) — not a lifecycle category. */
   category?: string;
+  /** The envelope's addressee list, when the caller passes it through (inbox does —
+   *  entries are cast wholesale). Read ONLY by the directed-question clip (P-004);
+   *  `unknown` so a malformed/absent value degrades to "not directed", never throws. */
+  to?: unknown;
+  /** Audience-selector stamp (`@fleet:…`/'*') — present ⇒ a fan-out, not a directed
+   *  message, even though `to` resolved to concrete ownerIds at send time. */
+  audience?: unknown;
   summary?: string;
   body?: string;
   ts: string;
@@ -131,6 +138,36 @@ export function shortHandle(from: string): string {
 function clip(s: string, max = 200): string {
   const oneLine = s.replace(/\s+/g, ' ').trim();
   return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1)}…`;
+}
+
+/** Extended per-line budget for a DIRECTED question (fleet-leader-frictions P-004):
+ *  a question addressed to YOU is the highest-priority line in the block, yet the
+ *  200-char clip routinely severed the ask mid-sentence ("…was ON in PostHo…"),
+ *  forcing a coord:inbox re-read just to learn what was asked. Bounded — this is a
+ *  clip extension for the ask sentence, not an unclipped body channel. */
+const DIRECTED_QUESTION_CAP = 500;
+
+/** A line is DIRECTED when the sender enumerated concrete recipients: no '*' / 'human'
+ *  in `to`, and no `audience` stamp (selector fan-outs resolve to concrete ownerIds but
+ *  are broadcasts in intent). Defensive over `unknown` — malformed ⇒ not directed. */
+function isDirected(e: Pick<CoordLineSource, 'to' | 'audience'>): boolean {
+  if (e.audience != null) return false;
+  const to = e.to;
+  if (!Array.isArray(to) || to.length === 0) return false;
+  return to.every((t) => typeof t === 'string' && t !== '*' && t !== 'human');
+}
+
+/** clip(), except a question sentence survives: when the text overflows `max` and its
+ *  last '?' lies past the plain-clip window but within `hardCap`, cut just AFTER that
+ *  '?' (the ask stays intact) instead of mid-question. No '?' in reach ⇒ plain clip. */
+function clipKeepQuestion(s: string, max: number, hardCap: number): string {
+  const oneLine = s.replace(/\s+/g, ' ').trim();
+  if (oneLine.length <= max) return oneLine;
+  const lastQ = oneLine.lastIndexOf('?', hardCap - 1);
+  // A '?' at index ≤ max-2 already survives the plain clip (which keeps max-1 chars).
+  if (lastQ < max - 1) return `${oneLine.slice(0, max - 1)}…`;
+  const kept = oneLine.slice(0, lastQ + 1);
+  return lastQ + 1 >= oneLine.length ? kept : `${kept} …`;
 }
 
 /**
@@ -222,7 +259,10 @@ export function renderInjection(entries: CoordLineSource[], opts: RenderInjectio
   for (const e of shown) {
     const glyph = glyphFor(e);
     const handle = shortHandle(e.from);
-    const body = clip(e.summary || e.body || '(no summary)', textCap);
+    // P-004: a directed line gets the question-preserving clip (broadcasts keep the
+    // flat cap — an FYI's question is not a blocked peer waiting on the reader).
+    const raw = e.summary || e.body || '(no summary)';
+    const body = isDirected(e) ? clipKeepQuestion(raw, textCap, DIRECTED_QUESTION_CAP) : clip(raw, textCap);
     // queen-fleet-authority-boundary P-003: a CONTROL cue (drain/pause/steer) carries
     // a structured authority+scope stamp — surface it as a leading `[…]` tag so the
     // reader distinguishes a hive-wide Queen pause from a fleet leader draining its

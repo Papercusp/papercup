@@ -19,6 +19,8 @@ import {
   advSessionTitleTag,
   macConsoleInvocation,
   spawnConsole,
+  spawnHeadless,
+  headlessLogPath,
   type AppearanceOpts,
   type DesktopEnvProbes,
 } from './console-spawn';
@@ -228,6 +230,57 @@ describe('spawnConsole early-exit probe — WI-1886(b)', () => {
     expect(r.status).toBe('ok');
     expect((r as { pid: number | null }).pid).toBe(3333);
   }, 10_000);
+});
+
+describe('headlessLogPath — per-session log filename (headless-fleet-launch P-002)', () => {
+  it('slugifies the label + stamps pid/time under the given dir', () => {
+    const p = headlessLogPath({ logDir: '/var/log/fleet', label: 'my-fleet · member 1/3 (plan)', pid: 42, nowMs: 1000 });
+    expect(p.startsWith('/var/log/fleet/')).toBe(true);
+    const base = p.slice('/var/log/fleet/'.length);
+    // no whitespace or shell-meta survives into the filename
+    expect(base).not.toMatch(/[\s·()]/);
+    expect(base).toBe('my-fleet-member-1-3-plan-42-1000.log');
+  });
+  it('falls back to tmpdir when no dir given, and never yields an empty base name', () => {
+    const p = headlessLogPath({ logDir: null, label: '···', pid: 1, nowMs: 2 });
+    expect(p).toMatch(/headless-1-2\.log$/);
+  });
+});
+
+describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch P-002)', () => {
+  const envelope: ConsoleEnvelope = {
+    cwd: '/tmp',
+    env: {},
+    mcpJsonContents: '',
+    greetingCmd: 'psu --headless',
+    needsSuperuserBootstrap: false,
+    sessionId: 'test-sid',
+  };
+  beforeEach(() => spawnMock.mockReset());
+
+  it('runs bash -lc (no terminal emulator) detached with a log fd, and reports ok+pid when the session outlives the probe', async () => {
+    spawnMock.mockImplementation(() => fakeChild(7777)); // never exits = a live agent
+    const r = await spawnHeadless({ envelope, label: 'hl', logDir: null });
+    expect(r.status).toBe('ok');
+    expect((r as { pid: number | null }).pid).toBe(7777);
+    // the spawned program is bash -lc <oneliner>, NOT a terminal emulator
+    const [bin, args] = spawnMock.mock.calls[0];
+    expect(bin).toBe('bash');
+    expect(args[0]).toBe('-lc');
+    expect(args[1]).toContain('psu --headless');
+  }, 10_000);
+
+  it('a psu that dies at boot inside the probe ⇒ LOUD error (not a false ok+pid)', async () => {
+    spawnMock.mockImplementation(() => {
+      const child = fakeChild(8888);
+      queueMicrotask(() => child.emit('exit', 1, null));
+      return child;
+    });
+    const r = await spawnHeadless({ envelope, label: 'hl', logDir: null });
+    expect(r.status).toBe('error');
+    expect((r as { code: number }).code).toBe(502);
+    expect((r as { error: string }).error).toMatch(/died at boot/i);
+  });
 });
 
 describe('buildConsoleOneliner', () => {

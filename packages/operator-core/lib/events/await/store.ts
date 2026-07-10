@@ -273,6 +273,46 @@ export async function listActiveAwaitsByKeyPrefix(prefix: string): Promise<Await
   return rows.map(mapAwait);
 }
 
+/** The always-armed per-agent self-wake key prefix (turn-lifecycle-control) —
+ *  every live agent holds one, so it signals liveness, NOT a deliberate bench. */
+export const INBOX_WAKE_KEY_PREFIX = 'coord:inbox-wake:';
+
+/**
+ * P-001 (fleet-member-dx-improvements-2026-07-10, EI-9014): active NON-inbox-wake
+ * awaits for MANY subscribers in ONE round-trip — the "parked-on-event" read that
+ * fleet:assignments and the claim-discipline watch derive a member's deliberate
+ * bench state from. An agent holding an active await on a real event key is
+ * PARKED (benched awaiting a pushed event), not abandoned. Excludes the
+ * always-armed `coord:inbox-wake:%` self-await (see INBOX_WAKE_KEY_PREFIX) and
+ * rows already past their deadline (the sweeper may not have fired them yet).
+ */
+export async function listParkedAwaitsForSubscribers(
+  subscriberIds: readonly string[],
+): Promise<Array<Pick<AwaitRow, 'subscriberId' | 'eventKey' | 'note' | 'expiresTs' | 'createdAt'>>> {
+  const ids = [...new Set(subscriberIds.filter((id) => !!id))];
+  if (ids.length === 0) return [];
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const rows = await sql`
+    SELECT subscriber_id, event_key, note, expires_ts, created_at
+      FROM harness_shared.event_awaits
+     WHERE workspace_id = ${ws}
+       AND subscriber_id = ANY(${ids as string[]}::text[])
+       AND fired_at IS NULL AND cancelled_at IS NULL
+       AND event_key NOT LIKE ${INBOX_WAKE_KEY_PREFIX + '%'}
+       AND (expires_ts IS NULL OR expires_ts > now())
+     ORDER BY created_at DESC
+     LIMIT 500
+  `;
+  return rows.map((r: any) => ({
+    subscriberId: r.subscriber_id,
+    eventKey: r.event_key,
+    note: r.note ?? null,
+    expiresTs: r.expires_ts ? new Date(r.expires_ts).toISOString() : null,
+    createdAt: new Date(r.created_at).toISOString(),
+  }));
+}
+
 /** Active awaits matching an event key — peek without firing (sources may use
  *  this to decide whether anyone is waiting at all). */
 export async function listActiveAwaitsForKey(eventKey: string): Promise<AwaitRow[]> {

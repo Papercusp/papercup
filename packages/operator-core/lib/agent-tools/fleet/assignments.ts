@@ -44,6 +44,7 @@ import {
   coverageCollisions,
   type CoverageCollision,
 } from '../../plan-item-coverage';
+import { listParkedAwaitsForSubscribers } from '../../events/await/store';
 import { boundRowField, boundListField, trimToByteBudget } from '../_bound-output';
 import { shapeFleetAssignments } from './assignments-shape';
 import { getPlanRow, planItemsForRow } from '../plans/source';
@@ -204,6 +205,41 @@ export async function decorateMemberVerdicts<
   return agents;
 }
 
+/**
+ * P-001 (fleet-member-dx-improvements-2026-07-10, EI-9014): stamp each agent row
+ * with `parkedOn` — the event keys of its ACTIVE non-inbox-wake events:await
+ * registrations. An agent parked on a real key is DELIBERATELY idle (benched
+ * awaiting a pushed event — typically a leader's "I'll emit when X greens"),
+ * not abandoned: a leader sees who is parked on what without tracking benches
+ * from memory, and the claim-discipline watch suppresses its nag (P-002).
+ * DERIVED from the await store — no new state; the always-armed
+ * `coord:inbox-wake:<id>` self-await never counts (every live agent holds one).
+ * Exported with an injectable fetcher so it unit-tests without PG (the
+ * decorateMemberVerdicts pattern). Mutates in place; best-effort at the call site.
+ */
+export async function decorateParkedOn<T extends AgentAssignment & { parkedOn?: string[] }>(
+  agents: T[],
+  fetchParkedAwaits: (
+    ids: string[],
+  ) => Promise<Array<{ subscriberId: string; eventKey: string }>> = listParkedAwaitsForSubscribers,
+): Promise<T[]> {
+  if (agents.length === 0) return agents;
+  const rows = await fetchParkedAwaits(agents.map((a) => a.agentId));
+  if (rows.length === 0) return agents;
+  const byId = new Map<string, string[]>();
+  for (const r of rows) {
+    const list = byId.get(r.subscriberId) ?? [];
+    // Cap per-agent keys (a standing-watch hoarder shouldn't bloat every read).
+    if (list.length < 6 && !list.includes(r.eventKey)) list.push(r.eventKey);
+    byId.set(r.subscriberId, list);
+  }
+  for (const a of agents) {
+    const keys = byId.get(a.agentId);
+    if (keys && keys.length > 0) a.parkedOn = keys;
+  }
+  return agents;
+}
+
 export default defineTool({
   name: 'fleet:assignments',
   profile: 'engineer',
@@ -317,6 +353,10 @@ export default defineTool({
     // lastToolCallAt) — AFTER reconcileWakeability so sessionState is settled.
     // Best-effort: a failure leaves the rows verdict-less, never breaks the read.
     await decorateMemberVerdicts(agents).catch(() => {});
+    // P-001 (fleet-member-dx): stamp `parkedOn` — active non-inbox-wake events:await
+    // keys — so a deliberately-benched member reads as parked, not abandoned.
+    // Best-effort: a failure just omits the field.
+    await decorateParkedOn(agents).catch(() => {});
     const orphans = orphanedClaims(rows);
     // agent-activity-liveness-truth P-002/P-005: a live-but-not-progressing holder
     // is NOT "covered" — surface stalled claims as reclaimable alongside orphans, so

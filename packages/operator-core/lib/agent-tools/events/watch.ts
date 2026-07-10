@@ -109,7 +109,7 @@ export default defineTool({
     payload_filter: dataConditionSchema
       .optional()
       .describe(
-        "EI-8998: a predicate tested against the emitted event's PAYLOAD (not just its key/pattern), e.g. { queue_depth: { $lt: 5 } } — kills the polling-vigil pattern (\"wake me when X crosses a threshold\") without a bespoke exact key per condition. Same MatchMap/all/any/not vocabulary as an ECA rule's `when`. A filter that never matches the emitter's actual payload shape silently never fires — check the emitting source's payload shape first.",
+        "EI-8998: a predicate tested against the emitted event's PAYLOAD (not just its key/pattern), e.g. { queue_depth: { lt: 5 } } — kills the polling-vigil pattern (\"wake me when X crosses a threshold\") without a bespoke exact key per condition. Same MatchMap/all/any/not vocabulary as an ECA rule's `when`. A filter that never matches the emitter's actual payload shape silently never fires — check the emitting source's payload shape first.",
       ),
     plan_run_id: z
       .number()

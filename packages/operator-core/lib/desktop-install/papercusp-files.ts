@@ -1084,13 +1084,21 @@ export function resolveInstallPaths(home: string): InstallPaths {
 type HookCommand = { type: 'command'; command: string };
 type HookEntry = { matcher?: string; hooks: HookCommand[] };
 
-/** Drop every entry in `arr` whose command references one of `ours` (full path OR
- *  basename), then append `fresh`. Mirrors the python is_ours filter + append used by
- *  every merge_* helper in install-standalone-mcp.sh. */
+/** Drop every COMMAND in `arr` that references one of `ours` (full path OR basename)
+ *  — at the command level, not the whole entry — then append `fresh`. An entry that
+ *  mixes one of ours with a FOREIGN command (e.g. a live settings.json's single Bash
+ *  entry carrying both `pretooluse-bash-resource-gate.sh` AND a third-party `rtk hook
+ *  claude`) keeps its foreign command; only entries left with ZERO commands after the
+ *  filter are dropped. A whole-ENTRY drop silently destroyed a co-located foreign
+ *  command on a real live settings.json (EI-8997 follow-up) — this is the fix. Mirrors
+ *  the python is_ours filter used by every merge_* helper in install-standalone-mcp.sh
+ *  (KEEP THE TWO IN SYNC — see that script's own merge_* comments). */
 function replaceOurHookEntries(arr: HookEntry[], ours: readonly string[], fresh: HookEntry): HookEntry[] {
-  const isOurs = (e: HookEntry) =>
-    Array.isArray(e?.hooks) && e.hooks.some((h) => ours.some((o) => String(h?.command ?? '').includes(o)));
-  return [...arr.filter((e) => !isOurs(e)), fresh];
+  const isOursCmd = (h: HookCommand) => ours.some((o) => String(h?.command ?? '').includes(o));
+  const filtered = arr
+    .map((e) => (Array.isArray(e?.hooks) ? { ...e, hooks: e.hooks.filter((h) => !isOursCmd(h)) } : e))
+    .filter((e) => Array.isArray(e?.hooks) && e.hooks.length > 0);
+  return [...filtered, fresh];
 }
 
 /**

@@ -43,7 +43,8 @@ beforeAll(async () => {
   u.pathname = `/${dbName}`;
   rootSql = postgres(u.toString(), { max: 2, onnotice: () => {} });
   await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
-  // FAITHFUL to mig 163 + 175 (once/min_sleep_sec/urgency) + 183 (the partial unique index).
+  // FAITHFUL to mig 163 + 175 (once/min_sleep_sec/urgency) + 183 (the partial unique
+  // index) + 533 (payload_filter, EI-8998).
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.event_awaits (
       id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -53,7 +54,8 @@ beforeAll(async () => {
       timeout_behavior text NOT NULL DEFAULT 'expire' CHECK (timeout_behavior IN ('expire','wake')),
       expires_ts timestamptz, created_at timestamptz NOT NULL DEFAULT now(),
       fired_at timestamptz, fired_reason text, cancelled_at timestamptz,
-      once boolean NOT NULL DEFAULT true, min_sleep_sec integer, urgency boolean NOT NULL DEFAULT false
+      once boolean NOT NULL DEFAULT true, min_sleep_sec integer, urgency boolean NOT NULL DEFAULT false,
+      payload_filter jsonb
     )`);
   await rootSql.unsafe(`
     CREATE UNIQUE INDEX event_awaits_inbox_wake_one_per_agent

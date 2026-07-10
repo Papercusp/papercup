@@ -4,7 +4,7 @@
  *
  * Covers the pure override math (effective spec, default-vs-override, build-or-
  * clear) and the rendered editor: baseline tiers from @papercusp/sync, the
- * default/override badge, and that editing a spec writes the computed override.
+ * editable tier rows, custom-state reset affordance, and spec writes.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -77,7 +77,7 @@ describe('ModelTiersOverride render', () => {
     expect(screen.queryByLabelText('fast model spec')).toBeNull();
   });
 
-  it('renders the baseline tiers with default badges in the compact Models section', async () => {
+  it('renders baseline tiers as clean label-and-field rows', async () => {
     render(<ModelTiersOverride override={null} onWrite={vi.fn()} busy={false} />, { wrapper: Wrap });
     expect(H.useSyncQuery).toHaveBeenCalledWith({
       queryName: 'agentConfig.modelTiersBaseline',
@@ -86,18 +86,28 @@ describe('ModelTiersOverride render', () => {
     });
     await waitFor(() => expect(screen.getByText('fast')).toBeTruthy());
     expect(screen.getByText('std')).toBeTruthy();
-    expect(screen.getAllByText('default').length).toBe(2);
+    expect(screen.queryByText('default')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Use workspace model for/ })).toBeNull();
     expect(screen.getByText('Workspace')).toBeTruthy();
     expect(screen.getByText('Models')).toBeTruthy();
     expect(screen.queryByText(/Session override of the workspace model tiers/)).toBeNull();
   });
 
-  it('shows the override badge + value when a tier is overridden', async () => {
+  it('highlights an overridden tier with a direct workspace reset action', async () => {
     render(<ModelTiersOverride override={[{ name: 'fast', spec: 'opus:xhigh' }]} onWrite={vi.fn()} busy={false} />, { wrapper: Wrap });
     await waitFor(() => expect(screen.getByText('fast')).toBeTruthy());
-    expect(screen.getByText('override')).toBeTruthy();
+    expect(screen.queryByText('override')).toBeNull();
     expect((screen.getByLabelText('fast model spec') as HTMLInputElement).value).toBe('opus:xhigh');
     expect(screen.getByText('1 custom')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Use workspace model for fast' })).toBeTruthy();
+  });
+
+  it('resets a custom tier directly from its row', async () => {
+    const onWrite = vi.fn();
+    render(<ModelTiersOverride override={[{ name: 'fast', spec: 'opus:xhigh' }]} onWrite={onWrite} busy={false} />, { wrapper: Wrap });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Use workspace model for fast' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Use workspace model for fast' }));
+    expect(onWrite).toHaveBeenCalledWith(null);
   });
 
   it('editing a tier spec + blurring writes the computed override', async () => {

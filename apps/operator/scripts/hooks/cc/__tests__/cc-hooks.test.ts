@@ -11,7 +11,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as http from 'node:http';
 import * as os from 'node:os';
 import { join } from 'node:path';
 
@@ -310,44 +309,19 @@ describe('cc PreToolUse activity-report hook — operator-independent paths', ()
     expect(elapsed).toBeLessThan(2500); // proves it did NOT wait on the 3s POST timeout
   });
 
-  it('SYNC mode actually posts phase:"pre" (not "post") to the operator', () => {
-    // A tiny local HTTP server standing in for the operator, capturing the POST body.
-    const http = require('node:http') as typeof import('node:http');
-    let captured: string | null = null;
-    const server = http.createServer((req, res) => {
-      const chunks: Buffer[] = [];
-      req.on('data', (c) => chunks.push(c));
-      req.on('end', () => {
-        captured = Buffer.concat(chunks).toString('utf8');
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end('{}');
-      });
-    });
-    const port = 39217;
-    server.listen(port, '127.0.0.1');
-    try {
-      const tokenHome = fs.mkdtempSync(join(os.tmpdir(), 'acthook-pre-live-'));
-      fs.mkdirSync(join(tokenHome, '.papercusp'), { recursive: true });
-      fs.writeFileSync(join(tokenHome, '.papercusp', 'superuser-token'), 'tok');
-      const r = runActivityPre(
-        {
-          PAPERCUSP_SID: 'sid-live',
-          PAPERCUSP_ACTIVITY_SYNC: '1',
-          PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${port}`,
-        },
-        payload(editPayload),
-        tokenHome,
-      );
-      fs.rmSync(tokenHome, { recursive: true, force: true });
-      expect(r.status).toBe(0);
-      expect(captured).toBeTruthy();
-      const body = JSON.parse(captured!);
-      expect(body.params.name).toBe('activity:report');
-      expect(body.params.arguments.phase).toBe('pre');
-      expect(body.params.arguments.tool_name).toBe('Edit');
-    } finally {
-      server.close();
-    }
+  // Not a spawnSync-against-a-same-process-server test (like the payload-capture
+  // approach might suggest): spawnSync BLOCKS this process's event loop for the
+  // whole child lifetime, so a same-process http.createServer server can never
+  // actually service the request until spawnSync already returned — a same-process
+  // capture race, not a real assertion. The operator-independent scope this file
+  // documents up top is deliberate; the live wire payload (phase:'pre' reaching
+  // activity:report) is exercised by the activity-tool's own tests + the D-003 live
+  // smoke. Here we just pin the SOURCE actually sets phase:'pre' (not 'post') so a
+  // future edit can't silently turn this back into a duplicate post-hook.
+  it('the script source reports phase:"pre" (never "post")', () => {
+    const src = fs.readFileSync(PRE_ACTIVITY_HOOK, 'utf8');
+    expect(src).toContain("'phase': 'pre'");
+    expect(src).not.toContain("'phase': 'post'");
   });
 });
 

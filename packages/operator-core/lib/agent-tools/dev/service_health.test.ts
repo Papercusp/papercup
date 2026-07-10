@@ -16,10 +16,17 @@ vi.mock("../../projected-tool-deps", () => ({
     lastInsertErrorAt: "2026-07-05T15:00:00.000Z",
   })),
 }));
+vi.mock("../../supervision/unit-reconciler", () => ({
+  supervisionSnapshot: vi.fn(() => [
+    { name: "mcp-proxy", layer: "systemd-user", autoRestart: true, criticality: "important", consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok" },
+  ]),
+}));
 
 import { probeAll } from "../../service-health";
 import { getTelemetryHealth } from "../../projected-tool-deps";
+import { supervisionSnapshot } from "../../supervision/unit-reconciler";
 const probeM = vi.mocked(probeAll);
+const supervisionM = vi.mocked(supervisionSnapshot);
 const tool = (await import("./service_health")).default;
 
 type Out = { content: { text: string }[] };
@@ -45,7 +52,24 @@ describe("dev:service_health handler", () => {
         insertErrorCount: 1,
         lastInsertErrorAt: "2026-07-05T15:00:00.000Z",
       },
+      supervision: [
+        { name: "mcp-proxy", layer: "systemd-user", autoRestart: true, criticality: "important", consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok" },
+      ],
     });
     expect(getTelemetryHealth).toHaveBeenCalledTimes(1);
+  });
+
+  it("P-004: folds the additive supervision block without disturbing the pre-existing { ok, services, telemetry } shape", async () => {
+    probeM.mockResolvedValue([{ name: "operator", up: true, latencyMs: 5 }] as never);
+    const b = body((await tool.handler({} as never, {} as never)) as Out);
+    // Old shape (pre-P-004 consumers) still parses unchanged.
+    expect(b.ok).toBe(true);
+    expect(b.services).toEqual([{ name: "operator", up: true, latencyMs: 5 }]);
+    expect(b.telemetry).toBeDefined();
+    // New, additive field.
+    expect(supervisionM).toHaveBeenCalledTimes(1);
+    expect(b.supervision).toEqual([
+      { name: "mcp-proxy", layer: "systemd-user", autoRestart: true, criticality: "important", consecutiveProbeFailures: 0, lastRestartAt: null, restartsLast10m: 0, flapState: "ok" },
+    ]);
   });
 });

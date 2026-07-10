@@ -21,7 +21,13 @@
  * `expandPatternMacro` / `assertUsablePattern` at registration.
  */
 
-import { evaluateOperatorTest, evaluateDataCondition, type OperatorTest, type DataCondition } from '@papercusp/rules';
+import {
+  evaluateOperatorTest,
+  evaluateDataCondition,
+  isPlainObject,
+  type OperatorTest,
+  type DataCondition,
+} from '@papercusp/rules';
 
 /**
  * A registered event key is a PATTERN (not an exact key) iff it contains a glob
@@ -102,6 +108,11 @@ export function keyMatchesPattern(pattern: string, firedKey: string): boolean {
  */
 export function payloadMatchesFilter(filter: unknown, payload: unknown): boolean {
   if (filter == null) return true;
+  // A DataCondition must be a plain object (a MatchMap, or a sole all/any/not key) —
+  // reject anything else UP FRONT rather than handing it to evaluateDataCondition,
+  // whose MatchMap branch would otherwise treat a non-object's enumerable keys (e.g. a
+  // string's character indices) as paths and can vacuously "match" nothing-to-fail-on.
+  if (!isPlainObject(filter)) return false;
   try {
     return evaluateDataCondition(filter as DataCondition, payload);
   } catch {

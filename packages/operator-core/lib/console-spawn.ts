@@ -33,6 +33,7 @@ import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import {
   closeSync,
   existsSync,
+  mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
@@ -829,4 +830,130 @@ export function macConsoleInvocation(
   // one-shot files; exec replaces the process with our login-shell one-liner.
   const content = `#!/bin/bash\nrm -f "$0"\nexec bash -lc ${shellEscape(oneliner)}\n`;
   return { file, content, term, openArgs: ['-na', term, file] };
+}
+
+// ─── Headless spawn (no terminal emulator) ───────────────────────────
+//
+// headless-fleet-launch-and-carry-knob-2026-07-10 P-002 (D-004: "keep the pty,
+// drop the terminal emulator"). {@link spawnHeadless} is the third spawn BACKEND
+// alongside spawnConsole (Linux/macOS window) and the Windows desktop-bridge — NOT
+// a parallel launch system. It runs the EXACT SAME `buildConsoleOneliner` output
+// that spawnConsole runs, but under a bare detached `bash -lc` with stdio wired to
+// a log FILE instead of a terminal window. The greeting is a `psu --headless …`
+// command, so psu-launcher takes the managed-pty host despite the non-TTY stdio
+// (usePtyHost + PAPERCUSP_PSU_HEADLESS=1) — the member stays injectable for warm
+// `loop:arm` wakes exactly like a desktop member; it just has no window.
+//
+// Cross-platform for free: no DISPLAY, no terminal cascade, no desktop-env
+// resolution — a headless member is just a background process. So this path works
+// identically on Linux, macOS, AND the Windows WSL2 operator (no Session-0 window
+// problem because there is no window). Returns the SAME SpawnConsoleResult shape as
+// spawnConsole so the fleet launcher needs no result-shape branch.
+
+/** Where a headless member's console log lands, given an explicit dir (the caller's
+ *  per-workspace fleet-logs dir) or a tmp fallback. Pure + exported for tests. */
+export function headlessLogPath(
+  opts: { logDir?: string | null; label: string; nowMs?: number; pid?: number },
+): string {
+  const dir = opts.logDir?.trim() || tmpdir();
+  const safe = opts.label.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'headless';
+  const stamp = `${opts.pid ?? process.pid}-${opts.nowMs ?? Date.now()}`;
+  return join(dir, `${safe}-${stamp}.log`);
+}
+
+export interface SpawnHeadlessOpts {
+  /** Envelope from `buildConsoleEnvelope` (cwd, env, greetingCmd) — greetingCmd MUST
+   *  be a `psu --headless …` command for the session to stay injectable. */
+  envelope: ConsoleEnvelope;
+  /** Display label for the log filename + the result's `terminal` field. */
+  label?: string | null;
+  /** Directory for the per-session log file (created if absent). Defaults to tmpdir. */
+  logDir?: string | null;
+}
+
+/**
+ * Launch a headless (no-window) managed-pty session. Detached + unref'd so it
+ * outlives the operator, with stdout+stderr → a per-session log file so a leader
+ * can tail a member. Async like spawnConsole: it watches the child briefly and
+ * reports a boot-time death (the psu command dying inside the probe window) as an
+ * error-with-log-tail instead of a false ok+pid.
+ */
+export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConsoleResult> {
+  const { envelope } = opts;
+  const label = opts.label ?? 'headless-member';
+  // Same one-liner spawnConsole builds — appearance prelude is harmless with no
+  // TTY (the OSC escapes just land in the log). 'console' mode keeps it identical.
+  const oneliner = buildConsoleOneliner(envelope.cwd, envelope.env, envelope.greetingCmd, {
+    mode: 'console',
+    planSlug: null,
+    label,
+    scheme: null,
+  });
+
+  let logDir = opts.logDir?.trim() || null;
+  if (logDir) {
+    try {
+      mkdirSync(logDir, { recursive: true });
+    } catch {
+      logDir = null; // fall back to tmp if the dir can't be made
+    }
+  }
+  const logPath = headlessLogPath({ logDir, label });
+  let logFd: number | null = null;
+  try {
+    logFd = openSync(logPath, 'a');
+  } catch {
+    logFd = null; // last resort: inherit-nothing (stdio ignore) below
+  }
+
+  try {
+    const child = spawn('bash', ['-lc', oneliner], {
+      detached: true,
+      stdio: ['ignore', logFd ?? 'ignore', logFd ?? 'ignore'],
+      cwd: envelope.cwd,
+      env: { ...process.env, ...envelope.env },
+    });
+    child.unref();
+    if (logFd != null) {
+      closeSync(logFd); // the child holds its own dup of the fd
+      logFd = null;
+    }
+
+    // Boot-death probe: psu that dies at launch (bad model spec, missing backend,
+    // config-dir fault) exits within the window — surface it + the log tail, not
+    // a false ok. A healthy session BLOCKS here (the agent runs), so the probe
+    // times out and we report ok.
+    const earlyExit = await watchEarlyExit(child, EARLY_EXIT_PROBE_MS);
+    if (earlyExit && (earlyExit.signal != null || (earlyExit.code ?? 0) !== 0)) {
+      let logTail = '';
+      try {
+        logTail = readFileSync(logPath, 'utf8').trim().slice(-800);
+      } catch {
+        logTail = '';
+      }
+      return {
+        status: 'error',
+        error:
+          `headless psu died at boot (${earlyExit.signal ? `signal ${earlyExit.signal}` : `exit ${earlyExit.code}`}) within ${EARLY_EXIT_PROBE_MS}ms` +
+          `${logTail ? ` — log tail: ${logTail}` : ` — see ${logPath}`}`,
+        code: 502,
+      };
+    }
+
+    return {
+      status: 'ok',
+      pid: child.pid ?? null,
+      terminal: `headless (log: ${logPath})`,
+      child,
+      display: null,
+      desktopEnvResolvedVia: null,
+    };
+  } catch (e: any) {
+    if (logFd != null) {
+      try {
+        closeSync(logFd);
+      } catch { /* already closed */ }
+    }
+    return { status: 'error', error: `headless spawn failed: ${e?.message}`, code: 500 };
+  }
 }

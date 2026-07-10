@@ -216,9 +216,33 @@ export async function composeOrient(
   // MORE entries + fuller bodies (the shaper relaxes its inbox re-cap when a recovery
   // block is present). Ambient broadcasts stay excluded by coord:inbox's default —
   // the directed-message bias the audit asked for is already the default.
+  //
+  // fleet-leader-frictions P-004: a MONITOR tick re-paid the full recent-inbox fold
+  // every wake — mostly entries the [coord+N] channel already showed. Scope a monitor
+  // read to SINCE-LAST-SHOWN via the caller's `messages_shown_ts` watermark (the
+  // read-receipt cursor both the injection channel AND this very read advance), so a
+  // 60s loop folds only the genuinely-new delta. NOT under afterCompaction — a
+  // just-compacted agent lost its context, so "already shown" no longer means
+  // "already known"; it keeps the fuller unscoped re-read. BEST-EFFORT + fail-open:
+  // an absent/failed watermark ⇒ the unfiltered read, never a broken orient.
+  let inboxSince: string | undefined;
+  if (monitor && !args.afterCompaction) {
+    try {
+      const wm = (await call('coord:watermark', {})) as
+        | { read_through_ts?: string | null }
+        | null
+        | undefined;
+      if (typeof wm?.read_through_ts === 'string' && wm.read_through_ts) {
+        inboxSince = wm.read_through_ts;
+      }
+    } catch {
+      /* fail-open: unscoped read */
+    }
+  }
   const inbox = (await call('coord:inbox', {
     limit: args.inboxLimit ?? (args.afterCompaction ? 25 : 10),
     max_body_chars: args.afterCompaction ? 800 : 300,
+    ...(inboxSince ? { since_ts: inboxSince } : {}),
   })) as { summary?: unknown; entries?: unknown } | undefined;
 
   // work_items:list returns the bare array (its `result` schema), but be defensive

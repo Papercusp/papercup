@@ -109,4 +109,15 @@ describe('events:await wrapper defaults', () => {
     await expect(call({ event: '*' })).rejects.toThrow(/too broad/);
     expect(registerAwait).not.toHaveBeenCalled();
   });
+
+  // ── EI-8998: predicate/payload watches ────────────────────────────────────
+  it('payload_filter flows through to registerAwait; omitted defaults to null', async () => {
+    const filter = { severity: { gte: 3 } };
+    await call({ event: 'alert:raised', payload_filter: filter });
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({ payloadFilter: filter });
+
+    vi.clearAllMocks();
+    await call({ event: 'alert:raised' });
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({ payloadFilter: null });
+  });
 });

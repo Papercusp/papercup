@@ -85,23 +85,28 @@ describe('payloadMatchesFilter (EI-8998 — predicate/payload watches)', () => {
     expect(payloadMatchesFilter(null, { queue_depth: 99 })).toBe(true);
     expect(payloadMatchesFilter(undefined, undefined)).toBe(true);
   });
-  it('evaluates a mingo comparator against a payload field', () => {
-    expect(payloadMatchesFilter({ queue_depth: { $lt: 5 } }, { queue_depth: 3 })).toBe(true);
-    expect(payloadMatchesFilter({ queue_depth: { $lt: 5 } }, { queue_depth: 9 })).toBe(false);
+  it('evaluates the $-free OperatorTest vocabulary (lt/gte/…) against a payload field', () => {
+    expect(payloadMatchesFilter({ queue_depth: { lt: 5 } }, { queue_depth: 3 })).toBe(true);
+    expect(payloadMatchesFilter({ queue_depth: { lt: 5 } }, { queue_depth: 9 })).toBe(false);
   });
   it('supports the all/any/not combinators (same vocabulary as an ECA rule when)', () => {
-    const filter = { all: [{ status: 'red' }, { severity: { $gte: 3 } }] };
+    const filter = { all: [{ status: 'red' }, { severity: { gte: 3 } }] };
     expect(payloadMatchesFilter(filter, { status: 'red', severity: 4 })).toBe(true);
     expect(payloadMatchesFilter(filter, { status: 'red', severity: 1 })).toBe(false);
     expect(payloadMatchesFilter(filter, { status: 'green', severity: 4 })).toBe(false);
   });
   it('a payload missing the tested field fails the predicate rather than throwing', () => {
-    expect(payloadMatchesFilter({ queue_depth: { $lt: 5 } }, {})).toBe(false);
-    expect(payloadMatchesFilter({ queue_depth: { $lt: 5 } }, null)).toBe(false);
+    expect(payloadMatchesFilter({ queue_depth: { lt: 5 } }, {})).toBe(false);
+    expect(payloadMatchesFilter({ queue_depth: { lt: 5 } }, null)).toBe(false);
   });
-  it('a malformed filter degrades to false rather than throwing (best-effort emit path)', () => {
+  it('a non-object filter (string/number/array) is rejected up front, never vacuously true', () => {
     expect(payloadMatchesFilter('not-an-object', { x: 1 })).toBe(false);
     expect(payloadMatchesFilter(42, { x: 1 })).toBe(false);
+    expect(payloadMatchesFilter(['also', 'not', 'an', 'object'], { x: 1 })).toBe(false);
+  });
+  it('a malformed operand inside an otherwise-valid filter degrades to false rather than throwing', () => {
+    // an unterminated regex source is an author bug mingo's compiler rejects at build time
+    expect(payloadMatchesFilter({ name: { matches: '[' } }, { name: 'x' })).toBe(false);
   });
 });
 

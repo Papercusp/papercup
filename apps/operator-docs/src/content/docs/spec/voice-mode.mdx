@@ -51,7 +51,7 @@ A new always-on utterance cancels any TTS that is currently playing. Implementat
 Each role gets its own voice, stable across harnesses, browser sessions, and restarts. Implementation:
 - The runtime hashes the role name (e.g. `system:operator`, `orchestrator`) to a stable index into the available browser voices.
 - The assignment is persisted to localStorage (`papercusp.voice.config.v1`).
-- Users can override per role at `/settings/voice` with a Test button.
+- `assignVoiceToRole()` (`voice-mode.ts`) remains the programmatic override API, but as of the 2026-07-09 settings cleanup **the per-role/per-slug override UI (the role→voice table + per-slug composite-key overrides) was removed from `/settings/voice`** — there is no longer a Select-per-role or a "role @ slug" override table in the page. What remains at `/settings/voice` is a **"Test all N role voices"** button (`onTestAllRoles`) that plays each `KNOWN_ROLES` entry through its auto-assigned voice in sequence (with an ElevenLabs cost-confirm when that engine is selected) — a listen-only sanity check, not an override control.
 
 When the same role speaks (e.g. `system:operator` from two different harnesses), the same voice plays.
 
@@ -141,4 +141,4 @@ The realtime path (ElevenLabs Conv-AI shell relaying into the Sentinel pane, the
 
 - **Multi-lingual voice** (current default is `en-US`). v1.5.
 - **Voice-only login / lock-screen control**. Out of scope.
-- **Per-harness voice override** (currently per-role only). Possible v1.5 if useful.
+- **Per-harness voice override** (currently per-role only). A per-slug (`role@slug`) override table existed briefly in `/settings/voice` (a v1.5 experiment) but was removed in the 2026-07-09 settings cleanup along with the per-role override table — see "Per-role voices" above.

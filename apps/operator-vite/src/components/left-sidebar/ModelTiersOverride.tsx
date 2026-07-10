@@ -23,8 +23,7 @@
 import { useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
 import { parseAsBoolean, useQueryState } from 'nuqs';
-import { ChevronDown, ChevronRight, Cpu } from 'lucide-react';
-import OverridableSetting from '../override/OverridableSetting';
+import { ChevronDown, ChevronRight, Cpu, RotateCcw } from 'lucide-react';
 // type-only (erased at build): a VALUE import of operator-core constants doesn't
 // resolve in the operator-vite vitest env, so the workspace-default tiers come
 // from the sync resolver instead of a client import.
@@ -124,16 +123,13 @@ export default function ModelTiersOverride({
               {baseline.map((t) => {
                 const over = isOverridden(baseline, override, t.name);
                 const draft = drafts[t.name] ?? effectiveSpec(baseline, override, t.name);
+                const inputId = `mug-model-tier-${t.name.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
                 return (
                   <li key={t.name} className={`pc-mt__row${over ? ' pc-mt__row--on' : ''}`}>
-                    <OverridableSetting
-                      label={t.name}
-                      isOverridden={over}
-                      onReset={() => resetTier(t.name)}
-                      busy={busy}
-                      badgeStyle="chip"
-                    >
+                    <label className="pc-mt__name" htmlFor={inputId}>{t.name}</label>
+                    <div className="pc-mt__control">
                       <input
+                        id={inputId}
                         className="pc-mt__spec"
                         value={draft}
                         disabled={busy}
@@ -145,7 +141,19 @@ export default function ModelTiersOverride({
                           if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
                         }}
                       />
-                    </OverridableSetting>
+                      {over && (
+                        <button
+                          type="button"
+                          className="pc-mt__reset"
+                          onClick={() => resetTier(t.name)}
+                          disabled={busy}
+                          aria-label={`Use workspace model for ${t.name}`}
+                          title="Use workspace model"
+                        >
+                          <RotateCcw size={11} aria-hidden />
+                        </button>
+                      )}
+                    </div>
                   </li>
                 );
               })}

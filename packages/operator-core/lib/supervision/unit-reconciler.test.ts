@@ -11,6 +11,7 @@ import {
   initialFlapState,
   reconcileTick,
   _resetReconcilerState,
+  checkRestartPolicyDrift,
   BACKOFF_SEQUENCE_SEC,
   GIVE_UP_THRESHOLD,
   GIVE_UP_WINDOW_MS,
@@ -279,6 +280,40 @@ describe('decideReconcile', () => {
   });
 });
 
+describe('checkRestartPolicyDrift (P-003(b) config-drift guard)', () => {
+  it('report-only entry (autoRestart:false) never warns, regardless of the live Restart= value', () => {
+    expect(checkRestartPolicyDrift(REPORT_ONLY_ENTRY, 'no', false)).toEqual({ warn: false, nextWarned: false });
+    expect(checkRestartPolicyDrift(REPORT_ONLY_ENTRY, 'no', true)).toEqual({ warn: false, nextWarned: true });
+  });
+
+  it('no drift (Restart=always, matching the applied drop-in) -> no warn, latch clears', () => {
+    expect(checkRestartPolicyDrift(AUTORESTART_ENTRY, 'always', false)).toEqual({ warn: false, nextWarned: false });
+    // Clears an existing latch too — a prior warn that's since been fixed should reset so a
+    // future re-drift warns again instead of staying silently latched forever.
+    expect(checkRestartPolicyDrift(AUTORESTART_ENTRY, 'always', true)).toEqual({ warn: false, nextWarned: false });
+  });
+
+  it('unknown/unavailable Restart= (systemctl show call failed this tick) -> treated as no drift, no warn', () => {
+    expect(checkRestartPolicyDrift(AUTORESTART_ENTRY, undefined, false)).toEqual({ warn: false, nextWarned: false });
+  });
+
+  it('first drift observed (Restart=no, not yet warned) -> warns once, latches', () => {
+    expect(checkRestartPolicyDrift(AUTORESTART_ENTRY, 'no', false)).toEqual({ warn: true, nextWarned: true });
+  });
+
+  it('drift persists across ticks (already warned) -> no re-warn, latch stays set', () => {
+    expect(checkRestartPolicyDrift(AUTORESTART_ENTRY, 'no', true)).toEqual({ warn: false, nextWarned: true });
+  });
+
+  it('drift observed fixed after having warned -> latch clears, so a future re-drift warns again', () => {
+    const fixed = checkRestartPolicyDrift(AUTORESTART_ENTRY, 'on-failure', true);
+    expect(fixed).toEqual({ warn: false, nextWarned: false });
+    // Simulate the drift recurring on a later tick — it warns again since the latch was cleared.
+    const redrift = checkRestartPolicyDrift(AUTORESTART_ENTRY, 'no', fixed.nextWarned);
+    expect(redrift).toEqual({ warn: true, nextWarned: true });
+  });
+});
+
 describe('reconcileTick (orchestrator, mocked deps)', () => {
   beforeEach(() => {
     _resetReconcilerState();
@@ -347,5 +382,53 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
     });
     await expect(reconcileTick(deps)).resolves.toBeDefined();
     expect(deps.notify).toHaveBeenCalled();
+  });
+
+  it('P-003(b): a supervised unit whose live Restart= has drifted to "no" gets a ONE-TIME escalation notify, not re-fired while still drifted', async () => {
+    // mcp-proxy is UP+healthy in this variant (so the drift guard is exercised independently of
+    // the down/restart path) but its live Restart= has drifted off the applied drop-in.
+    const upFixture = [
+      'papercup-mcp-proxy.service                       loaded active   running Papercusp resilient MCP proxy',
+      '',
+    ].join('\n');
+    const deps = makeDeps({
+      execUser: vi.fn(async (args: string[]) => {
+        if (args[0] === 'list-units') return upFixture;
+        if (args[0] === 'show') return 'Result=success\nNRestarts=0\nRestart=no\n';
+        return '';
+      }),
+      registry: () => [AUTORESTART_ENTRY],
+    });
+    await reconcileTick(deps);
+    const driftNotifies = deps.notify.mock.calls.filter((c) => String(c[0]?.summary).includes('Restart= policy has drifted'));
+    expect(driftNotifies).toHaveLength(1);
+
+    // A second tick, still drifted — must NOT re-notify (one-time until observed fixed).
+    await reconcileTick(deps);
+    const driftNotifiesAfter = deps.notify.mock.calls.filter((c) => String(c[0]?.summary).includes('Restart= policy has drifted'));
+    expect(driftNotifiesAfter).toHaveLength(1);
+  });
+
+  it('P-003(b): once the drift is observed fixed, a later re-drift warns again', async () => {
+    const upFixture = [
+      'papercup-mcp-proxy.service                       loaded active   running Papercusp resilient MCP proxy',
+      '',
+    ].join('\n');
+    let restartProp = 'no';
+    const deps = makeDeps({
+      execUser: vi.fn(async (args: string[]) => {
+        if (args[0] === 'list-units') return upFixture;
+        if (args[0] === 'show') return `Result=success\nNRestarts=0\nRestart=${restartProp}\n`;
+        return '';
+      }),
+      registry: () => [AUTORESTART_ENTRY],
+    });
+    await reconcileTick(deps); // drifted -> warns (1)
+    restartProp = 'always'; // fixed
+    await reconcileTick(deps); // fixed -> no warn, latch clears
+    restartProp = 'no'; // drifts again
+    await reconcileTick(deps); // re-drifted -> warns again (2)
+    const driftNotifies = deps.notify.mock.calls.filter((c) => String(c[0]?.summary).includes('Restart= policy has drifted'));
+    expect(driftNotifies).toHaveLength(2);
   });
 });

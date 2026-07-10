@@ -91,6 +91,61 @@ describe('renderInjection — positional [coord+N] block', () => {
   });
 });
 
+describe('renderInjection — directed-question clip (fleet-leader-frictions P-004)', () => {
+  const READER = 'su-4dc3befd-194e-4e3b-8f5a-77dc8c635798';
+  // ~340 chars of preamble, then the ask — the exact shape the 200-clip severed.
+  const preamble =
+    'Threshold ping: watermark still 127 — your stamped probe is now ~50min in the pipeline without traversing drain→replicate→merge→project. ' +
+    'Mac datapoints from my probe just now: disk healthy (21Gi free, purge held), but ZERO outbox/drain/error lines in the last 80 log lines.';
+  const ask = 'Is the Mac app actually draining post-restart?';
+  const longQuestion = `${preamble} ${ask}`;
+
+  it('a DIRECTED question past the 200 clip keeps the ask sentence intact', () => {
+    const out = renderInjection([e({ to: [READER], summary: longQuestion })]);
+    expect(out).toContain(ask); // the whole question survives, un-severed
+    expect(out).not.toContain('draining post-restar…'); // not the mid-sentence cut
+  });
+
+  it("a BROADCAST ('*' / audience-stamped) question still gets the flat 200 clip", () => {
+    for (const over of [{ to: ['*'] }, { to: [READER], audience: ['@fleet:x'] }]) {
+      const out = renderInjection([e({ ...over, summary: longQuestion })]);
+      expect(out).not.toContain(ask);
+      expect(out).toContain('…');
+    }
+  });
+
+  it('a directed NON-question is clipped normally (the extension is for asks only)', () => {
+    const statement = longQuestion.replace(/\?/g, '.');
+    const out = renderInjection([e({ to: [READER], summary: statement })]);
+    expect(out).not.toContain('draining post-restart.');
+    expect(out).toContain('…');
+  });
+
+  it("a directed question whose '?' lies beyond the hard cap falls back to the plain clip (bounded)", () => {
+    const runaway = `${'x'.repeat(700)} ${ask}`;
+    const out = renderInjection([e({ to: [READER], summary: runaway })]);
+    expect(out).not.toContain(ask);
+    const line = out.split('\n')[1];
+    expect(line.length).toBeLessThan(260); // glyph + handle + 200-clip, nowhere near 700
+  });
+
+  it("a short directed question needs no extension — and text AFTER the kept '?' is marked elided", () => {
+    expect(renderInjection([e({ to: [READER], summary: 'quick one: which port?' })])).toContain(
+      'quick one: which port?',
+    );
+    const trailing = `${longQuestion} Also, no rush — I am mid-fix on my side and will circle back after the deploy lands.`;
+    const out = renderInjection([e({ to: [READER], summary: trailing })]);
+    expect(out).toContain(`${ask} …`); // ask intact, trailer visibly elided
+  });
+
+  it('malformed `to` shapes are never directed and never throw', () => {
+    for (const to of [undefined, null, [], [42], 'su-x', ['su-x', '*']]) {
+      const out = renderInjection([e({ to: to as never, summary: longQuestion })]);
+      expect(out).not.toContain(ask);
+    }
+  });
+});
+
 describe('renderInjection — cue-authority stamp tag (queen-fleet-authority-boundary P-003)', () => {
   it('prefixes a hive-wide Queen pause cue with its authority tag', () => {
     const out = renderInjection([

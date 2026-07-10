@@ -739,6 +739,15 @@ describe('psu-launcher arg parsing', () => {
     expect(parseArgs(['--no-subagents']).allowSubagents).toBe(false);
   });
 
+  it('parses --headless (headless-fleet-launch P-001); defaults false and implies --no-picker', () => {
+    expect(parseArgs([]).headless).toBe(false);
+    expect(parseArgs([]).picker).toBe(true);
+    const a = parseArgs(['--headless', '--agent=claude', '--harness=x', '--plan=p']);
+    expect(a.headless).toBe(true);
+    // No terminal to prompt at — headless forces the scripted (non-picker) path.
+    expect(a.picker).toBe(false);
+  });
+
   it('parses retired --brain as a tombstoned flag, not a backend-specific capability', () => {
     expect(parseArgs(['--brain']).brain).toBe(true);
     expect(parseArgs([]).brain).toBe(false);
@@ -2270,6 +2279,31 @@ describe('usePtyHost — managed-pty rollout gate (turn-lifecycle-control Phase 
 
   it('PAPERCUSP_PSU_PTY=1 is still honored as an explicit enable', () => {
     expect(usePtyHost({ env: { PAPERCUSP_PSU_PTY: '1' }, stdin: tty, stdout: tty })).toBe(true);
+  });
+
+  describe('PAPERCUSP_PSU_HEADLESS — a headless fleet member keeps the injectable pty despite no TTY (headless-fleet-launch P-001)', () => {
+    it('bypasses the isTTY check so a non-TTY launch STILL takes the managed pty', () => {
+      // The whole point: without the pty there is no control socket / discovery file,
+      // so wake-executor Channel 3 parks the member forever after one turn.
+      expect(usePtyHost({ env: { PAPERCUSP_PSU_HEADLESS: '1' }, stdin: notTty, stdout: notTty })).toBe(true);
+      expect(usePtyHost({ env: { PAPERCUSP_PSU_HEADLESS: '1' }, stdin: notTty, stdout: tty })).toBe(true);
+    });
+
+    it('does NOT override the PAPERCUSP_PSU_NO_PTY kill switch', () => {
+      expect(
+        usePtyHost({ env: { PAPERCUSP_PSU_HEADLESS: '1', PAPERCUSP_PSU_NO_PTY: '1' }, stdin: notTty, stdout: notTty }),
+      ).toBe(false);
+    });
+
+    it('does NOT override an explicit PAPERCUSP_PSU_PTY=0 opt-out', () => {
+      expect(
+        usePtyHost({ env: { PAPERCUSP_PSU_HEADLESS: '1', PAPERCUSP_PSU_PTY: '0' }, stdin: notTty, stdout: notTty }),
+      ).toBe(false);
+    });
+
+    it('is inert when unset — a plain non-TTY launch still keeps the plain spawn', () => {
+      expect(usePtyHost({ env: {}, stdin: notTty, stdout: notTty })).toBe(false);
+    });
   });
 });
 

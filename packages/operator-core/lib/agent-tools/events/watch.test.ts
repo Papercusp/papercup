@@ -59,4 +59,16 @@ describe('watch routing', () => {
     const arg = vi.mocked(registerAwait).mock.calls[0][0];
     expect(arg).toMatchObject({ minSleepSec: 120, urgency: true });
   });
+
+  it('EI-8998: payload_filter on a wake watch is threaded through to registerAwait', async () => {
+    const filter = { queue_depth: { lt: 5 } };
+    await call({ pattern: 'queue:depth-changed', wake: true, payload_filter: filter });
+    const arg = vi.mocked(registerAwait).mock.calls[0][0];
+    expect(arg).toMatchObject({ payloadFilter: filter });
+  });
+
+  it('EI-8998: payload_filter on an inject (wake:false) watch is rejected loudly, not silently ignored', async () => {
+    await expect(call({ pattern: 'locks', payload_filter: { x: 1 } })).rejects.toThrow(/payload_filter/);
+    expect(subscribeTopic).not.toHaveBeenCalled();
+  });
 });

@@ -385,6 +385,62 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       expect(r.claimable).toHaveLength(2);
       expect(calls.some((c) => c.name === 'work_items:list')).toBe(true);
     });
+
+    // ── fleet-leader-frictions P-004: monitor inbox scoped to since-last-shown ──
+    describe('monitor inbox watermark (fleet-leader-frictions P-004)', () => {
+      const WM_TS = '2026-07-10T03:30:00.000Z';
+
+      it('scopes the monitor inbox read to since_ts = the messages_shown watermark', async () => {
+        const { call, calls } = fakeCall({
+          ...CORE,
+          'coord:watermark': () => ({ owner_id: 'leader', self: true, read_through_ts: WM_TS }),
+        });
+        const r = await composeOrient({ mode: 'monitor' }, call, 'leader');
+        expect(r.ok).toBe(true);
+        const inboxCall = calls.find((c) => c.name === 'coord:inbox');
+        expect(inboxCall?.args).toMatchObject({ since_ts: WM_TS });
+      });
+
+      it('no watermark yet (null read_through_ts) ⇒ the unscoped read', async () => {
+        const { call, calls } = fakeCall({
+          ...CORE,
+          'coord:watermark': () => ({ owner_id: 'leader', self: true, read_through_ts: null }),
+        });
+        await composeOrient({ mode: 'monitor' }, call, 'leader');
+        expect(calls.find((c) => c.name === 'coord:inbox')?.args.since_ts).toBeUndefined();
+      });
+
+      it('a FAILED watermark read fails open — unscoped inbox, orient still ok', async () => {
+        const { call, calls } = fakeCall({
+          ...CORE,
+          'coord:watermark': () => {
+            throw new Error('pg down');
+          },
+        });
+        const r = await composeOrient({ mode: 'monitor' }, call, 'leader');
+        expect(r.ok).toBe(true);
+        expect(calls.find((c) => c.name === 'coord:inbox')?.args.since_ts).toBeUndefined();
+      });
+
+      it('FULL mode never reads the watermark (unscoped inbox as today)', async () => {
+        const { call, calls } = fakeCall({ ...CORE });
+        await composeOrient({}, call, 'me');
+        expect(calls.some((c) => c.name === 'coord:watermark')).toBe(false);
+        expect(calls.find((c) => c.name === 'coord:inbox')?.args.since_ts).toBeUndefined();
+      });
+
+      it('afterCompaction OVERRIDES the scoping — a compacted agent needs the fuller re-read ("already shown" ≠ "already known")', async () => {
+        const { call, calls } = fakeCall({
+          ...CORE,
+          'coord:watermark': () => ({ read_through_ts: WM_TS }),
+        });
+        await composeOrient({ mode: 'monitor', afterCompaction: true }, call, 'leader');
+        expect(calls.some((c) => c.name === 'coord:watermark')).toBe(false);
+        const inboxCall = calls.find((c) => c.name === 'coord:inbox');
+        expect(inboxCall?.args.since_ts).toBeUndefined();
+        expect(inboxCall?.args).toMatchObject({ limit: 25, max_body_chars: 800 });
+      });
+    });
   });
 
   // ── P-002 / D-001: queen-loop steering is withheld from a RESPONSIVE caller's recall ──

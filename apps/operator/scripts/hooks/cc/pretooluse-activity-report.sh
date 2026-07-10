@@ -23,6 +23,13 @@
 # near-duplicate (not a sourced common lib) so each hook stays a single,
 # independently-reviewable file matching the CC hook install pattern — see
 # posttooluse-activity-report.sh's own header for the shared-shape rationale.
+#
+# Precedent: OMP's in-process coord-hook.ts already reports phase:'pre' at its
+# tool_call event (D-003) — this brings the Claude/Codex shell-hook chain to
+# parity with what OMP has done all along, rather than inventing a new shape.
+# Codex-specific caveat (D-006, same as the post-hook's own note): Codex's
+# PreToolUse doesn't reliably fire on EDITS, so this degrades to a no-op for
+# that subset there; Codex PostToolUse (already wired) still covers it.
 
 set -euo pipefail
 
