@@ -53,6 +53,7 @@ import { ClaimStatusBadge, CLAIM_STATUS_COPY } from '../_components/ClaimStatusB
 import { HowSharingWorks } from '../_components/HowSharingWorks';
 import { Button } from '../harness/Button';
 import { Tooltip } from '../harness/Tooltip';
+import { CUPBOARD_LISTING_KIND_TONE } from '../harness/theme';
 import { CupboardErrorState } from './CupboardErrorState';
 import { ToolsSection } from './ToolsSection';
 import { useLexicon } from '@/lib/useLexicon';
@@ -91,14 +92,6 @@ function ActionIcon({ action, size = 13 }: { action: ListingAction; size?: numbe
     case 'install': return <Plug size={size} />;
   }
 }
-
-const KIND_TONES: Record<ListingKind, { fg: string; bg: string; border: string }> = {
-  harness: { fg: 'var(--accent-soft)', bg: 'color-mix(in srgb, var(--accent), transparent 86%)', border: 'color-mix(in srgb, var(--accent-strong), transparent 74%)' },
-  blueprint: { fg: 'var(--good)', bg: 'color-mix(in srgb, var(--good), transparent 86%)', border: 'color-mix(in srgb, var(--good), transparent 74%)' },
-  plugin: { fg: 'var(--accent-soft)', bg: 'color-mix(in srgb, var(--accent), transparent 86%)', border: 'color-mix(in srgb, var(--accent-strong), transparent 74%)' },
-  'tool-pack': { fg: 'var(--accent-cool)', bg: 'color-mix(in srgb, var(--accent-deep), transparent 87%)', border: 'color-mix(in srgb, var(--accent-cool), transparent 76%)' },
-  'learning-pack': { fg: 'var(--warn)', bg: 'color-mix(in srgb, var(--warn), transparent 88%)', border: 'color-mix(in srgb, var(--warn), transparent 76%)' },
-};
 
 const filterButtonStyle = (active: boolean): React.CSSProperties => ({
   display: 'inline-flex',
@@ -728,7 +721,7 @@ export function ListingCard({
   const repoSlug = listingRepoSlug(listing);
   const contributors = listingContributorCount(listing);
   const language = listingTopLanguage(listing);
-  const tone = KIND_TONES[kind];
+  const tone = CUPBOARD_LISTING_KIND_TONE[kind];
   return (
     <div
       className="pc-card"
@@ -877,7 +870,7 @@ export function ListingCard({
 
 /** Small kind tag on a card. */
 function KindBadge({ kind }: { kind: ListingKind }) {
-  const tone = KIND_TONES[kind];
+  const tone = CUPBOARD_LISTING_KIND_TONE[kind];
   return (
     <span
       data-testid="cupboard-kind-badge"

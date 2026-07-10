@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from 'react';
 import { createResilientEventSource } from '@papercusp/sse';
+import { TONE } from './theme';
 
 /**
  * Shared live "thinking" stream primitives for a Now-running agent — the
@@ -170,7 +171,7 @@ function EntryTime({ ts }: { ts?: string }) {
 
 /** A pulsing dot — the "actively thinking" indicator, shared by the thinking pane
  *  header and the agents roster. Self-contained (ships its own keyframe). */
-export function ThinkingDot({ size = 7, color = '#6aa84f', title = 'thinking' }: { size?: number; color?: string; title?: string }) {
+export function ThinkingDot({ size = 7, color = TONE.good, title = 'thinking' }: { size?: number; color?: string; title?: string }) {
   return (
     <span
       role="img"
@@ -304,8 +305,8 @@ export function Entry({ entry, highlightTerm }: { entry: TimelineEntry; highligh
   }
   if (entry.kind === 'tool_result') {
     return (
-      <div style={{ margin: '0 0 8px', padding: '4px 6px', background: 'rgba(106, 168, 79, 0.06)', border: '1px solid rgba(106, 168, 79, 0.16)', borderRadius: 3 }}>
-        <div style={{ color: '#6aa84f', fontSize: 10.5, marginBottom: 2 }}>
+      <div style={{ margin: '0 0 8px', padding: '4px 6px', background: 'color-mix(in srgb, var(--good), transparent 94%)', border: '1px solid color-mix(in srgb, var(--good), transparent 84%)', borderRadius: 3 }}>
+        <div style={{ color: TONE.good, fontSize: 10.5, marginBottom: 2 }}>
           <EntryTime ts={entry.ts} />
           ◂ tool_result
         </div>
@@ -334,7 +335,7 @@ export function Entry({ entry, highlightTerm }: { entry: TimelineEntry; highligh
     const right = [time, cost, tokens, dur].filter(Boolean).join(' · ');
     return (
       <div style={{ margin: '0 0 4px', padding: '4px 6px', background: 'var(--bg-2)', borderTop: '1px solid var(--border)' }}>
-        <div style={{ color: '#9a9a9a', fontSize: 10.5, marginBottom: 2 }}>
+        <div style={{ color: TONE.neutral, fontSize: 10.5, marginBottom: 2 }}>
           ✓ result {right && <span style={{ float: 'right' }}>{right}</span>}
         </div>
         {entry.text && (

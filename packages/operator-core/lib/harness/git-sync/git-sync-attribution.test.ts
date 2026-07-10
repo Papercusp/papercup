@@ -30,18 +30,18 @@ describe('agentsForScopedFiles (P-006 assign-don\'t-broadcast)', () => {
 describe('groupFilesForAttribution (P-004)', () => {
   it('groups attributed files per agent + a catch-all remainder LAST', () => {
     const attr = new Map<string, FileAttribution>([
-      ['a.ts', { agent: 'ag2', agentLabel: 'Bee Two', intent: 'fix the parser' }],
-      ['b.ts', { agent: 'ag1', agentLabel: 'Bee One', intent: 'add the flag' }],
-      ['c.ts', { agent: 'ag2', agentLabel: 'Bee Two', intent: 'fix the parser' }],
+      ['a.ts', { agent: 'ag2', agentLabel: 'Cup Two', intent: 'fix the parser' }],
+      ['b.ts', { agent: 'ag1', agentLabel: 'Cup One', intent: 'add the flag' }],
+      ['c.ts', { agent: 'ag2', agentLabel: 'Cup Two', intent: 'fix the parser' }],
     ]);
     const groups = groupFilesForAttribution(['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts'], attr);
 
     // ag1, ag2 (sorted by id), then the catch-all (null) LAST.
     expect(groups.map((g) => g.agent)).toEqual(['ag1', 'ag2', null]);
-    expect(groups[0]).toMatchObject({ agent: 'ag1', files: ['b.ts'], subject: 'add the flag (Bee One)' });
+    expect(groups[0]).toMatchObject({ agent: 'ag1', files: ['b.ts'], subject: 'add the flag (Cup One)' });
     expect(groups[1]).toMatchObject({ agent: 'ag2', files: ['a.ts', 'c.ts'] }); // sorted within
-    expect(groups[1].subject).toBe('fix the parser (Bee Two)');
-    expect(groups[1].coAuthor).toBe('Bee Two <ag2@agents.papercusp>');
+    expect(groups[1].subject).toBe('fix the parser (Cup Two)');
+    expect(groups[1].coAuthor).toBe('Cup Two <ag2@agents.papercusp>');
     // remainder = the unattributed files, sorted, with the default subject + no co-author.
     expect(groups[2]).toEqual({ agent: null, files: ['d.ts', 'e.ts'], subject: DEFAULT_GIT_SYNC_SUBJECT, coAuthor: null });
   });
@@ -62,12 +62,12 @@ describe('groupFilesForAttribution (P-004)', () => {
 
 describe('intentToSubject', () => {
   it('uses the intent + label, collapsing whitespace and clamping to 72 chars', () => {
-    expect(intentToSubject('fix\n  the   parser', 'Bee')).toBe('fix the parser (Bee)');
+    expect(intentToSubject('fix\n  the   parser', 'Cup')).toBe('fix the parser (Cup)');
     const long = 'x'.repeat(100);
     expect(intentToSubject(long, undefined).length).toBe(72);
   });
   it('falls back to the default subject when the intent is empty/blank', () => {
-    expect(intentToSubject('', 'Bee')).toBe(DEFAULT_GIT_SYNC_SUBJECT);
+    expect(intentToSubject('', 'Cup')).toBe(DEFAULT_GIT_SYNC_SUBJECT);
     expect(intentToSubject('   ', undefined)).toBe(DEFAULT_GIT_SYNC_SUBJECT);
     expect(intentToSubject(undefined, undefined)).toBe(DEFAULT_GIT_SYNC_SUBJECT);
   });
@@ -75,8 +75,8 @@ describe('intentToSubject', () => {
 
 describe('coAuthorTrailer', () => {
   it('formats Name <email>, synthesizing an agents address when email is unknown', () => {
-    expect(coAuthorTrailer({ agent: 'ag1', agentLabel: 'Bee One', email: 'b1@x.com' })).toBe('Bee One <b1@x.com>');
-    expect(coAuthorTrailer({ agent: 'ag1', agentLabel: 'Bee One' })).toBe('Bee One <ag1@agents.papercusp>');
+    expect(coAuthorTrailer({ agent: 'ag1', agentLabel: 'Cup One', email: 'b1@x.com' })).toBe('Cup One <b1@x.com>');
+    expect(coAuthorTrailer({ agent: 'ag1', agentLabel: 'Cup One' })).toBe('Cup One <ag1@agents.papercusp>');
   });
   it('falls back to the agent id as the name, or null when there is no identity', () => {
     expect(coAuthorTrailer({ agent: 'ag1' })).toBe('ag1 <ag1@agents.papercusp>');

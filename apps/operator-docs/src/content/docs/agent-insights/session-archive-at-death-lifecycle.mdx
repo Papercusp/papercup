@@ -33,13 +33,33 @@ D-001):
 2. **Hourly reconciler** (`session-archive-reconciler.ts`, DBOS
    `sessionArchiveReconcile` @ :20) — the backstop for kill-9/OOM/host-crash
    ghosts: sweeps ended-unarchived adv rows (bounded 500 scanned/50 archived
-   per tick) + unprotected disk dirs (100/tick) + stale omp files (200/tick,
-   24h mtime grace).
+   per tick) + unprotected disk dirs (100/tick, **1h quiet grace per session's
+   files** — a raw/untracked resumed session has no adv row and no presence,
+   so a fresh mtime is its only live signal) + stale omp files (200/tick, 24h
+   mtime grace). **A degraded protected-set skips the whole disk side**
+   (`skippedDisk: 'degraded-protected-set'`, mirrors session-dir-gc's abort) —
+   the reads fail open, and sweeping against an incomplete set would delete a
+   live session's files.
 
-Safety invariants: **never follow symlinks** (per-session claude dirs are
-symlink farms into the shared `~/.claude`); **delete only after a
-sha-verified committed stamp**; archive write = one PG tx; rematerialize
-never clobbers a differing existing file (disk wins).
+**Interactive resume rematerializes too** (WI-3859 F4, owner-hit): `psu
+--resume <id>` restores an archived transcript via
+`POST /api/adv/sessions/rematerialize` on both miss points (tracked row with
+no transcript on disk; untracked uuid found nowhere) before declaring the
+session unresumable. Raw `claude --resume` outside psu still cannot — go
+through psu, or call the endpoint by hand.
+
+Safety invariants (hardened by the WI-3859 adversarial pass, 2026-07-10):
+**never follow symlinks** — at collect time (lstat/Dirent) AND at
+delete/rematerialize time (delete resolve-and-verifies `realpath(abs) ===
+realpath(root)/relpath`; rematerialize lstats the target — an existing
+symlink/dir is a conflict, never written through — and containment-checks the
+parent dir); **manifest relpaths are untrusted data** (`isUnsafeArchiveRelpath`
+rejects absolute/`..`/NUL — a poisoned stamp row can never unlink or write
+outside the session root); **delete only after a sha-verified committed
+stamp**; archive write = one PG tx; rematerialize never clobbers a differing
+existing file (disk wins); PG `mtime` strings are coerced to Dates before
+`utimes` (F6 — the silent-catch had been eating mtime restore on every real
+rematerialize).
 
 ## What replaced each disk read
 

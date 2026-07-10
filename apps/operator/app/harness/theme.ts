@@ -57,6 +57,35 @@ export const STATUS = new Proxy(_STATUS_TABLE as Record<string, { solid: string;
 
 export type HarnessStatus = keyof typeof _STATUS_TABLE;
 
+// Fixed categorical swatches — the single source for hues whose meaning is
+// identity/category rather than semantic state. Unlike TONE below, these do
+// not follow the active theme: a Conversations handoff, an /adv tab, and a
+// Learning rail keep the same distinguishing hue across themes. Keep the hex
+// and RGB representations paired so the two forms cannot drift independently.
+export const CATEGORICAL = {
+  indigo400:  { hex: '#818cf8', rgb: '129, 140, 248' },
+  amber500:   { hex: '#f59e0b', rgb: '245, 158, 11' },
+  teal400:    { hex: '#2dd4bf', rgb: '45, 212, 191' },
+  violet400:  { hex: '#a78bfa', rgb: '167, 139, 250' },
+  rose500:    { hex: '#f43f5e', rgb: '244, 63, 94' },
+  green500:   { hex: '#22c55e', rgb: '34, 197, 94' },
+  lime500:    { hex: '#84cc16', rgb: '132, 204, 22' },
+  blue400:    { hex: '#60a5fa', rgb: '96, 165, 250' },
+  teal500:    { hex: '#14b8a6', rgb: '20, 184, 166' },
+  pink500:    { hex: '#ec4899', rgb: '236, 72, 153' },
+  emerald400: { hex: '#34d399', rgb: '52, 211, 153' },
+  yellow500:  { hex: '#eab308', rgb: '234, 179, 8' },
+  orange500:  { hex: '#f97316', rgb: '249, 115, 22' },
+  violet300:  { hex: '#c4b5fd', rgb: '196, 181, 253' },
+  pink400:    { hex: '#f472b6', rgb: '244, 114, 182' },
+  red400:     { hex: '#f87171', rgb: '248, 113, 113' },
+  slate500:   { hex: '#64748b', rgb: '100, 116, 139' },
+  slate400:   { hex: '#94a3b8', rgb: '148, 163, 184' },
+  teal300:    { hex: '#5eead4', rgb: '94, 234, 212' },
+} as const;
+
+export type CategoricalKey = keyof typeof CATEGORICAL;
+
 // Ordering used for list sort.
 // Active work first, terminal states last. `deprecated` is a soft-retired
 // state — sorts to the very end so it doesn't crowd active work.
@@ -215,6 +244,40 @@ export function statusToneColor(status: string, fallback: ToneKey = 'neutral'): 
   if (status.includes('MAX_RECOVERY')) return TONE.bad; // DBOS retry-exhausted variants
   return TONE[fallback];
 }
+
+// Coordination-feed kinds are categorical identities, even when a semantic
+// token is the right source for a particular kind.
+export const FEED_KIND_COLOR: Record<string, string> = {
+  message: 'var(--accent-strong, #7dd3fc)',
+  ack: 'var(--fg-mute, #7f9bb4)',
+  notify: 'var(--warn, #fbbf24)',
+  broadcast: `var(--advconv-accent-strong, ${CATEGORICAL.pink400.hex})`,
+  handoff: CATEGORICAL.violet400.hex,
+  handoff_accepted: CATEGORICAL.violet300.hex,
+  escalation: 'var(--bad, #f87171)',
+  escalation_resolved: 'var(--good, #86efac)',
+  plan_event: CATEGORICAL.teal300.hex,
+  subscribe: 'var(--accent, #38bdf8)',
+  unsubscribe: `var(--fg-mute, ${CATEGORICAL.slate500.hex})`,
+  contract: 'var(--warn, #fcd34d)',
+};
+export const FEED_KIND_FALLBACK = CATEGORICAL.slate500.hex;
+
+export interface CategoryTone {
+  fg: string;
+  bg: string;
+  border: string;
+}
+
+// Cupboard listing kinds use a three-part categorical treatment. This belongs
+// beside the other central kind tables rather than inside the storefront.
+export const CUPBOARD_LISTING_KIND_TONE: Record<string, CategoryTone> = {
+  harness: { fg: 'var(--accent-soft)', bg: 'color-mix(in srgb, var(--accent), transparent 86%)', border: 'color-mix(in srgb, var(--accent-strong), transparent 74%)' },
+  blueprint: { fg: 'var(--good)', bg: 'color-mix(in srgb, var(--good), transparent 86%)', border: 'color-mix(in srgb, var(--good), transparent 74%)' },
+  plugin: { fg: 'var(--accent-soft)', bg: 'color-mix(in srgb, var(--accent), transparent 86%)', border: 'color-mix(in srgb, var(--accent-strong), transparent 74%)' },
+  'tool-pack': { fg: 'var(--accent-cool)', bg: 'color-mix(in srgb, var(--accent-deep), transparent 87%)', border: 'color-mix(in srgb, var(--accent-cool), transparent 76%)' },
+  'learning-pack': { fg: 'var(--warn)', bg: 'color-mix(in srgb, var(--warn), transparent 88%)', border: 'color-mix(in srgb, var(--warn), transparent 76%)' },
+};
 
 // Memory-kind chip hues (settings/user/memory). Categorical, not status —
 // kinds are backend-defined and style-only (never a filter source; the

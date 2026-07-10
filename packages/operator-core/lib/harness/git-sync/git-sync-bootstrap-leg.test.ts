@@ -152,7 +152,7 @@ describe('runBootstrapLeg', () => {
     expect(patch.bootstrap).toMatchObject({ ok: true, namespaceCount: 1, skippedExisting: 0 });
   });
 
-  it('falls back to ctx-derived hiveHomeSlug from entry.slug when hive_slug is absent but self_repo is true', async () => {
+  it('falls back to ctx-derived potHomeSlug from entry.slug when hive_slug is absent but self_repo is true', async () => {
     loadHarnessRegistryMock.mockResolvedValue({
       projects: [{ slug: SLUG, self_repo: true }],
     });

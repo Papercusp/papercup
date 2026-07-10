@@ -20,6 +20,7 @@ import { useQueryState, parseAsString } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { ArrowUpRight, HeartPulse } from 'lucide-react';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { CATEGORICAL, TONE as THEME_TONE } from '@/app/harness/theme';
 import {
   PANEL_ORDER,
   type SystemHealth,
@@ -184,20 +185,20 @@ function HealthStyles() {
         border-left: 3px solid var(--card-accent, #475569);
         background: var(--bg-2, rgba(255, 255, 255, 0.035));
       }
-      .pc-hcard--good { --card-accent: #34d399; }
-      .pc-hcard--warn { --card-accent: #fbbf24; }
-      .pc-hcard--bad { --card-accent: #f43f5e; }
-      .pc-hcard--mute { --card-accent: #475569; opacity: 0.72; }
+      .pc-hcard--good { --card-accent: ${THEME_TONE.good}; }
+      .pc-hcard--warn { --card-accent: ${THEME_TONE.warn}; }
+      .pc-hcard--bad { --card-accent: ${THEME_TONE.bad}; }
+      .pc-hcard--mute { --card-accent: ${CATEGORICAL.slate500.hex}; opacity: 0.72; }
       .pc-hcard__head { display: flex; align-items: center; gap: 6px; }
       .pc-hcard__title {
         font-size: 10.5px; font-weight: 750; letter-spacing: 0; text-transform: uppercase;
         color: var(--fg, #e7f7ff); flex: 1; min-width: 0;
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
       }
-      .pc-hcard__dot--good { background: #34d399; box-shadow: 0 0 5px rgba(52, 211, 153, 0.7); }
-      .pc-hcard__dot--warn { background: #fbbf24; box-shadow: 0 0 5px rgba(251, 191, 36, 0.6); }
-      .pc-hcard__dot--bad { background: #f43f5e; box-shadow: 0 0 6px rgba(244, 63, 94, 0.7); }
-      .pc-hcard__dot--mute { background: #475569; }
+      .pc-hcard__dot--good { background: ${THEME_TONE.good}; box-shadow: 0 0 5px rgb(from ${THEME_TONE.good} r g b / 0.7); }
+      .pc-hcard__dot--warn { background: ${THEME_TONE.warn}; box-shadow: 0 0 5px rgb(from ${THEME_TONE.warn} r g b / 0.6); }
+      .pc-hcard__dot--bad { background: ${THEME_TONE.bad}; box-shadow: 0 0 6px rgb(from ${THEME_TONE.bad} r g b / 0.7); }
+      .pc-hcard__dot--mute { background: ${CATEGORICAL.slate500.hex}; }
       .pc-hcard__link {
         display: inline-flex; align-items: center; flex-shrink: 0;
         color: var(--fg-mute, #7f9bb4); text-decoration: none; opacity: 0.7;

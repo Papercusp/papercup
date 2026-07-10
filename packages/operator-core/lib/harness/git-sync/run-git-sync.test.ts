@@ -156,34 +156,34 @@ describe('runGitSync (real git, no submodule)', () => {
   });
 
   it('P-004 flag-ON (loadRoster supplied): peels a per-agent commit (intent + Co-Authored-By) before the catch-all', async () => {
-    writeFileSync(join(repo, 'mine.txt'), 'a\n'); // attributed to bee-7
+    writeFileSync(join(repo, 'mine.txt'), 'a\n'); // attributed to cup-7
     writeFileSync(join(repo, 'other.txt'), 'b\n'); // unattributed → catch-all
     const out = await runGitSync('test', {
       repoPath: repo,
       config: cfg,
-      loadRoster: async () => [{ agent: 'bee-7', agentLabel: 'Bee Seven', intent: 'wire the parser', files: ['mine.txt'] }],
+      loadRoster: async () => [{ agent: 'cup-7', agentLabel: 'Cup Seven', intent: 'wire the parser', files: ['mine.txt'] }],
     });
     expect(out.status).toBe('synced');
     // origin received BOTH the per-agent commit (intent subject) AND the catch-all auto-commit.
     const subjects = originLog();
-    expect(subjects).toMatch(/wire the parser \(Bee Seven\)/);
+    expect(subjects).toMatch(/wire the parser \(Cup Seven\)/);
     expect(subjects).toMatch(/auto-commit test/);
     // the per-agent commit carries a Co-Authored-By trailer crediting the agent (DERIVED attribution).
     const bodies = git(originDir, 'log', '--format=%B', 'main');
-    expect(bodies).toContain('Co-Authored-By: Bee Seven <bee-7@agents.papercusp>');
+    expect(bodies).toContain('Co-Authored-By: Cup Seven <cup-7@agents.papercusp>');
     // both files landed; the tree is clean.
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
   it('STRANDING GUARD (WI-1316 / 8186adfb5): a FAILED attributed commit (index.lock race) must NOT skip the catch-all — the remainder still commits', async () => {
-    // mine.txt is attributed to bee-7 (peeled into its OWN commit first); other.txt is
+    // mine.txt is attributed to cup-7 (peeled into its OWN commit first); other.txt is
     // unattributed (the catch-all remainder). We force the ONE attributed commit to fail
     // like the index.lock race that bit 2026-06-30. PRE-fix, syncOneRepo `return`-ed on
     // res.error and BOTH files stranded (mine.txt staged-uncommitted, other.txt untracked)
     // → an unbuildable tree ("Cannot find module"). POST-fix it logs + falls through to the
     // catch-all `git add -A`, so nothing strands. This is the deterministic guard WI-1316 asks
     // for: inject a runGit that fails the attributed commit but runs everything else for real.
-    writeFileSync(join(repo, 'mine.txt'), 'a\n'); // attributed → bee-7
+    writeFileSync(join(repo, 'mine.txt'), 'a\n'); // attributed → cup-7
     writeFileSync(join(repo, 'other.txt'), 'b\n'); // unattributed → catch-all
 
     // A real-git runner (non-throwing: returns {code} instead of throwing on non-zero).
@@ -207,7 +207,7 @@ describe('runGitSync (real git, no submodule)', () => {
     const out = await runGitSync('test', {
       repoPath: repo,
       config: cfg,
-      loadRoster: async () => [{ agent: 'bee-7', agentLabel: 'Bee Seven', intent: 'wire the parser', files: ['mine.txt'] }],
+      loadRoster: async () => [{ agent: 'cup-7', agentLabel: 'Cup Seven', intent: 'wire the parser', files: ['mine.txt'] }],
       runGit,
     });
 

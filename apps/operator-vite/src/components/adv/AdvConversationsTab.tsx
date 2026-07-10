@@ -53,6 +53,7 @@ import { listCountLabel } from '@papercusp/operator-core/lib/sync-resolver/list-
 import { Tooltip } from '@/app/harness/Tooltip';
 import { Modal } from '@/app/harness/Modal';
 import ChatPanel from '@/app/harness/ChatPanel';
+import { FEED_KIND_COLOR, FEED_KIND_FALLBACK } from '@/app/harness/theme';
 import {
   inputStyle,
   primaryBtnStyle,
@@ -452,25 +453,6 @@ const FEED_KIND_GROUPS = [
   { id: 'escalations', label: 'Escalations', description: 'Blocked work and resolutions', kinds: ['escalation', 'escalation_resolved'] },
   { id: 'plan-events', label: 'Plan events', description: 'Plan changes and lifecycle updates', kinds: ['plan_event'] },
 ] as const;
-
-/** Kind → accent colour. `broadcast` is a synthetic UI kind (any kind with
- *  to:['*']); kept distinct so the firehose's all-hands traffic stands out. */
-const KIND_COLOR: Record<string, string> = {
-  message: 'var(--accent-strong, #7dd3fc)',
-  ack: 'var(--fg-mute, #7f9bb4)',
-  notify: 'var(--warn, #fbbf24)',
-  // broadcast is the tab's own all-hands accent — bind it to the pink
-  // --advconv-accent-strong (the scoped var, == #f472b6) so it tracks the theme.
-  broadcast: 'var(--advconv-accent-strong, #f472b6)',
-  handoff: '#a78bfa', // categorical — no semantic token
-  handoff_accepted: '#c4b5fd', // categorical — no semantic token
-  escalation: 'var(--bad, #f87171)',
-  escalation_resolved: 'var(--good, #86efac)',
-  plan_event: '#5eead4', // categorical — no semantic token
-  subscribe: 'var(--accent, #38bdf8)',
-  unsubscribe: 'var(--fg-mute, #64748b)',
-  contract: '#fcd34d', // categorical — no semantic token
-};
 
 interface FeedRow {
   ts: string;
@@ -892,11 +874,11 @@ function FeedView() {
                   key={k}
                   className="pc-advfeed__kindchip"
                   active={active}
-                  accent={KIND_COLOR[k] ?? '#64748b'}
+                  accent={FEED_KIND_COLOR[k] ?? FEED_KIND_FALLBACK}
                   onClick={() => toggleKind(k)}
                   aria-pressed={active}
                 >
-                  <span className="pc-advfeed__kinddot" style={{ background: KIND_COLOR[k] ?? '#64748b' }} aria-hidden />
+                  <span className="pc-advfeed__kinddot" style={{ background: FEED_KIND_COLOR[k] ?? FEED_KIND_FALLBACK }} aria-hidden />
                   {kindLabel(k)}
                   {typeof n === 'number' && n > 0 ? <span className="pc-advfeed__kindn">{n}</span> : null}
                 </Pill>
@@ -1017,7 +999,7 @@ function FeedItem({
   onAgentClick: (a: string) => void;
 }) {
   const badge = row.kind;
-  const color = KIND_COLOR[row.broadcast ? 'broadcast' : badge] ?? '#64748b';
+  const color = FEED_KIND_COLOR[row.broadcast ? 'broadcast' : badge] ?? FEED_KIND_FALLBACK;
   const summary =
     row.summary ||
     (row.kind === 'plan_event' && row.event ? `${row.event}${row.detail ? `: ${row.detail}` : ''}` : '');
@@ -1102,7 +1084,7 @@ function FeedItem({
                   <span className="pc-advfeed__threadmeta">
                     <span
                       className="pc-advfeed__badge pc-advfeed__badge--sm"
-                      style={{ borderColor: KIND_COLOR[c.kind] ?? '#64748b', color: KIND_COLOR[c.kind] ?? '#64748b' }}
+                      style={{ borderColor: FEED_KIND_COLOR[c.kind] ?? FEED_KIND_FALLBACK, color: FEED_KIND_COLOR[c.kind] ?? FEED_KIND_FALLBACK }}
                     >
                       <span aria-hidden />
                       {c.kind}

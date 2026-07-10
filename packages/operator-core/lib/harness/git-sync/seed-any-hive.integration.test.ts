@@ -424,7 +424,7 @@ describe('S2: joinHiveAsView seeds joiner members active/push:false, never the v
   const TOPIC = 'a'.repeat(64);
   const JREPO = `jrepo${RUN}`;
   const REPO_ID = 424242;
-  const HIVE_ID = `h2hive${RUN}`;
+  const POT_ID = `h2pot${RUN}`;
   const LINK = `papercusp://harness?topic=${TOPIC}&github=acme%2F${JREPO}&repo_id=${REPO_ID}`;
 
   let jrepoDir: string;
@@ -451,12 +451,12 @@ describe('S2: joinHiveAsView seeds joiner members active/push:false, never the v
     jrepoDir = await makeWorkRepo(`s2-${JREPO}`);
 
     const r = await joinHiveAsView(
-      { potId: HIVE_ID, memberLinks: [LINK], workspaceId: WS2 },
+      { potId: POT_ID, memberLinks: [LINK], workspaceId: WS2 },
       deps(),
     );
 
     expect(r.ok).toBe(true);
-    expect(r.potSlug).toBe(HIVE_ID);
+    expect(r.potSlug).toBe(POT_ID);
     expect(r.members).toHaveLength(1);
     expect(r.members[0].slug).toBe(JREPO);
     expect(r.members[0].detail).toBe('joined; git_sync:seeded');
@@ -474,16 +474,16 @@ describe('S2: joinHiveAsView seeds joiner members active/push:false, never the v
     expect(cfg).not.toHaveProperty('branch'); // join links carry no default branch
 
     // The remote_hive VIEW is a non-repo dir — never seeded.
-    expect(await routineCount(HIVE_ID)).toBe(0);
+    expect(await routineCount(POT_ID)).toBe(0);
 
     // Registry view materialized as expected (remote_hive flag + membership).
     const reg = await loadHarnessRegistry(WS2);
-    expect(reg.projects.find((p) => p.slug === HIVE_ID)).toMatchObject({
+    expect(reg.projects.find((p) => p.slug === POT_ID)).toMatchObject({
       harness_kind: 'hive',
       remote_hive: true,
     });
     expect(reg.projects.find((p) => p.slug === JREPO)).toMatchObject({
-      hive_slug: HIVE_ID,
+      hive_slug: POT_ID,
       github_repository_id: REPO_ID,
     });
   });
@@ -503,7 +503,7 @@ describe('S2: joinHiveAsView seeds joiner members active/push:false, never the v
     const callsBefore = joinLinkCalls;
 
     const r = await joinHiveAsView(
-      { potId: HIVE_ID, memberLinks: [LINK], workspaceId: WS2 },
+      { potId: POT_ID, memberLinks: [LINK], workspaceId: WS2 },
       deps(),
     );
 

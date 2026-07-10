@@ -98,8 +98,8 @@ describe("cup:spawn tool — workspace resolution never records the '*' wildcard
   });
 });
 
-describe('cup:spawn tool — bee work-item reservation', () => {
-  it('infers a work item from the brief and claims it to the reserved bee spawn id', async () => {
+describe('cup:spawn tool — cup work-item reservation', () => {
+  it('infers a work item from the brief and claims it to the reserved cup spawn id', async () => {
     h.spawnAgentInHarness.mockImplementation(async (input: any) => ({
       ok: true,
       spawnId: input.spawnId,

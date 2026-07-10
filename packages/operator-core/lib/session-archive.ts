@@ -553,9 +553,13 @@ export async function rematerializeSession(
       continue;
     }
     await writeFile(abs, raw);
-    if (row.mtime) {
+    if (row.mtime != null) {
       try {
-        await utimes(abs, row.mtime, row.mtime);
+        // WI-3859 F6 (caught by the live e2e): the PG client returns `mtime`
+        // as a STRING, which utimes rejects — and the best-effort catch was
+        // silently swallowing that on EVERY real rematerialize. Coerce first.
+        const m = row.mtime instanceof Date ? row.mtime : new Date(row.mtime as unknown as string);
+        if (!Number.isNaN(m.getTime())) await utimes(abs, m, m);
       } catch {
         /* mtime restore is best-effort */
       }
@@ -657,6 +661,9 @@ export function pgSessionArchiveStore(): SessionArchiveStore {
         ...r,
         bytes_raw: Number(r.bytes_raw),
         bytes_stored: Number(r.bytes_stored),
+        // type honesty (WI-3859 F6): the client hands timestamptz back as a
+        // string; the declared ArchiveFileRow contract is Date | null.
+        mtime: r.mtime == null ? null : r.mtime instanceof Date ? r.mtime : new Date(r.mtime as unknown as string),
       }));
     },
 

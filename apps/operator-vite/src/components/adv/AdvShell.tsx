@@ -43,6 +43,7 @@ import { useLexicon } from '@/lib/useLexicon';
 import { useShortcutAction } from '@/lib/hotkeys';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
+import { CATEGORICAL } from '@/app/harness/theme';
 
 const ADV_TAB_IDS = ['overview', 'harnesses', 'health', 'brainstorm', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'git', 'testing', 'plans', 'calendar', 'frames', 'evals'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
@@ -61,39 +62,39 @@ export const ADV_TABS: ReadonlyArray<{
   accent: string;
   accentRgb: string;
 }> = [
-  { id: 'overview', label: 'Overview', icon: LayoutDashboard, accent: '#818cf8', accentRgb: '129, 140, 248' },
+  { id: 'overview', label: 'Overview', icon: LayoutDashboard, accent: CATEGORICAL.indigo400.hex, accentRgb: CATEGORICAL.indigo400.rgb },
   { id: 'brainstorm', label: 'Brainstorm', icon: Lightbulb, accent: 'var(--accent)', accentRgb: 'var(--accent-rgb, 56, 189, 248)' },
-  { id: 'plans', label: 'Create', icon: ListChecks, accent: '#f59e0b', accentRgb: '245, 158, 11' },
+  { id: 'plans', label: 'Create', icon: ListChecks, accent: CATEGORICAL.amber500.hex, accentRgb: CATEGORICAL.amber500.rgb },
   // Calendar — the schedulable time-surface for scheduled/recurring plans
   // (scheduled-recurring-plans-2026-06-16 P-019). Next to Create (D-001: no separate
   // routines tab — plans are just optionally-scheduled). Workspace-scoped (aggregates
   // every pot's scheduled plans), so it also lives in WORKSPACE_TAB_IDS.
-  { id: 'calendar', label: 'Calendar', icon: CalendarClock, accent: '#2dd4bf', accentRgb: '45, 212, 191' },
+  { id: 'calendar', label: 'Calendar', icon: CalendarClock, accent: CATEGORICAL.teal400.hex, accentRgb: CATEGORICAL.teal400.rgb },
   // Label "Working" (owner ask 2026-06-11, was "Progress"): the tab is the
   // live-work view (work items / agents / runs for the selected project). The
   // tab ID stays 'harnesses' — it's serialized in URLs (?tab=harnesses), deep
   // links, and the agent ui:dispatch surface; renaming the id would break all
   // of them.
-  { id: 'harnesses', label: 'Working', icon: Boxes, accent: '#a78bfa', accentRgb: '167, 139, 250' },
+  { id: 'harnesses', label: 'Working', icon: Boxes, accent: CATEGORICAL.violet400.hex, accentRgb: CATEGORICAL.violet400.rgb },
   // Health — the read-only at-a-glance system dashboard (system-health-tab-2026-06-15),
   // beside Working. Workspace-scoped (it aggregates the whole running system, not one
   // pot), so it also lives in WORKSPACE_TAB_IDS. Flag-gated (SYSTEM_HEALTH_TAB).
-  { id: 'health', label: 'Health', icon: HeartPulse, accent: '#f43f5e', accentRgb: '244, 63, 94' },
+  { id: 'health', label: 'Health', icon: HeartPulse, accent: CATEGORICAL.rose500.hex, accentRgb: CATEGORICAL.rose500.rgb },
   // (The Overwatch surface moved to the left sidebar next to Queen — its
   // actionable control + anomaly→action list — and its duplicated health grid
   // was dropped in favour of this Health tab. system-health-tab P-008, 2026-06-15.)
   { id: 'frames', label: 'Frames', icon: MonitorPlay, accent: 'var(--accent-strong, var(--accent))', accentRgb: 'var(--accent-rgb, 56, 189, 248)' },
-  { id: 'git', label: 'Git', icon: GitBranch, accent: '#22c55e', accentRgb: '34, 197, 94' },
-  { id: 'testing', label: 'Tests', icon: FlaskConical, accent: '#84cc16', accentRgb: '132, 204, 22' },
-  { id: 'docs', label: 'Docs', icon: BookOpen, accent: '#60a5fa', accentRgb: '96, 165, 250' },
-  { id: 'insights', label: 'Insights', icon: TrendingUp, accent: '#14b8a6', accentRgb: '20, 184, 166' },
-  { id: 'conversations', label: 'Conversations', icon: MessageCircle, accent: '#ec4899', accentRgb: '236, 72, 153' },
-  { id: 'learning', label: 'Learning', icon: GraduationCap, accent: '#34d399', accentRgb: '52, 211, 153' },
+  { id: 'git', label: 'Git', icon: GitBranch, accent: CATEGORICAL.green500.hex, accentRgb: CATEGORICAL.green500.rgb },
+  { id: 'testing', label: 'Tests', icon: FlaskConical, accent: CATEGORICAL.lime500.hex, accentRgb: CATEGORICAL.lime500.rgb },
+  { id: 'docs', label: 'Docs', icon: BookOpen, accent: CATEGORICAL.blue400.hex, accentRgb: CATEGORICAL.blue400.rgb },
+  { id: 'insights', label: 'Insights', icon: TrendingUp, accent: CATEGORICAL.teal500.hex, accentRgb: CATEGORICAL.teal500.rgb },
+  { id: 'conversations', label: 'Conversations', icon: MessageCircle, accent: CATEGORICAL.pink500.hex, accentRgb: CATEGORICAL.pink500.rgb },
+  { id: 'learning', label: 'Learning', icon: GraduationCap, accent: CATEGORICAL.emerald400.hex, accentRgb: CATEGORICAL.emerald400.rgb },
   // Evaluation — the impartial-benchmark surface (impartial-benchmark-suite-2026-06-15
   // D-007). Workspace-scoped (aggregates external benchmark runs across the whole
   // workspace, not one pot), so it also lives in WORKSPACE_TAB_IDS below.
-  { id: 'evals', label: 'Evaluation', icon: Trophy, accent: '#eab308', accentRgb: '234, 179, 8' },
-  { id: 'settings', label: 'Settings', icon: Settings, accent: '#f97316', accentRgb: '249, 115, 22' },
+  { id: 'evals', label: 'Evaluation', icon: Trophy, accent: CATEGORICAL.yellow500.hex, accentRgb: CATEGORICAL.yellow500.rgb },
+  { id: 'settings', label: 'Settings', icon: Settings, accent: CATEGORICAL.orange500.hex, accentRgb: CATEGORICAL.orange500.rgb },
 ] as const;
 
 /**

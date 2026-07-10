@@ -6,7 +6,33 @@
  *   - Title-cased label, with dash/underscore handling.
  */
 import { describe, it, expect } from 'vitest';
-import { getRoleStyle, ROLE } from './theme';
+import {
+  CATEGORICAL,
+  CUPBOARD_LISTING_KIND_TONE,
+  FEED_KIND_COLOR,
+  FEED_KIND_FALLBACK,
+  getRoleStyle,
+  ROLE,
+} from './theme';
+
+describe('central categorical palette', () => {
+  it('keeps every fixed swatch hex and rgb representations paired', () => {
+    for (const swatch of Object.values(CATEGORICAL)) {
+      expect(swatch.hex).toMatch(/^#[0-9a-f]{6}$/);
+      expect(swatch.rgb).toMatch(/^\d{1,3}, \d{1,3}, \d{1,3}$/);
+    }
+    expect(CATEGORICAL.pink500).toEqual({ hex: '#ec4899', rgb: '236, 72, 153' });
+  });
+
+  it('owns the complete feed-kind and Cupboard listing-kind lookups', () => {
+    expect(FEED_KIND_COLOR.handoff).toBe(CATEGORICAL.violet400.hex);
+    expect(FEED_KIND_COLOR.handoff_accepted).toBe(CATEGORICAL.violet300.hex);
+    expect(FEED_KIND_FALLBACK).toBe(CATEGORICAL.slate500.hex);
+    expect(Object.keys(CUPBOARD_LISTING_KIND_TONE).sort()).toEqual([
+      'blueprint', 'harness', 'learning-pack', 'plugin', 'tool-pack',
+    ]);
+  });
+});
 
 describe('getRoleStyle', () => {
   it('returns canonical color for known roles', () => {

@@ -1349,14 +1349,14 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       return; // registry unreadable — next tick retries
     }
     if (!entry) return;
-    const hiveHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
-    if (!hiveHomeSlug) return;
+    const potHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
+    if (!potHomeSlug) return;
 
-    const repoPath = hiveGitRepoPath(hiveHomeSlug, slug);
+    const repoPath = hiveGitRepoPath(potHomeSlug, slug);
     const existingNamespaces = await listNamespaces(repoPath);
     if (existingNamespaces.length > 0) return; // warm repo — nothing to bootstrap
 
-    const members = await listHiveMembers(workspaceId, hiveHomeSlug);
+    const members = await listHiveMembers(workspaceId, potHomeSlug);
     const memberDevicePubkeysBase64 = [
       ...new Set(members.flatMap((m) => m.deviceAttestations.map((a) => a.device_pubkey).filter(Boolean))),
     ];

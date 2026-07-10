@@ -392,6 +392,27 @@ describe('adversarial: poisoned manifests + symlink attacks (WI-3859)', () => {
     expect(existsSync(abs)).toBe(false); // nothing written from a corrupt archive
   });
 
+  it('rematerialize restores mtimes even when the store returns them as STRINGS (the real PG client does — F6)', async () => {
+    const root = await tmp('sa-mtime-');
+    await mkdir(join(root, 'projects', '-x'), { recursive: true });
+    const abs = join(root, 'projects', '-x', `${SID}.jsonl`);
+    await writeFile(abs, 'm\n');
+    const store = new MemStore();
+    await archiveAndDeleteSession({ sourceKind: 'claude', sessionId: SID, sessionRoot: root }, store);
+
+    // simulate the PG round-trip: timestamptz comes back as a string
+    const key = [...store.files.keys()][0];
+    const row = store.files.get(key)!;
+    const want = new Date('2026-07-01T01:02:03Z');
+    store.files.set(key, { ...row, mtime: want.toISOString() as unknown as Date });
+
+    const remat = await rematerializeSession({ sourceKind: 'claude', sessionId: SID }, store);
+    expect(remat.ok).toBe(true);
+    const { stat } = await import('node:fs/promises');
+    const st = await stat(abs);
+    expect(Math.abs(st.mtimeMs - want.getTime())).toBeLessThan(1500);
+  });
+
   it('bounds: >64 files → too_many_files; >256MB raw → too_large (malformed input, not an archive job)', async () => {
     const many = await tmp('sa-many-');
     for (let i = 0; i < 65; i++) {

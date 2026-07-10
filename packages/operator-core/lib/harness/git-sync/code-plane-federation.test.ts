@@ -1,5 +1,5 @@
 /**
- * code-plane-federation.test.ts — Brief AH (shared-hive-release-testing): the
+ * code-plane-federation.test.ts — Brief AH (shared-pot-release-testing): the
  * CODE plane's end-to-end federation, with real `git` + a local bare repo as the
  * shared-hive origin (no GitHub network, no PG). The content plane (plans /
  * members / locks over the hyperbee substrate) is exhaustively covered by
@@ -202,7 +202,7 @@ describe('AH-1: collaborator code reaches origin/main end-to-end; a peer converg
     const { bare, works } = await makeSharedOrigin('ah1', 'main', ['ah1-a', 'ah1-b']);
     const [workA, workB] = works;
 
-    // A "Bee" writes a real source file in member-A's running tree.
+    // A "Cup" writes a real source file in member-A's running tree.
     const CODE = 'export const answer = 42;\n// landed via the code plane\n';
     await mkdir(join(workA, 'src'), { recursive: true });
     await writeFile(join(workA, 'src/feature.ts'), CODE);

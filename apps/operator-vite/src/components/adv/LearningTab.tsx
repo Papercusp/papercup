@@ -43,6 +43,7 @@ import { useQueryState, parseAsStringEnum, parseAsBoolean, parseAsString } from 
 import { useSyncQuery } from '@papercusp/sync';
 import { GraduationCap, RefreshCw, ShieldCheck, UserRound, CheckCircle2, Dumbbell, Sparkles, XCircle, Clock, HelpCircle, Gauge, BookOpen, ArrowUpRight, ArrowUp, ArrowDown, Minus, Activity, Repeat2, Hourglass, Radar, Brain, Star, MessageSquarePlus, MessageSquareText, Send } from 'lucide-react';
 import type { ImprovementDigest, ScoredItem } from '@papercusp/operator-core/lib/harness/improvements/digest';
+import { CATEGORICAL, SEVERITY } from '@/app/harness/theme';
 import type { ImprovementFlow } from '@papercusp/operator-core/lib/harness/improvements/flow-metrics';
 import type { InsightsSnapshot, MemoryHealth } from '@papercusp/operator-core/lib/memory/knowledge-read';
 import type { ScoutSnapshot, ScoutRoutedItem } from '@papercusp/operator-core/lib/sync-resolver/learning-scout-read';
@@ -385,19 +386,6 @@ export default function LearningTab() {
 const LANES = ['all', 'auto', 'human'] as const;
 type Lane = (typeof LANES)[number];
 
-/** Severity → accent. Tokenized to the app's semantic palette so severity reads
- *  the same here as in the sibling issue panels (RealIssuesPanel/PinnedIssuePanel):
- *  critical=danger, minor=warn, nit=muted. `major` stays a hardcoded orange — there
- *  is no semantic orange token, and every severity panel hardcodes it. Hardcoded
- *  semantic chip colors alongside the CSS-var tokens are the established idiom
- *  (apps/operator/app/harness/TrustBadge.tsx). */
-const SEV_COLOR: Record<string, string> = {
-  critical: 'var(--bad)',
-  major: '#fb923c',
-  minor: 'var(--warn)',
-  nit: 'var(--fg-mute)',
-};
-
 function ageLabel(days: number): string {
   if (days < 1 / 24) return 'just now';
   if (days < 1) return `${Math.round(days * 24)}h`;
@@ -536,7 +524,7 @@ function ImprovementRow({
   selected?: boolean;
   onDismissSelect?: () => void;
 }) {
-  const sevColor = SEV_COLOR[item.severity ?? 'minor'] ?? 'var(--fg-mute)';
+  const sevColor = SEVERITY[item.severity ?? 'minor'].solid;
   const human = item.tier === 'human';
   const ref = useRef<HTMLLIElement>(null);
   useEffect(() => {
@@ -1043,10 +1031,10 @@ function HiveEvalTrendView() {
 // runtime) — graceful-empty until the first run lands.
 
 const BAKEOFF_VERDICT_META: Record<BakeoffTrendRow['verdict'], { label: string; tone: 'good' | 'bad' | 'flat'; color: string }> = {
-  improved: { label: 'improved', tone: 'good', color: '#34d399' },
-  regressed: { label: 'regressed', tone: 'bad', color: '#f87171' },
-  neutral: { label: 'neutral', tone: 'flat', color: '#94a3b8' },
-  inconclusive: { label: 'inconclusive', tone: 'flat', color: '#64748b' },
+  improved: { label: 'improved', tone: 'good', color: CATEGORICAL.emerald400.hex },
+  regressed: { label: 'regressed', tone: 'bad', color: CATEGORICAL.red400.hex },
+  neutral: { label: 'neutral', tone: 'flat', color: CATEGORICAL.slate400.hex },
+  inconclusive: { label: 'inconclusive', tone: 'flat', color: CATEGORICAL.slate500.hex },
 };
 
 function BakeoffTrendView() {
@@ -1145,9 +1133,9 @@ function BakeoffTrendView() {
 function railMeta(t: ReturnType<typeof useLexicon>): Record<string, { label: string; desc: string; color: string }> {
   return {
     plan: { label: 'plan draft', desc: `A draft plan awaiting ${t('brain')}/owner triage — open it in the Create tab`, color: 'var(--accent-strong, var(--accent))' },
-    gym: { label: 'gym', desc: 'Seeded into the gym quality-diversity experiment archive', color: '#34d399' },
-    improvement: { label: 'improvement', desc: 'Filed as an improvement work-item (EI-…) in the backlog', color: '#a78bfa' },
-    instance: { label: 'instance', desc: 'Registered as a genome-variant candidate for the apiary eval-battery', color: '#f472b6' },
+    gym: { label: 'gym', desc: 'Seeded into the gym quality-diversity experiment archive', color: CATEGORICAL.emerald400.hex },
+    improvement: { label: 'improvement', desc: 'Filed as an improvement work-item (EI-…) in the backlog', color: CATEGORICAL.violet400.hex },
+    instance: { label: 'instance', desc: 'Registered as a genome-variant candidate for the apiary eval-battery', color: CATEGORICAL.pink400.hex },
   };
 }
 

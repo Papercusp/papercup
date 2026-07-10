@@ -4,7 +4,7 @@
  *
  * The human-testable operator→spawn path: the operator chat brain calls this
  * (or emits the equivalent `<spawn>` tag), a psu/admin shell calls it directly,
- * and the projected HTTP route (`POST /api/agent-tools/bee/spawn?superuser=1`)
+ * and the projected HTTP route (`POST /api/agent-tools/cup/spawn?superuser=1`)
  * gives a curl-able admin trigger. All of them land in the same
  * `spawnAgentInHarness` engine → harness_shared.spawned_agents → visible in
  * fleet:tree and cancellable with fleet:cancel.
@@ -30,22 +30,22 @@ export default defineTool({
   guidance: {
     when: 'Use to place a background autonomous worker on new work: a cup, validator, scoper, architect, worker, or another supported role in a harness. Prefer role="cup" for self-pulling claim-spec work; factory roles are handed explicit feature/chunk work.',
     notWhen:
-      'Not for visible desktop terminals on a plan (fleet:launch-on-plan), simple lookups, or work that should just enter the durable work-item pipeline. Unsure which spawn tool you want? See the decision table: /internal/docs/agent-insights/desktop-fleet-vs-loop-bee.',
+      'Not for visible desktop terminals on a plan (fleet:launch-on-plan), simple lookups, or work that should just enter the durable work-item pipeline. Unsure which spawn tool you want? See the decision table: /internal/docs/agent-insights/desktop-fleet-vs-loop-cup.',
     chaining: 'cup:spawn → (later) fleet:tree { spawn_id } to watch → fleet:cancel { spawn_id } to abort.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,
   // D-002 (bee-capability-expansion-2026-06-08): spawning agents is PLACEMENT — a
-  // Queen-only surface. The Queen calls this as role 'queen' (the registered
-  // placement decider, EI-286 follow-up) or 'operator'; the worker-bee is
-  // explicitly EXCLUDED. The bee joined COORD_ROLES in local-hive P-011 (so it could
+  // Mug-only surface. The Mug calls this as role 'mug' (the registered
+  // placement decider, EI-286 follow-up) or 'operator'; the worker-cup is
+  // explicitly EXCLUDED. The cup joined COORD_ROLES in local-pot P-011 (so it could
   // coord:* / issues:* / improvements:capture), which inadvertently leaked this
-  // placement tool to it via [...COORD_ROLES]. Filtering bee back out restores the
-  // pre-bee allowlist and turns "only the brain spawns" from convention into a gate.
-  // Also exclude the sentinel: it WATCHES the fleet (fleet:assignments/tree), it
-  // does not PLACE agents — placement is the Queen's, the sentinel raises alarms
-  // (unify-launch-mechanics D-004). Same carve-out as bee. Overwatch excluded too
-  // (overwatch-role-2026-06-15 D-001): it NUDGES the Queen to re-place, never places.
+  // placement tool to it via [...COORD_ROLES]. Filtering cup back out restores the
+  // pre-cup allowlist and turns "only the mug spawns" from convention into a gate.
+  // Also exclude the papercup: it WATCHES the fleet (fleet:assignments/tree), it
+  // does not PLACE agents — placement is the Mug's, the papercup raises alarms
+  // (unify-launch-mechanics D-004). Same carve-out as cup. Overwatch excluded too
+  // (overwatch-role-2026-06-15 D-001): it NUDGES the Mug to re-place, never places.
   agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'kettle'),
   args: z
     .object({
@@ -63,7 +63,7 @@ export default defineTool({
           'Child agent role. The generic operator-world worker is "cup" — the default for placing a ranked task + brief (NO chunk needed). ' +
             "Coding-pipeline roles (scoper, architect, worker, validator, reviewer, debugger, documenter, curator) apply only inside a kind:'harness' coding harness; " +
             'role="worker" additionally REQUIRES a chunk (spawn a scoper first to chunk the feature). ' +
-            'Other spawnable specialists: sentinel, security-reviewer, infra-reviewer, ui-qa, crosscheck, auditor, planner, release-manager. ' +
+            'Other spawnable specialists: papercup, security-reviewer, infra-reviewer, ui-qa, crosscheck, auditor, planner, release-manager. ' +
             'Plugin roles are "<plugin>:<role>". There is NO "engineer" role — an unknown name is rejected with the full valid list (EI-392).',
         ),
       feature: z.string().max(120).optional().describe('Feature id the child should pick up.'),
@@ -123,9 +123,9 @@ export default defineTool({
           'Dedupe key for retries (EI-73): pass the SAME key when retrying a spawn that may have already landed (e.g. after a timeout) — a match returns the original spawn_id with deduped:true instead of launching a second agent.',
         ),
       // FAIL-LOUD on unknown arg keys (EI-72). zod's default z.object() STRIPS keys it
-      // doesn't recognize: when the Queen sent the (then-new) `brief` to a host still
+      // doesn't recognize: when the Mug sent the (then-new) `brief` to a host still
       // running pre-brief code, the unknown key was silently dropped and 5 task-less
-      // bees booted and exited 'done'. `.strict()` makes the projection-layer validator
+      // cups booted and exited 'done'. `.strict()` makes the projection-layer validator
       // (standardValidate in define-tool.ts) reject any unrecognized key with
       // `invalid_args` — so a newer-field caller against an older serving host gets a
       // loud error instead of a silently no-op'd fleet. Placement is the highest-stakes
@@ -148,7 +148,7 @@ export default defineTool({
     // already registered" — killing the whole DBOS boot (durable pipelines dead).
     const { spawnAgentInHarness } = await import('../../fleet/operator-spawn');
     // P-005 kill-switch (MUG_TIER_SELECTION, default ON): with the flag OFF a
-    // queen-supplied tier is dropped — her spawns run at the role's standing
+    // mug-supplied tier is dropped — her spawns run at the role's standing
     // default. Human/operator tier picks are honored regardless.
     let tier = args.tier ?? null;
     if (tier && ctx.role === 'mug') {
@@ -182,8 +182,8 @@ export default defineTool({
         // say "skip this") is a heuristic convenience, not a pin: when that
         // inferred id is already live-claimed by someone else, the whole spawn
         // used to wedge on it every retry (same brief text → same extracted id →
-        // same rejection), even though role="bee" is documented as
-        // self-pulling. Degrade instead: drop the inferred id and spawn the bee
+        // same rejection), even though role="cup" is documented as
+        // self-pulling. Degrade instead: drop the inferred id and spawn the cup
         // task-less so it self-pulls its own work via scheduler:get_next /
         // work_items:claim_next once it boots, rather than rejecting the spawn
         // over a claim it was never explicitly asked to reserve.
@@ -197,7 +197,7 @@ export default defineTool({
                   spawn_id: reservedSpawnId,
                   harness: args.harness ?? null,
                   project_dir: null,
-                  error: `spawn rejected: work item ${workItemId} could not be claimed for the new bee`,
+                  error: `spawn rejected: work item ${workItemId} could not be claimed for the new cup`,
                   next: 'inspect the work item holder/state, release stale ownership if appropriate, then retry cup:spawn.',
                 }),
               },
@@ -212,15 +212,15 @@ export default defineTool({
       }
     }
     // Named-fleet placement (fleet-color-schemes): resolve the fleet (create-if-
-    // absent, so the Queen need not fleet:create first — she becomes its leader)
-    // + its bound scheme, and thread it so the bee auto-joins (presence label) +
+    // absent, so the Mug need not fleet:create first — she becomes its leader)
+    // + its bound scheme, and thread it so the cup auto-joins (presence label) +
     // recolors its terminal at launch, with NO brief directive. Best-effort: a
-    // resolve error just spawns the bee ungrouped.
+    // resolve error just spawns the cup ungrouped.
     let fleetPlacement: { slug: string; role: string; bg: string; fg: string; cursor: string } | null = null;
     // WI-1764 #2: nudge at the moment of confusion. If the `fleet` param names a
-    // fleet that did NOT already exist, a BEE spawn just materialised it — which is
-    // exactly the mistake that spun up 3 background bees when the caller meant
-    // visible desktop members. Still create it (bees can be color-grouped), but flag
+    // fleet that did NOT already exist, a CUP spawn just materialised it — which is
+    // exactly the mistake that spun up 3 background cups when the caller meant
+    // visible desktop members. Still create it (cups can be color-grouped), but flag
     // the substrate so a mis-aimed "launch a fleet" screams instead of silently
     // succeeding. A `fleet` that already existed = deliberate grouping → no advisory.
     let fleetAutoCreated = false;
@@ -257,19 +257,19 @@ export default defineTool({
       itemId: reservedWorkItemId ?? args.feature ?? null,
       chunkId: args.chunk ?? null,
       brief,
-      // The queen's model lever is tier NAMES only (propose/dispose split) —
-      // a raw model spec from role=queen is ignored in favor of her tier.
+      // The mug's model lever is tier NAMES only (propose/dispose split) —
+      // a raw model spec from role=mug is ignored in favor of her tier.
       tier,
       modelSpec: ctx.role === 'mug' ? null : (args.model ?? null),
       // account-routing-3-options: explicit per-spawn routing (pool-id pin / auto / default). Honored
-      // for any caller role — the Queen places, but routing is operational, not a model lever.
+      // for any caller role — the Mug places, but routing is operational, not a model lever.
       accountOverride: args.account ?? null,
       extras: args.extras,
       parentSpawnId,
       parentRole: ctx.role ?? 'operator',
       idempotencyKey: args.idempotency_key ?? null,
       // Coordination-token attribution (B-TOK-4): a cup:spawn'd agent's turn runs
-      // because it was placed by a coordinating agent (the Queen / operator) — a
+      // because it was placed by a coordinating agent (the Mug / operator) — a
       // coordination trigger. Stamps turn_trigger on the run's usage sample.
       turnTrigger: 'coord-wake',
       fleet: fleetPlacement,
@@ -292,10 +292,10 @@ export default defineTool({
             // and retry the same spawn on wake (a slot-free announces it).
             ...(res.awaitEvent ? { await_event: res.awaitEvent } : {}),
             ...(res.deduped ? { deduped: true } : {}),
-            // WI-1764 #2: loud advisory when this bee-spawn auto-created its fleet.
+            // WI-1764 #2: loud advisory when this cup-spawn auto-created its fleet.
             ...(fleetAutoCreated && res.ok
               ? {
-                  fleet_advisory: `⚠ Created fleet "${args.fleet}" from a BEE spawn — these are autonomous-loop bees (queen↔bee nursery), NOT visible desktop su agents. If you meant desktop members on a plan, fleet:cancel this + use fleet:launch-on-plan instead.`,
+                  fleet_advisory: `⚠ Created fleet "${args.fleet}" from a CUP spawn — these are autonomous-loop cups (mug↔cup nursery), NOT visible desktop su agents. If you meant desktop members on a plan, fleet:cancel this + use fleet:launch-on-plan instead.`,
                 }
               : {}),
             next: res.ok

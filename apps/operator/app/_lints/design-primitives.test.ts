@@ -528,12 +528,12 @@ describe('design primitive lint', () => {
     expectNoUnexpected('Direct cyan literals', unexpectedDirectCyanLiteralsInAuditedFiles());
   });
 
-  it('keeps status/severity/kind color maps in the central theme tables (warn-first)', () => {
+  it('keeps status/severity/kind color maps in the central theme tables', () => {
     warnOrFail(
       'Component-local status/kind color map',
       unexpectedLocalStatusColorMaps(),
       {
-        enforce: false,
+        enforce: true,
         hint:
           'Status/severity/kind colors single-source from operator/app/harness/theme.ts ' +
           '(TONE + statusToneColor for one-color lookups; STATUS/SEVERITY/ISSUE_STATUS/' +
