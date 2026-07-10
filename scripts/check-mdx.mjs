@@ -11,7 +11,11 @@
  * only current signal arrives AFTER it ships to the shared tree (EI-438; the
  * 2026-06-13 break was `A "resets <date>" string` in a fleet-token insight).
  *
- *   node scripts/check-mdx.mjs
+ *   npm run lint:mdx        # = tsx scripts/check-mdx.mjs
+ *
+ * Run it with tsx (via the npm script), NOT bare `node`: this file imports the
+ * TypeScript ../packages/operator-core/lib/content-lint/mdx module, which the
+ * plain node ESM loader can't resolve (ERR_MODULE_NOT_FOUND) without tsx.
  *
  * Detection is the REAL MDX compiler, not a regex: each tracked .mdx is
  * compiled with `@mdx-js/mdx` (the same MDX core astro runs). Undefined

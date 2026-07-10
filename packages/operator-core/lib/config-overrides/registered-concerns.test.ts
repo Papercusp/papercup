@@ -52,14 +52,25 @@ vi.mock('@papercusp/sse', () => ({
 import { listOverrideConcerns, getOverrideConcern } from './registry';
 
 // Import the concern store modules so their registerOverrideConcern side-effects run.
-import { writeRateLimitConfig } from '../rate-limit-config';
+import { writeRateLimitConfig, RATE_LIMIT_MAX_CEILING } from '../rate-limit-config';
 import { writeAgentConfig, readAgentConfig } from '../agent-config';
 import { saveVoicePrefs } from '../voice-prefs';
 import { setAccountOverride } from '../deployment/account-session-override';
+import { getResourceProfile } from '../resource-profile';
 
 beforeEach(() => {
   store.clear();
 });
+
+// The default maxSimultaneousAgents is HOST-SCALED (getResourceProfile: 2 on an
+// 8-core box, 16 on a 128-core box). A hardcoded `maxSimultaneousAgents: 2` write
+// therefore surfaces as an override only where 2 ≠ the default — green on the dev
+// box, silently no-diff on any small host (laptop / CI runner / packaged install).
+// Derive a value guaranteed to differ from the live default, staying inside the
+// clamp range [1, RATE_LIMIT_MAX_CEILING].
+const DEFAULT_MAX_AGENTS = getResourceProfile().maxSimultaneousAgents;
+const OVERRIDE_MAX_AGENTS =
+  DEFAULT_MAX_AGENTS < RATE_LIMIT_MAX_CEILING ? DEFAULT_MAX_AGENTS + 1 : DEFAULT_MAX_AGENTS - 1;
 
 const CONCERNS = ['rate-limit-config', 'agent-config', 'voice-prefs', 'account-session-override'] as const;
 
@@ -82,7 +93,7 @@ describe('P-037 newly-registered override concerns', () => {
   it('rate-limit-config: write surfaces in diff, reset clears it', async () => {
     const c = getOverrideConcern('rate-limit-config')!;
     expect(await c.diff()).toEqual([]); // clean default
-    await writeRateLimitConfig({ maxSimultaneousAgents: 2, concurrencyFloor: 2 });
+    await writeRateLimitConfig({ maxSimultaneousAgents: OVERRIDE_MAX_AGENTS, concurrencyFloor: 2 });
     const diff = await c.diff();
     expect(diff.map((e) => e.key).sort()).toEqual(['concurrencyFloor', 'maxSimultaneousAgents']);
     await c.reset();
@@ -127,11 +138,13 @@ describe('P-037 newly-registered override concerns', () => {
 
   it('capture → reset → restore round-trips an override (the audited-reset revert primitive)', async () => {
     const c = getOverrideConcern('rate-limit-config')!;
-    await writeRateLimitConfig({ maxSimultaneousAgents: 2, concurrencyFloor: 1 });
+    await writeRateLimitConfig({ maxSimultaneousAgents: OVERRIDE_MAX_AGENTS, concurrencyFloor: 1 });
     const snap = await c.capture();
     await c.reset();
     expect(await c.diff()).toEqual([]);
     await c.restore(snap);
-    expect((await c.diff()).find((e) => e.key === 'maxSimultaneousAgents')?.effective).toBe(2);
+    expect((await c.diff()).find((e) => e.key === 'maxSimultaneousAgents')?.effective).toBe(
+      OVERRIDE_MAX_AGENTS,
+    );
   });
 });

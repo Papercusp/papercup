@@ -8,9 +8,9 @@ documents:
   - "packages/operator-core/lib/voice-node/operator-voice-session.ts"
   - "packages/operator-core/lib/voice-node/operator-voice-session-deps.ts"
   - "packages/operator-core/lib/voice-node/sentinel-says-pump.ts"
-  - "packages/operator-core/lib/sentinel/sentinel-pane-input.ts"
-  - "packages/operator-core/lib/sentinel/sentinel-deep-delegate.ts"
-  - "packages/operator-core/lib/sentinel/sentinel-deep-watch.ts"
+  - "packages/operator-core/lib/papercup/papercup-pane-input.ts"
+  - "packages/operator-core/lib/papercup/papercup-deep-delegate.ts"
+  - "packages/operator-core/lib/papercup/papercup-deep-watch.ts"
   - "packages/operator-core/lib/agent-tools/voice/delegate-deep.ts"
   - "apps/operator/app/_components/voice/VoiceAppBridge.tsx"
 plans:
@@ -21,7 +21,8 @@ plans:
 
 Since `voice-unified-papercup-pipeline-2026-07-01` (owner-ratified D-001..D-004), the
 **zellij pane's psu Papercup is the ONE brain of record for every modality**. Typed text
-and voice both enter through `writeToSentinelPane` (`papercup/papercup-pane-input.ts` —
+and voice both enter through `writeToSentinelPane` (`papercup/papercup-pane-input.ts`,
+formerly `sentinel/sentinel-pane-input.ts` before the sentinel→papercup rename —
 the shared mechanics behind `POST /operator/papercup-input`), and every Papercup answer
 leaves both **written** (pane text) and **spoken** (`voice:say` → `sentinel_says` FIFO →
 the says-pump). ElevenLabs Conv-AI is deliberately **demoted to a voice front-end**:
@@ -44,7 +45,9 @@ the pane, so the two modalities had different conversation state.
 
 ## The says-pump (voice-out)
 
-While a voice session is LIVE, `voice-node/papercup-says-pump.ts` drains the pane's
+While a voice session is LIVE, `voice-node/sentinel-says-pump.ts` (not yet renamed to
+the `papercup-` prefix, unlike the pane-input/deep-delegate/deep-watch modules below)
+drains the pane's
 `voice:say` lines from PG (`harness_shared.sentinel_says`, migration 390) server-side,
 broadcasts each as a **response transcript** (clients display it) and synthesizes it
 into **bus audio** via the same `speakIntoSession` seam the proactive sweep uses
@@ -72,16 +75,18 @@ an answer channel — D-003). Two entry points, one core (`papercup/papercup-dee
 - converse runtime: the `<delegate_deep summary brief>` tag (parsed in
   `operator-converse-tags.ts`, dispatched from `converse.ts`).
 
-`delegateDeep` mints a `research-task` work-item **already claimed by the pre-minted
-spawn id in the same write** (so it never sits unclaimed in the placement frontier —
-no double-execution race), spawns an ephemeral deep-tier `cup` with the question as its
-brief (cap 2 in flight, 15-min timeout, claim released back to `todo` if the launch is
-refused), and the agent answers by COMPLETING the item — `completion.summary` IS the
-answer. On settle, `papercup/papercup-deep-watch.ts` (fired from the work-items
-settled-events seam) injects `[deep-answer WI-NNN] <summary>` back through
-`writeToSentinelPane`, with a hindsight fallback when the pane is down. The Papercup
-never spawns anything itself — the SN-H04 no-spawn contract holds; the tool/watch is
-the accountable, capped indirection.
+`delegateDeep` mints a `task`-kind work-item (tagged `deep-delegation`) **already claimed
+by the pre-minted spawn id in the same write** (so it never sits unclaimed in the
+placement frontier — no double-execution race), spawns an ephemeral deep-tier `cup` with
+the question as its brief (cap 2 in flight, 15-min timeout, claim released back to `todo`
+if the launch is refused), and the agent answers by COMPLETING the item —
+`completion.summary` IS the answer. (WI-2874: the durable record used to be a
+feature-family `research-task` kind; that was merged into the generic `task` kind since
+research/analysis is non-code work.) On settle, `papercup/papercup-deep-watch.ts` (fired
+from the work-items settled-events seam) injects `[deep-answer WI-NNN] <summary>` back
+through `writeToSentinelPane`, with a hindsight fallback when the pane is down. The
+Papercup never spawns anything itself — the SN-H04 no-spawn contract holds; the
+tool/watch is the accountable, capped indirection.
 
 ## Traps
 
@@ -98,4 +103,4 @@ the accountable, capped indirection.
    full round-trip E2E is a coordinated (owner-present) run, not a silent CI job.
 4. **Scenario coverage:** `sn-D01`/`sn-D02` enforce the three-way routing
    (answer / delegate / handoff); the host relay semantics are unit-tested in
-   `operator-voice-session.test.ts`; the pump in `papercup-says-pump.test.ts`.
+   `operator-voice-session.test.ts`; the pump in `sentinel-says-pump.test.ts`.

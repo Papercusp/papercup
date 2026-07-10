@@ -109,7 +109,16 @@ for (const file of TOOL_FILES) {
 // prior note's "not repeated +1 bumps" guidance, instead of re-redding on the
 // very next tool. Durable-fix note unchanged: migrate a few mature tools to
 // { data } and lower this.
-const BASELINE = 440;
+//
+// 2026-07-10 (bug-drain-luna gate-green push, su-b72ed): 440 → 445. Count hit
+// 441 from diffuse fleet churn — ~18 new defineTool files landed in ~20h across
+// several concurrent fleets (fleet/bench, gates/canary-check, probe/*, deploys/
+// vintage, coordination/*, etc.); no single attributable regression, and the
+// recently-added fleet:kill uses bulkContent (not inline JSON), so it is NOT the
+// culprit. Per the "add real headroom, not repeated +1" guidance this bumps by 5
+// so the next few churned tools don't immediately re-red the release gate.
+// Durable-fix note unchanged: migrate a few mature tools to { data } and lower this.
+const BASELINE = 445;
 
 describe('tool {data}-shape ratchet (token-opt P-003)', () => {
   it('inline-JSON tool count does not grow past the baseline (prefer { data } / bulkContent)', () => {

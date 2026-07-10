@@ -26,7 +26,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, type AgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { planBatchPlacement, type BatchPlacementPlan } from '../../fleet/batch-placement';
+import { planBatchPlacement, type BatchPlacementPlan, type PlacementDecision } from '../../fleet/batch-placement';
 import { gatherFrontier, gatherLiveBees } from '../../fleet/placement-gather';
 import { admitConflictFree } from '../../fleet/admit-conflict-free';
 import { getFlag } from '@papercusp/flags/server';
@@ -65,14 +65,19 @@ export interface ExecuteBatchDeps {
   reorderWorkItem: (typeof import('../../work-items'))['reorderWorkItem'];
   sendMessage: (typeof import('../coordination/messages'))['sendMessage'];
   wakeRecipients: (typeof import('../coordination/inbox-wake'))['wakeRecipients'];
+  // EI-1611: ensure/subscribe the per-plan group topic. Separate seams (not one
+  // combined helper) so a test can assert each call's args precisely.
+  ensureGroupTopic: (typeof import('../coordination/topics'))['createTopic'];
+  subscribeGroupTopic: (typeof import('../coordination/topics'))['subscribeTopic'];
 }
 
 async function loadExecuteBatchDeps(): Promise<ExecuteBatchDeps> {
-  const [spawn, wi, msgs, wake] = await Promise.all([
+  const [spawn, wi, msgs, wake, topics] = await Promise.all([
     import('../../fleet/operator-spawn'),
     import('../../work-items'),
     import('../coordination/messages'),
     import('../coordination/inbox-wake'),
+    import('../coordination/topics'),
   ]);
   return {
     spawnAgentInHarness: spawn.spawnAgentInHarness,
@@ -81,6 +86,8 @@ async function loadExecuteBatchDeps(): Promise<ExecuteBatchDeps> {
     reorderWorkItem: wi.reorderWorkItem,
     sendMessage: msgs.sendMessage,
     wakeRecipients: wake.wakeRecipients,
+    ensureGroupTopic: topics.createTopic,
+    subscribeGroupTopic: topics.subscribeTopic,
   };
 }
 
@@ -336,6 +343,89 @@ export function buildPlacementWarnings(opts: { spawned: number; wakeMode: WakeMo
   return warnings;
 }
 
+/** One shared-plan cohort this batch actually placed — the EI-1611 grouping unit. */
+export interface TopicGroup {
+  /** `plan:<planSlug>` — the topic slug ensured + subscribed. */
+  topic: string;
+  planSlug: string;
+  /** Distinct placed-bee ownerIds (spawn_id for a fresh spawn, bee for a warm-inject). */
+  ownerIds: string[];
+}
+
+/**
+ * EI-1611 (Queen should place bees in topic-subscribed groups): group THIS
+ * batch's ACTUALLY-PLACED bees (spawned or injected — never unplaced/deferred/
+ * failed/errored) by shared `planSlug`. A cohort needs >=2 distinct bees to be
+ * worth a shared channel — a lone placement has no sibling to coordinate with.
+ * Pure + index-aligned with `plan.decisions` (executeBatch's placement loop
+ * pushes exactly one PlacementResult per decision, in the same order), so no
+ * PG/fleet state is needed to test this — see place_batch.test.ts.
+ */
+export function groupPlacementsForTopicSubscribe(
+  decisions: readonly PlacementDecision[],
+  placements: readonly PlacementResult[],
+): TopicGroup[] {
+  const byPlan = new Map<string, Set<string>>();
+  const len = Math.min(decisions.length, placements.length);
+  for (let i = 0; i < len; i++) {
+    const planSlug = decisions[i].task.planSlug;
+    if (!planSlug) continue;
+    const p = placements[i];
+    const ownerId = p.action === 'spawned' ? p.spawn_id : p.action === 'injected' ? p.bee : null;
+    if (!ownerId) continue;
+    const set = byPlan.get(planSlug) ?? new Set<string>();
+    set.add(ownerId);
+    byPlan.set(planSlug, set);
+  }
+  const groups: TopicGroup[] = [];
+  for (const [planSlug, owners] of byPlan) {
+    if (owners.size < 2) continue;
+    groups.push({ topic: `plan:${planSlug}`, planSlug, ownerIds: [...owners].sort() });
+  }
+  return groups.sort((a, b) => a.planSlug.localeCompare(b.planSlug));
+}
+
+/**
+ * EI-1611: ensure + subscribe every placed bee in each group's shared plan
+ * topic. Best-effort per group (one group's failure never touches another's,
+ * and NEVER reverts/blocks the already-committed placement it rides on — this
+ * runs strictly after doSpawn/warm-inject have landed). Returns the count of
+ * groups successfully wired + any per-group errors for the caller to surface.
+ */
+async function subscribeGroups(
+  groups: readonly TopicGroup[],
+  deps: Pick<ExecuteBatchDeps, 'ensureGroupTopic' | 'subscribeGroupTopic'>,
+  opts: { actor: AgentIdentity; workspaceId: string },
+): Promise<{ groupsSubscribed: number; groupErrors: string[] }> {
+  let groupsSubscribed = 0;
+  const groupErrors: string[] = [];
+  for (const g of groups) {
+    try {
+      await deps.ensureGroupTopic(opts.actor, {
+        slug: g.topic,
+        title: `Plan ${g.planSlug}`,
+        description: `Auto-created group channel (EI-1611): bees the Queen placed together this batch on plan "${g.planSlug}" — sibling completions, decisions, blast-radius warnings.`,
+      });
+      for (const ownerId of g.ownerIds) {
+        const beeIdentity: AgentIdentity = {
+          ownerId,
+          ownerLabel: ownerId,
+          source: 'fleet-spawn',
+          workspaceId: opts.workspaceId,
+          userId: null,
+        };
+        // 3-day TTL: a group channel is for the LIFE of this placement cohort, not
+        // a permanent subscription every bee ever placed on a plan accumulates.
+        await deps.subscribeGroupTopic(beeIdentity, g.topic, { mode: 'full', ttl_sec: 3 * 24 * 3600 });
+      }
+      groupsSubscribed++;
+    } catch (err) {
+      groupErrors.push(`${g.topic}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return { groupsSubscribed, groupErrors };
+}
+
 function summarizePlan(plan: BatchPlacementPlan) {
   return {
     spawn: plan.spawnCount,
@@ -368,10 +458,25 @@ export async function executeBatch(opts: {
   /** Test seam (DI): inject the spawn/claim/message/wake effects. Defaults to
    *  the real modules — the tool handler passes none (zero behavior change). */
   deps?: ExecuteBatchDeps;
-}): Promise<{ placements: PlacementResult[]; summary: Record<string, number>; await_event?: string; next?: string }> {
+}): Promise<{
+  placements: PlacementResult[];
+  summary: Record<string, number>;
+  await_event?: string;
+  next?: string;
+  groups_subscribed?: number;
+  group_errors?: string[];
+}> {
   const { plan, headroom, brief, tier, actor, role, workspaceId } = opts;
-  const { spawnAgentInHarness, claimWorkItem, releaseWorkItem, reorderWorkItem, sendMessage, wakeRecipients } =
-    opts.deps ?? (await loadExecuteBatchDeps());
+  const {
+    spawnAgentInHarness,
+    claimWorkItem,
+    releaseWorkItem,
+    reorderWorkItem,
+    sendMessage,
+    wakeRecipients,
+    ensureGroupTopic,
+    subscribeGroupTopic,
+  } = opts.deps ?? (await loadExecuteBatchDeps());
 
   const ownerId = actor.ownerId ?? '';
   const parentSpawnId = /^s-/.test(ownerId) ? ownerId : null;
@@ -503,11 +608,30 @@ export async function executeBatch(opts: {
     deferred: count('deferred'),
     failed: count('spawn-failed') + count('error'),
   };
+
+  // EI-1611: group + subscribe AFTER every placement has landed — never on the
+  // critical path of a spawn/inject, so a topics failure can't touch the
+  // placement result it rides on. Flag-off ⇒ byte-identical to today (no groups).
+  let groupsSubscribed = 0;
+  let groupErrors: string[] = [];
+  if (await getFlag(FLAGS.QUEEN_GROUP_TOPIC_SUBSCRIBE, 'system').catch(() => true)) {
+    const groups = groupPlacementsForTopicSubscribe(plan.decisions, placements);
+    if (groups.length > 0) {
+      ({ groupsSubscribed, groupErrors } = await subscribeGroups(
+        groups,
+        { ensureGroupTopic, subscribeGroupTopic },
+        { actor, workspaceId },
+      ));
+    }
+  }
+
   return {
     placements,
     summary,
     ...(awaitEvent
       ? { await_event: awaitEvent, next: `over the fleet ceiling — events:await { event: "${awaitEvent}" }, end your turn, and re-run fleet:place_batch for the deferred tasks on wake.` }
       : {}),
+    ...(groupsSubscribed > 0 ? { groups_subscribed: groupsSubscribed } : {}),
+    ...(groupErrors.length > 0 ? { group_errors: groupErrors } : {}),
   };
 }

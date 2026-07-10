@@ -4,6 +4,7 @@ import placeBatchTool, {
   executeBatch,
   buildPlacementWarnings,
   currentFilesFromLivePresence,
+  groupPlacementsForTopicSubscribe,
   type ExecuteBatchDeps,
 } from './place_batch';
 import type { PlacementDecision, BatchPlacementPlan } from '../../fleet/batch-placement';
@@ -62,6 +63,113 @@ describe('currentFilesFromLivePresence — EI-3061 peer-lane coverage', () => {
   });
 });
 
+describe('groupPlacementsForTopicSubscribe — EI-1611 same-plan cohort grouping', () => {
+  it('groups >=2 ACTUALLY-PLACED bees sharing a planSlug into one plan:<slug> topic', () => {
+    const decisions = [
+      { task: task('WI-1', { planSlug: 'p-x' }), disposition: 'spawn', reason: 'r' },
+      { task: task('WI-2', { planSlug: 'p-x' }), disposition: 'warm-inject', bee: 's-bee', rank: 0, reason: 'r' },
+    ] as PlacementDecision[];
+    const placements = [
+      { task: 'WI-1', action: 'spawned', spawn_id: 's-fresh', reason: 'r' },
+      { task: 'WI-2', action: 'injected', bee: 's-bee', rank: 0, reason: 'r' },
+    ];
+    expect(groupPlacementsForTopicSubscribe(decisions, placements)).toEqual([
+      { topic: 'plan:p-x', planSlug: 'p-x', ownerIds: ['s-bee', 's-fresh'] },
+    ]);
+  });
+
+  it('a lone placement on its plan is NOT a group (needs >=2 distinct bees)', () => {
+    const decisions = [{ task: task('WI-1', { planSlug: 'p-x' }), disposition: 'spawn', reason: 'r' }] as PlacementDecision[];
+    const placements = [{ task: 'WI-1', action: 'spawned', spawn_id: 's-fresh', reason: 'r' }];
+    expect(groupPlacementsForTopicSubscribe(decisions, placements)).toEqual([]);
+  });
+
+  it('tasks with no planSlug never group, even placed together', () => {
+    const decisions = [
+      { task: task('WI-1'), disposition: 'spawn', reason: 'r' },
+      { task: task('WI-2'), disposition: 'spawn', reason: 'r' },
+    ] as PlacementDecision[];
+    const placements = [
+      { task: 'WI-1', action: 'spawned', spawn_id: 's-a', reason: 'r' },
+      { task: 'WI-2', action: 'spawned', spawn_id: 's-b', reason: 'r' },
+    ];
+    expect(groupPlacementsForTopicSubscribe(decisions, placements)).toEqual([]);
+  });
+
+  it('unplaced/deferred/error placements do NOT count toward a group, even sharing a plan', () => {
+    const decisions = [
+      { task: task('WI-1', { planSlug: 'p-x' }), disposition: 'spawn', reason: 'r' },
+      { task: task('WI-2', { planSlug: 'p-x' }), disposition: 'unplaced', reason: 'no headroom' },
+    ] as PlacementDecision[];
+    const placements = [
+      { task: 'WI-1', action: 'spawned', spawn_id: 's-fresh', reason: 'r' },
+      { task: 'WI-2', action: 'unplaced', reason: 'no headroom' },
+    ];
+    // Only ONE bee actually landed on plan p-x this batch — not a group.
+    expect(groupPlacementsForTopicSubscribe(decisions, placements)).toEqual([]);
+  });
+
+  it('two DIFFERENT plans, each with 2 placed bees, produce two separate groups (sorted by planSlug)', () => {
+    const decisions = [
+      { task: task('WI-1', { planSlug: 'p-b' }), disposition: 'spawn', reason: 'r' },
+      { task: task('WI-2', { planSlug: 'p-b' }), disposition: 'spawn', reason: 'r' },
+      { task: task('WI-3', { planSlug: 'p-a' }), disposition: 'spawn', reason: 'r' },
+      { task: task('WI-4', { planSlug: 'p-a' }), disposition: 'spawn', reason: 'r' },
+    ] as PlacementDecision[];
+    const placements = [
+      { task: 'WI-1', action: 'spawned', spawn_id: 's-1', reason: 'r' },
+      { task: 'WI-2', action: 'spawned', spawn_id: 's-2', reason: 'r' },
+      { task: 'WI-3', action: 'spawned', spawn_id: 's-3', reason: 'r' },
+      { task: 'WI-4', action: 'spawned', spawn_id: 's-4', reason: 'r' },
+    ];
+    expect(groupPlacementsForTopicSubscribe(decisions, placements).map((g) => g.topic)).toEqual(['plan:p-a', 'plan:p-b']);
+  });
+});
+
+describe('executeBatch — EI-1611 group-topic auto-subscribe wiring', () => {
+  it('ensures the plan topic + subscribes every placed bee once a >=2-bee same-plan cohort lands', async () => {
+    const { fns, deps } = makeDeps();
+    const r = await run(
+      plan([
+        { task: task('WI-1', { planSlug: 'p-x' }), disposition: 'spawn', reason: 'r' },
+        { task: task('WI-2', { planSlug: 'p-x' }), disposition: 'warm-inject', bee: 's-bee', rank: 0, reason: 'r' },
+      ]),
+      deps,
+    );
+    expect(fns.ensureGroupTopic).toHaveBeenCalledTimes(1);
+    expect(fns.ensureGroupTopic).toHaveBeenCalledWith(actor, expect.objectContaining({ slug: 'plan:p-x' }));
+    expect(fns.subscribeGroupTopic).toHaveBeenCalledTimes(2);
+    expect(fns.subscribeGroupTopic).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: 's-bee', source: 'fleet-spawn' }),
+      'plan:p-x',
+      expect.objectContaining({ mode: 'full' }),
+    );
+    expect(r.groups_subscribed).toBe(1);
+  });
+
+  it('a single placement (no cohort) never touches the topics deps', async () => {
+    const { fns, deps } = makeDeps();
+    const r = await run(plan([{ task: task('WI-1', { planSlug: 'p-solo' }), disposition: 'spawn', reason: 'r' }]), deps);
+    expect(fns.ensureGroupTopic).not.toHaveBeenCalled();
+    expect(fns.subscribeGroupTopic).not.toHaveBeenCalled();
+    expect(r.groups_subscribed).toBeUndefined();
+  });
+
+  it('a group-topic failure is swallowed — never touches the placement result it rides on', async () => {
+    const { fns, deps } = makeDeps({ ensureGroupTopic: vi.fn(async () => { throw new Error('topics down'); }) });
+    const r = await run(
+      plan([
+        { task: task('WI-1', { planSlug: 'p-x' }), disposition: 'spawn', reason: 'r' },
+        { task: task('WI-2', { planSlug: 'p-x' }), disposition: 'spawn', reason: 'r' },
+      ]),
+      deps,
+    );
+    expect(r.summary.spawned).toBe(2); // the placements themselves are untouched
+    expect(r.groups_subscribed).toBeUndefined();
+    expect(r.group_errors?.[0]).toMatch(/plan:p-x: topics down/);
+  });
+});
+
 // ── executeBatch — the gather→plan→EXECUTE path (DI seam; no fleet / PG) ──
 // planBatchPlacement (the pure decision) is tested in fleet/batch-placement.test.ts;
 // here we assert the EXECUTION of a plan: spawn, warm-inject, the woken:0 ladder,
@@ -76,6 +184,8 @@ function makeDeps(over: Partial<Record<keyof ExecuteBatchDeps, AnyMock>> = {}) {
     reorderWorkItem: over.reorderWorkItem ?? vi.fn(async () => undefined),
     sendMessage: over.sendMessage ?? vi.fn(async () => ({ ok: true })),
     wakeRecipients: over.wakeRecipients ?? vi.fn(async () => ({ woken: 1 })),
+    ensureGroupTopic: over.ensureGroupTopic ?? vi.fn(async () => ({ topic: {}, created: true, notified: 0 })),
+    subscribeGroupTopic: over.subscribeGroupTopic ?? vi.fn(async () => ({})),
   };
   return { fns, deps: fns as unknown as ExecuteBatchDeps };
 }
