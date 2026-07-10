@@ -25,6 +25,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { ChevronDown, ChevronRight, ExternalLink, GitBranch, RotateCcw, Shield, ShieldCheck } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
+import { Tooltip } from '@/app/harness/Tooltip';
 
 export const DECOMP_MODES = ['serial', 'balanced', 'parallel'] as const;
 export type DecompMode = (typeof DECOMP_MODES)[number];
@@ -154,9 +155,11 @@ export default function AutonomySurfacing({
               <GitBranch size={11} aria-hidden />
               <span className="pc-queen__knoblabel">Parallelism</span>
               {decomposition != null && (
-                <button type="button" className="pc-queen__knobreset" onClick={() => onSetDecomposition(null)} disabled={busy} aria-label="Use workspace parallelism" title="Use workspace parallelism">
-                  <RotateCcw size={11} aria-hidden />
-                </button>
+                <Tooltip label="Use workspace parallelism">
+                  <button type="button" className="pc-queen__knobreset" onClick={() => onSetDecomposition(null)} disabled={busy} aria-label="Use workspace parallelism">
+                    <RotateCcw size={11} aria-hidden />
+                  </button>
+                </Tooltip>
               )}
             </div>
             <div className="pc-queen__seg" role="group" aria-label="Decomposition aggressiveness">

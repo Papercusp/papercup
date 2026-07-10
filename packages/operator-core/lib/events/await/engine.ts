@@ -116,6 +116,15 @@ export interface EmitResult {
   /** Notify recipients the inbox message went to (post-expansion happens in sendMessage). */
   notified: string[];
   msgId: string | null;
+  /** EI-9000: total ACTIVE events:await registrations matched on this key by
+   *  this emit — `woken + notifyAwaits`, i.e. everyone who had actually
+   *  registered before you fired (independent of any extra `to[]` audience,
+   *  which is a fire-and-forget add-on, not a waiter). Lets the emitter tell
+   *  "0 woken because nobody was listening on this key at all" apart from
+   *  "0 woken but N were notified", and tells a caller BEFORE they decide the
+   *  emit was worth it that it genuinely reached no one when `waiters` is 0
+   *  and no `to[]` was given. */
+  waiters: number;
 }
 
 export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<EmitResult> {

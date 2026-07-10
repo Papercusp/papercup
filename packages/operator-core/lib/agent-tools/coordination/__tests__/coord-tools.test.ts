@@ -40,6 +40,20 @@ vi.mock('../recipient-resolve', () => ({
   resolveBestEffortAgainstRoster: async (to: string[]) => [...to],
 }));
 
+// coord:handoff opens a durable handoff and then fire-and-forget wakes the
+// recipient through the event-await engine. This suite exercises handler
+// envelopes against in-memory coordination stores; keep the PG-backed wake
+// engine at its unit-test seam (the dedicated handoff suite tests that wiring).
+vi.mock('../../../events/await/engine', () => ({
+  emitAwaitedEvent: vi.fn(async ({ key }: { key: string }) => ({
+    ok: true,
+    key,
+    woken: 1,
+    notified: [],
+    msgId: null,
+  })),
+}));
+
 import whoamiTool from '../tools/whoami';
 import { boundInboxEntries } from '../tools/inbox';
 import ackTool from '../tools/ack';

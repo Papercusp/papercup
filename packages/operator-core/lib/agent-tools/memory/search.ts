@@ -18,6 +18,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { getMemoryBackend, type MemoryEntry } from '../../memory/backend';
 import { isMemoryWorkspaceScopedRecallOn, keepUserPoolHitForWorkspace } from '../../memory/workspace-scope-recall';
 import { MemoryTimeoutError, withMemoryToolTimeout, embedFailureReason } from '../../memory/op-deadline';
+import { isOpenAiEmbedInCooldown } from '../../memory/configure';
 import { getSessionUserOrDefault } from '../../auth';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { isEphemeralBenchmarkHarnessSlug } from '../../harness/improvements/watchdog';
@@ -200,8 +201,11 @@ export default defineTool({
       // as a CLEAN reason + empty results, not an opaque handler_error.
       const embedReason = embedFailureReason(err);
       if (embedReason) {
+        // EI-9031: a failed embed is a DEGRADED recall, not an informative empty —
+        // stamp it loudly (in addition to the reason) so agents / orient never read
+        // the `[]` as "nothing relevant exists".
         return {
-          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: embedReason, results: [] }) }],
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: embedReason, degraded: true, results: [] }) }],
         };
       }
       throw err;
@@ -224,6 +228,16 @@ export default defineTool({
       const { loadFeedbackSignals, applyFeedbackRerank } = await import('../../memory/feedback-rerank');
       hits = applyFeedbackRerank(hits, await loadFeedbackSignals(getOrgPg().sql));
     } catch { /* best-effort */ }
+
+    // EI-9031: when the production embedder (OpenAI) is in its post-exhaustion
+    // cooldown, the 'auto' cascade has silently fallen back to the local vec table
+    // — older OpenAI-embedded memories live in a DIFFERENT per-mode table, so an
+    // empty/short result in this window is NOT reliably "nothing relevant exists".
+    // Stamp the recall `degraded` so agents (and coord:orient, which folds this)
+    // don't treat a possibly-false MISS as informative context. A recall hit is
+    // binding — the dual is that a recall miss informs decisions too, and a fake
+    // miss corrupts that inference for every agent for the whole outage.
+    const embeddingDegraded = isOpenAiEmbedInCooldown();
 
     const wireRows = hits.slice(0, limit).map(toWireRow);
     // Session-tier hit shaping (P-024) — see MEMORY_SEARCH_TIER_CAPS above.
@@ -256,6 +270,12 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             results,
+            // EI-9031: loud degraded marker — the embedder is on a reduced-breadth
+            // fallback, so a thin/empty `results` may be a false miss, not an
+            // informative empty.
+            ...(embeddingDegraded
+              ? { degraded: true, degraded_reason: 'embedding_backend_degraded' }
+              : {}),
             // Loud tier marker (D-004): a non-full session sees WHY hits are
             // clipped and how to widen (payloadTier:"full").
             ...(sessionTier === 'trimmed' || sessionTier === 'standard'

@@ -55,6 +55,12 @@ export const MAX_RESPAWN_ATTEMPTS = 5;
 export const RESPAWN_WINDOW_MS = 5 * 60_000;
 let respawnAttempts: number[] = []; // timestamps (ms) of recent auto-respawn schedules
 let respawnTimer: ReturnType<typeof setTimeout> | null = null;
+// P-006 (critical-process-supervisor-2026-07-04): latches once the sliding-window
+// circuit breaker below gives up, so `substrateSidecarSupervisionStatus()` (feeding
+// dev:service_health's supervision block) can report 'gave-up' instead of silently
+// looking merely idle. Reset at the top of every fresh spawnSubstrateSidecar() call,
+// mirroring `deliberateStop`'s reset.
+let gaveUp = false;
 
 // ── WI-1877: post-respawn reconcile hook ─────────────────────────────────────
 //
@@ -154,6 +160,7 @@ function scheduleRespawn(socketPath: string): void {
   const now = Date.now();
   respawnAttempts = pruneRespawnWindow(respawnAttempts, now, RESPAWN_WINDOW_MS);
   if (respawnBudgetExhausted(respawnAttempts, MAX_RESPAWN_ATTEMPTS)) {
+    gaveUp = true;
     console.error(
       `[substrate-sidecar] ${MAX_RESPAWN_ATTEMPTS} crashes within ${Math.round(RESPAWN_WINDOW_MS / 1000)}s — giving up auto-respawn. ` +
         'Substrate stays on its in-process fallback (see substrate-boot-wrapper) until an explicit spawnSubstrateSidecar() call.',
@@ -200,6 +207,7 @@ export async function spawnSubstrateSidecar(
   // A fresh spawn attempt — clear any pending backoff timer and the deliberate-stop
   // flag so the crash-respawn machinery is armed for this (re)spawn.
   deliberateStop = false;
+  gaveUp = false;
   if (respawnTimer) {
     clearTimeout(respawnTimer);
     respawnTimer = null;
@@ -380,6 +388,7 @@ export async function spawnSubstrateSidecar(
 /** Test seam — reset the module-global respawn/scope state between unit tests. */
 export function _resetSubstrateSidecarSpawnStateForTests(): void {
   deliberateStop = false;
+  gaveUp = false;
   if (respawnTimer) {
     clearTimeout(respawnTimer);
     respawnTimer = null;
@@ -388,6 +397,29 @@ export function _resetSubstrateSidecarSpawnStateForTests(): void {
   sidecarProcess = null;
   sidecarReady = false;
   readyWaiters.length = 0;
+}
+
+/**
+ * P-006: node-child supervision status for `dev:service_health`'s additive
+ * `supervision` block (mirrors the systemd-user layer's `supervisionSnapshot()`,
+ * `packages/operator-core/lib/supervision/unit-reconciler.ts`) — PURE given the
+ * module's own in-memory state (no I/O), safe to call on every request.
+ */
+export interface SidecarSupervisionStatus {
+  running: boolean;
+  respawnAttemptsInWindow: number;
+  gaveUp: boolean;
+  lastRespawnScheduledAt: number | null;
+}
+
+export function substrateSidecarSupervisionStatus(now: number = Date.now()): SidecarSupervisionStatus {
+  const attempts = pruneRespawnWindow(respawnAttempts, now, RESPAWN_WINDOW_MS);
+  return {
+    running: !!sidecarProcess && !sidecarProcess.killed,
+    respawnAttemptsInWindow: attempts.length,
+    gaveUp,
+    lastRespawnScheduledAt: attempts.length ? attempts[attempts.length - 1] : null,
+  };
 }
 
 /**

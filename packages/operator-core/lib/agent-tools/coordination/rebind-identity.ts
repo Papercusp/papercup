@@ -366,6 +366,23 @@ export async function rebindIdentity(
     r.moved = moved.length;
   });
 
+  // 13. Staged (manual-mode) wakes — pending-wakes.ts (D-005/migration 204) reads
+  //     PURELY by owner_id, no fallback: `listPendingWakes(ownerId)` is the sole
+  //     read path the agent's pane and the wake-count sync query use. A wake
+  //     staged for the from-id before a compaction rebind (a manual-mode agent's
+  //     inbox-wake queued right before the sid changes) would otherwise sit
+  //     invisibly under the dead sid forever — the owner's pane never surfaces
+  //     it and the (now differently-sid'd) live agent never sees it queued
+  //     (EI-8999: the WI-3642 lesson generalized — found via a sweep of every
+  //     owner_id-keyed table that a presence-tied reader/reaper touches).
+  await run('pending-wakes', async (r) => {
+    const moved = await sql<Array<{ id: number }>>`
+      UPDATE harness_shared.pending_wakes SET owner_id = ${t}
+       WHERE owner_id = ${f} RETURNING id
+    `;
+    r.moved = moved.length;
+  });
+
   const totalMoved = surfaces.reduce(
     (n, s) => n + s.moved + (s.dropped ?? 0) + (s.cancelled ?? 0) + (s.appended ?? 0),
     0,

@@ -44,6 +44,11 @@ apps/operator-mobile/src-tauri/target/
 # 2026-07-09 git-sync excluded a 240MB blob from .wi3388-cargo-target/ every sweep
 .wi*-cargo-target/
 *cargo-target*/
+# Sidecar backup dirs left by desktop packaging (2026-07-10: git-sync excluded a
+# 100.1MB node binary from papercusp-desktop/src-tauri/sidecar.old.55111/ every
+# sweep — same class as the cargo-target churn above; never source).
+sidecar.old*/
+**/sidecar.old*/
 
 # operator-docs (Astro+Starlight)
 apps/operator-docs/dist/

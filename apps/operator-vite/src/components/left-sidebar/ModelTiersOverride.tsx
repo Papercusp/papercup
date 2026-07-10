@@ -28,6 +28,7 @@ import { ChevronDown, ChevronRight, Cpu, RotateCcw } from 'lucide-react';
 // resolve in the operator-vite vitest env, so the workspace-default tiers come
 // from the sync resolver instead of a client import.
 import type { ModelTier } from '@papercusp/operator-core/lib/agent-config-constants';
+import { Tooltip } from '@/app/harness/Tooltip';
 
 /** The effective spec for a tier: the session override if set, else the baseline. Pure. */
 export function effectiveSpec(baseline: readonly ModelTier[], override: readonly ModelTier[] | null, name: string): string {
@@ -142,16 +143,17 @@ export default function ModelTiersOverride({
                         }}
                       />
                       {over && (
-                        <button
-                          type="button"
-                          className="pc-mt__reset"
-                          onClick={() => resetTier(t.name)}
-                          disabled={busy}
-                          aria-label={`Use workspace model for ${t.name}`}
-                          title="Use workspace model"
-                        >
-                          <RotateCcw size={11} aria-hidden />
-                        </button>
+                        <Tooltip label={`Use workspace model for ${t.name}`}>
+                          <button
+                            type="button"
+                            className="pc-mt__reset"
+                            onClick={() => resetTier(t.name)}
+                            disabled={busy}
+                            aria-label={`Use workspace model for ${t.name}`}
+                          >
+                            <RotateCcw size={11} aria-hidden />
+                          </button>
+                        </Tooltip>
                       )}
                     </div>
                   </li>

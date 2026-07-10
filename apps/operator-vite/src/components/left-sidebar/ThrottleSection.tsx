@@ -34,6 +34,7 @@ import { ChevronDown, ChevronRight, Cpu, Gauge, Moon, RotateCcw, TrendingUp, Use
 import type { ModelTier } from '@papercusp/operator-core/lib/agent-config-constants';
 import { Checkbox } from '@/app/harness/Checkbox';
 import { Select } from '@/app/harness/Select';
+import { Tooltip } from '@/app/harness/Tooltip';
 import { useLexicon } from '@/lib/useLexicon';
 
 /** The idle background activities the owner can gate (mirrors owner-steering.ts
@@ -244,9 +245,11 @@ export default function ThrottleSection({
               <Gauge size={11} aria-hidden />
               <span className="pc-queen__knoblabel">Time between wakes</span>
               {cadenceFloorSec != null && (
-                <button type="button" className="pc-queen__knobreset" onClick={() => onSetCadenceFloor(null)} disabled={busy} aria-label="Use workspace wake timing" title="Use workspace timing">
-                  <RotateCcw size={11} aria-hidden />
-                </button>
+                <Tooltip label="Use workspace timing">
+                  <button type="button" className="pc-queen__knobreset" onClick={() => onSetCadenceFloor(null)} disabled={busy} aria-label="Use workspace wake timing">
+                    <RotateCcw size={11} aria-hidden />
+                  </button>
+                </Tooltip>
               )}
             </div>
             <div className="pc-queen__presetrow" role="group" aria-label="Time between wake presets">
@@ -279,9 +282,11 @@ export default function ThrottleSection({
               <Users size={11} aria-hidden />
               <span className="pc-queen__knoblabel">Concurrent {t('contributor', { plural: true, lower: true })}</span>
               {maxBees != null && (
-                <button type="button" className="pc-queen__knobreset" onClick={() => onSetMaxBees(null)} disabled={busy} aria-label="Use workspace concurrency" title="Use workspace concurrency">
-                  <RotateCcw size={11} aria-hidden />
-                </button>
+                <Tooltip label="Use workspace concurrency">
+                  <button type="button" className="pc-queen__knobreset" onClick={() => onSetMaxBees(null)} disabled={busy} aria-label="Use workspace concurrency">
+                    <RotateCcw size={11} aria-hidden />
+                  </button>
+                </Tooltip>
               )}
             </div>
             <div className="pc-queen__knobrow">
@@ -303,9 +308,11 @@ export default function ThrottleSection({
               <Cpu size={11} aria-hidden />
               <span className="pc-queen__knoblabel">Highest {t('contributor', { lower: true })} tier</span>
               {beeTier && (
-                <button type="button" className="pc-queen__knobreset" onClick={() => onSetBeeTierCap(null)} disabled={busy} aria-label="Use workspace tier limit" title="Use workspace tier limit">
-                  <RotateCcw size={11} aria-hidden />
-                </button>
+                <Tooltip label="Use workspace tier limit">
+                  <button type="button" className="pc-queen__knobreset" onClick={() => onSetBeeTierCap(null)} disabled={busy} aria-label="Use workspace tier limit">
+                    <RotateCcw size={11} aria-hidden />
+                  </button>
+                </Tooltip>
               )}
             </div>
             <Select

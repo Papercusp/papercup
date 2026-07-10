@@ -120,6 +120,7 @@ let dupRows: Array<{ spawn_id: string }> = [];
 let errorSpy: ReturnType<typeof vi.spyOn>;
 let savedXbenchDirective: string | undefined;
 let savedXbenchDirectiveLegacy: string | undefined;
+let savedSpawnReadinessShadow: string | undefined;
 
 beforeEach(() => {
   // Hermeticity (EI-1837): the external-bench launcher exports
@@ -130,8 +131,15 @@ beforeEach(() => {
   // and restore them after — otherwise the suite reddens whenever it runs under the bench.
   savedXbenchDirective = process.env.PAPERCUSP_XBENCH_CUP_DIRECTIVE;
   savedXbenchDirectiveLegacy = process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE;
+  savedSpawnReadinessShadow = process.env.PAPERCUSP_SPAWN_READINESS_SHADOW;
   delete process.env.PAPERCUSP_XBENCH_CUP_DIRECTIVE;
   delete process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE;
+  // The readiness probe is intentionally shadow-only in production and emits
+  // console.warn when the local gateway has no serviceable account. This suite
+  // tests spawn semantics, not that inert telemetry, and vitest fails on any
+  // unexpected console output; keep the test hermetic while preserving the
+  // production default.
+  process.env.PAPERCUSP_SPAWN_READINESS_SHADOW = '0';
   runningCount = 0;
   dupRows = [];
   h.ownerSteering.value = null;
@@ -176,6 +184,8 @@ afterEach(() => {
   else process.env.PAPERCUSP_XBENCH_CUP_DIRECTIVE = savedXbenchDirective;
   if (savedXbenchDirectiveLegacy === undefined) delete process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE;
   else process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE = savedXbenchDirectiveLegacy;
+  if (savedSpawnReadinessShadow === undefined) delete process.env.PAPERCUSP_SPAWN_READINESS_SHADOW;
+  else process.env.PAPERCUSP_SPAWN_READINESS_SHADOW = savedSpawnReadinessShadow;
 });
 
 /** Let the fire-and-forget completion chain settle. */
