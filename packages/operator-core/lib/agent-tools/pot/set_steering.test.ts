@@ -46,7 +46,7 @@ afterEach(() => vi.clearAllMocks());
 
 describe('pot:set-steering', () => {
   it('writes the provided fields, refreshes the panel, and WAKES the Mug', async () => {
-    const next: OwnerSteering = { directive: 'focus', eligiblePlans: ['p1'], eligiblePots: [], includeUnplannedWork: true, pauseNewWork: false, pausedUntil: null };
+    const next: OwnerSteering = { directive: 'focus', eligiblePlans: ['p1'], eligibleHives: [], includeUnplannedWork: true, pauseNewWork: false, pausedUntil: null };
     setOwnerSteering.mockResolvedValueOnce(next);
     const res = parse(await setTool.handler({ pot: 'acme', directive: 'focus', eligiblePlans: ['p1'] }, ctx()));
 
@@ -70,7 +70,7 @@ describe('pot:set-steering', () => {
 
   it('forwards eligiblePots (the placement scope, B-04 round-2)', async () => {
     await setTool.handler({ pot: 'acme', eligiblePots: ['pot-a', 'pot-b'] }, ctx());
-    expect(setOwnerSteering).toHaveBeenCalledWith('ws-active', 'acme', { eligiblePots: ['pot-a', 'pot-b'] });
+    expect(setOwnerSteering).toHaveBeenCalledWith('ws-active', 'acme', { eligibleHives: ['pot-a', 'pot-b'] });
   });
 
   it('forwards the throttle knobs (P-006/P-009) into the patch', async () => {
@@ -87,7 +87,7 @@ describe('pot:set-steering', () => {
     );
     expect(setOwnerSteering).toHaveBeenCalledWith('ws-active', 'acme', {
       cadenceFloorSec: 420,
-      maxCups: 5,
+      maxBees: 5,
       idleActivities: { gym: false },
       autoScaleOut: false,
       decomposition: 'serial',
@@ -116,7 +116,7 @@ describe('pot:set-steering', () => {
 
 describe('pot:get-steering', () => {
   it('reads the current steering for the pot', async () => {
-    const cur: OwnerSteering = { directive: 'd', eligiblePlans: ['p'], eligiblePots: ['pot-a'], includeUnplannedWork: true, pauseNewWork: true, pausedUntil: null };
+    const cur: OwnerSteering = { directive: 'd', eligiblePlans: ['p'], eligibleHives: ['pot-a'], includeUnplannedWork: true, pauseNewWork: true, pausedUntil: null };
     getOwnerSteering.mockResolvedValueOnce(cur);
     const res = parse(await getTool.handler({ pot: 'acme' }, ctx()));
     expect(getOwnerSteering).toHaveBeenCalledWith('ws-active', 'acme');

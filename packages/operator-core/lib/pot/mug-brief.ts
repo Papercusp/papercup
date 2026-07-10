@@ -398,9 +398,9 @@ export function renderMugBrief(input: MugBriefInput): string {
           'start nothing outside them.',
       );
     }
-    if (os.eligiblePots.length > 0) {
+    if (os.eligibleHives.length > 0) {
       out.push(
-        `**Eligible hives ONLY:** ${os.eligiblePots.join(', ')} — place work only INTO these ` +
+        `**Eligible hives ONLY:** ${os.eligibleHives.join(', ')} — place work only INTO these ` +
           'hives/harnesses (the survey frontier is already scoped to them); leave others alone.',
       );
     }
@@ -428,9 +428,9 @@ export function renderMugBrief(input: MugBriefInput): string {
         `- Wake-cadence floor: **≥${os.cadenceFloorSec}s between wakes** — pace yourself; a tighter self-wake is clamped up to this.`,
       );
     }
-    if (os.maxCups != null) {
+    if (os.maxBees != null) {
       throttle.push(
-        `- Concurrency ceiling: **≤${os.maxCups} cups** running at once — plan within it; spawns past it queue, they do not run.`,
+        `- Concurrency ceiling: **≤${os.maxBees} cups** running at once — plan within it; spawns past it queue, they do not run.`,
       );
     }
     if (os.tierCeilings && Object.keys(os.tierCeilings).length > 0) {

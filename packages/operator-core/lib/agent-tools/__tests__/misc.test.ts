@@ -29,8 +29,8 @@ afterEach(() => {
   vi.doUnmock('@papercusp/flags/server');
   vi.doUnmock('../../wiki-backlinks');
   vi.doUnmock('../../omp-config');
-  vi.doUnmock('../../hive/soak-report');
-  vi.doUnmock('../../hive/wake');
+  vi.doUnmock('../../pot/soak-report');
+  vi.doUnmock('../../pot/wake');
 });
 
 // The status/control tools read harness_shared.routines via getOrgPg().sql —
@@ -190,11 +190,11 @@ describe('autoloop:control', () => {
 
 describe('loop:soak-report', () => {
   it('reads the resolved hive soak report', async () => {
-    vi.doMock('../../hive/wake', async (importOriginal) => ({
+    vi.doMock('../../pot/wake', async (importOriginal) => ({
       ...(await importOriginal<Record<string, unknown>>()),
       resolvePotHomeSlug: vi.fn(() => 'papercusp'),
     }));
-    vi.doMock('../../hive/soak-report', () => ({
+    vi.doMock('../../pot/soak-report', () => ({
       readHiveSoakReport: vi.fn(async () => ({ potSlug: 'papercusp', ready: false, reasons: ['gate red'] })),
       MIN_SOAK_WINDOW_HOURS: 12,
       MAX_SOAK_WINDOW_HOURS: 24,
@@ -208,11 +208,11 @@ describe('loop:soak-report', () => {
   });
 
   it('returns ok:false when no hive home resolves', async () => {
-    vi.doMock('../../hive/wake', async (importOriginal) => ({
+    vi.doMock('../../pot/wake', async (importOriginal) => ({
       ...(await importOriginal<Record<string, unknown>>()),
       resolvePotHomeSlug: vi.fn(() => null),
     }));
-    vi.doMock('../../hive/soak-report', () => ({
+    vi.doMock('../../pot/soak-report', () => ({
       readHiveSoakReport: vi.fn(),
       MIN_SOAK_WINDOW_HOURS: 12,
       MAX_SOAK_WINDOW_HOURS: 24,

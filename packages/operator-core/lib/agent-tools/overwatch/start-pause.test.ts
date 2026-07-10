@@ -24,7 +24,7 @@ vi.mock('../../overwatch/wake-bridge', () => ({
   clearOverwatchWake: (...a: unknown[]) => clearOverwatchWake(...a),
 }));
 
-vi.mock('../../hive/wake', () => ({
+vi.mock('../../pot/wake', () => ({
   resolvePotHomeSlug: (explicit?: string | null, ctxSlug?: string | null) =>
     explicit?.trim() || ctxSlug?.trim() || null,
 }));

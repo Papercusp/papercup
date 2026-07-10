@@ -190,7 +190,7 @@ async function gatherOwnerSteering(
     const active =
       !!s.directive ||
       s.eligiblePlans.length > 0 ||
-      s.eligiblePots.length > 0 ||
+      s.eligibleHives.length > 0 ||
       s.includeUnplannedWork === false || // loose-work turned off is an active scope
       pausedNow ||
       hasActiveThrottle(s); // P-006/P-009: a throttle-only steering still surfaces in the brief
@@ -256,7 +256,7 @@ export async function computeMugWakeBrief(
       ownerSteering.pauseNewWork ||
       ownerSteering.pausedUntil != null ||
       ownerSteering.eligiblePlans.length > 0 ||
-      ownerSteering.eligiblePots.length > 0 ||
+      ownerSteering.eligibleHives.length > 0 ||
       ownerSteering.includeUnplannedWork === false
     );
     const scopeFilter: ScopeFilter | undefined =
@@ -265,7 +265,7 @@ export async function computeMugWakeBrief(
             ...(ownerSteering && ownerSteering.eligiblePlans.length > 0 ? { eligiblePlans: ownerSteering.eligiblePlans } : {}),
             // Eligible Pots → the survey's allowedHarnesses scope (C-2, su-266): the
             // Mug may place only into these hives/harnesses (B-04 round-2).
-            ...(ownerSteering && ownerSteering.eligiblePots.length > 0 ? { allowedHarnesses: ownerSteering.eligiblePots } : {}),
+            ...(ownerSteering && ownerSteering.eligibleHives.length > 0 ? { allowedHarnesses: ownerSteering.eligibleHives } : {}),
             // "Non-plan work items" toggle OFF → drop loose frontier work (decouple 2026-06-30).
             ...(ownerSteering && ownerSteering.includeUnplannedWork === false ? { includeUnplannedWork: false } : {}),
             ...(ownerSteering && ownerSteering.pauseNewWork ? { pauseNewWork: true } : {}),

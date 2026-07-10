@@ -235,6 +235,20 @@ export async function wireHiveDirectoryAtBoot(opts: WireHiveDirectoryOpts): Prom
         // WI-1585 defect B: a late canonical announce re-fires the auto-join
         // (no-op when already joined / non-canonical / debounced — see above).
         if (!unlist) void maybeTriggerCanonicalJoinOnIngest(frame as SignedHiveAnnounce).catch(() => {});
+      } else if (res.reason !== 'superseded' && res.reason !== 'muted' && !process.env.VITEST) {
+        // WI-953 diagnosability: a rejected announce previously left ZERO
+        // trace anywhere — from the outside "peer connected, no discovery
+        // row" was indistinguishable between "announce never arrived" and
+        // "announce arrived but silently rejected" (unattested / bad-sig /
+        // tombstoned). 'superseded'/'muted' are routine under normal gossip
+        // re-broadcast and excluded to avoid log noise; the rest indicate a
+        // real admission problem worth a trace on the next live/gate run.
+        // Gated to non-test env (same reasoning as the sync-sse push above):
+        // unit tests deliberately exercise every rejection path and would
+        // otherwise trip vitest-fail-on-console on an unasserted warn.
+        console.warn(
+          `[hive-directory] rejected inbound ${unlist ? 'unlist' : 'announce'} for ${frame.hive_id}: ${res.reason}`,
+        );
       }
       return res;
     },

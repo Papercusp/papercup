@@ -131,9 +131,9 @@ vi.mock('@papercusp/flags/server', async (importActual) => ({
 // Old brain-brief dependencies remain mocked so tombstone tests can prove the
 // retired launch path exits before computing a brief.
 const listStartedHivesMock = vi.fn(async () => [{ workspaceId: 'default', installSlug: 'papercup' }]);
-vi.mock('../../hive/started', () => ({ listStartedHives: (...a: unknown[]) => listStartedHivesMock(...(a as [])) }));
+vi.mock('../../pot/started', () => ({ listStartedHives: (...a: unknown[]) => listStartedHivesMock(...(a as [])) }));
 const computeQueenWakeBriefMock = vi.fn(async (): Promise<string | null> => '## QUEEN WAKE BRIEF\n- frontier: wi-1');
-vi.mock('../../hive/mug-brief-launch', () => ({
+vi.mock('../../pot/mug-brief-launch', () => ({
   computeQueenWakeBrief: (...a: unknown[]) => computeQueenWakeBriefMock(...(a as [])),
 }));
 vi.mock('../../device-harnesses', () => ({

@@ -59,7 +59,7 @@ vi.mock('../../adv-sessions', () => ({
 // compute). Default null = compute degraded → the EI-506 kickoff fallback applies;
 // per-test overrides return a brief to assert the computed path.
 const computeQueenWakeBrief = vi.fn(async (): Promise<string | null> => null);
-vi.mock('../../hive/mug-brief-launch', () => ({
+vi.mock('../../pot/mug-brief-launch', () => ({
   computeQueenWakeBrief: (...a: unknown[]) =>
     (computeQueenWakeBrief as (...args: unknown[]) => unknown)(...a),
 }));

@@ -142,7 +142,7 @@ beforeEach(() => {
   }));
   vi.doMock('../../learning-packs/seed', () => ({
     shapesFromDetection: () => undefined,
-    seedPackIntoPot: async () => ({
+    seedPackIntoHive: async () => ({
       ok: true,
       packId: 'papercusp-default',
       packVersion: '1.0.0',

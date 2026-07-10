@@ -31,7 +31,7 @@ process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
 // exactly the kind of side effect a routine-level test must NOT perform for
 // real. Mock it and assert the ROUTINE calls it correctly instead.
 const urgentWakeSpy = vi.fn().mockResolvedValue({ fired: true, coalesced: false });
-vi.mock('../../hive/urgent-wake', () => ({
+vi.mock('../../pot/urgent-wake', () => ({
   requestUrgentHiveWake: (...args: unknown[]) => urgentWakeSpy(...args),
 }));
 

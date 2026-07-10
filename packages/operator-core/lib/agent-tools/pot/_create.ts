@@ -409,7 +409,7 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
         if (await getFlag(FLAGS.LEARNING_PACKS, 'system')) {
           const { DEFAULT_LEARNING_PACK_ID } = await import('../../learning-packs/pack-format');
           const { loadLearningPack } = await import('../../learning-packs/load-packs');
-          const { seedPackIntoPot } = await import('../../learning-packs/seed');
+          const { seedPackIntoHive: seedPackIntoPot } = await import('../../learning-packs/seed');
           // P-014: an explicit arg wins; else the blueprint's declared learning.pack
           // (a generic-pot can seed a different pack); else the global default.
           const packId = opts.learningPack ?? validation.blueprint.learning?.pack ?? DEFAULT_LEARNING_PACK_ID;

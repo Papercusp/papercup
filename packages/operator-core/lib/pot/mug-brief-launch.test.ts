@@ -39,7 +39,7 @@ vi.mock('../inference-gateway/observability', () => ({ fetchGatewayHeadroom: (..
 const getOwnerSteering = vi.fn(async (..._a: unknown[]) => ({
   directive: null as string | null,
   eligiblePlans: [] as string[],
-  eligiblePots: [] as string[],
+  eligibleHives: [] as string[],
   pauseNewWork: false,
   pausedUntil: null as number | null,
 }));
@@ -91,7 +91,7 @@ test('computeMugWakeBrief — EI-3419: the install slug renders as the ground-tr
 
 test('computeMugWakeBrief — owner steering directive flows into the brief (B-02 / P-002)', async () => {
   surveyPot.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
-  getOwnerSteering.mockResolvedValueOnce({ directive: 'Only the in-flight backlog — start nothing new.', eligiblePlans: ['plan-x'], eligiblePots: [], pauseNewWork: false, pausedUntil: null });
+  getOwnerSteering.mockResolvedValueOnce({ directive: 'Only the in-flight backlog — start nothing new.', eligiblePlans: ['plan-x'], eligibleHives: [], pauseNewWork: false, pausedUntil: null });
   const out = await computeMugWakeBrief('ws-1', 'papercup');
   assert.ok(out);
   assert.match(out!, /### Owner steering directive/);
@@ -117,7 +117,7 @@ test('computeMugWakeBrief — a flaky getOwnerSteering read is fail-soft (brief 
 
 test('computeMugWakeBrief — an EXPIRED pausedUntil is normalized away (no stale PAUSED line)', async () => {
   surveyPot.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
-  getOwnerSteering.mockResolvedValueOnce({ directive: null, eligiblePlans: [], eligiblePots: [], pauseNewWork: false, pausedUntil: 1 });
+  getOwnerSteering.mockResolvedValueOnce({ directive: null, eligiblePlans: [], eligibleHives: [], pauseNewWork: false, pausedUntil: 1 });
   const out = await computeMugWakeBrief('ws-1', 'papercup');
   // Specific to the owner-steering pause directive (not a bare /PAUSED/, which now also matches the
   // capacity panel's "POOL PAUSED" — the steering pause renders "start NO new work").
@@ -143,7 +143,7 @@ test('computeMugWakeBrief — capacity panel flows from the gateway oracle, fail
 
 test('computeMugWakeBrief — eligiblePots scopes the survey via allowedHarnesses (B-04 round-2, C-2)', async () => {
   surveyPot.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
-  getOwnerSteering.mockResolvedValueOnce({ directive: null, eligiblePlans: [], eligiblePots: ['pot-a', 'pot-b'], pauseNewWork: false, pausedUntil: null });
+  getOwnerSteering.mockResolvedValueOnce({ directive: null, eligiblePlans: [], eligibleHives: ['pot-a', 'pot-b'], pauseNewWork: false, pausedUntil: null });
   await computeMugWakeBrief('ws-1', 'papercup');
   // The eligiblePots scope reaches surveyPot as scopeFilter.allowedHarnesses.
   assert.deepEqual(surveyPot.mock.calls[0], [

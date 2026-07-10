@@ -159,12 +159,12 @@ export default defineTool({
     const patch: OwnerSteeringPatch = {};
     if (args.directive !== undefined) patch.directive = args.directive;
     if (args.eligiblePlans !== undefined) patch.eligiblePlans = args.eligiblePlans;
-    if (args.eligiblePots !== undefined) patch.eligiblePots = args.eligiblePots;
+    if (args.eligiblePots !== undefined) patch.eligibleHives = args.eligiblePots;
     if (args.includeUnplannedWork !== undefined) patch.includeUnplannedWork = args.includeUnplannedWork;
     if (args.modelTiers !== undefined) patch.modelTiers = args.modelTiers;
     if (args.tierCeilings !== undefined) patch.tierCeilings = args.tierCeilings;
     if (args.cadenceFloorSec !== undefined) patch.cadenceFloorSec = args.cadenceFloorSec;
-    if (args.maxCups !== undefined) patch.maxCups = args.maxCups;
+    if (args.maxCups !== undefined) patch.maxBees = args.maxCups;
     if (args.idleActivities !== undefined) patch.idleActivities = args.idleActivities;
     if (args.autoScaleOut !== undefined) patch.autoScaleOut = args.autoScaleOut;
     if (args.decomposition !== undefined) patch.decomposition = args.decomposition;

@@ -14,7 +14,7 @@ vi.mock('../../harness/fork-gc', () => ({
   gcForksForUpstreams: vi.fn(),
   DEFAULT_FORK_RETENTION_MS: 2_592_000_000,
 }));
-vi.mock('../../hive/enable-platform-mode', () => ({
+vi.mock('../../pot/enable-platform-mode', () => ({
   PAPERCUSP_CANONICAL_REPO_URL: 'https://github.com/Papercusp/papercup.git',
 }));
 

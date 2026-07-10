@@ -24,7 +24,7 @@ vi.mock('../../overwatch/control-state', () => ({
   getOverwatchCadenceSec: (...a: unknown[]) => getOverwatchCadenceSec(...a),
 }));
 
-vi.mock('../../hive/wake', () => ({
+vi.mock('../../pot/wake', () => ({
   resolvePotHomeSlug: (explicit?: string | null, ctxSlug?: string | null) =>
     explicit?.trim() || ctxSlug?.trim() || null,
 }));

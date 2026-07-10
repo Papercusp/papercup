@@ -70,7 +70,7 @@ export function watchdogStaleSec(): number {
 async function registeredPotState(workspaceId: string, installSlug: string): Promise<boolean | null> {
   if (installSlug === workspaceId) return true;
   try {
-    const { isRegisteredPot } = await import('../harness-registry');
+    const { isRegisteredHive: isRegisteredPot } = await import('../harness-registry');
     return await isRegisteredPot(workspaceId, installSlug);
   } catch {
     return null;

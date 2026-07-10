@@ -371,7 +371,7 @@ export async function recordPotThroughputTick(opts: {
         import('../fleet/operator-spawn'),
       ]);
       const steering = await getOwnerSteering(ws, opts.potSlug);
-      ownerMaxCups = steering.maxCups ?? null;
+      ownerMaxCups = steering.maxBees ?? null;
       systemCeiling = spawnConcurrencyCeiling();
     } catch {
       // Fail open: a steering read fault must not hide a genuine starvation breach.
