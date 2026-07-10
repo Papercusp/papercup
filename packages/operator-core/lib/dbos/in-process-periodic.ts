@@ -671,24 +671,36 @@ const sharedPresenceReaperCheck: PeriodicCheck = {
   },
 };
 
-// Every 10min: rubric-emission floor pulse (WI-2374 adoption step 1). Files the
-// deterministic pot-coordination-health floor when NO scorecard (agent or floor)
-// landed in the last hour — the data layer no longer dies with a stopped/dead
-// overwatch (the turn-end backstop only fires when an overwatch turn ENDS). Zero
-// LLM tokens; flag-gated (papercusp-overwatch) inside the pulse; a live overwatch
-// makes this a cheap freshness read + no-op. HEAVY when it fires (computeSystemHealth)
-// → sheds under saturation; a shed cycle just delays the floor 10min.
+// Every 10min: rubric-emission floor pulse (WI-2374 adoption step 1) + the
+// cadence-miss ESCALATION (WI-3777). The FLOOR files the deterministic
+// pot-coordination-health floor when NO scorecard (agent or floor) landed in the last
+// hour — the data layer no longer dies with a stopped/dead overwatch (the turn-end
+// backstop only fires when an overwatch turn ENDS). The ESCALATION adds the teeth a
+// floor lacks: a loop that is enabled+started but silently STOPS emitting complete
+// cards (a wedge, as on 2026-07-10 08:32Z) is raised as ONE debounced owner advisory,
+// while a benign stopped/paused supervisor stays floor-only. Both run on THIS
+// in-process seam, independent of the routinesTick pool-shed path that froze the loop.
+// Zero LLM tokens; flag-gated (papercusp-overwatch) inside each; a live overwatch makes
+// both a cheap freshness read + no-op. HEAVY when the floor fires (computeSystemHealth)
+// → sheds under saturation; a shed cycle just delays the floor/check 10min.
 const scorecardEmissionPulseCheck: PeriodicCheck = {
   name: 'scorecard-emission-pulse',
   intervalMs: 600_000,
   shed: true,
   tick: async () => {
     const { readRegistry } = await import('../workspace-registry');
-    const { runScorecardEmissionPulse } = await import('../scorecard-emission-pulse');
+    const { runScorecardEmissionPulse, checkOverwatchEmissionWedge } = await import(
+      '../scorecard-emission-pulse'
+    );
     for (const ws of readRegistry().workspaces.map((w) => w.id)) {
       const r = await runScorecardEmissionPulse({ workspaceId: ws });
       if (r.outcome === 'filed') {
         console.warn(`[scorecard-emission-pulse] ${ws}: ${r.reason}`);
+      }
+      // WI-3777: escalate a loop-alive-but-not-emitting WEDGE (a floor is not an alarm).
+      const w = await checkOverwatchEmissionWedge({ workspaceId: ws });
+      if (w.outcome === 'escalated') {
+        console.warn(`[scorecard-emission-pulse] ${ws}: WEDGE — ${w.reason}`);
       }
     }
   },

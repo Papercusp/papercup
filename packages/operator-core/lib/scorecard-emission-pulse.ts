@@ -43,11 +43,19 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { overwatchEnabled } from './overwatch/watchdog';
-import { getOverwatchControlState } from './overwatch/snapshot';
-import { checkScorecardFreshness } from './scorecard-freshness';
+import { getOverwatchControlState, getOverwatchLiveness } from './overwatch/snapshot';
+import {
+  checkScorecardFreshness,
+  interpretOverwatchEmission,
+  type OverwatchEmissionContext,
+  type FreshnessVerdict,
+} from './scorecard-freshness';
 import { computeSystemHealth } from './system-health/compute';
 import { captureImprovement } from './harness/improvements/capture-core';
 import { findIssuesByWatchdogKeys, mergeIssuePayload } from './issues-engineer';
+import { openEscalation } from './agent-tools/coordination/escalations';
+import type { AgentIdentity } from './agent-tools/coordination/identity';
+import { DEFAULT_OVERWATCH_CADENCE_SEC } from './overwatch/control-state';
 import {
   COORDINATION_RUBRIC_REF,
   synthesizeCoordinationScorecard,
@@ -55,6 +63,7 @@ import {
   type ScorecardRating,
 } from './overwatch/scorecard-backstop';
 import type { SystemHealth } from './system-health/types';
+import type { OverwatchLiveness } from './overwatch/brief-types';
 
 /** Stable cross-tick dedup key for this hive's pulse floor (WI-2977). Same shape
  *  convention as `watchdogKeyOf` elsewhere: `<source>:<key>`. */
@@ -247,6 +256,202 @@ export async function runScorecardEmissionPulse(
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.warn(`[scorecard-emission-pulse] pulse failed (${workspaceId}): ${msg}`);
+    return { outcome: 'error', reason: msg };
+  }
+}
+
+// ── WI-3777: the cadence-miss ESCALATION (the companion to the floor above) ──────
+//
+// The floor keeps the DATA layer alive when the supervisor STOPS — but a floor is
+// not an alarm, and a wide-window `scorecards:freshness` read still says 'fresh'
+// while a loop that is enabled+started silently STOPS emitting complete cards. That
+// exact silent wedge cost hours on 2026-07-10 (overwatch launched last at 08:32Z,
+// the one-shot never re-armed, freshness still read 'fresh' off the 08:35Z card).
+//
+// This adds the missing teeth: on the SAME in-process periodic seam (independent of
+// the routinesTick pool-shed path that froze the loop), disambiguate the emission
+// gap with the EXISTING `interpretOverwatchEmission` interpreter over a TIGHT window
+// (2× the overwatch cadence) and — only for its ACTIONABLE verdicts (`loop-dead` /
+// `agent-skipping`) — raise ONE debounced owner advisory. The benign verdicts
+// (`overwatch-disabled` / `overwatch-not-started`) stay floor-only, never alarm.
+//
+// Debounce is FREE: `openEscalation` dedups on (dedupKind, subjectSignature), so a
+// persisting wedge bumps a single open advisory's repeatCount instead of re-alerting
+// each 10-min tick; advisory escalations also auto-expire after 7d. No new table.
+
+/** Wedge-detection window as a multiple of the overwatch cadence. 2× mirrors the
+ *  liveness STALE_CADENCE_MULTIPLE, so "loop went stale" and "no complete card"
+ *  trip on the same threshold — one missed cycle is tolerable jitter, two is a wedge. */
+export const WEDGE_STALE_CADENCE_MULTIPLE = 2;
+
+/** dedupKind for the wedge advisory — one stable open row per (hive, verdict). */
+const EMISSION_WEDGE_DEDUP_KIND = 'scorecard-emission-wedge';
+
+/** Synthetic identity for the background wedge escalation (mirrors steering-churn). */
+const EMISSION_WEDGE_IDENTITY: AgentIdentity = {
+  ownerId: 'scorecard-emission-pulse',
+  ownerLabel: 'system · scorecard-emission-pulse',
+  source: 'principal',
+  workspaceId: null,
+  userId: null,
+};
+
+export interface EmissionWedgeEscalation {
+  sourceHive: string;
+  verdict: FreshnessVerdict;
+  /** the interpreter's one-line WHY + what-to-do note. */
+  note: string;
+  lastRunAt: string | null;
+  lastCompleteAt: string | null;
+  windowMs: number;
+  cadenceSec: number;
+}
+
+/** Escalation sink — injectable so the detector is testable without coord IO. */
+export type EmissionWedgeEscalator = (input: EmissionWedgeEscalation) => Promise<void>;
+
+/** Default escalator: a debounced `coord:escalate` advisory to the human (the same
+ *  `openEscalation` path the tool handler uses; harness_slug FEDERATES it to the
+ *  owner's inbox hub — WI-1375). The stable subjectSignature is the debounce key. */
+const defaultEmissionWedgeEscalator: EmissionWedgeEscalator = async (input) => {
+  const mins = Math.round(input.windowMs / 60_000);
+  const subjectSignature = `${EMISSION_WEDGE_DEDUP_KIND}:${input.sourceHive}:${input.verdict}`;
+  await openEscalation(EMISSION_WEDGE_IDENTITY, {
+    severity: 'advisory',
+    summary: `Overwatch emission wedge: ${input.sourceHive} — ${input.verdict} (monitor-the-monitor silent)`,
+    body:
+      `${input.note}\n\n` +
+      `Evidence: no COMPLETE ${COORDINATION_RUBRIC_REF} scorecard in the last ${mins}m ` +
+      `(${WEDGE_STALE_CADENCE_MULTIPLE}× the ${input.cadenceSec}s overwatch cadence). ` +
+      `Overwatch loop lastRunAt=${input.lastRunAt ?? 'never'}; ` +
+      `last complete card=${input.lastCompleteAt ?? 'none in-window'}.\n\n` +
+      `This is the cadence-miss ESCALATION (WI-3777). The scorecard-emission-pulse FLOOR keeps the ` +
+      `data layer alive when the supervisor stops, but a floor is not an alarm: a loop that is ` +
+      `enabled + started yet not emitting complete cards is a SILENT WEDGE (as on 2026-07-10 08:32Z, ` +
+      `when a wide-window freshness read still said 'fresh'). Investigate the overwatch launch chain ` +
+      `(kettle:start / kettle:declare-wake, the [overwatch-loop] journal) and host load (pool-churn).`,
+    harness_slug: input.sourceHive,
+    meta: { dedupKind: EMISSION_WEDGE_DEDUP_KIND, subjectSignature },
+  });
+};
+
+/** Record a "the wedge detector fired" signal into the shared watchdog-fires table
+ *  under its own source, so a persisting wedge leaves a countable trail distinct
+ *  from the pulse floor's `scorecard-pulse` fires. Best-effort; never throws. */
+async function recordWedgeFire(workspaceId: string, installSlug: string, reason: string): Promise<void> {
+  try {
+    const { sql } = getOrgPg();
+    await sql`
+      INSERT INTO harness_shared.hive_watchdog_fires
+        (workspace_id, install_slug, source, reason, wake_at, demand)
+      VALUES (${workspaceId}, ${installSlug}, ${'scorecard-emission-wedge'}, ${reason}, ${null}, ${'{}'}::text::jsonb)`;
+  } catch (e) {
+    console.warn(`[scorecard-emission-pulse] wedge fire record failed: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
+/** Dependency seam — defaults to the real impls; injectable for hermetic tests. */
+export interface OverwatchEmissionWedgeDeps {
+  liveness?: typeof getOverwatchLiveness;
+  freshness?: typeof checkScorecardFreshness;
+  escalate?: EmissionWedgeEscalator;
+  recordFire?: (workspaceId: string, installSlug: string, reason: string) => Promise<void>;
+}
+
+export interface EmissionWedgeResult {
+  /** 'escalated' = an actionable wedge was found + a (deduped) advisory raised;
+   *  'skipped' = benign / healthy / no hive; 'error' = the check itself failed
+   *  (recorded, never thrown). */
+  outcome: 'escalated' | 'skipped' | 'error';
+  reason: string;
+  /** the interpreter verdict, when one was computed. */
+  verdict?: FreshnessVerdict;
+}
+
+/**
+ * One wedge-check pass for one workspace: read the overwatch loop liveness, measure
+ * COMPLETE-card freshness over a tight 2×-cadence window (synthesized floors are
+ * NOT counted — they must never mask a wedge), disambiguate via
+ * `interpretOverwatchEmission`, and escalate ONLY on an actionable verdict.
+ *
+ * Benign short-circuits (flag off / not started / no hive) never alarm — those are
+ * the pulse floor's job. A `loop-dead` verdict with a NEVER-fired loop (lastRunAt
+ * null ⇒ `ageMs` null) is the benign pre-first-fire window right after kettle:start,
+ * NOT a wedge, so it is skipped; only a loop that WAS firing and went silent past the
+ * window (the WI-3777 08:32Z signature) escalates. `agent-skipping` always has a
+ * recent lastRunAt (that is why the loop reads alive), so it is unaffected.
+ */
+export async function checkOverwatchEmissionWedge(
+  opts: { workspaceId: string },
+  deps: OverwatchEmissionWedgeDeps = {},
+): Promise<EmissionWedgeResult> {
+  const { workspaceId } = opts;
+  const liveness = deps.liveness ?? getOverwatchLiveness;
+  const freshness = deps.freshness ?? checkScorecardFreshness;
+  const escalate = deps.escalate ?? defaultEmissionWedgeEscalator;
+  const recordFire = deps.recordFire ?? recordWedgeFire;
+  try {
+    const live = await liveness({ workspaceId });
+
+    // Benign, expected emission gaps — the floor covers the data layer; never alarm.
+    if (!live.flagEnabled) return { outcome: 'skipped', reason: 'overwatch disabled (flag off) — benign' };
+    if (!live.started) return { outcome: 'skipped', reason: 'overwatch not started (pre-armed/paused) — benign' };
+    const sourceHive = live.potSlug;
+    if (!sourceHive) return { outcome: 'skipped', reason: 'no hive configured for this workspace' };
+
+    const cadenceSec = live.cadenceSec > 0 ? live.cadenceSec : DEFAULT_OVERWATCH_CADENCE_SEC;
+    const windowMs = cadenceSec * 1000 * WEDGE_STALE_CADENCE_MULTIPLE;
+
+    // COMPLETE agent cards only (includeSynthesized:false) — a synthesized floor must
+    // NOT mask a wedge, which is the whole point of alarming above the floor.
+    const f = await freshness({
+      rubricRef: COORDINATION_RUBRIC_REF,
+      sourceHive,
+      lookbackMs: windowMs,
+      includeSynthesized: false,
+    });
+
+    const ctx: OverwatchEmissionContext = {
+      flagEnabled: live.flagEnabled,
+      started: live.started,
+      loopAlive: live.alive,
+      loopStale: live.stale,
+      lastRunAt: live.lastRunAt,
+    };
+    const interp = interpretOverwatchEmission(f.status, ctx);
+    if (!interp.actionable) {
+      return { outcome: 'skipped', reason: `no wedge (${interp.verdict})`, verdict: interp.verdict };
+    }
+
+    // Startup-race guard: a never-fired loop right after kettle:start reads `loop-dead`
+    // (enabled+started, no fire yet), but that is the benign pre-first-fire window, not
+    // a wedge. Only escalate loop-dead once the loop HAS fired and gone silent past the
+    // window (ageMs present ⇒ loopStale already means aged past 2× cadence).
+    if (interp.verdict === 'loop-dead' && live.ageMs == null) {
+      return {
+        outcome: 'skipped',
+        reason: 'loop never fired yet (pre-first-fire / not-armed) — not a wedge',
+        verdict: interp.verdict,
+      };
+    }
+
+    await escalate({
+      sourceHive,
+      verdict: interp.verdict,
+      note: interp.note,
+      lastRunAt: live.lastRunAt,
+      lastCompleteAt: f.lastCompleteAt,
+      windowMs,
+      cadenceSec,
+    });
+    const reason = `emission wedge (${interp.verdict}) — no complete card in ${Math.round(
+      windowMs / 60_000,
+    )}m; escalated (deduped)`;
+    await recordFire(workspaceId, sourceHive, reason);
+    return { outcome: 'escalated', reason, verdict: interp.verdict };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(`[scorecard-emission-pulse] wedge check failed (${workspaceId}): ${msg}`);
     return { outcome: 'error', reason: msg };
   }
 }

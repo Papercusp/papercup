@@ -10,8 +10,12 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   runScorecardEmissionPulse,
+  checkOverwatchEmissionWedge,
+  WEDGE_STALE_CADENCE_MULTIPLE,
   PULSE_WINDOW_MS,
   type ScorecardEmissionPulseDeps,
+  type OverwatchEmissionWedgeDeps,
+  type EmissionWedgeEscalation,
 } from './scorecard-emission-pulse';
 import {
   COORDINATION_CRITERIA,
@@ -19,6 +23,7 @@ import {
 } from './overwatch/scorecard-backstop';
 import type { SystemHealth } from './system-health/types';
 import type { ScorecardFreshness } from './scorecard-freshness';
+import type { OverwatchLiveness } from './overwatch/brief-types';
 
 const EMPTY_HEALTH = { panels: {}, evaluatedAt: 0 } as unknown as SystemHealth;
 
@@ -213,5 +218,173 @@ describe('runScorecardEmissionPulse', () => {
       expect(readPulseRepeatCount({ pulseRepeat: { count: 'nope' } })).toBe(0);
       expect(readPulseRepeatCount({ pulseRepeat: { count: 5 } })).toBe(5);
     });
+  });
+});
+
+// ── WI-3777: the cadence-miss ESCALATION ─────────────────────────────────────────
+//
+// The contract under test: escalate ONLY an actionable emission-wedge verdict
+// (loop-dead / agent-skipping) as a debounced owner advisory; a benign
+// stopped/paused/disabled supervisor stays floor-only (never alarms); the freshness
+// read counts ONLY complete agent cards (synthesized floors must not mask a wedge);
+// a never-fired loop right after start is the pre-first-fire window, not a wedge.
+// Fully deps-injected — no PG / flags / coord IO / vi.mock.
+
+function livenessResult(over: Partial<OverwatchLiveness> = {}): OverwatchLiveness {
+  return {
+    potSlug: 'papercusp',
+    started: true,
+    flagEnabled: true,
+    cadenceSec: 600,
+    lastRunAt: '2026-07-10T18:00:00Z',
+    lastStatus: 'ok',
+    consecutiveErrors: 0,
+    ageMs: 30_000,
+    nextRunAt: '2026-07-10T18:10:00Z',
+    nextRunInMs: 570_000,
+    alive: true,
+    stale: false,
+    recentRuns: [],
+    ...over,
+  };
+}
+
+function mkWedgeDeps(over: Partial<OverwatchEmissionWedgeDeps> = {}): {
+  deps: OverwatchEmissionWedgeDeps;
+  escalate: ReturnType<typeof vi.fn>;
+  recordFire: ReturnType<typeof vi.fn>;
+  freshness: ReturnType<typeof vi.fn>;
+} {
+  const escalate = vi.fn(async (_i: EmissionWedgeEscalation) => {});
+  const recordFire = vi.fn(async () => {});
+  // Default: loop ALIVE + no complete card in-window → the agent-skipping wedge.
+  const freshness = vi.fn(async () => freshnessResult({ status: 'stale' }));
+  return {
+    escalate,
+    recordFire,
+    freshness,
+    deps: {
+      liveness: (async () => livenessResult()) as never,
+      freshness: freshness as never,
+      escalate,
+      recordFire,
+      ...over,
+    },
+  };
+}
+
+describe('checkOverwatchEmissionWedge (WI-3777 cadence-miss escalation)', () => {
+  it('loop ALIVE but no complete card in-window → escalates agent-skipping (once) + records the fire', async () => {
+    const { deps, escalate, recordFire } = mkWedgeDeps();
+    const r = await checkOverwatchEmissionWedge({ workspaceId: 'ws' }, deps);
+    expect(r.outcome).toBe('escalated');
+    expect(r.verdict).toBe('agent-skipping');
+    expect(escalate).toHaveBeenCalledTimes(1);
+    expect(recordFire).toHaveBeenCalledTimes(1);
+    const arg = escalate.mock.calls[0][0] as EmissionWedgeEscalation;
+    expect(arg.sourceHive).toBe('papercusp');
+    expect(arg.verdict).toBe('agent-skipping');
+  });
+
+  it('loop STALE with a prior fire (the 08:32Z signature) → escalates loop-dead', async () => {
+    const { deps, escalate } = mkWedgeDeps({
+      liveness: (async () =>
+        livenessResult({ alive: false, stale: true, lastRunAt: '2026-07-10T17:30:00Z', ageMs: 30 * 60_000 })) as never,
+    });
+    const r = await checkOverwatchEmissionWedge({ workspaceId: 'ws' }, deps);
+    expect(r.outcome).toBe('escalated');
+    expect(r.verdict).toBe('loop-dead');
+    expect(escalate).toHaveBeenCalledTimes(1);
+    expect((escalate.mock.calls[0][0] as EmissionWedgeEscalation).lastRunAt).toBe('2026-07-10T17:30:00Z');
+  });
+
+  it('the startup-race guard: loop NEVER fired (ageMs null) → skipped, NOT a wedge, no escalation', async () => {
+    const { deps, escalate, recordFire } = mkWedgeDeps({
+      liveness: (async () =>
+        livenessResult({ alive: false, stale: true, lastRunAt: null, ageMs: null })) as never,
+    });
+    const r = await checkOverwatchEmissionWedge({ workspaceId: 'ws' }, deps);
+    expect(r.outcome).toBe('skipped');
+    expect(r.verdict).toBe('loop-dead');
+    expect(r.reason).toContain('never fired');
+    expect(escalate).not.toHaveBeenCalled();
+    expect(recordFire).not.toHaveBeenCalled();
+  });
+
+  it('healthy: a COMPLETE card in-window → skipped (no wedge), no escalation', async () => {
+    const { deps, escalate } = mkWedgeDeps({
+      freshness: (async () =>
+        freshnessResult({ status: 'fresh', emitted: true, complete: true, count: 1, lastCompleteAt: '2026-07-10T18:05:00Z' })) as never,
+    });
+    const r = await checkOverwatchEmissionWedge({ workspaceId: 'ws' }, deps);
+    expect(r.outcome).toBe('skipped');
+    expect(r.verdict).toBe('fresh');
+    expect(escalate).not.toHaveBeenCalled();
+  });
+
+  it('benign STOPPED supervisor (not started) → skipped floor-only; freshness never read', async () => {
+    const freshness = vi.fn(async () => freshnessResult());
+    const { deps, escalate } = mkWedgeDeps({
+      liveness: (async () => livenessResult({ started: false, alive: false, stale: false })) as never,
+      freshness: freshness as never,
+    });
+    const r = await checkOverwatchEmissionWedge({ workspaceId: 'ws' }, deps);
+    expect(r.outcome).toBe('skipped');
+    expect(r.reason).toContain('not started');
+    expect(escalate).not.toHaveBeenCalled();
+    expect(freshness).not.toHaveBeenCalled();
+  });
+
+  it('flag off → skipped (benign), no escalation, freshness never read', async () => {
+    const freshness = vi.fn(async () => freshnessResult());
+    const { deps, escalate } = mkWedgeDeps({
+      liveness: (async () => livenessResult({ flagEnabled: false })) as never,
+      freshness: freshness as never,
+    });
+    const r = await checkOverwatchEmissionWedge({ workspaceId: 'ws' }, deps);
+    expect(r.outcome).toBe('skipped');
+    expect(r.reason).toContain('disabled');
+    expect(escalate).not.toHaveBeenCalled();
+    expect(freshness).not.toHaveBeenCalled();
+  });
+
+  it('no hive configured → skipped', async () => {
+    const { deps, escalate } = mkWedgeDeps({
+      liveness: (async () => livenessResult({ potSlug: null })) as never,
+    });
+    const r = await checkOverwatchEmissionWedge({ workspaceId: 'ws' }, deps);
+    expect(r.outcome).toBe('skipped');
+    expect(r.reason).toContain('no hive');
+    expect(escalate).not.toHaveBeenCalled();
+  });
+
+  it('freshness is read for COMPLETE cards only (includeSynthesized:false) over the 2×-cadence window', async () => {
+    const { deps, freshness } = mkWedgeDeps();
+    await checkOverwatchEmissionWedge({ workspaceId: 'ws' }, deps);
+    expect(freshness).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rubricRef: COORDINATION_RUBRIC_REF,
+        sourceHive: 'papercusp',
+        lookbackMs: 600 * 1000 * WEDGE_STALE_CADENCE_MULTIPLE,
+        includeSynthesized: false,
+      }),
+    );
+  });
+
+  it('a throwing escalator → outcome error, NEVER a throw into the scheduler', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { deps } = mkWedgeDeps({
+        escalate: async () => {
+          throw new Error('coord down');
+        },
+      });
+      const r = await checkOverwatchEmissionWedge({ workspaceId: 'ws' }, deps);
+      expect(r.outcome).toBe('error');
+      expect(r.reason).toContain('coord down');
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
