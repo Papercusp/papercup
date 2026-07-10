@@ -2087,6 +2087,29 @@ export function loopIterationNoiseExclusionSql(sql: OrgSql) {
 }
 
 /**
+ * The ALREADY-TERMINALLY-COMPLETED self-select EXCLUSION floor for issue-family claims
+ * (EI-8972). `work_items:complete` records a structured completion (terminal_owner +
+ * terminal_completion_ref) but a caller can omit the top-level `state` — the tool warns
+ * about it (`stateWarning`) but does not reject it, so the row's `status` can be left
+ * sitting in a non-terminal value (e.g. 'open') even though it has genuinely been
+ * completed/diagnosed. Without this floor that row stays in the claimable pool and a
+ * DIFFERENT agent (possibly a different fleet) self-selects it fresh, re-discovering work
+ * a peer already finished — observed live: WI-3646, completed+terminal-owned by one agent
+ * as a duplicate, re-claimed whole by another via claim_next minutes later because `state`
+ * was never flipped off 'open'. A non-null terminal_owner + terminal_completion_ref is
+ * itself a strong "already settled, don't re-place" signal independent of `status` — pool-
+ * exclude it (like observation/needsHuman/federation-detector/loop-noise above) so an
+ * all-already-completed backlog also reads `drained:true` instead of idling a drainer on
+ * unpickable rows. Still directly claimable BY ID (e.g. to formally flip its `state`).
+ */
+export function alreadyTerminallyCompletedExclusionSql(sql: OrgSql) {
+  return sql`(
+    (wi.terminal_owner IS NULL OR wi.terminal_owner = '')
+    OR (wi.terminal_completion_ref IS NULL OR wi.terminal_completion_ref = '')
+  )`;
+}
+
+/**
  * Set (or clear) an issue-family work-item's self-select claim hold (WI-2797). A held item is
  * excluded from `claim_next`/`scheduler:get_next` self-selection (see
  * {@link claimHoldExclusionSql}) but stays otherwise normal — visible, commentable, and
@@ -2345,7 +2368,11 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          AND ${federationDetectorExclusionSql(sql)}
          -- EI-8802: a stray AUTO-loop-iteration bookkeeping marker is likewise not work-queue
          -- material AT ALL — pool-exclude it too, same rationale as observation/needsHuman.
-         AND ${loopIterationNoiseExclusionSql(sql)}`;
+         AND ${loopIterationNoiseExclusionSql(sql)}
+         -- EI-8972: a row already carrying a genuine terminal completion (terminal_owner +
+         -- terminal_completion_ref both set) is likewise not work-queue material AT ALL, even
+         -- if its status was never flipped terminal — pool-exclude it too.
+         AND ${alreadyTerminallyCompletedExclusionSql(sql)}`;
     pendingUnclaimed += issuePoolRows[0]?.n ?? 0;
 
     // READY issue count — mirrors claimNextIssueWorkItem's WHERE exactly: the pool floors
@@ -2401,6 +2428,9 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- EI-8802: a stray AUTO-loop-iteration bookkeeping marker is not work-queue material
          -- either — same floor the claim applies (below), so the miss diagnosis never disagrees.
          AND ${loopIterationNoiseExclusionSql(sql)}
+         -- EI-8972: an already-genuinely-terminally-completed row is not work-queue material
+         -- either — same floor the claim applies (below), so the miss diagnosis never disagrees.
+         AND ${alreadyTerminallyCompletedExclusionSql(sql)}
          -- Mig 499: a row still in ITS OWN release-cooldown (this caller released it recently)
          -- is likewise pending-but-gated for THIS caller — same floor claimNextIssueWorkItem applies.
          AND ${
@@ -2532,6 +2562,12 @@ export async function claimNextIssueWorkItem(
           -- misfiled loop:checkpoint substitute) — pure recycle churn for zero real work.
           -- Still directly claimable BY ID.
           AND ${loopIterationNoiseExclusionSql(sql)}
+          -- EI-8972: never self-select a row that already carries a genuine terminal
+          -- completion (terminal_owner + terminal_completion_ref both set) even if its
+          -- status was never flipped terminal — a peer already finished/diagnosed it
+          -- (work_items:complete's own stateWarning documents this exact gap: a caller can
+          -- omit state and leave the row claimable). Still directly claimable BY ID.
+          AND ${alreadyTerminallyCompletedExclusionSql(sql)}
           -- Mig 499: release-cooldown floor (mirrors claimFloorsWhereSql's feature-family
           -- clause) — NULL-safe: never released, released by someone else, or released
           -- long enough ago, all pass; only "released by ME within the cooldown window"

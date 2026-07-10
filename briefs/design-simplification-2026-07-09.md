@@ -278,10 +278,38 @@ Owner-approved 2026-07-09; executor: su ("implement it yourself from start to fi
   native `<table>`, wrapped once). Verified: `_lints` 29/29 (was 21), vite components
   29/29, p2p page 9/9. Do NOT re-add an allowlist entry for a file that merely
   mentions a primitive in a comment — that bug is fixed; fix your file, not the list.
-- **P-010** globals.css split (26,935 lines/834KB; .operator-* 2001, .pc-* 1468,
-  .oracle-* 318): DELETE dead .oracle-*/.op-chat-* blocks (post P-003), extract
-  Deck/feed chrome → deck.css, etc. Brace-balanced splitter + frost/black visual
-  litmus via tauri-agent-tools.
+- **P-010** globals.css dead-CSS deletion — **[DONE 2026-07-09 — THE BLOCKS WERE
+  NOT YET DEAD; ONE ORPHAN COMPONENT WAS HOLDING ALL 29 `.oracle-*` CLASSES ALIVE]**
+  The premise ".oracle-*/.op-chat-* are dead post-P-003" was FALSE when written:
+  P-003 retired the *parents* (OracleDock, OperatorChat) and left their shared
+  child `ChatConversation.tsx` behind — a component nothing rendered, but which
+  referenced every `.oracle-*` class. **Stage 1** finished that retirement
+  (ChatConversation + PendingCardsBar + LocalCardHost + tests →
+  `_retired/legacy-web-chats/`; `ChatMessage`/`ChatToolCall` lifted into
+  `app/_components/chat/chat-types.ts`; `AskChoiceCard`/`InputCard`/
+  `ReportBlockCard` are KEEPERS, reached from `app/admin/plans/*` and
+  `lib/chat-cards/`). Only then was the CSS provably dead.
+  **Stage 2** deleted it with a selector-based, comment-masked, brace-balanced
+  script that refuses to write unless (a) brace balance is 0, (b) no retired
+  class survives and (c) no NON-retired class disappears except modifier-only
+  ones. Result: **399 rules deleted, 4 at-rules dropped, 7 mixed preludes
+  rewritten (17 retired selectors dropped, live ones kept verbatim), 26,651 →
+  23,965 lines (−2,663, −7.9%)**.
+  ⚠ Two traps this item disarmed, for whoever touches this next:
+  1. **Never grep-and-delete on `op-chat-`.** 2 of the 6 `@keyframes op-chat-*`
+     were LIVE, animating the *surviving* AskChoiceCard. They are now renamed to
+     `ask-choice-option-sheen` / `ask-choice-card-pick`; the other 4 were deleted.
+  2. **`--op-chat-w` was never "a live variable"** (an earlier note here said so).
+     `OperatorChatSidebar` was its only writer, so post-P-003 it could never
+     resolve — the two layout rails read it with a `0px` fallback, i.e. always 0.
+     Removed everywhere (rails, `RUNTIME_TOKENS`, gotchas.mdx);
+     `index-html-no-op-chat-reservation.test.ts` now guards the phantom offset too.
+  **The "extract Deck/feed chrome → deck.css" half of this item is STALE** — there
+  is no `.deck-*` family (the string "deck" appears 4× in globals.css, 3 of them
+  in comments). The file's real structure is `.operator-*` (2,001 rules) + `.pc-*`
+  (1,468) = ~96% of it; any future split is along THAT seam, and must preserve
+  source order (equal-specificity cascade). Filed separately rather than smuggled
+  into a deletion item.
 - **P-011** delete legacy hive theme alias (hive.semantic.tokens.json +
   generated css + theme.ts readers map hive→honeycomb + docs). npm run tokens.
 - **P-012** letter-spacing: add baseline reset; delete ~495 css + ~60 inline

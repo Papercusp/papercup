@@ -990,6 +990,21 @@ export const FLAGS = {
   // dark until both dogfood machines updated; owner flips after a 2-machine verify.
   // Listed in KNOWN_DARK_FLAGS (cutover).
   PRESENCE_GOSSIP: "papercusp-presence-gossip",
+  // cross-machine-coord-parity-and-trust-2026-07-01 P-021 live cutover (WI-1491):
+  // switches lockAuthorityFor/lockAuthorityForHive's winner-selection algorithm from
+  // the single global argmin(device_pubkey) (D-005, one peer is EVERY scope's
+  // authority) to per-scope-key RENDEZVOUS HASHING (HRW — authority/rendezvous-
+  // authority.ts, proven in isolation, NOT yet wired live). OFF ⇒ selectAuthorityFromRows
+  // argmin, today's byte-identical behavior. ON ⇒ selectAuthorityRendezvous
+  // (argmax HRW weight over `scopeKey`, defaulting to the harness/hive slug when no
+  // finer-grained scopeKey is threaded through by a caller — so existing call sites
+  // work unchanged, they just get HRW's peer picked instead of argmin's). Ships dark:
+  // a live cutover of the lock/claim serialization point across the whole fleet needs
+  // an attended multi-peer verify (confirm authority resolution + failover still agree
+  // byte-identical across peers before flipping the shared coordination primitive) —
+  // the CLAUDE.md "reversible cutover kill-switch" dark case, not "finished, ship it".
+  // Listed in KNOWN_DARK_FLAGS (cutover).
+  HRW_RENDEZVOUS_AUTHORITY: "papercusp-hrw-rendezvous-authority",
   // workspace-data-isolation-leaks-2026-06-17 F-E1 (PHASE 1): scope the routines
   // upsert's ON CONFLICT to (workspace_id, install_slug, name) so a hive in workspace
   // B can no longer CLOBBER a same-named routine in workspace A (the latent leak — 0
@@ -1480,6 +1495,7 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     // first-party rubrics locally; the Cupboard kind='rubric' marketplace is a v2 seam.
     [FLAGS.RUBRICS_MARKETPLACE, { case: 'parked', reason: 'local-first-party-rubric-bundling-2026-07-07 (owner-directed 2026-07-07, the templates-v1 design applied to rubrics): V1 ships the first-party rubrics bundled in-app (sidecar/rubrics content dirs) and seeds them into the workspace rubric store on first rubrics:* read (idempotent, no-clobber — an existing workspace rubricId always wins). The Cupboard MARKETPLACE merge for kind=rubric listings is deliberately deferred to v2 — no remote-fetch code exists yet; the flag reserves the seam. OFF ⇒ rubrics:* resolve the workspace store (+ bundled seed) only. Owner flips ON in v2 when the rubric marketplace ships.' }],
     [FLAGS.OWN_LOG_FORK_AUTO_RECOVERY, { case: 'owner-authority', reason: 'p2p-parity-parallel-lanes-2026-07-09 P-003 (WI-3535): the own-log-fork-guard auto-recovery sketch (own-log-fork-recovery.ts) performs a per-harness Corestore STORE RESET — deletes the on-disk peer-log directory so a fresh keypair is minted on next boot — to break the equivocation-loop boot loop. DESTRUCTIVE: it discards any local hypercore-only history not yet merged into PG, so unattended auto-recovery is unsafe until the owner personally ratifies it (the plan explicitly requires this flag-gated default-OFF). OFF ⇒ recoverForkedOwnLog always short-circuits with reason:"flag_off"; the detector still files a durable EI naming the supported MANUAL recovery. Owner flips ON only after reviewing the destructive blast radius.' }],
+    [FLAGS.HRW_RENDEZVOUS_AUTHORITY, { case: 'cutover', reason: 'WI-1491 (cross-machine-coord-parity-and-trust-2026-07-01 P-021 live cutover): flips lockAuthorityFor/lockAuthorityForHive from the global argmin(device_pubkey) winner rule to per-scope HRW rendezvous hashing. Every peer computes the winner independently and PURELY from shared_presence + the flag value — if peers disagree on the flag mid-flip (rolling deploy), they compute DIFFERENT authorities for the same scope, defeating the whole point of a single serialization point (same class of risk as PRESENCE_GOSSIP\'s reader/writer skew). OFF ⇒ selectAuthorityFromRows argmin, byte-identical to pre-WI-1491 behavior. Owner flips ON after a multi-peer verify that every live peer resolves the same authority for a shared scope.' }],
   ]);
 
 // ── The dark allowlist's HYGIENE BOUNDS (re-review deadline + size ceiling) ────

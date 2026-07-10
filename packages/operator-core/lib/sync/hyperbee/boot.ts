@@ -3321,7 +3321,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // ref-announce" to a live socket to dial, which is exactly what
         // wireHiveGitDial (peer-dial-registry.ts) populates on every
         // connection, symmetric with wireHiveGitServe above.
-        ...(hiveHomeProjectionSlug ? { hiveGitDial: { selfDevicePubkeyBase64: identity.devicePubkeyBase64 } } : {}),
+        // WI-3641: sign our hello frame with the same identity keypair that
+        // signs our announce — the peer's serve-side verifies it before
+        // binding `selfDevicePubkeyBase64` to the live socket, so a scope-repo
+        // fetch can be authorized against a PROVEN device identity.
+        ...(hiveHomeProjectionSlug
+          ? { hiveGitDial: { selfDevicePubkeyBase64: identity.devicePubkeyBase64, sign: signOurAnnounce } }
+          : {}),
         onPeerConnected: (keyHex) => {
           recordBootEvent(opts.workspaceId, opts.harnessSlug, 'peer_connected');
            

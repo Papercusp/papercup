@@ -109,40 +109,13 @@ const CODEX_LOCK_ENFORCEMENT_NOTE = [
   '',
 ].join('\n');
 
-/** Escape a value for a TOML double-quoted basic string. */
-function tomlEscape(s: string): string {
-  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-}
-
-function gatewayPort(): number {
-  const p = Number(process.env.PAPERCUSP_GATEWAY_PORT);
-  return Number.isFinite(p) && p > 0 ? p : 8788;
-}
-
-function codexGatewayConfigToml(accountId?: string | null): { root: string[]; tables: string[] } {
-  if (!accountId) return { root: [], tables: [] };
-  const providerId = 'papercusp-codex-gateway';
-  return {
-    root: [
-      '# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT',
-      '# Route Codex model traffic through the Papercusp inference gateway account pin.',
-      `model_provider = "${providerId}"`,
-      '# END PAPERCUSP_CODEX_GATEWAY_ROOT',
-      '',
-    ],
-    tables: [
-      '# BEGIN PAPERCUSP_CODEX_GATEWAY_PROVIDER',
-      `[model_providers.${providerId}]`,
-      'name = "Papercusp Codex Gateway"',
-      `base_url = "http://127.0.0.1:${gatewayPort()}/v1"`,
-      'wire_api = "responses"',
-      'experimental_bearer_token = "papercusp-gateway"',
-      `http_headers = { "x-papercusp-account" = "${tomlEscape(accountId)}" }`,
-      '# END PAPERCUSP_CODEX_GATEWAY_PROVIDER',
-      '',
-    ],
-  };
-}
+// The gateway config-TOML builder + tomlEscape are SHARED with the spawned-agent path
+// (orchestrator's spawn-mcp.ts writeSignedSpawnCodexHome) via the package subpath export —
+// WI-3645: the two local copies had drifted (this one still REQUIRED an account pin, which is
+// why interactive `auto` stayed unwired for codex). One builder, one behavior: a pin renders
+// the x-papercusp-account header; `gatewayOn` without a pin renders the SAME provider block
+// with the header omitted (the gateway auto-selects); neither renders nothing.
+import { codexGatewayConfigToml, tomlEscape } from '@papercusp/orchestrator/codex-gateway-config';
 
 /** Single-quote a value for a shell command (env prefix). */
 function shellSingleQuote(s: string): string {

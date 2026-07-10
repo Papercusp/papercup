@@ -752,6 +752,12 @@ export interface GatewayStats {
   totalRequests: number;
   inFlight: number;
   queueDepth: number;
+  /** Pool-wide count of accounts that can serve a request RIGHT NOW (not circuit-paused for
+   *  SERVICEABLE_CLAMP_MODEL) — the same `pool.healthyCount()` denominator the serviceable-admission
+   *  clamp and `priorityTiers.healthyAccounts` already use, hoisted to the top level (unconditionally,
+   *  not gated behind the priority-tier flag) so a plain consumer (WI-390 spawn-readiness gate) can read
+   *  it without opting into the tier layer. `1` when the pool has no healthyCount() (single-account pool). */
+  healthyAccounts: number;
   /** Per-priority queue breakdown (P-011 / P-014). With the priority-TIER layer on, `admission.byTier`
    *  carries the per-tier {cap,inFlight,queued} and `admission.tier1Reserve` the reserved floor. */
   admission: AdmissionSnapshot;
@@ -1943,6 +1949,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       totalRequests,
       inFlight: admission.running,
       queueDepth: admission.queued,
+      healthyAccounts: pool.healthyCount ? pool.healthyCount() : 1,
       admission,
       codexAdmission,
       ...(priorityTiers ? { priorityTiers } : {}),

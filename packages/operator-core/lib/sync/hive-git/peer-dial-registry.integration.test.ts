@@ -29,13 +29,23 @@ import { fetchOverDuplex } from './fetch-transport';
 import { wireHiveGitServe } from './serve-wiring';
 import { setHiveGitMode, getHiveGitMode } from '../../harness/git-sync/hive-git-mode';
 import { wireHiveGitDial, resolveHiveGitPeerSocket, openHiveGitDuplexToDevice, _testing } from './peer-dial-registry';
+import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
 
 const WORKSPACE_ID = `ws-dial-registry-${randomUUID().slice(0, 8)}`;
 const HIVE = `hive-dial-registry-${randomUUID().slice(0, 8)}`;
 const TOPIC = Buffer.alloc(32, 11); // a fixed 32-byte stand-in for the hive topic
 const FAKE_PUBKEY = Buffer.alloc(32, 13).toString('base64');
-const SERVER_DEVICE = Buffer.alloc(32, 1).toString('base64');
-const CLIENT_DEVICE = Buffer.alloc(32, 2).toString('base64');
+// WI-3641: the hello handshake is now SIGNED (peer-dial-registry.ts verifies
+// each hello against `helloSignContext(topic)` before trusting a device_pubkey
+// — see verifyEd25519 in the hello onmessage handler), so these must be REAL
+// Ed25519 keypairs, not fixed filler bytes; a fake pubkey would fail
+// verification and the hello would never be trusted / registered.
+const serverKeypair = generateEd25519KeypairDer();
+const clientKeypair = generateEd25519KeypairDer();
+const SERVER_DEVICE = serverKeypair.pubkeyBase64;
+const CLIENT_DEVICE = clientKeypair.pubkeyBase64;
+const signAsServer = (bytes: Buffer): Buffer => signWithPrivateKeyDer(serverKeypair.privateKeyDer, bytes);
+const signAsClient = (bytes: Buffer): Buffer => signWithPrivateKeyDer(clientKeypair.privateKeyDer, bytes);
 
 async function mintCommit(repoPath: string, msg: string): Promise<string> {
   const tree = await defaultRunGit(['hash-object', '-w', '-t', 'tree', '/dev/null'], repoPath);
@@ -208,7 +218,7 @@ describe('hive-git peer-dial-registry (WI-3583: device_pubkey -> live socket, ov
       const srvDuplex = frameWrap(srvConn);
       wireAllCorked(srvDuplex, () => {
         wireHiveGitServe(srvDuplex, TOPIC, { potHomeSlug: HIVE, workspaceId: WORKSPACE_ID });
-        wireHiveGitDial(srvDuplex, TOPIC, SERVER_DEVICE);
+        wireHiveGitDial(srvDuplex, TOPIC, SERVER_DEVICE, signAsServer);
       });
     });
     await new Promise<void>((r) => server.listen(sockPath, () => r()));
@@ -231,7 +241,7 @@ describe('hive-git peer-dial-registry (WI-3583: device_pubkey -> live socket, ov
     // same connection (WI-3583 diagnosis).
     wireAllCorked(clientDuplex, () => {
       wireHiveGitServe(clientDuplex, TOPIC, { potHomeSlug: HIVE, workspaceId: WORKSPACE_ID });
-      wireHiveGitDial(clientDuplex, TOPIC, CLIENT_DEVICE);
+      wireHiveGitDial(clientDuplex, TOPIC, CLIENT_DEVICE, signAsClient);
     });
   });
 

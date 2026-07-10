@@ -20,11 +20,14 @@
  * independently. The freshness / dedup / self / excluded rules are byte-identical
  * to selectAuthorityFromRows; ONLY the winner pick differs (HRW argmax vs argmin).
  *
- * FLAG-GATED / NOT YET WIRED. These are pure functions, proven here in isolation
- * (see rendezvous-authority.test.ts — determinism + churn confinement). The LIVE
- * election (lockAuthorityFor / lockAuthorityForHive) still uses the global argmin;
- * threading a scopeKey through + a flag-gated cutover is a follow-up. Prove the
- * selector before touching the live election.
+ * FLAG-GATED, WIRED (WI-1491). {@link selectAuthorityRendezvous} is called live from
+ * lock-authority.ts's `lockAuthorityFor` / `lockAuthorityForHive` behind the
+ * `HRW_RENDEZVOUS_AUTHORITY` flag (dark by default — see libs/flags/src/types.ts,
+ * KNOWN_DARK_FLAGS 'cutover' case): OFF keeps the byte-identical global argmin;
+ * ON switches to this module's per-scope-key HRW winner, with `LockAuthorityDeps.
+ * scopeKey` (defaulting to the harness/hive slug, so every existing call site works
+ * unchanged) as the scope key. {@link applyLeaseStickiness} is proven here but NOT
+ * yet wired live — it needs a federated lease store (a follow-up; see its own doc).
  */
 
 import type { AuthorityResolution, SelfSwarmIdentity } from './lock-authority';

@@ -70,6 +70,9 @@ import { getHiveGitMode, type HiveGitMode } from '../../harness/git-sync/hive-gi
 import { hiveGitRepoPath, pathExists } from './storage';
 import { isScopeRepoFamilyPath } from './scope-repo';
 import { HIVE_GIT_PROTOCOL, serveUploadPack } from './fetch-transport';
+import { authorizeScopeRepoServe } from './scope-serve-gate';
+import { getScopeRoster } from '../../p2p/scope-roster';
+import { resolveGithubUserIdForDevicePubkey } from '../hyperbee/hive-member-identity-set';
 
 export { HIVE_GIT_PROTOCOL };
 
@@ -82,6 +85,16 @@ export interface HiveGitServeConfig {
   /** Per-fetch wall-clock ceiling forwarded to `serveUploadPack` (default
    *  DEFAULT_FETCH_TIMEOUT_MS — see fetch-transport.ts). */
   timeoutMs?: number;
+  /**
+   * WI-3641: resolve the SIGNATURE-VERIFIED device_pubkey bound to a live
+   * connection socket, or `undefined` if none has been verified on it yet.
+   * Required to authorize a `scopes/` repo fetch — swarm.ts wires
+   * `resolveVerifiedDevicePubkeyForSocket` (peer-dial-registry.ts's signed
+   * hello handshake) here. Omitted ⇒ every scope-repo fetch refuses
+   * (`scope-repo-no-resolver`) — fail-closed, matching the pre-WI-3641
+   * deferral's behavior when this config is absent.
+   */
+  resolvePeerDevicePubkey?: (socket: unknown) => string | undefined;
 }
 
 // ─── wire frames ─────────────────────────────────────────────────────────
@@ -238,6 +251,11 @@ interface ChannelState {
   /** Set by `wireHiveGitServe` — null means "not registered to serve on this
    *  connection" (an inbound req refuses `not-serving`, never crashes). */
   serverConfig: HiveGitServeConfig | null;
+  /** WI-3641: the raw connection socket `wireHiveGitServe` was called with —
+   *  threaded through so `handleReq` can resolve the caller's verified device
+   *  identity via `serverConfig.resolvePeerDevicePubkey(socket)` for the
+   *  `scopes/` repo gate. Null until `wireHiveGitServe` registers. */
+  socket: unknown;
   /** Sessions where WE are the server (id allocated by the peer's req). */
   serverSessions: Map<number, FrameDuplex>;
   /** Sessions where WE are the requester (id allocated by us). */
@@ -268,6 +286,7 @@ function newState(): ChannelState {
     opened: false,
     openedWaiters: [],
     serverConfig: null,
+    socket: null,
     serverSessions: new Map(),
     clientSessions: new Map(),
     nextClientId: 1,
@@ -319,9 +338,31 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
       return refuse('bad-repo-key');
     }
     if (isScopeRepoFamilyPath(repoPath)) {
-      // §5.3 needs a roster-verified peer identity this transport doesn't yet
-      // carry (see module header) — refuse rather than serve unauthenticated.
-      return refuse('scope-repo-unsupported');
+      // WI-3641: authorize via the roster serve-gate, keyed by the caller's
+      // SIGNATURE-VERIFIED device identity (never the wire `req` frame's
+      // self-reported `peerGithubUserId` — see module header). Every branch
+      // below fails closed: no resolver, no verified device, an unresolvable
+      // member, or a roster refusal all refuse rather than serve.
+      const devicePubkey = cfg.resolvePeerDevicePubkey?.(state.socket);
+      if (!devicePubkey) return refuse('scope-repo-no-verified-peer');
+      let githubUserId: number | null;
+      try {
+        githubUserId = await resolveGithubUserIdForDevicePubkey(
+          cfg.workspaceId,
+          cfg.potHomeSlug,
+          devicePubkey,
+        );
+      } catch {
+        return refuse('scope-repo-member-lookup-error');
+      }
+      if (githubUserId == null) return refuse('scope-repo-unknown-device');
+      const roster = getScopeRoster({ workspaceId: cfg.workspaceId, potSlug: cfg.potHomeSlug });
+      const decision = await authorizeScopeRepoServe({
+        repoPath,
+        peerGithubUserId: githubUserId,
+        isScopeMember: roster.predicate,
+      });
+      if (!decision.ok) return refuse(`scope-repo:${decision.refusal.reason}`);
     }
     // EI-8863/WI-3643 finding (su-95401d6d's handoff): an unknown-but-validly
     // NAMED repoKey (no traversal, no unsafe chars — so hiveGitRepoPath above
@@ -488,7 +529,9 @@ export function wireHiveGitServe(socket: unknown, topic: Buffer, config: HiveGit
     const { mux, opened } = resolveMuxStream(socket, topic);
     const register = (): void => {
       try {
-        ensureChannel(mux, topic).serverConfig = config;
+        const state = ensureChannel(mux, topic);
+        state.serverConfig = config;
+        state.socket = socket;
       } catch {
         /* best-effort */
       }

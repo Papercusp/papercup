@@ -53,9 +53,13 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { resolveUsageActor } from '../harness/usage-actor';
+import { systemDistinctId } from '../flag-distinct-id';
 import { getPeerRpcTransport, PeerUnreachableError } from './peer-rpc-transport';
 import { getAuthorityEvictionMonitor, type AuthorityEvictionMonitor } from './peer-eviction';
+import { selectAuthorityRendezvous, type RendezvousPeerRow } from './rendezvous-authority';
 
 /**
  * A peer in a harness swarm, identified by the same `(github_user_id,
@@ -132,6 +136,33 @@ export interface LockAuthorityDeps {
    * pre-P-016 staleness-only behavior). Default (no global installed) → no-op.
    */
   evictionMonitor?: AuthorityEvictionMonitor | null;
+  /**
+   * WI-1491 (P-021 live cutover): the fine-grained scope key to shard authority
+   * selection on when the `HRW_RENDEZVOUS_AUTHORITY` flag is on (a file path, a
+   * plan-item id, a work-item id — whatever the caller is actually serializing).
+   * Omit to fall back to the harness/hive slug itself as the scope key — every
+   * EXISTING call site keeps working unchanged (same single scope per harness/hive
+   * as today's argmin), it just gets HRW's winner instead of argmin's when the flag
+   * is on. Threading a finer-grained key through a given call site is a caller-side
+   * follow-up, not required for the cutover itself.
+   */
+  scopeKey?: string;
+  /**
+   * Test/caller override for the `HRW_RENDEZVOUS_AUTHORITY` flag read — skips the
+   * PostHog round-trip. `undefined` (default) → read the live flag.
+   */
+  useHrwRendezvous?: boolean;
+}
+
+/**
+ * Resolve whether this selection should use HRW rendezvous hashing (WI-1491) —
+ * `deps.useHrwRendezvous` short-circuits the flag read (tests / callers that already
+ * know), otherwise reads the live `HRW_RENDEZVOUS_AUTHORITY` flag. Exported for
+ * direct unit testing of the gate itself, independent of the DB-backed selection.
+ */
+export async function resolveUseHrwRendezvous(deps: LockAuthorityDeps): Promise<boolean> {
+  if (deps.useHrwRendezvous !== undefined) return deps.useHrwRendezvous;
+  return getFlag(FLAGS.HRW_RENDEZVOUS_AUTHORITY, systemDistinctId());
 }
 
 /**
@@ -323,9 +354,23 @@ export async function lockAuthorityFor(
   const now = deps.now ?? Date.now;
   const staleMs = deps.staleMs ?? DEFAULT_AUTHORITY_STALE_MS;
 
-  const [rows, self] = await Promise.all([fetchRows(harnessSlug, staleMs), resolveSelf()]);
+  const [rows, self, useHrw] = await Promise.all([
+    fetchRows(harnessSlug, staleMs),
+    resolveSelf(),
+    resolveUseHrwRendezvous(deps),
+  ]);
   const nowMs = now();
   const excluded = evictionExclusions(harnessSlug, rows, self, nowMs, deps);
+  if (useHrw) {
+    return selectAuthorityRendezvous(
+      rows as RendezvousPeerRow[],
+      self,
+      nowMs,
+      staleMs,
+      deps.scopeKey ?? harnessSlug,
+      excluded,
+    );
+  }
   return selectAuthorityFromRows(rows, self, nowMs, staleMs, excluded);
 }
 
@@ -378,9 +423,23 @@ export async function lockAuthorityForHive(
   const now = deps.now ?? Date.now;
   const staleMs = deps.staleMs ?? DEFAULT_AUTHORITY_STALE_MS;
 
-  const [rows, self] = await Promise.all([fetchRows(potSlug, staleMs), resolveSelf()]);
+  const [rows, self, useHrw] = await Promise.all([
+    fetchRows(potSlug, staleMs),
+    resolveSelf(),
+    resolveUseHrwRendezvous(deps),
+  ]);
   const nowMs = now();
   const excluded = evictionExclusions(potSlug, rows, self, nowMs, deps);
+  if (useHrw) {
+    return selectAuthorityRendezvous(
+      rows as RendezvousPeerRow[],
+      self,
+      nowMs,
+      staleMs,
+      deps.scopeKey ?? potSlug,
+      excluded,
+    );
+  }
   return selectAuthorityFromRows(rows, self, nowMs, staleMs, excluded);
 }
 

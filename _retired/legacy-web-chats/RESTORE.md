@@ -74,11 +74,26 @@ and `lib/chat-cards/AskChoiceCardEntry.tsx`, and **none of them uses an
 7. `packages/agent-mcp/src/delta-eval-harness.ts` — a comment referencing
    `chat/LocalCardHost` as an example webview importer was dropped.
 
-**Known dead weight left in place:** the `--op-chat-w` runtime-token allowlist
-entry in `css-tokens.test.ts` (left-sidebar/dev-admin rail still read it with a
-`0px` fallback — it is a live CSS **variable**, distinct from the dead
-`.op-chat-*` classes); stale prose mentions in comments/docs (`el-min`,
-`Chromeless`, `process-polyfill`, `harness/dock/README.md`).
+**Un-wired in the P-010 CSS deletion (restore = re-apply these):**
+8. `apps/operator/app/globals.css` — all 399 `.oracle-*` / `.op-chat-*` /
+   `body.has-op-chat` rules were deleted (−2,663 lines). The 4 orphaned
+   `@keyframes op-chat-{empty-float,card-sheen,thinking-breathe,thinking-sheen}`
+   went with them; the 2 that the surviving `AskChoiceCard` actually animates
+   were **renamed, not deleted** — `op-chat-option-sheen` →
+   `ask-choice-option-sheen`, `op-chat-card-pick` → `ask-choice-card-pick`.
+   Restoring the components means restoring their CSS from this commit's parent.
+9. `--op-chat-w` is **gone**, not merely unused. `OperatorChatSidebar` was the
+   only writer, so once it retired the variable could never resolve — the
+   left-sidebar / dev-admin rails read it with a `0px` fallback, i.e. always 0.
+   Removed from `left-sidebar.styles.ts`, `LeftSidebar.tsx` (its `leftOffset()`
+   drag helper, always 0), `dev-admin-rail.styles.ts`, the `RUNTIME_TOKENS`
+   allowlist in `css-tokens.test.ts`, and `design/gotchas.mdx`. Restoring the
+   sidebar means re-adding the variable *and* its writer;
+   `index-html-no-op-chat-reservation.test.ts` now guards both the pre-paint
+   bootstrap and the rails' phantom offset.
+
+**Known dead weight left in place:** stale prose mentions in comments/docs
+(`el-min`, `Chromeless`, `process-polyfill`, `harness/dock/README.md`).
 
 **Last-active commit:** the tree state immediately before the git-sync commit
 containing this file. (No git tag cut — git-sync owns commits on this tree;

@@ -9,7 +9,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   lockAuthorityFor,
+  lockAuthorityForHive,
   selectAuthorityFromRows,
+  resolveUseHrwRendezvous,
   routeToAuthority,
   queryPresenceRows,
   queryPresenceRowsForHive,
@@ -17,6 +19,7 @@ import {
   type LockAuthorityDeps,
   type PeerRef,
 } from '../lock-authority';
+import { selectAuthorityRendezvous } from '../rendezvous-authority';
 import {
   setPeerRpcTransport,
   __resetPeerRpcTransportForTests,
@@ -278,6 +281,126 @@ describe('lockAuthorityFor — staleness / failover (D-005)', () => {
 
   it('rejects an empty harness slug', async () => {
     await expect(lockAuthorityFor('', deps())).rejects.toThrow(/non-empty/);
+  });
+});
+
+// ── WI-1491 (P-021 live cutover): HRW rendezvous flag-gate ──────────────────────
+describe('lockAuthorityFor / lockAuthorityForHive — HRW rendezvous cutover (WI-1491)', () => {
+  const rows = [
+    { device_pubkey: 'aaa', github_user_id: 1, machine_label: 'm1', last_seen_ms: NOW - 1000 },
+    { device_pubkey: 'bbb', github_user_id: 2, machine_label: 'm2', last_seen_ms: NOW - 1000 },
+    { device_pubkey: 'ccc', github_user_id: 3, machine_label: 'm3', last_seen_ms: NOW - 1000 },
+  ];
+  const self = { githubUserId: 1, devicePubkey: 'aaa' };
+  const staleMs = 90_000;
+
+  it('resolveUseHrwRendezvous: deps.useHrwRendezvous short-circuits (no flag read)', async () => {
+    await expect(resolveUseHrwRendezvous({ useHrwRendezvous: true })).resolves.toBe(true);
+    await expect(resolveUseHrwRendezvous({ useHrwRendezvous: false })).resolves.toBe(false);
+  });
+
+  it('resolveUseHrwRendezvous: defaults to the live flag, which is dark (OFF) with no PostHog client / override store configured in tests', async () => {
+    await expect(resolveUseHrwRendezvous({})).resolves.toBe(false);
+  });
+
+  it('flag OFF (default, undeclared) → lockAuthorityFor is byte-identical to the argmin path, even with a scopeKey set', async () => {
+    const r = await lockAuthorityFor('h', {
+      now: () => NOW,
+      staleMs,
+      fetchPresenceRows: async () => rows,
+      resolveSelf: async () => self,
+      scopeKey: 'some-fine-grained-scope', // ignored while the flag is off
+    });
+    expect(r).toEqual(selectAuthorityFromRows(rows, self, NOW, staleMs));
+  });
+
+  it('flag ON, no scopeKey → lockAuthorityFor delegates to selectAuthorityRendezvous using the harnessSlug as the default scope key', async () => {
+    const r = await lockAuthorityFor('my-harness', {
+      now: () => NOW,
+      staleMs,
+      fetchPresenceRows: async () => rows,
+      resolveSelf: async () => self,
+      useHrwRendezvous: true,
+    });
+    expect(r).toEqual(selectAuthorityRendezvous(rows, self, NOW, staleMs, 'my-harness'));
+    // Every existing call site (none pass scopeKey today) keeps a SINGLE authority
+    // per harness under the cutover — only the winner RULE changes (HRW vs argmin).
+  });
+
+  it('flag ON + an explicit scopeKey overrides the harnessSlug default (fine-grained sharding)', async () => {
+    const r = await lockAuthorityFor('my-harness', {
+      now: () => NOW,
+      staleMs,
+      fetchPresenceRows: async () => rows,
+      resolveSelf: async () => self,
+      useHrwRendezvous: true,
+      scopeKey: 'file:/some/path.ts',
+    });
+    expect(r).toEqual(selectAuthorityRendezvous(rows, self, NOW, staleMs, 'file:/some/path.ts'));
+  });
+
+  it('flag ON: two different scope keys over the SAME live peer set can resolve to DIFFERENT authorities (the HRW load-spread property)', async () => {
+    const manyRows = [
+      { device_pubkey: 'aaa', github_user_id: 1, machine_label: 'm1', last_seen_ms: NOW - 1000 },
+      { device_pubkey: 'bbb', github_user_id: 2, machine_label: 'm2', last_seen_ms: NOW - 1000 },
+      { device_pubkey: 'ccc', github_user_id: 3, machine_label: 'm3', last_seen_ms: NOW - 1000 },
+      { device_pubkey: 'ddd', github_user_id: 4, machine_label: 'm4', last_seen_ms: NOW - 1000 },
+      { device_pubkey: 'eee', github_user_id: 5, machine_label: 'm5', last_seen_ms: NOW - 1000 },
+    ];
+    const winners = new Set<string>();
+    for (const scopeKey of ['scope-a', 'scope-b', 'scope-c', 'scope-d', 'scope-e', 'scope-f']) {
+      const r = await lockAuthorityFor('h', {
+        now: () => NOW,
+        staleMs,
+        fetchPresenceRows: async () => manyRows,
+        resolveSelf: async () => null,
+        useHrwRendezvous: true,
+        scopeKey,
+      });
+      winners.add(r.peer?.devicePubkey ?? '(self)');
+    }
+    // Global argmin would put every one of these 6 scopes on the SAME peer; HRW is
+    // expected (not guaranteed for every possible input, but true for this fixture)
+    // to spread them across more than one — the whole point of the cutover.
+    expect(winners.size).toBeGreaterThan(1);
+  });
+
+  it('flag ON: an excluded (P-016 relay-confirmed-dead) peer is dropped from HRW candidacy too', async () => {
+    const r = await lockAuthorityFor('h', {
+      now: () => NOW,
+      staleMs,
+      fetchPresenceRows: async () => rows,
+      resolveSelf: async () => null,
+      useHrwRendezvous: true,
+      evictionMonitor: {
+        beforeSelect: () => new Set(['aaa', 'bbb', 'ccc']), // exclude everyone but self has none → empty
+        onRelayConfirmDead: () => {},
+      },
+    });
+    // Every remote candidate excluded, no self identity → single-box fallback.
+    expect(r).toEqual({ isSelf: true, liveCount: 0 });
+  });
+
+  it('lockAuthorityForHive: flag ON, no scopeKey → defaults the scope key to the hive/pot slug', async () => {
+    const r = await lockAuthorityForHive('my-hive', {
+      now: () => NOW,
+      staleMs,
+      fetchHivePresenceRows: async () => rows,
+      resolveSelf: async () => self,
+      useHrwRendezvous: true,
+    });
+    expect(r).toEqual(selectAuthorityRendezvous(rows, self, NOW, staleMs, 'my-hive'));
+  });
+
+  it('lockAuthorityForHive: flag OFF → byte-identical to the argmin path', async () => {
+    const r = await lockAuthorityForHive('my-hive', {
+      now: () => NOW,
+      staleMs,
+      fetchHivePresenceRows: async () => rows,
+      resolveSelf: async () => self,
+      useHrwRendezvous: false,
+    });
+    expect(r).toEqual(selectAuthorityFromRows(rows, self, NOW, staleMs));
   });
 });
 
