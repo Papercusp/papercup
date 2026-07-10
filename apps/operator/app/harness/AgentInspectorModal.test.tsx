@@ -138,4 +138,41 @@ describe('AgentInspectorModal (pinned full inspector)', () => {
     renderModal();
     expect(screen.queryByTestId('focus-window-btn')).toBeNull();
   });
+
+  it('shows a "Resume in new terminal" button (live:false) that POSTs resumeSessionId to console/launch', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ status: 'ok' }) });
+    vi.stubGlobal('fetch', fetchSpy);
+    renderModal({ resumeTarget: { sessionId: 'sess-abc', live: false } });
+    const btn = screen.getByTestId('resume-terminal-btn');
+    expect(btn.textContent).toContain('Resume in new terminal');
+    fireEvent.click(btn);
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    expect(fetchSpy.mock.calls[0][0]).toBe('/api/agent-mcp/console/launch');
+    expect(fetchSpy.mock.calls[0][1].method).toBe('POST');
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toEqual({
+      resumeSessionId: 'sess-abc',
+      label: 'resume · worker',
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it('shows a "Fork in new terminal" button (live:true) for a still-running source session', () => {
+    renderModal({ resumeTarget: { sessionId: 'sess-abc', live: true } });
+    const btn = screen.getByTestId('resume-terminal-btn');
+    expect(btn.textContent).toContain('Fork in new terminal');
+  });
+
+  it('surfaces a "resume failed" state when the launch POST fails', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({ ok: false, json: () => Promise.resolve({ status: 'error' }) });
+    vi.stubGlobal('fetch', fetchSpy);
+    renderModal({ resumeTarget: { sessionId: 'sess-abc', live: false } });
+    fireEvent.click(screen.getByTestId('resume-terminal-btn'));
+    await waitFor(() => expect(screen.getByTestId('resume-terminal-btn').textContent).toContain('resume failed'));
+    vi.unstubAllGlobals();
+  });
+
+  it('hides the Resume/Fork button when no resumeTarget is given (never a dead button)', () => {
+    renderModal();
+    expect(screen.queryByTestId('resume-terminal-btn')).toBeNull();
+  });
 });

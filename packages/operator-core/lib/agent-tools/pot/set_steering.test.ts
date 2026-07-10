@@ -3,7 +3,7 @@
  * (queen-steering-panel-2026-06-15 B-01 / C-1).
  *
  * The owner-steering store is round-tripped against PG via owner-steering's own
- * unit suite (pot-settings-store mocked there); THIS file pins the tool-handler
+ * unit suite (hive-settings-store mocked there); THIS file pins the tool-handler
  * orchestration: the patch fan-out, the workspace/pot resolution, the Mug wake
  * on a write, and the no-home-harness + failure surfaces — store + wake mocked.
  */

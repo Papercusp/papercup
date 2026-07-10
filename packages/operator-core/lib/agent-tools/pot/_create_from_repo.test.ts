@@ -51,7 +51,7 @@ function fakes(over: Partial<CreatePotFromRepoDeps> = {}) {
     },
     publish: async (o) => {
       calls.publishes.push(o as unknown as Record<string, unknown>);
-      return { announced: true, cupboard: { attempted: true, rowsCreated: 1, rowsFailed: 0 }, localBindings: { created: 1, existed: 0, failed: 0 } };
+      return { announced: true, reachablePeers: 1, cupboard: { attempted: true, rowsCreated: 1, rowsFailed: 0 }, localBindings: { created: 1, existed: 0, failed: 0 } };
     },
     loadRegistry: async () => ({ projects: calls.registry as never }),
     mutateRegistry: (async (fn: (r: { projects: never[] }) => unknown) => {
@@ -105,7 +105,7 @@ describe('createPotFromRepo (P-006)', () => {
         ({
           kind: 'hive',
           coords: { owner: 'acme', repo: 'shop', identityResolved: true },
-          pot: { potId: 'h', title: 'H' },
+          hive: { potId: 'h', title: 'H' },
           source: 'directory',
           bindingUnverified: false,
         }) as RepoHiveLookup,
@@ -256,7 +256,7 @@ describe('createPotFromRepo (P-006)', () => {
         ({
           kind: 'hive',
           coords: { owner: 'acme', repo: 'shop', githubRepositoryId: 100, identityResolved: true },
-          pot: { potId: 'h', title: 'H', potPubkey: 'HPK' },
+          hive: { potId: 'h', title: 'H', hivePubkey: 'HPK' },
           source: 'directory',
           bindingUnverified: false,
         }) as RepoHiveLookup,
@@ -274,16 +274,16 @@ describe('createPotFromRepo (P-006)', () => {
         ({
           kind: 'hive',
           coords: { owner: 'acme', repo: 'shop', githubRepositoryId: 100, identityResolved: true },
-          pot: { potId: 'h', title: 'H', potPubkey: 'HPK' },
+          hive: { potId: 'h', title: 'H', hivePubkey: 'HPK' },
           source: 'cupboard',
           bindingUnverified: false,
         }) as RepoHiveLookup,
       // Mirrors the real publishListingForMeta output on the bug's repro shape:
-      // potPubkey resolved, but the registry re-read found no members → memberLinks absent.
+      // hivePubkey resolved, but the registry re-read found no members → memberLinks absent.
       publish: async () => ({
         announced: true,
         reachablePeers: 1,
-        potPubkey: 'aGl2ZXB1YmtleWJhc2U2NHBhZGRlZHRvMzJieXRlcyEh',
+        hivePubkey: 'aGl2ZXB1YmtleWJhc2U2NHBhZGRlZHRvMzJieXRlcyEh',
         cupboard: { attempted: true, rowsCreated: 1, rowsFailed: 0 },
       }),
     });

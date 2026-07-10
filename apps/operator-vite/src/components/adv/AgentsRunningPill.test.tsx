@@ -39,7 +39,7 @@ vi.mock('nuqs', () => ({
   useQueryState: () => [nuqs.open, nuqs.set],
 }));
 
-import AgentsRunningPill, { groupByFleet, agentGlyph, shortOwner, displayName, hasThinking, thinkingStreamUrl, fmtCompactAge, isLiveByActivity, LIVE_TURN_MS, distinctMachineCount, machineKey, machineTabs, canFocusWindow, type RosterAgent } from './AgentsRunningPill';
+import AgentsRunningPill, { groupByFleet, agentGlyph, shortOwner, displayName, hasThinking, thinkingStreamUrl, fmtCompactAge, isLiveByActivity, LIVE_TURN_MS, distinctMachineCount, machineKey, machineTabs, canFocusWindow, resumableSessionId, type RosterAgent } from './AgentsRunningPill';
 
 function agent(over: Partial<RosterAgent> = {}): RosterAgent {
   return {
@@ -118,6 +118,21 @@ describe('canFocusWindow (pure — focus-button guard)', () => {
     expect(canFocusWindow({ windowId: '0x0185e0d2' })).toBe(true);
     expect(canFocusWindow({ windowId: null })).toBe(false);
     expect(canFocusWindow({ windowId: undefined })).toBe(false);
+  });
+});
+
+describe('resumableSessionId (pure — Fork/Resume-button guard, WI-3882)', () => {
+  it('claude: returns sessionId', () => {
+    expect(resumableSessionId({ agent: 'claude', sessionId: 'sess-1', ompThreadId: null })).toBe('sess-1');
+  });
+  it('omp: returns ompThreadId when sessionId is absent', () => {
+    expect(resumableSessionId({ agent: 'omp', sessionId: null, ompThreadId: 'thread-1' })).toBe('thread-1');
+  });
+  it('codex: always null — rollout resume is a different mechanism than `-r`', () => {
+    expect(resumableSessionId({ agent: 'codex', sessionId: 'sess-1', ompThreadId: 'thread-1' })).toBeNull();
+  });
+  it('null when neither id is present', () => {
+    expect(resumableSessionId({ agent: 'claude', sessionId: null, ompThreadId: null })).toBeNull();
   });
 });
 

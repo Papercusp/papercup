@@ -1,7 +1,7 @@
 /**
  * _cross-pot-ask-deps — the PRODUCTION wiring of the cross-Pot front-door tools
  * (hive-network-surface-2026-06-11 P-003, brief B-04). Binds the injectable ports
- * of `cross-pot-ask-send` to their live implementations:
+ * of `cross-hive-ask-send` to their live implementations:
  *
  *   - resolveBoundary    → the boot-wired boundary registry (B-01 registers).
  *   - checkOutboundGrant → B-05's directed-grant `assertOutboundGrant`, adapted to

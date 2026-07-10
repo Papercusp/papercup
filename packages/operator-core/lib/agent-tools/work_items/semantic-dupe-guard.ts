@@ -8,7 +8,7 @@
  * matched. This guard embeds the NEW item's title+summary as a DOCUMENT (the
  * exact space + prompt the embed-backfill sweep stores the ledger in —
  * doc↔doc cosine, resolveBackfillEmbedder) and ranks it against OPEN items'
- * migration-548 vectors:
+ * migration-551 vectors:
  *
  *   similarity ≥ hard (default 0.93) → the create is REFUSED
  *     (`duplicate_semantic`, force:true overrides — same contract as EI-316);
@@ -28,12 +28,10 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { issuesScopeWorkspace } from '../../issues-engineer';
-import { harnessScope, harnessOfScope } from '../../work-item-scope';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { ISSUE_TERMINAL_STATUSES } from '../../work-item-blocking';
-import { TERMINAL_STATUSES } from '../../dbos/frontier-readiness';
+import { ALL_TERMINAL_STATUSES } from '../../work-item-blocking';
 
-/** Width of the migration-548 embedding columns (= embed-backfill's EMBEDDER_DIM). */
+/** Width of the migration-551 embedding columns (= embed-backfill's EMBEDDER_DIM). */
 const EMBED_DIM = 384;
 const DEFAULT_HARD = 0.93;
 const DEFAULT_SOFT = 0.85;
@@ -41,7 +39,8 @@ const DEFAULT_SOFT = 0.85;
  *  ~10ms; a cold in-process model load (~2.8s) simply forfeits THIS create's
  *  verdict while the model warms for the next one. */
 const BUDGET_MS = 2500;
-/** Top-k per kind-table — the checkpoint's "top-3 vs OPEN items". */
+/** Top-k per family ("top-3 vs OPEN items"); the single base-table query
+ *  takes 2× since it spans both families. */
 const TOP_K = 3;
 
 export interface SemanticDupeCandidate {
@@ -98,40 +97,32 @@ function withBudget<T>(ms: number, p: Promise<T | null>): Promise<T | null> {
 async function queryCandidatesReal(vec: number[], mode: string, harness?: string): Promise<SemanticDupeCandidate[]> {
   const { sql } = getOrgPg();
   const vecLit = `[${vec.join(',')}]`;
-  const issueTerminal = [...ISSUE_TERMINAL_STATUSES];
-  const featureTerminal = [...TERMINAL_STATUSES];
-  const issues = await sql<Array<{ id: string; title: string; state: string; scope: string; similarity: number }>>`
-    SELECT issue_id AS id, COALESCE(title, '') AS title, state, scope,
-           1 - (embedding <=> ${vecLit}::vector) AS similarity
-      FROM harness_shared.engineer_issues
-     WHERE workspace_id = ${issuesScopeWorkspace()}
-       AND embedding IS NOT NULL
-       AND embedding_mode = ${mode}
-       AND NOT (state = ANY(${issueTerminal}::text[]))
-       AND ${harness ? sql`scope = ${harnessScope(harness)}` : sql`TRUE`}
-     ORDER BY embedding <=> ${vecLit}::vector
-     LIMIT ${TOP_K}`;
-  const features = await sql<Array<{ id: string; title: string; state: string; harness_slug: string; similarity: number }>>`
+  // ONE query covers BOTH families: migration 374 unified issues + features
+  // into harness_shared.work_items (the compat views project from it), and
+  // migration 551's embedding columns live on that base. `status` holds the
+  // family's own vocabulary, so "open" = not in the cross-family terminal set.
+  // Issue rows live in the coord workspace, feature rows in the project one —
+  // admit both.
+  const terminal = [...ALL_TERMINAL_STATUSES];
+  const workspaces = [...new Set([issuesScopeWorkspace(), activeWorkspaceId()])];
+  const rows = await sql<Array<{ id: string; title: string; state: string; harness_slug: string; similarity: number }>>`
     SELECT feature_id AS id, COALESCE(title, '') AS title, COALESCE(status, 'todo') AS state, harness_slug,
            1 - (embedding <=> ${vecLit}::vector) AS similarity
-      FROM harness_shared.harness_features_consolidated
-     WHERE workspace_id = ${activeWorkspaceId()}
+      FROM harness_shared.work_items
+     WHERE workspace_id = ANY(${workspaces}::text[])
        AND embedding IS NOT NULL
        AND embedding_mode = ${mode}
-       AND (status IS NULL OR NOT (status = ANY(${featureTerminal}::text[])))
+       AND (status IS NULL OR NOT (status = ANY(${terminal}::text[])))
        AND ${harness ? sql`harness_slug = ${harness}` : sql`TRUE`}
      ORDER BY embedding <=> ${vecLit}::vector
-     LIMIT ${TOP_K}`;
-  return [
-    ...issues.map((r) => ({
-      id: r.id, title: r.title, state: r.state,
-      harness: harnessOfScope(r.scope), similarity: Number(r.similarity),
-    })),
-    ...features.map((r) => ({
-      id: r.id, title: r.title, state: r.state,
-      harness: r.harness_slug, similarity: Number(r.similarity),
-    })),
-  ];
+     LIMIT ${TOP_K * 2}`;
+  return rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    state: r.state,
+    harness: r.harness_slug || null,
+    similarity: Number(r.similarity),
+  }));
 }
 
 const realDeps: SemanticDupeDeps = {

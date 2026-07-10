@@ -694,7 +694,7 @@ export async function getWorkItemDetail(id: string, harness?: string): Promise<W
   };
 }
 
-/** Width of the migration-548 embedding columns (= embed-backfill's
+/** Width of the migration-551 embedding columns (= embed-backfill's
  *  EMBEDDER_DIM). A local const — importing it would pull the whole embed
  *  stack (configure/sidecar/admission) into this module's static graph; the
  *  embedder itself is dynamic-imported inside the leg for the same reason. */
@@ -708,11 +708,11 @@ export type QueryEmbedderResolver = () => Promise<{ mode: string; dims: number; 
 /** Cross-kind full-text search over both kind-tables (parity with issues:search).
  *
  * P-008 (shared-embedding-sidecar-and-enrichment-2026-07-10): also runs a
- * SEMANTIC leg — cosine top-k over the migration-548 embedding columns, space
+ * SEMANTIC leg — cosine top-k over the migration-551 embedding columns, space
  * filtered to the active embedder mode — and merges the hits AFTER the lexical
  * ones, deduped by id. Recall-additive only: a rephrased query ("agents keep
  * filing the same bug") now finds items whose words never matched. The leg is
- * strictly fail-open (no embedder / 548 absent / dims mismatch ⇒ lexical-only)
+ * strictly fail-open (no embedder / 551 absent / dims mismatch ⇒ lexical-only)
  * and defaults OFF under vitest (an implicit model load in unrelated tests is
  * the WI-3792 load-scar class) — pass `semantic: true` to force it there.
  */
@@ -792,7 +792,7 @@ export async function searchWorkItems(
         }
       }
     } catch {
-      // Fail-open (D-003 discipline): embedder down / migration 548 not applied /
+      // Fail-open (D-003 discipline): embedder down / migration 551 not applied /
       // pgvector absent all degrade to the lexical result, never to an error.
     }
   }

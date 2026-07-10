@@ -83,7 +83,7 @@ function buildAdmissionGovernedOpenAiEmbedder(key: string): Embedder {
 }
 
 /** The query embedder PLUS its resolved mode + dims. Consumers whose stored
- *  vectors carry a space discriminator (migration 530/548 `<col>_mode`) need
+ *  vectors carry a space discriminator (migration 530/551 `<col>_mode`) need
  *  the mode to filter `WHERE <col>_mode = <active>` — cosine against a
  *  foreign-space vector is meaningless (embedding-space-vs-dimension). */
 export interface ResolvedQueryEmbedder {

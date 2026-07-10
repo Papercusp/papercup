@@ -392,8 +392,8 @@ export async function createPotFromRepo(
     // P-008 create-anyway: proceed, explicitly flagged for the supersede flow.
     duplicateOf = {
       kind: found.kind,
-      ...(found.kind === 'hive' && found.hive.potPubkey
-        ? { potPubkey: found.hive.potPubkey }
+      ...(found.kind === 'hive' && found.hive.hivePubkey
+        ? { potPubkey: found.hive.hivePubkey }
         : {}),
       source: found.source,
     };
@@ -604,6 +604,7 @@ export async function createPotFromRepo(
       ...(repoIsPrivate !== undefined ? { repoIsPrivate } : {}),
     }).catch((e) => ({
       announced: false,
+      reachablePeers: 0,
       cupboard: { attempted: false as const },
       error: e instanceof Error ? e.message : String(e),
     }));
@@ -617,6 +618,7 @@ export async function createPotFromRepo(
       ...(repoIsPrivate !== undefined ? { repoIsPrivate } : {}),
     }).catch((e) => ({
       announced: false,
+      reachablePeers: 0,
       cupboard: { attempted: false as const },
       error: e instanceof Error ? e.message : String(e),
     }));
@@ -635,13 +637,13 @@ export async function createPotFromRepo(
   // potPubkey but came back with no memberLinks, so a from-repo create is
   // NEVER joinable-blind for its own just-created member.
   if (
-    'potPubkey' in publishOutcome &&
-    publishOutcome.potPubkey &&
+    'hivePubkey' in publishOutcome &&
+    publishOutcome.hivePubkey &&
     !publishOutcome.memberLinks?.length &&
     repoId !== undefined
   ) {
     try {
-      const topicHex = topicAsHex(deriveHiveFederationTopic(publishOutcome.potPubkey));
+      const topicHex = topicAsHex(deriveHiveFederationTopic(publishOutcome.hivePubkey));
       const selfLink = formatHarnessLink({
         topic: topicHex,
         github: `${parsed.owner}/${parsed.repo}`,

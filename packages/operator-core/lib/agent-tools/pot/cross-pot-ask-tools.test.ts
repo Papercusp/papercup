@@ -1,22 +1,22 @@
 /**
  * Front-door cross-Pot tools (hive-network-surface-2026-06-11 P-003, brief B-04).
- * PG-free + swarm-free: the send composition (cross-pot-ask-send) takes injected
+ * PG-free + swarm-free: the send composition (cross-hive-ask-send) takes injected
  * ports, and the tools resolve their boundary/store through runtime registries
- * (cross-pot-boundary-registry / a fake store) — so a fake boundary + fake store
+ * (cross-hive-boundary-registry / a fake store) — so a fake boundary + fake store
  * exercise pot:ask / pot:request_work / pot:asks end-to-end.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
-  sendCrossPotAsk,
-  type SendCrossPotAskDeps,
+  sendCrossHiveAsk as sendCrossPotAsk,
+  type SendCrossHiveAskDeps as SendCrossPotAskDeps,
   type CheckOutboundGrant,
-} from '../../cross-pot-ask-send';
+} from '../../cross-hive-ask-send';
 import type { CrossHiveBoundaryWiring } from '../../cross-hive-wiring';
 import type { SendResult } from '../../cross-hive-transport';
 import {
-  registerCrossPotBoundary,
-  __clearCrossPotBoundaryRegistry,
-} from '../../cross-pot-boundary-registry';
+  registerCrossHiveBoundary as registerCrossPotBoundary,
+  __clearCrossHiveBoundaryRegistry as __clearCrossPotBoundaryRegistry,
+} from '../../cross-hive-boundary-registry';
 import { __setCrossPotAskTestDeps } from './_cross-pot-ask-deps';
 import type { CrossHiveAsksStore, CrossHiveAsk } from '../../cross-hive-asks-store-port';
 import type { InsertCrossHiveAskInput, ListCrossHiveAsksFilter } from '../../cross-hive-asks-pg';
@@ -54,7 +54,7 @@ function fakeBoundary(delivered: boolean): {
   return { wiring, sends };
 }
 
-/** An in-memory C-1 store mirroring PgCrossPotAsks's insert-queued / mark-sent / list. */
+/** An in-memory C-1 store mirroring PgCrossHiveAsks's insert-queued / mark-sent / list. */
 function fakeStore(): { store: CrossHiveAsksStore; rows: CrossHiveAsk[] } {
   const rows: CrossHiveAsk[] = [];
   const store: CrossHiveAsksStore = {

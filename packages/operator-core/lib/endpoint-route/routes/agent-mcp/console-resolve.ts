@@ -25,6 +25,11 @@ export default defineTool({
       // psu-in-desktop-builds B: the Tauri (mac/Windows) path threads runPsu so
       // the native console runs psu on open. Flag-gated in buildConsoleEnvelope.
       runPsu?: boolean;
+      // WI-3882: the Tauri-fallback twin of console-launch.ts's resumeSessionId
+      // — was accepted on the primary /console/launch route but silently
+      // dropped on this one, so a resume request on a non-Linux operator (the
+      // only case that reaches this fallback) always opened a fresh session.
+      resumeSessionId?: string | null;
     };
     const workspaceId = activeWorkspaceId();
     try {
@@ -33,6 +38,7 @@ export default defineTool({
         slug: body.slug ?? null,
         operatorBaseUrl: new URL(req.url).origin,
         runPsu: body.runPsu ?? false,
+        resumeSessionId: body.resumeSessionId ?? undefined,
       });
       return Response.json(envelope);
     } catch (e: any) {

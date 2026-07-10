@@ -105,6 +105,12 @@ async function tryServerSideSpawn(
       planSlug: opts.planSlug ?? null,
       label: opts.label ?? null,
       runPsu: opts.runPsu ?? false,
+      // WI-3882: was declared on LaunchOpts but never actually forwarded here —
+      // every server-side-spawn resume call silently opened a FRESH session
+      // instead of resuming. The server route already accepts + honors this
+      // (console-launch.ts's `body.resumeSessionId` → buildConsoleEnvelope →
+      // console-launcher.ts's `<agent-cli> -r <id>` — plan-agent-launch P-023).
+      resumeSessionId: opts.resumeSessionId ?? null,
     }),
   });
   const data = await r.json().catch(() => ({ status: 'error', error: 'invalid JSON' }));
@@ -152,7 +158,13 @@ export async function launchNativeConsole(opts: LaunchOpts): Promise<void> {
   const resolveR = await fetch('/api/agent-mcp/console/resolve', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ slug: opts.slug, runPsu: opts.runPsu ?? false }),
+    body: JSON.stringify({
+      slug: opts.slug,
+      runPsu: opts.runPsu ?? false,
+      // WI-3882: same forwarding gap as the primary path above, for the
+      // non-Linux (Tauri-command) fallback.
+      resumeSessionId: opts.resumeSessionId ?? undefined,
+    }),
   });
   if (!resolveR.ok) {
     const detail = await resolveR.json().catch(() => null);

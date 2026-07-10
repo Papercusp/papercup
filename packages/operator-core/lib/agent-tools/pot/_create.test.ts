@@ -28,7 +28,7 @@ let upsertPotMemberCalls: unknown[];
 let blueprintKnobs: Record<string, unknown>;
 let blueprintOutput: { kind: string } | undefined;
 // P-009: the self_repo-home pipeline seeds (git-sync + green-checkpoint) are mocked — their
-// own behavior is pinned in git-sync-routine.test.ts / seed-pot-release-routines.test.ts.
+// own behavior is pinned in git-sync-routine.test.ts / seed-hive-release-routines.test.ts.
 let gitSyncSeedCalls: Array<{ installSlug: string }>;
 let releaseSeedCalls: Array<{ potSlug: string }>;
 // EI-3388: capture what `operatorResolveExtends` was called with, so we can assert
@@ -96,9 +96,9 @@ beforeEach(() => {
   // per-pot-git-and-release-gate P-003/P-004: the fresh-repo finalize (commit + branch +
   // remote publish) is mocked — its own behavior is pinned in pot-repo-init.test.ts; here
   // we only assert createPotHarness CALLS it for a fresh coding pot and records self_repo.
-  vi.doMock('../../harness/pot-repo-init', () => ({
-    commitInitialPotRepo: async (o: { branch?: string }) => ({ committed: true, branch: o.branch ?? 'staging' }),
-    publishPotRepo: async () => ({ mode: 'local-only', pushed: false, reason: 'mocked' }),
+  vi.doMock('../../harness/hive-repo-init', () => ({
+    commitInitialHiveRepo: async (o: { branch?: string }) => ({ committed: true, branch: o.branch ?? 'staging' }),
+    publishHiveRepo: async () => ({ mode: 'local-only', pushed: false, reason: 'mocked' }),
   }));
   // P-009: the self_repo-home pipeline seeds — record the calls; behavior pinned elsewhere.
   vi.doMock('../../harness/git-sync/git-sync-routine', () => ({
@@ -107,8 +107,8 @@ beforeEach(() => {
       return { seeded: true };
     },
   }));
-  vi.doMock('../../harness/routines/seed-pot-release-routines', () => ({
-    seedPotReleaseRoutines: async (o: { potSlug: string }) => {
+  vi.doMock('../../harness/routines/seed-hive-release-routines', () => ({
+    seedHiveReleaseRoutines: async (o: { potSlug: string }) => {
       releaseSeedCalls.push({ potSlug: o.potSlug });
       return { seeded: false, reason: 'flag_off', undo: async () => {} };
     },
@@ -121,7 +121,7 @@ beforeEach(() => {
       return { record: {}, created: true };
     },
   }));
-  vi.doMock('../../pot-store', () => ({
+  vi.doMock('../../hive-store', () => ({
     deletePot: async (ws: string, slug: string) => {
       deletePotCalls.push([ws, slug]);
       return true;
@@ -165,11 +165,11 @@ beforeEach(() => {
     },
   }));
   // P-021 (domain-generic-pot): the mug-home-pubkey record step is mocked (its
-  // own behavior is pinned in pot-settings-store + steering-lease tests). Without
+  // own behavior is pinned in hive-settings-store + steering-lease tests). Without
   // this the real setMugHomePubkey → setPotSetting → getPotBySlug hits the
   // pot-store mock above (which omits getPotBySlug) and console.warns, which
   // vitest-fail-on-console treats as a failure.
-  vi.doMock('../../pot-settings-store', () => ({
+  vi.doMock('../../hive-settings-store', () => ({
     setMugHomePubkey: async (ws: string, slug: string, pk: string) => {
       mugHomeCalls.push({ workspaceId: ws, potSlug: slug, devicePubkey: pk });
     },
@@ -205,16 +205,16 @@ afterEach(() => {
   vi.doUnmock('../../blueprint/materialize-triggers');
   vi.doUnmock('../blueprint/_resolve');
   vi.doUnmock('../../pot-identity');
-  vi.doUnmock('../../pot-store');
+  vi.doUnmock('../../hive-store');
   vi.doUnmock('@papercusp/flags/server');
   vi.doUnmock('../../learning-packs/load-packs');
   vi.doUnmock('../../learning-packs/seed');
   vi.doUnmock('../../pot/provision-learning-loop');
-  vi.doUnmock('../../pot-settings-store');
+  vi.doUnmock('../../hive-settings-store');
   vi.doUnmock('../../harness/usage-actor');
-  vi.doUnmock('../../harness/pot-repo-init');
+  vi.doUnmock('../../harness/hive-repo-init');
   vi.doUnmock('../../harness/git-sync/git-sync-routine');
-  vi.doUnmock('../../harness/routines/seed-pot-release-routines');
+  vi.doUnmock('../../harness/routines/seed-hive-release-routines');
   vi.doUnmock('../../identity/resolve-local-github-identity');
   vi.doUnmock('../../pot-membership-store');
   try {
@@ -398,7 +398,7 @@ describe('createPotHarness', () => {
       });
       expect(res.ok).toBe(true);
       expect(res.repoInit?.remoteMode).toBe('local-only');
-      // reason 'mocked' only appears when publishPotRepo is CALLED; local-only never calls it.
+      // reason 'mocked' only appears when publishHiveRepo is CALLED; local-only never calls it.
       expect(res.repoInit?.remoteReason).toBeUndefined();
     });
   });

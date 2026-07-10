@@ -485,9 +485,9 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
     //     ACTIVE is safe. Best-effort + undo, like the learning-loop above; the
     //     matching teardown is in teardownPotLearningLoop (pot:dissolve).
     try {
-      const { armPotCrossPotDrainRoutine } = await import('../../harness/routines/arm-pot-cross-pot-drain');
+      const { armHiveCrossHiveDrainRoutine } = await import('../../harness/routines/arm-hive-cross-hive-drain');
       const { sql } = getOrgPg();
-      const armed = await armPotCrossPotDrainRoutine({ sql, workspaceId: ws, potSlug: opts.slug });
+      const armed = await armHiveCrossHiveDrainRoutine({ sql, workspaceId: ws, potSlug: opts.slug });
       undo.push(armed.undo);
     } catch (e) {
       console.warn(
@@ -511,13 +511,13 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
       const { resolveUsageActor } = await import('../../harness/usage-actor');
       const self = await resolveUsageActor();
       if (self?.devicePubkey) {
-        const { setMugHomePubkey, deletePotSetting, MUG_HOME_PUBKEY_SETTING_KEY } = await import(
-          '../../pot-settings-store'
+        const { setQueenHomePubkey, deleteHiveSetting, QUEEN_HOME_PUBKEY_SETTING_KEY } = await import(
+          '../../hive-settings-store'
         );
-        await setMugHomePubkey(ws, opts.slug, self.devicePubkey);
+        await setQueenHomePubkey(ws, opts.slug, self.devicePubkey);
         undo.push(async () => {
           try {
-            await deletePotSetting(ws, opts.slug, MUG_HOME_PUBKEY_SETTING_KEY);
+            await deleteHiveSetting(ws, opts.slug, QUEEN_HOME_PUBKEY_SETTING_KEY);
           } catch {
             /* best-effort rollback */
           }
@@ -592,13 +592,13 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
     let repoInit: PotRepoInitSummary | undefined;
     if (!linkExisting && requiresRepo) {
       try {
-        const { commitInitialPotRepo, publishPotRepo } = await import('../../harness/pot-repo-init');
-        const committed = await commitInitialPotRepo({ path, slug: opts.slug });
+        const { commitInitialHiveRepo, publishHiveRepo } = await import('../../harness/hive-repo-init');
+        const committed = await commitInitialHiveRepo({ path, slug: opts.slug });
         let remote: string | undefined;
         let remoteMode: 'remote' | 'local-only' = 'local-only';
         let remoteReason: string | undefined;
         if ((opts.repoRemote ?? 'auto') !== 'local-only') {
-          const publish = await publishPotRepo({
+          const publish = await publishHiveRepo({
             path,
             slug: opts.slug,
             ...(opts.repoOwner ? { owner: opts.repoOwner } : {}),
@@ -666,7 +666,7 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
     //     default-OFF → a no-op until the owner opts a pot in; D-008). Both best-effort —
     //     a failure NEVER fails the create. The release-routine undo joins the rollback
     //     stack. Runs for any self_repo home (fresh OR linked); skipped for a repo-less
-    //     (non-coding) home. seedPotReleaseRoutines self-gates (skips the operator-home +
+    //     (non-coding) home. seedHiveReleaseRoutines self-gates (skips the operator-home +
     //     non-coding/repo-less); git-sync self-gates via its eligibility check.
     const hasOwnRepo = linkExisting || requiresRepo;
     if (hasOwnRepo) {
@@ -687,9 +687,9 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
           );
         }
         try {
-          const { seedPotReleaseRoutines } = await import('../../harness/routines/seed-pot-release-routines');
+          const { seedHiveReleaseRoutines } = await import('../../harness/routines/seed-hive-release-routines');
           const { sql } = getOrgPg();
-          const seeded = await seedPotReleaseRoutines({ sql, workspaceId: ws, potSlug: opts.slug });
+          const seeded = await seedHiveReleaseRoutines({ sql, workspaceId: ws, potSlug: opts.slug });
           if (seeded.seeded) undo.push(seeded.undo);
         } catch (e) {
           console.warn(

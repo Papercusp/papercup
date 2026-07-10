@@ -88,6 +88,19 @@ export function canFocusWindow(a: Pick<RosterAgent, 'windowId'>): boolean {
   return Boolean(a.windowId);
 }
 
+/** The session id to fork/resume this agent's terminal into a NEW window
+ *  (WI-3882) — `<agent-cli> -r <id>` (plan-agent-launch P-023,
+ *  console-launcher.ts) only accepts claude + omp session ids; codex's
+ *  rollout resume is a different mechanism, so it's deliberately excluded
+ *  here rather than passing an id that would silently fail. null ⇒ no
+ *  Fork/Resume action shown (never a dead button). Pure — exported for tests. */
+export function resumableSessionId(
+  a: Pick<RosterAgent, 'agent' | 'sessionId' | 'ompThreadId'>,
+): string | null {
+  if (a.agent === 'codex') return null;
+  return a.sessionId ?? a.ompThreadId ?? null;
+}
+
 /** Whether an agent has a viewable thinking stream — a spawned bee's run-log, a
  *  claude session's transcript, a codex session's rollout (keyed by its adv row
  *  id), or an omp session's thread jsonl. Pure — exported for tests.
@@ -578,6 +591,9 @@ export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: 
           streamUrl={thinkingStreamUrl(inspecting) ?? undefined}
           focusTarget={canFocusWindow(inspecting)
             ? { advSessionId: inspecting.advSessionId ?? null, windowId: inspecting.windowId ?? null, pid: inspecting.pid ?? null }
+            : undefined}
+          resumeTarget={resumableSessionId(inspecting)
+            ? { sessionId: resumableSessionId(inspecting)!, live: true, label: `fork · ${displayName(inspecting)}` }
             : undefined}
           open
           onClose={() => setInspecting(null)}

@@ -45,6 +45,7 @@ export default function AgentInspectorModal({
   startedAtMs,
   streamUrl,
   focusTarget,
+  resumeTarget,
   highlightTerm,
 }: {
   slug: string;
@@ -64,6 +65,20 @@ export default function AgentInspectorModal({
    *  stored X11 `windowId`). Present ⇒ a "Focus window" button that raises the
    *  agent's terminal via `POST /api/adv/sessions/focus`; absent ⇒ no button. */
   focusTarget?: { advSessionId?: number | null; windowId?: string | null; pid?: number | null };
+  /**
+   * WI-3882 (P-012, adv-sessions-live-roster): the session id to fork/resume
+   * into a NEW terminal via `POST /api/agent-mcp/console/launch`'s
+   * `resumeSessionId` (plan-agent-launch P-023 — `<agent-cli> -r <id>`,
+   * console-launcher.ts). Present ⇒ a state-aware button: `live:true` (the
+   * source agent is still running — this OPENS A PARALLEL window on the same
+   * transcript, the original keeps going) labels it "Fork in new terminal";
+   * `live:false` (the source session has ENDED) labels it "Resume in new
+   * terminal". Absent ⇒ no button (never a dead one) — only claude/omp
+   * sessions accept `-r`, so callers gate on that before passing this.
+   * Linux-only for now, same constraint as the primary /console/launch spawn
+   * path itself (see native-console.ts) — mirrors focusTarget's posture.
+   */
+  resumeTarget?: { sessionId: string; live: boolean; label?: string | null } | null;
   /** Search-hit deep-link (agents-pill-inactive-search-2026-07-09 P-005): the
    *  term to highlight throughout the transcript. Pair with a streamUrl that
    *  carries `find`/`anchorTs` — the stream's `anchor` event then names the
@@ -139,6 +154,29 @@ export default function AgentInspectorModal({
     }
   }, [focusTarget]);
 
+  // "Fork/Resume in new terminal" (WI-3882) — reuse the existing capability:
+  // terminal + psu-session-resume path (plan-agent-launch P-023) via the same
+  // console-launch route the "+" console button / capability:terminal use.
+  const [resumeState, setResumeState] = useState<'idle' | 'busy' | 'err'>('idle');
+  const resumeInNewTerminal = useCallback(async () => {
+    if (!resumeTarget) return;
+    setResumeState('busy');
+    try {
+      const res = await fetch('/api/agent-mcp/console/launch', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          resumeSessionId: resumeTarget.sessionId,
+          label: resumeTarget.label ?? `${resumeTarget.live ? 'fork' : 'resume'} · ${role}`,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      setResumeState(res.ok && data?.status === 'ok' ? 'idle' : 'err');
+    } catch {
+      setResumeState('err');
+    }
+  }, [resumeTarget, role]);
+
   const elapsedMs = Math.max(0, now - (startedAtMs ?? openedAtRef.current));
   const waiting = waitingMessage(status, elapsedMs);
   // A live run sitting on zero output past the stall threshold reads as
@@ -183,6 +221,28 @@ export default function AgentInspectorModal({
           {' · '}<code style={{ fontSize: 11 }}>{runId}</code>
         </span>
         <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {resumeTarget ? (
+            <button
+              type="button"
+              data-testid="resume-terminal-btn"
+              onClick={resumeInNewTerminal}
+              disabled={resumeState === 'busy'}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                font: 'inherit', fontSize: 11, cursor: resumeState === 'busy' ? 'default' : 'pointer',
+                color: resumeState === 'err' ? TONE.bad : 'var(--fg)',
+                background: 'var(--bg-1)', border: '1px solid var(--border)',
+                borderRadius: 5, padding: '2px 8px', lineHeight: 1.4,
+              }}
+            >
+              <span aria-hidden>{resumeTarget.live ? '⑂' : '↻'}</span>
+              {resumeState === 'busy'
+                ? (resumeTarget.live ? 'forking…' : 'resuming…')
+                : resumeState === 'err'
+                  ? (resumeTarget.live ? 'fork failed' : 'resume failed')
+                  : (resumeTarget.live ? 'Fork in new terminal' : 'Resume in new terminal')}
+            </button>
+          ) : null}
           {focusTarget ? (
             <button
               type="button"

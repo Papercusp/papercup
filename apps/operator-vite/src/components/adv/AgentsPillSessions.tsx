@@ -23,6 +23,7 @@ import {
   displayName,
   fmtCompactAge,
   groupByFleet,
+  resumableSessionId,
   shortOwner,
   type RosterAgent,
 } from './AgentsRunningPill';
@@ -174,6 +175,27 @@ interface InspectTarget {
   runId: string;
   role: string;
   highlightTerm?: string;
+  /** WI-3882: the id to fork/resume into a new terminal (null ⇒ no
+   *  Fork/Resume button — codex results, or a source with no resumable id). */
+  resumeSessionId?: string | null;
+  /** true ⇒ the source agent is still RUNNING (Fork — a parallel window,
+   *  original keeps going); false ⇒ it has ENDED (Resume). */
+  resumeLive?: boolean;
+}
+
+/** WI-3882: the Fork/Resume target for a matched search result — an ACTIVE
+ *  result's agent is still running (Fork, a parallel window); an INACTIVE
+ *  result's session has ended (Resume). null ⇒ no button (codex, or neither
+ *  half of the result carries a resumable id). Pure — exported for tests. */
+export function searchResultResumeTarget(
+  result: Pick<SearchSessionResult, 'active' | 'session'>,
+): { sessionId: string; live: boolean } | null {
+  const sessionId = result.active
+    ? resumableSessionId(result.active)
+    : result.session
+      ? resumableSessionId(result.session)
+      : null;
+  return sessionId ? { sessionId, live: Boolean(result.active) } : null;
 }
 
 /** One matched session row + its excerpt hits. Shared by the active (fleet-
@@ -198,7 +220,15 @@ function SearchResultRow({
   const openHit = (hit: SearchTurnHit) => {
     const url = searchHitStreamUrl(result, hit, query);
     if (!url) return;
-    onInspect({ streamUrl: url, runId: result.sessionId, role: title, highlightTerm: query });
+    const resumeTarget = searchResultResumeTarget(result);
+    onInspect({
+      streamUrl: url,
+      runId: result.sessionId,
+      role: title,
+      highlightTerm: query,
+      resumeSessionId: resumeTarget?.sessionId ?? null,
+      resumeLive: resumeTarget?.live ?? false,
+    });
   };
   const top = result.hits[0];
   const openable = top ? searchHitStreamUrl(result, top, query) !== null : false;
@@ -377,6 +407,9 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
           role={inspecting.role}
           streamUrl={inspecting.streamUrl}
           highlightTerm={inspecting.highlightTerm}
+          resumeTarget={inspecting.resumeSessionId
+            ? { sessionId: inspecting.resumeSessionId, live: Boolean(inspecting.resumeLive) }
+            : undefined}
           open
           onClose={() => setInspecting(null)}
         />
@@ -528,6 +561,9 @@ export function InactiveSessionsSection({
           runId={inspecting.sessionId ?? inspecting.ompThreadId ?? String(inspecting.id)}
           role={endedDisplayName(inspecting)}
           streamUrl={endedSessionStreamUrl(inspecting) ?? undefined}
+          resumeTarget={resumableSessionId(inspecting)
+            ? { sessionId: resumableSessionId(inspecting)!, live: false }
+            : undefined}
           open
           onClose={() => setInspecting(null)}
         />

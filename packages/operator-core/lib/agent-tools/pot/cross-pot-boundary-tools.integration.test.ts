@@ -52,12 +52,12 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
 });
 
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
-const { insertPotIfAbsent } = await import('../../pot-store');
-const { PgCrossPotAsks } = await import('../../cross-pot-asks-pg');
+const { insertHiveIfAbsent } = await import('../../hive-store');
+const { PgCrossHiveAsks } = await import('../../cross-hive-asks-pg');
 const {
-  registerCrossPotBoundary,
-  __clearCrossPotBoundaryRegistry,
-} = await import('../../cross-pot-boundary-registry');
+  registerCrossHiveBoundary: registerCrossPotBoundary,
+  __clearCrossHiveBoundaryRegistry: __clearCrossPotBoundaryRegistry,
+} = await import('../../cross-hive-boundary-registry');
 const { __setCrossPotAskTestDeps } = await import('./_cross-pot-ask-deps');
 
 // The four tool handlers under test (resolved after the mock so their import graph picks
@@ -116,7 +116,7 @@ beforeAll(async () => {
   db = await createOrgTestDb();
   h.sql = db.adminSql;
   // A Pot identity must exist for hive_settings (and thus grants) to attach to.
-  await insertPotIfAbsent(
+  await insertHiveIfAbsent(
     { workspaceId: WS, homeSlug: POT, pubkeyBase64: Buffer.alloc(32).toString('base64'), keychainId: 'kc-1' },
     db.adminSql,
   );
@@ -180,7 +180,7 @@ describe('cross-Pot boundary, mediated through the real tools (grant → ask/ans
 
     // STEP 3 — the peer's ANSWER comes back through the boot-wired boundary (simulated here
     // by the production reply-persistence path) and lands the row `answered` with the body.
-    const reply = await new PgCrossPotAsks(WS, POT, db.adminSql).recordReply({
+    const reply = await new PgCrossHiveAsks(WS, POT, db.adminSql).recordReply({
       correlationId,
       replyKind: 'answer',
       replyBody: 'reviewed — schema looks good',

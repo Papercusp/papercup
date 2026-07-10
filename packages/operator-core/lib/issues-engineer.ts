@@ -1107,23 +1107,39 @@ export async function searchIssues(query: string, limit = 50): Promise<EngineerI
  * (shared-embedding-sidecar-and-enrichment-2026-07-10) work_items:search
  * merges with the lexical hits above. `mode` is the ACTIVE embedder mode the
  * query vector was produced in: rows are filtered `embedding_mode = mode`
- * (migration 548's space discriminator) so a stored vector from a different
+ * (migration 551's space discriminator) so a stored vector from a different
  * embedder is never ranked against — cosine across spaces is noise, not a
- * weaker match (embedding-space-vs-dimension). Same workspace scoping as
- * searchIssues. Throws when migration 548 (or pgvector) is absent — callers
- * fail open to lexical-only.
+ * weaker match (embedding-space-vs-dimension).
+ *
+ * The embedding columns live on the BASE table harness_shared.work_items
+ * (engineer_issues is a hand-mapped compat view since migration 374 and does
+ * NOT expose them) — so rank there, restricted to issue-family kinds, then
+ * hydrate the issue shape through the view preserving distance order. Same
+ * workspace scoping as searchIssues. Throws when migration 551 (or pgvector)
+ * is absent — callers fail open to lexical-only.
  */
 export async function semanticSearchIssues(vec: number[], mode: string, limit = 20): Promise<EngineerIssue[]> {
   const { sql } = getOrgPg();
   const vecLit = `[${vec.join(',')}]`;
-  const rows = await sql<IssueRowDb[]>`
-    SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
+  const hits = await sql<Array<{ id: string }>>`
+    SELECT feature_id AS id
+      FROM harness_shared.work_items
      WHERE workspace_id = ${issuesScopeWorkspace()}
+       AND item_kind IN ('bug', 'change', 'task')
        AND embedding IS NOT NULL
        AND embedding_mode = ${mode}
      ORDER BY embedding <=> ${vecLit}::vector
      LIMIT ${Math.min(limit, 200)}`;
-  return rows.map(toIssue);
+  if (hits.length === 0) return [];
+  const ids = hits.map((r) => r.id);
+  const rows = await sql<IssueRowDb[]>`
+    SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
+     WHERE workspace_id = ${issuesScopeWorkspace()}
+       AND issue_id = ANY(${ids}::text[])`;
+  const rank = new Map(ids.map((id, i) => [id, i]));
+  return rows
+    .map(toIssue)
+    .sort((a, b) => (rank.get(a.id) ?? ids.length) - (rank.get(b.id) ?? ids.length));
 }
 
 /**

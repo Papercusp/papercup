@@ -19,6 +19,7 @@ import {
   headlineToSafeHtml,
   searchFailureMessage,
   searchHitStreamUrl,
+  searchResultResumeTarget,
   type EndedSessionRow,
 } from './AgentsPillSessions';
 import type { RosterAgent } from './AgentsRunningPill';
@@ -81,6 +82,30 @@ describe('searchHitStreamUrl', () => {
 
   it('agent_chat (and anything unknown) has no transcript viewer ⇒ null', () => {
     expect(searchHitStreamUrl({ ...base, sourceKind: 'agent_chat', sessionId: 'c1' }, { ts: null, owner: null }, 'x')).toBeNull();
+  });
+});
+
+describe('searchResultResumeTarget (pure — Fork/Resume-button wiring, WI-3882)', () => {
+  it('active claude result → live:true, sessionId from the roster agent', () => {
+    expect(
+      searchResultResumeTarget({ active: rosterAgent({ agent: 'claude', sessionId: 'sid-1', ompThreadId: null }), session: null }),
+    ).toEqual({ sessionId: 'sid-1', live: true });
+  });
+  it('inactive omp result → live:false, sessionId from the ended row', () => {
+    expect(
+      searchResultResumeTarget({ active: null, session: endedRow({ agent: 'omp', ompThreadId: 'thread-1' }) }),
+    ).toEqual({ sessionId: 'thread-1', live: false });
+  });
+  it('codex (active or inactive) → null, never a dead resume/fork button', () => {
+    expect(
+      searchResultResumeTarget({ active: rosterAgent({ agent: 'codex', sessionId: 'sid-1', ompThreadId: null }), session: null }),
+    ).toBeNull();
+    expect(
+      searchResultResumeTarget({ active: null, session: endedRow({ agent: 'codex', sessionId: 'sid-1' }) }),
+    ).toBeNull();
+  });
+  it('neither active nor session → null', () => {
+    expect(searchResultResumeTarget({ active: null, session: null })).toBeNull();
   });
 });
 

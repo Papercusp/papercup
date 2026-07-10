@@ -3,8 +3,8 @@
  *
  * Walks the prose surfaces (operator_turns, harness_escalations,
  * harness_brainstorm, harness_decisions, session_turns) and the work-item
- * ledger's two kind-tables (engineer_issues, harness_features_consolidated —
- * P-008, shared-embedding-sidecar-and-enrichment-2026-07-10) looking for rows
+ * ledger's base table (work_items — P-008,
+ * shared-embedding-sidecar-and-enrichment-2026-07-10) looking for rows
  * that lack a vector IN THE ACTIVE EMBEDDING SPACE, and fills them in
  * batches using the same OpenAI/local cascade mem0 uses (so embeddings
  * live in the same 384-D space as memories — future cross-pollination
@@ -201,19 +201,16 @@ export const TARGETS: BackfillTarget[] = [
     keyCols: ['workspace_id', 'source_kind', 'session_id', 'turn_idx'],
   },
   // P-008 (shared-embedding-sidecar-and-enrichment-2026-07-10): the work-item
-  // ledger's two kind-tables (migration 548). Embeds title + body/summary
-  // (body truncated to 2k chars, mirroring session_turns) so work_items:search
-  // gains a semantic leg and work_items:create can prescreen a new title
-  // against OPEN items by cosine similarity — the 2026-07-10 30-dupe
-  // bug-storm class (WI-3358..WI-3477) that lexical dedup missed.
+  // ledger — ONE base table (migration 374 unified issue + feature families
+  // into harness_shared.work_items; engineer_issues / harness_features_
+  // consolidated are compat views over it, so the migration-551 embedding
+  // columns live HERE and one sweep covers every kind). Embeds title +
+  // body/summary (truncated to 2k chars, mirroring session_turns) so
+  // work_items:search gains a semantic leg and work_items:create can prescreen
+  // a new title against OPEN items by cosine similarity — the 2026-07-10
+  // 30-dupe bug-storm class (WI-3358..WI-3477) that lexical dedup missed.
   {
-    table: 'harness_shared.engineer_issues',
-    embedCol: 'embedding',
-    bodySql: `COALESCE(title, '') || E'\\n' || left(COALESCE(body, ''), 2000)`,
-    keyCols: ['workspace_id', 'issue_id'],
-  },
-  {
-    table: 'harness_shared.harness_features_consolidated',
+    table: 'harness_shared.work_items',
     embedCol: 'embedding',
     bodySql: `COALESCE(title, '') || E'\\n' || left(COALESCE(summary, ''), 2000)`,
     keyCols: ['harness_slug', 'feature_id'],
