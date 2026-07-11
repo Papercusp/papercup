@@ -384,23 +384,37 @@ export async function buildConsoleEnvelope(
         );
       } catch { /* best-effort — nothing to restore / archive unavailable */ }
     }
-    // Permission mode is per-INVOCATION, not inherited from the resumed session:
-    // a bare `claude -r` lands in default ask-per-tool mode (owner-hit on the
-    // Windows app, 2026-07-07). Re-assert the frictionless posture psu-launcher
-    // uses.
-    const bypass =
-      backend === 'claude-code'
-        ? '--dangerously-skip-permissions --permission-mode bypassPermissions '
-        : backend === 'omp'
-          ? '--approval-mode yolo '
-          : '';
-    // `--fork-session` goes AFTER `-r <id>` to match psu-launcher's proven claude
-    // fork argv order (`--resume <id> … --fork-session`); claude branches the
-    // resumed conversation into a fresh auto-minted id (no forced --session-id
-    // needed — this console path doesn't track forks in the psu picker).
-    const forkSuffix = opts.fork ? ' --fork-session' : '';
     const verb = opts.fork ? 'forking' : 'resuming';
-    greetingCmd = `echo "${verb} plan-run ${id}…"; exec ${bin} ${bypass}-r ${id}${forkSuffix}`;
+    if (backend === 'claude-code') {
+      // WI-4159 (owner-hit 2026-07-11, "resume/fork asked me to /login"): a bare
+      // `claude -r` under the session's ISOLATED CLAUDE_CONFIG_DIR (set above)
+      // prompts /login — the isolation dir carries the credential SYMLINK
+      // (claude-credential-sync) but NOT the account state (~/.claude.json) claude
+      // needs to consider itself signed in. psu-launcher's OWN resume path does the
+      // per-session CLAUDE_CONFIG_DIR→credential RELOCATION (psu-launcher
+      // L1910/3499/3652-3655) that makes the isolated dir authenticated — the exact
+      // auth setup a fresh psu launch uses (and why a psu-launched session never
+      // sees /login). So route the claude resume/fork THROUGH psu (reuse psu's
+      // proven, auth-correct resume) rather than reimplementing its credential
+      // dance here. psu resolves the session by id across the isolation dirs,
+      // re-derives + points CLAUDE_CONFIG_DIR at it (overriding whatever we set
+      // above), relocates creds, parks any role-scoped .mcp.json (identity-leak
+      // fix), reactivates the adv row, and resumes with the frictionless posture.
+      // Fork is claude-only (psu `--fork`, guarded above). psu is on PATH via the
+      // ~/.papercusp/bin shim. The rematerialization above still seeds an archived
+      // transcript into the isolation dir so psu's `--resume=<id>` finder locates
+      // an ended session.
+      const forkFlag = opts.fork ? ' --fork' : '';
+      greetingCmd = `echo "${verb} plan-run ${id}…"; exec psu --resume=${id}${forkFlag}`;
+    } else {
+      // codex/omp: keep the bare interactive binary. The /login artifact is
+      // claude-CLAUDE_CONFIG_DIR-specific; these backends authenticate from their
+      // own per-session home (CODEX_HOME / omp store) and don't hit it. Permission
+      // posture is per-INVOCATION — a bare resume otherwise lands in ask-per-tool
+      // mode (owner-hit 2026-07-07); fork is already guarded to claude-only above.
+      const bypass = backend === 'omp' ? '--approval-mode yolo ' : '';
+      greetingCmd = `echo "${verb} plan-run ${id}…"; exec ${bin} ${bypass}-r ${id}`;
+    }
   }
 
   return {

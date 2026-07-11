@@ -1439,6 +1439,18 @@ export const FLAGS = {
   // long-dead rows in the live roster). OFF ⇒ the reaper tick no-ops (today's behavior:
   // rows accumulate until the opportunistic 24h sweepStalePresence catches them).
   COORD_PRESENCE_REAPER: "papercusp-coord-presence-reaper",
+  // coord-delivery-residual-gaps-2026-07-11 P-004 (WI-4160): the delivery
+  // ESCALATION LADDER kill-switch. One server-side rule — a DIRECTED message
+  // (explicit to:[ownerId], never broadcast/@audience/system-sender) unread
+  // past TTL (default 5m) by a LIVE recipient auto-fires that recipient's
+  // standing inbox-wake, storm-capped at 1 wake/recipient/10m (the ladder's
+  // own marker message is the cap record). Closes the "sender assumed
+  // delivery, live recipient never read it" gap (mid-long-exec deafness,
+  // hook-enrollment drift, non-enrolled runtimes). DEFAULT ON (alpha
+  // flags-default-on: finished + tested, additive, bounded by the storm cap).
+  // OFF ⇒ the deliveryLadderSweep periodic tick no-ops (today's behavior:
+  // unread directed mail waits for the recipient's next natural read).
+  COORD_DELIVERY_LADDER: "papercusp-coord-delivery-ladder",
   // federated-scout-gym-learning-2026-07-02 P-010 (F3-2): the fleet-wide KILL-SWITCH
   // for federated Scout↔gym ELITE/FACT sharing (island-model QD). Default ON (the
   // GITHUB_BRIDGE/P2P pattern — NOT in DARK_FLAGS): activation is STRUCTURAL, not the

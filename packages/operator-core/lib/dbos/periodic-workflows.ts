@@ -42,6 +42,7 @@ import { runDbosWorkflowGcOnce } from './dbos-workflow-gc';
 import { reconcileStaleEscalationsOnce } from '../attention/reconcile-escalations';
 import { reconcileStalePendingHandoffsOnce, reconcileHandoffRepingsOnce } from '../reconcile-handoffs';
 import { runReplyDeadlineSweepOnce } from '../agent-tools/coordination/reply-deadline-sweep';
+import { runDeliveryLadderSweepOnce, DELIVERY_LADDER_OWNER } from '../agent-tools/coordination/delivery-ladder-sweep';
 import { runStorageGrowthAlarmOnce } from '../storage/storage-growth-alarm';
 import { runReplicationSlotAlarmOnce } from '../storage/replication-slot-alarm';
 import { runTestDesktopReaperOnce } from '../test-desktop-reaper';
@@ -491,6 +492,36 @@ const replyDeadlineSweepWorkflow = idempotentRegisterWorkflow('replyDeadlineSwee
   }),
 );
 DBOS.registerScheduled(replyDeadlineSweepWorkflow, { name: 'replyDeadlineSweep', crontab: '0 */5 * * * *' });
+
+// Every 2 minutes (:30s, off the reply-deadline stampede): the coord delivery
+// ESCALATION LADDER (coord-delivery-residual-gaps-2026-07-11 P-004, WI-4160) —
+// a DIRECTED message unread past TTL (default 5m; recipient LIVE per
+// wakeable+liveTurn) auto-fires that recipient's standing inbox-wake,
+// storm-capped 1/recipient/10m via the ladder's own marker message. Closes the
+// "sender assumed delivery, live recipient never read it" gap (mid-long-exec
+// deafness / hook drift / non-enrolled runtimes). Kill-switch flag
+// COORD_DELIVERY_LADDER (default ON) is checked here per tick so a runtime
+// flip takes effect on the next tick; fail-safe like retentionEnabled (a flag
+// read error runs the sweep — its default is ON).
+async function deliveryLadderSweepTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    if (shouldShedHeavyTick('delivery-ladder-sweep')) return;
+    let enabled = true;
+    try {
+      enabled = await getFlag(FLAGS.COORD_DELIVERY_LADDER, DELIVERY_LADDER_OWNER);
+    } catch {
+      enabled = true;
+    }
+    if (!enabled) return;
+    await runDeliveryLadderSweepOnce();
+  }, { name: 'delivery-ladder-sweep' });
+}
+const deliveryLadderSweepWorkflow = idempotentRegisterWorkflow('deliveryLadderSweep', () =>
+  DBOS.registerWorkflow(deliveryLadderSweepTick, {
+    name: 'deliveryLadderSweep', maxRecoveryAttempts: 5,
+  }),
+);
+DBOS.registerScheduled(deliveryLadderSweepWorkflow, { name: 'deliveryLadderSweep', crontab: '30 */2 * * * *' });
 
 // Hourly (:23, off the stampede): surface silently-dead DBOS workflows
 // (MAX_RECOVERY_ATTEMPTS_EXCEEDED / ERROR) — the embedBackfill/systemHealth class the
