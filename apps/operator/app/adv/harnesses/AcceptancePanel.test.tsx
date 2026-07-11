@@ -32,6 +32,14 @@ vi.mock('@/app/harness/Checkbox', () => ({
     <input type="checkbox" checked={checked} disabled={disabled} onChange={() => onChange()} />
   ),
 }));
+vi.mock('@/lib/use-workspace-id', () => ({ useWorkspaceId: () => 'ws-test' }));
+const { syncState, invalidateSpy } = vi.hoisted(() => ({
+  syncState: { data: [] as Assertion[], loading: false, error: null as Error | null },
+  invalidateSpy: vi.fn(),
+}));
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: () => ({ ...syncState, fetching: false, invalidate: invalidateSpy }),
+}));
 
 import AcceptancePanel from './AcceptancePanel';
 
@@ -40,7 +48,6 @@ function A(over: Partial<Assertion> & { val_id: string }): Assertion {
   return { plan_slug: 'p', item_id: 'P-1', verify_text: 'must work', status: 'todo', requires_test: true, ...over };
 }
 
-let listResp: { ok: boolean; status?: number; body: unknown } | 'pending';
 let toggleOk = true;
 let fetchCalls: Array<{ url: string; method: string; body?: unknown }>;
 function stubFetch() {
@@ -49,35 +56,39 @@ function stubFetch() {
     const method = init?.method ?? 'GET';
     fetchCalls.push({ url, method, body: init?.body ? JSON.parse(init.body) : undefined });
     if (method === 'POST') return Promise.resolve({ ok: toggleOk, status: toggleOk ? 200 : 500 } as Response);
-    if (listResp === 'pending') return new Promise<Response>(() => {});
-    return Promise.resolve({ ok: listResp.ok, status: listResp.status ?? (listResp.ok ? 200 : 500), json: async () => listResp.body } as Response);
+    return Promise.resolve({ ok: true, status: 200 } as Response);
   }));
 }
 
-beforeEach(() => { toggleOk = true; listResp = { ok: true, body: { assertions: [] } }; stubFetch(); });
+beforeEach(() => {
+  toggleOk = true;
+  Object.assign(syncState, { data: [], loading: false, error: null });
+  invalidateSpy.mockClear();
+  stubFetch();
+});
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('AcceptancePanel', () => {
   it('shows the loading state before assertions resolve', () => {
-    listResp = 'pending';
+    syncState.loading = true;
     render(<AcceptancePanel slug="alpha" />);
     expect(screen.getByText(/Loading acceptance criteria/i)).toBeTruthy();
   });
 
   it('shows an error when the assertions fetch fails', async () => {
-    listResp = { ok: false, status: 500, body: {} };
+    syncState.error = new Error('HTTP 500');
     render(<AcceptancePanel slug="alpha" />);
     expect(await screen.findByText(/Could not load acceptance criteria: HTTP 500/i)).toBeTruthy();
   });
 
   it('shows the empty state when there are no VALs', async () => {
-    listResp = { ok: true, body: { assertions: [] } };
+    syncState.data = [];
     render(<AcceptancePanel slug="alpha" />);
     expect(await screen.findByText(/No VAL assertions yet/i)).toBeTruthy();
   });
 
   it('renders a row per VAL with its verify text + status', async () => {
-    listResp = { ok: true, body: { assertions: [A({ val_id: 'VAL-1', verify_text: 'login works', status: 'passed' })] } };
+    syncState.data = [A({ val_id: 'VAL-1', verify_text: 'login works', status: 'passed' })];
     render(<AcceptancePanel slug="alpha" />);
     const row = await screen.findByTestId('row-VAL-1');
     expect(within(row).getByText('login works')).toBeTruthy();
@@ -85,7 +96,7 @@ describe('AcceptancePanel', () => {
   });
 
   it('optimistically flips requires_test and POSTs the new value', async () => {
-    listResp = { ok: true, body: { assertions: [A({ val_id: 'VAL-1', requires_test: true })] } };
+    syncState.data = [A({ val_id: 'VAL-1', requires_test: true })];
     render(<AcceptancePanel slug="alpha" />);
     const row = await screen.findByTestId('row-VAL-1');
     const box = within(row).getByRole('checkbox') as HTMLInputElement;
@@ -95,12 +106,13 @@ describe('AcceptancePanel', () => {
     const post = fetchCalls.find((c) => c.method === 'POST')!;
     expect(post.url).toContain('/assertions/VAL-1');
     expect(post.body).toEqual({ requires_test: false });
+    expect(invalidateSpy).toHaveBeenCalledOnce();
     expect((within(row).getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
   });
 
   it('reverts the optimistic flip when the POST fails', async () => {
     toggleOk = false;
-    listResp = { ok: true, body: { assertions: [A({ val_id: 'VAL-1', requires_test: true })] } };
+    syncState.data = [A({ val_id: 'VAL-1', requires_test: true })];
     render(<AcceptancePanel slug="alpha" />);
     const row = await screen.findByTestId('row-VAL-1');
     fireEvent.click(within(row).getByRole('checkbox'));

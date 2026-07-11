@@ -286,6 +286,7 @@ export function deriveSignatureFromSummary(summary: string): string | null {
   if (s.startsWith('Queen loop dark')) return 'queen-dark';
   if (s.startsWith('Overwatch supervisor loop dark')) return 'overwatch-dark';
   if (/LLM pool account\(s\) paused/.test(s)) return 'accounts-starved';
+  if (s.startsWith('Postgres RESTARTED')) return 'pg-restarted';
   // Catch-all panel form: "<panel label>: <panel summary>".
   const idx = s.indexOf(': ');
   if (idx > 0) {
@@ -439,8 +440,19 @@ export async function runLivenessAlarmTick(
   const stale = snapshotAgeMs === null || snapshotAgeMs > staleMs;
   const health = stale ? await compute(ws) : (cached as SystemHealth);
 
-  const signals = evaluateLivenessAlarm(health, snapshotAgeMs, { snapshotStaleMs: staleMs });
+  // P-008: the PG-restart drift baseline. Read the previous postmaster-start value,
+  // evaluate against it, then advance it to the current reading — but ONLY when PG
+  // was readable this tick (cur != null). An unreadable tick must not clobber the
+  // baseline, else the next readable tick would false-fire a "restart".
+  const readBaseline = deps.readPostmasterBaseline ?? ((w: string) => lastPostmasterStartMs.get(w) ?? null);
+  const writeBaseline = deps.writePostmasterBaseline ?? ((w: string, ms: number) => void lastPostmasterStartMs.set(w, ms));
+  const prevPostmasterStartMs = readBaseline(ws);
+
+  const signals = evaluateLivenessAlarm(health, snapshotAgeMs, { snapshotStaleMs: staleMs, prevPostmasterStartMs });
   const currentSigs = new Set(signals.map((s) => s.key));
+
+  const curPostmasterStartMs = health.panels.infra?.data?.pg?.postmasterStartMs ?? null;
+  if (curPostmasterStartMs !== null) writeBaseline(ws, curPostmasterStartMs);
 
   // Read the open infra-liveness escalations ONCE, bucketed by signature. The
   // durable, cross-worker/cross-restart dedup the in-memory debounce cannot give.
@@ -551,7 +563,9 @@ export function startInfraLivenessAlarm(opts: { intervalMs?: number } = {}): { s
   };
 }
 
-/** Test-only — clear the per-signal debounce. */
+/** Test-only — clear the per-signal debounce AND the P-008 PG-restart baseline
+ *  (both are module-level per-worker state a hermetic test must reset). */
 export function _resetLivenessAlarmDebounce(): void {
   lastAlertedAt.clear();
+  lastPostmasterStartMs.clear();
 }

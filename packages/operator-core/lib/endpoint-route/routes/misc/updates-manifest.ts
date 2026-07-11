@@ -87,7 +87,7 @@ export function visibleChannels(target: Channel): ReadonlySet<Channel> {
   return new Set(['stable']);
 }
 
-function platformKeyFor(target: string, arch: string): string | null {
+export function platformKeyFor(target: string, arch: string): string | null {
   const t = target.toLowerCase();
   const a = arch.toLowerCase().replace(/-/g, '_');
   if (!['darwin', 'linux', 'windows'].includes(t)) return null;
@@ -178,11 +178,11 @@ function sameAssetName(a: string, b: string): boolean {
   return norm(a) === norm(b);
 }
 
-function findSigAsset(release: GhRelease, assetName: string): GhAsset | null {
+export function findSigAsset(release: GhRelease, assetName: string): GhAsset | null {
   return release.assets.find((a) => sameAssetName(a.name, `${assetName}.sig`)) ?? null;
 }
 
-function findLatestJsonAsset(release: GhRelease): GhAsset | null {
+export function findLatestJsonAsset(release: GhRelease): GhAsset | null {
   return (
     release.assets.find((a) => /^papercusp-latest-.*\.json$/i.test(a.name)) ??
     release.assets.find((a) => a.name.toLowerCase() === 'latest.json') ??

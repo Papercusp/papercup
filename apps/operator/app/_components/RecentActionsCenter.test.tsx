@@ -25,13 +25,10 @@ vi.mock('@papercusp/operator-core/lib/browser-workspace', () => ({
   wsLocalKey: (k: string) => `ws:default:${k}`,
 }));
 
-const { prefetchSpy } = vi.hoisted(() => ({ prefetchSpy: vi.fn(async () => {}) }));
-
 // OperatorActionLog drives its own sync transport; stub it to a marker so the
 // has-slug branch is observable without mocking the whole sync stack here.
 vi.mock('./OperatorActionLog', () => ({
   OperatorActionLog: ({ slug }: { slug: string }) => <div data-testid="action-log">log:{slug}</div>,
-  prefetchRecentActions: (slug: string) => prefetchSpy(slug as never),
 }));
 
 // Popover wraps Radix; render the trigger + children inline (always-open) so
@@ -72,7 +69,6 @@ function installLocalStorageShim(): void {
 beforeEach(() => {
   installLocalStorageShim();
   setUrl('/');
-  prefetchSpy.mockClear();
 });
 afterEach(cleanup);
 
@@ -129,19 +125,7 @@ describe('<RecentActionsCenter />', () => {
     expect(screen.getByTestId('action-log').textContent).toBe('log:live-harness');
   });
 
-  it('primes the recent-actions cache for the resolved slug on mount', () => {
-    setUrl('/x?slug=live-harness');
-    render(<RecentActionsCenter />);
-    expect(prefetchSpy).toHaveBeenCalledWith('live-harness');
-  });
-
-  it('does not prefetch when no slug resolves', () => {
-    setUrl('/harness');
-    render(<RecentActionsCenter />);
-    expect(prefetchSpy).not.toHaveBeenCalled();
-  });
-
-  it('re-reads the slug + re-primes the cache on a popstate navigation', async () => {
+  it('re-reads the slug on a popstate navigation', async () => {
     setUrl('/harness'); // no slug → empty state
     render(<RecentActionsCenter />);
     expect(screen.getByText(/pick a harness/i)).toBeTruthy();
@@ -149,7 +133,6 @@ describe('<RecentActionsCenter />', () => {
     setUrl('/x?slug=nav-harness');
     act(() => { window.dispatchEvent(new PopStateEvent('popstate')); });
     await waitFor(() => expect(screen.getByTestId('action-log').textContent).toBe('log:nav-harness'));
-    expect(prefetchSpy).toHaveBeenCalledWith('nav-harness');
   });
 
   it('the close button is wired (clicking it does not throw)', () => {

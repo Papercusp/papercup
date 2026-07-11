@@ -1526,6 +1526,7 @@ function PreservedRunsView() {
 
   // Live fleet state. Spawn/sample writes are bridged onto the sync bus, so
   // active runs update by push instead of a fixed four-second refetch loop.
+  const selRun = runs.find((r) => r.id === selId);
   const liveSync = useSyncQuery<BenchRunLive>({
     queryName: 'evals.benchRunLive',
     args: { runId: selId ?? '' },

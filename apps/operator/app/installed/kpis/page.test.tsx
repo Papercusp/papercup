@@ -7,9 +7,16 @@
  * silently swallowed).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+const { syncState, invalidateSpy } = vi.hoisted(() => ({
+  syncState: { data: [] as unknown[], loading: false, fetching: false, error: null as Error | null },
+  invalidateSpy: vi.fn(),
+}));
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: () => ({ ...syncState, invalidate: invalidateSpy }),
+}));
 
 import KPIsPage from './page';
 
@@ -31,15 +38,9 @@ function kpis(over: Record<string, unknown> = {}) {
   };
 }
 
-let fetchImpl: (url: string) => Promise<Response>;
-function installFetch() {
-  const fn = vi.fn(async (url: string) => fetchImpl(String(url)));
-  vi.stubGlobal('fetch', fn as unknown as typeof fetch);
-  return fn;
-}
-
 beforeEach(() => {
-  fetchImpl = async () => new Response(JSON.stringify(kpis()), { status: 200 });
+  Object.assign(syncState, { data: [kpis()], loading: false, fetching: false, error: null });
+  invalidateSpy.mockClear();
 });
 afterEach(() => {
   cleanup();
@@ -49,50 +50,30 @@ afterEach(() => {
 
 describe('KPIsPage', () => {
   it('shows a loading state before the first fetch resolves', async () => {
-    let resolveFetch!: (r: Response) => void;
-    fetchImpl = () => new Promise((resolve) => { resolveFetch = resolve; });
-    installFetch();
-
+    Object.assign(syncState, { data: [], loading: true });
     render(<KPIsPage />);
     expect(screen.getByText(/Loading KPIs/i)).toBeTruthy();
-
-    resolveFetch(new Response(JSON.stringify(kpis()), { status: 200 }));
-    await waitFor(() => expect(screen.getByText('Substrate KPIs')).toBeTruthy());
   });
 
-  it('renders the stat grid once data loads', async () => {
-    installFetch();
+  it('renders the stat grid once data loads', () => {
     render(<KPIsPage />);
-    await waitFor(() => expect(screen.getByText('Substrate KPIs')).toBeTruthy());
+    expect(screen.getByText('Substrate KPIs')).toBeTruthy();
     expect(screen.getByText('120')).toBeTruthy(); // Messages 24h
     expect(screen.getByText('42')).toBeTruthy(); // Actions 24h
   });
 
-  it('shows a full-page error when the first fetch fails and there is no prior data', async () => {
-    fetchImpl = async () => new Response('boom', { status: 500 });
-    installFetch();
+  it('shows a full-page error when the first query fails and there is no prior data', () => {
+    Object.assign(syncState, { data: [], error: new Error('boom') });
     render(<KPIsPage />);
-    await waitFor(() => expect(screen.getByText(/Failed to load/i)).toBeTruthy());
+    expect(screen.getByText(/Failed to load/i)).toBeTruthy();
   });
 
-  it('keeps showing stale data plus a warning banner when a later refresh fails', async () => {
-    let callCount = 0;
-    fetchImpl = async () => {
-      callCount += 1;
-      if (callCount === 1) return new Response(JSON.stringify(kpis()), { status: 200 });
-      return new Response('boom', { status: 500 });
-    };
-    installFetch();
-
+  it('keeps showing stale data plus a warning when revalidation fails', () => {
+    Object.assign(syncState, { data: [kpis()], error: new Error('boom') });
     render(<KPIsPage />);
-    await waitFor(() => expect(screen.getByText('Substrate KPIs')).toBeTruthy());
-
-    // Trigger a manual refresh that fails; the previously-fetched data (and
-    // the page itself) must stay on screen rather than being replaced by the
-    // full-page error state.
     screen.getByRole('button', { name: 'Refresh' }).click();
-
-    await waitFor(() => expect(screen.getByText(/showing stale data/i)).toBeTruthy());
+    expect(invalidateSpy).toHaveBeenCalledOnce();
+    expect(screen.getByText(/showing stale data/i)).toBeTruthy();
     expect(screen.getByText('Substrate KPIs')).toBeTruthy();
     expect(screen.getByText('120')).toBeTruthy();
   });

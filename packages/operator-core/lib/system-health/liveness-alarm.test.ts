@@ -58,6 +58,34 @@ describe('evaluateLivenessAlarm (pure)', () => {
     expect(dr?.summary).toContain('git-sync');
   });
 
+  // P-008: PG-restart drift detector.
+  it('PG postmaster-start FIRST observation (no prior baseline) → NO pg-restarted signal (just seeds)', () => {
+    const h = mkHealth({ panels: { infra: { data: { pg: { postmasterStartMs: 1_700_000_000_000 } } } } });
+    const sigs = evaluateLivenessAlarm(h, null, { prevPostmasterStartMs: null });
+    expect(sigs.map((s) => s.key)).not.toContain('pg-restarted');
+  });
+
+  it('PG postmaster-start DRIFT (prev != cur, both present) → pg-restarted blocker', () => {
+    const h = mkHealth({ panels: { infra: { data: { pg: { postmasterStartMs: 1_700_000_050_000 } } } } });
+    const sigs = evaluateLivenessAlarm(h, null, { prevPostmasterStartMs: 1_700_000_000_000 });
+    const pg = sigs.find((s) => s.key === 'pg-restarted');
+    expect(pg?.severity).toBe('blocker');
+    expect(pg?.summary).toContain('Postgres RESTARTED');
+    expect(pg?.summary).toContain(new Date(1_700_000_050_000).toISOString());
+  });
+
+  it('PG postmaster-start STABLE (prev == cur) → NO pg-restarted signal', () => {
+    const h = mkHealth({ panels: { infra: { data: { pg: { postmasterStartMs: 1_700_000_000_000 } } } } });
+    const sigs = evaluateLivenessAlarm(h, null, { prevPostmasterStartMs: 1_700_000_000_000 });
+    expect(sigs.map((s) => s.key)).not.toContain('pg-restarted');
+  });
+
+  it('PG unreadable this tick (cur null) → NO pg-restarted signal even with a prior baseline', () => {
+    const h = mkHealth({ panels: { infra: { data: { pg: null } } } });
+    const sigs = evaluateLivenessAlarm(h, null, { prevPostmasterStartMs: 1_700_000_000_000 });
+    expect(sigs.map((s) => s.key)).not.toContain('pg-restarted');
+  });
+
   it('queen dark (started + not alive) → queen-dark blocker', () => {
     const h = mkHealth({ crossMonitor: { queenAlive: false }, panels: { queen: { data: { started: true } } } });
     expect(evaluateLivenessAlarm(h, null).map((s) => s.key)).toContain('queen-dark');
@@ -379,6 +407,48 @@ describe('runLivenessAlarmTick — durable dedup + auto-resolve (EI-2146)', () =
     const t3 = await runLivenessAlarmTick('ws', deps);
     expect(t3.fired.map((s) => s.key)).toEqual(['dead-routines']);
     expect(store.openCount()).toBe(1);
+  });
+
+  it('(pg) P-008: postmaster-start drift fires pg-restarted ONCE then auto-resolves; the first tick only seeds', async () => {
+    const store = makeStore();
+    let pmStart = 1_700_000_000_000;
+    const mk = () =>
+      mkHealth({
+        evaluatedAt: 100 * 60_000,
+        panels: { infra: { data: { pg: { postmasterStartMs: pmStart } } } },
+      });
+    let now = 100 * 60_000 + 60_000; // fresh snapshot (no stale signal)
+    const deps = {
+      readLast: () => mk(),
+      computeHealth: async () => mk(),
+      escalate: store.escalate,
+      listOpen: store.listOpen,
+      resolve: store.resolve,
+      now: () => now,
+      snapshotStaleMs: 6 * 60_000,
+      debounceMs: 30 * 60_000,
+    };
+
+    // t1: first observation just seeds the baseline — a restart cannot be inferred
+    // from one reading, so no signal (this is why a :3070 restart never false-fires).
+    const t1 = await runLivenessAlarmTick('ws', deps);
+    expect(t1.fired.map((s) => s.key)).not.toContain('pg-restarted');
+    expect(store.openCount()).toBe(0);
+
+    // t2: PG restarted (postmaster start-time jumps) → exactly one pg-restarted blocker.
+    pmStart = 1_700_000_050_000;
+    now += 60_000;
+    const t2 = await runLivenessAlarmTick('ws', deps);
+    expect(t2.fired.map((s) => s.key)).toContain('pg-restarted');
+    expect(store.openCount()).toBe(1);
+
+    // t3: start-time stable at the new value → the drift clears → auto-resolves (a
+    // restart is an EVENT, not a stuck condition — one page, then the all-clear).
+    now += 60_000;
+    const t3 = await runLivenessAlarmTick('ws', deps);
+    expect(t3.fired.map((s) => s.key)).not.toContain('pg-restarted');
+    expect(t3.resolved.length).toBe(1);
+    expect(store.openCount()).toBe(0);
   });
 
   it('one-time backlog sweep: a LEGACY open escalation (no signature meta) whose condition recovered is classified by summary and auto-resolved', async () => {
