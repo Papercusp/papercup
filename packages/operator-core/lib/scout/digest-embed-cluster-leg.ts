@@ -28,9 +28,36 @@
  * resolver lazy-loads an ONNX model — the WI-3792 load-scar class). Embeddings are
  * deterministic per model+mode and the greedy clustering is order-deterministic, so
  * the digest stays regenerable.
+ *
+ * WI-4183/EI-9694 (2026-07-11): the leg used to `.embed()` every candidate title
+ * fresh, per digest run — the first real execution (EI-9693) measured 69s for 600
+ * titles, which forfeits BUDGET_MS at any real corpus size, so flag-on could never
+ * actually produce a verdict outside a toy run. Friction candidates ARE
+ * `engineer_issues`/`work_items` rows, and they already carry migration-551
+ * embeddings maintained by the backfill sweep (embed-backfill.ts) — so this leg now
+ * REUSES those stored vectors, JOIN-WISE, with no new storage and no embed cost (the
+ * exact D-016 convention semantic-novelty-leg.ts / P-017 established: query
+ * `harness_shared.work_items` by `feature_id`, filtered to the CURRENT resolved
+ * embedding mode). A candidate whose vector hasn't backfilled yet (or is stored under
+ * a different mode) is simply excluded from clustering — fail-open PER ROW, not a
+ * whole-leg forfeit. EI-9693 also raised the default cosine threshold 0.85 → 0.92
+ * (title-only cosine at 0.85 false-merged template-shaped titles, e.g. two distinct
+ * "Test failing repeatedly: <path>" watchdog rows unified because the shared
+ * boilerplate sentence shape dominates the vector far more than the differing path).
+ * The complementary "strip boilerplate before embedding" / "require weak-lexical AND
+ * cosine" refinements EI-9693 also floats are NOT done here: the former is
+ * incompatible with reusing stored (whole-title) vectors without paying the re-embed
+ * cost back, and the latter needs re-validation against the real corpus (a quick
+ * token-overlap analysis on the EI-9693 false-merge examples shows shared path
+ * prefixes like `packages/operator-core/lib/` already give ~0.4 lexical Jaccard, so a
+ * naive "weak lexical AND cosine" gate would likely still merge them) — left as
+ * follow-up idea filing rather than shipped on an unvalidated guess.
  */
+import { getOrgPg } from '@papercusp/db-org';
+
 import { dedupSignature, type DupCluster } from '../harness/improvements/digest';
 import type { ImprovementCandidate } from '../harness/improvements/policy';
+import { parseVectorText } from '../search/embed-space-self-check';
 
 /** Width of the migration-551/553 embedding columns (= embed-backfill's EMBEDDER_DIM). */
 const EMBED_DIM = 384;
@@ -40,9 +67,11 @@ const EMBED_DIM = 384;
 const BUDGET_MS = 4000;
 /** Cosine ≥ this ⇒ two friction titles cluster. The embedding analog of the lexical
  *  NEAR_DUP_JACCARD (0.8); cosine neighbours run higher in absolute terms, so the
- *  default sits a touch above. Override per-experiment via
- *  PAPERCUSP_SU_DIGEST_EMBED_CLUSTER_THRESHOLD. */
-const DEFAULT_COSINE_THRESHOLD = 0.85;
+ *  default sits above. Raised from the original 0.85 per EI-9693's first-run
+ *  evidence: 0.85 false-merged template-shaped titles that differ only by file path
+ *  (the shared boilerplate sentence dominates the vector). Override per-experiment
+ *  via PAPERCUSP_SU_DIGEST_EMBED_CLUSTER_THRESHOLD. */
+const DEFAULT_COSINE_THRESHOLD = 0.92;
 /** Above this friction count the experiment forfeits (fail-open to lexical) rather
  *  than embed a pathological backlog — mirrors findLikelyDuplicates' NEAR_DUP bound. */
 const MAX_EMBED_CANDIDATES = 600;
@@ -54,6 +83,13 @@ export interface DigestEmbedClusterDeps {
     | { mode: 'disabled'; reason?: string }
     | null
   >;
+  /** feature_id → stored vector for the ids that HAVE one in `mode`'s embedding
+   *  space (migration-551 `harness_shared.work_items.embedding`) — the D-016
+   *  join-wise convention (semantic-novelty-leg.ts). No embed() call, no new
+   *  storage: an id absent from the returned map has no usable stored vector
+   *  (not yet backfilled, or backfilled under a different mode) and is excluded
+   *  from clustering rather than embedded fresh. */
+  queryStoredVectors: (mode: string, ids: string[]) => Promise<Map<string, number[]>>;
 }
 
 /** The experiment is OPT-IN — lexical clustering is the control AND the default. */
@@ -136,10 +172,26 @@ export function clusterByCosine(
   return clusters;
 }
 
+async function queryStoredVectorsReal(mode: string, ids: string[]): Promise<Map<string, number[]>> {
+  if (ids.length === 0) return new Map();
+  const { sql } = getOrgPg();
+  // migration 374 unified issues + features into harness_shared.work_items;
+  // migration 551's embedding columns live on that base — the same table/columns
+  // semantic-novelty-leg's queryWorkItemSimsReal joins against for 'wi:<id>' refs.
+  const rows = await sql<Array<{ id: string; embedding: string }>>`
+    SELECT feature_id AS id, embedding::text AS embedding
+      FROM harness_shared.work_items
+     WHERE feature_id = ANY(${ids})
+       AND embedding IS NOT NULL
+       AND embedding_mode = ${mode}`;
+  return new Map(rows.map((r) => [r.id, parseVectorText(r.embedding)]));
+}
+
 /** The DOCUMENT-side resolver the backfill sweep stores the ledger under — the one
  *  seam that guarantees the friction titles and any stored vectors share space+prompt. */
 const realDeps: DigestEmbedClusterDeps = {
   resolveEmbedder: async () => (await import('../search/embed-backfill')).resolveBackfillEmbedder(),
+  queryStoredVectors: queryStoredVectorsReal,
 };
 
 async function embedAndCluster(
@@ -150,15 +202,22 @@ async function embedAndCluster(
   const resolved = await deps.resolveEmbedder();
   if (!resolved || resolved.mode === 'disabled' || !('embed' in resolved)) return null;
   if (resolved.dims !== EMBED_DIM) return null; // harrier@1024 — no vector(384) verdict possible
-  const vectors: number[][] = [];
+  const vectorById = await deps.queryStoredVectors(
+    resolved.mode,
+    candidates.map((c) => c.id),
+  );
+  // Fail-open PER ROW: a candidate whose stored vector hasn't backfilled yet (or is
+  // stored under a different mode) is excluded from clustering, not embedded fresh —
+  // that's the whole point of reusing the ledger instead of paying embed cost again.
+  const usable: Array<{ id: string; title: string; vector: number[] }> = [];
   for (const c of candidates) {
-    const v = await resolved.embed((c.title ?? '').slice(0, 2000));
-    if (v.length !== EMBED_DIM) return null; // wrong-width ⇒ fail-open, don't cluster garbage
-    vectors.push(v);
+    const v = vectorById.get(c.id);
+    if (v && v.length === EMBED_DIM) usable.push({ id: c.id, title: c.title, vector: v });
   }
+  if (usable.length < 2) return null;
   return clusterByCosine(
-    candidates.map((c) => ({ id: c.id, title: c.title })),
-    vectors,
+    usable.map((u) => ({ id: u.id, title: u.title })),
+    usable.map((u) => u.vector),
     digestEmbedClusterThreshold(),
   );
 }
