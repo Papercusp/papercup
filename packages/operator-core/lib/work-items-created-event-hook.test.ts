@@ -13,6 +13,9 @@ const emitWorkItemCreatedEvent = vi.fn();
 vi.mock('./work-items-events', () => ({
   emitWorkItemCreatedEvent: (...a: unknown[]) => emitWorkItemCreatedEvent(...a),
   emitWorkItemClaimedEvent: vi.fn(),
+  // P-007: createWorkItem also co-fires the claimable hook through the same
+  // lazy import — stub it or the real emitter runs against this file's fake sql.
+  emitWorkItemClaimableEvent: vi.fn(),
 }));
 
 vi.mock('./pot/urgent-wake', () => ({ requestUrgentHiveWake: vi.fn(async () => ({ fired: true, coalesced: false })) }));
