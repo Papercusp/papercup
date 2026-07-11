@@ -14,6 +14,7 @@ import {
   parseRefToken,
   renderHydratedRef,
   renderHydratedRefs,
+  renderReplyQuoteSuffix,
   type HydratableRef,
 } from './ref-hydrate';
 import { hydrateRefs, type RefResolver } from './ref-hydrate-resolve';
@@ -112,6 +113,23 @@ describe('render', () => {
       { ref: { kind: 'work-item', id: 'WI-2' }, ok: false, label: 'work-item:WI-2', snippet: '', error: 'not_found' },
     ]);
     expect(block.split('\n')).toHaveLength(2);
+  });
+
+  it('reply-quote suffix (P-005): `⤷ re` + quoted verbatim snippet; unresolved stays visible', () => {
+    expect(
+      renderReplyQuoteSuffix({
+        ref: { kind: 'msg', id: 'm1' },
+        ok: true,
+        label: 'msg m1 (15179 → 4c85f, 2026-07-11T09:01Z)',
+        snippet: 'is the Mac app actually draining?',
+      }),
+    ).toBe(' ⤷ re msg m1 (15179 → 4c85f, 2026-07-11T09:01Z): "is the Mac app actually draining?"');
+    expect(
+      renderReplyQuoteSuffix({ ref: { kind: 'msg', id: 'm2' }, ok: false, label: 'msg:m2', snippet: '', error: 'not_found' }),
+    ).toBe(' ⤷ re msg:m2 — unresolved (not_found)');
+    expect(
+      renderReplyQuoteSuffix({ ref: { kind: 'msg', id: 'm3' }, ok: true, label: 'msg m3', snippet: '' }),
+    ).toBe(' ⤷ re msg m3');
   });
 });
 

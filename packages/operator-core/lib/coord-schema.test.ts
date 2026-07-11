@@ -359,6 +359,65 @@ describe('renderInjection — H2 relay-provenance suffix + UNVERIFIED-claim flag
   });
 });
 
+describe('renderInjection — P-005 reply-quote hydration (related_msg_id, coord-authority-hardening)', () => {
+  const HIT = {
+    ref: { kind: 'msg', id: 'm-orig' },
+    ok: true,
+    label: 'msg m-orig (9999a → 4c85f, 2026-07-11T09:01Z)',
+    snippet: 'is the Mac app actually draining post-restart?',
+  } as const;
+  const quotes = new Map([['m-orig', HIT]]);
+
+  it('a reply with a hydrated related_msg_id gets the inline ⤷ re quote of the REFERENCED message', () => {
+    const out = renderInjection([e({ summary: 'yes — drained 40 rows since 09:00', related_msg_id: 'm-orig' })], {
+      relatedQuotes: quotes as never,
+    });
+    expect(out).toContain(
+      'yes — drained 40 rows since 09:00 ⤷ re msg m-orig (9999a → 4c85f, 2026-07-11T09:01Z): "is the Mac app actually draining post-restart?"',
+    );
+  });
+
+  it('an unresolved (dangling) related ref is VISIBLE, not silently dropped', () => {
+    const miss = new Map([
+      ['m-gone', { ref: { kind: 'msg', id: 'm-gone' }, ok: false, label: 'msg:m-gone', snippet: '', error: 'not_found' }],
+    ]);
+    const out = renderInjection([e({ summary: 'replying to the void', related_msg_id: 'm-gone' })], {
+      relatedQuotes: miss as never,
+    });
+    expect(out).toContain('⤷ re msg:m-gone — unresolved (not_found)');
+  });
+
+  it('no relatedQuotes map (legacy caller / hydration failed) ⇒ prior behavior, no suffix', () => {
+    const out = renderInjection([e({ summary: 'a reply', related_msg_id: 'm-orig' })]);
+    expect(out).toContain('- ab533 a reply');
+    expect(out).not.toContain('⤷');
+  });
+
+  it('a map without the entry’s id, or a line without related_msg_id, renders plain', () => {
+    const out = renderInjection(
+      [e({ summary: 'unrelated line' }), e({ summary: 'other reply', related_msg_id: 'm-other', ts: '2026-06-06T00:00:01.000Z' })],
+      { relatedQuotes: quotes as never },
+    );
+    expect(out).not.toContain('⤷');
+  });
+
+  it('a malformed related_msg_id (non-string) degrades to no suffix, never throws', () => {
+    const bad = { ...e({ summary: 'weird envelope' }), related_msg_id: 42 } as unknown as CoordLineSource;
+    expect(renderInjection([bad], { relatedQuotes: quotes as never })).toContain('- ab533 weird envelope');
+  });
+
+  it('reply-quote composes with the H2 relay suffix on the same line (relay first, reply after)', () => {
+    const entry = {
+      ...e({ summary: 'relaying + replying', related_msg_id: 'm-orig' }),
+      relayProvenance: { tier: 'owner-verified-turn', quote: 'wind down' },
+    } as CoordLineSource;
+    const out = renderInjection([entry], { relatedQuotes: quotes as never });
+    const line = out.split('\n')[1];
+    expect(line.indexOf('↪ owner-verified(turn)')).toBeGreaterThan(-1);
+    expect(line.indexOf('⤷ re msg m-orig')).toBeGreaterThan(line.indexOf('↪ owner-verified(turn)'));
+  });
+});
+
 describe('renderCoordLegend + anti-desync (P-002)', () => {
   it('declares the positional grammar', () => {
     const legend = renderCoordLegend();
