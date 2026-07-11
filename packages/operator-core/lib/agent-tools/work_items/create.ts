@@ -97,11 +97,12 @@ export default defineTool({
   description:
     'Create ONE or MANY work-items of any kind — feature | chunk | bug | change | task. Returns kind-independent WI-NNN ids. bug/change/task file a tracked issue; feature/chunk enter the harness work queue. Single: { kind, title, … }. Many: items:[{ kind, title, … }] with batch-level harness / workspace / assign_all_to_self. Returns { ok, results:[{ ok, id, title, workItem } | { ok:false, title, error }], counts } — a mirror-duplicate or one bad item never fails the rest. Dedup with work_items:list/search first.',
   guidance: {
-    when: 'Track a unit of work an agent will do. Pick the kind by what it IS: bug (code is broken), change (a code change / fix / refactor / DX ask — the DEFAULT for most coding work-items), feature (a pipeline-sized coding work-unit that plans into chunks), chunk (a sub-unit of a feature, pass `parent`), or task (NON-CODE work only — research a library, make a decision, a manual verification / ops step). File several at once via items:[…] instead of a round-trip each.',
+    when: 'Track a unit of work an agent will do. Pick the kind by what it IS: bug (code is broken), change (a code change / fix / refactor / DX ask — the DEFAULT for most coding work-items), feature (a pipeline-sized coding work-unit that plans into chunks), chunk (a sub-unit of a feature, pass `parent`), or task (NON-CODE work only — research a library, make a decision, a manual verification / ops step). File several at once via items:[…] instead of a round-trip each. Born with known relationships? Write them inline via links:[{ rel, target_id | target_kind+target_ref }] instead of a follow-up work_items:link call.',
     notWhen: 'NEVER use `task` for anything that edits code — that is `change` (or `feature` if pipeline-sized); `task` is non-code only. A passing question with no owner → coord:ask. A validator finding inside a live pipeline run → the validator pipeline, not here.',
-    chaining: 'work_items:list (dedup) → work_items:create → work_items:claim/claim_next when you start → work_items:set_state on progress; work_items:promote to give a bug/change a pipeline run.',
+    chaining: 'work_items:list (dedup) → work_items:create (+ inline links:[…] for edges known at birth) → work_items:claim/claim_next when you start → work_items:set_state on progress; work_items:promote to give a bug/change a pipeline run.',
     seeAlso: [
       'work_items:list (dedup against existing items before filing)',
+      'work_items:link (add typed edges to an EXISTING item — create’s links:[…] is the at-birth shorthand)',
       'work_items:promote (give a filed bug/change a pipeline run)',
       'work_items:claim (self-assign the new item at creation via { assignee })',
     ],

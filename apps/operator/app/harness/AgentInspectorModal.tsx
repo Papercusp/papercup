@@ -69,20 +69,27 @@ export default function AgentInspectorModal({
    * WI-3882 (P-012, adv-sessions-live-roster): the session id to fork/resume
    * into a NEW terminal via `POST /api/agent-mcp/console/launch`'s
    * `resumeSessionId` (plan-agent-launch P-023 — `<agent-cli> -r <id>`,
-   * console-launcher.ts). Present ⇒ a state-aware button: `live:true` (the
-   * source agent is still running — this OPENS A PARALLEL window on the same
-   * transcript, the original keeps going) labels it "Fork in new terminal";
-   * `live:false` (the source session has ENDED) labels it "Resume in new
-   * terminal". Absent ⇒ no button (never a dead one) — only claude/omp
-   * sessions accept `-r`, so callers gate on that before passing this.
-   * WI-4009: `live:true` additionally requires the source to be a CLAUDE
-   * session — `--fork-session` is claude-only (console-launcher.ts), and an
-   * omp session has no fork command, so callers never set `live:true` for a
-   * live omp/codex agent (see `canForkLive` in AgentsRunningPill.tsx).
+   * console-launcher.ts). Present ⇒ up to TWO independent buttons, BOTH offered
+   * for active AND ended sessions (owner ask 2026-07-11 — retracted the earlier
+   * "fork only for active / resume only for inactive" split):
+   *   • "Resume in new terminal" (fork:false) — always shown when resumeTarget
+   *     is present. `<cli> -r <id>` resumes the transcript IN PLACE. Both
+   *     claude and omp accept `-r`, so callers gate presence on that alone.
+   *     When `live:true` (source still running) this opens a SECOND CLI on the
+   *     same live transcript — a collision — so the button carries a warning
+   *     tooltip in that case; it stays enabled (owner wants the option).
+   *   • "Fork in new terminal" (fork:true) — shown only when `canFork:true`.
+   *     `<cli> -r <id> --fork-session` BRANCHES into a new session (the source,
+   *     if live, keeps running untouched). `--fork-session` is claude-only
+   *     (console-launcher.ts) — omp has no fork command — so callers set
+   *     `canFork` = "is a claude session" (see `canForkLive` in
+   *     AgentsRunningPill.tsx), independent of active/inactive.
+   * Absent ⇒ no buttons (never a dead one). `live` no longer gates which button
+   * shows — it only tags the Resume button's collision tooltip.
    * Linux-only for now, same constraint as the primary /console/launch spawn
    * path itself (see native-console.ts) — mirrors focusTarget's posture.
    */
-  resumeTarget?: { sessionId: string; live: boolean; label?: string | null } | null;
+  resumeTarget?: { sessionId: string; live: boolean; canFork: boolean; label?: string | null } | null;
   /** Search-hit deep-link (agents-pill-inactive-search-2026-07-09 P-005): the
    *  term to highlight throughout the transcript. Pair with a streamUrl that
    *  carries `find`/`anchorTs` — the stream's `anchor` event then names the
@@ -165,14 +172,18 @@ export default function AgentInspectorModal({
   // "Fork/Resume in new terminal" (WI-3882) — reuse the existing capability:
   // terminal + psu-session-resume path (plan-agent-launch P-023) via the same
   // console-launch route the "+" console button / capability:terminal use.
-  const [resumeState, setResumeState] = useState<'idle' | 'busy' | 'err'>('idle');
-  // The server's actual failure reason (WI-3988/WI-3989) — shown as the button
-  // tooltip so a failure is diagnosable instead of a bare "fork failed".
-  const [resumeErr, setResumeErr] = useState<string | null>(null);
-  const resumeInNewTerminal = useCallback(async () => {
+  // TASK2 (owner ask 2026-07-11): Resume (fork:false) and Fork (fork:true) are
+  // two INDEPENDENT actions now, each offered for active AND ended sessions —
+  // so track launch state + the server's failure reason per action.
+  const [launchState, setLaunchState] = useState<{ resume: 'idle' | 'busy' | 'err'; fork: 'idle' | 'busy' | 'err' }>({ resume: 'idle', fork: 'idle' });
+  // The server's actual failure reason (WI-3988/WI-3989) per action — shown as
+  // that button's tooltip so a failure is diagnosable, not a bare "failed".
+  const [launchErr, setLaunchErr] = useState<{ resume: string | null; fork: string | null }>({ resume: null, fork: null });
+  const launchInNewTerminal = useCallback(async (fork: boolean) => {
     if (!resumeTarget) return;
-    setResumeState('busy');
-    setResumeErr(null);
+    const key = fork ? 'fork' : 'resume';
+    setLaunchState((s) => ({ ...s, [key]: 'busy' }));
+    setLaunchErr((e) => ({ ...e, [key]: null }));
     try {
       const res = await fetch('/api/agent-mcp/console/launch', {
         method: 'POST',
@@ -187,24 +198,24 @@ export default function AgentInspectorModal({
         headers: { 'content-type': 'text/plain' },
         body: JSON.stringify({
           resumeSessionId: resumeTarget.sessionId,
-          // WI-3882: a LIVE source session FORKS (branch into a new session —
-          // the original keeps running); an ENDED one resumes in place. Without
-          // this the Fork button would resume the still-live session in place
-          // and collide with it (a second CLI on the same transcript).
-          fork: resumeTarget.live === true,
-          label: resumeTarget.label ?? `${resumeTarget.live ? 'fork' : 'resume'} · ${role}`,
+          // fork:true → `--fork-session` (branch into a new session, source
+          // untouched, claude-only); fork:false → `-r` (resume in place). A
+          // resume-in-place of a still-LIVE session opens a second CLI on the
+          // same transcript (the collision the Resume tooltip warns about).
+          fork,
+          label: resumeTarget.label ?? `${fork ? 'fork' : 'resume'} · ${role}`,
         }),
       });
       const data = await res.json().catch(() => null);
       if (res.ok && data?.status === 'ok') {
-        setResumeState('idle');
+        setLaunchState((s) => ({ ...s, [key]: 'idle' }));
       } else {
-        setResumeErr(data?.error ?? `HTTP ${res.status}`);
-        setResumeState('err');
+        setLaunchErr((e) => ({ ...e, [key]: data?.error ?? `HTTP ${res.status}` }));
+        setLaunchState((s) => ({ ...s, [key]: 'err' }));
       }
     } catch (e) {
-      setResumeErr(e instanceof Error ? e.message : 'request failed');
-      setResumeState('err');
+      setLaunchErr((e2) => ({ ...e2, [key]: e instanceof Error ? e.message : 'request failed' }));
+      setLaunchState((s) => ({ ...s, [key]: 'err' }));
     }
   }, [resumeTarget, role]);
 
@@ -252,41 +263,63 @@ export default function AgentInspectorModal({
           {' · '}<code style={{ fontSize: 11 }}>{runId}</code>
         </span>
         <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {/* TASK2 (owner 2026-07-11): Resume + Fork are two INDEPENDENT buttons,
+              both offered for active AND ended sessions. Resume (↻, fork:false)
+              always shows when a resumeTarget is present; on a still-LIVE source
+              it carries a collision-warning tooltip (a second CLI on the same
+              transcript) but stays enabled. Fork (⑂, fork:true) shows only for a
+              claude session (canFork) since --fork-session is claude-only.
+              Native `title` (not a Radix Tooltip whose label toggles) — see
+              EI-9449: a label that flips falsy⇄truthy after mount remounts the
+              whole button subtree and strands any DOM ref mid-flight. */}
           {resumeTarget ? (
-            // EI-9449: a Radix <Tooltip label={...}> whose label toggles falsy⇄truthy
-            // AFTER MOUNT (here: undefined → resumeErr once the launch POST fails)
-            // structurally swaps Tooltip's own render tree (its `if (!label) return
-            // <>{children}</>` guard branches from a bare Fragment to the full
-            // Provider/Root/Trigger/Portal tree — a different element TYPE at this
-            // JSX position), so React unmounts + remounts the whole subtree, INCLUDING
-            // this button — any DOM reference held across that transition (a prior
-            // `getByTestId`/focus/ref) goes stale mid-flight, silently pointing at a
-            // detached node forever. A native `title` attribute carries the same
-            // "server reason as tooltip" intent (see the getAttribute('title') assert
-            // below) without ever changing this element's type, so the button node
-            // never remounts. (Tooltip.tsx's guard is intentional + tested for STATIC
-            // per-usage labels — this is the one call site that toggles the label at
-            // runtime; fix the toggling call site, not the shared component's contract.)
             <button
               type="button"
               data-testid="resume-terminal-btn"
-              onClick={resumeInNewTerminal}
-              disabled={resumeState === 'busy'}
-              title={resumeState === 'err' && resumeErr ? resumeErr : undefined}
+              onClick={() => launchInNewTerminal(false)}
+              disabled={launchState.resume === 'busy'}
+              title={launchState.resume === 'err' && launchErr.resume
+                ? launchErr.resume
+                : resumeTarget.live
+                  ? 'Opens a second CLI on the still-running session (same transcript) — may collide with the live agent. Use Fork to branch a fresh session instead.'
+                  : undefined}
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: 4,
-                font: 'inherit', fontSize: 11, cursor: resumeState === 'busy' ? 'default' : 'pointer',
-                color: resumeState === 'err' ? TONE.bad : 'var(--fg)',
+                font: 'inherit', fontSize: 11, cursor: launchState.resume === 'busy' ? 'default' : 'pointer',
+                color: launchState.resume === 'err' ? TONE.bad : 'var(--fg)',
                 background: 'var(--bg-1)', border: '1px solid var(--border)',
                 borderRadius: 5, padding: '2px 8px', lineHeight: 1.4,
               }}
             >
-              <span aria-hidden>{resumeTarget.live ? '⑂' : '↻'}</span>
-              {resumeState === 'busy'
-                ? (resumeTarget.live ? 'forking…' : 'resuming…')
-                : resumeState === 'err'
-                  ? (resumeTarget.live ? 'fork failed' : 'resume failed')
-                  : (resumeTarget.live ? 'Fork in new terminal' : 'Resume in new terminal')}
+              <span aria-hidden>↻</span>
+              {launchState.resume === 'busy'
+                ? 'resuming…'
+                : launchState.resume === 'err'
+                  ? 'resume failed'
+                  : 'Resume in new terminal'}
+            </button>
+          ) : null}
+          {resumeTarget?.canFork ? (
+            <button
+              type="button"
+              data-testid="fork-terminal-btn"
+              onClick={() => launchInNewTerminal(true)}
+              disabled={launchState.fork === 'busy'}
+              title={launchState.fork === 'err' && launchErr.fork ? launchErr.fork : undefined}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                font: 'inherit', fontSize: 11, cursor: launchState.fork === 'busy' ? 'default' : 'pointer',
+                color: launchState.fork === 'err' ? TONE.bad : 'var(--fg)',
+                background: 'var(--bg-1)', border: '1px solid var(--border)',
+                borderRadius: 5, padding: '2px 8px', lineHeight: 1.4,
+              }}
+            >
+              <span aria-hidden>⑂</span>
+              {launchState.fork === 'busy'
+                ? 'forking…'
+                : launchState.fork === 'err'
+                  ? 'fork failed'
+                  : 'Fork in new terminal'}
             </button>
           ) : null}
           {focusTarget ? (

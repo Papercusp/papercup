@@ -217,6 +217,9 @@ export async function assemblePresenceSnapshot(
   opts: { owner?: string; nowMs?: number; detail?: { coordinationDomain: string } } = {},
 ): Promise<PresenceSnapshot> {
   const { wsId, potId, scope, scopeNote } = resolved;
+  // EI-9454: a `{ owner }` read is a TARGETED point-lookup — it must not pay the
+  // whole-roster assembly (see the early filter + sweep skip below).
+  const targeted = typeof opts.owner === 'string' && opts.owner.length > 0;
   const [records, federated, recordedLive] = await Promise.all([
     listPresence({ workspaceId: wsId, potSlug: potId }),
     listFederatedPresence({ workspaceId: wsId, potSlug: potId }),
@@ -240,7 +243,11 @@ export async function assemblePresenceSnapshot(
     // `ended` one past its TTL) and was cleared to ship once the append-only
     // fleet_membership_events ledger (P-002 / WI-1345 / migration 430) landed —
     // fleet-membership history now survives a coord_presence row's deletion.
-    sweepStalePresence(PRESENCE_GC_MS).catch(() => 0),
+    // EI-9454: the sweep (a maintenance DELETE) runs on the FULL-roster read only —
+    // a targeted { owner } lookup is the hot "is this agent alive?" point-read and
+    // must not queue a write behind a starved pool. The hourly presence-reaper and
+    // every default read keep the sweep cadence, so retention is unaffected.
+    targeted ? Promise.resolve(0) : sweepStalePresence(PRESENCE_GC_MS).catch(() => 0),
   ]);
   // Reconcile the two liveness sources: a fresh presence row wins; a live
   // session-log record supersedes a STALE presence row (so a resumed-but-idle
@@ -252,8 +259,20 @@ export async function assemblePresenceSnapshot(
   const localOwnerIds = new Set(records.map((r) => r.ownerId));
   const fedDeduped = federated.filter((f) => !localOwnerIds.has(f.ownerId));
   const all: RosterRow[] = reconcileRosterSources([...records, ...fedDeduped], recordedLive);
-  const active = all.filter((r) => !r.stale);
-  const stale = all.filter((r) => r.stale);
+  // EI-9454 (targeted-lookup cost): when `owner` is set, filter EARLY — the base
+  // rows already carry ownerId+ownerLabel (all matchesOwner needs), so the matched
+  // row(s) are known BEFORE the enrichment fan-out. Everything downstream (the 5
+  // batch joins, the per-row projection, the opt-in detail lock join) then runs
+  // for the 1-2 matched ids instead of the whole roster — the documented
+  // "targeted lookup" stops paying the O(roster) assembly that made it time out
+  // under fleet load (~67 sessions → 55s/300s aborts). selectRosterRows applies
+  // the SAME predicate at the end (idempotent), so the selected rows are
+  // byte-identical to the late-filter result; summary counts on a targeted read
+  // now describe the matched subset (the rows actually returned), not the whole
+  // roster.
+  const scoped = targeted ? all.filter((r) => matchesOwner(r, opts.owner as string)) : all;
+  const active = scoped.filter((r) => !r.stale);
+  const stale = scoped.filter((r) => r.stale);
   const now = opts.nowMs ?? Date.now();
   const isFederated = (r: RosterRow) => r.federated === true;
   // Tier-1 enrichment stays ACTIVE-only (cost, P-003); wakeability is fetched for
@@ -432,7 +451,9 @@ export async function assemblePresenceSnapshot(
     summary: {
       active: active.length,
       stale: stale.length,
-      federated: federated.length,
+      // EI-9454: on a targeted read the count matches the returned subset (like
+      // active/stale above); the default read keeps the whole-roster count.
+      federated: targeted ? scoped.filter((r) => r.federated === true).length : federated.length,
       wakeable,
       onDesktop,
       viewerAttached,

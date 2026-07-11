@@ -20,7 +20,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 import { isWorkspaceCoordinationOn, workspaceBrainScopeKey, workspaceBrainReadKeys } from '../workspace-brain-scope';
 import { dedupById, gatherCompletions, type ChangeFeedEntry } from '../curation/change-feed';
-import { buildChangeFeedReaders } from '../curation/change-feed-deps';
+import { buildChangeFeedReaders, CHANGE_FEED_COMPLETION_STATUSES } from '../curation/change-feed-deps';
 import {
   classifyIdeaOutcome,
   computeLensOutcomes,
@@ -460,20 +460,77 @@ async function readWorkItemLossEntries(): Promise<ChangeFeedEntry[]> {
 }
 
 /**
+ * Work-item terminals for the refs the su-ideate ledger actually routed —
+ * winning statuses AND 'deprecated' — shaped as change-feed completion entries
+ * (su-ideate-learning-substrate P-016). The production feed is a top-500
+ * recency window over updated_ts: a su filing resolved months ago (the P-016
+ * backfilled corpus) falls OUTSIDE it and would sit 'pending' forever under a
+ * feed-only join. Scoping by the ledger's own routed refs removes the window
+ * for exactly the rows being classified, and only those. Deliberately NO
+ * terminal-integrity requirement, mirroring {@link readWorkItemLossEntries}:
+ * the item's terminal status is the idea's fate — completion-record hygiene
+ * metadata doesn't change whether the filed work shipped.
+ */
+async function readSuRefScopedTerminalEntries(
+  opts: ScoutLedgerOpts = {},
+): Promise<ChangeFeedEntry[]> {
+  const { sql } = getOrgPg();
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const rows = await sql<
+    {
+      feature_id: string;
+      harness_slug: string | null;
+      title: string | null;
+      status: string | null;
+      updated_ts: string | null;
+    }[]
+  >`
+    SELECT w.feature_id, w.harness_slug, w.title, w.status, w.updated_ts
+      FROM harness_shared.work_items w
+     WHERE w.status = ANY(${[...CHANGE_FEED_COMPLETION_STATUSES, 'deprecated']}::text[])
+       AND w.feature_id IN (
+             SELECT substring(routed_ref FROM 4)
+               FROM harness_shared.scout_routed_ideas
+              WHERE origin = 'su-ideate'
+                AND routed_ref LIKE 'wi:%'
+                AND workspace_id = ${ws}
+                ${opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``}
+                ${opts.cycleId ? sql`AND cycle_id = ${opts.cycleId}` : sql``}
+           )`;
+  return rows.map((r) => ({
+    id: `wi:${r.feature_id}`,
+    kind: 'completion' as const,
+    title: r.title || `Completed: ${r.feature_id}`,
+    detail: `Status: ${r.status}`,
+    harness: r.harness_slug ?? undefined,
+    workItemId: r.feature_id,
+    ref: `wi:${r.feature_id}`,
+    ts: epochMsToIso(r.updated_ts),
+  }));
+}
+
+/**
  * The completions join for an origin-scoped outcome read. The scout path (and
  * 'all') is byte-identical to gatherCompletions — winning terminals only, so
  * Scout's lens learning is untouched (D-002/D-009). The 'su-ideate' path
  * (P-003) additionally folds in losing work-item terminals so a deprecated su
- * filing classifies 'lost'. Losses are appended AFTER the feed, so on an id
- * collision the first-wins dedup keeps the feed's winning entry.
+ * filing classifies 'lost', and (P-016) the ledger-ref-scoped terminals so a
+ * su filing whose item resolved OUTSIDE the feed's top-500 recency window
+ * still classifies. Extras are appended AFTER the feed, so on an id collision
+ * the first-wins dedup keeps the feed's richer entry.
  */
 async function gatherCompletionsForOrigin(
   origin: ScoutLedgerOpts['origin'],
+  opts: ScoutLedgerOpts = {},
 ): Promise<ChangeFeedEntry[]> {
   const completions = await gatherCompletions(buildChangeFeedReaders());
   if (origin !== 'su-ideate') return completions;
-  const losses = await readWorkItemLossEntries();
-  return losses.length > 0 ? dedupById([...completions, ...losses]) : completions;
+  const [losses, refScoped] = await Promise.all([
+    readWorkItemLossEntries(),
+    readSuRefScopedTerminalEntries(opts),
+  ]);
+  const extras = [...losses, ...refScoped];
+  return extras.length > 0 ? dedupById([...completions, ...extras]) : completions;
 }
 
 /**
@@ -486,7 +543,7 @@ async function gatherCompletionsForOrigin(
 export function buildScoutOutcomeReaders(opts: ScoutLedgerOpts = {}): ScoutOutcomeReaders {
   return {
     routedIdeas: () => readRoutedIdeas(opts),
-    completions: () => gatherCompletionsForOrigin(opts.origin),
+    completions: () => gatherCompletionsForOrigin(opts.origin, opts),
   };
 }
 
@@ -500,7 +557,7 @@ export async function getScoutLensOutcomes(
 ): Promise<LensOutcomeReport> {
   const [provenance, completions] = await Promise.all([
     readRoutedIdeas(opts),
-    gatherCompletionsForOrigin(opts.origin),
+    gatherCompletionsForOrigin(opts.origin, opts),
   ]);
   const report = computeLensOutcomes(provenance, completions, opts.weights);
   return { ...report, generatedAt: new Date().toISOString() };
@@ -669,7 +726,7 @@ export async function refreshScoutOutcomes(
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const [provenance, completions] = await Promise.all([
     readRoutedIdeas(opts),
-    gatherCompletionsForOrigin(opts.origin),
+    gatherCompletionsForOrigin(opts.origin, opts),
   ]);
 
   if (provenance.length > 0) {

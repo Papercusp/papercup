@@ -31,7 +31,12 @@ function epochMsToIso(v: string | number | null): string {
   return new Date(Number.isFinite(n) ? n : 0).toISOString();
 }
 
-const CHANGE_FEED_COMPLETION_STATUSES = ['done', 'passed', 'resolved', 'closed'] as const;
+/**
+ * The work-item statuses that count as a WINNING terminal, shared with the
+ * su-ideate ref-scoped completions read (scout/routed-ledger.ts) so the two
+ * paths can never disagree on what "completed" means.
+ */
+export const CHANGE_FEED_COMPLETION_STATUSES = ['done', 'passed', 'resolved', 'closed'] as const;
 
 /**
  * Work-item completions: rows of the unified `work_items` view (features ∪

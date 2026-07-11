@@ -79,6 +79,12 @@ beforeAll(async () => {
   h.sql = db.sql;
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
   await db.sql.unsafe(readMigration('141-plan-item-claims.sql')).simple();
+  // 143 (agent_activity) rides along because claimPlanItem's steal-guard/sweep SQL
+  // (EI-8997, plan-items/claims.ts) joins it for the holder-activity grace check —
+  // without it, plan_items:claim 500s with "relation harness_shared.agent_activity
+  // does not exist" the moment it reaches that query (see
+  // lib/plan-items/claims.integration.test.ts for the same pairing).
+  await db.sql.unsafe(readMigration('143-agent-activity.sql')).simple();
 }, 90_000);
 
 afterAll(async () => {

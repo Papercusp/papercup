@@ -54,6 +54,11 @@
 @papercusp/operator-core::lib/deployment/p2p-perf-tier3/**
 @papercusp/operator-core::lib/p2p/**
 @papercusp/operator-core::lib/shared-pot-loop/**
+# v2 de-quarantine follow-up: WI-3240 (root-cause + green lib/sync/hyperbee/**, then
+# remove this entry). Closed 2026-07-06 under the owner's V1-scope directive above —
+# reopen only if that directive is superseded (ruled 2026-07-11: it is NOT superseded
+# by the 2026-07-10 p2p-parity-lanes drill, which unblocked the parity gates, not every
+# v2-deferred item; see coord thread mrfrwl77/mrfs5z3h).
 @papercusp/operator-core::lib/sync/hyperbee/**
 @papercusp/p2p-voice::src/**
 @papercusp/pubsub-substrate::src/**

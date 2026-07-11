@@ -109,15 +109,15 @@ export function resumableSessionId(
   return a.sessionId ?? a.ompThreadId ?? null;
 }
 
-/** Whether a LIVE agent's session can be safely FORKED into a new parallel
- *  window (WI-4009) — `--fork-session` (console-launcher.ts's buildConsoleEnvelope)
- *  is claude-only; omp has no fork command, and resuming a live omp session
- *  IN PLACE (no fork) would collide with the still-running original. So a live
- *  non-claude agent gets NO Fork affordance at all — never degrade to a
- *  colliding in-place resume. Only gates the LIVE case: resuming an ENDED
- *  session (no fork flag) is fine for any non-codex backend and is unaffected
- *  by this guard. Pure — exported for tests. */
-export function canForkLive(a: Pick<RosterAgent, 'agent'>): boolean {
+/** Whether an agent's session can be FORKED into a new session (WI-4009;
+ *  generalized 2026-07-11) — `--fork-session` (console-launcher.ts's
+ *  buildConsoleEnvelope) is claude-only; omp has no fork command. Gates the
+ *  Fork button for BOTH active and inactive sessions (owner ask 2026-07-11 —
+ *  retracted the earlier "fork only when live" rule): forking BRANCHES a fresh
+ *  session from the transcript, safe whether or not the source is still
+ *  running. Resume-in-place (no fork) remains available for any non-codex
+ *  backend regardless. Pure — exported for tests. */
+export function canForkSession(a: Pick<RosterAgent, 'agent'>): boolean {
   return a.agent === 'claude';
 }
 
@@ -612,8 +612,17 @@ export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: 
           focusTarget={canFocusWindow(inspecting)
             ? { advSessionId: inspecting.advSessionId ?? null, windowId: inspecting.windowId ?? null, pid: inspecting.pid ?? null }
             : undefined}
-          resumeTarget={resumableSessionId(inspecting) && canForkLive(inspecting)
-            ? { sessionId: resumableSessionId(inspecting)!, live: true, label: `fork · ${displayName(inspecting)}` }
+          resumeTarget={resumableSessionId(inspecting)
+            ? {
+                sessionId: resumableSessionId(inspecting)!,
+                // This roster only shows RUNNING agents, so the source is live —
+                // tags the Resume button's collision-warning tooltip. Fork
+                // (canFork) branches a fresh session and avoids the collision.
+                live: true,
+                canFork: canForkSession(inspecting),
+                // No fixed label: each button self-labels (fork · / resume · role)
+                // since the two actions share this resumeTarget.
+              }
             : undefined}
           open
           onClose={() => setInspecting(null)}

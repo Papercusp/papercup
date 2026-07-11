@@ -356,6 +356,42 @@ at the cost of not picking up your own Rust-side edits without a manual
 rebuild.
 </Aside>
 
+<Aside type="caution" title="screenshot --selector can capture an occluding or stale X11 window even when the bridge PID is right (EI-9010)">
+`eval`/`dom`/`check` are **bridge-native** — they always execute inside the
+correct webview once `--pid`/`--title` resolves the right bridge. The
+**native `screenshot`/`info`/`list-windows` OS-level window capture is
+NOT the same code path**: `info`/`list-windows` only accept `--title
+<regex>` (no `--pid`), so on a box with several windows sharing a similar
+title (multiple dev shells, a glued native terminal, a stale
+already-closed window whose X11 handle briefly lingers), the title-match
+can resolve to the wrong toplevel and `screenshot --selector` silently
+captures **unrelated pixels** — e.g. terminal content — while reporting
+success. This is a distinct failure mode from
+[GNOME/Mutter iconifying new windows](/internal/docs/agent-insights/gnome-mutter-iconifies-new-x11-windows)
+(that doc covers a *missing* window; this one covers a *wrong* window),
+and it can happen even after DOM/eval already correctly targeted the
+intended bridge PID for everything else.
+
+**Do not trust a `screenshot --selector` PNG as sole evidence** on a box
+that may have more than one Papercusp/terminal window open. Cross-check
+before relying on it:
+
+```sh
+# Confirm which X11 window the bridge PID actually owns before trusting
+# a screenshot taken against the same --title/--pid.
+wmctrl -lxp | awk -v pid="$PID" '$3 == pid'
+```
+
+If the screenshot output doesn't match what `wmctrl`/`xwininfo` (for that
+PID) shows, prefer the DOM-native path instead — `check --selector ...`,
+`dom <selector>`, or `eval` geometry/content assertions are resolved
+through the bridge itself and cannot be fooled by an occluding window.
+Reserve `screenshot`/`snapshot`/`capture` for a *visual* signal DOM can't
+express (layout, animation, font rendering), and treat it as
+corroborating evidence, not the primary assertion, whenever multiple
+windows might be present.
+</Aside>
+
 ### 1.4 Stale Vite cache
 
 If the Tauri sidecar log shows a JSX parse error referencing a line

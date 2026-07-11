@@ -64,7 +64,18 @@ const NATIVE_TABLE_ALLOWED_FILES = new Set<string>([
 /** The confirm primitive is a modal — no file, not even its own, calls native confirm(). */
 const NATIVE_CONFIRM_ALLOWED_FILES = new Set<string>();
 
-const BUTTON_TITLE_ALLOWED_FILES = new Set<string>();
+const BUTTON_TITLE_ALLOWED_FILES = new Set<string>([
+  // WI-4059 / EI-9449: native title= on resume-terminal-btn is deliberate, not an
+  // unmigrated tooltip. A Radix <Tooltip label={...}> whose label toggles
+  // falsy<->truthy AFTER MOUNT (undefined -> resumeErr once a launch POST fails)
+  // swaps Tooltip's own render tree to a different element TYPE at that JSX
+  // position, so React unmounts+remounts the whole subtree INCLUDING this button
+  // -- any DOM ref held across the transition (getByTestId/focus) goes stale. A
+  // native title attribute carries the same "server reason as tooltip" intent
+  // without ever changing the element's type, so the button node never remounts.
+  // See the in-file comment at AgentInspectorModal.tsx's resume-terminal-btn.
+  'operator/app/harness/AgentInspectorModal.tsx',
+]);
 const LINK_TITLE_ALLOWED_FILES = new Set<string>();
 const TAB_TITLE_ALLOWED_FILES = new Set<string>();
 
