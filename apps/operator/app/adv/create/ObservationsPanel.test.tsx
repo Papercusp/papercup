@@ -162,7 +162,6 @@ describe('<ObservationsPanel />', () => {
     ];
     render(<ObservationsPanel />);
     expect(screen.getByText('a longer note')).toBeTruthy();
-    expect(screen.getByText('engineer')).toBeTruthy();
     expect(screen.getByText('engineer · repo · high · F-1 · WI-2')).toBeTruthy();
   });
 

@@ -322,7 +322,6 @@ function ImprovementsView({ hive }: { hive: string }) {
     queryName: 'learning.improvements',
     args: hive ? { hive } : {},
     staleTime: 30_000,
-    staleTime: 30_000,
   });
   const digest = sync.data?.[0];
   const [lane, setLane] = useQueryState('lane', parseAsStringEnum<Lane>([...LANES]).withDefault('all'));
@@ -624,7 +623,6 @@ function GymView({ hive }: { hive: string }) {
   const sync = useSyncQuery<GymSnapshot>({
     queryName: 'learning.gym',
     args: hive ? { hive } : {},
-    staleTime: 30_000,
     staleTime: 30_000,
   });
   const snap = sync.data?.[0];
