@@ -10,7 +10,11 @@
  * Storage rides the neutral `MemoryBackend` seam; per-scope fan-out and
  * merge live behind it. RESPONSE CONTRACT (byte-stable — the TUI Memory
  * tab consumes it): { ok, reason?, results: [{ id, memory, metadata,
- * score }] }.
+ * score }] }. Additive degraded stamps (EI-9031 / WI-4214): any failed or
+ * reduced-fidelity recall carries `degraded: true` (+ `degraded_reason`,
+ * and `fallback: 'lexical'` when the hits came from the embed-free
+ * token-match fallback) so an empty/thin result is never mistaken for an
+ * informative "nothing relevant exists".
  */
 
 import { z } from 'zod';
@@ -313,12 +317,16 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             results,
-            // EI-9031: loud degraded marker — the embedder is on a reduced-breadth
-            // fallback, so a thin/empty `results` may be a false miss, not an
-            // informative empty.
-            ...(embeddingDegraded
-              ? { degraded: true, degraded_reason: 'embedding_backend_degraded' }
-              : {}),
+            // Loud degraded markers. WI-4214 (most specific first): the semantic
+            // leg failed outright and these hits came from the embed-free lexical
+            // fallback — token matches only, paraphrase recall is out, so a thin/
+            // empty `results` may be a false miss. Else EI-9031: the embedder is
+            // on a reduced-breadth fallback (cooldown), same false-miss caveat.
+            ...(overloadDegradedReason
+              ? { degraded: true, degraded_reason: overloadDegradedReason, fallback: 'lexical' }
+              : embeddingDegraded
+                ? { degraded: true, degraded_reason: 'embedding_backend_degraded' }
+                : {}),
             // Loud tier marker (D-004): a non-full session sees WHY hits are
             // clipped and how to widen (payloadTier:"full").
             ...(sessionTier === 'trimmed' || sessionTier === 'standard'

@@ -152,11 +152,16 @@ describe('op-deadline primitive', () => {
 });
 
 describe('memory tools return memory_timeout on a wedged backend (no infinite hang)', () => {
-  it('memory:search → { ok:false, reason:"memory_timeout", results:[] }', async () => {
+  it('memory:search → { ok:false, reason:"memory_timeout", degraded:true, results:[] }', async () => {
     useBackend(wedgedBackend());
+    // degraded:true is the WI-4214 overload-contract extension: a timed-out
+    // recall must never read as an informative empty. (The wedged backend has
+    // no searchLexical, so no fallback fires — that path is covered in
+    // search-overload-degrade.test.ts.)
     expect(parse(await search.handler({ query: 'q' }, ctx))).toEqual({
       ok: false,
       reason: 'memory_timeout',
+      degraded: true,
       results: [],
     });
   });
