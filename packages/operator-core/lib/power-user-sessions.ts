@@ -123,10 +123,35 @@ export interface OwnerPresence {
 }
 
 /**
- * The mechanical owner-present read (P-004): is a human power-user session live for this
- * workspace? PRESENT iff a non-revoked session's `last_seen_at` is within `freshMs`. Used by
- * coord:orient (and any wake-time bootstrap) so presence-adaptive cadence keys off this signal
- * instead of inferring from who sent the last message. Injectable clock/window for tests.
+ * owner-presence-human-turn-signal-2026-07-11 P-001: stamp the CLI/desktop
+ * human-turn signal for a workspace (upsert one row/workspace, bumping
+ * `last_human_turn_at` to now()). Called fire-and-forget from the
+ * `/admin/owner-presence/touch` route, which the psu pty-host hits on every
+ * human keystroke into an agent's terminal (onStdin) — the backend-agnostic
+ * (claude/codex/omp) "the owner just drove a turn" signal that
+ * `readOwnerPresence` folds in alongside the OMP/web token-refresh channel.
+ * Idempotent and cheap. Never let a failure here break a turn — callers treat
+ * it as fire-and-forget.
+ */
+export async function touchOwnerActivity(workspaceId: string): Promise<void> {
+  const { sql } = getOrgPg();
+  await sql`
+    INSERT INTO harness_shared.owner_activity (workspace_id, last_human_turn_at)
+    VALUES (${workspaceId}, now())
+    ON CONFLICT (workspace_id)
+      DO UPDATE SET last_human_turn_at = now()
+  `;
+}
+
+/**
+ * The mechanical owner-present read: is a human live for this workspace? PRESENT iff the owner
+ * was seen within `freshMs` on EITHER channel — (a) a non-revoked power-user session's
+ * `last_seen_at` (bumped by the OMP/web token-refresh chain — original P-004 signal), OR (b) a
+ * `owner_activity.last_human_turn_at` human-turn stamp (owner-presence-human-turn-signal-2026-07-11:
+ * the owner driving an agent over the CLI/desktop pty channel, which the refresh chain is blind
+ * to). Presence keys off whichever channel saw the owner most recently. Used by coord:orient (and
+ * any wake-time bootstrap) so presence-adaptive cadence keys off this signal instead of inferring
+ * from who sent the last message. Injectable clock/window for tests.
  */
 export async function readOwnerPresence(
   workspaceId: string,
@@ -143,10 +168,38 @@ export async function readOwnerPresence(
   `;
   const r = rows[0];
   const activeSessions = r?.n ? Number(r.n) : 0;
-  if (!r?.last_seen_at) return { present: false, lastSeenAgoMs: null, activeSessions };
-  const lastSeenMs =
-    r.last_seen_at instanceof Date ? r.last_seen_at.getTime() : new Date(r.last_seen_at).getTime();
-  const lastSeenAgoMs = now - lastSeenMs;
+
+  // Fold in the CLI/desktop human-turn channel. Defensive: an operator that has not yet run the
+  // boot ensure (no `owner_activity` table) must degrade to the session-only read, never throw —
+  // this is a read on the orient hot path.
+  let humanTurnMs: number | null = null;
+  try {
+    const ar = await sql<Array<{ last_human_turn_at: Date | string | null }>>`
+      SELECT max(last_human_turn_at) AS last_human_turn_at
+        FROM harness_shared.owner_activity
+       WHERE workspace_id = ${workspaceId}
+    `;
+    const v = ar[0]?.last_human_turn_at ?? null;
+    if (v != null) humanTurnMs = v instanceof Date ? v.getTime() : new Date(v).getTime();
+  } catch {
+    humanTurnMs = null;
+  }
+
+  const sessionMs = r?.last_seen_at
+    ? r.last_seen_at instanceof Date
+      ? r.last_seen_at.getTime()
+      : new Date(r.last_seen_at).getTime()
+    : null;
+
+  // Presence keys off whichever channel saw the owner most recently.
+  const newestMs =
+    sessionMs == null
+      ? humanTurnMs
+      : humanTurnMs == null
+        ? sessionMs
+        : Math.max(sessionMs, humanTurnMs);
+  if (newestMs == null) return { present: false, lastSeenAgoMs: null, activeSessions };
+  const lastSeenAgoMs = now - newestMs;
   return { present: lastSeenAgoMs <= freshMs, lastSeenAgoMs, activeSessions };
 }
 

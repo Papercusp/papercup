@@ -396,4 +396,19 @@ export async function ensureCoordPresenceTable(sql: Sql): Promise<void> {
       revoked_at      TIMESTAMPTZ
     )
   `;
+  // owner_activity (owner-presence-human-turn-signal-2026-07-11 P-001): a
+  // backend-agnostic "the human just took a turn" signal, one row per workspace.
+  // power_user_sessions.last_seen_at is bumped ONLY by the OMP/web token-refresh
+  // chain, so it is blind to a human who drives an agent over the CLI/desktop pty
+  // channel — the owner types, but readOwnerPresence still reads `absent`. The psu
+  // pty-host stamps this row on every human keystroke (onStdin; socket-injected
+  // agent wakes take a separate path, so this only ever reflects a real person at
+  // the keyboard — covers claude/codex/omp uniformly). readOwnerPresence ORs this
+  // in alongside last_seen_at so an owner-initiated turn counts as present.
+  await sql`
+    CREATE TABLE IF NOT EXISTS harness_shared.owner_activity (
+      workspace_id       TEXT        NOT NULL PRIMARY KEY,
+      last_human_turn_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `;
 }

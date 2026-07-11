@@ -10,9 +10,26 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const emitWorkItemCreatedEvent = vi.fn();
-vi.mock('./work-items-events', () => ({
+vi.mock('./work-items-events', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   emitWorkItemCreatedEvent: (...a: unknown[]) => emitWorkItemCreatedEvent(...a),
   emitWorkItemClaimedEvent: vi.fn(),
+}));
+// The create path fires the lifecycle event fire-and-forget via a dynamic
+// `import('./work-items-events')` under a work-items ↔ work-items-events import
+// CYCLE — a combination vitest's per-function module mock does NOT reliably
+// intercept, so a REAL emit could leak through, hit the real await-engine against
+// this file's fakeSql (which answers EVERY query with [{ id: 'WI-9001' }], so the
+// engine's delivery/await-row parse tripped `new Date(undefined).toISOString()` =
+// "Invalid time value"), and console.warn at a TIMING-DEPENDENT moment (surfacing
+// inside a LATER test) → vitest-fail-on-console flaked this file (EI-9654; the
+// identical class WI-3309/EI-8413 red-pinned the gate 4× on 2026-07-07). Stub the
+// SINGLE SINK every emit funnels through — emitAwaitedEvent — so no emit path
+// (mocked or leaked) can ever touch PG. The event leg has its own coverage in
+// work-items-events.test.ts.
+vi.mock('./events/await/engine', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  emitAwaitedEvent: vi.fn(async () => ({ ok: true, key: '', woken: 0, notified: [], msgId: null })),
 }));
 
 vi.mock('./pot/urgent-wake', () => ({ requestUrgentHiveWake: vi.fn(async () => ({ fired: true, coalesced: false })) }));

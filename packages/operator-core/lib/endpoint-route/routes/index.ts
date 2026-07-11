@@ -336,6 +336,8 @@ import adminCommands from './admin/commands';
 import adminDeployAccountsList from './admin/deploy-accounts-list';
 import adminDeployAccountsRegister from './admin/deploy-accounts-register';
 import adminInferenceGatewayStats from './admin/inference-gateway-stats';
+// owner-presence-human-turn-signal-2026-07-11 P-002 — human-turn presence signal (all backends).
+import adminOwnerPresenceTouch from './admin/owner-presence-touch';
 import adminDeployAccountsRemove from './admin/deploy-accounts-remove';
 import adminDeployAccountsReset from './admin/deploy-accounts-reset';
 // accounts-pool-tab-2026-06-15 P-002 — the experimental one-click OAuth account link.
@@ -790,6 +792,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(adminDeployAccountsList as AnyRoute),
   ...flatten(adminDeployAccountsRegister as AnyRoute),
   ...flatten(adminInferenceGatewayStats as AnyRoute),
+  ...flatten(adminOwnerPresenceTouch as AnyRoute),
   ...flatten(adminDeployAccountsRemove as AnyRoute),
   ...flatten(adminDeployAccountsReset as AnyRoute),
   ...flatten(adminDeployAccountsLinkStart as AnyRoute),
