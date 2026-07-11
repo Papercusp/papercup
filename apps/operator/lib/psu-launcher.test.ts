@@ -2117,8 +2117,13 @@ describe('findUntrackedSession (resume a non-psu session by searching the agent 
     const projDir = join(configDir, 'projects', '-iso-dir');
     mkdirSync(projDir, { recursive: true });
     writeFileSync(join(projDir, `${UUID}.jsonl`), `{"sessionId":"${UUID}","cwd":"/home/me/iso-repo"}\n`);
+    // EI-9756: a hit here proves psu launched it (only psu creates the isolated
+    // per-owner dir structure) — carries psuTracked so resumeFlow skips the
+    // misleading "not a tracked psu launch" warning for an ended session that
+    // merely fell outside the resumable window.
     expect(findUntrackedSession(UUID, { home })).toEqual({
       agent: 'claude', sessionId: UUID, cwd: '/home/me/iso-repo', untracked: true, configDir,
+      psuTracked: true,
     });
   });
 

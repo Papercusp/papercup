@@ -1002,6 +1002,17 @@ export function findUntrackedSession(id, { home = homedir(), cwd = process.cwd()
     // scan those too, so an isolated session whose adv row was pruned still
     // resolves by its native uuid (and carries its `configDir` so the resume
     // points CLAUDE_CONFIG_DIR back at it).
+    //
+    // EI-9756: a hit here is found ONLY because psu's own per-owner isolation
+    // dir structure exists — a genuinely vanilla (non-psu) claude session can
+    // never land under `session-claude/<owner>/`. So, exactly like the
+    // WI-3884 tracked-CODEX_HOME case below, mark it `psuTracked` — the most
+    // common reason this branch is reached at all is an ENDED session whose
+    // adv row fell outside the (default 30-row) `/adv/sessions/resumable`
+    // window, NOT an untracked/foreign session; the prior unconditional
+    // "isn't linked to a tracked psu launch" warning was actively misleading
+    // for that (very common) case and is exactly what the owner-reported
+    // repro saw.
     const isoRoot = sessionClaudeRoot(home);
     for (const owner of safeReaddir(isoRoot)) {
       if (!owner.isDirectory()) continue;
@@ -1010,7 +1021,16 @@ export function findUntrackedSession(id, { home = homedir(), cwd = process.cwd()
       for (const d of safeReaddir(projects)) {
         if (!d.isDirectory()) continue;
         const f = join(projects, d.name, `${id}.jsonl`);
-        if (existsSync(f)) return { agent: 'claude', sessionId: id, cwd: cwdFromSessionFile(f) || cwd, untracked: true, configDir };
+        if (existsSync(f)) {
+          return {
+            agent: 'claude',
+            sessionId: id,
+            cwd: cwdFromSessionFile(f) || cwd,
+            untracked: true,
+            configDir,
+            psuTracked: true,
+          };
+        }
       }
     }
     const codexRollout = findCodexRollout(join(home, '.codex', 'sessions'), id);
@@ -4191,13 +4211,16 @@ async function resumeFlow(args = {}) {
 
     // 4. Untracked = NOT launched by psu → its engineer playbook (and, for codex,
     //    the papercusp-su tools) are NOT loaded. Require an explicit confirm.
-    //    EXCEPT a su-codex-homes hit (WI-3884): that session WAS psu-launched —
-    //    only older than the resumable window — and its per-session CODEX_HOME
-    //    carries the baked config, so nothing is lost on resume; no confirm.
+    //    EXCEPT a psuTracked hit — su-codex-homes (WI-3884) or the claude
+    //    per-owner isolation dir (EI-9756): that session WAS psu-launched —
+    //    only older than the resumable window — and its per-session store
+    //    (CODEX_HOME / CLAUDE_CONFIG_DIR) carries the baked config, so nothing
+    //    is lost on resume; no confirm, and no "not a tracked psu launch" scare.
     if (untracked.psuTracked) {
+      const store = untracked.agent === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR';
       console.error(
-        `psu: session ${untracked.sessionId} is tracked psu session #${untracked.id ?? '?'} — ` +
-          `older than the recent-session window; resuming from its per-session CODEX_HOME.`,
+        `psu: session ${untracked.sessionId} is a psu-launched ${untracked.agent} session${untracked.id != null ? ` (tracked #${untracked.id})` : ''} — ` +
+          `older than the recent-session window; resuming from its per-session ${store}.`,
       );
     } else {
       await confirmUntrackedResume(untracked, args);

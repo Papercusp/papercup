@@ -899,6 +899,14 @@ export interface SpawnHeadlessOpts {
   label?: string | null;
   /** Directory for the per-session log file (created if absent). Defaults to tmpdir. */
   logDir?: string | null;
+  /**
+   * EI-9748: injectable platform/PATH probes for {@link buildHeadlessSpawnCommand}.
+   * Tests MUST pass fakes — the default (real) probes check the live PATH for
+   * `systemd-run`, so a test that doesn't control this flakes with the host's
+   * actual systemd availability (same class of bug findLinuxTerminal's cache-reset
+   * exists for). Production callers omit it.
+   */
+  spawnCommandProbes?: { platform?: NodeJS.Platform; hasSystemdRun?: () => boolean };
 }
 
 // EI-9748: headless members are a DETACHED + unref'd child of whichever operator
@@ -932,6 +940,75 @@ export function wrapHeadlessSigtermDiagnostic(oneliner: string): string {
     `NOT a crash, OOM, or rate limit. See work-item EI-9748 for the root cause + fix status." >&2; ` +
     `exit 143' TERM`;
   return `${trap}; ${oneliner}`;
+}
+
+/**
+ * EI-9748 DURABLE FIX — Route (A), leader-ruled (su-286379e2, 2026-07-11,
+ * under owner Avi's delegation): a narrow, DOCUMENTED exemption for the
+ * PRODUCT headless-spawn path (and ONLY this path — never agent-invoked Bash)
+ * to escape the operator service's own cgroup via `systemd-run --user --scope`.
+ *
+ * This is NOT routing around the box's native-scheduler lockout guard (the
+ * PreToolUse hook that blocks an agent session's own Bash tool from invoking
+ * crontab/at/batch/systemd-run). That guard exists to stop AGENT SESSIONS
+ * creating untracked background processes invisible to the hive's
+ * pause/status/liveness machinery. A headless fleet member spawned here is
+ * the opposite of that: it registers presence, an ownerId, fleet membership,
+ * and stays reachable for `loop:arm` wakes — fully hive-supervised — so the
+ * guard's rationale does not apply to it. The exemption is scoped to exactly
+ * this function; nothing here grants an agent's own shell the ability to call
+ * systemd-run (that PreToolUse hook is untouched and still fires on agent Bash
+ * calls).
+ *
+ * MECHANISM: `--user --scope` creates a transient `<unit>.scope` as a SIBLING
+ * of the operator's own `papercup-*-api.service` in the systemd --user cgroup
+ * tree (both hang off e.g. `user@<uid>.service/app.slice/`), NOT a descendant
+ * of the operator service's cgroup — `systemd-run` moves the newly-forked
+ * process into the new scope's cgroup before exec, and the scope is created
+ * via the user's systemd manager (D-Bus), independent of whichever process
+ * asked for it. So `systemctl --user restart papercup-staging-api.service`
+ * (KillMode=control-group) only reaps THAT service's own cgroup — the sibling
+ * scope, and the psu session running inside it, are untouched. `--collect`
+ * auto-removes the transient unit once the session exits so units don't
+ * accrete; `--unit=<name>` gives it a stable, greppable name for `systemctl
+ * --user status`/`journalctl --user -u` debugging.
+ *
+ * FALLBACK: when `systemd-run` isn't on PATH (macOS has no systemd at all; a
+ * non-systemd Linux host — a bare container, etc. — has no user manager to
+ * scope against), falls back to the pre-existing plain detached spawn — the
+ * one still vulnerable to the cgroup-kill this function exists to fix, but a
+ * headless member that MIGHT die on a service restart beats no headless
+ * member at all on hosts where the durable escape isn't available.
+ *
+ * Pure (given the platform/PATH probes) + exported for unit tests.
+ */
+export function buildHeadlessSpawnCommand(
+  oneliner: string,
+  label: string,
+  probes: { platform?: NodeJS.Platform; hasSystemdRun?: () => boolean } = {},
+): { bin: string; args: string[] } {
+  const platform = probes.platform ?? process.platform;
+  const hasSystemdRun = probes.hasSystemdRun ?? (() => isOnPath('systemd-run'));
+  if (platform === 'linux' && hasSystemdRun()) {
+    const safeLabel =
+      label.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'member';
+    const unitName = `papercup-headless-${safeLabel}-${process.pid}-${Date.now()}`;
+    return {
+      bin: 'systemd-run',
+      args: [
+        '--user',
+        '--scope',
+        '--collect',
+        '--quiet',
+        `--unit=${unitName}`,
+        '--',
+        'bash',
+        '-lc',
+        oneliner,
+      ],
+    };
+  }
+  return { bin: 'bash', args: ['-lc', oneliner] };
 }
 
 /**
@@ -972,7 +1049,13 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
   }
 
   try {
-    const child = spawn('bash', ['-lc', oneliner], {
+    // EI-9748 Route (A): escape the operator service's own cgroup via
+    // systemd-run --user --scope when available, so a headless member
+    // survives a `systemctl --user restart papercup-{dev,staging}-api.service`
+    // instead of being reaped by KillMode=control-group. See
+    // buildHeadlessSpawnCommand's doc comment for the full rationale.
+    const { bin, args } = buildHeadlessSpawnCommand(oneliner, label, opts.spawnCommandProbes);
+    const child = spawn(bin, args, {
       detached: true,
       stdio: ['ignore', logFd ?? 'ignore', logFd ?? 'ignore'],
       cwd: envelope.cwd,

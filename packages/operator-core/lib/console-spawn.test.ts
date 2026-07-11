@@ -22,6 +22,7 @@ import {
   spawnHeadless,
   headlessLogPath,
   wrapHeadlessSigtermDiagnostic,
+  buildHeadlessSpawnCommand,
   _resetTerminalCacheForTests,
   type AppearanceOpts,
   type DesktopEnvProbes,
@@ -271,9 +272,14 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
   };
   beforeEach(() => spawnMock.mockReset());
 
-  it('runs bash -lc (no terminal emulator) detached with a log fd, and reports ok+pid when the session outlives the probe', async () => {
+  // No-systemd-run fallback path — pin hasSystemdRun:false so these don't flake
+  // with whichever host/CI runner actually runs the suite (same class of bug
+  // findLinuxTerminal's _resetTerminalCacheForTests exists for).
+  const noSystemdRun = { spawnCommandProbes: { hasSystemdRun: () => false } };
+
+  it('falls back to bash -lc (no terminal emulator, no systemd-run) detached with a log fd, and reports ok+pid when the session outlives the probe', async () => {
     spawnMock.mockImplementation(() => fakeChild(7777)); // never exits = a live agent
-    const r = await spawnHeadless({ envelope, label: 'hl', logDir: null });
+    const r = await spawnHeadless({ envelope, label: 'hl', logDir: null, ...noSystemdRun });
     expect(r.status).toBe('ok');
     expect((r as { pid: number | null }).pid).toBe(7777);
     // the spawned program is bash -lc <oneliner>, NOT a terminal emulator
@@ -289,7 +295,7 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
       queueMicrotask(() => child.emit('exit', 1, null));
       return child;
     });
-    const r = await spawnHeadless({ envelope, label: 'hl', logDir: null });
+    const r = await spawnHeadless({ envelope, label: 'hl', logDir: null, ...noSystemdRun });
     expect(r.status).toBe('error');
     expect((r as { code: number }).code).toBe(502);
     expect((r as { error: string }).error).toMatch(/died at boot/i);
@@ -297,7 +303,7 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
 
   it('EI-9748: installs a TERM trap ahead of the greeting so a cgroup-restart kill logs a diagnostic instead of dying silently', async () => {
     spawnMock.mockImplementation(() => fakeChild(7778));
-    await spawnHeadless({ envelope, label: 'hl', logDir: null });
+    await spawnHeadless({ envelope, label: 'hl', logDir: null, ...noSystemdRun });
     const oneliner = spawnMock.mock.calls[0][1][1] as string;
     expect(oneliner).toMatch(/^trap '.*' TERM;/);
     expect(oneliner).toContain('EI-9748');
@@ -305,6 +311,81 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     // still runs the real greeting after the trap is installed
     expect(oneliner).toContain('psu --headless');
   }, 10_000);
+
+  it('EI-9748 Route (A): when systemd-run is available on Linux, spawns via systemd-run --user --scope instead of plain bash — the cgroup escape', async () => {
+    spawnMock.mockImplementation(() => fakeChild(7779));
+    const r = await spawnHeadless({
+      envelope,
+      label: 'hl',
+      logDir: null,
+      spawnCommandProbes: { platform: 'linux', hasSystemdRun: () => true },
+    });
+    expect(r.status).toBe('ok');
+    const [bin, args] = spawnMock.mock.calls[0];
+    expect(bin).toBe('systemd-run');
+    expect(args).toEqual(
+      expect.arrayContaining(['--user', '--scope', '--collect', '--quiet', 'bash', '-lc']),
+    );
+    expect(args.some((a: string) => /^--unit=papercup-headless-hl-/.test(a))).toBe(true);
+    // the actual oneliner (with the EI-9748 TERM trap) still travels as the
+    // final argv element, unmodified by the systemd-run wrapping
+    const oneliner = args[args.length - 1] as string;
+    expect(oneliner).toMatch(/^trap '.*' TERM;/);
+    expect(oneliner).toContain('psu --headless');
+  }, 10_000);
+
+  it('EI-9748 Route (A): falls back to plain bash on a platform/host without systemd-run (e.g. macOS)', async () => {
+    spawnMock.mockImplementation(() => fakeChild(7780));
+    const r = await spawnHeadless({
+      envelope,
+      label: 'hl',
+      logDir: null,
+      spawnCommandProbes: { platform: 'darwin', hasSystemdRun: () => true }, // even if somehow true, platform gates it
+    });
+    expect(r.status).toBe('ok');
+    const [bin] = spawnMock.mock.calls[0];
+    expect(bin).toBe('bash');
+  }, 10_000);
+});
+
+describe('buildHeadlessSpawnCommand (EI-9748 Route A — cgroup escape)', () => {
+  it('picks systemd-run --user --scope --collect on Linux with systemd-run available', () => {
+    const { bin, args } = buildHeadlessSpawnCommand('exec claude', 'my label', {
+      platform: 'linux',
+      hasSystemdRun: () => true,
+    });
+    expect(bin).toBe('systemd-run');
+    expect(args.slice(0, 4)).toEqual(['--user', '--scope', '--collect', '--quiet']);
+    expect(args.some((a) => /^--unit=papercup-headless-my-label-/.test(a))).toBe(true);
+    expect(args.slice(-3)).toEqual(['bash', '-lc', 'exec claude']);
+  });
+
+  it('sanitizes the label into a safe systemd unit-name fragment', () => {
+    const { args } = buildHeadlessSpawnCommand('x', 'fleet · member 1/3 (plan!)', {
+      platform: 'linux',
+      hasSystemdRun: () => true,
+    });
+    const unitArg = args.find((a) => a.startsWith('--unit='))!;
+    expect(unitArg).toMatch(/^--unit=papercup-headless-[A-Za-z0-9._-]+$/);
+  });
+
+  it('falls back to plain bash -lc when systemd-run is unavailable', () => {
+    const { bin, args } = buildHeadlessSpawnCommand('exec claude', 'hl', {
+      platform: 'linux',
+      hasSystemdRun: () => false,
+    });
+    expect(bin).toBe('bash');
+    expect(args).toEqual(['-lc', 'exec claude']);
+  });
+
+  it('falls back to plain bash -lc on a non-Linux platform even if hasSystemdRun somehow returns true', () => {
+    const { bin, args } = buildHeadlessSpawnCommand('exec claude', 'hl', {
+      platform: 'darwin',
+      hasSystemdRun: () => true,
+    });
+    expect(bin).toBe('bash');
+    expect(args).toEqual(['-lc', 'exec claude']);
+  });
 });
 
 describe('wrapHeadlessSigtermDiagnostic (EI-9748)', () => {
