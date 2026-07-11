@@ -32,7 +32,7 @@ edit tools), a `hookSpecificOutput` decision on stdout. All are **fail-open**
 | `posttooluse-locks-release.sh`        | PostToolUse  | Release the lock for that `tool_use_id`. |
 | `posttooluse-coord-inbox.sh`          | PostToolUse  | Inject NEW `coord:inbox` messages mid-turn (SU only). |
 | `posttooluse-activity-report.sh`      | PostToolUse  | **Activity bridge** — mirror every native tool call into `harness_shared.agent_activity` → the pui fleet view + curator (papercusp-worker-integration-2026-06-04). Fire-and-forget + detached, so it adds no latency. |
-| `pretooluse-bash-resource-gate.sh`    | PreToolUse   | Refuse a destructive Bash command that collides with an EXCLUSIVE hold on a registered named resource. |
+| `pretooluse-bash-resource-gate.sh`    | PreToolUse   | Refuse a destructive Bash command that collides with an EXCLUSIVE hold on a registered named resource. Also the native-scheduler lockout, the shared-tree git guard, heavy-command admission, and (Claude `Bash` only) the **long-foreground-exec soft advisory** — foreground `timeout > 120s` gets `additionalContext` nudging `run_in_background` (coord-delivery P-003; never a deny, never for codex shells). |
 
 **Codex env caveat (D-006):** Codex hands hooks a **minimal env**, so the Codex
 `hooks.json` **bakes** `PAPERCUSP_SID` (+ `PAPERCUSP_AGENT=codex`) into the
