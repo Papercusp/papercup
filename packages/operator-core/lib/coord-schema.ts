@@ -33,6 +33,12 @@ import {
   renderOutOfScopeCueTag,
   type RecipientCueScope,
 } from './agent-tools/coordination/cue-authority';
+import {
+  detectAuthorityClaim,
+  readRelayProvenance,
+  renderRelayQuoteSuffix,
+  UNVERIFIED_CLAIM_TAG,
+} from './agent-tools/coordination/relay-provenance';
 
 export interface LegendEntry {
   glyph: string;
@@ -294,8 +300,23 @@ export function renderInjection(entries: CoordLineSource[], opts: RenderInjectio
         ? renderOutOfScopeCueTag(stamp)
         : renderCueAuthorityTag(stamp)
       : null;
+    // coord-authority-hardening P-004 (H2): a relay-provenance stamp renders as an
+    // inline `↪ <tier>: "<verified quote>"` suffix — the referenced ORIGINAL's
+    // words, platform-captured at send, auto-inlined at delivery (the receiver
+    // never fetches). Conversely, free text CLAIMING owner/queen authority with
+    // NO tier gets the UNVERIFIED-claim flag (flag only, never blocked) — except
+    // a queen-claim whose platform-derived cueAuthority stamp IS hive-queen
+    // (that authority is already verified; owner words are only verifiable via
+    // a relay tier).
+    const relay = readRelayProvenance(e as unknown as Record<string, unknown>);
+    const relaySuffix = relay ? renderRelayQuoteSuffix(relay) : '';
+    const claim = relay ? null : detectAuthorityClaim(raw);
+    const claimFlag =
+      claim === 'owner' || (claim === 'queen' && stamp?.authority !== 'hive-queen')
+        ? `${UNVERIFIED_CLAIM_TAG} `
+        : '';
     const text = tag ? `[${tag}] ${body}` : body;
-    lines.push(`${glyph} ${handle} ${text}`);
+    lines.push(`${glyph} ${handle} ${claimFlag}${text}${relaySuffix}`);
   }
   return lines.join('\n');
 }
