@@ -401,3 +401,53 @@ describe('empty', () => {
     expect(byKind).toEqual({});
   });
 });
+
+describe('retraction suppression (coord:retract, WI-4176)', () => {
+  const RETRACTS_FIELD = 'retracts'; // mirror of ./retraction — a rename must fail here too
+
+  it('a retracted message disappears from rows/total/byKind; the notice row survives', async () => {
+    setSurfaces({
+      messages: [
+        env({ msg_id: 'm-bad', summary: 'WRONG directive', ts: '2026-06-23T12:00:00.000Z' }),
+        env({ msg_id: 'm-ok', ts: '2026-06-23T12:00:01.000Z' }),
+        env({
+          msg_id: 'n-1',
+          from: 'system:coord-retract',
+          related_msg_id: 'm-bad',
+          ts: '2026-06-23T12:00:02.000Z',
+          [RETRACTS_FIELD]: 'm-bad',
+        }),
+      ],
+    });
+    const { rows, total, byKind } = await readCoordFeed();
+    expect(rows.map((r) => r.msg_id)).toEqual(['n-1', 'm-ok']); // newest-first, m-bad gone
+    expect(total).toBe(2);
+    expect(byKind).toEqual({ message: 2 }); // the histogram matches what is shown
+  });
+
+  it('includeRetracted:true is the forensic escape hatch — both rows visible', async () => {
+    setSurfaces({
+      messages: [
+        env({ msg_id: 'm-bad', ts: '2026-06-23T12:00:00.000Z' }),
+        env({ msg_id: 'n-1', ts: '2026-06-23T12:00:01.000Z', [RETRACTS_FIELD]: 'm-bad' }),
+      ],
+    });
+    const { rows, total } = await readCoordFeed({ includeRetracted: true });
+    expect(rows.map((r) => r.msg_id)).toEqual(['n-1', 'm-bad']);
+    expect(total).toBe(2);
+  });
+
+  it('markers are collected from the RAW window: a q filter that drops the notice still suppresses its target', async () => {
+    setSurfaces({
+      messages: [
+        env({ msg_id: 'm-bad', summary: 'the secret directive', ts: '2026-06-23T12:00:00.000Z' }),
+        env({ msg_id: 'n-1', summary: 'retraction notice', ts: '2026-06-23T12:00:01.000Z', [RETRACTS_FIELD]: 'm-bad' }),
+      ],
+    });
+    // q matches only the ORIGINAL — the notice falls out of `filtered`, but its
+    // marker (collected from the raw tagged window) still suppresses m-bad.
+    const { rows, total } = await readCoordFeed({ q: 'secret' });
+    expect(rows).toEqual([]);
+    expect(total).toBe(0);
+  });
+});
