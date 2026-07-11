@@ -11,11 +11,12 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { listActiveAwaits, listRecentDeliveries, wakeMeter } from '../../events/await/store';
+import { listActiveComposedRoots, loadTreeLeaves } from '../../events/await/compose-store';
 
 export default defineTool({
   name: 'events:status',
   description:
-    'Inspect the await-event surface: your active awaits, your recent wake deliveries (with channel + status), and optionally the workspace wake meter (per-agent wake counts, last 24h — the wake-storm detector).',
+    'Inspect the await-event surface: your active awaits, your active composed await TREES (spec + fired/pending leaves), your recent wake deliveries (with channel + status), and optionally the workspace wake meter (per-agent wake counts, last 24h — the wake-storm detector).',
   guidance: {
     when: 'Checking what you are (still) waiting on, whether a wake fired and via which channel, or whether the fleet is wake-storming (meter: true).',
     notWhen: 'Reading your message stream — that is coord:inbox. Following an area — topics:feed.',
@@ -33,26 +34,50 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    const [awaits, recent, meter] = await Promise.all([
+    const [awaits, recent, meter, composedRoots] = await Promise.all([
       listActiveAwaits(identity.ownerId),
       listRecentDeliveries(identity.ownerId, 10),
       args.meter ? wakeMeter() : Promise.resolve(null),
+      listActiveComposedRoots(identity.ownerId),
     ]);
+    // Render each active composed tree: its authored spec + which leaves have fired vs.
+    // are still pending. loadTreeLeaves reads a tree's leaves across all its nodes.
+    const composed = await Promise.all(
+      composedRoots.map(async (root) => ({
+        root_id: root.id,
+        spec: root.spec,
+        required: root.requiredCount,
+        fired_count: root.firedCount,
+        expires_ts: root.expiresTs,
+        on_timeout: root.timeoutBehavior,
+        note: root.note,
+        leaves: (await loadTreeLeaves(root.id)).map((l) => ({
+          event: l.eventKey,
+          fired: l.memberFiredAt != null,
+          member_fired_at: l.memberFiredAt,
+        })),
+      })),
+    );
     return {
       content: [
         {
           type: 'text' as const,
           text: JSON.stringify({
             ok: true,
-            active_awaits: awaits.map((a) => ({
-              await_id: a.id,
-              event: a.eventKey,
-              policy: a.policy,
-              note: a.note,
-              expires_ts: a.expiresTs,
-              on_timeout: a.timeoutBehavior,
-              created_at: a.createdAt,
-            })),
+            // Plain awaits only — a composed tree's leaves + anchor (rootId set) render
+            // under composed_awaits below, not as loose rows here.
+            active_awaits: awaits
+              .filter((a) => a.rootId == null)
+              .map((a) => ({
+                await_id: a.id,
+                event: a.eventKey,
+                policy: a.policy,
+                note: a.note,
+                expires_ts: a.expiresTs,
+                on_timeout: a.timeoutBehavior,
+                created_at: a.createdAt,
+              })),
+            ...(composed.length > 0 ? { composed_awaits: composed } : {}),
             recent_wakes: recent.map((d) => ({
               delivery_id: d.id,
               event: d.eventKey,
