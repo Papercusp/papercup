@@ -585,6 +585,10 @@ import './coordination/tools/feed';
 // Audience-keyed catch-up — the message history for a fleet/topic you belong to
 // (low-tier coord:read, membership-checked; the pull counterpart to @fleet:/@topic:).
 import './coordination/tools/catch-up';
+// Withdraw a sent message (H5c, coord-authority-hardening WI-4176): a retraction-notice
+// row to the originally-delivered audience; inbox/feed/catch-up reads suppress the
+// retracted message (coord:thread keeps both for forensics).
+import './coordination/tools/retract';
 // Per-member fleet delivery override — full | digest | muted for a fleet's broadcasts
 // without leaving it (the "+ optional override" on the derived fleet subscription).
 import './coordination/tools/fleet-delivery';

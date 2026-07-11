@@ -34,6 +34,7 @@ import {
   type CueAuthorityStamp,
 } from './cue-authority';
 import { resolveSenderCueAuthority } from './cue-authority-resolve';
+import { collectRetractedIds, suppressRetracted } from './retraction';
 
 export type { InboxOptions };
 
@@ -289,6 +290,14 @@ export const INBOX_FAST_PATH_ROW_CAP = 25_000;
 /**
  * Read everything addressed to `ownerId` (or to '*') across all outboxes.
  * Sorted by ts ascending; forgiving of malformed/missing files.
+ *
+ * coord:retract (WI-4176): messages a retraction notice withdraws are
+ * SUPPRESSED here — the chokepoint every owner-scoped read rides (coord:inbox,
+ * the [coord+N] injection, orient's inbox fold). Markers are collected from
+ * the RAW pre-filter window (so a notice a kinds/since filter would drop still
+ * suppresses its target); the notice row itself always survives. The notice is
+ * addressed to the original audience, so any window containing the original
+ * also contains the (newer) notice. coord:thread stays unsuppressed (forensics).
  */
 export async function readInbox(
   ownerId: string,
@@ -349,13 +358,13 @@ export async function readInbox(
         );
       }
       const lines = rows.map((r) => (typeof r.body === 'string' ? JSON.parse(r.body) : r.body) as CoordEnvelope);
-      return filterInbox(lines, ownerId, opts);
+      return suppressRetracted(filterInbox(lines, ownerId, opts), collectRetractedIds(lines));
     } catch {
       // Fall through to the authoritative full-surface read below.
     }
   }
   const lines = await coordLog.readLines('messages');
-  return filterInbox(lines, ownerId, opts);
+  return suppressRetracted(filterInbox(lines, ownerId, opts), collectRetractedIds(lines));
 }
 
 /**

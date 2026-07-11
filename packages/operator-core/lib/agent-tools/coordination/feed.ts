@@ -27,6 +27,7 @@ import type { CoordEnvelope, CoordKind } from '@papercusp/coordination/core';
 import { compareByTsThenId } from '@papercusp/coordination/core';
 import { coordLog } from './log';
 import { estimateTokens } from './presence-cost';
+import { collectRetractedIds, suppressRetracted } from './retraction';
 
 type CursorSurfaceState = { cursor: number | undefined; exhausted: boolean };
 
@@ -98,6 +99,11 @@ export interface ReadCoordFeedOpts {
    *  `~N tokens` (this) is exactly what an agent wants. Bounds compose: the page
    *  stops at whichever of `limit` or `token_budget` is hit first. */
   token_budget?: number;
+  /** coord:retract (WI-4176): also return messages a retraction notice has
+   *  withdrawn. Default false — retracted messages are SUPPRESSED from the
+   *  feed (the notice row itself is always visible). True is the forensic /
+   *  audit escape hatch. */
+  includeRetracted?: boolean;
 }
 
 export const DEFAULT_FEED_LIMIT = 100;
@@ -297,13 +303,24 @@ export async function readCoordFeed(
   // Filter.
   const filtered = tagged.filter(passesFilter);
 
-  // Kind histogram over the WHOLE filtered set (the filter-chip counts) —
+  // coord:retract (WI-4176): suppress withdrawn messages unless the caller
+  // asked for the forensic view. Markers are collected from the RAW tagged
+  // window (pre-filter) so a notice a kinds/owner/q filter would drop still
+  // suppresses its target; the notice row itself always survives (distinct
+  // msg_id). Applied BEFORE the byKind histogram so the chips match what is
+  // shown. Deep before_ts pages older than the notice can still show the
+  // original — the documented v1 in-window caveat (see ../retraction.ts).
+  const visible = opts.includeRetracted
+    ? filtered
+    : suppressRetracted(filtered, collectRetractedIds(tagged));
+
+  // Kind histogram over the WHOLE visible set (the filter-chip counts) —
   // computed before the page cap so the chips reflect everything, not the page.
   const byKind: Record<string, number> = {};
-  for (const env of filtered) byKind[env.kind] = (byKind[env.kind] ?? 0) + 1;
+  for (const env of visible) byKind[env.kind] = (byKind[env.kind] ?? 0) + 1;
 
   // Newest-first. compareByTsThenId is ascending; reverse for descending.
-  filtered.sort((a, b) => compareByTsThenId(b, a));
+  visible.sort((a, b) => compareByTsThenId(b, a));
 
   // Build the page newest-first, bounded by BOTH limit (count) and token_budget —
   // stop at whichever is hit first. At least one row is always returned (so a single
@@ -312,13 +329,13 @@ export async function readCoordFeed(
   const tokenBudget = opts.token_budget && opts.token_budget > 0 ? opts.token_budget : null;
   const page: CoordFeedRow[] = [];
   let tokens = 0;
-  for (const row of filtered) {
+  for (const row of visible) {
     page.push(row);
     tokens += estimateTokens(JSON.stringify(row).length);
     if (page.length >= limit) break;
     if (tokenBudget !== null && tokens >= tokenBudget) break;
   }
-  const nextCursor = filtered.length > page.length ? (page[page.length - 1]?.ts ?? null) : null;
+  const nextCursor = visible.length > page.length ? (page[page.length - 1]?.ts ?? null) : null;
 
-  return { rows: page, nextCursor, total: filtered.length, byKind, tokens };
+  return { rows: page, nextCursor, total: visible.length, byKind, tokens };
 }

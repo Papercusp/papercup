@@ -89,6 +89,10 @@ export default defineTool({
       .min(1)
       .optional()
       .describe('Accumulate rows newest-first until ~this many tokens, then stop (≥1 row always returned). The "as much history as fits in my context" knob — useful for a long backlog where a row count is hard to guess. Composes with limit: stops at whichever is hit first.'),
+    include_retracted: z
+      .boolean()
+      .optional()
+      .describe('Also show messages withdrawn via coord:retract (default false — retracted messages are suppressed from the feed; the retraction notice itself is always visible). The forensic/audit escape hatch; coord:thread shows both without a flag.'),
   }),
   async handler(args) {
     const { rows, nextCursor, total, byKind, tokens } = await readCoordFeed({
@@ -102,6 +106,7 @@ export default defineTool({
       before_ts: args.before_ts,
       limit: args.limit ?? AGENT_FEED_DEFAULT,
       token_budget: args.token_budget,
+      includeRetracted: args.include_retracted,
     });
     // EI-1597: excerpt the big per-row text fields so the firehose can't overflow the
     // agent result cap. The q-filter already ran (over full bodies) inside readCoordFeed,
