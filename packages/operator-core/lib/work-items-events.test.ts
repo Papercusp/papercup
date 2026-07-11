@@ -513,7 +513,7 @@ describe('emitWorkItemStatusEvent (P-101 — the general per-transition key)', (
 
   it('the ENTERING-EDGE guard: claimable→claimable moves and assigned/non-claimable landings do NOT re-announce', async () => {
     const { emitWorkItemStatusEvent } = await import('./work-items-events');
-    const cases: Array<[string, Parameters<typeof wi>[0], string]> = [
+    const cases: Array<[string, Partial<WorkItem>, string]> = [
       ['todo→open (already advertised)', { id: 'WI-12', state: 'open', assignee: null }, 'todo'],
       ['blocked→todo while ASSIGNED', { id: 'WI-13', state: 'todo', assignee: 'su-holder' }, 'blocked'],
       ['wip→blocked (non-claimable landing)', { id: 'WI-14', state: 'blocked', assignee: null }, 'wip'],
