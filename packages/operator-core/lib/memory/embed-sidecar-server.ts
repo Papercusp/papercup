@@ -52,6 +52,12 @@ import {
 
 export const EMBED_SIDECAR_DEFAULT_PORT = 3384; // mnemonic: the 384-dim space it serves
 export const EMBED_SIDECAR_PORT_ENV = 'PAPERCUSP_EMBED_SIDECAR_PORT';
+/** Comma-separated models to warm at boot (e.g. "gemma,harrier"); default gemma.
+ *  A host whose live embedder mode is harrier should warm it here too — under
+ *  Restart=always supervision every restart otherwise lazy-loads the model on
+ *  the first real request, which is what turns a clean restart into a visible
+ *  first-embed timeout (WI-4021). */
+export const EMBED_SIDECAR_WARM_ENV = 'PAPERCUSP_EMBED_SIDECAR_WARM';
 /** Printed to stdout once listening — the spawn-side handshake line. */
 export const EMBED_SIDECAR_READY_LINE = 'PAPERCUSP_EMBED_SIDECAR_READY';
 
@@ -121,6 +127,18 @@ export function validateEmbedRequest(body: unknown): EmbedRequest | { error: str
 }
 
 type WarmState = 'cold' | 'warming' | 'warm' | 'failed';
+
+/** The boot-warm model set: EMBED_SIDECAR_WARM_ENV comma-list filtered to known
+ *  models (unknown names dropped), deduped; empty/unset ⇒ ['gemma']. Pure. */
+export function resolveWarmModels(env: NodeJS.ProcessEnv = process.env): EmbedSidecarModel[] {
+  const raw = env[EMBED_SIDECAR_WARM_ENV];
+  if (!raw?.trim()) return ['gemma'];
+  const known = raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s): s is EmbedSidecarModel => (EMBED_SIDECAR_MODELS as readonly string[]).includes(s));
+  return known.length > 0 ? [...new Set(known)] : ['gemma'];
+}
 
 /** Builder seam — tests inject fakes so no unit test loads a real ONNX model. */
 export type EmbedderBuilders = {
@@ -288,15 +306,18 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
   });
 
   if (opts.warmAtBoot !== false) {
-    // Warm gemma (the default space) in the background AFTER listen is queued:
-    // the READY handshake must not wait out a model load (can be 10s+ cold),
-    // and a request that races the warm-up simply awaits the same promise.
+    // Warm the configured models (EMBED_SIDECAR_WARM_ENV, default gemma) in the
+    // background AFTER listen is queued: the READY handshake must not wait out
+    // a model load (can be 10s+ cold), and a request that races the warm-up
+    // simply awaits the same promise.
     void listening.then(() => {
-      for (const kind of ['document', 'query'] as const) {
-        getEmbedder('gemma', kind)
-          .then((embed) => embed('warm-up'))
-          .then(() => log(`[embed-sidecar] gemma:${kind} warm`))
-          .catch((e) => log(`[embed-sidecar] gemma:${kind} warm-up failed: ${e instanceof Error ? e.message : e}`));
+      for (const model of resolveWarmModels()) {
+        for (const kind of ['document', 'query'] as const) {
+          getEmbedder(model, kind)
+            .then((embed) => embed('warm-up'))
+            .then(() => log(`[embed-sidecar] ${model}:${kind} warm`))
+            .catch((e) => log(`[embed-sidecar] ${model}:${kind} warm-up failed: ${e instanceof Error ? e.message : e}`));
+        }
       }
     });
   }

@@ -13,21 +13,23 @@ const executed: Exec[] = [];
 let pendingRows: unknown[] = [];
 let insertFails = false;
 
-const sqlTag = Object.assign(
-  async (strings: TemplateStringsArray, ...values: unknown[]) => {
-    const text = strings.join('?').replace(/\s+/g, ' ').trim();
-    executed.push({ text, values });
-    if (insertFails) throw new Error('relation does not exist');
-    if (text.startsWith('INSERT INTO harness_shared.memory_write_journal')) {
-      return [{ id: 'journal-row-1' }];
-    }
-    if (text.includes('FROM harness_shared.memory_write_journal') && text.includes("status = 'pending'") && text.includes('FOR UPDATE')) {
-      return pendingRows;
-    }
-    return [];
-  },
-  { json: (x: unknown) => x },
-);
+// Deliberately NO `json` helper on the fake: sql.json() mis-binds and throws on
+// this stack's prepare:false (pgbouncer) pools, so the journal must never call
+// it — a regression back to sql.json fails here as "sql.json is not a function"
+// instead of silently passing against a fake that models behavior production
+// doesn't have (the WI-4021 zero-rows-ever-journaled incident).
+const sqlTag = async (strings: TemplateStringsArray, ...values: unknown[]) => {
+  const text = strings.join('?').replace(/\s+/g, ' ').trim();
+  executed.push({ text, values });
+  if (insertFails) throw new Error('relation does not exist');
+  if (text.startsWith('INSERT INTO harness_shared.memory_write_journal')) {
+    return [{ id: 'journal-row-1' }];
+  }
+  if (text.includes('FROM harness_shared.memory_write_journal') && text.includes("status = 'pending'") && text.includes('FOR UPDATE')) {
+    return pendingRows;
+  }
+  return [];
+};
 
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: sqlTag }) }));
 
@@ -62,6 +64,20 @@ describe('journalPendingWrite / markJournalCommitted', () => {
     expect(id).toBe('journal-row-1');
     expect(executed[0].text).toContain('INSERT INTO harness_shared.memory_write_journal');
     expect(executed[0].values).toContain('userA');
+  });
+
+  it('binds metadata as a JSON string cast ::text::jsonb — never an object parameter', async () => {
+    const id = await journalPendingWrite({
+      scope: 'userA', content: 'fact', metadata: { a: 1, nested: { b: 'x' } },
+    });
+    expect(id).toBe('journal-row-1');
+    expect(executed[0].text).toContain('::text::jsonb');
+    expect(executed[0].values).toContain(JSON.stringify({ a: 1, nested: { b: 'x' } }));
+    // every bound value must be a primitive/null — an object here reproduces the
+    // prepare:false mis-bind that skipped journaling on every production write
+    for (const v of executed[0].values) {
+      expect(typeof v === 'object' && v !== null).toBe(false);
+    }
   });
 
   it('degrades to null (never throws) when the journal table is unavailable', async () => {

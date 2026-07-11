@@ -20,6 +20,11 @@ import { resolveSelfRef, markSelfRows } from '../self-marker';
 import { shapeCoordPresence } from './presence-shape';
 import { COORD_ROLES } from '../roles';
 import { getModesForOwners } from '../../../modes/store';
+import {
+  classifyCoordDeafness,
+  coordDeafBudgetMs,
+  lastInboxReadAtBatch,
+} from '../inbox-read-freshness';
 import { listParkedAwaitsForSubscribers } from '../../../events/await/store';
 import { buildParkedOnMap } from '../../fleet/assignments';
 
@@ -190,6 +195,50 @@ export default defineTool({
         }
       }
     } catch { /* fail-soft */ }
+    // coord-delivery-residual-gaps-2026-07-11 P-001: coord-DEAFNESS overlay —
+    // stamp `coordHook: 'stale' | 'missing'` (+ `coordLastReadAgoSec`) on LIVE
+    // rows whose inbox-read freshness is over budget. Every delivery leg's
+    // poll is a real coord:inbox/orient row in tool_invocations, so "is this
+    // session actually seeing its mail?" is derivable server-side: live +
+    // demonstrably active + no read for a whole budget window ⇒ deaf RIGHT NOW
+    // (hook enrollment drifted, a runtime with no injection leg, or one long
+    // foreground exec). Same batched, best-effort, non-etag-tracked overlay
+    // pattern as `modes`/`parkedOn` above; unknowns fail toward unflagged.
+    try {
+      const liveRows = active.filter(
+        (r) => (r as { sessionState?: string | null }).sessionState === 'live',
+      );
+      const liveIds = liveRows
+        .map((r) => String((r as { ownerId?: unknown }).ownerId ?? ''))
+        .filter(Boolean);
+      if (liveIds.length) {
+        const reads = await lastInboxReadAtBatch(liveIds);
+        const budget = coordDeafBudgetMs();
+        const nowMs = Date.now();
+        active = active.map((r) => {
+          const row = r as {
+            ownerId?: unknown;
+            sessionState?: string | null;
+            lastActiveSecAgo?: number | null;
+            startedAt?: string | null;
+          };
+          if (row.sessionState !== 'live') return r;
+          const verdict = classifyCoordDeafness(
+            {
+              sessionState: row.sessionState,
+              lastActiveSecAgo: row.lastActiveSecAgo,
+              startedAt: row.startedAt,
+              lastReadAt: reads.get(String(row.ownerId ?? '')) ?? null,
+            },
+            nowMs,
+            budget,
+          );
+          return verdict
+            ? { ...r, coordHook: verdict.state, coordLastReadAgoSec: verdict.lastReadAgoSec }
+            : r;
+        });
+      }
+    } catch { /* fail-soft — deafness detection must never degrade the roster */ }
     const out = {
       ...snapshot,
       ...(self ? { self } : {}),

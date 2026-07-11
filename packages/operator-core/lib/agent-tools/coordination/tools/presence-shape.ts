@@ -43,6 +43,11 @@ export function shapeCoordPresence(data: unknown, tier: PresenceTier): unknown {
       // P-007: coarse context-pressure bucket (ok|high|critical|null) — cheap
       // enough (one short string) to keep at every tier, like state/wakeable.
       contextPressure: r.contextPressure ?? null,
+      // coord-delivery-residual-gaps P-001: deafness flag (stale|missing|null)
+      // — "is this live session actually seeing its coord mail right now?".
+      // One short string, kept at every tier like contextPressure: a leader
+      // deciding whether a coord:send will be SEEN needs this in the core row.
+      coordHook: r.coordHook ?? null,
       intent: clip(r.intent, c.intent),
       plan: r.currentPlanSlug ?? null,
       claims: claimed.length,

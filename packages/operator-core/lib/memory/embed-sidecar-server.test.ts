@@ -9,12 +9,30 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   createEmbedSidecarServer,
+  resolveWarmModels,
   validateEmbedRequest,
+  EMBED_SIDECAR_WARM_ENV,
   MAX_TEXTS_PER_CALL,
   EMBED_SIDECAR_RUNTIME,
   type EmbedderBuilders,
   type EmbedSidecarHandle,
 } from './embed-sidecar-server';
+
+describe('resolveWarmModels', () => {
+  it('defaults to gemma when unset/blank', () => {
+    expect(resolveWarmModels({})).toEqual(['gemma']);
+    expect(resolveWarmModels({ [EMBED_SIDECAR_WARM_ENV]: '  ' })).toEqual(['gemma']);
+  });
+
+  it('parses a comma list, trims, dedupes, and drops unknown names', () => {
+    expect(resolveWarmModels({ [EMBED_SIDECAR_WARM_ENV]: 'gemma, harrier' })).toEqual(['gemma', 'harrier']);
+    expect(resolveWarmModels({ [EMBED_SIDECAR_WARM_ENV]: 'harrier,harrier,gpt-9' })).toEqual(['harrier']);
+  });
+
+  it('falls back to gemma when every name is unknown', () => {
+    expect(resolveWarmModels({ [EMBED_SIDECAR_WARM_ENV]: 'gpt-9,nope' })).toEqual(['gemma']);
+  });
+});
 
 describe('validateEmbedRequest', () => {
   it('accepts a minimal valid request and defaults model to gemma', () => {

@@ -75,10 +75,14 @@ function warnOnce(err: unknown): void {
 export async function journalPendingWrite(args: JournalWriteArgs): Promise<string | null> {
   try {
     const { sql } = getOrgPg();
+    // jsonb bound as `${JSON.stringify(x)}::text::jsonb` — NOT sql.json(), which
+    // throws under postgres-js v3.4 on this stack's prepare:false (pgbouncer)
+    // pools ("The \"string\" argument must be of type string..."), which made
+    // journaling silently skip on every production write (WI-4021 incident).
     const rows = await sql<{ id: string }[]>`
       INSERT INTO harness_shared.memory_write_journal (scope, kind, content, metadata, verbatim, source)
       VALUES (${args.scope}, ${args.kind ?? null}, ${args.content},
-              ${args.metadata ? sql.json(args.metadata as never) : null},
+              ${args.metadata ? JSON.stringify(args.metadata) : null}::text::jsonb,
               ${args.verbatim ?? true}, ${args.source ?? 'live-write'})
       RETURNING id`;
     return rows[0]?.id ?? null;

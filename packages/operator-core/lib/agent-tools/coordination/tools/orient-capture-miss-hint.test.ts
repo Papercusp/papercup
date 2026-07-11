@@ -34,6 +34,14 @@ describe('detectHighSignalMarkers', () => {
     expect(m.durableDiscovery).toBe(false);
     expect(m.hits).toEqual([]);
   });
+  it('NEGATED forms do not count toward the cluster (the healthy-status false positive)', () => {
+    // "0 failed" + "no errors" would naively be 2 tokens ⇒ a false cluster.
+    expect(detectHighSignalMarkers(['2482 tests green, 0 failed, no errors']).errorRetryCluster).toBe(false);
+    expect(detectHighSignalMarkers(['zero failures; never timed out; without exceptions']).errorRetryCluster).toBe(false);
+    // But real positives still cluster even alongside a negated mention.
+    const mixed = detectHighSignalMarkers(['0 failed locally, but CI errored twice and the retry timed out']);
+    expect(mixed.errorRetryCluster).toBe(true);
+  });
 });
 
 describe('computeCaptureMissHint', () => {

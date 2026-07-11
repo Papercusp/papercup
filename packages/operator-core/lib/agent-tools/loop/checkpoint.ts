@@ -38,6 +38,7 @@ import { getPresence } from '../coordination/presence';
 import { readInbox } from '../coordination/messages';
 import { readWatermark } from '../coordination/watermarks';
 import { continuationGateFromReads } from '../coordination/tools/continuation-gate';
+import { COORD_READ_TOOL_NAMES } from '../coordination/inbox-read-freshness';
 import { provenanceLintField } from '../../carry-surface-provenance-lint';
 import { withBoundedTimeout } from '../../bounded-timeout';
 
@@ -76,7 +77,7 @@ export async function lastInboxReadAt(ownerId: string): Promise<string | null> {
       SELECT invoked_at
         FROM harness_shared.tool_invocations
        WHERE coord_owner_id = ${ownerId}
-         AND tool_name IN ('coord:inbox', 'coord:orient', 'coord_inbox', 'coord_orient')
+         AND tool_name = ANY(${[...COORD_READ_TOOL_NAMES]})
        ORDER BY invoked_at DESC
        LIMIT 1
     `;
