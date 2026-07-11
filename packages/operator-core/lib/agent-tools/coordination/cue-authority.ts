@@ -92,6 +92,24 @@ export function hiveWideCueAuthority(hive: string | null | undefined): CueAuthor
 }
 
 /**
+ * A fleet-scoped stamp for an action whose authority is INTRINSIC to the action
+ * itself — fleet:wind-down / fleet:resume ARE that fleet's control plane
+ * (P-009 / H4), whoever the (already guard-checked: owner / leader / queen)
+ * invoker is. The mirror of {@link hiveWideCueAuthority} at fleet scope: the
+ * cue renders `fleet-leader(<slug>)→fleet-members(<slug>)`, BINDING for that
+ * fleet's members and receive-side DEMOTED (H1) for everyone else.
+ */
+export function fleetScopedCueAuthority(fleetSlug: string): CueAuthorityStamp {
+  const slug = fleetSlug.trim() || '(fleet)';
+  return {
+    authority: 'fleet-leader',
+    authorityRef: slug,
+    scope: 'fleet-members',
+    scopeRef: slug,
+  };
+}
+
+/**
  * Render a stamp to a short, scannable tag for the coord injection line, e.g.
  * `hive-queen(papercusp)→hive-wide` or
  * `fleet-leader(windows-parity)→fleet-members(windows-parity)`.

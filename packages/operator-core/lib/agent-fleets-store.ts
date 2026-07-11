@@ -21,6 +21,9 @@ import {
   type ColorScheme,
 } from './console-color-schemes';
 
+/** Typed fleet control state (coord-authority-hardening-2026-07-11 P-009 / H4). */
+export type FleetControlState = 'active' | 'winding-down';
+
 /** A named-fleet registry row. */
 export interface AgentFleetRecord {
   workspaceId: string;
@@ -36,6 +39,16 @@ export interface AgentFleetRecord {
    *  Null on legacy rows created before the binding existed — resolveFleetScheme
    *  falls back to a deterministic slug hash for those. */
   colorScheme: string | null;
+  /** P-009 (H4): the fleet's typed control state — 'active' | 'winding-down'
+   *  (mig 575; fleet:pause aliases wind-down). PLATFORM state on the durable
+   *  row, so late joiners read it at orient instead of missing a broadcast. */
+  controlState: FleetControlState;
+  /** Invoker-stated reason for the current control state (advisory). */
+  controlReason: string | null;
+  /** Coord owner-id that set the current control state (audit). */
+  controlBy: string | null;
+  /** Epoch ms when the current control state was set. */
+  controlAt: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -59,6 +72,10 @@ interface FleetRow {
   owner: string | null;
   leader_owner_id: string | null;
   color_scheme: string | null;
+  control_state: string | null;
+  control_reason: string | null;
+  control_by: string | null;
+  control_at: string | number | null;
   created_at: string | number;
   updated_at: string | number;
 }
@@ -72,6 +89,12 @@ function rowToRecord(r: FleetRow): AgentFleetRecord {
     owner: r.owner,
     leaderOwnerId: r.leader_owner_id,
     colorScheme: r.color_scheme,
+    // Defensive: only the one non-default state is honored; anything else
+    // (legacy null, a hand-forged value) reads back 'active'.
+    controlState: r.control_state === 'winding-down' ? 'winding-down' : 'active',
+    controlReason: r.control_reason ?? null,
+    controlBy: r.control_by ?? null,
+    controlAt: r.control_at == null ? null : Number(r.control_at),
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
   };
@@ -100,7 +123,7 @@ function refreshDirectoryCard(
     .catch(() => {});
 }
 
-const COLS = `workspace_id, fleet_slug, title, description, owner, leader_owner_id, color_scheme, created_at, updated_at`;
+const COLS = `workspace_id, fleet_slug, title, description, owner, leader_owner_id, color_scheme, control_state, control_reason, control_by, control_at, created_at, updated_at`;
 
 /**
  * Derive a stable fleet_slug from a user-entered fleet NAME. The original name
@@ -184,7 +207,7 @@ export async function createFleetIfAbsent(
     input.colorScheme ?? (await allocateSchemeForWorkspace(input.workspaceId, sql));
   const inserted = (await s.unsafe(
     `INSERT INTO harness_shared.agent_fleets (${COLS})
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', NULL, NULL, NULL, $8, $8)
      ON CONFLICT (workspace_id, fleet_slug) DO NOTHING
      RETURNING ${COLS}`,
     [
@@ -229,6 +252,31 @@ export async function setFleetLeader(
       WHERE workspace_id = $1 AND fleet_slug = $2
       RETURNING ${COLS}`,
     [workspaceId, fleetSlug, leaderOwnerId, Date.now()],
+  )) as unknown as FleetRow[];
+  if (rows[0]) refreshDirectoryCard(workspaceId, fleetSlug, { sql });
+  return rows[0] ? rowToRecord(rows[0]) : null;
+}
+
+/**
+ * Set the fleet's typed CONTROL STATE (P-009 / H4): 'winding-down' | 'active'.
+ * Records who flipped it, why, and when — the registry row is the durable
+ * source late joiners read at orient. Idempotent re-sets refresh reason/by/at
+ * (the newest invocation's word stands). Returns null if the fleet doesn't exist.
+ */
+export async function setFleetControlState(
+  workspaceId: string,
+  fleetSlug: string,
+  control: { state: FleetControlState; reason?: string | null; by?: string | null },
+  sql?: Sql,
+): Promise<AgentFleetRecord | null> {
+  const s = pg(sql);
+  const now = Date.now();
+  const rows = (await s.unsafe(
+    `UPDATE harness_shared.agent_fleets
+        SET control_state = $3, control_reason = $4, control_by = $5, control_at = $6, updated_at = $6
+      WHERE workspace_id = $1 AND fleet_slug = $2
+      RETURNING ${COLS}`,
+    [workspaceId, fleetSlug, control.state, control.reason ?? null, control.by ?? null, now],
   )) as unknown as FleetRow[];
   if (rows[0]) refreshDirectoryCard(workspaceId, fleetSlug, { sql });
   return rows[0] ? rowToRecord(rows[0]) : null;
