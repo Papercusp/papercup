@@ -89,6 +89,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // /api/design/sketches, raw SQL, or a FEDERATED git-doc write — pushes the pane live.
   'harness_shared.harness_design_artifacts': ['designSketches.byFeature'],
   'harness_shared.harness_project_files': ['harnessProjectFiles.byHarness'],
+  'harness_shared.adaptive_telemetry': ['adaptiveTelemetry.byHarness'],
   'harness_shared.harness_skills': ['harnessSkills.byHarness'],
   'harness_shared.harness_decisions': ['harnessDecisions.byHarness'],
   'harness_shared.harness_lanes': ['harnessLanes.byHarness', 'harnessLanes.snapshot'],

@@ -935,6 +935,52 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // adaptiveTelemetry.byHarness — the Harness Settings tier-dispatch history.
+  // Empty is authoritative; writes push through the adaptive_telemetry table
+  // bridge so the settings grid never needs an on-open REST snapshot.
+  'adaptiveTelemetry.byHarness': {
+    argsSchema: z.object({
+      harnessSlug: z.string(),
+      workspaceId: z.string().optional(),
+      limit: z.number().int().min(1).max(1000).default(200),
+    }),
+    resolve: async (args) => {
+      const { harnessSlug, workspaceId, limit } = args as {
+        harnessSlug: string;
+        workspaceId?: string;
+        limit: number;
+      };
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
+      const { and, desc, eq } = await import('drizzle-orm');
+      const t = generated.adaptiveTelemetryInHarnessShared;
+      const { db } = getOrgPg();
+      return (await db
+        .select({
+          id: t.id,
+          ts: t.ts,
+          feature_id: t.featureId,
+          requested_n: t.requestedN,
+          actual_n: t.actualN,
+          tier_label: t.tierLabel,
+          available_at_decision: t.availableAtDecision,
+          max_slots: t.maxSlots,
+          outcome: t.outcome,
+          outcome_ts: t.outcomeTs,
+          duration_ms: t.durationMs,
+          synthesized: t.synthesized,
+          synthesis_error: t.synthesisError,
+        })
+        .from(t)
+        .where(
+          workspaceId != null
+            ? and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId))
+            : eq(t.harnessSlug, harnessSlug),
+        )
+        .orderBy(desc(t.ts))
+        .limit(limit)) as unknown[];
+    },
+  },
+
   // harnessSkills.byHarness — skills sorted by name.
   //   zql.harnessSkills.where('harnessSlug', s).orderBy('name', 'asc')
   'harnessSkills.byHarness': {

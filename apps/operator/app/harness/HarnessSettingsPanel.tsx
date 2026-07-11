@@ -191,9 +191,6 @@ export default function HarnessSettingsPanel({
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const [telemetry, setTelemetry] = useState<TelemetryRow[]>([]);
-  const [telemetryLoading, setTelemetryLoading] = useState(false);
-
   const [discord, setDiscord] = useState<DiscordSettings>({
     isShared: false,
     guildId: '',
@@ -203,12 +200,10 @@ export default function HarnessSettingsPanel({
     error: null,
   });
 
-  // Eager via Zero — harnessProjectFiles.byHarness mirrors PG's
-  // harness_project_files row that holds config.json. Replaces the
-  // lazy /spec?phase= round-trip on mount/slug/phase change. Cross-tab
-  // edits to config.json push updates here automatically. REST-fallback
-  // path retained below for harnesses that pre-date the mirror.
-  const { data: settingsConfigRows } = useSyncQuery<{
+  // harnessProjectFiles.byHarness is the sole owner of durable config.json.
+  // Empty is authoritative (a harness with no row has default config); a REST
+  // back-stop would let a late response overwrite a newer pushed value.
+  const settingsQuery = useSyncQuery<{
     harnessSlug: string;
     config?: string | null;
   }>({
@@ -216,6 +211,14 @@ export default function HarnessSettingsPanel({
     args: { harnessSlug: slug, workspaceId },
     enabled: !!slug,
   });
+  const { data: settingsConfigRows, loading: settingsLoading } = settingsQuery;
+  const telemetryQuery = useSyncQuery<TelemetryRow>({
+    queryName: 'adaptiveTelemetry.byHarness',
+    args: { harnessSlug: slug, workspaceId, limit: 200 },
+    enabled: !!slug && parallel.workerCountMode === 'tiers',
+  });
+  const telemetry = telemetryQuery.data ?? [];
+  const telemetryLoading = telemetryQuery.loading;
   const applyLoadedConfig = useCallback((cfg: Record<string, unknown>) => {
     setOriginalConfig(cfg);
     const pwRaw = (cfg.parallelWorkers ?? {}) as Record<string, unknown>;
@@ -286,33 +289,21 @@ export default function HarnessSettingsPanel({
       });
     }
     setAiBackend(rows);
+    const discordCfg = (cfg.discord ?? {}) as Record<string, unknown>;
+    setDiscord((prev) => ({
+      ...prev,
+      guildId: typeof discordCfg.guildId === 'string' ? discordCfg.guildId : '',
+      inviteUrl: typeof discordCfg.inviteUrl === 'string' ? discordCfg.inviteUrl : '',
+    }));
     setLoaded(true);
   }, []);
   useEffect(() => {
-    if (!Array.isArray(settingsConfigRows) || settingsConfigRows.length === 0) return;
+    if (settingsLoading || !Array.isArray(settingsConfigRows)) return;
     const cfgRaw = settingsConfigRows[0]?.config;
     if (typeof cfgRaw !== 'string' || !cfgRaw.trim()) { applyLoadedConfig({}); return; }
     try { applyLoadedConfig(JSON.parse(cfgRaw)); }
     catch { applyLoadedConfig({}); }
-  }, [settingsConfigRows, applyLoadedConfig]);
-
-  // REST back-stop: harnesses that pre-date the project-files mirror or
-  // when Zero hasn't hydrated yet. Skipped once Zero has populated.
-  useEffect(() => {
-    if (loaded) return;
-    let cancelled = false;
-    fetch(`/api/harness/${slug}/spec?phase=${phase}`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (cancelled || loaded) return;
-        const cfg = typeof data?.config === 'string' && data.config.trim()
-          ? (() => { try { return JSON.parse(data.config); } catch { return {}; } })()
-          : {};
-        applyLoadedConfig(cfg);
-      })
-      .catch(() => { if (!cancelled) setLoaded(true); });
-    return () => { cancelled = true; };
-  }, [slug, phase, loaded, applyLoadedConfig]);
+  }, [settingsConfigRows, settingsLoading, applyLoadedConfig]);
 
   // Load discord config from the dedicated endpoint (also gives us isShared).
   useEffect(() => {
@@ -321,12 +312,7 @@ export default function HarnessSettingsPanel({
       .then((r) => r.json())
       .then((d: { isShared?: boolean; discord?: { guildId?: string; inviteUrl?: string } | null }) => {
         if (cancelled) return;
-        setDiscord((prev) => ({
-          ...prev,
-          isShared: d.isShared === true,
-          guildId: d.discord?.guildId ?? '',
-          inviteUrl: d.discord?.inviteUrl ?? '',
-        }));
+        setDiscord((prev) => ({ ...prev, isShared: d.isShared === true }));
       })
       .catch(() => { /* not critical */ });
     return () => { cancelled = true; };
@@ -345,30 +331,13 @@ export default function HarnessSettingsPanel({
         throw new Error(body.error ?? `HTTP ${res.status}`);
       }
       setDiscord((prev) => ({ ...prev, saving: false, saved: true }));
+      settingsQuery.invalidate();
       toast.success('Discord settings saved');
     } catch (e) {
       setDiscord((prev) => ({ ...prev, saving: false, error: (e as Error).message }));
       toast.error('Failed to save Discord settings', { description: (e as Error).message });
     }
-  }, [slug, discord.guildId, discord.inviteUrl]);
-
-  const refreshTelemetry = useCallback(async () => {
-    setTelemetryLoading(true);
-    try {
-      const res = await fetch(`/api/harness/${slug}/orchestrator/adaptive-telemetry?limit=200`);
-      const data = await res.json();
-      setTelemetry(Array.isArray(data?.rows) ? data.rows : []);
-    } catch {
-      setTelemetry([]);
-    } finally {
-      setTelemetryLoading(false);
-    }
-  }, [slug]);
-
-  // Auto-load telemetry only when tier-based dispatch is active.
-  useEffect(() => {
-    if (parallel.workerCountMode === 'tiers') void refreshTelemetry();
-  }, [parallel.workerCountMode, refreshTelemetry]);
+  }, [slug, discord.guildId, discord.inviteUrl, settingsQuery]);
 
   // Validation for tier shape — only fires in tiers mode.
   const validation = useMemo(() => {
@@ -1149,7 +1118,7 @@ export default function HarnessSettingsPanel({
             <h2 style={{ fontSize: 14, margin: 0 }}>Recent worker decisions</h2>
             <button
               type="button"
-              onClick={() => void refreshTelemetry()}
+              onClick={() => telemetryQuery.invalidate()}
               disabled={telemetryLoading}
               style={{ fontSize: 11, padding: '3px 10px' }}
             >

@@ -10,9 +10,9 @@
  * shared/not-shared branch, and a successful Save (toast.success).
  *
  * Mocked: useFlag (controls the testing flag), @papercusp/flags (FLAGS),
- * useSyncQuery, sonner, VirtualGrid (stub list), and the two heavy children
- * (SavedPromptsSection / HarnessPluginsSection). fetch is stubbed for the spec
- * REST back-stop, /discord, /adaptive-telemetry, and the /spec PUT.
+ * useSyncQuery, sonner, VirtualGrid (stub list), and the two heavy children.
+ * fetch is allowed only for the filesystem-backed Discord shared marker and
+ * mutations; durable config + telemetry must stay on named queries.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -20,9 +20,15 @@ import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 import type { ReactElement } from 'react';
 
 /* ── Mocks ─────────────────────────────────────────────────────────── */
-let syncData: unknown[];
+const syncState = new Map<string, { data: unknown[] | undefined; loading?: boolean }>();
 vi.mock('@papercusp/sync', () => ({
-  useSyncQuery: () => ({ data: syncData, error: null, loading: false, fetching: false, invalidate: vi.fn() }),
+  useSyncQuery: ({ queryName }: { queryName: string }) => ({
+    data: syncState.get(queryName)?.data,
+    error: null,
+    loading: syncState.get(queryName)?.loading ?? false,
+    fetching: false,
+    invalidate: vi.fn(),
+  }),
 }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('@papercusp/flags', () => ({ FLAGS: { TESTING: 'papercusp-testing' } }));
@@ -52,23 +58,25 @@ function renderPanel(ui: ReactElement, searchParams = '') {
 function loadedConfigRow(cfg: Record<string, unknown> = {}) {
   return [{ harnessSlug: 'h', config: JSON.stringify(cfg) }];
 }
+function setLoadedConfig(cfg: Record<string, unknown> = {}) {
+  syncState.set('harnessProjectFiles.byHarness', { data: loadedConfigRow(cfg) });
+}
 
-/** Stub the panel's network: spec back-stop, discord, telemetry, PUT. */
+/** Stub only the filesystem-backed Discord marker and mutation calls. */
 function stubFetch(opts: { isShared?: boolean } = {}) {
-  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     if (typeof url === 'string' && url.includes('/discord')) {
       return new Response(JSON.stringify({ isShared: opts.isShared ?? false, discord: null }), { status: 200 });
     }
-    if (typeof url === 'string' && url.includes('/adaptive-telemetry')) {
-      return new Response(JSON.stringify({ rows: [] }), { status: 200 });
-    }
-    // /spec GET back-stop + /spec PUT.
+    if (!init?.method || init.method === 'GET') throw new Error(`unexpected durable GET: ${url}`);
+    // /spec PUT and other mutations.
     return new Response(JSON.stringify({ ok: true, config: '{}' }), { status: 200 });
   }));
 }
 
 beforeEach(() => {
-  syncData = [];
+  syncState.clear();
+  syncState.set('adaptiveTelemetry.byHarness', { data: [] });
   testingFlagValue = false;
 });
 afterEach(() => {
@@ -79,16 +87,15 @@ afterEach(() => {
 
 describe('HarnessSettingsPanel (legacy per-harness settings)', () => {
   it('shows the loading state before config has resolved', () => {
-    // No sync data + a never-resolving fetch back-stop → stays loading.
     vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
-    syncData = [];
+    syncState.set('harnessProjectFiles.byHarness', { data: undefined, loading: true });
     renderPanel(<HarnessSettingsPanel slug="h" phase="production" />);
     expect(screen.getByText('Loading…')).toBeTruthy();
   });
 
   it('renders the always-on sections once config loads (flag OFF)', async () => {
     stubFetch();
-    syncData = loadedConfigRow();
+    setLoadedConfig();
     renderPanel(<HarnessSettingsPanel slug="h" phase="production" />);
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Workers' })).toBeTruthy());
     // The slug appears in the header.
@@ -106,7 +113,7 @@ describe('HarnessSettingsPanel (legacy per-harness settings)', () => {
   it('reveals the flag-gated worker-count controls when the testing flag is ON', async () => {
     stubFetch();
     testingFlagValue = true;
-    syncData = loadedConfigRow();
+    setLoadedConfig();
     renderPanel(<HarnessSettingsPanel slug="h" phase="production" />);
     await waitFor(() => expect(screen.getByText('workers / feature')).toBeTruthy());
     expect(screen.getByText('features cap')).toBeTruthy();
@@ -118,7 +125,7 @@ describe('HarnessSettingsPanel (legacy per-harness settings)', () => {
     stubFetch();
     testingFlagValue = true;
     // adaptive present → applyLoadedConfig infers workerCountMode 'tiers'.
-    syncData = loadedConfigRow({
+    setLoadedConfig({
       parallelWorkers: { max: 4, adaptive: { tiers: [1, 2, 4], labels: ['a', 'b', 'c'], rubric: 'r' } },
     });
     renderPanel(<HarnessSettingsPanel slug="h" phase="production" />);
@@ -132,7 +139,7 @@ describe('HarnessSettingsPanel (legacy per-harness settings)', () => {
   it('adds a tier row when "+ Add tier" is clicked', async () => {
     stubFetch();
     testingFlagValue = true;
-    syncData = loadedConfigRow({
+    setLoadedConfig({
       parallelWorkers: { max: 4, adaptive: { tiers: [1, 2], labels: ['a', 'b'], rubric: 'r' } },
     });
     renderPanel(<HarnessSettingsPanel slug="h" phase="production" />);
@@ -145,7 +152,7 @@ describe('HarnessSettingsPanel (legacy per-harness settings)', () => {
 
   it('shows the not-shared Discord notice when the harness is private', async () => {
     stubFetch({ isShared: false });
-    syncData = loadedConfigRow();
+    setLoadedConfig();
     renderPanel(<HarnessSettingsPanel slug="h" phase="production" />);
     await waitFor(() => expect(screen.getByText(/only available for shared harnesses/i)).toBeTruthy());
     // The guild-id input only renders in the shared branch.
@@ -154,7 +161,7 @@ describe('HarnessSettingsPanel (legacy per-harness settings)', () => {
 
   it('renders the Discord guild/invite inputs for a shared harness', async () => {
     stubFetch({ isShared: true });
-    syncData = loadedConfigRow();
+    setLoadedConfig();
     renderPanel(<HarnessSettingsPanel slug="h" phase="production" />);
     await waitFor(() => expect(screen.getByPlaceholderText(/1509111829471690783/)).toBeTruthy());
     expect(screen.getByRole('button', { name: /Save Discord/i })).toBeTruthy();
@@ -162,7 +169,7 @@ describe('HarnessSettingsPanel (legacy per-harness settings)', () => {
 
   it('adds an AI backend role-override row', async () => {
     stubFetch();
-    syncData = loadedConfigRow();
+    setLoadedConfig();
     renderPanel(<HarnessSettingsPanel slug="h" phase="production" />);
     await waitFor(() => expect(screen.getByText('default (all roles)')).toBeTruthy());
     // One default row → its cmd input uses the "omp -p" placeholder.
@@ -174,7 +181,7 @@ describe('HarnessSettingsPanel (legacy per-harness settings)', () => {
 
   it('Save persists the config and toasts success', async () => {
     stubFetch();
-    syncData = loadedConfigRow();
+    setLoadedConfig();
     renderPanel(<HarnessSettingsPanel slug="h" phase="production" />);
     await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -183,7 +190,7 @@ describe('HarnessSettingsPanel (legacy per-harness settings)', () => {
 
   it('mounts the saved-prompts and plugins sections', async () => {
     stubFetch();
-    syncData = loadedConfigRow();
+    setLoadedConfig();
     renderPanel(<HarnessSettingsPanel slug="h" phase="production" />);
     await waitFor(() => expect(screen.getByTestId('saved-prompts')).toBeTruthy());
     expect(screen.getByTestId('plugins-section')).toBeTruthy();

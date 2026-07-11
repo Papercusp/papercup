@@ -60,6 +60,7 @@ describe('sync-resolver v2 registry', () => {
       for (const expected of [
         'harnessTextArtifact.byHarness',
         'harnessProjectFiles.byHarness',
+        'adaptiveTelemetry.byHarness',
         'harnessSkills.byHarness',
         'harnessDecisions.byHarness',
       ]) {

@@ -94,6 +94,25 @@ beforeAll(async () => {
       started_at timestamptz NOT NULL DEFAULT now(),
       ended_at timestamptz, exit_code integer
     )`);
+  // The operator-hindsight drain fans out via sendMessage → resolveWorkspaceHiveScope →
+  // hive-store.ts listHives, which queries harness_shared.pots (the first-class Hive
+  // entity, renamed from `hives` by migration 557 cup-lexicon-db-rename-phase3). Absent
+  // in this hand-built rig, federation-scope.ts fail-soft catches + console.warns on the
+  // missing relation ("relation harness_shared.pots does not exist"), tripping
+  // vitest-fail-on-console. Minimal shape covering exactly the columns listHives selects
+  // (an empty table → no shared hive → send stays local, the intended unscoped path).
+  await db.sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.pots (
+      workspace_id text NOT NULL DEFAULT 'default',
+      pot_home_slug text NOT NULL,
+      public_key bytea,
+      keychain_id text,
+      title text,
+      description text,
+      created_at bigint NOT NULL DEFAULT 0,
+      updated_at bigint NOT NULL DEFAULT 0,
+      PRIMARY KEY (workspace_id, pot_home_slug)
+    )`);
 }, 90_000);
 
 afterAll(async () => {
