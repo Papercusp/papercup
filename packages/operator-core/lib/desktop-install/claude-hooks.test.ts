@@ -42,13 +42,17 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     ]);
     expect(commandsFor(cfg, 'Stop')).toEqual([`${DEST}/workitem-verify-nudge.sh`]);
 
+    // UserPromptSubmit: turn-provenance classification (turn-provenance-owner-vs-agent P-003).
+    expect(commandsFor(cfg, 'UserPromptSubmit')).toEqual([`${DEST}/userpromptsubmit-provenance.sh`]);
+    expect(cfg.hooks.UserPromptSubmit[0].matcher).toBeUndefined(); // fires on every prompt
+
     // statusLine + the Claude-only project-MCP auto-approve flag.
     expect(cfg.statusLine).toEqual({ type: 'command', command: `${DEST}/statusline-fleet.sh` });
     expect(cfg.enableAllProjectMcpServers).toBe(true);
 
     // objective-title is copied to disk but intentionally NOT registered (parity with the bash installer).
-    const allCmds = ['PreToolUse', 'PostToolUse', 'SessionStart', 'SessionEnd', 'Stop'].flatMap((e) =>
-      commandsFor(cfg, e),
+    const allCmds = ['PreToolUse', 'PostToolUse', 'SessionStart', 'SessionEnd', 'Stop', 'UserPromptSubmit'].flatMap(
+      (e) => commandsFor(cfg, e),
     );
     expect(allCmds.some((c) => c.includes('objective-title'))).toBe(false);
   });

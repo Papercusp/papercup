@@ -443,6 +443,9 @@ describe('P-004: SessionStart[source=compact] continuity anchor', () => {
       expect(ctx).toContain('POST-COMPACTION CONTINUITY ANCHOR');
       expect(ctx).toContain('coord:orient { afterCompaction: true }');
       expect(ctx).toContain('HYPOTHESES to re-verify');
+      // turn-provenance P-004: native continuations are stamped machine-generated.
+      expect(ctx).toContain('⟦turn-provenance⟧ MACHINE-GENERATED CONTINUATION');
+      expect(ctx).toContain('Never attribute its text to the owner');
       expect(ctx).toContain('Armed loop @papercusp (active, every 120s)');
       expect(ctx).toContain('ship P-004');
       // argv intact ⇒ NO playbook-recovery part alongside the anchor.

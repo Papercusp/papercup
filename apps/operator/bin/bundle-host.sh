@@ -180,3 +180,18 @@ if [[ -z "$_locks_sql_max" || "$_locks_sql_max" != "$_bundled_locks_sql_max" || 
   exit 1
 fi
 echo "    ✓ bundled @papercusp/locks DDL matches the tree (highest migration $_locks_sql_max, $_locks_sql_count files)"
+
+# @papercusp/memory's local-embedder-worker.ts resolves its worker-thread
+# script NEXT TO the executing module (dirname of import.meta.url) — inside a
+# bundle that is $OUTDIR, and esbuild never emits sibling non-JS assets, so
+# without this copy every embed silently falls back to INLINE main-thread ONNX
+# inference (~6s/embed vs ~36ms via the worker; WI-4196). WARN instead of
+# exiting: the runtime tolerates a missing worker (slow, not broken), and a
+# hard failure here would block bg-host/sidecar boots over a perf asset.
+EMBED_WORKER_SRC="${PAPERCUSP_EMBED_WORKER_SCRIPT:-../../libs/generic/memory/src/local-embedder-worker.script.mjs}"
+if [[ -f "$EMBED_WORKER_SRC" ]]; then
+  cp "$EMBED_WORKER_SRC" "$OUTDIR/local-embedder-worker.script.mjs"
+  echo "    ✓ bundled @papercusp/memory embed-worker script beside the entry"
+else
+  echo "WARNING: embed-worker script not found at $EMBED_WORKER_SRC — embeds will run inline (slow; WI-4196)"
+fi

@@ -173,8 +173,12 @@ export interface OrientResult {
    *  null on failure; absent when none stand. For an OWNER-DIRECTED (responsive)
    *  caller, queen-loop steering facts (pauseNewWork/maxBees) are withheld here —
    *  see `factsWithheld` — since they govern the queen-bee loop, not the caller's
-   *  owner-directed task (P-002 / D-001). */
-  facts?: Array<{ scope: string; ref: string | null; body: string; src: string | null }> | null;
+   *  owner-directed task (P-002 / D-001).
+   *  P-007: audience-filtered by the CALLER's fleet (an `aud`-scoped fact folds
+   *  only for its fleet's members), and `src` is provenance-hydrated — a typed
+   *  verified sourceRef renders `<ref> ✓ "<verbatim quote>"`, an unresolvable
+   *  one renders `✗unverified` loudly. */
+  facts?: Array<{ scope: string; ref: string | null; body: string; src: string | null; aud?: string }> | null;
   /** Present iff queen-loop steering facts were withheld from a responsive caller
    *  (P-002) — transparent, never a silent drop. Pull live state via pot:get-steering. */
   factsWithheld?: { count: number; reason: string };
@@ -491,6 +495,20 @@ export async function composeOrient(
     }
   }
 
+  // ── the caller's fleet (coord:whoami) — resolved ONCE, hoisted ABOVE the facts
+  // fold because the P-007 audience filter needs it there; reused by the fleet
+  // legs and the announced-gates fold below (EI-9270). BEST-EFFORT: null on any
+  // failure; skipped on a monitor tick (both consumers are monitor-skipped too).
+  let fleetSlug: string | null = null;
+  if (!monitor) {
+    try {
+      const who = (await call('coord:whoami', {})) as { fleetSlug?: string | null } | undefined;
+      fleetSlug = who?.fleetSlug ?? null;
+    } catch {
+      fleetSlug = null;
+    }
+  }
+
   // ── standing-facts fold (queen-memory-hybrid L1c) — the deterministic sibling of
   // the fuzzy memory recall above: scoped conclusions delivered VERBATIM every
   // orient (workspace + this owner + the named harness). BEST-EFFORT like every
@@ -498,13 +516,18 @@ export async function composeOrient(
   // entirely on a monitor tick (a leader loop re-reads its own steering facts on
   // every wake for no reason — it already has them from an earlier full orient).
   if (!monitor) try {
-    const { foldFacts } = await import('../../../agent-facts/store');
+    const { foldFacts, renderFactSrc } = await import('../../../agent-facts/store');
     const selectors = [
       { scope: 'workspace' as const },
       ...(ownerId ? [{ scope: 'owner' as const, scopeRef: ownerId }] : []),
       ...(args.harness ? [{ scope: 'harness' as const, scopeRef: args.harness }] : []),
     ];
-    const facts = await foldFacts(selectors, {});
+    // P-007: filter by the RECIPIENT's audience — an audience-scoped fact
+    // (audienceScope 'fleet:<slug>') folds only for that fleet's members;
+    // a non-fleet caller receives only unrestricted facts.
+    const facts = await foldFacts(selectors, {
+      audiences: fleetSlug ? [`fleet:${fleetSlug}`] : [],
+    });
     // P-002 / D-001: withhold queen-loop steering facts (pauseNewWork/maxBees) from
     // an OWNER-DIRECTED (responsive) caller — filter the RAW facts (key + body both
     // inspected) BEFORE projecting, so the structural `queen-loop:` key convention
@@ -515,7 +538,11 @@ export async function composeOrient(
         scope: f.scope,
         ref: f.scopeRef,
         body: f.body,
-        src: f.sourceRef,
+        // P-007: provenance-hydrated src — a verified typed sourceRef renders its
+        // platform-captured verbatim quote (`msg:x ✓ "…"`); an unresolvable one
+        // renders LOUDLY (`✗unverified`); free-text anchors pass through as before.
+        src: renderFactSrc(f) || null,
+        ...(f.audienceScope ? { aud: f.audienceScope } : {}),
       }));
     }
     if (withheld.length > 0) {
@@ -554,21 +581,16 @@ export async function composeOrient(
     }
   }
 
-  // ── fleet legs (full mode only) — resolve the caller's fleet ONCE via coord:whoami,
-  // then fold two bounded slices for a fleet member: (1) catch-up = "what did my fleet
-  // say while I was away" (the pull counterpart to @fleet: broadcasts, NOT auto-polled),
-  // and (2) fleet-health = the coord:glance health subset agents otherwise re-fetch right
-  // after orient (compaction-fold-audit-2026-07-06 — 44%+ did). Both gated + BEST-EFFORT:
-  // a non-fleet caller or any failure degrades to absent/null. EI-8300: skipped entirely
-  // on a monitor tick (both legs). (fleet-messaging-integrate-and-land P-006)
-  let fleetSlug: string | null = null; // hoisted: the announced-gates fold below reuses it (EI-9270)
+  // ── fleet legs (full mode only) — the caller's fleet was resolved ONCE above
+  // (hoisted for the P-007 facts audience filter); here it folds two bounded
+  // slices for a fleet member: (1) catch-up = "what did my fleet say while I was
+  // away" (the pull counterpart to @fleet: broadcasts, NOT auto-polled), and
+  // (2) fleet-health = the coord:glance health subset agents otherwise re-fetch
+  // right after orient (compaction-fold-audit-2026-07-06 — 44%+ did). Both gated
+  // + BEST-EFFORT: a non-fleet caller or any failure degrades to absent/null.
+  // EI-8300: skipped entirely on a monitor tick (both legs).
+  // (fleet-messaging-integrate-and-land P-006)
   if (!monitor && (args.includeFleetCatchUp !== false || args.includeFleetHealth !== false)) {
-    try {
-      const who = (await call('coord:whoami', {})) as { fleetSlug?: string | null } | undefined;
-      fleetSlug = who?.fleetSlug ?? null;
-    } catch {
-      fleetSlug = null;
-    }
     if (fleetSlug && args.includeFleetCatchUp !== false) {
       try {
         const cuLimit = Math.min(args.fleetCatchUpLimit ?? FLEET_CATCHUP_FOLD, FLEET_CATCHUP_CAP);

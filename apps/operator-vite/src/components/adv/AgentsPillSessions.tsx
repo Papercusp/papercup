@@ -259,7 +259,7 @@ function SearchResultRow({
   return (
     <div className="pc-agents-sessions__result" data-testid={`session-hit-${result.sourceKind}-${result.sessionId}`}>
       <div
-        className={`pc-agents-roster__row pc-agents-sessions__result-head${openable ? '' : ' is-unopenable'}`}
+        className={`pc-agents-roster__row pc-agents-roster__row--nocheck pc-agents-sessions__result-head${openable ? '' : ' is-unopenable'}`}
         role={openable ? 'button' : undefined}
         tabIndex={openable ? 0 : undefined}
         title={openable ? 'Open at the best match' : 'No transcript viewer for this source'}
@@ -541,7 +541,7 @@ export function InactiveSessionsSection({
             return (
               <div
                 key={r.id}
-                className={`pc-agents-roster__row${url ? '' : ' is-unopenable'}`}
+                className={`pc-agents-roster__row pc-agents-roster__row--nocheck${url ? '' : ' is-unopenable'}`}
                 data-testid={`inactive-session-${r.id}`}
                 role={url ? 'button' : undefined}
                 tabIndex={url ? 0 : undefined}

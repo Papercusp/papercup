@@ -13,7 +13,7 @@
  */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { assertFact, resolveFactScopeRef, FACT_SCOPES, FACT_BODY_MAX_CHARS } from '../../agent-facts/store';
+import { assertFact, resolveFactScopeRef, FACT_SCOPES, FACT_BODY_MAX_CHARS, type FactSourceProvenance } from '../../agent-facts/store';
 import { resolveScopeRefAlias } from './scope-ctx';
 import { provenanceLintField } from '../../carry-surface-provenance-lint';
 
@@ -75,7 +75,7 @@ export default defineTool({
     // assert time — the stamp travels with the fact and folds render the
     // verified quote with zero extra reads. Fail-soft: stamping never blocks
     // the assert (the resolver degrades internally; this catch is the belt).
-    let sourceProvenance = null;
+    let sourceProvenance: FactSourceProvenance | null = null;
     if (args.sourceRef) {
       try {
         const { resolveFactSourceProvenance } = await import('./source-provenance-resolve');

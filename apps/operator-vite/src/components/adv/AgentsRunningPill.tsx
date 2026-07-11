@@ -17,7 +17,6 @@ import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { Popover } from '@/app/harness/Popover';
 import { Tooltip } from '@/app/harness/Tooltip';
-import { Checkbox } from '@/app/harness/Checkbox';
 import { LivenessDot } from '@/app/coord/presence-ui';
 import AgentInspectorModal from '@/app/harness/AgentInspectorModal';
 import { ThinkingDot } from '@/app/harness/AgentThinkingStream';
@@ -805,28 +804,25 @@ export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: 
                   }
                 }}
               >
-                {/* Shared Checkbox primitive (native <input type=checkbox> trips the
-                    design-primitives lint, EI-9468). The display:contents wrapper
-                    carries the stopPropagation the primitive doesn't expose —
-                    ticking the box must never open the inspector / pin the row
-                    (the row's own onClick). */}
-                <span style={{ display: 'contents' }} onClick={(e) => e.stopPropagation()}>
-                  <Checkbox
-                    dataTestId={`agent-select-${a.ownerId}`}
-                    checked={selected.has(a.ownerId)}
-                    ariaLabel={`Select ${displayName(a)}`}
-                    onChange={() => toggleSelected(a.ownerId)}
-                    // Native-accent look matching the approved browser mockup
-                    // (owner-hit 2026-07-11 r2: "make it look like your browser
-                    // mockup" — the Radix default read as a faint bordered box
-                    // that never fills on check). Passing className makes the
-                    // primitive DROP its inline ROOT_STYLE (see Checkbox.tsx
-                    // L61), so .pc-agents-roster__check fully owns the look: a
-                    // compact 12px box that fills with --accent + a dark check
-                    // when selected, like a native accent-color checkbox.
-                    className="pc-agents-roster__check"
-                  />
-                </span>
+                {/* A REAL native accent checkbox (owner-hit 2026-07-11 r3: the
+                    shared Radix primitive's <button>+lucide-svg restyle never
+                    matched the approved native mockup, even once deployed to
+                    dist — because it's an approximation, not the browser's own
+                    checkbox). A native <input type=checkbox> with accent-color
+                    IS the native accent look, and the Tauri/WebKitGTK webview
+                    draws it natively. stopPropagation on click+keydown so
+                    ticking the box never opens the inspector / pins the row (the
+                    row's own onClick/onKeyDown). */}
+                <input
+                  type="checkbox"
+                  className="pc-agents-roster__check"
+                  data-testid={`agent-select-${a.ownerId}`}
+                  checked={selected.has(a.ownerId)}
+                  aria-label={`Select ${displayName(a)}`}
+                  onChange={() => toggleSelected(a.ownerId)}
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => e.stopPropagation()}
+                />
                 <span className="pc-agents-roster__live">
                   {a.thinking ? (
                     <ThinkingDot size={7} title={`${displayName(a)} — thinking`} />
@@ -1032,11 +1028,21 @@ function RosterStyles() {
            (max-content, capped via the name's own max-width) so a short id like
            "su-5577c" doesn't reserve a wide track and leave a big gap before the
            description — the description follows right after. The doing column
-           takes the rest. The Checkbox reaches the grid directly through its
-           display:contents wrapper, so it IS the first grid item — the template
-           must carry a track for it or the row shatters. */
+           takes the rest. The native checkbox input is the first grid item, so
+           the template must carry the leading auto track for it or the row
+           shatters (checkbox-less rows use --nocheck below, which drops it). */
         display: grid; grid-template-columns: auto max-content 16px minmax(40px, max-content) minmax(0, 1fr);
         align-items: center; gap: 8px; padding: 3px 8px; border-radius: 4px;
+      }
+      /* Rows WITHOUT the leading select checkbox — the inactive-session list and
+         the search-result heads (AgentsPillSessions) — reuse this row for its
+         look but render only 4 cells (age/glyph/name/doing), no checkbox. Using
+         the 5-column template above shifted every cell left by one and dumped the
+         NAME into the fixed 16px glyph column, truncating it to a single letter
+         ("r…" "p…", owner-hit 2026-07-11 r3). This modifier drops that leading
+         checkbox track so the 4 cells land in their own columns. */
+      .pc-agents-roster__row--nocheck {
+        grid-template-columns: max-content 16px minmax(40px, max-content) minmax(0, 1fr);
       }
       .pc-agents-roster__row:hover { background: var(--bg-2); }
       .pc-agents-roster__row[data-liveness="stale"] { opacity: 0.5; }
@@ -1095,24 +1101,18 @@ function RosterStyles() {
       .pc-agents-roster__row.is-selected:hover {
         background: color-mix(in srgb, var(--accent, #38bdf8) 40%, transparent);
       }
-      /* Roster select box — styled to match the approved native-accent mockup
-         (owner-hit 2026-07-11 r2). This class fully owns the appearance because
-         the shared Checkbox primitive drops its inline ROOT_STYLE when given a
-         className. Radix renders a <button role=checkbox data-state=…>; the
-         lucide <Check size=10> indicator inherits the current color. Compact 12px box,
-         fills solid --accent with a dark check when selected — a clean native
-         accent-color checkbox, not the faint bordered box the default gave. */
+      /* Roster select box — a REAL native accent checkbox (owner-hit 2026-07-11
+         r3). The prior Radix <button>+svg restyle could not reproduce the
+         approved native mockup even deployed, so this is a native
+         <input type=checkbox>: accent-color tints the browser's own check with
+         the theme accent, and color-scheme:dark makes the unchecked box render
+         for the dark surface instead of the browser default light box. */
       .pc-agents-roster__check {
-        width: 12px; height: 12px; box-sizing: border-box;
+        width: 13px; height: 13px; box-sizing: border-box;
         margin: 0; padding: 0; align-self: center; flex: 0 0 auto;
-        display: inline-flex; align-items: center; justify-content: center;
-        border: 1px solid var(--border); border-radius: 3px;
-        background: var(--bg-2); color: var(--accent-ink, #051827);
-        cursor: pointer; outline: none;
-      }
-      .pc-agents-roster__check[data-state="checked"] {
-        background: var(--accent, #38bdf8);
-        border-color: var(--accent, #38bdf8);
+        accent-color: var(--accent, #38bdf8);
+        color-scheme: dark;
+        cursor: pointer;
       }
       .pc-agents-roster__bulkbar {
         display: flex; flex-wrap: wrap; align-items: center; gap: 4px;

@@ -5,7 +5,8 @@
  * 2026-07-09 P-003/P-004/P-006). The heavy neighbors are mocked exactly like
  * AgentsRunningPill.test.tsx so importing the module stays cheap.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => ({ data: [{ active: [] }] }) }));
 vi.mock('@/app/coord/presence-ui', () => ({ LivenessDot: () => null }));
@@ -20,6 +21,7 @@ import {
   searchFailureMessage,
   searchHitStreamUrl,
   searchResultResumeTarget,
+  InactiveSessionsSection,
   type EndedSessionRow,
 } from './AgentsPillSessions';
 import type { RosterAgent } from './AgentsRunningPill';
