@@ -31,7 +31,7 @@ import {
   resolveGithubToken,
 } from './updates-github';
 
-type Channel = 'alpha' | 'beta' | 'stable';
+export type Channel = 'alpha' | 'beta' | 'stable';
 const CHANNELS = new Set<Channel>(['alpha', 'beta', 'stable']);
 
 type Product = 'gui' | 'server';
@@ -41,7 +41,7 @@ export interface GhAsset {
   name: string;
   browser_download_url: string;
 }
-interface GhRelease {
+export interface GhRelease {
   tag_name: string;
   name?: string;
   body?: string;
@@ -73,7 +73,7 @@ export function normalizeTagVersion(tag: string): string {
   return tag.replace(/^desktop-v/i, '').replace(/^v/i, '');
 }
 
-function classifyChannel(release: GhRelease): Channel {
+export function classifyChannel(release: GhRelease): Channel {
   const tag = release.tag_name.toLowerCase();
   if (tag.includes('-alpha')) return 'alpha';
   if (tag.includes('-beta') || tag.includes('-rc')) return 'beta';
@@ -81,7 +81,7 @@ function classifyChannel(release: GhRelease): Channel {
   return 'stable';
 }
 
-function visibleChannels(target: Channel): ReadonlySet<Channel> {
+export function visibleChannels(target: Channel): ReadonlySet<Channel> {
   if (target === 'alpha') return new Set(['alpha', 'beta', 'stable']);
   if (target === 'beta') return new Set(['beta', 'stable']);
   return new Set(['stable']);
@@ -190,7 +190,7 @@ function findLatestJsonAsset(release: GhRelease): GhAsset | null {
   );
 }
 
-async function fetchReleases(token: string | null): Promise<GhRelease[] | null> {
+export async function fetchReleases(token: string | null): Promise<GhRelease[] | null> {
   const url = `https://api.github.com/repos/${GITHUB_DESKTOP_REPO}/releases?per_page=30`;
   const res = await fetch(url, {
     headers: githubApiHeaders(token),
@@ -201,7 +201,7 @@ async function fetchReleases(token: string | null): Promise<GhRelease[] | null> 
   return (await res.json()) as GhRelease[];
 }
 
-function resolveChannel(params: URLSearchParams, override?: string): Channel {
+export function resolveChannel(params: URLSearchParams, override?: string): Channel {
   const fromQuery = params.get('channel');
   if (fromQuery && CHANNELS.has(fromQuery as Channel)) return fromQuery as Channel;
   if (override && CHANNELS.has(override as Channel)) return override as Channel;

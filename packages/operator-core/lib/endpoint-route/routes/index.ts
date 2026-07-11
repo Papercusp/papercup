@@ -295,6 +295,7 @@ import miscSecurityAdvisoriesCheck from './misc/security-advisories-check';
 import miscAgentBundle from './misc/agent-bundle';
 import miscTestButtonsEcho from './misc/test-buttons-echo';
 import miscUpdatesManifest from './misc/updates-manifest';
+import miscUpdatesHistory from './misc/updates-history';
 import miscUpdatesDownload from './misc/updates-download';
 import authLogin from './auth/login';
 import authLogout from './auth/logout';
@@ -747,6 +748,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(miscAgentBundle as AnyRoute),
   ...flatten(miscTestButtonsEcho as AnyRoute),
   ...flatten(miscUpdatesManifest as AnyRoute),
+  ...flatten(miscUpdatesHistory as AnyRoute),
   ...flatten(miscUpdatesDownload as AnyRoute),
   ...flatten(authLogin as AnyRoute),
   ...flatten(authLogout as AnyRoute),
