@@ -107,13 +107,14 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('PlansListPanel — view buttons', () => {
-  it('renders the New-plan button + the 5 view buttons', () => {
+  it('renders the New-plan button + the view buttons (Observations moved to Signals, 2026-07-11)', () => {
     render(<PlansListPanel />);
     expect(screen.getByRole('button', { name: /New plan/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Plans/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Queue/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Sessions/i })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Observations/i })).toBeTruthy();
+    // Observations is no longer a Create-dock view — it lives on the Signals tab.
+    expect(screen.queryByRole('button', { name: /Observations/i })).toBeNull();
   });
 
   it('clicking a view button sets ?view to that view', () => {
@@ -122,8 +123,6 @@ describe('PlansListPanel — view buttons', () => {
     expect(setters.view).toHaveBeenCalledWith('queue');
     fireEvent.click(screen.getByRole('button', { name: /Sessions/i }));
     expect(setters.view).toHaveBeenCalledWith('sessions');
-    fireEvent.click(screen.getByRole('button', { name: /Observations/i }));
-    expect(setters.view).toHaveBeenCalledWith('observations');
   });
 });
 

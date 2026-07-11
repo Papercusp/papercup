@@ -366,6 +366,21 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
 
     broadcast(topicHex: string, frame: Frame): void {
       const st = topics.get(topicHex);
+      // WI-953 layer-4 diagnosability: broadcast() is fire-and-forget over
+      // WHATEVER channels happen to be open at this exact instant (no queue,
+      // no retry) — if a broadcast lands in the gap between "topic joined"
+      // and "peer paired" (or during a connection-flap reconnect), the frame
+      // is silently dropped and nothing else will ever re-send it until the
+      // next explicit call (e.g. the 5-min reannounce timer). Trace the
+      // channel count at call time so a live gate run can directly confirm
+      // (not just infer from "pairing happened, announce still never
+      // landed") whether an announce broadcast is going out over zero
+      // channels.
+      if (!process.env.VITEST) {
+        console.warn(
+          `[topic-gossip:${opts.protocol}] broadcast on topic ${topicHex} — ${st ? st.channels.size : 0} channel(s) open, topicKnown=${!!st}`,
+        );
+      }
       if (!st) return;
       for (const m of st.channels) {
         try {

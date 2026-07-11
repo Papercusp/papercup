@@ -76,6 +76,25 @@ export default function UpdateChip() {
             : `You're on v${u.current_version} (latest)`,
         );
       }
+      // Notify — once per version per session — when a BACKGROUND check first surfaces a
+      // new release. The footer button alone is easy to miss, and the owner wants users
+      // actively notified ("I want them to be notified when there is an update"). Nothing
+      // installs on its own — the toast points at the button, install stays a click+confirm.
+      if (silent && u?.available && u.new_version) {
+        const notifyKey = `pc:update-notified:${u.new_version}`;
+        let firstThisSession = true;
+        try {
+          firstThisSession = !sessionStorage.getItem(notifyKey);
+          if (firstThisSession) sessionStorage.setItem(notifyKey, '1');
+        } catch {
+          /* sessionStorage unavailable (private mode) — still notify, just no dedupe */
+        }
+        if (firstThisSession) {
+          toast.info(`Update available: v${u.new_version}`, {
+            description: `Click “Update to v${u.new_version}” in the footer to install — nothing installs on its own.`,
+          });
+        }
+      }
     } catch (e: any) {
       if (!silent) toast.error(`update check failed: ${e?.message ?? e}`);
     } finally {

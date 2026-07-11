@@ -57,7 +57,6 @@ vi.mock('@/app/_components/layout/TwoPaneShell', () => ({ default: ({ list, deta
 vi.mock('./QueuePanel', () => ({ default: () => <div data-testid="queue-panel" /> }));
 vi.mock('./PreviewPanel', () => ({ default: () => <div data-testid="preview-panel" /> }));
 vi.mock('./SessionsPanel', () => ({ default: () => <div data-testid="sessions-panel" /> }));
-vi.mock('./ObservationsPanel', () => ({ default: () => <div data-testid="observations-panel" /> }));
 vi.mock('@/app/harness/useConfirmDialog', () => ({
   useConfirmDialog: () => ({
     confirm: dialogs.confirm,
@@ -118,11 +117,6 @@ describe('<MainViewPanel /> view routing', () => {
     expect(screen.getByTestId('sessions-panel')).toBeTruthy();
   });
 
-  it('renders the Observations panel when view=observations', () => {
-    view.value = 'observations';
-    render(<MainViewPanel {...mkProps()} />);
-    expect(screen.getByTestId('observations-panel')).toBeTruthy();
-  });
 
   it('renders the queue split (QueuePanel | PreviewPanel) when view=queue', () => {
     view.value = 'queue';

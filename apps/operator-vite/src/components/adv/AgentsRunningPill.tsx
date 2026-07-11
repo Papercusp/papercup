@@ -72,20 +72,28 @@ export interface RosterAgent {
    *  (WI-2680). Absent/true for every other backend (bee / codex / omp). */
   thinkingResolvable?: boolean;
   /** The adv_sessions row id + the OS terminal-window handle for this agent, when
-   *  recorded. `windowId` (an X11 window id, resolved via wmctrl) is the ONLY
-   *  reliable focus target — every gnome-terminal shares one server pid, so a pid
-   *  can't be matched back to a window. Present ⇒ the "Focus window" action works;
-   *  absent ⇒ it's hidden (never a dead button). */
+   *  recorded. `windowId` (an X11 window id, resolved via wmctrl) is the most
+   *  direct focus target, but NOT the only one: given `advSessionId`, the
+   *  /adv/sessions/focus endpoint also resolves the window from the adv row's
+   *  stored windowId OR the `[adv:<id>]` window-TITLE fragment (wmctrl), so a live
+   *  session whose windowId wasn't pre-resolved (common for fleet/psu launches)
+   *  is still focusable. pid alone is NOT sufficient — every gnome-terminal shares
+   *  one server pid, so a pid can't be matched back to a window. */
   advSessionId?: number | null;
   windowId?: string | null;
   pid?: number | null;
 }
 
-/** Whether an agent's terminal window can be focused — i.e. we have a stored X11
- *  window id to hand `wmctrl -ia`. pid is NOT sufficient here (all gnome-terminal
- *  windows share one server pid). Pure — exported for tests. */
-export function canFocusWindow(a: Pick<RosterAgent, 'windowId'>): boolean {
-  return Boolean(a.windowId);
+/** Whether an agent's terminal window can be focused. True when we have a stored
+ *  X11 `windowId` (direct wmctrl target) OR an `advSessionId` — the
+ *  /adv/sessions/focus endpoint resolves the window from the adv row / the
+ *  `[adv:<id>]` title fragment in that case, so the "Focus window" affordance is
+ *  offered for a live session even before its windowId is resolved (owner ask
+ *  2026-07-11). A resolution miss surfaces as a graceful "focus failed", never a
+ *  crash. pid alone is NOT enough (all gnome-terminals share one server pid).
+ *  Pure — exported for tests. */
+export function canFocusWindow(a: Pick<RosterAgent, 'windowId' | 'advSessionId'>): boolean {
+  return Boolean(a.windowId) || a.advSessionId != null;
 }
 
 /** The session id to fork/resume this agent's terminal into a NEW window

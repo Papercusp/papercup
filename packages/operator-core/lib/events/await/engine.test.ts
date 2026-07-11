@@ -24,11 +24,14 @@ const h = vi.hoisted(() => ({
   executeWake: vi.fn(async (): Promise<unknown> => ({ kind: 'delivered', channel: 'resume' })),
   sendMessage: vi.fn(async () => ({ msg_id: 'm-1' })),
   admitSpawn: vi.fn(async (): Promise<{ admitted: boolean }> => ({ admitted: true })),
+  // WI-4014 Part 2: standing event-key inject subscribers folded into the notify path.
+  listEventKeySubscribers: vi.fn(async (): Promise<Array<{ subscriber_id: string; delivery_mode: string }>> => []),
 }));
 
 vi.mock('./store', () => h.store);
 vi.mock('./wake-executor', () => ({ executeWake: h.executeWake }));
 vi.mock('../../agent-tools/coordination/messages', () => ({ sendMessage: h.sendMessage }));
+vi.mock('../../agent-tools/coordination/event-subscriptions', () => ({ listEventKeySubscribers: h.listEventKeySubscribers }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
 vi.mock('../../fleet/governor', () => ({ admitSpawn: h.admitSpawn }));
@@ -141,6 +144,71 @@ describe('emitAwaitedEvent', () => {
     const r = await emitAwaitedEvent({ key: 'k', to: ['su-x'] });
     expect(r.ok).toBe(true);
     expect(r.msgId).toBeNull();
+  });
+});
+
+describe('emitAwaitedEvent — WI-4014 Part 2: standing event-key inject subscribers', () => {
+  it('folds standing event-key subscribers into the notify audience and reports eventSubscribers', async () => {
+    h.store.fireAwaitsForKey.mockResolvedValueOnce([]);
+    h.listEventKeySubscribers.mockResolvedValueOnce([
+      { subscriber_id: 'su-ev-1', delivery_mode: 'full' },
+      { subscriber_id: 'su-ev-2', delivery_mode: 'digest' },
+    ]);
+    const r = await emitAwaitedEvent({ key: 'lock:grant:t1' });
+    expect(h.listEventKeySubscribers).toHaveBeenCalledWith('lock:grant:t1');
+    expect(h.sendMessage).toHaveBeenCalledTimes(1);
+    const sendArgs = h.sendMessage.mock.calls[0] as unknown as [unknown, { to: string[] }];
+    expect(sendArgs[1].to.sort()).toEqual(['su-ev-1', 'su-ev-2']);
+    expect(r.notified.sort()).toEqual(['su-ev-1', 'su-ev-2']);
+    expect(r.eventSubscribers).toBe(2);
+  });
+
+  it('excludes delivery_mode:"muted" event-key subscribers from the notify send', async () => {
+    h.store.fireAwaitsForKey.mockResolvedValueOnce([]);
+    h.listEventKeySubscribers.mockResolvedValueOnce([
+      { subscriber_id: 'su-live', delivery_mode: 'full' },
+      { subscriber_id: 'su-muted', delivery_mode: 'muted' },
+    ]);
+    const r = await emitAwaitedEvent({ key: 'k' });
+    const sendArgs = h.sendMessage.mock.calls[0] as unknown as [unknown, { to: string[] }];
+    expect(sendArgs[1].to).toEqual(['su-live']);
+    expect(r.notified).toEqual(['su-live']);
+    // eventSubscribers counts only the ones actually folded in (muted excluded).
+    expect(r.eventSubscribers).toBe(1);
+  });
+
+  it('an event-key subscriber already WOKEN (a wake-policy await on the same key) is not double-notified', async () => {
+    h.store.fireAwaitsForKey.mockResolvedValueOnce([
+      awaitRow({ id: 1, subscriberId: 'su-both', policy: 'wake' }),
+    ]);
+    h.listEventKeySubscribers.mockResolvedValueOnce([
+      { subscriber_id: 'su-both', delivery_mode: 'full' }, // also has a standing inject sub
+      { subscriber_id: 'su-inject-only', delivery_mode: 'full' },
+    ]);
+    const r = await emitAwaitedEvent({ key: 'k' });
+    expect(r.woken).toBe(1);
+    expect(r.notified).toEqual(['su-inject-only']); // su-both excluded — already woken
+    const sendArgs = h.sendMessage.mock.calls[0] as unknown as [unknown, { to: string[] }];
+    expect(sendArgs[1].to).toEqual(['su-inject-only']);
+  });
+
+  it('a subscriber lookup error is fail-soft — the emit still succeeds (wake path unaffected)', async () => {
+    h.store.fireAwaitsForKey.mockResolvedValueOnce([
+      awaitRow({ id: 1, subscriberId: 'su-w', policy: 'wake' }),
+    ]);
+    h.listEventKeySubscribers.mockRejectedValueOnce(new Error('store down'));
+    const r = await emitAwaitedEvent({ key: 'k' });
+    expect(r.ok).toBe(true);
+    expect(r.woken).toBe(1); // the wake half is untouched by a notify-side lookup failure
+    expect(r.eventSubscribers).toBe(0);
+  });
+
+  it('no event-key subscribers and nothing else → eventSubscribers:0, no message', async () => {
+    h.store.fireAwaitsForKey.mockResolvedValueOnce([]);
+    h.listEventKeySubscribers.mockResolvedValueOnce([]);
+    const r = await emitAwaitedEvent({ key: 'k' });
+    expect(r.eventSubscribers).toBe(0);
+    expect(h.sendMessage).not.toHaveBeenCalled();
   });
 });
 

@@ -485,8 +485,11 @@ export function useItemPlanFilter() {
 
 /* ── Active view (the create:filter buttons set it; create:main renders it) ── */
 
-export type CreateView = 'plans' | 'queue' | 'sessions' | 'observations';
-export const CREATE_VIEWS: CreateView[] = ['plans', 'queue', 'sessions', 'observations'];
+// 'observations' was removed from the Create dock (owner ask 2026-07-11) — the
+// Observations feed now lives on the /adv Signals tab (SignalsTab, ?sig=observations),
+// which reuses ObservationsPanel directly. Keep ObservationsPanel.tsx.
+export type CreateView = 'plans' | 'queue' | 'sessions';
+export const CREATE_VIEWS: CreateView[] = ['plans', 'queue', 'sessions'];
 
 /** Shared `?view` selector for the Create dock (Plans = single pane;
  *  Queue/Sessions = split). Defaults to Plans, matching the old Plans tab. */

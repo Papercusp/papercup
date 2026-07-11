@@ -114,8 +114,16 @@ describe('fmtCompactAge (pure — last-active pill)', () => {
 });
 
 describe('canFocusWindow (pure — focus-button guard)', () => {
-  it('true only with a stored windowId; pid alone is NOT enough (shared server pid)', () => {
+  it('true with a stored windowId (direct wmctrl target)', () => {
     expect(canFocusWindow({ windowId: '0x0185e0d2' })).toBe(true);
+    expect(canFocusWindow({ windowId: '0x0185e0d2', advSessionId: null })).toBe(true);
+  });
+  it('true with an advSessionId even when windowId is unresolved — the focus endpoint resolves the window by adv row / [adv:<id>] title (owner ask 2026-07-11)', () => {
+    expect(canFocusWindow({ windowId: null, advSessionId: 42 })).toBe(true);
+    expect(canFocusWindow({ windowId: undefined, advSessionId: 7 })).toBe(true);
+  });
+  it('false when neither a windowId nor an advSessionId is present (pid alone is NOT enough — shared server pid)', () => {
+    expect(canFocusWindow({ windowId: null, advSessionId: null })).toBe(false);
     expect(canFocusWindow({ windowId: null })).toBe(false);
     expect(canFocusWindow({ windowId: undefined })).toBe(false);
   });

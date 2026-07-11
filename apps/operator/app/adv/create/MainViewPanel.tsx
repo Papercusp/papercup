@@ -29,7 +29,6 @@ import TwoPaneShell from '@/app/_components/layout/TwoPaneShell';
 import QueuePanel from './QueuePanel';
 import PreviewPanel from './PreviewPanel';
 import SessionsPanel from './SessionsPanel';
-import ObservationsPanel from './ObservationsPanel';
 import { useCreateScope, usePlanListMaps, useCreateView } from './use-create-data';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 
@@ -107,7 +106,6 @@ export default function MainViewPanel(_props?: PanelComponentProps) {
     );
   }
   if (view === 'sessions') return <SessionsPanel />;
-  if (view === 'observations') return <ObservationsPanel />;
   if (view === 'queue') return <TwoPaneShell list={<QueuePanel />} detail={<PreviewPanel />} />;
   // view === 'plans': a search finds another plan; otherwise we're between the
   // list loading and the auto-open effect firing (or there are no plans).

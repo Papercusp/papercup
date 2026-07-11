@@ -36,6 +36,8 @@ vi.mock('../../events/await/predicate-watch', () => ({
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-x' }));
 vi.mock('../coordination/topics', () => ({ subscribeTopic: vi.fn(async (_id: unknown, slug: string, opts: Record<string, unknown>) => ({ target_ref: slug, delivery_mode: opts.mode ?? 'full', expires_ts: null })) }));
+// WI-4014 Part 2: the targetKind:'event' sibling of subscribeTopic above.
+vi.mock('../coordination/event-subscriptions', () => ({ subscribeEventKey: vi.fn(async (_id: unknown, key: string, opts: Record<string, unknown>) => ({ target_ref: key, delivery_mode: opts.mode ?? 'full', expires_ts: null })) }));
 
 import watch from './watch';
 import { lookupByMcpName } from '@papercusp/agent-mcp';
@@ -43,6 +45,7 @@ import { registerAwait, cancelAwait } from '../../events/await/store';
 import { deliverToSpecificAwaits } from '../../events/await/engine';
 import { registerPredicateWatch, evalPredicateWatch, findMatchingActivePredicateWatch } from '../../events/await/predicate-watch';
 import { subscribeTopic } from '../coordination/topics';
+import { subscribeEventKey } from '../coordination/event-subscriptions';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof watch.handler>[1];
 const call = async (args: Record<string, unknown>) => {
@@ -91,6 +94,30 @@ describe('watch routing', () => {
   it('EI-8998: payload_filter on an inject (wake:false) watch is rejected loudly, not silently ignored', async () => {
     await expect(call({ pattern: 'locks', payload_filter: { x: 1 } })).rejects.toThrow(/payload_filter/);
     expect(subscribeTopic).not.toHaveBeenCalled();
+  });
+});
+
+describe('WI-4014 Part 2: targetKind routing (wake:false only)', () => {
+  it('targetKind omitted defaults to "topic" (unchanged, backward compatible)', async () => {
+    const out = await call({ pattern: 'locks' });
+    expect(subscribeTopic).toHaveBeenCalledWith(expect.anything(), 'locks', { mode: undefined, ttl_sec: undefined });
+    expect(subscribeEventKey).not.toHaveBeenCalled();
+    expect(out.watch).toMatchObject({ targetKind: 'topic' });
+  });
+
+  it('targetKind:"event" routes to subscribeEventKey, NOT subscribeTopic', async () => {
+    const out = await call({ pattern: 'lock:grant:t1', targetKind: 'event', mode: 'digest', timeout_sec: 42 });
+    expect(subscribeEventKey).toHaveBeenCalledWith(expect.anything(), 'lock:grant:t1', { mode: 'digest', ttl_sec: 42 });
+    expect(subscribeTopic).not.toHaveBeenCalled();
+    expect(registerAwait).not.toHaveBeenCalled();
+    expect(out.watch).toMatchObject({ pattern: 'lock:grant:t1', targetKind: 'event', wake: false, once: false, mode: 'digest' });
+  });
+
+  it('targetKind:"event" is ignored on a wake:true watch (only wake:false honors it)', async () => {
+    await call({ pattern: 'feature:settled', targetKind: 'event', wake: true });
+    expect(subscribeEventKey).not.toHaveBeenCalled();
+    expect(subscribeTopic).not.toHaveBeenCalled();
+    expect(registerAwait).toHaveBeenCalled();
   });
 });
 

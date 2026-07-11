@@ -245,7 +245,18 @@ beforeAll(async () => {
   // actually record. Self-contained migration, no deps.
   await rootSql.unsafe(readMigration('253-calibration-predictions.sql')).simple();
   await rootSql.unsafe(readMigration('158-pot-wake-state.sql')).simple();
+  // 198's own filename is historical/immutable (applied migrations are never renamed
+  // on disk): as of 2026-06-09 "pot" was the LEGACY name and "hive" was canonical, so
+  // 198 renames pot_wake -> hive_wake. The cup-lexicon rename (2026-07-09/10, mig 554)
+  // later flipped the canonical direction back — hive_wake -> pot_wake, the CURRENT
+  // name operator-state-pg.ts reads/writes — so apply 554 too (EI-9435: this test was
+  // ENOENT'ing on a corrupted filename, then, once that was fixed, red on the missing
+  // pot_wake table until 554 was added here — same fix already applied in
+  // declared-event-wake-e2e.integration.test.ts). 554 is a self-contained set of
+  // per-table to_regclass(...) IS NOT NULL guarded DO blocks, so applying the whole
+  // file is safe against this hand-curated minimal schema.
   await rootSql.unsafe(readMigration('198-rename-pot-wake-to-hive-wake.sql')).simple();
+  await rootSql.unsafe(readMigration('554-cup-lexicon-db-rename-phase1.sql')).simple();
   await rootSql.unsafe(readMigration('122-harness-plans.sql')).simple();
   // Stage-3 derived-index columns (items/decisions/now_*) — the write path
   // (with-plan-lock) and the start tool's source reads expect them at head.

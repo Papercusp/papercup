@@ -114,11 +114,20 @@ beforeAll(async () => {
       CONSTRAINT routines_install_slug_name_key UNIQUE (install_slug, name)
     )
   `);
-  // 158 creates the legacy `pot_wake` table; 198 renames it to `hive_wake`
-  // (the unify-launch-mechanics pot→hive rename) — apply BOTH so the test DB
-  // matches head, where readPotWakeState('hive_wake') reads the renamed table.
+  // 158 creates the legacy `pot_wake` table; 198 renames it to `hive_wake` (the
+  // unify-launch-mechanics pot→hive rename, 2026-06-09). The cup-lexicon rename
+  // (2026-07-09/10, mig 554) later flipped the canonical direction back —
+  // hive_wake -> pot_wake, the CURRENT name wake.ts's readPotWakeState/
+  // updateOperatorState reads/writes (key 'pot_wake') — so apply all three
+  // (158, 198, 554) so the test DB matches head (EI-9435: this test was red on
+  // a corrupted 198 filename, then, once fixed, red again on the missing
+  // pot_wake table until 554 was added here too — same fix already applied in
+  // declared-event-wake-e2e.integration.test.ts). 554 is a self-contained set of
+  // per-table to_regclass(...) IS NOT NULL guarded DO blocks, so applying the
+  // whole file is safe against this hand-curated minimal schema.
   await rootSql.unsafe(readMigration('158-pot-wake-state.sql')).simple();
   await rootSql.unsafe(readMigration('198-rename-pot-wake-to-hive-wake.sql')).simple();
+  await rootSql.unsafe(readMigration('554-cup-lexicon-db-rename-phase1.sql')).simple();
   // 472 — the Mug carry-note converged onto the shared carry-note substrate
   // (su-cold-auto-mode P-001): setPotCarryNote now writes carry_notes, not the
   // hive_wake payload. The data-fold's work_item_checkpoints branch is IF-EXISTS
