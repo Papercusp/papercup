@@ -18,6 +18,15 @@ import {
 } from '@papercusp/operator-core/lib/harness-testing-registry';
 import { universalDomains } from '@papercusp/operator-core/lib/testing-domains';
 import HarnessTestsView from '../../app/adv/harnesses/HarnessTestsView';
+
+// AcceptancePanel's GET path went through useSyncQuery (data-sync convention,
+// AcceptancePanel P-062/P-063 migration off raw fetch) — mock the resolver
+// per-test via this mutable slot instead of stubbing global fetch for the GET.
+let syncQueryResult: { data: unknown; loading: boolean; error: Error | null } = { data: undefined, loading: true, error: null };
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: () => ({ ...syncQueryResult, fetching: syncQueryResult.loading, invalidate: vi.fn() }),
+}));
+
 import AcceptancePanel from '../../app/adv/harnesses/AcceptancePanel';
 
 afterEach(() => {
@@ -79,10 +88,7 @@ describe('<AcceptancePanel> (P-062/P-063)', () => {
   ];
 
   it('lists VAL rows with status + a requires_test toggle', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({ ok: true, json: async () => ({ assertions: ASSERTIONS }) })) as unknown as typeof fetch,
-    );
+    syncQueryResult = { data: ASSERTIONS, loading: false, error: null };
     render(<AcceptancePanel slug="demo" />);
     await waitFor(() => expect(screen.getAllByText('VAL-demo-001').length).toBeGreaterThan(0));
     expect(screen.getAllByText('GET /x returns 200').length).toBeGreaterThan(0);
@@ -95,7 +101,8 @@ describe('<AcceptancePanel> (P-062/P-063)', () => {
   });
 
   it('PATCHes requires_test when a toggle is flipped', async () => {
-    const fetchMock = vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
+    syncQueryResult = { data: ASSERTIONS, loading: false, error: null };
+    const fetchMock = vi.fn(async (_url: string, init?: { method?: string; body?: string }) => {
       if (init?.method === 'POST') return { ok: true, json: async () => ({ ok: true }) };
       return { ok: true, json: async () => ({ assertions: ASSERTIONS }) };
     });
@@ -119,10 +126,7 @@ describe('<AcceptancePanel> (P-062/P-063)', () => {
   });
 
   it('shows an empty state when there are no assertions', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({ ok: true, json: async () => ({ assertions: [] }) })) as unknown as typeof fetch,
-    );
+    syncQueryResult = { data: [], loading: false, error: null };
     render(<AcceptancePanel slug="demo" />);
     await waitFor(() => screen.getByText(/No VAL assertions yet/));
   });

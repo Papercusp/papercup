@@ -704,6 +704,8 @@ import './capability/set-tier';
 import './release/deploy';
 // WI-1320 follow-up — the manual GATE-run lever (fire the green-checkpoint suite on demand):
 import './release/checkpoint-run';
+// desktop-update-center-and-release-tooling P-5 Unit B — the LOCAL desktop-release cut + hand-off orchestrator:
+import './release/cut';
 
 // Engineer issues (bug/change): the agent-facing issues:* TOOL surface was RETIRED onto the
 // unified work_items:* surface (coordination-unification-2026-06-23 P-015 / D-011). The
