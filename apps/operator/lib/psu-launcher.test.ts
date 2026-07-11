@@ -200,7 +200,12 @@ describe('tagKickoffProvenance (turn-provenance-owner-vs-agent-2026-07-11 P-002)
   });
 
   it('fail-soft: an unwritable ledger dir still returns the untagged text (never a broken launch)', () => {
-    const env = { PAPERCUSP_TURN_PROVENANCE_DIR: '/proc/definitely-unwritable' } as NodeJS.ProcessEnv;
+    // ⚠ NEVER '/proc/…' here: node 25's recursive mkdirSync retries /proc's
+    // EPERM forever (wedged every gate for hours on 2026-07-11). A plain file
+    // as the path's parent throws ENOTDIR instantly instead.
+    const plainFile = join(provDir, 'plain-file');
+    writeFileSync(plainFile, 'x');
+    const env = { PAPERCUSP_TURN_PROVENANCE_DIR: join(plainFile, 'sub') } as NodeJS.ProcessEnv;
     expect(tagKickoffProvenance('hello', 'su-kick-2', env)).toBe('hello');
   });
 

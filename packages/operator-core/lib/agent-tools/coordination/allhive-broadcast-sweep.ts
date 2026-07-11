@@ -178,10 +178,16 @@ async function writeAllHiveAuditRow(d: DetectedAllHiveBroadcast): Promise<void> 
     sent_at: d.sentAt ?? null,
     detected_by: ALLHIVE_SWEEP_OWNER,
   };
+  // ${JSON.stringify(...)}::jsonb, NOT sql.json(): the org pool runs
+  // postgres-js with prepare:false, which mis-binds sql.json() ("string
+  // argument … Received an instance of Object") — the proven house pattern
+  // (gym/store.ts, work-items.ts). Caught by
+  // coord-authority-hardening.integration.test.ts; the unit mock's
+  // `json: (v) => v` cannot see this.
   await sql`
     INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
     VALUES (${id}, ${Date.now()}, ${d.from}, ${ALLHIVE_AUDIT_ACTION}, ${d.msgId},
-            ${sql.json(details)}, ${d.workspaceId})
+            ${JSON.stringify(details)}::jsonb, ${d.workspaceId})
   `;
 }
 

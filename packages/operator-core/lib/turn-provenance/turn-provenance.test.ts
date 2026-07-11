@@ -222,7 +222,13 @@ describe('ledger write/read/GC', () => {
   it('missing dir/file reads as [] and append fail-softs to false on an unwritable dir', () => {
     expect(readLedgerRows('nobody', { dir, nowMs: NOW })).toEqual([]);
     expect(appendLedgerRow(row(), { dir: join(dir, 'not-a-dir-file'), nowMs: NOW })).toBe(true); // mkdir -p creates it
-    expect(appendLedgerRow(row(), { dir: '/proc/definitely-unwritable', nowMs: NOW })).toBe(false);
+    // ⚠ NEVER use '/proc/…' as the unwritable path: node 25's recursive
+    // mkdirSync retries /proc's EPERM forever (90% CPU, no exit) — it wedged
+    // every test gate for hours on 2026-07-11. A file-as-parent path throws
+    // ENOTDIR instantly instead.
+    const plainFile = join(dir, 'plain-file');
+    writeFileSync(plainFile, 'x');
+    expect(appendLedgerRow(row(), { dir: join(plainFile, 'sub'), nowMs: NOW })).toBe(false);
   });
 
   it('gcLedgerDir drops expired rows and unlinks fully-dead files', () => {
@@ -267,11 +273,13 @@ describe('tagTurnForInjection (the injector one-call API)', () => {
   });
 
   it('fail-soft: unwritable ledger still returns deliverable tagged text', () => {
+    const plainFile = join(dir, 'plain-file-2');
+    writeFileSync(plainFile, 'x');
     const tagged = tagTurnForInjection({
       sid: SID,
       origin: 'loop-fire',
       text: 'tick',
-      dir: '/proc/definitely-unwritable',
+      dir: join(plainFile, 'sub'), // ENOTDIR — fails fast (never '/proc/…': node 25 mkdirSync hangs)
       nowMs: NOW,
     });
     expect(tagged.ledgerWritten).toBe(false);
