@@ -11,7 +11,7 @@ import type { HiveStatusBeacon } from '../hive-beacon';
 import { captureBeaconSnapshot, listBeaconHistory } from './beacon-history-pg';
 
 // Mirrors migration 236 (minus the psql directives + role grants the test DB lacks).
-// Table renamed cross_hive_beacon_history -> cross_pot_beacon_history by migration 557
+// Table renamed cross_pot_beacon_history -> cross_pot_beacon_history by migration 557
 // (cup-lexicon-full-rename-2026-07-09 P-009); hive_id/hive_pubkey columns deliberately
 // left as-is (557 renamed the table but not these columns — see WI-3953's checkpoint).
 const BEACON_HISTORY_DDL = `

@@ -29,7 +29,7 @@
  * SCOPE (disclosed, not silent): this covers `harness_features_consolidated`
  * only — the table both prior incidents hit, and the one with by far the
  * richest column/migration history in the rig. The other 7 tables
- * setupCellSchema creates (user_trust_list, hive_members,
+ * setupCellSchema creates (user_trust_list, pot_members,
  * harness_issues_consolidated, projects, rig_side_effects, work_item_deps,
  * datatype_registry) are comparatively small/stable slices with no drift
  * incident on record; extending this same pattern to them is a natural,

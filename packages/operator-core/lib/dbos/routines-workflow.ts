@@ -25,7 +25,7 @@
  * routines unsupervised. Registered only when `bootstrap.ts` imports this module.
  */
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
-import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
+import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
 import { queueConcurrency } from './queue-concurrency';
 import { ROUTINES_QUEUE, ROUTINES_CRITICAL_QUEUE, queueForRoutine } from './routines-queue-classification';
 import { getOrgPg, listDueCronRoutines } from '@papercusp/db-org';
@@ -48,13 +48,23 @@ import { operatorApiBase } from '../operator-api-base';
 const TICK_CRONTAB = process.env.PAPERCUSP_DBOS_ROUTINES_CRONTAB || '*/30 * * * * *';
 const operatorBase = operatorApiBase;
 
-const routinesQueue = new WorkflowQueue(ROUTINES_QUEUE, { concurrency: queueConcurrency(4) });
+// WI-4015 (critical, 2026-07-11): idempotentWorkflowQueue guards against a second
+// top-level module evaluation throwing "Workflow Queue '<name>' defined multiple
+// times" inside startDbos()'s import chain — a failure that host-bootstrap.ts's
+// caller only logs as "[dbos] boot failed (non-fatal)" and swallows, silently
+// preventing DBOS.launch() (and therefore routinesTick itself) from ever arming.
+// See idempotent-register-workflow.ts's doc comment for the full incident story.
+const routinesQueue = idempotentWorkflowQueue(ROUTINES_QUEUE, () =>
+  new WorkflowQueue(ROUTINES_QUEUE, { concurrency: queueConcurrency(4) }),
+);
 // Protected lane for critical QUICK routines (git-sync) — a saturated shared `routines` queue (long
 // routines holding every slot) must never starve fleet-wide persistence (the 2026-06-23 7h commit-freeze).
 // Low concurrency: git-sync fires are quick AND serializing them avoids git-index contention across the
 // per-hive git-sync routines. Instantiated at module load so DBOS listens on it; fires route here via
 // queueForRoutine(). Both names exported so a boot/deploy check can assert DBOS is listening on each.
-const routinesCriticalQueue = new WorkflowQueue(ROUTINES_CRITICAL_QUEUE, { concurrency: queueConcurrency(2) });
+const routinesCriticalQueue = idempotentWorkflowQueue(ROUTINES_CRITICAL_QUEUE, () =>
+  new WorkflowQueue(ROUTINES_CRITICAL_QUEUE, { concurrency: queueConcurrency(2) }),
+);
 export const ROUTINE_FIRE_QUEUES = [routinesQueue.name, routinesCriticalQueue.name] as const;
 
 /** Hard ceiling on one routine fire — the dedup-ID release valve (exported for tests). */

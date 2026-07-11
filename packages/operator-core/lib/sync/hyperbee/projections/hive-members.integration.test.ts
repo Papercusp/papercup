@@ -19,6 +19,7 @@ import { loadRevokedHivePubkeys, getHiveMember } from '../../../hive-membership-
 import { buildHiveMembersProjection, _testing, type HiveMemberRow } from './hive-members';
 import type { DeviceAttestationEntry } from '../../../harness/contributor-row-types';
 import { listBootHistory, _resetBootHistoryForTests } from '../boot-history';
+import { applyPot557RenameAndFixups } from '../__tests__/_hive-substrate-rig';
 
 // WI-3828: the WI-887 self-heal (writeToPg's onMemberApplied epoch-key reconcile) used to
 // swallow its dynamic-import result in a bare `catch {}` — a thrown grant failure, or a
@@ -57,6 +58,10 @@ beforeAll(async () => {
   for (const m of ['184-hives-table.sql', '185-hive-members-admission.sql', '189-hive-members-federation-cols.sql']) {
     await db.sql.unsafe(readFileSync(join(SQL_DIR, m), 'utf8'));
   }
+  // EI-9396: forwards the hand-built archive schema to the pot_* names (mig 557) + the
+  // post-557 capture-trigger-body fixups (mig 565) — ADD COLUMN fed_hlc below then targets
+  // the real pot_members table instead of erroring on the still-hive_members one.
+  await applyPot557RenameAndFixups(db.sql);
   // D-001 (mig 314): the fed_hlc ordering column the projection now writes.
   await db.sql.unsafe(`ALTER TABLE harness_shared.pot_members ADD COLUMN IF NOT EXISTS fed_hlc TEXT`);
 });
@@ -64,7 +69,7 @@ afterAll(async () => {
   await db?.cleanup();
 });
 afterEach(async () => {
-  await db.sql.unsafe('TRUNCATE harness_shared.pot_members, harness_shared.hives CASCADE');
+  await db.sql.unsafe('TRUNCATE harness_shared.pot_members, harness_shared.pots CASCADE');
   reconcileEpochKeysForCurrentMembers.mockReset().mockResolvedValue({ applied: true, newEpoch: 1, distributed: 1 });
   isHiveRekeyEnabledMock.mockReset().mockResolvedValue(true);
   _resetBootHistoryForTests();

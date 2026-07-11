@@ -47,6 +47,12 @@ export class InMemoryPresenceStore implements PresenceStore {
       ...input,
       agentRole: input.agentRole ?? existing?.input.agentRole ?? null,
       potSlug: input.potSlug ?? existing?.input.potSlug ?? null,
+      // populate-once-then-keep, same as agentRole/potSlug: an omitted or
+      // empty capabilityTags on a later write preserves the existing value.
+      capabilityTags:
+        input.capabilityTags && input.capabilityTags.length > 0
+          ? input.capabilityTags
+          : (existing?.input.capabilityTags ?? []),
     };
     // intentDeclaredAt only advances when the intent TEXT actually changes
     // (EI-8988) — a re-declare with the same string, or an existing row's
@@ -157,6 +163,7 @@ export class InMemoryPresenceStore implements PresenceStore {
       intentDeclaredAt: r.intentDeclaredAt != null ? new Date(r.intentDeclaredAt).toISOString() : null,
       agentRole: r.input.agentRole ?? null,
       potSlug: r.input.potSlug ?? null,
+      capabilityTags: r.input.capabilityTags ?? [],
       compactionLimit: null,
       contextTokens: null,
       contextEstimatedAt: null,

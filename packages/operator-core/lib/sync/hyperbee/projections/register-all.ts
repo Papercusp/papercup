@@ -45,6 +45,8 @@ import { buildPlanItemAssignmentsProjection } from './plan-item-assignments';
 import { buildHiveSettingsProjection } from './hive-settings';
 // F1-1 (federated-scout-gym-learning-2026-07-02): shareable standing facts.
 import { buildAgentFactsProjection } from './agent-facts';
+// mem0-cross-machine-federation-2026-07-10: shareable memories (F1-1 mirror).
+import { buildMemoriesProjection } from './p2p-memories';
 // F1-2/F1-5 (federated-scout-gym-learning-2026-07-02): foreign QD elites.
 import { buildGymQdElitesProjection } from './gym-qd-elites';
 import { buildBeeClaimSpecProjection } from './bee-claim-spec';
@@ -180,6 +182,9 @@ export const REGISTERED_PROJECTION_TAGS = [
   // federated-scout-gym-learning-2026-07-02 (F1-1): shareable standing facts —
   // hive-home-grained, epoch-encrypted content, source-partitioned on apply (H6).
   'agent-facts-by-key',
+  // mem0-cross-machine-federation-2026-07-10 (F1-1 mirror): shareable memories —
+  // hive-home-grained, epoch-encrypted content, source-partitioned on apply (H6).
+  'p2p-memories-by-id',
   // federated-scout-gym-learning-2026-07-02 (F1-2/F1-5): foreign QD elites —
   // hive-home-grained, epoch-encrypted content; receive side writes ONLY the
   // provenance-keyed gym_qd_foreign_elites (mig 465), never the local archive.
@@ -291,6 +296,9 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
     // F1-1 (federated-scout-gym): SHAREABLE standing facts, hive-home-grained
     // like hive_settings (the fact's harness_slug carries the hive home slug).
     buildAgentFactsProjection(hiveScoped),
+    // mem0-cross-machine-federation-2026-07-10 (F1-1 mirror): SHAREABLE memories,
+    // hive-home-grained like hive_settings (the memory's harness_slug carries the hive home slug).
+    buildMemoriesProjection(hiveScoped),
     // F1-2/F1-5 (federated-scout-gym): foreign QD elites, hive-home-grained too
     // (the elite's harness_slug carries the hive home slug — mig 465 demux).
     // F1-6/P-014: thread the WI-259 verified-source-log→device resolver as

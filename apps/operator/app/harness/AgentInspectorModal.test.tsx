@@ -149,6 +149,10 @@ describe('AgentInspectorModal (pinned full inspector)', () => {
     await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
     expect(fetchSpy.mock.calls[0][0]).toBe('/api/agent-mcp/console/launch');
     expect(fetchSpy.mock.calls[0][1].method).toBe('POST');
+    // WI-3988/WI-3989: text/plain (a CORS "simple request", no preflight) — NOT
+    // application/json, whose preflight OPTIONS fails SILENTLY in the desktop
+    // webkit2gtk build and killed the request before it reached the server.
+    expect(fetchSpy.mock.calls[0][1].headers['content-type']).toBe('text/plain');
     // live:false → resume in place, so fork must be false (never branches).
     expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toEqual({
       resumeSessionId: 'sess-abc',
@@ -176,12 +180,20 @@ describe('AgentInspectorModal (pinned full inspector)', () => {
     vi.unstubAllGlobals();
   });
 
-  it('surfaces a "resume failed" state when the launch POST fails', async () => {
-    const fetchSpy = vi.fn().mockResolvedValue({ ok: false, json: () => Promise.resolve({ status: 'error' }) });
+  it('surfaces a "resume failed" state + the server error as the button tooltip when the launch POST fails', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: () => Promise.resolve({ status: 'error', error: 'cannot fork a omp session' }),
+    });
     vi.stubGlobal('fetch', fetchSpy);
     renderModal({ resumeTarget: { sessionId: 'sess-abc', live: false } });
-    fireEvent.click(screen.getByTestId('resume-terminal-btn'));
-    await waitFor(() => expect(screen.getByTestId('resume-terminal-btn').textContent).toContain('resume failed'));
+    const btn = screen.getByTestId('resume-terminal-btn');
+    fireEvent.click(btn);
+    await waitFor(() => expect(btn.textContent).toContain('resume failed'));
+    // WI-3988/WI-3989: the actual server reason is surfaced (button tooltip),
+    // not swallowed into a bare "resume failed".
+    expect(btn.getAttribute('title')).toBe('cannot fork a omp session');
     vi.unstubAllGlobals();
   });
 

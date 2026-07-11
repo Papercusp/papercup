@@ -130,6 +130,9 @@ export function synthesizeRecordedRosterRows(
       // workspace/all-scope only (P-002 adds hive_slug to the recording so the
       // hive-scoped Queen view can include un-self-registered bees too).
       potSlug: null,
+      // WI-1546: synthesized from adv_sessions, which carries no capability
+      // detection at all (pre-registration row) — same gap as intentDeclaredAt.
+      capabilityTags: [],
       stale: false,
       userId: null,
       revoked: false,

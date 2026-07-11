@@ -785,7 +785,7 @@ describe('Federation propagation edge cases — DELETE, usage-events, large payl
 
   // ── G6 [P3]: verified_author_github_user_id semantics on apply ──
   it(
-    'G6: B stamps verified_author_github_user_id=NULL on a remote feature with no hive_members attestation',
+    'G6: B stamps verified_author_github_user_id=NULL on a remote feature with no pot_members attestation',
     async () => {
       const { peerA, peerB, mergeBoth } = await bootTwoPeers('g6');
 
@@ -803,9 +803,9 @@ describe('Federation propagation edge cases — DELETE, usage-events, large payl
       expect(onB).toMatchObject({ feature_id: 'F-author', origin: 'remote' });
 
       // The harness-features projection (writeToPg) only resolves a verified gh id
-      // when origin='remote' AND a non-revoked hive_members device attestation
+      // when origin='remote' AND a non-revoked pot_members device attestation
       // maps author_pubkey → a github_user_id. This test peer schema has NO
-      // hive_members table/rows, so `resolveVerifiedAuthorGithubId` cannot verify
+      // pot_members table/rows, so `resolveVerifiedAuthorGithubId` cannot verify
       // the sender → the column MUST be NULL (the conservative "refuse the
       // fast-path" default the trust gate consumes). A non-NULL value here would
       // mean an UNVERIFIED self-claimed id was trusted — a trust-gate hole.

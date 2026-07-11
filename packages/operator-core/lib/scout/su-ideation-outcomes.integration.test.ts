@@ -12,9 +12,15 @@
  *  - refreshScoutOutcomes({ origin:'su-ideate' }) (the P-016 backfill sweep)
  *    persists the su outcome cache but NEVER writes scout_lens_weights (D-003 —
  *    su lens learning is read-time only), while the default scout refresh still
- *    closes the weight loop (the guard is origin-based, not broken plumbing).
+ *    closes the weight loop (the guard is origin-based, not broken plumbing);
+ *  - lensWinRates[] (P-004): per-su-lens win-rates over the full
+ *    SU_IDEATION_LENSES roster at read time (grade-dominated, sentinel rows in
+ *    no lens row, floored sampling weights summing to 1) — with the D-003
+ *    weight-table emptiness re-checked AFTER the read (read-time truly means
+ *    no write).
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { SU_IDEATION_LENSES } from './types';
 import type { OrgTestDb } from '../../test/_org-test-db';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
@@ -123,6 +129,29 @@ describe('su ideation outcome readback (real PG — P-003)', () => {
     expect(res.count).toBe(1);
     expect(res.entries[0]).toContain('★5');
     expect(res.entries[0]).toContain('ship the felt thing: exactly the felt need');
+  });
+
+  it('lensWinRates[] (P-004): per-su-lens tallies over the full 7-lens roster, sentinel excluded, floored weights sum to 1', async () => {
+    const res = await runIdeationFeedback({});
+    // One row per SU_IDEATION_LENSES member, roster order — never a sentinel row.
+    expect(res.lensWinRates.map((r) => r.lens)).toEqual([...SU_IDEATION_LENSES]);
+    const byLens = new Map(res.lensWinRates.map((r) => [r.lens, r]));
+
+    // su-won (user-value, grade 5): the grade DOMINATES the tally — full win mass.
+    expect(byLens.get('user-value')).toMatchObject({ ideas: 1, won: 1, lost: 0, pending: 0, winRate: 1 });
+    // su-lost (risk-first, deprecated wi): the loss-read decides it.
+    expect(byLens.get('risk-first')).toMatchObject({ ideas: 1, won: 0, lost: 1, pending: 0, winRate: 0 });
+    // A roster lens with no su filings: present, neutral, floor-alive.
+    expect(byLens.get('analogical')).toMatchObject({ ideas: 0, winRate: null });
+    // su-open declared the 'su-ideate' sentinel — it is in outcomes/summary (total 3)
+    // but in NO lens row (already pinned by the roster equality above).
+
+    // The anti-strangle floor: every lens keeps a positive share, the shares are a
+    // distribution, and the winner outweighs the loser.
+    for (const r of res.lensWinRates) expect(r.weight).toBeGreaterThan(0);
+    const sum = res.lensWinRates.reduce((a, r) => a + r.weight, 0);
+    expect(sum).toBeCloseTo(1, 10);
+    expect(byLens.get('user-value')!.weight).toBeGreaterThan(byLens.get('risk-first')!.weight);
   });
 
   it("refreshScoutOutcomes({ origin:'su-ideate' }) persists the su outcome cache but NEVER writes scout_lens_weights (D-003)", async () => {

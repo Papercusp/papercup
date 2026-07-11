@@ -26,9 +26,15 @@
  * CAPABILITY TAGS: `shardRequiredTags` / `machineCanRunShard` define the
  * (platform, deps, DB) matching — unit shards need only a node toolchain;
  * integration shards additionally need docker+pg (testcontainers). Carrying a
- * machine's tag set in its session-presence row is the wiring half — filed as
- * a follow-up work item (see the plan), not silently dropped; until then every
- * member advertises DEFAULT_MACHINE_TAGS and the matcher is already exercised.
+ * machine's tag set in its session-presence row was the wiring half — LANDED
+ * (WI-1546): `coord_presence.capability_tags` (mig 566) is populated by
+ * `writePresence` via `detectMachineCapabilityTags`
+ * (agent-tools/coordination/machine-capability-tags.ts, a real `docker info`
+ * probe, memoized per operator process) — populate-once-then-keep, same
+ * family as agent_role/pot_slug. `machineTagsFromPresence` below is the read
+ * side for whenever a DG-3 consumer reads a `PresenceRecord` to place a shard;
+ * until one exists, DEFAULT_MACHINE_TAGS remains the matcher's exercised
+ * fallback (an empty/legacy `capabilityTags` reads as "use the default").
  *
  * PULL ORDER: `rankShardsForMachine` gives each idle machine a DETERMINISTIC,
  * device-keyed rendezvous order over the needed shards, so concurrent pullers
@@ -151,6 +157,17 @@ export function eligibleShards<T extends { layer: ShardLayer }>(
   targets: readonly T[],
 ): T[] {
   return targets.filter((t) => machineCanRunShard(machineTags, t));
+}
+
+/**
+ * Resolve the tag set a DG-3 consumer should match against for a given
+ * machine's presence row (WI-1546's read side): a populated
+ * `capabilityTags` wins; an empty one (never detected, or a pre-mig-566 row)
+ * falls back to `DEFAULT_MACHINE_TAGS` rather than making every shard
+ * unschedulable on that machine.
+ */
+export function machineTagsFromPresence(capabilityTags: readonly string[] | null | undefined): readonly string[] {
+  return capabilityTags && capabilityTags.length > 0 ? capabilityTags : DEFAULT_MACHINE_TAGS;
 }
 
 /* ------------------------------------------------------------------------ *

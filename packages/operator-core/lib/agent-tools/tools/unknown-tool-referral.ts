@@ -16,16 +16,21 @@
  * Pure + registry-read-only. Shared by both `unknown_tool` emission sites in
  * _mcp-handler.ts (the tools:invoke dispatch engine + the tools/call fall-through).
  */
-import { listAllProjectedTools } from '@papercusp/agent-mcp';
+import { listAllProjectedTools, normalizeMcpName } from '@papercusp/agent-mcp';
 
-/** Normalize a tool name for comparison: strip the client's `mcp__<server>__` wrapper and
- *  treat `:`, `_`, `.`, `-` as one separator (clients rewrite `:` → `_` when advertising). */
-export function normalizeToolName(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/^mcp__[^_]+(?:[^_]|_(?!_))*__/, '') // mcp__<server>__<tool> → <tool>
-    .replace(/[:_.\-]+/g, ':');
-}
+/**
+ * Normalize a tool name for comparison: strip the client's `mcp__<server>__`
+ * wrapper and treat `:`, `_`, `.`, `-` as one separator (clients rewrite
+ * `:` → `_` when advertising).
+ *
+ * ALIAS of the registry's canonical normalizer (tooldef `normalizeMcpName`) —
+ * the SAME function tools:invoke uses to RESOLVE a name (WI-3930). Sharing one
+ * implementation guarantees the name a miss SUGGESTS ("did you mean X?") is a
+ * name tools:invoke can actually resolve; a second copy could silently drift and
+ * suggest a form the resolver rejects. Kept as a named export for existing
+ * callers/tests.
+ */
+export const normalizeToolName = normalizeMcpName;
 
 /** Cheap similarity for suggestion ranking: exact-normalized ≫ substring ≫ token overlap. */
 function scoreCandidate(requestedNorm: string, candidateNorm: string): number {

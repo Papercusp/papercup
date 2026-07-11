@@ -38,7 +38,7 @@ const WS = 'default';
 const POT = 'team-pot';
 const REPO = 'acme/widgets';
 
-// Table renamed hive_members -> pot_members, column hive_home_slug -> pot_home_slug
+// Table renamed pot_members -> pot_members, column pot_home_slug -> pot_home_slug
 // by migration 557 (cup-lexicon-full-rename-2026-07-09 P-009).
 const DDL = `
   CREATE SCHEMA IF NOT EXISTS harness_shared;

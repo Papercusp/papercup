@@ -417,4 +417,157 @@ describe('swarm-path chaos — real Hyperswarm, seeded connection churn (P-004)'
     },
     120_000,
   );
+
+  /**
+   * WI-4019 (split from WI-1582 sub-item 1): the WI-1582 hunt hypothesized
+   * that swarm.ts's in-process `opts.store.replicate(socket)` path leaks a
+   * dangling corestore replication stream (Protomux muxer, per-core buffers)
+   * on every unclean peer disconnect — the same class `pipeWithMutualTeardown`
+   * fixed for the SIDECAR path (which manually pipes a bare, detached
+   * NoiseSecretStream to a real transport). Code-reading (node_modules/
+   * corestore/index.js replicate() + node_modules/hypercore/index.js
+   * createProtocolStream) suggested the two paths are NOT parallel: the
+   * in-process path passes an ALREADY-REAL hyperswarm connection socket, and
+   * corestore's external-stream mode ties its bookkeeping teardown
+   * (`streamTracker`) to THAT SAME socket's own 'close' — which a real
+   * hyperswarm/NoiseSecretStream reliably fires on an unclean disconnect (that
+   * IS its job), unlike a bare stream nothing else owns.
+   *
+   * This test proves it empirically rather than resting on the code-reading
+   * alone: repeatedly kill+reconnect a real 2-peer swarm connection (the same
+   * `killConnections`/`forceReconnectAll` chaos machinery above) and assert
+   * `store.streamTracker.records` — corestore's own per-connection tracking —
+   * stays BOUNDED across rounds instead of growing linearly with the kill
+   * count. A genuine leak would show up as one un-reaped record per round.
+   */
+  it(
+    'WI-4019: corestore per-connection bookkeeping (streamTracker) stays bounded across repeated kill+reconnect churn',
+    async () => {
+      _setSwarmGuardForTests(RIG_GUARD);
+
+      const testnet = await createTestnet(3);
+      cleanups.push(async () => {
+        try {
+          await testnet.destroy();
+        } catch {
+          /* ignore */
+        }
+      });
+      for (const node of (testnet as { nodes?: Array<{ on?: (ev: string, fn: (s: unknown) => void) => void }> }).nodes ?? []) {
+        node.on?.('connection', (s) =>
+          (s as { on?: (ev: string, fn: () => void) => void }).on?.('error', () => {}),
+        );
+      }
+
+      const workspaceId = 'ws-chaos-streamtracker';
+      const harnessSlug = 'sheets';
+      const binding = { kind: 'local' as const, workspace_id: workspaceId, harness_slug: harnessSlug };
+
+      const idA = makeIdentityOverride('alice2', 5555, 'kc-tracker-alice');
+      const idB = makeIdentityOverride('bob2', 5556, 'kc-tracker-bob');
+      const honestVerify = async () => 'verified' as const;
+
+      const swarms = { A: makeSwarm(testnet.bootstrap), B: makeSwarm(testnet.bootstrap) };
+      const applies = {
+        A: vi.fn<(op: OpEnvelope) => Promise<boolean>>(async () => true),
+        B: vi.fn<(op: OpEnvelope) => Promise<boolean>>(async () => true),
+      };
+
+      async function bootPeer(name: 'A' | 'B', id: ReturnType<typeof makeIdentityOverride>): Promise<BootedHarnessHandle> {
+        const root = makeWorkspaceRoot(`chaos-tracker-${name}-`);
+        const handle = await bootHarnessSubstrate({
+          workspaceRoot: root,
+          workspaceId,
+          harnessSlug,
+          swarmBinding: binding,
+          swarmOverride: swarms[name],
+          verifyBindingOverride: honestVerify,
+          applyOverride: applies[name],
+          mergePollMs: 0,
+          pendingRetryMs: 0,
+          loadRevokedOverride: async () => new Set(),
+          announceIdentityOverride: id.override,
+        });
+        cleanups.push(async () => {
+          await handle.close();
+          await closeHarnessStore({ workspaceRoot: root, harnessSlug });
+        });
+        return handle;
+      }
+
+      const A = await bootPeer('A', idA);
+      const B = await bootPeer('B', idB);
+      expect(A.swarm).not.toBeNull();
+      const topicHex = A.swarm!.topicHex;
+
+      const trackerSize = (h: BootedHarnessHandle): number =>
+        (h.store as unknown as { streamTracker?: { records: unknown[] } }).streamTracker?.records.length ?? -1;
+
+      const append = (h: BootedHarnessHandle, pk: string, key: string, ts: number) =>
+        h.append({
+          type: 'put',
+          table: 'features_consolidated',
+          hbKey: key,
+          value: { chaos: true },
+          ts,
+          schema_version: 1,
+          writerPubkey: pk,
+        });
+
+      // Establish the FIRST real connection + confirm actual replication (not
+      // just a socket-level connect) before measuring anything.
+      await append(A, idA.devicePubkey, 'F-A-0', 1);
+      let tick = 0;
+      const firstReplicated = await pollUntil(
+        async () => {
+          if (tick++ % 10 === 0) forceReconnectAll(Object.values(swarms), topicHex);
+          await B.mergeNow();
+          return applies.B.mock.calls.some((c) => c[0].hbKey === 'F-A-0');
+        },
+        { timeoutMs: 30_000, intervalMs: 300 },
+      );
+      expect(firstReplicated, 'initial replication never established — rig is broken, the assertion below would be vacuous').toBe(
+        true,
+      );
+
+      const sizesAfterRound: number[] = [];
+      const ROUNDS = 5;
+      for (let r = 0; r < ROUNDS; r++) {
+        killConnections(swarms.A);
+        killConnections(swarms.B);
+        forceReconnectAll(Object.values(swarms), topicHex);
+
+        // Confirm the link actually came back (a FRESH op crosses) before
+        // measuring — a dead/never-reconnected link would trivially "pass" a
+        // bounded-size assertion for the wrong reason.
+        await append(A, idA.devicePubkey, `F-A-r${r}`, 100 + r);
+        let t2 = 0;
+        const reconnected = await pollUntil(
+          async () => {
+            if (t2++ % 10 === 0) forceReconnectAll(Object.values(swarms), topicHex);
+            await B.mergeNow();
+            return applies.B.mock.calls.some((c) => c[0].hbKey === `F-A-r${r}`);
+          },
+          { timeoutMs: 30_000, intervalMs: 300 },
+        );
+        expect(reconnected, `round ${r}: post-kill reconnect + replication never re-established`).toBe(true);
+
+        sizesAfterRound.push(trackerSize(A), trackerSize(B));
+      }
+
+      // THE ASSERTION: if the in-process store.replicate(socket) path leaked a
+      // dangling stream per killed connection (the WI-1582 hypothesis),
+      // streamTracker.records would grow roughly linearly with ROUNDS. It does
+      // not — confirming the architectural read: corestore's own bookkeeping
+      // teardown already rides the real hyperswarm socket's 'close', so this
+      // path needs no pipeWithMutualTeardown-style fix, unlike the sidecar path.
+      expect(Math.min(...sizesAfterRound)).toBeGreaterThanOrEqual(0); // streamTracker really was inspectable, not a silent miss
+      const maxSize = Math.max(...sizesAfterRound);
+      expect(
+        maxSize,
+        `streamTracker.records grew to ${maxSize} across ${ROUNDS} kill rounds — expected it to stay bounded (a handful, not one per round), which would confirm a REAL leak the WI-1582 hypothesis predicted`,
+      ).toBeLessThan(ROUNDS);
+    },
+    120_000,
+  );
 });

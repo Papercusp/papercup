@@ -39,7 +39,7 @@ vi.mock('nuqs', () => ({
   useQueryState: () => [nuqs.open, nuqs.set],
 }));
 
-import AgentsRunningPill, { groupByFleet, agentGlyph, shortOwner, displayName, hasThinking, thinkingStreamUrl, fmtCompactAge, isLiveByActivity, LIVE_TURN_MS, distinctMachineCount, machineKey, machineTabs, canFocusWindow, resumableSessionId, type RosterAgent } from './AgentsRunningPill';
+import AgentsRunningPill, { groupByFleet, agentGlyph, shortOwner, displayName, hasThinking, thinkingStreamUrl, fmtCompactAge, isLiveByActivity, LIVE_TURN_MS, distinctMachineCount, machineKey, machineTabs, canFocusWindow, resumableSessionId, canForkLive, type RosterAgent } from './AgentsRunningPill';
 
 function agent(over: Partial<RosterAgent> = {}): RosterAgent {
   return {
@@ -133,6 +133,21 @@ describe('resumableSessionId (pure — Fork/Resume-button guard, WI-3882)', () =
   });
   it('null when neither id is present', () => {
     expect(resumableSessionId({ agent: 'claude', sessionId: null, ompThreadId: null })).toBeNull();
+  });
+});
+
+describe('canForkLive (pure — live-Fork-button backend guard, WI-4009)', () => {
+  it('claude: forkable live', () => {
+    expect(canForkLive({ agent: 'claude' })).toBe(true);
+  });
+  it('omp: NOT forkable live — no --fork-session support, would collide in-place', () => {
+    expect(canForkLive({ agent: 'omp' })).toBe(false);
+  });
+  it('codex: NOT forkable live', () => {
+    expect(canForkLive({ agent: 'codex' })).toBe(false);
+  });
+  it('null/unknown agent: NOT forkable live (fail closed, never a colliding button)', () => {
+    expect(canForkLive({ agent: null })).toBe(false);
   });
 });
 

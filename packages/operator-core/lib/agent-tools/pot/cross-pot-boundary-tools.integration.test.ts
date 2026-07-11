@@ -39,7 +39,7 @@ import type { OrgTestDb } from '../../../test/_org-test-db';
 import type { CrossHiveBoundaryWiring } from '../../cross-hive-wiring';
 import type { SendResult } from '../../cross-hive-transport';
 
-// Redirect EVERY store that routes through getOrgPg().sql (hive_settings, the cross-Pot
+// Redirect EVERY store that routes through getOrgPg().sql (pot_settings, the cross-Pot
 // grants, the C-1 ask ledger) to the fixture's migrated admin client — so the tools, which
 // pass sql=undefined internally, hit the test PG. PARTIAL mock: the import graph also pulls
 // `generated` (lib/memory/backend-selection) from db-org, so spread the real module and
@@ -115,7 +115,7 @@ let boundary: ReturnType<typeof fakeBoundary>;
 beforeAll(async () => {
   db = await createOrgTestDb();
   h.sql = db.adminSql;
-  // A Pot identity must exist for hive_settings (and thus grants) to attach to.
+  // A Pot identity must exist for pot_settings (and thus grants) to attach to.
   await insertHiveIfAbsent(
     { workspaceId: WS, homeSlug: POT, pubkeyBase64: Buffer.alloc(32).toString('base64'), keychainId: 'kc-1' },
     db.adminSql,
@@ -128,8 +128,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   // Reset the federated grant policy + the C-1 ledger between cases (the hives row persists).
-  await db.adminSql`DELETE FROM harness_shared.hive_settings`;
-  await db.adminSql`DELETE FROM harness_shared.cross_hive_asks`;
+  await db.adminSql`DELETE FROM harness_shared.pot_settings`;
+  await db.adminSql`DELETE FROM harness_shared.cross_pot_asks`;
   __clearCrossPotBoundaryRegistry();
   boundary = fakeBoundary(true);
   registerCrossPotBoundary(WS, POT, boundary.wiring);
@@ -163,7 +163,7 @@ describe('cross-Pot boundary, mediated through the real tools (grant → ask/ans
     expect(res.state).toBe('sent');
     expect(res.delivered).toBe(true);
     const correlationId = res.correlationId as string;
-    expect(res.answeredEvent).toBe(`cross-pot:answered:${correlationId}`);
+    expect(res.answeredEvent).toBe(`cross-hive:answered:${correlationId}`);
     // The fake boundary saw exactly the signed ask (envelope id === correlation id).
     expect(boundary.sends).toEqual([
       { to: PEER, kind: 'ask', id: correlationId, subject: 'review auth schema', body: 'please advise' },

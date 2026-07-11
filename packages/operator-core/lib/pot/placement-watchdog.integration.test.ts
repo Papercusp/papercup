@@ -32,7 +32,9 @@ vi.mock('../agent-tools/coordination/escalations', async (orig) => ({
   resolveEscalation: mocks.resolveEscalation,
 }));
 
+import { hostname } from 'node:os';
 import { reconcileOnePot, summarizeOpenPlacements, type PlacementConfig } from './placement-watchdog';
+import { RECLAIM_STALE_MS } from '../fleet/spawn-reclaim';
 
 const WS = 'default'; // coord_links default workspace == the org workspace here
 const POT = 'papercup';
@@ -56,17 +58,21 @@ async function seedCup(opts: {
   heartbeatAtMs?: number;
   lastOutputAtMs?: number | null;
   errorMessage?: string | null;
+  pid?: number | null;
+  launcherHost?: string | null;
 }): Promise<void> {
   await sql`
     INSERT INTO harness_shared.spawned_agents
       (spawn_id, workspace_id, harness_slug, parent_spawn_id, parent_role, child_role,
-       session_owner, feature_id, run_id, status, error_message, heartbeat_at, last_output_at, started_at)
+       session_owner, feature_id, run_id, status, error_message, heartbeat_at, last_output_at, started_at,
+       pid, launcher_host)
     VALUES (
       ${opts.owner}, ${WS}, ${POT}, ${MUG}, 'mug', 'cup',
       ${opts.owner}, ${opts.featureId}, ${'run-' + opts.owner}, ${opts.status}, ${opts.errorMessage ?? null},
       ${new Date(opts.heartbeatAtMs ?? NOW)},
       ${opts.lastOutputAtMs == null ? null : new Date(opts.lastOutputAtMs)},
-      now())`;
+      now(),
+      ${opts.pid ?? null}, ${opts.launcherHost ?? null})`;
 }
 
 /** A governed model call (agent_usage_samples row) for a cup's run — the WI-233
@@ -156,6 +162,60 @@ describe('pot_placements completion sweep (real PG, migration 263)', () => {
     expect(out.find((r) => r.workItemId === 'F-100')?.decision).toBe('recover');
     expect(mocks.wakeRecipients).toHaveBeenCalledTimes(1);
     expect(mocks.wakeRecipients.mock.calls[0]![0]).toEqual([MUG]);
+  });
+
+  // WI-3977 — the duplicate-placement false-positive this reconcile fixes: a cup
+  // whose heartbeat_at went stale beyond RECLAIM_STALE_MS (the launcher-side gap
+  // WI-3961 documented — a scope-isolated cup's heartbeat can go un-bumped for a
+  // stretch, e.g. after a bg-host restart, without the process ever dying) is NOT
+  // read `dead` when its OS process is confirmed alive on this host — so the Mug
+  // is NOT woken to re-place a duplicate cup onto the same unit (mirroring the
+  // reclaim sweep's WI-3961 exemption, applied here to the watchdog's independent
+  // liveness derivation).
+  it('WI-3977: a heartbeat-stale but process-confirmed-alive cup reads healthy — no duplicate re-place wake', async () => {
+    await seedCup({
+      owner: 'cup-stale-alive',
+      featureId: 'F-115',
+      status: 'running',
+      heartbeatAtMs: NOW - RECLAIM_STALE_MS - 1, // stale by the naive heartbeat-only check
+      lastOutputAtMs: NOW - 1000, // still producing output — not wedged
+      pid: 424242,
+      launcherHost: hostname(), // same-host as the code under test (real hostname(), no mock)
+    });
+    await seedUnit({ id: 'F-115', status: 'in_progress', takenBy: 'cup-stale-alive' });
+
+    const fakeIsAlive = vi.fn((pid: number) => pid === 424242);
+    await reconcileOnePot(sql, WS, POT, CFG, NOW, fakeIsAlive);
+
+    // 'healthy' is the silent no-op path (steer, don't dispatch — P-023) and never
+    // pushes a PlacementSweepResult; the durable proof is the placement row + the
+    // absence of a recovery wake, matching the existing "live cup" test's pattern.
+    expect((await readPlacement('F-115'))?.status).toBe('working'); // NOT recovering
+    expect(mocks.wakeRecipients).not.toHaveBeenCalled(); // NOT re-placed
+    expect(fakeIsAlive).toHaveBeenCalledWith(424242, 'spawn');
+  });
+
+  // The dual: WITHOUT the pid confirmation (isAlive says dead), the SAME stale
+  // heartbeat still reads `dead` and re-places — proving the fix narrows the
+  // false-positive without silently exempting every stale cup.
+  it('WI-3977 (dual): a heartbeat-stale cup NOT confirmed alive still recovers as before (no false negative)', async () => {
+    await seedCup({
+      owner: 'cup-stale-dead',
+      featureId: 'F-116',
+      status: 'running',
+      heartbeatAtMs: NOW - RECLAIM_STALE_MS - 1,
+      lastOutputAtMs: NOW - 1000,
+      pid: 424243,
+      launcherHost: hostname(),
+    });
+    await seedToolCall('cup-stale-dead');
+    await seedUnit({ id: 'F-116', status: 'in_progress', takenBy: 'cup-stale-dead' });
+
+    const fakeIsAlive = vi.fn(() => false); // /proc confirms it's actually gone
+    await reconcileOnePot(sql, WS, POT, CFG, NOW, fakeIsAlive);
+
+    expect((await readPlacement('F-116'))?.status).toBe('recovering');
+    expect(mocks.wakeRecipients).toHaveBeenCalledTimes(1);
   });
 
   it('P-020: a live cup on a non-terminal unit → working, no wake (steering, hands-off)', async () => {

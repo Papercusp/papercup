@@ -1096,7 +1096,7 @@ async function buildMcpToolContext(
         ? ctxRef.current!
         : { ...ctxRef.current!, workspaceId: effectiveWs };
     return (await dispatchWithSynthesizedTx(target, spawnCtx, baseCtx, (ctx) =>
-      dispatchProjectedToolToMcp(target, toolName, toolArgs ?? {}, ctx, PROJECTED_DEPS),
+      dispatchProjectedToolToMcp(target, canonicalName, toolArgs ?? {}, ctx, PROJECTED_DEPS),
     )) as Awaited<ReturnType<NonNullable<UnifiedToolContext['dispatchTool']>>>;
   };
   const builtCtx: UnifiedToolContext = {

@@ -143,6 +143,33 @@ export interface CreateScope {
 }
 
 /**
+ * Sync reads are a runtime boundary: a stale process can briefly serve rows
+ * produced by an older resolver shape. Keep a malformed registry row from
+ * escaping into `resolveHarnessScope`, where property access during render
+ * would take down the entire /adv shell.
+ */
+function isHarnessNodeForScope(value: unknown): value is HarnessNodeForScope {
+  if (!value || typeof value !== 'object') return false;
+  const row = value as { slug?: unknown; parent_slug?: unknown };
+  if (typeof row.slug !== 'string' || row.slug.trim().length === 0) return false;
+  return row.parent_slug == null || typeof row.parent_slug === 'string';
+}
+
+/** The plan-items reader has the same rolling-version boundary as the registry. */
+function isPlanItemRow(value: unknown): value is PlanItemRow {
+  if (!value || typeof value !== 'object') return false;
+  const row = value as { plan?: unknown; item?: { id?: unknown } | null };
+  return (
+    typeof row.plan === 'string'
+    && row.plan.trim().length > 0
+    && !!row.item
+    && typeof row.item === 'object'
+    && typeof row.item.id === 'string'
+    && row.item.id.trim().length > 0
+  );
+}
+
+/**
  * Lifted from PlansClient: resolve the harness scope the list/inbox/sessions
  * panels fetch across. `?h` user filter → `?slug` active harness → `?scope`
  * expand/self/all toggle, unioned with sub-harnesses via the registry.
@@ -166,10 +193,10 @@ export function useCreateScope(): CreateScope {
     args: { includeHiveHomes: true },
     staleTime: 60_000,
   });
-  const registryProjects = useMemo<HarnessNodeForScope[]>(
-    () => (registryQuery.data ?? []) as HarnessNodeForScope[],
-    [registryQuery.data],
-  );
+  const registryProjects = useMemo<HarnessNodeForScope[]>(() => {
+    const rows: unknown = registryQuery.data;
+    return Array.isArray(rows) ? rows.filter(isHarnessNodeForScope) : [];
+  }, [registryQuery.data]);
 
   const harnessSlugsForFetch = useMemo<readonly string[] | undefined>(() => {
     if (harnessFilter) return [harnessFilter];
@@ -325,9 +352,15 @@ export function useQueueData(opts: {
 
   const taggedItems = useMemo(() => {
     const out: Array<{ row: PlanItemRow; category: ItemStatusFilter }> = [];
-    for (const r of itemsNeedsHuman.data?.items ?? []) out.push({ row: r, category: 'needs-human' });
-    for (const r of itemsActionable.data?.items ?? []) out.push({ row: r, category: 'todo' });
-    for (const r of itemsBlocked.data?.items ?? []) out.push({ row: r, category: 'blocked' });
+    const append = (rows: unknown, category: ItemStatusFilter) => {
+      if (!Array.isArray(rows)) return;
+      for (const row of rows) {
+        if (isPlanItemRow(row)) out.push({ row, category });
+      }
+    };
+    append(itemsNeedsHuman.data?.items, 'needs-human');
+    append(itemsActionable.data?.items, 'todo');
+    append(itemsBlocked.data?.items, 'blocked');
     const seen = new Set<string>();
     const dedup: typeof out = [];
     for (const e of out) {

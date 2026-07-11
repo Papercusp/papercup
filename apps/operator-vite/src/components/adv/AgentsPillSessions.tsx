@@ -20,6 +20,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import AgentInspectorModal from '@/app/harness/AgentInspectorModal';
 import {
   agentGlyph,
+  canForkLive,
   displayName,
   fmtCompactAge,
   groupByFleet,
@@ -197,16 +198,23 @@ interface InspectTarget {
 /** WI-3882: the Fork/Resume target for a matched search result — an ACTIVE
  *  result's agent is still running (Fork, a parallel window); an INACTIVE
  *  result's session has ended (Resume). null ⇒ no button (codex, or neither
- *  half of the result carries a resumable id). Pure — exported for tests. */
+ *  half of the result carries a resumable id). WI-4009: the ACTIVE/Fork case
+ *  is further gated by `canForkLive` — only claude supports forking a LIVE
+ *  session (`--fork-session`); a live omp agent has no fork command and
+ *  resuming it in place would collide with the still-running original, so it
+ *  gets no button at all rather than a degraded in-place resume. The ended/
+ *  Resume case is unaffected (no fork flag involved). Pure — exported for
+ *  tests. */
 export function searchResultResumeTarget(
   result: Pick<SearchSessionResult, 'active' | 'session'>,
 ): { sessionId: string; live: boolean } | null {
-  const sessionId = result.active
-    ? resumableSessionId(result.active)
-    : result.session
-      ? resumableSessionId(result.session)
-      : null;
-  return sessionId ? { sessionId, live: Boolean(result.active) } : null;
+  if (result.active) {
+    if (!canForkLive(result.active)) return null;
+    const sessionId = resumableSessionId(result.active);
+    return sessionId ? { sessionId, live: true } : null;
+  }
+  const sessionId = result.session ? resumableSessionId(result.session) : null;
+  return sessionId ? { sessionId, live: false } : null;
 }
 
 /** One matched session row + its excerpt hits. Shared by the active (fleet-

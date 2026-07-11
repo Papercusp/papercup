@@ -17,6 +17,15 @@
  * Grades are a pure learning signal (D-005): fractional win credit in the
  * lens weights (C-5) + labelled feedback in ideator priming (C-4); they never
  * touch the routed artifact itself.
+ *
+ * su-ideate-learning-substrate-2026-07-10 P-005 adds the grade→revise WAKE (the
+ * Queen↔Scout revision loop, su-shaped): post-write, a grade at or below
+ * {@link REVISION_WAKE_MAX_GRADE} WITH feedback on an origin='su-ideate' row
+ * wakes the originator (created_by) to revise or defend; a higher grade with
+ * feedback delivers an unwoken FYI (D-008). Delivery is BEST-EFFORT: the durable
+ * coord note is the reliable half and the wake the bonus (the WI-963 lesson) —
+ * a wake that reaches nobody degrades to the unwoken pot-inbox note
+ * (revisionWake.fallback), and a send failure NEVER fails the grade.
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
@@ -49,6 +58,11 @@ export interface GradedIdeaSummary {
   humanFeedback: string | null;
   gradedBy: string | null;
   gradedAt: string | null;
+  /** P-005: origin partition + originator + home workspace of the ledger row —
+   *  the revision-notice decision inputs (and caller-useful attribution). */
+  origin: string | null;
+  createdBy: string | null;
+  workspaceId: string | null;
 }
 
 /** The C-2 result + attribution + row summary — the tool's full payload. */
@@ -58,6 +72,9 @@ export interface GradeIdeaOutcome extends GradeRoutedIdeaResult {
   ideaId: string | null;
   /** Post-write row state; on an owner-grade-sovereign no-op this carries the standing owner grade. */
   idea: GradedIdeaSummary | null;
+  /** P-005: revision-notice delivery report — present iff a notice was attempted
+   *  (an APPLIED grade on a su-ideate row with feedback + a known originator). */
+  revisionWake?: RevisionWakeOutcome;
 }
 
 export const gradeIdeaArgs = z
@@ -91,6 +108,9 @@ interface SummaryRow {
   human_feedback: string | null;
   graded_by: string | null;
   graded_at: string | Date | null;
+  origin: string | null;
+  created_by: string | null;
+  workspace_id: string | null;
 }
 
 function toIso(v: string | number | Date | null): string | null {
@@ -126,7 +146,8 @@ async function readIdeaSummary(ideaId: string): Promise<GradedIdeaSummary | null
   const { sql } = getOrgPg();
   const rows = await sql<SummaryRow[]>`
     SELECT idea_id, lens, rail, routed_ref, title, routed_at,
-           human_grade, human_feedback, graded_by, graded_at
+           human_grade, human_feedback, graded_by, graded_at,
+           origin, created_by, workspace_id
       FROM harness_shared.scout_routed_ideas
      WHERE idea_id = ${ideaId}`;
   const r = rows[0];
@@ -142,17 +163,154 @@ async function readIdeaSummary(ideaId: string): Promise<GradedIdeaSummary | null
     humanFeedback: r.human_feedback,
     gradedBy: r.graded_by,
     gradedAt: toIso(r.graded_at),
+    origin: r.origin,
+    createdBy: r.created_by,
+    workspaceId: r.workspace_id,
   };
 }
 
-/** Injectable PG seams — unit tests run the full flow with fakes (gym-tools pattern). */
+// ── P-005: the grade→revise notice (su-ideate-learning-substrate D-008) ───────
+
+/** D-008 named threshold: a grade AT OR BELOW this + feedback wakes the
+ *  originator to revise or defend; above it, feedback delivers an unwoken FYI. */
+export const REVISION_WAKE_MAX_GRADE = 3;
+
+/** P-005 delivery report on the tool result — present iff a notice was attempted. */
+export interface RevisionWakeOutcome {
+  /** The durable coord note landed (the reliable half — an inbox row survives a dead originator). */
+  sent: boolean;
+  /** Wake awaits actually fired (always 0 on the FYI branch). */
+  woken: number;
+  /** A revision wake reached nobody (woken 0 / dead originator) and degraded to
+   *  the unwoken pot-inbox note — the durable half above still stands. */
+  fallback: boolean;
+}
+
+/** One originator-addressed notice: a durable coord note + (wake branch) an inbox wake. */
+export interface RevisionNotice {
+  to: string[];
+  summary: string;
+  body: string;
+  /** true = revision branch (grade ≤ {@link REVISION_WAKE_MAX_GRADE}): also fire the inbox wake. */
+  wake: boolean;
+  /** The ledger ROW's workspace — coord delivery must run under IT, not the
+   *  in-process ALS default (same EI-346 reasoning as the readers above). */
+  workspaceId: string | null;
+}
+
+/** The injectable send port — fake-send-port tests drive both D-008 branches. */
+export type RevisionNoticePort = (notice: RevisionNotice) => Promise<{ woken: number }>;
+
+/** PURE: which delivery this grade earns. 'none' unless the write APPLIED to an
+ *  origin='su-ideate' row with a known originator and non-empty feedback. */
+export function revisionNoticeMode(args: {
+  applied: boolean;
+  origin: string | null;
+  createdBy: string | null;
+  feedback: string | null;
+  grade: number;
+}): 'wake' | 'fyi' | 'none' {
+  if (!args.applied) return 'none';
+  if (args.origin !== 'su-ideate') return 'none';
+  if (!args.createdBy) return 'none';
+  if (!args.feedback?.trim()) return 'none';
+  return args.grade <= REVISION_WAKE_MAX_GRADE ? 'wake' : 'fyi';
+}
+
+/** PURE: render the notice — critique + routedRef + (wake branch) the revise-or-defend ask. */
+export function buildRevisionNotice(
+  mode: 'wake' | 'fyi',
+  row: {
+    createdBy: string;
+    gradedBy: GradedBy;
+    grade: number;
+    feedback: string;
+    ideaId: string;
+    routedRef: string | null;
+    title: string | null;
+    workspaceId: string | null;
+  },
+): RevisionNotice {
+  const ref = row.routedRef ?? row.ideaId;
+  const head =
+    `${row.gradedBy} graded your su-ideate filing ${ref} — ${row.grade}/5.` +
+    (row.title ? `\nIdea: ${row.title}` : '') +
+    `\nCritique: ${row.feedback}`;
+  if (mode === 'wake') {
+    return {
+      to: [row.createdBy],
+      summary: `Grade ${row.grade}/5 on your su-ideate filing ${ref} — revise or defend`,
+      body:
+        `${head}\n\nRevise or defend — file the revision as an update or reply ` +
+        `(improvements:capture the revised idea, or coord:send a reply defending this one).`,
+      wake: true,
+      workspaceId: row.workspaceId,
+    };
+  }
+  return {
+    to: [row.createdBy],
+    summary: `FYI: grade ${row.grade}/5 + feedback on your su-ideate filing ${ref}`,
+    body:
+      `${head}\n\nFYI only (grade above ${REVISION_WAKE_MAX_GRADE} — D-008): no action forced; ` +
+      `the critique is primed into your future IDEATE passes.`,
+    wake: false,
+    workspaceId: row.workspaceId,
+  };
+}
+
+/**
+ * Production port: durable coord note FIRST (the reliable half — it lands in the
+ * originator's pot inbox whether or not any session is live), then the wake as a
+ * best-effort bonus (the WI-963 lesson: an event-key wake alone fires into the
+ * void when the originator's session already ended). A wake error is swallowed
+ * to woken:0 — the caller reads that as the unwoken-note fallback. Lazy imports
+ * keep the tool's import graph PG-only for unit tests.
+ */
+async function deliverRevisionNotice(notice: RevisionNotice): Promise<{ woken: number }> {
+  const [{ sendMessage }, { wakeRecipients }, { runWithWorkspace }] = await Promise.all([
+    import('../coordination/messages'),
+    import('../coordination/inbox-wake'),
+    import('../../workspace-als'),
+  ]);
+  const identity = {
+    ownerId: 'su-ideate-revision-wake',
+    ownerLabel: 'blender:grade-idea',
+    source: 'static-client' as const,
+    workspaceId: notice.workspaceId,
+    userId: null,
+  };
+  const send = () =>
+    sendMessage(identity, { to: notice.to, summary: notice.summary, body: notice.body });
+  if (notice.workspaceId) await runWithWorkspace(notice.workspaceId, send);
+  else await send();
+  if (!notice.wake) return { woken: 0 };
+  try {
+    const res = await wakeRecipients(notice.to, {
+      summary: notice.summary,
+      source: 'su-ideate-revision-wake',
+      ...(notice.workspaceId ? { workspaceId: notice.workspaceId } : {}),
+    });
+    return { woken: res.woken };
+  } catch {
+    return { woken: 0 };
+  }
+}
+
+/** Injectable PG + coord seams — unit tests run the full flow with fakes (gym-tools pattern). */
 export interface GradeIdeaDeps {
   gradeRoutedIdea: typeof gradeRoutedIdea;
   resolveIdeaIdFromRef: typeof resolveIdeaIdFromRef;
   readIdeaSummary: typeof readIdeaSummary;
+  /** P-005: the revision-notice delivery port (durable note + optional wake). */
+  sendRevisionNotice: RevisionNoticePort;
 }
 
-const defaultDeps: GradeIdeaDeps = { gradeRoutedIdea, resolveIdeaIdFromRef, readIdeaSummary };
+const defaultDeps: GradeIdeaDeps = {
+  gradeRoutedIdea,
+  resolveIdeaIdFromRef,
+  readIdeaSummary,
+  sendRevisionNotice: deliverRevisionNotice,
+};
 
 /** The testable core: resolve key → C-2 write → row read-back. */
 export async function runGradeIdea(
@@ -194,11 +352,50 @@ export async function runGradeIdea(
         humanFeedback: feedback ?? null,
         gradedBy,
         gradedAt: new Date().toISOString(),
+        // Origin/originator unknown when the read-back is down — the revision
+        // notice below deliberately stays silent rather than guessing (P-005).
+        origin: null,
+        createdBy: null,
+        workspaceId: null,
       };
     }
   }
 
-  return { ...result, gradedBy, ideaId, idea };
+  // P-005 (D-008): a graded su-ideate filing notifies its originator — grade at
+  // or below REVISION_WAKE_MAX_GRADE with feedback WAKES them to revise or
+  // defend; a higher grade with feedback is an unwoken FYI. Best-effort by
+  // contract: a delivery failure NEVER fails the grade.
+  let revisionWake: RevisionWakeOutcome | undefined;
+  if (idea?.createdBy && feedback) {
+    const mode = revisionNoticeMode({
+      applied: result.applied,
+      origin: idea.origin,
+      createdBy: idea.createdBy,
+      feedback,
+      grade: args.grade,
+    });
+    if (mode !== 'none') {
+      const notice = buildRevisionNotice(mode, {
+        createdBy: idea.createdBy,
+        gradedBy,
+        grade: args.grade,
+        feedback,
+        ideaId,
+        routedRef: idea.routedRef,
+        title: idea.title,
+        workspaceId: idea.workspaceId,
+      });
+      try {
+        const { woken } = await deps.sendRevisionNotice(notice);
+        revisionWake = { sent: true, woken, fallback: mode === 'wake' && woken === 0 };
+      } catch (e) {
+        console.warn(`[grade-idea] revision notice failed: ${e instanceof Error ? e.message : e}`);
+        revisionWake = { sent: false, woken: 0, fallback: false };
+      }
+    }
+  }
+
+  return { ...result, gradedBy, ideaId, idea, ...(revisionWake ? { revisionWake } : {}) };
 }
 
 /** Map the outcome onto the tool result envelope (isError ONLY for not-found — a sovereign no-op is designed behavior). */
@@ -215,14 +412,14 @@ export function toToolResult(out: GradeIdeaOutcome): {
 export default defineTool({
   name: 'blender:grade-idea',
   description:
-    "Grade a routed Blender idea 1–5 with optional feedback (≤2000 chars). Grades steer Blender's learning: fractional win credit in the lens weights + the critique primed into next cycles' ideator prompts. Key by ideaId or routedRef.",
+    "Grade a routed Blender idea 1–5 with optional feedback (≤2000 chars). Grades steer Blender's learning: fractional win credit in the lens weights + the critique primed into next cycles' ideator prompts. Key by ideaId or routedRef. On a su-ideate filing, a grade ≤3 with feedback wakes the originator to revise or defend (higher grades + feedback deliver an unwoken FYI) — best-effort, reported as revisionWake.",
   capability: 'harness:write',
   guidance: {
     when: "You want to score a routed Blender idea 1–5 (optional one-line critique) so Blender learns which lenses to favor. Key by ideaId (Blender view / learning.scout snapshot callers) or by routedRef — the routed artifact's change-feed ref 'plan:<slug>' | 'wi:<id>' | 'gym:<id>' — when you hold the artifact but not the ideaId (the Mug's triage path: grade each ungraded routed draft).",
     notWhen:
       'Not an accept/reject of the routed artifact — a grade is a pure learning signal; the draft proceeds through normal triage regardless. Never pass grader attribution: gradedBy is derived from the caller role (Mug vs owner surface).',
     chaining:
-      "Nothing to chain: weights update on the next refreshScoutOutcomes pass and feedback enters ideator priming automatically. applied:false + reason 'owner-grade-sovereign' (Mug regrading an owner-graded row) is expected, not an error — owner grades are sovereign; the returned summary carries the standing grade.",
+      "Nothing to chain: weights update on the next refreshScoutOutcomes pass and feedback enters ideator priming automatically. A su-ideate grade with feedback auto-notifies the originator (revisionWake in the result: ≤3 wakes them to revise or defend, >3 is an unwoken FYI). applied:false + reason 'owner-grade-sovereign' (Mug regrading an owner-graded row) is expected, not an error — owner grades are sovereign; the returned summary carries the standing grade.",
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],

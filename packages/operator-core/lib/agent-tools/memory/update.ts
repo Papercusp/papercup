@@ -23,6 +23,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getMemoryBackend } from '../../memory/backend';
 import { MemoryTimeoutError, withMemoryToolTimeout } from '../../memory/op-deadline';
+import { journalPendingWrite } from '../../memory/write-journal';
 import { runBulk, bulkContent } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
 
@@ -183,7 +184,23 @@ export default defineTool({
         } catch (err) {
           // B1: a wedged store yields memory_timeout, not a hang.
           if (err instanceof MemoryTimeoutError) {
-            return { ok: false as const, id: it.id, reason: 'memory_timeout' as const };
+            // Write-ahead journal (memory-write-journal-auto-recovery P-002):
+            // a TEXT update is embed-synchronous (re-embeds the new text), so
+            // an outage here would lose the edit — park it; the drain replays
+            // it via backend.update (metadata.__journal_update_of). Metadata-
+            // only patches ride the vec-safe merge path and aren't journaled.
+            const journalId = it.content !== undefined
+              ? await journalPendingWrite({
+                  scope: `__update__:${it.id}`,
+                  content: it.content,
+                  metadata: { __journal_update_of: it.id },
+                  verbatim: true,
+                })
+              : null;
+            return {
+              ok: false as const, id: it.id, reason: 'memory_timeout' as const,
+              ...(journalId ? { journaled: true, will_retry: true, journal_id: journalId } : {}),
+            };
           }
           // A well-formed id that names no existing memory is a clean negative
           // result, not a tool failure — the mem0 backend THROWS ("Memory with
@@ -192,8 +209,22 @@ export default defineTool({
           // (EI-486). Return a graceful { ok:false, error } instead. Other backend
           // failures (DB down, etc.) surface their message the same way.
           const message = err instanceof Error ? err.message : String(err);
-          const error = /not\s*found/i.test(message) ? `Memory with ID ${it.id} not found` : message;
-          return { ok: false as const, id: it.id, error };
+          const notFound = /not\s*found/i.test(message);
+          const error = notFound ? `Memory with ID ${it.id} not found` : message;
+          // Journal the text edit on infrastructure failures only — a
+          // not-found is a clean negative, not a lost write.
+          const journalId = !notFound && it.content !== undefined
+            ? await journalPendingWrite({
+                scope: `__update__:${it.id}`,
+                content: it.content,
+                metadata: { __journal_update_of: it.id },
+                verbatim: true,
+              })
+            : null;
+          return {
+            ok: false as const, id: it.id, error,
+            ...(journalId ? { journaled: true, will_retry: true, journal_id: journalId } : {}),
+          };
         }
         // Learning signal (learning-system-audit P-050): an agent-driven CONTENT
         // correction feeds the extraction-adaptation loop (memory_feedback).

@@ -161,6 +161,54 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(await store.ackDelivery({ deliveryId: w.id, subscriberId: 'su-ack' })).toBe(false);
   });
 
+  it('settleCaughtUpInboxWakeDeliveries (EI-9389): settles MY pre-cutoff pending/parked standing-inbox-wake deliveries as coalesced; a post-cutoff row and a peer\'s row are left alone', async () => {
+    const key = `${store.INBOX_WAKE_KEY_PREFIX}su-settle`;
+    // The always-armed standing (once:false) inbox-wake watch — mirrors the real thing.
+    await store.registerAwait({ subscriberId: 'su-settle', eventKey: key, once: false });
+
+    // Delivery #1 (parked): claim it IMMEDIATELY (nothing else queued yet, so
+    // claimDueDeliveries can't accidentally sweep a sibling row too) then park it —
+    // both pre-cutoff settle paths (pending AND parked) must be covered.
+    const fired1 = await store.fireAwaitsForKey({ eventKey: key });
+    await store.insertDeliveries({ awaits: fired1, summary: 'seen-parked' });
+    const [toPark] = await store.claimDueDeliveries({ limit: 1 });
+    await store.markDeliveryParked(toPark.id, 'alive, no pty', 60_000);
+
+    // Delivery #2 (pending): traffic the agent has ALREADY read in a bulk coord:inbox,
+    // left untouched (never claimed) — this is the common case.
+    const fired1b = await store.fireAwaitsForKey({ eventKey: key });
+    await store.insertDeliveries({ awaits: fired1b, summary: 'seen-pending' });
+
+    // A peer's own standing wake, fired at the same moment — must NEVER be touched by
+    // MY settle call (subscriber_id-scoped, like ackDelivery).
+    const peerKey = `${store.INBOX_WAKE_KEY_PREFIX}su-settle-peer`;
+    await store.registerAwait({ subscriberId: 'su-settle-peer', eventKey: peerKey, once: false });
+    const firedPeer = await store.fireAwaitsForKey({ eventKey: peerKey });
+    await store.insertDeliveries({ awaits: firedPeer, summary: 'peer-untouched' });
+
+    // The cutoff: everything above was queued before this instant.
+    const cutoffTs = new Date().toISOString();
+    await new Promise((r) => setTimeout(r, 20)); // ensure strictly-later created_at below
+
+    // Delivery #2: fired AFTER the cutoff (arrived mid-read) — must survive untouched.
+    const fired2 = await store.fireAwaitsForKey({ eventKey: key });
+    await store.insertDeliveries({ awaits: fired2, summary: 'post-cutoff' });
+
+    const settledCount = await store.settleCaughtUpInboxWakeDeliveries({ subscriberId: 'su-settle', cutoffTs });
+    expect(settledCount).toBe(2); // the pending + the parked pre-cutoff rows
+
+    const mine = await store.listRecentDeliveries('su-settle', 10);
+    expect(mine.find((d) => d.summary === 'seen-pending')).toMatchObject({ status: 'delivered', channel: 'coalesced' });
+    expect(mine.find((d) => d.summary === 'seen-parked')).toMatchObject({ status: 'delivered', channel: 'coalesced' });
+    expect(mine.find((d) => d.summary === 'post-cutoff')).toMatchObject({ status: 'pending' });
+
+    const peer = await store.listRecentDeliveries('su-settle-peer', 10);
+    expect(peer.find((d) => d.summary === 'peer-untouched')).toMatchObject({ status: 'pending' });
+
+    // Idempotence: re-settling the same (now-empty) window finds nothing left to do.
+    expect(await store.settleCaughtUpInboxWakeDeliveries({ subscriberId: 'su-settle', cutoffTs })).toBe(0);
+  });
+
   it('deferred rows give back their attempt and re-queue', async () => {
     const fired = await store
       .registerAwait({ subscriberId: 'su-9', eventKey: 'defer:k' })

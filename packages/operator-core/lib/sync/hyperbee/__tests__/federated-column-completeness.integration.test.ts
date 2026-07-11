@@ -94,7 +94,7 @@ const PROVENANCE = new Set<string>([
   'fed_ts', // projection stamps from op provenance.ts (EI-79 LWW cursor)
   'fed_hlc', // projection stamps from op provenance.fedHlc (= op.hlc) — the D-001 HLC ordering key
   'author_pubkey', // projection stamps from the op's writerPubkey
-  'verified_author_github_user_id', // projection derives via verified hive_members attestation (features; P-008)
+  'verified_author_github_user_id', // projection derives via verified pot_members attestation (features; P-008)
   'schema_version', // rides the op envelope, not the row value
   'owner_author_pubkey', // harness_plans (mig 414/P-018-D-012): projection binds from the VERIFIED
   // source-log device on first authorized remote write (harness-plans.ts ownerToBind), preserved
@@ -140,6 +140,17 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     // state, not content.
     last_released_by: 'per-machine claim-cooldown bookkeeping, local work state (mig 485)',
     last_released_at: 'per-machine claim-cooldown bookkeeping, local work state (mig 485)',
+    // EI-9418 (mig 551, shared-embedding-sidecar-and-enrichment-2026-07-10): the
+    // vector + its embedder tag are deliberately NOT portable across machines.
+    // `memoryEmbedderMode` picks the active embedder per-process (space
+    // discipline, mig 530/551 header) — a vector federated from a peer running a
+    // DIFFERENT embedder would be a foreign-space value the exact
+    // `embedding_mode IS DISTINCT FROM $active` re-embed sweep exists to catch and
+    // discard, so shipping it over the wire would just have the receiver
+    // immediately re-embed it locally anyway. Each machine computes its own from
+    // the row's real (federated) content instead.
+    embedding: 'embedder-mode-specific vector, machine-local (mig 551) — foreign-space noise if federated, re-embedded locally instead',
+    embedding_mode: 'tags which embedder produced `embedding` on THIS machine, machine-local (mig 551)',
   },
   harness_issues_consolidated: {
     // Issues federate every content column — only PROVENANCE is local. (Empty.)
@@ -189,30 +200,30 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     created_at: 'machine-local row timestamp (federated times are assigned_ts/released_ts)',
     updated_at: 'machine-local row timestamp',
   },
-  hive_settings: {
+  pot_settings: {
     created_at: 'machine-local row timestamp; the federated content is the `value`',
     updated_at: 'machine-local row timestamp; the federated content is the `value`',
   },
-  hive_policy: {
+  pot_policy: {
     // EN-1: the federated subset is policy_json + owner_pubkey + signature + policy_version
     // (the owner-signed content, all carried by toHivePolicyValue). Only timestamps are local.
     created_at: 'machine-local row timestamp; the federated content is policy_json + signature',
     updated_at: 'machine-local row timestamp; the federated content is policy_json + signature',
   },
-  hive_reports: {
+  pot_reports: {
     // EN-3 / P-MOD: the federated subset is report_id + reporter identity + target + status
     // (all carried by toHiveReportValue). Only the timestamps are machine-local.
     created_at: 'machine-local row timestamp; the federated content is the report fields + status',
     updated_at: 'machine-local row timestamp; the federated content is the report fields + status',
   },
-  hive_pending_joins: {
+  pot_pending_joins: {
     // EN-3 / P-MEMBER: the federated subset is the joiner identity + devices + the decision
     // (status/decided_*) — all carried by toHivePendingJoinValue. pending_join_fed_key is a
     // GENERATED column (auto-detected); only the timestamps are machine-local.
     created_at: 'machine-local row timestamp; the federated content is the joiner fields + decision',
     updated_at: 'machine-local row timestamp; the federated content is the joiner fields + decision',
   },
-  hive_epoch_keys: {
+  pot_epoch_keys: {
     // shared-hive-rekey-2026-06-19 (P-005): the federated subset is the WRAPPED per-member
     // epoch key material + the epoch/member coords (carried by the value-mapper). Only the
     // row timestamps are machine-local. DARK until papercusp-hive-rekey flips (capture is
@@ -220,7 +231,7 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     created_at: 'machine-local row timestamp',
     updated_at: 'machine-local row timestamp',
   },
-  hive_members: {
+  pot_members: {
     display_name: 'GitHub-derived cosmetic, re-resolved per machine',
     avatar_url: 'GitHub-derived cosmetic, re-resolved per machine',
     joined_at: 'machine-local membership timestamp',

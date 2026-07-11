@@ -20,7 +20,7 @@
  *   - the own log is RE-DERIVED from disk (same key + length read back),
  *   - the admitted-set + merge cursor start EMPTY (createMergeCursor per boot), so
  *     the member must RE-ADMIT the owner from its PERSISTED state (the
- *     `hive_directory_cache` owner binding + the federated `hive_members` roster
+ *     `pot_directory_cache` owner binding + the federated `pot_members` roster
  *     both live in PG, which survives the restart) and RE-FOLD the owner log,
  *   - the outbox `drained_at` watermark — the at-least-once dedup key — lives in
  *     PG, so a fresh process MUST NOT re-emit already-drained rows.
@@ -93,6 +93,7 @@ import { _resetHarnessAdminUrlCacheForTests } from '../../../embedded-pg-discove
 import { createOrgTestDb, type OrgTestDb } from '../../../../test/_org-test-db';
 import { mutateHarnessRegistry } from '../../../harness-registry';
 import { _clearHiveMemberDeviceSetCacheForTest } from '../hive-member-identity-set';
+import { applyPot557RenameAndFixups } from './_hive-substrate-rig';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../../../../..');
@@ -124,7 +125,7 @@ function stripMig(s: string): string {
 
 /**
  * The OWNER author's content-origin schema: harness_features_consolidated + the
- * CDC capture (375) PLUS the Hive schema (184 hives + 185 hive_members + 189
+ * CDC capture (375) PLUS the Hive schema (184 hives + 185 pot_members + 189
  * federation-cols) so the owner can author its ROSTER + features and have them
  * drain to its log (the member federates from there).
  */
@@ -148,9 +149,10 @@ async function setupOwnerSchema(sql: postgres.Sql, hiveHome: string, hivePubkeyB
   await sql.unsafe(stripMig(readFileSync(join(SQL_DIR, '184-hives-table.sql'), 'utf8')));
   await sql.unsafe(stripMig(readFileSync(join(SQL_DIR, '185-hive-members-admission.sql'), 'utf8')));
   await sql.unsafe(stripMig(readFileSync(join(SQL_DIR, '189-hive-members-federation-cols.sql'), 'utf8')));
+  await applyPot557RenameAndFixups(sql);
   await sql`
-    INSERT INTO harness_shared.hives
-      (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+    INSERT INTO harness_shared.pots
+      (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
     VALUES (${WORKSPACE_ID}, ${hiveHome}, decode(${hivePubkeyB64}, 'base64'),
             'kc-owner-home', 'Owner Home', null, 1, 1)
   `;
@@ -384,16 +386,16 @@ describe('SIDECAR restart-durability federation (D-053/D-054) — member sidecar
       const hivePubkeyB64 = rawPubkeyBase64(hivePub);
 
       // MEMBER's PG: a hives row for HIVE_HOME (home resolution) + the VERIFIED
-      // directory-cache owner binding. NO hive_members rows → EMPTY roster (fresh join).
+      // directory-cache owner binding. NO pot_members rows → EMPTY roster (fresh join).
       // BOTH survive the restart (PG is durable) → the re-booted member re-admits.
       await orgDb.adminSql`
-        INSERT INTO harness_shared.hives
-          (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+        INSERT INTO harness_shared.pots
+          (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, decode(${hivePubkeyB64}, 'base64'),
                 'kc-owner-home', 'Owner Home', null, 1, 1)
       `;
       await orgDb.adminSql`
-        INSERT INTO harness_shared.hive_directory_cache (workspace_id, payload, updated_at)
+        INSERT INTO harness_shared.pot_directory_cache (workspace_id, payload, updated_at)
         VALUES (${WORKSPACE_ID}, ${JSON.stringify({
           hives: [{ hivePubkey: hivePubkeyB64, ownerDevicePubkey: idOwner.devicePubkey }],
         })}::text::jsonb, 1)
@@ -492,13 +494,13 @@ describe('SIDECAR restart-durability federation (D-053/D-054) — member sidecar
           { device_pubkey: pk, gist_id: `gist-${login}`, gist_url: `https://gist.github.com/${login}`, device_label: `${login}-dev`, created_at: 1, signature_by_device: 'sig' },
         ]);
       await dbOwner.sql`
-        INSERT INTO harness_shared.hive_members
-          (workspace_id, hive_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status)
+        INSERT INTO harness_shared.pot_members
+          (workspace_id, pot_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${idOwner.userId}, 'owner', ${memberAtt('owner', idOwner.devicePubkey)}::text::jsonb, '{}'::text[], 'verified')
       `;
       await dbOwner.sql`
-        INSERT INTO harness_shared.hive_members
-          (workspace_id, hive_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status)
+        INSERT INTO harness_shared.pot_members
+          (workspace_id, pot_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${idMember.userId}, 'member', ${memberAtt('member', idMember.devicePubkey)}::text::jsonb, '{}'::text[], 'verified')
       `;
       await dbOwner.sql`
@@ -522,8 +524,8 @@ describe('SIDECAR restart-durability federation (D-053/D-054) — member sidecar
           await Promise.all([owner.mergeNow(), member.mergeNow()]);
           const admitted = member.handle.admitted.has(ownerLogKey);
           const members = await orgDb.adminSql<Array<{ n: number }>>`
-            SELECT COUNT(*)::int AS n FROM harness_shared.hive_members
-             WHERE workspace_id = ${WORKSPACE_ID} AND hive_home_slug = ${HIVE_HOME}
+            SELECT COUNT(*)::int AS n FROM harness_shared.pot_members
+             WHERE workspace_id = ${WORKSPACE_ID} AND pot_home_slug = ${HIVE_HOME}
           `;
           const feat = await readFeature(orgDb.adminSql, HIVE_HOME, 'F-init');
           return admitted && Number(members[0]?.n ?? 0) >= 2 && feat ? { feat } : undefined;

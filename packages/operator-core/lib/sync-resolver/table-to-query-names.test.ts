@@ -278,6 +278,18 @@ describe('TABLE_TO_QUERY_NAMES vs v2 registry consistency', () => {
     expect(names.length).toBeGreaterThanOrEqual(45);
     expect(new Set(names).size, 'bridged query names are distinct').toBe(names.length);
   });
+
+  it('refreshes the unified Conversations inbox from every curated source table', () => {
+    for (const table of [
+      'harness_shared.coord_conversations',
+      'harness_shared.coord_threads',
+      'harness_shared.coord_thread_posts',
+      'harness_shared.agent_chats_consolidated',
+      'harness_shared.messages_consolidated',
+    ]) {
+      expect(TABLE_TO_QUERY_NAMES[table]).toContain('conversations.unified');
+    }
+  });
 });
 
 describe('TABLE_TO_QUERY_NAMES shape', () => {

@@ -28,8 +28,25 @@ import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identi
 import { COORD_ROLES } from '../coordination/roles';
 import { hiveArg } from '../_hive-scope';
 import { createOneWorkItem, type CreateOneWorkItemArgs } from './_create-core';
+import { LINK_RELS } from './link';
 import { runBulk, bulkContent } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
+
+/**
+ * Inline typed-link spec (WI-3956) — one edge written from the NEW work-item to a
+ * target right after creation. Shared by the single-create args and the bulk itemSpec
+ * so the shape never drifts. `rel` is pinned to the LINK_RELS vocabulary (imported
+ * from the link tool — one source of truth); the target is another work-item
+ * (target_id) or any coord ObjectRef (target_kind + target_ref). Best-effort in the
+ * core: an unresolvable target is skipped, never failing the create.
+ */
+const linkSpec = z.object({
+  rel: z.enum(LINK_RELS).describe('the relationship: blocks | relates | duplicates | fixes | investigates | about | caused-by'),
+  target_id: z.string().max(120).optional().describe('a target work-item id'),
+  target_kind: z.string().max(40).optional().describe('explicit coord ObjectRef kind (e.g. plan_item, event) — use with target_ref'),
+  target_ref: z.string().max(160).optional().describe('explicit coord ObjectRef ref — use with target_kind'),
+  target_harness: z.string().max(80).optional().describe('harness for a feature target_id (disambiguation)'),
+});
 
 /**
  * Heuristic: does this work-item text smell like CODE work? Used ONLY for a
@@ -71,6 +88,7 @@ const itemSpec = z.object({
     .object({ slug: z.string().min(1), item: z.string().min(1) })
     .optional()
     .describe('Plan item this work-item ADDRESSES (e.g. { slug:"my-plan", item:"P-003" }) — writes a forward work→plan_item coverage edge so the item rolls up into that plan item and plans:items stops showing it unworked.'),
+  links: z.array(linkSpec).max(20).optional().describe('inline typed links (WI-3956) written from the new item to targets on create — e.g. [{ rel:"investigates", target_id:"EI-9250" }]. Best-effort: a bad target is skipped, never fails the create.'),
 });
 
 export default defineTool({
@@ -138,6 +156,7 @@ export default defineTool({
         .object({ slug: z.string().min(1), item: z.string().min(1) })
         .optional()
         .describe('Plan item this work-item ADDRESSES (e.g. { slug:"my-plan", item:"P-003" }) — writes a forward work→plan_item coverage edge so the item rolls up into that plan item and plans:items stops showing it unworked.'),
+      links: z.array(linkSpec).max(20).optional().describe('inline typed links (WI-3956) written from the new item to targets on create — e.g. [{ rel:"investigates", target_id:"EI-9250" }]. Best-effort: a bad target is skipped, never fails the create.'),
       // ── bulk-create (n≥1) ──
       items: z.array(itemSpec).min(1).max(100).optional().describe('create many work-items at once — each is a full create spec.'),
       assign_all_to_self: z.boolean().optional().describe('Claim every created item for YOU (your ownerId) — unless an item carries its own assign_to.'),
@@ -157,6 +176,7 @@ export default defineTool({
           workspace: args.workspace,
           assign_to: resolveSelfLiteral(it.assign_to, ident.ownerId) ?? (args.assign_all_to_self ? ident.ownerId : undefined),
           ...(it.plan_item ? { targetPlanItem: { slug: it.plan_item.slug, itemId: it.plan_item.item } } : {}),
+          ...(it.links ? { links: it.links } : {}),
         }))
       : [
           {
@@ -174,6 +194,7 @@ export default defineTool({
             force: args.force,
             assign_to: resolveSelfLiteral(args.assign_to, ident.ownerId) ?? (args.assign_all_to_self ? ident.ownerId : undefined),
             ...(args.plan_item ? { targetPlanItem: { slug: args.plan_item.slug, itemId: args.plan_item.item } } : {}),
+            ...(args.links ? { links: args.links } : {}),
           },
         ];
     const env = await runBulk(

@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { buildSharedHiveCoreChecks } from './checks';
+import { applyPot557RenameAndFixups } from '../../sync/hyperbee/__tests__/_hive-substrate-rig';
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../../../libs/papercusp/libs/db/sql');
 
@@ -43,6 +44,7 @@ beforeAll(async () => {
   // hives (184) + hive_members (185, FK → hives) — the admission-union check.
   await db.sql.unsafe(readFileSync(join(SQL_DIR, '184-hives-table.sql'), 'utf8'));
   await db.sql.unsafe(readFileSync(join(SQL_DIR, '185-hive-members-admission.sql'), 'utf8'));
+  await applyPot557RenameAndFixups(db.sql);
 });
 
 afterAll(async () => {

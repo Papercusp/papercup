@@ -2,7 +2,7 @@
  * cross-hive-wiring.integration.test.ts — the FULL cross-Hive boundary WIRING
  * (cross-hive-boundary-2026-06-08 P-006 composition + the strengthened P-005
  * in-process proof). Two SEPARATE Hives, each a wireCrossHiveBoundary; Hive B's
- * admission grants live in REAL PG (loadCrossHiveGrants over hive_settings). Hive A
+ * admission grants live in REAL PG (loadCrossHiveGrants over pot_settings). Hive A
  * addresses Hive B; B admits per its PG grant and routes the admitted request to
  * its (recording) ports; an UNGRANTED kind is rejected (sovereignty); then B
  * replies and A's onReply fires.
@@ -32,13 +32,13 @@ const A_SLUG = 'hive-a';
 const B_SLUG = 'hive-b';
 
 const HIVES_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.hives (
-    workspace_id text NOT NULL, home_slug text NOT NULL, public_key bytea NOT NULL,
+  CREATE TABLE IF NOT EXISTS harness_shared.pots (
+    workspace_id text NOT NULL, pot_home_slug text NOT NULL, public_key bytea NOT NULL,
     keychain_id text NOT NULL, title text, description text,
     created_at bigint NOT NULL, updated_at bigint NOT NULL DEFAULT 0,
-    PRIMARY KEY (workspace_id, home_slug))`;
+    PRIMARY KEY (workspace_id, pot_home_slug))`;
 const HIVE_SETTINGS_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.hive_settings (
+  CREATE TABLE IF NOT EXISTS harness_shared.pot_settings (
     workspace_id text NOT NULL, harness_slug text NOT NULL, setting_key text NOT NULL,
     value text, author_pubkey text, origin text NOT NULL DEFAULT 'local', fed_ts bigint,
     fed_hlc text,
@@ -86,11 +86,11 @@ beforeAll(async () => {
   await db.sql.unsafe(HIVES_DDL);
   await db.sql.unsafe(HIVE_SETTINGS_DDL);
   await db.sql`
-    INSERT INTO harness_shared.hives (workspace_id, home_slug, public_key, keychain_id, created_at)
+    INSERT INTO harness_shared.pots (workspace_id, pot_home_slug, public_key, keychain_id, created_at)
     VALUES (${WS}, ${B_SLUG}, ${Buffer.alloc(32)}, 'kc-b', 0)`;
 });
 afterAll(async () => { await db?.cleanup(); });
-beforeEach(async () => { await db.sql`DELETE FROM harness_shared.hive_settings`; });
+beforeEach(async () => { await db.sql`DELETE FROM harness_shared.pot_settings`; });
 
 describe('cross-Hive boundary wiring — composition + PG-grant admission (P-006 / P-005 proxy)', () => {
   it('B admits A per its PG grant, rejects an ungranted kind, and the reply reaches A', async () => {

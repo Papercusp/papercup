@@ -101,6 +101,18 @@ export function resumableSessionId(
   return a.sessionId ?? a.ompThreadId ?? null;
 }
 
+/** Whether a LIVE agent's session can be safely FORKED into a new parallel
+ *  window (WI-4009) — `--fork-session` (console-launcher.ts's buildConsoleEnvelope)
+ *  is claude-only; omp has no fork command, and resuming a live omp session
+ *  IN PLACE (no fork) would collide with the still-running original. So a live
+ *  non-claude agent gets NO Fork affordance at all — never degrade to a
+ *  colliding in-place resume. Only gates the LIVE case: resuming an ENDED
+ *  session (no fork flag) is fine for any non-codex backend and is unaffected
+ *  by this guard. Pure — exported for tests. */
+export function canForkLive(a: Pick<RosterAgent, 'agent'>): boolean {
+  return a.agent === 'claude';
+}
+
 /** Whether an agent has a viewable thinking stream — a spawned bee's run-log, a
  *  claude session's transcript, a codex session's rollout (keyed by its adv row
  *  id), or an omp session's thread jsonl. Pure — exported for tests.
@@ -592,7 +604,7 @@ export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: 
           focusTarget={canFocusWindow(inspecting)
             ? { advSessionId: inspecting.advSessionId ?? null, windowId: inspecting.windowId ?? null, pid: inspecting.pid ?? null }
             : undefined}
-          resumeTarget={resumableSessionId(inspecting)
+          resumeTarget={resumableSessionId(inspecting) && canForkLive(inspecting)
             ? { sessionId: resumableSessionId(inspecting)!, live: true, label: `fork · ${displayName(inspecting)}` }
             : undefined}
           open

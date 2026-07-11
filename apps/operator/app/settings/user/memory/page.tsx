@@ -25,6 +25,14 @@ interface AuditFields {
   broken_anchors: BrokenAnchor[];
 }
 
+// Write-ahead journal status (memory-write-journal-auto-recovery P-006):
+// shape served by the userMemory.journalStatus sync resolver.
+interface JournalStatus {
+  pending: number;
+  failedPermanent: number;
+  lastRecovery: { count: number; from: string; to: string; lastAt: string } | null;
+}
+
 // The neutral memory entry shape served by /api/user/memory
 // (generalize-memory-backend-swappable D-003) — backend-agnostic:
 // text/kind at the top level, never a mem0 row.
@@ -151,6 +159,15 @@ export default function MemoryPage() {
     enabled: !!userId,
   });
   const loading = !metaLoaded || (!!userId && rowsLoading);
+
+  // Write-ahead journal status (memory-write-journal-auto-recovery P-006):
+  // "N pending" badge + "Memory recovered" banner. The journal drain fires
+  // notifySyncInvalidate('userMemory.journalStatus'), so this updates live.
+  const { data: journalRows } = useSyncQuery<JournalStatus>({
+    queryName: 'userMemory.journalStatus',
+    args: {},
+  });
+  const journal = journalRows?.[0] ?? null;
 
   const switchBackend = useCallback(async (choice: string) => {
     if (!choice || choice === currentBackend) return;
@@ -427,6 +444,20 @@ export default function MemoryPage() {
                 {stateBadge.icon} {stateBadge.label}
               </span>
             )}
+            {/* P-007 provenance: this fact arrived late via the write-ahead
+                journal drain / transcript miner, not a live write. */}
+            {typeof meta.recovered_from === 'string' && (
+              <span
+                title={`Recovered via ${meta.recovered_from} after an embedder outage`}
+                style={{
+                  padding: '2px 8px', borderRadius: 4,
+                  background: 'color-mix(in srgb, var(--accent), transparent 85%)',
+                  color: 'var(--accent)', fontSize: 11, fontWeight: 600,
+                }}
+              >
+                ↻ recovered
+              </span>
+            )}
             {rowDate && (
               <span title={new Date(rowDate).toLocaleString()} style={{ fontSize: 11, color: 'var(--fg-mute)' }}>
                 {timeAgo(rowDate)}
@@ -549,6 +580,30 @@ export default function MemoryPage() {
           </Collapsible.Root>
         )}
       </header>
+
+      {/* Write-ahead journal surfacing (memory-write-journal-auto-recovery
+          P-006): facts parked during an embedder outage + recoveries. */}
+      {journal && journal.pending > 0 && (
+        <div style={{ padding: '8px 12px', border: '1px solid var(--warn)', borderRadius: 6, background: 'var(--warn-bg)', fontSize: 13 }}>
+          ⏳ <strong>{journal.pending}</strong> memor{journal.pending === 1 ? 'y is' : 'ies are'} pending embedding —
+          parked safely during an embedder outage; they will be stored automatically when it recovers.
+        </div>
+      )}
+      {journal?.lastRecovery && (
+        <div style={{ padding: '8px 12px', border: '1px solid var(--good)', borderRadius: 6, background: 'color-mix(in srgb, var(--good), transparent 85%)', fontSize: 13 }}>
+          ✓ Memory recovered: <strong>{journal.lastRecovery.count}</strong> fact{journal.lastRecovery.count === 1 ? '' : 's'} from{' '}
+          {new Date(journal.lastRecovery.from).toLocaleString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' })}
+          {' – '}
+          {new Date(journal.lastRecovery.to).toLocaleString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' })}
+          {' '}now searchable.
+        </div>
+      )}
+      {journal && journal.failedPermanent > 0 && (
+        <div style={{ padding: '8px 12px', border: '1px solid var(--bad)', borderRadius: 6, background: 'color-mix(in srgb, var(--bad), transparent 85%)', fontSize: 13 }}>
+          ❌ <strong>{journal.failedPermanent}</strong> journaled memor{journal.failedPermanent === 1 ? 'y' : 'ies'} exhausted retries —
+          the content is preserved in the journal but could not be re-stored automatically.
+        </div>
+      )}
 
       {availableBackends.length > 1 && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-2)' }}>

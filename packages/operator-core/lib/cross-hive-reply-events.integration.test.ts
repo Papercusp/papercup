@@ -191,7 +191,7 @@ describe('cross-Hive reply → ledger transition + C-4 event + queued wake (real
     expect(deliveries).toHaveLength(1);
   });
 
-  it('PRODUCTION DEFAULT: the real cross_hive_asks row (migration 231) transitions and the wake queues', async () => {
+  it('PRODUCTION DEFAULT: the real cross_pot_asks row (migration 231) transitions and the wake queues', async () => {
     const t = twoHives(); // no askLedger injected — the wiring's PG default
     const pgStore = new PgCrossHiveAsks(WS, 'hive-a');
 

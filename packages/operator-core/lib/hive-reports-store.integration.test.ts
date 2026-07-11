@@ -6,7 +6,7 @@
  * round-trip. The handler test (agent-tools/hive/moderation_resolve.test.ts) MOCKS the
  * store and hive-moderation.test.ts is pure, so the ACTUAL SQL — the ON CONFLICT upsert
  * (idempotent on report_id, status PRESERVED on a duplicate file), the open-queue read
- * (hive_reports_by_status, newest-first), the status filter, the resolve UPDATE, and the
+ * (pot_reports_by_status, newest-first), the status filter, the resolve UPDATE, and the
  * explicit `WHERE workspace_id` scoping (the RLS backstop, D-004) — is only exercised here.
  *
  * The store functions take an injectable `sql`, so we hand them the testcontainer's admin
@@ -91,7 +91,7 @@ describe('hive-reports-store (integration — P-MOD report round-trip)', () => {
 
     // Exactly one row exists for that key (no second insert).
     const [{ n }] = (await db.adminSql.unsafe(
-      `SELECT count(*)::int AS n FROM harness_shared.hive_reports
+      `SELECT count(*)::int AS n FROM harness_shared.pot_reports
          WHERE workspace_id = $1 AND harness_slug = $2 AND report_id = $3`,
       [WS, HIVE, 'r-idem'],
     )) as unknown as Array<{ n: number }>;
@@ -107,7 +107,7 @@ describe('hive-reports-store (integration — P-MOD report round-trip)', () => {
     await mk('q-new', 'new');
     // Deterministic ordering.
     await db.adminSql.unsafe(
-      `UPDATE harness_shared.hive_reports SET created_at = CASE report_id
+      `UPDATE harness_shared.pot_reports SET created_at = CASE report_id
          WHEN 'q-old' THEN 1000 WHEN 'q-mid' THEN 2000 WHEN 'q-new' THEN 3000 END
        WHERE workspace_id = $1 AND harness_slug = $2`,
       [WS, hive],

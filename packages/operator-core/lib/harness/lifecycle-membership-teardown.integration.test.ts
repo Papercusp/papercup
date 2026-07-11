@@ -38,6 +38,7 @@ import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { leaveHive, type LeaveHiveDeps } from './leave-hive';
 import { upsertHiveMember, getHiveMember, removeAllHiveMembers } from '../hive-membership-store';
 import type { HarnessRegistry } from '../harness-registry';
+import { applyPot557RenameAndFixups } from '../sync/hyperbee/__tests__/_hive-substrate-rig';
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../../libs/papercusp/libs/db/sql');
 const WS = 'ws-lifecycle-gap';
@@ -77,7 +78,7 @@ function stripMeta(sqlText: string): string {
 async function delOpsFor(sql: Sql, githubUserId: number): Promise<number> {
   const [{ n }] = await sql<Array<{ n: number }>>`
     SELECT count(*)::int AS n FROM harness_shared.substrate_outbox
-     WHERE table_name = 'hive_members' AND op = 'del' AND key = ${String(githubUserId)}`;
+     WHERE table_name = 'pot_members' AND op = 'del' AND key = ${String(githubUserId)}`;
   return n;
 }
 
@@ -107,8 +108,9 @@ beforeAll(async () => {
   for (const m of ['184-hives-table.sql', '185-hive-members-admission.sql', '189-hive-members-federation-cols.sql']) {
     await db.sql.unsafe(stripMeta(readFileSync(join(SQL_DIR, m), 'utf8')));
   }
+  await applyPot557RenameAndFixups(db.sql);
   await db.sql.unsafe(PRESENCE_DDL);
-  await db.sql`INSERT INTO harness_shared.hives (workspace_id, home_slug, public_key, keychain_id, created_at)
+  await db.sql`INSERT INTO harness_shared.pots (workspace_id, pot_home_slug, public_key, keychain_id, created_at)
     VALUES (${WS}, ${HIVE}, ${Buffer.from([0])}, 'kc-shop', 0)`;
 });
 afterAll(async () => {
@@ -118,7 +120,7 @@ afterEach(async () => {
   // Also clear substrate_outbox so each test sees only its OWN captured ops (TRUNCATE
   // fires no row-level capture trigger, so this enqueues nothing).
   await db.sql.unsafe(
-    'TRUNCATE harness_shared.hive_members, harness_shared.shared_presence, harness_shared.substrate_outbox CASCADE',
+    'TRUNCATE harness_shared.pot_members, harness_shared.shared_presence, harness_shared.substrate_outbox CASCADE',
   );
 });
 

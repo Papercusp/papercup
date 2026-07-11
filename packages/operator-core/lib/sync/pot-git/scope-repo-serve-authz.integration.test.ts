@@ -6,7 +6,7 @@
  * instances, so `resolvePeerDevicePubkey` resolves an actually
  * SIGNATURE-VERIFIED device — never the wire `req` frame's self-reported
  * `peerGithubUserId` — then drives the `authorizeScopeRepoServe` roster gate
- * against a REAL `hive_members` row (tier-1 owner-only roster, scope-roster.ts).
+ * against a REAL `pot_members` row (tier-1 owner-only roster, scope-roster.ts).
  *
  * Three proving cases (P-201 fail-closed deferral, closed by WI-3641):
  *   1. an AUTHORIZED member (device attested to the scope's owner github user

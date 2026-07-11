@@ -30,7 +30,7 @@
  * stub so the DBOS dedup/resume mechanics are proven without spawning sandboxes.
  */
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
-import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
+import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
 import { queueConcurrency } from './queue-concurrency';
 import type { ProvisionPhase, ProvisionRunInputs, ProvisionRunResult } from '../provision/runner';
 
@@ -129,7 +129,11 @@ export const provisionWorkflow = idempotentRegisterWorkflow('provision', () =>
 
 // Provisions are interactive + infrequent; a small global concurrency cap is
 // plenty. The per-target mutex is the deduplicationID, not the queue width.
-export const provisionQueue = new WorkflowQueue('provision', { concurrency: queueConcurrency(4) });
+// WI-4015: idempotentWorkflowQueue guards the module-top-level-DBOS-singleton class
+// (see idempotent-register-workflow.ts's doc comment).
+export const provisionQueue = idempotentWorkflowQueue('provision', () =>
+  new WorkflowQueue('provision', { concurrency: queueConcurrency(4) }),
+);
 
 /**
  * Start (or, on a concurrent duplicate, decline) a provision as a durable

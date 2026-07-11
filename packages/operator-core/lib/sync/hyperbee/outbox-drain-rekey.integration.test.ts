@@ -136,9 +136,9 @@ describe('outbox-drain re-key capture-wire (real PG)', () => {
     expect(appends[0]?.value).toEqual({ __rekey: 'CIPHER' });
   });
 
-  it('leaves an admission/key/policy op (hive_settings) PLAINTEXT — capability not called', async () => {
+  it('leaves an admission/key/policy op (pot_settings) PLAINTEXT — capability not called', async () => {
     await seedOutbox(db.sql, {
-      table_name: 'hive_settings',
+      table_name: 'pot_settings',
       op: 'put',
       key: 'epoch',
       row: { harness_slug: SLUG, setting_key: 'epoch', value: '0' },

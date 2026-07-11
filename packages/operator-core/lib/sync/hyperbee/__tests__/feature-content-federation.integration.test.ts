@@ -76,7 +76,7 @@ import {
 // WI-259 STEP 1 (P-001) membership-aware admission case (below) — these route the
 // PROCESS-GLOBAL getOrgPg() at a migrated throwaway DB so boot.ts's STEP 1 reads
 // (potHomeSlugForHarness + resolveHiveMemberDeviceSet, both hardcoded to getOrgPg()
-// with NO sql seam) resolve against a seeded hive_members/hives/harness_registry.
+// with NO sql seam) resolve against a seeded pot_members/hives/harness_registry.
 // Mirrors the _baseline-coord-fixture env-routing in two-peer-convergence.integration.test.ts.
 import { _resetForTests as resetDbOrgPools } from '@papercusp/db-org';
 // eslint-disable-next-line import/no-relative-packages -- clears the env-URL cache the pool resolver memoizes
@@ -726,8 +726,8 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
   // THE SLUG-MISMATCH MECHANISM (root cause CONFIRMED — do not re-investigate):
   //   - `buildHarnessProjectionApply(opts)` (register-all.ts:236) takes a
   //     `potHomeSlug`, but in `buildHarnessProjections` (register-all.ts:171-174)
-  //     ONLY the hive-home-grained projections (hive_settings, hive_members,
-  //     hive_policy, hive_reports, hive_pending_joins, hive_epoch_keys) rebind to
+  //     ONLY the hive-home-grained projections (pot_settings, pot_members,
+  //     pot_policy, pot_reports, pot_pending_joins, pot_epoch_keys) rebind to
   //     `potHomeSlug`. The ~16 OTHERS — INCLUDING harness_features — STAY scoped
   //     to the member `harnessSlug`.
   //   - So A's feature op carries `harness_slug = 'hive-repo'` (A's member slug);
@@ -937,7 +937,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
   // ──────────────────────────────────────────────────────────────────────────
   // WI-259 STEP 1 (P-001) — the MEMBERSHIP-AWARE admission gate (LANDED).
   //
-  // The WI-261 Prong A case above does NOT seed hive_members, so on B
+  // The WI-261 Prong A case above does NOT seed pot_members, so on B
   // `myHiveHome = hiveHomeProjectionSlug ?? potHomeSlugForHarness(ws, B-slug)`
   // resolves null and STEP 1 is SKIPPED — it only exercises the APPLY-layer drop.
   // This case SEEDS membership so STEP 1's admission path actually FIRES: B admits
@@ -954,16 +954,16 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
   // throwaway DB (createOrgTestDb + HARNESS_ADMIN/DATABASE_URL — the established
   // _baseline-coord-fixture pattern, see two-peer-convergence.integration.test.ts) and
   // seed THERE:
-  //   - `hives`         — one row for HIVE_HOME (hive_members FKs it; needs a valid
+  //   - `hives`         — one row for HIVE_HOME (pot_members FKs it; needs a valid
   //                       raw-32 base64 Ed25519 public_key).
-  //   - `hive_members`  — one row for A's identity (idA.userId + a device_attestations
-  //                       entry carrying idA.devicePubkey), hive_home_slug = HIVE_HOME.
+  //   - `pot_members`  — one row for A's identity (idA.userId + a device_attestations
+  //                       entry carrying idA.devicePubkey), pot_home_slug = HIVE_HOME.
   //                       This is what resolveHiveMemberDeviceSet returns A's pubkey from.
   //   - `harness_registry` — B's project `{ slug: B_SLUG, hive_slug: HIVE_HOME }` so
   //                       potHomeSlugForHarness(ws, B_SLUG) resolves HIVE_HOME (A's
   //                       home project + a hive entry too, for symmetry).
   // A's announce carries A's REAL device_pubkey + github_user_id (the identity override),
-  // matched to the seeded hive_members row.
+  // matched to the seeded pot_members row.
   //
   // ASSERTIONS:
   //  (1) PASSES — B ADMITS A's log: `handleB.admitted.has(handleA.ownLog.keyHex)` flips
@@ -981,7 +981,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
       const HIVE_HOME = 'hive-repo-home'; // the shared hive-home both members belong to
 
       // ── Env-route the PROCESS-GLOBAL getOrgPg() at a migrated membership DB so
-      //    boot.ts STEP 1's getOrgPg()-backed reads see seeded hive_members/hives/registry. ──
+      //    boot.ts STEP 1's getOrgPg()-backed reads see seeded pot_members/hives/registry. ──
       const orgDb: OrgTestDb = await createOrgTestDb();
       const prevAdminUrl = process.env.HARNESS_ADMIN_DATABASE_URL;
       const prevAppUrl = process.env.HARNESS_DATABASE_URL;
@@ -1021,26 +1021,26 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         await orgDb.cleanup();
       });
 
-      // ── Identities up front — A's seeded hive_members row MUST match A's announce. ──
+      // ── Identities up front — A's seeded pot_members row MUST match A's announce. ──
       const idA = makeIdentityOverride('alice', 42, 'kc-alice');
       const idB = makeIdentityOverride('bob', 7, 'kc-bob');
 
       // ── Seed membership in the env-routed (getOrgPg) DB. adminSql is harness_admin
       //    (RLS-bypass superuser), so no app.workspace_id GUC is needed. ──
-      // A valid raw-32 base64 Ed25519 pubkey for the hives row (hive_members FKs hives).
+      // A valid raw-32 base64 Ed25519 pubkey for the hives row (pot_members FKs hives).
       const { publicKey: hivePub } = generateKeyPairSync('ed25519');
       const hivePubkeyB64 = rawPubkeyBase64(hivePub);
       await orgDb.adminSql`
-        INSERT INTO harness_shared.hives
-          (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+        INSERT INTO harness_shared.pots
+          (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, decode(${hivePubkeyB64}, 'base64'),
                 'kc-hive-home', 'Hive Home', null, 1, 1)
       `;
-      // A's hive_members row — the device_attestations entry carries A's REAL announce
+      // A's pot_members row — the device_attestations entry carries A's REAL announce
       // device_pubkey, so resolveHiveMemberDeviceSet(ws, HIVE_HOME) contains it.
       await orgDb.adminSql`
-        INSERT INTO harness_shared.hive_members
-          (workspace_id, hive_home_slug, github_user_id, github_username,
+        INSERT INTO harness_shared.pot_members
+          (workspace_id, pot_home_slug, github_user_id, github_username,
            device_attestations, revoked_pubkeys, binding_status)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${idA.userId}, 'alice',
                 ${JSON.stringify([
@@ -1192,7 +1192,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
 
       // ── (1) THE NEW VALUE: poll until B ADMITS A's remote log via STEP 1. This is the
       //    landed P-001 path — B admits A's out-of-scope log because A's verified
-      //    device_pubkey ∈ B's hive member device set (the seeded hive_members). A miss
+      //    device_pubkey ∈ B's hive member device set (the seeded pot_members). A miss
       //    FAILS the test (a real STEP-1 regression). `handleB.admitted` is keyed by
       //    log_core_key (= ownLog.keyHex), seeded with B's own log + every admitted remote. ──
       const bAdmittedA =
@@ -1206,7 +1206,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
       expect(
         bAdmittedA,
         "B did NOT admit A's same-hive cross-member log — WI-259 STEP 1 (P-001) membership-aware " +
-          'admission did not fire (check the seeded hives/hive_members/registry resolve under getOrgPg())',
+          'admission did not fire (check the seeded hives/pot_members/registry resolve under getOrgPg())',
       ).toBe(true);
 
       // ── (2) WI-259 P-002 CLOSE GATE: A's same-hive cross-member feature now LANDS in B's
@@ -1214,7 +1214,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
       //    unforgeable receiver-stamped sourceLogKeyHex → A's admitted device
       //    (resolveAuthorDevice, mirroring boot.ts:607/1009) and the P-002 guard applies it
       //    because that device ∈ B's hive member device set (resolveHiveMemberDeviceSet over
-      //    the seeded hive_members). Content stays under A's MEMBER slug — the membership-aware
+      //    the seeded pot_members). Content stays under A's MEMBER slug — the membership-aware
       //    design keeps cross-member content addressable by its author's slug, NOT remapped to
       //    B_SLUG or HIVE_HOME. (Was the documented pre-P-002 absence; flipped now P-002 landed.) ──
       for (let i = 0; i < 6; i++) {
@@ -1305,14 +1305,14 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
       const { publicKey: hivePub } = generateKeyPairSync('ed25519');
       const hivePubkeyB64 = rawPubkeyBase64(hivePub);
       await orgDb.adminSql`
-        INSERT INTO harness_shared.hives
-          (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+        INSERT INTO harness_shared.pots
+          (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, decode(${hivePubkeyB64}, 'base64'),
                 'kc-owner-home', 'Owner Home', null, 1, 1)
       `;
       await orgDb.adminSql`
-        INSERT INTO harness_shared.hive_members
-          (workspace_id, hive_home_slug, github_user_id, github_username,
+        INSERT INTO harness_shared.pot_members
+          (workspace_id, pot_home_slug, github_user_id, github_username,
            device_attestations, revoked_pubkeys, binding_status)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${idMember.userId}, 'member',
                 ${JSON.stringify([
@@ -1445,7 +1445,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
       expect(
         ownerAdmittedMember,
         "the owner did NOT admit the member's log — STEP-1 membership admission did not fire " +
-          '(seeded hives/hive_members/registry must resolve under getOrgPg())',
+          '(seeded hives/pot_members/registry must resolve under getOrgPg())',
       ).toBe(true);
 
       // ── THE PROOF: the member's cross-member feature LANDS in the owner's PG (getOrgPg/orgDb)
@@ -1477,24 +1477,24 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
   // ──────────────────────────────────────────────────────────────────────────
   // WI-259 P-004 — CONTENT-BEFORE-MEMBERSHIP defer / replay (the capstone).
   //
-  // A member A's content op and A's `hive_members` row federate as SEPARATE ops, and the merge
+  // A member A's content op and A's `pot_members` row federate as SEPARATE ops, and the merge
   // applies ops by LOG POSITION, not a global cross-table sort — so on peer B a cross-member
-  // content op can reach the apply seam BEFORE the `hive_members` op that adds its author. The
+  // content op can reach the apply seam BEFORE the `pot_members` op that adds its author. The
   // P-002 membership guard then sees A ∉ members and would DROP it, and the cursor advances past
   // it → lost. P-004 DEFERS such an op (author device known, just not yet a member) into the
-  // PendingMembershipContent buffer and RE-APPLIES it when A's `hive_members` row applies (the
+  // PendingMembershipContent buffer and RE-APPLIES it when A's `pot_members` row applies (the
   // onMemberApplied drain in projections/hive-members.ts).
   //
   // The full two-peer swarm rig (the cases above) CANNOT exercise this: there membership is
-  // pre-seeded in PG, so the `hive_members` projection apply — which FIRES the drain — never runs
-  // for A. This case drives the REAL projections (issues + hive_members) + the REAL buffer + the
+  // pre-seeded in PG, so the `pot_members` projection apply — which FIRES the drain — never runs
+  // for A. This case drives the REAL projections (issues + pot_members) + the REAL buffer + the
   // REAL drain hook directly, over ONE migrated workspace PG (production's single-PG shape: the
-  // guard's getOrgPg membership read and the hive_members write hit the SAME DB), so the ordering
+  // guard's getOrgPg membership read and the pot_members write hit the SAME DB), so the ordering
   // is deterministic and every real seam (decideMemberContentOp → defer → invalidate → drain →
   // re-apply → resolveHiveMemberDeviceSet) is on the path.
   // ──────────────────────────────────────────────────────────────────────────
   it(
-    'WI-259 P-004: a cross-member content op arriving BEFORE the author’s membership is DEFERRED, then DRAINS + lands when the member’s hive_members row applies',
+    'WI-259 P-004: a cross-member content op arriving BEFORE the author’s membership is DEFERRED, then DRAINS + lands when the member’s pot_members row applies',
     async () => {
       const HIVE_HOME = 'hive-home-p004';
       const B_SLUG = 'joined-member-b'; // the receiving member harness (≠ A's author slug)
@@ -1542,19 +1542,19 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
         await orgDb.cleanup();
       });
 
-      // Seed the hive row (hive_members FKs it; needs a valid raw-32 base64 Ed25519 pubkey).
-      // NOT A's hive_members row yet — that arrives in step (2), the whole point of the race.
+      // Seed the hive row (pot_members FKs it; needs a valid raw-32 base64 Ed25519 pubkey).
+      // NOT A's pot_members row yet — that arrives in step (2), the whole point of the race.
       const { publicKey: hivePub } = generateKeyPairSync('ed25519');
       const hivePubkeyB64 = rawPubkeyBase64(hivePub);
       await orgDb.adminSql`
-        INSERT INTO harness_shared.hives
-          (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+        INSERT INTO harness_shared.pots
+          (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, decode(${hivePubkeyB64}, 'base64'),
                 'kc-hive-home', 'Hive Home', null, 1, 1)
       `;
 
       // ── The REAL projections, bound to the SAME workspace DB + the SAME buffer instance (exactly
-      //    as boot.ts wires them: the content projection defers, the hive_members projection drains). ──
+      //    as boot.ts wires them: the content projection defers, the pot_members projection drains). ──
       const buffer = new PendingMembershipContent();
       const issuesProj = buildIssuesProjection({
         workspaceId: WORKSPACE_ID,
@@ -1568,7 +1568,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
       });
       const membersProj = buildHiveMembersProjection({
         workspaceId: WORKSPACE_ID,
-        harnessSlug: HIVE_HOME, // the hive_members projection demuxes on the hive-home slug
+        harnessSlug: HIVE_HOME, // the pot_members projection demuxes on the hive-home slug
         sql: orgDb.adminSql,
         pendingMemberContent: buffer, // shares the buffer → its apply drains the deferred content
       });
@@ -1609,7 +1609,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
       ).toBeUndefined();
       expect(buffer.size(), 'the dropped cross-member op must be buffered, not lost').toBe(1);
 
-      // ── (2) A's hive_members row applies → the onMemberApplied DRAIN re-applies the deferred issue.
+      // ── (2) A's pot_members row applies → the onMemberApplied DRAIN re-applies the deferred issue.
       //    The projection apply invalidates the member-set cache (so the re-check reads fresh) THEN
       //    drains the buffer for A's device + re-runs the deferred writeToPg, which now sees A ∈
       //    members and applies it. This is the P-004 fix the swarm rig can't reach. ──

@@ -23,7 +23,7 @@
  * both VERIFIED members, both authoring the shared home backlog. Both boot
  * `harnessSlug = HIVE_HOME` on the hive binding and admit each other via the REAL
  * member-set admission (D-002: admit a log iff its announce device ∈ the hive's
- * federated `hive_members`) — NO membership/admission LOGIC is stubbed.
+ * federated `pot_members`) — NO membership/admission LOGIC is stubbed.
  * `verifyBindingOverride` stands in ONLY for the unreachable GitHub gist-attestation
  * I/O (the same infra stub every faithful sidecar repro uses).
  *
@@ -238,7 +238,7 @@ async function bootViaSidecarHost(args: {
 }
 
 /** env-route getOrgPg at a migrated org DB (peer A's PG view + the workspace-shared
- *  hive_members / hives / directory-cache the REAL admission reads). */
+ *  pot_members / hives / directory-cache the REAL admission reads). */
 function installEnv(orgDb: OrgTestDb, workspaceId: string): void {
   const prev = {
     adminUrl: process.env.HARNESS_ADMIN_DATABASE_URL,
@@ -286,11 +286,11 @@ const memberAtt = (login: string, pk: string) =>
     },
   ]);
 
-/** Seed a hive_members roster row DIRECTLY in a (migrated) DB. */
+/** Seed a pot_members roster row DIRECTLY in a (migrated) DB. */
 async function seedRosterRow(sql: postgres.Sql, hiveHome: string, workspaceId: string, id: Identity): Promise<void> {
   await sql`
-    INSERT INTO harness_shared.hive_members
-      (workspace_id, hive_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status)
+    INSERT INTO harness_shared.pot_members
+      (workspace_id, pot_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status)
     VALUES (${workspaceId}, ${hiveHome}, ${id.userId}, ${id.login},
             ${memberAtt(id.login, id.devicePubkey)}::text::jsonb, '{}'::text[], 'verified')
   `;
@@ -415,12 +415,12 @@ async function bootTwoDeviceHive(wsId: string, hiveHome: string): Promise<{
   // BOTH devices as verified members → the real member-set admission admits each
   // peer's log on the other. (No membership LOGIC stubbed.)
   await dbA.adminSql`
-    INSERT INTO harness_shared.hives
-      (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+    INSERT INTO harness_shared.pots
+      (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
     VALUES (${wsId}, ${hiveHome}, decode(${hivePubkeyB64}, 'base64'), 'kc-home', 'Home', null, 1, 1)
   `;
   await dbA.adminSql`
-    INSERT INTO harness_shared.hive_directory_cache (workspace_id, payload, updated_at)
+    INSERT INTO harness_shared.pot_directory_cache (workspace_id, payload, updated_at)
     VALUES (${wsId}, ${JSON.stringify({
       hives: [{ hivePubkey: hivePubkeyB64, ownerDevicePubkey: idA.devicePubkey }],
     })}::text::jsonb, 1)

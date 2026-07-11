@@ -17,7 +17,7 @@
  * workspace-isolation policy.
  *
  * That is a SILENT cross-tenant leak waiting to happen: a new federated table
- * (this was a live footgun authoring mig-317 / hive_policy — `ENABLE ROW LEVEL
+ * (this was a live footgun authoring mig-317 / pot_policy — `ENABLE ROW LEVEL
  * SECURITY` + the policy were attached by hand) that ships its capture trigger
  * and projection but FORGETS `ENABLE ROW LEVEL SECURITY`, or attaches a policy
  * that is not workspace-scoped, would federate workspace A's rows and expose them
@@ -175,9 +175,9 @@ describe('federated CDC tables — workspace RLS is enabled + policy present (te
 
   it('sanity: a representative federated table reports RLS enabled', async () => {
     const enabled = await rlsEnabled();
-    // hive_settings has carried workspace RLS since mig-186; if THIS is absent the
+    // pot_settings has carried workspace RLS since mig-186; if THIS is absent the
     // introspection/migration is broken, not the invariant.
-    expect(enabled.has('hive_settings'), 'RLS introspection returned nothing — query/migration broken').toBe(true);
+    expect(enabled.has('pot_settings'), 'RLS introspection returned nothing — query/migration broken').toBe(true);
   });
 
   it('every workspace-scoped federated table has RLS ENABLED (except documented RLS_EXEMPT)', async () => {

@@ -45,7 +45,7 @@
  * `DBOS.launch()`, like the feature-pipeline + coord-program workflows.
  */
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
-import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
+import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { queueConcurrency } from './queue-concurrency';
@@ -818,7 +818,11 @@ export const durableSpawnFireWorkflow = idempotentRegisterWorkflow('durableSpawn
   }),
 );
 
-export const durableSpawnQueue = new WorkflowQueue('durable-spawn-fire', { concurrency: queueConcurrency(8) });
+// WI-4015: idempotentWorkflowQueue guards the module-top-level-DBOS-singleton class
+// (see idempotent-register-workflow.ts's doc comment).
+export const durableSpawnQueue = idempotentWorkflowQueue('durable-spawn-fire', () =>
+  new WorkflowQueue('durable-spawn-fire', { concurrency: queueConcurrency(8) }),
+);
 
 /**
  * Durably fire an autonomous agent launch. Returns `true` when the durable workflow

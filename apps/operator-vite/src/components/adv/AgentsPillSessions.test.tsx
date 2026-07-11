@@ -53,30 +53,33 @@ describe('searchHitStreamUrl', () => {
       { ts: '2026-07-09T12:00:00Z', owner: 'su-abc' },
       'red gate',
     );
+    // base = inactive (active:null) ⇒ ended=1 appended (WI-3990).
     expect(url).toBe(
-      '/api/adv/session/thinking?sessionId=sid-1&owner=su-abc&find=red%20gate&anchorTs=2026-07-09T12%3A00%3A00Z',
+      '/api/adv/session/thinking?sessionId=sid-1&owner=su-abc&find=red%20gate&anchorTs=2026-07-09T12%3A00%3A00Z&ended=1',
     );
   });
 
   it('claude: owner falls back active.ownerId → session.coordOwnerId → omitted', () => {
     const s = { sourceKind: 'claude', sessionId: 'sid-1' };
+    // ACTIVE result (a live roster agent) → transcript is live on disk, NO ended flag.
     expect(
       searchHitStreamUrl({ ...s, active: rosterAgent({ ownerId: 'su-live' }), session: null }, { ts: null, owner: null }, 'q!'),
     ).toBe('/api/adv/session/thinking?sessionId=sid-1&owner=su-live&find=q!');
+    // INACTIVE result (ended session) → ended=1 so the route rematerializes / terminates.
     expect(
       searchHitStreamUrl({ ...s, active: null, session: endedRow({ coordOwnerId: 'su-dead' }) }, { ts: null, owner: null }, 'q!'),
-    ).toBe('/api/adv/session/thinking?sessionId=sid-1&owner=su-dead&find=q!');
+    ).toBe('/api/adv/session/thinking?sessionId=sid-1&owner=su-dead&find=q!&ended=1');
     expect(searchHitStreamUrl({ ...s, ...base }, { ts: null, owner: null }, 'q!')).toBe(
-      '/api/adv/session/thinking?sessionId=sid-1&find=q!',
+      '/api/adv/session/thinking?sessionId=sid-1&find=q!&ended=1',
     );
   });
 
-  it('omp keys by thread id; codex by rollout uuid', () => {
+  it('omp keys by thread id; codex by rollout uuid (inactive ⇒ ended=1)', () => {
     expect(searchHitStreamUrl({ ...base, sourceKind: 'omp', sessionId: 'tid-9' }, { ts: null, owner: null }, 'x')).toBe(
-      '/api/adv/session/thinking?ompThreadId=tid-9&find=x',
+      '/api/adv/session/thinking?ompThreadId=tid-9&find=x&ended=1',
     );
     expect(searchHitStreamUrl({ ...base, sourceKind: 'codex', sessionId: 'uuid-7' }, { ts: null, owner: null }, 'x')).toBe(
-      '/api/adv/session/thinking?codexRolloutId=uuid-7&find=x',
+      '/api/adv/session/thinking?codexRolloutId=uuid-7&find=x&ended=1',
     );
   });
 
@@ -104,23 +107,36 @@ describe('searchResultResumeTarget (pure — Fork/Resume-button wiring, WI-3882)
       searchResultResumeTarget({ active: null, session: endedRow({ agent: 'codex', sessionId: 'sid-1' }) }),
     ).toBeNull();
   });
+  it('WI-4009: active omp result → null (fork is claude-only; forking omp live would collide)', () => {
+    expect(
+      searchResultResumeTarget({ active: rosterAgent({ agent: 'omp', sessionId: null, ompThreadId: 'thread-1' }), session: null }),
+    ).toBeNull();
+  });
+  it('WI-4009: inactive omp result still resumes fine (no fork flag involved)', () => {
+    expect(
+      searchResultResumeTarget({ active: null, session: endedRow({ agent: 'omp', ompThreadId: 'thread-1' }) }),
+    ).toEqual({ sessionId: 'thread-1', live: false });
+  });
   it('neither active nor session → null', () => {
     expect(searchResultResumeTarget({ active: null, session: null })).toBeNull();
   });
 });
 
 describe('endedSessionStreamUrl', () => {
-  it('claude leg: sessionId (+ owner isolation hint when recorded)', () => {
+  it('claude leg: sessionId (+ owner isolation hint when recorded), always ended=1', () => {
+    // Every ended-session URL carries ended=1 (WI-3990) — the session has ENDED,
+    // so the thinking route must rematerialize an archived transcript or terminate,
+    // never poll forever for a "first turn" that will never come.
     expect(endedSessionStreamUrl(endedRow({ sessionId: 's1', coordOwnerId: 'su-a' }))).toBe(
-      '/api/adv/session/thinking?sessionId=s1&owner=su-a',
+      '/api/adv/session/thinking?sessionId=s1&owner=su-a&ended=1',
     );
-    expect(endedSessionStreamUrl(endedRow({ sessionId: 's1' }))).toBe('/api/adv/session/thinking?sessionId=s1');
+    expect(endedSessionStreamUrl(endedRow({ sessionId: 's1' }))).toBe('/api/adv/session/thinking?sessionId=s1&ended=1');
   });
 
-  it('omp + codex legs, and null when no handle was recorded', () => {
-    expect(endedSessionStreamUrl(endedRow({ ompThreadId: 't1' }))).toBe('/api/adv/session/thinking?ompThreadId=t1');
+  it('omp + codex legs (ended=1), and null when no handle was recorded', () => {
+    expect(endedSessionStreamUrl(endedRow({ ompThreadId: 't1' }))).toBe('/api/adv/session/thinking?ompThreadId=t1&ended=1');
     expect(endedSessionStreamUrl(endedRow({ id: 42, agent: 'codex' }))).toBe(
-      '/api/adv/session/thinking?codexSessionKey=42',
+      '/api/adv/session/thinking?codexSessionKey=42&ended=1',
     );
     expect(endedSessionStreamUrl(endedRow({ agent: 'claude' }))).toBeNull();
   });

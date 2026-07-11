@@ -22,6 +22,7 @@ import {
   type PresenceRecord,
 } from '@papercusp/coordination/presence';
 import { deriveAgentRole, deriveFleetMembership, type AgentIdentity } from './identity';
+import { getCachedMachineCapabilityTags } from './machine-capability-tags';
 import { writeSessionBrief } from '../../session-brief';
 import {
   appendFleetMembershipEvent,
@@ -106,7 +107,14 @@ export async function writePresence(
   // the file-header note above. Pass `input.host`/`input.pid` through exactly
   // as given (undefined for every current in-repo caller); the store's own
   // column defaults apply.
-  await store.write(identity, { ...input, agentRole, potSlug });
+  //
+  // WI-1546 (Gate DG-3 follow-up): capability tags ARE safe to resolve from
+  // this process — unlike host/pid they're a MACHINE-level fact (docker/pg
+  // availability), true for every process on this box, not a specific agent's
+  // OS process. Memoized per-process (see machine-capability-tags.ts) so only
+  // the first write on a given operator instance pays the docker probe.
+  const capabilityTags = input.capabilityTags ?? (await getCachedMachineCapabilityTags());
+  await store.write(identity, { ...input, agentRole, potSlug, capabilityTags });
 
   // Fleet membership (named-su-agent-fleets-2026-06-29 P-005): the SOFT presence label,
   // sourced from env at registration (PAPERCUSP_FLEET_SLUG / PAPERCUSP_FLEET_ROLE), the

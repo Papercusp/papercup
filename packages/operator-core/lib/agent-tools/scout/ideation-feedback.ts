@@ -14,6 +14,12 @@
  * lost, open wi ⇒ pending) + a `summary` roll-up — so the pass sees not just what the grader
  * SAID but what actually SHIPPED. Read-only, origin-scoped to 'su-ideate', so it NEVER touches
  * Scout's per-lens weight learning (which reads origin='scout').
+ *
+ * P-004 adds `lensWinRates[]`: the same outcome data tallied per {@link SuIdeationLens}
+ * (grade-dominated like Scout's weight math), with an anti-strangle sampling weight
+ * (samplingWeightsWithFloor) baked in — computed at READ TIME on every call, never written
+ * to scout_lens_weights (D-003). Sentinel ('su-ideate'-lens / unlensed) filings appear in
+ * `outcomes`/`summary` but in no lens row.
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
@@ -21,10 +27,13 @@ import type { ChangeFeedEntry } from '../../curation/change-feed';
 import { gatherGraderFeedbackPriming } from '../../scout/ideator-feedback-priming';
 import {
   classifyIdeaOutcome,
+  computeLensOutcomes,
+  samplingWeightsWithFloor,
   type IdeaOutcome,
   type RoutedIdeaProvenance,
 } from '../../scout/outcome-feedback';
 import { buildScoutOutcomeReaders } from '../../scout/routed-ledger';
+import { SU_IDEATION_LENSES, type SuIdeationLens } from '../../scout/types';
 
 /** One su-ideate filing joined to its routed artifact's fate (P-003). */
 export interface IdeationOutcomeEntry {
@@ -86,6 +95,7 @@ export async function runIdeationFeedback(args: {
 
   let outcomes: IdeationOutcomeEntry[] = [];
   const summary = { won: 0, lost: 0, pending: 0, graded: 0, total: 0 };
+  let lensWinRates: SuLensWinRate[] = [];
   let outcomesError: string | undefined;
   try {
     const readers = buildScoutOutcomeReaders({ origin: 'su-ideate', ...scope });
@@ -112,6 +122,30 @@ export async function runIdeationFeedback(args: {
       summary[o.outcome] += 1;
       if (o.humanGrade != null) summary.graded += 1;
     }
+
+    // P-004: per-su-lens win-rates, READ-TIME only (D-003 — no scout_lens_weights
+    // write; Scout's persist→read-back floor becomes a same-call floor here).
+    // Grade-dominated tally (a graded filing counts as fractional win/loss mass),
+    // sentinel/unlensed rows land in no lens row but stay in the report total.
+    const report = computeLensOutcomes(provenance, completions, { lenses: SU_IDEATION_LENSES });
+    const floored = samplingWeightsWithFloor(
+      Object.fromEntries(
+        SU_IDEATION_LENSES.map((l) => [l, report.byLens[l].weight]),
+      ) as Partial<Record<SuIdeationLens, number>>,
+      { lenses: SU_IDEATION_LENSES },
+    );
+    lensWinRates = SU_IDEATION_LENSES.map((l) => {
+      const s = report.byLens[l];
+      return {
+        lens: l,
+        ideas: s.routed,
+        won: s.won,
+        lost: s.lost,
+        pending: s.pending,
+        winRate: s.winRate,
+        weight: floored[l],
+      };
+    });
   } catch (err) {
     // Fail-open (D-016): a broken outcome join degrades to the pre-P-003
     // priming-only read instead of failing the whole grounding pre-pass.
@@ -124,6 +158,7 @@ export async function runIdeationFeedback(args: {
     count: entries.length,
     outcomes,
     summary,
+    lensWinRates,
     ...(outcomesError ? { outcomesError } : {}),
   };
 }
@@ -131,7 +166,7 @@ export async function runIdeationFeedback(args: {
 export default defineTool({
   name: 'blender:ideation-feedback',
   description:
-    "Your IDEATE-pass read of your OWN past proposals: the owner/Mug grades + critiques on features you filed (improvements:capture kind:'feature') as a grader-feedback priming block, PLUS each filing's real-world outcome (outcomes[]: won / lost / pending from the routed artifact's fate — resolved ⇒ won, deprecated ⇒ lost) with a summary roll-up. Read-only; su-ideate origin only — never touches Blender's lens-weight learning.",
+    "Your IDEATE-pass read of your OWN past proposals: the owner/Mug grades + critiques on features you filed (improvements:capture kind:'feature') as a grader-feedback priming block, PLUS each filing's real-world outcome (outcomes[]: won / lost / pending from the routed artifact's fate — resolved ⇒ won, deprecated ⇒ lost) with a summary roll-up, PLUS lensWinRates[] — per-ideation-lens win-rates with a floored sampling weight, so you can lean into the stances that land without abandoning the rest. Read-only; su-ideate origin only — never touches Blender's lens-weight learning.",
   capability: 'curation:read',
   guidance: {
     when: 'Opening an IDEATE-mode grounding pre-pass — pull this to see how your past feature proposals were graded AND how they actually fared (shipped, deprecated, still pending), so the pass builds on what landed / what the grader flagged rather than starting cold. Pairs with curation:state-of-pot + rubrics:list + scorecards:freshness as the IDEATE grounding reads.',

@@ -4,7 +4,7 @@
 // design. Mounts the tab against a realistic dev.coordFeed snapshot (useSyncQuery
 // + nuqs mocked, the pinned sibling pattern — see admin/GitClient.test.tsx) and
 // asserts:
-//   - Q&A is the default front door,
+//   - the unified inbox is the default front door,
 //   - the stale "Needs you" pill is gone (its home is now Create → Queue),
 //   - the Raw events log is set apart but keeps raw traffic reachable,
 //   - human category filters replace the raw 12-kind wall by default,
@@ -15,13 +15,13 @@
 // Guards against render-time crashes the typecheck can't catch.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 // nuqs: every useQueryState call needs the adapter context — stub each param to
 // a stable [value, noop]. The component reads `conv` (view), the activity filters
-// (fkind array, fadvanced, fagent/fplan/fq strings, fmsg selection). Default view is threads.
+// (fkind array, fadvanced, fagent/fplan/fq strings, fmsg selection). Default view is inbox.
 const nuqsState: Record<string, unknown> = {
-  conv: 'threads',
+  conv: 'inbox',
   fkind: [],
   fadvanced: 'closed',
   fagent: '',
@@ -41,9 +41,11 @@ const nuqsState: Record<string, unknown> = {
   opc: null,
 };
 import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
+const { setQueryStates } = vi.hoisted(() => ({ setQueryStates: vi.fn() }));
 vi.mock('nuqs', () => ({
   ...nuqsParsers,
   useQueryState: (key: string) => [nuqsState[key], vi.fn()],
+  useQueryStates: () => [{}, setQueryStates],
   parseAsString: { withDefault: () => ({}) },
   parseAsStringEnum: () => ({ withDefault: () => ({}) }),
   parseAsArrayOf: () => ({ withDefault: () => ({}) }),
@@ -138,7 +140,45 @@ let mockResult: Record<string, unknown> = {
   invalidate: vi.fn(),
   transport: 'SSE',
 };
-vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => mockResult }));
+const unifiedRows = [
+  {
+    id: 'messages:msg-1',
+    source: 'messages',
+    sourceId: 'msg-1',
+    kind: 'handoff',
+    state: 'delivered',
+    title: 'pick up the UI work',
+    preview: 'the scoping is done, your turn',
+    actor: 'architect',
+    recipient: 'worker',
+    harnessSlug: 'papercusp',
+    relatedRef: 'F-042',
+    updatedAt: Date.now() - 60_000,
+  },
+  {
+    id: 'threads:c-1',
+    source: 'threads',
+    sourceId: 'c-1',
+    kind: 'question',
+    state: 'open',
+    title: 'why does the watchdog recycle the host?',
+    preview: '#infra',
+    actor: 'oracle',
+    harnessSlug: 'papercusp',
+    updatedAt: Date.now() - 120_000,
+  },
+];
+let mockUnifiedResult: Record<string, unknown> = {
+  data: unifiedRows,
+  loading: false,
+  fetching: false,
+  error: null,
+  invalidate: vi.fn(),
+  transport: 'SSE',
+};
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: ({ queryName }: { queryName: string }) => queryName === 'conversations.unified' ? mockUnifiedResult : mockResult,
+}));
 
 // @tanstack/react-virtual: the agent-chats rail (U1) renders through a
 // virtualized RichGrid (virtualMode). jsdom has no layout engine, so the REAL
@@ -180,7 +220,8 @@ vi.mock('@/app/harness/ChatPanel', () => ({
 import AdvConversationsTab from './AdvConversationsTab';
 
 beforeEach(() => {
-  nuqsState.conv = 'threads';
+  setQueryStates.mockReset();
+  nuqsState.conv = 'inbox';
   nuqsState.fkind = [];
   nuqsState.fadvanced = 'closed';
   nuqsState.fagent = '';
@@ -198,6 +239,7 @@ beforeEach(() => {
   nuqsState.msg = null;
   nuqsState.opc = null;
   mockResult = { data: feedRows, loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'SSE' };
+  mockUnifiedResult = { data: unifiedRows, loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'SSE' };
   vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ conversations: [] }) })));
 });
 
@@ -207,7 +249,7 @@ afterEach(() => {
 });
 
 describe('AdvConversationsTab — Create-style shell', () => {
-  it('opens on Q&A with the persistent nav sidebar, the + Ask action, and the view switcher', () => {
+  it('opens on the unified inbox with the compact source rail and + Ask action', () => {
     render(<AdvConversationsTab />);
 
     // design-pass (2026-06-23): the tab now mirrors the Create dock's sidebar│main
@@ -217,20 +259,35 @@ describe('AdvConversationsTab — Create-style shell', () => {
     // The Create-style primary action ("+ New plan" ⇒ "+ Ask").
     expect(screen.getByRole('button', { name: /Ask the agents/i })).toBeTruthy();
     // The view switcher moved into the sidebar rail (still role=tab).
-    expect(screen.getByRole('tab', { name: 'Q&A' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Conversations', selected: true })).toBeTruthy();
     // The raw event log is relabelled + set apart, but still reachable.
     expect(screen.getByRole('tab', { name: 'Raw events' })).toBeTruthy();
     // The stale "Needs you" pill is removed — its canonical home is Create → Queue.
     expect(screen.queryByRole('button', { name: /Needs you/i })).toBeNull();
     // The active view's section header still labels the rail.
-    expect(screen.getByText(/Question & discussion threads/i)).toBeTruthy();
+    expect(screen.getByText('pick up the UI work')).toBeTruthy();
+    expect(screen.getByText('why does the watchdog recycle the host?')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Open pick up the UI work' })).toBeTruthy();
+  });
+
+  it('opens a unified row with one atomic view + selection route update', () => {
+    render(<AdvConversationsTab />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open pick up the UI work' }));
+    expect(setQueryStates).toHaveBeenCalledTimes(1);
+    expect(setQueryStates).toHaveBeenCalledWith({
+      conv: 'messages',
+      conversation: null,
+      thread: null,
+      chat: null,
+      msg: 'msg-1',
+    });
   });
 
   // The five views each get a switcher button in the sidebar rail (labels are
   // pinned copy; the per-view one-liner is now the button's tooltip, mirroring
   // Create's tooltip'd Plans/Queue/Sessions buttons).
   it('renders a switcher button for every view', () => {
-    const LABELS = ['Q&A', 'Deliberations', 'Agent chats', 'Messages', 'Raw events'];
+    const LABELS = ['Conversations', 'Q&A', 'Deliberations', 'Agent chats', 'Messages', 'Raw events'];
     render(<AdvConversationsTab />);
     for (const label of LABELS) {
       expect(screen.getByRole('tab', { name: label })).toBeTruthy();
@@ -255,14 +312,17 @@ describe('AdvConversationsTab — Create-style shell', () => {
     expect(primary?.contains(raw)).toBe(false);
     expect(diagnostic?.contains(raw)).toBe(true);
     const btnRule = styles.match(/\.pc-advconv__navbtn\s*{[^}]*}/)?.[0] ?? '';
-    expect(btnRule).toContain('flex: 1');
+    expect(btnRule).toContain('width: 40px');
     expect(styles).toContain('.pc-advconv__navbtn.is-active::before');
     expect(styles).toContain('.pc-advconv__navlabel { display: none; }');
+    expect(styles).toContain('.pc-advconv__shell:not(.is-detail-open) .pc-advconv__main:not(.pc-advconv__main--wide)');
+    expect(styles).toContain('.pc-advconv__shell.is-detail-open .pc-advconv__inbox');
+    expect(styles).toContain('.pc-advconv__shell.is-detail-open .pc-advconv__back');
   });
 
   it('connects the selected tab to one labelled detail panel', () => {
     render(<AdvConversationsTab />);
-    const selected = screen.getByRole('tab', { name: 'Q&A', selected: true });
+    const selected = screen.getByRole('tab', { name: 'Conversations', selected: true });
     const panel = screen.getByRole('tabpanel');
     expect(selected.getAttribute('aria-controls')).toBe(panel.id);
     expect(panel.getAttribute('aria-labelledby')).toBe(selected.id);
@@ -274,16 +334,12 @@ describe('AdvConversationsTab — Create-style shell', () => {
     expect(await screen.findByPlaceholderText(/What do you want to ask the fleet/i)).toBeTruthy();
   });
 
-  // design-pass: Conversations now honors its DECLARED pink tab accent (#ec4899,
-  // AdvShell ADV_TABS) instead of silently falling back to the body sky --accent —
-  // so the pink nav badge actually reaches the UI. Guards against re-introducing the
-  // var(--accent, …) fallback. (Live-visual is build-gated; this locks the emit.)
-  it('emits the declared pink tab accent (#ec4899) at the root, not the sky fallback', () => {
+  it('uses the semantic accent token instead of a component-local brand color', () => {
     render(<AdvConversationsTab />);
     const styles = [...document.querySelectorAll('style')].map((s) => s.textContent).join('\n');
     const rootRule = styles.match(/\.pc-advconv\s*{[^}]*}/)?.[0] ?? '';
-    expect(rootRule).toContain('--advconv-accent: #ec4899');
-    expect(rootRule).toContain('--advconv-accent-strong: #f472b6');
+    expect(rootRule).toContain('--advconv-accent: var(--accent)');
+    expect(rootRule).not.toContain('#ec4899');
   });
 
   it('shows the Raw events log as the set-apart view with grouped filters', () => {
@@ -433,6 +489,18 @@ function stubComms(byUrl: Record<string, unknown>) {
   );
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+const response = (payload: unknown) => ({
+  ok: true,
+  status: 200,
+  json: async () => payload,
+});
+
 describe('AdvConversationsTab — unified communication views', () => {
   it('exposes a view tab for every communication type', () => {
     render(<AdvConversationsTab />);
@@ -483,6 +551,38 @@ describe('AdvConversationsTab — unified communication views', () => {
     render(<AdvConversationsTab />);
     expect(await screen.findByText('the host recycles every 12m')).toBeTruthy();
     expect(screen.getByText('looks like the watchdog threshold')).toBeTruthy();
+  });
+
+  it('keeps the newest deliberation when an earlier detail request resolves late', async () => {
+    nuqsState.conv = 'deliberations';
+    nuqsState.thread = 'th-a';
+    const first = deferred<ReturnType<typeof response>>();
+    const second = deferred<ReturnType<typeof response>>();
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (url.includes('/comms/threads/list')) return Promise.resolve(response({ items: [] }));
+      const body = JSON.parse(String(init?.body ?? '{}')) as { thread_id?: string };
+      return body.thread_id === 'th-a' ? first.promise : second.promise;
+    }));
+
+    const { rerender } = render(<AdvConversationsTab />);
+    await waitFor(() => expect(screen.getByRole('status', { name: 'Loading deliberation' })).toBeTruthy());
+    nuqsState.thread = 'th-b';
+    rerender(<AdvConversationsTab />);
+    await act(async () => {
+      second.resolve(response({
+        thread: { thread_id: 'th-b', title: 'newest thread', parent_kind: null, parent_ref: null, created_by: null, harness_slug: null, created_at: new Date().toISOString(), last_post_at: null, post_count: 1 },
+        posts: [{ id: 2, author_id: 'worker', body: 'newest detail', created_at: new Date().toISOString(), harness_slug: null }],
+      }));
+    });
+    expect(await screen.findByText('newest detail')).toBeTruthy();
+    await act(async () => {
+      first.resolve(response({
+        thread: { thread_id: 'th-a', title: 'stale thread', parent_kind: null, parent_ref: null, created_by: null, harness_slug: null, created_at: new Date().toISOString(), last_post_at: null, post_count: 1 },
+        posts: [{ id: 1, author_id: 'worker', body: 'stale detail', created_at: new Date().toISOString(), harness_slug: null }],
+      }));
+    });
+    expect(screen.queryByText('stale detail')).toBeNull();
+    expect(screen.getByText('newest detail')).toBeTruthy();
   });
 
   it('Agent chats view lists sessions and opens a transcript', async () => {
@@ -542,6 +642,42 @@ describe('AdvConversationsTab — unified communication views', () => {
     expect(screen.getByText('on it — opening the module')).toBeTruthy();
     // archived → no interactive panel
     expect(screen.queryByTestId('advconv-live-chat')).toBeNull();
+  });
+
+  it('keeps the newest agent chat when an earlier detail request resolves late', async () => {
+    nuqsState.conv = 'agentchats';
+    nuqsState.chat = 'chat-a';
+    const first = deferred<ReturnType<typeof response>>();
+    const second = deferred<ReturnType<typeof response>>();
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (url.includes('/comms/agent-chats/list')) return Promise.resolve(response({ items: [] }));
+      const body = JSON.parse(String(init?.body ?? '{}')) as { id?: string };
+      return body.id === 'chat-a' ? first.promise : second.promise;
+    }));
+
+    const { rerender } = render(<AdvConversationsTab />);
+    await waitFor(() => expect(screen.getByRole('status', { name: 'Loading chat' })).toBeTruthy());
+    nuqsState.chat = 'chat-b';
+    rerender(<AdvConversationsTab />);
+    const chat = (id: string, content: string) => ({
+      id,
+      harness_slug: null,
+      role: 'worker',
+      feature_id: null,
+      title: id,
+      created_at: Date.now(),
+      archived_at: Date.now(),
+      total_input_tokens: 0,
+      total_output_tokens: 0,
+      total_cost_usd_cents: 0,
+      turns: 1,
+      transcript: [{ role: 'assistant', content }],
+    });
+    await act(async () => { second.resolve(response({ chat: chat('chat-b', 'newest chat detail') })); });
+    expect(await screen.findByText('newest chat detail')).toBeTruthy();
+    await act(async () => { first.resolve(response({ chat: chat('chat-a', 'stale chat detail') })); });
+    expect(screen.queryByText('stale chat detail')).toBeNull();
+    expect(screen.getByText('newest chat detail')).toBeTruthy();
   });
 
   // WI-125: the conversations tab is no longer a read-only transcript browser —

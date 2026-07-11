@@ -4,7 +4,7 @@
  * (cross-machine-coord-parity-and-trust-2026-07-01 P-025 residual (a)).
  *
  * Drives REAL device-signed frames through the wiring singleton's actual
- * pipeline — verify → hive_members gate → shared_presence /
+ * pipeline — verify → pot_members gate → shared_presence /
  * shared_session_presence writers — over the same fake-swarm/Protomux harness
  * directory-swarm.test.ts uses (the real-wire semantics are the 2-machine
  * verify, P-025 residual (b)). Pins:

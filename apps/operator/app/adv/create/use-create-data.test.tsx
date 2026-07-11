@@ -32,7 +32,7 @@ import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
 // useSyncQuery dispatches by queryName; harnessProjects.lite resolves to the
 // `registryRows` fixture (the resolver returns the ProjectsLiteEntry array
 // directly — the same rows the old REST endpoint put under `d.projects`).
-let registryRows: Array<{ slug: string; parent_slug?: string | null }> | undefined;
+let registryRows: unknown[] | undefined;
 let registryQueryArgs: unknown;
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: ({ queryName, args }: { queryName: string; args?: unknown }) => {
@@ -116,7 +116,7 @@ const lsStub = {
 // Set the harnessProjects.lite query result. 'fail' (a dead registry read)
 // surfaces to the hook as an empty registry, so the scope falls back to the
 // active slug exactly like the old fetch-rejection .catch() did.
-function stubRegistry(projects: Array<{ slug: string; parent_slug?: string | null }> | 'fail') {
+function stubRegistry(projects: unknown[] | 'fail') {
   registryRows = projects === 'fail' ? [] : projects;
 }
 
@@ -198,6 +198,17 @@ describe('useCreateScope', () => {
     stubRegistry('fail');
     const { result } = renderHook(() => useCreateScope(), wrap('?slug=active'));
     expect(result.current.harnessSlugsForFetch).toEqual(['active']);
+  });
+
+  it('ignores malformed registry rows instead of crashing the ADV shell', () => {
+    stubRegistry([
+      null,
+      { parent_slug: 'active' },
+      { slug: 42, parent_slug: 'active' },
+      { slug: 'child', parent_slug: 'active' },
+    ]);
+    const { result } = renderHook(() => useCreateScope(), wrap('?slug=active'));
+    expect(result.current.harnessSlugsForFetch).toEqual(['active', 'child']);
   });
 });
 
@@ -318,6 +329,16 @@ describe('useQueueData', () => {
     expect(result.current.tierCounts.alert).toBe(1);
     expect(result.current.tierCounts.activity).toBe(1);
     expect(result.current.tierCounts.handled).toBe(0);
+  });
+
+  it('ignores malformed plan-item rows instead of crashing the ADV shell', () => {
+    hookFixtures.needsHuman = {
+      items: [null, { plan: 'plan-a' }, { plan: 'plan-a', item: null }, ITEM('plan-a', 'P-001')],
+    };
+    hookFixtures.actionable = { items: [{ item: { id: 'P-002' } }, ITEM('plan-a', 'P-002')] };
+    const { result } = renderHook(() => useQueueData(inboxArgs({})), wrap(''));
+    expect(result.current.filteredItems.map((row) => row.item.id)).toEqual(['P-001', 'P-002']);
+    expect(result.current.queueTotal).toBe(2);
   });
 
   it('filters by istatus and by plan bucket', () => {

@@ -5,6 +5,12 @@ import { z } from 'zod';
 // handler's runtime-failure catch matches what the test throws (the handler
 // imports the class from this same module shim). Exported under the real name
 // from the mock; the test imports it as MemoryUnavailableError below.
+vi.mock('../../memory/write-journal', () => ({
+  // Unit tests have no PG — journaling degrades to null (the pre-journal
+  // path); write-journal's own behavior is covered in write-journal.test.ts.
+  journalPendingWrite: vi.fn(async () => null),
+  markJournalCommitted: vi.fn(async () => {}),
+}));
 vi.mock('../../memory/backend', () => ({
   getMemoryBackend: vi.fn(),
   MemoryUnavailableError: class MemoryUnavailableError extends Error {

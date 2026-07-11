@@ -1,5 +1,5 @@
 /**
- * hive-directory-cache.integration.test.ts — the hive_directory_cache state
+ * hive-directory-cache.integration.test.ts — the pot_directory_cache state
  * table (migration 182, p2p-hive-directory P-003) against real migrated PG.
  *
  * Verifies the offline-cache round-trip the directory's loadCache/saveCache
@@ -35,7 +35,7 @@ function hive(id: string): DiscoveredHive {
   };
 }
 
-describe('hive_directory_cache (real PG, migration 182)', () => {
+describe('pot_directory_cache (real PG, migration 182)', () => {
   let db: OrgTestDb;
   beforeAll(async () => {
     db = await createOrgTestDb();

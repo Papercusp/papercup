@@ -30,8 +30,8 @@
  *    JOINER's real projections write there, and boot's membership/registry reads
  *    (joinerPotHomeSlug, potHomeSlugForHarness, loadHiveMembers,
  *    resolveHiveMemberDeviceSet) all resolve against the seeded
- *    hives/hive_members/harness_registry there too.
- *  - hive_members seeds BOTH the owner device AND the joiner device as current verified
+ *    hives/pot_members/harness_registry there too.
+ *  - pot_members seeds BOTH the owner device AND the joiner device as current verified
  *    members of the hive (the realistic post-membership-federation state).
  *
  * PAPERCUSP_A003_TRACE=1 is set inside the test so the member-guard + boot-resolution
@@ -321,8 +321,8 @@ describe('FAITHFUL repro — OWNER writes to its hive-home harness; does it fede
       const { publicKey: hivePub } = generateKeyPairSync('ed25519');
       const hivePubkeyB64 = rawPubkeyBase64(hivePub);
       await orgDb.adminSql`
-        INSERT INTO harness_shared.hives
-          (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+        INSERT INTO harness_shared.pots
+          (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, decode(${hivePubkeyB64}, 'base64'),
                 'kc-owner-home', 'Owner Home', null, 1, 1)
       `;
@@ -330,8 +330,8 @@ describe('FAITHFUL repro — OWNER writes to its hive-home harness; does it fede
       // device_pubkey, so resolveHiveMemberDeviceSet(HIVE_HOME) contains it (the content guard
       // applies the owner's cross-member op iff its source-log device ∈ this set).
       await orgDb.adminSql`
-        INSERT INTO harness_shared.hive_members
-          (workspace_id, hive_home_slug, github_user_id, github_username,
+        INSERT INTO harness_shared.pot_members
+          (workspace_id, pot_home_slug, github_user_id, github_username,
            device_attestations, revoked_pubkeys, binding_status)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${idOwner.userId}, 'owner',
                 ${JSON.stringify([
@@ -349,8 +349,8 @@ describe('FAITHFUL repro — OWNER writes to its hive-home harness; does it fede
       // JOINER membership row too (the realistic post-membership-federation state — both peers
       // are current verified members of the hive on both peers, which share this getOrgPg DB).
       await orgDb.adminSql`
-        INSERT INTO harness_shared.hive_members
-          (workspace_id, hive_home_slug, github_user_id, github_username,
+        INSERT INTO harness_shared.pot_members
+          (workspace_id, pot_home_slug, github_user_id, github_username,
            device_attestations, revoked_pubkeys, binding_status)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${idJoiner.userId}, 'joiner',
                 ${JSON.stringify([
@@ -488,7 +488,7 @@ describe('FAITHFUL repro — OWNER writes to its hive-home harness; does it fede
       expect(
         joinerAdmittedOwner,
         "the JOINER did NOT admit the owner's log — STEP-1 membership/owner-bootstrap admission did " +
-          'not fire (seeded hives/hive_members/registry must resolve under getOrgPg())',
+          'not fire (seeded hives/pot_members/registry must resolve under getOrgPg())',
       ).toBe(true);
 
       // ── THE PROOF: the owner's feature LANDS in the JOINER's PG (getOrgPg/orgDb). Content keeps

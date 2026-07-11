@@ -18,7 +18,7 @@
  */
 
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
-import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
+import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
 import { queueConcurrency } from './queue-concurrency';
 import { executeDurableReaction, type DurableReactionPayload } from '../events/durable-exec';
 import { setDurableReactionRunner, type DurableReactionInput } from '../events/durable';
@@ -43,7 +43,11 @@ export const eventReactionWorkflow = idempotentRegisterWorkflow('eventReaction',
   }),
 );
 
-export const reactionsQueue = new WorkflowQueue('event-reactions', { concurrency: queueConcurrency(4) });
+// WI-4015: idempotentWorkflowQueue guards the module-top-level-DBOS-singleton class
+// (see idempotent-register-workflow.ts's doc comment).
+export const reactionsQueue = idempotentWorkflowQueue('event-reactions', () =>
+  new WorkflowQueue('event-reactions', { concurrency: queueConcurrency(4) }),
+);
 
 /**
  * Enqueue a reaction as a durable workflow. Fire-and-forget — does NOT await the

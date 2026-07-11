@@ -233,6 +233,7 @@ import './learning_packs/candidates';
 import './learning_packs/decide_candidate';
 import './memory/forget';
 import './memory/update';
+import './memory/recover-from-transcripts';
 import './autoloop/status';
 import './autoloop/control';
 // loop-routines-interval-recurrence-2026-06-20 (B-LOOP-5 / P-008) — the engine-managed

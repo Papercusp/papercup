@@ -7,6 +7,7 @@ import {
   DEFAULT_MACHINE_TAGS,
   eligibleShards,
   machineCanRunShard,
+  machineTagsFromPresence,
   planShardRuns,
   rankShardsForMachine,
   shardRequiredTags,
@@ -139,5 +140,18 @@ describe('rankShardsForMachine — rendezvous pull order', () => {
     expect([...a1].sort((x, y) => x.shardId.localeCompare(y.shardId))).toEqual(
       [...targets].sort((x, y) => x.shardId.localeCompare(y.shardId)),
     );
+  });
+});
+
+describe('machineTagsFromPresence (WI-1546 read side)', () => {
+  it('uses a populated capabilityTags as-is', () => {
+    expect(machineTagsFromPresence(['node'])).toEqual(['node']);
+    expect(machineTagsFromPresence(['node', 'docker', 'pg'])).toEqual(['node', 'docker', 'pg']);
+  });
+
+  it('falls back to DEFAULT_MACHINE_TAGS on empty/null/undefined (never-detected or pre-mig-566 row)', () => {
+    expect(machineTagsFromPresence([])).toBe(DEFAULT_MACHINE_TAGS);
+    expect(machineTagsFromPresence(null)).toBe(DEFAULT_MACHINE_TAGS);
+    expect(machineTagsFromPresence(undefined)).toBe(DEFAULT_MACHINE_TAGS);
   });
 });

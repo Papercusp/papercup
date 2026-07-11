@@ -10,10 +10,10 @@
  *   - OPEN (or absent policy) ⇒ auto-admit; NO pending row, NO member row.
  *   - APPROVAL ⇒ a real pending row lands (devices captured) AND federates
  *     (substrate_outbox put, scoped to the Hive home slug → reaches the owner).
- *   - owner APPROVE ⇒ the joiner + their captured devices land in hive_members
+ *   - owner APPROVE ⇒ the joiner + their captured devices land in pot_members
  *     (binding 'verified') and the pending row flips 'approved'.
  *   - owner DENY ⇒ the pending row flips 'denied' (reason logged); the joiner is
- *     NEVER trust-admitted (no hive_members row).
+ *     NEVER trust-admitted (no pot_members row).
  *   - a DENIED joiner's re-request stays denied (the store preserves the owner's
  *     decision — a denied joiner can't re-open the queue).
  *   - BAN: a banned github id is REFUSED admission even in open mode; banMember
@@ -77,7 +77,7 @@ const alice = {
 let db: OrgTestDb;
 let sql: Sql;
 
-/** Seed the Hive identity row (FK parent for hive_members on approval). */
+/** Seed the Hive identity row (FK parent for pot_members on approval). */
 async function seedHive(slug = HIVE, ws = WS): Promise<void> {
   await insertHiveIfAbsent(
     {
@@ -142,8 +142,8 @@ afterAll(async () => {
 
 afterEach(async () => {
   await sql.unsafe(
-    `TRUNCATE harness_shared.hive_pending_joins, harness_shared.hive_members,
-             harness_shared.hive_policy, harness_shared.hives,
+    `TRUNCATE harness_shared.pot_pending_joins, harness_shared.pot_members,
+             harness_shared.pot_policy, harness_shared.pots,
              harness_shared.substrate_outbox CASCADE`,
   );
 });
@@ -191,13 +191,13 @@ describe('admission — APPROVAL mode ⇒ pending → owner decides', () => {
     // It federates: one substrate_outbox put keyed by github id, scoped to the Hive home slug.
     const outbox = (await sql.unsafe(
       `SELECT table_name, op, key, harness_slug FROM harness_shared.substrate_outbox
-        WHERE table_name = 'hive_pending_joins'`,
+        WHERE table_name = 'pot_pending_joins'`,
     )) as unknown as Array<{ table_name: string; op: string; key: string; harness_slug: string }>;
     expect(outbox).toHaveLength(1);
     expect(outbox[0]).toMatchObject({ op: 'put', key: String(alice.githubUserId), harness_slug: HIVE });
   });
 
-  it('owner APPROVE ⇒ joiner + captured devices land in hive_members (verified); pending → approved', async () => {
+  it('owner APPROVE ⇒ joiner + captured devices land in pot_members (verified); pending → approved', async () => {
     await seedHive();
     await setPolicy({ membership: 'approval' });
     await evaluateJoinAdmission({ workspaceId: WS, potHomeSlug: HIVE, joiner: alice }, { sql });
@@ -410,7 +410,7 @@ describe('ban — refused re-join even in open mode; unban restores', () => {
 // ownerAdmitOrPend instead of an unconditional upsertHiveMember. This exercises that
 // decision end-to-end on real PG — the live-path behavior boot.ts depends on.
 describe('ownerAdmitOrPend — owner admission seam routes off the policy (WI-639)', () => {
-  it('OPEN / absent policy ⇒ trust-admit: a real hive_members row, NO pending', async () => {
+  it('OPEN / absent policy ⇒ trust-admit: a real pot_members row, NO pending', async () => {
     await seedHive();
     const out = await ownerAdmitOrPend({ workspaceId: WS, potHomeSlug: HIVE, joiner: alice }, { sql });
     expect(out).toMatchObject({ action: 'admitted', reason: 'policy_admit' });
@@ -435,7 +435,7 @@ describe('ownerAdmitOrPend — owner admission seam routes off the policy (WI-63
 
     // The pending request federates (one outbox put keyed by github id, Hive-scoped).
     const outbox = (await sql.unsafe(
-      `SELECT op, key, harness_slug FROM harness_shared.substrate_outbox WHERE table_name = 'hive_pending_joins'`,
+      `SELECT op, key, harness_slug FROM harness_shared.substrate_outbox WHERE table_name = 'pot_pending_joins'`,
     )) as unknown as Array<{ op: string; key: string; harness_slug: string }>;
     expect(outbox).toHaveLength(1);
     expect(outbox[0]).toMatchObject({ op: 'put', key: String(alice.githubUserId), harness_slug: HIVE });

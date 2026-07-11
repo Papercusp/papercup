@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { parseAsStringEnum, useQueryState } from 'nuqs';
 import AdvShell, { ADV_TABS, type AdvTabId } from '../../components/adv/AdvShell';
+import AdvTabErrorBoundary from '../../components/adv/AdvTabErrorBoundary';
 import AdvOverviewTab from '../../components/adv/AdvOverviewTab';
 import AdvConversationsTab from '../../components/adv/AdvConversationsTab';
 import LearningTab from '../../components/adv/LearningTab';
@@ -31,7 +32,17 @@ function AdvIndexPage() {
   );
   const title = getAdvTitle(activeTab);
 
-  return <AdvShell title={title}>{renderAdvTab(activeTab)}</AdvShell>;
+  // The tab body is wrapped in an error boundary so a render crash in ONE tab
+  // (e.g. a hook useMemo over a shape-changed query) can't white-screen the whole
+  // operator — the shell chrome (AgentsRunningPill, tab strip) sits OUTSIDE it and
+  // every other tab stays reachable. key={activeTab} resets it on navigation.
+  return (
+    <AdvShell title={title}>
+      <AdvTabErrorBoundary key={activeTab} tab={activeTab}>
+        {renderAdvTab(activeTab)}
+      </AdvTabErrorBoundary>
+    </AdvShell>
+  );
 }
 
 function getAdvTitle(tab: AdvTabId): string {

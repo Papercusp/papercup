@@ -19,7 +19,7 @@
  */
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { createWorkItem, getWorkItem, linkWorkItem, isWorkItemKind, type WorkItem, type WorkItemKind } from '../../work-items';
+import { createWorkItem, getWorkItem, linkWorkItem, resolveWorkItemRef, isWorkItemKind, type WorkItem, type WorkItemKind } from '../../work-items';
 import { planItemRef, PLAN_ITEM_KIND } from '../../issue-blocks-merge';
 import { findMirroredOpenItem } from './mirror-guard';
 import { findSemanticDupes, type SemanticDupeCandidate } from './semantic-dupe-guard';
@@ -57,6 +57,15 @@ export interface CreateOneWorkItemArgs {
    *  rolls up into that plan item's coverage and `plans:items` stops showing it as
    *  unworked. Non-fatal — an edge failure never blocks the create. */
   targetPlanItem?: { slug: string; itemId: string };
+  /** Inline typed links (WI-3956): edges written from the NEW work-item to targets
+   *  right after creation — the general form of `targetPlanItem` (the plan-coverage
+   *  special case). Each targets another work-item (target_id) OR any coord ObjectRef
+   *  (target_kind + target_ref, e.g. an event key or plan_item). Best-effort + non-fatal,
+   *  exactly like the plan-coverage edge: a bad/unresolvable target is skipped and never
+   *  turns a successful create into an error (the manual work_items:link path stays
+   *  available to retry). The tool layer (work_items:create) pins `rel` to the LINK_RELS
+   *  vocabulary; the core stays permissive (rel: string), mirroring linkWorkItem. */
+  links?: Array<{ rel: string; target_id?: string; target_kind?: string; target_ref?: string; target_harness?: string }>;
 }
 
 /** The acting agent identity the core needs (resolved by the caller from ctx). */
@@ -235,6 +244,23 @@ export async function createOneWorkItem(
         );
       } catch {
         // Non-fatal — coverage edge is best-effort.
+      }
+    }
+    // Inline typed links (WI-3956): declare "this new item investigates EI-x / is about
+    // <event key> / …" at birth, so the relationship is queryable in work_items:get
+    // { detail:true } without a separate work_items:link round-trip. Each edge is
+    // best-effort + non-fatal — identical contract to the plan-coverage edge above: an
+    // unresolvable target is skipped, never turning a successful create into an error.
+    for (const l of args.links ?? []) {
+      try {
+        const dst = l.target_id
+          ? await resolveWorkItemRef(l.target_id, l.target_harness ?? harnessForItem)
+          : l.target_kind && l.target_ref
+            ? { kind: l.target_kind, ref: l.target_ref }
+            : null;
+        if (dst) await linkWorkItem(workItem.id, dst, l.rel, { harness: harnessForItem, by: ctx.ownerId });
+      } catch {
+        // Non-fatal — an inline edge is best-effort, like the coverage edge.
       }
     }
     return { ok: true, workItem, ...(similarOpen ? { similarOpen } : {}) };

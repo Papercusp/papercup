@@ -25,6 +25,7 @@ import { anchorMetadata } from '../../memory/anchors';
 import { checkConflicts, conflictCheckEnabled } from '../../memory/conflict-check';
 import { createAnthropicJudge } from '../../memory/anthropic-judge';
 import { persistAnchorsSql } from '../../memory/persist-anchors';
+import { journalPendingWrite, markJournalCommitted } from '../../memory/write-journal';
 import { getSessionUserOrDefault } from '../../auth';
 import { hardText, LIMITS } from '../limits';
 import { coerceMemoryKind } from './remember-coerce';
@@ -134,6 +135,8 @@ export default defineTool({
       .describe("Scope to a Pot's SHARED pool (learning-packs P-004) — every agent in every member harness of that pot recalls it. Use for discovered project conventions (test command, build path, design system) the whole pot should inherit. Mutually exclusive with harness_slug."),
     force: z.boolean().optional()
       .describe('Bypass the dedup-on-write similarity check (P-016). Use only when knowingly writing a near-duplicate the agent has decided to keep separate. Default: false.'),
+    shareable: z.boolean().optional()
+      .describe('OPT-IN federation egress (F0-2): true = this memory may federate to other hives. Default false — memories are hive-private.'),
     workspace: z.string().optional()
       .describe('Superuser-only: from an UNSCOPED session, tag the write under THIS workspace (the resolved workspace lands in metadata.workspace_id). Scoped/power-user sessions ignore it.'),
     }),
@@ -141,24 +144,6 @@ export default defineTool({
   async handler(args, ctx) {
     const user = await getSessionUserOrDefault();
     const backend = getMemoryBackend();
-    // B1: bound the connectivity probe — `available()` itself hangs when the
-    // store is wedged (the 2026-06-19 outage), so a deadline here is the
-    // difference between a fast `memory_timeout` and an infinite hang.
-    try {
-      const avail = await withMemoryToolTimeout(backend.available(), 'memory:remember available');
-      if (!avail.ok) {
-        return {
-          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: avail.reason }) }],
-        };
-      }
-    } catch (err) {
-      if (err instanceof MemoryTimeoutError) {
-        return {
-          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'memory_timeout' }) }],
-        };
-      }
-      throw err;
-    }
     if (args.harness_slug && args.hive_slug) {
       return {
         content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'harness_slug and hive_slug are mutually exclusive — pick the pool the fact belongs to.' }) }],
@@ -200,6 +185,51 @@ export default defineTool({
     if (anchors) {
       metadata.anchors = anchors.anchors;
       metadata.anchor_count = anchors.anchor_count;
+    }
+
+    // Write-ahead journal (memory-write-journal-auto-recovery P-002/D-001):
+    // park the fact durably BEFORE any embedder-dependent step. A plain PG
+    // INSERT has no embedder dependency, so every failure branch below —
+    // probe-fail, probe-timeout, write-timeout, unavailable, embed-fail —
+    // leaves the row `pending` for the embed-backfill tick to replay, and
+    // tells the agent so (journaled/will_retry). Deliberate refusals
+    // (dedup/conflict) CLOSE the row so the drain never resurrects a write
+    // the tool refused. journalId === null ⇒ journaling degraded (e.g. the
+    // migration hasn't applied) — behavior is then exactly the old lossy path.
+    const journalId = await journalPendingWrite({
+      scope: scopeKey,
+      kind: args.kind,
+      content: args.content,
+      metadata,
+      verbatim: true,
+    });
+    const journaledFields = journalId
+      ? {
+          journaled: true,
+          will_retry: true,
+          journal_id: journalId,
+          hint: 'Fact journaled durably; it will be stored automatically once the embedder recovers — do NOT re-fire this write.',
+        }
+      : {};
+
+    // B1: bound the connectivity probe — `available()` itself hangs when the
+    // store is wedged (the 2026-06-19 outage), so a deadline here is the
+    // difference between a fast `memory_timeout` and an infinite hang.
+    // (Runs AFTER journaling so an outage detected here still parks the fact.)
+    try {
+      const avail = await withMemoryToolTimeout(backend.available(), 'memory:remember available');
+      if (!avail.ok) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: avail.reason, ...journaledFields }) }],
+        };
+      }
+    } catch (err) {
+      if (err instanceof MemoryTimeoutError) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'memory_timeout', ...journaledFields }) }],
+        };
+      }
+      throw err;
     }
 
     // Phase 4 P-016: dedup-on-write. Search the same scope for
@@ -246,6 +276,9 @@ export default defineTool({
           }
           const topScore = top !== undefined ? best : null;
           if (top && topScore !== null && topScore >= dedupThreshold()) {
+            // Deliberate refusal — close the journal row (content is already
+            // in the store as `top`) so the drain never replays it.
+            if (journalId) void markJournalCommitted(journalId, top.id);
             return {
               content: [{
                 type: 'text',
@@ -274,6 +307,9 @@ export default defineTool({
             judge: createAnthropicJudge(),
           });
           if (conflict.conflicts.length > 0) {
+            // Deliberate refusal — the agent must resolve the contradiction;
+            // the drain must not land the conflicting write behind its back.
+            if (journalId) void markJournalCommitted(journalId, null);
             return {
               content: [{
                 type: 'text',
@@ -324,6 +360,7 @@ export default defineTool({
         scope: scopeKey,
         kind: args.kind,
         metadata,
+        shareable: args.shareable,
         // Store the agent's text VERBATIM (infer:false) — do NOT run mem0's
         // LLM fact-extraction/condense step on the explicit single-fact write
         // path. That step is an unbounded Anthropic (Haiku) call with no
@@ -338,14 +375,18 @@ export default defineTool({
         verbatim: true,
       }), 'memory:remember remember'));
     } catch (err) {
+      // Every legible write-failure class below leaves the journal row
+      // `pending` — the embed-backfill tick replays it (with a near-dup
+      // guard, since a timeout may mean the write actually landed and the
+      // response was lost — the EI-178 blind-retry class).
       if (err instanceof MemoryTimeoutError) {
         return {
-          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'memory_timeout' }) }],
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'memory_timeout', ...journaledFields }) }],
         };
       }
       if (err instanceof MemoryUnavailableError) {
         return {
-          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: err.reason }) }],
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: err.reason, ...journaledFields }) }],
         };
       }
       // mem0-timeout-fix-2026-06-24: a fast-failed embed (org TPM 429 / 5xx / stall) surfaces
@@ -353,11 +394,15 @@ export default defineTool({
       const embedReason = embedFailureReason(err);
       if (embedReason) {
         return {
-          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: embedReason }) }],
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: embedReason, ...journaledFields }) }],
         };
       }
       throw err;
     }
+
+    // The write landed — close the journal row (fire-and-forget; a missed
+    // close self-heals on drain via the near-dup guard).
+    if (journalId) void markJournalCommitted(journalId, ids[0] ?? null);
 
     // Live-refresh the settings memory page (userMemory.list sync query) —
     // fire-and-forget, never load-bearing (memory-settings-page-refresh P-008).

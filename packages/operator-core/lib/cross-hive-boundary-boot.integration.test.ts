@@ -31,13 +31,13 @@ const WS = 'default';
 const B_SLUG = 'hive-b';
 
 const HIVES_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.hives (
-    workspace_id text NOT NULL, home_slug text NOT NULL, public_key bytea NOT NULL,
+  CREATE TABLE IF NOT EXISTS harness_shared.pots (
+    workspace_id text NOT NULL, pot_home_slug text NOT NULL, public_key bytea NOT NULL,
     keychain_id text NOT NULL, title text, description text,
     created_at bigint NOT NULL, updated_at bigint NOT NULL DEFAULT 0,
-    PRIMARY KEY (workspace_id, home_slug))`;
+    PRIMARY KEY (workspace_id, pot_home_slug))`;
 const HIVE_SETTINGS_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.hive_settings (
+  CREATE TABLE IF NOT EXISTS harness_shared.pot_settings (
     workspace_id text NOT NULL, harness_slug text NOT NULL, setting_key text NOT NULL,
     value text, author_pubkey text, origin text NOT NULL DEFAULT 'local', fed_ts bigint,
     fed_hlc text,
@@ -45,7 +45,7 @@ const HIVE_SETTINGS_DDL = `
     PRIMARY KEY (workspace_id, harness_slug, setting_key))`;
 // Mirrors migration 196 (minus psql directives + role grants the test DB lacks).
 const OUTBOX_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.cross_hive_outbox (
+  CREATE TABLE IF NOT EXISTS harness_shared.cross_pot_outbox (
     workspace_id text NOT NULL, pot_slug text NOT NULL, id text NOT NULL,
     from_hive_pubkey text NOT NULL, to_hive_pubkey text NOT NULL, kind text NOT NULL,
     subject text NOT NULL DEFAULT '', body text NOT NULL DEFAULT '',
@@ -53,11 +53,11 @@ const OUTBOX_DDL = `
     created_at bigint NOT NULL DEFAULT 0, attempt_count integer NOT NULL DEFAULT 0,
     last_attempt_at bigint NOT NULL DEFAULT 0,
     PRIMARY KEY (workspace_id, pot_slug, id),
-    CONSTRAINT cross_hive_outbox_kind_check CHECK (kind IN ('ask','work-request','answer','decline')))`;
+    CONSTRAINT cross_pot_outbox_kind_check CHECK (kind IN ('ask','work-request','answer','decline')))`;
 // Mirrors migration 231 (the C-1 ask ledger) — the boot-wired boundary's default
 // quota ledger records every ADMITTED inbound request as an `in` row (P-013).
 const ASKS_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.cross_hive_asks (
+  CREATE TABLE IF NOT EXISTS harness_shared.cross_pot_asks (
     workspace_id text NOT NULL, pot_slug text NOT NULL,
     id uuid NOT NULL DEFAULT gen_random_uuid(),
     peer_pubkey text NOT NULL, direction text NOT NULL DEFAULT 'out',
@@ -66,12 +66,12 @@ const ASKS_DDL = `
     reply_body text, reply_ts timestamptz,
     asked_by text,
     created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT cross_hive_asks_pkey PRIMARY KEY (id),
-    CONSTRAINT cross_hive_asks_workspace_nonempty CHECK (workspace_id <> ''),
-    CONSTRAINT cross_hive_asks_direction_check CHECK (direction IN ('out','in')),
-    CONSTRAINT cross_hive_asks_kind_check CHECK (kind IN ('ask','work-request')),
-    CONSTRAINT cross_hive_asks_state_check CHECK (state IN ('queued','sent','answered','declined','expired')),
-    CONSTRAINT cross_hive_asks_correlation_uniq UNIQUE (workspace_id, pot_slug, correlation_id))`;
+    CONSTRAINT cross_pot_asks_pkey PRIMARY KEY (id),
+    CONSTRAINT cross_pot_asks_workspace_nonempty CHECK (workspace_id <> ''),
+    CONSTRAINT cross_pot_asks_direction_check CHECK (direction IN ('out','in')),
+    CONSTRAINT cross_pot_asks_kind_check CHECK (kind IN ('ask','work-request')),
+    CONSTRAINT cross_pot_asks_state_check CHECK (state IN ('queued','sent','answered','declined','expired')),
+    CONSTRAINT cross_pot_asks_correlation_uniq UNIQUE (workspace_id, pot_slug, correlation_id))`;
 
 let db: FreshPgDb;
 
@@ -123,15 +123,15 @@ beforeAll(async () => {
   await db.sql.unsafe(OUTBOX_DDL);
   await db.sql.unsafe(ASKS_DDL);
   await db.sql`
-    INSERT INTO harness_shared.hives (workspace_id, home_slug, public_key, keychain_id, created_at)
+    INSERT INTO harness_shared.pots (workspace_id, pot_home_slug, public_key, keychain_id, created_at)
     VALUES (${WS}, ${B_SLUG}, ${Buffer.alloc(32)}, 'kc-b', 0)`;
 });
 afterAll(async () => {
   await db?.cleanup();
 });
 beforeEach(async () => {
-  await db.sql`DELETE FROM harness_shared.hive_settings`;
-  await db.sql`DELETE FROM harness_shared.cross_hive_outbox`;
+  await db.sql`DELETE FROM harness_shared.pot_settings`;
+  await db.sql`DELETE FROM harness_shared.cross_pot_outbox`;
 });
 afterEach(() => {
   __resetCrossHiveBoundaryBootForTests();

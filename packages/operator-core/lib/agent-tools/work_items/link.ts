@@ -18,9 +18,26 @@ import { guardFeatureBlockEdgeAcyclic } from '../../dbos/feature-blockers-edges'
 import type { ObjectRef } from '@papercusp/coordination/capabilities';
 import { runBulk, bulkContent } from '../_bulk';
 
+/**
+ * The typed-link vocabulary (WI-3956). `coord_links.rel` is free-form text at the
+ * store layer, so this enum is the ONE place the vocabulary is pinned — widen it
+ * here and both the single + bulk schemas and the handler cast stay in sync (a
+ * second copy would silently drift). Beyond the original dependency rels
+ * (blocks/relates/duplicates/fixes) it adds the investigation/causal rels the
+ * linking audit called for: `investigates` (this item digs into a target bug/EI/
+ * event), `about` (this item concerns a target — a topic, event key, or object),
+ * and `caused-by` (this item was caused by the target). All are polymorphic: the
+ * target is another work-item (target_id) OR any coord ObjectRef (target_kind +
+ * target_ref, e.g. an event key or plan_item). Only `blocks` carries scheduler
+ * semantics (the acyclicity guard below); the rest are descriptive edges surfaced
+ * in work_items:get { detail:true }.
+ */
+export const LINK_RELS = ['blocks', 'relates', 'duplicates', 'fixes', 'about', 'investigates', 'caused-by'] as const;
+export type LinkRel = (typeof LINK_RELS)[number];
+
 const itemSpec = z.object({
   id: z.string().min(1).describe('the source work-item id'),
-  rel: z.enum(['blocks', 'relates', 'duplicates', 'fixes']),
+  rel: z.enum(LINK_RELS),
   target_id: z.string().max(120).optional().describe('a target work-item id (resolved to its coord ref)'),
   target_harness: z.string().max(80).optional().describe('harness for a feature target_id (disambiguation)'),
   target_kind: z.string().max(40).optional().describe('explicit coord ObjectRef kind (e.g. plan_item) — use with target_ref'),
@@ -33,9 +50,9 @@ export default defineTool({
   name: 'work_items:link',
   profile: 'engineer',
   description:
-    "Link one OR many work-items to targets (rel: blocks | relates | duplicates | fixes) — single inline { id, rel, target_id } or items:[{ id, rel, target_id | target_kind+target_ref, remove? }] (a source can fan out to many targets in one call). Blocking works across kinds. Pass remove:true to unlink. Returns { ok, results:[{ ok, id, rel, dst? | error }], counts }.",
+    "Link one OR many work-items to targets (rel: blocks | relates | duplicates | fixes | investigates | about | caused-by) — single inline { id, rel, target_id } or items:[{ id, rel, target_id | target_kind+target_ref, remove? }] (a source can fan out to many targets in one call). Targets are polymorphic: another work-item (target_id) or any coord ObjectRef (target_kind+target_ref — a plan_item, event key, topic). Blocking works across kinds. Pass remove:true to unlink. Returns { ok, results:[{ ok, id, rel, dst? | error }], counts }.",
   guidance: {
-    when: 'You discovered one or more dependencies/relationships: a work-item blocks/relates-to/duplicates/fixes other work-items or plan items. Create several edges at once via items:[…].',
+    when: 'You discovered one or more dependencies/relationships: a work-item blocks/relates-to/duplicates/fixes other work-items or plan items, or INVESTIGATES / is ABOUT / was CAUSED-BY a bug, EI, event key, or topic. Create several edges at once via items:[…].',
     chaining: 'work_items:get both sides → work_items:link { rel:"blocks", target_id } (or items:[…]).',
     seeAlso: [
       'work_items:get (inspect both endpoints before linking)',
@@ -48,7 +65,7 @@ export default defineTool({
   args: z
     .object({
       id: z.string().min(1).optional().describe('single shorthand: the source work-item id'),
-      rel: z.enum(['blocks', 'relates', 'duplicates', 'fixes']).optional().describe('single shorthand: the relationship'),
+      rel: z.enum(LINK_RELS).optional().describe('single shorthand: the relationship'),
       target_id: z.string().max(120).optional(),
       target_harness: z.string().max(80).optional(),
       target_kind: z.string().max(40).optional(),
@@ -70,7 +87,7 @@ export default defineTool({
       ? args.items
       : [{
           id: args.id as string,
-          rel: args.rel as 'blocks' | 'relates' | 'duplicates' | 'fixes',
+          rel: args.rel as LinkRel,
           target_id: args.target_id,
           target_harness: args.target_harness,
           target_kind: args.target_kind,

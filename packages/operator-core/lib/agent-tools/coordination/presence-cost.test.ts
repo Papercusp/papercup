@@ -61,6 +61,9 @@ function makeHeavyRow(i: number): RosterRow {
     awaitingNote: 'always-armed inbox-wake (turn-lifecycle-control)',
     wakeMode: 'auto',
     revoked: false,
+    // Not part of the emitted lean row (PRESENCE_DROPPED_FIELDS) — present only
+    // to satisfy the type, never counted in the token-budget measurement below.
+    capabilityTags: [],
     stale: false,
     lastActiveSecAgo: 7,
     heartbeatAt: '2026-06-18T08:43:00.000Z',
@@ -93,6 +96,7 @@ function makeIdleRow(i: number): RosterRow {
     awaitingNote: 'always-armed inbox-wake (turn-lifecycle-control)',
     wakeMode: 'auto',
     revoked: false,
+    capabilityTags: [],
     stale: false,
     lastActiveSecAgo: 0,
     heartbeatAt: '2026-06-18T08:43:00.000Z',

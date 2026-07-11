@@ -11,6 +11,12 @@
  */
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 
+vi.mock('../../memory/write-journal', () => ({
+  // Unit tests have no PG — journaling degrades to null (the pre-journal
+  // path); write-journal's own behavior is covered in write-journal.test.ts.
+  journalPendingWrite: vi.fn(async () => null),
+  markJournalCommitted: vi.fn(async () => {}),
+}));
 vi.mock('../../memory/backend', () => ({
   getMemoryBackend: vi.fn(),
   // Real-shaped MemoryUnavailableError so remember.ts's `instanceof` branch is

@@ -370,6 +370,65 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     expect(links.map((l) => l.rel)).toEqual(['blocks', 'relates']);
   });
 
+  it('link: accepts the investigation/causal rels (investigates, about, caused-by) incl. a polymorphic event target (WI-3956)', async () => {
+    const wi = await createOne({ kind: 'bug', title: 'the investigation', harness: 'papercup' });
+    const wiId = (wi.workItem as Record<string, unknown>).id as string;
+    const target = await createOne({ kind: 'bug', title: 'the bug under investigation', harness: 'papercup' });
+    const targetId = (target.workItem as Record<string, unknown>).id as string;
+
+    // work-item → work-item: `investigates` (a rel the pre-WI-3956 enum rejected)
+    const inv = await call(linkTool, { id: wiId, rel: 'investigates', target_id: targetId, target_harness: 'papercup' });
+    expect(inv.ok).toBe(true);
+    const invRes = (inv.results as { ok: boolean; rel: string; dst: unknown }[])[0]!;
+    expect(invRes.ok).toBe(true);
+    expect(invRes.rel).toBe('investigates');
+    expect(invRes.dst).toEqual({ kind: 'issue', ref: targetId });
+
+    // work-item → a polymorphic coord ObjectRef (an event key): `about`
+    const about = await call(linkTool, { id: wiId, rel: 'about', target_kind: 'event', target_ref: 'deploy:landed:papercup' });
+    expect(about.ok).toBe(true);
+    expect((about.results as { ok: boolean; rel: string }[])[0]!.ok).toBe(true);
+
+    // the widened vocabulary persists as real coord_links edges
+    const links = await db.sql<{ rel: string; dst_kind: string; dst_ref: string }[]>`
+      SELECT rel, dst_kind, dst_ref FROM harness_shared.coord_links
+       WHERE src_kind = 'issue' AND src_ref = ${wiId} ORDER BY rel`;
+    expect(links).toEqual([
+      { rel: 'about', dst_kind: 'event', dst_ref: 'deploy:landed:papercup' },
+      { rel: 'investigates', dst_kind: 'issue', dst_ref: targetId },
+    ]);
+  });
+
+  it('create: inline links[] write typed edges at birth; a bad target is skipped non-fatally (WI-3956)', async () => {
+    const target = await createOne({ kind: 'bug', title: 'root-cause bug', harness: 'papercup' });
+    const targetId = (target.workItem as Record<string, unknown>).id as string;
+
+    // a fresh item that declares, on create, that it investigates an existing bug and
+    // is about an event key — plus one deliberately-unresolvable target that must NOT
+    // fail the create (best-effort edge contract, same as the plan-coverage edge).
+    const created = await createOne({
+      kind: 'change',
+      title: 'fix the root cause',
+      harness: 'papercup',
+      links: [
+        { rel: 'investigates', target_id: targetId, target_harness: 'papercup' },
+        { rel: 'about', target_kind: 'event', target_ref: 'incident:papercup:42' },
+        { rel: 'caused-by', target_id: 'WI-909404' }, // does not exist → skipped, create still ok
+      ],
+    });
+    expect(created.ok).toBe(true);
+    const newId = (created.workItem as Record<string, unknown>).id as string;
+
+    const links = await db.sql<{ rel: string; dst_kind: string; dst_ref: string }[]>`
+      SELECT rel, dst_kind, dst_ref FROM harness_shared.coord_links
+       WHERE src_kind = 'issue' AND src_ref = ${newId} ORDER BY rel`;
+    // the two resolvable edges landed; the unresolvable caused-by was silently skipped
+    expect(links).toEqual([
+      { rel: 'about', dst_kind: 'event', dst_ref: 'incident:papercup:42' },
+      { rel: 'investigates', dst_kind: 'issue', dst_ref: targetId },
+    ]);
+  });
+
   it('tag + subscribe return success envelopes', async () => {
     const bug = await createOne({ kind: 'bug', title: 'b', harness: 'papercup' });
     const id = (bug.workItem as Record<string, unknown>).id as string;

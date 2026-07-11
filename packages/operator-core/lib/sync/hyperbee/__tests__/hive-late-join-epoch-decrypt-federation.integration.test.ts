@@ -16,7 +16,7 @@
  *      XChaCha20-Poly1305 + sealed-box crypto, `resolveHiveEpochCrypto(true)`).
  *      WI-2102: epoch 0 is the plaintext BASELINE (encryptOp returns null there),
  *      so the owner first advances to epoch 1 and encrypts the content under it.
- *   2. The epoch ADVANCES (real `advanceHiveEpoch`, federated hive_settings).
+ *   2. The epoch ADVANCES (real `advanceHiveEpoch`, federated pot_settings).
  *   3. A MEMBER joins AFTER the advance — so it missed the boundary wrap and holds
  *      NO epoch keys. The owner's ciphertext replicates to the joiner first; the
  *      real decrypt gate (`buildEpochDecryptGate`) DEFERS it (no key yet) →
@@ -122,10 +122,10 @@ afterEach(async () => {
 /** Minimal, prod-faithful DDL for the three content/key tables this test writes —
  *  exactly the columns the projections + wrapped-key store touch, no RLS / triggers
  *  / generated cols (the same superset-only stance as test/_work-items-schema.ts).
- *  The hive_* tables (hives / hive_members / hive_settings) come from the rig's
+ *  The hive_* tables (hives / pot_members / pot_settings) come from the rig's
  *  setupHivePeerSchema (the real migrations). */
 const CONTENT_AND_KEY_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.hive_epoch_keys (
+  CREATE TABLE IF NOT EXISTS harness_shared.pot_epoch_keys (
     workspace_id         text NOT NULL,
     harness_slug         text NOT NULL,
     epoch                integer NOT NULL,
@@ -209,7 +209,7 @@ async function makeDevice(keychainId: string): Promise<TestDevice> {
 async function freshDb(name: string): Promise<FreshPgDb> {
   const db = await createFreshPgDb(name);
   cleanups.push(() => db.cleanup());
-  await setupHivePeerSchema(db.sql); // hives / hive_members / hive_settings (real migrations)
+  await setupHivePeerSchema(db.sql); // hives / pot_members / pot_settings (real migrations)
   await db.sql.unsafe(CONTENT_AND_KEY_DDL); // + the three tables this test writes
   return db;
 }
@@ -274,7 +274,7 @@ describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an e
       const ownerDevice = await makeDevice('device-owner');
       const joinerDevice = await makeDevice('device-joiner');
 
-      await seedHive(dbOwner.sql); // the hives row hive_settings/hive_members attach to
+      await seedHive(dbOwner.sql); // the hives row pot_settings/pot_members attach to
 
       // ── 1. OWNER authors a plan + work_item, ENCRYPTED under the current epoch.
       //       WI-2102: epoch 0 is the PRE-re-key BASELINE — content federates PLAINTEXT
@@ -341,8 +341,8 @@ describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an e
         [7, 'bob', joinerDevice, 'verified'],
       ] as const) {
         await dbOwner.sql.unsafe(
-          `INSERT INTO harness_shared.hive_members
-             (workspace_id, hive_home_slug, github_user_id, github_username,
+          `INSERT INTO harness_shared.pot_members
+             (workspace_id, pot_home_slug, github_user_id, github_username,
               device_attestations, revoked_pubkeys, binding_status)
            VALUES ($1,$2,$3,$4,$5::jsonb,$6::text[],$7)`,
           [WORKSPACE_ID, HIVE_SLUG, uid, login,
@@ -354,8 +354,8 @@ describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an e
       // silently return fewer members than exist).
       const members = await listHiveMembers(WORKSPACE_ID, HIVE_SLUG, dbOwner.sql);
       const [{ n: rawCount }] = await dbOwner.sql<Array<{ n: number }>>`
-        SELECT COUNT(*)::int AS n FROM harness_shared.hive_members
-         WHERE workspace_id = ${WORKSPACE_ID} AND hive_home_slug = ${HIVE_SLUG}`;
+        SELECT COUNT(*)::int AS n FROM harness_shared.pot_members
+         WHERE workspace_id = ${WORKSPACE_ID} AND pot_home_slug = ${HIVE_SLUG}`;
       expect(members.length).toBe(2);
       expect(members.length).toBe(Number(rawCount));
 
@@ -406,7 +406,7 @@ describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an e
       // 3 epochs (0,1,2) × 2 live devices = 6 wrapped rows.
       expect(reconcile.distributed).toBe(6);
       const [{ n: keyRowCount }] = await dbOwner.sql<Array<{ n: number }>>`
-        SELECT COUNT(*)::int AS n FROM harness_shared.hive_epoch_keys
+        SELECT COUNT(*)::int AS n FROM harness_shared.pot_epoch_keys
          WHERE workspace_id = ${WORKSPACE_ID} AND harness_slug = ${HIVE_SLUG}
            AND member_device_pubkey = ${joinerDevice.pubkeyBase64}`;
       expect(Number(keyRowCount), 'joiner granted all three epoch keys (0, 1 and 2)').toBe(3);
@@ -421,7 +421,7 @@ describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an e
       const keysLookup: ProjectionLookup = (tag) =>
         tag === 'hive-epoch-keys' ? (keysProj as TableProjection<unknown>) : null;
       const keyRows = await dbOwner.sql<Array<{ epoch: number; member_device_pubkey: string; wrapped_key: string }>>`
-        SELECT epoch, member_device_pubkey, wrapped_key FROM harness_shared.hive_epoch_keys
+        SELECT epoch, member_device_pubkey, wrapped_key FROM harness_shared.pot_epoch_keys
          WHERE workspace_id = ${WORKSPACE_ID} AND harness_slug = ${HIVE_SLUG}`;
       for (const r of keyRows) {
         const keyOp: OpEnvelope = {
@@ -467,7 +467,7 @@ describe('WI-894 — late-join epoch-key decryption: a member joining AFTER an e
     60_000,
   );
 
-  it('WI-892/EI-3409 guard: a hive_members write under the unscoped-superuser sentinel workspace is refused LOUDLY (never silently invisible to concrete-workspace reads)', async () => {
+  it('WI-892/EI-3409 guard: a pot_members write under the unscoped-superuser sentinel workspace is refused LOUDLY (never silently invisible to concrete-workspace reads)', async () => {
     await expect(
       upsertHiveMember({
         workspaceId: '*', // the unscoped-superuser READ sentinel — never storable

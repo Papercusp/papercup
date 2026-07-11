@@ -20,7 +20,7 @@
  * plumbing and the workflow stays directly testable.
  */
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
-import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
+import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
 import { queueConcurrency } from './queue-concurrency';
 import { loadBuiltinBlueprint, type Blueprint } from '@papercusp/orchestrator/blueprint';
 import '../coord-ops/index.js'; // register every coord op
@@ -99,7 +99,11 @@ export const coordProgramWorkflow = idempotentRegisterWorkflow('coordProgram', (
   }),
 );
 
-export const coordProgramQueue = new WorkflowQueue('coord-program', { concurrency: queueConcurrency(4) });
+// WI-4015: idempotentWorkflowQueue guards the module-top-level-DBOS-singleton class
+// (see idempotent-register-workflow.ts's doc comment).
+export const coordProgramQueue = idempotentWorkflowQueue('coord-program', () =>
+  new WorkflowQueue('coord-program', { concurrency: queueConcurrency(4) }),
+);
 
 /**
  * Start (or resume) a durable coord-op program. The workflow id is deterministic

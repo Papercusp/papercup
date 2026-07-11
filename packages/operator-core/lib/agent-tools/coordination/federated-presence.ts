@@ -120,6 +120,10 @@ export function mapSharedPresenceRow(
     intentDeclaredAt: null,
     agentRole: null,
     potSlug: row.pot_slug,
+    // WI-1546: capability tags are a LOCAL-machine detection (docker/pg probe
+    // run by writePresence), not carried by shared_presence — same
+    // federation-boundary gap as agentRole/lastActiveAt above.
+    capabilityTags: [],
     stale: row.last_seen_ms < ctx.now - ctx.staleMs,
     userId: String(row.github_user_id),
     revoked: false,
@@ -190,6 +194,9 @@ export function mapSessionPresenceRow(
     intentDeclaredAt: iso,
     agentRole: row.kind,
     potSlug: row.pot_slug,
+    // WI-1546: shared_session_presence does not carry capability tags either
+    // (they're a local docker/pg probe, not part of the gossip frame yet).
+    capabilityTags: [],
     stale: row.last_seen_ms < ctx.now - ctx.staleMs,
     userId: String(row.github_user_id),
     revoked: false,

@@ -46,14 +46,14 @@ const HFC_FED_HLC_PATCH = `
   ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS fed_hlc text`;
 
 // P-008: the admission records the verified-author resolver reads. Minimal shape
-// mirroring harness_shared.hive_members (migration 185): a member's bound devices
+// mirroring harness_shared.pot_members (migration 185): a member's bound devices
 // (device_attestations jsonb array of {device_pubkey,...}) + the revoked blocklist
 // + binding_status. The resolver returns github_user_id ONLY for a verified,
 // non-revoked, attested pubkey.
 const HIVE_MEMBERS_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.hive_members (
+  CREATE TABLE IF NOT EXISTS harness_shared.pot_members (
     workspace_id text NOT NULL,
-    hive_home_slug text NOT NULL,
+    pot_home_slug text NOT NULL,
     github_user_id bigint NOT NULL,
     github_username text NOT NULL,
     display_name text, avatar_url text,
@@ -61,7 +61,7 @@ const HIVE_MEMBERS_DDL = `
     revoked_pubkeys text[],
     binding_status text NOT NULL DEFAULT 'unverified',
     joined_at bigint,
-    PRIMARY KEY (workspace_id, hive_home_slug, github_user_id))`;
+    PRIMARY KEY (workspace_id, pot_home_slug, github_user_id))`;
 
 // Phase 3 / P-009: the owner-keyed LOCAL trust list the admission predicate consults
 // (shared DDL — USER_TRUST_LIST_DDL imported from ../test/_work-items-schema).
@@ -134,7 +134,7 @@ beforeEach(async () => {
   await db.sql`DELETE FROM harness_shared.harness_features_consolidated`;
   await db.sql`DELETE FROM harness_shared.work_item_replicas`;
   await db.sql`DELETE FROM harness_shared.user_trust_list`;
-  await db.sql`DELETE FROM harness_shared.hive_members`;
+  await db.sql`DELETE FROM harness_shared.pot_members`;
 });
 
 /** Seed a feature with a VERIFIED author id (what P-008 stamps) — for the trust-leg cases. */
@@ -152,7 +152,7 @@ function trust(githubId: number, ws: string = WS) {
     VALUES (${ws}, ${githubId}, 1)`;
 }
 
-/** Seed a hive_members admission row (P-008 producer source). `pubkeys` become
+/** Seed a pot_members admission row (P-008 producer source). `pubkeys` become
  *  device_attestations; `revoked` go on revoked_pubkeys; `binding` is the binding_status. */
 function seedMember(
   githubId: number,
@@ -171,8 +171,8 @@ function seedMember(
     signature_by_device: 's',
   }));
   return h.sql`
-    INSERT INTO harness_shared.hive_members
-      (workspace_id, hive_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status, joined_at)
+    INSERT INTO harness_shared.pot_members
+      (workspace_id, pot_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status, joined_at)
     VALUES (${ws}, ${hive}, ${githubId}, ${'user' + githubId}, ${JSON.stringify(attestations)}::text::jsonb, ${revoked}, ${binding}, 1)`;
 }
 
@@ -344,8 +344,8 @@ describe('P-008 — resolveVerifiedAuthorGithubId (verified-attestation resolver
   });
   it('handles NULL revoked_pubkeys / device_attestations without error', async () => {
     await h.sql`
-      INSERT INTO harness_shared.hive_members
-        (workspace_id, hive_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status, joined_at)
+      INSERT INTO harness_shared.pot_members
+        (workspace_id, pot_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status, joined_at)
       VALUES (${WS}, 'hive-a', 7, 'u7', ${JSON.stringify([{ device_pubkey: 'pk-7' }])}::text::jsonb, NULL, 'verified', 1)`;
     expect(await resolveVerifiedAuthorGithubId(h.sql, { workspaceId: WS, authorPubkey: 'pk-7' })).toBe(7);
     expect(await resolveVerifiedAuthorGithubId(h.sql, { workspaceId: WS, authorPubkey: '' })).toBeNull();

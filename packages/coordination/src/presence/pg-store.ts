@@ -44,6 +44,7 @@ interface CoordPresenceDbRow {
   intent_declared_at: string | null;
   agent_role: string | null;
   pot_slug: string | null;
+  capability_tags: unknown;
   compaction_limit: number | null;
   context_tokens: number | null;
   context_estimated_at: string | null;
@@ -74,6 +75,9 @@ function parseFiles(v: unknown): string[] {
 
 function toRecord(r: CoordPresenceDbRow, now: number): PresenceRecord {
   const files = parseFiles(r.current_files);
+  // Same dual text/binary-protocol shape as current_files (see parseFiles) —
+  // capability_tags is also a jsonb array column.
+  const capabilityTags = parseFiles(r.capability_tags);
   return {
     ownerId: r.owner_id,
     ownerLabel: r.owner_label,
@@ -90,6 +94,7 @@ function toRecord(r: CoordPresenceDbRow, now: number): PresenceRecord {
     intentDeclaredAt: r.intent_declared_at,
     agentRole: r.agent_role,
     potSlug: r.pot_slug,
+    capabilityTags,
     compactionLimit: r.compaction_limit,
     contextTokens: r.context_tokens,
     contextEstimatedAt: r.context_estimated_at,
@@ -113,14 +118,16 @@ export class PgPresenceStore implements PresenceStore {
       INSERT INTO harness_shared.coord_presence
         (owner_id, owner_label, workspace_id, source, intent,
          current_plan_slug, current_files, host, pid,
-         agent_role, pot_slug, heartbeat_at, last_active_at, intent_declared_at)
+         agent_role, pot_slug, capability_tags, heartbeat_at, last_active_at, intent_declared_at)
       VALUES (
         ${identity.ownerId}, ${identity.ownerLabel},
         ${identity.workspaceId ?? 'default'}, ${identity.source},
         ${input.intent ?? ''}, ${input.currentPlanSlug ?? null},
         ${JSON.stringify(input.currentFiles ?? [])}::text::jsonb,
         ${input.host ?? ''}, ${input.pid ?? null},
-        ${input.agentRole ?? null}, ${input.potSlug ?? null}, now(), now(), now()
+        ${input.agentRole ?? null}, ${input.potSlug ?? null},
+        ${JSON.stringify(input.capabilityTags ?? [])}::text::jsonb,
+        now(), now(), now()
       )
       ON CONFLICT (owner_id) DO UPDATE SET
         owner_label       = EXCLUDED.owner_label,
@@ -133,6 +140,13 @@ export class PgPresenceStore implements PresenceStore {
         pid               = EXCLUDED.pid,
         agent_role        = COALESCE(EXCLUDED.agent_role, harness_shared.coord_presence.agent_role),
         pot_slug          = COALESCE(EXCLUDED.pot_slug, harness_shared.coord_presence.pot_slug),
+        -- populate-once-then-keep, same family as agent_role/pot_slug: an
+        -- omitted/empty capabilityTags on this write (serializes to '[]')
+        -- must not clobber a previously-detected tag set.
+        capability_tags   = COALESCE(
+                               NULLIF(EXCLUDED.capability_tags, '[]'::jsonb),
+                               harness_shared.coord_presence.capability_tags
+                             ),
         heartbeat_at      = now(),
         last_active_at    = now(),
         -- EI-8988: only advance when the intent TEXT actually changes — a
@@ -271,7 +285,7 @@ export class PgPresenceStore implements PresenceStore {
       SELECT cp.owner_id, cp.owner_label, cp.workspace_id, cp.source,
              cp.intent, cp.current_plan_slug, cp.current_files,
              cp.host, cp.pid, cp.started_at, cp.heartbeat_at,
-             cp.last_active_at, cp.intent_declared_at, cp.agent_role, cp.pot_slug, cp.compaction_limit,
+             cp.last_active_at, cp.intent_declared_at, cp.agent_role, cp.pot_slug, cp.capability_tags, cp.compaction_limit,
              cp.context_tokens, cp.context_estimated_at,
              pus.user_id, pus.revoked_at
         FROM harness_shared.coord_presence cp
@@ -292,7 +306,7 @@ export class PgPresenceStore implements PresenceStore {
       SELECT cp.owner_id, cp.owner_label, cp.workspace_id, cp.source,
              cp.intent, cp.current_plan_slug, cp.current_files,
              cp.host, cp.pid, cp.started_at, cp.heartbeat_at,
-             cp.last_active_at, cp.intent_declared_at, cp.agent_role, cp.pot_slug, cp.compaction_limit,
+             cp.last_active_at, cp.intent_declared_at, cp.agent_role, cp.pot_slug, cp.capability_tags, cp.compaction_limit,
              cp.context_tokens, cp.context_estimated_at,
              pus.user_id, pus.revoked_at
         FROM harness_shared.coord_presence cp
@@ -352,6 +366,7 @@ export async function ensureCoordPresenceTable(sql: Sql): Promise<void> {
       last_active_at    timestamptz,
       agent_role        text,
       pot_slug          text,
+      capability_tags   jsonb       NOT NULL DEFAULT '[]'::jsonb,
       compaction_limit  integer,
       context_tokens    integer,
       context_estimated_at timestamptz
@@ -365,6 +380,7 @@ export async function ensureCoordPresenceTable(sql: Sql): Promise<void> {
       ADD COLUMN IF NOT EXISTS last_active_at   timestamptz,
       ADD COLUMN IF NOT EXISTS agent_role       text,
       ADD COLUMN IF NOT EXISTS pot_slug         text,
+      ADD COLUMN IF NOT EXISTS capability_tags  jsonb NOT NULL DEFAULT '[]'::jsonb,
       ADD COLUMN IF NOT EXISTS compaction_limit integer,
       ADD COLUMN IF NOT EXISTS context_tokens   integer,
       ADD COLUMN IF NOT EXISTS context_estimated_at timestamptz,

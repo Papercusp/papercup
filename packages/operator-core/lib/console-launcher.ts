@@ -27,6 +27,8 @@ import { FLAGS } from '@papercusp/flags';
 
 import { papercuspPathForWorkspace } from './papercusp-root';
 import { resolveAgentMcpBaseUrl } from './mcp-base-url';
+import { advSessionsByTranscriptHandles } from './adv-sessions';
+import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
 import {
   resolveContextEnv,
   resolveProjectDir,
@@ -326,6 +328,42 @@ export async function buildConsoleEnvelope(
       throw new Error(
         `cannot fork a ${bin} session: only claude sessions support --fork-session on the console resume path`,
       );
+    }
+    // WI-3988/WI-3989: `claude -r <id>` only finds the conversation if it runs
+    // with the SAME CLAUDE_CONFIG_DIR + cwd the original agent used. papercusp
+    // runs each claude agent in a per-session ISOLATION home
+    // (~/.papercusp/session-claude/<owner>, keyed by coord owner id), and the
+    // move-inactive-sessions-to-PG lifecycle ARCHIVES + DELETES an ended
+    // session's on-disk jsonl. A plain `claude -r` against the default ~/.claude
+    // therefore reported "No conversation found with session ID: <id>" and exited
+    // 1 (owner-hit 2026-07-11). Resolve the session's launch context from its
+    // adv_sessions row and point the resume at it, rematerializing the archived
+    // transcript from PG first. All best-effort: on any miss we fall through to a
+    // bare -r (no worse than before).
+    if (backend === 'claude-code') {
+      try {
+        const rows = await advSessionsByTranscriptHandles({ sessionIds: [opts.resumeSessionId] });
+        const row = rows[0];
+        // Point claude at the session's isolation config dir so `-r` reads the
+        // right conversation store (not the default ~/.claude).
+        if (row?.coordOwnerId) env.CLAUDE_CONFIG_DIR = sessionClaudeConfigDir(row.coordOwnerId);
+        // Land in the session's ORIGINAL project dir — claude scopes resume by
+        // cwd. Only override when it still exists (an ended session's cwd may be
+        // gone); else keep the harness/workspace cwd.
+        if (row?.cwd && existsSync(row.cwd)) cwd = row.cwd;
+        // An ENDED session's jsonl was archived + deleted after death, so `-r`
+        // finds nothing even with the right config dir — rematerialize it from PG
+        // (session_archives) first. Lazy import: session-archive fails LOUD at
+        // import when zstd is unavailable, so keep that off this module's load
+        // path. A LIVE session isn't archived → rematerialize is a no-op miss.
+        try {
+          const { pgSessionArchiveStore, rematerializeSession } = await import('./session-archive');
+          await rematerializeSession(
+            { sourceKind: 'claude', sessionId: opts.resumeSessionId },
+            pgSessionArchiveStore(),
+          );
+        } catch { /* best-effort — nothing to restore / archive unavailable */ }
+      } catch { /* best-effort — fall through to a bare -r */ }
     }
     // Permission mode is per-INVOCATION, not inherited from the resumed
     // session: a bare `claude -r` lands the user in default ask-per-tool

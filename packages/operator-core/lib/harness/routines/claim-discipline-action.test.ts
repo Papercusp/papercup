@@ -47,6 +47,7 @@ function presenceRecord(over: {
     intentDeclaredAt: recentHeartbeat,
     agentRole: null,
     potSlug: null,
+    capabilityTags: [],
     stale: false,
     userId: 'user-1',
     revoked: over.revoked ?? false,

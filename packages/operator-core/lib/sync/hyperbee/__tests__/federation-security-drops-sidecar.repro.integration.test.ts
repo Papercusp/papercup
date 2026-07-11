@@ -45,7 +45,7 @@
  * Cases 1 + 2 boot two/three `createSubstrateSidecarHost` + `bootHarnessSubstrate` peers
  * over a loopback testnet DHT (real swarm / announce / `verifyAnnounce` / D-004 admission /
  * D-053 owner-bootstrap / merge / member-content guard) against migrated testcontainer
- * Postgres org DBs (real CDC capture + outbox drain + the real federated `hive_members`
+ * Postgres org DBs (real CDC capture + outbox drain + the real federated `pot_members`
  * read). Every case carries a POSITIVE control on the SAME path (the owner's legitimate
  * content DOES apply) so a green negative can never be a false "nothing federated at all".
  * `verifyBinding` is overridden only to stand in for the unreachable GitHub gist-attestation
@@ -103,6 +103,7 @@ import { _resetUrlCacheForTests } from '../../../../../../libs/papercusp/libs/db
 import { _resetHarnessAdminUrlCacheForTests } from '../../../embedded-pg-discovery';
 import { createOrgTestDb, type OrgTestDb } from '../../../../test/_org-test-db';
 import { mutateHarnessRegistry } from '../../../harness-registry';
+import { applyPot557RenameAndFixups } from './_hive-substrate-rig';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../../../../..');
@@ -367,15 +368,16 @@ async function setupAuthorSchema(sql: postgres.Sql, authorSlug: string, workspac
 }
 
 /** The OWNER author additionally needs the Hive schema so it can author the ROSTER
- *  (hive_members) into its own log — the joiners federate it from there. */
+ *  (pot_members) into its own log — the joiners federate it from there. */
 async function setupOwnerSchema(sql: postgres.Sql, hiveHome: string, hivePubkeyB64: string, workspaceId: string): Promise<void> {
   await setupAuthorSchema(sql, hiveHome, workspaceId);
   await sql.unsafe(stripMig(readFileSync(join(SQL_DIR, '184-hives-table.sql'), 'utf8')));
   await sql.unsafe(stripMig(readFileSync(join(SQL_DIR, '185-hive-members-admission.sql'), 'utf8')));
   await sql.unsafe(stripMig(readFileSync(join(SQL_DIR, '189-hive-members-federation-cols.sql'), 'utf8')));
+  await applyPot557RenameAndFixups(sql);
   await sql`
-    INSERT INTO harness_shared.hives
-      (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+    INSERT INTO harness_shared.pots
+      (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
     VALUES (${workspaceId}, ${hiveHome}, decode(${hivePubkeyB64}, 'base64'),
             'kc-owner-home', 'Owner Home', null, 1, 1)
   `;
@@ -393,32 +395,32 @@ const memberAtt = (login: string, pk: string) =>
     },
   ]);
 
-/** Author one hive_members ROSTER row (fires the capture trigger → outbox → log). */
+/** Author one pot_members ROSTER row (fires the capture trigger → outbox → log). */
 async function authorRosterRow(sql: postgres.Sql, hiveHome: string, workspaceId: string, id: Identity): Promise<void> {
   await sql`
-    INSERT INTO harness_shared.hive_members
-      (workspace_id, hive_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status)
+    INSERT INTO harness_shared.pot_members
+      (workspace_id, pot_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status)
     VALUES (${workspaceId}, ${hiveHome}, ${id.userId}, ${id.login},
             ${memberAtt(id.login, id.devicePubkey)}::text::jsonb, '{}'::text[], 'verified')
   `;
 }
 
-/** Seed the `hives` row a `hive_members` row FK-references (hive_members_hive_fkey). */
+/** Seed the `hives` row a `pot_members` row FK-references (pot_members_hive_fkey). */
 async function seedHiveRow(sql: postgres.Sql, hiveHome: string, workspaceId: string): Promise<void> {
   const { publicKey } = generateKeyPairSync('ed25519');
   await sql`
-    INSERT INTO harness_shared.hives
-      (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+    INSERT INTO harness_shared.pots
+      (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
     VALUES (${workspaceId}, ${hiveHome}, decode(${rawPubkeyBase64(publicKey)}, 'base64'),
             'kc-owner-home', 'Owner Home', null, 1, 1)
   `;
 }
 
-/** Seed a hive_members roster row DIRECTLY in the (migrated) org DB. */
+/** Seed a pot_members roster row DIRECTLY in the (migrated) org DB. */
 async function seedRosterRow(sql: postgres.Sql, hiveHome: string, workspaceId: string, id: Identity): Promise<void> {
   await sql`
-    INSERT INTO harness_shared.hive_members
-      (workspace_id, hive_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status)
+    INSERT INTO harness_shared.pot_members
+      (workspace_id, pot_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status)
     VALUES (${workspaceId}, ${hiveHome}, ${id.userId}, ${id.login},
             ${memberAtt(id.login, id.devicePubkey)}::text::jsonb, '{}'::text[], 'verified')
   `;
@@ -494,15 +496,15 @@ async function runReceiverWithAttacker(opts: {
   const hivePubkeyB64 = rawPubkeyBase64(hivePub);
 
   // Receiver's PG: a hives row (home resolution) + the VERIFIED directory-cache owner
-  // binding (the SOLE source the topic-bound D-053 bootstrap-admit reads). NO hive_members
+  // binding (the SOLE source the topic-bound D-053 bootstrap-admit reads). NO pot_members
   // rows → EMPTY roster = the genuine fresh-join state.
   await orgDb.adminSql`
-    INSERT INTO harness_shared.hives
-      (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+    INSERT INTO harness_shared.pots
+      (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
     VALUES (${wsId}, ${hiveHome}, decode(${hivePubkeyB64}, 'base64'), 'kc-owner-home', 'Owner Home', null, 1, 1)
   `;
   await orgDb.adminSql`
-    INSERT INTO harness_shared.hive_directory_cache (workspace_id, payload, updated_at)
+    INSERT INTO harness_shared.pot_directory_cache (workspace_id, payload, updated_at)
     VALUES (${wsId}, ${JSON.stringify({
       hives: [{ hivePubkey: hivePubkeyB64, ownerDevicePubkey: owner.devicePubkey }],
     })}::text::jsonb, 1)
@@ -843,7 +845,7 @@ describe('SIDECAR shared-hive SECURITY DROPS — a malicious / unauthorised fram
   );
 
   it(
-    'DROP 3b — REVOKED/BANNED member (real testcontainer roster): once removed from hive_members, decideMemberContentOp drops the member’s SUBSEQUENT content',
+    'DROP 3b — REVOKED/BANNED member (real testcontainer roster): once removed from pot_members, decideMemberContentOp drops the member’s SUBSEQUENT content',
     async () => {
       const wsId = 'ws-sd-ban';
       const hiveHome = 'sdban-owner-hive';
@@ -869,8 +871,8 @@ describe('SIDECAR shared-hive SECURITY DROPS — a malicious / unauthorised fram
 
       // BAN: remove the member from the roster (the membership cut a pot:ban_member drives).
       await orgDb.adminSql`
-        DELETE FROM harness_shared.hive_members
-         WHERE workspace_id = ${wsId} AND hive_home_slug = ${hiveHome}
+        DELETE FROM harness_shared.pot_members
+         WHERE workspace_id = ${wsId} AND pot_home_slug = ${hiveHome}
            AND github_user_id = ${member.userId}
       `;
       // The onMemberApplied hook invalidates this in production; do it explicitly here.

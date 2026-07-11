@@ -21,7 +21,7 @@
  * ctx-building and directly testable.
  */
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
-import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
+import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
 import { queueConcurrency } from './queue-concurrency';
 import { parseDecisionFor } from '@papercusp/orchestrator';
 import { deriveNext, loadBuiltinBlueprint, type BlueprintSpine } from '@papercusp/orchestrator/blueprint';
@@ -463,7 +463,16 @@ export const featurePipelineWorkflow = idempotentRegisterWorkflow('featurePipeli
   }),
 );
 
-export const pipelineQueue = new WorkflowQueue('feature-pipeline', { concurrency: queueConcurrency(4) });
+// WI-4015 (critical, 2026-07-11): the SAME module-top-level-DBOS-singleton class as
+// WI-3830 above, but for `new WorkflowQueue(...)` — a second top-level evaluation of
+// this module in one process throws "Workflow Queue 'feature-pipeline' defined
+// multiple times" INSIDE startDbos()'s import chain, which host-bootstrap.ts's caller
+// only logs as "[dbos] boot failed (non-fatal)" and swallows — so DBOS.launch() never
+// completes and NO scheduled workflow (routinesTick included) ever arms fleet-wide,
+// even though the process stays up. idempotentWorkflowQueue guards it the same way.
+export const pipelineQueue = idempotentWorkflowQueue('feature-pipeline', () =>
+  new WorkflowQueue('feature-pipeline', { concurrency: queueConcurrency(4) }),
+);
 
 /**
  * Start (or resume) a feature's durable pipeline. The workflow ID is deterministic

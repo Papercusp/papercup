@@ -40,6 +40,12 @@ export interface PresenceInput {
   /** The agent's home Hive slug, resolved host-side (null = standalone). Also
    *  preserved across writes that omit it. */
   potSlug?: string | null;
+  /** This machine's DG-3 shard-scheduling capability tags (platform/deps/DB —
+   *  e.g. 'node'/'docker'/'pg'; see pot-git/gate/scheduling.ts's
+   *  shardRequiredTags vocabulary). Resolved host-side (detectMachineCapabilityTags),
+   *  populate-once-then-keep like agentRole/potSlug: an omitted/empty value on a
+   *  later write PRESERVES whatever was already recorded, never clobbers to []. */
+  capabilityTags?: string[];
 }
 
 export interface PresenceRecord {
@@ -71,6 +77,9 @@ export interface PresenceRecord {
   agentRole: string | null;
   /** The agent's home Hive slug (null = standalone / no hive). */
   potSlug: string | null;
+  /** This machine's DG-3 capability tags (platform/deps/DB), populate-once-then-kept.
+   *  [] when never resolved (pre-existing rows, or a store that doesn't carry it). */
+  capabilityTags: string[];
   /** Per-session SOFT compaction limit in tokens (agent-managed-compaction).
    *  null/undefined ⇒ use the per-model default. Set via config:set-compaction-limit.
    *  Optional: only the PG store (live presence) carries it; roster/snapshot

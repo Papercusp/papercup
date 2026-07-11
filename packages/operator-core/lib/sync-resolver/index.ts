@@ -2192,6 +2192,20 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // userMemory.journalStatus — the memory write-ahead journal's live status
+  // for the settings Memory page (memory-write-journal-auto-recovery P-006):
+  // pending badge count, failed_permanent count, and the last-24h drain
+  // recovery window for the "Memory recovered: N facts…" banner. The drain
+  // (embed-backfill tick) fires notifySyncInvalidate on both this key and
+  // userMemory.list after a recovery, so the page updates live.
+  'userMemory.journalStatus': {
+    argsSchema: z.object({}),
+    resolve: async () => {
+      const { journalStatusSnapshot } = await import('../memory/journal-surfacing');
+      return [await journalStatusSnapshot()] as unknown[];
+    },
+  },
+
   // notes.list — the minimal notes app's row set (owner-ask-batch-2026-07-06
   // P-004, WI-3265), newest-updated-first, optionally filtered by a search
   // term (ILIKE over title+body — see notes.ts). Writes fire
@@ -4038,6 +4052,129 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       type Opts = NonNullable<Parameters<typeof listConversations>[0]>;
       const rows = await listConversations({ state: state as Opts['state'], limit });
       return rows;
+    },
+  },
+
+  // conversations.unified — the /adv Conversations front door. The four
+  // curated communication stores have deliberately different schemas, but the
+  // inbox only needs one stable row grammar (source, title, preview, status,
+  // scope, recency). Keep that projection here on the shared sync rail instead
+  // of teaching the browser to fan out four ad-hoc REST reads. Source-specific
+  // detail and mutations continue through their existing audited endpoints.
+  'conversations.unified': {
+    argsSchema: z.object({ limit: clampedLimit(500, 200) }),
+    resolve: async (args) => {
+      const { limit } = args as { limit: number };
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { listConversations } = await import('../agent-tools/coordination/conversations');
+      const { sql } = getOrgPg();
+      const [questions, deliberations, agentChats, messages] = await Promise.all([
+        listConversations({ limit }),
+        sql`
+          SELECT thread_id, parent_kind, parent_ref, title, created_by,
+                 harness_slug, created_at, last_post_at, post_count
+            FROM harness_shared.coord_threads
+           ORDER BY last_post_at DESC NULLS LAST, created_at DESC NULLS LAST
+           LIMIT ${limit}`,
+        sql`
+          SELECT id, harness_slug, role, feature_id, title, created_at,
+                 archived_at, total_input_tokens, total_output_tokens,
+                 total_cost_usd_cents,
+                 jsonb_array_length(COALESCE(transcript, '[]'::jsonb)) AS turns
+            FROM harness_shared.agent_chats_consolidated
+           ORDER BY created_at DESC NULLS LAST
+           LIMIT ${limit}`,
+        sql`
+          SELECT id, harness_slug, from_slug, to_slug, to_role, kind, subject,
+                 body, status, created_at, from_feature_id, to_feature_id
+            FROM harness_shared.messages_consolidated
+           ORDER BY created_at DESC NULLS LAST
+           LIMIT ${limit}`,
+      ]);
+
+      const epoch = (value: unknown): number => {
+        if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+        if (typeof value === 'bigint') return Number(value);
+        if (value instanceof Date) return value.getTime();
+        const parsed = Date.parse(String(value ?? ''));
+        return Number.isFinite(parsed) ? parsed : 0;
+      };
+      const text = (value: unknown): string => (value == null ? '' : String(value));
+      const rows = [
+        ...questions.map((row) => {
+          const r = row as unknown as Record<string, unknown>;
+          const topics = Array.isArray(r.topics) ? r.topics.map(text).filter(Boolean) : [];
+          const sourceId = text(r.id);
+          return {
+            id: `threads:${sourceId}`,
+            source: 'threads',
+            sourceId,
+            kind: text(r.kind),
+            state: text(r.state),
+            title: text(r.title) || sourceId,
+            preview: topics.map((topic) => `#${topic}`).join('  '),
+            actor: text(r.asker_id),
+            harnessSlug: r.harness_slug == null ? null : text(r.harness_slug),
+            relatedRef: r.promoted_issue_id == null ? null : text(r.promoted_issue_id),
+            updatedAt: epoch(r.created_ts ?? r.created_at),
+          };
+        }),
+        ...deliberations.map((row) => {
+          const r = row as Record<string, unknown>;
+          const sourceId = text(r.thread_id);
+          return {
+            id: `deliberations:${sourceId}`,
+            source: 'deliberations',
+            sourceId,
+            kind: text(r.parent_kind),
+            state: '',
+            title: text(r.title) || sourceId,
+            preview: [text(r.parent_kind), text(r.parent_ref)].filter(Boolean).join(' · '),
+            actor: text(r.created_by),
+            harnessSlug: r.harness_slug == null ? null : text(r.harness_slug),
+            relatedRef: r.parent_ref == null ? null : text(r.parent_ref),
+            count: Number(r.post_count ?? 0),
+            updatedAt: epoch(r.last_post_at ?? r.created_at),
+          };
+        }),
+        ...agentChats.map((row) => {
+          const r = row as Record<string, unknown>;
+          const sourceId = text(r.id);
+          return {
+            id: `agentchats:${sourceId}`,
+            source: 'agentchats',
+            sourceId,
+            kind: text(r.role),
+            state: r.archived_at == null ? 'open' : 'archived',
+            title: text(r.title) || sourceId,
+            preview: [text(r.role), text(r.feature_id)].filter(Boolean).join(' · '),
+            actor: text(r.role),
+            harnessSlug: r.harness_slug == null ? null : text(r.harness_slug),
+            relatedRef: r.feature_id == null ? null : text(r.feature_id),
+            count: Number(r.turns ?? 0),
+            updatedAt: epoch(r.created_at),
+          };
+        }),
+        ...messages.map((row) => {
+          const r = row as Record<string, unknown>;
+          const sourceId = text(r.id);
+          return {
+            id: `messages:${sourceId}`,
+            source: 'messages',
+            sourceId,
+            kind: text(r.kind),
+            state: text(r.status),
+            title: text(r.subject) || text(r.body) || sourceId,
+            preview: text(r.body),
+            actor: text(r.from_slug),
+            recipient: text(r.to_slug ?? r.to_role),
+            harnessSlug: r.harness_slug == null ? null : text(r.harness_slug),
+            relatedRef: r.to_feature_id == null ? (r.from_feature_id == null ? null : text(r.from_feature_id)) : text(r.to_feature_id),
+            updatedAt: epoch(r.created_at),
+          };
+        }),
+      ];
+      return rows.sort((a, b) => b.updatedAt - a.updatedAt);
     },
   },
 

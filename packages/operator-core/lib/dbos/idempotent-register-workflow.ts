@@ -31,14 +31,23 @@
  * is an instance of the SAME latent class, but migrating all of them is a larger,
  * separately-reviewed follow-up (filed WI-3831), not bundled into this incident fix.
  */
-import type { WorkflowConfig, FunctionName } from '@dbos-inc/dbos-sdk';
+import type { WorkflowConfig, FunctionName, WorkflowQueue } from '@dbos-inc/dbos-sdk';
 
-type GlobalRegistry = typeof globalThis & { __papercuspDbosWorkflowCache__?: Map<string, unknown> };
+type GlobalRegistry = typeof globalThis & {
+  __papercuspDbosWorkflowCache__?: Map<string, unknown>;
+  __papercuspDbosQueueCache__?: Map<string, unknown>;
+};
 
 function registryCache(): Map<string, unknown> {
   const g = globalThis as GlobalRegistry;
   if (!g.__papercuspDbosWorkflowCache__) g.__papercuspDbosWorkflowCache__ = new Map();
   return g.__papercuspDbosWorkflowCache__;
+}
+
+function queueCache(): Map<string, unknown> {
+  const g = globalThis as GlobalRegistry;
+  if (!g.__papercuspDbosQueueCache__) g.__papercuspDbosQueueCache__ = new Map();
+  return g.__papercuspDbosQueueCache__;
 }
 
 /**
@@ -61,6 +70,44 @@ export function idempotentRegisterWorkflow<This, Args extends unknown[], Return>
   const registered = register();
   cache.set(key, registered);
   return registered;
+}
+
+/**
+ * idempotentWorkflowQueue — the SAME globalThis-cached-singleton guard as
+ * idempotentRegisterWorkflow above, applied to `new WorkflowQueue(name, config)`
+ * (WI-4015, 2026-07-11 critical incident: bg-host DBOS routines DOWN fleet-wide since
+ * 20:39 EDT — git-sync, cross-hive-outbox-drain/federation replication, scout-cycle,
+ * green-checkpoint, and every scheduled loop wake ALL stalled).
+ *
+ * `new WorkflowQueue(name, ...)` hits the EXACT SAME class of bug documented above for
+ * `DBOS.registerWorkflow`: DBOS's queue registry is a process-wide singleton keyed by
+ * name, and constructing a SECOND `WorkflowQueue` with the same name (from a second
+ * top-level evaluation of the defining module within one process) throws
+ * "Workflow Queue '<name>' defined multiple times" — but because this construction sits
+ * at MODULE TOP LEVEL (`export const pipelineQueue = new WorkflowQueue('feature-pipeline', ...)`),
+ * the throw happens DURING `startDbos()`'s import chain, which host-bootstrap.ts's
+ * `startDbos()` caller catches as merely "[dbos] boot failed (non-fatal)" and swallows —
+ * so DBOS.launch() never actually completes and NO scheduled workflow (routinesTick
+ * included) ever arms, even though the process stays up. Confirmed live 2026-07-11:
+ * this fired on 5/5 consecutive boots under the tsx-direct fallback entrypoint (never
+ * seen under the bundled esbuild entry, which collapses every import of a module into
+ * one instance) — same latent-class shape WI-3830 already fixed for `registerWorkflow`,
+ * just not yet extended to `WorkflowQueue` construction. See WI-3831 (the WI-3830
+ * follow-up) for the broader "migrate every module-top-level DBOS registration in dbos/*.ts"
+ * effort this is also an instance of.
+ *
+ * Usage (replaces a bare `new WorkflowQueue(name, config)` call):
+ *   export const pipelineQueue = idempotentWorkflowQueue('feature-pipeline', () =>
+ *     new WorkflowQueue('feature-pipeline', { concurrency: queueConcurrency(4) }),
+ *   );
+ */
+export function idempotentWorkflowQueue(key: string, construct: () => WorkflowQueue): WorkflowQueue {
+  const cache = queueCache();
+  const cached = cache.get(key);
+  if (cached) return cached as WorkflowQueue;
+  const queue = construct();
+  cache.set(key, queue);
+  return queue;
 }
 
 // Re-exported so a call site's `config` object type-checks against the real DBOS types

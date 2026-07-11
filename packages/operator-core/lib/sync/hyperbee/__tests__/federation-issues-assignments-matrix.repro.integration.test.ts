@@ -217,15 +217,15 @@ async function seedHive(
   const { publicKey: hivePub } = generateKeyPairSync('ed25519');
   const hivePubkeyB64 = rawPubkeyBase64(hivePub);
   await orgDb.adminSql`
-    INSERT INTO harness_shared.hives
-      (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+    INSERT INTO harness_shared.pots
+      (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
     VALUES (${WORKSPACE_ID}, ${hiveHome}, decode(${hivePubkeyB64}, 'base64'),
             'kc-hive-home', 'Hive Home', null, 1, 1)
   `;
   for (const m of members) {
     await orgDb.adminSql`
-      INSERT INTO harness_shared.hive_members
-        (workspace_id, hive_home_slug, github_user_id, github_username,
+      INSERT INTO harness_shared.pot_members
+        (workspace_id, pot_home_slug, github_user_id, github_username,
          device_attestations, revoked_pubkeys, binding_status)
       VALUES (${WORKSPACE_ID}, ${hiveHome}, ${m.userId}, ${m.login},
               ${JSON.stringify([
@@ -242,8 +242,8 @@ async function seedHive(
     `;
   }
   const [row] = await orgDb.adminSql<Array<{ pk: string }>>`
-    SELECT encode(public_key, 'base64') AS pk FROM harness_shared.hives
-     WHERE workspace_id = ${WORKSPACE_ID} AND home_slug = ${hiveHome}
+    SELECT encode(public_key, 'base64') AS pk FROM harness_shared.pots
+     WHERE workspace_id = ${WORKSPACE_ID} AND pot_home_slug = ${hiveHome}
   `;
   return row!.pk;
 }

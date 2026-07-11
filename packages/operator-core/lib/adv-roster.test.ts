@@ -38,6 +38,7 @@ function presence(overrides: Partial<PresenceRecord> = {}): PresenceRecord {
     intentDeclaredAt: iso(NOW - 5_000),
     agentRole: null,
     potSlug: null,
+    capabilityTags: [],
     stale: false,
     userId: null,
     revoked: false,

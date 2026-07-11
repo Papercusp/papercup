@@ -8,7 +8,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import type { ChangeFeedEntry } from '../curation/change-feed';
-import { CREATIVE_LENSES, type CreativeLens } from './types';
+import { CREATIVE_LENSES, SU_IDEATION_LENSES, type CreativeLens, type SuIdeationLens } from './types';
 import {
   classifyIdeaOutcome,
   computeLensOutcomes,
@@ -420,6 +420,54 @@ describe('Scout outcome-feedback (P-013 / D-009)', () => {
       expect(w.reframing).toBeCloseTo(0.25, 10);
       expect(w['first-principles']).toBe(0);
       expect(w['constraint-removal']).toBe(0);
+    });
+  });
+
+  describe('lens roster generalization (su-ideate-learning-substrate P-004)', () => {
+    // su provenance rows carry SuIdeationLens / sentinel text in the ledger's
+    // lens column — the cast mirrors the read path (DB text → provenance).
+    const suProv = (lens: string, routedRef: string, extra: Partial<RoutedIdeaProvenance> = {}) =>
+      prov({ lens: lens as CreativeLens, routedRef, ...extra });
+    const suRows: RoutedIdeaProvenance[] = [
+      suProv('risk-first', 'wi:SU-1'), // in the feed → won
+      suProv('user-value', 'wi:SU-2', { humanGrade: 5 }), // graded — dominates (won mass 1)
+      suProv('su-ideate', 'wi:SU-3'), // sentinel: no roster lens, counted in total only
+    ];
+    const suFeed = [entry({ ref: 'wi:SU-1', kind: 'completion', detail: 'Status: resolved' })];
+
+    it('lenses: SU_IDEATION_LENSES — full 7-lens roster, sentinel excluded from per-lens stats but in total', () => {
+      const r = computeLensOutcomes(suRows, suFeed, { lenses: SU_IDEATION_LENSES });
+      expect(Object.keys(r.byLens).sort()).toEqual([...SU_IDEATION_LENSES].sort());
+      expect('su-ideate' in r.byLens).toBe(false);
+      expect(r.total).toBe(3); // the sentinel row still counts
+      expect(r.byLens['risk-first']).toMatchObject({ routed: 1, won: 1, lost: 0, winRate: 1 });
+      expect(r.byLens['user-value']).toMatchObject({ routed: 1, won: 1, lost: 0, winRate: 1 });
+      expect(r.byLens.analogical.routed).toBe(0);
+      expect(r.ranked).toHaveLength(SU_IDEATION_LENSES.length);
+      const sum = SU_IDEATION_LENSES.reduce((a, l) => a + r.byLens[l].weight, 0);
+      expect(sum).toBeCloseTo(1, 10);
+    });
+
+    it('the DEFAULT roster is unchanged: su-lens rows enter no per-lens stat, only the total', () => {
+      const r = computeLensOutcomes(suRows, suFeed);
+      expect(Object.keys(r.byLens).sort()).toEqual([...CREATIVE_LENSES].sort());
+      expect(r.total).toBe(3);
+      for (const l of CREATIVE_LENSES) expect(r.byLens[l].routed).toBe(0);
+    });
+
+    it('samplingWeightsWithFloor over a custom roster: absent lenses land exactly on the floor, sum 1', () => {
+      const w = samplingWeightsWithFloor<SuIdeationLens>(
+        { 'user-value': 3, 'risk-first': 1 },
+        { lenses: SU_IDEATION_LENSES },
+      );
+      const n = SU_IDEATION_LENSES.length;
+      const floor = SAMPLING_FLOOR_FRACTION / n;
+      expect(w['cost-leverage']).toBeCloseTo(floor, 10); // no raw weight → exactly the floor
+      expect(w.analogical).toBeCloseTo(floor, 10);
+      expect(w['user-value']).toBeGreaterThan(w['risk-first']);
+      expect(w['risk-first']).toBeGreaterThan(floor);
+      const sum = SU_IDEATION_LENSES.reduce((a, l) => a + w[l], 0);
+      expect(sum).toBeCloseTo(1, 10);
     });
   });
 });

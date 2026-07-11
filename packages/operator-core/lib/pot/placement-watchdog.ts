@@ -34,12 +34,13 @@
  * sweep (`reconcilePotPlacements`) so the behavioral contract unit-tests with no
  * database — the same split as wake-frontier-guard.
  */
+import { hostname } from 'node:os';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
-import { RECLAIM_STALE_MS, WEDGE_SILENT_MS } from '../fleet/spawn-reclaim';
+import { RECLAIM_STALE_MS, WEDGE_SILENT_MS, isSpawnProcessAlive } from '../fleet/spawn-reclaim';
 import { placementOverride } from '../pot-control-policy';
 import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 import { openEscalation, resolveEscalation } from '../agent-tools/coordination/escalations';
@@ -196,22 +197,51 @@ export interface CupLivenessInput {
   heartbeatAtMs: number | null;
   lastOutputAtMs: number | null;
   now: number;
+  /** WI-3977 — same-host process liveness, mirroring the WI-3961 exemption
+   *  already applied by `reclaimOrphanedSpawns`. When the caller can positively
+   *  confirm the spawn's OS process is alive on THIS host (same-host pid check,
+   *  `isSpawnProcessAlive`), a heartbeat-stale row is NOT concluded `dead` — the
+   *  process is demonstrably still running; the stale heartbeat is a launcher-side
+   *  bookkeeping gap (WI-3961's field note: a scope-isolated cup's heartbeat_at can
+   *  go un-bumped for a stretch — e.g. it isn't registered in the CURRENT operator
+   *  generation's in-memory heartbeat loop after a bg-host restart), not evidence
+   *  the cup died. Omitted / undefined ⇒ unverifiable (a different host, or the
+   *  caller didn't check) — falls back to the heartbeat-only verdict below, exactly
+   *  today's behavior. Only ever narrows `dead` → `live`/`wedged`; never widens it. */
+  confirmedAliveSameHost?: boolean;
 }
 
 /**
  * Derive a cup's liveness from its spawn row, reusing the fleet-reclaim
  * thresholds so the watchdog agrees with orphan-reclaim / wedge-reap:
  *   - terminal spawn status (done/failed/cancelled/reaped) → `dead`;
- *   - running but heartbeat stale beyond RECLAIM_STALE_MS → `dead` (orphaned host);
- *   - running, heartbeat fresh, but output silent beyond WEDGE_SILENT_MS → `wedged`;
+ *   - running, heartbeat stale beyond RECLAIM_STALE_MS, but the caller has
+ *     POSITIVELY confirmed the process is alive on this host → NOT `dead` (falls
+ *     through to the wedge/live check below on the stale heartbeat) — WI-3977;
+ *   - running but heartbeat stale beyond RECLAIM_STALE_MS (and not confirmed
+ *     alive) → `dead` (orphaned host, or unverifiable);
+ *   - running, heartbeat fresh (or confirmed-alive-but-stale), but output silent
+ *     beyond WEDGE_SILENT_MS → `wedged`;
  *   - otherwise → `live`.
  * A null heartbeat on a running cup is treated as `live` (freshly spawned, no
  * heartbeat tick yet — reclaim owns the true-orphan case).
+ *
+ * WI-3977 — before this, a heartbeat-stale-but-actually-alive cup (the SAME
+ * false-positive class WI-3961 fixed for the reclaim sweep: a scope-isolated
+ * cup whose heartbeat_at goes un-bumped past RECLAIM_STALE_MS while it is
+ * demonstrably still running) read `dead` here UNCONDITIONALLY — this decider
+ * had no pid-liveness check at all, unlike reclaimOrphanedSpawns. `hasLiveHolder`
+ * in `evaluatePlacement` then went false and the Mug re-placed a FRESH cup onto
+ * the same work-item while the original kept working — two live cups racing the
+ * same edit (observed live: WI-3954, two concurrent cups on the same rename).
+ * `confirmedAliveSameHost` closes that gap the same way WI-3961 closed it for
+ * the reclaim sweep: verify via `isSpawnProcessAlive` before trusting a stale
+ * heartbeat as death.
  */
 export function deriveCupLiveness(input: CupLivenessInput): CupLiveness {
   if (TERMINAL_SPAWN_STATES.has(input.status)) return 'dead';
-  const { heartbeatAtMs, lastOutputAtMs, now } = input;
-  if (heartbeatAtMs != null && now - heartbeatAtMs > RECLAIM_STALE_MS) return 'dead';
+  const { heartbeatAtMs, lastOutputAtMs, now, confirmedAliveSameHost } = input;
+  if (heartbeatAtMs != null && now - heartbeatAtMs > RECLAIM_STALE_MS && !confirmedAliveSameHost) return 'dead';
   if (lastOutputAtMs != null && now - lastOutputAtMs > WEDGE_SILENT_MS) return 'wedged';
   return 'live';
 }
@@ -793,6 +823,11 @@ export async function reconcileOnePot(
   installSlug: string,
   cfg: PlacementConfig,
   now: number,
+  // WI-3977 — injectable liveness seam (mirrors reclaimOrphanedSpawns's `opts.isAlive`)
+  // so the integration test can fake /proc without a real live child. Optional +
+  // last-positioned so every existing positional call site (reconcileOnePot(sql, ws,
+  // slug, cfg, now)) stays byte-identical; defaults to the real check.
+  isAlive: (pid: number, kind?: 'spawn' | 'launch') => boolean = isSpawnProcessAlive,
 ): Promise<PlacementSweepResult[]> {
   const out: PlacementSweepResult[] = [];
   // ALL Mug-owners that served this pot (a fresh-per-wake / re-woken Mug accrues
@@ -816,15 +851,35 @@ export async function reconcileOnePot(
       last_output_ms: number | null;
       run_id: string | null;
       error_message: string | null;
+      pid: number | null;
+      launcher_host: string | null;
     }[]
   >`
-    SELECT spawn_id, session_owner, feature_id, status, run_id, error_message,
+    SELECT spawn_id, session_owner, feature_id, status, run_id, error_message, pid, launcher_host,
            extract(epoch from heartbeat_at) * 1000 AS heartbeat_ms,
            extract(epoch from last_output_at) * 1000 AS last_output_ms
       FROM harness_shared.spawned_agents
      WHERE workspace_id = ${workspaceId}
        AND child_role = 'cup'
        AND parent_spawn_id = ANY(${mugOwners})`;
+
+  // WI-3977 — same-host process-liveness confirmation, reusing the WI-3961 check
+  // (isSpawnProcessAlive) so a heartbeat-stale-but-actually-alive cup isn't read
+  // `dead` by deriveCupLiveness below (see its doc comment). Only a SAME-HOST row
+  // with a recorded pid can be positively verified; a different host or a missing
+  // pid stays unverifiable (today's behavior — falls back to heartbeat-only).
+  const me = hostname();
+  const confirmedAliveByOwner = new Map<string, boolean>();
+  for (const b of cupRows) {
+    const ownerId = b.session_owner || b.spawn_id;
+    if (b.launcher_host !== me || b.pid == null) continue;
+    const kind: 'spawn' | 'launch' =
+      (b.run_id ?? '').startsWith('launch-') || b.spawn_id.startsWith('durable-spawn:') ? 'launch' : 'spawn';
+    if (isAlive(b.pid, kind)) {
+      confirmedAliveByOwner.set(ownerId, true);
+      confirmedAliveByOwner.set(b.spawn_id, true);
+    }
+  }
 
   // EI-865 / WI-233 — which cups made a governed model call within ACTIVE_RECLAIM_WINDOW_MS
   // (agent_usage_samples, keyed by the spawn's run_id). This is the liveness signal that a
@@ -893,6 +948,9 @@ export async function reconcileOnePot(
         heartbeatAtMs: num(b.heartbeat_ms),
         lastOutputAtMs: num(b.last_output_ms),
         now,
+        // WI-3977 — don't trust a stale heartbeat as death when the process is
+        // positively confirmed alive on this host.
+        confirmedAliveSameHost: confirmedAliveByOwner.get(b.spawn_id) === true,
       }),
       // Slow-but-alive false reclaim: recent model-call activity AND the cup is either
       // only heartbeat-stale (still running/restarting, the reaper has not run yet) or

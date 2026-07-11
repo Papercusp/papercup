@@ -211,3 +211,59 @@ test('wake cap — a bee that keeps stalling is given up after maxWakesPerBee', 
   assert.equal(h.calls.wake.length, 2, 'no further wakes past the cap');
   assert.deepEqual(r.dropped, ['bee-1']);
 });
+
+test('WI-1582: breadcrumbs (lastWokeAt/lastUnwedgeAt/wakeCount) are bounded — swept once long-idle and not pending', async () => {
+  const h = harness({ breadcrumbTtlMs: 1000 });
+  h.pushStall({ soonestResetAt: h.state.t + 100 });
+  h.advance(200);
+  await h.w.tick(); // wakes bee-1 → pending cleared, but breadcrumbs (lastWokeAt, wakeCount) persist
+  assert.equal(h.w.pendingCount, 0);
+  assert.equal(h.w.breadcrumbCount, 1, 'the wake breadcrumb is tracked once woken');
+
+  // Well within the TTL: a routine tick with nothing new must NOT sweep it yet.
+  h.advance(500);
+  await h.w.tick();
+  assert.equal(h.w.breadcrumbCount, 1, 'not yet stale — kept');
+
+  // Past the TTL with no further activity for this owner → swept.
+  h.advance(600); // total 1100ms since last wake, past breadcrumbTtlMs=1000
+  await h.w.tick();
+  assert.equal(h.w.breadcrumbCount, 0, 'long-silent owner is reclaimed');
+});
+
+test('WI-1582: a CURRENTLY-PENDING owner is never swept, even past breadcrumbTtlMs (would reset its wake cap mid-episode)', async () => {
+  const h = harness({ breadcrumbTtlMs: 1000, maxWakesPerBee: 1, wakeCooldownMs: 0 });
+  h.state.capBack = false; // stays pending — never reaches the reset/capacity gate again
+  h.pushStall({ soonestResetAt: h.state.t + 100 });
+  h.advance(200);
+  await h.w.tick(); // reset passed, capacity NOT back → stays pending, no wake yet
+  assert.equal(h.w.pendingCount, 1);
+  // The default harness has `unwedge` wired and beeIdle:true, so the confirmed-idle
+  // owner is fast-ESC'd (2a-FAST) before the capacity gate — lastUnwedgeAt IS set here.
+  assert.equal(h.w.breadcrumbCount, 1, 'the unwedge breadcrumb is tracked, but the owner stays pending');
+
+  h.advance(2000); // well past breadcrumbTtlMs, but the owner is still pending throughout
+  const r = await h.w.tick();
+  assert.equal(h.w.pendingCount, 1, 'still pending — capacity never came back');
+  assert.deepEqual(r.dropped, [], 'sweepBreadcrumbs must not touch a pending owner');
+});
+
+test("WI-1582: sweeping resets the wake cap for a bee that stalls again long after its session ended (doesn't permanently ban a NEW session's owner id)", async () => {
+  const h = harness({ maxWakesPerBee: 1, wakeCooldownMs: 0, breadcrumbTtlMs: 1000 });
+  h.pushStall({ soonestResetAt: h.state.t + 100 });
+  h.advance(200);
+  await h.w.tick();
+  assert.equal(h.calls.wake.length, 1, 'first wake attempt used the cap');
+
+  h.advance(1100); // past breadcrumbTtlMs with no activity → wakeCount reclaimed
+  await h.w.tick(); // a no-op tick (no pending stall) still runs the sweep
+  assert.equal(h.w.breadcrumbCount, 0);
+
+  // A fresh stall for the SAME ownerId, long after the fact, gets a clean cap again —
+  // sweeping did not permanently ban a bee that merely went quiet for a day.
+  h.pushStall({ at: h.state.t, soonestResetAt: h.state.t + 100 });
+  h.advance(200);
+  const r = await h.w.tick();
+  assert.deepEqual(r.woken, ['bee-1'], 'the cap reset after the long-idle sweep');
+  assert.equal(h.calls.wake.length, 2);
+});

@@ -6,15 +6,15 @@
  *
  * ## The bug (now fixed)
  * Cross-machine shared-hive federation, owner device A → joiner device B. When B
- * joins via joinHiveAsView it boots at hive-home = <none>: the hive_members /
- * hive_settings projections are bound to B's MEMBER slug, NOT the HIVE-HOME slug.
+ * joins via joinHiveAsView it boots at hive-home = <none>: the pot_members /
+ * pot_settings projections are bound to B's MEMBER slug, NOT the HIVE-HOME slug.
  * The hive-home slug is only learned at the 2c REKEY (boot.ts `rekey()`), whose
  * rebind block re-binds those two projections to the hive-home slug.
  *
  * If B MERGES (admits + folds) A's already-admitted owner log BEFORE the rekey
- * rebind, A's `hive_members` roster row is applied against the MEMBER-slug binding:
+ * rebind, A's `pot_members` roster row is applied against the MEMBER-slug binding:
  * the projection DROPS it at projections/hive-members.ts writeToPg (line ~104,
- * `row.hive_home_slug !== opts.harnessSlug`), the merge cursor marks the op DONE,
+ * `row.pot_home_slug !== opts.harnessSlug`), the merge cursor marks the op DONE,
  * and — because the log SET didn't change — the cursor is never reset, so the op
  * is NEVER re-applied. B's roster stays EMPTY, A's content op defers/drops at the
  * member-content guard forever (member-content-guard.ts: no hiveHome / not-in-member-set),
@@ -29,7 +29,7 @@
  * checked + cleared UNDER the merge gate at the top of mergeOnePass (right after the
  * log-set-change cursor-reset loop), and driven by an `await mergeNow()` added at the
  * END of rekey() (after retryPendingOnce). It re-folds ALL admitted logs through the
- * freshly-rebound projection so A's hive_members op re-applies and lands, firing the
+ * freshly-rebound projection so A's pot_members op re-applies and lands, firing the
  * pendingMemberContent drain so A's content lands too.
  *
  * ## How this differs from owner-content-to-joiner-faithful.repro (the sibling)
@@ -37,7 +37,7 @@
  *   (1) it pre-stamps the registry so `joinerPotHomeSlug(JOINER)` resolves the home
  *       SYNCHRONOUSLY at boot → B boots ALREADY hive-home-bound, so rekey is a no-op
  *       rebind and the home=<none> window never exists;
- *   (2) it pre-inserts BOTH peers into hive_members → the roster is never empty.
+ *   (2) it pre-inserts BOTH peers into pot_members → the roster is never empty.
  * THIS test AVOIDS BOTH: it drives the joinerPotHomeSlugOverride seam to return null
  * at boot (the live fresh-joiner home=<none> window) and starts B with an EMPTY roster
  * (only the hives identity + the owner-device binding for ownerDeviceForHive bootstrap-
@@ -47,7 +47,7 @@
  * ## Teeth
  * Reverting EITHER half of the fix — the `await mergeNow()` at the end of rekey() OR
  * the `forceReFold` reset in mergeOnePass — leaves A's already-folded-and-dropped
- * hive_members op un-re-applied: B's roster stays EMPTY and A's content count stays 0
+ * pot_members op un-re-applied: B's roster stays EMPTY and A's content count stays 0
  * AFTER the rekey → the step-(f) assertions flip RED. (Verified by the author.)
  *
  * RUN (integration layer — real testcontainer PG; needs Docker):
@@ -168,7 +168,7 @@ async function pollUntil<T>(
 }
 
 /** The throwaway per-peer apply for the AUTHOR (its own state-origin DB). Both the
- *  hive_members and the feature projections are CDC-captured (skipOwnOps), so the
+ *  pot_members and the feature projections are CDC-captured (skipOwnOps), so the
  *  author's own appended ops are no-ops here; the set just makes the op-dispatch
  *  lookup complete for those two table tags. */
 function buildAuthorApply(
@@ -196,12 +196,12 @@ async function countOutbox(sql: postgres.Sql, table: string, key: string): Promi
   return Number(rows[0]?.n ?? 0);
 }
 
-/** Read the github_user_ids currently in B's roster (hive_members) for the hive home. */
+/** Read the github_user_ids currently in B's roster (pot_members) for the hive home. */
 async function rosterUserIds(sql: postgres.Sql, hiveHome: string): Promise<Set<number>> {
   const rows = await sql<Array<{ github_user_id: number }>>`
     SELECT github_user_id::int AS github_user_id
-      FROM harness_shared.hive_members
-     WHERE workspace_id = ${WORKSPACE_ID} AND hive_home_slug = ${hiveHome}
+      FROM harness_shared.pot_members
+     WHERE workspace_id = ${WORKSPACE_ID} AND pot_home_slug = ${hiveHome}
   `;
   return new Set(rows.map((r) => Number(r.github_user_id)));
 }
@@ -294,7 +294,7 @@ describe('A-003 OWNER→JOINER roster-rebind RACE (deterministic) — merge BEFO
       const idJoiner = makeIdentityOverride('joiner', 7, 'kc-joiner');
 
       // ── Seed ONLY the hive identity row in B's org DB. ──
-      //    NO hive_members rows (the EMPTY-roster fresh-join state — shortcut #2 AVOIDED).
+      //    NO pot_members rows (the EMPTY-roster fresh-join state — shortcut #2 AVOIDED).
       //    The owner's device binding for the bootstrap-admit is supplied via the injected
       //    `ownerDeviceForHiveOverride` seam below (the binding lives in the offline
       //    hive-directory cache in production, NOT on the hives row), so the hives row only
@@ -302,8 +302,8 @@ describe('A-003 OWNER→JOINER roster-rebind RACE (deterministic) — merge BEFO
       const { publicKey: hivePub } = generateKeyPairSync('ed25519');
       const hivePubkeyB64 = rawPubkeyBase64(hivePub);
       await orgDb.adminSql`
-        INSERT INTO harness_shared.hives
-          (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+        INSERT INTO harness_shared.pots
+          (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, decode(${hivePubkeyB64}, 'base64'),
                 'kc-owner-home', 'Owner Home', null, 1, 1)
       `;
@@ -329,15 +329,15 @@ describe('A-003 OWNER→JOINER roster-rebind RACE (deterministic) — merge BEFO
       _clearHiveMemberDeviceSetCacheForTest();
 
       // ── The OWNER author's own state-origin DB (full migrated schema + the REAL mig-189
-      //    hive_members capture + the work-items CDC capture). Seed the hive identity here too
-      //    (hive_members has an FK → hives). ──
+      //    pot_members capture + the work-items CDC capture). Seed the hive identity here too
+      //    (pot_members has an FK → hives). ──
       const authorDb: OrgTestDb = await createOrgTestDb();
       cleanups.push(async () => {
         await authorDb.cleanup();
       });
       await authorDb.adminSql`
-        INSERT INTO harness_shared.hives
-          (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+        INSERT INTO harness_shared.pots
+          (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, decode(${hivePubkeyB64}, 'base64'),
                 'kc-owner-home', 'Owner Home', null, 1, 1)
       `;
@@ -394,7 +394,7 @@ describe('A-003 OWNER→JOINER roster-rebind RACE (deterministic) — merge BEFO
 
       // ── Boot the JOINER (RECEIVER): member slug JOINER_SLUG; NO applyOverride → the REAL boot
       //    scopedApply (getOrgPg → orgDb). joinerPotHomeSlugOverride returns null at boot → B
-      //    boots hive_members/hive_settings MEMBER-slug-bound (home=<none>). ownerDeviceForHive
+      //    boots pot_members/pot_settings MEMBER-slug-bound (home=<none>). ownerDeviceForHive
       //    Override returns A's device so B can bootstrap-admit A's owner log with an EMPTY roster
       //    (the WI-787/WI-797 keystone — the roster that would admit A lives inside A's un-merged
       //    log). ──
@@ -423,12 +423,12 @@ describe('A-003 OWNER→JOINER roster-rebind RACE (deterministic) — merge BEFO
       expect(handleJoiner.swarm).not.toBeNull();
       expect(handleOwner.swarm!.topicHex).toBe(handleJoiner.swarm!.topicHex);
 
-      // ── (c) The OWNER authors its hive_members roster row AND one content op under HIVE_HOME →
+      // ── (c) The OWNER authors its pot_members roster row AND one content op under HIVE_HOME →
       //    REAL capture triggers → outbox → drain → owner's log. ──
-      // Roster row (mig 189 custom capture → outbox.harness_slug := hive_home_slug = HIVE_HOME).
+      // Roster row (mig 189 custom capture → outbox.harness_slug := pot_home_slug = HIVE_HOME).
       await authorDb.adminSql`
-        INSERT INTO harness_shared.hive_members
-          (workspace_id, hive_home_slug, github_user_id, github_username,
+        INSERT INTO harness_shared.pot_members
+          (workspace_id, pot_home_slug, github_user_id, github_username,
            device_attestations, revoked_pubkeys, binding_status)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${idOwner.userId}, 'owner',
                 ${JSON.stringify([
@@ -453,7 +453,7 @@ describe('A-003 OWNER→JOINER roster-rebind RACE (deterministic) — merge BEFO
           (workspace_id, harness_slug, feature_id, title, summary, status, attempts, origin, ts, created_ts, updated_ts)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${FEATURE_ID}, 'Owner→joiner feature', 'from owner', 'todo', 0, 'local', 7001, 7001, 7001)
       `;
-      expect(await countOutbox(authorDb.adminSql, 'hive_members', String(idOwner.userId))).toBe(1);
+      expect(await countOutbox(authorDb.adminSql, 'pot_members', String(idOwner.userId))).toBe(1);
       expect(await countOutbox(authorDb.adminSql, 'harness_features_consolidated', FEATURE_ID)).toBe(1);
       const drained = await drainOutboxOnce(handleOwner, authorDb.adminSql);
       expect(drained, "the owner's roster + content ops were not drained to its log").toBeGreaterThanOrEqual(2);
@@ -475,8 +475,8 @@ describe('A-003 OWNER→JOINER roster-rebind RACE (deterministic) — merge BEFO
       ).toBe(true);
 
       // ── (d) FORCE THE BAD ORDERING: drive several FULL merge passes on B BEFORE the rekey, so
-      //    B admits + FOLDS A's owner log while the hive_members projection is still MEMBER-slug-
-      //    bound (home=<none>). A's roster op is DROPPED at hive-members.ts (row.hive_home_slug=
+      //    B admits + FOLDS A's owner log while the pot_members projection is still MEMBER-slug-
+      //    bound (home=<none>). A's roster op is DROPPED at hive-members.ts (row.pot_home_slug=
       //    HIVE_HOME ≠ JOINER_SLUG), the cursor marks it DONE, and the log SET doesn't change so it
       //    is never re-folded. A's content op DROPS at the member-guard (no resolved hiveHome).
       //    Refresh the membership cache so the next read reflects PG, not a stale set. ──
@@ -499,7 +499,7 @@ describe('A-003 OWNER→JOINER roster-rebind RACE (deterministic) — merge BEFO
       ).toBe(0);
 
       // ── (e) Flip the override to resolve the hive-home slug, then REKEY (the 2c re-key). The
-      //    rebind block re-binds the hive_members/hive_settings projections to HIVE_HOME, sets
+      //    rebind block re-binds the pot_members/pot_settings projections to HIVE_HOME, sets
       //    forceReFold, and the `await mergeNow()` at the END of rekey() consumes it → the merge
       //    cursor resets → ALL admitted logs re-fold through the now-hive-home-bound projection →
       //    A's roster op re-applies (it was dropped+done before) → the pendingMemberContent drain
@@ -663,8 +663,8 @@ describe('A-003 OWNER→JOINER roster-rebind + SUBSTRATE_LOG_SNAPSHOT ON — the
       const { publicKey: hivePub } = generateKeyPairSync('ed25519');
       const hivePubkeyB64 = rawPubkeyBase64(hivePub);
       await orgDb.adminSql`
-        INSERT INTO harness_shared.hives
-          (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+        INSERT INTO harness_shared.pots
+          (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, decode(${hivePubkeyB64}, 'base64'),
                 'kc-owner-home-rrs', 'Owner Home', null, 1, 1)
       `;
@@ -687,8 +687,8 @@ describe('A-003 OWNER→JOINER roster-rebind + SUBSTRATE_LOG_SNAPSHOT ON — the
         await authorDb.cleanup();
       });
       await authorDb.adminSql`
-        INSERT INTO harness_shared.hives
-          (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+        INSERT INTO harness_shared.pots
+          (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, decode(${hivePubkeyB64}, 'base64'),
                 'kc-owner-home-rrs', 'Owner Home', null, 1, 1)
       `;
@@ -764,8 +764,8 @@ describe('A-003 OWNER→JOINER roster-rebind + SUBSTRATE_LOG_SNAPSHOT ON — the
 
       // ── (c) OWNER authors its roster row + one content op → capture → outbox → drain → own log. ──
       await authorDb.adminSql`
-        INSERT INTO harness_shared.hive_members
-          (workspace_id, hive_home_slug, github_user_id, github_username,
+        INSERT INTO harness_shared.pot_members
+          (workspace_id, pot_home_slug, github_user_id, github_username,
            device_attestations, revoked_pubkeys, binding_status)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${idOwner.userId}, 'owner',
                 ${JSON.stringify([
@@ -785,7 +785,7 @@ describe('A-003 OWNER→JOINER roster-rebind + SUBSTRATE_LOG_SNAPSHOT ON — the
           (workspace_id, harness_slug, feature_id, title, summary, status, attempts, origin, ts, created_ts, updated_ts)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${FEATURE_ID}, 'Owner→joiner feature (snapshot)', 'from owner', 'todo', 0, 'local', 7001, 7001, 7001)
       `;
-      expect(await countOutbox(authorDb.adminSql, 'hive_members', String(idOwner.userId))).toBe(1);
+      expect(await countOutbox(authorDb.adminSql, 'pot_members', String(idOwner.userId))).toBe(1);
       expect(await countOutbox(authorDb.adminSql, 'harness_features_consolidated', FEATURE_ID)).toBe(1);
       const drained = await drainOutboxOnce(handleOwner, authorDb.adminSql);
       expect(drained, "the owner's roster + content ops were not drained to its log").toBeGreaterThanOrEqual(2);
@@ -846,7 +846,7 @@ describe('A-003 OWNER→JOINER roster-rebind + SUBSTRATE_LOG_SNAPSHOT ON — the
         'pre-rekey (snapshots ON): with an empty roster + home=<none>, A’s content op MUST NOT materialize on B',
       ).toBe(0);
 
-      // ── (e) Resolve the hive-home slug + REKEY. The rebind block re-binds hive_members/hive_settings
+      // ── (e) Resolve the hive-home slug + REKEY. The rebind block re-binds pot_members/pot_settings
       //    to HIVE_HOME, sets forceReFold, and the `await mergeNow()` at the END of rekey() consumes it →
       //    the cursor resets → `seedCursorFromSnapshots` RE-seeds at the owner snapshot → the fold
       //    RE-EXPANDS the snapshot through the now-hive-home-bound projection → A's roster op re-applies →

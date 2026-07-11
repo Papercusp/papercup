@@ -179,24 +179,127 @@ export async function setupHivePeerSchema(sql: postgres.Sql): Promise<void> {
   ]) {
     await sql.unsafe(stripMeta(readFileSync(resolve(SQL_DIR, m), 'utf8')));
   }
+  await applyPot557RenameAndFixups(sql);
+}
+
+/**
+ * EI-9396: shared by every test rig that hand-builds its federation-CRUD schema
+ * from the PRE-rename archive migrations (184-hives-table / 185-hive-members-
+ * admission / 189-hive-members-federation-cols / 186-hive-settings). Call this
+ * AFTER applying whatever subset of those archive migrations the caller needs —
+ * it forwards the schema to the pot_* names exactly as live migration 557 (cup-
+ * lexicon phase 3) does, then re-applies the two post-557 trigger-body fixups
+ * that a bare RENAME can't cover (mig 565 + its own prerequisites), so callers
+ * never have to hand-roll (and re-discover the same bugs in) this block.
+ * Every step is EXISTENCE-GUARDED (mirrors 557's own `to_regclass` idempotency
+ * style) so it's safe to call regardless of which archive migrations a given
+ * caller loaded (e.g. omitting 186 ⇒ no hive_settings ⇒ that rename is skipped).
+ */
+export async function applyPot557RenameAndFixups(sql: postgres.Sql): Promise<void> {
   // WI-3953 (mig 557, cup-lexicon phase 3): the live projections now target the
-  // pot_* names. This rig hand-builds its schema from the PRE-rename archive
-  // migrations (184/185/186/189), so rename the tables forward exactly as 557
-  // does in production. RENAME TABLE/COLUMN carries the PK/FK/index/policy AND the
-  // capture triggers along automatically (there is no capture-fn fixup migration
-  // for these two tables — they key off TG_TABLE_NAME, so the trigger follows).
-  await sql.unsafe(`ALTER TABLE harness_shared.hives RENAME TO pots`);
-  await sql.unsafe(`ALTER TABLE harness_shared.pots RENAME COLUMN home_slug TO pot_home_slug`);
-  await sql.unsafe(`ALTER TABLE harness_shared.hive_members RENAME TO pot_members`);
-  await sql.unsafe(`ALTER TABLE harness_shared.pot_members RENAME COLUMN hive_home_slug TO pot_home_slug`);
-  await sql.unsafe(`ALTER TABLE harness_shared.hive_settings RENAME TO pot_settings`);
-  // D-001 (mig 314): the fed_hlc ordering column the pot projections now write.
-  await sql.unsafe(`ALTER TABLE harness_shared.pot_members  ADD COLUMN IF NOT EXISTS fed_hlc TEXT`);
-  await sql.unsafe(`ALTER TABLE harness_shared.pot_settings ADD COLUMN IF NOT EXISTS fed_hlc TEXT`);
+  // pot_* names. Rename the tables forward exactly as 557 does in production.
+  // RENAME TABLE/COLUMN carries the PK/FK/index/policy AND the capture triggers
+  // along automatically (there is no capture-fn fixup migration for hives/hive_
+  // settings — they key off TG_TABLE_NAME, so the trigger follows).
+  await sql.unsafe(`
+    DO $$ BEGIN
+      IF to_regclass('harness_shared.hives') IS NOT NULL AND to_regclass('harness_shared.pots') IS NULL THEN
+        ALTER TABLE harness_shared.hives RENAME TO pots;
+        ALTER TABLE harness_shared.pots RENAME COLUMN home_slug TO pot_home_slug;
+      END IF;
+    END $$;
+    DO $$ BEGIN
+      IF to_regclass('harness_shared.hive_members') IS NOT NULL AND to_regclass('harness_shared.pot_members') IS NULL THEN
+        ALTER TABLE harness_shared.hive_members RENAME TO pot_members;
+        ALTER TABLE harness_shared.pot_members RENAME COLUMN hive_home_slug TO pot_home_slug;
+      END IF;
+    END $$;
+    DO $$ BEGIN
+      IF to_regclass('harness_shared.hive_settings') IS NOT NULL AND to_regclass('harness_shared.pot_settings') IS NULL THEN
+        ALTER TABLE harness_shared.hive_settings RENAME TO pot_settings;
+      END IF;
+    END $$;
+  `);
+  // mig 565 (P-011 live-verification finding, 2026-07-11): ALTER TABLE ... RENAME COLUMN
+  // does NOT rewrite function bodies — capture_hive_members_outbox() (mig 189/477's live
+  // def) still hard-coded `v_row ->> 'hive_home_slug'` after the column above became
+  // pot_home_slug, so that JSONB lookup silently returned NULL and every INSERT/DELETE on
+  // pot_members hard-failed substrate_outbox's harness_slug NOT NULL constraint. Re-apply
+  // the fixed trigger function (idempotent CREATE OR REPLACE) so this rig doesn't reproduce
+  // the same bug the live migration had to patch. Only meaningful once pot_members exists.
+  //
+  // mig 565's body also writes substrate_outbox.op_hlc and calls harness_shared.hlc_now() —
+  // both introduced by mig 314, which these rigs never apply (314's OTHER ALTER TABLEs touch
+  // tables these minimal rigs don't have, e.g. harness_feature_prs/shared_presence, so loading
+  // 314 wholesale would error). Inline just the two prerequisites 565 needs, verbatim from 314
+  // (no GRANTs — the test connection already owns the schema).
+  const [{ hasPotMembers, hasOutbox }] = await sql.unsafe<Array<{ hasPotMembers: boolean; hasOutbox: boolean }>>(`
+    SELECT to_regclass('harness_shared.pot_members') IS NOT NULL AS "hasPotMembers",
+           to_regclass('harness_shared.substrate_outbox') IS NOT NULL AS "hasOutbox"
+  `);
+  // Only meaningful when BOTH exist: no pot_members ⇒ nothing to capture; no substrate_outbox
+  // ⇒ nowhere for the capture trigger to write (some rigs, e.g. hive-membership-store's, apply
+  // 184/185/406 WITHOUT ever loading archive-102, so substrate_outbox never exists there).
+  if (hasPotMembers && hasOutbox) {
+    await sql.unsafe(`
+      CREATE TABLE IF NOT EXISTS harness_shared.hlc_clock (
+        id          smallint PRIMARY KEY DEFAULT 1,
+        last_ms     bigint   NOT NULL DEFAULT 0,
+        last_count  integer  NOT NULL DEFAULT 0,
+        CONSTRAINT hlc_clock_singleton CHECK (id = 1)
+      );
+      INSERT INTO harness_shared.hlc_clock (id, last_ms, last_count)
+        VALUES (1, 0, 0) ON CONFLICT (id) DO NOTHING;
+      CREATE OR REPLACE FUNCTION harness_shared.hlc_now() RETURNS text
+        LANGUAGE plpgsql SECURITY DEFINER
+        AS $fn$
+      DECLARE
+        now_ms  bigint := floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint;
+        l_ms    bigint;
+        l_count integer;
+        n_ms    bigint;
+        n_count integer;
+      BEGIN
+        SELECT last_ms, last_count INTO l_ms, l_count
+          FROM harness_shared.hlc_clock WHERE id = 1 FOR UPDATE;
+        IF l_ms IS NULL THEN
+          INSERT INTO harness_shared.hlc_clock (id, last_ms, last_count) VALUES (1, 0, 0)
+            ON CONFLICT (id) DO NOTHING;
+          l_ms := 0; l_count := 0;
+        END IF;
+        IF now_ms > l_ms THEN
+          n_ms := now_ms; n_count := 0;
+        ELSIF l_count >= 65535 THEN
+          n_ms := l_ms + 1; n_count := 0;
+        ELSE
+          n_ms := l_ms; n_count := l_count + 1;
+        END IF;
+        UPDATE harness_shared.hlc_clock SET last_ms = n_ms, last_count = n_count WHERE id = 1;
+        RETURN lpad(n_ms::text, 15, '0') || ':' || lpad(n_count::text, 5, '0');
+      END;
+      $fn$;
+      ALTER TABLE harness_shared.substrate_outbox ADD COLUMN IF NOT EXISTS op_hlc TEXT;
+    `);
+    await sql.unsafe(
+      stripMeta(readFileSync(resolve(SQL_DIR, '565-fix-capture-hive-members-outbox-pot-rename.sql'), 'utf8')),
+    );
+  }
+  // D-001 (mig 314): the fed_hlc ordering column the pot projections now write — needed
+  // whenever the table exists, independent of whether substrate_outbox/capture-trigger
+  // machinery is also present (e.g. hive-membership-store's rig applies 184/185/406 without
+  // ever loading archive-102, so it has pot_members but no substrate_outbox at all).
+  if (hasPotMembers) {
+    await sql.unsafe(`ALTER TABLE harness_shared.pot_members ADD COLUMN IF NOT EXISTS fed_hlc TEXT`);
+  }
+  if ((await sql.unsafe(`SELECT to_regclass('harness_shared.pot_settings') AS t`))[0]?.t) {
+    await sql.unsafe(`ALTER TABLE harness_shared.pot_settings ADD COLUMN IF NOT EXISTS fed_hlc TEXT`);
+  }
   // EI-6983-class gap (mig 495): the drainer's own-log-key attribution column on
-  // substrate_outbox, written by outbox-drain.ts's drainOutboxOnce. This rig only
-  // applies the archive-102 baseline for that table, which predates mig 495.
-  await sql.unsafe(`ALTER TABLE harness_shared.substrate_outbox ADD COLUMN IF NOT EXISTS drained_log_key TEXT`);
+  // substrate_outbox, written by outbox-drain.ts's drainOutboxOnce. These rigs only
+  // apply the archive-102 baseline for that table, which predates mig 495.
+  if ((await sql.unsafe(`SELECT to_regclass('harness_shared.substrate_outbox') AS t`))[0]?.t) {
+    await sql.unsafe(`ALTER TABLE harness_shared.substrate_outbox ADD COLUMN IF NOT EXISTS drained_log_key TEXT`);
+  }
 }
 
 /** Per-peer apply over the REAL hive_members + hive_settings projections bound to

@@ -5,6 +5,8 @@ import gradeIdeaTool, {
   gradeIdeaArgs,
   runGradeIdea,
   toToolResult,
+  revisionNoticeMode,
+  REVISION_WAKE_MAX_GRADE,
   type GradeIdeaDeps,
   type GradedIdeaSummary,
 } from '../grade-idea';
@@ -14,6 +16,12 @@ import gradeIdeaTool, {
  * exercised with FAKE PG deps (gym-tools pattern: no database). Pins the three
  * contract behaviors: role-derived attribution, arg validation (incl. the D-007
  * exactly-one key rule), and C-2 result pass-through (owner-grade-sovereign).
+ *
+ * su-ideate-learning-substrate-2026-07-10 P-005 adds the grade→revise notice
+ * suite (fake send port): a grade ≤ REVISION_WAKE_MAX_GRADE with feedback on an
+ * origin='su-ideate' row wakes created_by to revise or defend; a higher grade
+ * with feedback is an unwoken FYI (D-008); a wake reaching nobody degrades to
+ * the unwoken pot-inbox note (fallback); a send failure never fails the grade.
  */
 
 const summary = (over: Partial<GradedIdeaSummary> = {}): GradedIdeaSummary => ({
@@ -27,6 +35,9 @@ const summary = (over: Partial<GradedIdeaSummary> = {}): GradedIdeaSummary => ({
   humanFeedback: 'sharp',
   gradedBy: 'owner',
   gradedAt: '2026-06-12T01:00:00.000Z',
+  origin: 'scout',
+  createdBy: null,
+  workspaceId: 'ws-grade-test',
   ...over,
 });
 
@@ -35,6 +46,7 @@ function fakeDeps(over: Partial<GradeIdeaDeps> = {}): GradeIdeaDeps {
     gradeRoutedIdea: vi.fn(async () => ({ applied: true })),
     resolveIdeaIdFromRef: vi.fn(async () => 'idea-1'),
     readIdeaSummary: vi.fn(async () => summary()),
+    sendRevisionNotice: vi.fn(async () => ({ woken: 0 })),
     ...over,
   };
 }
@@ -169,6 +181,115 @@ describe('runGradeIdea', () => {
     const out = await runGradeIdea({ ideaId: 'idea-1', grade: 4, feedback: 'good' }, undefined, deps);
     expect(out.applied).toBe(true);
     expect(out.idea).toMatchObject({ ideaId: 'idea-1', humanGrade: 4, humanFeedback: 'good', gradedBy: 'owner' });
+  });
+});
+
+describe('revision notice (su-ideate-learning-substrate-2026-07-10 P-005 / D-008) — fake send port', () => {
+  const suRow = (over: Partial<GradedIdeaSummary> = {}): GradedIdeaSummary =>
+    summary({ origin: 'su-ideate', createdBy: 'su-originator-1', routedRef: 'wi:F-101', ...over });
+
+  it('grade ≤ REVISION_WAKE_MAX_GRADE + feedback on a su-ideate row WAKES created_by, carrying critique + routedRef + the revise-or-defend ask', async () => {
+    const deps = fakeDeps({
+      readIdeaSummary: vi.fn(async () => suRow()),
+      sendRevisionNotice: vi.fn(async () => ({ woken: 1 })),
+    });
+    const out = await runGradeIdea(
+      { ideaId: 'idea-1', grade: REVISION_WAKE_MAX_GRADE, feedback: 'too vague — quantify the win' },
+      undefined,
+      deps,
+    );
+
+    expect(out.applied).toBe(true);
+    expect(deps.sendRevisionNotice).toHaveBeenCalledTimes(1);
+    const notice = vi.mocked(deps.sendRevisionNotice).mock.calls[0][0];
+    expect(notice.to).toEqual(['su-originator-1']);
+    expect(notice.wake).toBe(true);
+    // Coord delivery runs under the ROW's workspace, not the ALS default (EI-346).
+    expect(notice.workspaceId).toBe('ws-grade-test');
+    expect(notice.body).toContain('too vague — quantify the win');
+    expect(notice.body).toContain('wi:F-101');
+    expect(notice.body).toContain('Revise or defend — file the revision as an update or reply');
+    expect(out.revisionWake).toEqual({ sent: true, woken: 1, fallback: false });
+  });
+
+  it('a wake that reaches nobody (woken 0 / dead originator) degrades to the unwoken pot-inbox note: fallback:true, the grade stands', async () => {
+    const deps = fakeDeps({ readIdeaSummary: vi.fn(async () => suRow()) }); // default port: woken 0
+    const out = await runGradeIdea({ ideaId: 'idea-1', grade: 2, feedback: 'derivative' }, undefined, deps);
+    expect(out.applied).toBe(true);
+    expect(out.revisionWake).toEqual({ sent: true, woken: 0, fallback: true });
+  });
+
+  it('grade above the threshold + feedback delivers the UNWOKEN FYI (D-008): wake:false and never a fallback', async () => {
+    const deps = fakeDeps({ readIdeaSummary: vi.fn(async () => suRow()) });
+    const out = await runGradeIdea(
+      { ideaId: 'idea-1', grade: REVISION_WAKE_MAX_GRADE + 1, feedback: 'good — ship it' },
+      undefined,
+      deps,
+    );
+    const notice = vi.mocked(deps.sendRevisionNotice).mock.calls[0][0];
+    expect(notice.wake).toBe(false);
+    expect(notice.to).toEqual(['su-originator-1']);
+    expect(notice.summary).toContain('FYI');
+    expect(notice.body).toContain('good — ship it');
+    expect(out.revisionWake).toEqual({ sent: true, woken: 0, fallback: false });
+  });
+
+  it('stays silent (no notice, no revisionWake key) without feedback, off-origin, without created_by, and on a sovereign no-op', async () => {
+    // No feedback: a bare low grade nudges nobody.
+    let deps = fakeDeps({ readIdeaSummary: vi.fn(async () => suRow()) });
+    let out = await runGradeIdea({ ideaId: 'idea-1', grade: 1 }, undefined, deps);
+    expect(deps.sendRevisionNotice).not.toHaveBeenCalled();
+    expect('revisionWake' in out).toBe(false);
+
+    // Scout origin: the su revision loop never touches Scout's own ideas (D-002).
+    deps = fakeDeps({ readIdeaSummary: vi.fn(async () => summary({ createdBy: 'su-originator-1' })) });
+    await runGradeIdea({ ideaId: 'idea-1', grade: 1, feedback: 'meh' }, undefined, deps);
+    expect(deps.sendRevisionNotice).not.toHaveBeenCalled();
+
+    // su-ideate but no created_by (pre-P-001 legacy row): nobody to address.
+    deps = fakeDeps({ readIdeaSummary: vi.fn(async () => suRow({ createdBy: null })) });
+    await runGradeIdea({ ideaId: 'idea-1', grade: 1, feedback: 'meh' }, undefined, deps);
+    expect(deps.sendRevisionNotice).not.toHaveBeenCalled();
+
+    // Owner-grade-sovereign no-op: nothing was written — never re-notify.
+    deps = fakeDeps({
+      gradeRoutedIdea: vi.fn(async () => ({ applied: false as const, reason: 'owner-grade-sovereign' as const })),
+      readIdeaSummary: vi.fn(async () => suRow()),
+    });
+    out = await runGradeIdea({ ideaId: 'idea-1', grade: 1, feedback: 'meh' }, { role: 'mug' }, deps);
+    expect(deps.sendRevisionNotice).not.toHaveBeenCalled();
+    expect('revisionWake' in out).toBe(false);
+  });
+
+  it('best-effort by contract: a THROWING send port never fails the grade — applied stands, revisionWake reports sent:false', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const deps = fakeDeps({
+        readIdeaSummary: vi.fn(async () => suRow()),
+        sendRevisionNotice: vi.fn(async () => {
+          throw new Error('coord down');
+        }),
+      });
+      const out = await runGradeIdea({ ideaId: 'idea-1', grade: 1, feedback: 'unsound premise' }, undefined, deps);
+      expect(out.applied).toBe(true);
+      expect(out.revisionWake).toEqual({ sent: false, woken: 0, fallback: false });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('revision notice failed'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('revisionNoticeMode is the D-008 truth table around the NAMED threshold', () => {
+    const base = { applied: true, origin: 'su-ideate', createdBy: 'su-x', feedback: 'critique' };
+    expect(REVISION_WAKE_MAX_GRADE).toBe(3);
+    expect(revisionNoticeMode({ ...base, grade: REVISION_WAKE_MAX_GRADE })).toBe('wake');
+    expect(revisionNoticeMode({ ...base, grade: 1 })).toBe('wake');
+    expect(revisionNoticeMode({ ...base, grade: REVISION_WAKE_MAX_GRADE + 1 })).toBe('fyi');
+    expect(revisionNoticeMode({ ...base, grade: 5 })).toBe('fyi');
+    expect(revisionNoticeMode({ ...base, grade: 2, feedback: '   ' })).toBe('none');
+    expect(revisionNoticeMode({ ...base, grade: 2, applied: false })).toBe('none');
+    expect(revisionNoticeMode({ ...base, grade: 2, origin: 'scout' })).toBe('none');
+    expect(revisionNoticeMode({ ...base, grade: 2, createdBy: null })).toBe('none');
   });
 });
 

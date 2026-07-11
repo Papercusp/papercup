@@ -89,7 +89,10 @@ const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
   plan_item_assignments: 'item-assignments',
   // shared-hive-federation-2026-06-08 (P-005): per-Hive settings. Projection
   // 'hive-settings-by-key' (projections/hive-settings.ts); key == setting_key.
-  hive_settings: 'hive-settings-by-key',
+  // Table renamed hive_settings -> pot_settings (cup-lexicon-full-rename-2026-07-09
+  // P-011, mig 557 Phase 3) — this key must track the live table name (TG_TABLE_NAME
+  // in the generic capture trigger, 000-baseline.sql, reflects the post-rename name).
+  pot_settings: 'hive-settings-by-key',
   // federated-scout-gym-learning-2026-07-02 (F1-1): SHAREABLE standing facts.
   // Projection 'agent-facts-by-key' (projections/agent-facts.ts); key == the
   // generated fed_key column (scope/coalesce(scope_ref,'')/key — mig 462).
@@ -117,26 +120,42 @@ const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
   // shared-hive-owner-enforcement-2026-06-19 (EN-1): the owner-signed Hive policy
   // record. Projection 'hive-policy' (projections/hive-policy.ts); SINGLETON, so
   // key == harness_slug (the Hive home).
-  hive_policy: 'hive-policy',
+  // Table renamed hive_policy -> pot_policy (cup-lexicon-full-rename-2026-07-09
+  // P-011, mig 557 Phase 3) — same live-tracking requirement as pot_settings above.
+  pot_policy: 'hive-policy',
   // shared-hive-owner-enforcement-2026-06-19 (EN-3 / P-MOD): the member→owner moderation
   // report queue. Projection 'hive-reports' (projections/hive-reports.ts); key == report_id.
-  hive_reports: 'hive-reports',
+  // Table renamed hive_reports -> pot_reports (cup-lexicon-full-rename-2026-07-09 P-011,
+  // mig 557 Phase 3) — same live-tracking requirement as pot_settings above. (EI-9396: this
+  // key was MISSED by the P-011 pass — TG_TABLE_NAME emits 'pot_reports' live, so the stale
+  // 'hive_reports' key here silently dropped every hive_reports federation op as an
+  // UnknownOutboxTableError since 557 landed.)
+  pot_reports: 'hive-reports',
   // shared-hive-owner-enforcement-2026-06-19 (EN-3 / P-MEMBER): approval-mode pending join
   // requests. Projection 'hive-pending-joins' (projections/hive-pending-joins.ts); key ==
   // github_user_id (the generated pending_join_fed_key column).
-  hive_pending_joins: 'hive-pending-joins',
+  // Table renamed hive_pending_joins -> pot_pending_joins (cup-lexicon-full-rename-2026-07-09
+  // P-011, mig 557 Phase 3) — same live-tracking requirement as pot_settings above (EI-9396:
+  // also missed by the P-011 pass, same live-drop bug as pot_reports above).
+  pot_pending_joins: 'hive-pending-joins',
   // shared-hive-federation-2026-06-08 (P-006): per-Hive contributor/device admission.
   // Projection 'hive-members' (projections/hive-members.ts); key == github_user_id.
   // The capture trigger (mig 189) writes outbox.harness_slug := NEW.hive_home_slug so
   // it rides the Hive peer-log.
-  hive_members: 'hive-members',
+  // Table renamed hive_members -> pot_members (cup-lexicon-full-rename-2026-07-09
+  // P-011, mig 557 Phase 3) — same live-tracking requirement as pot_settings above.
+  pot_members: 'hive-members',
   // shared-hive-rekey-2026-06-19 (P-005): per-member WRAPPED epoch keys for the read-plane
   // re-key. Projection 'hive-epoch-keys' (projections/hive-epoch-keys.ts); key ==
   // '<epoch>:<member_device_pubkey>' (the generated epoch_key_fed_key column). The capture
   // trigger (mig 316) writes outbox.harness_slug := the Hive home so it rides the Hive
   // peer-log. DARK until papercusp-hive-rekey flips (the boundary trigger + producer are
   // flag-gated, so nothing writes the table — the trigger never fires — until cutover).
-  hive_epoch_keys: 'hive-epoch-keys',
+  // Table renamed hive_epoch_keys -> pot_epoch_keys (cup-lexicon-full-rename-2026-07-09
+  // P-011, mig 557 Phase 3) — same live-tracking requirement as pot_settings above
+  // (still DARK until papercusp-hive-rekey flips, so no live incident yet, but wrong
+  // either way).
+  pot_epoch_keys: 'hive-epoch-keys',
   // fed-reanchor B5: the work-queue's issue/task family. Projection 'engineer-issues'
   // (projections/engineer-issues.ts); key == issue_id. The capture trigger (mig 197)
   // derives the federation slug from `scope` + stamps it into the row as harness_slug.
@@ -968,7 +987,7 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
     case 'plan_item_assignments':
       value = toAssignmentValue(row);
       break;
-    case 'hive_settings':
+    case 'pot_settings':
       value = toHiveSettingValue(row);
       break;
     case 'cup_claim_specs':
@@ -977,19 +996,19 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
     case 'gate_verdicts':
       value = toGateVerdictValue(row);
       break;
-    case 'hive_policy':
+    case 'pot_policy':
       value = toHivePolicyValue(row);
       break;
-    case 'hive_reports':
+    case 'pot_reports':
       value = toHiveReportValue(row);
       break;
-    case 'hive_pending_joins':
+    case 'pot_pending_joins':
       value = toHivePendingJoinValue(row);
       break;
-    case 'hive_members':
+    case 'pot_members':
       value = toHiveMemberValue(row);
       break;
-    case 'hive_epoch_keys':
+    case 'pot_epoch_keys':
       value = toHiveEpochKeyValue(row);
       break;
     case 'engineer_issues':

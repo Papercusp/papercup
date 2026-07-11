@@ -91,6 +91,8 @@
     "gen:contract:check": "tsx scripts/gen-testing-domains-contract.ts --check",
     "gen:tool-catalog": "tsx scripts/gen-tool-catalog.ts",
     "gen:tool-catalog:check": "tsx scripts/gen-tool-catalog.ts --check",
+    "scan:lexicon": "node scripts/scan-lexicon.mjs",
+    "scan:lexicon:check": "node scripts/scan-lexicon.mjs --check",
     "gen:openapi": "tsx scripts/gen-openapi-spec.ts",
     "gen:openapi:check": "tsx scripts/gen-openapi-spec.ts --check",
     "gen:lib-api": "tsx scripts/gen-lib-api-docs.ts",

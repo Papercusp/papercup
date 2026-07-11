@@ -26,6 +26,7 @@ import {
 } from './hive-membership-store';
 import { makeAdmissionDecider } from './sync/hyperbee/read-admission';
 import type { DeviceAttestationEntry } from './harness/contributor-row-types';
+import { applyPot557RenameAndFixups } from './sync/hyperbee/__tests__/_hive-substrate-rig';
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../libs/papercusp/libs/db/sql');
 const WS = 'ws-p006';
@@ -43,6 +44,7 @@ beforeAll(async () => {
   await db.sql.unsafe(readFileSync(join(SQL_DIR, '185-hive-members-admission.sql'), 'utf8'));
   // WI-892 / EI-3409: forbid the '*' wildcard workspace_id (heal + CHECK constraint).
   await db.sql.unsafe(readFileSync(join(SQL_DIR, '406-hive-members-forbid-wildcard-workspace.sql'), 'utf8'));
+  await applyPot557RenameAndFixups(db.sql);
 });
 
 afterAll(async () => {
@@ -50,7 +52,7 @@ afterAll(async () => {
 });
 
 afterEach(async () => {
-  await db.sql.unsafe('TRUNCATE harness_shared.hive_members, harness_shared.hives CASCADE');
+  await db.sql.unsafe('TRUNCATE harness_shared.pot_members, harness_shared.pots CASCADE');
 });
 
 async function seedHive(slug = HIVE, ws = WS): Promise<void> {
@@ -206,8 +208,8 @@ describe('hive-membership-store (P-006 per-Hive admission)', () => {
       const view = await listHiveMembers(WS, HIVE, db.sql);
       // …vs the raw table rows for the same (workspace, hive).
       const raw = (await db.sql.unsafe(
-        `SELECT github_user_id FROM harness_shared.hive_members
-          WHERE workspace_id = $1 AND hive_home_slug = $2`,
+        `SELECT github_user_id FROM harness_shared.pot_members
+          WHERE workspace_id = $1 AND pot_home_slug = $2`,
         [WS, HIVE],
       )) as unknown as Array<{ github_user_id: string | number }>;
       expect(view.map((m) => m.githubUserId).sort()).toEqual([1, 2]);
@@ -224,7 +226,7 @@ describe('hive-membership-store (P-006 per-Hive admission)', () => {
       ).rejects.toThrow(/read sentinel/);
       // and nothing leaked into the table
       const leaked = (await db.sql.unsafe(
-        `SELECT count(*)::int AS n FROM harness_shared.hive_members WHERE workspace_id = '*'`,
+        `SELECT count(*)::int AS n FROM harness_shared.pot_members WHERE workspace_id = '*'`,
       )) as unknown as Array<{ n: number }>;
       expect(leaked[0].n).toBe(0);
     });
@@ -233,8 +235,8 @@ describe('hive-membership-store (P-006 per-Hive admission)', () => {
       await seedHive();
       await expect(
         db.sql.unsafe(
-          `INSERT INTO harness_shared.hive_members
-             (workspace_id, hive_home_slug, github_user_id, github_username, binding_status)
+          `INSERT INTO harness_shared.pot_members
+             (workspace_id, pot_home_slug, github_user_id, github_username, binding_status)
            VALUES ('*', $1, 3, 'sneaky', 'verified')`,
           [HIVE],
         ),

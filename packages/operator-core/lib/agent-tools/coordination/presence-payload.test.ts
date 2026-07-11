@@ -69,9 +69,10 @@ const MAXIMAL_ROW: RosterRow = {
   onDesktop: true,
   viewerAttached: true,
   contextPressure: 'ok',
-  // — dropped (raw churning timestamps) —
+  // — dropped (raw churning timestamps + the DG-3-only capability tags) —
   heartbeatAt: '2026-06-14T01:00:00.000Z',
   lastActiveAt: '2026-06-14T00:59:00.000Z',
+  capabilityTags: ['node', 'docker', 'pg'],
 };
 
 /** A local PresenceRecord (pre-enrichment) for the byte-stability pipeline test. */
@@ -91,6 +92,7 @@ const LOCAL_BASE: UnifiedPresenceRecord = {
   lastActiveAt: '2026-06-14T00:59:00.000Z',
   agentRole: 'su',
   potSlug: 'papercup-hive',
+  capabilityTags: [],
   stale: false,
   userId: 'u1',
   revoked: false,
@@ -133,6 +135,7 @@ describe('partitionPresenceRow', () => {
       lastActiveAt: null,
       agentRole: null,
       potSlug: 'papercup-hive',
+      capabilityTags: [],
       stale: false,
       userId: '42',
       revoked: false,

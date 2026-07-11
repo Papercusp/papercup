@@ -47,6 +47,7 @@ function fedPeer(over: Partial<UnifiedPresenceRecord> = {}): UnifiedPresenceReco
     intentDeclaredAt: null,
     agentRole: null,
     potSlug: null,
+    capabilityTags: [],
     stale: false,
     userId: '1',
     revoked: false,

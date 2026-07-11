@@ -497,8 +497,8 @@ describe('joinHiveAsView (WI-971 follow-up) — REAL rekeyHarness/bootSingleHarn
 
       // ── PROOF 2: hives row materialized for real (upsertHiveIdentity NOT stubbed) —
       //    the precondition resolveHiveSwarmBinding needed to even pick the hive topic. ──
-      const hiveRow = await orgDb.adminSql<Array<{ home_slug: string }>>`
-        SELECT home_slug FROM harness_shared.hives WHERE workspace_id = ${WORKSPACE_ID} AND home_slug = ${potSlug}
+      const hiveRow = await orgDb.adminSql<Array<{ pot_home_slug: string }>>`
+        SELECT pot_home_slug FROM harness_shared.pots WHERE workspace_id = ${WORKSPACE_ID} AND pot_home_slug = ${potSlug}
       `;
       expect(hiveRow.length, 'upsertHiveIdentity never materialized the joiner`s hives row').toBe(1);
 
@@ -523,13 +523,13 @@ describe('joinHiveAsView (WI-971 follow-up) — REAL rekeyHarness/bootSingleHarn
       //    confirm the author against), which is exactly the failure PROOF 3 below
       //    was hitting. ──
       await orgDb.adminSql`
-        INSERT INTO harness_shared.hive_members
-          (workspace_id, hive_home_slug, github_user_id, github_username, device_attestations)
+        INSERT INTO harness_shared.pot_members
+          (workspace_id, pot_home_slug, github_user_id, github_username, device_attestations)
         VALUES (
           ${WORKSPACE_ID}, ${potSlug}, ${idOwner.userId}, 'owner',
           ${JSON.stringify([{ device_pubkey: idOwner.devicePubkey }])}::jsonb
         )
-        ON CONFLICT (workspace_id, hive_home_slug, github_user_id) DO UPDATE
+        ON CONFLICT (workspace_id, pot_home_slug, github_user_id) DO UPDATE
           SET device_attestations = EXCLUDED.device_attestations
       `;
       _clearHiveMemberDeviceSetCacheForTest();

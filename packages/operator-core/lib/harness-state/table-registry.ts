@@ -284,6 +284,13 @@ const PEER_LOG_WORKSPACE_OWNED = [
   // landed without this classification, which red-pinned checkSubstrateCaptureCoverage
   // for every table — flagged to the F1-1 owner su-29e3d.]
   'agent_facts',
+  // mem0-cross-machine-federation-2026-07-10 (F1-1 mirror for memories): SHAREABLE
+  // memories federate as hive state (mig 562-563 capture triggers, shareable=true rows
+  // only — D-006 privacy; apply side partitions by receiver-stamped source_hive, H6).
+  // Keyed (workspace_id, id, source_hive) → workspace-owned + peer-log. Projection
+  // 'p2p-memories' (projections/p2p-memories.ts, Phase 2). Capture triggers enqueue
+  // only shareable=true rows to the substrate outbox.
+  'p2p_memories',
   // federated-scout-gym-learning-2026-07-02 (F1-2/F1-5): the gym QD archive's
   // FEDERATABLE elites (D-002: outcome=won OR grade>=4) federate as hive state.
   // Producer = CDC capture (mig 464, gated WHEN federatable); receive side writes

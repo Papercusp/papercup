@@ -43,12 +43,12 @@
  * reply drafts + loading/busy lifecycle + the expand-set are useState.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useQueryState, parseAsString, parseAsStringEnum, parseAsArrayOf } from 'nuqs';
+import { useQueryState, useQueryStates, parseAsString, parseAsStringEnum, parseAsArrayOf } from 'nuqs';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { AlertTriangle, ArrowUpRight, Bot, CheckCircle2, Mail, MessageCircle, MessagesSquare, Plus, RefreshCw, Radio, Megaphone, Search, Send, SlidersHorizontal, UserRound } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, ArrowUpRight, Bot, CheckCircle2, Inbox, Mail, MessageCircle, MessagesSquare, Plus, RefreshCw, Radio, Megaphone, Search, Send, SlidersHorizontal, UserRound } from 'lucide-react';
 import { listCountLabel } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { Modal } from '@/app/harness/Modal';
@@ -167,7 +167,7 @@ const railRowProps = () => RAIL_ROW_PROPS;
 const streamRowProps = () => STREAM_ROW_PROPS;
 
 // ─── View switch ─────────────────────────────────────────────────────
-const CONV_VIEWS = ['threads', 'deliberations', 'agentchats', 'messages', 'feed'] as const;
+const CONV_VIEWS = ['inbox', 'threads', 'deliberations', 'agentchats', 'messages', 'feed'] as const;
 type ConvView = (typeof CONV_VIEWS)[number];
 
 interface ViewDef {
@@ -186,6 +186,7 @@ interface ViewDef {
 // traffic (deliberation posts, coord messages, escalations), not a 5th peer.
 // The header sets it apart so it reads as a debug firehose, not a conversation type.
 const VIEW_DEFS: ReadonlyArray<ViewDef> = [
+  { id: 'inbox', label: 'Conversations', desc: 'Every curated conversation, ordered by the most recent activity.', group: 'curated', Icon: Inbox },
   { id: 'threads', label: 'Q&A', desc: 'Questions & discussions between you and the agents — reply, accept an answer, or promote to an issue.', group: 'curated', Icon: MessageCircle },
   { id: 'deliberations', label: 'Deliberations', desc: 'Group decisions — coord threads, proposals, and votes.', group: 'curated', Icon: MessagesSquare },
   { id: 'agentchats', label: 'Agent chats', desc: "Each agent's full chat transcript, with token + cost detail.", group: 'curated', Icon: Bot },
@@ -200,11 +201,12 @@ const RAW_VIEW_DEFS = VIEW_DEFS.filter((v) => v.group === 'raw');
 // (mirrors the Create sidebar's per-view button colours). 'feed' is the muted
 // debug firehose, so it gets a quiet slate.
 const VIEW_ACCENT: Record<ConvView, string> = {
-  threads: 'var(--accent, #38bdf8)',
-  deliberations: '#a78bfa',
-  agentchats: '#22c55e',
-  messages: '#f59e0b',
-  feed: '#94a3b8',
+  inbox: 'var(--accent)',
+  threads: 'var(--accent)',
+  deliberations: 'var(--accent)',
+  agentchats: 'var(--accent)',
+  messages: 'var(--accent)',
+  feed: 'var(--fg-mute)',
 };
 
 /**
@@ -337,6 +339,148 @@ function AskComposer({
   );
 }
 
+interface UnifiedConversationRow {
+  id: string;
+  source: Exclude<ConvView, 'inbox' | 'feed'>;
+  sourceId: string;
+  kind: string;
+  state: string;
+  title: string;
+  preview: string;
+  actor?: string;
+  recipient?: string;
+  harnessSlug?: string | null;
+  relatedRef?: string | null;
+  count?: number;
+  updatedAt: number;
+}
+
+const SOURCE_DEF = new Map(VIEW_DEFS.map((definition) => [definition.id, definition]));
+
+/**
+ * The unified inbox is a projection, not a new communication store. Its rows
+ * ride the shared SSE resolver and open the existing source-specific detail,
+ * keeping replies/resolution/live-chat behavior on the audited paths that
+ * already own it. This is intentionally a custom virtualized master-detail
+ * list: the design guide calls that shape out as a non-RichGrid use case.
+ */
+function UnifiedInboxView() {
+  const [, setRoute] = useQueryStates({
+    conv: parseAsStringEnum<ConvView>([...CONV_VIEWS]).withDefault('inbox'),
+    conversation: parseAsString,
+    thread: parseAsString,
+    chat: parseAsString,
+    msg: parseAsString,
+  });
+  const { data, loading, error, invalidate } = useSyncQuery<UnifiedConversationRow>({
+    queryName: 'conversations.unified',
+    args: { limit: 200 },
+  });
+  const rows = data ?? [];
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const virtualizer = useVirtualizer<HTMLDivElement, HTMLButtonElement>({
+    count: rows.length,
+    getScrollElement: () => listRef.current,
+    estimateSize: () => 82,
+    overscan: 10,
+  });
+  useEffect(() => {
+    virtualizer.measure();
+  }, [rows, virtualizer]);
+
+  const open = (row: UnifiedConversationRow) => setRoute({
+    conv: row.source,
+    conversation: row.source === 'threads' ? row.sourceId : null,
+    thread: row.source === 'deliberations' ? row.sourceId : null,
+    chat: row.source === 'agentchats' ? row.sourceId : null,
+    msg: row.source === 'messages' ? row.sourceId : null,
+  });
+
+  return (
+    <ConvFrame
+      filters={
+        <div className="pc-advconv__railhead pc-advconv__railhead--unified">
+          <span style={sectionHeaderStyle}>Conversations</span>
+          <strong>{loading ? '…' : rows.length}</strong>
+          <button
+            type="button"
+            className="pc-coord__chip pc-advconv__refresh"
+            aria-label="Reload conversations"
+            disabled={loading}
+            onClick={() => void invalidate()}
+          >
+            <RefreshCw size={11} aria-hidden />
+          </button>
+        </div>
+      }
+      list={
+        <div className="pc-advconv__listscroll pc-advconv__unified" ref={listRef}>
+          {loading && rows.length === 0 ? (
+            <LoadingRows rows={6} label="Loading conversations" />
+          ) : error && rows.length === 0 ? (
+            <LoadError message={errText(error)} onRetry={() => void invalidate()} />
+          ) : rows.length === 0 ? (
+            <EmptyState
+              icon={<Inbox size={22} aria-hidden />}
+              title="No conversations"
+              desc="No communication is recorded for the current source."
+            />
+          ) : (
+            <div className="pc-advconv__virtual-list" style={{ height: virtualizer.getTotalSize() }}>
+              {virtualizer.getVirtualItems().map((item) => {
+                const row = rows[item.index];
+                if (!row) return null;
+                const definition = SOURCE_DEF.get(row.source);
+                const Icon = definition?.Icon ?? MessageCircle;
+                return (
+                  <button
+                    key={row.id}
+                    ref={virtualizer.measureElement}
+                    type="button"
+                    className="pc-advconv__unified-row"
+                    data-index={item.index}
+                    style={{ transform: `translateY(${item.start}px)` }}
+                    aria-label={`Open ${row.title}`}
+                    onClick={() => void open(row)}
+                  >
+                    <span className="pc-advconv__unified-source" aria-hidden><Icon size={14} /></span>
+                    <span className="pc-advconv__unified-content">
+                      <span className="pc-advconv__unified-topline">
+                        <span className="pc-advconv__unified-kind">{definition?.label}</span>
+                        {row.state ? <span className={`pc-advconv__statepill pc-advconv__statepill--${row.state}`}>{row.state}</span> : null}
+                        <time>{fmtRel(row.updatedAt)}</time>
+                      </span>
+                      <strong>{row.title}</strong>
+                      {row.preview ? <span className="pc-advconv__unified-preview">{row.preview}</span> : null}
+                      <span className="pc-advconv__unified-meta">
+                        {row.actor ? <span>{row.actor}</span> : null}
+                        {row.recipient ? <span>→ {row.recipient}</span> : null}
+                        {row.harnessSlug ? <span>{hiveHomeLabel(row.harnessSlug)}</span> : null}
+                        {row.relatedRef ? <span>{row.relatedRef}</span> : null}
+                        {row.count ? <span>{row.count}</span> : null}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      }
+      detail={
+        <section className="pc-coord__detail">
+          <EmptyState
+            style={{ minHeight: '100%' }}
+            icon={<Inbox size={22} aria-hidden />}
+            title="Select a conversation"
+            desc="Open a conversation to review its full context."
+          />
+        </section>
+      }
+    />
+  );
+}
+
 /**
  * ConvFrame — the shared Conversations shell, mirroring the Create dock's
  * sidebar│main model (a persistent left rail that owns the primary action + the
@@ -352,14 +496,18 @@ function ConvFrame({
   filters,
   list,
   detail,
+  detailOpen = false,
+  onBack,
 }: {
   filters?: React.ReactNode;
   /** The sidebar list (rail|detail views). Omit for full-width stream views
    *  (Messages / Raw events), which render their list inside `detail`. */
   list?: React.ReactNode;
   detail: React.ReactNode;
+  detailOpen?: boolean;
+  onBack?: () => void;
 }) {
-  const [view, setView] = useQueryState('conv', parseAsStringEnum<ConvView>([...CONV_VIEWS]).withDefault('threads'));
+  const [view, setView] = useQueryState('conv', parseAsStringEnum<ConvView>([...CONV_VIEWS]).withDefault('inbox'));
   const [askOpen, setAskOpen] = useState(false);
 
   const navBtn = (d: ViewDef) => (
@@ -368,6 +516,7 @@ function ConvFrame({
         id={`adv-conversations-tab-${d.id}`}
         type="button"
         role="tab"
+        aria-label={d.label}
         aria-selected={view === d.id}
         aria-controls="adv-conversations-panel"
         className={`pc-advconv__navbtn pc-advconv__navbtn--${d.group}${view === d.id ? ' is-active' : ''}`}
@@ -383,7 +532,7 @@ function ConvFrame({
   );
 
   return (
-    <div className="pc-advconv__shell">
+    <div className={`pc-advconv__shell${detailOpen ? ' is-detail-open' : ''}`}>
       <aside className="pc-plans__rail pc-advconv__nav">
         <div className="pc-plans__rail-actions pc-advconv__nav-actions">
           <Tooltip label="Ask the agents a question — opens a question conversation routed to topic subscribers; answers land in Q&A.">
@@ -404,22 +553,26 @@ function ConvFrame({
             </div>
           </div>
         </div>
-        {filters != null && <div className="pc-plans__group pc-advconv__navfilters">{filters}</div>}
-        {list != null && <div className="pc-advconv__navlist">{list}</div>}
-        {/* Full-width views (Messages / Raw events) have no rail list, which left
-            the sidebar empty below the switcher. Fill it with the view's blurb so
-            the space reads as intentional context, not a broken empty panel. */}
-        {list == null && (() => {
-          const d = VIEW_DEFS.find((v) => v.id === view);
-          return d ? <p className="pc-advconv__nav-hint">{d.desc}</p> : null;
-        })()}
       </aside>
+      {list != null && (
+        <section className="pc-advconv__inbox" aria-label="Conversation list">
+          {filters != null && <div className="pc-plans__group pc-advconv__navfilters">{filters}</div>}
+          <div className="pc-advconv__navlist">{list}</div>
+        </section>
+      )}
       <main
         id="adv-conversations-panel"
         role="tabpanel"
         aria-labelledby={`adv-conversations-tab-${view}`}
         className={`pc-advconv__main${list == null ? ' pc-advconv__main--wide' : ''}`}
       >
+        {onBack ? (
+          <Tooltip label="Back to conversations">
+            <button type="button" className="pc-advconv__back" aria-label="Back to conversations" onClick={onBack}>
+              <ArrowLeft size={15} aria-hidden />
+            </button>
+          </Tooltip>
+        ) : null}
         {detail}
       </main>
       <AskComposer open={askOpen} onOpenChange={setAskOpen} onAsked={() => void setView('threads')} />
@@ -428,10 +581,12 @@ function ConvFrame({
 }
 
 export default function AdvConversationsTab() {
-  const [view] = useQueryState('conv', parseAsStringEnum<ConvView>([...CONV_VIEWS]).withDefault('threads'));
+  const [view] = useQueryState('conv', parseAsStringEnum<ConvView>([...CONV_VIEWS]).withDefault('inbox'));
   return (
     <div className="pc-coord pc-advconv pc-advconv--shell">
-      {view === 'feed' ? (
+      {view === 'inbox' ? (
+        <UnifiedInboxView />
+      ) : view === 'feed' ? (
         <FeedView />
       ) : view === 'deliberations' ? (
         <DeliberationsView />
@@ -1236,6 +1391,7 @@ function ThreadsView() {
   const [sel, setSel] = useQueryState('conversation', parseAsString);
   const [list, setList] = useState<ConvRow[]>([]);
   const [detail, setDetail] = useState<ConvDetailT | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1279,10 +1435,12 @@ function ThreadsView() {
   useEffect(() => {
     if (!sel) {
       setDetail(null);
+      setDetailLoading(false);
       return;
     }
     let live = true;
     setDetail(null);
+    setDetailLoading(true);
     void (async () => {
       try {
         const r = await coord<ConvGetResponse>('conversations/get', { conversation_id: sel });
@@ -1294,6 +1452,8 @@ function ThreadsView() {
         );
       } catch {
         if (live) setDetail(null);
+      } finally {
+        if (live) setDetailLoading(false);
       }
     })();
     return () => {
@@ -1380,6 +1540,8 @@ function ThreadsView() {
 
   return (
     <ConvFrame
+      detailOpen={!!sel}
+      onBack={() => void setSel(null)}
       filters={
         <>
           <div className="pc-advconv__railhead">
@@ -1458,7 +1620,9 @@ function ThreadsView() {
       }
       detail={
         <section className="pc-coord__detail">
-          {!detail ? (
+          {detailLoading ? (
+            <LoadingRows rows={5} label="Loading conversation" />
+          ) : !detail ? (
           <EmptyState
             style={{ minHeight: '100%' }}
             icon={<MessageCircle size={22} aria-hidden />}
@@ -1574,6 +1738,7 @@ function DeliberationsView() {
   const [total, setTotal] = useState<number | undefined>(undefined);
   const [posts, setPosts] = useState<ThreadPost[]>([]);
   const [head, setHead] = useState<ThreadRow | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -1598,18 +1763,31 @@ function DeliberationsView() {
     if (!sel) {
       setPosts([]);
       setHead(null);
+      setDetailLoading(false);
       return;
     }
+    let live = true;
+    setPosts([]);
+    setHead(null);
+    setDetailLoading(true);
     void (async () => {
       try {
         const r = await comms<{ thread?: ThreadRow | null; posts?: ThreadPost[] }>('threads', 'get', { thread_id: sel });
+        if (!live) return;
         setHead(r.thread ?? null);
         setPosts(r.posts ?? []);
       } catch {
-        setHead(null);
-        setPosts([]);
+        if (live) {
+          setHead(null);
+          setPosts([]);
+        }
+      } finally {
+        if (live) setDetailLoading(false);
       }
     })();
+    return () => {
+      live = false;
+    };
   }, [sel]);
 
   // U1 (operator-vite-ui-consolidation): the deliberations rail renders through
@@ -1656,6 +1834,8 @@ function DeliberationsView() {
 
   return (
     <ConvFrame
+      detailOpen={!!sel}
+      onBack={() => void setSel(null)}
       filters={
         <div className="pc-advconv__railhead">
           <span style={sectionHeaderStyle}>Deliberation threads</span>
@@ -1700,7 +1880,9 @@ function DeliberationsView() {
       }
       detail={
         <section className="pc-coord__detail">
-          {!head ? (
+          {detailLoading ? (
+            <LoadingRows rows={5} label="Loading deliberation" />
+          ) : !head ? (
           <EmptyState
             style={{ minHeight: '100%' }}
             icon={<MessagesSquare size={22} aria-hidden />}
@@ -1784,6 +1966,7 @@ function AgentChatsView() {
   const [list, setList] = useState<AgentChatRow[]>([]);
   const [total, setTotal] = useState<number | undefined>(undefined);
   const [detail, setDetail] = useState<AgentChatDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -1811,16 +1994,25 @@ function AgentChatsView() {
   useEffect(() => {
     if (!sel) {
       setDetail(null);
+      setDetailLoading(false);
       return;
     }
+    let live = true;
+    setDetail(null);
+    setDetailLoading(true);
     void (async () => {
       try {
         const r = await comms<{ chat?: AgentChatDetail }>('agent-chats', 'get', { id: sel });
-        setDetail(r.chat ?? null);
+        if (live) setDetail(r.chat ?? null);
       } catch {
-        setDetail(null);
+        if (live) setDetail(null);
+      } finally {
+        if (live) setDetailLoading(false);
       }
     })();
+    return () => {
+      live = false;
+    };
   }, [sel]);
 
   const harnesses = useMemo(() => [...new Set(list.map((c) => c.harness_slug).filter(Boolean))].sort() as string[], [list]);
@@ -1885,6 +2077,8 @@ function AgentChatsView() {
 
   return (
     <ConvFrame
+      detailOpen={!!sel}
+      onBack={() => void setSel(null)}
       filters={
         <>
           <div className="pc-advconv__railhead">
@@ -1957,7 +2151,9 @@ function AgentChatsView() {
       }
       detail={
         <section className="pc-coord__detail">
-        {!detail ? (
+        {detailLoading ? (
+          <LoadingRows rows={5} label="Loading chat" />
+        ) : !detail ? (
           <EmptyState
             style={{ minHeight: '100%' }}
             icon={<Bot size={22} aria-hidden />}
@@ -2206,13 +2402,10 @@ function AdvConvStyles() {
         --advconv-panel-strong: color-mix(in srgb, var(--bg-popover, #0d1829), transparent 6%);
         --advconv-border: var(--border, rgba(125, 211, 252, 0.15));
         --advconv-border-strong: var(--border-strong, rgba(125, 211, 252, 0.32));
-        /* Conversations honors its DECLARED tab accent (pink #ec4899, AdvShell ADV_TABS) —
-           previously these fell back to the body sky --accent, so the pink nav badge never
-           reached the UI. Each adv tab renders its own accent; this makes Conversations match. */
-        --advconv-accent: #ec4899;
-        --advconv-accent-strong: #f472b6;
-        --advconv-accent-soft: color-mix(in oklab, #ec4899, transparent 86%);
-        --advconv-accent-softer: color-mix(in oklab, #ec4899, transparent 92%);
+        --advconv-accent: var(--accent);
+        --advconv-accent-strong: var(--accent-strong, var(--accent));
+        --advconv-accent-soft: color-mix(in oklab, var(--accent), transparent 86%);
+        --advconv-accent-softer: color-mix(in oklab, var(--accent), transparent 92%);
         --advconv-good-soft: color-mix(in oklab, var(--good, #22c55e), transparent 88%);
         --advconv-warn-soft: color-mix(in oklab, var(--warn, #f59e0b), transparent 90%);
         height: 100%;
@@ -2229,36 +2422,35 @@ function AdvConvStyles() {
       .pc-advconv__shell {
         flex: 1 1 auto;
         min-height: 0;
-        display: flex;
+        display: grid;
+        grid-template-columns: 64px minmax(300px, 360px) minmax(0, 1fr);
         align-items: stretch;
-        background:
-          radial-gradient(circle at 15% 0%, color-mix(in oklab, var(--advconv-accent), transparent 94%), transparent 30%),
-          var(--advconv-bg);
+        background: var(--advconv-bg);
       }
       /* The nav reuses .pc-plans__rail (border-right + column flex + bg) for
          pixel parity with the Create sidebar; only its width is set here. */
       .pc-advconv__nav {
         flex: 0 0 auto;
-        width: clamp(272px, 24vw, 320px);
+        width: 64px;
         min-height: 0;
+        border-right: 1px solid var(--advconv-border);
       }
       .pc-advconv__nav-actions {
         display: flex;
         flex-direction: column;
         align-items: stretch;
-        gap: 8px;
-        padding: 10px;
+        gap: 10px;
+        padding: 10px 8px;
       }
       .pc-advconv__nav-actions .pc-plans__new-plan {
         flex: 0 0 auto;
-        width: 100%;
+        width: 40px;
+        height: 40px;
         min-height: 40px;
-        justify-content: flex-start;
-        padding: 6px 8px;
+        justify-content: center;
+        padding: 5px;
         border-color: color-mix(in oklab, var(--advconv-accent), transparent 44%);
-        background: linear-gradient(135deg,
-          color-mix(in oklab, var(--advconv-accent), transparent 72%),
-          color-mix(in oklab, var(--advconv-accent), transparent 86%));
+        background: color-mix(in oklab, var(--advconv-accent), transparent 84%);
       }
       .pc-advconv__nav-switcher {
         display: flex;
@@ -2268,7 +2460,7 @@ function AdvConvStyles() {
       }
       .pc-advconv__nav-primary {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: minmax(0, 1fr);
         gap: 6px;
       }
       .pc-advconv__nav-diagnostic {
@@ -2282,13 +2474,14 @@ function AdvConvStyles() {
         position: relative;
         display: inline-flex;
         align-items: center;
-        justify-content: flex-start;
-        gap: 8px;
+        justify-content: center;
+        gap: 0;
         flex: 1;
-        min-width: 0;
-        min-height: 44px;
+        width: 40px;
+        min-width: 40px;
+        min-height: 40px;
         overflow: hidden;
-        padding: 6px 8px;
+        padding: 5px;
         border: 1px solid color-mix(in srgb, var(--advconv-border), transparent 28%);
         border-radius: 10px;
         background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 36%);
@@ -2297,7 +2490,7 @@ function AdvConvStyles() {
         font-weight: 700;
         letter-spacing: 0;
         cursor: pointer;
-        transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease;
+        transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
       }
       .pc-advconv__navicon {
         display: inline-flex;
@@ -2312,23 +2505,18 @@ function AdvConvStyles() {
         border: 1px solid color-mix(in oklab, var(--nav-accent, var(--advconv-accent)), transparent 72%);
       }
       .pc-advconv__navlabel {
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+        display: none;
       }
       .pc-advconv__navbtn:hover {
-        background: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 90%);
-        border-color: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 58%);
+        background: color-mix(in oklab, var(--nav-accent, var(--accent)), transparent 90%);
+        border-color: color-mix(in oklab, var(--nav-accent, var(--accent)), transparent 58%);
         color: var(--fg, #e7f7ff);
-        transform: translateY(-1px);
       }
       .pc-advconv__navbtn.is-active {
-        background: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 84%);
-        border-color: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 44%);
+        background: color-mix(in oklab, var(--nav-accent, var(--accent)), transparent 84%);
+        border-color: color-mix(in oklab, var(--nav-accent, var(--accent)), transparent 44%);
         color: var(--fg, #e7f7ff);
         font-weight: 700;
-        box-shadow: 0 8px 20px color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 90%);
       }
       .pc-advconv__navbtn.is-active::before {
         content: '';
@@ -2336,11 +2524,11 @@ function AdvConvStyles() {
         inset: 7px auto 7px 0;
         width: 3px;
         border-radius: 0 999px 999px 0;
-        background: var(--nav-accent, #38bdf8);
+        background: var(--nav-accent, var(--accent));
       }
       .pc-advconv__navbtn.is-active .pc-advconv__navicon {
-        background: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 72%);
-        border-color: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 48%);
+        background: color-mix(in oklab, var(--nav-accent, var(--accent)), transparent 72%);
+        border-color: color-mix(in oklab, var(--nav-accent, var(--accent)), transparent 48%);
       }
       .pc-advconv__nav-sep {
         display: none;
@@ -2365,6 +2553,15 @@ function AdvConvStyles() {
         display: flex;
         flex-direction: column;
         gap: 6px;
+      }
+      .pc-advconv__inbox {
+        min-width: 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        border-right: 1px solid var(--advconv-border);
+        background: var(--advconv-panel);
       }
       /* Sidebar blurb shown for the full-width views (no rail list) so the
          sidebar isn't an empty panel below the switcher. */
@@ -2397,6 +2594,19 @@ function AdvConvStyles() {
         flex-direction: column;
         overflow: hidden;
         padding: 8px;
+      }
+      .pc-advconv__back {
+        display: none;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        margin: 0 0 6px;
+        padding: 0;
+        border: 1px solid var(--advconv-border);
+        border-radius: 8px;
+        background: var(--bg-2);
+        color: var(--fg-dim);
       }
       .pc-advconv__main--wide { padding: 0; }
       .pc-advconv {
@@ -2640,11 +2850,9 @@ function AdvConvStyles() {
         border-left: 1px solid var(--advconv-border);
         border-radius: 12px;
         background: var(--advconv-panel);
-        backdrop-filter: blur(12px);
+        backdrop-filter: none;
         padding: 12px;
-        box-shadow:
-          inset 3px 0 0 color-mix(in oklab, var(--advconv-accent), transparent 70%),
-          0 12px 32px rgba(0, 0, 0, 0.12);
+        box-shadow: none;
       }
       .pc-advconv__railhead {
         display: flex;
@@ -2668,6 +2876,110 @@ function AdvConvStyles() {
         background: var(--advconv-accent-soft);
         border: 1px solid var(--advconv-border);
       }
+      .pc-advconv__railhead--unified {
+        justify-content: flex-start;
+      }
+      .pc-advconv__railhead--unified strong {
+        margin-left: auto;
+      }
+      .pc-advconv__unified {
+        padding: 8px;
+      }
+      .pc-advconv__virtual-list {
+        position: relative;
+        width: 100%;
+      }
+      .pc-advconv__unified-row {
+        position: absolute;
+        inset: 0 0 auto;
+        width: 100%;
+        min-height: 76px;
+        display: grid;
+        grid-template-columns: 34px minmax(0, 1fr);
+        gap: 9px;
+        align-items: start;
+        padding: 9px;
+        border: 1px solid transparent;
+        border-bottom-color: var(--advconv-border);
+        border-radius: 8px;
+        background: transparent;
+        color: var(--fg);
+        text-align: left;
+        cursor: pointer;
+        transition: background-color 120ms ease, border-color 120ms ease;
+      }
+      .pc-advconv__unified-row:hover,
+      .pc-advconv__unified-row:focus-visible {
+        background: var(--advconv-accent-softer);
+        border-color: color-mix(in oklab, var(--advconv-accent), transparent 62%);
+      }
+      .pc-advconv__unified-row:focus-visible {
+        outline: 1px solid var(--advconv-accent);
+        outline-offset: -1px;
+      }
+      .pc-advconv__unified-source {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        border: 1px solid color-mix(in oklab, var(--advconv-accent), transparent 70%);
+        border-radius: 9px;
+        background: var(--advconv-accent-soft);
+        color: var(--advconv-accent-strong);
+      }
+      .pc-advconv__unified-content {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+      }
+      .pc-advconv__unified-topline,
+      .pc-advconv__unified-meta {
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--fg-mute);
+        font-size: 10px;
+      }
+      .pc-advconv__unified-topline time {
+        margin-left: auto;
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+      }
+      .pc-advconv__unified-kind {
+        color: var(--fg-dim);
+        font-weight: 750;
+      }
+      .pc-advconv__unified-content > strong {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--fg);
+        font-size: 12.5px;
+        line-height: 1.35;
+      }
+      .pc-advconv__unified-preview {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--fg-dim);
+        font-size: 11.5px;
+        line-height: 1.35;
+      }
+      .pc-advconv__unified-meta {
+        overflow: hidden;
+      }
+      .pc-advconv__unified-meta span {
+        min-width: 0;
+        max-width: 150px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
       .pc-advconv .pc-coord__row {
         position: relative;
         display: flex;
@@ -2679,18 +2991,16 @@ function AdvConvStyles() {
         border-color: color-mix(in srgb, var(--border, rgba(125, 211, 252, 0.15)), transparent 48%);
         background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 38%);
         cursor: pointer;
-        transition: background-color 140ms, border-color 140ms, transform 140ms, box-shadow 140ms;
+        transition: background-color 140ms, border-color 140ms;
       }
       .pc-advconv .pc-coord__row:hover {
         background: var(--advconv-accent-softer);
         border-color: var(--advconv-border);
-        transform: translateX(2px);
       }
       .pc-advconv .pc-coord__row.is-active {
         background: var(--advconv-accent-soft);
         border-color: color-mix(in oklab, var(--advconv-accent), transparent 42%);
-        box-shadow: 0 8px 20px color-mix(in oklab, var(--advconv-accent), transparent 92%);
-        transform: translateX(3px);
+        box-shadow: none;
       }
       .pc-advconv .pc-coord__row.is-active::before {
         content: '';
@@ -3036,9 +3346,7 @@ function AdvConvStyles() {
         font-size: 11px;
         font-weight: 700;
       }
-      .pc-advfeed__advancedtoggle {
-        --advconv-button-accent: #a78bfa;
-      }
+      .pc-advfeed__advancedtoggle { --advconv-button-accent: var(--accent); }
       .pc-advfeed__rawkinds {
         padding-top: 2px;
       }
@@ -3316,8 +3624,31 @@ function AdvConvStyles() {
       .pc-advfeed__loadolder:hover { color: var(--fg, #e7f7ff); border-color: var(--advconv-border-strong); background: var(--advconv-accent-soft); }
       .pc-advfeed__refresh { flex: 0 0 auto; }
       @media (max-width: 920px) {
-        .pc-advconv__shell { flex-direction: column; }
-        .pc-advconv__nav { width: auto; border-right: none; border-bottom: 1px solid var(--advconv-border); }
+        .pc-advconv__shell {
+          grid-template-columns: minmax(0, 1fr);
+          grid-template-rows: auto minmax(0, 1fr);
+        }
+        .pc-advconv__nav {
+          grid-column: 1;
+          grid-row: 1;
+          width: auto;
+          border-right: none;
+          border-bottom: 1px solid var(--advconv-border);
+        }
+        .pc-advconv__inbox,
+        .pc-advconv__main {
+          grid-column: 1;
+          grid-row: 2;
+        }
+        .pc-advconv__shell:not(.is-detail-open) .pc-advconv__main:not(.pc-advconv__main--wide) {
+          display: none;
+        }
+        .pc-advconv__shell.is-detail-open .pc-advconv__inbox {
+          display: none;
+        }
+        .pc-advconv__shell.is-detail-open .pc-advconv__back {
+          display: inline-flex;
+        }
         .pc-advconv__nav-actions {
           flex-direction: row;
           align-items: stretch;
@@ -3327,8 +3658,8 @@ function AdvConvStyles() {
         }
         .pc-advconv__nav-actions .pc-plans__new-plan {
           flex: 0 0 auto;
-          width: auto;
-          min-width: 92px;
+          width: 40px;
+          min-width: 40px;
         }
         .pc-advconv__nav-switcher { flex: 0 0 auto; flex-direction: row; gap: 6px; }
         .pc-advconv__nav-primary { display: flex; gap: 6px; }
@@ -3338,14 +3669,14 @@ function AdvConvStyles() {
           border-top: none;
           border-left: 1px solid var(--advconv-border);
         }
-        .pc-advconv__navbtn { flex: 0 0 auto; min-width: 112px; }
-        .pc-advconv__navbtn--raw { min-width: 104px; }
+        .pc-advconv__navbtn { flex: 0 0 auto; min-width: 40px; }
+        .pc-advconv__navbtn--raw { min-width: 40px; }
         .pc-advconv__detailhead { flex-direction: column; }
         .pc-advconv__detailstats { justify-content: flex-start; max-width: none; }
         .pc-advconv__replyhead { flex-direction: column; }
         .pc-advconv__replyhead em { max-width: none; text-align: left; }
         .pc-advfeed__refresh { justify-content: center; }
-        .pc-advconv__navlist { max-height: 38vh; }
+        .pc-advconv__navlist { max-height: none; }
         .pc-advfeed__row {
           grid-template-columns: auto auto minmax(0, 1fr) auto;
         }

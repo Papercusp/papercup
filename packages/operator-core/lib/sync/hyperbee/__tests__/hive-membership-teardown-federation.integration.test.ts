@@ -76,14 +76,15 @@ describe('hive_members membership-teardown federation (G24 / G27 transport)', ()
       // scoped to the Hive home slug — exactly what a federated dissolve/leave would
       // produce IF it deleted the row. ──
       await dbA.sql`
-        DELETE FROM harness_shared.hive_members
-         WHERE workspace_id = ${WORKSPACE_ID} AND hive_home_slug = ${HIVE_SLUG}
+        DELETE FROM harness_shared.pot_members
+         WHERE workspace_id = ${WORKSPACE_ID} AND pot_home_slug = ${HIVE_SLUG}
            AND github_user_id = ${idA.userId}
       `;
-      // Confirm the del was captured on A.
+      // Confirm the del was captured on A. (WI-3953/mig 557: capture trigger keys
+      // off TG_TABLE_NAME, which now reads 'pot_members' post-rename.)
       const [{ n }] = await dbA.sql<Array<{ n: number }>>`
         SELECT count(*)::int AS n FROM harness_shared.substrate_outbox
-         WHERE table_name = 'hive_members' AND op = 'del' AND key = ${String(idA.userId)}
+         WHERE table_name = 'pot_members' AND op = 'del' AND key = ${String(idA.userId)}
       `;
       expect(n, "A's member DELETE was not captured as a del op").toBe(1);
 

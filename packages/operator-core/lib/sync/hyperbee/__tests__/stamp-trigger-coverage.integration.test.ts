@@ -18,7 +18,7 @@
  * (sibling) proves every COLUMN survives the value-mapper (column grain). Both
  * stay GREEN while the BEFORE stamp trigger is missing — the op still flows, it
  * just carries a NULL clock. This was a live footgun while authoring mig-317
- * (hive_policy): the stamp trigger had to be remembered by hand, and nothing in
+ * (pot_policy): the stamp trigger had to be remembered by hand, and nothing in
  * CI would have failed had it been omitted. This guard is that missing teeth.
  *
  * WHY AN INTEGRATION TEST (not a parse of the DDL files)
@@ -150,10 +150,10 @@ describe('federated CDC tables — every fed_hlc table has the LWW stamp trigger
 
   it('sanity: the stamp trigger exists on a representative federated table', async () => {
     const withTrigger = await stampTriggerTables();
-    // hive_settings is one of the original mig-214 federated tables — if THIS is
+    // pot_settings is one of the original mig-214 federated tables — if THIS is
     // absent the introspection query or the migration apply is broken, not the
     // invariant. Guards against a silently-empty set making the core check vacuous.
-    expect(withTrigger.has('hive_settings'), 'stamp trigger introspection returned nothing — query/migration broken').toBe(
+    expect(withTrigger.has('pot_settings'), 'stamp trigger introspection returned nothing — query/migration broken').toBe(
       true,
     );
   });

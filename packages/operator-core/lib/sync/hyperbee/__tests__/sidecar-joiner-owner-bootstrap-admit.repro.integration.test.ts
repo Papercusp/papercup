@@ -5,24 +5,24 @@
  *
  * ## THE LIVE BUG (run 18, both Hetzner frames queried directly)
  * In SUBSTRATE_SIDECAR mode the fresh JOINER B receives NOTHING from the OWNER A:
- * hive_members=0, hive_settings=0, hive_epoch_keys=0, 0 remote content. Both peers
+ * pot_members=0, pot_settings=0, pot_epoch_keys=0, 0 remote content. Both peers
  * swarm-`peer_connected`, but B never admits A's log → never merges → 0 roster.
  *
  * ## WHY THE EXISTING TESTS DON'T CATCH IT
  * `federation-sidecar-swarm-peering.repro.test.ts` and the faithful
  * `owner-content-to-joiner-faithful.repro.test.ts` BOTH pre-seed the joiner's
- * `hive_members` (so the member-set admission path admits the owner) AND stub the
+ * `pot_members` (so the member-set admission path admits the owner) AND stub the
  * announce identity. The live bug is in the UN-seeded path: a FRESH joiner with an
- * EMPTY `hive_members` roster must admit the owner's log via the WI-787/D-010
+ * EMPTY `pot_members` roster must admit the owner's log via the WI-787/D-010
  * OWNER-LOG BOOTSTRAP-ADMIT (`loadHiveOwnerDevicePubkey` from the verified
- * `hive_directory_cache` owner binding). This repro exercises that REAL path.
+ * `pot_directory_cache` owner binding). This repro exercises that REAL path.
  *
  * ## What this repro proves
  * Boot OWNER + a FRESH JOINER through the REAL substrate sidecar HOST
  * (createSubstrateSidecarHost + real bootHarnessSubstrate → real swarm / announce /
  * admission / merge), with:
- *   - the JOINER's `hive_members` EMPTY (no seed) — it MUST bootstrap-admit, and
- *   - a verified `hive_directory_cache` owner binding seeded for the joiner, and
+ *   - the JOINER's `pot_members` EMPTY (no seed) — it MUST bootstrap-admit, and
+ *   - a verified `pot_directory_cache` owner binding seeded for the joiner, and
  *   - the REAL `loadHiveOwnerDevicePubkey` owner-bootstrap (NO ownerDeviceForHiveOverride).
  *
  * Asserts the JOINER ADMITS the owner's log. Parameterised over the swarm-binding
@@ -76,6 +76,7 @@ import { _resetHarnessAdminUrlCacheForTests } from '../../../embedded-pg-discove
 import { createOrgTestDb, type OrgTestDb } from '../../../../test/_org-test-db';
 import { mutateHarnessRegistry } from '../../../harness-registry';
 import { _clearHiveMemberDeviceSetCacheForTest } from '../hive-member-identity-set';
+import { applyPot557RenameAndFixups } from './_hive-substrate-rig';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../../../../..');
@@ -105,7 +106,7 @@ function stripMig(s: string): string {
 
 /**
  * The OWNER author's content-origin schema: harness_features_consolidated + the
- * CDC capture (375) PLUS the Hive schema (184 hives + 185 hive_members + 189
+ * CDC capture (375) PLUS the Hive schema (184 hives + 185 pot_members + 189
  * federation-cols/custom capture) so the owner can author its ROSTER and have it
  * drain to its log (the joiner federates the roster from there).
  */
@@ -126,13 +127,14 @@ async function setupOwnerSchema(sql: postgres.Sql, hiveHome: string, hivePubkeyB
   await sql.unsafe(FILL_WORKSPACE_ID_DDL);
   await sql.unsafe(HARNESS_ISSUES_CONSOLIDATED_FED_DDL);
   await sql.unsafe(stripMig(readFileSync(join(SQL_DIR, '375-work-items-cdc-capture.sql'), 'utf8')));
-  // Hive schema so the owner can author its hive_members roster → outbox → log.
+  // Hive schema so the owner can author its pot_members roster → outbox → log.
   await sql.unsafe(stripMig(readFileSync(join(SQL_DIR, '184-hives-table.sql'), 'utf8')));
   await sql.unsafe(stripMig(readFileSync(join(SQL_DIR, '185-hive-members-admission.sql'), 'utf8')));
   await sql.unsafe(stripMig(readFileSync(join(SQL_DIR, '189-hive-members-federation-cols.sql'), 'utf8')));
+  await applyPot557RenameAndFixups(sql);
   await sql`
-    INSERT INTO harness_shared.hives
-      (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+    INSERT INTO harness_shared.pots
+      (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
     VALUES (${WORKSPACE_ID}, ${hiveHome}, decode(${hivePubkeyB64}, 'base64'),
             'kc-owner-home', 'Owner Home', null, 1, 1)
   `;
@@ -351,17 +353,17 @@ async function runScenario(
   // hives row for HIVE_HOME so getHiveBySlug(HIVE_HOME) resolves (potHomeSlugForHarness
   // + resolveHiveSwarmBinding need it). public_key is the hive pubkey.
   await orgDb.adminSql`
-    INSERT INTO harness_shared.hives
-      (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+    INSERT INTO harness_shared.pots
+      (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
     VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, decode(${hivePubkeyB64}, 'base64'),
             'kc-owner-home', 'Owner Home', null, 1, 1)
   `;
 
-  // hive_directory_cache: the VERIFIED owner binding (hivePubkey → ownerDevicePubkey)
+  // pot_directory_cache: the VERIFIED owner binding (hivePubkey → ownerDevicePubkey)
   // — the SOLE source loadHiveOwnerDevicePubkey reads for the bootstrap admit. NO
-  // hive_members rows are seeded → the joiner roster is EMPTY (the fresh-join state).
+  // pot_members rows are seeded → the joiner roster is EMPTY (the fresh-join state).
   await orgDb.adminSql`
-    INSERT INTO harness_shared.hive_directory_cache (workspace_id, payload, updated_at)
+    INSERT INTO harness_shared.pot_directory_cache (workspace_id, payload, updated_at)
     VALUES (${WORKSPACE_ID}, ${JSON.stringify({
       hives: [{ hivePubkey: hivePubkeyB64, ownerDevicePubkey: idOwner.devicePubkey }],
     })}::text::jsonb, 1)
@@ -426,7 +428,7 @@ async function runScenario(
     },
   });
 
-  // JOINER: EMPTY hive_members (no seed → real loadHiveMembers returns []), REAL
+  // JOINER: EMPTY pot_members (no seed → real loadHiveMembers returns []), REAL
   // owner-bootstrap (no ownerDeviceForHiveOverride → real loadHiveOwnerDevicePubkey).
   const joiner = await bootViaSidecarHost({
     root: rootJoiner,
@@ -495,7 +497,7 @@ async function runScenario(
   return { joinerAdmittedOwner, joinerEvents };
 }
 
-describe('SIDECAR fresh-joiner owner-bootstrap-admit (EMPTY hive_members, real loadHiveOwnerDevicePubkey) — D-052/D-053', () => {
+describe('SIDECAR fresh-joiner owner-bootstrap-admit (EMPTY pot_members, real loadHiveOwnerDevicePubkey) — D-052/D-053', () => {
   it(
     'JOINER booted on a HIVE binding admits the owner log via the directory-cache owner-bootstrap',
     async () => {
@@ -507,7 +509,7 @@ describe('SIDECAR fresh-joiner owner-bootstrap-admit (EMPTY hive_members, real l
       );
       expect(
         joinerAdmittedOwner,
-        "the FRESH JOINER (empty hive_members, HIVE binding) did NOT admit the owner's log via owner-bootstrap",
+        "the FRESH JOINER (empty pot_members, HIVE binding) did NOT admit the owner's log via owner-bootstrap",
       ).toBe(true);
     },
     180_000,
@@ -524,7 +526,7 @@ describe('SIDECAR fresh-joiner owner-bootstrap-admit (EMPTY hive_members, real l
       );
       expect(
         joinerAdmittedOwner,
-        "the FRESH JOINER (empty hive_members, TOPIC binding) did NOT admit the owner's log — owner-bootstrap is gated on swarmBinding.kind==='hive', so a topic-bound joiner never bootstrap-admits (D-053)",
+        "the FRESH JOINER (empty pot_members, TOPIC binding) did NOT admit the owner's log — owner-bootstrap is gated on swarmBinding.kind==='hive', so a topic-bound joiner never bootstrap-admits (D-053)",
       ).toBe(true);
     },
     180_000,
@@ -594,15 +596,15 @@ describe('SIDECAR fresh-joiner FULL CHAIN — TOPIC-bound joiner: admit → rost
       const hivePubkeyB64 = rawPubkeyBase64(hivePub);
 
       // JOINER's PG: a hives row for HIVE_HOME (home resolution) + the VERIFIED
-      // directory-cache owner binding. NO hive_members rows → EMPTY roster (fresh join).
+      // directory-cache owner binding. NO pot_members rows → EMPTY roster (fresh join).
       await orgDb.adminSql`
-        INSERT INTO harness_shared.hives
-          (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+        INSERT INTO harness_shared.pots
+          (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, decode(${hivePubkeyB64}, 'base64'),
                 'kc-owner-home', 'Owner Home', null, 1, 1)
       `;
       await orgDb.adminSql`
-        INSERT INTO harness_shared.hive_directory_cache (workspace_id, payload, updated_at)
+        INSERT INTO harness_shared.pot_directory_cache (workspace_id, payload, updated_at)
         VALUES (${WORKSPACE_ID}, ${JSON.stringify({
           hives: [{ hivePubkey: hivePubkeyB64, ownerDevicePubkey: idOwner.devicePubkey }],
         })}::text::jsonb, 1)
@@ -661,7 +663,7 @@ describe('SIDECAR fresh-joiner FULL CHAIN — TOPIC-bound joiner: admit → rost
         },
       });
 
-      // JOINER: TOPIC binding, EMPTY hive_members, REAL apply (no applyOverride → getOrgPg/orgDb).
+      // JOINER: TOPIC binding, EMPTY pot_members, REAL apply (no applyOverride → getOrgPg/orgDb).
       const joiner = await bootViaSidecarHost({
         root: rootJoiner,
         swarm: swarmJoiner,
@@ -680,13 +682,13 @@ describe('SIDECAR fresh-joiner FULL CHAIN — TOPIC-bound joiner: admit → rost
           { device_pubkey: pk, gist_id: `gist-${login}`, gist_url: `https://gist.github.com/${login}`, device_label: `${login}-dev`, created_at: 1, signature_by_device: 'sig' },
         ]);
       await dbOwner.sql`
-        INSERT INTO harness_shared.hive_members
-          (workspace_id, hive_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status)
+        INSERT INTO harness_shared.pot_members
+          (workspace_id, pot_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${idOwner.userId}, 'owner', ${memberAtt('owner', idOwner.devicePubkey)}::text::jsonb, '{}'::text[], 'verified')
       `;
       await dbOwner.sql`
-        INSERT INTO harness_shared.hive_members
-          (workspace_id, hive_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status)
+        INSERT INTO harness_shared.pot_members
+          (workspace_id, pot_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, ${idJoiner.userId}, 'joiner', ${memberAtt('joiner', idJoiner.devicePubkey)}::text::jsonb, '{}'::text[], 'verified')
       `;
       await dbOwner.sql`
@@ -698,14 +700,14 @@ describe('SIDECAR fresh-joiner FULL CHAIN — TOPIC-bound joiner: admit → rost
       expect(drained, 'owner outbox (roster + feature) did not drain to its log').toBeGreaterThanOrEqual(3);
 
       // THE FULL-CHAIN PROOF: merge until the joiner ADMITS the owner, FEDERATES the
-      // roster (orgDb hive_members), and APPLIES the owner feature (orgDb features).
+      // roster (orgDb pot_members), and APPLIES the owner feature (orgDb features).
       const result = await pollUntil(
         async () => {
           await Promise.all([owner.mergeNow(), joiner.mergeNow()]);
           const admitted = joiner.handle.admitted.has(owner.handle.ownLog.keyHex);
           const members = await orgDb.adminSql<Array<{ n: number }>>`
-            SELECT COUNT(*)::int AS n FROM harness_shared.hive_members
-             WHERE workspace_id = ${WORKSPACE_ID} AND hive_home_slug = ${HIVE_HOME}
+            SELECT COUNT(*)::int AS n FROM harness_shared.pot_members
+             WHERE workspace_id = ${WORKSPACE_ID} AND pot_home_slug = ${HIVE_HOME}
           `;
           const feat = await orgDb.adminSql<Array<{ feature_id: string; origin: string; title: string }>>`
             SELECT feature_id, origin, title FROM harness_shared.harness_features_consolidated
@@ -725,7 +727,7 @@ describe('SIDECAR fresh-joiner FULL CHAIN — TOPIC-bound joiner: admit → rost
       ).toBe(true);
       expect(
         result?.memberCount,
-        'the joiner never federated the owner roster (hive_members) from the owner log',
+        'the joiner never federated the owner roster (pot_members) from the owner log',
       ).toBeGreaterThanOrEqual(2);
       expect(
         result?.feature,

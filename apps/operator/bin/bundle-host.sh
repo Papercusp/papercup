@@ -96,14 +96,38 @@ for np in "${NATIVE_PKGS[@]}"; do HOST_EXTERNALS+=( "--external:$np" ); done
 # (operator-core/lib/util/cli-entry.ts) returns false under this define — its
 # ONLY consumer (verified 2026-07-07). Unlike the sidecar build we bake NO
 # version/dogfood-ref defines: the dev host reads live process.env.
+# EI-9413: bundle-host.sh reruns on EVERY service restart (ExecStartPre), and
+# systemd's restart-always can fire another attempt while a prior esbuild
+# invocation's write to $OUTFILE hasn't finished flushing (or, on a wedged
+# host, an orphaned esbuild child from an earlier attempt is still running) —
+# two writers racing a non-atomic `--outfile` produces a torn/interleaved
+# bundle that boots with a random `ReferenceError: X is not defined` for
+# whichever symbol's bytes got clobbered (seen twice tonight: two DIFFERENT
+# symbols on two DIFFERENT boots, same tree, same script — the signature of a
+# write race, not a source bug). Two independent closures:
+#  (1) flock serializes concurrent bundle-host.sh runs against the SAME
+#      outfile instead of letting them race each other;
+#  (2) esbuild writes to a private tmp file, then `mv` atomically renames it
+#      into place — a reader (ExecStart) either sees the fully-old file or
+#      the fully-new one, never a torn hybrid, even if step (1) is ever
+#      bypassed (e.g. a killed/orphaned process holding the lock).
+mkdir -p "$(dirname "$OUTFILE")"
+LOCKFILE="$OUTFILE.build.lock"
+TMPFILE="$OUTFILE.tmp.$$"
+trap 'rm -f "$TMPFILE"' EXIT
+
 echo "→ esbuild-bundling $ENTRY → $OUTFILE (plain-node host entry, no tsx loader)"
-npx --yes esbuild@0.25.0 "$ENTRY" \
-  --bundle --platform=node --format=esm --target=node22 \
-  --outfile="$OUTFILE" \
-  --banner:js="$HOST_BANNER" \
-  --define:__PAPERCUSP_BUNDLED_SIDECAR__=true \
-  --log-limit=20 \
-  "${HOST_EXTERNALS[@]}"
+(
+  flock -w 120 9 || { echo "ERROR: timed out waiting for bundle lock $LOCKFILE (another build stuck?)"; exit 1; }
+  npx --yes esbuild@0.25.0 "$ENTRY" \
+    --bundle --platform=node --format=esm --target=node22 \
+    --outfile="$TMPFILE" \
+    --banner:js="$HOST_BANNER" \
+    --define:__PAPERCUSP_BUNDLED_SIDECAR__=true \
+    --log-limit=20 \
+    "${HOST_EXTERNALS[@]}"
+  mv -f "$TMPFILE" "$OUTFILE"
+) 9>"$LOCKFILE"
 
 echo "✓ bundled: $(du -h "$OUTFILE" | cut -f1) $OUTFILE"
 

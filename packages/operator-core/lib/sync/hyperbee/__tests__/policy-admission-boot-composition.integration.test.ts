@@ -55,7 +55,7 @@ const POLICY_JSON = JSON.stringify({
 // Minimal real schema (mirrors mig 317's read columns — getHivePolicy READ_COLS).
 const HIVE_POLICY_DDL = `
   CREATE SCHEMA IF NOT EXISTS harness_shared;
-  CREATE TABLE IF NOT EXISTS harness_shared.hive_policy (
+  CREATE TABLE IF NOT EXISTS harness_shared.pot_policy (
     workspace_id   text NOT NULL,
     harness_slug   text NOT NULL,
     policy_json    text NOT NULL,
@@ -67,7 +67,7 @@ const HIVE_POLICY_DDL = `
     fed_hlc        text,
     created_at     bigint NOT NULL DEFAULT (EXTRACT(EPOCH FROM now()) * 1000)::bigint,
     updated_at     bigint NOT NULL DEFAULT (EXTRACT(EPOCH FROM now()) * 1000)::bigint,
-    CONSTRAINT hive_policy_pkey PRIMARY KEY (workspace_id, harness_slug)
+    CONSTRAINT pot_policy_pkey PRIMARY KEY (workspace_id, harness_slug)
   );`;
 
 let db: MigratedTestDb;
@@ -85,7 +85,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await sql.unsafe('TRUNCATE harness_shared.hive_policy');
+  await sql.unsafe('TRUNCATE harness_shared.pot_policy');
 });
 
 /**
@@ -122,7 +122,7 @@ async function bootEnforcedApply(
 
 async function storePolicy(slug: string): Promise<void> {
   await sql.unsafe(
-    `INSERT INTO harness_shared.hive_policy (workspace_id, harness_slug, policy_json, policy_version)
+    `INSERT INTO harness_shared.pot_policy (workspace_id, harness_slug, policy_json, policy_version)
      VALUES ($1, $2, $3, 1)`,
     [WS, slug, POLICY_JSON],
   );

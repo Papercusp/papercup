@@ -26,6 +26,7 @@ import { getHivePolicy } from '../../../hive-policy-store';
 import { canonicalizeHivePolicy, hivePolicySignedBytes, type HivePolicy } from '../../../hive-policy-schema';
 import { buildHivePolicyProjection, type HivePolicyRow, type HivePolicyProjectionOpts } from './hive-policy';
 import type { ProvenanceContext } from '../projection';
+import { applyPot557RenameAndFixups } from '../__tests__/_hive-substrate-rig';
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../../../../libs/papercusp/libs/db/sql');
 const WS = 'ws-policy';
@@ -52,13 +53,17 @@ const ownerKp = generateEd25519KeypairDer();
 beforeAll(async () => {
   db = await createFreshPgDb('hive-policy-proj');
   await db.sql.unsafe(readFileSync(join(SQL_DIR, '184-hives-table.sql'), 'utf8'));
+  // EI-9396: forwards the archive-184 hand-built `hives` table to `pots` (mig 557) —
+  // insertHiveIfAbsent/getHivePolicy etc are the REAL production store fns, which now
+  // query harness_shared.pots.
+  await applyPot557RenameAndFixups(db.sql);
   await db.sql.unsafe(HIVE_POLICY_DDL);
 });
 afterAll(async () => {
   await db?.cleanup();
 });
 afterEach(async () => {
-  await db.sql.unsafe('TRUNCATE harness_shared.pot_policy, harness_shared.hives CASCADE');
+  await db.sql.unsafe('TRUNCATE harness_shared.pot_policy, harness_shared.pots CASCADE');
 });
 
 async function seedHive(pubkeyBase64 = ownerKp.pubkeyBase64) {

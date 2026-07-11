@@ -7,9 +7,9 @@
  * THIS file closes the last gap in the registered, CDC-captured projection set: the three
  * HIVE-HOME-grained Hive-STATE projections that NO prior 2-boot repro exercises —
  *
- *   • hive_policy        (projections/hive-policy.ts, tableTag 'hive-policy')          — GAP
- *   • hive_reports       (projections/hive-reports.ts, tableTag 'hive-reports')        — GAP
- *   • hive_pending_joins (projections/hive-pending-joins.ts, tableTag 'hive-pending-joins') — GAP
+ *   • pot_policy        (projections/hive-policy.ts, tableTag 'hive-policy')          — GAP
+ *   • pot_reports       (projections/hive-reports.ts, tableTag 'hive-reports')        — GAP
+ *   • pot_pending_joins (projections/hive-pending-joins.ts, tableTag 'hive-pending-joins') — GAP
  *
  * Authoritative federating-set audit (the basis for "these three are the gap"):
  *   table-registry.ts PEER_LOG_TABLES + the capture_substrate_outbox / capture_work_items_outbox
@@ -18,7 +18,7 @@
  *     features/plans/plan-parts (federation-content-matrix), coord_event_log/threads/posts/
  *     conversations (federation-comms-matrix), engineer_issues + plan_item_assignments
  *     (federation-issues-assignments-matrix), harness_issues_consolidated (feature-content-
- *     federation), hive_members + hive_settings (_hive-substrate-rig: cross-hive-grant /
+ *     federation), hive_members + pot_settings (_hive-substrate-rig: cross-hive-grant /
  *     teardown / late-join), hive_epoch_keys (hive-epoch-drain / hive-late-join). Those three
  *     hive-state tables (policy/reports/pending_joins) had a registered projection + a real
  *     capture trigger but NO federation test — proven here.
@@ -33,7 +33,7 @@
  * the real boot rebind (the _hive-substrate-rig drives hive_members/settings via applyOverride
  * on BOTH peers, never the boot rebind).
  *
- * hive_policy is the security-critical one: its projection VERIFIES the owner signature
+ * pot_policy is the security-critical one: its projection VERIFIES the owner signature
  * (realVerifyHivePolicy → getHiveBySlug trust anchor → verifyEd25519) before applying. This
  * test authors a GENUINELY owner-signed policy (signed with the seeded Hive identity private
  * key, owner_pubkey = the Hive identity pubkey) so the REAL verify on the receiver passes and
@@ -42,16 +42,16 @@
  * MATRIX (each cell through the REAL receiver boot apply, origin='remote'):
  *   • TEST 1 OWNER→JOINER — owner authors under the hive home; the JOINER boots a member
  *     harness whose hive home is a remote_hive VIEW → boot rebinds the hive-home-grained
- *     projections. Covers hive_policy (signed), hive_settings (re-proven via the REAL boot
- *     path), and hive_pending_joins (the owner's APPROVED decision — the decision-back
+ *     projections. Covers pot_policy (signed), pot_settings (re-proven via the REAL boot
+ *     path), and pot_pending_joins (the owner's APPROVED decision — the decision-back
  *     direction).
  *   • TEST 2 MEMBER→OWNER — a member authors under the hive home key; the OWNER's RECEIVING
- *     harness IS the hive home. Covers hive_reports (a member's report → owner's queue) and
- *     hive_pending_joins (a prospective joiner's PENDING request) — both member→owner. Together
- *     with TEST 1's approved-decision row, hive_pending_joins is proven BOTH directions.
+ *     harness IS the hive home. Covers pot_reports (a member's report → owner's queue) and
+ *     pot_pending_joins (a prospective joiner's PENDING request) — both member→owner. Together
+ *     with TEST 1's approved-decision row, pot_pending_joins is proven BOTH directions.
  *
- * SEND path for every case = the REAL mig-317 (hive_policy) / mig-318 (reports/pending_joins) /
- * mig-186 (hive_settings) capture triggers → substrate_outbox → drainOutboxOnce → the peer's
+ * SEND path for every case = the REAL mig-317 (pot_policy) / mig-318 (reports/pending_joins) /
+ * mig-186 (pot_settings) capture triggers → substrate_outbox → drainOutboxOnce → the peer's
  * mergeNow → the hive-state projection apply. No hand-built outbox.
  *
  * PAPERCUSP_A003_TRACE=1 is set so the boot rebind + member-guard decisions print (grep
@@ -225,7 +225,7 @@ function installTraceAndEnv(orgDb: OrgTestDb): { a003Lines: string[] } {
 
 interface SeededHive {
   hivePubkeyB64: string;
-  /** The Hive identity PRIVATE key — the owner holds it; used to SIGN hive_policy faithfully. */
+  /** The Hive identity PRIVATE key — the owner holds it; used to SIGN pot_policy faithfully. */
   hivePrivateKey: KeyObject;
 }
 
@@ -235,19 +235,19 @@ async function seedHive(
   members: Array<{ userId: number; login: string; devicePubkey: string }>,
 ): Promise<SeededHive> {
   // Generate the Hive identity keypair and RETAIN the private key (the matrices discard it;
-  // hive_policy needs it to produce a real owner signature the projection will verify).
+  // pot_policy needs it to produce a real owner signature the projection will verify).
   const { publicKey: hivePub, privateKey: hivePrivateKey } = generateKeyPairSync('ed25519');
   const hivePubkeyB64 = rawPubkeyBase64(hivePub);
   await orgDb.adminSql`
-    INSERT INTO harness_shared.hives
-      (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+    INSERT INTO harness_shared.pots
+      (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
     VALUES (${WORKSPACE_ID}, ${hiveHome}, decode(${hivePubkeyB64}, 'base64'),
             'kc-hive-home', 'Hive Home', null, 1, 1)
   `;
   for (const m of members) {
     await orgDb.adminSql`
-      INSERT INTO harness_shared.hive_members
-        (workspace_id, hive_home_slug, github_user_id, github_username,
+      INSERT INTO harness_shared.pot_members
+        (workspace_id, pot_home_slug, github_user_id, github_username,
          device_attestations, revoked_pubkeys, binding_status)
       VALUES (${WORKSPACE_ID}, ${hiveHome}, ${m.userId}, ${m.login},
               ${JSON.stringify([
@@ -298,7 +298,7 @@ async function countOutbox(sql: postgres.Sql, table: string, key: string): Promi
 
 // ── Author helpers (the REAL write paths whose capture triggers are the federation seam). ──
 
-/** Author an owner-SIGNED hive_policy row (mig 317). owner_pubkey = the Hive identity pubkey;
+/** Author an owner-SIGNED pot_policy row (mig 317). owner_pubkey = the Hive identity pubkey;
  *  signature = Ed25519 over hivePolicySignedBytes with the Hive identity private key — so the
  *  receiver's realVerifyHivePolicy PASSES (proving signed federation, not a stub). */
 async function authorPolicy(
@@ -315,7 +315,7 @@ async function authorPolicy(
   const signature = nodeSign(null, bytes, opts.hivePrivateKey).toString('base64');
   const now = Date.now();
   await sql`
-    INSERT INTO harness_shared.hive_policy
+    INSERT INTO harness_shared.pot_policy
       (workspace_id, harness_slug, policy_json, owner_pubkey, signature, policy_version,
        origin, created_at, updated_at)
     VALUES (${WORKSPACE_ID}, ${opts.slug}, ${canonicalPolicyJson}, ${opts.hivePubkeyB64},
@@ -324,20 +324,20 @@ async function authorPolicy(
   return { canonicalPolicyJson };
 }
 
-/** Author a hive_settings row (mig 186). value is JSON-serialized TEXT (the federated subset). */
+/** Author a pot_settings row (mig 186). value is JSON-serialized TEXT (the federated subset). */
 async function authorSetting(
   sql: postgres.Sql,
   opts: { slug: string; key: string; value: unknown },
 ): Promise<void> {
   const now = Date.now();
   await sql`
-    INSERT INTO harness_shared.hive_settings
+    INSERT INTO harness_shared.pot_settings
       (workspace_id, harness_slug, setting_key, value, origin, created_at, updated_at)
     VALUES (${WORKSPACE_ID}, ${opts.slug}, ${opts.key}, ${JSON.stringify(opts.value)}, 'local', ${now}, ${now})
   `;
 }
 
-/** Author a hive_reports row (mig 318 / P-MOD) — a member's moderation report. */
+/** Author a pot_reports row (mig 318 / P-MOD) — a member's moderation report. */
 async function authorReport(
   sql: postgres.Sql,
   opts: {
@@ -352,7 +352,7 @@ async function authorReport(
   },
 ): Promise<void> {
   await sql`
-    INSERT INTO harness_shared.hive_reports
+    INSERT INTO harness_shared.pot_reports
       (workspace_id, harness_slug, report_id, reporter_github_user_id, reporter_github_username,
        target_kind, target_ref, report_reason, status, origin)
     VALUES (${WORKSPACE_ID}, ${opts.slug}, ${opts.reportId}, ${opts.reporterUserId}, ${opts.reporterUsername},
@@ -360,7 +360,7 @@ async function authorReport(
   `;
 }
 
-/** Author a hive_pending_joins row (mig 318 / P-MEMBER) — a request (status='pending') or the
+/** Author a pot_pending_joins row (mig 318 / P-MEMBER) — a request (status='pending') or the
  *  owner's decision (status='approved'/'denied' + decided_*). */
 async function authorPendingJoin(
   sql: postgres.Sql,
@@ -376,7 +376,7 @@ async function authorPendingJoin(
   const now = Date.now();
   const decided = opts.decidedByUserId ?? null;
   await sql`
-    INSERT INTO harness_shared.hive_pending_joins
+    INSERT INTO harness_shared.pot_pending_joins
       (workspace_id, harness_slug, github_user_id, github_username, display_name, avatar_url,
        device_attestations, status, reason, requested_at, decided_at, decided_by_github_user_id, origin)
     VALUES (${WORKSPACE_ID}, ${opts.slug}, ${opts.userId}, ${opts.username}, ${opts.displayName}, null,
@@ -390,12 +390,12 @@ async function readPolicy(sql: postgres.Sql, slug: string) {
   const rows = await sql<
     Array<{ harness_slug: string; policy_json: string; owner_pubkey: string; signature: string; policy_version: number; origin: string }>
   >`SELECT harness_slug, policy_json, owner_pubkey, signature, policy_version, origin
-      FROM harness_shared.hive_policy WHERE workspace_id = ${WORKSPACE_ID} AND harness_slug = ${slug}`;
+      FROM harness_shared.pot_policy WHERE workspace_id = ${WORKSPACE_ID} AND harness_slug = ${slug}`;
   return rows[0];
 }
 async function readSetting(sql: postgres.Sql, slug: string, key: string) {
   const rows = await sql<Array<{ setting_key: string; value: string | null; origin: string }>>`
-    SELECT setting_key, value, origin FROM harness_shared.hive_settings
+    SELECT setting_key, value, origin FROM harness_shared.pot_settings
      WHERE workspace_id = ${WORKSPACE_ID} AND harness_slug = ${slug} AND setting_key = ${key}`;
   return rows[0];
 }
@@ -405,7 +405,7 @@ async function readReport(sql: postgres.Sql, slug: string, reportId: string) {
   const rows = await sql<
     Array<{ report_id: string; harness_slug: string; status: string; target_kind: string; target_ref: string; reporter_github_user_id: number; origin: string }>
   >`SELECT report_id, harness_slug, status, target_kind, target_ref, reporter_github_user_id::int AS reporter_github_user_id, origin
-      FROM harness_shared.hive_reports WHERE workspace_id = ${WORKSPACE_ID} AND harness_slug = ${slug} AND report_id = ${reportId}`;
+      FROM harness_shared.pot_reports WHERE workspace_id = ${WORKSPACE_ID} AND harness_slug = ${slug} AND report_id = ${reportId}`;
   return rows[0];
 }
 async function readPendingJoin(sql: postgres.Sql, slug: string, userId: number) {
@@ -413,7 +413,7 @@ async function readPendingJoin(sql: postgres.Sql, slug: string, userId: number) 
   const rows = await sql<
     Array<{ github_user_id: number; harness_slug: string; status: string; github_username: string; origin: string }>
   >`SELECT github_user_id::int AS github_user_id, harness_slug, status, github_username, origin
-      FROM harness_shared.hive_pending_joins
+      FROM harness_shared.pot_pending_joins
      WHERE workspace_id = ${WORKSPACE_ID} AND harness_slug = ${slug} AND github_user_id = ${userId}`;
   return rows[0];
 }
@@ -436,7 +436,7 @@ interface HiveStatePair {
  * One peer AUTHORS (applyOverride → its own org DB) and the other RECEIVES via the REAL boot
  * scoped apply (no override → getOrgPg → the env-routed receiver org DB).
  *
- * The hive-state tables (hive_policy/settings/reports/pending_joins) are HIVE-HOME-grained: the
+ * The hive-state tables (pot_policy/settings/reports/pending_joins) are HIVE-HOME-grained: the
  * stores write `harness_slug = the hive home` (hive-reports-store.ts / hive-pending-joins-store.ts),
  * and the outbox drain selects rows by `harness_slug = the BOOTING harness slug` (outbox-drain.ts).
  * So a hive-state row only drains under a substrate booted AS the hive home — which is exactly what
@@ -589,16 +589,16 @@ async function bootHiveStatePair(cfg: {
   };
 }
 
-describe('federation HIVE-STATE matrix — hive_policy + hive_reports + hive_pending_joins (+ hive_settings via real boot) federate over the Hive topic (faithful 2-boot, real swarm + PG, NO stubs)', () => {
+describe('federation HIVE-STATE matrix — pot_policy + pot_reports + pot_pending_joins (+ pot_settings via real boot) federate over the Hive topic (faithful 2-boot, real swarm + PG, NO stubs)', () => {
   // ────────────────────────────────────────────────────────────────────────────
   // TEST 1: OWNER → JOINER. Owner authors the Hive state under the hive home; the JOINER boots
   // a member harness whose hive home is a remote_hive VIEW → boot rebinds the hive-home-grained
-  // projections (register-all hiveScoped, boot.ts:803/855). Covers hive_policy (owner-SIGNED),
-  // hive_settings (re-proven through the REAL boot path), hive_pending_joins (the APPROVED
+  // projections (register-all hiveScoped, boot.ts:803/855). Covers pot_policy (owner-SIGNED),
+  // pot_settings (re-proven through the REAL boot path), pot_pending_joins (the APPROVED
   // decision — the decision-back direction).
   // ────────────────────────────────────────────────────────────────────────────
   it(
-    'OWNER→JOINER: a signed hive_policy, a hive_settings row, and an approved hive_pending_joins decision federate to the JOINER (origin=remote)',
+    'OWNER→JOINER: a signed pot_policy, a pot_settings row, and an approved pot_pending_joins decision federate to the JOINER (origin=remote)',
     async () => {
       const HIVE_HOME = 'hs-owner-hive';
       const JOINER_SLUG = 'hs-joined-owner-hive';
@@ -634,13 +634,13 @@ describe('federation HIVE-STATE matrix — hive_policy + hive_reports + hive_pen
       });
 
       // Capture sanity on the AUTHOR (the REAL mig-317 / mig-186 / mig-318 triggers).
-      expect(await countOutbox(authorDb.adminSql, 'hive_policy', HIVE_HOME)).toBe(1);
-      expect(await countOutbox(authorDb.adminSql, 'hive_settings', 'theme')).toBe(1);
-      expect(await countOutbox(authorDb.adminSql, 'hive_pending_joins', '5151')).toBe(1);
+      expect(await countOutbox(authorDb.adminSql, 'pot_policy', HIVE_HOME)).toBe(1);
+      expect(await countOutbox(authorDb.adminSql, 'pot_settings', 'theme')).toBe(1);
+      expect(await countOutbox(authorDb.adminSql, 'pot_pending_joins', '5151')).toBe(1);
 
       await federate();
 
-      // ── hive_policy (owner-SIGNED) — the receiver's realVerifyHivePolicy must PASS. ──
+      // ── pot_policy (owner-SIGNED) — the receiver's realVerifyHivePolicy must PASS. ──
       const policyOnB = await pollUntil(
         async () => {
           await Promise.all([pair.handleAuthor.mergeNow(), pair.handleReceiver.mergeNow()]);
@@ -650,7 +650,7 @@ describe('federation HIVE-STATE matrix — hive_policy + hive_reports + hive_pen
       );
       expect(
         policyOnB,
-        'hive_policy owner→joiner: the signed policy never reached the JOINER (signature verify or hive-home rebind gap)',
+        'pot_policy owner→joiner: the signed policy never reached the JOINER (signature verify or hive-home rebind gap)',
       ).toBeTruthy();
       expect(policyOnB).toMatchObject({
         harness_slug: HIVE_HOME,
@@ -658,9 +658,9 @@ describe('federation HIVE-STATE matrix — hive_policy + hive_reports + hive_pen
         policy_version: 1,
         origin: 'remote',
       });
-      expect(policyOnB!.policy_json, 'hive_policy: the canonical signed bytes must round-trip').toBe(canonicalPolicyJson);
+      expect(policyOnB!.policy_json, 'pot_policy: the canonical signed bytes must round-trip').toBe(canonicalPolicyJson);
 
-      // ── hive_settings — re-proven through the REAL boot apply path (not the rig's applyOverride). ──
+      // ── pot_settings — re-proven through the REAL boot apply path (not the rig's applyOverride). ──
       const settingOnB = await pollUntil(
         async () => {
           await Promise.all([pair.handleAuthor.mergeNow(), pair.handleReceiver.mergeNow()]);
@@ -668,11 +668,11 @@ describe('federation HIVE-STATE matrix — hive_policy + hive_reports + hive_pen
         },
         { timeoutMs: 20_000, intervalMs: 250 },
       );
-      expect(settingOnB, 'hive_settings owner→joiner: the setting never reached the JOINER').toBeTruthy();
+      expect(settingOnB, 'pot_settings owner→joiner: the setting never reached the JOINER').toBeTruthy();
       expect(settingOnB).toMatchObject({ setting_key: 'theme', origin: 'remote' });
       expect(JSON.parse(settingOnB!.value ?? 'null')).toBe('midnight');
 
-      // ── hive_pending_joins — the owner's APPROVED decision rides owner→joiner. ──
+      // ── pot_pending_joins — the owner's APPROVED decision rides owner→joiner. ──
       const pjOnB = await pollUntil(
         async () => {
           await Promise.all([pair.handleAuthor.mergeNow(), pair.handleReceiver.mergeNow()]);
@@ -680,7 +680,7 @@ describe('federation HIVE-STATE matrix — hive_policy + hive_reports + hive_pen
         },
         { timeoutMs: 20_000, intervalMs: 250 },
       );
-      expect(pjOnB, 'hive_pending_joins owner→joiner: the approved decision never reached the JOINER').toBeTruthy();
+      expect(pjOnB, 'pot_pending_joins owner→joiner: the approved decision never reached the JOINER').toBeTruthy();
       expect(pjOnB).toMatchObject({
         github_user_id: 5151,
         harness_slug: HIVE_HOME,
@@ -697,12 +697,12 @@ describe('federation HIVE-STATE matrix — hive_policy + hive_reports + hive_pen
   // remote_hive-VIEW HIVE_HOME substrate (the home-to-home topology: both peers run the hive-home
   // substrate, like _hive-substrate-rig — that is the substrate whose drain covers the
   // hive-home-scoped rows the stores write). The OWNER's hive-home substrate RECEIVES via the real
-  // boot apply. Covers hive_reports (a member's report → the owner's moderation queue) and
-  // hive_pending_joins (a prospective joiner's PENDING request). Together with TEST 1's
-  // approved-decision row, hive_pending_joins is proven BOTH directions.
+  // boot apply. Covers pot_reports (a member's report → the owner's moderation queue) and
+  // pot_pending_joins (a prospective joiner's PENDING request). Together with TEST 1's
+  // approved-decision row, pot_pending_joins is proven BOTH directions.
   // ────────────────────────────────────────────────────────────────────────────
   it(
-    'MEMBER→OWNER: a hive_reports report and a pending hive_pending_joins request federate back to the OWNER (origin=remote)',
+    'MEMBER→OWNER: a pot_reports report and a pending pot_pending_joins request federate back to the OWNER (origin=remote)',
     async () => {
       const HIVE_HOME = 'hs-fed-owner-home';
       const pair = await bootHiveStatePair({
@@ -734,12 +734,12 @@ describe('federation HIVE-STATE matrix — hive_policy + hive_reports + hive_pen
         decidedByUserId: null,
       });
 
-      expect(await countOutbox(authorDb.adminSql, 'hive_reports', 'REP-1')).toBe(1);
-      expect(await countOutbox(authorDb.adminSql, 'hive_pending_joins', '4242')).toBe(1);
+      expect(await countOutbox(authorDb.adminSql, 'pot_reports', 'REP-1')).toBe(1);
+      expect(await countOutbox(authorDb.adminSql, 'pot_pending_joins', '4242')).toBe(1);
 
       await federate();
 
-      // ── hive_reports — the member's report lands on the OWNER's queue. ──
+      // ── pot_reports — the member's report lands on the OWNER's queue. ──
       const reportOnA = await pollUntil(
         async () => {
           await Promise.all([pair.handleAuthor.mergeNow(), pair.handleReceiver.mergeNow()]);
@@ -747,7 +747,7 @@ describe('federation HIVE-STATE matrix — hive_policy + hive_reports + hive_pen
         },
         { timeoutMs: 20_000, intervalMs: 250 },
       );
-      expect(reportOnA, 'hive_reports member→owner: the report never reached the OWNER queue').toBeTruthy();
+      expect(reportOnA, 'pot_reports member→owner: the report never reached the OWNER queue').toBeTruthy();
       expect(reportOnA).toMatchObject({
         report_id: 'REP-1',
         harness_slug: HIVE_HOME,
@@ -758,7 +758,7 @@ describe('federation HIVE-STATE matrix — hive_policy + hive_reports + hive_pen
         origin: 'remote',
       });
 
-      // ── hive_pending_joins — the prospective joiner's PENDING request lands on the OWNER. ──
+      // ── pot_pending_joins — the prospective joiner's PENDING request lands on the OWNER. ──
       const pjOnA = await pollUntil(
         async () => {
           await Promise.all([pair.handleAuthor.mergeNow(), pair.handleReceiver.mergeNow()]);
@@ -766,7 +766,7 @@ describe('federation HIVE-STATE matrix — hive_policy + hive_reports + hive_pen
         },
         { timeoutMs: 20_000, intervalMs: 250 },
       );
-      expect(pjOnA, 'hive_pending_joins member→owner: the pending request never reached the OWNER').toBeTruthy();
+      expect(pjOnA, 'pot_pending_joins member→owner: the pending request never reached the OWNER').toBeTruthy();
       expect(pjOnA).toMatchObject({
         github_user_id: 4242,
         harness_slug: HIVE_HOME,

@@ -291,6 +291,34 @@ export function describePresenceConformance(
       expect(inWs.map((r) => r.ownerId)).toEqual(expected);
     });
 
+    it('capabilityTags (WI-1546) is populate-once-then-keep, like agentRole/potSlug', async () => {
+      if (skip) return;
+      const store = makeStore();
+      const id = ident(store, 'tags');
+      // First write with no capabilityTags → defaults to [].
+      await store.write(id, { intent: 'first' });
+      const first = await store.get(id.ownerId);
+      expect(first!.capabilityTags).toEqual([]);
+
+      // A write that DOES carry tags populates them.
+      await store.write(id, { intent: 'second', capabilityTags: ['node', 'docker', 'pg'] });
+      const withTags = await store.get(id.ownerId);
+      expect(withTags!.capabilityTags).toEqual(['node', 'docker', 'pg']);
+
+      // A LATER write that omits capabilityTags entirely must PRESERVE them —
+      // never clobber back to [] (the exact hazard the COALESCE(NULLIF(...))
+      // pattern in PgPresenceStore.write guards against).
+      await store.write(id, { intent: 'third' });
+      const preserved = await store.get(id.ownerId);
+      expect(preserved!.capabilityTags).toEqual(['node', 'docker', 'pg']);
+
+      // An explicit empty array also does not clobber (same "nothing new
+      // reported" semantics as omitting the field).
+      await store.write(id, { intent: 'fourth', capabilityTags: [] });
+      const stillPreserved = await store.get(id.ownerId);
+      expect(stillPreserved!.capabilityTags).toEqual(['node', 'docker', 'pg']);
+    });
+
     it('list filters by potSlug (P-004 hive-scoped read)', async () => {
       if (skip) return;
       const store = makeStore();

@@ -1,7 +1,7 @@
 /**
  * A-003 (shared-pot-release-testing Brief I) — the JOINER projection-binding fix.
  *
- * A joiner boots a MEMBER harness; the hive_members / hive_settings ops it reads
+ * A joiner boots a MEMBER harness; the pot_members / pot_settings ops it reads
  * off the shared Hive topic carry the HIVE-HOME slug (pot_home_slug / harness_slug
  * = the Hive home). Before this fix the member-slug-bound projections dropped them
  * — the member list/settings never reached the joiner, and
@@ -17,7 +17,7 @@
  * `hiveScoped` (back to `opts`) flips the GREEN ones red.
  *
  * Real full-schema PG (createOrgTestDb → the boot-path migration runner) so the
- * hive_members/hive_settings capture triggers + functions exist; assertions use the
+ * pot_members/pot_settings capture triggers + functions exist; assertions use the
  * RLS-bypass admin client.
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
@@ -42,7 +42,7 @@ function dev(pk: string): DeviceAttestationEntry {
   return { device_pubkey: pk, gist_id: 'g', gist_url: 'u', device_label: 'd', created_at: 1, signature_by_device: 's' };
 }
 
-/** A federated (remote) hive_members put, exactly as the read-merge would hand it
+/** A federated (remote) pot_members put, exactly as the read-merge would hand it
  *  to the scoped apply (sourceLogKeyHex != ownLog → origin='remote', not skipped). */
 function memberOp(over: Record<string, unknown> = {}, ts = 100): OpEnvelope {
   return {
@@ -98,7 +98,7 @@ afterAll(async () => {
 });
 afterEach(async () => {
   await db.adminSql.unsafe(
-    'TRUNCATE harness_shared.pot_members, harness_shared.pot_settings, harness_shared.hives CASCADE',
+    'TRUNCATE harness_shared.pot_members, harness_shared.pot_settings, harness_shared.pots CASCADE',
   );
 });
 
@@ -114,7 +114,7 @@ async function seedHive(slug: string) {
   );
 }
 
-describe('A-003 — hive_members/hive_settings reach a member-booted joiner', () => {
+describe('A-003 — pot_members/pot_settings reach a member-booted joiner', () => {
   it('RED (the bug): a member-slug apply with NO potHomeSlug drops the home-grained ops', async () => {
     await seedHive(HOME);
     const apply = memberBoundApply();

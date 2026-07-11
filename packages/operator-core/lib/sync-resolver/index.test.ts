@@ -189,6 +189,10 @@ describe('sync-resolver v2 registry', () => {
       }
     });
 
+    it('includes the unified Conversations inbox projection', () => {
+      expect(knownQueryNamesV2()).toContain('conversations.unified');
+    });
+
     it('includes the plans.* Create-tab live queries', () => {
       const names = knownQueryNamesV2();
       for (const expected of [

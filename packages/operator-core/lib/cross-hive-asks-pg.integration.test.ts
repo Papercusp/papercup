@@ -22,7 +22,7 @@ const PEER2 = 'peer-pubkey-2';
 
 // Mirrors migration 231 (minus the psql directives + role grants the test DB lacks).
 const ASKS_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.cross_hive_asks (
+  CREATE TABLE IF NOT EXISTS harness_shared.cross_pot_asks (
     workspace_id text NOT NULL, pot_slug text NOT NULL,
     id uuid NOT NULL DEFAULT gen_random_uuid(),
     peer_pubkey text NOT NULL, direction text NOT NULL DEFAULT 'out',
@@ -31,12 +31,12 @@ const ASKS_DDL = `
     reply_body text, reply_ts timestamptz,
     asked_by text,
     created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT cross_hive_asks_pkey PRIMARY KEY (id),
-    CONSTRAINT cross_hive_asks_workspace_nonempty CHECK (workspace_id <> ''),
-    CONSTRAINT cross_hive_asks_direction_check CHECK (direction IN ('out','in')),
-    CONSTRAINT cross_hive_asks_kind_check CHECK (kind IN ('ask','work-request')),
-    CONSTRAINT cross_hive_asks_state_check CHECK (state IN ('queued','sent','answered','declined','expired')),
-    CONSTRAINT cross_hive_asks_correlation_uniq UNIQUE (workspace_id, pot_slug, correlation_id))`;
+    CONSTRAINT cross_pot_asks_pkey PRIMARY KEY (id),
+    CONSTRAINT cross_pot_asks_workspace_nonempty CHECK (workspace_id <> ''),
+    CONSTRAINT cross_pot_asks_direction_check CHECK (direction IN ('out','in')),
+    CONSTRAINT cross_pot_asks_kind_check CHECK (kind IN ('ask','work-request')),
+    CONSTRAINT cross_pot_asks_state_check CHECK (state IN ('queued','sent','answered','declined','expired')),
+    CONSTRAINT cross_pot_asks_correlation_uniq UNIQUE (workspace_id, pot_slug, correlation_id))`;
 
 let db: FreshPgDb;
 let store: PgCrossHiveAsks;
@@ -49,7 +49,7 @@ afterAll(async () => {
   await db?.cleanup();
 });
 beforeEach(async () => {
-  await db.sql`DELETE FROM harness_shared.cross_hive_asks`;
+  await db.sql`DELETE FROM harness_shared.cross_pot_asks`;
   store = new PgCrossHiveAsks(WS, HIVE_A, db.sql);
 });
 
@@ -260,7 +260,7 @@ describe('expireStale', () => {
     await store.markSent(oldDone.id);
     await store.transition(oldDone.id, 'answered');
     // Backdate 'old' and 'done' beyond the cutoff window.
-    await db.sql`UPDATE harness_shared.cross_hive_asks
+    await db.sql`UPDATE harness_shared.cross_pot_asks
                    SET created_at = now() - interval '2 hours'
                  WHERE correlation_id IN ('old','done')`;
 
@@ -306,7 +306,7 @@ describe('countRecentByPeer (P-013 rolling rate-cap counter)', () => {
     expect(await store2.countRecentByPeer(PEER2, 'out', hourAgo)).toBe(1);
 
     // Rows older than the window fall out of the count.
-    await db.sql`UPDATE harness_shared.cross_hive_asks
+    await db.sql`UPDATE harness_shared.cross_pot_asks
                    SET created_at = now() - interval '2 hours'
                  WHERE correlation_id = 'c-out-2'`;
     expect(await store2.countRecentByPeer(PEER, 'out', hourAgo)).toBe(1);

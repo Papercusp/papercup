@@ -13,7 +13,7 @@
  *                              fakes the LLM); the lane's verdict→audit_verdict write
  *                              and reject→escalation are real;
  *   - the REAL verified-author producer — the harness-features projection stamp
- *                              (resolveVerifiedAuthorGithubId over hive_members);
+ *                              (resolveVerifiedAuthorGithubId over pot_members);
  *   - the REAL owner trust store — trust/user-trust-list addTrustedUser /
  *                              removeTrustedUser (the `trust:add` / `trust:remove` tools).
  *
@@ -61,13 +61,13 @@ const HARNESS = 'h1';
 
 const HFC_DDL = HARNESS_FEATURES_CONSOLIDATED_DDL;
 
-// The verified-author producer source (hive_members, migration 185): a member's
+// The verified-author producer source (pot_members, migration 185): a member's
 // attested devices + revoked blocklist + binding_status. resolveVerifiedAuthorGithubId
 // returns github_user_id ONLY for a verified, non-revoked, attested pubkey.
 const HIVE_MEMBERS_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.hive_members (
+  CREATE TABLE IF NOT EXISTS harness_shared.pot_members (
     workspace_id text NOT NULL,
-    hive_home_slug text NOT NULL,
+    pot_home_slug text NOT NULL,
     github_user_id bigint NOT NULL,
     github_username text NOT NULL,
     display_name text, avatar_url text,
@@ -75,7 +75,7 @@ const HIVE_MEMBERS_DDL = `
     revoked_pubkeys text[],
     binding_status text NOT NULL DEFAULT 'unverified',
     joined_at bigint,
-    PRIMARY KEY (workspace_id, hive_home_slug, github_user_id))`;
+    PRIMARY KEY (workspace_id, pot_home_slug, github_user_id))`;
 
 // The owner-keyed LOCAL trust list the admission predicate consults (P-009) —
 // USER_TRUST_LIST_DDL imported from ../test/_work-items-schema (shared superset).
@@ -121,7 +121,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await db.sql`DELETE FROM harness_shared.harness_features_consolidated`;
-  await db.sql`DELETE FROM harness_shared.hive_members`;
+  await db.sql`DELETE FROM harness_shared.pot_members`;
   await db.sql`DELETE FROM harness_shared.user_trust_list`;
   await db.sql`DELETE FROM harness_shared.audit_log`;
 });
@@ -134,14 +134,14 @@ function insRemotePending(fid: string, ts = 1) {
     VALUES (${WS}, ${HARNESS}, ${fid}, ${fid}, 'todo', 'feature', 'remote', NULL, ${ts}, ${ts})`;
 }
 
-/** Seed a hive_members admission row — `pubkeys` become device_attestations; `binding` is the binding_status. */
+/** Seed a pot_members admission row — `pubkeys` become device_attestations; `binding` is the binding_status. */
 function seedMember(githubId: number, pubkeys: string[], binding: 'verified' | 'pending' | 'unverified', hive = 'hive-a') {
   const attestations = pubkeys.map((pk, i) => ({
     device_pubkey: pk, gist_id: `g${i}`, gist_url: 'u', device_label: 'd', created_at: 1, signature_by_device: 's',
   }));
   return h.sql`
-    INSERT INTO harness_shared.hive_members
-      (workspace_id, hive_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status, joined_at)
+    INSERT INTO harness_shared.pot_members
+      (workspace_id, pot_home_slug, github_user_id, github_username, device_attestations, revoked_pubkeys, binding_status, joined_at)
     VALUES (${WS}, ${hive}, ${githubId}, ${'user' + githubId}, ${JSON.stringify(attestations)}::text::jsonb, ${[]}, ${binding}, 1)`;
 }
 

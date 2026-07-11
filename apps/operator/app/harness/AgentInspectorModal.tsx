@@ -75,6 +75,10 @@ export default function AgentInspectorModal({
    * `live:false` (the source session has ENDED) labels it "Resume in new
    * terminal". Absent ⇒ no button (never a dead one) — only claude/omp
    * sessions accept `-r`, so callers gate on that before passing this.
+   * WI-4009: `live:true` additionally requires the source to be a CLAUDE
+   * session — `--fork-session` is claude-only (console-launcher.ts), and an
+   * omp session has no fork command, so callers never set `live:true` for a
+   * live omp/codex agent (see `canForkLive` in AgentsRunningPill.tsx).
    * Linux-only for now, same constraint as the primary /console/launch spawn
    * path itself (see native-console.ts) — mirrors focusTarget's posture.
    */

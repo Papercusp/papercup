@@ -76,6 +76,10 @@ const ALLOWLIST: Record<string, Classification> = {
   'coord_presence.owner_id': { status: 'covered', surface: 'presence' },
   'fleet_membership_events.owner_id': { status: 'covered', surface: 'fleet-membership' },
   'agent_fleets.leader_owner_id': { status: 'covered', surface: 'fleet-leadership' },
+  // cup-lexicon-full-rename P-009 Phase 2 (WI-3954): the base table (né bee_claim_specs).
+  'cup_claim_specs.bee_id': { status: 'covered', surface: 'claim-spec' },
+  // The compat VIEW over cup_claim_specs (dropped in a later contract phase) —
+  // re-keyed transitively via the base table's 'claim-spec' rebind surface.
   'bee_claim_specs.bee_id': { status: 'covered', surface: 'claim-spec' },
   'event_awaits.subscriber_id': { status: 'covered', surface: 'awaits' },
   'plan_item_claims.owner': { status: 'covered', surface: 'plan-claims' },

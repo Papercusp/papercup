@@ -205,6 +205,49 @@ describe('deriveCupLiveness (P-020 — reuses the fleet-reclaim thresholds)', ()
   it('running + null heartbeat (freshly spawned) → live (reclaim owns true orphans)', () => {
     expect(deriveCupLiveness({ status: 'running', heartbeatAtMs: null, lastOutputAtMs: null, now: NOW })).toBe('live');
   });
+
+  // WI-3977 — a heartbeat-stale cup CONFIRMED alive on this host (the same
+  // false-positive class WI-3961 fixed for reclaimOrphanedSpawns) must not read
+  // `dead` — that false verdict is what let the Mug re-place a duplicate cup onto
+  // a work-item whose original cup was still genuinely working (WI-3954).
+  it('running + heartbeat stale but confirmedAliveSameHost=true → NOT dead (falls to live/wedged)', () => {
+    expect(
+      deriveCupLiveness({
+        status: 'running',
+        heartbeatAtMs: NOW - RECLAIM_STALE_MS - 1,
+        lastOutputAtMs: NOW - 1000,
+        now: NOW,
+        confirmedAliveSameHost: true,
+      }),
+    ).toBe('live');
+  });
+  it('running + heartbeat AND output both stale but confirmedAliveSameHost=true → wedged, not dead', () => {
+    expect(
+      deriveCupLiveness({
+        status: 'running',
+        heartbeatAtMs: NOW - RECLAIM_STALE_MS - 1,
+        lastOutputAtMs: NOW - WEDGE_SILENT_MS - 1,
+        now: NOW,
+        confirmedAliveSameHost: true,
+      }),
+    ).toBe('wedged');
+  });
+  it('running + heartbeat stale, confirmedAliveSameHost=false (default/unverifiable) → still dead (unchanged default behavior)', () => {
+    expect(
+      deriveCupLiveness({
+        status: 'running',
+        heartbeatAtMs: NOW - RECLAIM_STALE_MS - 1,
+        lastOutputAtMs: NOW,
+        now: NOW,
+        confirmedAliveSameHost: false,
+      }),
+    ).toBe('dead');
+  });
+  it('terminal spawn status stays dead even when confirmedAliveSameHost=true (terminal status wins)', () => {
+    expect(
+      deriveCupLiveness({ status: 'failed', heartbeatAtMs: NOW, lastOutputAtMs: NOW, now: NOW, confirmedAliveSameHost: true }),
+    ).toBe('dead');
+  });
 });
 
 describe('evaluatePlacement — P-020 completion tracking', () => {

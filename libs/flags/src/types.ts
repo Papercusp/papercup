@@ -1513,6 +1513,15 @@ export const FLAGS = {
   // IS the feature). OFF ⇒ report-only everywhere — probes + notifications still run, nothing is
   // ever restarted. No `process.env.PAPERCUSP_*` gate (`lint:env-feature-gates`).
   SUPERVISOR_AUTO_RESTART: "papercusp-supervisor-auto-restart",
+  // mem0-cross-machine-federation-2026-07-10 (F1-1 mirror): gates the cross-machine federation
+  // of SHAREABLE memories (memory:remember with shareable=true). When ON, shareable memories
+  // capture to the peer-log and federate to other hives; receive-side projections apply remote
+  // memories to the local store (source-partitioned, H6 pattern mirroring agent-facts). DEFAULT
+  // OFF: memory federation affects what personal memory data leaves the machine — only the owner
+  // ratifies when/how/which memories federate. OFF ⇒ shareable flag is stored but capture/egress
+  // never triggers (the flag has no effect, byte-identical to today). Owner flips ON after
+  // reviewing the privacy implications + confirming both pot-visibility + member-admission gates.
+  MEM0_FEDERATION_EGRESS: "papercusp-mem0-federation-egress",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -1619,6 +1628,7 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
     // DARK_FLAGS + restore watermark to 22) at any time.
     [FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION, { case: 'owner-authority', reason: 'git-sync-dx-hardening-2026-06-17 P-004: DERIVED per-agent commit attribution rewrites the git-sync commit hot path — the mechanism EVERY agent in the fleet depends on to land work — grouping dirty files by declared-intent/lock-holder into per-agent commits + a Co-Authored-By trailer instead of one whole-tree `git add -A` commit. The flag\'s OWN comment has always said "DEFAULT OFF: it rewrites the commit hot path... Owner flips post-review" but was never added to DARK_FLAGS, so it derived live default-ON — confirmed no PG override exists in workspace papercusp-workspace. High fleet-wide blast radius if the per-agent grouping logic has an edge-case bug (a wedged/malformed commit stalls the WHOLE shared tree\'s sync), so it ships dark until the owner reviews the attribution logic end-to-end. OFF ⇒ git-sync reverts to today\'s single whole-tree commit, byte-identical to the documented/expected behavior. Owner flips ON after reviewing.' }],
     [FLAGS.DOC_STEWARD, { case: 'owner-authority', reason: 'docs-corpus-audit WS2 P-008 / deterministic-commit-workitem-attribution P-005: the post-git-sync doc-freshness sweep dispatches an LLM doc-steward agent to auto-edit/regenerate a drifted doc against current code, and can spawn an agent per drift. The flag\'s OWN comment has always said "DEFAULT OFF: it auto-edits the doc corpus (owner-authority surface) + spawns an agent per drift — flip ON after the owner-verified end-to-end check" but was never added to DARK_FLAGS, so it derived live default-ON — confirmed no PG override exists in workspace papercusp-workspace. Unattended auto-editing of the doc corpus + unbounded per-drift agent spawn is an owner-authority surface, so it ships dark until the owner runs the end-to-end verification its own design calls for. OFF ⇒ the freshness sweep still detects drift, but no auto-edit and no agent dispatch (today\'s actually-safe behavior). Owner flips ON after the verified check.' }],
+    [FLAGS.MEM0_FEDERATION_EGRESS, { case: 'owner-authority', reason: 'mem0-cross-machine-federation-2026-07-10 (F1-1 mirror, D-006 privacy): gates the cross-machine federation of SHAREABLE memories (memory:remember with shareable=true). When ON, capture triggers enqueue shareable=true memories to the peer-log outbox, and receive-side projections apply remote memories to the local store (source-partitioned H6 pattern mirroring agent-facts). OWNER-AUTHORITY: memory federation affects what personal memory data leaves the machine — only the owner ratifies when/how/which memories federate. The privacy gates ride the SAME pot-visibility + member-admission guards as agent-facts (private pots never leak; only admitted members receive). OFF ⇒ shareable flag has no effect — capture stays quiet and egress never happens (byte-identical to today\'s personal-only behavior). Owner flips ON after reviewing privacy implications + confirming the privacy gates are in effect.' }],
   ]);
 
 // ── The dark allowlist's HYGIENE BOUNDS (re-review deadline + size ceiling) ────
@@ -1678,7 +1688,7 @@ export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }
 // coord:send + a durable fact rather than silently appended. Owner may reverse (drop back
 // to 22) once reviewed; nothing further should raise it again without an explicit ask.
 export const DARK_FLAGS_REVIEW_BY = '2026-07-24';
-export const DARK_FLAGS_HIGH_WATERMARK = 24;
+export const DARK_FLAGS_HIGH_WATERMARK = 25; // mem0-federation-egress added 2026-07-10
 
 // FLAG_DEFAULTS — DERIVED, not hand-written (P-011 inversion). Every registered flag
 // defaults ON unless it is in DARK_FLAGS. Resolvers (server.ts getFlag / client.ts /

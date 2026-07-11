@@ -554,6 +554,28 @@ export async function runEmbedBackfillOnce(): Promise<void> {
     console.warn('[embed-backfill] doc-sections sync failed:', (err as Error).message);
   }
   await _runSweepLogged('periodic');
+
+  // Memory write-journal drain (memory-write-journal-auto-recovery P-003):
+  // replay memory writes parked during an embedder outage. Rides this tick
+  // (plan D-002 — both drains want the embedder back). An on-battery pause
+  // above only skips the SWEEP; the journal drain is small (≤25 rows/tick)
+  // and deferring recovered facts is worse than the marginal battery cost.
+  // Dynamic import keeps memory/ out of this module's static graph.
+  try {
+    const { drainMemoryWriteJournal } = await import('../memory/write-journal');
+    const r = await drainMemoryWriteJournal();
+    if (r.recovered > 0 || r.deduped > 0 || r.retriesExhausted > 0) {
+      console.log(
+        `[memory-journal] drain: recovered=${r.recovered} deduped=${r.deduped} ` +
+          `exhausted=${r.retriesExhausted} stillPending=${r.stillPending}`,
+      );
+      // P-006 surfacing — recovery nudge + live settings-page refresh.
+      const { notifyJournalRecovery } = await import('../memory/journal-surfacing');
+      await notifyJournalRecovery(r);
+    }
+  } catch (err) {
+    console.warn('[memory-journal] drain failed:', (err as Error).message);
+  }
 }
 
 // Legacy startEmbedBackfillWorker/stopEmbedBackfillWorker removed (consolidation

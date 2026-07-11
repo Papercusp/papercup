@@ -66,6 +66,14 @@ export interface StallWakerOptions {
   maxWakesPerBee?: number;
   /** Forget a pending stall entirely after this long (bound the map; the reset never came). Default 2 h. */
   pendingTtlMs?: number;
+  /** Forget an owner's wake/unwedge cooldown + attempt-count breadcrumbs (lastWokeAt/
+   *  lastUnwedgeAt/wakeCount) once it has had NO wake/unwedge activity for this long AND
+   *  is no longer pending (WI-1582, sub-item 3: these three maps were never pruned —
+   *  bee-1 stalls once, decades of ownerIds accumulate one entry each, forever). Long by
+   *  design so it never resets an ACTIVE bee's maxWakesPerBee "give up" cap mid-session —
+   *  it only reclaims memory from an owner that's been silent this long (its session is
+   *  surely over). Default 24 h. */
+  breadcrumbTtlMs?: number;
 }
 
 interface Pending {
@@ -80,6 +88,7 @@ const DEFAULTS: Required<StallWakerOptions> = {
   unwedgeCooldownMs: 45_000,
   maxWakesPerBee: 3,
   pendingTtlMs: 2 * 60 * 60_000,
+  breadcrumbTtlMs: 24 * 60 * 60_000,
 };
 
 export class StallWaker {
@@ -98,6 +107,13 @@ export class StallWaker {
   /** Observability: how many bees are currently waiting for a wake. */
   get pendingCount(): number {
     return this.pending.size;
+  }
+
+  /** Observability (WI-1582): how many DISTINCT owners currently have a wake/unwedge
+   *  breadcrumb (lastWokeAt/lastUnwedgeAt/wakeCount) tracked — the count sweepBreadcrumbs
+   *  bounds. Union across the three maps, since an owner can appear in only one or two. */
+  get breadcrumbCount(): number {
+    return new Set<string>([...this.lastWokeAt.keys(), ...this.lastUnwedgeAt.keys(), ...this.wakeCount.keys()]).size;
   }
 
   /** One pass: pull new stalls, then re-evaluate every pending bee. Never throws (each step is guarded);
@@ -234,6 +250,36 @@ export class StallWaker {
       }
     }
 
+    // WI-1582 (bg-host residual RSS growth, sub-item 3): bound the breadcrumb maps —
+    // see sweepBreadcrumbs for why this is TTL-based rather than tied to a pending-drop.
+    this.sweepBreadcrumbs(now);
+
     return { pulled, woken, dropped, unwedged };
+  }
+
+  /**
+   * Forget lastWokeAt/lastUnwedgeAt/wakeCount for any owner that (a) is NOT currently
+   * pending — sweeping a live owner would reset its maxWakesPerBee cap and wake/unwedge
+   * cooldowns mid-episode, a real behavior change, not just a memory fix — and (b) has had
+   * no wake/unwedge activity for `breadcrumbTtlMs`. Deliberately NOT tied to the moment an
+   * owner drops out of `pending`: that would reset the "give up" cap on every repeated
+   * stall episode within a session's lifetime, silently undoing maxWakesPerBee (see the
+   * "wake cap" test). Only a long-silent owner (its session is surely over) is reclaimed.
+   */
+  private sweepBreadcrumbs(now: number): void {
+    const ids = new Set<string>([
+      ...this.lastWokeAt.keys(),
+      ...this.lastUnwedgeAt.keys(),
+      ...this.wakeCount.keys(),
+    ]);
+    for (const id of ids) {
+      if (this.pending.has(id)) continue; // still active — never sweep a live owner
+      const lastTouched = Math.max(this.lastWokeAt.get(id) ?? 0, this.lastUnwedgeAt.get(id) ?? 0);
+      if (now - lastTouched > this.opt.breadcrumbTtlMs) {
+        this.lastWokeAt.delete(id);
+        this.lastUnwedgeAt.delete(id);
+        this.wakeCount.delete(id);
+      }
+    }
   }
 }

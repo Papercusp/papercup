@@ -18,7 +18,7 @@ const PEER = 'B-pubkey';
 
 // Mirrors migration 196 (minus psql directives + role grants the test DB lacks).
 const OUTBOX_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.cross_hive_outbox (
+  CREATE TABLE IF NOT EXISTS harness_shared.cross_pot_outbox (
     workspace_id text NOT NULL, pot_slug text NOT NULL, id text NOT NULL,
     from_hive_pubkey text NOT NULL, to_hive_pubkey text NOT NULL, kind text NOT NULL,
     subject text NOT NULL DEFAULT '', body text NOT NULL DEFAULT '',
@@ -26,7 +26,7 @@ const OUTBOX_DDL = `
     created_at bigint NOT NULL DEFAULT 0, attempt_count integer NOT NULL DEFAULT 0,
     last_attempt_at bigint NOT NULL DEFAULT 0,
     PRIMARY KEY (workspace_id, pot_slug, id),
-    CONSTRAINT cross_hive_outbox_kind_check CHECK (kind IN ('ask','work-request','answer','decline')))`;
+    CONSTRAINT cross_pot_outbox_kind_check CHECK (kind IN ('ask','work-request','answer','decline')))`;
 
 let db: FreshPgDb;
 
@@ -72,7 +72,7 @@ afterAll(async () => {
   await db?.cleanup();
 });
 beforeEach(async () => {
-  await db.sql`DELETE FROM harness_shared.cross_hive_outbox`;
+  await db.sql`DELETE FROM harness_shared.cross_pot_outbox`;
 });
 
 describe('drain over the real PG outbox — queued → delivered on peer return, no hot-loop', () => {

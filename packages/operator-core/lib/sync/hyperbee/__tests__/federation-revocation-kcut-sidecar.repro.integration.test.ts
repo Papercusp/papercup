@@ -337,24 +337,24 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
       const { pubkeyBase64: hivePubkeyB64 } = generateEd25519KeypairDer();
 
       await orgDb.adminSql`
-        INSERT INTO harness_shared.hives
-          (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+        INSERT INTO harness_shared.pots
+          (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, decode(${hivePubkeyB64}, 'base64'),
                 'kc-kcut-home', 'KCut Owner Home', null, 1, 1)
       `;
       // The owner's content-origin DB also needs the hives row: advanceHiveEpoch →
       // setHiveSetting refuses to write a setting for a Hive that doesn't exist in the DB it
-      // writes to (the epoch lives in hive_settings, scoped to a real hive).
+      // writes to (the epoch lives in pot_settings, scoped to a real hive).
       await dbOwner.adminSql`
-        INSERT INTO harness_shared.hives
-          (workspace_id, home_slug, public_key, keychain_id, title, description, created_at, updated_at)
+        INSERT INTO harness_shared.pots
+          (workspace_id, pot_home_slug, public_key, keychain_id, title, description, created_at, updated_at)
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, decode(${hivePubkeyB64}, 'base64'),
                 'kc-kcut-home', 'KCut Owner Home', null, 1, 1)
       `;
-      // hive_directory_cache: the VERIFIED owner binding (hivePubkey → ownerDevicePubkey) —
+      // pot_directory_cache: the VERIFIED owner binding (hivePubkey → ownerDevicePubkey) —
       // the SOLE source D-053's loadHiveOwnerDevicePubkey reads for the bootstrap admit.
       await orgDb.adminSql`
-        INSERT INTO harness_shared.hive_directory_cache (workspace_id, payload, updated_at)
+        INSERT INTO harness_shared.pot_directory_cache (workspace_id, payload, updated_at)
         VALUES (${WORKSPACE_ID}, ${JSON.stringify({
           hives: [{ hivePubkey: hivePubkeyB64, ownerDevicePubkey: idOwner.devicePubkey }],
         })}::text::jsonb, 1)
@@ -530,7 +530,7 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
       if (!epoch0) {
         const { listBootHistory } = await import('../boot-history');
         const admittedOwner = bPeer.handle.admitted.has(owner.handle.ownLog.keyHex);
-        const anyKeys = await orgDb.adminSql`SELECT epoch, member_device_pubkey FROM harness_shared.hive_epoch_keys WHERE workspace_id = ${WORKSPACE_ID}`;
+        const anyKeys = await orgDb.adminSql`SELECT epoch, member_device_pubkey FROM harness_shared.pot_epoch_keys WHERE workspace_id = ${WORKSPACE_ID}`;
         const anyPlans = await orgDb.adminSql`SELECT plan_slug, origin FROM harness_shared.harness_plans WHERE workspace_id = ${WORKSPACE_ID}`;
         const ownerOps = await readOwnLogOps(owner.handle);
          
@@ -563,7 +563,7 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
           resolveCrypto: async () => crypto,
           resolveAuthorPubkey: async () => idOwner.devicePubkey,
           // remaining = all members − cut(B) = {owner}; explicit so the boundary needs no
-          // hive_members read (the cut is who gets wrapped, not a roster lookup).
+          // pot_members read (the cut is who gets wrapped, not a roster lookup).
           loadAllMemberPubkeys: async () => [idOwner.devicePubkey, idB.devicePubkey],
         },
       );
@@ -573,11 +573,11 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
 
       // Structural forever-cut at the source: owner has the epoch-1 key row, B never will.
       const ownerHasKey1 = await dbOwner.adminSql<Array<{ n: number }>>`
-        SELECT COUNT(*)::int AS n FROM harness_shared.hive_epoch_keys
+        SELECT COUNT(*)::int AS n FROM harness_shared.pot_epoch_keys
          WHERE workspace_id = ${WORKSPACE_ID} AND harness_slug = ${HIVE_HOME}
            AND epoch = 1 AND member_device_pubkey = ${idOwner.devicePubkey}`;
       const dbOwnerHasBKey1 = await dbOwner.adminSql<Array<{ n: number }>>`
-        SELECT COUNT(*)::int AS n FROM harness_shared.hive_epoch_keys
+        SELECT COUNT(*)::int AS n FROM harness_shared.pot_epoch_keys
          WHERE workspace_id = ${WORKSPACE_ID} AND harness_slug = ${HIVE_HOME}
            AND epoch = 1 AND member_device_pubkey = ${idB.devicePubkey}`;
       expect(Number(ownerHasKey1[0]?.n ?? 0), 'owner minted its own epoch-1 key row').toBe(1);
@@ -661,7 +661,7 @@ async function readPlanOnB(orgDb: OrgTestDb, planSlug: string) {
 
 async function hasKeyRowOnB(orgDb: OrgTestDb, epoch: number, memberDevicePubkey: string): Promise<boolean> {
   const rows = await orgDb.adminSql<Array<{ n: number }>>`
-    SELECT COUNT(*)::int AS n FROM harness_shared.hive_epoch_keys
+    SELECT COUNT(*)::int AS n FROM harness_shared.pot_epoch_keys
      WHERE workspace_id = ${WORKSPACE_ID} AND harness_slug = ${HIVE_HOME}
        AND epoch = ${epoch} AND member_device_pubkey = ${memberDevicePubkey}
   `;

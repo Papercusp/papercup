@@ -173,13 +173,16 @@ export const PRESENCE_LIVENESS_FIELDS = [
 ] as const satisfies readonly (keyof RosterRow)[];
 
 /**
- * Raw per-row timestamps deliberately DROPPED from the emitted payload (they
- * churn every read and would break byte-stability). Listed so the coverage
- * guard treats them as intentionally unclassified, not an oversight.
+ * Fields deliberately DROPPED from the emitted roster payload. Listed so the
+ * coverage guard treats them as intentionally unclassified, not an oversight.
+ * heartbeatAt/lastActiveAt churn every read and would break byte-stability;
+ * capabilityTags (WI-1546) is a DG-3 shard-scheduling detail — irrelevant to
+ * a coord:presence roster viewer and not worth its bytes on the lean row.
  */
 export const PRESENCE_DROPPED_FIELDS = [
   'heartbeatAt',
   'lastActiveAt',
+  'capabilityTags',
 ] as const satisfies readonly (keyof RosterRow)[];
 
 /** The delta-eligible field set (D-005 lane 1) = IDENTITY ∪ STATE. A change in
