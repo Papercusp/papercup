@@ -10,11 +10,12 @@ const { commands } = vi.hoisted(() => ({
     appVersion: vi.fn(),
     checkForUpdate: vi.fn(),
     installUpdate: vi.fn(),
+    revertTo: vi.fn(),
   },
 }));
 vi.mock('./tauri-bindings', () => ({ commands }));
 
-import { isDesktop, appVersion, checkForUpdate, installUpdate } from './version-tauri';
+import { isDesktop, appVersion, checkForUpdate, installUpdate, revertTo } from './version-tauri';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -29,7 +30,9 @@ describe('web mode (no Tauri internals)', () => {
     expect(await appVersion()).toBeNull();
     expect(await checkForUpdate()).toBeNull();
     await expect(installUpdate()).rejects.toThrow(/not in desktop mode/);
+    await expect(revertTo('desktop-v1.0.0')).rejects.toThrow(/not in desktop mode/);
     expect(commands.appVersion).not.toHaveBeenCalled();
+    expect(commands.revertTo).not.toHaveBeenCalled();
   });
 });
 
@@ -59,5 +62,14 @@ describe('desktop mode', () => {
     await expect(installUpdate()).resolves.toBeUndefined();
     commands.installUpdate.mockResolvedValue({ status: 'error', error: 'patch failed' });
     await expect(installUpdate()).rejects.toThrow('patch failed');
+  });
+
+  it('revertTo passes the tag through and unwraps the envelope', async () => {
+    enterDesktop();
+    commands.revertTo.mockResolvedValue({ status: 'ok' });
+    await expect(revertTo('desktop-v1.0.0')).resolves.toBeUndefined();
+    expect(commands.revertTo).toHaveBeenCalledWith('desktop-v1.0.0');
+    commands.revertTo.mockResolvedValue({ status: 'error', error: 'unknown_tag' });
+    await expect(revertTo('desktop-v9.9.9')).rejects.toThrow('unknown_tag');
   });
 });

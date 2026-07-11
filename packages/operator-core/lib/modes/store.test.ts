@@ -98,6 +98,20 @@ describe('mode registry', () => {
     const idx = modeIndexMarkdown();
     for (const m of MODES) expect(idx).toContain(`**${m.id}**`);
   });
+
+  it('P-014 (su-ideate-learning-substrate): IDEATE contract splices the su closed-loop ritual; GRADE notes the originator-wake', () => {
+    const ideate = modeById('ideate')!.contract;
+    // The su learning ritual: ground → file lens-tagged → route broad → close with a ledgered tick.
+    expect(ideate).toContain('blender:ideation-feedback');
+    expect(ideate).toContain('blender:route-idea');
+    expect(ideate).toContain('blender:ideate-pass-record');
+    const grade = modeById('grade')!.contract;
+    expect(grade).toContain('blender:grade-idea');
+    expect(grade).toMatch(/WAKES its\s+originator/);
+    // one-liners stay stable (P-014: the always-present index is untouched).
+    expect(modeById('ideate')!.oneLiner).not.toContain('\n');
+    expect(modeById('grade')!.oneLiner).not.toContain('\n');
+  });
 });
 
 describe('setMode semantics', () => {

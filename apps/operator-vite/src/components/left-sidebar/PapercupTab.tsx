@@ -13,9 +13,8 @@
  *
  * Read/write wiring (mirrors apps/operator/app/settings/user/page.tsx — the Next
  * page that already shows BOTH layers for these prefs):
- *  - workspace DEFAULT ← GET /api/agent-mcp/operator-voice-prefs?layer=workspace
- *    (loadWorkspaceVoicePrefs, no user merge).
- *  - per-user OVERRIDE ← GET /api/user/preferences → { payload }.
+ *  - workspace DEFAULT ← `voicePrefs.workspace` shared sync query.
+ *  - per-user OVERRIDE ← `userPreferences.current` shared sync query.
  *  - write override     → PATCH /api/user/preferences { [key]: value }.
  *  - clear override     → DELETE /api/user/preferences?key=<key> (the reset ↺).
  *
@@ -28,6 +27,7 @@
  *  - Do-not-disturb / pause (silenceVoice — when on, hushes the Sentinel).
  */
 import { useCallback, useEffect, useState } from 'react';
+import { useSyncQuery } from '@papercusp/sync';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { useNavigate } from '@tanstack/react-router';
 import { Megaphone, RotateCcw, Settings2 } from 'lucide-react';
@@ -56,23 +56,6 @@ const FALLBACK_WORKSPACE = {
 } as const;
 
 type PrefBag = Record<string, unknown>;
-
-/** Read BOTH layers the way the Next /settings/user page does: workspace-only
- *  defaults (?layer=workspace, no user merge) + the per-user override payload. */
-async function loadLayers(): Promise<{ workspace: PrefBag; user: PrefBag }> {
-  const [workspaceJson, prefsJson] = await Promise.all([
-    fetch('/api/agent-mcp/operator-voice-prefs?layer=workspace')
-      .then((r) => (r.ok ? r.json() : null))
-      .catch(() => null),
-    fetch('/api/user/preferences')
-      .then((r) => (r.ok ? r.json() : { payload: {} }))
-      .catch(() => ({ payload: {} })),
-  ]);
-  return {
-    workspace: (workspaceJson as PrefBag) ?? {},
-    user: ((prefsJson as { payload?: PrefBag })?.payload ?? {}) as PrefBag,
-  };
-}
 
 /** Write one per-user override (PATCH /api/user/preferences). Throws on failure. */
 async function writeOverride(key: string, value: unknown): Promise<void> {
@@ -110,26 +93,37 @@ export default function PapercupTab({ active }: { active: boolean }) {
   const navigate = useNavigate();
   const [workspace, setWorkspace] = useState<PrefBag>({ ...FALLBACK_WORKSPACE });
   const [user, setUser] = useState<PrefBag>({});
-  const [loaded, setLoaded] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const workspaceSync = useSyncQuery<PrefBag>({
+    queryName: 'voicePrefs.workspace',
+    enabled: active,
+    staleTime: 30_000,
+  });
+  const userSync = useSyncQuery<{ payload: PrefBag }>({
+    queryName: 'userPreferences.current',
+    enabled: active,
+    staleTime: 30_000,
+  });
+  const loaded = active && !workspaceSync.loading && !userSync.loading;
 
-  const refresh = useCallback(async () => {
-    try {
-      const layers = await loadLayers();
-      setWorkspace({ ...FALLBACK_WORKSPACE, ...layers.workspace });
-      setUser(layers.user);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoaded(true);
-    }
-  }, []);
-
-  // Only read when the tab is actually open (mirrors the {active}-gated panels).
   useEffect(() => {
-    if (active) void refresh();
-  }, [active, refresh]);
+    if (!active) return;
+    setWorkspace({ ...FALLBACK_WORKSPACE, ...(workspaceSync.data?.[0] ?? {}) });
+  }, [active, workspaceSync.data]);
+  useEffect(() => {
+    if (!active) return;
+    setUser(userSync.data?.[0]?.payload ?? {});
+  }, [active, userSync.data]);
+  useEffect(() => {
+    const syncError = workspaceSync.error ?? userSync.error;
+    if (syncError) setErr(syncError instanceof Error ? syncError.message : String(syncError));
+  }, [userSync.error, workspaceSync.error]);
+
+  const refresh = useCallback(() => {
+    workspaceSync.invalidate();
+    userSync.invalidate();
+  }, [userSync, workspaceSync]);
 
   const setOverride = useCallback(async (key: string, value: unknown) => {
     setBusyKey(key);
@@ -138,6 +132,7 @@ export default function PapercupTab({ active }: { active: boolean }) {
     setUser((u) => ({ ...u, [key]: value }));
     try {
       await writeOverride(key, value);
+      refresh();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
       void refresh();
@@ -156,6 +151,7 @@ export default function PapercupTab({ active }: { active: boolean }) {
     });
     try {
       await clearOverride(key);
+      refresh();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
       void refresh();

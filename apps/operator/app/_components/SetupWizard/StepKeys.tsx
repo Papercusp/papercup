@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useSyncQuery } from '@papercusp/sync';
 import RouteLink from '../RouteLink';
 import { useLexicon } from '@/lib/useLexicon';
 
@@ -19,13 +20,18 @@ const MEMORY_OPTIONS: { value: MemMode; label: string; tradeoff: string }[] = [
 
 export function StepKeys() {
   const t = useLexicon();
-  const [loaded, setLoaded] = useState(false);
+  const [credentialsLoaded, setCredentialsLoaded] = useState(false);
   const [openaiMasked, setOpenaiMasked] = useState<string | null>(null);
   const [openaiInput, setOpenaiInput] = useState('');
   const [savingOpenai, setSavingOpenai] = useState(false);
   const [openaiSaved, setOpenaiSaved] = useState<'idle' | 'saved' | 'error'>('idle');
   const [memMode, setMemMode] = useState<MemMode>('harrier');
   const [memSaving, setMemSaving] = useState(false);
+  const voicePrefsSync = useSyncQuery<{ memoryEmbedderMode?: string }>({
+    queryName: 'voicePrefs.effective',
+    staleTime: 30_000,
+  });
+  const loaded = credentialsLoaded && !voicePrefsSync.loading;
 
   useEffect(() => {
     void (async () => {
@@ -35,29 +41,30 @@ export function StepKeys() {
           const j = (await credsRes.json()) as { openai_api_key?: string | null };
           setOpenaiMasked(j.openai_api_key ?? null);
         }
-        // Current memory system (defaults to harrier if never set). Tolerant of
-        // either a bare prefs object or a { prefs } envelope.
-        const prefsRes = await fetch('/api/agent-mcp/operator-voice-prefs', { cache: 'no-store' });
-        if (prefsRes.ok) {
-          const body = (await prefsRes.json()) as { memoryEmbedderMode?: string; prefs?: { memoryEmbedderMode?: string } };
-          const mode = body.memoryEmbedderMode ?? body.prefs?.memoryEmbedderMode;
-          if (mode === 'gemma' || mode === 'harrier' || mode === 'local' || mode === 'openai' || mode === 'disabled') setMemMode(mode);
-        }
       } finally {
-        setLoaded(true);
+        setCredentialsLoaded(true);
       }
     })();
   }, []);
+
+  useEffect(() => {
+    const mode = voicePrefsSync.data?.[0]?.memoryEmbedderMode;
+    if (mode === 'gemma' || mode === 'harrier' || mode === 'local' || mode === 'openai' || mode === 'disabled') {
+      setMemMode(mode);
+    }
+  }, [voicePrefsSync.data]);
 
   const saveMemMode = async (mode: MemMode) => {
     setMemMode(mode);
     setMemSaving(true);
     try {
-      await fetch('/api/agent-mcp/operator-voice-prefs', {
+      const response = await fetch('/api/agent-mcp/operator-voice-prefs', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ memoryEmbedderMode: mode }),
       });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      voicePrefsSync.invalidate();
     } catch {
       /* best-effort — also settable at Settings → Memory */
     } finally {

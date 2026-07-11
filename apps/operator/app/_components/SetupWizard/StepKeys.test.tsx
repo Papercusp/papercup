@@ -8,6 +8,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
+const syncFixture = vi.hoisted(() => ({
+  rows: [{ memoryEmbedderMode: 'harrier' }],
+  invalidate: vi.fn(),
+}));
+
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: () => ({
+    data: syncFixture.rows,
+    loading: false,
+    error: null,
+    invalidate: syncFixture.invalidate,
+  }),
+}));
+
 vi.mock('@/lib/useLexicon', () => ({
   useLexicon: () => (key: string, opts?: { plural?: boolean; lower?: boolean }) => {
     const base = key === 'pot' ? (opts?.plural ? 'Pots' : 'Pot') : key;

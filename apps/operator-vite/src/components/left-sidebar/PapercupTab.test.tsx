@@ -3,8 +3,8 @@
  * PapercupTab.test (left sidebar) — the Sentinel settings panel. Mirrors
  * OverwatchTab.test's idiom but for the
  * two-layer voice-prefs wiring PapercupTab loads on open:
- *   - workspace DEFAULT ← GET /api/agent-mcp/operator-voice-prefs?layer=workspace
- *   - per-user OVERRIDE ← GET /api/user/preferences → { payload }
+ *   - workspace DEFAULT ← `voicePrefs.workspace` shared sync query
+ *   - per-user OVERRIDE ← `userPreferences.current` shared sync query
  *   - write override     → PATCH /api/user/preferences { [key]: value }
  *   - clear override     → DELETE /api/user/preferences?key=<key>  (the reset ↺)
  *
@@ -17,6 +17,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 import { effectiveFor, keyOverridden } from './PapercupTab';
+
+const syncFixtures = vi.hoisted(() => ({
+  workspaceRows: [{}] as Array<Record<string, unknown>>,
+  userRows: [{ payload: {} as Record<string, unknown> }],
+  invalidate: vi.fn(),
+}));
+
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: ({ queryName, enabled = true }: { queryName: string; enabled?: boolean }) => ({
+    data: !enabled
+      ? undefined
+      : queryName === 'voicePrefs.workspace'
+        ? syncFixtures.workspaceRows
+        : syncFixtures.userRows,
+    loading: false,
+    error: null,
+    invalidate: syncFixtures.invalidate,
+  }),
+}));
 
 // PapercupTab pulls in @tanstack/react-router's useNavigate — stub it so the panel
 // renders without a router context (we only assert the badge/reset behaviour).
@@ -32,17 +51,12 @@ import PapercupTab from './PapercupTab';
 /** A fetch double that routes by URL+method, mirroring the real endpoints. The
  *  PATCH/DELETE handlers record their calls so the tests can assert the writes. */
 function makeFetch(opts: {
-  workspace?: Record<string, unknown> | null;
-  user?: Record<string, unknown>;
   patches?: Array<{ url: string; body: unknown }>;
   deletes?: string[];
 }) {
-  const { workspace = {}, user = {}, patches = [], deletes = [] } = opts;
+  const { patches = [], deletes = [] } = opts;
   return vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
     const method = init?.method ?? 'GET';
-    if (url.startsWith('/api/agent-mcp/operator-voice-prefs')) {
-      return { ok: true, json: async () => workspace };
-    }
     if (url.startsWith('/api/user/preferences')) {
       if (method === 'PATCH') {
         patches.push({ url, body: init?.body ? JSON.parse(init.body) : null });
@@ -52,7 +66,6 @@ function makeFetch(opts: {
         deletes.push(url);
         return { ok: true, json: async () => ({ ok: true }) };
       }
-      return { ok: true, json: async () => ({ payload: user }) };
     }
     return { ok: true, json: async () => ({}) };
   });
@@ -61,6 +74,12 @@ function makeFetch(opts: {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+});
+
+beforeEach(() => {
+  syncFixtures.workspaceRows = [{}];
+  syncFixtures.userRows = [{ payload: {} }];
+  syncFixtures.invalidate.mockClear();
 });
 
 describe('PapercupTab pure layer helpers', () => {
@@ -82,7 +101,7 @@ describe('PapercupTab pure layer helpers', () => {
 
 describe('PapercupTab rendering', () => {
   it('renders the settings rows once the layers load', async () => {
-    vi.stubGlobal('fetch', makeFetch({ workspace: {}, user: {} }));
+    vi.stubGlobal('fetch', makeFetch({}));
     render(<PapercupTab active />);
     await waitFor(() => expect(screen.getByText('Audience mode')).toBeTruthy());
     // "Voice" is both the section title and the speakSuggestions row label.
@@ -104,13 +123,9 @@ describe('PapercupTab rendering', () => {
   it('shows the "override" badge for a key whose user value differs from the workspace default, and "default" for one that matches', async () => {
     // workspace: speakSuggestions=true; user overrides it to false (a real override).
     // proactiveTicksEnabled: user matches the workspace default ⇒ NOT an override.
-    vi.stubGlobal(
-      'fetch',
-      makeFetch({
-        workspace: { speakSuggestions: true, proactiveTicksEnabled: true },
-        user: { speakSuggestions: false, proactiveTicksEnabled: true },
-      }),
-    );
+    syncFixtures.workspaceRows = [{ speakSuggestions: true, proactiveTicksEnabled: true }];
+    syncFixtures.userRows = [{ payload: { speakSuggestions: false, proactiveTicksEnabled: true } }];
+    vi.stubGlobal('fetch', makeFetch({}));
     render(<PapercupTab active />);
     await waitFor(() => expect(screen.getByText('Proactive nudges')).toBeTruthy());
 
@@ -125,14 +140,9 @@ describe('PapercupTab rendering', () => {
 
   it('clicking the reset ↺ on an overridden setting issues the DELETE clear for that key', async () => {
     const deletes: string[] = [];
-    vi.stubGlobal(
-      'fetch',
-      makeFetch({
-        workspace: { speakSuggestions: true },
-        user: { speakSuggestions: false },
-        deletes,
-      }),
-    );
+    syncFixtures.workspaceRows = [{ speakSuggestions: true }];
+    syncFixtures.userRows = [{ payload: { speakSuggestions: false } }];
+    vi.stubGlobal('fetch', makeFetch({ deletes }));
     render(<PapercupTab active />);
     await waitFor(() => expect(screen.getAllByText('Voice').length).toBeGreaterThan(0));
 
@@ -143,7 +153,8 @@ describe('PapercupTab rendering', () => {
 
   it('a segmented audience click PATCHes the per-user override', async () => {
     const patches: Array<{ url: string; body: unknown }> = [];
-    vi.stubGlobal('fetch', makeFetch({ workspace: { audienceMode: 'engineer' }, user: {}, patches }));
+    syncFixtures.workspaceRows = [{ audienceMode: 'engineer' }];
+    vi.stubGlobal('fetch', makeFetch({ patches }));
     render(<PapercupTab active />);
     await waitFor(() => expect(screen.getByText('Audience mode')).toBeTruthy());
 

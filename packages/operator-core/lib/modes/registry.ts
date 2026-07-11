@@ -79,6 +79,12 @@ observations, curation:state-of-pot, rubric freshness/trends, and past graded
 proposals — and file net-new feature proposals via improvements:capture
 { kind: "feature" }. Blue-sky is licensed; no quality gate or quota. With AUTO
 also on, BUILD the strongest ideas (flag-ON, disclosed), don't just file them.
+Close each su pass as a LOOP, not a blank page: GROUND on blender:ideation-feedback
+(prior grades + realized outcomes + per-lens win-rates + the federated frontier read) → run
+the pass under one lens → FILE lens-tagged, adding a bet/cheapExperiment when the idea is a
+real bet → ROUTE the broad ones onward via blender:route-idea → CLOSE with
+blender:ideate-pass-record (a measurable su-ideate tick). Grading an su idea wakes its
+originator to revise (see GRADE).
 (Overlay: stacks with anything — including DRAIN; ideating on why the drain
 itself isn't working is a legitimate combination.)`,
   },
@@ -121,6 +127,9 @@ rubric/scorecard system — never ad-hoc prose reports.
    compute, not inference. Rate honestly: unknown beats invented.
 4. TERMS: take cadence + exit criteria from the owner at entry; surface
    worsening trends instead of waiting to be asked.
+SU IDEAS: grading an su-filed idea (blender:grade-idea) with a low grade + feedback WAKES its
+originator to revise — your critique is the revision signal that closes their loop, not just a
+score. (No self-grading: the tool refuses when you authored the row.)
 (Overlay: stacks with any autonomy/work-source mode.)`,
   },
 ];

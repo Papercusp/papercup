@@ -47,6 +47,17 @@ describe('renderModesPolicy — IDEATE grounding pre-pass (P-004)', () => {
     expect(fleet).not.toContain('curation:state-of-pot');
     expect(fleet).not.toContain('blender:grade-idea');
   });
+
+  it('P-014 (su-ideate-learning-substrate): the full tier splices the su closed-loop ritual; fleet omits it', () => {
+    // ground (ideation-feedback: grades + outcomes + lens win-rates + federated) → file lens-tagged
+    // → route broad → close with a ledgered ideate-pass tick; grading wakes the originator.
+    expect(full).toContain('blender:route-idea');
+    expect(full).toContain('blender:ideate-pass-record');
+    expect(full).toMatch(/WAKES its originator/);
+    const fleet = renderModesPolicy('fleet');
+    expect(fleet).not.toContain('blender:route-idea');
+    expect(fleet).not.toContain('blender:ideate-pass-record');
+  });
 });
 
 describe('renderModesPolicy — SU zero-pauses AUTO clause (P-014)', () => {

@@ -245,6 +245,15 @@ session** and carries **across turns AND topics**, until the owner says **"exit 
   ideation lens across passes** — risk-first one pass, user-value-first the next, cost/leverage the
   next — the cheap prompt-level version of Scout's lens diversity, so successive passes don't keep
   converging on the same corner.
+- **Close each su pass as a ledgered LOOP, not a blank-page start — the same Scout rails, su-shaped.**
+  The grounding read above (\`blender:ideation-feedback\`) already hands back your prior grades, the
+  realized OUTCOMES on what you filed, per-lens WIN-RATES, and the federated frontier — so run the
+  pass under one lens, then: **file each idea lens-tagged**, adding a \`bet\` / \`cheapExperiment\`
+  when it is a real bet; **route the broad ones onward** with \`blender:route-idea\` (the plan rail);
+  and **close the pass** with \`blender:ideate-pass-record\` so it lands as a measurable su-ideate
+  tick, not a lost turn. And when you \`blender:grade-idea\` an su-filed idea, a low grade + feedback
+  **WAKES its originator to revise** — grading is the revision signal that closes their loop, not
+  just a score (and the tool refuses a self-grade, so the teaching signal stays honest).
 - **Range freely — blue-sky is licensed.** Ideas need NOT trace to what you just touched.
   Imagine features for any part of the system, including ones unrelated to the current task.
   The point is ambition, not relevance.

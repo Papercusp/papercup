@@ -15,12 +15,14 @@ const isDesktop = vi.fn(() => true);
 const appVersion = vi.fn(async () => '1.2.3');
 const checkForUpdate = vi.fn(async () => null as null | Record<string, unknown>);
 const installUpdate = vi.fn(async () => {});
+const revertTo = vi.fn(async (_tag: string) => {});
 
 vi.mock('@papercusp/operator-core/lib/version-tauri', () => ({
   isDesktop: () => isDesktop(),
   appVersion: () => appVersion(),
   checkForUpdate: () => checkForUpdate(),
   installUpdate: () => installUpdate(),
+  revertTo: (tag: string) => revertTo(tag),
 }));
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
@@ -52,6 +54,8 @@ beforeEach(() => {
   checkForUpdate.mockResolvedValue(null);
   installUpdate.mockClear();
   installUpdate.mockResolvedValue(undefined);
+  revertTo.mockClear();
+  revertTo.mockResolvedValue(undefined);
   checkForUpdate.mockClear();
   offlineState = false;
   confirmResult = true;
@@ -243,14 +247,35 @@ describe('UpdateChip — Update Center panel', () => {
     expect(patchCall).toBeTruthy();
   });
 
-  it('Revert confirms then reports rollback is not wired yet — never installs', async () => {
+  it('Revert confirms then calls revert_to with the row\'s full git tag — never installs (P-4)', async () => {
+    await openPanel();
+    await screen.findByText('v2.0.0-alpha');
+    // First Revert button targets the first non-current installable release.
+    fireEvent.click(screen.getAllByRole('button', { name: 'Revert' })[0]);
+    await waitFor(() => expect(confirmFn).toHaveBeenCalled());
+    await waitFor(() => expect(revertTo).toHaveBeenCalledTimes(1));
+    // The full git tag is what the rollback endpoint resolves, not the display version.
+    expect(revertTo).toHaveBeenCalledWith('desktop-v2.0.0-alpha');
+    expect(installUpdate).not.toHaveBeenCalled();
+  });
+
+  it('declining the Revert confirm never calls revert_to', async () => {
+    confirmResult = false;
     await openPanel();
     await screen.findByText('v2.0.0-alpha');
     fireEvent.click(screen.getAllByRole('button', { name: 'Revert' })[0]);
     await waitFor(() => expect(confirmFn).toHaveBeenCalled());
+    expect(revertTo).not.toHaveBeenCalled();
+  });
+
+  it('a failed revert surfaces an error toast and re-enables the button', async () => {
+    revertTo.mockRejectedValueOnce(new Error('fetch_failed'));
+    await openPanel();
+    await screen.findByText('v2.0.0-alpha');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Revert' })[0]);
+    await waitFor(() => expect(revertTo).toHaveBeenCalled());
     await waitFor(() =>
-      expect(vi.mocked(toast.info)).toHaveBeenCalledWith(expect.stringMatching(/isn.t available yet/)),
+      expect(vi.mocked(toast.error)).toHaveBeenCalledWith(expect.stringMatching(/failed: fetch_failed/)),
     );
-    expect(installUpdate).not.toHaveBeenCalled();
   });
 });
