@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { useQueryState, parseAsBoolean } from 'nuqs';
 import { Activity, X } from 'lucide-react';
-import { OperatorActionLog, prefetchRecentActions } from './OperatorActionLog';
+import { OperatorActionLog } from './OperatorActionLog';
 import { Popover } from '../harness/Popover';
 
 /**
@@ -55,16 +55,9 @@ export function RecentActionsCenter() {
   useEffect(() => {
     const next = readActiveSlug();
     setSlug(next);
-    // Prime the cache immediately on chrome mount so the first popover
-    // open paints instantly from cache instead of waiting for the
-    // live-sync transport (POLLING/WS) to establish — that path can
-    // take several seconds on a cold load. REST endpoint is ~50 ms and
-    // can race the rest of init without blocking anything visible.
-    if (next) void prefetchRecentActions(next);
     const onPop = () => {
       const fresh = readActiveSlug();
       setSlug(fresh);
-      if (fresh) void prefetchRecentActions(fresh);
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
@@ -73,10 +66,6 @@ export function RecentActionsCenter() {
     if (open) {
       const fresh = readActiveSlug();
       setSlug(fresh);
-      // Refresh on each open so the cache is at most one click old.
-      // Cache is still served immediately from inside OperatorActionLog;
-      // this just kicks off a background refetch.
-      if (fresh) void prefetchRecentActions(fresh);
     }
   }, [open]);
 

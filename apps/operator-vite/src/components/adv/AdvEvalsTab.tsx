@@ -1524,16 +1524,12 @@ function PreservedRunsView() {
   const detail = detailSync.data?.[0] ?? null;
   const detailErr = detailSync.error ? String(detailSync.error) : null;
 
-  // Live fleet state — polled while the selected run is active (the spawned_agents
-  // / agent_usage_samples tables aren't SSE-bridged). A completed run returns the
-  // not-live shape, so polling stops.
-  const selRun = runs.find((r) => r.id === selId);
-  const isActive = Boolean(selRun && ['pending', 'running', 'grading'].includes(selRun.status));
+  // Live fleet state. Spawn/sample writes are bridged onto the sync bus, so
+  // active runs update by push instead of a fixed four-second refetch loop.
   const liveSync = useSyncQuery<BenchRunLive>({
     queryName: 'evals.benchRunLive',
     args: { runId: selId ?? '' },
     enabled: Boolean(selId),
-    pollIntervalMs: isActive ? 4000 : undefined,
   });
   const live = liveSync.data?.[0] ?? null;
 

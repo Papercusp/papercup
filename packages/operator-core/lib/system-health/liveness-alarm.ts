@@ -82,7 +82,7 @@ const RUBRIC_EMISSION_DARK_GRACE_MS = 6 * 60 * 60_000;
 export function evaluateLivenessAlarm(
   health: SystemHealth,
   snapshotAgeMs: number | null,
-  opts: { snapshotStaleMs?: number } = {},
+  opts: { snapshotStaleMs?: number; prevPostmasterStartMs?: number | null } = {},
 ): AlarmSignal[] {
   const staleMs = opts.snapshotStaleMs ?? DEFAULT_SNAPSHOT_STALE_MS;
   // EI-1695: a stale snapshot means the bg routine engine is frozen — the SAME
@@ -190,6 +190,38 @@ export function evaluateLivenessAlarm(
     });
   }
 
+  // 5b. PG RESTART (P-008, mcp-reliability-hardening). The postmaster boot time
+  //     (infra panel) DRIFTED since the previous tick → Postgres was restarted, so
+  //     every backend connection + prepared statement was dropped fleet-wide. This
+  //     was a SILENT class: the 2026-07-10 21:04 EDT restart (an agent's
+  //     `sudo apt-get install postgresql-server-dev-18 bison flex` triggered the
+  //     postgresql-common maintainer scripts to restart the live cluster) went
+  //     undetected until downstream errors surfaced. Fires only when a PRIOR
+  //     baseline exists (prev != null — the first observation just seeds it, never
+  //     alarms) and the current reading is present (cur != null — an unreadable PG
+  //     tick is the pg panel's own concern, not a false "restart"). Transient by
+  //     design: the tick updates its baseline to the new value, so this fires once
+  //     then auto-resolves next tick — a "PG just restarted, connections blipped"
+  //     page, not a stuck condition.
+  const curPostmasterStartMs = health.panels.infra?.data?.pg?.postmasterStartMs ?? null;
+  const prevPostmasterStartMs = opts.prevPostmasterStartMs ?? null;
+  if (
+    prevPostmasterStartMs !== null &&
+    curPostmasterStartMs !== null &&
+    curPostmasterStartMs !== prevPostmasterStartMs
+  ) {
+    const at = new Date(curPostmasterStartMs).toISOString();
+    signals.push({
+      key: 'pg-restarted',
+      severity: 'blocker',
+      summary:
+        `Postgres RESTARTED (postmaster start-time drifted to ${at}) — every backend connection + prepared ` +
+        `statement was dropped; agents may have hit transient DB errors. If UNPLANNED, root-cause it (a ` +
+        `\`sudo apt-get install postgresql-*\` / cluster op restarts the live server — do package work off-hours ` +
+        `or against embedded-pg, never the shared :5432).`,
+    });
+  }
+
   // 6. Catch-all: any OTHER panel self-reporting `crit` (so a new critical signal
   //    is never silently missed). Sharper-keyed panels above are skipped.
   //    NOTE: the panel KEY for the Queen/Mug card is the STABLE identifier
@@ -278,6 +310,13 @@ export function livenessSignatureOf(rec: EscalationRecord): string | null {
 
 const lastAlertedAt = new Map<string, number>();
 
+/** P-008: the per-workspace baseline for the PG postmaster boot time (epoch ms).
+ *  A change between ticks = a PG restart → the `pg-restarted` signal. In-memory +
+ *  per-worker like `lastAlertedAt`; the durable openBySig dedup collapses the
+ *  cross-worker fire into one escalation, and a fresh process re-seeds (prev=null)
+ *  so a restart never false-fires on the first tick after a :3070 restart. */
+const lastPostmasterStartMs = new Map<string, number>();
+
 export interface AlarmDeps {
   computeHealth?: (ws: string) => Promise<SystemHealth>;
   readLast?: (ws: string) => SystemHealth | null;
@@ -303,6 +342,12 @@ export interface AlarmDeps {
   /** WI-4023: the fleet all-clear for recovered `blocker` signatures (default: real
    *  broadcastSevereEventResolvedMany). Inject a no-op in tests for the same reason. */
   pageResolved?: (sigs: string[]) => Promise<void>;
+  /** P-008: read/write the per-workspace PG postmaster-start baseline (epoch ms) the
+   *  `pg-restarted` drift signal compares against. Default = the module-level map;
+   *  tests inject a controlled store to exercise the seed→drift→auto-resolve sequence
+   *  hermetically. */
+  readPostmasterBaseline?: (ws: string) => number | null;
+  writePostmasterBaseline?: (ws: string, ms: number) => void;
 }
 
 async function defaultPage(s: AlarmSignal, ws: string): Promise<void> {

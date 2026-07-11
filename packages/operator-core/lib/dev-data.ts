@@ -1015,6 +1015,10 @@ export interface PgHealth {
   /** Top connection holders by `application_name`, server-wide — the attribution
    *  the 2026-06-17 exhaustion incident lacked. `(unset)` = an untagged pool. */
   byApplication: { name: string; count: number }[];
+  /** P-008: postmaster boot time in epoch MILLIS (null = unreadable). A change in
+   *  this value across health ticks is a PG RESTART — the infra-liveness alarm
+   *  watches it for drift (every backend connection is dropped on a restart). */
+  postmasterStartMs: number | null;
 }
 
 export interface PgActiveQuery {

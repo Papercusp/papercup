@@ -3,11 +3,11 @@
 /**
  * ChatPanel — multi-turn conversational UI for an agent_chats row.
  *
- * Mounted inside the pi-dock as the 'chat' panel type. On mount it loads
- * the chat (GET /agent-chats/:chatId), renders the transcript, and
+ * Mounted inside the pi-dock as the 'chat' panel type. On mount it subscribes
+ * to the focused agentChats.detail projection, renders the transcript, and
  * exposes a compose area. Send POSTs /messages and opens an EventSource
  * to stream deltas back, appending to the live assistant message. On
- * stream end, refetches the chat to pick up the persisted token/cost
+ * stream end, invalidates the detail query to pick up persisted token/cost
  * counters and the canonical assistant turn.
  *
  * Side-channel design: the chat agent's prompt tells it not to commit
@@ -88,10 +88,7 @@ export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelPr
   const localTurnsRef = useRef(0);
   const streamingRef = useRef(false);
 
-  // Eager via Zero — subscribe to all chats for this harness; pick out
-  // the one matching chatId. Replaces the per-chatId REST fetch so the
-  // panel renders the transcript same-frame on mount.
-  const { data: zeroChatRows } = useSyncQuery<{
+  const { data: detailRows, error: detailError, invalidate: invalidateDetail } = useSyncQuery<{
     harnessSlug: string;
     id: string;
     role: string;
@@ -105,21 +102,18 @@ export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelPr
     updatedAt: number;
     archivedAt?: number | null;
   }>({
-    queryName: 'agentChats.byHarness',
-    args: { harnessSlug: slug, limit: 200, workspaceId },
-    enabled: !!slug,
+    queryName: 'agentChats.detail',
+    args: { id: chatId, workspaceId },
+    enabled: !!chatId,
+    staleTime: 30_000,
   });
 
-  const loadChat = useCallback(async (opts?: { forceRest?: boolean }) => {
+  const loadChat = useCallback(async () => {
     // Never reload mid-stream — the streamed turns aren't on the server row
     // yet, and a setChat here wipes them from the panel. (The deliberate
     // post-stream refetch passes forceRest and skips both guards.)
-    if (!opts?.forceRest && streamingRef.current) return;
-    // Try the cached subscription first — UNLESS the caller knows it lags
-    // (post-stream: the per-harness agent_chats invalidate may never arrive,
-    // so the cached row would clobber the streamed transcript back to its
-    // pre-send state; REST always has the persisted turns).
-    const row = opts?.forceRest ? undefined : (zeroChatRows ?? []).find((r) => r.id === chatId);
+    if (streamingRef.current) return;
+    const row = detailRows?.[0];
     if (row) {
       // Stale-row guard: if the subscription row carries FEWER turns than
       // the panel already shows (locally streamed, not yet invalidated
@@ -142,22 +136,8 @@ export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelPr
       setLoadError(null);
       return;
     }
-    // Fall back to REST when the row hasn't been mirrored to consolidated
-    // (e.g. chat created in the legacy per-harness table without a
-    // consolidated dual-write yet).
-    try {
-      const r = await fetch(`/api/harness/${encodeURIComponent(slug)}/agent-chats/${encodeURIComponent(chatId)}`);
-      if (!r.ok) {
-        const body = await r.json().catch(() => ({} as { error?: string }));
-        setLoadError(body.error ?? `HTTP ${r.status}`);
-        return;
-      }
-      setChat((await r.json()) as ChatRow);
-      setLoadError(null);
-    } catch (err) {
-      setLoadError(`load failed: ${(err as Error).message}`);
-    }
-  }, [slug, chatId, zeroChatRows]);
+    if (detailError) setLoadError(detailError.message);
+  }, [detailError, detailRows]);
 
   useEffect(() => { void loadChat(); }, [loadChat]);
 
@@ -292,15 +272,14 @@ export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelPr
         });
         return;
       }
-      // Success — refetch to get the persisted assistant turn + counters.
-      // forceRest: the cached subscription row may not have invalidated yet
-      // and would reset the transcript to its pre-send state.
+      // Success — invalidate the focused detail key. The table bridge also
+      // pushes this, but the local write seam makes the refresh immediate.
       setSendState({ kind: 'idle' });
-      void loadChat({ forceRest: true });
+      invalidateDetail();
     } catch (err) {
       setSendState({ kind: 'error', message: `send failed: ${(err as Error).message}` });
     }
-  }, [chat, chatId, draft, loadChat, mode, sendState.kind, slug]);
+  }, [chat, chatId, draft, invalidateDetail, mode, sendState.kind, slug]);
 
   const onArchiveClick = useCallback(async () => {
     if (!await askConfirm({

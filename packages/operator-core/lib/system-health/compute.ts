@@ -985,7 +985,7 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
       const t0 = Date.now();
       const h = await pgHealth();
       const probeMs = Date.now() - t0;
-      pg = { version: h.version, total: h.totalConnections, active: h.activeConnections, idle: h.idleConnections };
+      pg = { version: h.version, total: h.totalConnections, active: h.activeConnections, idle: h.idleConnections, postmasterStartMs: h.postmasterStartMs };
       // Bands are LOOSER than the tick's SELECT-1 probe because this query is heavier:
       // elevated ≥1.5s, critical ≥4s (a healthy pgHealth returns in tens of ms).
       pool = { probeMs, band: classifyPoolPressure(probeMs, 1500, 4000) };

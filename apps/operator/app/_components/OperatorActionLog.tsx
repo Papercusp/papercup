@@ -4,8 +4,7 @@
  * OperatorActionLog — the harness-scoped log of long-running user-initiated
  * actions described in the designer brief from 2026-05-02.
  *
- * Polls /api/user-actions/<slug> every 4 seconds while at least one action is
- * `running`; otherwise every 30 seconds. Lightweight; designed to slot into
+ * Subscribes to userActions.byHarness through the root sync cache. Lightweight; designed to slot into
  * any harness chrome region (sidebar / dashboard panel / drawer). Wire-up
  * is intentionally not done here — the host decides where the panel lives.
  *
@@ -15,12 +14,10 @@
  *   - Failure prominence — currently failures stay chronological, marked.
  *   - Archive policy — currently no auto-archive; show all returned rows.
  *
- * The polling-vs-Zero decision: this component uses a polling endpoint as
- * v1 to ship without a Zero schema migration. When the Zero `user_actions`
- * table lands, swap useUserActions() for the Zero query — same row shape.
+ * The `user_actions` table bridge pushes every lifecycle transition.
  */
 
-import { useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useAutoAnimate } from '@formkit/auto-animate/react';
 import { Clock, DollarSign } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
@@ -41,58 +38,6 @@ export interface UserAction {
 
 type Listener = (a: UserAction) => void;
 
-/**
- * Globally-pinned cache of the last fetched action list per slug.
- * Survives Next.js dev module re-evaluation, OperatorActionLog mount/
- * unmount cycles, and popover open/close. Reactive: writes notify
- * subscribed components so the popover paints the moment the REST
- * prefetch lands, without waiting on the live-sync transport (which
- * can take seconds to establish a WS or first poll).
- */
-type RecentActionsCache = Map<string, { ts: number; actions: UserAction[] }>;
-type CacheListener = () => void;
-const _g = globalThis as unknown as {
-  __recentActionsCache?: RecentActionsCache;
-  __recentActionsListeners?: Set<CacheListener>;
-};
-const recentActionsCache: RecentActionsCache =
-  _g.__recentActionsCache ?? (_g.__recentActionsCache = new Map());
-const recentActionsListeners: Set<CacheListener> =
-  _g.__recentActionsListeners ?? (_g.__recentActionsListeners = new Set());
-
-function setRecentActionsCache(slug: string, actions: UserAction[]) {
-  recentActionsCache.set(slug, { ts: Date.now(), actions });
-  for (const l of recentActionsListeners) {
-    try { l(); } catch { /* ignore */ }
-  }
-}
-
-function useRecentActionsSeed(slug: string | null): UserAction[] | null {
-  return useSyncExternalStore(
-    (cb) => {
-      recentActionsListeners.add(cb);
-      return () => recentActionsListeners.delete(cb);
-    },
-    () => (slug ? (recentActionsCache.get(slug)?.actions ?? null) : null),
-    () => null,
-  );
-}
-
-/** Force-prime the cache outside the component (called from chrome on
- *  app boot, see RecentActionsCenter / ChromeShell). Safe to call
- *  repeatedly; the most-recent response wins. */
-export async function prefetchRecentActions(slug: string): Promise<void> {
-  if (!slug) return;
-  try {
-    const r = await fetch(`/api/user-actions/${encodeURIComponent(slug)}?limit=100`);
-    if (!r.ok) return;
-    const j = (await r.json()) as { actions: UserAction[] };
-    setRecentActionsCache(slug, j.actions ?? []);
-  } catch {
-    /* best-effort prefetch; failure is silent */
-  }
-}
-
 function useUserActions(slug: string | null, opts?: { onTransition?: Listener }): {
   actions: UserAction[];
   loading: boolean;
@@ -102,13 +47,6 @@ function useUserActions(slug: string | null, opts?: { onTransition?: Listener })
   const onTransitionRef = useRef(opts?.onTransition);
   onTransitionRef.current = opts?.onTransition;
   const lastRef = useRef<Map<number, UserAction>>(new Map());
-
-  // Seed from the global prefetch cache so a popover open paints
-  // instantly while Zero's first-load completes. Reactive — any
-  // prefetch write (REST fetch landing in ~50 ms) immediately
-  // re-renders this component, regardless of whether useSyncQuery
-  // has connected yet.
-  const seed = useRecentActionsSeed(slug);
 
   // HarnessSyncProvider is hoisted to root layout — useSyncQuery works
   // on every route now (was blocked by a Turbopack chunking bug;
@@ -124,16 +62,11 @@ function useUserActions(slug: string | null, opts?: { onTransition?: Listener })
   const liveLoading = sync.loading;
   const liveError = sync.error ? sync.error.message : null;
 
-  const actions: UserAction[] = useMemo(() => {
-    if (Array.isArray(liveRows) && liveRows.length > 0) return liveRows;
-    return seed ?? [];
-  }, [liveRows, seed]);
+  const actions: UserAction[] = useMemo(() => liveRows, [liveRows]);
 
-  // Persist the current rows into the prefetch cache so other mounts
-  // can paint instantly. Also fire onTransition callbacks on status flips.
+  // Fire onTransition callbacks on pushed status flips.
   useEffect(() => {
     if (!slug || !Array.isArray(liveRows) || liveRows.length === 0) return;
-    setRecentActionsCache(slug, liveRows);
     const next = new Map<number, UserAction>();
     for (const a of liveRows) next.set(a.id, a);
     const cb = onTransitionRef.current;

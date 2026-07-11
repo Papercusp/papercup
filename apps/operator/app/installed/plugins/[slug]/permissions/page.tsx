@@ -8,6 +8,8 @@ import { Checkbox } from '../../../../harness/Checkbox';
 import { explainCapability, tierBadgeColor } from '@papercusp/operator-core/lib/capability-explain';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { useLexicon } from '@/lib/useLexicon';
+import { useSyncQuery } from '@papercusp/sync';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 
 interface ManifestResp {
   name: string;
@@ -25,8 +27,14 @@ export default function PluginPermissionsPage({
 }) {
   const { slug } = use(params);
   const t = useLexicon();
+  const workspaceId = useWorkspaceId();
   const [manifest, setManifest] = useState<ManifestResp | null>(null);
-  const [harnesses, setHarnesses] = useState<ProjectRow[]>([]);
+  const projectsSync = useSyncQuery<ProjectRow>({
+    queryName: 'harnessProjects.lite',
+    args: { workspaceId },
+    staleTime: 30_000,
+  });
+  const harnesses = useMemo(() => projectsSync.data ?? [], [projectsSync.data]);
   // grants[harnessSlug] = Set<capability>
   const [grants, setGrants] = useState<Record<string, Set<string>>>({});
   const [loading, setLoading] = useState(true);
@@ -37,24 +45,18 @@ export default function PluginPermissionsPage({
     async function load() {
       setLoading(true);
       try {
-        const [mRes, pRes] = await Promise.all([
-          fetch(`/api/plugins/manifest?slug=${encodeURIComponent(slug)}`, { cache: 'no-store' }),
-          fetch('/api/harness/projects', { cache: 'no-store' }),
-        ]);
+        const mRes = await fetch(`/api/plugins/manifest?slug=${encodeURIComponent(slug)}`, { cache: 'no-store' });
         if (!mRes.ok) {
           toast.error(`Plugin "${slug}" not found`);
           if (!cancelled) setLoading(false);
           return;
         }
         const m = (await mRes.json()) as ManifestResp;
-        const p = pRes.ok ? await pRes.json() : { projects: [] };
-        const list: ProjectRow[] = Array.isArray(p?.projects) ? p.projects : [];
         if (cancelled) return;
         setManifest(m);
-        setHarnesses(list);
         // Fetch grants per harness in parallel
         const gEntries = await Promise.all(
-          list.map(async (h) => {
+          harnesses.map(async (h) => {
             const r = await fetch(
               `/api/plugins/grants?plugin=${encodeURIComponent(m.name)}&version=${encodeURIComponent(m.version)}&harness=${encodeURIComponent(h.slug)}`,
               { cache: 'no-store' },
@@ -75,7 +77,7 @@ export default function PluginPermissionsPage({
     }
     void load();
     return () => { cancelled = true; };
-  }, [slug]);
+  }, [harnesses, slug]);
 
   const explained = useMemo(
     () => (manifest?.capabilities ?? []).map(explainCapability),

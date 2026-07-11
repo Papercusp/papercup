@@ -1,16 +1,17 @@
 'use client';
 
 /**
- * Cross-harness KPI dashboard. Reads /api/harness/all/kpis and surfaces
+ * Cross-harness KPI dashboard. Reads the kpis.all sync projection and surfaces
  * the substrate-level metrics: project totals, message volume, audit-log
  * breakdown, autoLoop health, parent → child relationships.
  *
  * No mutations on this page — it's a read-only operational view of the
- * multi-harness substrate. Refresh button or 30s auto-refresh.
+ * multi-harness substrate. Push invalidation keeps the projection current.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { useSyncQuery } from '@papercusp/sync';
 import { useLexicon } from '@/lib/useLexicon';
 import { formatUptime } from './format-uptime';
 import { formatRel } from './format-rel';
@@ -115,59 +116,18 @@ function BarRow({ label, value, max }: { label: string; value: number; max: numb
 
 export default function KPIsPage() {
   const t = useLexicon();
-  const [data, setData] = useState<KPIs | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const kpisSync = useSyncQuery<KPIs>({ queryName: 'kpis.all', staleTime: 30_000 });
+  const data = kpisSync.data?.[0] ?? null;
+  const loading = kpisSync.loading;
+  const error = kpisSync.error?.message ?? null;
   const [lastFetched, setLastFetched] = useState<number | null>(null);
   // Local 1s ticker so the uptime card counts up smoothly between the 30s
   // KPI refreshes, instead of jumping every 30s or re-polling for a value
   // that's trivially derivable client-side. UI-timer exception (no network).
   const [nowTick, setNowTick] = useState(() => Date.now());
-  // Guards against an out-of-order response: a manual Refresh click can
-  // overlap the 30s auto-refresh, and there's no guarantee the older
-  // request's response arrives first. Each refresh() call stamps its own
-  // id; a response only applies if it's still the most recent one in
-  // flight, and the previous in-flight request is aborted outright so it
-  // can't land at all.
-  const requestIdRef = useRef(0);
-  const abortRef = useRef<AbortController | null>(null);
-
-  const refresh = useCallback(async () => {
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    const requestId = ++requestIdRef.current;
-
-    setError(null);
-    try {
-      const r = await fetch('/api/harness/all/kpis', { cache: 'no-store', signal: controller.signal });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const j = (await r.json()) as KPIs;
-      if (requestIdRef.current !== requestId) return; // superseded by a newer refresh
-      setData(j);
-      setLastFetched(Date.now());
-    } catch (e: any) {
-      if (e?.name === 'AbortError') return; // superseded — not a real failure
-      if (requestIdRef.current !== requestId) return;
-      setError(String(e?.message ?? e));
-    } finally {
-      if (requestIdRef.current === requestId) setLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
-    void refresh();
-    // Documented polling exception (audit P-058): cross-harness KPI
-    // aggregate endpoint with no sync queryName. 30s while visible;
-    // paused when hidden.
-    const id = setInterval(() => {
-      if (document.visibilityState !== 'hidden') void refresh();
-    }, 30_000);
-    return () => {
-      clearInterval(id);
-      abortRef.current?.abort();
-    };
-  }, [refresh]);
+    if (data) setLastFetched(Date.now());
+  }, [data]);
 
   useEffect(() => {
     const id = setInterval(() => setNowTick(Date.now()), 1_000);
@@ -205,7 +165,8 @@ export default function KPIsPage() {
           {lastFetched && <>Updated {formatRel(new Date(lastFetched).toISOString())}</>}
           <button
             className="pc-kpi-refresh-button"
-            onClick={refresh}
+            onClick={kpisSync.invalidate}
+            disabled={kpisSync.fetching}
             style={{ marginLeft: 12, padding: '4px 10px', background: 'transparent', border: '1px solid rgba(255,255,255,0.15)', color: 'var(--fg)', cursor: 'pointer', borderRadius: 4 }}
           >
             Refresh

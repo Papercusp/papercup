@@ -318,7 +318,11 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // identity aliases (the fleet_assignment view), so a spawn status/heartbeat flip
     // moves a run between progressing/alive/dead.
     'scheduler.running',
+    'evals.benchRunLive',
   ],
+  'harness_shared.agent_usage_samples': ['evals.benchRunLive'],
+  'harness_shared.bench_runs': ['evals.benchRuns', 'evals.benchRun', 'evals.benchRunLive'],
+  'harness_shared.bench_run_tasks': ['evals.benchRun', 'evals.benchRunLive'],
   // fleetAssignments.byHarness (progress-tab-agents-convergence P-001) reads the
   // fleet_assignment view = presence + plan-item claims + work-item claims.
   // coord_presence fires on heartbeats too — the 90s (name,args) dedupe window

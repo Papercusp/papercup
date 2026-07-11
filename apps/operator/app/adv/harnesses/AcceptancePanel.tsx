@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { Checkbox } from '@/app/harness/Checkbox';
 import { statusToneColor } from '@/app/harness/theme';
+import { useSyncQuery } from '@papercusp/sync';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 
 /**
  * <AcceptancePanel> — the harness Tests tab's "Acceptance" (Project) view.
@@ -32,21 +34,19 @@ const msg: React.CSSProperties = { padding: '16px 20px', color: 'var(--fg-mute, 
 
 export default function AcceptancePanel({ slug }: { slug: string }) {
   const base = `/api/harness/${encodeURIComponent(slug)}/testing`;
+  const workspaceId = useWorkspaceId();
+  const { data: assertionRows, loading: assertionsLoading, error: assertionsError, invalidate: invalidateAssertions } = useSyncQuery<Assertion>({
+    queryName: 'testing.assertionsByHarness',
+    args: { harnessSlug: slug, workspaceId },
+    enabled: !!slug,
+    staleTime: 30_000,
+  });
   const [rows, setRows] = useState<Assertion[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
 
-  const load = useCallback(() => {
-    setError(null);
-    fetch(`${base}/assertions`)
-      .then((r) => (r.ok ? (r.json() as Promise<{ assertions?: Assertion[] }>) : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((d) => setRows(d.assertions ?? []))
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
-  }, [base]);
-
   useEffect(() => {
-    load();
-  }, [load]);
+    if (!assertionsLoading) setRows(assertionRows ?? []);
+  }, [assertionRows, assertionsLoading]);
 
   const toggle = useCallback(
     async (a: Assertion) => {
@@ -60,6 +60,7 @@ export default function AcceptancePanel({ slug }: { slug: string }) {
           body: JSON.stringify({ requires_test: next }),
         });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        invalidateAssertions();
       } catch {
         // Revert the optimistic flip on failure.
         setRows((cur) => cur?.map((x) => (x.val_id === a.val_id ? { ...x, requires_test: a.requires_test } : x)) ?? cur);
@@ -67,10 +68,10 @@ export default function AcceptancePanel({ slug }: { slug: string }) {
         setSaving(null);
       }
     },
-    [base],
+    [base, invalidateAssertions],
   );
 
-  if (error) return <div style={msg}>Could not load acceptance criteria: {error}</div>;
+  if (assertionsError) return <div style={msg}>Could not load acceptance criteria: {assertionsError.message}</div>;
   if (!rows) return <div style={msg}>Loading acceptance criteria…</div>;
   if (rows.length === 0) {
     return (

@@ -427,7 +427,15 @@ export interface McpProxyHealth {
 /** Infra — PG + gateway reachability + the per-thread perf verdict (F1/P-030) + the
  *  MCP tool-call transport SLO (W8/P-008). */
 export interface InfraHealth {
-  pg: { version: string; total: number; active: number; idle: number } | null;
+  pg: {
+    version: string;
+    total: number;
+    active: number;
+    idle: number;
+    /** P-008: postmaster boot time, epoch MILLIS (null = unreadable). A change
+     *  across ticks = a PG restart; the infra-liveness alarm watches it for drift. */
+    postmasterStartMs: number | null;
+  } | null;
   gatewayReachable: boolean | null;
   /** Per-thread perf-SLO verdict from Lane E's latest perf-signals-v1 capture
    *  (F1/P-030). null = no capture / E1 not running on this box; status 'unknown' =
