@@ -377,6 +377,12 @@ describe('barge-in (TTS interruption)', () => {
   });
 
   it('a fresh utterance speaks again after a barge-in (capture resumes)', async () => {
+    // This assertion observes the browser SpeechSynthesis adapter directly.
+    // Voice prefs now hydrate through the shared sync bridge and default to
+    // Kokoro, so pin the browser engine explicitly instead of relying on the
+    // old fetch-cache's first-call fallback.
+    const prefs = await import('./voice-prefs-client');
+    prefs.setVoicePrefsClient({ ...prefs.loadVoicePrefsClient(), ttsEngine: 'browser' });
     const mod = await loadVoiceMode();
     mod.setVoiceMode('always-on');
     mod.speak('first', 'system:operator', 'polite', { force: true });
