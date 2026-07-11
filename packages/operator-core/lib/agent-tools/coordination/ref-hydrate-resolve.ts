@@ -19,11 +19,14 @@
 import type { CoordEnvelope } from './envelope';
 import { getMessageById } from './messages';
 import { getWorkItem } from '../../work-items';
+import { findAnnouncementsForKey } from '../../events/await/store';
 import {
   applyRefBudget,
   canonicalRefKey,
   clampSnippet,
   DEFAULT_REF_BUDGET,
+  GATE_REFS_MAX,
+  type GateRefStamp,
   type HydratableRef,
   type HydratedRef,
   type RefHydrationBudget,
@@ -84,6 +87,32 @@ const DEFAULT_RESOLVERS: RefResolvers = {
  * parallel, each fail-soft. Order of the returned list follows the budgeted
  * input order.
  */
+/**
+ * P-006: resolve a sender's gateRefs (announced-gate event keys) into
+ * send-time-verified stamps — checked against the announced-gates store the
+ * receiver's `events:await` will also consult. De-duped + capped; each probe
+ * fail-softs to `unknown` (a store hiccup must never block the send). The KEY
+ * always travels verbatim — verification decorates it, never rewrites it.
+ */
+export async function resolveGateRefStamps(keys: string[]): Promise<GateRefStamp[]> {
+  const uniq = [...new Set(keys.map((k) => (k ?? '').trim()).filter(Boolean))].slice(
+    0,
+    GATE_REFS_MAX,
+  );
+  return Promise.all(
+    uniq.map(async (key): Promise<GateRefStamp> => {
+      try {
+        const anns = await findAnnouncementsForKey(key);
+        if (anns.some((a) => a.firedAt && a.firedReason === 'event')) return { key, status: 'fired' };
+        if (anns.some((a) => !a.firedAt)) return { key, status: 'declared' };
+        return { key, status: 'undeclared' };
+      } catch {
+        return { key, status: 'unknown' };
+      }
+    }),
+  );
+}
+
 export async function hydrateRefs(
   refs: HydratableRef[],
   opts: { budget?: RefHydrationBudget; resolvers?: RefResolvers } = {},

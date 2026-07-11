@@ -185,3 +185,58 @@ export function renderReplyQuoteSuffix(h: HydratedRef): string {
   if (!h.ok) return ` ⤷ re ${h.label} — unresolved (${h.error ?? 'unknown'})`;
   return h.snippet ? ` ⤷ re ${h.label}: "${h.snippet}"` : ` ⤷ re ${h.label}`;
 }
+
+// ─────────────────────────── P-006: gateRefs ───────────────────────────
+
+/** Gate-key status at SEND time (checked against the announced-gates store):
+ *  `declared` = announced, not yet fired; `fired` = latched (proceed, don't
+ *  wait); `undeclared` = no announcement matches (typo, or a machine-derived
+ *  key that needs none); `unknown` = the probe failed (fail-soft). */
+export type GateRefStatus = 'declared' | 'fired' | 'undeclared' | 'unknown';
+
+export interface GateRefStamp {
+  /** The EXACT event key — the whole point: it travels verbatim, so the
+   *  receiver copies (or `events:await { fromMsg }`-resolves) it, never
+   *  re-types it. */
+  key: string;
+  status: GateRefStatus;
+}
+
+/** The reserved envelope field gateRef stamps ride on (array — same
+ *  pass-through contract as cueAuthority / relayProvenance). */
+export const GATE_REFS_FIELD = 'gateRefs';
+/** Cap per message — a send that names more gates than this is prose, not
+ *  coordination. */
+export const GATE_REFS_MAX = 3;
+
+const GATE_STATUSES: ReadonlySet<string> = new Set(['declared', 'fired', 'undeclared', 'unknown']);
+
+/**
+ * Read + validate gateRef stamps off an envelope. Defensive: absent/malformed
+ * → [] (never throws); malformed entries are dropped individually; capped.
+ */
+export function readGateRefs(env: Record<string, unknown> | null | undefined): GateRefStamp[] {
+  const raw = env?.[GATE_REFS_FIELD];
+  if (!Array.isArray(raw)) return [];
+  const out: GateRefStamp[] = [];
+  for (const s of raw) {
+    if (!s || typeof s !== 'object') continue;
+    const { key, status } = s as Record<string, unknown>;
+    if (typeof key !== 'string' || !key.trim()) continue;
+    if (typeof status !== 'string' || !GATE_STATUSES.has(status)) continue;
+    out.push({ key: key.trim(), status: status as GateRefStatus });
+    if (out.length >= GATE_REFS_MAX) break;
+  }
+  return out;
+}
+
+/**
+ * The inline `⛩` delivery suffix: each declared gate rendered with its EXACT
+ * key + send-time status. NEVER clipped by the line's text cap (it is appended
+ * after the clip) — a truncated gate key is worse than none, since a receiver
+ * copying it would strand on a near-miss.
+ */
+export function renderGateRefsSuffix(stamps: GateRefStamp[]): string {
+  if (!stamps.length) return '';
+  return ` ⛩ ${stamps.map((s) => `gate ${s.key} [${s.status}]`).join('; ')}`;
+}

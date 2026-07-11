@@ -13,6 +13,8 @@ import { z } from 'zod';
 import { dataConditionSchema } from '@papercusp/rules';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { getMessageById } from '../coordination/messages';
+import { readGateRefs } from '../coordination/ref-hydrate';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { registerAwait, findAnnouncementsForKey, findNearMissKeys } from '../../events/await/store';
 import { registerComposedAwait } from '../../events/await/compose';
@@ -87,10 +89,16 @@ export default defineTool({
       .describe(
         "EI-8998: also require the emitted PAYLOAD to satisfy this predicate before firing, e.g. { queue_depth: { lt: 5 } } — same vocabulary as an ECA rule's `when`. Only takes effect combined with an `event` key/pattern the emitter actually fires.",
       ),
+    fromMsg: hardText(LIMITS.IDENT)
+      .optional()
+      .describe(
+        'coord-authority-hardening P-006: a coord msg_id — await the gate THAT message declared (its `gateRefs` stamps, read server-side). Kills hand-typed key drift: you never re-type the key, the platform resolves it off the message. Exactly one gate on the message is required — none/many is a loud error naming what it found. Mutually exclusive with `event`/`spec`.',
+      ),
   })
-    .refine((a) => (a.event != null) !== (a.spec != null), {
-      message: 'pass exactly one of `event` or `spec`',
-    }),
+    .refine(
+      (a) => [a.event, a.spec, a.fromMsg].filter((x) => x != null).length === 1,
+      { message: 'pass exactly one of `event`, `spec`, or `fromMsg`' },
+    ),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     startAwaitSweeper();

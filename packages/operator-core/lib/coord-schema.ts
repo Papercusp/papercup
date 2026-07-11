@@ -40,6 +40,8 @@ import {
   UNVERIFIED_CLAIM_TAG,
 } from './agent-tools/coordination/relay-provenance';
 import {
+  readGateRefs,
+  renderGateRefsSuffix,
   renderReplyQuoteSuffix,
   type HydratedRef,
 } from './agent-tools/coordination/ref-hydrate';
@@ -341,8 +343,13 @@ export function renderInjection(entries: CoordLineSource[], opts: RenderInjectio
         ? opts.relatedQuotes?.get(e.related_msg_id)
         : undefined;
     const replySuffix = relatedHydration ? renderReplyQuoteSuffix(relatedHydration) : '';
+    // coord-authority-hardening P-006: a send that DECLARES gates carries their
+    // exact keys as send-time-verified stamps — render them canonically, after
+    // the clip, so the key is never truncated (a receiver copies it, or resolves
+    // it hands-free via events:await { fromMsg }). Pure read: [] when absent.
+    const gateSuffix = renderGateRefsSuffix(readGateRefs(e as unknown as Record<string, unknown>));
     const text = tag ? `[${tag}] ${body}` : body;
-    lines.push(`${glyph} ${handle} ${claimFlag}${text}${relaySuffix}${replySuffix}`);
+    lines.push(`${glyph} ${handle} ${claimFlag}${text}${relaySuffix}${replySuffix}${gateSuffix}`);
   }
   return lines.join('\n');
 }

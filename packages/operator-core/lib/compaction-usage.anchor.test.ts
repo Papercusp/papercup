@@ -17,6 +17,8 @@ import {
 } from './compaction-usage';
 
 const MARKER_LINE = '{"type":"summary","isCompactSummary":true,"summary":"compacted"}\n';
+/** Counting starts at the MARKER SUBSTRING, not the line start (full-scan semantics). */
+const MARKER_TAIL = MARKER_LINE.length - MARKER_LINE.indexOf('"isCompactSummary"');
 
 let dir: string;
 let file: string;
@@ -60,8 +62,8 @@ describe('anchored incremental context reads (WI-4154)', () => {
     expect(currentContextTokensSyncForOwner('o3')).toBe(350_000);
     fs.appendFileSync(file, MARKER_LINE + line(60_000)); // compaction + one fresh turn
     const after = currentContextTokensSyncForOwner('o3');
-    // Counting restarts at the marker START (full-scan semantics): marker line + 60k line.
-    expect(after).toBe(Math.floor((MARKER_LINE.length + 60_000) / 4));
+    // Counting restarts at the marker substring (full-scan semantics).
+    expect(after).toBe(Math.floor((MARKER_TAIL + 60_000) / 4));
     expect(after).toBe(tokensFromFileSize(file));
   });
 
@@ -71,7 +73,7 @@ describe('anchored incremental context reads (WI-4154)', () => {
     fs.appendFileSync(file, MARKER_LINE + line(20_000));
     expect(currentContextTokensSyncForOwner('o4')).toBe(tokensFromFileSize(file));
     expect(currentContextTokensSyncForOwner('o4')).toBe(
-      Math.floor((MARKER_LINE.length + 20_000) / 4),
+      Math.floor((MARKER_TAIL + 20_000) / 4),
     );
   });
 
@@ -107,7 +109,7 @@ describe('anchored incremental context reads (WI-4154)', () => {
     );
     fs.appendFileSync(file, '\n');
     expect(currentContextTokensSyncForOwner('o7')).toBe(tokensFromFileSize(file));
-    expect(currentContextTokensSyncForOwner('o7')).toBe(Math.floor(MARKER_LINE.length / 4));
+    expect(currentContextTokensSyncForOwner('o7')).toBe(Math.floor(MARKER_TAIL / 4));
   });
 
   it('rotation/truncation returns null this read (background reseed), not a stale number', () => {

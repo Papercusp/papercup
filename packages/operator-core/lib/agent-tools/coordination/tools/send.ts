@@ -24,6 +24,8 @@ import { resolveSenderCueAuthority } from '../cue-authority-resolve';
 import { CUE_AUTHORITY_FIELD, type CueAuthorityStamp } from '../cue-authority';
 import { RELAY_PROVENANCE_FIELD, type RelayProvenanceStamp } from '../relay-provenance';
 import { resolveRelayProvenance } from '../relay-provenance-resolve';
+import { GATE_REFS_FIELD } from '../ref-hydrate';
+import { resolveGateRefStamps } from '../ref-hydrate-resolve';
 import { sendMessage, getMessageById } from '../messages';
 import { parseSlotSelector } from '../slot-selector';
 import { wakeRecipients, reportIdleRecipients, buildStagedWakeNote } from '../inbox-wake';
@@ -57,6 +59,11 @@ interface SendMsg {
    *  against the CALLER's own transcript (hit → owner-verified(transcript-match),
    *  miss → delivered stamped `unverified`). */
   relayQuote?: string;
+  /** P-006: announced-gate event keys this message declares/references. Verified
+   *  against the announced-gates store at send (declared/fired/undeclared) and
+   *  rendered canonically — un-clipped — at delivery; `events:await { fromMsg }`
+   *  resolves them hands-free. Kills hand-typed gate-key drift. */
+  gateRefs?: string[];
   wake?: boolean | 'required' | 'optimistic';
   wakeOnReply?: boolean;
   /** EI-8986: "nudge if silent" — the dual of wakeOnReply (which wakes you when
@@ -171,6 +178,14 @@ const relayQuoteArg = z
     "Relay-provenance Tier 3 (older turns 'owner-turn' can't reach): a VERBATIM snippet of the owner turn you are relaying. Verified against your own transcript's human turns — hit → stamped owner-verified(transcript-match); miss → still delivered, stamped 'UNVERIFIED relay'.",
   );
 
+const gateRefsArg = z
+  .array(z.string().min(1))
+  .max(3)
+  .optional()
+  .describe(
+    'Declaring/referencing announced gate(s)? Pass the EXACT event key(s) (≤3 — e.g. the key events:emit { announce:true } RETURNED). The platform verifies each against the announced-gates store at send and stamps its status (declared/fired/undeclared); delivery renders the exact keys UN-CLIPPED, and receivers can skip copying entirely via events:await { fromMsg: <this msg_id> }. Kills hand-typed gate-key drift — a near-miss key never rendezvouses.',
+  );
+
 const itemSpec = z.object({
   to: toArg,
   summary: summaryArg,
@@ -180,6 +195,7 @@ const itemSpec = z.object({
   related_msg_id: z.string().optional(),
   relayOf: relayOfArg,
   relayQuote: relayQuoteArg,
+  gateRefs: gateRefsArg,
   wake: wakeArg,
   wakeOnReply: wakeOnReplyArg,
   replyDeadlineSec: replyDeadlineSecArg,
@@ -284,6 +300,16 @@ async function sendOne(
   // the opt-in and wake us back. Both keys merge onto the persisted envelope.
   const extra: Record<string, unknown> = {};
   if (relayStamp) extra[RELAY_PROVENANCE_FIELD] = relayStamp;
+  // P-006: verify + stamp announced-gate refs at send (fail-soft — a store
+  // hiccup stamps 'unknown', never blocks; the EXACT key always travels).
+  if (msg.gateRefs?.length) {
+    try {
+      const gateStamps = await resolveGateRefStamps(msg.gateRefs);
+      if (gateStamps.length) extra[GATE_REFS_FIELD] = gateStamps;
+    } catch {
+      /* fail-soft: gate stamping never blocks a send */
+    }
+  }
   if (wakeMode) extra.wake = true;
   if (effectiveWakeOnReply) extra.wakeOnReply = true;
   // EI-8986: stamp an absolute deadline (epoch ms) so the reply-deadline-sweep
@@ -747,6 +773,7 @@ export default defineTool({
     related_msg_id: z.string().optional(),
     relayOf: relayOfArg,
     relayQuote: relayQuoteArg,
+    gateRefs: gateRefsArg,
     wake: wakeArg,
     wakeOnReply: wakeOnReplyArg,
     endTurn: endTurnArg,
@@ -785,6 +812,7 @@ export default defineTool({
             related_msg_id: args.related_msg_id,
             relayOf: args.relayOf,
             relayQuote: args.relayQuote,
+            gateRefs: args.gateRefs,
             wake: args.wake,
             wakeOnReply: args.wakeOnReply,
             endTurn: args.endTurn,
