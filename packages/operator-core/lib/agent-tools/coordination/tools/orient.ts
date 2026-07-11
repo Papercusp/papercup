@@ -893,6 +893,19 @@ export default defineTool({
         }
       } catch { /* fail-soft */ }
     }
+    // su-ideate-learning-substrate-2026-07-10 P-011: when the caller's active
+    // modes include 'ideate', fold ONE line telling them whether they are OVERDUE
+    // to run an ideate pass — keyed on OBSERVATION COUNT, never elapsed days
+    // (D-015). Gated to ideate-active callers, fail-soft, a few indexed reads.
+    // Same handler-side best-effort IO pattern as the modes fold above.
+    let ideate: import('./orient-ideate-hint').IdeateHint | undefined;
+    if (ownerId && modes?.active?.some((m) => m.mode === 'ideate')) {
+      try {
+        const { computeIdeateOverdue } = await import('./orient-ideate-hint');
+        const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
+        ideate = await computeIdeateOverdue({ ownerId, workspaceId: ws });
+      } catch { /* fail-soft */ }
+    }
     // compaction-context-loss-2026-07-05 P-002: the post-compaction recovery
     // fold — held-item checkpoints + armed-loop status + the self-recall
     // pointer (with a self live-tail so it's fresh). Handler-side IO like
@@ -909,7 +922,7 @@ export default defineTool({
         recovery = await buildCompactionRecovery(ownerId, ws);
       } catch { /* fail-soft */ }
     }
-    const out = { ...(self ? { self } : {}), ...(modes ? { modes } : {}), ...(recovery ? { recovery } : {}), ...(result as object) };
+    const out = { ...(self ? { self } : {}), ...(modes ? { modes } : {}), ...(ideate ? { ideate } : {}), ...(recovery ? { recovery } : {}), ...(result as object) };
     // EI-9130: stamp the generic delta-served breadcrumb when at least one of orient's
     // bespoke cursor-delta legs actually narrowed/unchanged its response — see
     // orientServedDelta's doc comment + dispatch-stack.ts's recordTelemetry. Never
