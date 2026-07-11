@@ -640,7 +640,11 @@ recalled later — coord rows are timestamped events, not knowledge.
 
 **insights — procedural memory** (the runbook): MDX at
 `apps/operator-docs/src/content/docs/agent-insights/<slug>.mdx`,
-PR-reviewed. Write one short page when you hit something non-obvious that
+PR-reviewed. A PROCEDURAL ordered-steps page is the official **runbook**
+genre — slug `<topic>-runbook`, tag `runbook`, say "runbook" in
+title/description so docs:search ranks it (agent-insights/runbooks-convention);
+a post-mortem lesson is a plain insight. Write one short page when you hit
+something non-obvious that
 would save the next agent an hour — **in the SAME TURN the root cause is
 proven, never queued for close-out** (close-outs get lost; the insight is
 part of the fix). MANDATORY immediately when the owner flags recurrence

@@ -2,7 +2,7 @@
 title: "macOS code signing + notarization — the turnkey public-release runbook"
 description: "For a PUBLIC macOS release the .app MUST be Apple-signed (Developer ID Application) + notarized + stapled, or Gatekeeper refuses it on every fresh Mac ('Apple cannot check it for malicious software'). The build pipeline (mac-vm-build.sh → tauri build) already signs+notarizes automatically WHEN the Apple credentials are present in env — so this is gated only on the OWNER supplying: an Apple Developer Program membership, a Developer ID Application cert imported on build VM :2222, and notarytool creds (APPLE_ID + app-specific password + APPLE_TEAM_ID, or an App Store Connect API key). Entitlements (entitlements.plist) are already wired for the embedded-Node JIT under the hardened runtime."
 discovered: 2026-06-25
-tags: [macos, desktop, code-signing, notarization, gatekeeper, public-release, tauri, entitlements, hardened-runtime, owner-action, D-002]
+tags: [macos, desktop, code-signing, runbook, notarization, gatekeeper, public-release, tauri, entitlements, hardened-runtime, owner-action, D-002]
 status: active
 documents:
   - papercusp-desktop/src-tauri/tauri.conf.json

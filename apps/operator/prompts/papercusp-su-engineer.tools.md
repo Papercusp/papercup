@@ -734,7 +734,11 @@ checkpoints = in-flight continuity (re-injected on resume); mem0 = what I know
   anything you'd want recalled later.
 - **insights** — the runbook: MDX at
   `apps/operator-docs/src/content/docs/agent-insights/<slug>.mdx`. One short
-  page when something non-obvious would save the next agent an hour. **A proven
+  page when something non-obvious would save the next agent an hour. A
+  PROCEDURAL ordered-steps page is the official **runbook** genre — slug
+  `<topic>-runbook`, tag `runbook`, say "runbook" in title/description so
+  docs:search ranks it (agent-insights/runbooks-convention); a post-mortem
+  lesson is a plain insight. **A proven
   non-obvious root cause is a cue to write the insight IN THE SAME TURN as
   exploiting the fix — never queued for close-out** (close-outs get lost; the
   insight is part of the fix, not an appendix). MANDATORY immediately when the

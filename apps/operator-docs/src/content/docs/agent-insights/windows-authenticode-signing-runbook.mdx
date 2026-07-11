@@ -2,7 +2,7 @@
 title: "Windows Authenticode code signing — the turnkey public-release runbook"
 description: "For a PUBLIC Windows release the NSIS installer + bundled .exe MUST be Authenticode-signed, or Windows SmartScreen/Defender flags it ('Windows protected your PC — unknown publisher') on every fresh machine and most users abandon at that screen. The build pipeline (build-windows-on-vm.sh → tauri build --bundles nsis) signs automatically WHEN an Authenticode cert is present in env/store — so this is gated only on the OWNER supplying a code-signing certificate: an OV cert (a .pfx + password, importable) or — strongly preferred — an EV cert (hardware token / cloud HSM) which grants INSTANT SmartScreen trust. An agent cannot obtain either. Mirrors the macOS Developer ID runbook."
 discovered: 2026-06-25
-tags: [windows, desktop, code-signing, authenticode, smartscreen, defender, public-release, tauri, nsis, signtool, ev-cert, owner-action, D-001]
+tags: [windows, desktop, code-signing, runbook, authenticode, smartscreen, defender, public-release, tauri, nsis, signtool, ev-cert, owner-action, D-001]
 status: active
 documents:
   - papercusp-desktop/src-tauri/tauri.windows.conf.json
