@@ -209,8 +209,9 @@ not N awaits and never a timer poll.** `events:await { spec }` takes an
 when the combination is satisfied. The idle-fleet recipe
 (composable-event-awaits P-006/P-007): your `scheduler:get_next` pull came back
 empty → do NOT re-poll on a ~60s loop cadence — park on ONE leaf,
-`events:await { event: 'work-item:claimable', when: <your claim-spec view>,
-timeout_sec: 1800 }`, and END YOUR TURN (the ~30-min `on_timeout: 'wake'`
+`events:await { event: 'work-item:claimable', payload_filter: <your claim-spec
+view>, timeout_sec: 1800 }` (single-event form takes `payload_filter`; `when`
+is the leaf-spec spelling), and END YOUR TURN (the ~30-min `on_timeout: 'wake'`
 backstops a missed emit; `work-item:claimable` dual-fires on every
 created-unclaimed / claim-released / last-blocker-cleared transition, so the
 older 3-leaf composed spec keeps working too). The wake is a HINT that work

@@ -184,8 +184,10 @@ await** — `events:await { spec }` takes an `all`/`any`/`some:{require,of}`
 threshold tree over event leaves (`{ event: '<key|glob|@macro>', when? }`) and
 fires ONE wake when satisfied. Idle-fleet recipe
 (composable-event-awaits P-006/P-007): an empty `scheduler:get_next` pull
-parks on ONE leaf — `events:await { event: 'work-item:claimable', when: <your
-claim-spec view>, timeout_sec: 1800 }` — never a ~60s re-poll
+parks on ONE leaf — `events:await { event: 'work-item:claimable',
+payload_filter: <your claim-spec view>, timeout_sec: 1800 }` (the single-event
+form takes `payload_filter`; `when` is the leaf-spec spelling) — never a ~60s
+re-poll
 (`work-item:claimable` dual-fires on created-unclaimed / claim-released /
 unblocked, so the older 3-leaf composed spec keeps working too). The wake is a
 HINT; `scheduler:get_next` on the wake turn stays the authoritative claim

@@ -48,7 +48,8 @@ const PROMPTS_DIR = join(REPO, 'apps/operator/prompts');
 
 /** The load-bearing recipe markers a surface must carry to count as teaching it. */
 const RECIPE_MARKERS = [
-  'work-item:claimable', // the canonical P-007 dual-emit key — `when`-narrowable
+  'work-item:claimable', // the canonical P-007 dual-emit key
+  'payload_filter', // the SINGLE-EVENT form's filter arg — `when` is leaf-spec-only and silently mis-teaches (P-007 audit)
   '1800', // the ~30-min on_timeout backstop
 ];
 

@@ -54,6 +54,29 @@ vi.mock('../../../plan-items/agent-names', () => ({
   bestEffortOwnerUser: () => 'tester',
 }));
 
+// ── EI-9484 enrichment seams (bounded in the handler) ──
+// Kept as fast no-op resolvers so a test can WEDGE one (never-resolve) and
+// assert the bounded deadline degrades it instead of hanging the whole call.
+// The fast success shapes leave every existing test's happy path unchanged
+// (these legs are best-effort / return-payload only, asserted by no prior test).
+const drainAndDeliverUserMailbox = vi.fn(async () => [] as unknown[]);
+vi.mock('../messages', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  drainAndDeliverUserMailbox: (...a: unknown[]) => drainAndDeliverUserMailbox(...(a as [])),
+}));
+
+const resolveActorIdentity = vi.fn(async () => ({ ownerId: 'su-test', githubUserId: null, devicePubkey: null }));
+vi.mock('../actor-identity', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()), // actorMailboxKeys stays REAL (pure)
+  resolveActorIdentity: (...a: unknown[]) => resolveActorIdentity(...(a as [])),
+}));
+
+const fetchPresenceFleet = vi.fn(async () => new Map<string, unknown>());
+vi.mock('../presence-fleet', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  fetchPresenceFleet: (...a: unknown[]) => fetchPresenceFleet(...(a as [])),
+}));
+
 // SUT imported AFTER the seams are wired.
 import declareIntentTool from './declare-intent';
 
@@ -292,5 +315,73 @@ describe('coord:declare-intent — EI-5873 broad-intent over-coverage nudge', ()
       ),
     );
     expect(res.overCoverageHint).toBeTruthy();
+  });
+});
+
+describe('coord:declare-intent — EI-9484: bounded enrichment legs never hang the handler', () => {
+  // The bug: coord:declare-intent exceeded the 60s MCP tool timeout on ~2% of
+  // calls under fleet load ("handler returned but signal had aborted"). The
+  // essential write (writePresence) is one upsert, but the handler then AWAITS
+  // best-effort ENRICHMENT legs — the @user: mailbox drain (a serial appendLine
+  // loop) and the getPresence / fetchPresenceFleet return-payload reads. Any one
+  // stalling under DB-pool saturation held the whole call past the timeout even
+  // though the declaration already succeeded. Each leg is now bounded with
+  // withBoundedTimeout, so a wedged leg degrades to a fallback within its budget
+  // instead of hanging. A never-resolving mock simulates the wedge; fake timers
+  // fire the bounded deadline in virtual time rather than waiting 8s of wall-clock.
+
+  it('the un-wedged fast path is transparent — presence is still echoed back', async () => {
+    const res = parse(await tool.handler({ intent: 'work' }, ctx));
+    expect(res.ok).toBe(true);
+    expect(writePresence).toHaveBeenCalledTimes(1);
+    // getPresence's value flows through the bound unchanged (fleet label joined).
+    expect(res.presence).toMatchObject({ ownerId: 'su-test', fleetSlug: null, fleetRole: null });
+  });
+
+  it('a WEDGED @user: mailbox drain degrades to a no-op — the declaration still lands', async () => {
+    vi.useFakeTimers();
+    try {
+      // The serial appendLine drain never resolves (the fleet-load stall).
+      drainAndDeliverUserMailbox.mockImplementationOnce(() => new Promise<never>(() => {}));
+      const p = tool.handler({ intent: 'work' }, ctx);
+      // Advance well past every sequential leg's 8s bound so the wedged leg's
+      // deadline fires and the handler assembles its degraded-but-complete result.
+      await vi.advanceTimersByTimeAsync(40_000);
+      const res = parse(await p);
+      expect(res.ok).toBe(true);
+      expect(writePresence).toHaveBeenCalledTimes(1); // essential write ran regardless
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a WEDGED getPresence read degrades the echoed-back presence to null — no hang', async () => {
+    vi.useFakeTimers();
+    try {
+      getPresence.mockImplementationOnce(() => new Promise(() => {})); // return-payload read wedged
+      const p = tool.handler({ intent: 'work' }, ctx);
+      await vi.advanceTimersByTimeAsync(40_000);
+      const res = parse(await p);
+      expect(res.ok).toBe(true);
+      expect(writePresence).toHaveBeenCalledTimes(1);
+      expect(res.presence).toBeNull(); // bounded fallback (record → null), never a hang
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a WEDGED fetchPresenceFleet lookup degrades the fleet label but still returns presence', async () => {
+    vi.useFakeTimers();
+    try {
+      fetchPresenceFleet.mockImplementationOnce(() => new Promise(() => {}));
+      const p = tool.handler({ intent: 'work' }, ctx);
+      await vi.advanceTimersByTimeAsync(40_000);
+      const res = parse(await p);
+      expect(res.ok).toBe(true);
+      // getPresence still answered (fast) — presence is present, fleet label null.
+      expect(res.presence).toMatchObject({ ownerId: 'su-test', fleetSlug: null, fleetRole: null });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

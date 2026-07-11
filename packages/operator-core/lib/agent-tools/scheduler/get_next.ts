@@ -27,15 +27,15 @@ import { matchRoutingGateHint } from '../../routing-gate-hints';
  * park on ONE await over the canonical `work-item:claimable` key (P-007 dual-emit — it
  * fires on every created-unclaimed / claim-released / last-blocker-cleared transition,
  * collapsing the 3-leaf composed any-spec this recipe originally taught; payload carries
- * {id,kind,severity,harness,title,state,reason} so `when` narrows it to your claim
- * spec's view), with the ~30-min on_timeout 'wake' as the missed-emit backstop.
+ * {id,kind,severity,harness,title,state,reason} so `payload_filter` narrows it to your
+ * claim spec's view), with the ~30-min on_timeout 'wake' as the missed-emit backstop.
  * The wake is a HINT, never a claim — get_next stays the single authoritative claim path,
  * so a spurious/racing wake costs one cheap re-miss, never a double-claim.
  * Exported for the recurrence-guard pin test (idle-loop-recipe-pin.test.ts).
  */
 export const IDLE_PULL_MISS_ADVICE =
   'Idle recipe (composable-event-awaits P-006/P-007): do NOT re-poll on a timer — register ONE await and END YOUR TURN: ' +
-  'events:await { event: "work-item:claimable", when: { harness: { eq: "<your-harness>" } } /* narrow to your claim spec\'s view */, timeout_sec: 1800 } ' +
+  'events:await { event: "work-item:claimable", payload_filter: { harness: { eq: "<your-harness>" } } /* narrow to your claim spec\'s view */, timeout_sec: 1800 } ' +
   '— work-item:claimable fires on every created-unclaimed / claim-released / unblocked transition; the ~30-min on_timeout "wake" is the missed-emit backstop. ' +
   'The wake is a HINT that work may exist, never a claim: scheduler:get_next stays the AUTHORITATIVE claim on the wake turn; ' +
   'if it misses again, re-register the same await and end your turn again.';
