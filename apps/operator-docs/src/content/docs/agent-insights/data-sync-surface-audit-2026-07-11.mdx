@@ -1,6 +1,6 @@
 ---
 title: "Operator data-sync surface audit (2026-07-11)"
-description: "A route-by-route audit of the operator app's server-state reads: which surfaces still bypass @papercusp/sync, which should migrate, which reads are legitimate stream/probe/search/config exceptions, and the concrete migration shape for each violation. Also records the durable Conversations migration from one-off REST reads to focused named list/detail queries with scoped push invalidation."
+description: "A route-by-route audit and completed migration of the operator app's durable server-state reads to @papercusp/sync, including the focused Conversations list/detail model, scoped push invalidation, and the stream/probe/search/config exceptions that intentionally remain outside the cache."
 discovered: 2026-07-11
 tags: [data-sync, react-query, sse, invalidation, polling, conversations, operator-ui, audit]
 status: active
@@ -12,15 +12,16 @@ documents:
   - packages/operator-core/lib/sync-resolver/table-to-query-names.ts
 plans:
   - conversations-sync-migration-and-app-audit-2026-07-11
+  - all-active-surfaces-data-sync-migration-2026-07-11
 ---
 
 ## Verdict
 
-The main operator app is mostly on the intended push path, but it is not fully
-consistent. The audit found **13 remaining migration families**. Several are
-small duplicate REST fallbacks on otherwise-synced surfaces; the largest are
-the legacy `/coord` page, operator/user/voice settings, dock layouts, the
-cross-harness KPI dashboard, and the operator conversation-history bootstrap.
+The audit found **13 active migration families** plus two mixed-path cleanup
+cases. All are now migrated. Durable Postgres-backed reads use the shared root
+`@papercusp/sync` cache; write seams invalidate the affected named queries; and
+the table-to-query bridge covers out-of-process changes. REST remains only for
+mutations and for the explicit stream/probe/search/config exceptions below.
 
 The Advanced → Conversations tab is no longer one of the exceptions. Its Q&A,
 deliberation, agent-chat, message, and unified-inbox reads now use focused named
@@ -51,9 +52,13 @@ cache-coherence path; mutations may remain REST/tool calls as long as the write
 seam invalidates the affected named query immediately and the database-change
 bridge covers out-of-process writes.
 
-## Surfaces that should migrate
+## Completed migrations
 
-| # | Surface(s) | What differs from the pattern | Recommendation and implementation |
+The table preserves the original failure mode and the implementation decision.
+Every numbered row is complete; imperative wording in the last column describes
+the durable pattern to retain, not pending work.
+
+| # | Surface(s) | Original violation | Implemented shape |
 |---|---|---|---|
 | 1 | `AdvConversationsTab` (Advanced → Conversations) | **Fixed in this change.** It previously issued independent REST reads and an expensive `conversations.unified` four-store aggregate. Selection changes could be overwritten by stale request completion, refresh blanked the list, and every source switch started cold. | Keep the shipped `conversations.{questions,deliberation,agentChat,message}{List,Detail}` split. List rows are bounded summaries; detail is keyed by `{id}` and enabled only for the selection. Table changes invalidate lists plus ID-scoped details where the changed parent ID is available. The unified view client-composes the same four list caches. |
 | 2 | `OperatorConversationProvider` (global Papercup/operator chat history) | The live tail uses `operatorTurns.byConversation`, but mount still GETs `/api/operator/conversations`, and older-page loading uses REST. The initial REST response owns conversation identity and can race the live cache. | Add `operatorConversations.current` (workspace/user keyed) and a cursor-capable `operatorTurns.page`. Hydrate identity through sync first, let `operatorTurns.byConversation` own the live 200-row tail, and fetch immutable older pages through a sync-client/infinite-query adapter. Keep token generation and voice audio on their stream transports. |
@@ -71,7 +76,10 @@ bridge covers out-of-process writes.
 | 14 | `OperatorActionLog` boot prefetch | The rendered log is correctly `userActions.byHarness`, but `prefetchRecentActions` still seeds a second global cache through `/api/user-actions/:slug`. It can briefly win with stale rows and duplicates the transport. | Prefetch the named query into the root QueryClient (or rely on the already-hoisted provider) and delete the bespoke REST cache/listener. Keep the relative-time UI timer. |
 
 Rows 4 and 14 are cleanup of mixed paths rather than wholly unsynced pages,
-but they matter: a surface is only as coherent as its stale fallback.
+but they matter: a surface is only as coherent as its stale fallback. The
+preference family also includes the active `PapercupTab` and Setup Wizard
+callers; both now read `voicePrefs.*` / `userPreferences.current` and retain
+REST solely for writes and credentials.
 
 ## Reads that should stay outside the data-sync cache
 
@@ -113,11 +121,15 @@ what is visible without becoming another copy of the data.
 
 - `AdvConversationsTab.test.tsx`: 36 passing tests, including source switching,
   selected-ID detail keying, and cache-preserving refresh behavior.
-- sync resolver and table bridge suites: 92 passing tests.
-- full `npm run build:operator`: passed after rebuilding the generated npm
-  dependency tree from a consistent npm layout.
+- sync resolver/table bridge suites: 101 passing tests; generic sync-client
+  cache tests: 2 passing tests.
+- migration-focused UI suites: 112 passing tests across global conversation,
+  Coord, agent chat, dock, notes, Acceptance, settings, voice/preferences,
+  accounts, KPI, evaluations, plugins, and action-log consumers.
+- fresh `npm --workspace @papercusp/operator-vite run build`: passed.
 - browser drive on `/adv?tab=conversations`: the tab shell and Q&A/Messages
   navigation render correctly. The currently deployed API host is the green
   release checkout and therefore reports the new query names as unknown until
-  this staging change reaches that release; this is deployment skew, not a
-  client/runtime fallback.
+  this staging change reaches the green release; this is deployment skew, not
+  a client/runtime fallback. Do not interpret a staging-only verification as a
+  production rollout—verify the deployed SHA after the release gate advances.
