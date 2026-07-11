@@ -348,6 +348,39 @@ export function pruneDead() {
 }
 
 /**
+ * owner-presence-human-turn-signal-2026-07-11 P-003: report a human-turn presence
+ * signal, throttled to ≤1/60s per host process, when a human types into an agent's
+ * terminal. This is the backend-agnostic owner-present signal (claude/codex/omp all
+ * route through this pty bridge): stdin bytes here are REAL keystrokes — socket-
+ * injected agent wakes take the control-socket path (conn.on('data') → child.write),
+ * never stdin — so no human-vs-agent disambiguation is needed. Fire-and-forget: never
+ * awaited, never throws into the keystroke path; a wedged operator can't stall typing.
+ * The caller additionally gates this on `bridgeTty` (a real terminal), so a headless
+ * background session with a piped stdin never reports presence.
+ */
+const OWNER_PRESENCE_REPORT_THROTTLE_MS =
+  Number(process.env.PAPERCUSP_PSU_PTY_OWNER_PRESENCE_THROTTLE_MS) || 60_000;
+let lastOwnerPresenceReportAt = 0;
+export function reportOwnerHumanTurn(now = Date.now()) {
+  if (now - lastOwnerPresenceReportAt < OWNER_PRESENCE_REPORT_THROTTLE_MS) return;
+  lastOwnerPresenceReportAt = now;
+  try {
+    const base = process.env.PAPERCUSP_OPERATOR_URL || 'http://127.0.0.1:3270';
+    const ws = process.env.PAPERCUSP_WORKSPACE || 'default';
+    const url = `${base}/api/admin/owner-presence/touch?workspace=${encodeURIComponent(ws)}`;
+    // 1.5s timeout so a hung operator releases the socket rather than leaking it.
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 1500);
+    if (typeof t.unref === 'function') t.unref();
+    fetch(url, { method: 'POST', signal: ac.signal })
+      .catch(() => {})
+      .finally(() => clearTimeout(t));
+  } catch {
+    /* presence reporting must never disturb the terminal */
+  }
+}
+
+/**
  * The mid-keystroke idle gate (P-013). `touch()` on every stdin byte records
  * activity; `waitIdle()` resolves once `idleMs` of quiet has elapsed (or the cap
  * is hit). Pure-ish (uses timers + an injectable clock for tests).
@@ -1508,6 +1541,11 @@ export function hostThroughPty(o) {
   const onStdin = (d) => {
     idleGate.touch();
     activity.touchInput();
+    // owner-presence-human-turn-signal-2026-07-11 P-003: a real human keystroke into
+    // a bridged terminal → stamp owner presence (throttled, fire-and-forget). Gated on
+    // bridgeTty so only a genuine interactive TTY (never a headless piped session)
+    // reports. Socket-injected agent wakes bypass stdin, so they never reach here.
+    if (bridgeTty) reportOwnerHumanTurn();
     try {
       child.write(d.toString('utf8'));
     } catch {
