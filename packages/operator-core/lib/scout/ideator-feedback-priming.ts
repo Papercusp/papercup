@@ -26,6 +26,7 @@
  */
 
 import { readRoutedIdeas, type ScoutLedgerOpts } from './routed-ledger';
+import { rankByIntent, type IntentSimByRef } from './intent-rank-leg';
 
 /** C-4: the block heading, byte-exact. */
 export const GRADER_FEEDBACK_HEADING = '## Grader feedback on recent ideas';
@@ -57,6 +58,9 @@ export interface GradedIdeaView {
   gradedAt?: string;
   /** ISO routing timestamp — ordering fallback for a graded row missing gradedAt. */
   routedAt?: string;
+  /** The routed artifact ref ('plan:<slug>' | 'wi:<id>' | 'gym:<id>') — the P-019
+   *  intent-ranking join key (present on `readRoutedIdeas` rows; unused when no intent). */
+  routedRef?: string;
 }
 
 export interface GraderFeedbackOptions {
@@ -66,6 +70,15 @@ export interface GraderFeedbackOptions {
   maxBlockChars?: number;
   /** Per-entry cap (default {@link MAX_FEEDBACK_ENTRY_CHARS}). */
   maxEntryChars?: number;
+  /**
+   * P-019 intent-ranked priming: per-routedRef cosine(intent, artifact) similarities.
+   * When present, graded rows are ordered most-relevant-first (by their `routedRef`'s
+   * cosine) BEFORE the window — so the window keeps the entries most relevant to the
+   * pass's focus, not merely the newest. Rows with no resolved sim keep newest-first,
+   * below the ranked ones. The block SHAPE + window/char caps are unchanged (C-4).
+   * Absent ⇒ the pre-P-019 newest-first ordering, byte-identical.
+   */
+  intentSimByRef?: IntentSimByRef;
 }
 
 export interface GraderFeedbackPriming {
@@ -117,10 +130,18 @@ export function formatGraderFeedbackPriming(
   const maxBlockChars = Math.max(0, opts.maxBlockChars ?? MAX_FEEDBACK_BLOCK_CHARS);
   const maxEntryChars = Math.max(1, opts.maxEntryChars ?? MAX_FEEDBACK_ENTRY_CHARS);
 
-  const graded = rows
+  const gradedNewestFirst = rows
     .filter((r) => typeof r.humanGrade === 'number' && Number.isFinite(r.humanGrade))
-    .sort((a, b) => (sortKey(a) < sortKey(b) ? 1 : sortKey(a) > sortKey(b) ? -1 : 0))
-    .slice(0, maxEntries);
+    .sort((a, b) => (sortKey(a) < sortKey(b) ? 1 : sortKey(a) > sortKey(b) ? -1 : 0));
+  // P-019: when an intent is in play, rank the SAME graded set by cosine(intent, routed
+  // artifact) most-relevant-first BEFORE windowing — so the window keeps what's relevant
+  // to the pass's focus, not merely the newest. Rows with no resolved sim keep their
+  // newest-first order below the ranked ones (rankByIntent is stable). Window + caps
+  // below are unchanged, so the C-4 block shape holds either way.
+  const ordered = opts.intentSimByRef
+    ? rankByIntent(gradedNewestFirst, (r) => r.routedRef, opts.intentSimByRef)
+    : gradedNewestFirst;
+  const graded = ordered.slice(0, maxEntries);
 
   const entries = graded.map((r) => {
     const grade = clampGrade(r.humanGrade as number);

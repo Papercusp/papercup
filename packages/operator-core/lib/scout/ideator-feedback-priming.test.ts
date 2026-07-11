@@ -138,6 +138,53 @@ describe('formatGraderFeedbackPriming — C-4 shape', () => {
   });
 });
 
+describe('formatGraderFeedbackPriming — P-019 intent ordering', () => {
+  // Three graded rows in newest-first input order (a, then b, then c by gradedAt).
+  const rows: GradedIdeaView[] = [
+    graded({ title: 'a-newest', routedRef: 'wi:1', gradedAt: '2026-06-12T03:00:00.000Z' }),
+    graded({ title: 'b-mid', routedRef: 'wi:2', gradedAt: '2026-06-12T02:00:00.000Z' }),
+    graded({ title: 'c-oldest', routedRef: 'wi:3', gradedAt: '2026-06-12T01:00:00.000Z' }),
+  ];
+  const titles = (entries: string[]): string[] => entries.map((e) => e.split('] ')[1].split(':')[0]);
+
+  it('ranks the window most-relevant-first by cosine instead of newest-first', () => {
+    const intentSimByRef = new Map([
+      ['wi:1', 0.1],
+      ['wi:2', 0.9],
+      ['wi:3', 0.5],
+    ]);
+    const { entries } = formatGraderFeedbackPriming(rows, { intentSimByRef });
+    expect(titles(entries)).toEqual(['b-mid', 'c-oldest', 'a-newest']);
+  });
+
+  it('keeps rows with no resolved sim newest-first, below the ranked ones', () => {
+    const intentSimByRef = new Map([['wi:2', 0.8]]); // only b has a vector
+    const { entries } = formatGraderFeedbackPriming(rows, { intentSimByRef });
+    expect(titles(entries)).toEqual(['b-mid', 'a-newest', 'c-oldest']);
+  });
+
+  it('ranks BEFORE the window so a relevant-but-old row survives the cap', () => {
+    // Two rows, window of 1: newest is off-topic, oldest is on-topic ⇒ the oldest wins.
+    const two: GradedIdeaView[] = [
+      graded({ title: 'newest-offtopic', routedRef: 'wi:9', gradedAt: '2026-06-12T05:00:00.000Z' }),
+      graded({ title: 'oldest-ontopic', routedRef: 'wi:8', gradedAt: '2026-06-12T01:00:00.000Z' }),
+    ];
+    const intentSimByRef = new Map([
+      ['wi:9', 0.1],
+      ['wi:8', 0.95],
+    ]);
+    const { entries } = formatGraderFeedbackPriming(two, { maxEntries: 1, intentSimByRef });
+    expect(entries).toHaveLength(1);
+    expect(titles(entries)).toEqual(['oldest-ontopic']);
+  });
+
+  it('an empty sim map leaves the ordering byte-identical to newest-first (fail-open)', () => {
+    const ranked = formatGraderFeedbackPriming(rows, { intentSimByRef: new Map() });
+    const plain = formatGraderFeedbackPriming(rows);
+    expect(ranked).toEqual(plain);
+  });
+});
+
 describe('gatherGraderFeedbackPriming — the reader seam', () => {
   it('formats rows from the injected reader', async () => {
     const res = await gatherGraderFeedbackPriming({ readRows: async () => [graded()] });

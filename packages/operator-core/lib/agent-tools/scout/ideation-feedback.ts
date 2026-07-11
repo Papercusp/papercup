@@ -33,6 +33,7 @@ import {
   type RoutedIdeaProvenance,
 } from '../../scout/outcome-feedback';
 import { buildScoutOutcomeReaders } from '../../scout/routed-ledger';
+import { resolveIntentSims, rankByIntent, type IntentRankDeps } from '../../scout/intent-rank-leg';
 import { SU_IDEATION_LENSES, type SuIdeationLens } from '../../scout/types';
 // P-012 (federated-scout-gym-learning D-004/D-005): the OPTIONAL federated priming
 // fold. The pure math (crowding, config resolution, empty-frontier partition) is safe
@@ -87,7 +88,11 @@ export interface IdeationFeedbackResult {
   priming: string;
   entries: string[];
   count: number;
-  /** Newest-first, one per su-ideate ledger row (P-003). */
+  /**
+   * One per su-ideate ledger row (P-003). Newest-first by default; when the caller
+   * passes `intent`, ranked most-relevant-first by cosine(intent, routed-artifact
+   * vector) (P-019), falling back to newest-first when the embedder is down.
+   */
   outcomes: IdeationOutcomeEntry[];
   summary: { won: number; lost: number; pending: number; graded: number; total: number };
   /** Per-su-lens win-rates + floored sampling weights, SU_IDEATION_LENSES order (P-004). */
@@ -251,21 +256,22 @@ export async function computeFederatedPriming(
 
 /** The testable core: priming + outcome readback composed over the su-ideate ledger scope. */
 export async function runIdeationFeedback(
-  args: { harness?: string; maxEntries?: number },
+  args: { harness?: string; maxEntries?: number; intent?: string },
   ctx?: unknown,
-  deps: { federated?: FederatedPrimingDeps } = {},
+  deps: { federated?: FederatedPrimingDeps; intentRank?: IntentRankDeps } = {},
 ): Promise<IdeationFeedbackResult> {
   const scope = args.harness ? { harnessSlug: args.harness } : {};
-  const { priming, entries } = await gatherGraderFeedbackPriming({
-    origin: 'su-ideate',
-    ...scope,
-    ...(args.maxEntries ? { maxEntries: args.maxEntries } : {}),
-  });
+  const intent = args.intent?.trim() ? args.intent.trim() : undefined;
 
   let outcomes: IdeationOutcomeEntry[] = [];
   const summary = { won: 0, lost: 0, pending: 0, graded: 0, total: 0 };
   let lensWinRates: SuLensWinRate[] = [];
   let outcomesError: string | undefined;
+  // P-019: resolved ONCE from the provenance refs, then shared by BOTH the outcomes
+  // reorder here and the grades block (fed to gatherGraderFeedbackPriming) — a single
+  // intent embed + cosine join drives the whole read. Stays undefined (⇒ newest-first
+  // everywhere) with no intent OR when the embedder is down (fail-open, D-016).
+  let intentSimByRef: IntentSimByRef | undefined;
   try {
     const readers = buildScoutOutcomeReaders({ origin: 'su-ideate', ...scope });
     const [provenance, completions] = await Promise.all([
@@ -315,11 +321,36 @@ export async function runIdeationFeedback(
         weight: floored[l],
       };
     });
+
+    // P-019: intent-ranked priming. Resolve cosine(intent, routed-artifact) ONCE over
+    // the ledger refs; when it lands, surface the most-relevant filings first (outcomes
+    // here, grades below via intentSimByRef) instead of newest-first. Fail-open: a null
+    // verdict (no intent / embedder down / dims-mismatch) leaves both blocks newest-first.
+    if (intent) {
+      const sims = await resolveIntentSims(
+        intent,
+        provenance.map((p) => p.routedRef),
+        deps.intentRank,
+      );
+      if (sims) {
+        intentSimByRef = sims;
+        outcomes = rankByIntent(outcomes, (o) => o.routedRef, sims);
+      }
+    }
   } catch (err) {
     // Fail-open (D-016): a broken outcome join degrades to the pre-P-003
     // priming-only read instead of failing the whole grounding pre-pass.
     outcomesError = err instanceof Error ? err.message : String(err);
   }
+
+  // C-4 grader-feedback priming — gathered AFTER the outcome read so a resolved P-019
+  // intent order (intentSimByRef) reorders this block too; absent it, newest-first.
+  const { priming, entries } = await gatherGraderFeedbackPriming({
+    origin: 'su-ideate',
+    ...scope,
+    ...(args.maxEntries ? { maxEntries: args.maxEntries } : {}),
+    ...(intentSimByRef ? { intentSimByRef } : {}),
+  });
 
   // P-012: OPTIONAL federated priming fold. Fully fail-soft — a frontier / steering
   // read error degrades to NO block (the priming + outcome legs still return),
@@ -378,6 +409,14 @@ export default defineTool({
       .max(30)
       .optional()
       .describe('priming window size (default 10, newest-first)'),
+    intent: z
+      .string()
+      .min(1)
+      .max(400)
+      .optional()
+      .describe(
+        "this pass's one-line focus — when set, the grades + outcomes rank by semantic relevance to it (cosine of your intent against each past proposal's routed artifact) instead of newest-first, so the window surfaces what's relevant to THIS pass; silently falls back to newest-first if the embedder is unavailable",
+      ),
   }),
   async handler(args, ctx) {
     const out = await runIdeationFeedback(args, ctx);
