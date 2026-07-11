@@ -151,11 +151,44 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.pending_reviews': ['pendingReviews.byHarness'],
   'harness_shared.harness_pending_issues': ['harnessPendingIssues.byHarness'],
   'harness_shared.harness_screenshots': ['harnessScreenshots.byHarness'],
-  'harness_shared.agent_chats_consolidated': ['agentChats.byHarness', 'conversations.unified'],
-  'harness_shared.coord_conversations': ['conversations.unified'],
-  'harness_shared.coord_threads': ['conversations.unified'],
-  'harness_shared.coord_thread_posts': ['conversations.unified'],
-  'harness_shared.messages_consolidated': ['conversations.unified'],
+  'harness_shared.agent_chats_consolidated': [
+    'agentChats.byHarness',
+    'conversations.unified',
+    'conversations.agentChats.list',
+    { name: 'conversations.agentChats.detail', scope: idScope },
+  ],
+  'harness_shared.coord_conversations': [
+    'conversations.unified',
+    'conversations.questions.list',
+    { name: 'conversations.questions.detail', scope: idScope },
+  ],
+  // A coord thread can be a standalone deliberation OR the timeline attached
+  // to a Q&A conversation. These tables do not expose a trigger id that matches
+  // the parent/detail key, so detail queries intentionally full-bust by name.
+  'harness_shared.coord_threads': [
+    'conversations.unified',
+    'conversations.deliberations.list',
+    'conversations.deliberations.detail',
+    'conversations.questions.detail',
+  ],
+  'harness_shared.coord_thread_posts': [
+    'conversations.unified',
+    'conversations.deliberations.list',
+    'conversations.deliberations.detail',
+    'conversations.questions.detail',
+  ],
+  // Tag and subscriber changes alter the Q&A list/detail projections even
+  // though the conversation scalar row itself does not change.
+  'harness_shared.coord_links': [
+    'conversations.questions.list',
+    'conversations.questions.detail',
+  ],
+  'harness_shared.coord_entity_subscriptions': ['conversations.questions.detail'],
+  'harness_shared.messages_consolidated': [
+    'conversations.unified',
+    'conversations.messages.list',
+    { name: 'conversations.messages.detail', scope: idScope },
+  ],
   'harness_shared.harness_feature_notes': ['featureNotes.byHarness'],
   'harness_shared.harness_feature_debug_notes': ['featureDebugNotes.byHarness', 'featureTimeline.byFeature'],
   'harness_shared.feature_audit_consolidated': ['featureAudit.byHarness'],
@@ -397,6 +430,12 @@ function planSlugOf(args: TriggerEventArgs | undefined): string | undefined {
  *  would TDZ-fail at import time. */
 function planSlugScope(slug: string): Record<string, unknown> | null {
   return slug ? { slug } : null;
+}
+
+/** Detail queries whose consumer key is exactly `{ id }`. Hoisted because the
+ * table registry above references it during module initialization. */
+function idScope(id: string): Record<string, unknown> | null {
+  return id ? { id } : null;
 }
 
 /**

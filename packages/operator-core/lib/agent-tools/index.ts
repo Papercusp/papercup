@@ -1026,6 +1026,10 @@ import './experiment/results';
 // (+ optional critique) over the C-2 ledger seam; owner grades are sovereign.
 import './scout/grade-idea';
 import './scout/ideation-feedback';
+// su-ideate-learning-substrate-2026-07-10 P-009 — route an su idea onto the plan
+// rail: a draft plan + an origin='su-ideate' routed-idea ledger row (grade/outcome
+// attribution rides the same plan:<slug> terminal-state read).
+import './scout/route-idea';
 
 // self-learning-frontier-2026-06-12 P-004 (FB-02, D-003) — the behavior-change
 // ledger read surface: recent prompt/rule mutations (change_ledger:list) + the

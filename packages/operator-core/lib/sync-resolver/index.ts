@@ -4074,6 +4074,166 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // conversations.* — the cacheable source reads behind the /adv Conversations
+  // master/detail surface.  The unified inbox composes the four LIST queries in
+  // the browser, so opening a source view reuses the exact same React Query cache
+  // entry instead of unmounting the inbox and starting a cold REST lifecycle.
+  // Detail reads are independently keyed by id and only enabled while selected.
+  'conversations.questions.list': {
+    argsSchema: z.object({ limit: clampedLimit(200, 100) }),
+    resolve: async (args) => {
+      const { limit } = args as { limit: number };
+      const { listConversationsWithTopics } = await import('../agent-tools/coordination/conversations');
+      const rows = await listConversationsWithTopics({ limit });
+      return rows.map((row) => ({
+        id: row.id,
+        kind: row.kind,
+        state: row.state,
+        scope: row.scope,
+        harness_slug: row.harness_slug,
+        title: row.title ?? row.body.slice(0, 100),
+        asker_id: row.asker_id,
+        topics: row.topics,
+        promoted_issue_id: row.promoted_issue_id,
+        created_ts: row.created_ts,
+        updated_ts: row.updated_ts,
+      }));
+    },
+  },
+  'conversations.questions.detail': {
+    argsSchema: z.object({ id: z.string().min(1) }),
+    resolve: async (args) => {
+      const { id } = args as { id: string };
+      const { getConversation } = await import('../agent-tools/coordination/conversations');
+      const detail = await getConversation(id);
+      return detail
+        ? [{
+            ...detail.conversation,
+            topics: detail.topics,
+            posts: detail.posts,
+            subscriber_count: detail.subscriber_count,
+          }]
+        : [];
+    },
+  },
+  'conversations.deliberations.list': {
+    argsSchema: z.object({ limit: clampedLimit(1000, 100) }),
+    resolve: async (args) => {
+      const { limit } = args as { limit: number };
+      const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+      const [rows, totalRows] = await Promise.all([
+        sql`
+          SELECT thread_id, parent_kind, parent_ref, title, created_by, harness_slug,
+                 created_at, last_post_at, post_count
+            FROM harness_shared.coord_threads
+           ORDER BY last_post_at DESC NULLS LAST, created_at DESC NULLS LAST
+           LIMIT ${limit}`,
+        sql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.coord_threads`,
+      ]);
+      return attachListMeta(rows, { total: totalRows[0]?.n ?? rows.length });
+    },
+  },
+  'conversations.deliberations.detail': {
+    argsSchema: z.object({ id: z.string().min(1) }),
+    resolve: async (args) => {
+      const { id } = args as { id: string };
+      const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+      const [thread, posts] = await Promise.all([
+        sql`SELECT thread_id, parent_kind, parent_ref, title, created_by, harness_slug,
+                   created_at, last_post_at, post_count
+              FROM harness_shared.coord_threads
+             WHERE thread_id = ${id} LIMIT 1`,
+        sql`SELECT id, author_id, body, created_at, harness_slug
+              FROM harness_shared.coord_thread_posts
+             WHERE thread_id = ${id}
+             ORDER BY created_at ASC NULLS LAST
+             LIMIT 1000`,
+      ]);
+      if (!thread[0]) return [];
+      const safePosts = posts.map((post) => ({
+        ...post,
+        id: typeof post.id === 'bigint' ? Number(post.id) : post.id,
+      }));
+      return [{ thread: thread[0], posts: safePosts }];
+    },
+  },
+  'conversations.agentChats.list': {
+    argsSchema: z.object({
+      limit: clampedLimit(1000, 100),
+      harness: z.string().optional(),
+      role: z.string().optional(),
+    }),
+    resolve: async (args) => {
+      const { limit, harness, role } = args as { limit: number; harness?: string; role?: string };
+      const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+      const [rows, totalRows] = await Promise.all([
+        sql`
+          SELECT id, harness_slug, role, feature_id, title,
+                 created_at, updated_at, archived_at,
+                 total_input_tokens, total_output_tokens, total_cost_usd_cents,
+                 jsonb_array_length(COALESCE(transcript, '[]'::jsonb)) AS turns
+            FROM harness_shared.agent_chats_consolidated
+           WHERE (${harness ?? null}::text IS NULL OR harness_slug = ${harness ?? null})
+             AND (${role ?? null}::text IS NULL OR role = ${role ?? null})
+           ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+           LIMIT ${limit}`,
+        sql<{ n: number }[]>`
+          SELECT count(*)::int AS n
+            FROM harness_shared.agent_chats_consolidated
+           WHERE (${harness ?? null}::text IS NULL OR harness_slug = ${harness ?? null})
+             AND (${role ?? null}::text IS NULL OR role = ${role ?? null})`,
+      ]);
+      return attachListMeta(rows, { total: totalRows[0]?.n ?? rows.length });
+    },
+  },
+  'conversations.agentChats.detail': {
+    argsSchema: z.object({ id: z.string().min(1) }),
+    resolve: async (args) => {
+      const { id } = args as { id: string };
+      const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+      const rows = await sql`
+        SELECT id, harness_slug, role, feature_id, title, created_at, updated_at,
+               archived_at, transcript, total_input_tokens, total_output_tokens,
+               total_cost_usd_cents,
+               jsonb_array_length(COALESCE(transcript, '[]'::jsonb)) AS turns
+          FROM harness_shared.agent_chats_consolidated
+         WHERE id = ${id}
+         LIMIT 1`;
+      return rows;
+    },
+  },
+  'conversations.messages.list': {
+    argsSchema: z.object({ limit: clampedLimit(1000, 100) }),
+    resolve: async (args) => {
+      const { limit } = args as { limit: number };
+      const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+      const [rows, totalRows] = await Promise.all([
+        sql`
+          SELECT id, harness_slug, from_slug, to_slug, to_role, kind, subject,
+                 left(COALESCE(body, ''), 280) AS body, status, created_at,
+                 acknowledged_at, from_feature_id, to_feature_id
+            FROM harness_shared.messages_consolidated
+           ORDER BY created_at DESC NULLS LAST
+           LIMIT ${limit}`,
+        sql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.messages_consolidated`,
+      ]);
+      return attachListMeta(rows, { total: totalRows[0]?.n ?? rows.length });
+    },
+  },
+  'conversations.messages.detail': {
+    argsSchema: z.object({ id: z.string().min(1) }),
+    resolve: async (args) => {
+      const { id } = args as { id: string };
+      const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+      return sql`
+        SELECT id, harness_slug, from_slug, to_slug, to_role, kind, subject, body,
+               status, created_at, acknowledged_at, from_feature_id, to_feature_id
+          FROM harness_shared.messages_consolidated
+         WHERE id = ${id}
+         LIMIT 1`;
+    },
+  },
+
   // conversations.unified — the /adv Conversations front door. The four
   // curated communication stores have deliberately different schemas, but the
   // inbox only needs one stable row grammar (source, title, preview, status,
