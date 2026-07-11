@@ -15,6 +15,12 @@ vi.mock('@papercusp/sync', () => ({
   useSyncQuery: () => ({ ...syncResult, error: null, fetching: false, loading: false, invalidate: vi.fn() }),
 }));
 
+// Lexicon resolver echoes its key (t('brain') → 'brain') — isolates this
+// component's copy from the THE_HIVE flag's active brand pack default
+// (restore-pot-lexicon-public-release P-007; the pack default flipped to
+// 'classic' → 'Mug', which broke this test's hardcoded "Queen" expectation).
+vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+
 import QueueSummary from './QueueSummary';
 
 beforeEach(() => {
@@ -32,20 +38,20 @@ describe('QueueSummary (queue-authorization-redesign P-006/B1)', () => {
     syncResult = { data: [] };
     render(<QueueSummary waitingOnYou={0} />);
     expect(screen.getByText('0 waiting on you')).toBeTruthy();
-    expect(screen.getByText('0 handled by the Queen')).toBeTruthy();
+    expect(screen.getByText('0 handled by the brain')).toBeTruthy();
   });
 
   it('counts the disposition rows the ledger returns', () => {
     syncResult = { data: [{ id: 1 }, { id: 2 }, { id: 3 }] };
     render(<QueueSummary waitingOnYou={1} />);
-    expect(screen.getByText('3 handled by the Queen')).toBeTruthy();
+    expect(screen.getByText('3 handled by the brain')).toBeTruthy();
   });
 
   it('caps the handled count at HANDLED_CAP with a "100+" label', () => {
     // The hook is capped at limit:100; a full page reads as the cap → "100+".
     syncResult = { data: Array.from({ length: 100 }, (_, i) => ({ id: i })) };
     render(<QueueSummary waitingOnYou={7} />);
-    expect(screen.getByText('100+ handled by the Queen')).toBeTruthy();
+    expect(screen.getByText('100+ handled by the brain')).toBeTruthy();
   });
 
   it('renders the separator between the two halves', () => {
