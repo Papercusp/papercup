@@ -15,7 +15,9 @@
  */
 
 import { useQueryState, parseAsStringEnum } from 'nuqs';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { useSyncQuery } from '@papercusp/sync';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 import CoordHistory from './CoordHistory';
 import styles from './coord.module.css';
 import { LivenessDot, livenessFromHeartbeat } from './presence-ui';
@@ -166,74 +168,18 @@ interface PresenceRecord {
   stale: boolean;
 }
 
-// Documented polling exception (audit P-058): the /coord dev page reads
-// heartbeat-cadence presence + file-backed health endpoints with no PG
-// sync-invalidation source (attaching NOTIFY triggers to presence/
-// coord_event_log is an owner-gated trade-off — the heartbeat churn would
-// out-shout the dedupe window). Poll while visible, pause when hidden;
-// in-flight responses abort on supersede so a slow stale reply never
-// clobbers a newer one (audit P-064 race class).
-function usePolledJson<T>(url: string, intervalMs = 5000): {
-  data: T | null;
-  error: string | null;
-  loading: boolean;
-  refresh: () => void;
-} {
-  const [data, setData] = useState<T | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
-  const refresh = useCallback(async () => {
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setLoading(true);
-    setError(null);
-    try {
-      const r = await fetch(url, { signal: controller.signal });
-      if (!r.ok) throw new Error(`status ${r.status}`);
-      setData((await r.json()) as T);
-    } catch (e) {
-      if (e instanceof DOMException && e.name === 'AbortError') return;
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      if (!controller.signal.aborted) setLoading(false);
-    }
-  }, [url]);
-  useEffect(() => {
-    void refresh();
-    const tick = () => {
-      if (document.visibilityState === 'hidden') return;
-      void refresh();
-    };
-    const id = window.setInterval(tick, intervalMs);
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') tick();
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => {
-      abortRef.current?.abort();
-      window.clearInterval(id);
-      document.removeEventListener('visibilitychange', onVisible);
-    };
-  }, [refresh, intervalMs]);
-  return { data, error, loading, refresh };
-}
-
 function SessionsPanel() {
-  const { data, error } = usePolledJson<{
-    active: PresenceRecord[];
-    stale: PresenceRecord[];
-  }>('/api/coord/presence');
-
-  const active = data?.active ?? [];
-  const stale = data?.stale ?? [];
+  const workspaceId = useWorkspaceId();
+  const { data: active = [], error } = useSyncQuery<PresenceRecord>({
+    queryName: 'dev.coordPresence', args: { workspace: workspaceId }, staleTime: 30_000,
+  });
+  const stale: PresenceRecord[] = [];
 
   return (
     <div>
       {error && (
         <div className={styles.alert}>
-          Error: {error}
+          Error: {error.message}
         </div>
       )}
       <h2 className={styles.sectionTitle}>
@@ -315,15 +261,12 @@ interface InboxItem {
 }
 
 function InboxPanel() {
-  const { data, error } = usePolledJson<{ items: InboxItem[] }>(
-    '/api/coord/inbox',
-  );
-  const items = data?.items ?? [];
+  const { data: items = [], error } = useSyncQuery<InboxItem>({ queryName: 'coord.inbox', staleTime: 30_000 });
   return (
     <div>
       {error && (
         <div className={styles.alert}>
-          Error: {error}
+          Error: {error.message}
         </div>
       )}
       <p className={styles.mutedCopy}>
@@ -382,10 +325,7 @@ interface PlanSummary {
 }
 
 function PlansPanel() {
-  const { data, error } = usePolledJson<{ plans: PlanSummary[] }>(
-    '/api/coord/plans',
-    15000,
-  );
+  const { data: plans = [], error } = useSyncQuery<PlanSummary>({ queryName: 'coord.plans', staleTime: 30_000 });
   const [openSlug, setOpenSlug] = useState<string | null>(null);
   const [markdown, setMarkdown] = useState<string>('');
   const [mdLoading, setMdLoading] = useState(false);
@@ -409,12 +349,11 @@ function PlansPanel() {
     }
   }, [openSlug]);
 
-  const plans = data?.plans ?? [];
   return (
     <div>
       {error && (
         <div className={styles.alert}>
-          Error: {error}
+          Error: {error.message}
         </div>
       )}
       {plans.length === 0 && (

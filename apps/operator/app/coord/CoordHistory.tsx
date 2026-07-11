@@ -4,7 +4,7 @@
  * /coord — coordination history viewer (Phase B remainder of
  * agent-coordination-architecture-v2).
  *
- * Single page; polls /api/coord/history every 5s. Filters:
+ * Single page; subscribes to the coord.history projection. Filters:
  *
  *   - source (plan_event / message / escalation / handoff)
  *   - plan_slug (free-text exact-match)
@@ -15,7 +15,8 @@
  */
 
 import { useQueryState, parseAsArrayOf, parseAsString } from 'nuqs';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useState } from 'react';
+import { useSyncQuery } from '@papercusp/sync';
 import styles from './coord.module.css';
 
 interface HistoryItem {
@@ -29,12 +30,6 @@ interface HistoryItem {
   harness_slug?: string;
   summary?: string;
   payload: Record<string, unknown>;
-}
-
-interface HistoryResponse {
-  items: HistoryItem[];
-  total: number;
-  truncated: boolean;
 }
 
 const ALL_SOURCES: HistoryItem['source'][] = [
@@ -71,65 +66,18 @@ export default function CoordHistory() {
   const [owner, setOwner] = useQueryState('owner', parseAsString.withDefault(''));
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  const [data, setData] = useState<HistoryResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const queryString = useMemo(() => {
-    const params = new URLSearchParams();
-    if (sources && sources.length > 0 && sources.length < ALL_SOURCES.length) {
-      params.set('kinds', sources.join(','));
-    }
-    if (planSlug) params.set('plan_slug', planSlug);
-    if (owner) params.set('owner', owner);
-    params.set('limit', '200');
-    return params.toString();
-  }, [sources, planSlug, owner]);
-
-  // In-flight request is aborted on filter change/unmount so a slow stale
-  // response can never clobber a newer one (audit P-064 poll race).
-  const refresh = useCallback(async (signal?: AbortSignal) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const r = await fetch(`/api/coord/history?${queryString}`, { signal });
-      if (!r.ok) throw new Error(`status ${r.status}`);
-      const j = (await r.json()) as HistoryResponse;
-      setData(j);
-    } catch (e) {
-      if (e instanceof DOMException && e.name === 'AbortError') return;
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      if (!signal?.aborted) setLoading(false);
-    }
-  }, [queryString]);
-
-  // Documented polling exception (audit P-058): coord_event_log — the
-  // fleet's highest-write table — has no emit_change_notify trigger, so
-  // there is no sync invalidation to subscribe to (dev.coordFeed exists in
-  // the resolver but nothing fires it). Attaching a per-row NOTIFY trigger
-  // there is an owner-gated trade-off; until then this dev viewer polls 5s
-  // while visible and pauses when the tab is hidden.
-  useEffect(() => {
-    let controller = new AbortController();
-    void refresh(controller.signal);
-    const tick = () => {
-      if (document.visibilityState === 'hidden') return;
-      controller.abort();
-      controller = new AbortController();
-      void refresh(controller.signal);
-    };
-    const id = window.setInterval(tick, 5000);
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') tick();
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => {
-      controller.abort();
-      window.clearInterval(id);
-      document.removeEventListener('visibilitychange', onVisible);
-    };
-  }, [refresh]);
+  const historySync = useSyncQuery<HistoryItem>({
+    queryName: 'coord.history',
+    args: {
+      kinds: sources && sources.length < ALL_SOURCES.length ? sources : undefined,
+      planSlug: planSlug || undefined,
+      owner: owner || undefined,
+      limit: 200,
+    },
+    staleTime: 30_000,
+  });
+  const loading = historySync.loading || historySync.fetching;
+  const error = historySync.error?.message ?? null;
 
   const toggleSource = (s: HistoryItem['source']) => {
     const cur = new Set(sources ?? ALL_SOURCES);
@@ -138,13 +86,13 @@ export default function CoordHistory() {
     setSources(cur.size === 0 ? [...ALL_SOURCES] : [...cur]);
   };
 
-  const items = data?.items ?? [];
+  const items = historySync.data ?? [];
 
   return (
     <div>
       <div className={styles.toolbar}>
         <button
-          onClick={() => void refresh()}
+          onClick={historySync.invalidate}
           className={styles.button}
           disabled={loading}
         >
@@ -189,10 +137,9 @@ export default function CoordHistory() {
             placeholder="(any)"
           />
         </label>
-        {data && (
+        {!historySync.loading && (
           <span className={styles.resultCount}>
-            {items.length} of {data.total}
-            {data.truncated && ' (truncated)'}
+            {items.length} events
           </span>
         )}
       </div>

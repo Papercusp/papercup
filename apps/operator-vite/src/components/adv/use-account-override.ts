@@ -1,6 +1,6 @@
 /**
  * useAccountOverride — shared client logic for the owner's session-now account
- * override (accounts-pool-tab-2026-06-15 P-004): read it once, toggle force/exclude
+ * override (accounts-pool-tab-2026-06-15 P-004): subscribe through data sync, toggle force/exclude
  * per account, clear it. Backed by su-81fe4's GET/POST
  * /api/admin/deploy-accounts/session-override (hive_settings, fail-soft). Each POST
  * returns the new override (no refetch) and invalidates accounts.pool (cards refresh).
@@ -10,6 +10,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import { useSyncQuery } from '@papercusp/sync';
 
 export interface AccountOverride {
   forcedAccounts: string[];
@@ -21,22 +22,14 @@ const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(
 export function useAccountOverride() {
   const [override, setOverride] = useState<AccountOverride | null>(null);
   const [overrideBusy, setOverrideBusy] = useState(false);
+  const { data: overrideRows, invalidate: invalidateOverride } = useSyncQuery<AccountOverride>({
+    queryName: 'accounts.sessionOverride',
+    staleTime: 30_000,
+  });
 
   useEffect(() => {
-    let live = true;
-    void (async () => {
-      try {
-        const res = await fetch('/api/admin/deploy-accounts/session-override');
-        const j = (await res.json()) as { ok?: boolean; override?: AccountOverride };
-        if (live && j?.ok && j.override) setOverride(j.override);
-      } catch {
-        /* fail-soft — no override shown */
-      }
-    })();
-    return () => {
-      live = false;
-    };
-  }, []);
+    if (overrideRows?.[0]) setOverride(overrideRows[0]);
+  }, [overrideRows]);
 
   // Optimistic by design: the desktop ships on the SSE transport, where
   // @papercusp/sync's useSyncMutate has no Zero client and so can't apply
@@ -62,6 +55,7 @@ export function useAccountOverride() {
         const j = (await res.json()) as { ok?: boolean; error?: string; override?: AccountOverride };
         if (!res.ok || !j.ok) throw new Error(j.error || 'override failed');
         setOverride(j.override ?? { forcedAccounts: [], excludeAccounts: [] }); // reconcile with server truth
+        invalidateOverride();
         if (patch.clear) toast.success('Cleared the account override');
       } catch (e) {
         if (optimistic) setOverride(prev); // roll back the optimistic apply
@@ -70,7 +64,7 @@ export function useAccountOverride() {
         setOverrideBusy(false);
       }
     },
-    [override],
+    [invalidateOverride, override],
   );
 
   const forced = useMemo(() => new Set(override?.forcedAccounts ?? []), [override]);
