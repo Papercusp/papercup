@@ -59,9 +59,19 @@ import { attachListMeta } from './list-meta';
 // already bounded in the body). `clampedLimit` has a default; `clampedLimitOpt` stays
 // optional (absent → undefined, the body's own `?? N` applies).
 const clampedLimit = (cap: number, def: number) =>
-  z.number().int().positive().default(def).transform((v) => Math.min(v, cap));
+  z
+    .number()
+    .int()
+    .positive()
+    .default(def)
+    .transform((v) => Math.min(v, cap));
 const clampedLimitOpt = (cap: number) =>
-  z.number().int().positive().transform((v) => Math.min(v, cap)).optional();
+  z
+    .number()
+    .int()
+    .positive()
+    .transform((v) => Math.min(v, cap))
+    .optional();
 
 // Coerce any top-level BigInt field on each row to a Number so the rows survive the
 // rest-query-batch serializer (a plain JSON.stringify, which THROWS on a BigInt → a 500
@@ -245,7 +255,11 @@ async function resolveDesignFeatures(args: { harnessSlug: string; workspaceId: s
   })) as unknown[];
 }
 
-async function resolveDesignSketches(args: { harnessSlug: string; featureId: string; workspaceId: string }): Promise<unknown[]> {
+async function resolveDesignSketches(args: {
+  harnessSlug: string;
+  featureId: string;
+  workspaceId: string;
+}): Promise<unknown[]> {
   const { getOrgPg } = await import('@papercusp/db-org');
   const { harnessSlug, featureId, workspaceId } = args;
   const { sql } = getOrgPg();
@@ -319,15 +333,17 @@ async function resolveDesignRegressions(): Promise<unknown[]> {
       hasRegression: !!d && d.size > 200,
     };
   });
-  return [{
-    counts: {
-      baseline: buckets.baseline.size,
-      current: buckets.current.size,
-      diff: buckets.diff.size,
-      regressions: items.filter((i) => i.hasRegression).length,
+  return [
+    {
+      counts: {
+        baseline: buckets.baseline.size,
+        current: buckets.current.size,
+        diff: buckets.diff.size,
+        regressions: items.filter((i) => i.hasRegression).length,
+      },
+      items,
     },
-    items,
-  }];
+  ];
 }
 
 async function resolveDesignMemos(args: { status?: string }): Promise<unknown[]> {
@@ -346,8 +362,16 @@ async function resolveDesignMemos(args: { status?: string }): Promise<unknown[]>
     const slug = file.slice(0, -4);
     const raw = await fs.readFile(join(dir, file), 'utf-8');
     const frontmatter = /^---\n([\s\S]*?)\n---/.exec(raw)?.[1] ?? '';
-    const title = /^title:\s*(.+)$/m.exec(frontmatter)?.[1]?.trim().replace(/^["']|["']$/g, '') || slug;
-    const status = /^status:\s*(.+)$/m.exec(frontmatter)?.[1]?.trim().replace(/^["']|["']$/g, '') || 'open';
+    const title =
+      /^title:\s*(.+)$/m
+        .exec(frontmatter)?.[1]
+        ?.trim()
+        .replace(/^["']|["']$/g, '') || slug;
+    const status =
+      /^status:\s*(.+)$/m
+        .exec(frontmatter)?.[1]
+        ?.trim()
+        .replace(/^["']|["']$/g, '') || 'open';
     if (args.status && args.status !== 'any' && status !== args.status) continue;
     out.push({ slug, title, status, source: join(dir, file) });
   }
@@ -359,7 +383,9 @@ async function resolveDesignRegistry(args: { ecosystem?: string; query?: string 
   const ecosystem = args.ecosystem || 'react-tailwind';
   if (ecosystem !== 'react-tailwind') return [];
   const query = (args.query || '').trim().toLowerCase();
-  const registry = makeReactTailwindRegistry({ sourcePaths: ['apps/operator/app/harness', 'libs/generic/papergrid/grid-core/src'] });
+  const registry = makeReactTailwindRegistry({
+    sourcePaths: ['apps/operator/app/harness', 'libs/generic/papergrid/grid-core/src'],
+  });
   const entries = await registry.listPrimitives();
   if (!query) return entries as unknown[];
   return entries.filter((entry) => {
@@ -369,7 +395,9 @@ async function resolveDesignRegistry(args: { ecosystem?: string; query?: string 
       ...(entry.inputs ?? []).map((input) => `${input.name} ${input.type}`),
       ...(entry.variants ?? []),
       ...(entry.states ?? []),
-    ].join(' ').toLowerCase();
+    ]
+      .join(' ')
+      .toLowerCase();
     return haystack.includes(query);
   }) as unknown[];
 }
@@ -423,10 +451,7 @@ async function resolveHiveMemberSlugs(potHomeSlug: string, workspaceId?: string)
     // hiveMemberHarnessScopes always includes the home, so this is non-empty; guard anyway.
     return slugs.length > 0 ? slugs : [potHomeSlug];
   } catch (err) {
-    console.warn(
-      '[sync-resolver] hive member-slug resolution failed:',
-      err instanceof Error ? err.message : err,
-    );
+    console.warn('[sync-resolver] hive member-slug resolution failed:', err instanceof Error ? err.message : err);
     return [potHomeSlug];
   }
 }
@@ -468,9 +493,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // whole workspace (an ops dashboard wants every fleet, not one hive's).
   'fleet.status': {
     resolve: async () => {
-      const { resolvePresenceScope, assemblePresenceSnapshot } = await import(
-        '../agent-tools/coordination/presence-snapshot'
-      );
+      const { resolvePresenceScope, assemblePresenceSnapshot } =
+        await import('../agent-tools/coordination/presence-snapshot');
       const { activeWorkspaceId } = await import('../workspace-registry');
       const resolved = await resolvePresenceScope(
         { workspaceId: activeWorkspaceId(), harnessSlug: null },
@@ -599,7 +623,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       featureId: z.string().min(1),
       workspaceId: z.string().default('default'),
     }),
-    resolve: async (args) => resolveDesignSketches(args as { harnessSlug: string; featureId: string; workspaceId: string }),
+    resolve: async (args) =>
+      resolveDesignSketches(args as { harnessSlug: string; featureId: string; workspaceId: string }),
   },
   'designRegressions.list': {
     resolve: async () => resolveDesignRegressions(),
@@ -661,11 +686,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { eq } = await import('drizzle-orm');
       const t = generated.operatorBudgetInHarnessShared;
       const { db } = getOrgPg();
-      return (await db
-        .select()
-        .from(t)
-        .where(eq(t.workspaceId, workspaceId))
-        .limit(1)) as unknown[];
+      return (await db.select().from(t).where(eq(t.workspaceId, workspaceId)).limit(1)) as unknown[];
     },
   },
 
@@ -719,20 +740,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { statsAggregateForStatus } = await import('../identity/binding-verifier-types');
       const ws = workspaceId ?? activeWorkspaceId();
       const { sql } = getOrgPg();
-      const rows = (await sql<{
-        github_user_id: number;
-        github_username: string;
-        display_name: string | null;
-        avatar_url: string | null;
-        joined_at: Date | string;
-        last_seen_at: Date | string | null;
-        binding_status: string;
-        binding_last_checked_at: Date | string | null;
-        device_attestations: unknown;
-        prs_merged: string | number | null;
-        features_shipped: string | number | null;
-        activity_events: string | number | null;
-      }[]>`
+      const rows = await sql<
+        {
+          github_user_id: number;
+          github_username: string;
+          display_name: string | null;
+          avatar_url: string | null;
+          joined_at: Date | string;
+          last_seen_at: Date | string | null;
+          binding_status: string;
+          binding_last_checked_at: Date | string | null;
+          device_attestations: unknown;
+          prs_merged: string | number | null;
+          features_shipped: string | number | null;
+          activity_events: string | number | null;
+        }[]
+      >`
         SELECT
           c.github_user_id,
           c.github_username,
@@ -766,7 +789,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         WHERE c.workspace_id = ${ws}
           AND c.harness_slug = ${harnessSlug}
         ORDER BY c.joined_at DESC
-      `);
+      `;
       const toMs = (v: Date | string | null): number | null => {
         if (v === null) return null;
         if (v instanceof Date) return v.getTime();
@@ -803,7 +826,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'advSessions.list': {
     argsSchema: z.object({ limit: clampedLimit(500, 200).optional() }).optional(),
     resolve: async (args) => {
-      const limit = ((args as { limit?: number } | undefined)?.limit ?? 200);
+      const limit = (args as { limit?: number } | undefined)?.limit ?? 200;
       const { listAdvSessions } = await import('../adv-sessions');
       const { getOmpSessionRowSummary } = await import('../omp-sessions');
       const rows = await listAdvSessions(limit);
@@ -843,36 +866,34 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // advRoster.list — shared Sessions roster context, formerly a 4s
   // `/api/adv/roster` poll. Shape matches the route payload.
   'advRoster.list': {
-    argsSchema: z.object({
-      workspaceId: z.string().nullable().optional(),
-      endedLimit: clampedLimit(200, 50).optional(),
-    }).optional(),
+    argsSchema: z
+      .object({
+        workspaceId: z.string().nullable().optional(),
+        endedLimit: clampedLimit(200, 50).optional(),
+      })
+      .optional(),
     resolve: async (args) => {
       const { workspaceId = null, endedLimit = 50 } = (args ?? {}) as {
         workspaceId?: string | null;
         endedLimit?: number;
       };
       const os = await import('node:os');
-      const {
-        mergeRosterWithAssignments,
-        dedupeEndedAgainstActive,
-        pendingLaunchesToRosterEntries,
-      } = await import('../adv-roster');
-      const {
-        listEndedAdvSessions,
-        listPendingWorkbenchLaunches,
-      } = await import('../adv-sessions');
+      const { mergeRosterWithAssignments, dedupeEndedAgainstActive, pendingLaunchesToRosterEntries } =
+        await import('../adv-roster');
+      const { listEndedAdvSessions, listPendingWorkbenchLaunches } = await import('../adv-sessions');
       const [{ active, orphanedClaims }, endedAll, pendingRows] = await Promise.all([
         mergeRosterWithAssignments({ workspaceId }),
         listEndedAdvSessions({ workspaceId, limit: endedLimit }),
         listPendingWorkbenchLaunches({ workspaceId }),
       ]);
-      return [{
-        active,
-        ended: dedupeEndedAgainstActive(endedAll, active),
-        orphanedClaims,
-        pending: pendingLaunchesToRosterEntries(pendingRows, os.hostname()),
-      }];
+      return [
+        {
+          active,
+          ended: dedupeEndedAgainstActive(endedAll, active),
+          orphanedClaims,
+          pending: pendingLaunchesToRosterEntries(pendingRows, os.hostname()),
+        },
+      ];
     },
   },
 
@@ -1053,13 +1074,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return (await db
         .select()
         .from(t)
-        .where(
-          and(
-            eq(t.harnessSlug, harnessSlug),
-            eq(t.workspaceId, workspaceId),
-            eq(t.phase, phase),
-          ),
-        )
+        .where(and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId), eq(t.phase, phase)))
         .orderBy(asc(t.role))) as unknown[];
     },
   },
@@ -1089,7 +1104,13 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       if (!project) return [];
       const p = join(harnessDir(project), 'lanes.json');
       const nowMs = Date.now();
-      const lanes: Array<{ pid: number; featureId: string; startedAt: number; elapsedSeconds: number; alive: boolean }> = [];
+      const lanes: Array<{
+        pid: number;
+        featureId: string;
+        startedAt: number;
+        elapsedSeconds: number;
+        alive: boolean;
+      }> = [];
       if (existsSync(p)) {
         try {
           const raw = JSON.parse(readFileSync(p, 'utf8')) as { lanes?: unknown[] };
@@ -1228,13 +1249,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return (await db
         .select()
         .from(t)
-        .where(
-          and(
-            eq(t.harnessSlug, harnessSlug),
-            eq(t.workspaceId, workspaceId),
-            eq(t.phase, phase),
-          ),
-        )
+        .where(and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId), eq(t.phase, phase)))
         .limit(1)) as unknown[];
     },
   },
@@ -1424,11 +1439,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.pendingReviewsInHarnessShared;
       const { db } = getOrgPg();
-      const baseConds = [
-        eq(t.harnessSlug, harnessSlug),
-        eq(t.workspaceId, workspaceId),
-        eq(t.phase, phase),
-      ];
+      const baseConds = [eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId), eq(t.phase, phase)];
       const conds = includeResolved ? baseConds : [...baseConds, eq(t.resolved, false)];
       return (await db
         .select()
@@ -1654,7 +1665,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     // masked from su-d2230's pass by the coverage-guard comment-bleed blind spot.
     argsSchema: z.object({ harnessSlug: z.string(), featureId: z.string(), workspaceId: z.string().optional() }),
     resolve: async (args) => {
-      const { harnessSlug, featureId, workspaceId } = args as { harnessSlug: string; featureId: string; workspaceId?: string };
+      const { harnessSlug, featureId, workspaceId } = args as {
+        harnessSlug: string;
+        featureId: string;
+        workspaceId?: string;
+      };
       const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, asc, eq } = await import('drizzle-orm');
       const t = generated.harnessChunkPlansInHarnessShared;
@@ -1710,11 +1725,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { desc, eq } = await import('drizzle-orm');
       const t = generated.pluginEnablesInHarnessShared;
       const { db } = getOrgPg();
-      return (await db
-        .select()
-        .from(t)
-        .where(eq(t.workspaceId, workspaceId))
-        .orderBy(desc(t.updatedAt))) as unknown[];
+      return (await db.select().from(t).where(eq(t.workspaceId, workspaceId)).orderBy(desc(t.updatedAt))) as unknown[];
     },
   },
 
@@ -1770,13 +1781,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return (await db
         .select()
         .from(t)
-        .where(
-          and(
-            eq(t.harnessSlug, harnessSlug),
-            eq(t.workspaceId, workspaceId),
-            eq(t.phase, phase),
-          ),
-        )
+        .where(and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId), eq(t.phase, phase)))
         .orderBy(desc(t.ts))) as unknown[];
     },
   },
@@ -2118,11 +2123,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { desc, eq } = await import('drizzle-orm');
       const t = generated.harnessSnapshotsConsolidatedInHarnessShared;
       const { db } = getOrgPg();
-      return (await db
-        .select()
-        .from(t)
-        .where(eq(t.harnessSlug, harnessSlug))
-        .orderBy(desc(t.ts))) as unknown[];
+      return (await db.select().from(t).where(eq(t.harnessSlug, harnessSlug)).orderBy(desc(t.ts))) as unknown[];
     },
   },
 
@@ -2145,12 +2146,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.userActionsInHarnessShared;
       const { db } = getOrgPg();
-      return jsonSafeRows(await db
-        .select()
-        .from(t)
-        .where(and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId)))
-        .orderBy(desc(t.startedAt))
-        .limit(limit));
+      return jsonSafeRows(
+        await db
+          .select()
+          .from(t)
+          .where(and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId)))
+          .orderBy(desc(t.startedAt))
+          .limit(limit),
+      );
     },
   },
 
@@ -2175,18 +2178,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.userActionsInHarnessShared;
       const { db } = getOrgPg();
-      return jsonSafeRows(await db
-        .select()
-        .from(t)
-        .where(
-          and(
-            eq(t.harnessSlug, harnessSlug),
-            eq(t.workspaceId, workspaceId),
-            eq(t.kind, kind),
-          ),
-        )
-        .orderBy(desc(t.startedAt))
-        .limit(limit));
+      return jsonSafeRows(
+        await db
+          .select()
+          .from(t)
+          .where(and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId), eq(t.kind, kind)))
+          .orderBy(desc(t.startedAt))
+          .limit(limit),
+      );
     },
   },
 
@@ -2213,12 +2212,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { desc, eq } = await import('drizzle-orm');
       const t = generated.userActionsInHarnessShared;
       const { db } = getOrgPg();
-      return jsonSafeRows(await db
-        .select()
-        .from(t)
-        .where(eq(t.workspaceId, workspaceId))
-        .orderBy(desc(t.startedAt))
-        .limit(limit));
+      return jsonSafeRows(
+        await db.select().from(t).where(eq(t.workspaceId, workspaceId)).orderBy(desc(t.startedAt)).limit(limit),
+      );
     },
   },
 
@@ -2275,9 +2271,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { resolveHarnessPlansDir, readAllPlans } = await import(
-        '../agent-tools/plans/source'
-      );
+      const { resolveHarnessPlansDir, readAllPlans } = await import('../agent-tools/plans/source');
 
       const dirs = await resolveHarnessPlansDir(harnessSlug);
       const all = await readAllPlans({ harnessSlug: dirs.harnessSlug, workspaceId: dirs.workspaceId });
@@ -2519,14 +2513,23 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           const reg = await loadHarnessRegistry();
           harnessScopes = hiveMemberHarnessScopes(reg.projects, a.hive);
         } catch (err) {
-          console.warn('[learning.improvements] hive scope resolution failed:', err instanceof Error ? err.message : err);
+          console.warn(
+            '[learning.improvements] hive scope resolution failed:',
+            err instanceof Error ? err.message : err,
+          );
         }
       }
-      const items = await readImprovementItems({ state: a.state, limit: a.limit, ...(harnessScopes ? { harnessScopes } : {}) });
+      const items = await readImprovementItems({
+        state: a.state,
+        limit: a.limit,
+        ...(harnessScopes ? { harnessScopes } : {}),
+      });
       // Human lane ordered by the ONE ranker (frontier P-040; feature #1 is
       // consume-edges P-022's blocking impact) — the owner's queue leads with
       // what blocks the most, each item carrying its per-feature breakdown.
-      const digest = await applyHumanQueueRanking(buildDigest(items, { nowMs, ownerFullAutonomy }), { candidates: items });
+      const digest = await applyHumanQueueRanking(buildDigest(items, { nowMs, ownerFullAutonomy }), {
+        candidates: items,
+      });
       // FB-15 (P-043): this resolver IS the owner's view of the queue (the
       // improvements:digest tool and the digest routine read elsewhere), so a
       // hit here = the queue was rendered to the owner. Record a throttled
@@ -2592,7 +2595,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { loadHarnessTokens } = await import('../harness-insights/load-tokens');
       const ws = activeWorkspaceId();
       return await routeWithWorkspace(async (tx) => {
-        const runQuery = async <T,>(query: string, params: unknown[]): Promise<T[]> =>
+        const runQuery = async <T>(query: string, params: unknown[]): Promise<T[]> =>
           (await tx.unsafe(query, params as never)) as unknown as T[];
         const snapshot = await loadHarnessTokens({
           workspace_id: ws,
@@ -2632,12 +2635,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const a = args as { harness?: string; windowMs?: number };
       const { activeWorkspaceId } = await import('../workspace-registry');
       const { routeWithWorkspace } = await import('../route-workspace');
-      const { loadModelPricingBook, loadCoordTokenBreakdown, loadCoordPollVolume } = await import(
-        '../harness-insights/load-token-rollups'
-      );
+      const { loadModelPricingBook, loadCoordTokenBreakdown, loadCoordPollVolume } =
+        await import('../harness-insights/load-token-rollups');
       const ws = activeWorkspaceId();
       return await routeWithWorkspace(async (tx) => {
-        const runQuery = async <T,>(query: string, params: unknown[]): Promise<T[]> =>
+        const runQuery = async <T>(query: string, params: unknown[]): Promise<T[]> =>
           (await tx.unsafe(query, params as never)) as unknown as T[];
         const [pricingBook, coordBreakdown, pollVolume] = await Promise.all([
           loadModelPricingBook(runQuery),
@@ -2682,14 +2684,15 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const rows = issues
         .map((i) => {
           const p = i.payload && typeof i.payload === 'object' ? (i.payload as Record<string, unknown>) : {};
-          const obs = p.observation && typeof p.observation === 'object' ? (p.observation as Record<string, unknown>) : {};
+          const obs =
+            p.observation && typeof p.observation === 'object' ? (p.observation as Record<string, unknown>) : {};
           const refs = Array.isArray(obs.refs) ? obs.refs.filter((r): r is string => typeof r === 'string') : [];
           return {
             id: i.id,
             title: i.title,
             body: i.body ?? null,
             kind: typeof obs.kind === 'string' ? obs.kind : null,
-            scope: typeof obs.scope === 'string' ? obs.scope : i.scope ?? null,
+            scope: typeof obs.scope === 'string' ? obs.scope : (i.scope ?? null),
             confidence: typeof obs.confidence === 'string' ? obs.confidence : null,
             refs,
             sourceRole: typeof p.sourceRole === 'string' ? p.sourceRole : null,
@@ -3086,7 +3089,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       posture: z.enum(['auto', 'proposed', 'gated', 'rejected']).optional(),
       category: z.string().min(1).max(60).optional(),
       disposition: z.enum(['act', 'defer', 'reject', 'route-to-research', 'no-op']).optional(),
-      sinceHours: z.number().positive().max(24 * 90).optional(),
+      sinceHours: z
+        .number()
+        .positive()
+        .max(24 * 90)
+        .optional(),
       limit: clampedLimit(500, 50),
     }),
     resolve: async (args) => {
@@ -3143,7 +3150,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           memory.precision = await readMemoryPrecision(getOrgPg().sql, activeWorkspaceId());
         } catch (err) {
           if ((err as { code?: string }).code !== '42P01') {
-            console.warn('[learning.knowledge] memory precision read failed:', err instanceof Error ? err.message : err);
+            console.warn(
+              '[learning.knowledge] memory precision read failed:',
+              err instanceof Error ? err.message : err,
+            );
           }
           const { EMPTY_PRECISION_SNAPSHOT } = await import('../memory/bench/precision-read');
           memory.precision = EMPTY_PRECISION_SNAPSHOT;
@@ -3409,9 +3419,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           const atts = Array.isArray(m.device_attestations)
             ? (m.device_attestations as Array<Record<string, unknown>>)
             : [];
-          const revoked = new Set(
-            Array.isArray(m.revoked_pubkeys) ? (m.revoked_pubkeys as string[]) : [],
-          );
+          const revoked = new Set(Array.isArray(m.revoked_pubkeys) ? (m.revoked_pubkeys as string[]) : []);
           let thisDeviceLive = false;
           for (const a of atts) {
             const pubkey = typeof a.device_pubkey === 'string' ? a.device_pubkey : '';
@@ -3974,7 +3982,13 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const wsId = workspace ?? activeWorkspaceId();
       const [presence, members] = await Promise.all([
         listPresence({ workspaceId: workspace ?? null }) as Promise<
-          Array<{ ownerId: string; ownerLabel: string | null; intent: string | null; userId: string | null; stale?: boolean }>
+          Array<{
+            ownerId: string;
+            ownerLabel: string | null;
+            intent: string | null;
+            userId: string | null;
+            stale?: boolean;
+          }>
         >,
         listWorkspaceMembers(wsId).catch(() => []),
       ]);
@@ -4092,7 +4106,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { owner } = args as { owner: string };
       const { readInbox, readOutbox } = await import('../agent-tools/coordination/messages');
       const [inboxAll, outboxAll] = await Promise.all([readInbox(owner, {}), readOutbox(owner, {})]);
-      const tail = <T,>(arr: T[]) => (arr.length > 50 ? arr.slice(arr.length - 50) : arr);
+      const tail = <T>(arr: T[]) => (arr.length > 50 ? arr.slice(arr.length - 50) : arr);
       return [{ owner, inbox: tail(inboxAll), outbox: tail(outboxAll) }];
     },
   },
@@ -4184,9 +4198,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { and, eq } = await import('drizzle-orm');
       const t = generated.agentChatsConsolidatedInHarnessShared;
       const { db } = getOrgPg();
-      return db.select().from(t).where(
-        workspaceId ? and(eq(t.id, id), eq(t.workspaceId, workspaceId)) : eq(t.id, id),
-      ).limit(1) as unknown as Promise<unknown[]>;
+      return db
+        .select()
+        .from(t)
+        .where(workspaceId ? and(eq(t.id, id), eq(t.workspaceId, workspaceId)) : eq(t.id, id))
+        .limit(1) as unknown as Promise<unknown[]>;
     },
   },
 
@@ -4210,11 +4226,20 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   },
 
   'testing.assertionsByHarness': {
-    argsSchema: z.object({ harnessSlug: z.string(), workspaceId: z.string().optional(), planSlug: z.string().optional() }),
+    argsSchema: z.object({
+      harnessSlug: z.string(),
+      workspaceId: z.string().optional(),
+      planSlug: z.string().optional(),
+    }),
     resolve: async (args) => {
-      const { harnessSlug, workspaceId, planSlug } = args as { harnessSlug: string; workspaceId?: string; planSlug?: string };
+      const { harnessSlug, workspaceId, planSlug } = args as {
+        harnessSlug: string;
+        workspaceId?: string;
+        planSlug?: string;
+      };
       const [{ getOrgPg }, { activeWorkspaceId }] = await Promise.all([
-        import('@papercusp/db-org'), import('../workspace-registry'),
+        import('@papercusp/db-org'),
+        import('../workspace-registry'),
       ]);
       const { sql } = getOrgPg();
       const ws = workspaceId ?? activeWorkspaceId();
@@ -4234,19 +4259,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'operatorConfig.byWorkspace': {
     resolve: async () => {
       const [{ readOperatorState }, { OPERATOR_SUBSTRATE_PROMPT }] = await Promise.all([
-        import('../operator-state-pg'), import('../operator-prompt-system'),
+        import('../operator-state-pg'),
+        import('../operator-prompt-system'),
       ]);
       const [prompt, prefs] = await Promise.all([
         readOperatorState<{ content?: string }>('operator_prompt_user'),
         readOperatorState<{ content?: string }>('operator_preferences'),
       ]);
-      return [{
-        prompt_user: prompt?.content ?? '',
-        preferences: prefs?.content ?? '',
-        substrate_prompt: OPERATOR_SUBSTRATE_PROMPT,
-        prompt_user_path: 'harness_shared.operator_prompt_user',
-        prefs_path: 'harness_shared.operator_preferences',
-      }];
+      return [
+        {
+          prompt_user: prompt?.content ?? '',
+          preferences: prefs?.content ?? '',
+          substrate_prompt: OPERATOR_SUBSTRATE_PROMPT,
+          prompt_user_path: 'harness_shared.operator_prompt_user',
+          prefs_path: 'harness_shared.operator_preferences',
+        },
+      ];
     },
   },
   'operatorPreferences.byWorkspace': {
@@ -4264,7 +4292,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'userPreferences.current': {
     resolve: async () => {
       const [{ getSessionUser }, { loadUserPreferences }] = await Promise.all([
-        import('../auth'), import('../user-preferences'),
+        import('../auth'),
+        import('../user-preferences'),
       ]);
       const user = await getSessionUser();
       return [{ payload: await loadUserPreferences(user?.id ?? null), userId: user?.id ?? null }];
@@ -4286,7 +4315,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ workspaceId: z.string().optional() }),
     resolve: async (args) => {
       const [{ getAccountOverride }, { activeWorkspaceId }] = await Promise.all([
-        import('../deployment/account-session-override'), import('../workspace-registry'),
+        import('../deployment/account-session-override'),
+        import('../workspace-registry'),
       ]);
       const { workspaceId } = args as { workspaceId?: string };
       return [await getAccountOverride(workspaceId ?? activeWorkspaceId())];
@@ -4332,12 +4362,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { getConversation } = await import('../agent-tools/coordination/conversations');
       const detail = await getConversation(id);
       return detail
-        ? [{
-            ...detail.conversation,
-            topics: detail.topics,
-            posts: detail.posts,
-            subscriber_count: detail.subscriber_count,
-          }]
+        ? [
+            {
+              ...detail.conversation,
+              topics: detail.topics,
+              posts: detail.posts,
+              subscriber_count: detail.subscriber_count,
+            },
+          ]
         : [];
     },
   },
@@ -4465,9 +4497,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // per device client-side, mirroring the pui Hives tab.
   'sidebar.hives': {
     resolve: async () => {
-      const { listFederatedPresence } = await import(
-        '../agent-tools/coordination/federated-presence'
-      );
+      const { listFederatedPresence } = await import('../agent-tools/coordination/federated-presence');
       // All rows, stale ones flagged (a hive that joined but went quiet still
       // lists); fail-soft empty when the org PG is unreachable.
       return listFederatedPresence({});
@@ -4733,9 +4763,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // after boot). Same 90s-dedupe reasoning as network.hiveDirectory.
   'network.federationStatus': {
     resolve: async () => {
-      const { buildFederationStatus } = await import(
-        '../endpoint-route/routes/discovery/build-federation-status'
-      );
+      const { buildFederationStatus } = await import('../endpoint-route/routes/discovery/build-federation-status');
       return [await buildFederationStatus()];
     },
   },

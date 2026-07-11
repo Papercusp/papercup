@@ -26,10 +26,9 @@ const issue = (id: string, createdAt: string) => ({
 });
 
 beforeEach(() => {
-  listIssues.mockReset().mockResolvedValue([
-    issue('EI-2', '2026-07-11T12:00:00.000Z'),
-    issue('EI-1', '2026-07-10T12:00:00.000Z'),
-  ]);
+  listIssues
+    .mockReset()
+    .mockResolvedValue([issue('EI-2', '2026-07-11T12:00:00.000Z'), issue('EI-1', '2026-07-10T12:00:00.000Z')]);
   countIssues.mockReset().mockResolvedValue(725);
 });
 

@@ -3,59 +3,95 @@
  * Each stage composes the existing sync-backed panels; `?lview=` remains the
  * canonical deep-link state and `?lhive=` scopes the hive-aware views.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useQueryState, parseAsStringEnum, parseAsString } from 'nuqs';
-import { useSyncQuery } from '@papercusp/sync';
-import * as Tabs from '@radix-ui/react-tabs';
-import { RefreshCw, ShieldCheck, UserRound, CheckCircle2, Dumbbell, Sparkles, XCircle, Clock, HelpCircle, Gauge, BookOpen, ArrowUp, ArrowDown, Minus, Activity, Repeat2, Hourglass, Radar, Brain, Star, MessageSquarePlus, MessageSquareText, Send, Eye, Lightbulb, FlaskConical } from 'lucide-react';
-import type { ImprovementDigest, ScoredItem } from '@papercusp/operator-core/lib/harness/improvements/digest';
-import { CATEGORICAL, SEVERITY } from '@/app/harness/theme';
-import type { ImprovementFlow } from '@papercusp/operator-core/lib/harness/improvements/flow-metrics';
-import type { ScoutSnapshot, ScoutRoutedItem } from '@papercusp/operator-core/lib/sync-resolver/learning-scout-read';
-import type { HiveLearningsSnapshot } from '@papercusp/operator-core/lib/sync-resolver/learning-hive-read';
-import type { HiveThroughputSnapshot } from '@papercusp/operator-core/lib/sync-resolver/learning-hive-throughput-read';
-import type { PotSoakReportSnapshot } from '@papercusp/operator-core/lib/pot/soak-report';
-import type { InstallAction, InstallReview } from '@papercusp/operator-core/lib/learning-packs/manage';
-import { BenchmarkTrend, type BenchmarkTrendInstance } from './BenchmarkTrend';
-import type { BakeoffTrendRow } from '@papercusp/operator-core/lib/pot-eval/bakeoff-trend';
-import { EkgPanel } from './EkgPanel';
-import { RedQueenPanel } from './RedQueenPanel';
-import { MugWakeEfficiencyPanel } from './MugWakeEfficiencyPanel';
-import { ExperimentsPanel } from './ExperimentsPanel';
-import { Select } from '@/app/harness/Select';
-import { Tooltip } from '@/app/harness/Tooltip';
-import { statusToneColor } from '@/app/harness/theme';
-import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
-import { usePromptDialog } from '@/app/harness/usePromptDialog';
-import { hiveHomeLabel } from '@/lib/hive-label';
-import { useLexicon } from '@/lib/useLexicon';
-import LearningInfraHealthChip from './LearningInfraHealthChip';
-import LearningEfficacyPanel from './LearningEfficacyPanel';
-import HumanQueueDrain from './HumanQueueDrain';
-import LearningPackCandidates from './LearningPackCandidates';
-import RubricsPanel from '@/app/_components/RubricsPanel';
-import RubricDetailPanel from '@/app/_components/RubricDetailPanel';
-import ObservationsPanel from '@/app/adv/create/ObservationsPanel';
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useQueryState, parseAsStringEnum, parseAsString } from "nuqs";
+import { useSyncQuery } from "@papercusp/sync";
+import * as Tabs from "@radix-ui/react-tabs";
+import {
+  RefreshCw,
+  ShieldCheck,
+  UserRound,
+  CheckCircle2,
+  Dumbbell,
+  Sparkles,
+  XCircle,
+  Clock,
+  HelpCircle,
+  Gauge,
+  BookOpen,
+  ArrowUp,
+  ArrowDown,
+  Minus,
+  Activity,
+  Repeat2,
+  Hourglass,
+  Radar,
+  Brain,
+  Star,
+  MessageSquarePlus,
+  MessageSquareText,
+  Send,
+  Eye,
+  Lightbulb,
+  FlaskConical,
+} from "lucide-react";
+import type {
+  ImprovementDigest,
+  ScoredItem,
+} from "@papercusp/operator-core/lib/harness/improvements/digest";
+import { CATEGORICAL, SEVERITY } from "@/app/harness/theme";
+import type { ImprovementFlow } from "@papercusp/operator-core/lib/harness/improvements/flow-metrics";
+import type {
+  ScoutSnapshot,
+  ScoutRoutedItem,
+} from "@papercusp/operator-core/lib/sync-resolver/learning-scout-read";
+import type { HiveLearningsSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-hive-read";
+import type { HiveThroughputSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-hive-throughput-read";
+import type { PotSoakReportSnapshot } from "@papercusp/operator-core/lib/pot/soak-report";
+import type {
+  InstallAction,
+  InstallReview,
+} from "@papercusp/operator-core/lib/learning-packs/manage";
+import { BenchmarkTrend, type BenchmarkTrendInstance } from "./BenchmarkTrend";
+import type { BakeoffTrendRow } from "@papercusp/operator-core/lib/pot-eval/bakeoff-trend";
+import { EkgPanel } from "./EkgPanel";
+import { RedQueenPanel } from "./RedQueenPanel";
+import { MugWakeEfficiencyPanel } from "./MugWakeEfficiencyPanel";
+import { ExperimentsPanel } from "./ExperimentsPanel";
+import { Select } from "@/app/harness/Select";
+import { Tooltip } from "@/app/harness/Tooltip";
+import { statusToneColor } from "@/app/harness/theme";
+import { useConfirmDialog } from "@/app/harness/useConfirmDialog";
+import { usePromptDialog } from "@/app/harness/usePromptDialog";
+import { hiveHomeLabel } from "@/lib/hive-label";
+import { useLexicon } from "@/lib/useLexicon";
+import LearningInfraHealthChip from "./LearningInfraHealthChip";
+import LearningEfficacyPanel from "./LearningEfficacyPanel";
+import HumanQueueDrain from "./HumanQueueDrain";
+import LearningPackCandidates from "./LearningPackCandidates";
+import RubricsPanel from "@/app/_components/RubricsPanel";
+import RubricDetailPanel from "@/app/_components/RubricDetailPanel";
+import ObservationsPanel from "@/app/adv/create/ObservationsPanel";
 
 const LVIEWS = [
-  'observations',
-  'rubrics',
-  'ideas',
-  'gym',
-  'improvements',
-  'benchmark',
-  'orchestration',
-  'bakeoff',
-  'wake-efficiency',
-  'ekg',
-  'red-queen',
-  'experiments',
-  'throughput',
-  'learnings',
+  "observations",
+  "rubrics",
+  "ideas",
+  "gym",
+  "improvements",
+  "benchmark",
+  "orchestration",
+  "bakeoff",
+  "wake-efficiency",
+  "ekg",
+  "red-queen",
+  "experiments",
+  "throughput",
+  "learnings",
 ] as const;
 type LView = (typeof LVIEWS)[number];
 
-type LearningStage = 'observe' | 'improve' | 'verify' | 'retain';
+type LearningStage = "observe" | "improve" | "verify" | "retain";
 
 const STAGES: ReadonlyArray<{
   id: LearningStage;
@@ -64,108 +100,133 @@ const STAGES: ReadonlyArray<{
   views: ReadonlyArray<{ id: LView; label: string; icon: typeof Eye }>;
 }> = [
   {
-    id: 'observe',
-    label: 'Observe',
+    id: "observe",
+    label: "Observe",
     icon: Eye,
     views: [
-      { id: 'observations', label: 'Observations', icon: Eye },
-      { id: 'rubrics', label: 'Rubrics', icon: Gauge },
+      { id: "observations", label: "Observations", icon: Eye },
+      { id: "rubrics", label: "Rubrics", icon: Gauge },
     ],
   },
   {
-    id: 'improve',
-    label: 'Improve',
+    id: "improve",
+    label: "Improve",
     icon: Lightbulb,
     views: [
-      { id: 'ideas', label: 'Ideas', icon: Lightbulb },
-      { id: 'gym', label: 'Gym', icon: Dumbbell },
-      { id: 'improvements', label: 'Improvements', icon: Sparkles },
+      { id: "ideas", label: "Ideas", icon: Lightbulb },
+      { id: "gym", label: "Gym", icon: Dumbbell },
+      { id: "improvements", label: "Improvements", icon: Sparkles },
     ],
   },
   {
-    id: 'verify',
-    label: 'Verify',
+    id: "verify",
+    label: "Verify",
     icon: Gauge,
     views: [
-      { id: 'benchmark', label: 'Benchmark', icon: FlaskConical },
-      { id: 'orchestration', label: 'Pot orchestration', icon: Activity },
-      { id: 'bakeoff', label: 'Framework bake-off', icon: Repeat2 },
-      { id: 'wake-efficiency', label: 'Wake efficiency', icon: Hourglass },
-      { id: 'ekg', label: 'EKG', icon: Activity },
-      { id: 'red-queen', label: 'Red Queen', icon: Radar },
-      { id: 'experiments', label: 'Experiments', icon: FlaskConical },
+      { id: "benchmark", label: "Benchmark", icon: FlaskConical },
+      { id: "orchestration", label: "Pot orchestration", icon: Activity },
+      { id: "bakeoff", label: "Framework bake-off", icon: Repeat2 },
+      { id: "wake-efficiency", label: "Wake efficiency", icon: Hourglass },
+      { id: "ekg", label: "EKG", icon: Activity },
+      { id: "red-queen", label: "Red Queen", icon: Radar },
+      { id: "experiments", label: "Experiments", icon: FlaskConical },
     ],
   },
   {
-    id: 'retain',
-    label: 'Retain',
+    id: "retain",
+    label: "Retain",
     icon: Brain,
-    views: [{ id: 'learnings', label: 'Learnings', icon: Brain }],
+    views: [{ id: "learnings", label: "Learnings", icon: Brain }],
   },
 ];
 
 function stageForView(view: LView): LearningStage | null {
-  return STAGES.find((stage) => stage.views.some((candidate) => candidate.id === view))?.id ?? null;
+  return (
+    STAGES.find((stage) =>
+      stage.views.some((candidate) => candidate.id === view),
+    )?.id ?? null
+  );
 }
 
 /** Sub-views whose data is scoped to ONE Hive (the tenancy unit, D-008) — they
  *  read the tab-level `?lhive=`. The rest are workspace-global (Benchmark,
  *  Scout, Knowledge — plus the EKG/RedQueen/scout-ledger panels inside them) and
  *  ignore it; Throughput already lists every hive, so it ignores it too. */
-const HIVE_AWARE_VIEWS: ReadonlySet<LView> = new Set<LView>(['improvements', 'gym', 'learnings']);
+const HIVE_AWARE_VIEWS: ReadonlySet<LView> = new Set<LView>([
+  "improvements",
+  "gym",
+  "learnings",
+]);
 
 export default function LearningTab() {
   const t = useLexicon();
-  const [lview, setLview] = useQueryState('lview', parseAsStringEnum<LView>([...LVIEWS]).withDefault('improvements'));
-  const [, setAdvTab] = useQueryState('tab', parseAsString);
+  const [lview, setLview] = useQueryState(
+    "lview",
+    parseAsStringEnum<LView>([...LVIEWS]).withDefault("improvements"),
+  );
+  const [, setAdvTab] = useQueryState("tab", parseAsString);
   const [rubricId, setRubricId] = useState<string | null>(null);
   // Tab-level per-Hive lens (per-hive-learning-loops P-042): ONE `?lhive=` param,
   // promoted up from the Learnings sub-view so it applies across every hive-aware
   // view. Agents drive it via ui:dispatch; the hive-creation success card
   // deep-links here with ?lhive=<slug>. Default '' ⇒ the first hive (resolved
   // once the list loads).
-  const [lhive, setLhive] = useQueryState('lhive', parseAsString.withDefault(''));
-  const view: LView = (LVIEWS as readonly string[]).includes(lview) ? (lview as LView) : 'improvements';
+  const [lhive, setLhive] = useQueryState(
+    "lhive",
+    parseAsString.withDefault(""),
+  );
+  const view: LView = (LVIEWS as readonly string[]).includes(lview)
+    ? (lview as LView)
+    : "improvements";
 
   // The workspace's hives back the header picker (reuses the Learnings view's
   // query). Only fetched/shown for hive-aware views; an empty selection falls
   // back to the first hive so a fresh tab lands on a real hive.
   const hiveList = useSyncQuery<{ slug: string; remote: boolean }>({
-    queryName: 'learning.hiveList',
+    queryName: "learning.hiveList",
     args: {},
     staleTime: 60_000,
     enabled: HIVE_AWARE_VIEWS.has(view),
   });
   const hives = hiveList.data ?? [];
   const hiveAware = HIVE_AWARE_VIEWS.has(view);
-  const hive = lhive || hives[0]?.slug || '';
+  const hive = lhive || hives[0]?.slug || "";
   const activeStage = stageForView(view);
-  const activeStageMeta = STAGES.find((stage) => stage.id === activeStage) ?? null;
+  const activeStageMeta =
+    STAGES.find((stage) => stage.id === activeStage) ?? null;
   // Work Queue parity: once a view has been opened, keep its sync subscription
   // and rendered state alive while the user moves around the loop. The old
   // conditional unmounted every panel, forcing heavy aggregate reads to cold-
   // start again on return. This is lazy (only visited views mount), so opening
   // Learning does not fan out every query at once.
-  const [visitedViews, setVisitedViews] = useState<ReadonlySet<LView>>(() => new Set([view]));
+  const [visitedViews, setVisitedViews] = useState<ReadonlySet<LView>>(
+    () => new Set([view]),
+  );
   useEffect(() => {
-    setVisitedViews((current) => current.has(view) ? current : new Set([...current, view]));
+    setVisitedViews((current) =>
+      current.has(view) ? current : new Set([...current, view]),
+    );
   }, [view]);
   // Include the newly selected view in this render; the effect persists it for
   // later renders without introducing a one-frame empty panel.
-  const mountedViews = visitedViews.has(view) ? visitedViews : new Set([...visitedViews, view]);
+  const mountedViews = visitedViews.has(view)
+    ? visitedViews
+    : new Set([...visitedViews, view]);
 
   return (
     <div className="pc-learning">
       <header className="pc-learning__header">
-        <h1><Brain size={19} aria-hidden /> Learning</h1>
+        <h1>
+          <Brain size={19} aria-hidden /> Learning
+        </h1>
         <div className="pc-learning__utilities">
           <LearningInfraHealthChip />
           <Tooltip label="Learning-loop throughput and placement health">
             <button
               type="button"
-              className={`pc-learning__utility${view === 'throughput' ? ' is-active' : ''}`}
+              className={`pc-learning__utility${view === "throughput" ? " is-active" : ""}`}
               aria-label="Loop health"
-              onClick={() => void setLview('throughput')}
+              onClick={() => void setLview("throughput")}
             >
               <Activity size={14} aria-hidden />
               <span>Loop health</span>
@@ -176,7 +237,7 @@ export default function LearningTab() {
               type="button"
               className="pc-learning__utility"
               aria-label="Insights"
-              onClick={() => void setAdvTab('insights')}
+              onClick={() => void setAdvTab("insights")}
             >
               <BookOpen size={14} aria-hidden />
               <span>Insights</span>
@@ -187,20 +248,31 @@ export default function LearningTab() {
 
       <Tabs.Root
         className="pc-learning__stages"
-        value={activeStage ?? ''}
+        value={activeStage ?? ""}
         onValueChange={(next) => {
           const stage = STAGES.find((candidate) => candidate.id === next);
           if (stage) void setLview(stage.views[0].id);
         }}
       >
-        <Tabs.List className="pc-learning__stage-list" aria-label="Learning loop stage">
+        <Tabs.List
+          className="pc-learning__stage-list"
+          aria-label="Learning loop stage"
+        >
           {STAGES.map((stage, index) => {
             const Icon = stage.icon;
             return (
-              <Tabs.Trigger key={stage.id} value={stage.id} className="pc-learning__stage">
-                <span className="pc-learning__stage-icon"><Icon size={16} aria-hidden /></span>
+              <Tabs.Trigger
+                key={stage.id}
+                value={stage.id}
+                className="pc-learning__stage"
+              >
+                <span className="pc-learning__stage-icon">
+                  <Icon size={16} aria-hidden />
+                </span>
                 <span className="pc-learning__stage-label">{stage.label}</span>
-                {index < STAGES.length - 1 ? <span className="pc-learning__stage-line" aria-hidden /> : null}
+                {index < STAGES.length - 1 ? (
+                  <span className="pc-learning__stage-line" aria-hidden />
+                ) : null}
               </Tabs.Trigger>
             );
           })}
@@ -209,12 +281,23 @@ export default function LearningTab() {
 
       <div className="pc-learning__controls">
         {activeStageMeta && activeStageMeta.views.length > 1 ? (
-          <Tabs.Root className="pc-learning__view-tabs" value={view} onValueChange={(next) => void setLview(next as LView)}>
-            <Tabs.List className="pc-learning__view-list" aria-label={`${activeStageMeta.label} views`}>
+          <Tabs.Root
+            className="pc-learning__view-tabs"
+            value={view}
+            onValueChange={(next) => void setLview(next as LView)}
+          >
+            <Tabs.List
+              className="pc-learning__view-list"
+              aria-label={`${activeStageMeta.label} views`}
+            >
               {activeStageMeta.views.map((candidate) => {
                 const Icon = candidate.icon;
                 return (
-                  <Tabs.Trigger key={candidate.id} value={candidate.id} className="pc-learning__view-tab">
+                  <Tabs.Trigger
+                    key={candidate.id}
+                    value={candidate.id}
+                    className="pc-learning__view-tab"
+                  >
                     <Icon size={13} aria-hidden />
                     {candidate.label}
                   </Tabs.Trigger>
@@ -222,23 +305,36 @@ export default function LearningTab() {
               })}
             </Tabs.List>
           </Tabs.Root>
-        ) : <span />}
+        ) : (
+          <span />
+        )}
 
         {hiveAware ? (
-          <Tooltip label={`Scope this view to one ${t('pot', { lower: true })}`}>
+          <Tooltip
+            label={`Scope this view to one ${t("pot", { lower: true })}`}
+          >
             <label className="pc-learning__hivepick">
               <Brain size={12} aria-hidden />
-              <span className="pc-learning__hivepicklabel">{t('pot', { lower: true })}</span>
+              <span className="pc-learning__hivepicklabel">
+                {t("pot", { lower: true })}
+              </span>
               <Select
-                ariaLabel={`${t('pot')} lens`}
+                ariaLabel={`${t("pot")} lens`}
                 value={hive}
                 onChange={(next: string) => void setLhive(next)}
                 disabled={hives.length === 0}
-                placeholder={hives.length === 0 ? `no ${t('pot', { plural: true, lower: true })} yet` : undefined}
-                triggerStyle={{ maxWidth: 200, opacity: hives.length === 0 ? 0.6 : undefined }}
+                placeholder={
+                  hives.length === 0
+                    ? `no ${t("pot", { plural: true, lower: true })} yet`
+                    : undefined
+                }
+                triggerStyle={{
+                  maxWidth: 200,
+                  opacity: hives.length === 0 ? 0.6 : undefined,
+                }}
                 options={hives.map((candidate) => ({
                   value: candidate.slug,
-                  label: `${hiveHomeLabel(candidate.slug)}${candidate.remote ? ' (joined)' : ''}`,
+                  label: `${hiveHomeLabel(candidate.slug)}${candidate.remote ? " (joined)" : ""}`,
                 }))}
               />
             </label>
@@ -247,23 +343,25 @@ export default function LearningTab() {
       </div>
 
       <div className="pc-learning__body">
-        {LVIEWS.filter((candidate) => mountedViews.has(candidate)).map((mountedView) => (
-          <section
-            key={mountedView}
-            className="pc-learning__viewpane"
-            data-view={mountedView}
-            role="tabpanel"
-            aria-label={stageForView(mountedView) ?? 'Loop health'}
-            hidden={mountedView !== view}
-          >
-            <LearningViewContent
-              view={mountedView}
-              hive={hive}
-              rubricId={rubricId}
-              onRubricSelect={setRubricId}
-            />
-          </section>
-        ))}
+        {LVIEWS.filter((candidate) => mountedViews.has(candidate)).map(
+          (mountedView) => (
+            <section
+              key={mountedView}
+              className="pc-learning__viewpane"
+              data-view={mountedView}
+              role="tabpanel"
+              aria-label={stageForView(mountedView) ?? "Loop health"}
+              hidden={mountedView !== view}
+            >
+              <LearningViewContent
+                view={mountedView}
+                hive={hive}
+                rubricId={rubricId}
+                onRubricSelect={setRubricId}
+              />
+            </section>
+          ),
+        )}
       </div>
 
       <LearningStyles />
@@ -282,35 +380,38 @@ function LearningViewContent({
   rubricId: string | null;
   onRubricSelect: (id: string | null) => void;
 }) {
-  if (view === 'observations') return <ObservationsPanel />;
-  if (view === 'ideas') return <ScoutView />;
-  if (view === 'rubrics') {
+  if (view === "observations") return <ObservationsPanel />;
+  if (view === "ideas") return <ScoutView />;
+  if (view === "rubrics") {
     return rubricId ? (
-      <RubricDetailPanel rubricId={rubricId} onBack={() => onRubricSelect(null)} />
+      <RubricDetailPanel
+        rubricId={rubricId}
+        onBack={() => onRubricSelect(null)}
+      />
     ) : (
       <RubricsPanel onSelect={onRubricSelect} />
     );
   }
-  if (view === 'gym') return <GymView hive={hive} />;
-  if (view === 'improvements') return <ImprovementsView hive={hive} />;
-  if (view === 'benchmark') return <ApiaryView />;
-  if (view === 'orchestration') return <HiveEvalTrendView />;
-  if (view === 'bakeoff') return <BakeoffTrendView />;
-  if (view === 'wake-efficiency') return <MugWakeEfficiencyPanel />;
-  if (view === 'ekg') return <EkgPanel />;
-  if (view === 'red-queen') return <RedQueenPanel />;
-  if (view === 'experiments') return <ExperimentsPanel />;
-  if (view === 'throughput') return <ThroughputView />;
+  if (view === "gym") return <GymView hive={hive} />;
+  if (view === "improvements") return <ImprovementsView hive={hive} />;
+  if (view === "benchmark") return <ApiaryView />;
+  if (view === "orchestration") return <HiveEvalTrendView />;
+  if (view === "bakeoff") return <BakeoffTrendView />;
+  if (view === "wake-efficiency") return <MugWakeEfficiencyPanel />;
+  if (view === "ekg") return <EkgPanel />;
+  if (view === "red-queen") return <RedQueenPanel />;
+  if (view === "experiments") return <ExperimentsPanel />;
+  if (view === "throughput") return <ThroughputView />;
   return <LearningsView hive={hive} />;
 }
 
 // ─── Improvements view ───────────────────────────────────────────────────────
 
-const LANES = ['all', 'auto', 'human'] as const;
+const LANES = ["all", "auto", "human"] as const;
 type Lane = (typeof LANES)[number];
 
 function ageLabel(days: number): string {
-  if (days < 1 / 24) return 'just now';
+  if (days < 1 / 24) return "just now";
   if (days < 1) return `${Math.round(days * 24)}h`;
   return `${Math.round(days)}d`;
 }
@@ -319,28 +420,34 @@ function ImprovementsView({ hive }: { hive: string }) {
   // P-042: the tab-level hive lens scopes the feed to one hive's member-harness
   // improvements; '' ⇒ the workspace-wide feed (no hive arg).
   const sync = useSyncQuery<ImprovementDigest & { flow?: ImprovementFlow }>({
-    queryName: 'learning.improvements',
+    queryName: "learning.improvements",
     args: hive ? { hive } : {},
     staleTime: 30_000,
   });
   const digest = sync.data?.[0];
-  const [lane, setLane] = useQueryState('lane', parseAsStringEnum<Lane>([...LANES]).withDefault('all'));
+  const [lane, setLane] = useQueryState(
+    "lane",
+    parseAsStringEnum<Lane>([...LANES]).withDefault("all"),
+  );
   // Source facet (`?lsrc=`): who filed it — Scout / Queen / system / … (payload.sourceRole).
-  const [src, setSrc] = useQueryState('lsrc', parseAsString);
+  const [src, setSrc] = useQueryState("lsrc", parseAsString);
   // Selected item (`?lsel=`): set by deep-links (e.g. a Scout-routed improvement
   // click) — the row is highlighted + scrolled into view; clicking it dismisses.
-  const [lsel, setLsel] = useQueryState('lsel', parseAsString);
+  const [lsel, setLsel] = useQueryState("lsel", parseAsString);
 
   const allRows = useMemo<ScoredItem[]>(() => {
     if (!digest) return [];
-    if (lane === 'auto') return digest.autoEligible;
-    if (lane === 'human') return digest.humanQueue;
+    if (lane === "auto") return digest.autoEligible;
+    if (lane === "human") return digest.humanQueue;
     return [...digest.autoEligible, ...digest.humanQueue];
   }, [digest, lane]);
 
   const sources = useMemo<string[]>(() => {
     const s = new Set<string>();
-    for (const it of [...(digest?.autoEligible ?? []), ...(digest?.humanQueue ?? [])]) {
+    for (const it of [
+      ...(digest?.autoEligible ?? []),
+      ...(digest?.humanQueue ?? []),
+    ]) {
       if (it.source) s.add(it.source);
     }
     return [...s].sort();
@@ -358,18 +465,43 @@ function ImprovementsView({ hive }: { hive: string }) {
       {digest?.flow ? <FlowStrip flow={digest.flow} /> : null}
       <LearningEfficacyPanel />
 
-      <div className="pc-learning__scoreboard" aria-label="Improvements summary">
-        <Stat label="captured" value={digest?.total ?? '—'} hint="Everything ever filed — problems, friction, and ideas, open or not." />
-        <Stat label="open" value={digest?.open ?? '—'} hint="Not fixed yet." />
-        <Stat label="auto-fixable" value={digest?.autoEligible.length ?? '—'} tone="auto" hint="Open bugs that touch no protected surface — agents may fix these without asking you." />
-        <Stat label="needs review" value={digest?.humanQueue.length ?? '—'} tone="human" hint="Open items that need your judgment — risky surfaces, behaviour changes, or new features." />
-        <Stat label="resolved" value={resolved} tone="good" hint="Fixed and closed." />
+      <div
+        className="pc-learning__scoreboard"
+        aria-label="Improvements summary"
+      >
+        <Stat
+          label="captured"
+          value={digest?.total ?? "—"}
+          hint="Everything ever filed — problems, friction, and ideas, open or not."
+        />
+        <Stat label="open" value={digest?.open ?? "—"} hint="Not fixed yet." />
+        <Stat
+          label="auto-fixable"
+          value={digest?.autoEligible.length ?? "—"}
+          tone="auto"
+          hint="Open bugs that touch no protected surface — agents may fix these without asking you."
+        />
+        <Stat
+          label="needs review"
+          value={digest?.humanQueue.length ?? "—"}
+          tone="human"
+          hint="Open items that need your judgment — risky surfaces, behaviour changes, or new features."
+        />
+        <Stat
+          label="resolved"
+          value={resolved}
+          tone="good"
+          hint="Fixed and closed."
+        />
       </div>
 
       {/* The owner's drain ritual (consume-edges P-022): top of the human queue
           in the resolver's blocking-impact order; click highlights the row. */}
-      {digest && lane !== 'auto' ? (
-        <HumanQueueDrain items={digest.humanQueue} onSelect={(id) => void setLsel(id)} />
+      {digest && lane !== "auto" ? (
+        <HumanQueueDrain
+          items={digest.humanQueue}
+          onSelect={(id) => void setLsel(id)}
+        />
       ) : null}
 
       <div className="pc-learning__sectionhead">
@@ -378,28 +510,42 @@ function ImprovementsView({ hive }: { hive: string }) {
           {sources.length > 0 ? (
             <Select
               ariaLabel="Filter by who filed it"
-              value={src ?? '__any__'}
-              onChange={(v: string) => void setSrc(v === '__any__' ? null : v)}
+              value={src ?? "__any__"}
+              onChange={(v: string) => void setSrc(v === "__any__" ? null : v)}
               options={[
-                { value: '__any__', label: 'Any source' },
+                { value: "__any__", label: "Any source" },
                 ...sources.map((s) => ({ value: s, label: s })),
               ]}
             />
           ) : null}
-          <div className="pc-learning__lanes" role="tablist" aria-label="Triage lane">
+          <div
+            className="pc-learning__lanes"
+            role="tablist"
+            aria-label="Triage lane"
+          >
             {LANES.map((l) => (
               <Tooltip
                 key={l}
-                label={l === 'auto' ? 'Bugs agents may fix on their own' : l === 'human' ? 'Items waiting on your judgment' : null}
+                label={
+                  l === "auto"
+                    ? "Bugs agents may fix on their own"
+                    : l === "human"
+                      ? "Items waiting on your judgment"
+                      : null
+                }
               >
                 <button
                   type="button"
                   role="tab"
                   aria-selected={lane === l}
-                  className={`pc-learning__lane${lane === l ? ' is-active' : ''}`}
+                  className={`pc-learning__lane${lane === l ? " is-active" : ""}`}
                   onClick={() => void setLane(l)}
                 >
-                  {l === 'all' ? 'All' : l === 'auto' ? 'Auto-fixable' : 'Needs review'}
+                  {l === "all"
+                    ? "All"
+                    : l === "auto"
+                      ? "Auto-fixable"
+                      : "Needs review"}
                 </button>
               </Tooltip>
             ))}
@@ -419,17 +565,28 @@ function ImprovementsView({ hive }: { hive: string }) {
       {sync.loading && !digest ? (
         <p className="pc-learning__empty">Loading the improvements backlog…</p>
       ) : sync.error ? (
-        <p className="pc-learning__empty">Improvements feed unavailable: {sync.error.message}</p>
+        <p className="pc-learning__empty">
+          Improvements feed unavailable: {sync.error.message}
+        </p>
       ) : rows.length === 0 ? (
         <div className="pc-learning__empty pc-learning__empty--card">
           <CheckCircle2 size={20} aria-hidden />
           <strong>Nothing in this lane</strong>
-          <span>The watchdog auto-files objective signals (failing tests, down services, repeated tool errors) and agents capture friction as they work — they’ll appear here.</span>
+          <span>
+            The watchdog auto-files objective signals (failing tests, down
+            services, repeated tool errors) and agents capture friction as they
+            work — they’ll appear here.
+          </span>
         </div>
       ) : (
         <ul className="pc-learning__list">
           {rows.map((it) => (
-            <ImprovementRow key={it.id} item={it} selected={it.id === lsel} onDismissSelect={() => void setLsel(null)} />
+            <ImprovementRow
+              key={it.id}
+              item={it}
+              selected={it.id === lsel}
+              onDismissSelect={() => void setLsel(null)}
+            />
           ))}
         </ul>
       )}
@@ -447,41 +604,66 @@ function ImprovementRow({
   selected?: boolean;
   onDismissSelect?: () => void;
 }) {
-  const sevColor = SEVERITY[item.severity ?? 'minor'].solid;
-  const human = item.tier === 'human';
+  const sevColor = SEVERITY[item.severity ?? "minor"].solid;
+  const human = item.tier === "human";
   const ref = useRef<HTMLLIElement>(null);
   useEffect(() => {
-    if (selected) ref.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    if (selected)
+      ref.current?.scrollIntoView({ block: "center", behavior: "smooth" });
   }, [selected]);
   return (
     <li
       ref={ref}
-      className={`pc-learning__row${selected ? ' pc-learning__row--selected' : ''}`}
+      className={`pc-learning__row${selected ? " pc-learning__row--selected" : ""}`}
       title={item.tierReason}
       onClick={selected ? onDismissSelect : undefined}
     >
-      <span className="pc-learning__sev" style={{ background: sevColor }} aria-hidden />
+      <span
+        className="pc-learning__sev"
+        style={{ background: sevColor }}
+        aria-hidden
+      />
       <span className="pc-learning__id">{item.id}</span>
       <span className="pc-learning__title">{item.title}</span>
       <span className="pc-learning__meta">
-        <span className="pc-learning__chip" style={{ color: sevColor, borderColor: sevColor }}>
-          {item.severity ?? '—'}
+        <span
+          className="pc-learning__chip"
+          style={{ color: sevColor, borderColor: sevColor }}
+        >
+          {item.severity ?? "—"}
         </span>
-        {item.ideaType ? <span className="pc-learning__chip pc-learning__chip--idea">{item.ideaType}</span> : null}
+        {item.ideaType ? (
+          <span className="pc-learning__chip pc-learning__chip--idea">
+            {item.ideaType}
+          </span>
+        ) : null}
         {item.source ? (
           <span className="pc-learning__chip" title={`Filed by ${item.source}`}>
             {item.source}
           </span>
         ) : null}
         <span
-          className={`pc-learning__chip pc-learning__chip--${human ? 'human' : 'auto'}`}
-          title={human ? 'Waits for your review' : 'An agent may fix this on its own'}
+          className={`pc-learning__chip pc-learning__chip--${human ? "human" : "auto"}`}
+          title={
+            human ? "Waits for your review" : "An agent may fix this on its own"
+          }
         >
-          {human ? <UserRound size={10} aria-hidden /> : <ShieldCheck size={10} aria-hidden />}
-          {human ? 'review' : 'auto'}
+          {human ? (
+            <UserRound size={10} aria-hidden />
+          ) : (
+            <ShieldCheck size={10} aria-hidden />
+          )}
+          {human ? "review" : "auto"}
         </span>
-        <span className="pc-learning__age" title="How long ago this was filed">{ageLabel(item.ageDays)}</span>
-        <span className="pc-learning__score" title="Triage priority (severity + age) — higher means more urgent">{item.score}</span>
+        <span className="pc-learning__age" title="How long ago this was filed">
+          {ageLabel(item.ageDays)}
+        </span>
+        <span
+          className="pc-learning__score"
+          title="Triage priority (severity + age) — higher means more urgent"
+        >
+          {item.score}
+        </span>
       </span>
     </li>
   );
@@ -490,32 +672,56 @@ function ImprovementRow({
 // ─── Flow strip (P-041 — flows, not stocks) ──────────────────────────────────
 
 /** Watchdog liveness tone: green <30min since the last tick, amber <2h, red otherwise (incl. never). */
-function watchdogHealth(lastTickAt: string | null, nowMs: number): { tone: 'good' | 'warn' | 'bad'; label: string } {
+function watchdogHealth(
+  lastTickAt: string | null,
+  nowMs: number,
+): { tone: "good" | "warn" | "bad"; label: string } {
   const ms = lastTickAt ? Date.parse(lastTickAt) : NaN;
-  if (Number.isNaN(ms)) return { tone: 'bad', label: 'never' };
+  if (Number.isNaN(ms)) return { tone: "bad", label: "never" };
   const ageMin = Math.max(0, (nowMs - ms) / 60_000);
-  const label = ageMin < 1 ? 'just now' : ageMin < 90 ? `${Math.round(ageMin)}m ago` : ageMin < 48 * 60 ? `${Math.round(ageMin / 60)}h ago` : `${Math.round(ageMin / (60 * 24))}d ago`;
-  if (ageMin < 30) return { tone: 'good', label };
-  if (ageMin < 120) return { tone: 'warn', label };
-  return { tone: 'bad', label };
+  const label =
+    ageMin < 1
+      ? "just now"
+      : ageMin < 90
+        ? `${Math.round(ageMin)}m ago`
+        : ageMin < 48 * 60
+          ? `${Math.round(ageMin / 60)}h ago`
+          : `${Math.round(ageMin / (60 * 24))}d ago`;
+  if (ageMin < 30) return { tone: "good", label };
+  if (ageMin < 120) return { tone: "warn", label };
+  return { tone: "bad", label };
 }
 
 /** The flow scoreboard — is the loop CYCLING (in vs out), not just how big the pile is. */
 function FlowStrip({ flow }: { flow: ImprovementFlow }) {
   const net = flow.net7d;
-  const netTone: 'good' | 'warn' | 'flat' = net < 0 ? 'good' : net > 0 ? 'warn' : 'flat';
+  const netTone: "good" | "warn" | "flat" =
+    net < 0 ? "good" : net > 0 ? "warn" : "flat";
   const wd = watchdogHealth(flow.watchdog.lastTickAt, Date.now());
   return (
-    <div className="pc-learning__flow" aria-label="Improvement flow (trailing window)">
+    <div
+      className="pc-learning__flow"
+      aria-label="Improvement flow (trailing window)"
+    >
       <span
         className="pc-learning__flowchip"
         title="Items captured vs resolved in the trailing 7 days — the loop's in-flow vs out-flow. A shrinking backlog (↓) means resolution is keeping up with capture."
       >
         <Activity size={11} aria-hidden />
-        <strong>{flow.captured7d}</strong> in / <strong>{flow.resolved7d}</strong> out
+        <strong>{flow.captured7d}</strong> in /{" "}
+        <strong>{flow.resolved7d}</strong> out
         <em>7d</em>
-        <span className={`pc-learning__flownet pc-learning__flownet--${netTone}`} title="Net backlog change over 7 days (captured − resolved)">
-          {net > 0 ? <ArrowUp size={10} aria-hidden /> : net < 0 ? <ArrowDown size={10} aria-hidden /> : <Minus size={10} aria-hidden />}
+        <span
+          className={`pc-learning__flownet pc-learning__flownet--${netTone}`}
+          title="Net backlog change over 7 days (captured − resolved)"
+        >
+          {net > 0 ? (
+            <ArrowUp size={10} aria-hidden />
+          ) : net < 0 ? (
+            <ArrowDown size={10} aria-hidden />
+          ) : (
+            <Minus size={10} aria-hidden />
+          )}
           {net > 0 ? `+${net}` : net}
         </span>
       </span>
@@ -524,7 +730,12 @@ function FlowStrip({ flow }: { flow: ImprovementFlow }) {
         title="Median age of the open items — fresh churn or sediment? Rising median = the backlog is silting up."
       >
         <Hourglass size={11} aria-hidden />
-        median open <strong>{flow.medianOpenAgeDays == null ? '—' : ageLabel(flow.medianOpenAgeDays)}</strong>
+        median open{" "}
+        <strong>
+          {flow.medianOpenAgeDays == null
+            ? "—"
+            : ageLabel(flow.medianOpenAgeDays)}
+        </strong>
       </span>
       <span
         className="pc-learning__flowchip"
@@ -537,9 +748,15 @@ function FlowStrip({ flow }: { flow: ImprovementFlow }) {
         className={`pc-learning__flowchip pc-learning__flowchip--wd-${wd.tone}`}
         title={`The watchdog auto-files objective problems on a cadence — if it stops ticking, the capture feed has silently died. ${flow.watchdog.ticks24h} tick(s) and ${flow.watchdog.captured24h} capture(s) in the last 24h.`}
       >
-        <span className={`pc-learning__flowdot pc-learning__flowdot--${wd.tone}`} aria-hidden />
+        <span
+          className={`pc-learning__flowdot pc-learning__flowdot--${wd.tone}`}
+          aria-hidden
+        />
         watchdog <strong>{wd.label}</strong>
-        <em>{flow.watchdog.ticks24h} ticks / {flow.watchdog.captured24h} captured · 24h</em>
+        <em>
+          {flow.watchdog.ticks24h} ticks / {flow.watchdog.captured24h} captured
+          · 24h
+        </em>
       </span>
       {flow.dispatch ? <DispatchChip d={flow.dispatch} /> : null}
     </div>
@@ -552,9 +769,10 @@ function FlowStrip({ flow }: { flow: ImprovementFlow }) {
  * Red when anything is dying silently (overdue / fire-failed / orphaned), green
  * when the lane is genuinely fixing things.
  */
-function DispatchChip({ d }: { d: NonNullable<ImprovementFlow['dispatch']> }) {
+function DispatchChip({ d }: { d: NonNullable<ImprovementFlow["dispatch"]> }) {
   const dead = d.overdue + d.fireFailed + d.orphaned;
-  const tone: 'good' | 'warn' | 'bad' = dead > 0 ? 'bad' : d.fixed7d > 0 ? 'good' : 'warn';
+  const tone: "good" | "warn" | "bad" =
+    dead > 0 ? "bad" : d.fixed7d > 0 ? "good" : "warn";
   return (
     <span
       className={`pc-learning__flowchip pc-learning__flowchip--wd-${tone}`}
@@ -566,9 +784,14 @@ function DispatchChip({ d }: { d: NonNullable<ImprovementFlow['dispatch']> }) {
       }
     >
       <Send size={11} aria-hidden />
-      dispatch <strong>{d.fired7d}</strong> fired / <strong>{d.fixed7d}</strong> fixed
+      dispatch <strong>{d.fired7d}</strong> fired / <strong>{d.fixed7d}</strong>{" "}
+      fixed
       <em>7d</em>
-      {dead > 0 ? <strong>{dead} dead</strong> : <em>{d.inProgress + d.firing} live</em>}
+      {dead > 0 ? (
+        <strong>{dead} dead</strong>
+      ) : (
+        <em>{d.inProgress + d.firing} live</em>
+      )}
     </span>
   );
 }
@@ -601,7 +824,7 @@ interface GymSnapshot {
 }
 
 function whenLabel(ms: number): string {
-  if (!ms) return '';
+  if (!ms) return "";
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
   if (s < 60) return `${s}s ago`;
   const m = Math.round(s / 60);
@@ -611,17 +834,24 @@ function whenLabel(ms: number): string {
   return `${Math.round(h / 24)}d ago`;
 }
 
-function deltaLabel(d: number | null): { text: string; tone: 'good' | 'bad' | 'flat' } {
-  if (d === null || d === undefined || Number.isNaN(d)) return { text: '—', tone: 'flat' };
-  const sign = d > 0 ? '+' : d < 0 ? '−' : '±';
-  return { text: `${sign}${Math.abs(d).toFixed(3)}`, tone: d > 0 ? 'good' : d < 0 ? 'bad' : 'flat' };
+function deltaLabel(d: number | null): {
+  text: string;
+  tone: "good" | "bad" | "flat";
+} {
+  if (d === null || d === undefined || Number.isNaN(d))
+    return { text: "—", tone: "flat" };
+  const sign = d > 0 ? "+" : d < 0 ? "−" : "±";
+  return {
+    text: `${sign}${Math.abs(d).toFixed(3)}`,
+    tone: d > 0 ? "good" : d < 0 ? "bad" : "flat",
+  };
 }
 
 function GymView({ hive }: { hive: string }) {
   // P-042: scope the gym rollup to one hive's gym harness; '' ⇒ the whole
   // workspace (every gym harness).
   const sync = useSyncQuery<GymSnapshot>({
-    queryName: 'learning.gym',
+    queryName: "learning.gym",
     args: hive ? { hive } : {},
     staleTime: 30_000,
   });
@@ -629,19 +859,44 @@ function GymView({ hive }: { hive: string }) {
   const proposals = snap?.proposals ?? [];
   const autoloops = snap?.autoloops ?? [];
 
-  const champions = proposals.filter((p) => p.status === 'accepted').length;
-  const pending = proposals.filter((p) => p.status === 'pending').length;
-  const rejected = proposals.filter((p) => p.status === 'rejected').length;
-  const running = autoloops.filter((a) => a.enabled || a.status === 'running').length;
+  const champions = proposals.filter((p) => p.status === "accepted").length;
+  const pending = proposals.filter((p) => p.status === "pending").length;
+  const rejected = proposals.filter((p) => p.status === "rejected").length;
+  const running = autoloops.filter(
+    (a) => a.enabled || a.status === "running",
+  ).length;
 
   return (
     <section className="pc-learning__section">
       <div className="pc-learning__scoreboard" aria-label="Gym summary">
-        <Stat label="experiments" value={snap ? proposals.length : '—'} hint="Prompt variants the gym has proposed and tested recently." />
-        <Stat label="champions" value={snap ? champions : '—'} tone="good" hint="Accepted variants — each is now its role’s live prompt." />
-        <Stat label="pending" value={snap ? pending : '—'} tone="human" hint="Scored, awaiting a decision." />
-        <Stat label="rejected" value={snap ? rejected : '—'} hint="Scored worse than the current prompt — discarded." />
-        <Stat label="active loops" value={snap ? running : '—'} tone="auto" hint="Gym harnesses set to keep running experiment cycles on their own, within a spend budget." />
+        <Stat
+          label="experiments"
+          value={snap ? proposals.length : "—"}
+          hint="Prompt variants the gym has proposed and tested recently."
+        />
+        <Stat
+          label="champions"
+          value={snap ? champions : "—"}
+          tone="good"
+          hint="Accepted variants — each is now its role’s live prompt."
+        />
+        <Stat
+          label="pending"
+          value={snap ? pending : "—"}
+          tone="human"
+          hint="Scored, awaiting a decision."
+        />
+        <Stat
+          label="rejected"
+          value={snap ? rejected : "—"}
+          hint="Scored worse than the current prompt — discarded."
+        />
+        <Stat
+          label="active loops"
+          value={snap ? running : "—"}
+          tone="auto"
+          hint="Gym harnesses set to keep running experiment cycles on their own, within a spend budget."
+        />
       </div>
 
       <div className="pc-learning__sectionhead">
@@ -663,12 +918,16 @@ function GymView({ hive }: { hive: string }) {
             <span
               key={a.harnessSlug}
               className={`pc-learning__loop pc-learning__loop--${a.status}`}
-              title={`This gym runs experiment cycles on its own${a.budgetUsd != null ? ` — $${a.spentUsd.toFixed(2)} spent of a $${a.budgetUsd.toFixed(0)} budget` : ''}`}
+              title={`This gym runs experiment cycles on its own${a.budgetUsd != null ? ` — $${a.spentUsd.toFixed(2)} spent of a $${a.budgetUsd.toFixed(0)} budget` : ""}`}
             >
               <Dumbbell size={11} aria-hidden />
               {a.harnessSlug}
-              <em>{a.enabled ? a.status : 'off'}</em>
-              {a.budgetUsd != null && <span className="pc-learning__loopspend">${a.spentUsd.toFixed(2)}/${a.budgetUsd.toFixed(0)}</span>}
+              <em>{a.enabled ? a.status : "off"}</em>
+              {a.budgetUsd != null && (
+                <span className="pc-learning__loopspend">
+                  ${a.spentUsd.toFixed(2)}/${a.budgetUsd.toFixed(0)}
+                </span>
+              )}
             </span>
           ))}
         </div>
@@ -677,12 +936,18 @@ function GymView({ hive }: { hive: string }) {
       {sync.loading && !snap ? (
         <p className="pc-learning__empty">Loading gym experiments…</p>
       ) : sync.error ? (
-        <p className="pc-learning__empty">Gym feed unavailable: {sync.error.message}</p>
+        <p className="pc-learning__empty">
+          Gym feed unavailable: {sync.error.message}
+        </p>
       ) : proposals.length === 0 ? (
         <div className="pc-learning__empty pc-learning__empty--card">
           <Dumbbell size={20} aria-hidden />
           <strong>No gym experiments yet</strong>
-          <span>The gym A/B-tests prompt variants for the pipeline roles, scores them with a frozen judge, and promotes the winners. Proposals and champion promotions will appear here once a gym runs.</span>
+          <span>
+            The gym A/B-tests prompt variants for the pipeline roles, scores
+            them with a frozen judge, and promotes the winners. Proposals and
+            champion promotions will appear here once a gym runs.
+          </span>
         </div>
       ) : (
         <ul className="pc-learning__list">
@@ -699,26 +964,54 @@ function GymProposalRow({ p }: { p: GymProposal }) {
   const statusColor = statusToneColor(p.status);
   const delta = deltaLabel(p.devAnchorDelta);
   return (
-    <li className="pc-learning__row pc-learning__row--gym" title={p.rationale ?? undefined}>
-      <span className="pc-learning__sev" style={{ background: statusColor }} aria-hidden />
+    <li
+      className="pc-learning__row pc-learning__row--gym"
+      title={p.rationale ?? undefined}
+    >
+      <span
+        className="pc-learning__sev"
+        style={{ background: statusColor }}
+        aria-hidden
+      />
       <span className="pc-learning__id">{p.role}</span>
       <span className="pc-learning__title">
         {p.rationale || <em className="pc-learning__muted">(no rationale)</em>}
       </span>
       <span className="pc-learning__meta">
-        <span className="pc-learning__chip" style={{ color: statusColor, borderColor: statusColor }}>
-          {p.status === 'accepted' ? <CheckCircle2 size={10} aria-hidden /> : p.status === 'rejected' ? <XCircle size={10} aria-hidden /> : <Clock size={10} aria-hidden />}
+        <span
+          className="pc-learning__chip"
+          style={{ color: statusColor, borderColor: statusColor }}
+        >
+          {p.status === "accepted" ? (
+            <CheckCircle2 size={10} aria-hidden />
+          ) : p.status === "rejected" ? (
+            <XCircle size={10} aria-hidden />
+          ) : (
+            <Clock size={10} aria-hidden />
+          )}
           {p.status}
         </span>
-        <span className="pc-learning__chip pc-learning__chip--idea" title="The gym harness that ran this experiment">{p.harnessSlug}</span>
+        <span
+          className="pc-learning__chip pc-learning__chip--idea"
+          title="The gym harness that ran this experiment"
+        >
+          {p.harnessSlug}
+        </span>
         <span
           className={`pc-learning__delta pc-learning__delta--${delta.tone}`}
           title="Judge-score change vs the current prompt — positive means the variant did better"
         >
           Δ {delta.text}
         </span>
-        <span className="pc-learning__age" title={`Experiment cycle ${p.cycle}`}>c{p.cycle}</span>
-        <span className="pc-learning__age">{whenLabel(p.decidedAt ?? p.createdAt)}</span>
+        <span
+          className="pc-learning__age"
+          title={`Experiment cycle ${p.cycle}`}
+        >
+          c{p.cycle}
+        </span>
+        <span className="pc-learning__age">
+          {whenLabel(p.decidedAt ?? p.createdAt)}
+        </span>
       </span>
     </li>
   );
@@ -740,35 +1033,65 @@ interface ApiaryInstance {
   firstAttemptRate: number | null;
 }
 
-const pctLabel = (v: number | null): string => (v == null ? '—' : `${Math.round(v * 100)}%`);
-const compositeLabel = (v: number | null): string => (v == null ? '—' : v.toFixed(3));
+const pctLabel = (v: number | null): string =>
+  v == null ? "—" : `${Math.round(v * 100)}%`;
+const compositeLabel = (v: number | null): string =>
+  v == null ? "—" : v.toFixed(3);
 function secsLabel(v: number | null): string {
-  if (v == null) return '—';
+  if (v == null) return "—";
   return v < 90 ? `${Math.round(v)}s` : `${(v / 60).toFixed(1)}m`;
 }
 function tokensLabel(v: number | null): string {
-  if (v == null) return '—';
+  if (v == null) return "—";
   return v >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${Math.round(v)}`;
 }
-const shortSha = (s: string): string => (s ? s.slice(0, 7) : '—');
+const shortSha = (s: string): string => (s ? s.slice(0, 7) : "—");
 function dateLabel(iso: string): string {
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return Number.isNaN(d.getTime())
+    ? ""
+    : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 function ApiaryView() {
-  const sync = useSyncQuery<{ instances: ApiaryInstance[] }>({ queryName: 'learning.apiary', args: {}, staleTime: 30_000 });
+  const sync = useSyncQuery<{ instances: ApiaryInstance[] }>({
+    queryName: "learning.apiary",
+    args: {},
+    staleTime: 30_000,
+  });
   const instances = sync.data?.[0]?.instances ?? [];
   const latest = instances[0];
 
   return (
     <section className="pc-learning__section">
       <div className="pc-learning__scoreboard" aria-label="Benchmark summary">
-        <Stat label="composite" value={latest ? compositeLabel(latest.meanComposite) : '—'} tone="good" hint="Latest generation’s mean judge composite — higher is better. This is the headline benchmark; watch the trend, not the absolute number." />
-        <Stat label="success" value={latest ? pctLabel(latest.successRate) : '—'} hint="Share of battery tasks the fleet solved without escalating." />
-        <Stat label="time to green" value={latest ? secsLabel(latest.meanTimeToGreenSecs) : '—'} hint="Mean wall-clock to a solved task. Lower is better." />
-        <Stat label="tokens / task" value={latest ? tokensLabel(latest.meanTokens) : '—'} hint="Mean tokens per solved task. Lower is cheaper." />
-        <Stat label="escalations" value={latest ? pctLabel(latest.escalationRate) : '—'} tone="human" hint="Share of tasks that needed a human. Lower is better." />
+        <Stat
+          label="composite"
+          value={latest ? compositeLabel(latest.meanComposite) : "—"}
+          tone="good"
+          hint="Latest generation’s mean judge composite — higher is better. This is the headline benchmark; watch the trend, not the absolute number."
+        />
+        <Stat
+          label="success"
+          value={latest ? pctLabel(latest.successRate) : "—"}
+          hint="Share of battery tasks the fleet solved without escalating."
+        />
+        <Stat
+          label="time to green"
+          value={latest ? secsLabel(latest.meanTimeToGreenSecs) : "—"}
+          hint="Mean wall-clock to a solved task. Lower is better."
+        />
+        <Stat
+          label="tokens / task"
+          value={latest ? tokensLabel(latest.meanTokens) : "—"}
+          hint="Mean tokens per solved task. Lower is cheaper."
+        />
+        <Stat
+          label="escalations"
+          value={latest ? pctLabel(latest.escalationRate) : "—"}
+          tone="human"
+          hint="Share of tasks that needed a human. Lower is better."
+        />
       </div>
 
       <BenchmarkTrend instances={instances} />
@@ -789,38 +1112,84 @@ function ApiaryView() {
       {sync.loading && !sync.data ? (
         <p className="pc-learning__empty">Loading the benchmark…</p>
       ) : sync.error ? (
-        <p className="pc-learning__empty">Benchmark unavailable: {sync.error.message}</p>
+        <p className="pc-learning__empty">
+          Benchmark unavailable: {sync.error.message}
+        </p>
       ) : instances.length === 0 ? (
         <div className="pc-learning__empty pc-learning__empty--card">
           <Gauge size={20} aria-hidden />
           <strong>No baseline runs yet</strong>
-          <span>The IQ-battery is owner-gated — runs spend real budget, so they happen when the owner kicks one off, or via the monthly cadence routine once the owner sets its budget (it then benchmarks each new code generation automatically). It runs a fixed task corpus against the fleet and judges every run, so each generation is comparable; once generations land, the trend appears here — newest first, with the composite change vs the prior generation.</span>
+          <span>
+            The IQ-battery is owner-gated — runs spend real budget, so they
+            happen when the owner kicks one off, or via the monthly cadence
+            routine once the owner sets its budget (it then benchmarks each new
+            code generation automatically). It runs a fixed task corpus against
+            the fleet and judges every run, so each generation is comparable;
+            once generations land, the trend appears here — newest first, with
+            the composite change vs the prior generation.
+          </span>
         </div>
       ) : (
         <ul className="pc-learning__list">
           {instances.map((inst, i) => {
             const prev = instances[i + 1];
             const dComposite =
-              inst.meanComposite != null && prev?.meanComposite != null ? inst.meanComposite - prev.meanComposite : null;
+              inst.meanComposite != null && prev?.meanComposite != null
+                ? inst.meanComposite - prev.meanComposite
+                : null;
             const delta = deltaLabel(dComposite);
             return (
-              <li key={inst.instanceId} className="pc-learning__row pc-learning__row--bench" title={inst.instanceId}>
-                <span className="pc-learning__sev" style={{ background: '#34d399' }} aria-hidden />
-                <span className="pc-learning__id" title={inst.codeSha}>{shortSha(inst.codeSha)}</span>
+              <li
+                key={inst.instanceId}
+                className="pc-learning__row pc-learning__row--bench"
+                title={inst.instanceId}
+              >
+                <span
+                  className="pc-learning__sev"
+                  style={{ background: "#34d399" }}
+                  aria-hidden
+                />
+                <span className="pc-learning__id" title={inst.codeSha}>
+                  {shortSha(inst.codeSha)}
+                </span>
                 <span className="pc-learning__benchcell">
-                  <span className="pc-learning__benchnum" title="Mean judge composite for this generation">{compositeLabel(inst.meanComposite)}</span>
+                  <span
+                    className="pc-learning__benchnum"
+                    title="Mean judge composite for this generation"
+                  >
+                    {compositeLabel(inst.meanComposite)}
+                  </span>
                   {i < instances.length - 1 && (
-                    <span className={`pc-learning__delta pc-learning__delta--${delta.tone}`} title="Composite change vs the previous generation">
+                    <span
+                      className={`pc-learning__delta pc-learning__delta--${delta.tone}`}
+                      title="Composite change vs the previous generation"
+                    >
                       Δ {delta.text}
                     </span>
                   )}
-                  <span className="pc-learning__benchmeta">{inst.successfulRuns}/{inst.totalRuns} solved</span>
+                  <span className="pc-learning__benchmeta">
+                    {inst.successfulRuns}/{inst.totalRuns} solved
+                  </span>
                 </span>
                 <span className="pc-learning__meta">
-                  <span className="pc-learning__age" title="Mean time to green">{secsLabel(inst.meanTimeToGreenSecs)}</span>
-                  <span className="pc-learning__age" title="Mean tokens per task">{tokensLabel(inst.meanTokens)}</span>
-                  <span className="pc-learning__age" title="Escalation rate (lower is better)">{pctLabel(inst.escalationRate)} esc</span>
-                  <span className="pc-learning__age">{dateLabel(inst.createdAt)}</span>
+                  <span className="pc-learning__age" title="Mean time to green">
+                    {secsLabel(inst.meanTimeToGreenSecs)}
+                  </span>
+                  <span
+                    className="pc-learning__age"
+                    title="Mean tokens per task"
+                  >
+                    {tokensLabel(inst.meanTokens)}
+                  </span>
+                  <span
+                    className="pc-learning__age"
+                    title="Escalation rate (lower is better)"
+                  >
+                    {pctLabel(inst.escalationRate)} esc
+                  </span>
+                  <span className="pc-learning__age">
+                    {dateLabel(inst.createdAt)}
+                  </span>
                 </span>
               </li>
             );
@@ -852,12 +1221,13 @@ interface HiveEvalGeneration {
   fabricationRate: number | null;
 }
 
-const ratioLabel = (v: number | null): string => (v == null ? '—' : `${v.toFixed(2)}×`);
+const ratioLabel = (v: number | null): string =>
+  v == null ? "—" : `${v.toFixed(2)}×`;
 
 function HiveEvalTrendView() {
   const t = useLexicon();
   const sync = useSyncQuery<{ instances: HiveEvalGeneration[] }>({
-    queryName: 'learning.hiveEvalTrend',
+    queryName: "learning.hiveEvalTrend",
     args: {},
     staleTime: 30_000,
   });
@@ -876,11 +1246,13 @@ function HiveEvalTrendView() {
   return (
     <div className="pc-learning__hive-eval">
       <div className="pc-learning__sectionhead">
-        <h2>{t('pot')} orchestration <em>good · efficient · fast?</em></h2>
+        <h2>
+          {t("pot")} orchestration <em>good · efficient · fast?</em>
+        </h2>
         <button
           type="button"
           className="pc-learning__refresh"
-          aria-label={`Reload the ${t('pot')}-orchestration trend`}
+          aria-label={`Reload the ${t("pot")}-orchestration trend`}
           disabled={sync.fetching}
           onClick={() => sync.invalidate()}
         >
@@ -891,37 +1263,44 @@ function HiveEvalTrendView() {
       {instances.length === 0 ? (
         <div className="pc-learning__empty pc-learning__empty--card">
           <Gauge size={20} aria-hidden />
-          <strong>No {t('pot')}-eval generations yet</strong>
+          <strong>No {t("pot")}-eval generations yet</strong>
           <span>
-            This benchmark runs the WHOLE {t('pot')} ({t('brain')} + {t('contributor', { plural: true, lower: true })}) on seeded scenarios and grades each run on
-            outcome quality, efficiency, and speed — with an un-gameable gate (a fast-but-wrong run scores
-            zero). Every run spends real budget, so it&rsquo;s owner-gated: it runs when the owner sets the monthly
-            cadence&rsquo;s budget (P-051). Once generations land, the composite trend appears here — the yardstick
-            for whether {t('brain', { lower: true })}-execution / wave-dispatch / autonomy actually made the {t('pot')} better.
+            This benchmark runs the WHOLE {t("pot")} ({t("brain")} +{" "}
+            {t("contributor", { plural: true, lower: true })}) on seeded
+            scenarios and grades each run on outcome quality, efficiency, and
+            speed — with an un-gameable gate (a fast-but-wrong run scores zero).
+            Every run spends real budget, so it&rsquo;s owner-gated: it runs
+            when the owner sets the monthly cadence&rsquo;s budget (P-051). Once
+            generations land, the composite trend appears here — the yardstick
+            for whether {t("brain", { lower: true })}-execution / wave-dispatch
+            / autonomy actually made the {t("pot")} better.
           </span>
         </div>
       ) : (
         <>
-          <div className="pc-learning__scoreboard" aria-label={`${t('pot')} orchestration summary`}>
+          <div
+            className="pc-learning__scoreboard"
+            aria-label={`${t("pot")} orchestration summary`}
+          >
             <Stat
               label="composite"
-              value={latest ? compositeLabel(latest.meanComposite) : '—'}
+              value={latest ? compositeLabel(latest.meanComposite) : "—"}
               tone="good"
-              hint={`Latest generation's mean ${t('pot')}-run composite (0–10) — gated on outcome quality, then efficiency + speed. Higher is better; watch the trend, not the absolute number.`}
+              hint={`Latest generation's mean ${t("pot")}-run composite (0–10) — gated on outcome quality, then efficiency + speed. Higher is better; watch the trend, not the absolute number.`}
             />
             <Stat
               label="outcome gate"
-              value={latest ? pctLabel(latest.outcomeGatePassRate) : '—'}
+              value={latest ? pctLabel(latest.outcomeGatePassRate) : "—"}
               hint="Share of runs that did a GOOD job (passed acceptance + caught the planted bug + no fabrication). Efficiency/speed earn ZERO below the gate."
             />
             <Stat
               label="critical-path"
-              value={latest ? ratioLabel(latest.meanCriticalPathRatio) : '—'}
+              value={latest ? ratioLabel(latest.meanCriticalPathRatio) : "—"}
               hint="Measured wall-clock ÷ the computable ideal. ~1× = optimally parallel; higher = serialized/bottlenecked (a computed, un-gameable signal)."
             />
             <Stat
               label="fabrication"
-              value={latest ? pctLabel(latest.fabricationRate) : '—'}
+              value={latest ? pctLabel(latest.fabricationRate) : "—"}
               tone="human"
               hint="Share of runs with a fabricated DONE (a claim ground truth contradicts). Lower is better — ideally zero."
             />
@@ -941,17 +1320,28 @@ function HiveEvalTrendView() {
 // auto-reverts the flag (P-015). Owner-gated (a real bake-off spends budget + needs the operator
 // runtime) — graceful-empty until the first run lands.
 
-const BAKEOFF_VERDICT_META: Record<BakeoffTrendRow['verdict'], { label: string; tone: 'good' | 'bad' | 'flat'; color: string }> = {
-  improved: { label: 'improved', tone: 'good', color: CATEGORICAL.emerald400.hex },
-  regressed: { label: 'regressed', tone: 'bad', color: CATEGORICAL.red400.hex },
-  neutral: { label: 'neutral', tone: 'flat', color: CATEGORICAL.slate400.hex },
-  inconclusive: { label: 'inconclusive', tone: 'flat', color: CATEGORICAL.slate500.hex },
+const BAKEOFF_VERDICT_META: Record<
+  BakeoffTrendRow["verdict"],
+  { label: string; tone: "good" | "bad" | "flat"; color: string }
+> = {
+  improved: {
+    label: "improved",
+    tone: "good",
+    color: CATEGORICAL.emerald400.hex,
+  },
+  regressed: { label: "regressed", tone: "bad", color: CATEGORICAL.red400.hex },
+  neutral: { label: "neutral", tone: "flat", color: CATEGORICAL.slate400.hex },
+  inconclusive: {
+    label: "inconclusive",
+    tone: "flat",
+    color: CATEGORICAL.slate500.hex,
+  },
 };
 
 function BakeoffTrendView() {
   const t = useLexicon();
   const sync = useSyncQuery<{ rows: BakeoffTrendRow[] }>({
-    queryName: 'learning.bakeoff',
+    queryName: "learning.bakeoff",
     args: {},
     staleTime: 30_000,
   });
@@ -959,7 +1349,10 @@ function BakeoffTrendView() {
   // Each bet's CURRENT standing — rows arrive newest-first, so the first verdict per flag is latest
   // (the same logic as the canonical latestVerdictByFlag formatter; inlined to keep the client bundle
   // free of an operator-core value import).
-  const standings: Array<{ flag: string; verdict: BakeoffTrendRow['verdict'] }> = [];
+  const standings: Array<{
+    flag: string;
+    verdict: BakeoffTrendRow["verdict"];
+  }> = [];
   const seenFlags = new Set<string>();
   for (const r of rows) {
     if (!seenFlags.has(r.flagKey)) {
@@ -971,7 +1364,9 @@ function BakeoffTrendView() {
   return (
     <div className="pc-learning__hive-eval">
       <div className="pc-learning__sectionhead">
-        <h2>Framework bake-off <em>does the bet help?</em></h2>
+        <h2>
+          Framework bake-off <em>does the bet help?</em>
+        </h2>
         <button
           type="button"
           className="pc-learning__refresh"
@@ -988,11 +1383,13 @@ function BakeoffTrendView() {
           <Gauge size={20} aria-hidden />
           <strong>No bake-offs yet</strong>
           <span>
-            A bake-off runs the whole {t('pot')} twice over the seeded scenarios — once with a bet flag OFF,
-            once ON — and diffs the gated composite + outcome-gate pass rate. It’s the un-gameable A/B
-            proof that a change (compiled briefs, conflict-free placement, …) actually beats baseline; a
-            drop in the gate auto-reverts the flag. Every run spends real budget and needs the operator
-            runtime, so it’s owner-gated. Once a bake-off lands, each bet’s standing + the delta history
+            A bake-off runs the whole {t("pot")} twice over the seeded scenarios
+            — once with a bet flag OFF, once ON — and diffs the gated composite
+            + outcome-gate pass rate. It’s the un-gameable A/B proof that a
+            change (compiled briefs, conflict-free placement, …) actually beats
+            baseline; a drop in the gate auto-reverts the flag. Every run spends
+            real budget and needs the operator runtime, so it’s owner-gated.
+            Once a bake-off lands, each bet’s standing + the delta history
             appear here — newest first.
           </span>
         </div>
@@ -1002,9 +1399,15 @@ function BakeoffTrendView() {
             {standings.map(({ flag, verdict }) => (
               <Stat
                 key={flag}
-                label={flag.replace(/^papercusp-/, '')}
+                label={flag.replace(/^papercusp-/, "")}
                 value={BAKEOFF_VERDICT_META[verdict].label}
-                tone={verdict === 'improved' ? 'good' : verdict === 'regressed' ? 'human' : 'auto'}
+                tone={
+                  verdict === "improved"
+                    ? "good"
+                    : verdict === "regressed"
+                      ? "human"
+                      : "auto"
+                }
                 hint={`Latest bake-off verdict for ${flag}: 'improved' = the flag-ON arm beat baseline; 'regressed' = it lost the outcome gate or dropped the composite (auto-reverted off); 'neutral' = no real change; 'inconclusive' = too few runs.`}
               />
             ))}
@@ -1014,13 +1417,39 @@ function BakeoffTrendView() {
               const dc = deltaLabel(r.deltaMeanComposite);
               const meta = BAKEOFF_VERDICT_META[r.verdict];
               return (
-                <li key={`${r.flagKey}-${r.at}-${i}`} className="pc-learning__row pc-learning__row--bench" title={r.flagKey}>
-                  <span className="pc-learning__sev" style={{ background: meta.color }} aria-hidden />
-                  <span className="pc-learning__id" title={r.flagKey}>{r.flagKey.replace(/^papercusp-/, '')}</span>
+                <li
+                  key={`${r.flagKey}-${r.at}-${i}`}
+                  className="pc-learning__row pc-learning__row--bench"
+                  title={r.flagKey}
+                >
+                  <span
+                    className="pc-learning__sev"
+                    style={{ background: meta.color }}
+                    aria-hidden
+                  />
+                  <span className="pc-learning__id" title={r.flagKey}>
+                    {r.flagKey.replace(/^papercusp-/, "")}
+                  </span>
                   <span className="pc-learning__benchcell">
-                    <span className={`pc-learning__delta pc-learning__delta--${meta.tone}`} title="The bake-off verdict for this run">{meta.label}</span>
-                    <span className={`pc-learning__delta pc-learning__delta--${dc.tone}`} title="Change in mean gated composite (treatment − baseline)">Δcomp {dc.text}</span>
-                    <span className="pc-learning__benchmeta" title="Change in outcome-gate pass rate (treatment − baseline)">Δgate {r.deltaGatePassRate >= 0 ? '+' : ''}{r.deltaGatePassRate.toFixed(2)}</span>
+                    <span
+                      className={`pc-learning__delta pc-learning__delta--${meta.tone}`}
+                      title="The bake-off verdict for this run"
+                    >
+                      {meta.label}
+                    </span>
+                    <span
+                      className={`pc-learning__delta pc-learning__delta--${dc.tone}`}
+                      title="Change in mean gated composite (treatment − baseline)"
+                    >
+                      Δcomp {dc.text}
+                    </span>
+                    <span
+                      className="pc-learning__benchmeta"
+                      title="Change in outcome-gate pass rate (treatment − baseline)"
+                    >
+                      Δgate {r.deltaGatePassRate >= 0 ? "+" : ""}
+                      {r.deltaGatePassRate.toFixed(2)}
+                    </span>
                   </span>
                   <span className="pc-learning__meta">
                     <span className="pc-learning__age">{whenLabel(r.at)}</span>
@@ -1041,12 +1470,30 @@ function BakeoffTrendView() {
     RoutedRail ('plan' | 'gym' | 'improvement' | 'instance') — open set, render
     whatever arrives. Built per-render from the active lexicon so the agent-noun
     in the plan-draft copy tracks the FLAGS.THE_HIVE pack (restore-pot-lexicon P-006). */
-function railMeta(t: ReturnType<typeof useLexicon>): Record<string, { label: string; desc: string; color: string }> {
+function railMeta(
+  t: ReturnType<typeof useLexicon>,
+): Record<string, { label: string; desc: string; color: string }> {
   return {
-    plan: { label: 'plan draft', desc: `A draft plan awaiting ${t('brain')}/owner triage — open it in the Create tab`, color: 'var(--accent-strong, var(--accent))' },
-    gym: { label: 'gym', desc: 'Seeded into the gym quality-diversity experiment archive', color: CATEGORICAL.emerald400.hex },
-    improvement: { label: 'improvement', desc: 'Filed as an improvement work-item (EI-…) in the backlog', color: CATEGORICAL.violet400.hex },
-    instance: { label: 'instance', desc: 'Registered as a genome-variant candidate for the apiary eval-battery', color: CATEGORICAL.pink400.hex },
+    plan: {
+      label: "plan draft",
+      desc: `A draft plan awaiting ${t("brain")}/owner triage — open it in the Create tab`,
+      color: "var(--accent-strong, var(--accent))",
+    },
+    gym: {
+      label: "gym",
+      desc: "Seeded into the gym quality-diversity experiment archive",
+      color: CATEGORICAL.emerald400.hex,
+    },
+    improvement: {
+      label: "improvement",
+      desc: "Filed as an improvement work-item (EI-…) in the backlog",
+      color: CATEGORICAL.violet400.hex,
+    },
+    instance: {
+      label: "instance",
+      desc: "Registered as a genome-variant candidate for the apiary eval-battery",
+      color: CATEGORICAL.pink400.hex,
+    },
   };
 }
 
@@ -1059,11 +1506,11 @@ interface EffectiveGrade {
 }
 
 const GRADE_MEANING: Record<number, string> = {
-  1: 'a bad call — counts as a full loss for this lens',
-  2: 'weak — mostly a loss',
-  3: 'neutral — half win, half loss',
-  4: 'useful — mostly a win',
-  5: 'excellent — counts as a full win for this lens',
+  1: "a bad call — counts as a full loss for this lens",
+  2: "weak — mostly a loss",
+  3: "neutral — half win, half loss",
+  4: "useful — mostly a win",
+  5: "excellent — counts as a full win for this lens",
 };
 
 /** Attribution label per C-1's graded_by values ('owner' | 'Queen'). The raw
@@ -1071,14 +1518,19 @@ const GRADE_MEANING: Record<number, string> = {
     for display so the public (Pot) build never surfaces the swarm noun
     (restore-pot-lexicon P-006). */
 const graderLabel = (gradedBy: string, brainWord: string): string =>
-  gradedBy === 'owner' ? 'Owner' : gradedBy === 'Queen' ? brainWord : gradedBy;
+  gradedBy === "owner" ? "Owner" : gradedBy === "Queen" ? brainWord : gradedBy;
 
 /** The tool-proxy response envelope varies (the parsed result | {result} | MCP
     content text) — unwrap whichever the dispatcher returns. */
 function unwrapToolResult(d: unknown): Record<string, unknown> {
-  const o = d as { content?: Array<{ type?: string; text?: string }>; result?: unknown } | null;
-  const text = Array.isArray(o?.content) ? o.content.find((c) => c?.type === 'text')?.text : undefined;
-  if (typeof text === 'string') {
+  const o = d as {
+    content?: Array<{ type?: string; text?: string }>;
+    result?: unknown;
+  } | null;
+  const text = Array.isArray(o?.content)
+    ? o.content.find((c) => c?.type === "text")?.text
+    : undefined;
+  if (typeof text === "string") {
     try {
       return JSON.parse(text) as Record<string, unknown>;
     } catch {
@@ -1086,7 +1538,9 @@ function unwrapToolResult(d: unknown): Record<string, unknown> {
     }
   }
   const inner = o?.result ?? d;
-  return inner && typeof inner === 'object' ? (inner as Record<string, unknown>) : {};
+  return inner && typeof inner === "object"
+    ? (inner as Record<string, unknown>)
+    : {};
 }
 
 /** The 1–5 star radio row. Always interactive — the owner may regrade anything
@@ -1103,7 +1557,11 @@ function StarControl({
   size?: number;
 }) {
   return (
-    <span className="pc-learning__stars" role="radiogroup" aria-label="Grade this idea 1 to 5">
+    <span
+      className="pc-learning__stars"
+      role="radiogroup"
+      aria-label="Grade this idea 1 to 5"
+    >
       {[1, 2, 3, 4, 5].map((n) => (
         <Tooltip key={n} label={`★${n} — ${GRADE_MEANING[n]}`}>
           <button
@@ -1111,11 +1569,15 @@ function StarControl({
             role="radio"
             aria-checked={value === n}
             aria-label={`Grade ${n} of 5`}
-            className={`pc-learning__star${value != null && n <= value ? ' is-on' : ''}`}
+            className={`pc-learning__star${value != null && n <= value ? " is-on" : ""}`}
             disabled={busy}
             onClick={() => onRate(n)}
           >
-            <Star size={size} aria-hidden fill={value != null && n <= value ? 'currentColor' : 'none'} />
+            <Star
+              size={size}
+              aria-hidden
+              fill={value != null && n <= value ? "currentColor" : "none"}
+            />
           </button>
         </Tooltip>
       ))}
@@ -1139,7 +1601,7 @@ function GradePanel({
 }) {
   const t = useLexicon();
   const [grade, setGrade] = useState<number | null>(current?.grade ?? null);
-  const [draft, setDraft] = useState(current?.feedback ?? '');
+  const [draft, setDraft] = useState(current?.feedback ?? "");
   return (
     <div
       className="pc-learning__gradepanel"
@@ -1149,7 +1611,9 @@ function GradePanel({
       <div className="pc-learning__gradepanelrow">
         <StarControl value={grade} onRate={setGrade} size={16} />
         <span className="pc-learning__gradepanelhint">
-          {grade == null ? 'Pick a grade — 5 counts as a win for this lens, 1 as a loss.' : `★${grade} — ${GRADE_MEANING[grade]}`}
+          {grade == null
+            ? "Pick a grade — 5 counts as a win for this lens, 1 as a loss."
+            : `★${grade} — ${GRADE_MEANING[grade]}`}
         </span>
       </div>
       <textarea
@@ -1157,11 +1621,15 @@ function GradePanel({
         rows={2}
         maxLength={2000}
         aria-label="Grading note"
-        placeholder={`Why? ${t('scout')} quotes recent grading notes to the next cycle’s ideators.`}
+        placeholder={`Why? ${t("scout")} quotes recent grading notes to the next cycle’s ideators.`}
         onChange={(e) => setDraft(e.target.value)}
       />
       <div className="pc-learning__gradepanelactions">
-        <button type="button" className="pc-learning__panelbtn" onClick={onClose}>
+        <button
+          type="button"
+          className="pc-learning__panelbtn"
+          onClick={onClose}
+        >
           cancel
         </button>
         <button
@@ -1169,10 +1637,11 @@ function GradePanel({
           className="pc-learning__panelbtn pc-learning__panelbtn--primary"
           disabled={grade == null || busy}
           onClick={() => {
-            if (grade != null) onSave(grade, draft.trim() ? draft.trim() : null);
+            if (grade != null)
+              onSave(grade, draft.trim() ? draft.trim() : null);
           }}
         >
-          {busy ? 'saving…' : 'save grade'}
+          {busy ? "saving…" : "save grade"}
         </button>
       </div>
     </div>
@@ -1181,7 +1650,7 @@ function GradePanel({
 
 /** ms → compact human duration: "45s", "2m 0s", "1h 3m". */
 function formatDurationMs(ms: number | null | undefined): string {
-  if (ms == null || !Number.isFinite(ms) || ms < 0) return '—';
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return "—";
   const s = Math.round(ms / 1000);
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
@@ -1198,10 +1667,20 @@ function formatDurationMs(ms: number | null | undefined): string {
  */
 function ThroughputView() {
   const t = useLexicon();
-  const sync = useSyncQuery<HiveThroughputSnapshot>({ queryName: 'learning.hiveThroughput', args: {}, staleTime: 30_000 });
-  const soak = useSyncQuery<PotSoakReportSnapshot>({ queryName: 'learning.soakReport', args: {}, staleTime: 60_000 });
+  const sync = useSyncQuery<HiveThroughputSnapshot>({
+    queryName: "learning.hiveThroughput",
+    args: {},
+    staleTime: 30_000,
+  });
+  const soak = useSyncQuery<PotSoakReportSnapshot>({
+    queryName: "learning.soakReport",
+    args: {},
+    staleTime: 60_000,
+  });
   const hives = sync.data?.[0]?.hives ?? [];
-  const soakByHive = new Map((soak.data?.[0]?.hives ?? []).map((report) => [report.potSlug, report]));
+  const soakByHive = new Map(
+    (soak.data?.[0]?.hives ?? []).map((report) => [report.potSlug, report]),
+  );
 
   return (
     <section className="pc-learning__section">
@@ -1209,8 +1688,11 @@ function ThroughputView() {
         <div className="pc-learning__empty pc-learning__empty--card">
           <strong>No throughput recorded yet</strong>
           <span>
-            The {t('brain')} {t('pot', { lower: true })} loop records a tick every ~30s while a {t('pot', { lower: true })} is <strong>started</strong> with queued work.
-            Start a {t('pot', { lower: true })} (or wait for its next wake) and its placement metrics appear here.
+            The {t("brain")} {t("pot", { lower: true })} loop records a tick
+            every ~30s while a {t("pot", { lower: true })} is{" "}
+            <strong>started</strong> with queued work. Start a{" "}
+            {t("pot", { lower: true })} (or wait for its next wake) and its
+            placement metrics appear here.
           </span>
         </div>
       ) : (
@@ -1218,42 +1700,64 @@ function ThroughputView() {
           const m = h.latest;
           const report = soakByHive.get(h.potSlug);
           const rungs = m?.questionRungs ?? {};
-          const rungTotal = Object.values(rungs).reduce<number>((a, b) => a + (Number(b) || 0), 0);
+          const rungTotal = Object.values(rungs).reduce<number>(
+            (a, b) => a + (Number(b) || 0),
+            0,
+          );
           const tickMs = m?.tickAt ? Date.parse(m.tickAt) : NaN;
           const utilPct = m ? Math.round(m.utilization * 100) : 0;
-          const saturated = !!m && !h.operatingWell && m.utilization >= 1 && m.frontierDepth > 0;
+          const saturated =
+            !!m &&
+            !h.operatingWell &&
+            m.utilization >= 1 &&
+            m.frontierDepth > 0;
           return (
             <div key={h.potSlug} className="pc-learning__throughputhive">
-              <div className="pc-learning__flow" aria-label={`${h.potSlug} throughput health`}>
+              <div
+                className="pc-learning__flow"
+                aria-label={`${h.potSlug} throughput health`}
+              >
                 <span
-                  className={`pc-learning__flowchip ${h.operatingWell ? 'pc-learning__flowchip--wd-good' : 'pc-learning__flowchip--wd-warn'}`}
-                  title={`The ${t('pot', { lower: true })} whose ${t('brain')}-loop throughput this is, how recently it ticked, and whether the loop is operating well (frontier draining, fleet not pegged, no stuck placements).`}
+                  className={`pc-learning__flowchip ${h.operatingWell ? "pc-learning__flowchip--wd-good" : "pc-learning__flowchip--wd-warn"}`}
+                  title={`The ${t("pot", { lower: true })} whose ${t("brain")}-loop throughput this is, how recently it ticked, and whether the loop is operating well (frontier draining, fleet not pegged, no stuck placements).`}
                 >
                   <Activity size={11} aria-hidden />
                   {h.potSlug}
-                  <strong>{m && !Number.isNaN(tickMs) ? whenLabel(tickMs) : 'no ticks'}</strong>
-                  <em>{h.operatingWell ? 'operating well' : 'needs attention'}</em>
+                  <strong>
+                    {m && !Number.isNaN(tickMs)
+                      ? whenLabel(tickMs)
+                      : "no ticks"}
+                  </strong>
+                  <em>
+                    {h.operatingWell ? "operating well" : "needs attention"}
+                  </em>
                 </span>
                 {report ? (
                   <span
-                    className={`pc-learning__flowchip ${report.ready ? 'pc-learning__flowchip--wd-good' : 'pc-learning__flowchip--wd-warn'}`}
+                    className={`pc-learning__flowchip ${report.ready ? "pc-learning__flowchip--wd-good" : "pc-learning__flowchip--wd-warn"}`}
                     title={
                       report.ready
                         ? `Production-readiness gate held green for ${report.windowHours}h`
-                        : `NOT-READY: ${report.reasons.join(' · ')}`
+                        : `NOT-READY: ${report.reasons.join(" · ")}`
                     }
                   >
                     <ShieldCheck size={11} aria-hidden />
                     soak gate
-                    <strong>{report.ready ? 'READY' : 'NOT-READY'}</strong>
+                    <strong>{report.ready ? "READY" : "NOT-READY"}</strong>
                     <em>{report.windowHours}h window</em>
                   </span>
                 ) : null}
               </div>
 
               {report ? (
-                <div className="pc-learning__flow" aria-label={`${h.potSlug} production readiness`}>
-                  <span className="pc-learning__flowchip" title="Machine-checkable production-readiness verdict over the rolling soak window.">
+                <div
+                  className="pc-learning__flow"
+                  aria-label={`${h.potSlug} production readiness`}
+                >
+                  <span
+                    className="pc-learning__flowchip"
+                    title="Machine-checkable production-readiness verdict over the rolling soak window."
+                  >
                     <ShieldCheck size={11} aria-hidden />
                     reasons
                   </span>
@@ -1264,7 +1768,11 @@ function ThroughputView() {
                     </span>
                   ) : (
                     report.reasons.slice(0, 5).map((reason, i) => (
-                      <span key={`${report.potSlug}-reason-${i}`} className="pc-learning__lens" title={reason}>
+                      <span
+                        key={`${report.potSlug}-reason-${i}`}
+                        className="pc-learning__lens"
+                        title={reason}
+                      >
                         <em>{reason}</em>
                       </span>
                     ))
@@ -1272,35 +1780,74 @@ function ThroughputView() {
                 </div>
               ) : null}
 
-              <div className="pc-learning__scoreboard" aria-label={`${h.potSlug} throughput`}>
-                <Stat label="frontier" value={m ? m.frontierDepth : '—'} hint={`Ready work waiting for placement (todo items) — the queue the ${t('brain')} pours from.`} />
+              <div
+                className="pc-learning__scoreboard"
+                aria-label={`${h.potSlug} throughput`}
+              >
                 <Stat
-                  label={`${t('contributor', { plural: true, lower: true })} busy`}
-                  value={m ? `${m.beesBusy}/${m.beesCap}` : '—'}
-                  tone={saturated ? 'human' : 'good'}
-                  hint={`Live placed ${t('contributor', { plural: true, lower: true })} vs the fleet ceiling. Pegged at cap with work still queued = starvation (raise the ceiling / widen the credential pool, D-006).`}
+                  label="frontier"
+                  value={m ? m.frontierDepth : "—"}
+                  hint={`Ready work waiting for placement (todo items) — the queue the ${t("brain")} pours from.`}
                 />
-                <Stat label="utilization" value={m ? `${utilPct}%` : '—'} hint={`Fleet utilization: ${t('contributor', { plural: true, lower: true })} busy ÷ cap.`} />
-                <Stat label="placed / wake" value={m ? m.placements : '—'} tone="auto" hint={`${t('contributor', { plural: true })} newly placed since the previous tick — how fast the ${t('brain')} fans work out.`} />
-                <Stat label="completed" value={m ? m.completed : '—'} tone="auto" hint={`${t('contributor', { plural: true })} that finished in the tick window.`} />
-                <Stat label="avg complete" value={formatDurationMs(m?.mttcMs)} hint={`Mean-time-to-complete over ${t('contributor', { plural: true, lower: true })} that finished — how long a placement takes.`} />
+                <Stat
+                  label={`${t("contributor", { plural: true, lower: true })} busy`}
+                  value={m ? `${m.beesBusy}/${m.beesCap}` : "—"}
+                  tone={saturated ? "human" : "good"}
+                  hint={`Live placed ${t("contributor", { plural: true, lower: true })} vs the fleet ceiling. Pegged at cap with work still queued = starvation (raise the ceiling / widen the credential pool, D-006).`}
+                />
+                <Stat
+                  label="utilization"
+                  value={m ? `${utilPct}%` : "—"}
+                  hint={`Fleet utilization: ${t("contributor", { plural: true, lower: true })} busy ÷ cap.`}
+                />
+                <Stat
+                  label="placed / wake"
+                  value={m ? m.placements : "—"}
+                  tone="auto"
+                  hint={`${t("contributor", { plural: true })} newly placed since the previous tick — how fast the ${t("brain")} fans work out.`}
+                />
+                <Stat
+                  label="completed"
+                  value={m ? m.completed : "—"}
+                  tone="auto"
+                  hint={`${t("contributor", { plural: true })} that finished in the tick window.`}
+                />
+                <Stat
+                  label="avg complete"
+                  value={formatDurationMs(m?.mttcMs)}
+                  hint={`Mean-time-to-complete over ${t("contributor", { plural: true, lower: true })} that finished — how long a placement takes.`}
+                />
                 <Stat
                   label="stuck"
-                  value={m ? m.stuckCount : '—'}
-                  {...(m && m.stuckCount > 0 ? { tone: 'human' as const } : {})}
-                  hint={`Placed ${t('contributor', { plural: true, lower: true })} with a stale heartbeat — placements that stopped advancing and need a recovery wake (the placement watchdog, P-020).`}
+                  value={m ? m.stuckCount : "—"}
+                  {...(m && m.stuckCount > 0 ? { tone: "human" as const } : {})}
+                  hint={`Placed ${t("contributor", { plural: true, lower: true })} with a stale heartbeat — placements that stopped advancing and need a recovery wake (the placement watchdog, P-020).`}
                 />
-                <Stat label="questions" value={rungTotal} hint={`${t('contributor')} questions resolved this window, split by rung below. Lights up when the question-ladder (B-10/B-17) lands; 0 until then.`} />
+                <Stat
+                  label="questions"
+                  value={rungTotal}
+                  hint={`${t("contributor")} questions resolved this window, split by rung below. Lights up when the question-ladder (B-10/B-17) lands; 0 until then.`}
+                />
               </div>
 
               {rungTotal > 0 ? (
-                <div className="pc-learning__flow" aria-label={`${h.potSlug} question rungs`}>
-                  <span className="pc-learning__flowchip" title={`Where ${t('contributor', { lower: true })} questions resolved: ${t('contributor', { lower: true })}-self / peer-vote / ${t('brain')} / owner. The lower the rung, the less the owner was needed.`}>
+                <div
+                  className="pc-learning__flow"
+                  aria-label={`${h.potSlug} question rungs`}
+                >
+                  <span
+                    className="pc-learning__flowchip"
+                    title={`Where ${t("contributor", { lower: true })} questions resolved: ${t("contributor", { lower: true })}-self / peer-vote / ${t("brain")} / owner. The lower the rung, the less the owner was needed.`}
+                  >
                     <HelpCircle size={11} aria-hidden />
                     question rungs
                   </span>
                   {Object.entries(rungs).map(([rung, count]) => (
-                    <span key={rung} className="pc-learning__lens" title={`${String(count)} question(s) resolved at the ${rung} rung`}>
+                    <span
+                      key={rung}
+                      className="pc-learning__lens"
+                      title={`${String(count)} question(s) resolved at the ${rung} rung`}
+                    >
                       <em>{rung}</em>
                       <strong>{String(count)}</strong>
                     </span>
@@ -1314,7 +1861,7 @@ function ThroughputView() {
       <button
         type="button"
         className="pc-learning__refresh"
-        aria-label={`Reload ${t('pot', { lower: true })} throughput`}
+        aria-label={`Reload ${t("pot", { lower: true })} throughput`}
         disabled={sync.fetching || soak.fetching}
         onClick={() => {
           sync.invalidate();
@@ -1331,7 +1878,11 @@ function ThroughputView() {
 export function ScoutView() {
   const t = useLexicon();
   const RAIL_META = railMeta(t);
-  const sync = useSyncQuery<ScoutSnapshot>({ queryName: 'learning.scout', args: {}, staleTime: 30_000 });
+  const sync = useSyncQuery<ScoutSnapshot>({
+    queryName: "learning.scout",
+    args: {},
+    staleTime: 30_000,
+  });
   const snap = sync.data?.[0];
   const rails = snap?.railCounts ?? [];
   const recent = snap?.recent ?? [];
@@ -1343,35 +1894,53 @@ export function ScoutView() {
   // lifecycle → useState. A grade from this surface is an OWNER grade (the
   // server derives gradedBy from the caller — C-3); owner regrade is always
   // allowed, so the stars stay interactive on graded rows.
-  const [gradeOpen, setGradeOpen] = useQueryState('grade', parseAsString);
-  const [optimistic, setOptimistic] = useState<Record<string, EffectiveGrade>>({});
-  const [savingId, setSavingId] = useState('');
-  const [gradeError, setGradeError] = useState('');
+  const [gradeOpen, setGradeOpen] = useQueryState("grade", parseAsString);
+  const [optimistic, setOptimistic] = useState<Record<string, EffectiveGrade>>(
+    {},
+  );
+  const [savingId, setSavingId] = useState("");
+  const [gradeError, setGradeError] = useState("");
 
   const effectiveGrade = (item: ScoutRoutedItem): EffectiveGrade | null => {
     const opt = optimistic[item.ideaId];
     if (opt) return opt;
     if (item.humanGrade == null) return null;
-    return { grade: item.humanGrade, feedback: item.humanFeedback ?? null, gradedBy: item.gradedBy ?? 'owner' };
+    return {
+      grade: item.humanGrade,
+      feedback: item.humanFeedback ?? null,
+      gradedBy: item.gradedBy ?? "owner",
+    };
   };
 
-  const submitGrade = async (item: ScoutRoutedItem, grade: number, feedback: string | null) => {
-    setGradeError('');
+  const submitGrade = async (
+    item: ScoutRoutedItem,
+    grade: number,
+    feedback: string | null,
+  ) => {
+    setGradeError("");
     setSavingId(item.ideaId);
     const prevEntry = optimistic[item.ideaId] ?? null;
     // Optimistic: show the new grade immediately; the refetched snapshot
     // confirms it (or the catch below rolls it back).
-    setOptimistic((m) => ({ ...m, [item.ideaId]: { grade, feedback, gradedBy: 'owner' } }));
+    setOptimistic((m) => ({
+      ...m,
+      [item.ideaId]: { grade, feedback, gradedBy: "owner" },
+    }));
     try {
-      const res = await fetch('/api/agent-tools/scout/grade-idea', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ideaId: item.ideaId, grade, ...(feedback ? { feedback } : {}) }),
+      const res = await fetch("/api/agent-tools/scout/grade-idea", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ideaId: item.ideaId,
+          grade,
+          ...(feedback ? { feedback } : {}),
+        }),
       });
       const raw: unknown = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const result = unwrapToolResult(raw);
-      if (result.applied === false) throw new Error(String(result.reason ?? 'grade not applied'));
+      if (result.applied === false)
+        throw new Error(String(result.reason ?? "grade not applied"));
       sync.invalidate();
     } catch (e) {
       setOptimistic((m) => {
@@ -1382,7 +1951,7 @@ export function ScoutView() {
       });
       setGradeError(e instanceof Error ? e.message : String(e));
     } finally {
-      setSavingId('');
+      setSavingId("");
     }
   };
 
@@ -1391,7 +1960,9 @@ export function ScoutView() {
   const lensEntries = useMemo<Array<[string, number]>>(() => {
     const w = snap?.lensWeights;
     if (!w) return [];
-    const entries = Object.entries(w).filter(([, v]) => typeof v === 'number' && Number.isFinite(v) && v >= 0);
+    const entries = Object.entries(w).filter(
+      ([, v]) => typeof v === "number" && Number.isFinite(v) && v >= 0,
+    );
     const sum = entries.reduce((s, [, v]) => s + v, 0);
     if (entries.length === 0 || sum <= 0) return [];
     return entries
@@ -1401,52 +1972,81 @@ export function ScoutView() {
 
   // Deep-links: a routed idea opens its artifact's home surface (all nuqs, so
   // agents can drive the same navigation via ui:dispatch).
-  const [, setTab] = useQueryState('tab', parseAsString);
-  const [, setCreateView] = useQueryState('view', parseAsString);
-  const [, setPlanSel] = useQueryState('plan', parseAsString);
-  const [, setLviewRaw] = useQueryState('lview', parseAsString);
-  const [, setLane] = useQueryState('lane', parseAsString);
-  const [, setSrcSel] = useQueryState('lsrc', parseAsString);
-  const [, setLsel] = useQueryState('lsel', parseAsString);
+  const [, setTab] = useQueryState("tab", parseAsString);
+  const [, setCreateView] = useQueryState("view", parseAsString);
+  const [, setPlanSel] = useQueryState("plan", parseAsString);
+  const [, setLviewRaw] = useQueryState("lview", parseAsString);
+  const [, setLane] = useQueryState("lane", parseAsString);
+  const [, setSrcSel] = useQueryState("lsrc", parseAsString);
+  const [, setLsel] = useQueryState("lsel", parseAsString);
   const openRouted = (item: ScoutRoutedItem) => {
-    if (item.rail === 'plan' && item.routedRef.startsWith('plan:')) {
-      void setPlanSel(item.routedRef.slice('plan:'.length));
-      void setCreateView('plans');
-      void setTab('plans');
-    } else if (item.rail === 'gym') {
-      void setLviewRaw('gym');
-    } else if (item.rail === 'instance') {
-      void setLviewRaw('benchmark');
+    if (item.rail === "plan" && item.routedRef.startsWith("plan:")) {
+      void setPlanSel(item.routedRef.slice("plan:".length));
+      void setCreateView("plans");
+      void setTab("plans");
+    } else if (item.rail === "gym") {
+      void setLviewRaw("gym");
+    } else if (item.rail === "instance") {
+      void setLviewRaw("benchmark");
     } else {
       // improvement (wi:EI-…) and anything unknown → the improvements backlog,
       // selecting THAT row (?lsel) and resetting the lane/source filters so the
       // target is guaranteed visible (a sticky lane=auto would hide a
       // human-tier item and the click would look like a no-op).
-      const id = item.routedRef.startsWith('wi:') ? item.routedRef.slice('wi:'.length) : item.routedRef;
+      const id = item.routedRef.startsWith("wi:")
+        ? item.routedRef.slice("wi:".length)
+        : item.routedRef;
       void setLsel(id);
       void setLane(null);
       void setSrcSel(null);
-      void setLviewRaw('improvements');
+      void setLviewRaw("improvements");
     }
   };
 
   return (
     <section className="pc-learning__section">
-      <div className="pc-learning__flow" aria-label={`${t('scout')} tick health`}>
+      <div
+        className="pc-learning__flow"
+        aria-label={`${t("scout")} tick health`}
+      >
         <span
           className="pc-learning__flowchip"
-          title={tick ? `The newest ${t('scout')} tick and its gate outcome.${tick.detail ? ` ${tick.detail}` : ''}` : `${t('scout')} records a row per tick (gate outcomes, ideas generated/routed) once tick observability lands — no ticks recorded yet.`}
+          title={
+            tick
+              ? `The newest ${t("scout")} tick and its gate outcome.${tick.detail ? ` ${tick.detail}` : ""}`
+              : `${t("scout")} records a row per tick (gate outcomes, ideas generated/routed) once tick observability lands — no ticks recorded yet.`
+          }
         >
           <Radar size={11} aria-hidden />
-          last tick <strong>{tick && !Number.isNaN(tickMs) ? whenLabel(tickMs) : 'none yet'}</strong>
-          {tick?.outcome ? <em>{tick.detail ? `${tick.outcome} · ${tick.detail}` : tick.outcome}</em> : null}
+          last tick{" "}
+          <strong>
+            {tick && !Number.isNaN(tickMs) ? whenLabel(tickMs) : "none yet"}
+          </strong>
+          {tick?.outcome ? (
+            <em>
+              {tick.detail ? `${tick.outcome} · ${tick.detail}` : tick.outcome}
+            </em>
+          ) : null}
         </span>
       </div>
 
-      <div className="pc-learning__scoreboard" aria-label={`${t('scout')} summary`}>
-        <Stat label="routed ideas" value={snap ? snap.totalRouted : '—'} hint={`Ideas ${t('scout')} has dispatched into a rail (plan draft, gym experiment, or work item) — its only output that counts.`} />
+      <div
+        className="pc-learning__scoreboard"
+        aria-label={`${t("scout")} summary`}
+      >
+        <Stat
+          label="routed ideas"
+          value={snap ? snap.totalRouted : "—"}
+          hint={`Ideas ${t("scout")} has dispatched into a rail (plan draft, gym experiment, or work item) — its only output that counts.`}
+        />
         {rails.map((r) => (
-          <Stat key={r.rail} label={RAIL_META[r.rail]?.label ?? r.rail} value={r.count} tone="auto" hint={RAIL_META[r.rail]?.desc} />
+          <Stat
+            key={r.rail}
+            label={RAIL_META[r.rail]?.label ?? r.rail}
+            value={r.count}
+            tone="auto"
+            hint={RAIL_META[r.rail]?.desc}
+          />
         ))}
       </div>
 
@@ -1454,7 +2054,7 @@ export function ScoutView() {
         <div className="pc-learning__flow" aria-label="Lens sampling weights">
           <span
             className="pc-learning__flowchip"
-            title={`${t('scout')} picks its creative lenses with these sampling weights — learned from routed-idea outcomes and grades (a ★5 counts as a win, a ★1 as a loss; a grade beats the system's own outcome guess).`}
+            title={`${t("scout")} picks its creative lenses with these sampling weights — learned from routed-idea outcomes and grades (a ★5 counts as a win, a ★1 as a loss; a grade beats the system's own outcome guess).`}
           >
             <Sparkles size={11} aria-hidden />
             lens weights
@@ -1480,7 +2080,7 @@ export function ScoutView() {
         <button
           type="button"
           className="pc-learning__refresh"
-          aria-label={`Reload the ${t('scout', { lower: true })} feed`}
+          aria-label={`Reload the ${t("scout", { lower: true })} feed`}
           disabled={sync.fetching}
           onClick={() => sync.invalidate()}
         >
@@ -1489,14 +2089,24 @@ export function ScoutView() {
       </div>
 
       {sync.loading && !snap ? (
-        <p className="pc-learning__empty">Loading the {t('scout', { lower: true })} ledger…</p>
+        <p className="pc-learning__empty">
+          Loading the {t("scout", { lower: true })} ledger…
+        </p>
       ) : sync.error ? (
-        <p className="pc-learning__empty">{t('scout')} feed unavailable: {sync.error.message}</p>
+        <p className="pc-learning__empty">
+          {t("scout")} feed unavailable: {sync.error.message}
+        </p>
       ) : recent.length === 0 ? (
         <div className="pc-learning__empty pc-learning__empty--card">
           <Radar size={20} aria-hidden />
-          <strong>{t('scout')} has not routed ideas yet</strong>
-          <span>{t('scout')} sweeps the system on a cadence, but spends nothing unless its gates (idle, friction, budget, circuit-breaker) open — most ticks correctly do nothing. When an idea survives critique it’s routed into a plan draft, a gym experiment, an improvement work-item, or an instance candidate, and it appears here.</span>
+          <strong>{t("scout")} has not routed ideas yet</strong>
+          <span>
+            {t("scout")} sweeps the system on a cadence, but spends nothing
+            unless its gates (idle, friction, budget, circuit-breaker) open —
+            most ticks correctly do nothing. When an idea survives critique it’s
+            routed into a plan draft, a gym experiment, an improvement
+            work-item, or an instance candidate, and it appears here.
+          </span>
         </div>
       ) : (
         <>
@@ -1507,36 +2117,66 @@ export function ScoutView() {
           ) : null}
           <ul className="pc-learning__list">
             {recent.map((item) => {
-              const meta = RAIL_META[item.rail] ?? { label: item.rail, desc: 'Routed idea', color: '#94a3b8' };
+              const meta = RAIL_META[item.rail] ?? {
+                label: item.rail,
+                desc: "Routed idea",
+                color: "#94a3b8",
+              };
               const when = item.routedAt ? Date.parse(item.routedAt) : NaN;
               const eff = effectiveGrade(item);
               const isOpen = gradeOpen === item.ideaId;
               const saving = savingId === item.ideaId;
               return (
-                <li key={item.ideaId} className={`pc-learning__row pc-learning__row--scout${isOpen ? ' is-grading' : ''}`}>
+                <li
+                  key={item.ideaId}
+                  className={`pc-learning__row pc-learning__row--scout${isOpen ? " is-grading" : ""}`}
+                >
                   <span
                     className="pc-learning__rowmain"
                     role="button"
                     tabIndex={0}
                     onClick={() => openRouted(item)}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
+                      if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
                         openRouted(item);
                       }
                     }}
                     title={`${meta.desc}\n${item.routedRef}`}
                   >
-                    <span className="pc-learning__sev" style={{ background: meta.color }} aria-hidden />
-                    <span className="pc-learning__id" style={{ color: meta.color }}>{meta.label}</span>
-                    <span className="pc-learning__title">{item.title ?? item.routedRef}</span>
+                    <span
+                      className="pc-learning__sev"
+                      style={{ background: meta.color }}
+                      aria-hidden
+                    />
+                    <span
+                      className="pc-learning__id"
+                      style={{ color: meta.color }}
+                    >
+                      {meta.label}
+                    </span>
+                    <span className="pc-learning__title">
+                      {item.title ?? item.routedRef}
+                    </span>
                   </span>
                   <span className="pc-learning__meta">
-                    <span className="pc-learning__chip pc-learning__chip--idea" title="Creative lens that produced this idea">{item.lens}</span>
-                    {item.outcome && item.outcome !== 'pending' ? (
-                      <span className="pc-learning__score" title="Outcome from the change feed">{item.outcome}</span>
+                    <span
+                      className="pc-learning__chip pc-learning__chip--idea"
+                      title="Creative lens that produced this idea"
+                    >
+                      {item.lens}
+                    </span>
+                    {item.outcome && item.outcome !== "pending" ? (
+                      <span
+                        className="pc-learning__score"
+                        title="Outcome from the change feed"
+                      >
+                        {item.outcome}
+                      </span>
                     ) : null}
-                    <span className="pc-learning__age">{!Number.isNaN(when) ? whenLabel(when) : ''}</span>
+                    <span className="pc-learning__age">
+                      {!Number.isNaN(when) ? whenLabel(when) : ""}
+                    </span>
                     {/* Grade controls (P-006). A bare star click writes immediately
                         (preserving any existing note); the note button opens the
                         popover. stopPropagation so grading never opens the artifact. */}
@@ -1548,28 +2188,46 @@ export function ScoutView() {
                       <StarControl
                         value={eff?.grade ?? null}
                         busy={saving}
-                        onRate={(n) => void submitGrade(item, n, eff?.feedback ?? null)}
+                        onRate={(n) =>
+                          void submitGrade(item, n, eff?.feedback ?? null)
+                        }
                       />
                       {eff ? (
                         <span
                           className="pc-learning__gradechip"
                           title={
                             eff.feedback
-                              ? `Graded by ${graderLabel(eff.gradedBy, t('brain'))}: “${eff.feedback}”`
-                              : `Graded by ${graderLabel(eff.gradedBy, t('brain'))} — click the stars to regrade (your grade always wins)`
+                              ? `Graded by ${graderLabel(eff.gradedBy, t("brain"))}: “${eff.feedback}”`
+                              : `Graded by ${graderLabel(eff.gradedBy, t("brain"))} — click the stars to regrade (your grade always wins)`
                           }
                         >
-                          ★{eff.grade} · {graderLabel(eff.gradedBy, t('brain'))}
+                          ★{eff.grade} · {graderLabel(eff.gradedBy, t("brain"))}
                         </span>
                       ) : null}
-                      <Tooltip label={eff?.feedback ? `Edit the grading note: “${eff.feedback}”` : 'Grade with a note — ideators read recent notes next cycle'}>
+                      <Tooltip
+                        label={
+                          eff?.feedback
+                            ? `Edit the grading note: “${eff.feedback}”`
+                            : "Grade with a note — ideators read recent notes next cycle"
+                        }
+                      >
                         <button
                           type="button"
                           className="pc-learning__notebtn"
-                          aria-label={eff?.feedback ? 'Edit the grading note' : 'Grade with a note'}
-                          onClick={() => void setGradeOpen(isOpen ? null : item.ideaId)}
+                          aria-label={
+                            eff?.feedback
+                              ? "Edit the grading note"
+                              : "Grade with a note"
+                          }
+                          onClick={() =>
+                            void setGradeOpen(isOpen ? null : item.ideaId)
+                          }
                         >
-                          {eff?.feedback ? <MessageSquareText size={12} aria-hidden /> : <MessageSquarePlus size={12} aria-hidden />}
+                          {eff?.feedback ? (
+                            <MessageSquareText size={12} aria-hidden />
+                          ) : (
+                            <MessageSquarePlus size={12} aria-hidden />
+                          )}
                         </button>
                       </Tooltip>
                     </span>
@@ -1579,7 +2237,9 @@ export function ScoutView() {
                       current={eff}
                       busy={saving}
                       onSave={(grade, feedback) => {
-                        void submitGrade(item, grade, feedback).then(() => void setGradeOpen(null));
+                        void submitGrade(item, grade, feedback).then(
+                          () => void setGradeOpen(null),
+                        );
                       }}
                       onClose={() => void setGradeOpen(null)}
                     />
@@ -1596,7 +2256,7 @@ export function ScoutView() {
 
 // ─── Learnings view (a hive's editable shared memory — learning-packs P-008) ──
 
-type HiveLearningRowT = HiveLearningsSnapshot['rows'][number];
+type HiveLearningRowT = HiveLearningsSnapshot["rows"][number];
 
 function LearningsView({ hive }: { hive: string }) {
   const t = useLexicon();
@@ -1604,10 +2264,13 @@ function LearningsView({ hive }: { hive: string }) {
   // lens) — passed in as `hive`/`hives` instead of owned here, so the same
   // selection drives Improvements + Gym too. The origin filter (`?lpack=`) stays
   // local to this view.
-  const [lpack, setLpack] = useQueryState('lpack', parseAsString.withDefault('all'));
+  const [lpack, setLpack] = useQueryState(
+    "lpack",
+    parseAsString.withDefault("all"),
+  );
 
   const sync = useSyncQuery<HiveLearningsSnapshot>({
-    queryName: 'learning.hive',
+    queryName: "learning.hive",
     args: { hive },
     enabled: hive.length > 0,
     staleTime: 30_000,
@@ -1615,23 +2278,34 @@ function LearningsView({ hive }: { hive: string }) {
   const snap = sync.data?.[0];
   const rows = snap?.rows ?? [];
   const filtered =
-    lpack === 'all' ? rows : lpack === 'organic' ? rows.filter((r) => !r.packId) : rows.filter((r) => r.packId === lpack);
+    lpack === "all"
+      ? rows
+      : lpack === "organic"
+        ? rows.filter((r) => !r.packId)
+        : rows.filter((r) => r.packId === lpack);
 
   // ── Pack management (P-009/P-010/P-013): install / mute / uninstall /
   //    upgrade, with the conflict-review cards when the backend says
   //    review_required. Transient action state → useState (nuqs exception).
-  const catalog = useSyncQuery<{ id: string; title: string; version: string; itemCount: number }>({
-    queryName: 'learningPacks.list',
+  const catalog = useSyncQuery<{
+    id: string;
+    title: string;
+    version: string;
+    itemCount: number;
+  }>({
+    queryName: "learningPacks.list",
     args: {},
     staleTime: 60_000,
   });
   const installedIds = new Set((snap?.packs ?? []).map((p) => p.packId));
-  const installable = (catalog.data ?? []).filter((p) => !installedIds.has(p.id));
-  const [addPack, setAddPack] = useState('');
-  const [busyPack, setBusyPack] = useState('');
-  const [packError, setPackError] = useState('');
+  const installable = (catalog.data ?? []).filter(
+    (p) => !installedIds.has(p.id),
+  );
+  const [addPack, setAddPack] = useState("");
+  const [busyPack, setBusyPack] = useState("");
+  const [packError, setPackError] = useState("");
   const [reviewState, setReviewState] = useState<{
-    mode: 'install' | 'upgrade';
+    mode: "install" | "upgrade";
     pack: string;
     review: InstallReview;
     choices: Record<string, InstallAction>;
@@ -1640,16 +2314,16 @@ function LearningsView({ hive }: { hive: string }) {
   const { prompt: askPrompt, element: promptEl } = usePromptDialog();
 
   const packPost = async (
-    path: 'install' | 'upgrade' | 'uninstall' | 'set-enabled',
+    path: "install" | "upgrade" | "uninstall" | "set-enabled",
     body: Record<string, unknown>,
-    mode?: 'install' | 'upgrade',
+    mode?: "install" | "upgrade",
   ) => {
-    setPackError('');
-    setBusyPack(String(body.pack ?? ''));
+    setPackError("");
+    setBusyPack(String(body.pack ?? ""));
     try {
       const res = await fetch(`/api/learning-packs/${path}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ hive, ...body }),
       });
       const data = (await res.json().catch(() => ({}))) as {
@@ -1658,19 +2332,26 @@ function LearningsView({ hive }: { hive: string }) {
         review?: InstallReview;
         error?: string;
       };
-      if (data.reason === 'review_required' && data.review && mode) {
+      if (data.reason === "review_required" && data.review && mode) {
         // Preselect the backend's defaults (clashes skip — D-003).
         const choices: Record<string, InstallAction> = {};
-        for (const item of data.review.items) choices[item.itemId] = item.defaultAction;
-        setReviewState({ mode, pack: String(body.pack), review: data.review, choices });
+        for (const item of data.review.items)
+          choices[item.itemId] = item.defaultAction;
+        setReviewState({
+          mode,
+          pack: String(body.pack),
+          review: data.review,
+          choices,
+        });
         return;
       }
-      if (!res.ok || data.ok === false) setPackError(data.error ?? data.reason ?? `HTTP ${res.status}`);
+      if (!res.ok || data.ok === false)
+        setPackError(data.error ?? data.reason ?? `HTTP ${res.status}`);
       setReviewState(null);
     } catch (e) {
-      setPackError((e as Error).message ?? 'network error');
+      setPackError((e as Error).message ?? "network error");
     } finally {
-      setBusyPack('');
+      setBusyPack("");
       sync.invalidate();
       catalog.invalidate();
     }
@@ -1678,38 +2359,42 @@ function LearningsView({ hive }: { hive: string }) {
 
   const applyReview = () => {
     if (!reviewState) return;
-    const resolutions = Object.entries(reviewState.choices).map(([itemId, action]) => ({ itemId, action }));
+    const resolutions = Object.entries(reviewState.choices).map(
+      ([itemId, action]) => ({ itemId, action }),
+    );
     void packPost(reviewState.mode, { pack: reviewState.pack, resolutions });
   };
 
   const forget = async (row: HiveLearningRowT) => {
     const ok = await askConfirm({
-      title: 'Remove this learning?',
+      title: "Remove this learning?",
       body: row.text.slice(0, 160),
-      confirmLabel: 'Remove',
+      confirmLabel: "Remove",
       destructive: true,
     });
     if (!ok) return;
     try {
-      await fetch(`/api/user/memory?id=${encodeURIComponent(row.id)}`, { method: 'DELETE' });
+      await fetch(`/api/user/memory?id=${encodeURIComponent(row.id)}`, {
+        method: "DELETE",
+      });
     } finally {
       sync.invalidate();
     }
   };
   const edit = async (row: HiveLearningRowT) => {
     const next = await askPrompt({
-      title: 'Edit learning',
-      label: 'Learning text',
-      body: 'Agents recall the exact text.',
+      title: "Edit learning",
+      label: "Learning text",
+      body: "Agents recall the exact text.",
       defaultValue: row.text,
-      submitLabel: 'Save',
-      validate: (value) => (value.trim() ? null : 'Learning text is required.'),
+      submitLabel: "Save",
+      validate: (value) => (value.trim() ? null : "Learning text is required."),
     });
     if (next == null || !next.trim() || next === row.text) return;
     try {
-      await fetch('/api/user/memory', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+      await fetch("/api/user/memory", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: row.id, text: next.trim() }),
       });
     } finally {
@@ -1718,278 +2403,510 @@ function LearningsView({ hive }: { hive: string }) {
   };
 
   const actionBtn: React.CSSProperties = {
-    background: 'none',
-    border: '1px solid var(--border)',
+    background: "none",
+    border: "1px solid var(--border)",
     borderRadius: 4,
-    color: 'var(--fg-dim)',
-    cursor: 'pointer',
+    color: "var(--fg-dim)",
+    cursor: "pointer",
     fontSize: 11,
-    padding: '1px 7px',
+    padding: "1px 7px",
   };
 
   return (
     <>
-    {confirmEl}
-    {promptEl}
-    <section className="pc-learning__section">
-      {/* The hive picker now lives in the tab header (P-042) — this strip keeps
+      {confirmEl}
+      {promptEl}
+      <section className="pc-learning__section">
+        {/* The hive picker now lives in the tab header (P-042) — this strip keeps
           only the origin filter, scoped to the header-selected hive. */}
-      <div className="pc-learning__flow" aria-label="Learnings scope">
-        <label className="pc-learning__flowchip" style={{ gap: 6 }}>
-          show
-          <Select
-            ariaLabel="Filter by origin"
-            value={lpack}
-            onChange={(v: string) => void setLpack(v)}
-            options={[
-              { value: 'all', label: 'everything' },
-              { value: 'organic', label: `${t('pot', { lower: true })}-learned only` },
-              ...(snap?.packs ?? []).map((p) => ({ value: p.packId, label: `pack: ${p.packId}` })),
-            ]}
-          />
-        </label>
-      </div>
+        <div className="pc-learning__flow" aria-label="Learnings scope">
+          <label className="pc-learning__flowchip" style={{ gap: 6 }}>
+            show
+            <Select
+              ariaLabel="Filter by origin"
+              value={lpack}
+              onChange={(v: string) => void setLpack(v)}
+              options={[
+                { value: "all", label: "everything" },
+                {
+                  value: "organic",
+                  label: `${t("pot", { lower: true })}-learned only`,
+                },
+                ...(snap?.packs ?? []).map((p) => ({
+                  value: p.packId,
+                  label: `pack: ${p.packId}`,
+                })),
+              ]}
+            />
+          </label>
+        </div>
 
-      <div className="pc-learning__scoreboard" aria-label="Learnings summary">
-        <Stat label="learnings" value={snap ? rows.length : '—'} hint={`Everything in this ${t('pot', { lower: true })}'s shared memory pool — every agent in the ${t('pot', { lower: true })} recalls these.`} />
-        {(snap?.packs ?? []).map((p) => (
+        <div className="pc-learning__scoreboard" aria-label="Learnings summary">
           <Stat
-            key={p.packId}
-            label={`${p.packId}${p.packVersion ? ` v${p.packVersion}` : ''}`}
-            value={`${p.present}${p.packTotal ? `/${p.packTotal}` : ''}`}
-            tone="auto"
-            hint={`Seeded from the ${p.packId} learning pack — ${p.present} present (${p.modified} edited), ${p.notPresent} not seeded or removed.`}
+            label="learnings"
+            value={snap ? rows.length : "—"}
+            hint={`Everything in this ${t("pot", { lower: true })}'s shared memory pool — every agent in the ${t("pot", { lower: true })} recalls these.`}
           />
-        ))}
-        <Stat label={`${t('pot', { lower: true })}-learned`} value={snap ? snap.organicCount : '—'} tone="good" hint={`Conventions and gotchas this ${t('pot', { lower: true })}'s agents (or you) recorded — not from a pack.`} />
-      </div>
-
-      {/* Pack management (P-009/P-013): mute / uninstall / adopt-new + add-pack. */}
-      {hive !== '' && (
-        <div className="pc-learning__flow" aria-label="Pack management" style={{ flexWrap: 'wrap' }}>
           {(snap?.packs ?? []).map((p) => (
-            <span key={p.packId} className="pc-learning__flowchip" style={{ gap: 6 }}>
-              <strong>{p.packId}</strong>
-              {p.enabled === false ? (
-                <Tooltip label="Muted — rows stay stored but are not injected into agent turns">
-                  <em>muted</em>
-                </Tooltip>
-              ) : null}
-              <Tooltip label={p.enabled === false ? 'Resume injecting this pack' : 'Stop injecting this pack (rows stay stored)'}>
-                <button
-                  type="button"
-                  style={actionBtn}
-                  disabled={busyPack === p.packId}
-                  onClick={() => void packPost('set-enabled', { pack: p.packId, enabled: p.enabled === false })}
-                >
-                  {p.enabled === false ? 'unmute' : 'mute'}
-                </button>
-              </Tooltip>
-              <Tooltip label="Remove this pack's rows (your edited rows are kept)">
-                <button
-                  type="button"
-                  style={actionBtn}
-                  disabled={busyPack === p.packId}
-                  onClick={async () => {
-                    const ok = await askConfirm({
-                      title: `Uninstall ${p.packId}?`,
-                      body: 'Rows you edited are kept.',
-                      confirmLabel: 'Uninstall',
-                      destructive: true,
-                    });
-                    if (ok) {
-                    void packPost('uninstall', { pack: p.packId });
+            <Stat
+              key={p.packId}
+              label={`${p.packId}${p.packVersion ? ` v${p.packVersion}` : ""}`}
+              value={`${p.present}${p.packTotal ? `/${p.packTotal}` : ""}`}
+              tone="auto"
+              hint={`Seeded from the ${p.packId} learning pack — ${p.present} present (${p.modified} edited), ${p.notPresent} not seeded or removed.`}
+            />
+          ))}
+          <Stat
+            label={`${t("pot", { lower: true })}-learned`}
+            value={snap ? snap.organicCount : "—"}
+            tone="good"
+            hint={`Conventions and gotchas this ${t("pot", { lower: true })}'s agents (or you) recorded — not from a pack.`}
+          />
+        </div>
+
+        {/* Pack management (P-009/P-013): mute / uninstall / adopt-new + add-pack. */}
+        {hive !== "" && (
+          <div
+            className="pc-learning__flow"
+            aria-label="Pack management"
+            style={{ flexWrap: "wrap" }}
+          >
+            {(snap?.packs ?? []).map((p) => (
+              <span
+                key={p.packId}
+                className="pc-learning__flowchip"
+                style={{ gap: 6 }}
+              >
+                <strong>{p.packId}</strong>
+                {p.enabled === false ? (
+                  <Tooltip label="Muted — rows stay stored but are not injected into agent turns">
+                    <em>muted</em>
+                  </Tooltip>
+                ) : null}
+                <Tooltip
+                  label={
+                    p.enabled === false
+                      ? "Resume injecting this pack"
+                      : "Stop injecting this pack (rows stay stored)"
                   }
-                  }}
                 >
-                  uninstall
-                </button>
-              </Tooltip>
-              {p.updateAvailable ? (
-                <Tooltip label={`Adopt the new learnings in v${p.availableVersion} — rows you already have are never auto-changed`}>
                   <button
                     type="button"
-                    style={{ ...actionBtn, borderColor: 'var(--accent)', color: 'var(--accent)' }}
+                    style={actionBtn}
                     disabled={busyPack === p.packId}
-                    onClick={() => void packPost('upgrade', { pack: p.packId }, 'upgrade')}
+                    onClick={() =>
+                      void packPost("set-enabled", {
+                        pack: p.packId,
+                        enabled: p.enabled === false,
+                      })
+                    }
                   >
-                    v{p.availableVersion} available
+                    {p.enabled === false ? "unmute" : "mute"}
                   </button>
                 </Tooltip>
-              ) : null}
-            </span>
-          ))}
-          {installable.length > 0 && (
-            <span className="pc-learning__flowchip" style={{ gap: 6 }}>
-              <Select
-                ariaLabel="Add a learning pack"
-                value={addPack}
-                onChange={(v: string) => setAddPack(v)}
-                placeholder="add a pack…"
-                options={installable.map((p) => ({
-                  value: p.id,
-                  label: `${p.title} — ${p.itemCount} learnings`,
-                }))}
-              />
+                <Tooltip label="Remove this pack's rows (your edited rows are kept)">
+                  <button
+                    type="button"
+                    style={actionBtn}
+                    disabled={busyPack === p.packId}
+                    onClick={async () => {
+                      const ok = await askConfirm({
+                        title: `Uninstall ${p.packId}?`,
+                        body: "Rows you edited are kept.",
+                        confirmLabel: "Uninstall",
+                        destructive: true,
+                      });
+                      if (ok) {
+                        void packPost("uninstall", { pack: p.packId });
+                      }
+                    }}
+                  >
+                    uninstall
+                  </button>
+                </Tooltip>
+                {p.updateAvailable ? (
+                  <Tooltip
+                    label={`Adopt the new learnings in v${p.availableVersion} — rows you already have are never auto-changed`}
+                  >
+                    <button
+                      type="button"
+                      style={{
+                        ...actionBtn,
+                        borderColor: "var(--accent)",
+                        color: "var(--accent)",
+                      }}
+                      disabled={busyPack === p.packId}
+                      onClick={() =>
+                        void packPost("upgrade", { pack: p.packId }, "upgrade")
+                      }
+                    >
+                      v{p.availableVersion} available
+                    </button>
+                  </Tooltip>
+                ) : null}
+              </span>
+            ))}
+            {installable.length > 0 && (
+              <span className="pc-learning__flowchip" style={{ gap: 6 }}>
+                <Select
+                  ariaLabel="Add a learning pack"
+                  value={addPack}
+                  onChange={(v: string) => setAddPack(v)}
+                  placeholder="add a pack…"
+                  options={installable.map((p) => ({
+                    value: p.id,
+                    label: `${p.title} — ${p.itemCount} learnings`,
+                  }))}
+                />
+                <button
+                  type="button"
+                  style={actionBtn}
+                  disabled={!addPack || busyPack !== ""}
+                  onClick={() =>
+                    void packPost("install", { pack: addPack }, "install")
+                  }
+                >
+                  install
+                </button>
+              </span>
+            )}
+          </div>
+        )}
+        {packError ? (
+          <p className="pc-learning__empty" role="alert">
+            Pack action failed: {packError}
+          </p>
+        ) : null}
+
+        {/* P-032 (B-11): fleet→pack candidates awaiting the owner's adopt/dismiss. */}
+        <LearningPackCandidates />
+
+        {/* P-011 prune nudge: a bloated pool crowds the per-turn injection budget. */}
+        {rows.length > 80 && (
+          <p
+            className="pc-learning__empty"
+            style={{ color: "var(--warn, #f59e0b)" }}
+          >
+            This {t("pot", { lower: true })} carries {rows.length} learnings
+            across {(snap?.packs ?? []).length} pack
+            {(snap?.packs ?? []).length === 1 ? "" : "s"} — more than fits one
+            turn&rsquo;s memory budget, so the least turn-relevant are withheld.
+            Consider pruning duplicates or muting a pack.
+          </p>
+        )}
+
+        {/* The conflict-review cards (P-010, D-003): incoming vs existing,
+          per-item action, defaults preselected — never a silent union. */}
+        {reviewState && (
+          <div
+            style={{
+              border: "1px solid var(--accent)",
+              borderRadius: 8,
+              padding: "12px 14px",
+              margin: "10px 0",
+            }}
+            data-testid="pack-review"
+          >
+            <p style={{ margin: "0 0 8px", fontSize: 13, fontWeight: 600 }}>
+              Review:{" "}
+              {reviewState.mode === "upgrade"
+                ? "adopt new learnings from"
+                : "install"}{" "}
+              {reviewState.pack} — {reviewState.review.conflicts} conflict
+              {reviewState.review.conflicts === 1 ? "" : "s"},{" "}
+              {reviewState.review.duplicates} duplicate
+              {reviewState.review.duplicates === 1 ? "" : "s"},{" "}
+              {reviewState.review.clean} clean
+            </p>
+            <p
+              style={{
+                margin: "0 0 10px",
+                fontSize: 11.5,
+                color: "var(--fg-mute)",
+              }}
+            >
+              Clean items install as-is. For each clash, pick what wins — your
+              existing learnings outrank the incoming pack by default.
+            </p>
+            {reviewState.review.items
+              .filter((i) => i.status !== "clean")
+              .map((item) => (
+                <div
+                  key={item.itemId}
+                  style={{
+                    borderTop: "1px solid var(--border)",
+                    padding: "8px 0",
+                    fontSize: 12,
+                  }}
+                >
+                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                    <div style={{ flex: 1, minWidth: 220 }}>
+                      <div
+                        style={{
+                          fontSize: 10.5,
+                          color: "var(--fg-mute)",
+                          marginBottom: 2,
+                        }}
+                      >
+                        incoming ({item.status})
+                      </div>
+                      <div style={{ whiteSpace: "pre-wrap" }}>
+                        {item.incoming}
+                      </div>
+                    </div>
+                    {item.existing && (
+                      <div style={{ flex: 1, minWidth: 220 }}>
+                        <div
+                          style={{
+                            fontSize: 10.5,
+                            color: "var(--fg-mute)",
+                            marginBottom: 2,
+                          }}
+                        >
+                          existing (
+                          {item.existing.organic
+                            ? `${t("pot", { lower: true })}-learned`
+                            : `pack: ${item.existing.packId ?? "?"}`}
+                          )
+                        </div>
+                        <div style={{ whiteSpace: "pre-wrap" }}>
+                          {item.existing.text}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  {item.summary ? (
+                    <div
+                      style={{
+                        marginTop: 4,
+                        color: "var(--warn, #f59e0b)",
+                        fontSize: 11.5,
+                      }}
+                    >
+                      ⚠ {item.summary}
+                    </div>
+                  ) : null}
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 10,
+                      marginTop: 6,
+                      fontSize: 11.5,
+                    }}
+                  >
+                    <Select
+                      ariaLabel={`Resolution for ${item.itemId}`}
+                      value={
+                        reviewState.choices[item.itemId] ?? item.defaultAction
+                      }
+                      onChange={(a) =>
+                        setReviewState((s) =>
+                          s
+                            ? {
+                                ...s,
+                                choices: {
+                                  ...s.choices,
+                                  [item.itemId]: a as InstallAction,
+                                },
+                              }
+                            : s,
+                        )
+                      }
+                      options={[
+                        { value: "skip", label: "keep existing" },
+                        { value: "replace", label: "take incoming" },
+                        { value: "keep-both", label: "keep both" },
+                      ]}
+                    />
+                  </div>
+                </div>
+              ))}
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                justifyContent: "flex-end",
+                marginTop: 10,
+              }}
+            >
               <button
                 type="button"
                 style={actionBtn}
-                disabled={!addPack || busyPack !== ''}
-                onClick={() => void packPost('install', { pack: addPack }, 'install')}
+                onClick={() => setReviewState(null)}
               >
-                install
+                cancel
               </button>
-            </span>
-          )}
-        </div>
-      )}
-      {packError ? <p className="pc-learning__empty" role="alert">Pack action failed: {packError}</p> : null}
-
-      {/* P-032 (B-11): fleet→pack candidates awaiting the owner's adopt/dismiss. */}
-      <LearningPackCandidates />
-
-      {/* P-011 prune nudge: a bloated pool crowds the per-turn injection budget. */}
-      {rows.length > 80 && (
-        <p className="pc-learning__empty" style={{ color: 'var(--warn, #f59e0b)' }}>
-          This {t('pot', { lower: true })} carries {rows.length} learnings across {(snap?.packs ?? []).length} pack
-          {(snap?.packs ?? []).length === 1 ? '' : 's'} — more than fits one turn&rsquo;s memory budget, so the least
-          turn-relevant are withheld. Consider pruning duplicates or muting a pack.
-        </p>
-      )}
-
-      {/* The conflict-review cards (P-010, D-003): incoming vs existing,
-          per-item action, defaults preselected — never a silent union. */}
-      {reviewState && (
-        <div style={{ border: '1px solid var(--accent)', borderRadius: 8, padding: '12px 14px', margin: '10px 0' }} data-testid="pack-review">
-          <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 600 }}>
-            Review: {reviewState.mode === 'upgrade' ? 'adopt new learnings from' : 'install'} {reviewState.pack} —{' '}
-            {reviewState.review.conflicts} conflict{reviewState.review.conflicts === 1 ? '' : 's'}, {reviewState.review.duplicates} duplicate
-            {reviewState.review.duplicates === 1 ? '' : 's'}, {reviewState.review.clean} clean
-          </p>
-          <p style={{ margin: '0 0 10px', fontSize: 11.5, color: 'var(--fg-mute)' }}>
-            Clean items install as-is. For each clash, pick what wins — your existing learnings outrank the incoming pack by default.
-          </p>
-          {reviewState.review.items.filter((i) => i.status !== 'clean').map((item) => (
-            <div key={item.itemId} style={{ borderTop: '1px solid var(--border)', padding: '8px 0', fontSize: 12 }}>
-              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                <div style={{ flex: 1, minWidth: 220 }}>
-                  <div style={{ fontSize: 10.5, color: 'var(--fg-mute)', marginBottom: 2 }}>incoming ({item.status})</div>
-                  <div style={{ whiteSpace: 'pre-wrap' }}>{item.incoming}</div>
-                </div>
-                {item.existing && (
-                  <div style={{ flex: 1, minWidth: 220 }}>
-                    <div style={{ fontSize: 10.5, color: 'var(--fg-mute)', marginBottom: 2 }}>
-                      existing ({item.existing.organic ? `${t('pot', { lower: true })}-learned` : `pack: ${item.existing.packId ?? '?'}`})
-                    </div>
-                    <div style={{ whiteSpace: 'pre-wrap' }}>{item.existing.text}</div>
-                  </div>
-                )}
-              </div>
-              {item.summary ? <div style={{ marginTop: 4, color: 'var(--warn, #f59e0b)', fontSize: 11.5 }}>⚠ {item.summary}</div> : null}
-              <div style={{ display: 'flex', gap: 10, marginTop: 6, fontSize: 11.5 }}>
-                <Select
-                  ariaLabel={`Resolution for ${item.itemId}`}
-                  value={reviewState.choices[item.itemId] ?? item.defaultAction}
-                  onChange={(a) => setReviewState((s) => (s ? { ...s, choices: { ...s.choices, [item.itemId]: a as InstallAction } } : s))}
-                  options={[
-                    { value: 'skip', label: 'keep existing' },
-                    { value: 'replace', label: 'take incoming' },
-                    { value: 'keep-both', label: 'keep both' },
-                  ]}
-                />
-              </div>
+              <button
+                type="button"
+                style={{
+                  ...actionBtn,
+                  borderColor: "var(--accent)",
+                  color: "var(--accent)",
+                }}
+                disabled={busyPack !== ""}
+                onClick={applyReview}
+              >
+                apply
+              </button>
             </div>
-          ))}
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 10 }}>
-            <button type="button" style={actionBtn} onClick={() => setReviewState(null)}>cancel</button>
-            <button
-              type="button"
-              style={{ ...actionBtn, borderColor: 'var(--accent)', color: 'var(--accent)' }}
-              disabled={busyPack !== ''}
-              onClick={applyReview}
-            >
-              apply
-            </button>
           </div>
-        </div>
-      )}
+        )}
 
-      <div className="pc-learning__sectionhead">
-        <h2>Shared memory</h2>
-        <button
-          type="button"
-          className="pc-learning__refresh"
-          aria-label="Reload the learnings"
-          disabled={sync.fetching}
-          onClick={() => sync.invalidate()}
-        >
-          <RefreshCw size={13} aria-hidden />
-        </button>
-      </div>
+        <div className="pc-learning__sectionhead">
+          <h2>Shared memory</h2>
+          <button
+            type="button"
+            className="pc-learning__refresh"
+            aria-label="Reload the learnings"
+            disabled={sync.fetching}
+            onClick={() => sync.invalidate()}
+          >
+            <RefreshCw size={13} aria-hidden />
+          </button>
+        </div>
 
-      {hive === '' ? (
-        <div className="pc-learning__empty pc-learning__empty--card">
-          <Brain size={20} aria-hidden />
-          <strong>No {t('pot', { plural: true, lower: true })} yet</strong>
-          <span>Create a {t('pot', { lower: true })} and it starts with a default learning pack — curated working wisdom its agents inherit from the first wake. It appears here, fully editable.</span>
-        </div>
-      ) : sync.loading && !snap ? (
-        <p className="pc-learning__empty">Loading the {t('pot', { lower: true })}&rsquo;s shared memory…</p>
-      ) : snap?.unavailable ? (
-        <p className="pc-learning__empty">Memory store unavailable — try reloading.</p>
-      ) : filtered.length === 0 ? (
-        <div className="pc-learning__empty pc-learning__empty--card">
-          <Brain size={20} aria-hidden />
-          <strong>Nothing here yet</strong>
-          <span>This {t('pot', { lower: true })}&rsquo;s shared memory is empty for this filter. Seeded pack learnings and agent-recorded conventions both land here.</span>
-        </div>
-      ) : (
-        <ul className="pc-learning__list">
-          {filtered.map((r) => (
-            <li key={r.id} className="pc-learning__row" style={{ alignItems: 'flex-start' }}>
-              <span
-                className="pc-learning__sev"
-                style={{ background: r.packId ? 'var(--accent)' : 'var(--good)', marginTop: 5 }}
-                aria-hidden
-              />
-              <span style={{ flex: 1, minWidth: 0 }}>
-                <span style={{ display: 'block', fontSize: 12.5, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{r.text}</span>
-                <span style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 3, fontSize: 10.5, color: 'var(--fg-mute)' }}>
-                  {r.packId ? (
-                    <span title={`Seeded from the ${r.packId} learning pack${r.packState === 'modified' ? ' — edited since seeding' : ''}`}>
-                      <span style={{ border: '1px solid var(--border)', borderRadius: 3, padding: '0 4px' }}>
-                        pack: {r.packId}{r.packVersion ? ` v${r.packVersion}` : ''}
+        {hive === "" ? (
+          <div className="pc-learning__empty pc-learning__empty--card">
+            <Brain size={20} aria-hidden />
+            <strong>No {t("pot", { plural: true, lower: true })} yet</strong>
+            <span>
+              Create a {t("pot", { lower: true })} and it starts with a default
+              learning pack — curated working wisdom its agents inherit from the
+              first wake. It appears here, fully editable.
+            </span>
+          </div>
+        ) : sync.loading && !snap ? (
+          <p className="pc-learning__empty">
+            Loading the {t("pot", { lower: true })}&rsquo;s shared memory…
+          </p>
+        ) : snap?.unavailable ? (
+          <p className="pc-learning__empty">
+            Memory store unavailable — try reloading.
+          </p>
+        ) : filtered.length === 0 ? (
+          <div className="pc-learning__empty pc-learning__empty--card">
+            <Brain size={20} aria-hidden />
+            <strong>Nothing here yet</strong>
+            <span>
+              This {t("pot", { lower: true })}&rsquo;s shared memory is empty
+              for this filter. Seeded pack learnings and agent-recorded
+              conventions both land here.
+            </span>
+          </div>
+        ) : (
+          <ul className="pc-learning__list">
+            {filtered.map((r) => (
+              <li
+                key={r.id}
+                className="pc-learning__row"
+                style={{ alignItems: "flex-start" }}
+              >
+                <span
+                  className="pc-learning__sev"
+                  style={{
+                    background: r.packId ? "var(--accent)" : "var(--good)",
+                    marginTop: 5,
+                  }}
+                  aria-hidden
+                />
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span
+                    style={{
+                      display: "block",
+                      fontSize: 12.5,
+                      lineHeight: 1.5,
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                    }}
+                  >
+                    {r.text}
+                  </span>
+                  <span
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: 6,
+                      marginTop: 3,
+                      fontSize: 10.5,
+                      color: "var(--fg-mute)",
+                    }}
+                  >
+                    {r.packId ? (
+                      <span
+                        title={`Seeded from the ${r.packId} learning pack${r.packState === "modified" ? " — edited since seeding" : ""}`}
+                      >
+                        <span
+                          style={{
+                            border: "1px solid var(--border)",
+                            borderRadius: 3,
+                            padding: "0 4px",
+                          }}
+                        >
+                          pack: {r.packId}
+                          {r.packVersion ? ` v${r.packVersion}` : ""}
+                        </span>
+                        {r.packState === "modified" ? " · edited" : ""}
                       </span>
-                      {r.packState === 'modified' ? ' · edited' : ''}
-                    </span>
-                  ) : (
-                    <span title={`Recorded by ${r.createdBy ?? 'an agent'} — this ${t('pot', { lower: true })}'s own learning`}>{t('pot', { lower: true })}-learned{r.createdBy ? ` · ${r.createdBy}` : ''}</span>
-                  )}
-                  {r.kind ? <span>{r.kind}</span> : null}
+                    ) : (
+                      <span
+                        title={`Recorded by ${r.createdBy ?? "an agent"} — this ${t("pot", { lower: true })}'s own learning`}
+                      >
+                        {t("pot", { lower: true })}-learned
+                        {r.createdBy ? ` · ${r.createdBy}` : ""}
+                      </span>
+                    )}
+                    {r.kind ? <span>{r.kind}</span> : null}
+                  </span>
                 </span>
-              </span>
-              <span style={{ display: 'flex', gap: 6, marginTop: 2 }}>
-                <Tooltip label="Edit the learning text">
-                  <button type="button" style={actionBtn} onClick={() => void edit(r)}>edit</button>
-                </Tooltip>
-                <Tooltip label={`Remove this learning from the ${t('pot', { lower: true })}'s memory`}>
-                  <button type="button" style={actionBtn} onClick={() => void forget(r)}>remove</button>
-                </Tooltip>
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
+                <span style={{ display: "flex", gap: 6, marginTop: 2 }}>
+                  <Tooltip label="Edit the learning text">
+                    <button
+                      type="button"
+                      style={actionBtn}
+                      onClick={() => void edit(r)}
+                    >
+                      edit
+                    </button>
+                  </Tooltip>
+                  <Tooltip
+                    label={`Remove this learning from the ${t("pot", { lower: true })}'s memory`}
+                  >
+                    <button
+                      type="button"
+                      style={actionBtn}
+                      onClick={() => void forget(r)}
+                    >
+                      remove
+                    </button>
+                  </Tooltip>
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </>
   );
 }
 
 // ─── Shared ──────────────────────────────────────────────────────────────────
 
-function Stat({ label, value, tone, hint }: { label: string; value: number | string; tone?: 'auto' | 'human' | 'good'; hint?: string }) {
+function Stat({
+  label,
+  value,
+  tone,
+  hint,
+}: {
+  label: string;
+  value: number | string;
+  tone?: "auto" | "human" | "good";
+  hint?: string;
+}) {
   return (
-    <div className={`pc-learning__stat${tone ? ` pc-learning__stat--${tone}` : ''}`} title={hint}>
+    <div
+      className={`pc-learning__stat${tone ? ` pc-learning__stat--${tone}` : ""}`}
+      title={hint}
+    >
       <strong>{value}</strong>
       <span>{label}</span>
     </div>

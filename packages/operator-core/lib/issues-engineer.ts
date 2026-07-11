@@ -1170,9 +1170,7 @@ export async function semanticSearchIssues(vec: number[], mode: string, limit = 
      WHERE workspace_id = ${issuesScopeWorkspace()}
        AND issue_id = ANY(${ids}::text[])`;
   const rank = new Map(ids.map((id, i) => [id, i]));
-  return rows
-    .map(toIssue)
-    .sort((a, b) => (rank.get(a.id) ?? ids.length) - (rank.get(b.id) ?? ids.length));
+  return rows.map(toIssue).sort((a, b) => (rank.get(a.id) ?? ids.length) - (rank.get(b.id) ?? ids.length));
 }
 
 /**
