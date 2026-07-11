@@ -241,20 +241,26 @@ describe('runDeliveryLadderSweepOnce (DI end-to-end, no PG)', () => {
   });
 
   it('a wake failure is fail-soft: marker already sent, pass continues, woken uncounted', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const wake = vi.fn(async () => { throw new Error('pump down'); });
     const io = makeIo({ wake: wake as unknown as typeof wakeRecipients, wakeMock: wake });
     const res = await runDeliveryLadderSweepOnce({ nowMs: NOW, io });
     expect(res.woken).toBe(0);
     expect(res.escalations).toBe(1);
     expect(io.sendMock).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('a marker-send failure skips the wake for that recipient (no cap record ⇒ next tick retries)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const send = vi.fn(async () => { throw new Error('log write failed'); });
     const io = makeIo({ send: send as unknown as typeof sendMessage, sendMock: send });
     const res = await runDeliveryLadderSweepOnce({ nowMs: NOW, io });
     expect(res.woken).toBe(0);
     expect(io.wakeMock).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('a read/parked/capped recipient produces zero escalations end-to-end', async () => {
