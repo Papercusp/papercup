@@ -584,7 +584,7 @@ async function maybeCaptureRecipe(
     const workspaceId = ctx.workspaceId;
     if (!workspaceId) return []; // no workspace ⇒ nothing to scope a recipe to
 
-    const { buildQueryEmbedder } = await import('../search/embedder');
+    const { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } = await import('../search/embedder');
     const { potHomeSlugForHarness } = await import('../../hive-federation');
     const { resolveAgentIdentity } = await import('../coordination/identity');
 
@@ -595,7 +595,7 @@ async function maybeCaptureRecipe(
       ownerId = null; // unattributable ctx (e.g. a test/in-process call) — still capture
     }
 
-    const embedder = await buildQueryEmbedder().catch(() => null);
+    const embedder = await buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() }).catch(() => null);
 
     const captured = await captureRecipe(
       {

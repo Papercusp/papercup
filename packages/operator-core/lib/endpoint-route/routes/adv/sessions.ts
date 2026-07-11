@@ -526,6 +526,18 @@ const searchTranscripts = defineTool({
     const limitRaw = Number(url.searchParams.get('limit') ?? 30);
     const hitLimit = Math.min(50, Math.max(1, Number.isFinite(limitRaw) ? Math.floor(limitRaw) : 30));
 
+    // Per-stage timing breakdown (WI-3924 follow-up C): the endpoint's cold
+    // baseline was ~3.3s even with a BM25-only (no-embed) hit, and the cost
+    // was suspected to live OUTSIDE runHybridSearch (roster merge / session
+    // metadata hydration / classifySessionGroups). Always-on (Date.now()
+    // deltas — negligible cost) so any caller can see exactly where the
+    // budget went without spinning up separate profiling; kept out of the
+    // JSON body's hot fields (top-level `_stageTimingsMs`, ignorable by the
+    // client) so it never has to be toggled on to be useful.
+    const t0 = Date.now();
+    const stageTimingsMs: Record<string, number> = {};
+    const mark = (label: string) => { stageTimingsMs[label] = Date.now() - t0; };
+
     const [{ runHybridSearch }, { SEARCH_SOURCES }, { buildQueryEmbedder }, { parseTurnRef }, { activeWorkspaceId }, { getOrgPg }] =
       await Promise.all([
         import('@papercusp/search'),
@@ -556,6 +568,7 @@ const searchTranscripts = defineTool({
     // Bound the embedder CONSTRUCTION (the cold-start seam runHybridSearch's
     // embedTimeoutMs can't reach — it happens BEFORE the engine is called).
     const embedder = await acquireEmbedderWithin(buildQueryEmbedder, embedBudgetMs, signal);
+    mark('embedAcquire');
     // Whatever's left of the budget bounds the embed CALL inside runHybridSearch.
     // Floor at 250ms so an acquisition that finished near the deadline still lets
     // a NOW-warm embedder return (~20ms) rather than being handed a 0ms budget.
@@ -576,6 +589,7 @@ const searchTranscripts = defineTool({
       embedTimeoutMs,
       signal,
     });
+    mark('hybridSearch');
 
     // Engine hits → turn refs (source_id = `<sourceKind>:<sessionId>:<turnIdx>`).
     const turnHits: Array<{
@@ -623,6 +637,7 @@ const searchTranscripts = defineTool({
         /* metadata is a bonus — never fail the search */
       }
     }
+    mark('metadataHydration');
 
     const groups = groupHitsBySession(turnHits);
     const [{ active }, sessionRows] = await Promise.all([
@@ -632,9 +647,11 @@ const searchTranscripts = defineTool({
         ompThreadIds: groups.filter((g) => g.sourceKind === 'omp').map((g) => g.sessionId),
       }),
     ]);
+    mark('rosterAndSessionRows');
     const sessions = classifySessionGroups(groups, active, sessionRows);
+    mark('classify');
     return new Response(
-      JSON.stringify({ ok: true, query: q, totalHits: turnHits.length, sessions }),
+      JSON.stringify({ ok: true, query: q, totalHits: turnHits.length, sessions, _stageTimingsMs: stageTimingsMs }),
       { status: 200, headers: JSON_HEADERS },
     );
   },

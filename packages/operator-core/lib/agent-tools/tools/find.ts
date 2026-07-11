@@ -26,7 +26,7 @@ import { defineTool, listAllProjectedTools, AGENT_ROLES } from '@papercusp/agent
 import { categoryOf } from '../../cupboard/tools-search';
 import { schemaToText, type ToolDiscoveryEntry } from '../../cupboard/tools-discovery';
 import { findTools, type Embedder } from '../../cupboard/tool-find';
-import { buildQueryEmbedder } from '../search/embedder';
+import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 
 /**
  * Build the live corpus from the projected-tool registry: name + description +
@@ -75,7 +75,7 @@ let building: Promise<void> | null = null; // non-null while an index build is i
 async function getEmbedder(): Promise<Embedder | null> {
   if (queryEmbedder === undefined) {
     try {
-      queryEmbedder = await buildQueryEmbedder();
+      queryEmbedder = await buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() });
     } catch {
       queryEmbedder = null;
     }

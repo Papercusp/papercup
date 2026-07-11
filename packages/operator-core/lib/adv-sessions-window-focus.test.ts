@@ -90,3 +90,24 @@ describe('focusWindowId — Windows-desktop-host branch', () => {
     expect(focusWindowByTitleMock).not.toHaveBeenCalled();
   });
 });
+
+describe('closeWindowId — the "Kill agent" window close (owner ask 2026-07-11)', () => {
+  it('returns false (un-actionable) on a Windows-desktop host — no safe title-based close yet', async () => {
+    isWindowsDesktopHostMock.mockReturnValue(true);
+    const { closeWindowId } = await import('./adv-sessions');
+    // Must NOT fall through to focusing/closing the wrong window by title.
+    expect(await closeWindowId('Papercup — abc-123')).toBe(false);
+    expect(focusWindowByTitleMock).not.toHaveBeenCalled();
+  });
+
+  it('off a Windows-desktop host takes the wmctrl path (never the Windows title helper)', async () => {
+    isWindowsDesktopHostMock.mockReturnValue(false);
+    const { closeWindowId } = await import('./adv-sessions');
+    // Shells to `wmctrl -ic <wid>`; returns a boolean from the exit status. On a
+    // host without wmctrl/DISPLAY it fails soft to false — never throws, and
+    // never touches the Windows helper.
+    const r = await closeWindowId('0x123');
+    expect(typeof r).toBe('boolean');
+    expect(focusWindowByTitleMock).not.toHaveBeenCalled();
+  });
+});

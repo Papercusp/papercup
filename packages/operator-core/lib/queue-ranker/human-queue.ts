@@ -16,6 +16,7 @@ import type { ImprovementDigest, ScoredItem } from '../harness/improvements/dige
 import type { ImpactRankedItem } from '../harness/improvements/blocking-impact';
 import type { ImprovementCandidate } from '../harness/improvements/policy';
 import type { IssueLinkCounts } from '../issues-engineer';
+import { bettableFirstFeature } from './bettable-first-feature';
 import {
   blockingImpactFeature,
   defaultHumanQueueRankDeps,
@@ -45,6 +46,11 @@ export const HUMAN_QUEUE_FEATURES: readonly QueueFeature<ScoredItem, HumanQueueR
   // trust) — contributes 0 until armed (the same flag gates the capture
   // seams, so no bets exist while dark); order-preserving until then.
   calibrationFeature,
+  // su-ideate-learning-substrate P-007: ideas shipping a complete cheap
+  // falsifiable experiment (payload.ideation, D-006) surface first + carry the
+  // machine-checkable `bettable` flag. Contributes 0 and attaches nothing for
+  // items without ideation, so registering it is order-preserving too.
+  bettableFirstFeature,
 ];
 
 /** The registry as data — name/weight/description per feature. */

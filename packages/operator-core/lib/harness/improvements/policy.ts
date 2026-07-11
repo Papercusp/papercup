@@ -100,6 +100,29 @@ export interface ImprovementCandidate {
    *  rubric ratings WITHOUT re-reading the raw payload. Absent on non-observation /
    *  free-text rows. */
   observation?: import('./observation-types').StructuredObservation;
+  /** IDEATE-pass provenance (payload.ideation — su-ideate-learning-substrate-2026-07-10
+   *  P-007): the declared lens, the bet, and the cheap falsifiable first experiment,
+   *  persisted at capture. Enrichment only (D-005) — absent on non-ideation captures,
+   *  and absence changes nothing downstream; a COMPLETE cheapExperiment is what makes
+   *  the idea machine-checkably bettable (scout/invariants isBettable → the
+   *  bettable-first ranking feature). */
+  ideation?: CandidateIdeation;
+}
+
+/**
+ * The persisted `payload.ideation` shape (su-ideate-learning-substrate P-002 declared
+ * it on the capture tool contract; P-007 persists it). Mirrors the capture schema:
+ * all fields optional, `cheapExperiment` the ScoutExperiment triple (hypothesis /
+ * method / falsifiableSignal) — fields optional HERE because a payload round-trip is
+ * untrusted input; completeness is judged by `isBettable`, never assumed from the type.
+ */
+export interface CandidateIdeation {
+  /** The generative stance that produced the idea (a SuIdeationLens value). */
+  lens?: string;
+  /** The bet — the concrete upside if the idea pans out. */
+  bet?: string;
+  /** The cheap falsifiable first experiment (ScoutExperiment shape, D-006). */
+  cheapExperiment?: { hypothesis?: string; method?: string; falsifiableSignal?: string };
 }
 
 /**

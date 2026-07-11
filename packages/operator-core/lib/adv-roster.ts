@@ -749,6 +749,7 @@ export async function mergeRosterWithAssignments(
     pendingWakesByOwner,
     runInfoByOwner,
     loopArmedOwners,
+    nurseryByOwner,
   ] = await Promise.all([
     listPresence(),
     advSessionsByCoordOwner(),
@@ -759,10 +760,13 @@ export async function mergeRosterWithAssignments(
     countAllPendingWakes().catch(() => new Map<string, number>()),
     spawnedAgentRunInfoByOwner(),
     activeLoopOwners().catch(() => new Set<string>()),
+    // EI-348: nursery liveness join — needs only os.hostname() (sync, no
+    // dependency on the other reads), so it belongs in this batch, not a
+    // sequential await after it (WI-3924: every needless serialization point
+    // adds to the roster-merge baseline the search-transcripts endpoint pays
+    // on every query).
+    runningSpawnLivenessByOwner(os.hostname()),
   ]);
-  // EI-348: nursery liveness join — sequential (not in the Promise.all) only
-  // because it needs the hostname; one indexed query, still cheap.
-  const nurseryByOwner = await runningSpawnLivenessByOwner(os.hostname());
   const localPresence = scopePresenceToWorkspace(presenceAll, workspaceId);
   // Shared-hive federation: when presence-gossip is on, fold in cross-machine agents
   // (session-grain remote rows, each with its real ownerId + machineLabel) so the

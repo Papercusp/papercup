@@ -36,7 +36,7 @@ import {
 import { checkSelfImprovementForDeclare } from '../../datatype-self-improvement';
 import { isCompilableSchema } from '../../datatype-payload-validation';
 import { scaffoldFirstClassDatatype } from '../../datatype-firstclass-scaffold';
-import { buildQueryEmbedder } from '../search/embedder';
+import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 
 export default defineTool({
   name: 'meta:define-datatype',
@@ -166,7 +166,7 @@ export default defineTool({
     // The title+description embedding — the cosine dedup leg AND the stored vector.
     // Failure-tolerant (mirrors recipes:search): no embedder configured / a transient
     // error ⇒ null ⇒ the lexical (title_tsv) dedup leg carries it, exactly as before.
-    const embedder = await buildQueryEmbedder().catch(() => null);
+    const embedder = await buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() }).catch(() => null);
     const embedding = embedder
       ? await embedder(`${args.title ?? args.name}\n${args.description}`).catch(() => null)
       : null;

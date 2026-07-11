@@ -276,3 +276,48 @@ describe('readImprovementItems — signal provenance gate (frontier P-002 / D-00
     expect(c.origin).toBe('drill');
   });
 });
+
+describe('issueToCandidate — payload.ideation surfacing (su-ideate-learning-substrate P-007)', () => {
+  const stored = {
+    lens: 'risk-first',
+    bet: 'halves triage latency for su ideas',
+    cheapExperiment: {
+      hypothesis: 'triage decisions land twice as fast',
+      method: 'measure one week of triage latency',
+      falsifiableSignal: 'median triage latency unchanged',
+    },
+  };
+
+  it('surfaces the persisted payload.ideation verbatim', () => {
+    const c = issueToCandidate(
+      issue({ id: 'EI-70', title: 'su idea', kind: 'change', payload: { improvementKind: 'feature', ideation: stored } }),
+    );
+    expect(c.ideation).toEqual(stored);
+  });
+
+  it('absent on rows without ideation (enrichment only — the common case)', () => {
+    expect(issueToCandidate(issue({ id: 'EI-71', title: 'plain', kind: 'bug' })).ideation).toBeUndefined();
+  });
+
+  it('junk shapes read as absent, never throw (untrusted payload round-trip)', () => {
+    expect(
+      issueToCandidate(issue({ id: 'EI-72', title: 'x', kind: 'bug', payload: { ideation: 'nope' } })).ideation,
+    ).toBeUndefined();
+    expect(
+      issueToCandidate(issue({ id: 'EI-73', title: 'x', kind: 'bug', payload: { ideation: { lens: 42, bet: '   ' } } }))
+        .ideation,
+    ).toBeUndefined();
+  });
+
+  it('keeps only string fields of a partial cheapExperiment (completeness judged later by isBettable)', () => {
+    const c = issueToCandidate(
+      issue({
+        id: 'EI-74',
+        title: 'x',
+        kind: 'change',
+        payload: { ideation: { cheapExperiment: { hypothesis: 'a real hypothesis', method: 7 } } },
+      }),
+    );
+    expect(c.ideation).toEqual({ cheapExperiment: { hypothesis: 'a real hypothesis' } });
+  });
+});

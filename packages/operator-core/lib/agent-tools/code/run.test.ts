@@ -40,6 +40,7 @@ vi.mock('../../endpoint-route/routes/transport/role-principal-caps', async (impo
 }));
 vi.mock('../search/embedder', () => ({
   buildQueryEmbedder: async () => null,
+  interactiveEmbedAcquireBudgetMs: () => 4000,
 }));
 vi.mock('../../hive-federation', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),

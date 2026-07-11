@@ -242,3 +242,50 @@ describe('improvements:capture kind coercion (WI-1974)', () => {
     expect(json.properties?.kind?.enum).toEqual(['bug', 'change', 'feature']);
   });
 });
+
+describe('improvements:capture — IDEATE-pass ideation persistence (su-ideate-learning-substrate P-007)', () => {
+  const ideation = {
+    lens: 'risk-first',
+    bet: 'halves triage latency for su ideas',
+    cheapExperiment: {
+      hypothesis: 'triage decisions land twice as fast',
+      method: 'measure one week of triage latency',
+      falsifiableSignal: 'median triage latency unchanged',
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIdentity.mockReturnValue(identity('omp-hook-session'));
+    mockCapture.mockResolvedValue({ ok: true, id: 'EI-1', created: true } as unknown as Awaited<
+      ReturnType<typeof captureImprovement>
+    >);
+  });
+
+  it("persists the declared ideation onto the created item's payload (payloadExtra.ideation) for a feature capture", async () => {
+    await callTool({ title: 'su idea', kind: 'feature', ideation });
+    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ payloadExtra: { ideation } }));
+  });
+
+  it('drops absent fields instead of persisting undefined keys', async () => {
+    await callTool({ title: 'su idea', kind: 'feature', ideation: { bet: 'upside only' } });
+    expect(mockCapture).toHaveBeenCalledWith(
+      expect.objectContaining({ payloadExtra: { ideation: { bet: 'upside only' } } }),
+    );
+  });
+
+  it('a non-feature kind never persists ideation (contract: ignored for non-feature kinds)', async () => {
+    await callTool({ title: 'su idea', kind: 'change', ideation });
+    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ payloadExtra: undefined }));
+  });
+
+  it('lane:observation never persists ideation', async () => {
+    await callTool({ title: 'su idea', kind: 'feature', lane: 'observation', ideation });
+    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ payloadExtra: undefined }));
+  });
+
+  it('an empty ideation object persists nothing (absence changes nothing, D-005)', async () => {
+    await callTool({ title: 'su idea', kind: 'feature', ideation: {} });
+    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ payloadExtra: undefined }));
+  });
+});

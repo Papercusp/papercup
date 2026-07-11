@@ -61,6 +61,10 @@ interface ImprovementPayload {
   /** The structured-observation v2 record (rubric-driven-observations-2026-06-20
    *  P-001 / D-003) — payload.observation, surfaced onto the candidate for Scout (P-006). */
   observation?: unknown;
+  /** IDEATE-pass provenance (su-ideate-learning-substrate-2026-07-10 P-007) —
+   *  payload.ideation { lens, bet, cheapExperiment }, persisted at capture and
+   *  surfaced onto the candidate for the bettable-first ranking feature. */
+  ideation?: unknown;
 }
 
 function payloadOf(issue: EngineerIssue): ImprovementPayload {
@@ -80,6 +84,7 @@ export function issueToCandidate(issue: EngineerIssue): ImprovementCandidate {
   // reads rubric ratings + source-hive without re-parsing the raw payload.
   // Undefined on non-observation / free-text rows.
   const observation = asStructuredObservation(p.observation);
+  const ideation = asCandidateIdeation(p.ideation);
   return {
     id: issue.id,
     kind,
@@ -105,7 +110,38 @@ export function issueToCandidate(issue: EngineerIssue): ImprovementCandidate {
     ...(typeof p.findingClass === 'string' && p.findingClass ? { findingClass: p.findingClass } : {}),
     ...(isSignalOrigin(issue.signalOrigin) ? { origin: issue.signalOrigin } : {}),
     ...(observation ? { observation } : {}),
+    ...(ideation ? { ideation } : {}),
   };
+}
+
+/**
+ * Narrow an unknown payload.ideation to the CandidateIdeation view (P-007) —
+ * string fields only, junk shapes read as absent (enrichment must never make a
+ * candidate read throw). Returns undefined when nothing substantive survives,
+ * so legacy / non-ideation rows stay byte-identical candidates.
+ */
+function asCandidateIdeation(v: unknown): ImprovementCandidate['ideation'] {
+  if (!v || typeof v !== 'object') return undefined;
+  const o = v as Record<string, unknown>;
+  const str = (x: unknown): string | undefined => (typeof x === 'string' && x.trim() ? x : undefined);
+  const lens = str(o.lens);
+  const bet = str(o.bet);
+  let cheapExperiment: NonNullable<ImprovementCandidate['ideation']>['cheapExperiment'];
+  if (o.cheapExperiment && typeof o.cheapExperiment === 'object') {
+    const e = o.cheapExperiment as Record<string, unknown>;
+    const hypothesis = str(e.hypothesis);
+    const method = str(e.method);
+    const falsifiableSignal = str(e.falsifiableSignal);
+    if (hypothesis || method || falsifiableSignal) {
+      cheapExperiment = {
+        ...(hypothesis ? { hypothesis } : {}),
+        ...(method ? { method } : {}),
+        ...(falsifiableSignal ? { falsifiableSignal } : {}),
+      };
+    }
+  }
+  if (!lens && !bet && !cheapExperiment) return undefined;
+  return { ...(lens ? { lens } : {}), ...(bet ? { bet } : {}), ...(cheapExperiment ? { cheapExperiment } : {}) };
 }
 
 /** Narrow an unknown payload field to the lifecycle shape (cheap structural check). */

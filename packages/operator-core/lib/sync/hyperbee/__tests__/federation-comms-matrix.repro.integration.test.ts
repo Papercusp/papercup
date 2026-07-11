@@ -247,6 +247,25 @@ async function seedHive(
               '{}'::text[], 'verified')
     `;
   }
+  // Comms-trust lattice (P-013, cross-machine-coord-parity-and-trust-2026-07-01,
+  // landed 2026-07-01): the receiver-side coord-message projection quarantines
+  // 'handoffs'-surface rows from authors below the 'steer' tier
+  // ('handoff-below-steer'). This hermetic org DB has neither a local override
+  // nor a hive-policy comms.defaultTier, so authors resolved the FALLBACK tier
+  // 'message' — which quarantined M3's handoff glyphs and broke this matrix
+  // from 2026-07-02 on. The matrix asserts the POSITIVE path (every coord
+  // surface federates for a TRUSTED author, both directions), so grant the
+  // matrix identities 'steer'; the below-tier quarantine path has its own
+  // dedicated coverage in the coord-message federation tier-gate tests.
+  for (const m of members) {
+    await orgDb.adminSql`
+      INSERT INTO harness_shared.comms_trust_list
+        (workspace_id, trusted_github_user_id, tier, note, created_ts, updated_ts)
+      VALUES (${WORKSPACE_ID}, ${m.userId}, 'steer', 'matrix test author — trusted', 1, 1)
+      ON CONFLICT (workspace_id, trusted_github_user_id)
+        DO UPDATE SET tier = 'steer', updated_ts = 1
+    `;
+  }
   const [row] = await orgDb.adminSql<Array<{ pk: string }>>`
     SELECT encode(public_key, 'base64') AS pk FROM harness_shared.pots
      WHERE workspace_id = ${WORKSPACE_ID} AND pot_home_slug = ${hiveHome}

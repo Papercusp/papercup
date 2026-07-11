@@ -279,7 +279,9 @@ export async function assemblePresenceSnapshot(
   // BOTH active AND stale locals — a stale (heartbeat>10min) row with a live await
   // is `parked`, not gone, and that is exactly the dispatch target P-001 surfaces.
   const localActiveIds = active.filter((r) => !isFederated(r)).map((r) => r.ownerId);
-  const localAllIds = all.filter((r) => !isFederated(r)).map((r) => r.ownerId);
+  // EI-9454: derive from `scoped` (not `all`) so the wakeability + fleet joins
+  // also collapse to the matched id(s) on a targeted read.
+  const localAllIds = scoped.filter((r) => !isFederated(r)).map((r) => r.ownerId);
   let joins = new Map<string, PresenceTier1Joins>();
   let wakeability = new Map<string, WakeabilitySignals>();
   let onDesktopOwners = new Set<string>();

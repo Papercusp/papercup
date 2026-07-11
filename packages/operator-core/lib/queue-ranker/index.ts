@@ -15,6 +15,11 @@ export {
   type HumanQueueRankDeps,
 } from './blocking-impact-feature';
 export {
+  bettableFirstFeature,
+  isBettableIdeation,
+  BETTABLE_FIRST_WEIGHT,
+} from './bettable-first-feature';
+export {
   deferralInterestFeature,
   defaultDeferralInterestFeatureDeps,
   makeDeferralInterestFeature,

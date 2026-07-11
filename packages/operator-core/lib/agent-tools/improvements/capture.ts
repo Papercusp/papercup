@@ -126,8 +126,9 @@ export default defineTool({
       .describe('structured fields for a lane:observation record (the one-line "what" is the title, the optional "why" is the body). Pass rubricRef+ratings (each {rating,evidence}) to file a RUBRIC-GRADED observation — check rubrics:list first to see if a rubric fits.'),
     // ── IDEATE-pass provenance (su-ideate-learning-substrate-2026-07-10 P-002 / D-004:
     // the ONE schema bump — the full shape is declared here so the tool contract never
-    // churns again; this item persists only `lens`, P-007 wires bet/cheapExperiment onto
-    // the created item's payload). Enrichment only, never a gate (D-005): absence changes
+    // churns again; P-002 stamps `lens` on the ledger row, P-007 persists the whole
+    // declared object onto the created item's payload (payload.ideation) for the
+    // triage/learning read). Enrichment only, never a gate (D-005): absence changes
     // nothing about the capture.
     ideation: z
       .object({
@@ -137,7 +138,7 @@ export default defineTool({
           .describe(
             "the generative stance that produced this idea — Scout's four creative lenses (analogical / first-principles / reframing / constraint-removal) + the su stances (risk-first = de-risk the riskiest assumption; user-value = backward from felt owner/user value; cost-leverage = small change, big recurring cost). Declaring it earns per-lens outcome feedback on YOUR ideas (P-004); omitted = recorded under the 'su-ideate' sentinel (no per-lens learning)",
           ),
-        bet: z.string().max(2000).optional().describe('the bet — the concrete upside if the idea pans out (accepted now; persisted to the item payload by P-007)'),
+        bet: z.string().max(2000).optional().describe('the bet — the concrete upside if the idea pans out (persisted to the created item payload, payload.ideation)'),
         cheapExperiment: z
           .object({
             hypothesis: z.string().min(1).max(2000).describe('what we believe will be true if the idea has merit'),
@@ -145,7 +146,7 @@ export default defineTool({
             falsifiableSignal: z.string().min(1).max(2000).describe('the observable that would prove the hypothesis WRONG'),
           })
           .optional()
-          .describe('the cheap falsifiable first experiment (ScoutExperiment shape, D-006 bettable-not-clever; accepted now; persisted by P-007)'),
+          .describe('the cheap falsifiable first experiment (ScoutExperiment shape, D-006 bettable-not-clever; persisted to payload.ideation — a COMPLETE one makes the idea machine-checkably bettable and ranks it first in triage)'),
       })
       .strict()
       .optional()
@@ -175,6 +176,20 @@ export default defineTool({
     const observation = args.observation
       ? { ...args.observation, sourceHive: args.observation.sourceHive ?? ctxHarness }
       : undefined;
+    // P-007 (su-ideate-learning-substrate): persist the declared IDEATE-pass provenance
+    // onto the created item's payload (payload.ideation) so the triage/learning read can
+    // surface the bet + experiment and rank machine-checkably bettable ideas first.
+    // Same eligibility the contract doc states: a kind:'feature' improvement-lane capture
+    // only. Enrichment only (D-005) — absence changes nothing about the capture.
+    const ideation =
+      args.ideation && args.kind === 'feature' && args.lane !== 'observation'
+        ? {
+            ...(args.ideation.lens ? { lens: args.ideation.lens } : {}),
+            ...(args.ideation.bet ? { bet: args.ideation.bet } : {}),
+            ...(args.ideation.cheapExperiment ? { cheapExperiment: args.ideation.cheapExperiment } : {}),
+          }
+        : undefined;
+    const hasIdeation = !!ideation && Object.keys(ideation).length > 0;
     try {
       const result = await captureImprovement({
         title: args.title,
@@ -189,7 +204,10 @@ export default defineTool({
         checkDuplicatesOnly: args.checkDuplicatesOnly,
         origin: args.origin,
         lane: args.lane,
-        payloadExtra: observation ? { observation } : undefined,
+        payloadExtra:
+          observation || hasIdeation
+            ? { ...(observation ? { observation } : {}), ...(hasIdeation ? { ideation } : {}) }
+            : undefined,
         createdBy: id.ownerId,
         filedByRole,
         source,

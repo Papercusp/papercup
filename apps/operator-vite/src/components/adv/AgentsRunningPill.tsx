@@ -1054,6 +1054,31 @@ function RosterStyles() {
       .pc-agents-roster__nothinking {
         margin-top: 6px; font-size: 10.5px; color: var(--fg-mute); font-style: italic;
       }
+      /* Multi-select + bulk actions (owner ask 2026-07-11) */
+      .pc-agents-roster__check { margin: 0 4px 0 2px; cursor: pointer; accent-color: var(--accent, #38bdf8); flex: 0 0 auto; }
+      .pc-agents-roster__bulkbar {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+        padding: 5px 8px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+        background: color-mix(in oklab, var(--accent), transparent 90%); font-size: 11px;
+      }
+      .pc-agents-roster__bulk-count { font-weight: 600; margin-right: 4px; }
+      .pc-agents-roster__bulk-spacer { flex: 1 1 auto; }
+      .pc-agents-roster__bulk-btn {
+        font: inherit; font-size: 11px; cursor: pointer; padding: 2px 8px; line-height: 1.4;
+        background: var(--bg-1); color: var(--fg); border: 1px solid var(--border); border-radius: 5px;
+      }
+      .pc-agents-roster__bulk-btn:hover { border-color: var(--accent, #38bdf8); }
+      .pc-agents-roster__bulk-btn:disabled { opacity: 0.55; cursor: default; }
+      .pc-agents-roster__bulk-btn--ghost { background: transparent; color: var(--fg-mute); }
+      .pc-agents-roster__bulk-btn--danger { color: #e5484d; border-color: color-mix(in oklab, #e5484d, transparent 55%); }
+      .pc-agents-roster__bulk-btn--danger.is-armed { background: #e5484d; color: #fff; border-color: #e5484d; font-weight: 600; }
+      .pc-agents-roster__bulk-note { color: var(--fg-mute); margin-left: 2px; }
+      .pc-agents-roster__compose { flex: 1 1 100%; display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+      .pc-agents-roster__compose-input {
+        font: inherit; font-size: 11px; width: 100%; resize: vertical; box-sizing: border-box;
+        background: var(--bg-1); color: var(--fg); border: 1px solid var(--border); border-radius: 5px; padding: 4px 6px;
+      }
+      .pc-agents-roster__compose-actions { display: flex; gap: 4px; }
     `}</style>
   );
 }

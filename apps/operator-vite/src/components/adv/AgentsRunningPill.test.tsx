@@ -7,7 +7,7 @@
  * <Popover> needs a TooltipProvider ancestor (same as HivesRunningPill.test).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Provider as TooltipProvider } from '@radix-ui/react-tooltip';
 import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 
@@ -491,5 +491,134 @@ describe('machine grouping (shared-hive per-machine tabs)', () => {
     expect(tabs.map((t) => t.label)).toEqual(['Local', 'alpha', 'zeta']);
     expect(tabs[0].isLocal).toBe(true);
     expect(tabs.find((t) => t.label === 'alpha')?.count).toBe(2);
+  });
+});
+
+// ── Multi-select + bulk actions in the roster (owner ask 2026-07-11) ─────────
+describe('AgentsRoster — multi-select + bulk actions', () => {
+  // Two windowed agents (advSessionId ⇒ focusable/killable) + one headless.
+  function seed() {
+    H.active = [
+      agent({ ownerId: 'w1', label: 'w1', agent: 'claude', advSessionId: 11, windowId: '0xa1' }),
+      agent({ ownerId: 'w2', label: 'w2', agent: 'omp', advSessionId: 12 }),
+      agent({ ownerId: 'h3', label: 'h3', agent: 'gizmo' }), // no window handle
+    ];
+    nuqs.open = true;
+  }
+  function stubFetch(impl?: (url: string, init: RequestInit) => unknown) {
+    const spy = vi.fn().mockImplementation((url: string, init: RequestInit) =>
+      Promise.resolve(impl?.(url, init) ?? { ok: true, status: 200, json: () => Promise.resolve({ status: 'ok' }) }),
+    );
+    vi.stubGlobal('fetch', spy);
+    return spy;
+  }
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('shows no bulk bar until a row is selected, then reports the count', () => {
+    seed();
+    render(<Pill />);
+    expect(screen.queryByTestId('agents-bulk-bar')).toBeNull();
+    fireEvent.click(screen.getByTestId('agent-select-w1'));
+    expect(screen.getByTestId('agents-bulk-bar')).toBeTruthy();
+    expect(screen.getByTestId('agents-bulk-count').textContent).toBe('1 selected');
+    fireEvent.click(screen.getByTestId('agent-select-w2'));
+    expect(screen.getByTestId('agents-bulk-count').textContent).toBe('2 selected');
+  });
+
+  it('ticking a row checkbox selects it WITHOUT opening the inspector', () => {
+    H.active = [agent({ ownerId: 'w1', agent: 'claude', sessionId: 'sid-1', advSessionId: 11 })];
+    nuqs.open = true;
+    render(<Pill />);
+    fireEvent.click(screen.getByTestId('agent-select-w1'));
+    // selected (bar shows) but the inspector modal did NOT open
+    expect(screen.getByTestId('agents-bulk-bar')).toBeTruthy();
+    expect(screen.queryByTestId('inspector-modal')).toBeNull();
+  });
+
+  it('Message → compose → Send POSTs coord/send to all selected ownerIds (text/plain)', async () => {
+    seed();
+    const spy = stubFetch();
+    render(<Pill />);
+    fireEvent.click(screen.getByTestId('agent-select-w1'));
+    fireEvent.click(screen.getByTestId('agent-select-w2'));
+    fireEvent.click(screen.getByTestId('agents-bulk-message'));
+    fireEvent.change(screen.getByTestId('agents-bulk-msg'), { target: { value: 'standup in 5' } });
+    fireEvent.click(screen.getByTestId('agents-bulk-msg-send'));
+    await waitFor(() => expect(spy).toHaveBeenCalled());
+    const [url, init] = spy.mock.calls[0];
+    expect(url).toBe('/api/admin/coord/send');
+    expect(init.headers['content-type']).toBe('text/plain');
+    expect(JSON.parse(init.body)).toEqual({ to: ['w1', 'w2'], summary: 'standup in 5', body: 'standup in 5' });
+    await screen.findByText(/Sent to 2/);
+  });
+
+  it('Wake POSTs coord/send with wake:required to the selected', async () => {
+    seed();
+    const spy = stubFetch();
+    render(<Pill />);
+    fireEvent.click(screen.getByTestId('agent-select-w1'));
+    fireEvent.click(screen.getByTestId('agents-bulk-wake'));
+    await waitFor(() => expect(spy).toHaveBeenCalled());
+    const [url, init] = spy.mock.calls[0];
+    expect(url).toBe('/api/admin/coord/send');
+    const body = JSON.parse(init.body);
+    expect(body.to).toEqual(['w1']);
+    expect(body.wake).toBe('required');
+    await screen.findByText(/Nudged 1/);
+  });
+
+  it('Focus all POSTs to the focus endpoint once per WINDOWED selected agent (skips headless)', async () => {
+    seed();
+    const spy = stubFetch();
+    render(<Pill />);
+    fireEvent.click(screen.getByTestId('agent-select-w1'));
+    fireEvent.click(screen.getByTestId('agent-select-h3')); // headless — no window
+    fireEvent.click(screen.getByTestId('agents-bulk-focus'));
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1)); // only w1
+    expect(spy.mock.calls[0][0]).toBe('/api/adv/sessions/focus');
+    expect(JSON.parse(spy.mock.calls[0][1].body).id).toBe(11);
+    await screen.findByText(/Focused 1\/1/);
+  });
+
+  it('Kill is confirm-armed: first click arms (no request), second closes the windows', async () => {
+    seed();
+    const spy = stubFetch();
+    render(<Pill />);
+    fireEvent.click(screen.getByTestId('agent-select-w1'));
+    fireEvent.click(screen.getByTestId('agent-select-w2'));
+    const kill = screen.getByTestId('agents-bulk-kill');
+    // 1st click: arm only, no request fired
+    fireEvent.click(kill);
+    expect(spy).not.toHaveBeenCalled();
+    expect(kill.textContent).toMatch(/Confirm kill 2/);
+    // 2nd click: fire close-window for each windowed agent
+    fireEvent.click(kill);
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
+    expect(spy.mock.calls.every((c) => c[0] === '/api/adv/sessions/close-window')).toBe(true);
+    // selection cleared afterward ⇒ bar gone
+    await waitFor(() => expect(screen.queryByTestId('agents-bulk-bar')).toBeNull());
+  });
+
+  it('Copy ids writes the selected owner ids to the clipboard', async () => {
+    seed();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    render(<Pill />);
+    fireEvent.click(screen.getByTestId('agent-select-w1'));
+    fireEvent.click(screen.getByTestId('agent-select-w2'));
+    fireEvent.click(screen.getByTestId('agents-bulk-copy'));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('w1\nw2'));
+    await screen.findByText(/Copied 2 ids/);
+  });
+
+  it('Select all / Clear toggle the whole shown roster', () => {
+    seed();
+    render(<Pill />);
+    // Seed one selection so the bar (with Select all) is visible.
+    fireEvent.click(screen.getByTestId('agent-select-w1'));
+    fireEvent.click(screen.getByTestId('agents-bulk-selectall'));
+    expect(screen.getByTestId('agents-bulk-count').textContent).toBe('3 selected');
+    fireEvent.click(screen.getByTestId('agents-bulk-clear'));
+    expect(screen.queryByTestId('agents-bulk-bar')).toBeNull();
   });
 });
