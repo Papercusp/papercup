@@ -135,6 +135,11 @@ const RULES: ReadonlyArray<{
       { method: 'POST', path: '/admin/deploy-accounts/session-override', auth: VTL },
       { method: 'POST', path: '/admin/deploy-accounts/remove', auth: VTL },
       { method: 'POST', path: '/admin/deploy-accounts/reset-rate', auth: VTL },
+      // The packaged desktop roster invokes coord writes from its cookie-less
+      // loopback webview. Keep this exception pinned alongside the other
+      // desktop-callable admin routes so a future auth sweep does not regress
+      // the owner-local Send/Wake actions back to 403.
+      { method: 'POST', path: '/admin/coord/:verb', auth: VTL },
       // Same cookie-less desktop-webview HTTP-fallback path (EI-338): the
       // gateway rate/headroom stats view admits unverified-loopback (see the
       // route's own auth declaration in admin/inference-gateway-stats.ts).

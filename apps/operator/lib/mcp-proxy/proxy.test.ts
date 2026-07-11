@@ -12,6 +12,10 @@ import {
   prepareForward,
   postConnectRetryable,
   MAX_POST_CONNECT_RETRIES,
+  isBackpressureStatus,
+  backpressureRetryable,
+  retryAfterMs,
+  MAX_BACKPRESSURE_RETRIES,
   type McpProxyTarget,
 } from './proxy';
 
@@ -97,6 +101,30 @@ describe('postConnectRetryable — bounded, idempotent/keyed only', () => {
   });
 });
 
+// P-010: absorb an admission-control 429 (loop critically saturated → shed) by retrying.
+describe('backpressure (429) absorption — pure decisions', () => {
+  it('only 429 is treated as absorbable backpressure', () => {
+    expect(isBackpressureStatus(429)).toBe(true);
+    expect(isBackpressureStatus(503)).toBe(false); // proxy emits 503 itself; not absorbed
+    expect(isBackpressureStatus(500)).toBe(false);
+    expect(isBackpressureStatus(200)).toBe(false);
+  });
+  it('retries while under both the max count and the window', () => {
+    expect(backpressureRetryable(0, MAX_BACKPRESSURE_RETRIES, 100, 5_000)).toBe(true);
+    expect(backpressureRetryable(MAX_BACKPRESSURE_RETRIES, MAX_BACKPRESSURE_RETRIES, 100, 5_000)).toBe(false);
+    expect(backpressureRetryable(0, MAX_BACKPRESSURE_RETRIES, 6_000, 5_000)).toBe(false);
+  });
+  it('parses Retry-After delta-seconds, clamps, and falls back when absent/invalid', () => {
+    expect(retryAfterMs('1', 500, 3_000)).toBe(1_000);
+    expect(retryAfterMs(['2', '9'], 500, 3_000)).toBe(2_000); // first element
+    expect(retryAfterMs('99', 500, 3_000)).toBe(3_000); // clamped to max
+    expect(retryAfterMs(undefined, 500, 3_000)).toBe(500); // fallback
+    expect(retryAfterMs('', 500, 3_000)).toBe(500); // empty → fallback
+    expect(retryAfterMs('garbage', 500, 3_000)).toBe(500); // invalid → fallback
+    expect(retryAfterMs('-4', 500, 3_000)).toBe(500); // negative → fallback
+  });
+});
+
 const servers: http.Server[] = [];
 afterEach(() => {
   for (const s of servers) s.close();
@@ -149,6 +177,52 @@ describe('createMcpProxy — forwarding + restart recovery', () => {
     const r = await request(port(proxy));
     expect(r.status).toBe(200);
     expect(r.body).toBe('{"result":"ok"}');
+  });
+
+  it('P-010: ABSORBS an upstream 429 (admission shed) and returns the eventual 200 — saturation invisible', async () => {
+    let calls = 0;
+    const upstream = track(
+      http.createServer((_req, res) => {
+        calls++;
+        if (calls <= 2) {
+          // First two forwards: operator sheds (event loop critical). retry-after:0 → retry fast.
+          res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '0' });
+          res.end('{"error":"shed","data":{"reason":"loop_pressure_critical"}}');
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"result":"admitted"}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(createMcpProxy({ listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream), retryWindowMs: 5_000, retryBackoffMs: 20, log: () => {} }));
+    await listen(proxy);
+
+    const r = await request(port(proxy));
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":"admitted"}');
+    expect(calls).toBe(3); // two 429s absorbed, third admitted — the agent never saw a 429
+  });
+
+  it('P-010: kill-switch (PAPERCUSP_MCP_PROXY_ABSORB_429=0) surfaces the 429 instead of absorbing it', async () => {
+    const prev = process.env.PAPERCUSP_MCP_PROXY_ABSORB_429;
+    process.env.PAPERCUSP_MCP_PROXY_ABSORB_429 = '0';
+    try {
+      const upstream = track(
+        http.createServer((_req, res) => {
+          res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '1' });
+          res.end('{"error":"shed"}');
+        }),
+      );
+      await listen(upstream);
+      const proxy = track(createMcpProxy({ listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream), retryWindowMs: 5_000, retryBackoffMs: 20, log: () => {} }));
+      await listen(proxy);
+      const r = await request(port(proxy));
+      expect(r.status).toBe(429); // forwarded straight through, no absorption
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_MCP_PROXY_ABSORB_429;
+      else process.env.PAPERCUSP_MCP_PROXY_ABSORB_429 = prev;
+    }
   });
 
   it('RETRIES a refused upstream and recovers when :3070 comes back (restart invisible)', async () => {

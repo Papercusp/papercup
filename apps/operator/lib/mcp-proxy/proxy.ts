@@ -154,6 +154,20 @@ export function shouldRetry(connected: boolean, elapsedMs: number, windowMs: num
  *  commit→store race (a write that committed but died before persisting its replay row)
  *  to a single replay attempt. */
 export const MAX_POST_CONNECT_RETRIES = 1;
+/**
+ * P-010 (mcp-reliability-hardening-2026-07-11) — admission-control backpressure absorption.
+ * When :3070's event loop is CRITICALLY saturated it sheds a tools/call PRE-DISPATCH with
+ * HTTP 429 + Retry-After (the tool never ran → no side effect). A 429 is defined by HTTP as
+ * "the request was NOT fulfilled", so replaying it is write-safe for ANY ForwardClass — the
+ * proxy ABSORBS it (drain → wait Retry-After → retry) so the agent just waits a beat instead
+ * of seeing a spurious error, exactly like the refused-restart window. Bounded by BOTH the
+ * retry window and a max count so a persistently-critical operator eventually surfaces the
+ * 429 rather than hanging the client past its own timeout. Kill-switch:
+ * PAPERCUSP_MCP_PROXY_ABSORB_429=0 (forwards the 429 straight through, pre-P-010 behavior).
+ */
+export const MAX_BACKPRESSURE_RETRIES = 20;
+/** Clamp for a Retry-After wait so a missing/hostile header value can't wedge the proxy loop. */
+const MAX_BACKPRESSURE_WAIT_MS = 3000;
 /** Above this serialized size we do NOT rewrite the body to inject a key: re-stringifying a
  *  pathologically large tools/call would block the proxy loop, and that call is exactly the
  *  one we must not block on. Forgoing its key only drops it to 'opaque' (refused-only). */
@@ -243,6 +257,44 @@ export function postConnectRetryable(
   if (klass === 'opaque') return false;
   if (retriesUsed >= maxRetries) return false;
   return elapsedMs < windowMs;
+}
+
+/**
+ * Whether an upstream STATUS is transient admission-control backpressure the proxy should
+ * ABSORB (retry) rather than forward to the agent. Only 429 (P-010): HTTP defines 429 as
+ * "not fulfilled", so a retry never double-applies — safe regardless of ForwardClass, unlike
+ * a post-connect socket error whose side effect is unknown. PURE + unit-tested.
+ */
+export function isBackpressureStatus(status: number): boolean {
+  return status === 429;
+}
+
+/** Bounded backpressure-retry decision (PURE + unit-tested): keep absorbing a 429 while
+ *  under both the per-request max count and the retry window. */
+export function backpressureRetryable(
+  retriesUsed: number,
+  maxRetries: number,
+  elapsedMs: number,
+  windowMs: number,
+): boolean {
+  return retriesUsed < maxRetries && elapsedMs < windowMs;
+}
+
+/**
+ * Parse a `Retry-After` DELTA-SECONDS header into ms, clamped to [0, maxMs] with a fallback
+ * when the header is absent/invalid — so a missing value still backs off and a hostile huge
+ * value can't wedge the proxy loop. (We only emit delta-seconds server-side, so HTTP-date
+ * forms aren't parsed.) PURE + unit-tested.
+ */
+export function retryAfterMs(
+  header: string | string[] | undefined,
+  fallbackMs: number,
+  maxMs: number,
+): number {
+  const raw = Array.isArray(header) ? header[0] : header;
+  const secs = raw != null && raw !== '' ? Number(raw) : NaN;
+  const ms = Number.isFinite(secs) && secs >= 0 ? secs * 1000 : fallbackMs;
+  return Math.max(0, Math.min(ms, maxMs));
 }
 
 interface ForwardOutcome {
@@ -360,20 +412,42 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         // replay instead of double-applying the write. Kill-switch:
         // PAPERCUSP_MCP_PROXY_KEYED_RETRY=0 forces tools/call to 'opaque' (refused-only).
         const keyingEnabled = process.env.PAPERCUSP_MCP_PROXY_KEYED_RETRY !== '0';
+        // P-010: absorb an admission-control 429 by retrying (kill-switch to opt out).
+        const absorb429 = process.env.PAPERCUSP_MCP_PROXY_ABSORB_429 !== '0';
         const fwd = prepareForward(req.method ?? 'GET', req.headers, rawBody, { keyingEnabled, genKey: randomUUID });
         const started = Date.now();
         let attempts = 0;
         let postConnectRetries = 0;
+        let backpressureRetries = 0;
         let last: ForwardOutcome | undefined;
         // Retry loop: refused → replay across the window (shouldRetry); post-connect →
-        // replay only an idempotent/keyed request, bounded (postConnectRetryable).
+        // replay only an idempotent/keyed request, bounded (postConnectRetryable);
+        // upstream 429 (admission-control backpressure) → absorb + retry (P-010).
         // eslint-disable-next-line no-constant-condition
         while (true) {
           attempts++;
           const outcome = await forwardOnce(opts, req.method ?? 'GET', req.url ?? '/', fwd.headers, fwd.body);
+          const elapsed = Date.now() - started;
           if (outcome.ures) {
             const ures = outcome.ures;
             const status = ures.statusCode ?? 502;
+            // P-010: :3070 shed this tools/call (event loop critically saturated). The tool
+            // NEVER dispatched (429 = not fulfilled) → replay is write-safe for any class.
+            // Drain the shed response to free the socket, wait Retry-After, and retry within
+            // the window so the saturation is invisible to the agent. When the operator stays
+            // critical past the window/max, fall through and surface the 429 (honest, not a hang).
+            if (
+              isBackpressureStatus(status) &&
+              absorb429 &&
+              backpressureRetryable(backpressureRetries, MAX_BACKPRESSURE_RETRIES, elapsed, opts.retryWindowMs)
+            ) {
+              backpressureRetries++;
+              const waitMs = retryAfterMs(ures.headers['retry-after'], backoff, MAX_BACKPRESSURE_WAIT_MS);
+              ures.resume(); // discard the 429 body so the (keepAlive:false) socket is released
+              record({ kind: 'absorb_429', method: req.method, path: req.url, attempts, backpressureRetries, waitMs, elapsedMs: elapsed });
+              await new Promise((r) => setTimeout(r, waitMs));
+              continue;
+            }
             res.writeHead(status, ures.headers);
             ures.pipe(res);
             if (attempts > 1) {
@@ -389,7 +463,6 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             return;
           }
           last = outcome;
-          const elapsed = Date.now() - started;
           if (!outcome.connected) {
             // Refused / pre-connect: the request provably never reached :3070 → always safe to replay.
             if (shouldRetry(false, elapsed, opts.retryWindowMs)) {

@@ -31,6 +31,10 @@ vi.mock('../../blueprint/seed-learning-singletons', () => ({
 }));
 vi.mock('../../blueprint/learning-loop-health', () => ({
   computeLearningLoopHealth: vi.fn(() => [{ loop: 'calibration', state: 'firing' }]),
+  computeActivityLaneHealth: vi.fn((lane: { blueprintId: string; lastActivityAt: string | null; source: string }) => ({
+    ...lane,
+    status: lane.lastActivityAt ? 'firing' : 'dark-by-design',
+  })),
   summarizeLearningLoopHealth: vi.fn(() => ({ firing: 1, dark: 0 })),
   singletonRoutineName: vi.fn((id: string) => `sg:${id}`),
   SINGLETON_HOST_SLUG: '@singleton',
@@ -53,7 +57,15 @@ beforeEach(() => {
 describe('improvements:learning_loops handler', () => {
   it('maps routine rows (snake→camel, Date→ISO|null) and projects the health', async () => {
     const b = body(await tool.handler({} as never, { workspaceId: 'ws-1' } as never) as Out);
-    expect(b).toMatchObject({ ok: true, workspaceId: 'ws-1', summary: { firing: 1, dark: 0 }, loops: [{ loop: 'calibration' }] });
+    expect(b).toMatchObject({
+      ok: true,
+      workspaceId: 'ws-1',
+      summary: { firing: 1, dark: 0 },
+      loops: [
+        { loop: 'calibration' },
+        { blueprintId: 'su-ideation', status: 'dark-by-design' },
+      ],
+    });
     // the row→routine mapping fed to the composer
     const routines = computeM.mock.calls[0]![1] as unknown as Array<Record<string, unknown>>;
     expect(routines[0]).toEqual({
