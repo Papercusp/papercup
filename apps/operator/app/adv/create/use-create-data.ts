@@ -486,7 +486,7 @@ export function useItemPlanFilter() {
 /* ── Active view (the create:filter buttons set it; create:main renders it) ── */
 
 // 'observations' was removed from the Create dock (owner ask 2026-07-11) — the
-// Observations feed now lives on the /adv Signals tab (SignalsTab, ?sig=observations),
+// Observations feed now lives in the /adv Learning loop (?lview=observations),
 // which reuses ObservationsPanel directly. Keep ObservationsPanel.tsx.
 export type CreateView = 'plans' | 'queue' | 'sessions';
 export const CREATE_VIEWS: CreateView[] = ['plans', 'queue', 'sessions'];

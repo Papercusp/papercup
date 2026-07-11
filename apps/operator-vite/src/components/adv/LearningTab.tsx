@@ -1,52 +1,16 @@
 /**
- * LearningTab — the /adv "Learning" tab (operator-learning-tab-2026-06-09).
- *
- * A PULL surface for everything the system learns about itself. It replaces the
- * old `improvement-digest` inbox PUSH notification (a dead-end the owner couldn't
- * click through, D-001): instead of being pinged, the owner opens this tab.
- *
- * Sub-views (nuqs `?lview=`):
- *   - **Improvements** (default): the captured `papercusp-improvement` backlog, read
- *     through the `learning.improvements` resolver (same readImprovementItems +
- *     buildDigest path the `improvements:digest` tool uses, D-003). Scoreboard +
- *     the two triage lanes (auto-fixable vs needs-review).
- *   - **Gym**: the prompt-optimization pipeline — recent proposals (pending /
- *     accepted=champions / rejected) + each gym harness's autoloop status, read
- *     through `learning.gym` (the gym control-plane readers).
- *   - **Benchmark**: the apiary / IQ-battery generation trend via `learning.apiary`
- *     (owner-gated gen-0 baseline → clean empty state until it runs).
- *   - **Scout**: routed-ideas-by-rail + last-tick gate outcome via `learning.scout`
- *     (graceful empty until Scout routes its first idea / P-034 ticks land), plus
- *     idea grading (scout-idea-grading-2026-06-12 B-07): a 1–5 star control and
- *     note popover (`?grade=<ideaId>`) writing through the `blender:grade-idea`
- *     tool proxy with optimistic updates, a grade chip with owner/Queen
- *     attribution, and the learned per-lens sampling weights.
- *   - **Knowledge**: agent-insight runbook count + recent-5 and a memory-health
- *     strip via `learning.knowledge`, cross-linking to the full Insights tab
- *     (`?tab=insights`) — a teaser, never a duplicate of that tab.
- *
- * Each sub-view carries a plain-language "how this works" step strip (nuqs `?how=`,
- * shown by default) so the tab explains itself; every stat and chip carries a hover
- * hint.
- *
- * Per-Hive lens (per-hive-learning-loops-2026-06-14 P-042, D-008 — the Hive is the
- * tenancy unit): a tab-level `?lhive=` param + a header hive dropdown scope the
- * HIVE-AWARE views (Improvements, Gym, Learnings) to one hive. The workspace-global
- * views (Benchmark, Scout, Knowledge — and the EKG/RedQueen/scout-ledger panels) and
- * Throughput (already all-hives) ignore it; the picker hides on those.
- *
- * All user-meaningful state is in the URL via nuqs (CLAUDE.md). Styled with the
- * shared app tokens (--fg/--accent/…), matching AdvShell + AdvConversationsTab.
+ * The workspace learning loop: Observe → Improve → Verify → Retain.
+ * Each stage composes the existing sync-backed panels; `?lview=` remains the
+ * canonical deep-link state and `?lhive=` scopes the hive-aware views.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useQueryState, useQueryStates, parseAsStringEnum, parseAsString } from 'nuqs';
+import { useQueryState, parseAsStringEnum, parseAsString } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import * as Tabs from '@radix-ui/react-tabs';
-import { RefreshCw, ShieldCheck, UserRound, CheckCircle2, Dumbbell, Sparkles, XCircle, Clock, HelpCircle, Gauge, BookOpen, ArrowUpRight, ArrowUp, ArrowDown, Minus, Activity, Repeat2, Hourglass, Radar, Brain, Star, MessageSquarePlus, MessageSquareText, Send, Eye, Lightbulb, FlaskConical } from 'lucide-react';
+import { RefreshCw, ShieldCheck, UserRound, CheckCircle2, Dumbbell, Sparkles, XCircle, Clock, HelpCircle, Gauge, BookOpen, ArrowUp, ArrowDown, Minus, Activity, Repeat2, Hourglass, Radar, Brain, Star, MessageSquarePlus, MessageSquareText, Send, Eye, Lightbulb, FlaskConical } from 'lucide-react';
 import type { ImprovementDigest, ScoredItem } from '@papercusp/operator-core/lib/harness/improvements/digest';
 import { CATEGORICAL, SEVERITY } from '@/app/harness/theme';
 import type { ImprovementFlow } from '@papercusp/operator-core/lib/harness/improvements/flow-metrics';
-import type { InsightsSnapshot, MemoryHealth } from '@papercusp/operator-core/lib/memory/knowledge-read';
 import type { ScoutSnapshot, ScoutRoutedItem } from '@papercusp/operator-core/lib/sync-resolver/learning-scout-read';
 import type { HiveLearningsSnapshot } from '@papercusp/operator-core/lib/sync-resolver/learning-hive-read';
 import type { HiveThroughputSnapshot } from '@papercusp/operator-core/lib/sync-resolver/learning-hive-throughput-read';
@@ -57,7 +21,6 @@ import type { BakeoffTrendRow } from '@papercusp/operator-core/lib/pot-eval/bake
 import { EkgPanel } from './EkgPanel';
 import { RedQueenPanel } from './RedQueenPanel';
 import { MugWakeEfficiencyPanel } from './MugWakeEfficiencyPanel';
-import { DemandPanel } from './DemandPanel';
 import { ExperimentsPanel } from './ExperimentsPanel';
 import { Select } from '@/app/harness/Select';
 import { Tooltip } from '@/app/harness/Tooltip';
@@ -67,7 +30,6 @@ import { usePromptDialog } from '@/app/harness/usePromptDialog';
 import { hiveHomeLabel } from '@/lib/hive-label';
 import { useLexicon } from '@/lib/useLexicon';
 import LearningInfraHealthChip from './LearningInfraHealthChip';
-import MemoryHealthCard from './MemoryHealthCard';
 import LearningEfficacyPanel from './LearningEfficacyPanel';
 import HumanQueueDrain from './HumanQueueDrain';
 import LearningPackCandidates from './LearningPackCandidates';
@@ -1315,42 +1277,7 @@ function ThroughputView() {
   );
 }
 
-/** Cross-link shown where the Learning "Scout" sub-view used to render. Ideation
- *  (routed ideas + idea grading) now lives in the Signals tab, so Learning
- *  points there rather than duplicating it (owner ask 2026-07-10, no-dup). */
-function ScoutMovedCard() {
-  const [, setNav] = useQueryStates({ tab: parseAsString, sig: parseAsString });
-  return (
-    <section className="pc-learning__section">
-      <div className="pc-learning__empty pc-learning__empty--card">
-        <Radar size={20} aria-hidden />
-        <strong>Ideas &amp; idea grading moved to the Signals tab</strong>
-        <span>
-          Scout’s routed ideas and the 1–5 idea grading now live in <strong>Signals › Ideas</strong>,
-          next to observations and rubrics &amp; scorecards — one home for the ideation funnel, so it
-          isn’t duplicated across two tabs.
-        </span>
-        <button
-          type="button"
-          onClick={() => void setNav({ tab: 'signals', sig: 'ideas' })}
-          style={{
-            marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 6,
-            font: 'inherit', fontSize: 12, cursor: 'pointer', color: 'var(--fg)',
-            background: 'var(--bg-1)', border: '1px solid var(--accent, #2dd4bf)',
-            borderRadius: 7, padding: '6px 12px',
-          }}
-        >
-          <ArrowUpRight size={13} aria-hidden />
-          Open Signals › Ideas
-        </button>
-      </div>
-    </section>
-  );
-}
-
-// Exported so the Signals tab renders the SAME ideation surface (owner ask
-// 2026-07-10) — one implementation, mounted only in Signals now. Its
-// pc-learning__* classes come from LearningStyles (also exported).
+// The ideation surface is mounted directly inside Improve → Ideas.
 export function ScoutView() {
   const t = useLexicon();
   const RAIL_META = railMeta(t);
@@ -1613,87 +1540,6 @@ export function ScoutView() {
           </ul>
         </>
       )}
-    </section>
-  );
-}
-
-// ─── Knowledge view (agent-insight runbooks + memory health, P-008) ──────────
-
-function dateShort(iso: string | null): string {
-  if (!iso) return '';
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-}
-
-function KnowledgeView() {
-  const sync = useSyncQuery<{ insights: InsightsSnapshot; memory: MemoryHealth | null }>({ queryName: 'learning.knowledge', args: {}, staleTime: 30_000 });
-  const snap = sync.data?.[0];
-  const insights = snap?.insights;
-  const memory = snap?.memory ?? null;
-  const [, setTab] = useQueryState('tab', parseAsString);
-
-  return (
-    <section className="pc-learning__section">
-      <div className="pc-learning__scoreboard" aria-label="Knowledge summary">
-        <Stat label="runbooks" value={insights ? insights.count : '—'} tone="good" hint="Active agent-insight runbooks in the library (retired/superseded excluded)." />
-        <Stat label="memories" value={memory ? memory.totalMemories : '—'} hint="Canonical memories in the shared store — the facts agents recall before grepping." />
-        <Stat label="feedback 30d" value={memory ? memory.feedback30d : '—'} tone="human" hint="Memory feedback events (edits, forgets, corrections) in the last 30 days — the loop’s pulse. Zero against a populated store means the feedback loop isn’t wired on yet." />
-      </div>
-
-      <div className="pc-learning__sectionhead">
-        <h2>Recent runbooks</h2>
-        <button
-          type="button"
-          className="pc-learning__refresh"
-          aria-label="Reload the knowledge feed"
-          disabled={sync.fetching}
-          onClick={() => sync.invalidate()}
-        >
-          <RefreshCw size={13} aria-hidden />
-        </button>
-      </div>
-
-      {sync.loading && !snap ? (
-        <p className="pc-learning__empty">Loading the runbook library…</p>
-      ) : sync.error ? (
-        <p className="pc-learning__empty">Knowledge feed unavailable: {sync.error.message}</p>
-      ) : !insights || insights.recent.length === 0 ? (
-        <div className="pc-learning__empty pc-learning__empty--card">
-          <BookOpen size={20} aria-hidden />
-          <strong>No runbooks yet</strong>
-          <span>When an agent works through a confusing failure or a subtle invariant, it writes a short PR-reviewed runbook so the next agent doesn’t lose the same hour. They’ll appear here as they land.</span>
-        </div>
-      ) : (
-        <ul className="pc-learning__list">
-          {insights.recent.map((ins) => (
-            <li key={ins.slug} className="pc-learning__row" title={ins.description || ins.title}>
-              <span className="pc-learning__sev" style={{ background: 'var(--accent-strong, var(--accent))' }} aria-hidden />
-              <span className="pc-learning__id">{ins.slug}</span>
-              <span className="pc-learning__title">{ins.title}</span>
-              <span className="pc-learning__meta">
-                {ins.tags[0] ? <span className="pc-learning__chip pc-learning__chip--idea">{ins.tags[0]}</span> : null}
-                <span className="pc-learning__age" title="Last touched">{dateShort(ins.modifiedAt)}</span>
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <MemoryHealthCard memory={memory} />
-
-      <DemandPanel />
-
-      <div className="pc-learning__empty pc-learning__empty--card pc-learning__knowledge">
-        <BookOpen size={22} aria-hidden />
-        <strong>Agent insights — the fleet’s runbooks</strong>
-        <span>
-          When the fleet hits something non-obvious — a confusing failure, a subtle invariant, a library quirk — it writes a short,
-          PR-reviewed runbook so the next agent doesn’t lose the same hour. That library is the system’s durable, hard-won knowledge.
-        </span>
-        <button type="button" className="pc-learning__cta" onClick={() => void setTab('insights')}>
-          <ArrowUpRight size={13} aria-hidden /> Open the Insights library
-        </button>
-      </div>
     </section>
   );
 }

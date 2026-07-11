@@ -3333,6 +3333,99 @@ export function sanitizeInheritedEnv(env) {
   return out;
 }
 
+/**
+ * coord-delivery-residual-gaps-2026-07-11 P-002 — launch-time CC coord-hook
+ * enrollment guard.
+ *
+ * A Claude psu session receives mid-turn coord mail via the global
+ * `~/.claude/settings.json` PostToolUse[*] → posttooluse-coord-inbox.sh hook
+ * (see the coord-mid-turn-delivery insight). That wiring is re-merged at every
+ * OPERATOR boot (host-bootstrap → installPapercuspFiles), but it can drift
+ * BETWEEN boots (a hand-edited settings.json, a fresh machine, a wiped home) —
+ * and the failure is SILENT: the session launches fine and is simply deaf to
+ * peers until its next orient. Claude reads hooks at session birth, so the
+ * moment that matters is right here, before the spawn.
+ *
+ * PURE verdict: given the settings.json text + a hook-script existence probe,
+ * report whether the coord-inbox hook is enrolled and executable-on-disk.
+ * Unknown/unparseable states report the specific miss — the caller decides
+ * loudness. Exported for unit tests.
+ */
+export function ccCoordHookEnrollment(settingsText, { scriptExists } = {}) {
+  const misses = [];
+  let cfg = null;
+  try {
+    cfg = JSON.parse(settingsText ?? '');
+  } catch {
+    return { enrolled: false, misses: ['settings.json missing or unparseable'] };
+  }
+  const entries = Array.isArray(cfg?.hooks?.PostToolUse) ? cfg.hooks.PostToolUse : [];
+  const cmds = entries.flatMap((e) => (Array.isArray(e?.hooks) ? e.hooks : []))
+    .map((h) => (typeof h?.command === 'string' ? h.command : ''));
+  const hookCmd = cmds.find((c) => c.includes('posttooluse-coord-inbox.sh'));
+  if (!hookCmd) {
+    misses.push('no PostToolUse entry runs posttooluse-coord-inbox.sh');
+  } else if (typeof scriptExists === 'function') {
+    // The command may carry env prefixes/args — extract the script path token.
+    const tok = hookCmd.split(/\s+/).find((t) => t.includes('posttooluse-coord-inbox.sh')) ?? hookCmd;
+    if (!scriptExists(tok)) misses.push(`hook script missing on disk: ${tok}`);
+  }
+  return { enrolled: misses.length === 0, misses };
+}
+
+/**
+ * The I/O half: verify enrollment for a claude launch; on a miss, self-repair
+ * ONCE through the operator's existing idempotent install route
+ * (POST /api/desktop/install/papercusp-files — the same merge every operator
+ * boot runs), re-verify, and print a LOUD banner if still unenrolled. Never
+ * blocks or fails the launch (worst case ~4s on the already-broken path;
+ * healthy path is one readFileSync). The session still works deaf-but-launched:
+ * the server-side deafness detector (coord:presence `coordHook`) makes it
+ * visible fleet-side either way.
+ */
+function ensureCcCoordHookEnrollment(env) {
+  if ((env.PAPERCUSP_AGENT || '') !== 'claude') return; // codex bakes per-session hooks.json; omp uses its own coord-hook
+  const settingsPath = join(homedir(), '.claude', 'settings.json');
+  const read = () => {
+    try {
+      return readFileSync(settingsPath, 'utf8');
+    } catch {
+      return '';
+    }
+  };
+  const probe = (p) => existsSync(p);
+  let verdict = ccCoordHookEnrollment(read(), { scriptExists: probe });
+  if (verdict.enrolled) return;
+  // Self-repair: the operator re-runs the same idempotent hook merge its boot
+  // path uses. Loopback-only route; short timeout; failure falls through to the
+  // banner. curl keeps this synchronous (the spawn follows immediately).
+  try {
+    spawnSync('curl', ['-fsS', '-m', '4', '-X', 'POST', `${OPERATOR_URL}/api/desktop/install/papercusp-files`], {
+      encoding: 'utf8',
+      timeout: 6000,
+    });
+  } catch {
+    /* unreachable operator → banner below */
+  }
+  verdict = ccCoordHookEnrollment(read(), { scriptExists: probe });
+  if (verdict.enrolled) {
+    console.error('psu: coord-inbox hook was missing from ~/.claude/settings.json — repaired via the operator install route.');
+    return;
+  }
+  console.error(
+    [
+      '',
+      '⚠⚠ COORD-INBOX HOOK NOT ENROLLED — THIS SESSION WILL BE DEAF TO MID-TURN COORD MAIL ⚠⚠',
+      `   ${verdict.misses.join('; ')}`,
+      '   Peer messages will only land at session start / orient / an explicit wake — NOT between tool calls.',
+      '   Self-repair via the operator failed or it is unreachable. Fix: restart the operator (it re-installs',
+      `   hooks at boot), or: curl -X POST ${OPERATOR_URL}/api/desktop/install/papercusp-files`,
+      '   Launching anyway — the fleet sees this session flagged coordHook:missing in coord:presence.',
+      '',
+    ].join('\n'),
+  );
+}
+
 /** The original plain launch: inherit the user's stdio straight into the child.
  *  The fallback when the managed-pty host is disabled, has no TTY, or fails to
  *  start. */
@@ -3412,6 +3505,10 @@ function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv }) {
   // GITHUB_PERSONAL_ACCESS_TOKEN; unset → "Authorization header is badly formatted" (HTTP 400) on
   // every claude/omp launch. Export the gh CLI token when unset (verified it authenticates the MCP).
   applyGithubTokenEnv(env);
+  // P-002 (coord-delivery-residual-gaps): verify the claude coord-inbox hook is
+  // enrolled BEFORE the spawn (Claude reads hooks at session birth) — self-repairs
+  // via the operator's idempotent install route, loud-warns when it can't.
+  ensureCcCoordHookEnrollment(env);
   // turn-lifecycle-control Phase 3: when enabled + interactive, host the agent
   // through a managed pty + owner-only control socket so the operator can inject
   // a wake (or, Phase 4, an interrupt) into the LIVE session rather than parking

@@ -236,10 +236,10 @@ export default function ChromeShell() {
           {testingFlag ? (
             <RouteLink href="/installed/plugins" {...navLinkProps('/installed/plugins')}>Plugins</RouteLink>
           ) : null}
-          {/* Rubrics moved OFF the top navbar into the /adv "Signals" tab (owner
+          {/* Rubrics moved OFF the top navbar into the /adv "Learning" tab (owner
               ask 2026-07-10): the navbar link pointed at /rubrics, a route the
               live Vite operator never registered, so it errored. Rubrics &
-              scorecards now live in Signals → Rubrics & Scorecards (AdvShell). */}
+              scorecards now live in Learning → Verify → Rubrics (AdvShell). */}
           <RouteLink href="/support" {...navLinkProps('/support')}>Support</RouteLink>
           <RouteLink href="/settings/operator" {...navLinkProps('/settings/operator')}>Settings</RouteLink>
           {/* Admin link intentionally NOT rendered — reachable only by URL /admin */}
@@ -319,4 +319,3 @@ function DeferredDocks() {
     </Suspense>
   );
 }
-
