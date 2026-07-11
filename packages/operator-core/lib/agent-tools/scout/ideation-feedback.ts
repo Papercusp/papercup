@@ -34,6 +34,12 @@ import {
 } from '../../scout/outcome-feedback';
 import { buildScoutOutcomeReaders } from '../../scout/routed-ledger';
 import { resolveIntentSims, rankByIntent, type IntentRankDeps } from '../../scout/intent-rank-leg';
+import {
+  resolveObservationsImpact,
+  type ObservationImpactDeps,
+  type ObservationsImpact,
+} from '../../scout/observation-impact-leg';
+import { resolveAgentIdentity } from '../coordination/identity';
 import { SU_IDEATION_LENSES, type SuIdeationLens } from '../../scout/types';
 // P-012 (federated-scout-gym-learning D-004/D-005): the OPTIONAL federated priming
 // fold. The pure math (crowding, config resolution, empty-frontier partition) is safe
@@ -108,6 +114,16 @@ export interface IdeationFeedbackResult {
   federated?: FederatedPrimingBlock;
   /** Present only when the federated leg threw — the rest of the read still returns. */
   federatedError?: string;
+  /**
+   * OPTIONAL demand-pull observation→impact readback (P-021) — folded ONLY when the
+   * caller passes `scope:'mine'`. Walks the funnel: your last 7 days of
+   * `lane:observation` filings → the corpus-digest meta-patterns that cite them →
+   * the routed ideas grounded on those patterns → which of those SHIPPED. An
+   * observation visibly becoming pattern → idea → shipped change is the strongest
+   * filing motivator (D-017). Absent without `scope:'mine'`, or when the leg is
+   * disabled (kill switch); fail-soft to a filings-only block on a downstream error.
+   */
+  observationsImpact?: ObservationsImpact;
 }
 
 const NO_GRADES_FALLBACK =
@@ -256,9 +272,13 @@ export async function computeFederatedPriming(
 
 /** The testable core: priming + outcome readback composed over the su-ideate ledger scope. */
 export async function runIdeationFeedback(
-  args: { harness?: string; maxEntries?: number; intent?: string },
+  args: { harness?: string; maxEntries?: number; intent?: string; scope?: 'mine'; createdBy?: string },
   ctx?: unknown,
-  deps: { federated?: FederatedPrimingDeps; intentRank?: IntentRankDeps } = {},
+  deps: {
+    federated?: FederatedPrimingDeps;
+    intentRank?: IntentRankDeps;
+    observationImpact?: ObservationImpactDeps;
+  } = {},
 ): Promise<IdeationFeedbackResult> {
   const scope = args.harness ? { harnessSlug: args.harness } : {};
   const intent = args.intent?.trim() ? args.intent.trim() : undefined;
@@ -364,6 +384,16 @@ export async function runIdeationFeedback(
     federatedError = err instanceof Error ? err.message : String(err);
   }
 
+  // P-021: OPTIONAL demand-pull observation→impact readback — only when the caller
+  // asked for `scope:'mine'` AND their originating id is resolved (the handler
+  // stamps it from ctx). Fully fail-soft: resolveObservationsImpact never throws
+  // (returns undefined when disabled / VITEST-inert / blank), so a heavy digest
+  // read can never break the priming + outcome legs that already returned.
+  const observationsImpact =
+    args.scope === 'mine' && args.createdBy?.trim()
+      ? await resolveObservationsImpact(args.createdBy, {}, deps.observationImpact)
+      : undefined;
+
   return {
     priming: priming || NO_GRADES_FALLBACK,
     entries,
@@ -374,6 +404,7 @@ export async function runIdeationFeedback(
     ...(outcomesError ? { outcomesError } : {}),
     ...(federated ? { federated } : {}),
     ...(federatedError ? { federatedError } : {}),
+    ...(observationsImpact ? { observationsImpact } : {}),
   };
 }
 
@@ -417,9 +448,21 @@ export default defineTool({
       .describe(
         "this pass's one-line focus — when set, the grades + outcomes rank by semantic relevance to it (cosine of your intent against each past proposal's routed artifact) instead of newest-first, so the window surfaces what's relevant to THIS pass; silently falls back to newest-first if the embedder is unavailable",
       ),
+    scope: z
+      .enum(['mine'])
+      .optional()
+      .describe(
+        "pass 'mine' to ALSO fold observationsImpact — your last 7 days of lane:observation filings, which corpus-digest meta-patterns cite them, and which routed ideas grounded on those patterns actually shipped (an observation visibly becoming pattern → idea → shipped change). Demand-pull: omitted unless you ask for it",
+      ),
   }),
   async handler(args, ctx) {
-    const out = await runIdeationFeedback(args, ctx);
+    // scope:'mine' folds the observation→impact readback (P-021), attributed to the
+    // CALLER's originating id (resolved from ctx — never caller-supplied input).
+    const createdBy = args.scope === 'mine' ? resolveAgentIdentity(ctx).ownerId : undefined;
+    const out = await runIdeationFeedback(
+      { ...args, ...(createdBy ? { createdBy } : {}) },
+      ctx,
+    );
     return { content: [{ type: 'text' as const, text: JSON.stringify(out) }] };
   },
 });
