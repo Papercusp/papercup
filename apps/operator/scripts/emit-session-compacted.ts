@@ -33,6 +33,7 @@ import {
   emitSessionCompactedEventAsync,
   parseSessionCompactedArgv,
 } from '@papercusp/operator-core/lib/session-compacted-events';
+import { refreshContextEstimateAtBoundary } from '@papercusp/operator-core/lib/system-health/context-estimate-verify';
 
 async function main(): Promise<void> {
   const parsed = parseSessionCompactedArgv(process.argv);
@@ -47,10 +48,15 @@ async function main(): Promise<void> {
     console.error(
       `[emit-session-compacted] emit failed for ${parsed.owner}: ${e instanceof Error ? e.message : String(e)}`,
     );
-  } finally {
-    // postgres.js keeps the process alive; exit explicitly once the emit has committed.
-    process.exit(0);
   }
+  // WI-4154 boundary refresh: the compaction just moved the transcript's
+  // isCompactSummary marker, so the cached coord_presence.context_tokens is now
+  // the PRE-compaction number — re-derive + write through HERE so the gauge reads
+  // post-boundary within seconds instead of waiting out the next watchdog sweep.
+  // Best-effort like the emit (refreshContextEstimateAtBoundary never throws).
+  await refreshContextEstimateAtBoundary(parsed.owner);
+  // postgres.js keeps the process alive; exit explicitly once the rows are committed.
+  process.exit(0);
 }
 
 void main();

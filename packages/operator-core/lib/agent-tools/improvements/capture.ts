@@ -272,10 +272,19 @@ export default defineTool({
       // already-decided "tried, failed" ones) as response.priorArt. NEVER a gate (D-005):
       // only the improvement-dedup above may decline; a failed check just omits the field
       // (absent = not checked; [] = checked, nothing similar).
-      const priorArt =
+      const priorArtRaw =
         source === 'su' && args.kind === 'feature' && args.lane !== 'observation'
           ? await noveltyPriorArt(args.title).catch(() => undefined)
           : undefined;
+      // The su-ideate ledger bridge above inserts THIS filing's own row (wi:<id>)
+      // BEFORE this read, so the corpus contains the filing itself — a similarity-1.0
+      // self-match is not prior art (it reads as a false "already tried"). Filter it
+      // (audit find 2026-07-11, first surfaced on the EI-9694 filing). [] semantics
+      // preserved: checked-nothing-similar.
+      const selfId = captured.issue?.id;
+      const priorArt = selfId
+        ? priorArtRaw?.filter((p) => p.ref !== `wi:${selfId}` && p.ref !== selfId)
+        : priorArtRaw;
       const notified =
         args.notifyAgents?.length && captured.created && captured.issue?.id && args.lane !== 'observation'
           ? await notifyAgents(id, {

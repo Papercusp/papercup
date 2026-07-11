@@ -22,6 +22,7 @@ import {
   getContextUsage,
   isContextGaugeEnabled,
 } from '../system-health/context-usage-cache';
+import { gaugeNeedsVerification } from '../system-health/context-estimate-verify';
 
 /** The tool-result shape, derived from the annotator signature (no extra import). */
 type AnnotatedResult = Parameters<ResultAnnotator>[0];
@@ -45,6 +46,11 @@ export const contextGaugeAnnotator: ResultAnnotator = (result, ctx) => {
   }
   const usage = getContextUsage(ownerId);
   if (!usage) return result; // owner not tracked / estimate stale
+  // WI-4154 verify-before-alarm: an alarm-band cached reading may be stale across a
+  // compaction boundary — suppress it and kick a background transcript re-derive
+  // (this annotator is a sync hot path and cannot await one); the corrected value
+  // renders from the next call on, so a REAL alarm is delayed by at most one result.
+  if (gaugeNeedsVerification(ownerId, usage.tokens, usage.limit)) return result;
   const line = renderBandedContextGauge(usage.tokens, usage.limit);
   if (!line) return result; // below the quiet band — silent
   if (resultCarriesContextLine(result)) return result; // don't double-render (coord:inbox)
