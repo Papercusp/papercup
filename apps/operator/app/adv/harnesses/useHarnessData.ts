@@ -46,7 +46,7 @@ export interface HarnessFeature {
 // Consolidated sync row (camelCase). claims is a JSON-stringified
 // string[]; needs-review may surface under either casing depending on the
 // generated row — read both defensively.
-type ZeroFeatureRow = {
+type SyncFeatureRow = {
   featureId: string;
   title: string;
   summary?: string | null;
@@ -118,7 +118,7 @@ export function useHarnessFeatures(slug: string): {
   const [features, setFeatures] = useState<HarnessFeature[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const { data: syncRows, loading, error: syncError } = useSyncQuery<ZeroFeatureRow>({
+  const { data: syncRows, loading, error: syncError } = useSyncQuery<SyncFeatureRow>({
     queryName: 'featuresConsolidated.bySlug',
     args: slug ? { harnessSlug: slug, workspaceId } : undefined,
     enabled: !!slug,
@@ -152,7 +152,7 @@ export function useHarnessFeatures(slug: string): {
   }, [syncError]);
 
   // Optimistic local patch — merge a partial into one feature in the local
-  // state for instant feedback on a mutation. The Zero overlay reconciles to
+  // state for instant feedback on a mutation. The sync result reconciles to
   // the authoritative value when it next pushes (or the patch stands if the
   // harness isn't consolidated). No-op if the id isn't present.
   const patchFeature = useCallback((id: string, partial: Partial<HarnessFeature>) => {
@@ -164,7 +164,7 @@ export function useHarnessFeatures(slug: string): {
 
 // ───────── Issues ─────────
 
-type ZeroIssueRow = {
+type SyncIssueRow = {
   issueId: string;
   title: string;
   severity: string;
@@ -181,7 +181,7 @@ type ZeroIssueRow = {
   notes?: unknown;
 };
 
-function zeroRowToIssue(r: ZeroIssueRow): Issue {
+function syncRowToIssue(r: SyncIssueRow): Issue {
   const foundAtMs = typeof r.foundAt === 'number' ? r.foundAt : Date.parse(String(r.foundAt));
   return {
     id: r.issueId,
@@ -211,7 +211,7 @@ export function useHarnessIssues(slug: string): {
   const workspaceId = useWorkspaceId(); // EI-1763: tenant-scope sync reads
   const [issues, setIssues] = useState<Issue[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const { data: syncRows, loading, error: syncError } = useSyncQuery<ZeroIssueRow>({
+  const { data: syncRows, loading, error: syncError } = useSyncQuery<SyncIssueRow>({
     queryName: 'issuesConsolidated.bySlug',
     args: slug ? { harnessSlug: slug, workspaceId } : undefined,
     enabled: !!slug,
@@ -223,13 +223,13 @@ export function useHarnessIssues(slug: string): {
       return;
     }
     if (loading || !Array.isArray(syncRows)) return;
-    setIssues(syncRows.map(zeroRowToIssue));
+    setIssues(syncRows.map(syncRowToIssue));
   }, [slug, syncRows, loading]);
   useEffect(() => {
     setError(syncError ? (syncError instanceof Error ? syncError.message : String(syncError)) : null);
   }, [syncError]);
 
-  // Pending validator findings stream from harness_pending_issues (Zero).
+  // Pending validator findings share the same sync cache.
   const { data: pendingRows } = useSyncQuery<{ issueId: string }>({
     queryName: 'harnessPendingIssues.byHarness',
     args: slug ? { harnessSlug: slug, phase: 'staging', workspaceId } : undefined,
@@ -237,7 +237,7 @@ export function useHarnessIssues(slug: string): {
   });
   const pendingCount = Array.isArray(pendingRows) ? pendingRows.length : 0;
 
-  // Optimistic local patch (see patchFeature). Reconciled by the Zero overlay.
+  // Optimistic local patch (see patchFeature). Reconciled by the sync result.
   const patchIssue = useCallback((id: string, partial: Partial<Issue>) => {
     setIssues((prev) => (prev ? prev.map((i) => (i.id === id ? { ...i, ...partial } : i)) : prev));
   }, []);
@@ -258,9 +258,8 @@ export interface HarnessAgentRun {
   featureId?: string | null;
 }
 
-// Consolidated agent-run row exported to Zero (camelCase). See
-// libs/zero-harness/src/schema.ts `agentRunsConsolidated`.
-type ZeroAgentRow = {
+// Consolidated agent-run row returned by the named resolver (camelCase).
+type SyncAgentRow = {
   runId: string;
   role: string;
   ts?: number | string | null;
@@ -291,13 +290,13 @@ export function useHarnessAgents(slug: string): {
   const [agents, setAgents] = useState<HarnessAgentRun[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const query = useSyncQuery<ZeroAgentRow>({
+  const query = useSyncQuery<SyncAgentRow>({
     queryName: 'agentRunsConsolidated.bySlug',
     args: slug ? { harnessSlug: slug } : undefined,
     enabled: !!slug,
   });
-  const { data: syncRows, loading, error: syncError } = query;
-  const refresh = useCallback(() => query.invalidate(), [query]);
+  const { data: syncRows, loading, error: syncError, invalidate } = query;
+  const refresh = useCallback(() => invalidate(), [invalidate]);
   useEffect(() => {
     if (!slug) {
       setAgents(null);
@@ -343,7 +342,7 @@ export interface HarnessLogEvent {
 
 /**
  * Recent structured log events from `run.log.jsonl` (+ rotated peers),
- * via `/log/history`. Append-only file source with no Zero mirror, so
+ * via `/log/history`. Append-only file source with no database mirror, so
  * this is a one-shot REST read + manual `refresh()` (no auto-poll — the
  * legacy panel's 3s interval is dropped per the /adv no-polling ethos).
  */
