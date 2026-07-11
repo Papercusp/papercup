@@ -5,7 +5,6 @@ import AdvTabErrorBoundary from '../../components/adv/AdvTabErrorBoundary';
 import AdvOverviewTab from '../../components/adv/AdvOverviewTab';
 import AdvConversationsTab from '../../components/adv/AdvConversationsTab';
 import LearningTab from '../../components/adv/LearningTab';
-import SignalsTab from '../../components/adv/SignalsTab';
 import AdvFramesTab from '../../components/adv/AdvFramesTab';
 import AdvEvalsTab from '../../components/adv/AdvEvalsTab';
 import ScheduledCalendarTab from '../../components/adv/ScheduledCalendarTab';
@@ -48,7 +47,6 @@ function AdvIndexPage() {
 function getAdvTitle(tab: AdvTabId): string {
   if (tab === 'overview') return 'Overview';
   if (tab === 'conversations') return 'Conversations';
-  if (tab === 'signals') return 'Signals';
   if (tab === 'learning') return 'Learning';
   if (tab === 'harnesses') return 'Working';
   if (tab === 'health') return 'Health';
@@ -67,10 +65,6 @@ function renderAdvTab(tab: AdvTabId) {
       return <AdvOverviewTab />;
     case 'conversations':
       return <AdvConversationsTab />;
-    case 'signals':
-      // Signals — the self-measurement funnel: observations → ideas → rubrics &
-      // scorecards (owner ask 2026-07-10). Left of Learning.
-      return <SignalsTab />;
     case 'learning':
       return <LearningTab />;
     case 'harnesses':

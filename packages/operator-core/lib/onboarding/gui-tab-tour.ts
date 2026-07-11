@@ -100,16 +100,10 @@ export const GUI_TAB_TOUR: ReadonlyArray<GuiTabTourStop> = [
       'Every kind of communication the workspace produces — Q&A, deliberations, agent chats, messages, and the raw coordination log for debugging.',
   },
   {
-    id: 'signals',
-    label: 'Signals',
-    blurb:
-      'The system’s self-measurement funnel in one place: raw turn-end observations, the ideas agents propose from them, and the rubrics/scorecards that grade what actually lands.',
-  },
-  {
     id: 'learning',
     label: 'Learning',
     blurb:
-      'What the system learns about itself — the improvement backlog agents file into, and learning packs distilled from it (chapter 4 in GUI form).',
+      'The full learning loop in one place: observe raw signals, improve through ideas and experiments, verify with rubrics and benchmarks, then retain what worked.',
   },
   {
     id: 'evals',

@@ -2104,58 +2104,75 @@ export function LearningStyles() {
   return (
     <style>{`
       .pc-learning { display: flex; flex-direction: column; min-height: 0; padding: 14px 16px 20px; gap: 12px; overflow-y: auto; }
-      .pc-learning__header { display: flex; align-items: flex-start; gap: 12px; }
-      .pc-learning__copy { flex: 1; min-width: 0; }
-      .pc-learning__copy h1 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 20px; font-weight: 760; letter-spacing: 0; color: var(--fg, #e7f7ff); }
-      .pc-learning__copy p { margin: 4px 0 0; font-size: 12.5px; color: var(--fg-mute, #7f9bb4); max-width: 78ch; }
-
-      .pc-learning__controls { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
-      .pc-learning__subnav { display: inline-flex; gap: 6px; }
-      .pc-learning__subtab {
-        display: inline-flex; align-items: center; gap: 7px;
-        padding: 7px 13px; border-radius: 10px; cursor: pointer;
-        border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
-        background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-mute, #7f9bb4);
+      .pc-learning__header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+      .pc-learning__header h1 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 20px; font-weight: 760; color: var(--fg); }
+      .pc-learning__utilities { display: inline-flex; align-items: center; gap: 6px; }
+      .pc-learning__utility {
+        display: inline-flex; align-items: center; gap: 6px; min-height: 30px;
+        padding: 5px 9px; border: 1px solid var(--border); border-radius: 8px;
+        background: var(--bg-2); color: var(--fg-mute); cursor: pointer; font: inherit; font-size: 11.5px;
+        transition: color var(--dur-fast), border-color var(--dur-fast), background var(--dur-fast);
       }
-      .pc-learning__subtab span { display: flex; flex-direction: column; line-height: 1.15; font-size: 12.5px; font-weight: 650; text-align: left; }
-      .pc-learning__subtab em { font-style: normal; font-size: 10px; font-weight: 500; color: var(--fg-mute, #7f9bb4); text-transform: uppercase; letter-spacing: 0; }
-      .pc-learning__subtab.is-active { color: var(--fg, #e7f7ff); border-color: rgba(52, 211, 153, 0.55); background: rgba(52, 211, 153, 0.12); }
-      .pc-learning__subtab.is-active em { color: color-mix(in oklab, #34d399, white 12%); }
+      .pc-learning__utility:hover { color: var(--fg); border-color: var(--border-strong); background: var(--bg-3); }
+      .pc-learning__utility.is-active { color: var(--accent-strong); border-color: var(--accent); background: color-mix(in oklab, var(--accent), transparent 88%); }
 
-      .pc-learning__howtoggle {
-        display: inline-flex; align-items: center; gap: 6px;
-        padding: 6px 12px; font-size: 11.5px; font-weight: 600; border-radius: 999px; cursor: pointer;
-        border: 1px solid var(--border, rgba(125, 211, 252, 0.18));
-        background: transparent; color: var(--fg-mute, #7f9bb4);
+      .pc-learning__stage-list {
+        display: grid; grid-template-columns: repeat(4, minmax(90px, 1fr));
+        align-items: start; max-width: 760px; margin: 2px auto 0; padding: 0 24px;
       }
-      .pc-learning__howtoggle.is-on { color: var(--fg-dim, #b9d4e8); border-color: rgba(52, 211, 153, 0.4); background: rgba(52, 211, 153, 0.07); }
+      .pc-learning__stage {
+        --stage-accent: var(--accent);
+        position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px;
+        min-width: 0; padding: 0 8px; border: 0; background: transparent;
+        color: var(--fg-mute); cursor: pointer; font: inherit;
+      }
+      .pc-learning__stage:nth-child(2) { --stage-accent: var(--warn); }
+      .pc-learning__stage:nth-child(3) { --stage-accent: var(--good); }
+      .pc-learning__stage:nth-child(4) { --stage-accent: var(--accent-strong); }
+      .pc-learning__stage-icon {
+        position: relative; z-index: 1; display: grid; place-items: center; width: 34px; height: 34px;
+        border: 1px solid var(--border-strong); border-radius: 50%; background: var(--bg-1); color: var(--fg-mute);
+        transition: color var(--dur-fast), border-color var(--dur-fast), background var(--dur-fast);
+      }
+      .pc-learning__stage-line {
+        position: absolute; z-index: 0; top: 17px; left: calc(50% + 17px); width: calc(100% - 34px); height: 1px;
+        background: var(--border-strong); pointer-events: none;
+      }
+      .pc-learning__stage-label { font-size: 11.5px; font-weight: 650; }
+      .pc-learning__stage:hover .pc-learning__stage-icon { color: var(--fg); border-color: var(--stage-accent); background: var(--bg-2); }
+      .pc-learning__stage[data-state="active"] { color: var(--fg); }
+      .pc-learning__stage[data-state="active"] .pc-learning__stage-icon {
+        color: var(--stage-accent); border-color: var(--stage-accent);
+        background: color-mix(in oklab, var(--stage-accent), transparent 88%);
+      }
 
-      /* Tab-level per-Hive lens picker (P-042) — sits with the How toggle. */
-      .pc-learning__controlsright { display: inline-flex; align-items: center; gap: 8px; }
+      .pc-learning__controls { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+      .pc-learning__view-list { display: inline-flex; align-items: center; gap: 3px; padding: 3px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-1); }
+      .pc-learning__view-tab {
+        display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px;
+        border: 1px solid transparent; border-radius: 6px; background: transparent;
+        color: var(--fg-mute); cursor: pointer; font: inherit; font-size: 11.5px; font-weight: 620;
+        transition: color var(--dur-fast), border-color var(--dur-fast), background var(--dur-fast);
+      }
+      .pc-learning__view-tab:hover { color: var(--fg); background: var(--bg-2); }
+      .pc-learning__view-tab[data-state="active"] { color: var(--fg); border-color: var(--border-strong); background: var(--bg-3); }
+
       .pc-learning__hivepick {
         display: inline-flex; align-items: center; gap: 6px;
         padding: 5px 10px; font-size: 11.5px; font-weight: 600; border-radius: 999px;
-        border: 1px solid var(--border, rgba(125, 211, 252, 0.18));
-        background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-mute, #7f9bb4);
+        border: 1px solid var(--border); background: var(--bg-2); color: var(--fg-mute);
       }
       .pc-learning__hivepicklabel { text-transform: uppercase; font-size: 10px; letter-spacing: 0; }
+      .pc-learning__body { min-height: 240px; }
 
-      .pc-learning__how {
-        list-style: none; margin: 0; padding: 11px 13px;
-        display: flex; flex-wrap: wrap; gap: 16px;
-        border: 1px dashed var(--border, rgba(125, 211, 252, 0.2)); border-radius: 12px;
-        background: var(--bg-2, rgba(255, 255, 255, 0.02));
+      @media (max-width: 720px) {
+        .pc-learning__header { align-items: flex-start; }
+        .pc-learning__utilities { flex-wrap: wrap; justify-content: flex-end; }
+        .pc-learning__utility span { display: none; }
+        .pc-learning__stage-list { padding-inline: 4px; }
+        .pc-learning__stage { padding-inline: 2px; }
+        .pc-learning__stage-line { left: calc(50% + 15px); width: calc(100% - 30px); }
       }
-      .pc-learning__howstep { display: flex; gap: 9px; flex: 1 1 230px; min-width: 210px; }
-      .pc-learning__hownum {
-        display: inline-flex; align-items: center; justify-content: center;
-        width: 18px; height: 18px; flex-shrink: 0; margin-top: 1px;
-        border-radius: 50%; font-size: 10.5px; font-weight: 700;
-        color: #34d399; border: 1px solid rgba(52, 211, 153, 0.45);
-      }
-      .pc-learning__howbody { display: flex; flex-direction: column; gap: 2px; }
-      .pc-learning__howbody strong { font-size: 12px; font-weight: 700; color: var(--fg-dim, #b9d4e8); }
-      .pc-learning__howbody em { font-style: normal; font-size: 11.5px; line-height: 1.45; color: var(--fg-mute, #7f9bb4); }
 
       /* Flow strip (P-041) — compact in/out chips above the stock scoreboard. */
       .pc-learning__flow { display: flex; flex-wrap: wrap; gap: 6px; }
