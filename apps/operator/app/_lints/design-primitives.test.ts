@@ -53,7 +53,14 @@ const TEST_FILE_RE = /(?:\.test|\.spec)\.tsx?$/;
 const NATIVE_SELECT_ALLOWED_FILES = new Set<string>();
 
 /** Same: harness/Checkbox.tsx is a Radix wrapper, not a native <input type=checkbox>. */
-const NATIVE_CHECKBOX_ALLOWED_FILES = new Set<string>();
+const NATIVE_CHECKBOX_ALLOWED_FILES = new Set<string>([
+  // Owner-approved native accent checkbox (owner-hit 2026-07-11 r3 — see the
+  // in-file comment at AgentsRunningPill's roster row): the shared Radix
+  // primitive's <button>+svg restyle never matched the approved native mockup;
+  // a native <input type=checkbox> with accent-color IS the native accent look,
+  // drawn by the Tauri/WebKitGTK webview itself. Deliberate, not unmigrated.
+  'operator-vite/src/components/adv/AgentsRunningPill.tsx',
+]);
 
 const NATIVE_TABLE_ALLOWED_FILES = new Set<string>([
   // The one legitimate native <table>/<thead>/<tbody> (WI-3561, 2026-07-09): the shared

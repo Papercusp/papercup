@@ -7,12 +7,12 @@
  *   ┌────┬──────────────┬─────────────────────────────┐
  *   │view│ create:filter│ create:main                 │
  *   │rail│ (sidebar)    │ (active ?view)              │
- *   │    │ +New/search  │ Plans → one full-width pane │
+ *   │+New│ search       │ Plans → one full-width pane │
  *   │    │ plan list    │ Queue/Sessions → list|detail│
  *   └────┴──────────────┴─────────────────────────────┘
  *
- * The outer icon rail owns Plans/Queue/Sessions, create:filter owns New-plan
- * and the plan-list filter, and create:main renders the active ?view.
+ * The outer icon rail owns New-plan plus Plans/Queue/Sessions, create:filter
+ * owns the plan-list filter, and create:main renders the active ?view.
  * Navigation is those buttons, NOT dockview tabs — so per-group tab headers
  * are hidden (adv-dock.css `.pc-adv-create`) and every group is locked, which
  * leaves only the sidebar|main sash draggable. Blue-frost theme via .pc-adv-dock.

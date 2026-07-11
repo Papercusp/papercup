@@ -4,14 +4,13 @@
 import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * create:filter — the plan-browser sidebar of the Create dock, always visible
- * beside CreateViewRail. It owns New plan, search, plan-status bucket filters,
- * and the plan list. The plan list acts as a filter on whichever view is active —
+ * beside CreateViewRail. It owns search, plan-status bucket filters, and the
+ * plan list; CreateViewRail owns New plan. The plan list acts as a filter on whichever view is active —
  * clicking a plan in Inbox/Sessions toggles the ?itemPlans item filter; in
  * Plans view it opens that plan full-width on the right (?plan).
  *
- * Mirrors PlansClient's rail (search + buckets + PlanRail) plus its
- * rail-actions row (New plan + view buttons), lifted so the dock behaves like
- * the original Plans tab.
+ * Mirrors PlansClient's rail (search + buckets + PlanRail), lifted so the dock
+ * behaves like the original Plans tab.
  */
 
 import { useCallback, useMemo, useRef, useState } from 'react';
