@@ -238,6 +238,33 @@ export default defineTool({
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? undefined;
     const stored = await setLoopCarryNote({ harness, ownerId, workspaceId: workspaceId ?? undefined }, note);
 
+    // P-020 (su-ideate-learning-substrate): checkpoint-HARVEST. The carry-note `insight`
+    // is exactly the "non-obvious thing a future agent would re-derive" the observation
+    // lane wants — auto-file it as a lane:observation with ZERO new workflow (D-016/D-017).
+    // Fire-and-forget + fully fail-open: a harvest miss must NEVER slow or break the
+    // checkpoint write (the same discipline as the SSE-invalidate in capture-core). The
+    // leg self-coalesces the verbatim carry-note that persists across consecutive wakes.
+    if (args.insight && args.insight.trim()) {
+      const insightText = args.insight;
+      const harvestHarness = harness !== '*' ? harness : undefined;
+      void (async () => {
+        try {
+          const filedByRole = (await getPresence(ownerId).catch(() => null))?.agentRole ?? undefined;
+          const { harvestInsight } = await import('../../harness/improvements/checkpoint-harvest');
+          await harvestInsight({
+            insight: insightText,
+            createdBy: ownerId,
+            source: 'loop-checkpoint',
+            ref: 'loop:checkpoint',
+            ...(filedByRole ? { filedByRole } : {}),
+            ...(harvestHarness ? { harness: harvestHarness, sourceHive: harvestHarness } : {}),
+          });
+        } catch {
+          /* fail-open: harvest never affects the checkpoint the agent asked for */
+        }
+      })();
+    }
+
     // flush-to-proceed-stretch-discipline-2026-07-04 P-005: piggyback the CONTINUATION-GATE
     // read on the checkpoint the agent already writes at a unit boundary, so settle-vs-continue
     // is a one-call read (not a separate orient). Two mechanical legs: context headroom (from

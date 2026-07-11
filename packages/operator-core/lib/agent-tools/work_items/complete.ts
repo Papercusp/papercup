@@ -30,6 +30,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { getPresence } from '../coordination/presence';
 import { COORD_ROLES } from '../coordination/roles';
 import { objectSelector } from '../coordination/audience';
 import {
@@ -241,6 +242,34 @@ async function completeOne(it: CompleteItem, ident: { ownerId: string; ownerLabe
     agent: it.completion.agent || ident.ownerLabel || ident.ownerId,
     planSlug: it.completion.planSlug,
   };
+
+  // P-020 (su-ideate-learning-substrate): checkpoint-HARVEST. A completion's
+  // `coordNotes` — the design-note residual the structured fields can't hold — is
+  // the insight-bearing free-text agents ALREADY write at this boundary; auto-file
+  // it as a lane:observation with ZERO new workflow (D-016/D-017). Fire-and-forget +
+  // fully fail-open: harvest must NEVER affect the completion (EI-24 record-and-warn
+  // discipline). The leg coalesces a repeated note against the agent's own recent harvest.
+  const harvestNote = it.completion.coordNotes;
+  if (harvestNote && harvestNote.trim()) {
+    const ownerId = ident.ownerId;
+    const harvestHarness = it.harness && it.harness !== '*' ? it.harness : undefined;
+    void (async () => {
+      try {
+        const filedByRole = (await getPresence(ownerId).catch(() => null))?.agentRole ?? undefined;
+        const { harvestInsight } = await import('../../harness/improvements/checkpoint-harvest');
+        await harvestInsight({
+          insight: harvestNote,
+          createdBy: ownerId,
+          source: 'work-item-completion',
+          ref: `wi:${it.id}`,
+          ...(filedByRole ? { filedByRole } : {}),
+          ...(harvestHarness ? { harness: harvestHarness, sourceHive: harvestHarness } : {}),
+        });
+      } catch {
+        /* fail-open: harvest never affects the completion the agent recorded */
+      }
+    })();
+  }
 
   // EI-8993 (dup-close accountability): a completion that names `duplicateOf`
   // auto-creates the structured `duplicates` coord_links edge (so dup-scanners
