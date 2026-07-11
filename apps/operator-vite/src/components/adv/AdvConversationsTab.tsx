@@ -14,11 +14,9 @@
  *    attached to an issue or a conversation. Left rail lists threads; detail
  *    renders the discussion posts in order.
  *
- *  - **Agent chats** (`conv=agentchats`): the multi-turn agent chat SESSIONS
- *    (scoper/architect/worker/… transcripts, with tokens + cost) from
- *    `agent_chats_consolidated` — the bulk of real agent communication, which the
- *    per-harness `agent-chats` panel surfaced only one harness at a time. Left rail
- *    lists sessions (harness/role filters); detail renders the full transcript.
+ *  - **Agent chats** (`conv=agentchats`): the internal detail route for
+ *    multi-turn transcript rows projected into the unified stream. Live chats
+ *    retain their interactive composer; archived chats remain read-only.
  *
  *  - **Messages** (`conv=messages`): work-item-scoped agent↔agent messages
  *    (messages:send / messages:inbox) from `messages_consolidated` — from → to,
@@ -689,9 +687,8 @@ function UnifiedInboxView() {
  * ConvFrame — the shared Conversations shell, mirroring the Create dock's
  * sidebar│main model (a persistent left rail that owns the primary action + the
  * view switcher + this view's filters/list, and a main pane that holds only the
- * selected item's detail). Each of the five views renders one ConvFrame, passing
- * its own `filters`/`list`/`detail` slots — so the frame is identical across
- * views and only the content swaps, exactly like Create's TwoPaneShell.
+ * selected item's detail). The unified list and each source-owned detail render
+ * through the same frame, so the rail stays stable as the detail route changes.
  *
  * The nav reuses the globally-imported `pc-plans__*` rail classes (plans.css is
  * loaded on the /adv route) so it is visually identical to Create's sidebar.
@@ -735,25 +732,25 @@ function ConvFrame({
   const navBtn = (d: ViewDef) => {
     const active = d.id === 'inbox' ? view !== 'feed' : view === d.id;
     return (
-    <Tooltip key={d.id} label={d.desc}>
-      <button
-        id={`adv-conversations-tab-${d.id}`}
-        type="button"
-        role="tab"
-        aria-label={d.label}
-        aria-selected={active}
-        aria-controls="adv-conversations-panel"
-        className={`pc-advconv__navbtn pc-advconv__navbtn--${d.group}${active ? ' is-active' : ''}`}
-        style={{ ['--nav-accent' as string]: VIEW_ACCENT[d.id] } as React.CSSProperties}
-        onClick={() => switchView(d.id)}
-      >
-        <span className="pc-advconv__navicon" aria-hidden>
-          <d.Icon size={14} />
-        </span>
-        <span className="pc-advconv__navlabel">{d.label}</span>
-      </button>
-    </Tooltip>
-  );
+      <Tooltip key={d.id} label={d.desc}>
+        <button
+          id={`adv-conversations-tab-${d.id}`}
+          type="button"
+          role="tab"
+          aria-label={d.label}
+          aria-selected={active}
+          aria-controls="adv-conversations-panel"
+          className={`pc-advconv__navbtn pc-advconv__navbtn--${d.group}${active ? ' is-active' : ''}`}
+          style={{ ['--nav-accent' as string]: VIEW_ACCENT[d.id] } as React.CSSProperties}
+          onClick={() => switchView(d.id)}
+        >
+          <span className="pc-advconv__navicon" aria-hidden>
+            <d.Icon size={14} />
+          </span>
+          <span className="pc-advconv__navlabel">{d.label}</span>
+        </button>
+      </Tooltip>
+    );
   };
 
   return (

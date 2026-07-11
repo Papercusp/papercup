@@ -3,6 +3,8 @@ export { SiteHeader } from './SiteHeader';
 export { MarketplaceIndex } from './MarketplaceIndex';
 export { MarketplaceLayout } from './MarketplaceLayout';
 export { MarketplaceList } from './MarketplaceList';
+export { MarketplaceDetail } from './MarketplaceDetail';
+export type { DetailResponse } from './MarketplaceDetail';
 export type {
   CatalogEntry,
   InstalledHarness,
