@@ -205,6 +205,40 @@ rail" predates that inversion and is stale prose, not current behavior.
   (`gatherGraderFeedbackPriming`, concatenated below the gym stepping-stones).
   Source: `outcome-feedback.ts` / `routed-ledger.ts` / `ideator-feedback-priming.ts`.
 
+## su-ideate parity — the agent-driven twin
+
+Scout is the **automated** generative engine: a prompt-free cadence fires the
+cycle, the Mug gates, agents build. **su in IDEATE mode is the agent-driven
+twin** — the same learning substrate and the same outcome-feedback ledger, but a
+human-collaborator agent runs the passes *deliberately*. Parity means su gets the
+structure Scout has — corpus grounding, forced lens diversity, onward routing,
+and outcome feedback that primes the next pass — through the agent-facing
+`blender:*` tools instead of the internal `scout/*` cycle. The contract lives in
+`modes/registry.ts` (the IDEATE + GRADE mode contracts) and is rendered into the
+full-tier operating-modes clause by `operating-modes-policy.ts`
+(`renderModesPolicy('full')`); the **fleet tier stays IDEATE-free** — grounding
+is a leader/interactive posture, not a fleet-member one.
+
+Each su pass is a **loop, not a blank page**, mirroring the cycle stage-for-stage:
+
+| Scout stage | su-ideate equivalent (IDEATE mode) |
+|---|---|
+| **Corpus synthesis** (`corpus-digest.ts`) — meta-patterns + rubric ratings | **GROUND** on `blender:ideation-feedback` — prior grades + realized outcomes + per-lens win-rates + the federated frontier read |
+| **Divergent generation** under forced `CreativeLens` diversity (D-004) | run the pass **under one lens**, varying it across passes (cheap lens diversity) |
+| **Debate + recombine** → a bettable `Proposal` with a required `cheapExperiment` (D-006) | **FILE** lens-tagged via `improvements:capture {kind:'feature'}`, adding a **bet + cheapExperiment when the idea is a real bet** |
+| **Routing** (`router.ts`) — broad → plan draft | **ROUTE** the broad ones onward via `blender:route-idea` |
+| **Outcome feedback** (`routed-ledger.ts` / `outcome-feedback.ts`) — grades weight winning lenses + prime the next cycle (D-009) | **CLOSE** with `blender:ideate-pass-record` — a measurable su-ideate tick feeding the same per-lens weighting + priming |
+
+**The grade→wake→revise close.** Where Scout's outcome feedback is *passive* —
+the change feed plus owner/Mug grades weight lenses over time — su's is
+**active**: grading an su-filed idea (`blender:grade-idea`) with a low grade +
+critique **WAKES its originator to revise**. The critique is the revision signal
+that closes the loop, not merely a score, and the tool **refuses to grade a row
+you authored** (no self-grading, D-012). That active close is what makes
+su-ideate a *closed* loop — file → grade → wake → revise → outcome → priming —
+mapped end-to-end in the
+[su-ideate learning loop runbook](/internal/docs/agent-insights/su-ideate-learning-loop/).
+
 ## Testing
 
 - **Invariants suite** (`scout-loop-invariants.test.ts` + `invariants.ts`, P-009):
