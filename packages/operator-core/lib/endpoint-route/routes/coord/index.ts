@@ -35,7 +35,7 @@ async function readAllMessages(): Promise<CoordEnvelope[]> {
   return coordLog.readLines('messages');
 }
 
-interface HistoryItem {
+export interface HistoryItem {
   ts: string;
   msg_id: string;
   source: 'plan_event' | 'message' | 'escalation' | 'handoff';
@@ -77,56 +77,90 @@ function toHistoryItem(source: HistoryItem['source'], e: CoordEnvelope): History
   };
 }
 
+export async function loadCoordHistory(args: {
+  kinds?: string[];
+  planSlug?: string;
+  owner?: string;
+  sinceTs?: string;
+  limit?: number;
+} = {}): Promise<{ items: HistoryItem[]; total: number; truncated: boolean }> {
+  const wanted = args.kinds?.length ? new Set(args.kinds) : null;
+  const sinceMs = args.sinceTs ? new Date(args.sinceTs).getTime() : 0;
+  const limit = Math.min(Math.max(args.limit ?? 200, 1), 1000);
+  const items: HistoryItem[] = [];
+  if (!wanted || wanted.has('plan_event')) {
+    for (const e of await readPlanEvents({})) items.push(toHistoryItem('plan_event', e));
+  }
+  if (!wanted || wanted.has('message')) {
+    for (const e of await readAllMessages()) items.push(toHistoryItem('message', e));
+  }
+  if (!wanted || wanted.has('escalation')) {
+    for (const e of await listEscalations({})) items.push(toHistoryItem('escalation', e));
+  }
+  if (!wanted || wanted.has('handoff')) {
+    for (const h of await listHandoffs({})) {
+      items.push(toHistoryItem('handoff', h.record));
+      if (h.accepted_by) items.push(toHistoryItem('handoff', h.accepted_by));
+    }
+  }
+  let filtered = items;
+  if (args.planSlug) filtered = filtered.filter((it) => it.plan_slug === args.planSlug);
+  if (args.owner) {
+    const owner = args.owner;
+    filtered = filtered.filter(
+      (it) => it.from === owner || (it.to ?? []).includes(owner) || (it.to ?? []).includes('*'),
+    );
+  }
+  if (sinceMs > 0) filtered = filtered.filter((it) => new Date(it.ts).getTime() > sinceMs);
+  filtered.sort((a, b) => b.ts.localeCompare(a.ts) || b.msg_id.localeCompare(a.msg_id));
+  const truncated = filtered.length > limit;
+  return { items: truncated ? filtered.slice(0, limit) : filtered, total: filtered.length, truncated };
+}
+
+export async function loadCoordInbox(): Promise<HistoryItem[]> {
+  const [msgs, escs, hs] = await Promise.all([readAllMessages(), listEscalations({}), listHandoffs({})]);
+  const items: HistoryItem[] = [];
+  for (const m of msgs) {
+    if (Array.isArray(m.to) && m.to.includes('human')) items.push(toHistoryItem('message', m));
+  }
+  for (const e of escs) {
+    if (e.resolved == null) items.push(toHistoryItem('escalation', e));
+  }
+  for (const h of hs) {
+    if (Array.isArray(h.record.to) && h.record.to.includes('human')) items.push(toHistoryItem('handoff', h.record));
+  }
+  return items.sort((a, b) => b.ts.localeCompare(a.ts) || b.msg_id.localeCompare(a.msg_id));
+}
+
+export async function loadCoordPlans(): Promise<Array<Record<string, unknown>>> {
+  const { readAllPlans } = await import('../../../agent-tools/plans/source');
+  return (await readAllPlans({}))
+    .filter((p) => !p.parsed.isLegacy)
+    .map((p) => ({
+      slug: p.parsed.frontmatter.slug ?? p.parsed.slug,
+      title: p.parsed.frontmatter.title ?? p.parsed.slug,
+      status: p.parsed.frontmatter.status ?? 'unknown',
+      updated: p.parsed.frontmatter.updated ?? null,
+      now_state: p.parsed.now?.state ?? null,
+      now_next: p.parsed.now?.next ?? null,
+      item_count: p.parsed.items.length,
+      decision_count: p.parsed.decisions.length,
+    }));
+}
+
 const history = defineTool({
   method: 'GET',
   path: '/coord/history',
   auth: 'public',
   async handler(req) {
     const q = new URL(req.url).searchParams;
-    const kindsParam = q.get('kinds');
-    const wanted = kindsParam
-      ? new Set(kindsParam.split(',').map((s) => s.trim()))
-      : null;
-    const planSlug = q.get('plan_slug');
-    const owner = q.get('owner');
-    const sinceTs = q.get('since_ts');
-    const sinceMs = sinceTs ? new Date(sinceTs).getTime() : 0;
-    const limit = Math.min(Math.max(parseInt(q.get('limit') ?? '200', 10) || 200, 1), 1000);
-
-    const items: HistoryItem[] = [];
-    if (!wanted || wanted.has('plan_event')) {
-      const events = await readPlanEvents({});
-      for (const e of events) items.push(toHistoryItem('plan_event', e));
-    }
-    if (!wanted || wanted.has('message')) {
-      const msgs = await readAllMessages();
-      for (const m of msgs) items.push(toHistoryItem('message', m));
-    }
-    if (!wanted || wanted.has('escalation')) {
-      const escs = await listEscalations({});
-      for (const e of escs) items.push(toHistoryItem('escalation', e));
-    }
-    if (!wanted || wanted.has('handoff')) {
-      const hs = await listHandoffs({});
-      for (const h of hs) {
-        items.push(toHistoryItem('handoff', h.record));
-        if (h.accepted_by) items.push(toHistoryItem('handoff', h.accepted_by));
-      }
-    }
-
-    let filtered = items;
-    if (planSlug) filtered = filtered.filter((it) => it.plan_slug === planSlug);
-    if (owner) {
-      filtered = filtered.filter(
-        (it) => it.from === owner || (it.to ?? []).includes(owner) || (it.to ?? []).includes('*'),
-      );
-    }
-    if (sinceMs > 0) filtered = filtered.filter((it) => new Date(it.ts).getTime() > sinceMs);
-
-    filtered.sort((a, b) => b.ts.localeCompare(a.ts) || b.msg_id.localeCompare(a.msg_id));
-    const truncated = filtered.length > limit;
-    const out = truncated ? filtered.slice(0, limit) : filtered;
-    return Response.json({ items: out, total: filtered.length, truncated });
+    return Response.json(await loadCoordHistory({
+      kinds: q.get('kinds')?.split(',').map((s) => s.trim()).filter(Boolean),
+      planSlug: q.get('plan_slug') ?? undefined,
+      owner: q.get('owner') ?? undefined,
+      sinceTs: q.get('since_ts') ?? undefined,
+      limit: parseInt(q.get('limit') ?? '200', 10) || 200,
+    }));
   },
 });
 
@@ -150,24 +184,7 @@ const inbox = defineTool({
   path: '/coord/inbox',
   auth: 'public',
   async handler() {
-    // Strictly the human-facing inbox: entries with 'human' in `to`.
-    const msgs = await readAllMessages();
-    const escs = await listEscalations({});
-    const hs = await listHandoffs({});
-    const items: HistoryItem[] = [];
-    for (const m of msgs) {
-      if (Array.isArray(m.to) && m.to.includes('human')) items.push(toHistoryItem('message', m));
-    }
-    for (const e of escs) {
-      if (e.resolved == null) items.push(toHistoryItem('escalation', e));
-    }
-    for (const h of hs) {
-      if (Array.isArray(h.record.to) && h.record.to.includes('human')) {
-        items.push(toHistoryItem('handoff', h.record));
-      }
-    }
-    items.sort((a, b) => b.ts.localeCompare(a.ts) || b.msg_id.localeCompare(a.msg_id));
-    return Response.json({ items });
+    return Response.json({ items: await loadCoordInbox() });
   },
 });
 
@@ -176,21 +193,7 @@ const plans = defineTool({
   path: '/coord/plans',
   auth: 'public',
   async handler() {
-    const { readAllPlans } = await import('../../../agent-tools/plans/source');
-    const all = await readAllPlans({});
-    const out = all
-      .filter((p) => !p.parsed.isLegacy)
-      .map((p) => ({
-        slug: p.parsed.frontmatter.slug ?? p.parsed.slug,
-        title: p.parsed.frontmatter.title ?? p.parsed.slug,
-        status: p.parsed.frontmatter.status ?? 'unknown',
-        updated: p.parsed.frontmatter.updated ?? null,
-        now_state: p.parsed.now?.state ?? null,
-        now_next: p.parsed.now?.next ?? null,
-        item_count: p.parsed.items.length,
-        decision_count: p.parsed.decisions.length,
-      }));
-    return Response.json({ plans: out });
+    return Response.json({ plans: await loadCoordPlans() });
   },
 });
 

@@ -4055,6 +4055,182 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // Canonical operator conversation bootstrap + history. Keeping identity and
+  // turns in the shared sync cache prevents the mount-time REST response from
+  // racing a newer pushed transcript.
+  'operatorConversations.current': {
+    resolve: async () => {
+      const { getOrCreateActiveConversation } = await import('../operator-conversations');
+      return [await getOrCreateActiveConversation()];
+    },
+  },
+  'operatorTurns.byConversation': {
+    argsSchema: z.object({ conversationId: z.string().min(1), limit: clampedLimit(500, 200) }),
+    resolve: async (args) => {
+      const { conversationId, limit } = args as { conversationId: string; limit: number };
+      const { listTurnsRecent } = await import('../operator-conversations');
+      return (await listTurnsRecent({ conversationId, limit })).turns;
+    },
+  },
+  'operatorTurns.page': {
+    argsSchema: z.object({
+      conversationId: z.string().min(1),
+      beforeSeq: z.number().int().nonnegative().optional(),
+      limit: clampedLimit(500, 200),
+    }),
+    resolve: async (args) => {
+      const { conversationId, beforeSeq, limit } = args as {
+        conversationId: string;
+        beforeSeq?: number;
+        limit: number;
+      };
+      const { listTurnsRecent } = await import('../operator-conversations');
+      return [await listTurnsRecent({ conversationId, beforeSeq, limit })];
+    },
+  },
+
+  // Legacy /coord screen projections, now backed by the same root cache and
+  // SSE invalidation bus as the advanced coordination surfaces.
+  'coord.history': {
+    argsSchema: z.object({
+      kinds: z.array(z.string()).optional(),
+      planSlug: z.string().optional(),
+      owner: z.string().optional(),
+      sinceTs: z.string().optional(),
+      limit: clampedLimit(1000, 200),
+    }),
+    resolve: async (args) => {
+      const { loadCoordHistory } = await import('../endpoint-route/routes/coord');
+      return (await loadCoordHistory(args as never)).items;
+    },
+  },
+  'coord.inbox': {
+    resolve: async () => {
+      const { loadCoordInbox } = await import('../endpoint-route/routes/coord');
+      return loadCoordInbox();
+    },
+  },
+  'coord.plans': {
+    resolve: async () => {
+      const { loadCoordPlans } = await import('../endpoint-route/routes/coord');
+      return loadCoordPlans();
+    },
+  },
+
+  'agentChats.detail': {
+    argsSchema: z.object({ id: z.string().min(1), workspaceId: z.string().optional() }),
+    resolve: async (args) => {
+      const { id, workspaceId } = args as { id: string; workspaceId?: string };
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
+      const { and, eq } = await import('drizzle-orm');
+      const t = generated.agentChatsConsolidatedInHarnessShared;
+      const { db } = getOrgPg();
+      return db.select().from(t).where(
+        workspaceId ? and(eq(t.id, id), eq(t.workspaceId, workspaceId)) : eq(t.id, id),
+      ).limit(1) as unknown as Promise<unknown[]>;
+    },
+  },
+
+  'dockLayouts.byName': {
+    argsSchema: z.object({ workspaceId: z.string(), userId: z.string(), name: z.string().min(1) }),
+    resolve: async (args) => {
+      const { workspaceId, userId, name } = args as { workspaceId: string; userId: string; name: string };
+      const { getLayout } = await import('../dock-layouts');
+      return [await getLayout({ workspaceId, userId }, name)];
+    },
+  },
+  'dockLayouts.list': {
+    argsSchema: z.object({ workspaceId: z.string(), userId: z.string() }),
+    resolve: async (args) => {
+      const { workspaceId, userId } = args as { workspaceId: string; userId: string };
+      const { listLayouts } = await import('../dock-layouts');
+      return listLayouts({ workspaceId, userId });
+    },
+  },
+
+  'testing.assertionsByHarness': {
+    argsSchema: z.object({ harnessSlug: z.string(), workspaceId: z.string().optional(), planSlug: z.string().optional() }),
+    resolve: async (args) => {
+      const { harnessSlug, workspaceId, planSlug } = args as { harnessSlug: string; workspaceId?: string; planSlug?: string };
+      const [{ getOrgPg }, { activeWorkspaceId }] = await Promise.all([
+        import('@papercusp/db-org'), import('../workspace-registry'),
+      ]);
+      const { sql } = getOrgPg();
+      const ws = workspaceId ?? activeWorkspaceId();
+      return planSlug
+        ? sql`SELECT val_id, plan_slug, item_id, verify_text, status, requires_test
+              FROM harness_shared.harness_plan_assertions
+             WHERE workspace_id = ${ws} AND harness_slug = ${harnessSlug} AND plan_slug = ${planSlug}
+             ORDER BY val_id`
+        : sql`SELECT val_id, plan_slug, item_id, verify_text, status, requires_test
+              FROM harness_shared.harness_plan_assertions
+             WHERE workspace_id = ${ws} AND harness_slug = ${harnessSlug}
+             ORDER BY val_id`;
+    },
+  },
+
+  'operatorConfig.byWorkspace': {
+    resolve: async () => {
+      const [{ readOperatorState }, { OPERATOR_SUBSTRATE_PROMPT }] = await Promise.all([
+        import('../operator-state-pg'), import('../operator-prompt-system'),
+      ]);
+      const [prompt, prefs] = await Promise.all([
+        readOperatorState<{ content?: string }>('operator_prompt_user'),
+        readOperatorState<{ content?: string }>('operator_preferences'),
+      ]);
+      return [{
+        prompt_user: prompt?.content ?? '',
+        preferences: prefs?.content ?? '',
+        substrate_prompt: OPERATOR_SUBSTRATE_PROMPT,
+        prompt_user_path: 'harness_shared.operator_prompt_user',
+        prefs_path: 'harness_shared.operator_preferences',
+      }];
+    },
+  },
+  'operatorPreferences.byWorkspace': {
+    resolve: async () => {
+      const { listPreferenceEntries } = await import('../operator-preferences');
+      return listPreferenceEntries();
+    },
+  },
+  'userPreferences.current': {
+    resolve: async () => {
+      const [{ getSessionUser }, { loadUserPreferences }] = await Promise.all([
+        import('../auth'), import('../user-preferences'),
+      ]);
+      const user = await getSessionUser();
+      return [{ payload: await loadUserPreferences(user?.id ?? null), userId: user?.id ?? null }];
+    },
+  },
+  'voicePrefs.effective': {
+    resolve: async () => {
+      const { loadVoicePrefs } = await import('../voice-prefs');
+      return [await loadVoicePrefs()];
+    },
+  },
+  'voicePrefs.workspace': {
+    resolve: async () => {
+      const { loadWorkspaceVoicePrefs } = await import('../voice-prefs');
+      return [await loadWorkspaceVoicePrefs()];
+    },
+  },
+  'accounts.sessionOverride': {
+    argsSchema: z.object({ workspaceId: z.string().optional() }),
+    resolve: async (args) => {
+      const [{ getAccountOverride }, { activeWorkspaceId }] = await Promise.all([
+        import('../deployment/account-session-override'), import('../workspace-registry'),
+      ]);
+      const { workspaceId } = args as { workspaceId?: string };
+      return [await getAccountOverride(workspaceId ?? activeWorkspaceId())];
+    },
+  },
+  'kpis.all': {
+    resolve: async () => {
+      const { loadAllKpis } = await import('../endpoint-route/routes/harness/all-kpis');
+      return [await loadAllKpis()];
+    },
+  },
+
   // conversations.* — the cacheable source reads behind the /adv Conversations
   // master/detail surface.  The unified inbox composes the four LIST queries in
   // the browser, so opening a source view reuses the exact same React Query cache

@@ -443,13 +443,14 @@ export async function installOmpIntegration(opts: InstallOptions = {}): Promise<
     };
   }
 
-  // WI-1457: prefer the resilient MCP proxy when the operator environment opts
-  // in (PAPERCUSP_MCP_PROXY_BASE, WI-573). OMP reads this url LITERALLY (no env
-  // interpolation), so this reconciler — fired per console launch via
-  // ensureOmpSuInstalled — is the ONLY thing that decides whether OMP sessions
-  // ride the proxy; its direct-:3070 default re-minted away every manual
-  // re-point within minutes.
-  const operatorUrl = opts.operatorUrl ?? resolveAgentMcpBaseUrl('http://localhost:3070');
+  // WI-1457 / P-007: the resilient MCP proxy (:9071) is the DEFAULT — never a
+  // bare direct :3070. OMP reads this url LITERALLY (no env interpolation), so
+  // this reconciler — fired per console launch via ensureOmpSuInstalled — is the
+  // ONLY thing that decides whether OMP sessions ride the proxy; its old
+  // direct-:3070 default re-minted away every manual re-point within minutes
+  // (the same class P-007 fixed in the Claude generator). An explicit
+  // PAPERCUSP_MCP_PROXY_BASE (WI-573) still overrides via resolveAgentMcpBaseUrl.
+  const operatorUrl = opts.operatorUrl ?? resolveAgentMcpBaseUrl('http://127.0.0.1:9071');
   const actions: string[] = [];
 
   // 1. mcp.json merge — idempotent (compares to existing entry).

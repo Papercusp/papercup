@@ -99,6 +99,31 @@ describe('installClaudeIntegration', () => {
     }
   });
 
+  it('P-007: dev-box default (no PAPERCUSP_MCP_PROXY_BASE, no PAPERCUSP_DESKTOP) bakes the resilient :9071 proxy fallback, never direct :3070', async () => {
+    await seedPhase1();
+    await writeClaudeJson({ mcpServers: {} });
+    const prevProxy = process.env.PAPERCUSP_MCP_PROXY_BASE;
+    const prevDesktop = process.env.PAPERCUSP_DESKTOP;
+    delete process.env.PAPERCUSP_MCP_PROXY_BASE;
+    delete process.env.PAPERCUSP_DESKTOP;
+    try {
+      const res = await installClaudeIntegration({ home });
+      expect(res.changed).toBe(true);
+      const servers = (await readClaudeJson()).mcpServers as Record<string, { url: string }>;
+      // The proxy fronts :3070's deploy-restarts (WI-1457); a bare `claude` must
+      // ride it by DEFAULT — even a dev-box reconcile with neither env set — so a
+      // deploy no longer drops the session's tools. A direct-:3070 fallback here is
+      // the exact regression that silently reverted the P-006 cutover.
+      expect(servers['papercusp-su'].url).toContain('${PAPERCUSP_OPERATOR_URL:-http://127.0.0.1:9071}');
+      expect(servers['papercusp-su'].url).not.toContain(':3070');
+    } finally {
+      if (prevProxy === undefined) delete process.env.PAPERCUSP_MCP_PROXY_BASE;
+      else process.env.PAPERCUSP_MCP_PROXY_BASE = prevProxy;
+      if (prevDesktop === undefined) delete process.env.PAPERCUSP_DESKTOP;
+      else process.env.PAPERCUSP_DESKTOP = prevDesktop;
+    }
+  });
+
   it('NEVER creates ~/.claude.json when claude was never launched (dev box, seedIfAbsent off)', async () => {
     await seedPhase1();
     const res = await installClaudeIntegration({ home });

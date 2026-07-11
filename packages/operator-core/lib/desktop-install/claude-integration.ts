@@ -224,15 +224,14 @@ export async function installClaudeIntegration(
     return { ...st, supported: true, reason: 'phase1_not_run', changed: false, actions: [] };
   }
 
-  // WI-1457: route the baked fallback through the resilient MCP proxy when the
-  // operator environment opts in (PAPERCUSP_MCP_PROXY_BASE, WI-573) — this writer
-  // is the operator-side RECONCILER (ensureOmpSuInstalled fires it per console
-  // launch), so a direct-:3070 default here silently re-minted away the P-006
-  // cutover minutes after every manual re-point. Still byte-stable: the proxy
-  // base is a static loopback URL, so the merge stays idempotent across boots.
-  const defaultFallback =
-    process.env.PAPERCUSP_DESKTOP === '1' ? DESKTOP_OPERATOR_URL_FALLBACK : DEFAULT_OPERATOR_URL_FALLBACK;
-  const operatorUrl = opts.operatorUrl ?? resolveAgentMcpBaseUrl(defaultFallback);
+  // WI-1457 / P-007: the baked fallback is the resilient MCP proxy on EVERY host
+  // now (DEFAULT_OPERATOR_URL_FALLBACK = :9071), so this operator-side RECONCILER
+  // (ensureOmpSuInstalled fires it per console launch) can no longer silently
+  // re-mint a direct-:3070 default and revert the P-006 cutover — regardless of
+  // PAPERCUSP_DESKTOP. An explicit PAPERCUSP_MCP_PROXY_BASE (WI-573) still overrides
+  // via resolveAgentMcpBaseUrl. Still byte-stable: a static loopback URL, so the
+  // merge stays idempotent across boots.
+  const operatorUrl = opts.operatorUrl ?? resolveAgentMcpBaseUrl(DEFAULT_OPERATOR_URL_FALLBACK);
   const entry = buildClaudeMcpEntry(operatorUrl, token, agentId, profileDefault(opts.profile));
 
   // ~/.claude.json ABSENT = claude never launched on this box. Historically we

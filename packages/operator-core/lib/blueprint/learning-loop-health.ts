@@ -171,6 +171,48 @@ export function computeLearningLoopHealth(
   });
 }
 
+/**
+ * Classify a ROUTINE-LESS "activity-only" learning lane (su-ideate-learning-substrate
+ * P-013). Some learning loops have no cadence routine at all — su-ideation is
+ * judgment-in-the-loop (D-001: no su daemon), so its liveness is proven ONLY by domain
+ * activity (its pass-ledger ticks + the ungraded-filings backstop-watchdog fires), never a
+ * routine row. This folds one activity timestamp into the same {@link LearningLoopHealth}
+ * shape so the lane sits beside the routine-backed loops on a health read:
+ *   - never any activity → 'dark-by-design' (built, not yet turning — there is no routine
+ *     to be "absent", and the lane is judgment-driven, so silence is not yet a wedge);
+ *   - last activity within the stale window → 'firing';
+ *   - last activity older than the stale window → 'stale' (it WAS turning and went quiet —
+ *     the "a dead loop shows" signal {@link summarizeLearningLoopHealth} flags).
+ */
+export function computeActivityLaneHealth(
+  lane: { blueprintId: string; lastActivityAt: string | null; source: string },
+  opts: { nowMs: number; staleAfterDays?: number },
+): LearningLoopHealth {
+  const staleMs = (opts.staleAfterDays ?? DEFAULT_LOOP_STALE_AFTER_DAYS) * DAY_MS;
+  const activityMs = lane.lastActivityAt ? Date.parse(lane.lastActivityAt) : NaN;
+  const daysSinceActivity = Number.isNaN(activityMs)
+    ? null
+    : Math.floor((opts.nowMs - activityMs) / DAY_MS);
+  let status: LearningLoopStatus;
+  if (Number.isNaN(activityMs)) status = 'dark-by-design';
+  else if (opts.nowMs - activityMs > staleMs) status = 'stale';
+  else status = 'firing';
+  return {
+    blueprintId: lane.blueprintId,
+    alwaysOn: false,
+    singletonRow: null,
+    legacyRow: null,
+    collision: false,
+    active: status === 'firing' || status === 'stale',
+    lastFiredAt: null,
+    daysSinceFire: null,
+    activityLastAt: lane.lastActivityAt,
+    daysSinceActivity,
+    activitySource: lane.source,
+    status,
+  };
+}
+
 /** A rollup for the tool summary + the "needs attention" partition. */
 export interface LearningLoopHealthSummary {
   total: number;

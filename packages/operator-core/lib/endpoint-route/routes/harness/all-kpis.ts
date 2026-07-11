@@ -14,11 +14,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { filterSafeSchemaNames } from './all-kpis-safe-schema-name';
 import { aggregateOpCounts, countActiveAutoloops, tallyDirectiveStatuses } from './all-kpis-aggregate';
 
-export default defineTool({
-  method: 'GET',
-  path: '/harness/all/kpis',
-  auth: 'public',
-  async handler() {
+export async function loadAllKpis() {
     // Harness totals + per-schema metrics derive from the LIVE installed-harness
     // registry (workspace PG, same source as /api/installed) — NOT the legacy
     // harness_shared.projects pots table, which only holds pre-rethink demo rows
@@ -184,6 +180,15 @@ export default defineTool({
         uptime_seconds: Math.floor(os.uptime()),
       },
     };
+    return body;
+}
+
+export default defineTool({
+  method: 'GET',
+  path: '/harness/all/kpis',
+  auth: 'public',
+  async handler() {
+    const body = await loadAllKpis();
     return new Response(JSON.stringify(body), {
       headers: {
         'content-type': 'application/json',

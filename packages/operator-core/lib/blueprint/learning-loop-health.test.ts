@@ -4,6 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   computeLearningLoopHealth,
+  computeActivityLaneHealth,
   summarizeLearningLoopHealth,
   singletonRoutineName,
   type LearningLoopSpec,

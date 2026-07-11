@@ -9,7 +9,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { RoutedIdeaProvenance, LensOutcomeReport } from './outcome-feedback';
 import type { ScoutTickRecord } from './tick-ledger';
-import { CREATIVE_LENSES, type CreativeLens } from './types';
+import { CREATIVE_LENSES, type CreativeLens, SU_IDEATION_LENSES, type SuIdeationLens } from './types';
 import {
   computeScoutQualityReport,
   evaluateQualityDegradation,
@@ -59,6 +59,28 @@ function outcomes(
   ) as LensOutcomeReport['byLens'];
   const total = CREATIVE_LENSES.reduce((a, l) => a + byLens[l].routed, 0);
   return { total, byLens, ranked: CREATIVE_LENSES.map((l) => byLens[l]) };
+}
+
+/** A LensOutcomeReport over ANY roster (the su partition folds over SU_IDEATION_LENSES). */
+function outcomesFor<L extends string>(
+  lenses: readonly L[],
+  perLens: Partial<Record<L, { won?: number; lost?: number; pending?: number }>> = {},
+): LensOutcomeReport<L> {
+  const byLens = Object.fromEntries(
+    lenses.map((l) => {
+      const p = perLens[l] ?? {};
+      const won = p.won ?? 0;
+      const lost = p.lost ?? 0;
+      const pending = p.pending ?? 0;
+      const decided = won + lost;
+      return [
+        l,
+        { lens: l, routed: won + lost + pending, won, lost, pending, winRate: decided > 0 ? won / decided : null, weight: 1 / lenses.length },
+      ];
+    }),
+  ) as LensOutcomeReport<L>['byLens'];
+  const total = lenses.reduce((a, l) => a + byLens[l].routed, 0);
+  return { total, byLens, ranked: lenses.map((l) => byLens[l]) };
 }
 
 function inputs(p: Partial<ScoutQualityInputs> = {}): ScoutQualityInputs {
@@ -214,6 +236,47 @@ describe('computeScoutQualityReport', () => {
     expect(r.errorTicks).toBe(1);
     expect(r.totalTicks).toBe(4);
     expect(r.totalRouted).toBe(2);
+  });
+
+  // ── su-ideate partition (su-ideate-learning-substrate P-013) ──────────────────
+  it('folds perLensWinRates over the SU lens roster, not CREATIVE_LENSES', () => {
+    const r = computeScoutQualityReport<SuIdeationLens>(
+      {
+        ticks: [],
+        routedIdeas: [],
+        lensOutcomes: outcomesFor(SU_IDEATION_LENSES, {
+          'risk-first': { won: 3, lost: 1 }, // su-only lens
+          'user-value': { pending: 2 },
+        }),
+      },
+      { lenses: SU_IDEATION_LENSES },
+    );
+    // The su-only lenses (absent from CREATIVE_LENSES) are present + folded.
+    expect(r.perLensWinRates['risk-first']).toBeCloseTo(0.75, 9);
+    expect(r.perLensWinRates['user-value']).toBeNull();
+    expect(r.perLensWinRates['cost-leverage']).toBeNull();
+    expect(Object.keys(r.perLensWinRates).sort()).toEqual([...SU_IDEATION_LENSES].sort());
+    expect(r.accepted).toBe(3);
+    expect(r.rejected).toBe(1);
+    expect(r.triageAcceptanceRate).toBeCloseTo(0.75, 9);
+  });
+
+  it('includeDedupRate surfaces the reused novelty dedup-rate — null until a per-idea duplicate flag lands', () => {
+    const r = computeScoutQualityReport<SuIdeationLens>(
+      {
+        ticks: [],
+        routedIdeas: [prov('analogical', 'plan:x'), prov('reframing', 'plan:y')],
+        lensOutcomes: outcomesFor(SU_IDEATION_LENSES),
+      },
+      { lenses: SU_IDEATION_LENSES, includeDedupRate: true },
+    );
+    expect('dedupRate' in r).toBe(true);
+    expect(r.dedupRate).toBeNull(); // no duplicate flag persisted on the ledger yet
+  });
+
+  it('the Scout call omits dedupRate entirely — byte-identical report shape', () => {
+    const r = computeScoutQualityReport(inputs({ routedIdeas: [prov('analogical', 'gym:a')] }));
+    expect('dedupRate' in r).toBe(false);
   });
 });
 

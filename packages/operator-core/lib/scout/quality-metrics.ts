@@ -401,27 +401,53 @@ export interface BuildQualityInputsOptions extends ScoutLedgerOpts {
  * degrades each reader to empty on failure). Lazy imports keep this module's
  * pure core importable without the PG edge. Assembly only — no derivation here.
  */
-export async function buildQualityReportInputs(
-  opts: BuildQualityInputsOptions = {},
-): Promise<ScoutQualityInputs> {
+export async function buildQualityReportInputs<L extends string = CreativeLens>(
+  opts: BuildQualityInputsOptions & { lenses?: readonly L[] } = {},
+): Promise<ScoutQualityInputs<L>> {
   const [tickLedger, routedLedger] = await Promise.all([
     import('./tick-ledger'),
     import('./routed-ledger'),
   ]);
+  // `origin` (P-013) partitions ALL three reads to the same ledger slice — Scout
+  // (default 'scout') or su-ideate. The ledger opt + the tick opt both default 'scout',
+  // so an omitted origin is byte-identical to the pre-P-013 Scout read.
   const ledgerOpts: ScoutLedgerOpts = {
     ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
     ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
     ...(opts.cycleId ? { cycleId: opts.cycleId } : {}),
     ...(opts.limit != null ? { limit: opts.limit } : {}),
+    ...(opts.origin ? { origin: opts.origin } : {}),
   };
   const [ticks, routedIdeas, lensOutcomes] = await Promise.all([
     tickLedger.readScoutTicks({
       ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
       ...(opts.harnessSlug ? { installSlug: opts.harnessSlug } : {}),
       ...(opts.tickLimit != null ? { limit: opts.tickLimit } : {}),
+      ...(opts.origin ? { origin: opts.origin } : {}),
     }),
     routedLedger.readRoutedIdeas(ledgerOpts),
-    gatherLensOutcomes(routedLedger.buildScoutOutcomeReaders(ledgerOpts), opts.weights ?? {}),
+    gatherLensOutcomes<L>(routedLedger.buildScoutOutcomeReaders(ledgerOpts), {
+      ...(opts.weights ?? {}),
+      ...(opts.lenses ? { lenses: opts.lenses } : {}),
+    }),
   ]);
   return { ticks, routedIdeas, lensOutcomes };
+}
+
+/**
+ * The su-ideate PARTITION of the standing quality report (su-ideate-learning-substrate
+ * P-013). Same fold as Scout, read over `origin:'su-ideate'` + the su lens vocabulary
+ * ({@link SU_IDEATION_LENSES}), and surfacing the reused novelty dedup-rate. Scout's own
+ * report is untouched (default origin/lenses) — this is an ADDITIVE partition read that
+ * makes su-ideation quality legible the same way the Scout loop's is.
+ */
+export async function buildSuIdeationQualityReport(
+  opts: Pick<BuildQualityInputsOptions, 'workspaceId' | 'harnessSlug' | 'limit' | 'tickLimit' | 'weights'> = {},
+): Promise<ScoutQualityReport<SuIdeationLens>> {
+  const inputs = await buildQualityReportInputs<SuIdeationLens>({
+    ...opts,
+    origin: 'su-ideate',
+    lenses: SU_IDEATION_LENSES,
+  });
+  return computeScoutQualityReport(inputs, { lenses: SU_IDEATION_LENSES, includeDedupRate: true });
 }

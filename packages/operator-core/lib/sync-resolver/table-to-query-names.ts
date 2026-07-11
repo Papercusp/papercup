@@ -78,7 +78,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // back-to-back registry changes (EI-206 — a create followed by a delete
   // inside the window left open harness lists stale).
   // network.board: a hive create/dissolve changes its tier 1–2 rows.
-  'harness_shared.harness_registry': ['harnessProjects.lite', 'harnessWorkspaces.byHarness', 'network.board'],
+  'harness_shared.harness_registry': ['harnessProjects.lite', 'harnessWorkspaces.byHarness', 'network.board', 'kpis.all'],
   'harness_shared.contributors': ['contributors.byHarness'],
   'harness_shared.auto_review_audit': ['contributors.byHarness'],
   'harness_shared.adv_sessions': ['advSessions.list', 'advRoster.list'],
@@ -105,6 +105,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // / plan_runs feed the audit + run panels.
   'harness_shared.harness_plans': [
     'plans.list',
+    'coord.plans',
     // plans.get (EI-7433): scoped by plan slug (mig 507's natural-key
     // fallback). The one live consumer (usePlan's `live:true` path,
     // apps/operator/app/admin/plans/plans-api.ts) always subscribes with
@@ -153,6 +154,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.harness_screenshots': ['harnessScreenshots.byHarness'],
   'harness_shared.agent_chats_consolidated': [
     'agentChats.byHarness',
+    { name: 'agentChats.detail', scope: idScope },
     'conversations.agentChatList',
     { name: 'conversations.agentChatDetail', scope: idScope },
   ],
@@ -193,6 +195,17 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // ── Per-workspace tables ──────────────────────────────────────────
   'harness_shared.toast_log': ['toastLog.recent'],
   'harness_shared.operator_budget': ['operatorBudget.byWorkspace'],
+  'harness_shared.operator_conversations': ['operatorConversations.current'],
+  'harness_shared.operator_turns': ['operatorTurns.byConversation'],
+  'harness_shared.operator_prompt_user': ['operatorConfig.byWorkspace'],
+  'harness_shared.operator_preferences': ['operatorConfig.byWorkspace', 'operatorPreferences.byWorkspace'],
+  'harness_shared.operator_voice_prefs': ['voicePrefs.effective', 'voicePrefs.workspace'],
+  'harness_shared.user_preferences': ['userPreferences.current', 'voicePrefs.effective'],
+  'harness_shared.operator_account_override': ['accounts.sessionOverride', 'accounts.pool'],
+  'harness_shared.harness_dock_layouts': ['dockLayouts.byName', 'dockLayouts.list'],
+  'harness_shared.harness_plan_assertions': ['testing.assertionsByHarness'],
+  'harness_shared.projects': ['kpis.all'],
+  'harness_shared.autoloop_state': ['kpis.all'],
   'harness_shared.audit_log': ['auditLog.operatorDecisions'],
   'harness_shared.user_actions': ['userActions.byHarness', 'userActions.byKind', 'userActions.recent'],
   'harness_shared.plugin_configs': ['pluginConfigs.byHarness'],
@@ -359,7 +372,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // so the per-subscriber fan-out delivery copies don't each fire — the busiest
   // coord table stays cheap (shared-hive-collaboration P-006). The (name,args)
   // dedupe bounds burst refetches.
-  'harness_shared.coord_event_log': ['dev.coordFeed'],
+  'harness_shared.coord_event_log': ['dev.coordFeed', 'coord.history', 'coord.inbox'],
   'harness_shared.harness_snapshots_consolidated': ['snapshotsConsolidated.bySlug'],
 
   // ── Insights / activity ledger (v5 addendum 3) ──────────────────

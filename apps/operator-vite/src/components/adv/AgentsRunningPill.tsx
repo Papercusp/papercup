@@ -784,7 +784,7 @@ export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: 
             {g.agents.map((a) => (
               <div
                 key={a.ownerId}
-                className={`pc-agents-roster__row${a.ownerId === pinned ? ' is-pinned' : ''}`}
+                className={`pc-agents-roster__row${a.ownerId === pinned ? ' is-pinned' : ''}${selected.has(a.ownerId) ? ' is-selected' : ''}`}
                 data-testid={`agent-row-${a.ownerId}`}
                 data-liveness={a.liveness}
                 role="button"
@@ -816,6 +816,11 @@ export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: 
                     checked={selected.has(a.ownerId)}
                     ariaLabel={`Select ${displayName(a)}`}
                     onChange={() => toggleSelected(a.ownerId)}
+                    // Compact + never stretched: the Checkbox merges this over its
+                    // 14px default, and inline styles beat the grid — alignSelf
+                    // center stops the grid row from stretching the box tall
+                    // (owner-hit 2026-07-11: "checkboxes are much too tall").
+                    style={{ width: 12, height: 12, boxSizing: 'border-box', alignSelf: 'center' }}
                   />
                 </span>
                 <span className="pc-agents-roster__live">
@@ -1070,6 +1075,16 @@ function RosterStyles() {
         margin-top: 6px; font-size: 10.5px; color: var(--fg-mute); font-style: italic;
       }
       /* Multi-select + bulk actions (owner ask 2026-07-11) */
+      /* Selected-row indication (owner-hit 2026-07-11: "no visual indication the
+         row is selected"): tinted background + a left accent bar. Placed AFTER
+         :hover/.is-pinned so a selected row stays visibly selected on hover. */
+      .pc-agents-roster__row.is-selected {
+        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 82%);
+        box-shadow: inset 3px 0 0 var(--accent, #38bdf8);
+      }
+      .pc-agents-roster__row.is-selected:hover {
+        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 74%);
+      }
       .pc-agents-roster__check { margin: 0 4px 0 2px; cursor: pointer; accent-color: var(--accent, #38bdf8); flex: 0 0 auto; }
       .pc-agents-roster__bulkbar {
         display: flex; flex-wrap: wrap; align-items: center; gap: 4px;

@@ -161,6 +161,7 @@ describe('per-row scoped invalidation (caching-layer-tag-eca P-006)', () => {
       'conversations.questionDetail',
       'conversations.agentChatDetail',
       'conversations.messageDetail',
+      'agentChats.detail',
     ]);
     for (const [table, targets] of Object.entries(TABLE_TO_QUERY_NAMES)) {
       for (const t of targets) {

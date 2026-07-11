@@ -110,7 +110,16 @@ const writeRoute = defineTool({
   path: '/admin/coord/:verb',
   // Mutating coord ops — gate to the admin tier (the admin coord UI runs as a
   // verified session). Was 'public', which the D3 auth-posture guard flags.
-  auth: { trust: ['verified', 'trusted'] },
+  //
+  // 'unverified-loopback' (owner-hit 2026-07-11: roster bulk "send message" +
+  // "wake" 403'd): a packaged/nohmr Tauri desktop's webview fetches the operator
+  // /api DIRECTLY (loopback, no cookie/bearer) so it only ever resolves to
+  // 'unverified-loopback' trust — never 'verified'. Every other desktop-callable
+  // admin route (deploy-accounts-reset, inference-gateway-stats,
+  // dogfood-substrate-health) already admits it for exactly this reason; the
+  // operator binds loopback-only, so this is still an owner-local caller. Without
+  // it the roster's coord actions were unreachable from the desktop app.
+  auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
   handler: dispatchWrite,
 });
 

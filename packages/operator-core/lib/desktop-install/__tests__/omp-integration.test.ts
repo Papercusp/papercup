@@ -148,6 +148,26 @@ describe('installOmpIntegration', () => {
     });
   });
 
+  it('P-007: default fallback (no operatorUrl, no PAPERCUSP_MCP_PROXY_BASE) bakes the resilient :9071 proxy, never direct :3070', async () => {
+    await seedPhase1(tmpHome);
+    const prevProxy = process.env.PAPERCUSP_MCP_PROXY_BASE;
+    delete process.env.PAPERCUSP_MCP_PROXY_BASE;
+    try {
+      const result = await installOmpIntegration({ home: tmpHome, ompBinaryPath: null });
+      expect(result.changed).toBe(true);
+      const cfg = JSON.parse(await fs.readFile(resolveOmpPaths(tmpHome).mcpJsonPath, 'utf8'));
+      // OMP reads the url LITERALLY (no env interpolation), so the reconciler must
+      // bake the restart-resilient proxy by default — a direct :3070 re-minted away
+      // the P-006 cutover within minutes (the same class P-007 fixed for claude).
+      expect(cfg.mcpServers['papercusp-su'].url).toBe(
+        'http://127.0.0.1:9071/api/mcp?superuser=1&client=agent-456',
+      );
+    } finally {
+      if (prevProxy === undefined) delete process.env.PAPERCUSP_MCP_PROXY_BASE;
+      else process.env.PAPERCUSP_MCP_PROXY_BASE = prevProxy;
+    }
+  });
+
   it('wrapperPath co-locates with the detected omp binary (no wrapper written, P-050)', async () => {
     await seedPhase1(tmpHome);
     const fakeBinDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fake-bin-'));
