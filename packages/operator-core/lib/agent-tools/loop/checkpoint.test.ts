@@ -12,7 +12,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const setLoopCarryNote = vi.fn();
 const getLoopCarryNote = vi.fn();
 const getLoopStatus = vi.fn();
-const withBoundedTimeout = vi.fn(async () => ({ value: undefined, degraded: false, elapsedMs: 0 }));
+const withBoundedTimeout = vi.fn(async (..._a: unknown[]) => ({ value: undefined, degraded: false, elapsedMs: 0 }));
 // Mock the STORE fns; a sentinel renderCarryNote keeps the routing tests about ROUTING
 // (structured → render, raw → passthrough), not renderCarryNote's exact output. The pure
 // walls machinery (splitCarryNoteWalls / withCarryNoteWalls / normalizeWallEntries) stays
