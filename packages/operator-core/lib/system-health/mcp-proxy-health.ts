@@ -51,6 +51,24 @@ export interface McpProxyFailureRecord {
   method?: string;
   path?: string;
   elapsedMs?: number;
+  // P-006 instance tags — which proxy instance wrote this record (forensic attribution
+  // across a shared ledger; multiple instances / a restart were previously indistinguishable).
+  pid?: number;
+  listenPort?: number;
+  target?: string;
+}
+
+/**
+ * P-006: a forwarded non-2xx that is BENIGN probe/heartbeat traffic, NOT an agent-facing
+ * tool failure — so it must never count toward the SLO. The two measured classes:
+ *  - a 408 Request Timeout (a keep-alive heartbeat the upstream let lapse), and
+ *  - a GET that returns 405 Method Not Allowed (a liveness probe hitting the POST-only
+ *    MCP endpoint) — a GET is never a tools/call write, so a GET 405 is pure probe noise.
+ * Kept out of `hardFailures` AND `otherNon2xx` so the "genuine upstream 4xx/5xx" signal
+ * stays clean and any alarm computed from it fires only on REAL classes.
+ */
+export function isBenignProbe(rec: Pick<McpProxyFailureRecord, 'status' | 'method'>): boolean {
+  return rec.status === 408 || (rec.method === 'GET' && rec.status === 405);
 }
 
 /**
@@ -130,8 +148,13 @@ export function isStaleSocket400(rec: Pick<McpProxyFailureRecord, 'status' | 'co
  *                                          succeeded; the agent saw success) → `recovered`.
  *  - `exhausted_refused` | `upstream_error` → HARD (the call terminally failed: 503 after
  *                                          the retry window, or a 502 post-connect error).
+ *  - `upstream_non2xx` + benign probe (408 heartbeat / GET-405) → `benign` (P-006, NOT a
+ *                                          failure — kept out of every alarm class).
  *  - `upstream_non2xx` + stale-socket-400 signature → HARD (W1.3 regression).
  *  - `upstream_non2xx` otherwise         → `otherNon2xx` (a genuine upstream 4xx/5xx).
+ *  - `post_connect_retry` (P-005 intermediate retry marker) → neither hard nor a failure;
+ *                                          it only appears in `byKind` (the terminal
+ *                                          outcome is separately recorded recovered/error).
  *
  * Records outside `[now - windowMs, now + skew]` are ignored (a small future-skew guard
  * tolerates minor clock differences without admitting far-future garbage).
@@ -147,6 +170,7 @@ export function summarizeMcpProxyHealth(
   let hardFailures = 0;
   let recovered = 0;
   let otherNon2xx = 0;
+  let benign = 0;
   let newestAt: number | null = null;
   for (const r of records) {
     const t = Date.parse(r.ts);
@@ -160,9 +184,12 @@ export function summarizeMcpProxyHealth(
     } else if (r.kind === 'exhausted_refused' || r.kind === 'upstream_error') {
       hardFailures += 1;
     } else if (r.kind === 'upstream_non2xx') {
-      if (isStaleSocket400(r)) hardFailures += 1;
+      // P-006: benign probe traffic (408 heartbeat / GET-405) is separated FIRST so it can
+      // never inflate hardFailures or otherNon2xx — the SLO then alarms on real classes only.
+      if (isBenignProbe(r)) benign += 1;
+      else if (isStaleSocket400(r)) hardFailures += 1;
       else otherNon2xx += 1;
     }
   }
-  return { windowMs, total, hardFailures, recovered, otherNon2xx, byKind, newestAt };
+  return { windowMs, total, hardFailures, recovered, otherNon2xx, benign, byKind, newestAt };
 }

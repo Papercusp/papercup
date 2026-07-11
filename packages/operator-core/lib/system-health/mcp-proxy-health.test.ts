@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import {
   summarizeMcpProxyHealth,
   isStaleSocket400,
+  isBenignProbe,
   readMcpProxyFailureTail,
   mcpProxyFailureLogPath,
   type McpProxyFailureRecord,
@@ -77,6 +78,47 @@ describe('summarizeMcpProxyHealth — classification', () => {
     );
     expect(d.hardFailures).toBe(0);
     expect(d.otherNon2xx).toBe(2);
+  });
+
+  // P-006: benign probe/heartbeat non-2xx must be split OUT of hardFailures AND otherNon2xx.
+  it('a 408 heartbeat and a GET-405 probe are BENIGN (not hard, not otherNon2xx)', () => {
+    const d = summarizeMcpProxyHealth(
+      [
+        rec({ kind: 'upstream_non2xx', status: 408, method: 'GET' }),
+        rec({ kind: 'upstream_non2xx', status: 408, method: 'POST' }), // 408 is benign regardless of method (heartbeat lapse)
+        rec({ kind: 'upstream_non2xx', status: 405, method: 'GET' }),
+      ],
+      NOW,
+    );
+    expect(d.benign).toBe(3);
+    expect(d.hardFailures).toBe(0);
+    expect(d.otherNon2xx).toBe(0);
+    expect(d.total).toBe(3);
+  });
+
+  it('a POST-405 (not a GET probe) stays otherNon2xx — only GET-405 is a benign probe', () => {
+    const d = summarizeMcpProxyHealth([rec({ kind: 'upstream_non2xx', status: 405, method: 'POST' })], NOW);
+    expect(d.benign).toBe(0);
+    expect(d.otherNon2xx).toBe(1);
+  });
+
+  it('isBenignProbe: 408 (any method) and GET-405 only', () => {
+    expect(isBenignProbe({ status: 408, method: 'POST' })).toBe(true);
+    expect(isBenignProbe({ status: 405, method: 'GET' })).toBe(true);
+    expect(isBenignProbe({ status: 405, method: 'POST' })).toBe(false);
+    expect(isBenignProbe({ status: 500, method: 'GET' })).toBe(false);
+  });
+
+  it('post_connect_retry (P-005 marker) is neither hard nor a failure class — only byKind', () => {
+    const d = summarizeMcpProxyHealth(
+      [rec({ kind: 'post_connect_retry', method: 'POST' }), rec({ kind: 'recovered', status: 200 })],
+      NOW,
+    );
+    expect(d.hardFailures).toBe(0);
+    expect(d.otherNon2xx).toBe(0);
+    expect(d.benign).toBe(0);
+    expect(d.recovered).toBe(1);
+    expect(d.byKind.post_connect_retry).toBe(1);
   });
 
   it('byKind tallies every kind; newestAt is the freshest in-window record', () => {

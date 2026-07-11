@@ -315,6 +315,20 @@ function forwardOnce(
 export function createMcpProxy(opts: McpProxyOptions): http.Server {
   const log = opts.log ?? ((s: string) => console.log(`[mcp-proxy] ${s}`));
   const backoff = opts.retryBackoffMs ?? 500;
+  // P-006 (mcp-reliability-hardening-2026-07-11): instance-tag every failure record with
+  // pid + listenPort + the resolved target, so a forensic read of the shared ledger can
+  // attribute a failure to a SPECIFIC proxy instance (multiple instances / a restart across
+  // the same ledger were previously indistinguishable — every record looked identical).
+  const record = (rec: Record<string, unknown>): void => {
+    let target: string | undefined;
+    try {
+      const t = resolveTarget(opts);
+      target = `${t.host}:${t.port}`;
+    } catch {
+      /* target unresolved (misconfig / operator.json missing) — omit rather than throw */
+    }
+    recordProxyFailure({ pid: process.pid, listenPort: opts.listenPort, target, ...rec });
+  };
 
   return http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/__mcp_proxy_health') {
@@ -364,13 +378,13 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             ures.pipe(res);
             if (attempts > 1) {
               log(`recovered after ${attempts} attempts (${Date.now() - started}ms) — :3070 came back`);
-              recordProxyFailure({ kind: 'recovered', method: req.method, path: req.url, status, attempts, postConnectRetries, klass: fwd.klass, elapsedMs: Date.now() - started });
+              record({ kind: 'recovered', method: req.method, path: req.url, status, attempts, postConnectRetries, klass: fwd.klass, elapsedMs: Date.now() - started });
             }
             // Forwarded a non-2xx: previously INVISIBLE (no tool_invocations row). A 4xx with
             // `connection: close` is the stale-socket-400 signature (W1.3) — record it so any
             // regression of that class is instantly visible, never silently "transient".
             if (status >= 400) {
-              recordProxyFailure({ kind: 'upstream_non2xx', method: req.method, path: req.url, status, attempts, elapsedMs: Date.now() - started, connection: (ures.headers['connection'] as string) ?? null });
+              record({ kind: 'upstream_non2xx', method: req.method, path: req.url, status, attempts, elapsedMs: Date.now() - started, connection: (ures.headers['connection'] as string) ?? null });
             }
             return;
           }
@@ -387,7 +401,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           // Post-connect failure: replay ONLY an idempotent or server-keyed request, bounded.
           if (postConnectRetryable(fwd.klass, postConnectRetries, MAX_POST_CONNECT_RETRIES, elapsed, opts.retryWindowMs)) {
             postConnectRetries++;
-            recordProxyFailure({ kind: 'post_connect_retry', method: req.method, path: req.url, klass: fwd.klass, attempts, elapsedMs: elapsed, detail: String(outcome.err?.message ?? '') });
+            record({ kind: 'post_connect_retry', method: req.method, path: req.url, klass: fwd.klass, attempts, elapsedMs: elapsed, detail: String(outcome.err?.message ?? '') });
             await new Promise((r) => setTimeout(r, backoff));
             continue;
           }
@@ -410,7 +424,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           }),
         );
         log(`upstream ${refused ? 'unavailable' : 'error'} after ${attempts} attempt(s): ${last?.err?.message ?? last?.err}`);
-        recordProxyFailure({ kind: refused ? 'exhausted_refused' : 'upstream_error', method: req.method, path: req.url, status: refused ? 503 : 502, attempts, postConnectRetries, klass: fwd.klass, elapsedMs: Date.now() - started, detail: String(last?.err?.message ?? last?.err ?? 'unknown') });
+        record({ kind: refused ? 'exhausted_refused' : 'upstream_error', method: req.method, path: req.url, status: refused ? 503 : 502, attempts, postConnectRetries, klass: fwd.klass, elapsedMs: Date.now() - started, detail: String(last?.err?.message ?? last?.err ?? 'unknown') });
       })();
     });
   });

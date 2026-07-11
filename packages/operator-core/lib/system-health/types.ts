@@ -410,9 +410,15 @@ export interface McpProxyHealth {
    *  absorbed; the agent saw success). Informational — elevated under deploy churn, never
    *  alarming (the resilience working as designed). */
   recovered: number;
-  /** Forwarded non-2xx that were NOT the stale-socket signature (a genuine upstream 4xx/5xx). */
+  /** Forwarded non-2xx that were NOT the stale-socket signature NOR a benign probe (a
+   *  genuine upstream 4xx/5xx). */
   otherNon2xx: number;
-  /** Count by raw `kind` (recovered | upstream_non2xx | exhausted_refused | upstream_error). */
+  /** P-006: benign probe/heartbeat non-2xx (408 heartbeat, GET-405 liveness probe) —
+   *  explicitly separated so it can never inflate hardFailures/otherNon2xx or any alarm.
+   *  Informational only. */
+  benign: number;
+  /** Count by raw `kind` (recovered | upstream_non2xx | exhausted_refused | upstream_error
+   *  | post_connect_retry). */
   byKind: Record<string, number>;
   /** ms epoch of the newest failure record in the window, or null when none. */
   newestAt: number | null;
