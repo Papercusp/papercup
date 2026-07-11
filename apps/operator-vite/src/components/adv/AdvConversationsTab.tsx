@@ -1,10 +1,8 @@
 /**
- * AdvConversationsTab — the /adv "Conversations" tab. It surfaces EVERY type of
- * communication the workspace produces, across five views (nuqs `?conv=`) split
- * into two clusters in the header: FOUR curated communication stores (Q&A,
- * Deliberations, Agent chats, Messages — each a distinct table you read), then,
- * set apart past a divider, the RAW coordination event log (a debug firehose
- * beneath the curated views, not a 5th peer):
+ * AdvConversationsTab — the /adv "Conversations" tab. One deduplicated curated
+ * stream combines Q&A, group decisions, agent-chat transcripts, and work-item
+ * mail. Source identity is an inline type pill, not a separate navigation tab.
+ * Raw coordination events remain set apart as the subordinate diagnostic view.
  *
  *  - **Q&A** (default, `conv=threads`): the conversations substrate (questions +
  *    discussions) — the human counterpart to the agents' conversations:* tools.
@@ -44,11 +42,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryState, useQueryStates, parseAsString, parseAsStringEnum, parseAsArrayOf } from 'nuqs';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
-import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
+import { RichGrid, type ColumnDef, type FilterableColumn } from '@papercusp/grid-core';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { AlertTriangle, ArrowLeft, ArrowUpRight, Bot, CheckCircle2, Inbox, Mail, MessageCircle, MessagesSquare, Plus, RefreshCw, Radio, Megaphone, Search, Send, SlidersHorizontal, UserRound } from 'lucide-react';
 import { listCountLabel, readListTotal } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { useColumnFilters, ColumnFilterBar } from '@/app/harness/filters';
 import { Modal } from '@/app/harness/Modal';
 import ChatPanel from '@/app/harness/ChatPanel';
 import { FEED_KIND_COLOR, FEED_KIND_FALLBACK } from '@/app/harness/theme';
@@ -190,20 +189,18 @@ interface ViewDef {
   Icon: typeof MessageCircle;
 }
 
-// The five views split into TWO clusters. The first four are distinct, curated
-// stores (each its own table) you read directly; the fifth ('feed') is the RAW
-// coordination event log — a lower layer that re-surfaces SOME of the same
-// traffic (deliberation posts, coord messages, escalations), not a 5th peer.
-// The header sets it apart so it reads as a debug firehose, not a conversation type.
+// Source-specific ids remain accepted as INTERNAL detail routes so old deep
+// links and source-owned actions keep working. Only `inbox` and `feed` render as
+// navigation tabs: one curated stream plus the subordinate raw diagnostic log.
 const VIEW_DEFS: ReadonlyArray<ViewDef> = [
   { id: 'inbox', label: 'Conversations', desc: 'Every curated conversation, ordered by the most recent activity.', group: 'curated', Icon: Inbox },
-  { id: 'threads', label: 'Q&A', desc: 'Questions & discussions between you and the agents — reply, accept an answer, or promote to an issue.', group: 'curated', Icon: MessageCircle },
-  { id: 'deliberations', label: 'Deliberations', desc: 'Group decisions — coord threads, proposals, and votes.', group: 'curated', Icon: MessagesSquare },
-  { id: 'agentchats', label: 'Agent chats', desc: "Each agent's full chat transcript, with token + cost detail.", group: 'curated', Icon: Bot },
-  { id: 'messages', label: 'Messages', desc: 'Work-item-scoped mail between agents (messages:send / inbox).', group: 'curated', Icon: Mail },
+  { id: 'threads', label: 'Questions & discussions', desc: 'Questions and discussions between you and the agents.', group: 'curated', Icon: MessageCircle },
+  { id: 'deliberations', label: 'Group decisions', desc: 'Coord threads, proposals, and votes.', group: 'curated', Icon: MessagesSquare },
+  { id: 'agentchats', label: 'Agent chat', desc: "An agent's full multi-turn transcript.", group: 'curated', Icon: Bot },
+  { id: 'messages', label: 'Work-item mail', desc: 'Work-item-scoped mail between agents.', group: 'curated', Icon: Mail },
   { id: 'feed', label: 'Raw events', desc: 'The raw coordination event log — every envelope, newest first. A debug firehose beneath the curated views.', group: 'raw', Icon: Radio },
 ];
-const CURATED_VIEW_DEFS = VIEW_DEFS.filter((v) => v.group === 'curated');
+const CURATED_VIEW_DEFS = VIEW_DEFS.filter((v) => v.id === 'inbox');
 const RAW_VIEW_DEFS = VIEW_DEFS.filter((v) => v.group === 'raw');
 
 // Per-view accent for the sidebar switcher buttons — the icon already
@@ -265,7 +262,7 @@ function AskComposer({
         harness: harness.trim() || undefined,
         force_open: true,
       });
-      toast.success('Question opened — routed to topic subscribers; answers land in Q&A.', { duration: 4000 });
+      toast.success('Question opened — routed to topic subscribers; answers land in Conversations.', { duration: 4000 });
       reset();
       onOpenChange(false);
       onAsked();
@@ -295,7 +292,7 @@ function AskComposer({
     >
       <p style={{ margin: '0 0 16px', fontSize: 12.5, lineHeight: 1.5, color: 'var(--fg-dim)' }}>
         Opens a question conversation routed to the agents who own the topics you tag. Answers arrive back in
-        the <strong>Q&amp;A</strong> view — this never blocks.
+        <strong>Conversations</strong> — this never blocks.
       </p>
       {error && <ErrorBanner>{error}</ErrorBanner>}
       <div style={{ marginBottom: 14 }}>
@@ -353,6 +350,7 @@ interface UnifiedConversationRow {
   id: string;
   source: Exclude<ConvView, 'inbox' | 'feed'>;
   sourceId: string;
+  typeLabel: string;
   kind: string;
   state: string;
   title: string;
@@ -367,6 +365,15 @@ interface UnifiedConversationRow {
 
 const SOURCE_DEF = new Map(VIEW_DEFS.map((definition) => [definition.id, definition]));
 
+const UNIFIED_FILTER_COLUMNS: readonly FilterableColumn<UnifiedConversationRow>[] = [
+  { key: 'type', header: 'Type', filter: { type: 'enum', accessor: (row) => row.typeLabel } },
+  { key: 'state', header: 'State', filter: { type: 'enum', accessor: (row) => row.state || null } },
+  { key: 'sender', header: 'Sender', filter: { type: 'enum', accessor: (row) => row.actor ?? null } },
+  { key: 'recipient', header: 'Recipient', filter: { type: 'enum', accessor: (row) => row.recipient ?? null } },
+  { key: 'pot', header: 'Pot', filter: { type: 'enum', accessor: (row) => row.harnessSlug ?? null } },
+  { key: 'related', header: 'Related work', filter: { type: 'enum', accessor: (row) => row.relatedRef ?? null } },
+];
+
 function conversationEpoch(value: unknown): number {
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
   const parsed = Date.parse(String(value ?? ''));
@@ -376,18 +383,38 @@ function conversationEpoch(value: unknown): number {
 /** Compose the inbox from the SAME four cached list queries the source views
  * consume. A row click therefore remounts onto a warm list cache instead of
  * replacing one aggregate query with a cold REST request. */
-function composeUnifiedConversationRows(
+function normalizedConversationText(value: string | null | undefined): string {
+  return (value ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+}
+
+/** A deliberately strict cross-source signature. Distinct conversations may
+ * legitimately share a work-item or title, so collapse them only when every
+ * user-visible identity field and the activity timestamp are identical. */
+function unifiedConversationSignature(row: UnifiedConversationRow): string {
+  return [
+    normalizedConversationText(row.title),
+    normalizedConversationText(row.preview),
+    normalizedConversationText(row.actor),
+    normalizedConversationText(row.recipient),
+    normalizedConversationText(row.harnessSlug),
+    normalizedConversationText(row.relatedRef),
+    String(row.updatedAt),
+  ].join('|');
+}
+
+export function composeUnifiedConversationRows(
   questions: readonly ConvRow[],
   deliberations: readonly ThreadRow[],
   agentChats: readonly AgentChatRow[],
   messages: readonly MsgRow[],
   limit: number,
 ): UnifiedConversationRow[] {
-  return [
+  const candidates: UnifiedConversationRow[] = [
     ...questions.map((row) => ({
       id: `threads:${row.id}`,
       source: 'threads' as const,
       sourceId: row.id,
+      typeLabel: 'Questions & discussions',
       kind: row.kind,
       state: row.state,
       title: row.title ?? row.id,
@@ -401,6 +428,7 @@ function composeUnifiedConversationRows(
       id: `deliberations:${row.thread_id}`,
       source: 'deliberations' as const,
       sourceId: row.thread_id,
+      typeLabel: 'Group decisions',
       kind: row.parent_kind ?? '',
       state: '',
       title: row.title ?? row.thread_id,
@@ -415,6 +443,7 @@ function composeUnifiedConversationRows(
       id: `agentchats:${row.id}`,
       source: 'agentchats' as const,
       sourceId: row.id,
+      typeLabel: 'Agent chat',
       kind: row.role ?? '',
       state: row.archived_at == null ? 'open' : 'archived',
       title: row.title ?? row.id,
@@ -429,6 +458,7 @@ function composeUnifiedConversationRows(
       id: `messages:${row.id}`,
       source: 'messages' as const,
       sourceId: row.id,
+      typeLabel: 'Work-item mail',
       kind: row.kind,
       state: row.status,
       title: row.subject || row.body || row.id,
@@ -439,7 +469,21 @@ function composeUnifiedConversationRows(
       relatedRef: row.to_feature_id ?? row.from_feature_id,
       updatedAt: conversationEpoch(row.created_at),
     })),
-  ].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit);
+  ];
+
+  const identities = new Set<string>();
+  const semanticRows = new Set<string>();
+  const deduplicated: UnifiedConversationRow[] = [];
+  for (const row of candidates.sort((a, b) => b.updatedAt - a.updatedAt)) {
+    const identity = `${row.source}:${row.sourceId}`;
+    const semantic = unifiedConversationSignature(row);
+    if (identities.has(identity) || semanticRows.has(semantic)) continue;
+    identities.add(identity);
+    semanticRows.add(semantic);
+    deduplicated.push(row);
+    if (deduplicated.length === limit) break;
+  }
+  return deduplicated;
 }
 
 /**
@@ -451,6 +495,8 @@ function composeUnifiedConversationRows(
  */
 function UnifiedInboxView() {
   const [, setRoute] = useQueryStates(CONVERSATION_ROUTE_PARAMS);
+  const [search, setSearch] = useQueryState('cq', parseAsString.withDefault(''));
+  const debouncedSearch = useDebouncedValue(search, DEBOUNCE_MS);
   const questions = useSyncQuery<ConvRow>({ queryName: 'conversations.questionsList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
   const deliberations = useSyncQuery<ThreadRow>({ queryName: 'conversations.deliberationList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
   const agentChats = useSyncQuery<AgentChatRow>({ queryName: 'conversations.agentChatList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
@@ -459,6 +505,23 @@ function UnifiedInboxView() {
     () => composeUnifiedConversationRows(questions.data ?? [], deliberations.data ?? [], agentChats.data ?? [], messages.data ?? [], COMMS_LIST_LIMIT),
     [questions.data, deliberations.data, agentChats.data, messages.data],
   );
+  const columnFilters = useColumnFilters(UNIFIED_FILTER_COLUMNS, rows, { ns: 'cv' });
+  const filteredRows = useMemo(() => {
+    const query = debouncedSearch.trim().toLocaleLowerCase();
+    if (!query) return columnFilters.rows;
+    return columnFilters.rows.filter((row) => [
+      row.typeLabel,
+      row.kind,
+      row.state,
+      row.title,
+      row.preview,
+      row.actor,
+      row.recipient,
+      row.harnessSlug,
+      row.relatedRef,
+    ].some((value) => normalizedConversationText(value).includes(query)));
+  }, [columnFilters.rows, debouncedSearch]);
+  const filtersActive = columnFilters.hasActive || search.trim() !== '';
   const queries = [questions, deliberations, agentChats, messages];
   const loading = queries.some((query) => query.loading);
   const error = queries.find((query) => query.error)?.error ?? null;
@@ -474,7 +537,7 @@ function UnifiedInboxView() {
   }, [loading, rows.length]);
   const listRef = useRef<HTMLDivElement | null>(null);
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLButtonElement>({
-    count: rows.length,
+    count: filteredRows.length,
     getScrollElement: () => listRef.current,
     estimateSize: () => 82,
     overscan: 10,
@@ -495,22 +558,54 @@ function UnifiedInboxView() {
   return (
     <ConvFrame
       filters={
-        <div className="pc-advconv__railhead pc-advconv__railhead--unified">
-          <span style={sectionHeaderStyle}>Conversations</span>
-          <strong>{loading && rows.length === 0 ? '…' : rows.length}</strong>
-          <button
-            type="button"
-            className="pc-coord__chip pc-advconv__refresh"
-            aria-label="Reload conversations"
-            disabled={loading && !stalled}
-            onClick={() => {
-              setStalled(false);
-              void invalidate();
-            }}
-          >
-            <RefreshCw size={11} aria-hidden />
-          </button>
-        </div>
+        <>
+          <div className="pc-advconv__railhead pc-advconv__railhead--unified">
+            <span style={sectionHeaderStyle}>Conversations</span>
+            <strong>{loading && rows.length === 0 ? '…' : filtersActive ? `${filteredRows.length} of ${rows.length}` : rows.length}</strong>
+            <button
+              type="button"
+              className="pc-coord__chip pc-advconv__refresh"
+              aria-label="Reload conversations"
+              disabled={loading && !stalled}
+              onClick={() => {
+                setStalled(false);
+                void invalidate();
+              }}
+            >
+              <RefreshCw size={11} aria-hidden />
+            </button>
+          </div>
+          <div className="pc-advconv__unified-tools">
+            <label className="pc-advconv__unified-search">
+              <Search size={13} aria-hidden />
+              <input
+                type="search"
+                value={search}
+                onChange={(event) => void setSearch(event.target.value)}
+                placeholder="Search conversations…"
+                aria-label="Search conversations"
+              />
+            </label>
+            <ColumnFilterBar
+              controller={columnFilters.controller}
+              activeChips={columnFilters.activeChips}
+              hasActive={columnFilters.hasActive}
+              clearAll={columnFilters.clearAll}
+            />
+            {filtersActive ? (
+              <button
+                type="button"
+                className="pc-advpanel__chip pc-advconv__unified-reset"
+                onClick={() => {
+                  columnFilters.clearAll();
+                  void setSearch('');
+                }}
+              >
+                Reset
+              </button>
+            ) : null}
+          </div>
+        </>
       }
       list={
         <div className="pc-advconv__listscroll pc-advconv__unified" ref={listRef}>
@@ -523,16 +618,16 @@ function UnifiedInboxView() {
             }} />
           ) : error && rows.length === 0 ? (
             <LoadError message={errText(error)} onRetry={() => void invalidate()} />
-          ) : rows.length === 0 ? (
+          ) : filteredRows.length === 0 ? (
             <EmptyState
               icon={<Inbox size={22} aria-hidden />}
-              title="No conversations"
-              desc="No communication is recorded for the current source."
+              title={filtersActive ? 'No conversations match' : 'No conversations'}
+              desc={filtersActive ? 'Clear a filter or broaden the search.' : 'No curated communication is recorded.'}
             />
           ) : (
             <div className="pc-advconv__virtual-list" style={{ height: virtualizer.getTotalSize() }}>
               {virtualizer.getVirtualItems().map((item) => {
-                const row = rows[item.index];
+                const row = filteredRows[item.index];
                 if (!row) return null;
                 const definition = SOURCE_DEF.get(row.source);
                 const Icon = definition?.Icon ?? MessageCircle;
@@ -550,7 +645,7 @@ function UnifiedInboxView() {
                     <span className="pc-advconv__unified-source" aria-hidden><Icon size={14} /></span>
                     <span className="pc-advconv__unified-content">
                       <span className="pc-advconv__unified-topline">
-                        <span className="pc-advconv__unified-kind">{definition?.label}</span>
+                        <span className={`pc-advconv__unified-kind pc-advconv__unified-kind--${row.source}`}>{row.typeLabel}</span>
                         {row.state ? <span className={`pc-advconv__statepill pc-advconv__statepill--${row.state}`}>{row.state}</span> : null}
                         <time>{fmtRel(row.updatedAt)}</time>
                       </span>
@@ -632,16 +727,18 @@ function ConvFrame({
     });
   };
 
-  const navBtn = (d: ViewDef) => (
+  const navBtn = (d: ViewDef) => {
+    const active = d.id === 'inbox' ? view !== 'feed' : view === d.id;
+    return (
     <Tooltip key={d.id} label={d.desc}>
       <button
         id={`adv-conversations-tab-${d.id}`}
         type="button"
         role="tab"
         aria-label={d.label}
-        aria-selected={view === d.id}
+        aria-selected={active}
         aria-controls="adv-conversations-panel"
-        className={`pc-advconv__navbtn pc-advconv__navbtn--${d.group}${view === d.id ? ' is-active' : ''}`}
+        className={`pc-advconv__navbtn pc-advconv__navbtn--${d.group}${active ? ' is-active' : ''}`}
         style={{ ['--nav-accent' as string]: VIEW_ACCENT[d.id] } as React.CSSProperties}
         onClick={() => switchView(d.id)}
       >
@@ -652,12 +749,13 @@ function ConvFrame({
       </button>
     </Tooltip>
   );
+  };
 
   return (
     <div className={`pc-advconv__shell${detailOpen ? ' is-detail-open' : ''}`}>
       <aside className="pc-plans__rail pc-advconv__nav">
         <div className="pc-plans__rail-actions pc-advconv__nav-actions">
-          <Tooltip label="Ask the agents a question — opens a question conversation routed to topic subscribers; answers land in Q&A.">
+          <Tooltip label="Ask the agents a question — opens a question conversation routed to topic subscribers; answers land in Conversations.">
             <button type="button" className="pc-plans__new-plan" onClick={() => setAskOpen(true)} aria-label="Ask the agents">
               <span className="pc-advconv__navicon" aria-hidden>
                 <Plus size={14} />
@@ -685,7 +783,7 @@ function ConvFrame({
       <main
         id="adv-conversations-panel"
         role="tabpanel"
-        aria-labelledby={`adv-conversations-tab-${view}`}
+        aria-labelledby={`adv-conversations-tab-${view === 'feed' ? 'feed' : 'inbox'}`}
         className={`pc-advconv__main${list == null ? ' pc-advconv__main--wide' : ''}`}
       >
         {onBack ? (
@@ -697,13 +795,28 @@ function ConvFrame({
         ) : null}
         {detail}
       </main>
-      <AskComposer open={askOpen} onOpenChange={setAskOpen} onAsked={() => switchView('threads')} />
+      <AskComposer open={askOpen} onOpenChange={setAskOpen} onAsked={() => switchView('inbox')} />
     </div>
   );
 }
 
 export default function AdvConversationsTab() {
-  const [view] = useQueryState('conv', parseAsStringEnum<ConvView>([...CONV_VIEWS]).withDefault('inbox'));
+  const [route, setRoute] = useQueryStates(CONVERSATION_ROUTE_PARAMS);
+  const sourceSelection = route.conv === 'threads'
+    ? route.conversation
+    : route.conv === 'deliberations'
+      ? route.thread
+      : route.conv === 'agentchats'
+        ? route.chat
+        : route.conv === 'messages'
+          ? route.msg
+          : null;
+  const isInternalDetailRoute = route.conv !== 'inbox' && route.conv !== 'feed';
+  const view = isInternalDetailRoute && !sourceSelection ? 'inbox' : route.conv;
+  useEffect(() => {
+    if (!isInternalDetailRoute || sourceSelection) return;
+    void setRoute({ conv: 'inbox', ...EMPTY_CONVERSATION_SELECTION });
+  }, [isInternalDetailRoute, sourceSelection, setRoute]);
   return (
     <div className="pc-coord pc-advconv pc-advconv--shell">
       {view === 'inbox' ? (
@@ -1605,7 +1718,7 @@ function ThreadsView() {
     <ConvFrame
       detailOpen={!!sel}
       onBack={() => void setSel(null)}
-      filters={
+      filters={sel ? undefined : (
         <>
           <div className="pc-advconv__railhead">
             <span style={sectionHeaderStyle}>Question &amp; discussion threads</span>
@@ -1647,8 +1760,8 @@ function ThreadsView() {
             </div>
           )}
         </>
-      }
-      list={
+      )}
+      list={sel ? undefined : (
         <div className="pc-advconv__listscroll" ref={railScrollRef}>
           {loading && visible.length === 0 ? (
             <LoadingRows />
@@ -1680,7 +1793,7 @@ function ThreadsView() {
             />
           )}
         </div>
-      }
+      )}
       detail={
         <section className="pc-coord__detail">
           {detailLoading ? (
@@ -1864,7 +1977,7 @@ function DeliberationsView() {
     <ConvFrame
       detailOpen={!!sel}
       onBack={() => void setSel(null)}
-      filters={
+      filters={sel ? undefined : (
         <div className="pc-advconv__railhead">
           <span style={sectionHeaderStyle}>Deliberation threads</span>
           <strong>{loading && list.length === 0 ? '…' : listCountLabel(list.length, total)}</strong>
@@ -1872,8 +1985,8 @@ function DeliberationsView() {
             <RefreshCw size={11} aria-hidden />
           </button>
         </div>
-      }
-      list={
+      )}
+      list={sel ? undefined : (
         <div className="pc-advconv__listscroll" ref={railScrollRef}>
           {loading && list.length === 0 ? (
             <LoadingRows />
@@ -1905,7 +2018,7 @@ function DeliberationsView() {
             />
           )}
         </div>
-      }
+      )}
       detail={
         <section className="pc-coord__detail">
           {detailLoading ? (
@@ -2079,7 +2192,7 @@ function AgentChatsView() {
     <ConvFrame
       detailOpen={!!sel}
       onBack={() => void setSel(null)}
-      filters={
+      filters={sel ? undefined : (
         <>
           <div className="pc-advconv__railhead">
             <span style={sectionHeaderStyle}>Agent chat sessions</span>
@@ -2105,8 +2218,8 @@ function AgentChatsView() {
             </div>
           )}
         </>
-      }
-      list={
+      )}
+      list={sel ? undefined : (
         <div className="pc-advconv__listscroll" ref={railScrollRef}>
           {loading && list.length === 0 ? (
             <LoadingRows />
@@ -2148,7 +2261,7 @@ function AgentChatsView() {
             />
           )}
         </div>
-      }
+      )}
       detail={
         <section className="pc-coord__detail">
         {detailLoading ? (
