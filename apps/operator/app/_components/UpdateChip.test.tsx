@@ -144,3 +144,113 @@ describe('UpdateChip', () => {
     expect(installUpdate).not.toHaveBeenCalled();
   });
 });
+
+/* ── Update Center panel (P-3) ─────────────────────────────────────────
+ * Opening the version chip reveals the Update Center popover: a channel
+ * switcher (PATCH /api/desktop/setup-wizard-state) and the release history
+ * (GET /api/updates/history) with a guarded rollback. `fetch` is stubbed to
+ * serve both endpoints; the history fixture has a current release plus older
+ * installable ones so we can assert the "Current" marker and Revert buttons. */
+const HISTORY = [
+  {
+    tag: 'desktop-v2.0.0-alpha', version: '2.0.0-alpha', channel: 'alpha', notes: 'alpha notes',
+    pub_date: '2026-07-10T00:00:00Z', prerelease: true, is_current: false, installable: true,
+  },
+  {
+    tag: 'desktop-v1.2.3', version: '1.2.3', channel: 'stable', notes: '',
+    pub_date: '2026-07-05T00:00:00Z', prerelease: false, is_current: true, installable: true,
+  },
+  {
+    tag: 'desktop-v1.0.0', version: '1.0.0', channel: 'stable', notes: '',
+    pub_date: '2026-07-01T00:00:00Z', prerelease: false, is_current: false, installable: true,
+  },
+];
+
+function jsonResponse(obj: unknown) {
+  return { ok: true, json: async () => obj } as unknown as Response;
+}
+
+describe('UpdateChip — Update Center panel', () => {
+  let savedChannel = 'beta';
+  let lastPatched: string | null = null;
+  let historyQueries: string[] = [];
+  const fetchMock = vi.fn(async (input: unknown, init?: { method?: string; body?: string }) => {
+    const url = String(input);
+    if (url.includes('/api/desktop/setup-wizard-state')) {
+      if (init?.method === 'PATCH') {
+        const body = JSON.parse(init.body ?? '{}');
+        lastPatched = body.update_channel;
+        savedChannel = body.update_channel;
+        return jsonResponse({ update_channel: body.update_channel });
+      }
+      return jsonResponse({ update_channel: savedChannel });
+    }
+    if (url.includes('/api/updates/history')) {
+      historyQueries.push(url);
+      return jsonResponse({ channel: savedChannel, releases: HISTORY });
+    }
+    return jsonResponse({});
+  });
+
+  beforeEach(() => {
+    savedChannel = 'beta';
+    lastPatched = null;
+    historyQueries = [];
+    fetchMock.mockClear();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function openPanel() {
+    render(<UpdateChip />);
+    const chip = await screen.findByRole('button', { name: /v1\.2\.3/ });
+    fireEvent.click(chip);
+    // The popover content renders in a portal once open — wait for it.
+    await screen.findByText('Update Center');
+  }
+
+  it('opening the chip shows the channel switcher on the saved channel', async () => {
+    await openPanel();
+    const radios = screen.getAllByRole('radio');
+    expect(radios).toHaveLength(3);
+    const beta = screen.getByRole('radio', { name: /Beta/ });
+    expect(beta.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('opening the chip lists the channel release history with a current marker', async () => {
+    await openPanel();
+    await waitFor(() => expect(screen.getByText('v2.0.0-alpha')).toBeTruthy());
+    expect(screen.getByText('v1.0.0')).toBeTruthy();
+    // The running release is marked, not offered as a revert target.
+    expect(screen.getByText(/Current/)).toBeTruthy();
+    // Two older installable releases → two Revert buttons.
+    expect(screen.getAllByRole('button', { name: 'Revert' })).toHaveLength(2);
+  });
+
+  it('picking a different channel PATCHes update_channel and reloads history', async () => {
+    await openPanel();
+    await screen.findByText('v2.0.0-alpha');
+    historyQueries = [];
+    fireEvent.click(screen.getByRole('radio', { name: /Stable/ }));
+    await waitFor(() => expect(lastPatched).toBe('stable'));
+    // History is re-read for the new channel.
+    await waitFor(() => expect(historyQueries.length).toBeGreaterThan(0));
+    const patchCall = fetchMock.mock.calls.find(
+      ([u, i]) => String(u).includes('/setup-wizard-state') && (i as any)?.method === 'PATCH',
+    );
+    expect(patchCall).toBeTruthy();
+  });
+
+  it('Revert confirms then reports rollback is not wired yet — never installs', async () => {
+    await openPanel();
+    await screen.findByText('v2.0.0-alpha');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Revert' })[0]);
+    await waitFor(() => expect(confirmFn).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(vi.mocked(toast.info)).toHaveBeenCalledWith(expect.stringMatching(/isn.t available yet/)),
+    );
+    expect(installUpdate).not.toHaveBeenCalled();
+  });
+});

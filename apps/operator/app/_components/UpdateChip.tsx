@@ -543,10 +543,10 @@ export default function UpdateChip() {
           side="top"
           align="end"
           ariaLabel="Update Center"
-          tooltipLabel={triggerLabel}
           trigger={
             <button
               type="button"
+              title={triggerLabel}
               style={{
                 background: 'transparent',
                 border: `1px solid ${updateAvailable ? 'var(--accent, #2d7a40)' : 'var(--border, #2a2a2a)'}`,

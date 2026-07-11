@@ -142,8 +142,11 @@ describe('cross-hive grant + hive_settings federation (G25 / G26)', () => {
  *  guard (both peers already seeded the Hive identity row). */
 async function writeSetting(sql: Parameters<typeof loadCrossHiveGrants>[2], key: string, value: number): Promise<void> {
   const now = Date.now();
+  // harness_shared.hive_settings renamed to pot_settings (mig 557, cup-lexicon-
+  // full-rename-2026-07-09 P-011) — _hive-substrate-rig.ts's setupHivePeerSchema
+  // applies applyPot557RenameAndFixups, so only pot_settings exists in this rig.
   await sql!`
-    INSERT INTO harness_shared.hive_settings
+    INSERT INTO harness_shared.pot_settings
       (workspace_id, harness_slug, setting_key, value, created_at, updated_at)
     VALUES (${WORKSPACE_ID}, ${HIVE_SLUG}, ${key}, ${JSON.stringify(value)}, ${now}, ${now})
     ON CONFLICT (workspace_id, harness_slug, setting_key) DO UPDATE SET

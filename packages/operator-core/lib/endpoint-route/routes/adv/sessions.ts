@@ -13,6 +13,7 @@
 import os from 'node:os';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
+  closeWindowId,
   focusWindowId,
   getAdvSession,
   listAdvSessions,
@@ -306,6 +307,56 @@ const focus = defineTool({
       );
     }
     const ok = await focusWindowId(wid);
+    return new Response(
+      JSON.stringify({ status: ok ? 'ok' : 'error', windowId: wid }),
+      { status: ok ? 200 : 500, headers: JSON_HEADERS },
+    );
+  },
+});
+
+// "Kill agent" for a windowed session — resolve the window exactly like focus,
+// then GRACEFULLY close it (wmctrl -ic → WM_DELETE_WINDOW → the terminal tears
+// down and SIGHUPs the CLI). The roster's bulk-kill (owner ask 2026-07-11).
+// Same resolution chain as focus (windowId → adv row → pid → [adv:<id>] title),
+// so a fleet/psu-launched agent whose windowId wasn't pre-resolved is still
+// killable. A headless agent has no window ⇒ 404 'no window' (the caller reports
+// it un-killable rather than the endpoint guessing at a pid).
+const closeWindow = defineTool({
+  method: 'POST',
+  path: '/adv/sessions/close-window',
+  auth: 'loopback',
+  async handler(req) {
+    let body: { id?: number; pid?: number; windowId?: string | null } = {};
+    try {
+      const text = await req.text();
+      if (text.trim()) body = JSON.parse(text);
+    } catch { /* ignore */ }
+
+    let wid = body.windowId ?? null;
+    const latestRow =
+      typeof body.id === 'number' && body.id > 0
+        ? await getAdvSession(body.id)
+        : null;
+    if (!wid && latestRow?.windowId) {
+      wid = latestRow.windowId;
+    }
+    if (!wid && typeof body.pid === 'number') {
+      wid = await resolveWindowIdForPid(body.pid);
+    }
+    if (!wid && latestRow?.id) {
+      wid = await resolveWindowIdForTitleFragment(`[adv:${latestRow.id}]`);
+      if (wid) await setAdvSessionWindowId(latestRow.id, wid);
+    }
+    if (!wid) {
+      return new Response(
+        JSON.stringify({
+          status: 'error',
+          error: 'could not resolve a window to close (headless agent, wmctrl missing, or no DISPLAY)',
+        }),
+        { status: 404, headers: JSON_HEADERS },
+      );
+    }
+    const ok = await closeWindowId(wid);
     return new Response(
       JSON.stringify({ status: ok ? 'ok' : 'error', windowId: wid }),
       { status: ok ? 200 : 500, headers: JSON_HEADERS },
@@ -815,4 +866,4 @@ const onDesktopWindows = defineTool({
   },
 });
 
-export default [list, focus, alive, state, search, ended, searchTranscripts, resumable, rematerialize, roster, markLaunched, agentDetail, onDesktopWindows];
+export default [list, focus, closeWindow, alive, state, search, ended, searchTranscripts, resumable, rematerialize, roster, markLaunched, agentDetail, onDesktopWindows];

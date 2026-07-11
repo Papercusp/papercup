@@ -482,6 +482,143 @@ export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: 
     if (active) lastShownIdRef.current = active.agent.ownerId;
   }, [active]);
 
+  // ── Multi-select + bulk actions (owner ask 2026-07-11) ──────────────────
+  // Per-row checkboxes select agents; a bulk bar (shown when ≥1 in the CURRENT
+  // machine-tab view is selected) drives: Message all / Wake all (coord:send
+  // proxy, one call with all ownerIds) · Focus all windows · Kill (close the
+  // terminal window, confirm-armed) · Copy ids. All POSTs use text/plain (a
+  // CORS "simple request" — the desktop webkit2gtk build fails preflight
+  // OPTIONS silently; the routes parse the raw body as JSON regardless).
+  const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
+  const [bulkBusy, setBulkBusy] = useState<null | 'message' | 'wake' | 'focus' | 'kill'>(null);
+  const [composing, setComposing] = useState(false);
+  const [msgText, setMsgText] = useState('');
+  const [killArmed, setKillArmed] = useState(false);
+  const [bulkNote, setBulkNote] = useState<string | null>(null);
+  // Only agents in the current view (machine tab) count — switching tabs hides
+  // the bar rather than acting on off-screen selections.
+  const selectedAgents = useMemo(() => shown.filter((a) => selected.has(a.ownerId)), [shown, selected]);
+  const selectedIds = selectedAgents.map((a) => a.ownerId);
+  const allShownSelected = shown.length > 0 && shown.every((a) => selected.has(a.ownerId));
+  const toggleSelected = (ownerId: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(ownerId)) next.delete(ownerId);
+      else next.add(ownerId);
+      return next;
+    });
+    setKillArmed(false);
+    setBulkNote(null);
+  };
+  const selectAllShown = () => {
+    setSelected(new Set(shown.map((a) => a.ownerId)));
+    setKillArmed(false);
+    setBulkNote(null);
+  };
+  const clearSelection = () => {
+    setSelected(new Set());
+    setKillArmed(false);
+    setComposing(false);
+    setBulkNote(null);
+  };
+  const postText = (url: string, payload: unknown) =>
+    fetch(url, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: JSON.stringify(payload) });
+  const sendBulkMessage = async () => {
+    const text = msgText.trim();
+    if (!text || selectedIds.length === 0) return;
+    setBulkBusy('message');
+    setBulkNote(null);
+    try {
+      const res = await postText('/api/admin/coord/send', { to: selectedIds, summary: text.slice(0, 120), body: text });
+      if (res.ok) {
+        setBulkNote(`Sent to ${selectedIds.length}`);
+        setComposing(false);
+        setMsgText('');
+      } else {
+        setBulkNote(`Message failed (HTTP ${res.status})`);
+      }
+    } catch {
+      setBulkNote('Message failed');
+    } finally {
+      setBulkBusy(null);
+    }
+  };
+  const wakeSelected = async () => {
+    if (selectedIds.length === 0) return;
+    setBulkBusy('wake');
+    setBulkNote(null);
+    try {
+      const res = await postText('/api/admin/coord/send', { to: selectedIds, summary: '(nudge from the operator)', wake: 'required' });
+      setBulkNote(res.ok ? `Nudged ${selectedIds.length}` : `Wake failed (HTTP ${res.status})`);
+    } catch {
+      setBulkNote('Wake failed');
+    } finally {
+      setBulkBusy(null);
+    }
+  };
+  const focusSelected = async () => {
+    const targets = selectedAgents.filter((a) => canFocusWindow(a));
+    if (targets.length === 0) {
+      setBulkNote('None of the selected have a focusable window');
+      return;
+    }
+    setBulkBusy('focus');
+    setBulkNote(null);
+    let ok = 0;
+    await Promise.all(
+      targets.map(async (a) => {
+        try {
+          const res = await postText('/api/adv/sessions/focus', {
+            id: a.advSessionId ?? undefined,
+            windowId: a.windowId ?? undefined,
+            pid: a.pid ?? undefined,
+          });
+          if (res.ok) ok++;
+        } catch { /* best-effort per agent */ }
+      }),
+    );
+    setBulkNote(`Focused ${ok}/${targets.length}`);
+    setBulkBusy(null);
+  };
+  const killSelected = async () => {
+    // Confirm-armed: first click arms ("Confirm kill N?"), second executes.
+    if (!killArmed) {
+      setKillArmed(true);
+      setBulkNote(null);
+      return;
+    }
+    const targets = selectedAgents.filter((a) => canFocusWindow(a));
+    setBulkBusy('kill');
+    setBulkNote(null);
+    let ok = 0;
+    await Promise.all(
+      targets.map(async (a) => {
+        try {
+          const res = await postText('/api/adv/sessions/close-window', {
+            id: a.advSessionId ?? undefined,
+            windowId: a.windowId ?? undefined,
+            pid: a.pid ?? undefined,
+          });
+          if (res.ok) ok++;
+        } catch { /* best-effort per agent */ }
+      }),
+    );
+    const noWindow = selectedAgents.length - targets.length;
+    setBulkNote(`Killed ${ok}/${targets.length}${noWindow > 0 ? ` (${noWindow} had no window)` : ''}`);
+    setKillArmed(false);
+    setBulkBusy(null);
+    setSelected(new Set());
+  };
+  const copyIds = async () => {
+    const text = selectedIds.join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      setBulkNote(`Copied ${selectedIds.length} id${selectedIds.length === 1 ? '' : 's'}`);
+    } catch {
+      setBulkNote('Copy failed');
+    }
+  };
+
   return (
     // The last preview remains selected when the pointer leaves. This keeps the
     // detail strip mounted while the user moves into it or the inactive-session
@@ -519,6 +656,113 @@ export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: 
           <span key={k} className="pc-agents-roster__legend-item">{g} {k}</span>
         ))}
       </div>
+      {selectedAgents.length > 0 ? (
+        <div className="pc-agents-roster__bulkbar" data-testid="agents-bulk-bar" role="toolbar" aria-label="Bulk agent actions">
+          <span className="pc-agents-roster__bulk-count" data-testid="agents-bulk-count">{selectedAgents.length} selected</span>
+          <button
+            type="button"
+            className="pc-agents-roster__bulk-btn"
+            data-testid="agents-bulk-message"
+            onClick={() => { setComposing((c) => !c); setKillArmed(false); setBulkNote(null); }}
+          >
+            ✉ Message
+          </button>
+          <button
+            type="button"
+            className="pc-agents-roster__bulk-btn"
+            data-testid="agents-bulk-wake"
+            disabled={bulkBusy === 'wake'}
+            onClick={wakeSelected}
+            title="Re-invoke the selected agents (coord wake)"
+          >
+            {bulkBusy === 'wake' ? 'nudging…' : '⏰ Wake'}
+          </button>
+          <button
+            type="button"
+            className="pc-agents-roster__bulk-btn"
+            data-testid="agents-bulk-focus"
+            disabled={bulkBusy === 'focus'}
+            onClick={focusSelected}
+            title="Raise the selected agents' terminal windows"
+          >
+            {bulkBusy === 'focus' ? 'focusing…' : '⤢ Focus all'}
+          </button>
+          <button
+            type="button"
+            className="pc-agents-roster__bulk-btn"
+            data-testid="agents-bulk-copy"
+            onClick={copyIds}
+            title="Copy the selected owner ids to the clipboard"
+          >
+            ⧉ Copy ids
+          </button>
+          <button
+            type="button"
+            className={`pc-agents-roster__bulk-btn pc-agents-roster__bulk-btn--danger${killArmed ? ' is-armed' : ''}`}
+            data-testid="agents-bulk-kill"
+            disabled={bulkBusy === 'kill'}
+            onClick={killSelected}
+            title="Close the selected agents' terminal windows (graceful — SIGHUPs the CLI)"
+          >
+            {bulkBusy === 'kill'
+              ? 'killing…'
+              : killArmed
+                ? `⚠ Confirm kill ${selectedAgents.length}?`
+                : '✕ Kill'}
+          </button>
+          <span className="pc-agents-roster__bulk-spacer" />
+          <button
+            type="button"
+            className="pc-agents-roster__bulk-btn pc-agents-roster__bulk-btn--ghost"
+            data-testid="agents-bulk-selectall"
+            onClick={allShownSelected ? clearSelection : selectAllShown}
+          >
+            {allShownSelected ? 'Deselect all' : 'Select all'}
+          </button>
+          <button
+            type="button"
+            className="pc-agents-roster__bulk-btn pc-agents-roster__bulk-btn--ghost"
+            data-testid="agents-bulk-clear"
+            onClick={clearSelection}
+          >
+            Clear
+          </button>
+          {bulkNote ? (
+            <span className="pc-agents-roster__bulk-note" data-testid="agents-bulk-note">{bulkNote}</span>
+          ) : null}
+          {composing ? (
+            <div className="pc-agents-roster__compose" data-testid="agents-bulk-compose">
+              <textarea
+                className="pc-agents-roster__compose-input"
+                data-testid="agents-bulk-msg"
+                value={msgText}
+                onChange={(e) => setMsgText(e.target.value)}
+                placeholder={`Message ${selectedAgents.length} agent${selectedAgents.length === 1 ? '' : 's'}…`}
+                rows={2}
+                autoFocus
+              />
+              <div className="pc-agents-roster__compose-actions">
+                <button
+                  type="button"
+                  className="pc-agents-roster__bulk-btn"
+                  data-testid="agents-bulk-msg-send"
+                  disabled={bulkBusy === 'message' || msgText.trim().length === 0}
+                  onClick={sendBulkMessage}
+                >
+                  {bulkBusy === 'message' ? 'sending…' : 'Send'}
+                </button>
+                <button
+                  type="button"
+                  className="pc-agents-roster__bulk-btn pc-agents-roster__bulk-btn--ghost"
+                  onClick={() => setComposing(false)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       <div className="pc-agents-roster__scroll" data-testid="agents-roster-scroll">
         {groups.map((g) => (
           <section key={g.slug ?? '__none'} className="pc-agents-roster__group">
@@ -553,6 +797,17 @@ export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: 
                   }
                 }}
               >
+                <input
+                  type="checkbox"
+                  className="pc-agents-roster__check"
+                  data-testid={`agent-select-${a.ownerId}`}
+                  checked={selected.has(a.ownerId)}
+                  aria-label={`Select ${displayName(a)}`}
+                  // stopPropagation so ticking the box never opens the inspector /
+                  // pins the row (the row's own onClick).
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={() => toggleSelected(a.ownerId)}
+                />
                 <span className="pc-agents-roster__live">
                   {a.thinking ? (
                     <ThinkingDot size={7} title={`${displayName(a)} — thinking`} />

@@ -1020,3 +1020,31 @@ export async function focusWindowId(windowId: string): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * GRACEFULLY close a window by X11 window id — `wmctrl -ic <wid>` sends the
+ * window-manager close request (WM_DELETE_WINDOW). For an agent's terminal
+ * that tears the terminal down, which SIGHUPs the foreground CLI so it can
+ * exit cleanly. This is the "Kill agent" mechanism for a windowed session
+ * (the roster's bulk-kill, owner ask 2026-07-11): a graceful close, NOT a
+ * SIGKILL, and NOT a pid kill (every gnome-terminal shares one server pid, so
+ * a pid can't be matched back to one window — see resolveWindowIdForPid).
+ * Best-effort: returns false on any failure (no wmctrl, no DISPLAY, window
+ * already gone). Linux/X11 only for now — a headless agent has no window to
+ * close (the route reports that as an un-killable case rather than guessing).
+ * User-initiated only, like focusWindowId.
+ */
+export async function closeWindowId(windowId: string): Promise<boolean> {
+  if (isWindowsDesktopHost()) {
+    // No safe title-based close on the Windows desktop host yet — closing the
+    // wrong window is worse than a no-op. Report un-actionable.
+    return false;
+  }
+  const { spawnSync } = await import('node:child_process');
+  try {
+    const r = spawnSync('wmctrl', ['-ic', windowId], { encoding: 'utf8' });
+    return r.status === 0;
+  } catch {
+    return false;
+  }
+}

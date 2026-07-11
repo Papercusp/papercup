@@ -127,9 +127,12 @@ function nextId(prefix: string): string {
 
 async function insertHive(ws: string, homeSlug: string): Promise<void> {
   const publicKey = Buffer.from(`pk-${ws}-${homeSlug}`);
+  // harness_shared.hives/home_slug renamed to pots/pot_home_slug (mig 557,
+  // cup-lexicon-full-rename-2026-07-09 P-011) — this test runs against the REAL
+  // full migration chain (000-baseline → HEAD), so the old names no longer exist.
   await sql`
-    INSERT INTO harness_shared.hives
-      (workspace_id, home_slug, public_key, keychain_id, created_at)
+    INSERT INTO harness_shared.pots
+      (workspace_id, pot_home_slug, public_key, keychain_id, created_at)
     VALUES (${ws}, ${homeSlug}, ${publicKey}, ${'kc-' + ws + '-' + homeSlug}, ${Date.now()})`;
 }
 

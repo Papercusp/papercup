@@ -26,7 +26,12 @@ const { listPresenceMock, sweepMock, tier1Mock, wakeabilityMock, fleetMock } = v
   wakeabilityMock: vi.fn(async (..._a: unknown[]) => new Map()),
   fleetMock: vi.fn(async (..._a: unknown[]) => new Map()),
 }));
-vi.mock('./presence', () => ({
+// importOriginal spread (not a bare factory): real presence-wakeability — kept
+// real below via its own importOriginal — imports PRESENCE_STALE_MS from
+// './presence'; a factory-only mock drops that export and the whole module
+// graph fails to collect ("error when mocking a module").
+vi.mock('./presence', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   listPresence: listPresenceMock,
   sweepStalePresence: sweepMock,
 }));
