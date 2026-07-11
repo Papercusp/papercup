@@ -37,7 +37,10 @@ describe('work_items:link direction legend + rel guidance (P-002)', () => {
 describe('inline links:[…] discoverability (P-003)', () => {
   it('create guidance mentions inline links and cross-references work_items:link', () => {
     const src = read('./create.ts');
-    expect(src).toMatch(/links:\[\{ rel, target_id \| target_kind\+target_ref \}\]/);
+    // Accept both example spellings: the 2026-07-11 guidance rewrite (bug-filing
+    // discipline) shortened the inline example to `target_id` only — P-003's contract
+    // is that inline links are DISCOVERABLE from create's guidance, not the form list.
+    expect(src).toMatch(/links:\[\{ rel, target_id( \| target_kind\+target_ref)? \}\]/);
     expect(src).toMatch(/work_items:link \(add typed edges to an EXISTING item/);
   });
 
