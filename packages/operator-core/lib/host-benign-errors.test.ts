@@ -45,15 +45,22 @@ function diskFullEnospc(): Error {
 /** Build the exact postgres-js null-socket-write TypeError that crash-looped
  *  :3070 (2026-06-18): the message Node throws + a stack inside postgres-js's
  *  connection module. `variant` selects the module path: 'esm' →
- *  `postgres/src/connection.js`, 'cjs' → `postgres/cjs/src/connection.js`.
- *  The REAL incident stack (EI-1405) was the CJS path under papercup-release;
- *  both must classify benign or the green-operator crash path regresses. */
-function pgNullWriteError(variant: 'esm' | 'cjs' = 'esm'): TypeError {
+ *  `postgres/src/connection.js`, 'cjs' → `postgres/cjs/src/connection.js`,
+ *  'bundled' → the release BUNDLE (`dist-host/hono-host.mjs`), where the
+ *  postgres path is gone and only the `nextWrite` frame name survives.
+ *  The REAL EI-1405 incident stack was the CJS path under papercup-release;
+ *  the REAL 2026-07-10 incident (26 fatal worker exits/day,
+ *  mcp-reliability-hardening-2026-07-11 P-001) was the bundled shape. All
+ *  three must classify benign or a green-operator crash path regresses. */
+function pgNullWriteError(variant: 'esm' | 'cjs' | 'bundled' = 'esm'): TypeError {
   const e = new TypeError("Cannot read properties of null (reading 'write')");
   const modulePath =
-    variant === 'cjs'
-      ? 'file:///home/x/papercup-release/node_modules/postgres/cjs/src/connection.js:255:22'
-      : 'file:///home/x/papercup-release/node_modules/postgres/src/connection.js:255:22';
+    variant === 'bundled'
+      ? // Verbatim from the 2026-07-10 journal: postgres-js inlined into the bundle.
+        'file:///home/marsh-office/papercupai-workspace/papercup-release/apps/operator/dist-host/hono-host.mjs:296941:23'
+      : variant === 'cjs'
+        ? 'file:///home/x/papercup-release/node_modules/postgres/cjs/src/connection.js:255:22'
+        : 'file:///home/x/papercup-release/node_modules/postgres/src/connection.js:255:22';
   e.stack = [
     "TypeError: Cannot read properties of null (reading 'write')",
     `    at Immediate.nextWrite (${modulePath})`,
@@ -165,6 +172,27 @@ describe('isTransientPgConnectionError (2026-06-18 — torn-down PG connection m
     expect(isTransientPgConnectionError(Object.assign(new Error('x'), { code: 'CONNECT_TIMEOUT' }))).toBe(true);
     // by message alone (defensive fallback if the code is ever stripped in transit)
     expect(isTransientPgConnectionError(new Error('write CONNECT_TIMEOUT 127.0.0.1:6432'))).toBe(true);
+  });
+
+  it('classifies the BUNDLED-build stack (dist-host/hono-host.mjs, no postgres path — the 2026-07-10 26-crashes/day incident) as transient', () => {
+    // The release build bundles postgres-js into hono-host.mjs, so the module-path
+    // regex can never match — only the `nextWrite` frame name survives bundling.
+    // This is the exact stack that fatally exited :3070 cluster workers 26×/day
+    // on 2026-07-10 despite the error being catalogued benign. Pin it so a future
+    // "tighten the regex to the postgres path" change can't re-open it.
+    expect(isTransientPgConnectionError(pgNullWriteError('bundled'))).toBe(true);
+  });
+
+  it('does NOT swallow a bundled-stack null-`write` TypeError with a DIFFERENT frame name (real bugs still fail fast)', () => {
+    // Same message + same bundle path, but the throwing frame is NOT postgres-js's
+    // nextWrite — a genuine null-deref in our own bundled code must stay fatal.
+    const e = new TypeError("Cannot read properties of null (reading 'write')");
+    e.stack = [
+      "TypeError: Cannot read properties of null (reading 'write')",
+      '    at flushOutbox (file:///home/x/papercup-release/apps/operator/dist-host/hono-host.mjs:12345:7)',
+      '    at process.processImmediate (node:internal/timers:504:21)',
+    ].join('\n');
+    expect(isTransientPgConnectionError(e)).toBe(false);
   });
 
   it('does NOT swallow a null-`write` TypeError from OUTSIDE postgres-js (real bugs still fail fast)', () => {

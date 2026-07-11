@@ -5,7 +5,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { emitUnblockedOnEdgeRemoved, emitWorkItemSettledEvents, isSettledWorkItem, workItemIdFromRef } from './work-items-events';
+import { emitUnblockedOnEdgeRemoved, emitWorkItemSettledEvents, isSettledWorkItem, liveBlockedState, workItemIdFromRef } from './work-items-events';
 import type { WorkItem } from './work-items';
 
 const wi = (over: Partial<WorkItem> = {}): WorkItem => ({
@@ -433,5 +433,65 @@ describe('batched unblocked core (P-005)', () => {
     const src = readFileSync(fileURLToPath(new URL('./work-items-events.ts', import.meta.url)), 'utf8');
     expect(src).not.toMatch(/new PgLinkStore/);
     expect(src).toMatch(/blockingEdgeReader/);
+  });
+});
+
+// P-006 (linking-notify-family-hardening): the events:await registration latch
+// for work-item:unblocked:<id> keys probes the LIVE blocked state — an
+// already-unblocked (or settled) target is told so at registration instead of
+// stranding into a timeout-only wait. 'unknown' must never block registration.
+describe('liveBlockedState (P-006 latch probe)', () => {
+  it("returns 'blocked' while any live blocker edge remains", async () => {
+    const item = wi({ id: 'WI-DEP', state: 'open' });
+    const liveBlocker = wi({ id: 'WI-B1', state: 'open' });
+    await expect(
+      liveBlockedState('WI-DEP', {
+        getItem: vi.fn(async (id: string) => (id === 'WI-DEP' ? item : id === 'WI-B1' ? liveBlocker : null)) as never,
+        listIn: vi.fn(async () => [edge('WI-B1', 'WI-DEP')]) as never,
+      }),
+    ).resolves.toBe('blocked');
+  });
+
+  it("returns 'unblocked' when every blocker is settled (or none exist)", async () => {
+    const item = wi({ id: 'WI-DEP', state: 'open' });
+    const settledBlocker = wi({ id: 'WI-B1', state: 'closed' });
+    await expect(
+      liveBlockedState('WI-DEP', {
+        getItem: vi.fn(async (id: string) => (id === 'WI-DEP' ? item : id === 'WI-B1' ? settledBlocker : null)) as never,
+        listIn: vi.fn(async () => [edge('WI-B1', 'WI-DEP')]) as never,
+      }),
+    ).resolves.toBe('unblocked');
+    await expect(
+      liveBlockedState('WI-DEP', {
+        getItem: vi.fn(async () => item) as never,
+        listIn: vi.fn(async () => []) as never,
+      }),
+    ).resolves.toBe('unblocked');
+  });
+
+  it("returns 'settled' for a target already in a terminal state (the key can never fire)", async () => {
+    await expect(
+      liveBlockedState('WI-DEP', {
+        getItem: vi.fn(async () => wi({ id: 'WI-DEP', state: 'resolved' })) as never,
+        listIn: vi.fn(async () => []) as never,
+      }),
+    ).resolves.toBe('settled');
+  });
+
+  it("returns 'unknown' (never throws) when the item is unreadable — registration must proceed", async () => {
+    await expect(
+      liveBlockedState('WI-GONE', {
+        getItem: vi.fn(async () => null) as never,
+        listIn: vi.fn(async () => []) as never,
+      }),
+    ).resolves.toBe('unknown');
+    await expect(
+      liveBlockedState('WI-DEP', {
+        getItem: vi.fn(async () => wi({ id: 'WI-DEP', state: 'open' })) as never,
+        listIn: vi.fn(async () => {
+          throw new Error('pg down');
+        }) as never,
+      }),
+    ).resolves.toBe('unknown');
   });
 });

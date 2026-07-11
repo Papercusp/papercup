@@ -43,6 +43,18 @@ export function shouldSelfRestart(args: {
 export interface LagSelfRestartOpts {
   intervalMs?: number;
   sustainChecks?: number;
+  /**
+   * P-003 (mcp-reliability-hardening-2026-07-11): per-process random EXTRA sustain
+   * checks in [0, jitterChecks], drawn once at start. On a multi-worker reusePort
+   * cluster the pressure signal is highly correlated across workers (they share the
+   * box), so identical thresholds recycle MANY workers near-simultaneously —
+   * observed 2026-07-10 22:43–22:47: 7 recycles in ~4 min, each severing its
+   * in-flight requests. Jitter desynchronizes the herd. Default 0 (off) so the
+   * pure API is unchanged; the hono-host call site arms it.
+   */
+  jitterChecks?: number;
+  /** Seam for the jitter draw — defaults to Math.random. */
+  rand?: () => number;
   minUptimeMs?: number;
   exitCode?: number;
   /** Seam — defaults to the monitor's loopPressure(). */
@@ -69,7 +81,13 @@ export interface LagSelfRestartHandle {
  */
 export function startLagSelfRestart(opts: LagSelfRestartOpts = {}): LagSelfRestartHandle {
   const intervalMs = opts.intervalMs ?? DEFAULT_INTERVAL_MS;
-  const sustainChecks = Math.max(1, opts.sustainChecks ?? DEFAULT_SUSTAIN_CHECKS);
+  const jitterChecks = Math.max(0, Math.floor(opts.jitterChecks ?? 0));
+  const rand = opts.rand ?? Math.random;
+  // P-003: the effective sustain window = base + a per-process jitter draw, so
+  // co-saturated reusePort siblings don't all recycle in the same beat.
+  const sustainChecks =
+    Math.max(1, opts.sustainChecks ?? DEFAULT_SUSTAIN_CHECKS) +
+    (jitterChecks > 0 ? Math.floor(rand() * (jitterChecks + 1)) : 0);
   const minUptimeMs = opts.minUptimeMs ?? DEFAULT_MIN_UPTIME_MS;
   const exitCode = opts.exitCode ?? DEFAULT_EXIT_CODE;
   const pressure = opts.pressure ?? defaultLoopPressure;

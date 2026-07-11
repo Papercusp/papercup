@@ -357,7 +357,29 @@ function startRequestServers(): void {
   startInfraLivenessAlarm();
   startConditionStalenessAlarm();
   startSinglePrimaryGuard();
-  startLagSelfRestart();
+  // P-002 (mcp-reliability-hardening-2026-07-11): recycle GRACEFULLY. The seam's
+  // default is a bare process.exit(75), which severs every in-flight request on
+  // this worker — measured 2026-07-10/11: 303 lag-recycles/24h, and 41.3% of all
+  // agent-visible mcp-proxy 502s (read ECONNRESET / socket hang up) landed within
+  // ±5s of one (vs 7.5% chance coverage). Route the exit through the SAME bounded
+  // drain the memory-watchdog and SIGTERM paths use: markShuttingDown (stop
+  // STARTING background work) → stop accepting → drain in-flight HTTP → exit 75
+  // (8s hard backstop). gracefulHostRecycle's saturated-skip already avoids the
+  // WI-3795 native substrate-teardown crash — which a lag-recycle would otherwise
+  // ALWAYS risk, since its loop is 'critical' by definition at recycle time.
+  startLagSelfRestart({
+    // P-003: desynchronize sibling workers' recycles — pressure is box-correlated,
+    // so without jitter many workers trip the identical sustain window in the same
+    // beat (7 recycles in ~4 min observed 2026-07-10). +0..4 extra 15s checks.
+    jitterChecks: 4,
+    exit: (code) => {
+      markShuttingDown();
+      gracefulHostRecycle({
+        server: server as { close?: (cb?: () => void) => void },
+        recycleExitCode: code,
+      });
+    },
+  });
 }
 
 // P3-2 (operator-scalability-event-loop-2026-06-16): optional node:cluster. DEFAULT

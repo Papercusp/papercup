@@ -63,8 +63,17 @@ export interface StartClusterOpts {
   workerEnv?: Record<string, string>;
   /** Injected for tests; defaults to `node:cluster`. */
   cluster?: ClusterLike;
-  /** Max automatic respawns of crashed workers (crash-loop guard). Default workers*5. */
+  /** Max automatic respawns of crashed workers (crash-loop guard). Default workers*5.
+   *  P-003 (mcp-reliability-hardening-2026-07-11): applied per ROLLING WINDOW
+   *  (`respawnWindowMs`), NOT per primary lifetime. The lifetime cap was a shrink
+   *  bomb: on a long-lived primary under a lag-recycle storm the budget only ever
+   *  counted UP (observed 59/80 burned in one evening, 2026-07-10), and once
+   *  exhausted every further worker death PERMANENTLY shrank the serving cluster
+   *  until the next deploy restarted the primary. A rolling window still throttles
+   *  a crash-loop to the same rate but lets a healthy-again cluster recover. */
   maxRespawns?: number;
+  /** Rolling window for the maxRespawns budget (P-003). Default 600_000 (10 min). */
+  respawnWindowMs?: number;
   /**
    * Boot-failure backstop (2026-06-25 inconsistent-release MODULE_NOT_FOUND incident).
    * OPT-IN: provide `onUnbootable` to arm it (legacy respawn-budget behavior otherwise).
@@ -102,6 +111,10 @@ export interface ClusterHandle {
    *  always-empty process-local map (the substrate boot state lives only on the primary) —
    *  see `sync/hyperbee/cluster-booted-handles-sync.ts`. Undefined in worker/single roles. */
   broadcast?: (message: unknown) => void;
+  /** PRIMARY only: how many forked workers are LIVE right now (P-003 shrink visibility —
+   *  a health surface can compare this against the configured target). Undefined in
+   *  worker/single roles. */
+  liveWorkerCount?: () => number;
 }
 
 /**
@@ -226,7 +239,9 @@ export function startCluster(opts: StartClusterOpts): ClusterHandle {
     forkedAt.set(w.id, now());
     return w;
   };
-  let respawns = 0;
+  // P-003: rolling respawn budget — epoch-ms of respawns inside the current window.
+  const respawnWindowMs = opts.respawnWindowMs ?? 600_000;
+  const respawnTimes: number[] = [];
   let draining = false;
   // Boot-failure backstop state (armed only when opts.onUnbootable is set).
   let sawHealthy = false; // any worker has surpassed bootGraceMs (the build CAN boot)
@@ -264,12 +279,20 @@ export function startCluster(opts: StartClusterOpts): ClusterHandle {
       }
     }
 
-    if (respawns >= maxRespawns) {
-      log(`[cluster] worker ${worker.id} exited (code=${code} signal=${signal}); respawn budget exhausted (${maxRespawns}) — NOT respawning`);
+    // P-003: prune the rolling window, then decide. A deny is NOT permanent —
+    // once the window drains, the next exit respawns again (the cluster can
+    // RECOVER its full size instead of shrinking until the next deploy).
+    while (respawnTimes.length && now() - respawnTimes[0] > respawnWindowMs) respawnTimes.shift();
+    if (respawnTimes.length >= maxRespawns) {
+      log(
+        `[cluster] ALARM worker ${worker.id} exited (code=${code} signal=${signal}); respawn budget exhausted ` +
+          `(${respawnTimes.length}/${maxRespawns} respawns in the last ${Math.round(respawnWindowMs / 1000)}s) — NOT respawning now; ` +
+          `serving ${byId.size}/${workers} workers (resumes when the window drains)`,
+      );
       return;
     }
-    respawns += 1;
-    log(`[cluster] worker ${worker.id} exited (code=${code} signal=${signal}); respawning (${respawns}/${maxRespawns})`);
+    respawnTimes.push(now());
+    log(`[cluster] worker ${worker.id} exited (code=${code} signal=${signal}); respawning (${respawnTimes.length}/${maxRespawns} in window)`);
     track(cluster.fork(opts.workerEnv));
   });
 
@@ -287,6 +310,7 @@ export function startCluster(opts: StartClusterOpts): ClusterHandle {
       }
     },
     workerById: (id) => byId.get(id),
+    liveWorkerCount: () => byId.size,
     broadcast(message) {
       for (const w of byId.values()) {
         try {

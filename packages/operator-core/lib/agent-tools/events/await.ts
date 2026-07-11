@@ -31,7 +31,7 @@ export default defineTool({
   description:
     'Register a one-shot WAKE on an event key OR a key PATTERN. When it fires you are re-invoked, so end your turn instead of polling. A pattern (`work-item:done:*`, or the macros `@plan:<slug>` / `@fleet:<slug>`) wakes on the FIRST matching key — one await for "any lane item finished" instead of N.',
   guidance: {
-    when: 'You are blocked on a known event key: a lock grant, plan run finishing, peer answer, deploy/gate landing, or a custom key another tool/agent will emit (patterns/macros cover whole families — see `event`). HAND-MINTED pair key? Have the completion\'s OWNER declare it first (events:emit { announce:true }) and await the RETURNED key — never re-type a key from a chat message (near-miss drift strands you). ⚠ work-item:unblocked:<id> fires only when a blocker clears — check the item is STILL blocked before awaiting (an already-unblocked target never fires; you\'d get only the timeout wake).',
+    when: 'You are blocked on a known event key: a lock grant, plan run finishing, peer answer, deploy/gate landing, or a custom key another tool/agent will emit (patterns/macros cover whole families — see `event`). HAND-MINTED pair key? Have the completion\'s OWNER declare it first (events:emit { announce:true }) and await the RETURNED key — never re-type a key from a chat message (near-miss drift strands you). work-item:unblocked:<id> latches at registration: an already-unblocked target returns already_unblocked instead of a dead wait.',
     notWhen:
       'Ambient interest (use topics:subscribe), sub-minute waits inside one turn, or recurring schedules. Prefer the sugar verbs for common waits: deploy:await, checkpoint:await, work-item:await, service:await-up, git-sync:await, plan-item:await, fleet:await-drained.',
     chaining: 'events:catalog → events:await { event } (or a sugar verb) → END YOUR TURN → the wake carries the payload → re-register if you need the NEXT occurrence (one-shot: a fired await is gone). events:cancel retracts; events:status inspects.',
@@ -132,6 +132,41 @@ export default defineTool({
           }
         }
       } catch { /* best-effort — never block a registration */ }
+    }
+
+    // ── linking-notify-family-hardening P-006: the unblocked-key LATCH.
+    // `work-item:unblocked:<id>` fires only on a blocked→unblocked EDGE, so a
+    // registration against an item with NO live blocker (or already settled)
+    // could only ever time out — the await-after-the-fact strand, same class
+    // as the EI-9270 announced-gate race above. Say so NOW. Best-effort and
+    // time-bounded: an 'unknown' probe (unreadable item, ambiguous id) falls
+    // through to a normal registration.
+    const unblockedTarget = patternAwait ? undefined : /^work-item:unblocked:([^:]+)$/.exec(eventKey)?.[1];
+    if (unblockedTarget) {
+      const probe = await withBoundedTimeout(liveBlockedState(unblockedTarget), {
+        fallback: 'unknown' as const,
+        timeoutMs: 1_500,
+        label: 'events-await:unblockedLatch',
+      });
+      if (probe.value === 'unblocked' || probe.value === 'settled') {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: true,
+                already_unblocked: true,
+                event: eventKey,
+                item_state: probe.value,
+                advice:
+                  probe.value === 'settled'
+                    ? `${unblockedTarget} is already SETTLED — "${eventKey}" will never fire. Do not wait on it.`
+                    : `${unblockedTarget} has NO live blocker right now — it is ALREADY unblocked, so "${eventKey}" will not fire (it fires only on a future blocked→unblocked edge). Proceed with the blocked work now instead of waiting.`,
+              }),
+            },
+          ],
+        };
+      }
     }
 
     // ── Capture the wake handle NOW (D-003) ────────────────────────────

@@ -23842,10 +23842,6 @@ body:has(.operator-panel) {
 }
 
 @media (max-width: 960px) {
-  body.has-op-chat:has(.operator-panel) .operator-panel {
-    left: 12px !important;
-  }
-
   .operator-panel__body {
     grid-template-columns: 1fr !important;
   }

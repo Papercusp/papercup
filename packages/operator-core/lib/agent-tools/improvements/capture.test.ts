@@ -3,6 +3,7 @@ import { z } from 'zod';
 import captureTool from './capture';
 import { coerceCaptureKind } from './capture-coerce';
 import { captureImprovement } from '../../harness/improvements/capture-core';
+import { noveltyPriorArt } from '../../scout/novelty-precheck';
 import { resolveAgentIdentity } from '../coordination/identity';
 
 // PG-free unit: capture-core has its own 31-test suite; this pins the tool
@@ -11,9 +12,15 @@ import { resolveAgentIdentity } from '../coordination/identity';
 // the shared core unchanged. (self-learning-central P-001/P-010.)
 vi.mock('../../harness/improvements/capture-core');
 vi.mock('../coordination/identity');
+// P-008: the novelty pre-check is PG-backed (readNoveltyCorpus) — mock it so this
+// suite stays PG-free. Default = resolved undefined ("check unavailable"), which the
+// handler renders as an ABSENT priorArt field, leaving every pre-P-008 assertion
+// byte-identical; the P-008 describe below sets explicit values.
+vi.mock('../../scout/novelty-precheck', () => ({ noveltyPriorArt: vi.fn(async () => undefined) }));
 
 const mockCapture = vi.mocked(captureImprovement);
 const mockIdentity = vi.mocked(resolveAgentIdentity);
+const mockPriorArt = vi.mocked(noveltyPriorArt);
 
 function identity(source: ReturnType<typeof resolveAgentIdentity>['source'], ownerId = 'su-test') {
   return {
@@ -287,5 +294,69 @@ describe('improvements:capture — IDEATE-pass ideation persistence (su-ideate-l
   it('an empty ideation object persists nothing (absence changes nothing, D-005)', async () => {
     await callTool({ title: 'su idea', kind: 'feature', ideation: {} });
     expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ payloadExtra: undefined }));
+  });
+});
+
+/**
+ * P-008 (su-ideate-learning-substrate-2026-07-10): the REPORT-ONLY novelty
+ * pre-check on the su kind:'feature' path. Pins the gate (su + feature +
+ * improvement lane only), the response field semantics (array = checked, [] =
+ * checked-and-clean, absent = not checked / check failed), and that a pre-check
+ * failure NEVER fails the capture (D-005 — only the improvement-dedup declines).
+ */
+describe('IDEATE-pass novelty pre-check (P-008 priorArt)', () => {
+  const A_MATCH = [
+    { kind: 'idea', ref: 'wi:EI-77', title: 'the same idea, already dropped', similarity: 0.83, state: 'dropped' },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIdentity.mockReturnValue(identity('omp-hook-session'));
+    mockCapture.mockResolvedValue({ ok: true, id: 'EI-1', created: true } as unknown as Awaited<
+      ReturnType<typeof captureImprovement>
+    >);
+    mockPriorArt.mockResolvedValue([]);
+  });
+
+  async function bodyOf(args: Record<string, unknown>) {
+    const res = await callTool(args);
+    return JSON.parse(res.content[0].text) as Record<string, unknown>;
+  }
+
+  it("an su feature filing gets priorArt in the response, checked against the filing's title", async () => {
+    mockPriorArt.mockResolvedValue(A_MATCH as Awaited<ReturnType<typeof noveltyPriorArt>>);
+    const body = await bodyOf({ title: 'a fresh su idea', kind: 'feature' });
+    expect(mockPriorArt).toHaveBeenCalledWith('a fresh su idea');
+    expect(body.priorArt).toEqual(A_MATCH);
+  });
+
+  it('a clean check surfaces as priorArt: [] (checked, nothing similar) — distinct from absent', async () => {
+    const body = await bodyOf({ title: 'a fresh su idea', kind: 'feature' });
+    expect(body.priorArt).toEqual([]);
+  });
+
+  it('runs on a dedup-decline too (the collision report is MOST useful there)', async () => {
+    mockCapture.mockResolvedValue({ ok: false, created: false, duplicateOf: 'EI-5' } as unknown as Awaited<
+      ReturnType<typeof captureImprovement>
+    >);
+    mockPriorArt.mockResolvedValue(A_MATCH as Awaited<ReturnType<typeof noveltyPriorArt>>);
+    const body = await bodyOf({ title: 'a fresh su idea', kind: 'feature' });
+    expect(body.priorArt).toEqual(A_MATCH);
+  });
+
+  it('non-feature kinds, the observation lane, and non-su callers are never checked', async () => {
+    await callTool({ title: 'x', kind: 'change' });
+    await callTool({ title: 'x', kind: 'bug' });
+    await callTool({ title: 'x', kind: 'feature', lane: 'observation' });
+    mockIdentity.mockReturnValue(identity('signed-spawn'));
+    await callTool({ title: 'x', kind: 'feature' });
+    expect(mockPriorArt).not.toHaveBeenCalled();
+  });
+
+  it('a pre-check failure NEVER fails the capture — the field is simply absent (report-only, D-005)', async () => {
+    mockPriorArt.mockRejectedValue(new Error('corpus read exploded'));
+    const body = await bodyOf({ title: 'a fresh su idea', kind: 'feature' });
+    expect(body).toEqual({ ok: true, id: 'EI-1', created: true });
+    expect('priorArt' in body).toBe(false);
   });
 });
