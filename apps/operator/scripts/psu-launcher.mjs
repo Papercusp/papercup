@@ -21,7 +21,7 @@
  */
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, writeFileSync, chmodSync, rmSync, renameSync, realpathSync, statSync, readlinkSync, openSync, readSync, closeSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { homedir, hostname } from 'node:os';
 import { join, dirname, delimiter } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -743,6 +743,38 @@ export function suLaunchArgs(backend, { promptFile, coordExtPath, nativeSessionI
  * interactive human picker launch still opens at an empty prompt · `--no-kickoff` was
  * not passed (`args.kickoff !== false`). Pure — exported for tests.
  */
+/**
+ * turn-provenance P-002 (turn-provenance-owner-vs-agent-2026-07-11): envelope +
+ * ledger-tag a SCRIPTED kickoff first turn so the session's UserPromptSubmit
+ * hook classifies it as verified agent-origin (`fleet-kickoff`), never owner
+ * input. MIRROR of packages/operator-core/lib/turn-provenance/turn-provenance.ts
+ * (the launcher is plain node and cannot import the TS module) — keep the
+ * envelope format + JSONL row shape in lockstep. Fail-soft: any error returns
+ * the untagged text (the turn then classifies owner/unverified — visible, and
+ * never a broken launch). No-sid launches (interactive, untracked) stay untagged.
+ */
+export function tagKickoffProvenance(text, sid, env = process.env, nowMs = Date.now()) {
+  try {
+    if (!text || !sid) return text;
+    const nonce = randomBytes(8).toString('hex');
+    const sha256 = createHash('sha256')
+      .update(String(text).replace(/\r\n?/g, '\n').trim(), 'utf8')
+      .digest('hex');
+    const dir = env.PAPERCUSP_TURN_PROVENANCE_DIR || join(homedir(), '.papercusp', 'turn-provenance');
+    mkdirSync(dir, { recursive: true });
+    const safe = String(sid).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 200);
+    // Ledger row FIRST, then the tagged text (the hook classifies at prompt-submit).
+    writeFileSync(
+      join(dir, `${safe}.jsonl`),
+      JSON.stringify({ sid, nonce, origin: 'fleet-kickoff', sha256, ts: nowMs }) + '\n',
+      { flag: 'a' },
+    );
+    return `⟦turn-origin:fleet-kickoff nonce:${nonce}⟧\n${text}`;
+  } catch {
+    return text;
+  }
+}
+
 export function kickoffPositionalArgs(res, args) {
   // A client-supplied free-form `--kickoff='<text>'` wins over the server's
   // plan-derived kickoff (res.kickoffPrompt) — it's the general "start by working
@@ -4780,7 +4812,10 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     kickoffPromptText: resolveKickoffText(args),
   });
   if (kickoffArgs.length) {
-    launchArgs.push(...kickoffArgs);
+    // turn-provenance P-002: tag the scripted first turn (fleet-kickoff) so the
+    // session's own prompt hook labels it machine-origin, not owner input.
+    const sidForTag = res?.envelopeEnv?.PAPERCUSP_SID || process.env.PAPERCUSP_SID || null;
+    launchArgs.push(...kickoffArgs.map((t) => tagKickoffProvenance(t, sidForTag)));
     console.error(`psu: kickoff — seeding first turn${res.planSlug ? ` to advance plan ${res.planSlug}` : ''} (suppress with --no-kickoff)`);
   }
 

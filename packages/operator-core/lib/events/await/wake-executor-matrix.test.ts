@@ -56,6 +56,29 @@ function presenceRec(over: { stale?: boolean; revoked?: boolean } = {}) {
 }
 
 describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)', () => {
+  // turn-provenance P-002: this suite deliberately runs the REAL tagTurnForInjection
+  // (no tagTurn stub) so the envelope+ledger leg is exercised end-to-end — isolate
+  // its ledger dir so the suite never writes the real ~/.papercusp/turn-provenance.
+  let prevProvDir: string | undefined;
+  let provDir: string;
+  beforeEach(async () => {
+    const { mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    prevProvDir = process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
+    provDir = mkdtempSync(join(tmpdir(), 'wake-prov-'));
+    process.env.PAPERCUSP_TURN_PROVENANCE_DIR = provDir;
+  });
+  afterEach(async () => {
+    if (prevProvDir === undefined) delete process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
+    else process.env.PAPERCUSP_TURN_PROVENANCE_DIR = prevProvDir;
+    const { rmSync } = await import('node:fs');
+    try {
+      rmSync(provDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  });
   let tb: MultiSessionTestbed;
 
   beforeEach(() => {
@@ -98,6 +121,14 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
     expect(host.received).toHaveLength(1);
     expect(host.received[0]).toMatchObject({ v: 1, mode: 'turn' });
     expect(host.received[0].data).toContain('[await-event]');
+    // turn-provenance P-002 (real tagger, real socket): the injected turn opens
+    // with the origin envelope, and the ledger row it references EXISTS and
+    // classifies the delivered bytes as verified agent-origin.
+    expect(host.received[0].data).toMatch(/^⟦turn-origin:wake-pump nonce:[a-f0-9]{16}⟧\n/);
+    const { readLedgerRows, classify } = await import('../../turn-provenance/turn-provenance');
+    const rows = readLedgerRows(s.ownerId, { includeExpired: true });
+    expect(rows).toHaveLength(1);
+    expect(classify(host.received[0].data, rows).verdict).toBe('verified-agent');
   });
 
   it('no handle + no socket + presence LIVE → park (inbox-only)', async () => {

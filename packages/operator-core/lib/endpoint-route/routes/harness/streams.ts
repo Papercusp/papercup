@@ -614,6 +614,90 @@ const logStream = defineTool({
 });
 
 /**
+ * Reconstruct a thinking-pane backfill from the DURABLE session_turns corpus —
+ * the exact Postgres corpus /adv session-search matches on — for an ENDED
+ * session whose transcript jsonl AND archive are both gone (WI-4194). Without
+ * this, clicking a search hit into a pruned-transcript session (archives retain
+ * only ~1.5 days; the jsonl is deleted ~15s after death) dead-clicks to
+ * "0 turns · Run ended without producing any output", even though the full
+ * transcript is still in session_turns. Because search MATCHED on this corpus, a
+ * hit is guaranteed to have rows here.
+ *
+ * Maps each stored turn to an AgentTimelineEntry: a user/human turn becomes a
+ * `prompt` (the frontend's turn boundary) so the pane still groups into turns;
+ * everything else becomes `text`. Windows to the last `cap` turns, or — when a
+ * search deep-link supplied anchorTs — centers the window on the nearest turn by
+ * timestamp and returns its in-window index for the client to scroll to.
+ *
+ * Two queries keep the payload bounded: a cheap turn_idx+ts positional scan to
+ * pick the window/anchor without pulling text, then a windowed fetch that caps
+ * each row's text in SQL. Returns null when the corpus has no rows (caller falls
+ * back to the honest empty-backfill terminate). Exported for tests.
+ */
+export async function backfillFromSessionTurns(
+  key: { sourceKind: 'claude' | 'omp' | 'codex'; sessionId: string },
+  opts: { anchorTs?: string | null; cap?: number } = {},
+): Promise<{ entries: AgentTimelineEntry[]; anchorIndex: number | null } | null> {
+  const cap = Math.max(1, opts.cap ?? 200);
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  // 1) Positional scan — turn_idx + ts only, ordered — to bound the window (and
+  //    match anchorTs) without pulling every turn's text.
+  const idxRows = await sql<Array<{ turn_idx: number; ts: string | null }>>`
+    SELECT turn_idx, ts::text AS ts
+      FROM harness_shared.session_turns
+     WHERE source_kind = ${key.sourceKind} AND session_id = ${key.sessionId}
+     ORDER BY turn_idx ASC
+  `;
+  if (idxRows.length === 0) return null;
+  // Window: center on the anchored turn (search deep-link) else tail the last cap.
+  let start = Math.max(0, idxRows.length - cap);
+  let anchorPos: number | null = null;
+  if (opts.anchorTs) {
+    const at = Date.parse(opts.anchorTs);
+    if (!Number.isNaN(at)) {
+      let bestI = -1;
+      let bestD = Infinity;
+      for (let i = 0; i < idxRows.length; i++) {
+        const raw = idxRows[i].ts;
+        const t = raw ? Date.parse(raw) : NaN;
+        if (!Number.isNaN(t)) {
+          const d = Math.abs(t - at);
+          if (d < bestD) { bestD = d; bestI = i; }
+        }
+      }
+      if (bestI >= 0) {
+        start = Math.max(0, Math.min(bestI - Math.floor(cap / 2), idxRows.length - cap));
+        anchorPos = bestI;
+      }
+    }
+  }
+  if (start < 0) start = 0;
+  const end = Math.min(idxRows.length, start + cap);
+  const startIdx = idxRows[start].turn_idx;
+  // 2) Windowed fetch — text capped in SQL (+ a margin so capEntryText still
+  //    stamps its "[truncated]" marker on a genuinely long turn).
+  const textCap = THINKING_ENTRY_TEXT_CAP + 200;
+  const rows = await sql<Array<{ turn_idx: number; ts: string | null; speaker: string | null; text: string | null }>>`
+    SELECT turn_idx, ts::text AS ts, speaker, left(text, ${textCap}) AS text
+      FROM harness_shared.session_turns
+     WHERE source_kind = ${key.sourceKind} AND session_id = ${key.sessionId}
+       AND turn_idx >= ${startIdx}
+     ORDER BY turn_idx ASC
+     LIMIT ${cap}
+  `;
+  const entries: AgentTimelineEntry[] = rows.map((r) =>
+    capEntryText({
+      kind: r.speaker === 'user' || r.speaker === 'human' ? 'prompt' : 'text',
+      text: r.text ?? '',
+      ts: r.ts ?? undefined,
+    }),
+  );
+  const anchorIndex = anchorPos !== null && anchorPos >= start && anchorPos < end ? anchorPos - start : null;
+  return { entries, anchorIndex };
+}
+
+/**
  * GET /api/adv/session/thinking — a LIVE-FOLLOWED view of an INTERACTIVE
  * (non-bee) session's thinking timeline, for the agents-roster inspector.
  * Keyed by exactly one of:
@@ -841,13 +925,42 @@ const sessionThinkingStream = defineTool({
         if (path) {
           emitThinking(find ? await anchoredBackfillFrom(path) : backfillFrom(path));
         } else if (ended) {
-          // WI-3990: an ENDED session with no recoverable transcript (never
-          // archived, archive incomplete, or a codex session we don't
-          // rematerialize) — emit an empty backfill and TERMINATE. The pane shows
-          // its honest "no output" / ended state instead of "waiting for the
-          // first output" FOREVER (an ended session will never take a first turn,
-          // so the live-follow poll below would never resolve a path).
-          sink.event('backfill', []);
+          // WI-4194: the transcript jsonl + archive are both gone, but the ENDED
+          // session's turns may still live in the DURABLE session_turns corpus
+          // (exactly what /adv search matched on to surface this hit). Reconstruct
+          // the backfill from there so a search click renders the history instead
+          // of dead-clicking to "0 turns". Keyed by uuid: claude→sessionId,
+          // omp→ompThreadId, codex→codexRolloutId (codexSessionKey is an adv-row
+          // id with no corpus key, so it isn't recoverable here). Best-effort —
+          // any failure degrades to the honest empty-backfill terminate below.
+          const corpusKey = sessionId
+            ? ({ sourceKind: 'claude', sessionId } as const)
+            : ompThreadId
+              ? ({ sourceKind: 'omp', sessionId: ompThreadId } as const)
+              : codexRolloutId
+                ? ({ sourceKind: 'codex', sessionId: codexRolloutId } as const)
+                : null;
+          let recovered = false;
+          if (corpusKey) {
+            try {
+              const backfill = await backfillFromSessionTurns(corpusKey, { anchorTs });
+              if (backfill && backfill.entries.length > 0) {
+                sink.event('backfill', backfill.entries);
+                if (find) {
+                  sink.event('anchor', backfill.anchorIndex !== null
+                    ? { found: true, index: backfill.anchorIndex }
+                    : { found: false });
+                }
+                recovered = true;
+              }
+            } catch { /* degrade to the empty-backfill terminate below */ }
+          }
+          // WI-3990: no recoverable transcript anywhere (never archived, archive
+          // incomplete/pruned AND no session_turns rows) — emit an empty backfill
+          // and TERMINATE so the pane shows its honest "no output" / ended state
+          // instead of "waiting for the first output" FOREVER (an ended session
+          // never takes a first turn, so the live-follow poll would never resolve).
+          if (!recovered) sink.event('backfill', []);
           sink.done({});
           return;
         } else {

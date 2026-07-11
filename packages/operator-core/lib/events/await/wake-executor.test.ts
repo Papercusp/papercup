@@ -150,6 +150,17 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     collectSessionFiles: vi.fn(async () => [{}]) as never,
     rematerializeSession: vi.fn(async () => ({ ok: true, written: 0 })) as never,
     findArchivedSessionIdForAdv: vi.fn(async () => null) as never,
+    // Hermetic by default (turn-provenance P-002): the real tagger writes ledger
+    // rows under ~/.papercusp/turn-provenance — stub it to a passthrough so the
+    // long-standing exact-text assertions stay byte-identical. The dedicated
+    // provenance-tagging describe below injects a REAL-shaped tagger instead.
+    tagTurn: ((args: { text: string; origin: string }) => ({
+      taggedText: args.text,
+      envelope: '',
+      nonce: 'stub',
+      origin: args.origin,
+      ledgerWritten: true,
+    })) as never,
     ...over,
   };
 }
