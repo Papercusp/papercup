@@ -502,6 +502,11 @@ import './fleet_registry/status';
 import './fleet_registry/join';
 import './fleet_registry/leave';
 import './fleet_registry/take-leadership';
+// P-009 (coord-authority-hardening H4): typed fleet control state —
+// wind-down / resume (+ pause alias) on the durable registry row.
+import './fleet_registry/wind-down';
+import './fleet_registry/resume';
+import './fleet_registry/pause';
 import './fleet_registry/launch-on-plan';
 import './fleet_registry/request-remote-spawn';
 import './fleet_registry/recolor';

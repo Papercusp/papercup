@@ -207,6 +207,18 @@ export interface OrientResult {
    *  !== false; null on a failed fold. Folded so agents don't re-call coord:glance
    *  right after orient (compaction-fold-audit-2026-07-06 — 44%+ did). */
   fleetHealth?: { bees?: unknown; wake?: unknown; governor?: unknown } | null;
+  /** P-009 (coord-authority-hardening H4): the caller's fleet TYPED control state,
+   *  folded whenever it is NOT plain 'active' — how a LATE JOINER (or a member who
+   *  missed the cue) learns the fleet is winding down without any message having
+   *  reached them. Read from the durable registry row (mig 575). Absent for a
+   *  non-fleet caller / an active fleet / a failed read (best-effort). */
+  fleetControl?: {
+    fleet: string;
+    state: string;
+    reason: string | null;
+    by: string | null;
+    since: number | null;
+  };
   /** EI-9270: declared-but-unfired ANNOUNCED gate events visible to this caller's
    *  fleet/plan/harness (+ global) — "what should I events:await", with zero leader
    *  messages. Absent when none are visible (or on a monitor tick). */
@@ -590,6 +602,37 @@ export async function composeOrient(
   // + BEST-EFFORT: a non-fleet caller or any failure degrades to absent/null.
   // EI-8300: skipped entirely on a monitor tick (both legs).
   // (fleet-messaging-integrate-and-land P-006)
+  // ── fleet CONTROL STATE (P-009 / H4) — folded UNGATED by the catch-up/health
+  // flags: a winding-down fleet must reach every member orient, especially a
+  // LATE JOINER who never saw the wind-down cue. Only a non-'active' state is
+  // surfaced (zero noise on the common path). BEST-EFFORT + dynamic import
+  // (orient's static graph unchanged); skipped on a monitor tick like the
+  // other fleet legs (a leader's monitor loop reads fleet:status itself).
+  if (!monitor && fleetSlug) {
+    try {
+      const [{ getFleet }, { activeWorkspaceId }] = await Promise.all([
+        import('../../../agent-fleets-store'),
+        import('../../../workspace-registry'),
+      ]);
+      // composeOrient carries no ctx (IO arrives injected / dynamically imported,
+      // like the facts fold above) — the process-active workspace is the same
+      // fallback resolveFleetCaller uses for the registry writes.
+      const ws = activeWorkspaceId();
+      const fleet = ws && ws !== '*' ? await getFleet(ws, fleetSlug) : null;
+      if (fleet && fleet.controlState !== 'active') {
+        result.fleetControl = {
+          fleet: fleetSlug,
+          state: fleet.controlState,
+          reason: fleet.controlReason,
+          by: fleet.controlBy,
+          since: fleet.controlAt,
+        };
+      }
+    } catch {
+      /* best-effort — a registry hiccup must never break orientation */
+    }
+  }
+
   if (!monitor && (args.includeFleetCatchUp !== false || args.includeFleetHealth !== false)) {
     if (fleetSlug && args.includeFleetCatchUp !== false) {
       try {

@@ -19,7 +19,7 @@ export default defineTool({
     chaining: ROUTING_LADDER,
     seeAlso: ['fleet:wind-down (the canonical verb)', 'fleet:resume (lift it)'],
   },
-  capability: 'fleet:control',
+  capability: 'fleet:pause',
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
   args: z.object({
