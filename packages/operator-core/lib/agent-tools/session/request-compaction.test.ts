@@ -50,10 +50,27 @@ const injected = (): Envelope => (injectIntoHost.mock.calls[0] as [string, Envel
 const compactHost = { ownerId: 'su-caller', sock: '/tmp/sock', caps: ['compact'] };
 const oldHost = { ownerId: 'su-caller', sock: '/tmp/sock' }; // predates the 'compact' cap
 
+// turn-provenance P-002: the continuation note is now envelope+ledger-tagged
+// (origin self-compaction). Isolate the ledger dir so this suite never writes the
+// real ~/.papercusp/turn-provenance, and strip the envelope where an assertion is
+// about the NOTE itself.
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach } from 'vitest';
+let provDir = '';
+const ENVELOPE_LINE = /^⟦turn-origin:self-compaction nonce:[a-f0-9]{16}⟧\n/;
+
 beforeEach(() => {
   vi.clearAllMocks();
   injectIntoHost.mockResolvedValue(true);
   buildCarryBrief.mockResolvedValue(emptyBrief);
+  provDir = mkdtempSync(join(tmpdir(), 'reqcomp-prov-'));
+  process.env.PAPERCUSP_TURN_PROVENANCE_DIR = provDir;
+});
+afterEach(() => {
+  delete process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
+  rmSync(provDir, { recursive: true, force: true });
 });
 
 describe('session:request-compaction — WI-1804 auto-continuation caps gating', () => {
@@ -89,12 +106,15 @@ describe('session:request-compaction — WI-1804 auto-continuation caps gating',
     expect(b).toMatchObject({ autoContinue: false });
   });
 
-  it('continueNote overrides the derived wake text verbatim', async () => {
+  it('continueNote overrides the derived wake text verbatim (behind the provenance envelope)', async () => {
     findLiveHost.mockReturnValue(compactHost);
     await call({ focus: 'x', continueNote: 'resume: do the thing' });
     const msg = injected();
     expect(msg.mode).toBe('compact');
-    expect(msg.data).toBe('resume: do the thing');
+    // turn-provenance P-002: the typed continuation opens with the self-compaction
+    // envelope; the note itself rides verbatim after it.
+    expect(msg.data).toMatch(ENVELOPE_LINE);
+    expect(msg.data.replace(ENVELOPE_LINE, '')).toBe('resume: do the thing');
   });
 
   it('no live psu-pty host → clean no_live_pty_host error, nothing injected', async () => {
@@ -169,7 +189,8 @@ describe('session:request-compaction over-long hint truncation (EI-7032)', () =>
     it('an over-long continueNote also parses instead of rejecting', async () => {
       const b = body(await call({ focus: 'x', continueNote: 'z'.repeat(1400) }));
       expect(b).toMatchObject({ ok: true });
-      expect(injected().data.length).toBeLessThanOrEqual(1000);
+      // The NOTE is capped at 1000; the provenance envelope line rides on top of it.
+      expect(injected().data.replace(ENVELOPE_LINE, '').length).toBeLessThanOrEqual(1000);
     });
 
     it('a normal short focus is unaffected (byte-for-byte in the injected envelope)', async () => {

@@ -9,12 +9,16 @@ import type { Sql } from 'postgres';
 import { InvalidInputError } from '@papercusp/tooldef';
 import {
   assertFact,
+  parseFactSourceProvenance,
+  renderFactSrc,
   renderFactsFold,
   resolveFactScopeRef,
   resolveFederationWorkspace,
   retractFact,
+  validateAudienceScope,
   validateFactScope,
   type AgentFact,
+  type FactSourceProvenance,
 } from './store';
 
 describe('resolveFederationWorkspace (F1-4 / WI-1564)', () => {
@@ -187,6 +191,8 @@ describe('renderFactsFold', () => {
     key: 'k',
     body: 'WI-1439 is owner-residue — exclude from the placeable frontier',
     sourceRef: 'WI-1574',
+    audienceScope: null,
+    sourceProvenance: null,
     createdBy: 'su-test',
     updatedAt: new Date(0).toISOString(),
     expiresAt: new Date(3 * 86_400_000).toISOString(),
@@ -206,6 +212,129 @@ describe('renderFactsFold', () => {
     expect(out).toContain('[workspace]');
     expect(out).not.toContain('src ');
     expect(renderFactsFold([])).toBe('');
+  });
+
+  it('P-007: renders the audience tag and the verified provenance quote', () => {
+    const out = renderFactsFold(
+      [
+        fact({
+          audienceScope: 'fleet:backend',
+          sourceRef: 'msg:m-1',
+          sourceProvenance: { kind: 'msg', verified: true, quote: 'origin words', verifiedAt: 't' },
+        }),
+      ],
+      0,
+    );
+    expect(out).toContain('[role:mug ⊸fleet:backend]');
+    expect(out).toContain('src msg:m-1 ✓ "origin words"');
+  });
+});
+
+// ── coord-authority-hardening-2026-07-11 P-007 (H3+C) — the pure halves ─────────
+
+describe('validateAudienceScope (P-007 v1 grammar)', () => {
+  it('accepts absent/blank (unrestricted) and fleet:<slug>', () => {
+    expect(validateAudienceScope(undefined)).toBeNull();
+    expect(validateAudienceScope(null)).toBeNull();
+    expect(validateAudienceScope('')).toBeNull();
+    expect(validateAudienceScope('   ')).toBeNull();
+    expect(validateAudienceScope('fleet:p2p-git')).toBeNull();
+    expect(validateAudienceScope('fleet:Backend_2.x')).toBeNull();
+  });
+
+  it('rejects unknown grammars LOUDLY — a stored-but-unmatchable audience would hide the fact from everyone', () => {
+    for (const bad of ['fleet:', 'squad:x', 'fleet:@nope', 'owner:su-1', 'fleet:x y', 'FLEETbackend']) {
+      expect(validateAudienceScope(bad)).toMatch(/grammar/);
+    }
+  });
+});
+
+describe('assertFact audienceScope guard (P-007 — refuse before any write)', () => {
+  const failSql = (() => {
+    throw new Error('SQL SHOULD NOT BE REACHED — validation must refuse before any write');
+  }) as unknown as Sql;
+
+  it('an unknown audience grammar throws InvalidInputError (never stored unmatchable)', async () => {
+    await expect(
+      assertFact(
+        { scope: 'workspace', key: 'k', body: 'b', createdBy: 'su-test', audienceScope: 'squad:x' },
+        failSql,
+      ),
+    ).rejects.toBeInstanceOf(InvalidInputError);
+  });
+
+  it('a valid fleet audience passes the guard (reaches SQL)', async () => {
+    await expect(
+      assertFact(
+        { scope: 'workspace', key: 'k', body: 'b', createdBy: 'su-test', audienceScope: 'fleet:backend' },
+        failSql,
+      ),
+    ).rejects.toThrow(/SQL SHOULD NOT BE REACHED/);
+  });
+});
+
+describe('parseFactSourceProvenance (defensive jsonb round-trip read)', () => {
+  it('round-trips a valid stamp and drops unknown extras', () => {
+    expect(
+      parseFactSourceProvenance({
+        kind: 'owner-turn',
+        verified: true,
+        quote: 'the owner words',
+        label: 'owner turn 2026-07-11T00:00:00Z',
+        verifiedAt: '2026-07-11T00:00:01Z',
+        forged: 'junk',
+      }),
+    ).toEqual({
+      kind: 'owner-turn',
+      verified: true,
+      quote: 'the owner words',
+      label: 'owner turn 2026-07-11T00:00:00Z',
+      verifiedAt: '2026-07-11T00:00:01Z',
+    });
+  });
+
+  it('rejects absent/malformed/forged shapes → null, never throws', () => {
+    for (const junk of [
+      null,
+      undefined,
+      'string',
+      42,
+      {},
+      { kind: 'god-mode', verified: true, verifiedAt: 't' }, // forged kind
+      { kind: 'msg', verified: 'yes', verifiedAt: 't' }, // non-bool verified
+      { kind: 'msg', verified: true }, // missing verifiedAt
+    ]) {
+      expect(parseFactSourceProvenance(junk)).toBeNull();
+    }
+  });
+});
+
+describe('renderFactSrc (P-007 provenance-hydrated src)', () => {
+  const base = { sourceRef: 'msg:m-1' };
+
+  it('no stamp ⇒ the plain sourceRef (legacy/free-text unchanged); no source at all ⇒ empty', () => {
+    expect(renderFactSrc({ sourceRef: 'a-plan-slug', sourceProvenance: null })).toBe('a-plan-slug');
+    expect(renderFactSrc({ sourceRef: null, sourceProvenance: null })).toBe('');
+  });
+
+  it('verified with quote ⇒ `<ref> ✓ "<quote>"`; verified quote-less ⇒ label fallback', () => {
+    const stamp: FactSourceProvenance = { kind: 'msg', verified: true, quote: 'origin words', verifiedAt: 't' };
+    expect(renderFactSrc({ ...base, sourceProvenance: stamp })).toBe('msg:m-1 ✓ "origin words"');
+    expect(
+      renderFactSrc({
+        sourceRef: 'WI-4172',
+        sourceProvenance: { kind: 'work-item', verified: true, label: 'WI-4172 [feature/wip]', verifiedAt: 't' },
+      }),
+    ).toBe('WI-4172 ✓ WI-4172 [feature/wip]');
+  });
+
+  it('unverified renders LOUDLY with the error', () => {
+    expect(
+      renderFactSrc({ ...base, sourceProvenance: { kind: 'msg', verified: false, error: 'not_found', verifiedAt: 't' } }),
+    ).toBe('msg:m-1 ✗unverified (not_found)');
+    expect(
+      renderFactSrc({ ...base, sourceProvenance: { kind: 'msg', verified: false, verifiedAt: 't' } }),
+    ).toBe('msg:m-1 ✗unverified');
   });
 });
 

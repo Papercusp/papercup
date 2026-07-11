@@ -42,6 +42,7 @@ beforeAll(async () => {
     '455-agent-facts-shareable.sql',
     '461-agent-facts-federation.sql',
     '462-agent-facts-fed-key.sql',
+    '574-agent-facts-audience-provenance.sql',
   ]) {
     // EI-6887: shared strip-psql-meta-commands-and-txn-wrapper + apply helper
     // (lifted from this file's own former inline version).
@@ -178,5 +179,70 @@ describe('H6 local-partition discipline (foreign partitions untouchable locally)
     );
     const folded = await foldFacts([{ scope: 'harness', scopeRef: 'member-a' }], { workspaceId: WS }, db.sql);
     expect(folded.length).toBe(2);
+  });
+});
+
+// ── coord-authority-hardening-2026-07-11 P-007 (mig 574): audience filter +
+// source-provenance round-trip against the REAL columns ──
+describe('P-007 audience_scope + source_provenance (mig 574)', () => {
+  const SEL = [{ scope: 'harness' as const, scopeRef: 'papercusp' }];
+  const base = {
+    scope: 'harness' as const,
+    scopeRef: 'papercusp',
+    body: 'a conclusion',
+    createdBy: 'su-int',
+    workspaceId: WS,
+  };
+  const STAMP = {
+    kind: 'msg' as const,
+    verified: true,
+    quote: 'the verbatim origin',
+    label: 'msg m-1 (15179 → 4c85f, 2026-07-11T09:01Z)',
+    verifiedAt: '2026-07-11T00:00:01.000Z',
+  };
+
+  it('audienceScope + sourceProvenance round-trip through assert → fold', async () => {
+    await assertFact({ ...base, key: 'aud-rt', audienceScope: 'fleet:backend', sourceProvenance: STAMP }, db.sql);
+    const [f] = await foldFacts(SEL, { workspaceId: WS, audiences: ['fleet:backend'] }, db.sql);
+    expect(f.audienceScope).toBe('fleet:backend');
+    expect(f.sourceProvenance).toEqual(STAMP);
+  });
+
+  it('fold default excludes audience-scoped facts; only the MATCHING audience (or "all") includes them', async () => {
+    await assertFact({ ...base, key: 'aud-only', body: 'fleet-only', audienceScope: 'fleet:backend' }, db.sql);
+    await assertFact({ ...base, key: 'open', body: 'for everyone' }, db.sql);
+
+    const noAudience = await foldFacts(SEL, { workspaceId: WS }, db.sql);
+    expect(noAudience.map((f) => f.key)).toEqual(['open']);
+
+    const otherFleet = await foldFacts(SEL, { workspaceId: WS, audiences: ['fleet:frontend'] }, db.sql);
+    expect(otherFleet.map((f) => f.key)).toEqual(['open']);
+
+    const matching = await foldFacts(SEL, { workspaceId: WS, audiences: ['fleet:backend'] }, db.sql);
+    expect(matching.map((f) => f.key).sort()).toEqual(['aud-only', 'open']);
+
+    // facts:list's escape hatch — audience-scoped facts stay listable/retractable.
+    const all = await foldFacts(SEL, { workspaceId: WS, audiences: 'all' }, db.sql);
+    expect(all.map((f) => f.key).sort()).toEqual(['aud-only', 'open']);
+  });
+
+  it('a re-assert REPLACES audience + provenance (omitting them clears — fresh assert wins)', async () => {
+    await assertFact({ ...base, key: 'swap', audienceScope: 'fleet:backend', sourceProvenance: STAMP }, db.sql);
+    await assertFact({ ...base, key: 'swap', body: 'now unrestricted' }, db.sql);
+    const [f] = await foldFacts(SEL, { workspaceId: WS }, db.sql); // default fold now sees it
+    expect(f.key).toBe('swap');
+    expect(f.audienceScope).toBeNull();
+    expect(f.sourceProvenance).toBeNull();
+  });
+
+  it('a malformed/forged stored stamp reads back as null (defensive parse, fold never crashes)', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.agent_facts
+        (workspace_id, scope, scope_ref, key, body, created_by, expires_at, source_provenance)
+      VALUES (${WS}, 'harness', 'papercusp', 'forged', 'b', 'peer', now() + interval '1 day',
+              '{"kind":"god-mode","verified":"yes"}'::jsonb)`;
+    const [f] = await foldFacts(SEL, { workspaceId: WS }, db.sql);
+    expect(f.key).toBe('forged');
+    expect(f.sourceProvenance).toBeNull();
   });
 });

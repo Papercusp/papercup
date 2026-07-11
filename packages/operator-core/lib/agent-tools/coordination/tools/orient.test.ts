@@ -2,9 +2,12 @@ import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { composeOrient, orientServedDelta } from './orient';
 import type { InnerCall } from '../../_compound-dispatch';
 
-const foldFactsMock = vi.hoisted(() => vi.fn(async () => []));
+const foldFactsMock = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
 
-vi.mock('../../../agent-facts/store', () => ({
+// P-007: keep the PURE exports real (renderFactSrc renders the provenance-
+// hydrated src the fold projection is asserted on) — only the IO read is mocked.
+vi.mock('../../../agent-facts/store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../agent-facts/store')>()),
   foldFacts: foldFactsMock,
 }));
 
@@ -63,20 +66,23 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     // No intent ⇒ no memory recall, no declare.
     expect(r.memory).toBeUndefined();
     expect(r.intentDeclared).toBeUndefined();
-    // sequential order (never Promise.all on one ctx) + arg forwarding
+    // sequential order (never Promise.all on one ctx) + arg forwarding.
+    // P-007: coord:whoami is hoisted ABOVE the facts fold (the audience filter
+    // needs the caller's fleet), so it now precedes coord:plan-events.
     expect(calls.map((c) => c.name)).toEqual([
       'fleet:assignments',
       'work_items:list',
       'coord:inbox',
-      'coord:plan-events',
       'coord:whoami',
+      'coord:plan-events',
     ]);
     expect(calls[0].args).toMatchObject({ agent: 'me', harness: 'h' });
     // EI-7841: claimable is self-select context — must ask work_items:list to
     // exclude G2-admission-gated items so "claimable" matches what claim will do.
     expect(calls[1].args).toMatchObject({ harness: 'h', state: 'todo', limit: 20, admissibleOnly: true });
     expect(calls[2].args).toMatchObject({ limit: 10, max_body_chars: 300 });
-    expect(calls[3].args).toMatchObject({ limit: 10 });
+    // calls[3] is the hoisted coord:whoami (P-007); plan-events follows it.
+    expect(calls[4].args).toMatchObject({ limit: 10 });
   });
 
   it('omits the agent filter when no ownerId resolved (fleet-wide assignments)', async () => {
@@ -135,14 +141,15 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     // recipes:search uses intent as the query; result folded COMPACT (id/title/runCount/similarity).
     expect(calls.find((c) => c.name === 'recipes:search')!.args).toMatchObject({ query: 'implement P-005', limit: 3 });
     expect(r.recipes).toEqual([{ id: 'fan-out-wi', title: 'Fan-out work items', runCount: 7, similarity: 0.82 }]);
-    // order: core three → memory → plan-events → recipes → declare
+    // order: core three → memory → whoami (P-007: hoisted above the facts fold)
+    // → plan-events → recipes → declare
     expect(calls.map((c) => c.name)).toEqual([
       'fleet:assignments',
       'work_items:list',
       'coord:inbox',
       'memory:search',
-      'coord:plan-events',
       'coord:whoami',
+      'coord:plan-events',
       'recipes:search',
       'coord:declare-intent',
     ]);
@@ -594,6 +601,83 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     const r = await composeOrient({ intent: 'x' }, call, 'me');
     expect(r.memory!.hits).toHaveLength(2);
     expect(r.memory!.withheld).toBeUndefined();
+  });
+
+  // ── P-007 (coord-authority-hardening): facts fold — recipient audience filter
+  // + provenance-hydrated src projection ──
+  describe('P-007 facts fold: audience filter + provenance-hydrated src', () => {
+    const FLEET_CTX = {
+      'coord:whoami': () => ({ fleetSlug: 'backend' }),
+      'coord:catch-up': () => ({ total: 0, rows: [] }),
+    };
+    const baseFact = {
+      key: 'k',
+      createdBy: 'x',
+      updatedAt: '2026-07-11T00:00:00Z',
+      expiresAt: '2026-07-18T00:00:00Z',
+    };
+
+    it('a fleet caller folds with audiences [fleet:<slug>]; aud + verified quote projected', async () => {
+      foldFactsMock.mockResolvedValue([
+        {
+          ...baseFact,
+          scope: 'harness',
+          scopeRef: 'h',
+          body: 'fleet-scoped conclusion',
+          sourceRef: 'msg:m-1',
+          audienceScope: 'fleet:backend',
+          sourceProvenance: { kind: 'msg', verified: true, quote: 'the verbatim origin', label: 'msg m-1', verifiedAt: 't' },
+        },
+        {
+          ...baseFact,
+          scope: 'workspace',
+          scopeRef: null,
+          body: 'plain',
+          sourceRef: 'a-plan-slug',
+          audienceScope: null,
+          sourceProvenance: null,
+        },
+      ]);
+      const { call } = fakeCall({ ...CORE, ...FLEET_CTX });
+      const r = await composeOrient({ harness: 'h' }, call, 'me');
+      expect(foldFactsMock).toHaveBeenCalledWith(
+        [
+          { scope: 'workspace' },
+          { scope: 'owner', scopeRef: 'me' },
+          { scope: 'harness', scopeRef: 'h' },
+        ],
+        { audiences: ['fleet:backend'] },
+      );
+      expect(r.facts).toEqual([
+        { scope: 'harness', ref: 'h', body: 'fleet-scoped conclusion', src: 'msg:m-1 ✓ "the verbatim origin"', aud: 'fleet:backend' },
+        { scope: 'workspace', ref: null, body: 'plain', src: 'a-plan-slug' },
+      ]);
+    });
+
+    it('a non-fleet caller folds with an EMPTY audience list (only unrestricted facts)', async () => {
+      const { call } = fakeCall({ ...CORE });
+      await composeOrient({}, call, 'me');
+      expect(foldFactsMock).toHaveBeenCalledWith(expect.anything(), { audiences: [] });
+    });
+
+    it('an UNVERIFIED typed sourceRef renders LOUDLY in src (never silently dropped)', async () => {
+      foldFactsMock.mockResolvedValue([
+        {
+          ...baseFact,
+          scope: 'workspace',
+          scopeRef: null,
+          body: 'b',
+          sourceRef: 'msg:m-gone',
+          audienceScope: null,
+          sourceProvenance: { kind: 'msg', verified: false, error: 'not_found', verifiedAt: 't' },
+        },
+      ]);
+      const { call } = fakeCall({ ...CORE });
+      const r = await composeOrient({}, call, 'me');
+      expect(r.facts).toEqual([
+        { scope: 'workspace', ref: null, body: 'b', src: 'msg:m-gone ✗unverified (not_found)' },
+      ]);
+    });
   });
 });
 

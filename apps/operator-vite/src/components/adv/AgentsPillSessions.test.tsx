@@ -196,3 +196,40 @@ describe('searchFailureMessage', () => {
     expect(searchFailureMessage(null)).toBe('Search failed.');
   });
 });
+
+describe('InactiveSessionsSection row layout (WI-4195 r3 — name not truncated to one letter)', () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it('gives each inactive-session row the --nocheck grid modifier (no leading checkbox column)', async () => {
+    // jsdom has no IntersectionObserver; the section wires one for infinite scroll.
+    vi.stubGlobal('IntersectionObserver', class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        sessions: [endedRow({ id: 7, sessionId: 's-7', coordOwnerId: 'su-abcdef', label: 'a real session name', agent: 'claude' })],
+        hasMore: false,
+        nextBefore: null,
+      }),
+    })));
+
+    render(<InactiveSessionsSection activeOwnerIds={new Set()} nowMs={Date.parse('2026-07-09T02:00:00Z')} />);
+    fireEvent.click(screen.getByTestId('inactive-sessions-toggle'));
+
+    const row = await waitFor(() => screen.getByTestId('inactive-session-7'));
+    // The roster row's 5-col grid reserves col 1 for the checkbox; a checkbox-less
+    // row MUST drop it via --nocheck or the name lands in the 16px glyph column
+    // and truncates to one letter (the reported bug).
+    expect(row.className).toContain('pc-agents-roster__row');
+    expect(row.className).toContain('pc-agents-roster__row--nocheck');
+    // The full name renders (its own CSS ellipsizes past 200px; it is not clipped to a letter here).
+    expect(row.textContent).toContain('a real session name');
+  });
+});

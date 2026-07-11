@@ -11,6 +11,8 @@
  * Run: cd packages/operator-core && npx vitest run lib/system-health/compaction-compliance-watchdog.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const {
   estimateMock,
@@ -138,6 +140,10 @@ beforeEach(() => {
   // silence it so vitest-fail-on-console doesn't flag the expected output.
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
+  // turn-provenance P-002: the force-compact continuation is envelope+ledger-
+  // tagged (origin watchdog) — point the ledger at a throwaway dir so this suite
+  // never writes the real ~/.papercusp/turn-provenance.
+  process.env.PAPERCUSP_TURN_PROVENANCE_DIR = join(tmpdir(), `wd-prov-${process.pid}`);
 });
 
 describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () => {
