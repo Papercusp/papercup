@@ -4194,6 +4194,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return listPreferenceEntries();
     },
   },
+  'operatorStandingApprovals.byWorkspace': {
+    resolve: async () => {
+      const { readCandidates } = await import('../operator-standing-candidates');
+      return readCandidates();
+    },
+  },
   'userPreferences.current': {
     resolve: async () => {
       const [{ getSessionUser }, { loadUserPreferences }] = await Promise.all([

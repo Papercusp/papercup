@@ -199,6 +199,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.operator_turns': ['operatorTurns.byConversation'],
   'harness_shared.operator_prompt_user': ['operatorConfig.byWorkspace'],
   'harness_shared.operator_preferences': ['operatorConfig.byWorkspace', 'operatorPreferences.byWorkspace'],
+  'harness_shared.operator_standing_candidates': ['operatorStandingApprovals.byWorkspace'],
   'harness_shared.operator_voice_prefs': ['voicePrefs.effective', 'voicePrefs.workspace'],
   'harness_shared.user_preferences': ['userPreferences.current', 'voicePrefs.effective'],
   'harness_shared.operator_account_override': ['accounts.sessionOverride', 'accounts.pool'],

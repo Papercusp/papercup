@@ -87,6 +87,14 @@ function fmtAgo(ts: number | string): string {
   return `${Math.round(h / 24)}d ago`;
 }
 
+function noteBodies(raw: string): string[] {
+  if (!raw.trim()) return [];
+  return raw
+    .split(/^## \S+ \d{4}-\d{2}-\d{2}T[^\n]+\s*$/gm)
+    .map((body) => body.trim())
+    .filter(Boolean);
+}
+
 export type SelectionKind = 'feature' | 'issue' | 'workItem' | 'agent';
 
 /**
@@ -593,6 +601,13 @@ function FeatureDetail({
   const [notesOpen, setNotesOpen] = useState(false);
   const [steerNote, setSteerNote] = useState('');
   const { confirm, element: confirmEl } = useConfirmDialog();
+  const notesSync = useSyncQuery<{ featureId: string; content: string }>({
+    queryName: 'featureNotes.byHarness',
+    args: { harnessSlug: slug },
+    enabled: !!slug,
+    staleTime: 30_000,
+  });
+  const syncedNote = notesSync.data?.find((row) => row.featureId === feature.id);
 
   // Add a steer note for the worker — POSTs a block to .papercusp/notes/<id>.md
   // (the OperatorNoteForm contract). Optimistically appends to the local list.
@@ -608,6 +623,7 @@ function FeatureDetail({
       });
       if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
       setNotes((prev) => [...(prev ?? []), content]); // optimistic append
+      notesSync.invalidate();
       setSteerNote('');
       setNotesOpen(true);
       toast.success('Steer note added');
@@ -616,7 +632,7 @@ function FeatureDetail({
     } finally {
       setWorking(null);
     }
-  }, [slug, feature.id, steerNote]);
+  }, [feature.id, notesSync, slug, steerNote]);
 
   // Issues filed against this feature: linked as the fix (linkedFeatureId) or
   // found while working on it (foundDuring).
@@ -634,31 +650,13 @@ function FeatureDetail({
     [runs, feature.id],
   );
 
-  // Steer notes (operator notes for this feature). Collapsed unless populated.
   useEffect(() => {
-    let aborted = false;
-    setNotes(null);
-    fetch(`/api/harness/${encodeURIComponent(slug)}/features/${encodeURIComponent(feature.id)}/notes`)
-      .then((r) => (r.ok ? r.json() : { blocks: [] }))
-      .then((d: { blocks?: unknown[] }) => {
-        if (aborted) return;
-        const texts = (d.blocks ?? [])
-          .map((b) => {
-            if (typeof b === 'string') return b;
-            if (b && typeof b === 'object') {
-              const o = b as Record<string, unknown>;
-              return String(o.text ?? o.body ?? o.markdown ?? o.content ?? '');
-            }
-            return '';
-          })
-          .filter((t) => t.trim().length > 0);
-        setNotes(texts);
-      })
-      .catch(() => !aborted && setNotes([]));
-    return () => {
-      aborted = true;
-    };
-  }, [slug, feature.id]);
+    if (notesSync.loading) {
+      setNotes(null);
+      return;
+    }
+    setNotes(noteBodies(syncedNote?.content ?? ''));
+  }, [notesSync.loading, syncedNote?.content]);
 
   const callJson = useCallback(
     async (path: string, init?: RequestInit) => {

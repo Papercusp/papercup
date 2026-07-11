@@ -10,6 +10,7 @@ import { SettingsMarkdownEditor } from '../SettingsMarkdownEditor';
 import { useFormWith, SubmitButton } from '@/lib/forms';
 import { useLexicon } from '@/lib/useLexicon';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
+import { useSyncQuery } from '@papercusp/sync';
 
 // Form schema — both fields are free-form markdown, allowed to be empty.
 const ConfigSchema = z.object({
@@ -69,15 +70,14 @@ export default function OperatorSettingsPage() {
     totalSpendUsd: number;
     byActorMethod?: { voice: number; click: number; api: number; unspecified: number };
   } | null>(null);
-
-  const loadOperatorExtras = useCallback(async () => {
-    const [candR, statsR] = await Promise.all([
-      fetch('/api/agent-mcp/operator-standing-approvals').then((r) => r.json()).catch(() => ({ candidates: [] })),
-      fetch('/api/agent-mcp/operator-stats').then((r) => r.json()).catch(() => null),
-    ]);
-    setCandidates(candR.candidates ?? []);
-    setStats(statsR);
-  }, []);
+  const configSync = useSyncQuery<OperatorConfig>({ queryName: 'operatorConfig.byWorkspace', staleTime: 30_000 });
+  const prefsSync = useSyncQuery<PreferenceEntry>({ queryName: 'operatorPreferences.byWorkspace', staleTime: 30_000 });
+  const budgetSync = useSyncQuery<{ dailyCapUsd: number; todaySpendUsd: number; configured: boolean }>({
+    queryName: 'operatorBudget.byWorkspace', staleTime: 30_000,
+  });
+  const candidatesSync = useSyncQuery<{ capability: string; targetHarness: string; count: number; lastSeenAt: string }>({
+    queryName: 'operatorStandingApprovals.byWorkspace', staleTime: 30_000,
+  });
 
   // Seed the prompt/preferences FORM exactly once. loadAll re-runs after
   // saves and actions (and twice on mount under StrictMode, both fetches in
@@ -85,25 +85,23 @@ export default function OperatorSettingsPage() {
   // Display data (cfg paths, entries, budget, candidates) re-applies freely.
   const formSeededRef = useRef(false);
 
-  const loadAll = useCallback(async (options?: { blockOnExtras?: boolean }) => {
-    const [cfgR, prefsR, budgetR] = await Promise.all([
-      fetch('/api/agent-mcp/operator-config').then((r) => r.json()),
-      fetch('/api/agent-mcp/operator-preferences').then((r) => r.json()),
-      fetch('/api/agent-mcp/operator-budget').then((r) => r.json()),
-    ]);
+  useEffect(() => {
+    const cfgR = configSync.data?.[0];
+    if (!cfgR) return;
     setCfg(cfgR);
     if (!formSeededRef.current) {
       formSeededRef.current = true;
       reset({ prompt_user: cfgR.prompt_user ?? '', preferences: cfgR.preferences ?? '' });
     }
-    setEntries(prefsR.entries ?? []);
-    setBudget(budgetR);
+  }, [configSync.data, reset]);
+  useEffect(() => setEntries(prefsSync.data ?? []), [prefsSync.data]);
+  useEffect(() => setBudget(budgetSync.data?.[0] ?? null), [budgetSync.data]);
+  useEffect(() => setCandidates(candidatesSync.data ?? []), [candidatesSync.data]);
 
-    const extrasPromise = loadOperatorExtras();
-    if (options?.blockOnExtras ?? true) {
-      await extrasPromise;
-    }
-  }, [loadOperatorExtras, reset]);
+  useEffect(() => {
+    if (!statsOpen) return;
+    void fetch('/api/agent-mcp/operator-stats').then((r) => r.json()).then(setStats).catch(() => {});
+  }, [statsOpen]);
 
   const decideCandidate = useCallback(async (capability: string, targetHarness: string, decision: 'approve' | 'dismiss') => {
     try {
@@ -115,25 +113,16 @@ export default function OperatorSettingsPage() {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       // Refresh only the candidates/stats — never the form (an unsaved
       // prompt edit must survive approving a card on the same page).
-      await loadOperatorExtras();
+      candidatesSync.invalidate();
+      prefsSync.invalidate();
     } catch (err) {
       toast.error(`standing-approval ${decision} failed: ${(err as Error).message}`);
     }
-  }, [loadOperatorExtras]);
+  }, [candidatesSync, prefsSync]);
 
   useEffect(() => {
-    let cancelled = false;
-    loadAll({ blockOnExtras: false })
-      .catch((e) => {
-        if (!cancelled) toast.error(`load failed: ${e?.message ?? e}`);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [loadAll]);
+    setLoading(configSync.loading || prefsSync.loading || budgetSync.loading || candidatesSync.loading);
+  }, [budgetSync.loading, candidatesSync.loading, configSync.loading, prefsSync.loading]);
 
 
   const onSave = async (data: ConfigFormData) => {
@@ -151,7 +140,7 @@ export default function OperatorSettingsPage() {
       // Mark the form clean with exactly what was saved (loadAll no longer
       // resets the form — its once-guard protects in-flight edits).
       reset(data);
-      await loadAll();
+      configSync.invalidate();
       toast.success('Saved');
     } catch (err: any) {
       toast.error(`save failed: ${err?.message ?? err}`);
@@ -166,9 +155,10 @@ export default function OperatorSettingsPage() {
     });
     if (!ok) return;
     await fetch(`/api/agent-mcp/operator-preferences?key=${encodeURIComponent(key)}`, { method: 'DELETE' });
-    await loadAll();
+    prefsSync.invalidate();
+    configSync.invalidate();
     toast.success('Removed');
-  }, [loadAll, askConfirm]);
+  }, [askConfirm, configSync, prefsSync]);
 
   const setBudgetCap = useCallback(async (cap: number) => {
     await fetch('/api/agent-mcp/operator-budget', {
@@ -176,8 +166,8 @@ export default function OperatorSettingsPage() {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ dailyCapUsd: cap }),
     });
-    await loadAll();
-  }, [loadAll]);
+    budgetSync.invalidate();
+  }, [budgetSync]);
 
 
   const filteredEntries = useMemo(() => {

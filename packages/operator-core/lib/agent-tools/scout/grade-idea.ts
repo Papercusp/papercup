@@ -33,6 +33,7 @@ import { getOrgPg } from '@papercusp/db-org';
 
 import { gradeRoutedIdea, type GradeRoutedIdeaInput, type GradeRoutedIdeaResult } from '../../scout/routed-ledger';
 import { softText, clampText, LIMITS } from '../limits';
+import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
 
 /** Grader attribution vocabulary (C-1 / D-004) — the seam's input type is the pin. */
 export type GradedBy = GradeRoutedIdeaInput['gradedBy'];
@@ -66,7 +67,13 @@ export interface GradedIdeaSummary {
 }
 
 /** The C-2 result + attribution + row summary — the tool's full payload. */
-export interface GradeIdeaOutcome extends GradeRoutedIdeaResult {
+export interface GradeIdeaOutcome extends Omit<GradeRoutedIdeaResult, 'reason'> {
+  /**
+   * The C-2 seam's reasons PLUS the tool-layer 'no-self-grade' refusal (D-012):
+   * a guard that lives ABOVE the write seam — the ledger's gradeRoutedIdea never
+   * produces it — so it widens `reason` only here, keeping the seam type clean.
+   */
+  reason?: GradeRoutedIdeaResult['reason'] | 'no-self-grade';
   gradedBy: GradedBy;
   /** The resolved ledger key (null when a routedRef resolved to nothing). */
   ideaId: string | null;
@@ -167,6 +174,20 @@ async function readIdeaSummary(ideaId: string): Promise<GradedIdeaSummary | null
     createdBy: r.created_by,
     workspaceId: r.workspace_id,
   };
+}
+
+/**
+ * D-012 pre-write lookup: the row's ORIGINATOR (created_by), read BEFORE the grade
+ * write so the no-self-grade guard can refuse without ever touching the ledger.
+ * PK-keyed and deliberately NOT workspace-narrowed for the same EI-346 reason as
+ * the readers above. Returns null for an absent row (the write's own not-found path
+ * handles that) or a row with no recorded originator.
+ */
+async function readCreatedBy(ideaId: string): Promise<string | null> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ created_by: string | null }[]>`
+    SELECT created_by FROM harness_shared.scout_routed_ideas WHERE idea_id = ${ideaId}`;
+  return rows[0]?.created_by ?? null;
 }
 
 // ── P-005: the grade→revise notice (su-ideate-learning-substrate D-008) ───────
@@ -301,6 +322,8 @@ export interface GradeIdeaDeps {
   gradeRoutedIdea: typeof gradeRoutedIdea;
   resolveIdeaIdFromRef: typeof resolveIdeaIdFromRef;
   readIdeaSummary: typeof readIdeaSummary;
+  /** D-012: pre-write originator lookup for the no-self-grade guard. */
+  readCreatedBy: typeof readCreatedBy;
   /** P-005: the revision-notice delivery port (durable note + optional wake). */
   sendRevisionNotice: RevisionNoticePort;
 }
@@ -309,13 +332,14 @@ const defaultDeps: GradeIdeaDeps = {
   gradeRoutedIdea,
   resolveIdeaIdFromRef,
   readIdeaSummary,
+  readCreatedBy,
   sendRevisionNotice: deliverRevisionNotice,
 };
 
 /** The testable core: resolve key → C-2 write → row read-back. */
 export async function runGradeIdea(
   args: GradeIdeaArgs,
-  ctx: { role?: string } | undefined,
+  ctx: { role?: string; ownerId?: string | null } | undefined,
   deps: GradeIdeaDeps = defaultDeps,
 ): Promise<GradeIdeaOutcome> {
   const gradedBy = deriveGradedBy(ctx);
@@ -324,6 +348,22 @@ export async function runGradeIdea(
   const ideaId = args.ideaId ?? (await deps.resolveIdeaIdFromRef(args.routedRef as string));
   if (ideaId == null) {
     return { applied: false, reason: 'not-found', gradedBy, ideaId: null, idea: null };
+  }
+
+  // D-012 (owner 2026-07-10, BINDING) — the no-self-grade guard. An ideator grading
+  // its OWN routed filing is a self-licking loop: a self-authored grade would feed
+  // fractional win credit into the lens weights (C-5), prime the ideator with its own
+  // critique (C-4), and could self-trigger the P-005 grade→revise wake. When the caller
+  // AUTHORED this row (created_by === caller ownerId) we REFUSE before the write — no
+  // self grade ever reaches the ledger, so none of the learning seams are polluted.
+  // Caller-attributed ONLY: an unattributable ctx (no ownerId) cannot be a proven
+  // self-grade, so it falls through unchanged (the pre-D-012 behavior).
+  const callerOwnerId = ctx?.ownerId ?? null;
+  if (callerOwnerId) {
+    const createdBy = await deps.readCreatedBy(ideaId);
+    if (createdBy && createdBy === callerOwnerId) {
+      return { applied: false, reason: 'no-self-grade', gradedBy, ideaId, idea: null };
+    }
   }
 
   const result = await deps.gradeRoutedIdea({
@@ -407,6 +447,20 @@ export function toToolResult(out: GradeIdeaOutcome): {
     content: [{ type: 'text', text: JSON.stringify(out, null, 2) }],
     ...(out.reason === 'not-found' ? { isError: true } : {}),
   };
+}
+
+/**
+ * D-012: best-effort caller ownerId for the no-self-grade guard. resolveAgentIdentity
+ * THROWS on an unattributable ctx — the guard then FAILS OPEN (null ownerId ⇒ no
+ * self-grade comparison, i.e. exactly the pre-D-012 behavior), so an attribution miss
+ * never blocks a legitimate cross-author grade.
+ */
+function resolveCallerOwnerId(ctx: ResolveIdentityCtx | undefined): string | null {
+  try {
+    return resolveAgentIdentity((ctx ?? {}) as ResolveIdentityCtx).ownerId;
+  } catch {
+    return null;
+  }
 }
 
 export default defineTool({

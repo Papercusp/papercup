@@ -7,6 +7,7 @@ import { Checkbox } from '../../harness/Checkbox';
 import { Select } from '../../harness/Select';
 import { DraftNumberInput } from '@/lib/forms';
 import RouteLink from '@/app/_components/RouteLink';
+import { useSyncQuery } from '@papercusp/sync';
 
 interface User {
   id: string;
@@ -160,6 +161,12 @@ export default function UserSettingsPage() {
   const [user, setUser] = useState<User>(FALLBACK_USER);
   const [effective, setEffective] = useState<EffectivePrefs>({ workspace: {}, user: {} });
   const [loading, setLoading] = useState(true);
+  const userPrefsSync = useSyncQuery<{ payload: Record<string, unknown> }>({
+    queryName: 'userPreferences.current', staleTime: 30_000,
+  });
+  const workspacePrefsSync = useSyncQuery<Record<string, unknown>>({
+    queryName: 'voicePrefs.workspace', staleTime: 30_000,
+  });
 
   // Display name edit
   const [displayName, setDisplayName] = useState('');
@@ -173,29 +180,24 @@ export default function UserSettingsPage() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [me, prefsJson, workspaceJson] = await Promise.all([
-        fetch('/api/auth/me').then((r) => (r.ok ? r.json() : null)).catch(() => null),
-        fetch('/api/user/preferences').then((r) => r.ok ? r.json() : { payload: {} }),
-        // ?layer=workspace returns workspace-only prefs (no user merge),
-        // so we can show the true fallback value alongside the override.
-        fetch('/api/agent-mcp/operator-voice-prefs?layer=workspace')
-          .then((r) => r.ok ? r.json() : null)
-          .catch(() => null),
-      ]);
+      const me = await fetch('/api/auth/me').then((r) => (r.ok ? r.json() : null)).catch(() => null);
       // Under auto-login `/api/auth/me` returns no `user`; fall back to the
       // default identity (matches UserPicker) instead of "Not signed in".
       const resolvedUser: User = me?.user ?? FALLBACK_USER;
       setUser(resolvedUser);
       setDisplayName(resolvedUser.display_name ?? '');
-      const userPrefs = prefsJson.payload ?? {};
-      const workspace: Record<string, unknown> = workspaceJson ?? {};
-      setEffective({ workspace, user: userPrefs });
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    setEffective({
+      workspace: workspacePrefsSync.data?.[0] ?? {},
+      user: userPrefsSync.data?.[0]?.payload ?? {},
+    });
+  }, [userPrefsSync.data, workspacePrefsSync.data]);
 
   const setOverride = useCallback(async (key: string, value: unknown) => {
     const r = await fetch('/api/user/preferences', {
@@ -208,8 +210,10 @@ export default function UserSettingsPage() {
       return;
     }
     setEffective((p) => ({ ...p, user: { ...p.user, [key]: value } }));
+    userPrefsSync.invalidate();
+    workspacePrefsSync.invalidate();
     toast.success(`Override saved for ${key}`);
-  }, []);
+  }, [userPrefsSync, workspacePrefsSync]);
 
   const clearOverride = useCallback(async (key: string) => {
     const r = await fetch(`/api/user/preferences?key=${encodeURIComponent(key)}`, { method: 'DELETE' });
@@ -218,8 +222,10 @@ export default function UserSettingsPage() {
       return;
     }
     setEffective((p) => { const u = { ...p.user }; delete u[key]; return { ...p, user: u }; });
+    userPrefsSync.invalidate();
+    workspacePrefsSync.invalidate();
     toast.success(`Cleared override for ${key}`);
-  }, []);
+  }, [userPrefsSync, workspacePrefsSync]);
 
   const saveDisplayName = useCallback(async () => {
     setSavingName(true);
