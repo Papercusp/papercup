@@ -5,7 +5,12 @@
  *   - the flag-gated `clusterFrictionByEmbedding`: the money case (a re-worded
  *     friction pair the lexical findLikelyDuplicates MISSES is caught by cosine),
  *     plus the fail-open contract (flag-off / VITEST-inert / disabled /
- *     dims-mismatch / wrong-width all degrade to null → the lexical control).
+ *     dims-mismatch / wrong-width / no-stored-vector all degrade to null or a
+ *     per-row skip → the lexical control).
+ *
+ * WI-4183/EI-9694: the leg now REUSES stored migration-551 vectors join-wise
+ * (queryStoredVectors) instead of calling .embed() per title — these tests inject
+ * `queryStoredVectors` directly rather than mocking an `embed` function.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -32,24 +37,27 @@ function vecFor(topic: number): number[] {
   return v;
 }
 
-/** Injected embedder deps mapping title → topic axis (so the test owns every cosine). */
+/** Injected deps: a fixed resolved mode/dims + a stored-vector map keyed by candidate id
+ *  (mirrors the real join: an id absent from `vectorsById` has no stored vector). */
 function makeDeps(opts: {
-  topicByTitle?: Record<string, number>;
+  vectorsById?: Record<string, number[]>;
   dims?: number;
   mode?: string;
   disabled?: boolean;
-  embedLen?: number;
-}): DigestEmbedClusterDeps & { embed: ReturnType<typeof vi.fn> } {
-  const embed = vi.fn(async (title: string) => {
-    if (opts.embedLen != null) return new Array(opts.embedLen).fill(0.01);
-    const topic = opts.topicByTitle?.[title] ?? 999;
-    return vecFor(topic);
+}): DigestEmbedClusterDeps & { queryStoredVectors: ReturnType<typeof vi.fn> } {
+  const queryStoredVectors = vi.fn(async (_mode: string, ids: string[]) => {
+    const m = new Map<string, number[]>();
+    for (const id of ids) {
+      const v = opts.vectorsById?.[id];
+      if (v) m.set(id, v);
+    }
+    return m;
   });
   const resolveEmbedder = async () =>
     opts.disabled
       ? ({ mode: 'disabled' as const, reason: 'test' })
-      : { mode: opts.mode ?? 'gemma', dims: opts.dims ?? DIM, embed };
-  return { resolveEmbedder, embed };
+      : { mode: opts.mode ?? 'gemma', dims: opts.dims ?? DIM, embed: vi.fn() };
+  return { resolveEmbedder, queryStoredVectors };
 }
 
 const FLAG = 'PAPERCUSP_SU_DIGEST_EMBED_CLUSTER';
@@ -99,7 +107,9 @@ describe('clusterFrictionByEmbedding — the experiment (flag-gated, fail-open)'
 
     // Experiment: same topic axis for the pair, orthogonal for the third → one cluster.
     enable();
-    const deps = makeDeps({ topicByTitle: { [reworded[0].title]: 0, [reworded[1].title]: 0, [reworded[2].title]: 1 } });
+    const deps = makeDeps({
+      vectorsById: { 'wi:1': vecFor(0), 'wi:2': vecFor(0), 'wi:3': vecFor(1) },
+    });
     const clusters = await clusterFrictionByEmbedding(reworded, deps);
     expect(clusters).not.toBeNull();
     expect(clusters).toHaveLength(1);
@@ -107,10 +117,20 @@ describe('clusterFrictionByEmbedding — the experiment (flag-gated, fail-open)'
     expect(clusters![0].signature).toBe(dedupSignature(reworded[0].title));
   });
 
-  it('is deterministic — same candidates + embeddings ⇒ identical clusters', async () => {
+  it('queries stored vectors under the CURRENT resolved mode, not a hardcoded one', async () => {
+    enable();
+    const deps = makeDeps({
+      mode: 'harrier-ish-but-384', // any string; the leg passes resolved.mode through verbatim
+      vectorsById: { 'wi:1': vecFor(0), 'wi:2': vecFor(0), 'wi:3': vecFor(1) },
+    });
+    await clusterFrictionByEmbedding(reworded, deps);
+    expect(deps.queryStoredVectors).toHaveBeenCalledWith('harrier-ish-but-384', ['wi:1', 'wi:2', 'wi:3']);
+  });
+
+  it('is deterministic — same candidates + stored vectors ⇒ identical clusters', async () => {
     enable();
     const mkDeps = () =>
-      makeDeps({ topicByTitle: { [reworded[0].title]: 0, [reworded[1].title]: 0, [reworded[2].title]: 1 } });
+      makeDeps({ vectorsById: { 'wi:1': vecFor(0), 'wi:2': vecFor(0), 'wi:3': vecFor(1) } });
     const a = await clusterFrictionByEmbedding(reworded, mkDeps());
     const b = await clusterFrictionByEmbedding(reworded, mkDeps());
     expect(a).toEqual(b);
@@ -121,25 +141,34 @@ describe('clusterFrictionByEmbedding — the experiment (flag-gated, fail-open)'
     process.env.PAPERCUSP_SU_DIGEST_EMBED_CLUSTER_THRESHOLD = '0.99';
     // wi:1 = [1,0,…]; wi:2 = [0.8,0.6,…] ⇒ cosine 0.8, clearly below the raised 0.99
     // bar, so the otherwise-clustering pair now stays apart. wi:3 orthogonal.
-    const deps: DigestEmbedClusterDeps = {
-      resolveEmbedder: async () => ({
-        mode: 'gemma',
-        dims: DIM,
-        embed: async (t: string) =>
-          t === reworded[0].title
-            ? vecFor(0)
-            : t === reworded[1].title
-              ? [0.8, 0.6, ...new Array(DIM - 2).fill(0)]
-              : vecFor(5),
-      }),
-    };
+    const deps = makeDeps({
+      vectorsById: {
+        'wi:1': vecFor(0),
+        'wi:2': [0.8, 0.6, ...new Array(DIM - 2).fill(0)],
+        'wi:3': vecFor(5),
+      },
+    });
+    expect(await clusterFrictionByEmbedding(reworded, deps)).toEqual([]);
+  });
+
+  it('defaults the threshold to 0.92 (raised post-EI-9693) when no override is set', async () => {
+    enable();
+    // cosine ~0.894 (angle 26.57°) between wi:1/wi:2 — above the OLD 0.85 default,
+    // below the NEW 0.92 default.
+    const deps = makeDeps({
+      vectorsById: {
+        'wi:1': [1, 0, ...new Array(DIM - 2).fill(0)],
+        'wi:2': [0.894, 0.447, ...new Array(DIM - 2).fill(0)],
+        'wi:3': vecFor(5),
+      },
+    });
     expect(await clusterFrictionByEmbedding(reworded, deps)).toEqual([]);
   });
 
   it('fail-opens to null when the flag is OFF (the default control path)', async () => {
     // no enable() — flag stays off
     expect(digestEmbedClusterEnabled()).toBe(false);
-    const deps = makeDeps({ topicByTitle: { [reworded[0].title]: 0, [reworded[1].title]: 0 } });
+    const deps = makeDeps({ vectorsById: { 'wi:1': vecFor(0), 'wi:2': vecFor(0) } });
     expect(await clusterFrictionByEmbedding(reworded, deps)).toBeNull();
   });
 
@@ -155,20 +184,42 @@ describe('clusterFrictionByEmbedding — the experiment (flag-gated, fail-open)'
 
   it('fail-opens to null on a dims mismatch (harrier@1024 ≠ vector(384))', async () => {
     enable();
-    const deps = makeDeps({ dims: 1024, topicByTitle: { [reworded[0].title]: 0, [reworded[1].title]: 0 } });
+    const deps = makeDeps({ dims: 1024, vectorsById: { 'wi:1': vecFor(0), 'wi:2': vecFor(0) } });
     expect(await clusterFrictionByEmbedding(reworded, deps)).toBeNull();
-    expect(deps.embed).not.toHaveBeenCalled(); // rejected before embedding
+    expect(deps.queryStoredVectors).not.toHaveBeenCalled(); // rejected before the join
   });
 
-  it('fail-opens to null when the embedder returns a wrong-width vector', async () => {
+  it('excludes a candidate whose vector has the wrong width instead of failing the whole leg', async () => {
     enable();
-    const deps = makeDeps({ embedLen: 10, topicByTitle: { [reworded[0].title]: 0 } });
+    const deps = makeDeps({
+      vectorsById: {
+        'wi:1': vecFor(0),
+        'wi:2': new Array(10).fill(0.01), // wrong width — must not blow up the cosine pass
+        'wi:3': vecFor(1),
+      },
+    });
+    // wi:2 is excluded (wrong width); only wi:1/wi:3 remain, orthogonal ⇒ no cluster.
+    expect(await clusterFrictionByEmbedding(reworded, deps)).toEqual([]);
+  });
+
+  it('fail-opens to null when fewer than 2 candidates have a usable stored vector', async () => {
+    enable();
+    // Only wi:1 has backfilled; wi:2/wi:3 haven't — not enough to cluster.
+    const deps = makeDeps({ vectorsById: { 'wi:1': vecFor(0) } });
     expect(await clusterFrictionByEmbedding(reworded, deps)).toBeNull();
+  });
+
+  it('skips a not-yet-backfilled candidate (per-row fail-open) rather than forfeiting the leg', async () => {
+    enable();
+    // wi:3 has no stored vector at all (never backfilled) — wi:1/wi:2 still cluster.
+    const deps = makeDeps({ vectorsById: { 'wi:1': vecFor(0), 'wi:2': vecFor(0) } });
+    const clusters = await clusterFrictionByEmbedding(reworded, deps);
+    expect(clusters).toEqual([{ signature: dedupSignature(reworded[0].title), ids: ['wi:1', 'wi:2'] }]);
   });
 
   it('fail-opens to null on too few candidates (nothing to cluster)', async () => {
     enable();
-    const deps = makeDeps({ topicByTitle: { [reworded[0].title]: 0 } });
+    const deps = makeDeps({ vectorsById: { 'wi:1': vecFor(0) } });
     expect(await clusterFrictionByEmbedding([reworded[0]], deps)).toBeNull();
   });
 });

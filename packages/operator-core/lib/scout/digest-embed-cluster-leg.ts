@@ -61,9 +61,10 @@ import { parseVectorText } from '../search/embed-space-self-check';
 
 /** Width of the migration-551/553 embedding columns (= embed-backfill's EMBEDDER_DIM). */
 const EMBED_DIM = 384;
-/** Whole-leg budget (embed every friction title + the O(n²) cosine pass). A warm
- *  sidecar answers each embed in ~10ms; a cold in-process model load (~2.8s) simply
- *  forfeits THIS digest's experiment and falls back to lexical. */
+/** Whole-leg budget (resolve the current embedding mode + one stored-vector PG join
+ *  + the O(n²) cosine pass — no embed() calls since WI-4183/EI-9694 reused stored
+ *  vectors). A slow join or a wedged embedder-preference read simply forfeits THIS
+ *  digest's experiment and falls back to lexical. */
 const BUDGET_MS = 4000;
 /** Cosine ≥ this ⇒ two friction titles cluster. The embedding analog of the lexical
  *  NEAR_DUP_JACCARD (0.8); cosine neighbours run higher in absolute terms, so the
@@ -97,7 +98,7 @@ export function digestEmbedClusterEnabled(): boolean {
   return process.env.PAPERCUSP_SU_DIGEST_EMBED_CLUSTER === 'on';
 }
 
-/** Experiment threshold, env-overridable for tuning; clamped to (0,1], default 0.85. */
+/** Experiment threshold, env-overridable for tuning; clamped to (0,1], default 0.92. */
 export function digestEmbedClusterThreshold(): number {
   const raw = Number(process.env.PAPERCUSP_SU_DIGEST_EMBED_CLUSTER_THRESHOLD);
   if (!Number.isFinite(raw) || raw <= 0 || raw > 1) return DEFAULT_COSINE_THRESHOLD;
