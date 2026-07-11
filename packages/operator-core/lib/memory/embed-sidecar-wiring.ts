@@ -20,9 +20,11 @@
  *      behavior, zero per-call overhead.
  *
  * Space safety is inherited, not re-argued: the sidecar wraps the SAME
- * builders the fallback uses, so vectors are bit-identical either way
- * (D-002, live-verified in P-002/P-003) and a mid-stream failover can never
- * mix embedding spaces (D-003).
+ * builders, so vectors are bit-identical either way (D-002, live-verified in
+ * P-002/P-003). Since WI-4021 a configured sidecar is REQUIRED (D-003
+ * retired): sidecar failures throw after brief in-budget retries instead of
+ * silently failing over to an in-process model; the in-process builders are
+ * the sole engine ONLY where no sidecar is configured (case 3).
  */
 import {
   buildGemmaEmbedder,

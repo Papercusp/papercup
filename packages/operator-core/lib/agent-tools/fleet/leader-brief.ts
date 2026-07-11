@@ -38,8 +38,10 @@ import {
   decorateParkedOn,
   decorateContextPressure,
   decorateUnansweredDirected,
+  decorateCoordDeafness,
   type MemberVerdict,
 } from './assignments';
+import type { CoordDeafState } from '../coordination/inbox-read-freshness';
 import type { SessionState } from '../coordination/presence-wakeability';
 import type { WakeMode } from '../coordination/wake-mode';
 import type { ContextPressureBucket } from '../coordination/context-pressure';
@@ -59,6 +61,13 @@ export interface LeaderBriefMember {
   load: number;
   stalled: boolean;
   contextPressure: ContextPressureBucket | null;
+  /** coord-delivery-residual-gaps P-001: this LIVE member has not read its
+   *  coord mail for a whole budget window despite fresh activity — a
+   *  coord:send to it will NOT be seen until it wakes/settles. Absent when
+   *  reading normally. ('missing' needs a session start time, which the
+   *  assignments path doesn't carry — expect 'stale' here; coord:presence
+   *  carries the full classification.) */
+  coordHook?: CoordDeafState;
   /** Directed messages to this member with no reply/ack yet — absent when none. */
   unanswered?: UnansweredDirectedSummary;
   /** Active non-inbox-wake events:await keys — a deliberately-benched member. */
@@ -73,6 +82,8 @@ export type DecoratedAgent = AgentAssignment & {
   lastToolCallAt?: string | null;
   parkedOn?: string[];
   contextPressure?: ContextPressureBucket | null;
+  coordHook?: CoordDeafState | null;
+  coordLastReadAgoSec?: number | null;
   unanswered?: UnansweredDirectedSummary;
 };
 
@@ -92,6 +103,7 @@ export function projectMember(a: DecoratedAgent, nowMs: number): LeaderBriefMemb
     load: a.load,
     stalled: a.stalled === true,
     contextPressure: a.contextPressure ?? null,
+    ...(a.coordHook ? { coordHook: a.coordHook } : {}),
     ...(a.unanswered ? { unanswered: a.unanswered } : {}),
     ...(a.parkedOn && a.parkedOn.length > 0 ? { parkedOn: a.parkedOn } : {}),
   };
@@ -174,6 +186,7 @@ export default defineTool({
     await decorateParkedOn(grouped).catch(() => {});
     await decorateContextPressure(grouped).catch(() => {});
     await decorateUnansweredDirected(grouped).catch(() => {});
+    await decorateCoordDeafness(grouped).catch(() => {});
     const nowMs = Date.now();
     const members = grouped.map((a) => projectMember(a, nowMs));
     const self = resolveSelfRef(ctx);
@@ -188,6 +201,9 @@ export default defineTool({
       high_context: members.filter((m) => m.contextPressure === 'high').length,
       critical_context: members.filter((m) => m.contextPressure === 'critical').length,
       parked: members.filter((m) => (m.parkedOn?.length ?? 0) > 0).length,
+      // P-001 coord-deafness: live members NOT seeing their coord mail right
+      // now — a coord:send to them silently queues until they settle/wake.
+      coord_deaf: members.filter((m) => m.coordHook != null).length,
     };
     return {
       data: {

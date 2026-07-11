@@ -816,11 +816,15 @@ export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: 
                     checked={selected.has(a.ownerId)}
                     ariaLabel={`Select ${displayName(a)}`}
                     onChange={() => toggleSelected(a.ownerId)}
-                    // Compact + never stretched: the Checkbox merges this over its
-                    // 14px default, and inline styles beat the grid — alignSelf
-                    // center stops the grid row from stretching the box tall
-                    // (owner-hit 2026-07-11: "checkboxes are much too tall").
-                    style={{ width: 12, height: 12, boxSizing: 'border-box', alignSelf: 'center' }}
+                    // Native-accent look matching the approved browser mockup
+                    // (owner-hit 2026-07-11 r2: "make it look like your browser
+                    // mockup" — the Radix default read as a faint bordered box
+                    // that never fills on check). Passing className makes the
+                    // primitive DROP its inline ROOT_STYLE (see Checkbox.tsx
+                    // L61), so .pc-agents-roster__check fully owns the look: a
+                    // compact 12px box that fills with --accent + a dark check
+                    // when selected, like a native accent-color checkbox.
+                    className="pc-agents-roster__check"
                   />
                 </span>
                 <span className="pc-agents-roster__live">
@@ -1091,7 +1095,25 @@ function RosterStyles() {
       .pc-agents-roster__row.is-selected:hover {
         background: color-mix(in srgb, var(--accent, #38bdf8) 40%, transparent);
       }
-      .pc-agents-roster__check { margin: 0 4px 0 2px; cursor: pointer; accent-color: var(--accent, #38bdf8); flex: 0 0 auto; }
+      /* Roster select box — styled to match the approved native-accent mockup
+         (owner-hit 2026-07-11 r2). This class fully owns the appearance because
+         the shared Checkbox primitive drops its inline ROOT_STYLE when given a
+         className. Radix renders a <button role=checkbox data-state=…>; the
+         lucide <Check size=10> indicator inherits `color`. Compact 12px box,
+         fills solid --accent with a dark check when selected — a clean native
+         accent-color checkbox, not the faint bordered box the default gave. */
+      .pc-agents-roster__check {
+        width: 12px; height: 12px; box-sizing: border-box;
+        margin: 0; padding: 0; align-self: center; flex: 0 0 auto;
+        display: inline-flex; align-items: center; justify-content: center;
+        border: 1px solid var(--border); border-radius: 3px;
+        background: var(--bg-2); color: var(--accent-ink, #051827);
+        cursor: pointer; outline: none;
+      }
+      .pc-agents-roster__check[data-state="checked"] {
+        background: var(--accent, #38bdf8);
+        border-color: var(--accent, #38bdf8);
+      }
       .pc-agents-roster__bulkbar {
         display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
         padding: 5px 8px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);

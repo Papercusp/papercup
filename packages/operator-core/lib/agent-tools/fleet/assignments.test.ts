@@ -14,6 +14,7 @@ import {
   decorateParkedOn,
   decorateContextPressure,
   decorateUnansweredDirected,
+  decorateCoordDeafness,
   filterActiveCoverage,
   COVERAGE_ACTIVE_WINDOW_MS,
   VERDICT_SPEAKING_FRESH_MS,
@@ -536,5 +537,80 @@ describe('filterActiveCoverage (EI-9015)', () => {
     const atEdge = cov('p#P-1', 'complete', new Date(NOW - COVERAGE_ACTIVE_WINDOW_MS));
     const pastEdge = cov('p#P-2', 'complete', new Date(NOW - COVERAGE_ACTIVE_WINDOW_MS - 1));
     expect(refs(filterActiveCoverage([atEdge, pastEdge], { now: NOW }))).toEqual(['p#P-1']);
+  });
+});
+
+describe('decorateCoordDeafness — P-001 (coord-delivery-residual-gaps-2026-07-11)', () => {
+  const NOW = Date.parse('2026-07-11T12:00:00Z');
+  const BUDGET = 10 * 60_000;
+  const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();
+  type DeafRow = AgentAssignment & {
+    sessionState?: SessionState | null;
+    startedAt?: string | null;
+    coordHook?: 'stale' | 'missing' | null;
+    coordLastReadAgoSec?: number | null;
+  };
+  const liveAgent = (overrides: Partial<DeafRow> = {}): DeafRow => ({
+    ...baseAgent(),
+    sessionState: 'live',
+    heartbeatAt: iso(30_000),
+    ...overrides,
+  });
+
+  it('stamps stale on a live agent whose last read is past budget', async () => {
+    const agents = [liveAgent({ agentId: 'a1' })];
+    await decorateCoordDeafness(
+      agents,
+      async () => new Map([['a1', iso(25 * 60_000)]]),
+      NOW,
+      BUDGET,
+    );
+    expect(agents[0].coordHook).toBe('stale');
+    expect(agents[0].coordLastReadAgoSec).toBe(25 * 60);
+  });
+
+  it('a fresh reader stays unstamped', async () => {
+    const agents = [liveAgent({ agentId: 'a1' })];
+    await decorateCoordDeafness(agents, async () => new Map([['a1', iso(60_000)]]), NOW, BUDGET);
+    expect(agents[0].coordHook).toBeUndefined();
+  });
+
+  it('never-read WITHOUT a startedAt is not flagged (assignments rows carry no start time)', async () => {
+    const agents = [liveAgent({ agentId: 'a1' })];
+    await decorateCoordDeafness(agents, async () => new Map(), NOW, BUDGET);
+    expect(agents[0].coordHook).toBeUndefined();
+  });
+
+  it('never-read WITH an old startedAt → missing', async () => {
+    const agents = [liveAgent({ agentId: 'a1', startedAt: iso(60 * 60_000) })];
+    await decorateCoordDeafness(agents, async () => new Map(), NOW, BUDGET);
+    expect(agents[0].coordHook).toBe('missing');
+    expect(agents[0].coordLastReadAgoSec).toBeNull();
+  });
+
+  it('parked/ended rows are never candidates and never reach the fetcher', async () => {
+    const fetched: string[][] = [];
+    const agents = [
+      liveAgent({ agentId: 'p1', sessionState: 'parked' }),
+      liveAgent({ agentId: 'e1', sessionState: 'ended' }),
+    ];
+    await decorateCoordDeafness(agents, async (ids) => {
+      fetched.push(ids);
+      return new Map();
+    }, NOW, BUDGET);
+    expect(fetched).toEqual([]);
+    expect(agents[0].coordHook).toBeUndefined();
+    expect(agents[1].coordHook).toBeUndefined();
+  });
+
+  it('a live row with a cold heartbeat (not demonstrably active) is not flagged', async () => {
+    const agents = [liveAgent({ agentId: 'a1', heartbeatAt: iso(20 * 60_000) })];
+    await decorateCoordDeafness(
+      agents,
+      async () => new Map([['a1', iso(30 * 60_000)]]),
+      NOW,
+      BUDGET,
+    );
+    expect(agents[0].coordHook).toBeUndefined();
   });
 });

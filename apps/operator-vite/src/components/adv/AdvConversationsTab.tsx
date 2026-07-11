@@ -3171,11 +3171,10 @@ function AdvConvStyles() {
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .pc-advconv__unified-kind--threads { --type-accent: #38bdf8; }
+      .pc-advconv__unified-kind--threads { --type-accent: var(--accent-strong); }
       .pc-advconv__unified-kind--deliberations { --type-accent: #a78bfa; }
       .pc-advconv__unified-kind--agentchats { --type-accent: #f472b6; }
       .pc-advconv__unified-kind--messages { --type-accent: #fb923c; }
-      }
       .pc-advconv__unified-content > strong {
         min-width: 0;
         overflow: hidden;

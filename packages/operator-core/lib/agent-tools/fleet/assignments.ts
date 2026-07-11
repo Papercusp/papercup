@@ -51,6 +51,12 @@ import {
   fetchUnansweredDirected,
   type UnansweredDirectedSummary,
 } from '../coordination/unanswered-directed';
+import {
+  classifyCoordDeafness,
+  coordDeafBudgetMs,
+  lastInboxReadAtBatch,
+  type CoordDeafState,
+} from '../coordination/inbox-read-freshness';
 import { boundRowField, boundListField, trimToByteBudget } from '../_bound-output';
 import { shapeFleetAssignments } from './assignments-shape';
 import { getPlanRow, planItemsForRow } from '../plans/source';
@@ -338,6 +344,56 @@ export async function decorateUnansweredDirected<
   for (const a of agents) {
     const u = unanswered.get(a.agentId);
     if (u) a.unanswered = u;
+  }
+  return agents;
+}
+
+/**
+ * coord-delivery-residual-gaps-2026-07-11 P-001: stamp each LIVE agent row with
+ * `coordHook` ('stale' | 'missing' | null) + `coordLastReadAgoSec` — "is this
+ * session actually SEEING its coord mail right now?". Every delivery leg's poll
+ * is a real coord:inbox/orient row in tool_invocations, so deafness is
+ * server-derivable: live + demonstrably active (fresh heartbeat) + no read for
+ * a whole budget window ⇒ deaf (hook enrollment drifted, a runtime with no
+ * injection leg, or one long foreground exec). NOTE: assignment rows carry no
+ * session start time, so the never-read 'missing' class only fires here when a
+ * `startedAt` is present on the row (leader-brief path leaves it absent →
+ * stale-only); the coord:presence overlay carries the full classification.
+ * Injectable fetcher for PG-free unit tests (the decorateContextPressure
+ * pattern). Mutates in place; best-effort at the call site.
+ */
+export async function decorateCoordDeafness<
+  T extends AgentAssignment & {
+    sessionState?: SessionState | null;
+    startedAt?: string | null;
+    coordHook?: CoordDeafState | null;
+    coordLastReadAgoSec?: number | null;
+  },
+>(
+  agents: T[],
+  fetchReads: (ownerIds: string[]) => Promise<Map<string, string>> = lastInboxReadAtBatch,
+  nowMs: number = Date.now(),
+  budgetMs: number = coordDeafBudgetMs(),
+): Promise<T[]> {
+  const live = agents.filter((a) => a.sessionState === 'live');
+  if (live.length === 0) return agents;
+  const reads = await fetchReads(live.map((a) => a.agentId));
+  for (const a of live) {
+    const hbMs = a.heartbeatAt ? Date.parse(a.heartbeatAt) : NaN;
+    const verdict = classifyCoordDeafness(
+      {
+        sessionState: a.sessionState,
+        lastActiveSecAgo: Number.isFinite(hbMs) ? Math.max(0, (nowMs - hbMs) / 1000) : null,
+        startedAt: a.startedAt ?? null,
+        lastReadAt: reads.get(a.agentId) ?? null,
+      },
+      nowMs,
+      budgetMs,
+    );
+    if (verdict) {
+      a.coordHook = verdict.state;
+      a.coordLastReadAgoSec = verdict.lastReadAgoSec;
+    }
   }
   return agents;
 }

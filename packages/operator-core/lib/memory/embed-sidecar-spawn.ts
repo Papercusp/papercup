@@ -14,10 +14,14 @@
  * (orchestrator-runner.ts): embedding hosts differ (bg-host embeds constantly,
  * a desktop install rarely), so a fleet-wide flag flip is the wrong shape.
  *
- * Everything here is dark — the OFF path never spawns, and the client seam
- * (@papercusp/memory sidecar-embedder.ts, D-003) falls back to in-process
- * embedding whenever no sidecar answers, so a spawn failure degrades to
- * exactly today's behavior.
+ * Everything here is dark — the OFF path never spawns. Since WI-4021 (D-003
+ * retired) a host that RESOLVES a sidecar URL requires it: embed failures
+ * throw (writes park in the memory write journal) instead of failing over to
+ * an in-process model. ensureEmbedSidecar() returning null (disabled or
+ * unspawnable) still leaves the caller on the pure in-process engine — that
+ * path is for hosts with no sidecar story at all, not an outage fallback.
+ * Hosts with the systemd-owned sidecar (papercup-embed-sidecar.service)
+ * should set PAPERCUSP_EMBED_SIDECAR_URL and never enable this spawner.
  */
 
 import { spawn, ChildProcess } from 'node:child_process';

@@ -34,10 +34,14 @@
  * PAPERCUSP_EMBED_SIDECAR=1 (embed-sidecar-spawn.ts) or that run the bin
  * directly. Binds 127.0.0.1 ONLY — vectors of private text cross this wire.
  *
- * Availability contract (D-003): clients treat this sidecar as an OPTIMIZATION.
- * The @papercusp/memory client seam (sidecar-embedder.ts) falls back to
- * in-process embedding whenever this server is down — embedding is never
- * 'disabled' by a sidecar outage.
+ * Availability contract (v2, WI-4021 — D-003 retired): hosts with a configured
+ * sidecar REQUIRE it. The @papercusp/memory client seam (sidecar-embedder.ts)
+ * retries briefly and then throws when this server is down — no in-process
+ * failover. That makes THIS process's supervision the availability story:
+ * run it under the papercup-embed-sidecar systemd unit (Restart=always,
+ * resource limits, boot-warm via EMBED_SIDECAR_WARM_ENV), never ad-hoc.
+ * Memory writes during an outage park in the write-ahead journal and
+ * auto-recover (memory-write-journal-auto-recovery-2026-07-11).
  */
 import * as http from 'node:http';
 import {
