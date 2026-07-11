@@ -2,13 +2,11 @@
 //
 // LearningTab render coverage — the /adv "Learning" tab (operator-learning-tab-2026-06-09).
 // Mounts the tab against realistic `learning.improvements` / `learning.gym` /
-// `learning.apiary` / `learning.knowledge` / `learning.scout` snapshots (useSyncQuery +
+// `learning.apiary` / `learning.scout` snapshots (useSyncQuery +
 // nuqs mocked, the pinned sibling pattern — see AdvConversationsTab.test.tsx).
 // useSyncQuery dispatches on queryName so each sub-view gets its own shape. Asserts the
-// Improvements scoreboard + lanes (default view), the Gym sub-view, the Benchmark trend
-// (+ owner-gated empty state), the Scout rails/tick view, and the Knowledge runbooks +
-// memory health + Insights cross-link — plus the how-this-works strip — guarding against
-// render-time crashes the typecheck can't catch. Empty states are pinned per view.
+// Improvements scoreboard + lanes (default view), the lifecycle navigation, the Gym
+// and Benchmark views, and the Scout rails/tick view. Empty states are pinned per view.
 // Scout grading (B-07, scout-idea-grading-2026-06-12): star control, attribution
 // chip, optimistic write through the `blender:grade-idea` tool proxy (+ rollback),
 // the `?grade=` note popover, and the lens-weight strip.
@@ -16,7 +14,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
-const nuqsState: Record<string, unknown> = { lview: 'improvements', lane: 'all', how: true, tab: null, grade: null, lhive: '' };
+const nuqsState: Record<string, unknown> = { lview: 'improvements', lane: 'all', tab: null, grade: null, lhive: '' };
 // Capture the setter per key so tests can assert the hive picker writes ?lhive.
 const nuqsSetters: Record<string, ReturnType<typeof vi.fn>> = {};
 import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
@@ -26,16 +24,21 @@ vi.mock('nuqs', () => ({
     const setter = (nuqsSetters[key] ??= vi.fn((v: unknown) => { nuqsState[key] = v; }));
     return [nuqsState[key], setter];
   },
-  // ScoutMovedCard's cross-link writes tab+sig atomically via useQueryStates.
-  useQueryStates: (defs: Record<string, unknown>) => {
-    const setter = vi.fn((patch: Record<string, unknown>) => { Object.assign(nuqsState, patch); });
-    const values = Object.fromEntries(Object.keys(defs).map((k) => [k, nuqsState[k]]));
-    return [values, setter];
-  },
   parseAsStringEnum: () => ({ withDefault: () => ({}) }),
-  parseAsBoolean: { withDefault: () => ({}) },
   parseAsString: { withDefault: () => ({}) },
 }));
+
+vi.mock('@/app/_components/RubricsPanel', () => ({
+  default: ({ onSelect }: { onSelect?: (id: string) => void }) => (
+    <button data-testid="rubrics-panel" onClick={() => onSelect?.('rubric-1')}>rubrics-panel</button>
+  ),
+}));
+vi.mock('@/app/_components/RubricDetailPanel', () => ({
+  default: ({ rubricId, onBack }: { rubricId: string; onBack?: () => void }) => (
+    <div data-testid="rubric-detail">detail:{rubricId}<button onClick={onBack}>back</button></div>
+  ),
+}));
+vi.mock('@/app/adv/create/ObservationsPanel', () => ({ default: () => <div data-testid="observations-panel" /> }));
 
 // LearningTab's dropdowns now use the themed <Select> (Radix). Mock it as a native
 // <select> with the same contract (mirrors AdvShell.test) so the hive-lens
@@ -212,7 +215,6 @@ import LearningTab, { ScoutView } from './LearningTab';
 beforeEach(() => {
   nuqsState.lview = 'improvements';
   nuqsState.lane = 'all';
-  nuqsState.how = true;
   nuqsState.tab = null;
   nuqsState.grade = null;
   nuqsState.lhive = '';
@@ -248,28 +250,22 @@ describe('LearningTab — Improvements view (default)', () => {
     expect(screen.getByText('Decide next')).toBeTruthy();
   });
 
-  it('shows the lane filter tabs and the sub-view tabs', () => {
+  it('shows the four-stage loop and the Observe views', () => {
     render(<LearningTab />);
     expect(screen.getByRole('tab', { name: 'Auto-fixable' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: 'Needs review' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Observe' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Improve' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Verify' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Retain' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Observations' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Improvements/ })).toBeTruthy();
-    expect(screen.getByRole('tab', { name: /Gym/ })).toBeTruthy();
-    expect(screen.getByRole('tab', { name: /Benchmark/ })).toBeTruthy();
-    expect(screen.getByRole('tab', { name: /Knowledge/ })).toBeTruthy();
-    // Scout is no longer a Learning sub-tab — the ideation surface moved to the
-    // Signals tab (owner ask 2026-07-10, no-dup), so no scout tab appears here.
-    expect(screen.queryByRole('tab', { name: /scout/i })).toBeNull();
   });
 
-  it('renders the how-this-works strip for the improvements pipeline, hidden when toggled off', () => {
+  it('uses visual hierarchy instead of explanatory prose', () => {
     render(<LearningTab />);
-    expect(screen.getByText('Notice')).toBeTruthy();
-    expect(screen.getByText('Triage')).toBeTruthy();
-    expect(screen.getByText('Resolve')).toBeTruthy();
-    cleanup();
-    nuqsState.how = false;
-    render(<LearningTab />);
-    expect(screen.queryByText('Notice')).toBeNull();
+    expect(screen.queryByText('How this works')).toBeNull();
+    expect(document.querySelector('.pc-learning__copy')).toBeNull();
   });
 
   it('renders the empty state when no improvements match the lane', () => {
@@ -351,17 +347,45 @@ describe('LearningTab — Gym view', () => {
     expect(screen.getByText('worker')).toBeTruthy();
   });
 
-  it('renders the gym how-this-works strip (experiment → score → promote)', () => {
-    render(<LearningTab />);
-    expect(screen.getByText('Experiment')).toBeTruthy();
-    expect(screen.getByText('Score')).toBeTruthy();
-    expect(screen.getByText('Promote')).toBeTruthy();
-  });
-
   it('renders the gym empty state when no proposals exist', () => {
     gymResult = { data: [{ proposals: [], autoloops: [] }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
     render(<LearningTab />);
     expect(screen.getByText('No gym experiments yet')).toBeTruthy();
+  });
+});
+
+describe('LearningTab — unified Signals views', () => {
+  it('renders Observations inside Observe', () => {
+    nuqsState.lview = 'observations';
+    render(<LearningTab />);
+    expect(screen.getByTestId('observations-panel')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Observe' }).getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('renders Ideas inside Improve', () => {
+    nuqsState.lview = 'ideas';
+    render(<LearningTab />);
+    expect(screen.getByText('Routed ideas')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Improve' }).getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('renders Rubrics inside Verify and drills into a rubric', () => {
+    nuqsState.lview = 'rubrics';
+    render(<LearningTab />);
+    expect(screen.getByTestId('rubrics-panel')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Verify' }).getAttribute('aria-selected')).toBe('true');
+    fireEvent.click(screen.getByTestId('rubrics-panel'));
+    expect(screen.getByTestId('rubric-detail').textContent).toContain('rubric-1');
+    fireEvent.click(screen.getByText('back'));
+    expect(screen.getByTestId('rubrics-panel')).toBeTruthy();
+  });
+
+  it('keeps operational destinations visually separate from the learning stages', () => {
+    render(<LearningTab />);
+    fireEvent.click(screen.getByRole('button', { name: 'Loop health' }));
+    expect(nuqsSetters.lview).toHaveBeenCalledWith('throughput');
+    fireEvent.click(screen.getByRole('button', { name: 'Insights' }));
+    expect(nuqsSetters.tab).toHaveBeenCalledWith('insights');
   });
 });
 
@@ -413,21 +437,17 @@ describe('LearningTab — Benchmark view', () => {
   });
 });
 
-// ScoutView (the ideation surface) MOVED to the Signals tab (owner ask
-// 2026-07-10). It is exported from LearningTab and rendered ONLY in SignalsTab
-// now, so we test it directly here; a stale ?lview=scout deep-link in Learning
-// shows a cross-link card instead of a second copy.
-describe('ScoutView (Signals › Ideas) — routed ideas + tick', () => {
+describe('ScoutView (Learning › Improve › Ideas) — routed ideas + tick', () => {
   beforeEach(() => {
-    nuqsState.lview = 'scout';
+    nuqsState.lview = 'ideas';
   });
 
   it('renders the scoreboard, the routed-idea ledger rows, and the last-tick chip', () => {
     render(<ScoutView />);
     // Scoreboard: totalRouted stat + one Stat per rail (labelled via RAIL_META).
-    expect(screen.getAllByText('4').length).toBeGreaterThanOrEqual(1); // totalRouted stat (also the Grade how-strip step number)
+    expect(screen.getAllByText('4').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('plan draft').length).toBeGreaterThanOrEqual(1); // rail stat label + ledger row rail label
-    expect(screen.getAllByText('3').length).toBeGreaterThanOrEqual(1); // plan-rail count (also a how-strip step number)
+    expect(screen.getAllByText('3').length).toBeGreaterThanOrEqual(1);
     // The per-item ledger (replaced the by-rail rows): openable rows with
     // title, producing lens, and the classified outcome (pending suppressed).
     expect(screen.getByText('Routed ideas')).toBeTruthy();
@@ -443,12 +463,6 @@ describe('ScoutView (Signals › Ideas) — routed ideas + tick', () => {
     expect(tickChip.textContent).toContain('gated · min-interval'); // status + the self-gate that withheld the cycle
   });
 
-  it('shows the "moved to Signals" cross-link where Learning\'s Scout tab used to be (stale ?lview=scout deep-link)', () => {
-    render(<LearningTab />);
-    expect(screen.getByText(/moved to the Signals tab/i)).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Open Signals/i })).toBeTruthy();
-  });
-
   it('renders the graceful empty state when nothing has been routed and no tick exists', () => {
     scoutResult = { data: [{ totalRouted: 0, railCounts: [], lastTick: null }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
     render(<ScoutView />);
@@ -457,9 +471,9 @@ describe('ScoutView (Signals › Ideas) — routed ideas + tick', () => {
   });
 });
 
-describe('ScoutView (Signals › Ideas) — idea grading (B-07, scout-idea-grading-2026-06-12)', () => {
+describe('ScoutView (Learning › Improve › Ideas) — idea grading (B-07, scout-idea-grading-2026-06-12)', () => {
   beforeEach(() => {
-    nuqsState.lview = 'scout';
+    nuqsState.lview = 'ideas';
   });
   afterEach(() => vi.unstubAllGlobals());
 
@@ -536,66 +550,6 @@ describe('ScoutView (Signals › Ideas) — idea grading (B-07, scout-idea-gradi
   });
 });
 
-describe('LearningTab — Knowledge view', () => {
-  beforeEach(() => {
-    nuqsState.lview = 'knowledge';
-  });
-
-  it('renders the runbook count, the recent-5 list, and the memory-health chips', () => {
-    render(<LearningTab />);
-    expect(screen.getByText('38')).toBeTruthy(); // runbook count stat
-    expect(screen.getByText('Recent runbooks')).toBeTruthy();
-    expect(screen.getByText('Adding a sync query')).toBeTruthy();
-    expect(screen.getByText('postgres.js jsonb binding')).toBeTruthy();
-    expect(screen.getByText('adding-a-sync-query')).toBeTruthy(); // slug column
-    const memCard = screen.getByLabelText('Memory health');
-    expect(memCard.textContent).toContain('168');
-    expect(memCard.textContent).toContain('memories');
-    expect(memCard.textContent).toContain('3');
-    expect(memCard.textContent).toContain('feedback events');
-    // Recall-quality signals (P-031 / B-10): volume, zero-hit share, score distribution.
-    expect(memCard.textContent).toContain('40');
-    expect(memCard.textContent).toContain('recalls');
-    expect(memCard.textContent).toContain('25%');
-    expect(memCard.textContent).toContain('zero-hit');
-    expect(memCard.textContent).toContain('0.52');
-    expect(memCard.textContent).toContain('0.74');
-    // The EI-366 regression canary stays hidden at zero leakage.
-    expect(memCard.textContent).not.toContain('fragment hits');
-  });
-
-  it('renders the fragment-leakage canary chip ONLY when entity rows leak into recall', () => {
-    knowledgeResult = {
-      data: [{ insights: knowledgeSnapshot.insights, memory: { ...knowledgeSnapshot.memory, fragmentHits7d: 7 } }],
-      loading: false, fetching: false, error: null, invalidate: vi.fn(),
-    };
-    render(<LearningTab />);
-    const memCard = screen.getByLabelText('Memory health');
-    expect(memCard.textContent).toContain('7');
-    expect(memCard.textContent).toContain('fragment hits');
-  });
-
-  it('renders the agent-insights cross-link to the Insights tab', () => {
-    render(<LearningTab />);
-    expect(screen.getByText(/Agent insights/)).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Open the Insights library/ })).toBeTruthy();
-  });
-
-  it('renders the empty runbooks state (cross-link intact) when the library is empty', () => {
-    knowledgeResult = { data: [{ insights: { count: 0, recent: [] }, memory: { ...knowledgeSnapshot.memory, feedback30d: 0 } }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
-    render(<LearningTab />);
-    expect(screen.getByText('No runbooks yet')).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Open the Insights library/ })).toBeTruthy();
-  });
-
-  it('marks memory health unavailable when the memory half degraded to null', () => {
-    knowledgeResult = { data: [{ insights: knowledgeSnapshot.insights, memory: null }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
-    render(<LearningTab />);
-    expect(screen.getByLabelText('Memory health').textContent).toContain('memory health unavailable');
-    expect(screen.getByText('Adding a sync query')).toBeTruthy(); // insights half still renders
-  });
-});
-
 describe('LearningTab — per-Hive lens (per-hive-learning-loops-2026-06-14 P-042)', () => {
   it('renders the tab-level hive picker on hive-aware views (Improvements) with the hiveList options', () => {
     render(<LearningTab />); // default view = improvements (hive-aware)
@@ -621,8 +575,8 @@ describe('LearningTab — per-Hive lens (per-hive-learning-loops-2026-06-14 P-04
     expect(screen.getByLabelText('pot lens')).toBeTruthy();
   });
 
-  it('HIDES the picker on workspace-global views (Benchmark, Scout, Knowledge, Throughput)', () => {
-    for (const v of ['benchmark', 'scout', 'knowledge', 'throughput']) {
+  it('HIDES the picker on workspace-global views', () => {
+    for (const v of ['observations', 'ideas', 'rubrics', 'benchmark', 'throughput']) {
       cleanup();
       nuqsState.lview = v;
       render(<LearningTab />);

@@ -1986,8 +1986,8 @@ export function LearningStyles() {
       }
       .pc-learning__stage-label { font-size: 11.5px; font-weight: 650; }
       .pc-learning__stage:hover .pc-learning__stage-icon { color: var(--fg); border-color: var(--stage-accent); background: var(--bg-2); }
-      .pc-learning__stage[data-state="active"] { color: var(--fg); }
-      .pc-learning__stage[data-state="active"] .pc-learning__stage-icon {
+      .pc-learning__stage[aria-selected="true"] { color: var(--fg); }
+      .pc-learning__stage[aria-selected="true"] .pc-learning__stage-icon {
         color: var(--stage-accent); border-color: var(--stage-accent);
         background: color-mix(in oklab, var(--stage-accent), transparent 88%);
       }
@@ -2001,7 +2001,7 @@ export function LearningStyles() {
         transition: color var(--dur-fast), border-color var(--dur-fast), background var(--dur-fast);
       }
       .pc-learning__view-tab:hover { color: var(--fg); background: var(--bg-2); }
-      .pc-learning__view-tab[data-state="active"] { color: var(--fg); border-color: var(--border-strong); background: var(--bg-3); }
+      .pc-learning__view-tab[aria-selected="true"] { color: var(--fg); border-color: var(--border-strong); background: var(--bg-3); }
 
       .pc-learning__hivepick {
         display: inline-flex; align-items: center; gap: 6px;

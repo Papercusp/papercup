@@ -29,7 +29,7 @@ import { resolveAgentIdentity } from '../identity';
 import { resolveActorIdentity, actorMailboxKeys } from '../actor-identity';
 import { drainAndDeliverUserMailbox } from '../messages';
 import { writePresence, getPresence } from '../presence';
-import { fetchPresenceFleet } from '../presence-fleet';
+import { fetchPresenceFleet, type FleetMembership } from '../presence-fleet';
 import { COORD_ROLES } from '../roles';
 import { resolvePlanScope, getPlanRow, planItemsForRow } from '../../plans/source';
 import { reconcileDeclaredClaims } from '../../../plan-items/claim-discipline';
@@ -37,6 +37,28 @@ import { bestEffortOwnerUser, resolveAdoptedName } from '../../../plan-items/age
 import { convertPlanItem } from '../../../plan-items/convert';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { withBoundedTimeout } from '../../../bounded-timeout';
+
+/**
+ * EI-9484 — "coord:declare-intent timing out repeatedly": the watchdog observed
+ * the tool exceed the 60s MCP tool timeout on ~2% of calls under fleet load
+ * ("handler returned but signal had aborted"). The declaration itself is one
+ * upsert (`writePresence`), but the handler then AWAITS several best-effort
+ * ENRICHMENT legs in the critical request path:
+ *   • the `@user:` mailbox drain — a drain query + a SERIAL `appendLine` loop
+ *     whose cost scales with the returning member's parked-message count,
+ *   • the `getPresence` re-read and `fetchPresenceFleet` label lookup that only
+ *     shape the RETURN payload.
+ * Under event-loop / DB-pool saturation any one of these can stall, and because
+ * they are un-bounded they hold the whole call past the 60s timeout even though
+ * the essential presence write already succeeded. Bounding each enrichment leg
+ * (the WI-3818 `withBoundedTimeout` pattern already used in coord:orient /
+ * fleet:status) caps the blast radius of a slow leg to its own budget: the
+ * declaration still lands, the enrichment degrades to a fallback. The mailbox
+ * drain is claim-once, so a skipped drain is simply redelivered on the next
+ * declare-intent / inbox read — degrading it changes nothing.
+ */
+const DECLARE_INTENT_LEG_TIMEOUT_MS = 8_000;
 
 /**
  * EI-5873 — "broad AUTO directives cause fleet over-coverage": observed twice
@@ -142,9 +164,19 @@ export default defineTool({
     // returning member's parked `@user:` assignments are delivered into their inbox
     // here — surfacing in their [coord+N] injection right away. claim-once makes
     // this a safe no-op alongside the coord:inbox-read hook. Best-effort.
-    await resolveActorIdentity(ctx)
-      .then((actor) => drainAndDeliverUserMailbox(actorMailboxKeys(actor), actor.ownerId))
-      .catch(() => {});
+    //
+    // EI-9484: BOUNDED — this drains a `@user:` mailbox via a SERIAL `appendLine`
+    // loop whose cost scales with the parked-message count, so a large mailbox
+    // (or DB-pool starvation under fleet load) could stall it past the 60s MCP
+    // tool timeout and abort the whole call. Bounded so a slow drain degrades to
+    // a no-op instead; claim-once means the un-drained batch is redelivered on
+    // the next declare-intent / inbox read. withBoundedTimeout never throws.
+    await withBoundedTimeout<void>(
+      resolveActorIdentity(ctx).then(async (actor) => {
+        await drainAndDeliverUserMailbox(actorMailboxKeys(actor), actor.ownerId);
+      }),
+      { fallback: undefined, timeoutMs: DECLARE_INTENT_LEG_TIMEOUT_MS, label: 'declare-intent:mailbox-drain' },
+    );
 
     // Reconcile the declared lane → claims (claim-discipline). Per-item
     // conflicts are reported, never thrown: declaring intent must succeed even
@@ -231,13 +263,29 @@ export default defineTool({
       }
     }
 
-    const record = await getPresence(identity.ownerId);
+    // EI-9484: these two reads only shape the RETURN payload (the declaration
+    // already landed via writePresence). Bound each so a slow read under load
+    // degrades the echoed-back presence/fleet label instead of holding the whole
+    // call past the 60s MCP tool timeout.
+    const record = (
+      await withBoundedTimeout(getPresence(identity.ownerId), {
+        fallback: null,
+        timeoutMs: DECLARE_INTENT_LEG_TIMEOUT_MS,
+        label: 'declare-intent:getPresence',
+      })
+    ).value;
     // Surface the agent's named-fleet membership (P-005) alongside its presence row —
     // fleet_slug/fleet_role are a SOFT coord_presence label that does NOT ride the base
     // PresenceRecord, so join the STORED value (reflects a leader role a handoff may have
     // promoted this row to, not just the launch env). Absent ⇒ no fleet.
     const fleet = record
-      ? (await fetchPresenceFleet([identity.ownerId])).get(identity.ownerId)
+      ? (
+          await withBoundedTimeout(fetchPresenceFleet([identity.ownerId]), {
+            fallback: new Map<string, FleetMembership>(),
+            timeoutMs: DECLARE_INTENT_LEG_TIMEOUT_MS,
+            label: 'declare-intent:fetchPresenceFleet',
+          })
+        ).value.get(identity.ownerId)
       : undefined;
     const presence = record
       ? { ...record, fleetSlug: fleet?.fleetSlug ?? null, fleetRole: fleet?.fleetRole ?? null }
