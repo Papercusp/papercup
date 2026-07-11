@@ -171,6 +171,136 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
     expect(ok.status).toBe(200);
   });
 
+  it('coalesces CONCURRENT identical texts into one inference (WI-4196)', async () => {
+    // The mem0 per-scope fan-out case: N parallel requests, same query text.
+    let embedCalls = 0;
+    handle = createEmbedSidecarServer({
+      port: 0,
+      warmAtBoot: false,
+      log: () => {},
+      builders: {
+        gemma: async () => async (text: string) => {
+          embedCalls++;
+          await new Promise((r) => setTimeout(r, 20)); // hold so the peers arrive mid-flight
+          return [text.length, embedCalls];
+        },
+        local: fakeBuilders.local,
+        harrier: fakeBuilders.harrier,
+      },
+    });
+    baseUrl = `http://127.0.0.1:${await handle.listening}`;
+    const post = () =>
+      fetch(`${baseUrl}/embed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'query', texts: ['same query'] }),
+      }).then((r) => r.json() as Promise<{ vectors: number[][] }>);
+    const [a, b, c] = await Promise.all([post(), post(), post()]);
+    expect(embedCalls).toBe(1);
+    expect(a.vectors).toEqual([[10, 1]]);
+    expect(b.vectors).toEqual(a.vectors);
+    expect(c.vectors).toEqual(a.vectors);
+  });
+
+  it('serves repeats from the LRU, keys per model:kind, and reports cache stats', async () => {
+    let embedCalls = 0;
+    handle = createEmbedSidecarServer({
+      port: 0,
+      warmAtBoot: false,
+      log: () => {},
+      builders: {
+        gemma: async (kind) => async (text: string) => {
+          embedCalls++;
+          return [text.length, kind === 'query' ? 1 : 2];
+        },
+        local: fakeBuilders.local,
+        harrier: fakeBuilders.harrier,
+      },
+    });
+    baseUrl = `http://127.0.0.1:${await handle.listening}`;
+    const post = (kind: string) =>
+      fetch(`${baseUrl}/embed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind, texts: ['x'] }),
+      });
+    await post('query');
+    await post('query'); // cache hit
+    expect(embedCalls).toBe(1);
+    await post('document'); // same text, different kind ⇒ its own inference
+    expect(embedCalls).toBe(2);
+    const health = (await (await fetch(`${baseUrl}/healthz`)).json()) as {
+      cache: { hits: number; misses: number; size: number };
+    };
+    expect(health.cache).toEqual({ hits: 1, misses: 2, size: 2 });
+  });
+
+  it('evicts least-recently-used beyond cacheMax; cacheMax:0 disables caching', async () => {
+    let embedCalls = 0;
+    const boot1 = async (cacheMax: number) => {
+      embedCalls = 0;
+      handle = createEmbedSidecarServer({
+        port: 0,
+        warmAtBoot: false,
+        log: () => {},
+        cacheMax,
+        builders: {
+          gemma: async () => async (text: string) => {
+            embedCalls++;
+            return [text.length];
+          },
+          local: fakeBuilders.local,
+          harrier: fakeBuilders.harrier,
+        },
+      });
+      baseUrl = `http://127.0.0.1:${await handle.listening}`;
+    };
+    const post = (text: string) =>
+      fetch(`${baseUrl}/embed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'query', texts: [text] }),
+      });
+    await boot1(1);
+    await post('a');
+    await post('b'); // evicts 'a'
+    await post('a'); // re-infers
+    expect(embedCalls).toBe(3);
+    await handle!.close();
+    await boot1(0);
+    await post('a');
+    await post('a'); // caching disabled ⇒ re-infers
+    expect(embedCalls).toBe(2);
+  });
+
+  it('does not cache failures: a failed embed retries on the next request', async () => {
+    let attempts = 0;
+    handle = createEmbedSidecarServer({
+      port: 0,
+      warmAtBoot: false,
+      log: () => {},
+      builders: {
+        gemma: async () => async (text: string) => {
+          attempts++;
+          if (attempts === 1) throw new Error('transient worker fault');
+          return [text.length];
+        },
+        local: fakeBuilders.local,
+        harrier: fakeBuilders.harrier,
+      },
+    });
+    baseUrl = `http://127.0.0.1:${await handle.listening}`;
+    const post = () =>
+      fetch(`${baseUrl}/embed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'query', texts: ['x'] }),
+      });
+    expect((await post()).status).toBe(500);
+    expect((await post()).status).toBe(200); // in-flight entry cleaned up, retried
+    expect(attempts).toBe(2);
+  });
+
   it('single-flight FIFO: concurrent requests complete in arrival order', async () => {
     const finished: string[] = [];
     handle = createEmbedSidecarServer({

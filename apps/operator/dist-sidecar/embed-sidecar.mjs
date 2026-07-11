@@ -5428,6 +5428,7 @@ var EMBED_SIDECAR_READY_LINE = "PAPERCUSP_EMBED_SIDECAR_READY";
 var MAX_TEXTS_PER_CALL = 256;
 var MAX_TEXT_CHARS = 32e3;
 var MAX_BODY_BYTES = 16 * 1024 * 1024;
+var EMBED_CACHE_MAX_DEFAULT = 1024;
 var EMBED_SIDECAR_MODELS = ["gemma", "local", "harrier"];
 var EMBED_SIDECAR_RUNTIME = "node-onnx-worker";
 var MODEL_REVS = {
@@ -5530,6 +5531,55 @@ function createEmbedSidecarServer(opts = {}) {
     queue = run.catch(() => void 0);
     return run;
   };
+  const cacheMax = opts.cacheMax ?? EMBED_CACHE_MAX_DEFAULT;
+  const vecCache = /* @__PURE__ */ new Map();
+  const inflight = /* @__PURE__ */ new Map();
+  let cacheHits = 0;
+  let cacheMisses = 0;
+  const cacheGet = (key) => {
+    const hit = vecCache.get(key);
+    if (hit) {
+      vecCache.delete(key);
+      vecCache.set(key, hit);
+    }
+    return hit;
+  };
+  const cachePut = (key, vec) => {
+    if (cacheMax <= 0) return;
+    vecCache.delete(key);
+    vecCache.set(key, vec);
+    while (vecCache.size > cacheMax) {
+      const oldest = vecCache.keys().next().value;
+      if (oldest === void 0) break;
+      vecCache.delete(oldest);
+    }
+  };
+  const embedOneCached = (model, kind, text) => {
+    const key = `${model}:${kind}\0${text}`;
+    const cached = cacheGet(key);
+    if (cached) {
+      cacheHits++;
+      return Promise.resolve(cached);
+    }
+    const joined = inflight.get(key);
+    if (joined) {
+      cacheHits++;
+      return joined;
+    }
+    cacheMisses++;
+    const run = enqueue(async () => {
+      const embed = await getEmbedder(model, kind);
+      const vec = await embed(text);
+      cachePut(key, vec);
+      return vec;
+    });
+    inflight.set(key, run);
+    void run.then(
+      () => inflight.delete(key),
+      () => inflight.delete(key)
+    );
+    return run;
+  };
   const handleEmbed = async (req, res) => {
     let parsed;
     try {
@@ -5544,12 +5594,9 @@ function createEmbedSidecarServer(opts = {}) {
       return;
     }
     try {
-      const vectors = await enqueue(async () => {
-        const embed = await getEmbedder(v.model, v.kind);
-        const out = [];
-        for (const text of v.texts) out.push(await embed(text));
-        return out;
-      });
+      const vectors = await Promise.all(
+        v.texts.map((text) => embedOneCached(v.model, v.kind, text))
+      );
       const body = {
         vectors,
         dims: vectors[0]?.length ?? 0,
@@ -5569,7 +5616,8 @@ function createEmbedSidecarServer(opts = {}) {
         pid: process.pid,
         uptimeMs: Date.now() - startedAt,
         runtime: EMBED_SIDECAR_RUNTIME,
-        models: { ...warm }
+        models: { ...warm },
+        cache: { hits: cacheHits, misses: cacheMisses, size: vecCache.size }
       });
       return;
     }
