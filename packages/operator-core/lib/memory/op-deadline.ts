@@ -245,5 +245,13 @@ export function embedFailureReason(err: unknown): string | null {
   if (/openai_embed_quota_exhausted/.test(msg)) return 'embed_quota_exhausted';
   if (/openai_embed_failed_429/.test(msg)) return 'embed_rate_limited';
   if (/openai_embed_failed/.test(msg)) return 'embed_unavailable';
+  // WI-4183: a configured embed sidecar is REQUIRED (no in-process fallback, WI-4021 D-003
+  // retired) — a dead/unreachable sidecar throws a plain Error whose message is prefixed
+  // `sidecar_required_unavailable: …` (embed-sidecar-wiring.ts / libs/generic/memory's
+  // buildSidecarFirstEmbedder). It is NOT a MemoryUnavailableError instance, so without this
+  // branch it fell through every check here to the raw `throw err` in remember.ts/search.ts —
+  // an opaque handler_error that hid the already-journaled write's reason/journal_id from the
+  // caller. Map it to a clean reason exactly like every other embed-failure mode above.
+  if (/sidecar_required_unavailable/.test(msg)) return 'sidecar_unavailable';
   return null;
 }

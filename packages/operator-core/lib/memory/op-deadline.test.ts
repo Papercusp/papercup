@@ -233,4 +233,16 @@ describe('embedFailureReason — embed failure → clean degraded reason', () =>
     expect(embedFailureReason(new Error('some other failure'))).toBeNull();
     expect(embedFailureReason('a string error')).toBeNull();
   });
+
+  it('WI-4183: maps a dead-sidecar throw (sidecar_required_unavailable) to sidecar_unavailable', () => {
+    // The exact message shape buildSidecarFirstEmbedder / embed-sidecar-wiring.ts throws when a
+    // configured sidecar is unreachable (WI-4021 D-003: required, no in-process fallback) — a
+    // plain Error, NOT a MemoryUnavailableError instance, so it must be caught here rather than
+    // falling through to a raw handler_error.
+    expect(
+      embedFailureReason(
+        new Error('sidecar_required_unavailable: fetch failed (http://127.0.0.1:3384, harrier:document, budget 15000ms)'),
+      ),
+    ).toBe('sidecar_unavailable');
+  });
 });

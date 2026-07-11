@@ -35,6 +35,7 @@ import { coerceMemoryKind, normalizeMemoryKind } from './remember-coerce';
 import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
 import { getSessionUserOrDefault } from '../../auth';
 import { getOrgPg } from '@papercusp/db-org';
+import { journalPendingWrite } from '../../memory/write-journal';
 
 type FakeBackend = {
   name: string;
@@ -127,6 +128,33 @@ describe('memory:remember — backend seam (D-003)', () => {
       'a clean one-line fact',
       expect.objectContaining({ verbatim: true }),
     );
+  });
+
+  // WI-4183: a configured embed sidecar going down mid-write threw a plain Error
+  // (`sidecar_required_unavailable: …`, embed-sidecar-wiring.ts / WI-4021 D-003) that was
+  // NOT a MemoryUnavailableError instance, so it fell through the runtime-failure catch to a
+  // raw `throw err` — an opaque handler_error that hid the already-journaled write's
+  // journal_id/will_retry from the caller (who could then re-fire a write already parked).
+  it('a dead-sidecar throw during the write returns the journaled envelope, never a raw handler_error', async () => {
+    const b = fakeBackend();
+    b.remember.mockRejectedValueOnce(
+      new Error(
+        'sidecar_required_unavailable: fetch failed (http://127.0.0.1:3384, harrier:document, budget 15000ms)',
+      ),
+    );
+    useBackend(b);
+    vi.mocked(journalPendingWrite).mockResolvedValueOnce('journal-wi4183');
+
+    const res = await remember.handler({ content: 'parked while sidecar is down', kind: 'reference' }, fakeCtx);
+    const parsed = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+    expect(parsed).toEqual({
+      ok: false,
+      reason: 'sidecar_unavailable',
+      journaled: true,
+      will_retry: true,
+      journal_id: 'journal-wi4183',
+      hint: 'Fact journaled durably; it will be stored automatically once the embedder recovers — do NOT re-fire this write.',
+    });
   });
 });
 
