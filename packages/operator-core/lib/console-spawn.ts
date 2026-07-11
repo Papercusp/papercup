@@ -901,6 +901,39 @@ export interface SpawnHeadlessOpts {
   logDir?: string | null;
 }
 
+// EI-9748: headless members are a DETACHED + unref'd child of whichever operator
+// API process served the spawn call — `detached:true` gives it its own POSIX
+// process GROUP/session (escapes signals sent to a foreground job / a closing
+// terminal), but on a systemd-managed Linux host that is NOT the same thing as
+// escaping the parent's cgroup: a plain fork() inherits the parent's cgroup, and
+// both `papercup-dev-api.service` and `papercup-staging-api.service` run with
+// systemd's default `KillMode=control-group` — so ANY restart of that operator
+// unit (routine: agents restart papercup-staging-api.service constantly per this
+// repo's own "test a server-side edit live" workflow, plus the auto-deploy
+// pipeline restarting papercup-dev-api.service) sends SIGTERM to the WHOLE
+// cgroup, silently killing the headless child too, with no error/OOM/crash signal
+// of its own. This has repeatedly been misattributed to host load (it isn't —
+// confirmed by direct evidence on EI-9748: staging-api restarted every ~5-6min
+// for hours from a completely unrelated, sanctioned dev workflow).
+//
+// A full fix needs headless children to NOT share that cgroup (e.g. a durable,
+// separately-supervised spawner process) — a bigger infra change requiring
+// either a policy exception (ad-hoc `systemd-run --scope` is explicitly blocked
+// for agent use by the native-scheduler guard) or a new installed supervisor
+// unit, tracked on EI-9748. Until then, this wraps the child's own SIGTERM
+// handling so a cgroup-kill logs a clear, self-diagnosing breadcrumb instead of
+// a bare `Terminated` — turning "wasted an hour blaming load" into "read the log,
+// see EI-9748, move on". Exported + pure (string in, string out) for testing.
+export function wrapHeadlessSigtermDiagnostic(oneliner: string): string {
+  const trap =
+    `trap 'echo "[EI-9748] SIGTERM received at $(date -u +%FT%TZ) — this headless fleet member ` +
+    `was very likely reaped by an operator-service restart (systemd KillMode=control-group kills ` +
+    `this whole detached cgroup on any systemctl restart of papercup-dev-api/papercup-staging-api), ` +
+    `NOT a crash, OOM, or rate limit. See work-item EI-9748 for the root cause + fix status." >&2; ` +
+    `exit 143' TERM`;
+  return `${trap}; ${oneliner}`;
+}
+
 /**
  * Launch a headless (no-window) managed-pty session. Detached + unref'd so it
  * outlives the operator, with stdout+stderr → a per-session log file so a leader
@@ -913,12 +946,14 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
   const label = opts.label ?? 'headless-member';
   // Same one-liner spawnConsole builds — appearance prelude is harmless with no
   // TTY (the OSC escapes just land in the log). 'console' mode keeps it identical.
-  const oneliner = buildConsoleOneliner(envelope.cwd, envelope.env, envelope.greetingCmd, {
-    mode: 'console',
-    planSlug: null,
-    label,
-    scheme: null,
-  });
+  const oneliner = wrapHeadlessSigtermDiagnostic(
+    buildConsoleOneliner(envelope.cwd, envelope.env, envelope.greetingCmd, {
+      mode: 'console',
+      planSlug: null,
+      label,
+      scheme: null,
+    }),
+  );
 
   let logDir = opts.logDir?.trim() || null;
   if (logDir) {
