@@ -138,6 +138,11 @@ import { SU_S26_TAKE_CHARGE_DONT_WAIT } from './su/S26-take-charge-dont-wait';
 // SU-S27: fleet-dispatch-wake-clarity P-003 — a woken agent that finds a DIRECTED dispatch in its
 // inbox must CLAIM + WORK the lane this turn, never read-and-repark (the su-6ef6 black-hole).
 import { SU_S27_WOKE_TO_DISPATCH_CLAIMS } from './su/S27-woke-to-dispatch-claims';
+// SU-S28/S29: su-ideate-learning-substrate-2026-07-10 P-015 — the IDEATE + GRADE mode-batteries.
+// S28: an IDEATE pass runs CLOSED (ground on prior art → file lens-tagged → close with a tick).
+// S29: a GRADE-mode low grade + critique on a (peer-authored) su idea wakes the originator (woken:1).
+import { SU_S28_IDEATE_PASS_CLOSES_LOOP } from './su/S28-ideate-pass-closes-loop';
+import { SU_S29_GRADE_LOW_WAKES_ORIGINATOR } from './su/S29-grade-low-wakes-originator';
 // QUEEN-Q01/Q02: scout-idea-grading-2026-06-12 (B-06/B-08) — Mug grades
 // routed Scout drafts while triaging; owner-grade-sovereign refusals stand.
 import { QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE } from './mug/Q01-grade-routed-on-triage';
@@ -281,6 +286,9 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   // behavioral test for the take-charge / never-wait-on-a-stalled-dependency policy
   SU_S26_TAKE_CHARGE_DONT_WAIT,
   SU_S27_WOKE_TO_DISPATCH_CLAIMS,
+  // su-ideate learning-loop mode-batteries (su-ideate-learning-substrate-2026-07-10 P-015)
+  SU_S28_IDEATE_PASS_CLOSES_LOOP,
+  SU_S29_GRADE_LOW_WAKES_ORIGINATOR,
   // queen triage-grading behavioral coverage (scout-idea-grading-2026-06-12)
   QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE,
   QUEEN_Q02_OWNER_GRADE_SOVEREIGN_NO_RETRY,

@@ -44,6 +44,16 @@ import {
   markDeliveryParked,
   recoverStuckDeliveries,
 } from './store';
+import {
+  bumpNode,
+  claimDueComposedRoots,
+  findRootAnchor,
+  insertComposedRootDelivery,
+  loadTreeLeaves,
+  stampLeafMemberFired,
+  voidTreeDescendants,
+} from './compose-store';
+import { composedWakeSummary } from './compose-spec';
 import { executeWake, type ExecuteWakeDeps } from './wake-executor';
 import type { ResumeTurnExitRaw } from './resume-turn-outcome';
 import type { AwaitRow, DeliveryWork } from './types';
@@ -145,8 +155,14 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
   // threaded through so a row carrying a payload_filter is only fired when the
   // emitted payload actually satisfies it (rows with no filter are unaffected).
   const fired = await fireAwaitsForKey({ eventKey: opts.key, reason: 'event', payload: opts.payload });
-  const wakes = fired.filter((a) => a.policy === 'wake');
-  const notifyAwaits = fired.filter((a) => a.policy === 'notify');
+  // composable-event-awaits-2026-07-11: a fired row tagged with node_id is a composed-await LEAF.
+  // It does NOT wake/notify its subscriber directly — its (already atomic, exactly-once) claim
+  // PROPAGATES up the threshold tree, and only a ROOT trip queues a single wake. Split composed
+  // leaves off the plain wake/notify paths; the composed rows are handled below (fail-soft).
+  const composedLeaves = fired.filter((a) => a.nodeId != null);
+  const plainFired = fired.filter((a) => a.nodeId == null);
+  const wakes = plainFired.filter((a) => a.policy === 'wake');
+  const notifyAwaits = plainFired.filter((a) => a.policy === 'notify');
 
   // EI-9270: latch any ANNOUNCED gate on this key (fired_at stamped, row kept) so a
   // late registrant is told the gate already opened. Fail-soft — never break the emit.
@@ -170,6 +186,17 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
     setImmediate(() => {
       void pumpWakeDeliveries(ws).catch((e) => log(`pump kick failed: ${e instanceof Error ? e.message : e}`));
     });
+  }
+
+  // 2b. Composed-await leaves: propagate each claim up its threshold tree (a root trip queues
+  // its own wake + voids the tree). Fail-soft — a tree-propagation error must never break the
+  // emit (the plain wake/notify halves above already fired).
+  if (composedLeaves.length > 0) {
+    try {
+      await propagateComposedLeafClaims({ leaves: composedLeaves, payload: opts.payload, workspaceId: ws, source: opts.source ?? null });
+    } catch (e) {
+      log(`composed propagation failed for ${opts.key}: ${e instanceof Error ? e.message : e}`);
+    }
   }
 
   // 3. The notify path — one coord message to the remaining audience.
@@ -258,6 +285,102 @@ export async function deliverToSpecificAwaits(input: {
     void pumpWakeDeliveries(ws).catch((e) => log(`pump kick failed: ${e instanceof Error ? e.message : e}`));
   });
   return { delivered: toDeliver.length };
+}
+
+// ── composed threshold-tree awaits (composable-event-awaits-2026-07-11) ──────────
+//
+// A composed await is a TREE of any/all/k-of-n threshold nodes (event_await_nodes) over
+// leaves that stay ordinary event_awaits rows (compose-store.ts). The leaf claim reuses the
+// exact same atomic exactly-once UPDATE as every await (fireAwaitsForKey); the ONLY difference
+// is that a leaf tagged with node_id PROPAGATES its claim up the tree instead of waking — and
+// only the ROOT trip queues one wake (via the tree's anchor row) + voids the rest of the tree.
+// Every decision is local + monotone (fire-once leaves, counters that only increment, fired_at
+// that only goes NULL→set under a guard), so concurrent emits are race-safe without a txn.
+
+/**
+ * Propagate the claims of the composed LEAVES fired by one emit up their threshold trees.
+ * Each leaf: capture its fire payload (for the root wake), then walk the counter chain upward;
+ * a node that reaches its required_count trips and bumps ITS parent, until either a node
+ * absorbs the claim below threshold (stop) or the ROOT trips (deliver one wake + void the tree).
+ */
+export async function propagateComposedLeafClaims(input: {
+  leaves: AwaitRow[];
+  payload?: unknown;
+  workspaceId?: string;
+  source?: string | null;
+}): Promise<void> {
+  const ws = input.workspaceId ?? activeWorkspaceId();
+  for (const leaf of input.leaves) {
+    if (leaf.nodeId == null) continue;
+    await stampLeafMemberFired(leaf.id, input.payload);
+    await bumpComposedChain(leaf.nodeId, ws, input.source ?? null);
+  }
+}
+
+/** Walk the trip chain upward from a leaf's parent node. Each step is one atomic guarded
+ *  increment (bumpNode); a non-trip or an already-fired/cancelled node ends the walk. */
+async function bumpComposedChain(nodeId: number, ws: string, source: string | null): Promise<void> {
+  let current: number | null = nodeId;
+  while (current != null) {
+    const res = await bumpNode(current);
+    // null = node already fired/cancelled (a concurrent trip won the race, or the tree was
+    // voided) — the claim is harmlessly absorbed. !justTripped = counted but below threshold.
+    if (res == null || !res.justTripped) return;
+    if (res.parentId == null) {
+      // ROOT tripped — bumpNode already stamped its fired_at, uniquely, so this fires exactly once.
+      await fireComposedRoot({ rootId: res.rootId, reason: 'event', ws, source, deliver: true });
+      return;
+    }
+    current = res.parentId; // interior node tripped — count it toward its parent
+  }
+}
+
+/**
+ * Fire a composed ROOT whose fired_at is ALREADY stamped (by the tripping bumpNode, or by the
+ * timeout sweep's atomic claim): assemble the tree's partial state, deliver ONE wake against the
+ * anchor row when `deliver` (an 'expire' timeout lapses silently), then void every unfired
+ * descendant so no survivor ever wakes the subscriber again (whole-tree one-shot consumption).
+ */
+async function fireComposedRoot(input: {
+  rootId: number;
+  reason: 'event' | 'timeout';
+  ws: string;
+  source?: string | null;
+  deliver: boolean;
+}): Promise<void> {
+  const leaves = await loadTreeLeaves(input.rootId);
+  const firedLeaves = leaves.filter((l) => l.memberFiredAt != null);
+  const pendingLeaves = leaves.filter((l) => l.memberFiredAt == null);
+  const satisfied = input.reason === 'event';
+
+  if (input.deliver) {
+    const anchor = await findRootAnchor(input.rootId);
+    if (anchor) {
+      const payload = {
+        composed: true,
+        satisfied,
+        reason: input.reason,
+        fired: firedLeaves.map((l) => ({ event: l.eventKey, payload: l.memberPayload, at: l.memberFiredAt })),
+        pending: pendingLeaves.map((l) => l.eventKey),
+      };
+      await insertComposedRootDelivery({
+        anchorAwaitId: anchor.awaitId,
+        subscriberId: anchor.subscriberId,
+        rootId: input.rootId,
+        payload,
+        summary: composedWakeSummary({ satisfied, firedCount: firedLeaves.length, leafCount: leaves.length }),
+        source: input.source ?? null,
+      });
+      // A composed-only emit queues no plain wake, so it never kicks the pump — kick it here.
+      setImmediate(() => {
+        void pumpWakeDeliveries(input.ws).catch((e) => log(`composed pump kick failed: ${e instanceof Error ? e.message : e}`));
+      });
+    } else {
+      log(`composed root ${input.rootId} tripped (${input.reason}) but has no anchor row — cannot deliver its wake`);
+    }
+  }
+
+  await voidTreeDescendants(input.rootId);
 }
 
 // ── the pump ──────────────────────────────────────────────────────────────────
@@ -595,6 +718,20 @@ export async function sweepOnce(workspaceId?: string): Promise<void> {
 
   const lapsed = await expireLapsedAwaits();
   if (lapsed > 0) log(`expired ${lapsed} lapsed awaits (timeout_behavior=expire)`);
+
+  // composable-event-awaits-2026-07-11: composed threshold-tree ROOTS past their deadline. The
+  // claim atomically stamps fired_at (each root handled once, even across concurrent ticks); a
+  // 'wake' root delivers a partial-tree timeout wake, an 'expire' root lapses silently — both
+  // then void the tree. The pump below delivers the queued timeout wakes.
+  const dueRoots = await claimDueComposedRoots();
+  for (const root of dueRoots) {
+    try {
+      await fireComposedRoot({ rootId: root.id, reason: 'timeout', ws, deliver: root.timeoutBehavior === 'wake' });
+    } catch (e) {
+      log(`composed root timeout handling failed (root ${root.id}): ${e instanceof Error ? e.message : e}`);
+    }
+  }
+  if (dueRoots.length > 0) log(`composed: fired ${dueRoots.length} timed-out tree root(s)`);
 
   await pumpWakeDeliveries(ws);
 }
