@@ -87,7 +87,7 @@ vi.mock('./use-create-data', () => ({
   useCreateView: () => [view.value, mkSetter('view')],
 }));
 
-import PlansListPanel from './PlansListPanel';
+import PlansListPanel, { CreateViewRail } from './PlansListPanel';
 
 beforeEach(() => {
   for (const k of Object.keys(nuqs)) delete nuqs[k];
@@ -108,7 +108,7 @@ afterEach(cleanup);
 
 describe('PlansListPanel — view buttons', () => {
   it('renders the New-plan button + the view buttons (Observations moved to Signals, 2026-07-11)', () => {
-    render(<PlansListPanel />);
+    render(<><CreateViewRail /><PlansListPanel /></>);
     expect(screen.getByRole('button', { name: /New plan/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Plans/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Queue/i })).toBeTruthy();
@@ -118,7 +118,7 @@ describe('PlansListPanel — view buttons', () => {
   });
 
   it('clicking a view button sets ?view to that view', () => {
-    render(<PlansListPanel />);
+    render(<CreateViewRail />);
     fireEvent.click(screen.getByRole('button', { name: /Queue/i }));
     expect(setters.view).toHaveBeenCalledWith('queue');
     fireEvent.click(screen.getByRole('button', { name: /Sessions/i }));
@@ -126,7 +126,7 @@ describe('PlansListPanel — view buttons', () => {
   });
 
   it('renders the view controls as an icon-only left rail without moving New plan', () => {
-    render(<PlansListPanel />);
+    render(<><CreateViewRail /><PlansListPanel /></>);
     const rail = screen.getByRole('navigation', { name: 'Create view' });
     const plans = screen.getByRole('button', { name: 'Plans' });
     const queue = screen.getByRole('button', { name: 'Queue' });

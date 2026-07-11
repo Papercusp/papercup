@@ -21,7 +21,10 @@ vi.mock('../../harness/dock/panel-registry', () => ({
 vi.mock('../../harness/dock/dock-actions', () => ({
   onDockApiBind: vi.fn(() => () => {}),
 }));
-vi.mock('./PlansListPanel', () => ({ default: () => null }));
+vi.mock('./PlansListPanel', () => ({
+  default: () => null,
+  CreateViewRail: () => <nav aria-label="Create view" data-testid="create-view-rail" />,
+}));
 vi.mock('./MainViewPanel', () => ({ default: () => null }));
 // The shell imports a sibling CSS file by side effect; stub to a no-op module.
 vi.mock('../harnesses/adv-dock.css', () => ({}));
@@ -41,6 +44,8 @@ describe('AdvCreateDock', () => {
   it('mounts HarnessDock with the fixed adv-create2 layout', () => {
     render(<AdvCreateDock />);
     expect(screen.getByTestId('harness-dock').getAttribute('data-layout')).toBe('adv-create2');
+    expect(screen.getByTestId('create-view-rail')).toBeTruthy();
+    expect(screen.getByTestId('harness-dock').parentElement?.classList.contains('pc-adv-create__dock')).toBe(true);
   });
 
   it('ensureCreatePanelsRegistered is idempotent (the registered guard)', () => {
