@@ -1095,7 +1095,8 @@ export async function promoteIssue(
 
   const updated = await updateIssue(id, { linkedFeatureId: feature.id, by: opts.actor });
   await commentIssue(id, `Promoted to ${feature.id} in harness ${harness}.`, opts.actor);
-  return { issue: updated ?? issue, feature: { id: feature.id, title: feature.title } };
+  const promotedIssue = updated && 'shrinkGuardTripped' in updated ? issue : (updated ?? issue);
+  return { issue: promotedIssue, feature: { id: feature.id, title: feature.title } };
 }
 
 /**

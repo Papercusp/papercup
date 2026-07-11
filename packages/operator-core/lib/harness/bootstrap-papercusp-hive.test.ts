@@ -7,7 +7,10 @@ import { tmpdir } from 'node:os';
 // JOIN path. Mock the constant to null so the legacy clone+create-path tests still exercise
 // the per-owner fallback; the P-005/P-006 tests pass `canonicalInvite` explicitly (explicit
 // wins over the constant), so they are unaffected.
-vi.mock('./canonical-hive-invite', () => ({ CANONICAL_PAPERCUSP_HIVE_INVITE: null, CANONICAL_HIVE_TEAM_ALLOWLIST: [] }));
+vi.mock('./canonical-hive-invite', () => ({
+  CANONICAL_PAPERCUSP_HIVE_INVITE: null,
+  CANONICAL_HIVE_TEAM_ALLOWLIST: [],
+}));
 
 import {
   bootstrapPapercuspHive,
@@ -32,7 +35,7 @@ import { workspacesRoot, isKnownWorkspace } from '../workspace-registry';
 // Regression guard for the clones/-vs-papercusp-workspace/ mismatch (env-name confusion:
 // seedTargetDirs used PAPERCUSP_WORKSPACE_ROOT, boot's workspacesRoot() reads the PLURAL).
 describe('seedTargetDirs (WI-3232 corestore-dir parity)', () => {
-  it('restores the corestore to boot\'s dir: <workspacesRoot>/<ws>/.papercusp/<slug>/hyperbee', () => {
+  it("restores the corestore to boot's dir: <workspacesRoot>/<ws>/.papercusp/<slug>/hyperbee", () => {
     const { targetStoreDir } = seedTargetDirs();
     expect(targetStoreDir).toBe(
       join(workspacesRoot(), PAPERCUSP_WORKSPACE_ID, '.papercusp', PAPERCUSP_HIVE_SLUG, 'hyperbee'),
@@ -291,7 +294,14 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
 
   it('P-010: post-admission restore is SKIPPED when nothing was deferred', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const restoreSeed = vi.fn(async () => ({ ran: true, outcomes: [{ kind: 'corestore', ok: true }, { kind: 'git', ok: true }], deferred: [] }));
+    const restoreSeed = vi.fn(async () => ({
+      ran: true,
+      outcomes: [
+        { kind: 'corestore', ok: true },
+        { kind: 'git', ok: true },
+      ],
+      deferred: [],
+    }));
     const restoreDeferredGitSeed = vi.fn(async () => ({ ran: true, restored: ['git'], stillDeferred: [] }));
     const deps = spyDeps({
       canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
@@ -324,7 +334,11 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
 
   it('P-010: a post-admission restore failure is non-fatal — the join result still stands', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const restoreSeed = vi.fn(async () => ({ ran: true, outcomes: [{ kind: 'corestore', ok: true }], deferred: ['git'] }));
+    const restoreSeed = vi.fn(async () => ({
+      ran: true,
+      outcomes: [{ kind: 'corestore', ok: true }],
+      deferred: ['git'],
+    }));
     const restoreDeferredGitSeed = vi.fn(async () => {
       throw new Error('epoch key unwrap blew up');
     });
@@ -337,13 +351,19 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     });
     const res = await bootstrapPapercuspHive(deps);
     expect(res.state).toBe('cloned-and-created'); // post-admission restore threw; join result unaffected
-    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/post-admission git seed restore failed \(non-fatal; cold clone\)/));
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(/post-admission git seed restore failed \(non-fatal; cold clone\)/),
+    );
     warn.mockRestore();
   });
 
   it('WI-3070: schedules a background retry when the first post-admission attempt still reports stillDeferred=[git]', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const restoreSeed = vi.fn(async () => ({ ran: true, outcomes: [{ kind: 'corestore', ok: true }], deferred: ['git'] }));
+    const restoreSeed = vi.fn(async () => ({
+      ran: true,
+      outcomes: [{ kind: 'corestore', ok: true }],
+      deferred: ['git'],
+    }));
     const restoreDeferredGitSeed = vi.fn(async () => ({ ran: true, restored: [], stillDeferred: ['git'] }));
     const scheduleGitSeedRetry = vi.fn();
     const deps = spyDeps({
@@ -368,7 +388,11 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
 
   it('WI-3070: does NOT schedule a retry when the first post-admission attempt already restored git', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const restoreSeed = vi.fn(async () => ({ ran: true, outcomes: [{ kind: 'corestore', ok: true }], deferred: ['git'] }));
+    const restoreSeed = vi.fn(async () => ({
+      ran: true,
+      outcomes: [{ kind: 'corestore', ok: true }],
+      deferred: ['git'],
+    }));
     const restoreDeferredGitSeed = vi.fn(async () => ({ ran: true, restored: ['git'], stillDeferred: [] }));
     const scheduleGitSeedRetry = vi.fn();
     const deps = spyDeps({
@@ -395,7 +419,11 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
         if (call === 2) return { ran: true, restored: ['git'], stillDeferred: [] };
         throw new Error('must not be called again once restored');
       });
-      const restoreSeed = vi.fn(async () => ({ ran: true, outcomes: [{ kind: 'corestore', ok: true }], deferred: ['git'] }));
+      const restoreSeed = vi.fn(async () => ({
+        ran: true,
+        outcomes: [{ kind: 'corestore', ok: true }],
+        deferred: ['git'],
+      }));
       const deps = spyDeps({
         canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
         findJoinedCanonical: vi.fn(async () => null),
@@ -425,7 +453,11 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const restoreDeferredGitSeed = vi.fn(async () => ({ ran: true, restored: [], stillDeferred: ['git'] }));
-      const restoreSeed = vi.fn(async () => ({ ran: true, outcomes: [{ kind: 'corestore', ok: true }], deferred: ['git'] }));
+      const restoreSeed = vi.fn(async () => ({
+        ran: true,
+        outcomes: [{ kind: 'corestore', ok: true }],
+        deferred: ['git'],
+      }));
       const deps = spyDeps({
         canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
         findJoinedCanonical: vi.fn(async () => null),
@@ -482,7 +514,7 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
       outcomes: [{ kind: 'corestore', ok: true }],
       deferred: ['git'],
     }));
-    const restoreDeferredGitSeed = vi.fn(async () => ({ restored: ['git'], stillDeferred: [] }));
+    const restoreDeferredGitSeed = vi.fn(async () => ({ ran: true, restored: ['git'], stillDeferred: [] }));
     const selfAdmitCanonical = vi.fn(async () => ({
       state: 'admitted' as const,
       slug: PAPERCUSP_HIVE_SLUG,
@@ -526,7 +558,7 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
       findJoinedCanonical: vi.fn(async () => null),
       joinCanonical: vi.fn(async () => ({ state: 'skipped' as const, slug: null, reason: 'owner offline' })),
       restoreSeed: vi.fn(async () => ({ ran: true, outcomes: [{ kind: 'corestore', ok: true }], deferred: ['git'] })),
-      restoreDeferredGitSeed: vi.fn(async () => ({ restored: ['git'], stillDeferred: [] })),
+      restoreDeferredGitSeed: vi.fn(async () => ({ ran: true, restored: ['git'], stillDeferred: [] })),
       selfAdmitCanonical: vi.fn(async () => ({
         state: 'admitted' as const,
         slug: PAPERCUSP_HIVE_SLUG,
@@ -564,7 +596,7 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
       outcomes: [{ kind: 'corestore', ok: true }],
       deferred: ['git'],
     }));
-    const restoreDeferredGitSeed = vi.fn(async () => ({ restored: ['git'], stillDeferred: [] }));
+    const restoreDeferredGitSeed = vi.fn(async () => ({ ran: true, restored: ['git'], stillDeferred: [] }));
     const selfAdmitCanonical = vi.fn(async () => ({ state: 'admitted' as const, slug: PAPERCUSP_HIVE_SLUG }));
     const deps = spyDeps({
       canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },

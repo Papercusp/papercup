@@ -4482,12 +4482,13 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { id } = args as { id: string };
       const { sql } = (await import('@papercusp/db-org')).getOrgPg();
-      return sql`
+      const rows = await sql`
         SELECT id, harness_slug, from_slug, to_slug, to_role, kind, subject, body,
                status, created_at, acknowledged_at, from_feature_id, to_feature_id
           FROM harness_shared.messages_consolidated
          WHERE id = ${id}
          LIMIT 1`;
+      return [...rows];
     },
   },
 
