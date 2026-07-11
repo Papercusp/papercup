@@ -15,6 +15,8 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { registerAwait, findAnnouncementsForKey, findNearMissKeys } from '../../events/await/store';
+import { registerComposedAwait } from '../../events/await/compose';
+import { ComposedSpecError, type ComposedSpec } from '../../events/await/compose-spec';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { startAwaitSweeper } from '../../events/await/engine';
 import { isPattern, expandPatternMacro, assertUsablePattern } from '../../events/await/pattern';
@@ -29,7 +31,7 @@ import { AWAIT_DEFAULT_TIMEOUT_SEC as DEFAULT_TIMEOUT_SEC, AWAIT_MAX_TIMEOUT_SEC
 export default defineTool({
   name: 'events:await',
   description:
-    'Register a one-shot WAKE on an event key OR a key PATTERN. When it fires you are re-invoked, so end your turn instead of polling. A pattern (`work-item:done:*`, or the macros `@plan:<slug>` / `@fleet:<slug>`) wakes on the FIRST matching key — one await for "any lane item finished" instead of N.',
+    'Register a one-shot WAKE on an event key OR a key PATTERN. When it fires you are re-invoked, so end your turn instead of polling. A pattern (`work-item:done:*`, or the macros `@plan:<slug>` / `@fleet:<slug>`) wakes on the FIRST matching key — one await for "any lane item finished" instead of N. Or pass `spec` instead of `event` for a composed all/any/some THRESHOLD TREE — one wake when the combination is satisfied.',
   guidance: {
     when: 'You are blocked on a known event key: a lock grant, plan run finishing, peer answer, deploy/gate landing, or a custom key another tool/agent will emit (patterns/macros cover whole families — see `event`). HAND-MINTED pair key? Have the completion\'s OWNER declare it first (events:emit { announce:true }) and await the RETURNED key — never re-type a key from a chat message (near-miss drift strands you). work-item:unblocked:<id> latches at registration: an already-unblocked target returns already_unblocked instead of a dead wait.',
     notWhen:
@@ -48,8 +50,15 @@ export default defineTool({
   agentRoles: [...SU_ROLES],
   args: z.object({
     event: hardText(LIMITS.IDENT)
+      .optional()
       .describe(
-        'Event key to wait on. An EXACT key (`lock:grant:t1`) matches that one key. A PATTERN — a glob with `*` (`work-item:done:*`), or a macro `@plan:<slug>` (→ any plan item done) / `@fleet:<slug>` (→ any fleet event) — wakes on the FIRST key that matches. `*` matches any run of characters.',
+        'Event key to wait on (mutually exclusive with `spec`). An EXACT key (`lock:grant:t1`) matches that one key. A PATTERN — a glob with `*` (`work-item:done:*`), or a macro `@plan:<slug>` (→ any plan item done) / `@fleet:<slug>` (→ any fleet event) — wakes on the FIRST key that matches. `*` matches any run of characters.',
+      ),
+    spec: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe(
+        'Composed THRESHOLD TREE (mutually exclusive with `event`): wake ONCE when a combination of event occurrences is satisfied. A leaf is { event, when? } (`when` = a payload_filter DataCondition on that event). Combinators: { all: [...] } = every child; { any: [...] } = ≥1 child; { some: { require: k, of: [...] } } = k-of-n. Nest ≤3 deep, ≤20 leaves total; event-level negation is not supported (absence is observed by the deadline). e.g. { any: [ { event: "deploy:done" }, { all: [ { event: "ci:green" }, { event: "review:approved" } ] } ] }. Deadline via timeout_sec/on_timeout as usual; a tree already satisfied at registration returns already_satisfied WITHOUT registering.',
       ),
     note: softText(LIMITS.ANNOTATION)
       .optional()
@@ -78,15 +87,97 @@ export default defineTool({
       .describe(
         "EI-8998: also require the emitted PAYLOAD to satisfy this predicate before firing, e.g. { queue_depth: { lt: 5 } } — same vocabulary as an ECA rule's `when`. Only takes effect combined with an `event` key/pattern the emitter actually fires.",
       ),
-  }),
+  })
+    .refine((a) => (a.event != null) !== (a.spec != null), {
+      message: 'pass exactly one of `event` or `spec`',
+    }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     startAwaitSweeper();
 
+    // ── Composed threshold-tree await (composable-event-awaits-2026-07-11): a `spec`
+    //    (mutually exclusive with `event`) registers an all/any/some TREE that wakes
+    //    ONCE when its combination is satisfied. Leaves are ordinary awaits; only a ROOT
+    //    trip queues a wake. A tree already satisfied at registration short-circuits to
+    //    already_satisfied without persisting anything. Spec validation (caps, no-`not`,
+    //    unusable-glob) throws ComposedSpecError → a caller-facing error, never a 500. ──
+    if (args.spec != null) {
+      const { handle, note: handleNote } = await captureWakeHandleForOwner(identity.ownerId, {
+        planRunId: args.plan_run_id,
+      });
+      try {
+        const res = await registerComposedAwait({
+          subscriberId: identity.ownerId,
+          spec: args.spec as unknown as ComposedSpec,
+          wakeHandle: handle,
+          note: clampText(args.note, LIMITS.ANNOTATION) ?? null,
+          timeoutSec: args.timeout_sec ?? null,
+          timeoutBehavior: args.on_timeout ?? 'wake',
+        });
+        if (!res.registered) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  ok: true,
+                  already_satisfied: true,
+                  fired: res.fired,
+                  advice:
+                    'The composed condition is ALREADY satisfied — no await was registered. Proceed now with the work it was gating instead of waiting.',
+                }),
+              },
+            ],
+          };
+        }
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: true,
+                composed: true,
+                root_id: res.rootId,
+                await_id: res.anchorAwaitId,
+                leaf_count: res.leafCount,
+                depth: res.depth,
+                on_timeout: args.on_timeout ?? 'wake',
+                wake_handle: handleNote,
+                advice:
+                  'Registered a composed threshold tree. End your turn now — you will be woken ONCE when the combination is satisfied (or at the deadline). One-shot: re-register for the next occurrence. Cancel the whole tree with events:cancel { root_id }.',
+              }),
+            },
+          ],
+        };
+      } catch (e) {
+        if (e instanceof ComposedSpecError) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  ok: false,
+                  error: e.message,
+                  advice: 'The composed `spec` is invalid — fix it and retry (see the events:await `spec` schema).',
+                }),
+              },
+            ],
+          };
+        }
+        throw e;
+      }
+    }
+
+    const eventInput = args.event;
+    if (eventInput == null) {
+      // The XOR refine guarantees exactly one of event/spec; spec is handled above.
+      throw new Error('events:await: pass exactly one of `event` or `spec`');
+    }
+
     // ── Resolve the key: a PATTERN (glob / @macro) normalizes to a stored glob (P-201);
     //    an exact key passes through. A bad macro / too-broad glob throws a clear message. ──
-    const patternAwait = isPattern(args.event);
-    const eventKey = patternAwait ? expandPatternMacro(args.event) : args.event;
+    const patternAwait = isPattern(eventInput);
+    const eventKey = patternAwait ? expandPatternMacro(eventInput) : eventInput;
     if (patternAwait) assertUsablePattern(eventKey);
 
     // ── EI-9270: the announced-gate LATCH — if this exact key was DECLARED and has

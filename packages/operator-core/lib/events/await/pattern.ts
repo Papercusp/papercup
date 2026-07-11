@@ -96,8 +96,9 @@ export function keyMatchesPattern(pattern: string, firedKey: string): boolean {
 
 /**
  * Does an emitted PAYLOAD satisfy a watch's payload_filter (EI-8998)? Reuses
- * `evaluateDataCondition` — the SAME MatchMap/`all`/`any`/`not` vocabulary an
- * ECA rule's `when` evaluates — so predicate-watch semantics stay consistent
+ * `evaluateDataCondition` — the SAME MatchMap/`all`/`any`/`some`/`not` vocabulary
+ * an ECA rule's `when` evaluates (incl. the P-001 `some:{require,of}` k-of-n) — so
+ * predicate-watch semantics stay consistent
  * with rule conditions, same as keyMatchesPattern does for key globs above. A
  * null/undefined filter always matches (no predicate registered). A malformed
  * filter (author bug, e.g. not stored as a plain object) degrades to `false`
