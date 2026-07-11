@@ -4,20 +4,26 @@
  * unit surface is DB-free by design — the default msg/work-item resolvers are
  * exercised by their consuming tools' integration tests).
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
 import {
   applyRefBudget,
   canonicalRefKey,
   clampSnippet,
   DEFAULT_REF_BUDGET,
   detectBodyRefs,
+  GATE_REFS_FIELD,
   parseRefToken,
+  readGateRefs,
+  renderGateRefsSuffix,
   renderHydratedRef,
   renderHydratedRefs,
   renderReplyQuoteSuffix,
   type HydratableRef,
 } from './ref-hydrate';
-import { hydrateRefs, type RefResolver } from './ref-hydrate-resolve';
+import { hydrateRefs, resolveGateRefStamps, type RefResolver } from './ref-hydrate-resolve';
+import { findAnnouncementsForKey } from '../../events/await/store';
+
+vi.mock('../../events/await/store', () => ({ findAnnouncementsForKey: vi.fn() }));
 
 describe('parseRefToken', () => {
   it('parses each typed ref shape', () => {
@@ -130,6 +136,60 @@ describe('render', () => {
     expect(
       renderReplyQuoteSuffix({ ref: { kind: 'msg', id: 'm3' }, ok: true, label: 'msg m3', snippet: '' }),
     ).toBe(' ⤷ re msg m3');
+  });
+});
+
+describe('gate refs (P-006) — read/render pure core + send-time stamping', () => {
+  beforeEach(() => vi.mocked(findAnnouncementsForKey).mockReset());
+
+  it('readGateRefs round-trips valid stamps, drops malformed entries, caps at 3', () => {
+    const env = {
+      [GATE_REFS_FIELD]: [
+        { key: 'fleet:p2p:phase1-green', status: 'declared' },
+        { key: '', status: 'declared' }, // blank key dropped
+        { key: 'k2', status: 'god-mode' }, // forged status dropped
+        'not-an-object',
+        { key: 'k3', status: 'fired' },
+        { key: 'k4', status: 'undeclared' },
+        { key: 'k5', status: 'declared' }, // beyond cap
+      ],
+    };
+    expect(readGateRefs(env)).toEqual([
+      { key: 'fleet:p2p:phase1-green', status: 'declared' },
+      { key: 'k3', status: 'fired' },
+      { key: 'k4', status: 'undeclared' },
+    ]);
+    expect(readGateRefs({})).toEqual([]);
+    expect(readGateRefs(null)).toEqual([]);
+    expect(readGateRefs({ [GATE_REFS_FIELD]: 'nope' })).toEqual([]);
+  });
+
+  it('renderGateRefsSuffix renders each EXACT key with its status; empty → \'\'', () => {
+    expect(
+      renderGateRefsSuffix([
+        { key: 'fleet:p2p:phase1-green', status: 'declared' },
+        { key: 'deploy:done:papercusp', status: 'fired' },
+      ]),
+    ).toBe(' ⛩ gate fleet:p2p:phase1-green [declared]; gate deploy:done:papercusp [fired]');
+    expect(renderGateRefsSuffix([])).toBe('');
+  });
+
+  it('resolveGateRefStamps: declared / fired / undeclared by store state; error → unknown; dedupe+cap', async () => {
+    vi.mocked(findAnnouncementsForKey).mockImplementation(async (key: string) => {
+      if (key === 'g-fired') return [{ firedAt: '2026-07-11', firedReason: 'event', note: null, subscriberId: 's' }] as never;
+      if (key === 'g-declared') return [{ firedAt: null, firedReason: null, note: null, subscriberId: 's' }] as never;
+      if (key === 'g-boom') throw new Error('store down');
+      return [] as never;
+    });
+    expect(await resolveGateRefStamps(['g-fired', 'g-declared', 'g-nope'])).toEqual([
+      { key: 'g-fired', status: 'fired' },
+      { key: 'g-declared', status: 'declared' },
+      { key: 'g-nope', status: 'undeclared' },
+    ]);
+    expect(await resolveGateRefStamps(['g-boom'])).toEqual([{ key: 'g-boom', status: 'unknown' }]);
+    // dedupe + trim + cap at 3
+    const stamps = await resolveGateRefStamps([' g-declared ', 'g-declared', 'g-fired', 'g-nope', 'g-extra']);
+    expect(stamps.map((s) => s.key)).toEqual(['g-declared', 'g-fired', 'g-nope']);
   });
 });
 

@@ -176,10 +176,53 @@ export default defineTool({
       }
     }
 
-    const eventInput = args.event;
+    // ── P-006 (coord-authority-hardening): fromMsg — resolve the gate key OFF the
+    //    message that declared it, so the awaiter never re-types it (hand-typed
+    //    near-miss keys never rendezvous; this closes that class). Exactly one
+    //    gateRef on the message resolves; none/many is a LOUD, named error. ──
+    let eventInput = args.event;
+    if (args.fromMsg != null) {
+      const origin = await getMessageById(args.fromMsg).catch(() => null);
+      if (!origin) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: 'msg_not_found',
+                fromMsg: args.fromMsg,
+                advice: `fromMsg '${args.fromMsg}' matches no coord message — nothing was registered. Pass the msg_id from your inbox/feed line, or the gate key itself via \`event\`.`,
+              }),
+            },
+          ],
+        };
+      }
+      const gates = readGateRefs(origin as unknown as Record<string, unknown>);
+      if (gates.length !== 1) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: gates.length === 0 ? 'no_gate_refs_on_msg' : 'ambiguous_gate_refs',
+                fromMsg: args.fromMsg,
+                gate_refs: gates.map((g) => g.key),
+                advice:
+                  gates.length === 0
+                    ? `Message '${args.fromMsg}' carries no gateRefs stamp — nothing was registered. Ask the sender to re-send with gateRefs:[<key>], or find the key via events:catalog and await it via \`event\`.`
+                    : `Message '${args.fromMsg}' declares ${gates.length} gates — pick one and await it via \`event\` (keys listed in gate_refs).`,
+              }),
+            },
+          ],
+        };
+      }
+      eventInput = gates[0].key;
+    }
     if (eventInput == null) {
-      // The XOR refine guarantees exactly one of event/spec; spec is handled above.
-      throw new Error('events:await: pass exactly one of `event` or `spec`');
+      // The refine guarantees exactly one of event/spec/fromMsg; spec is handled above.
+      throw new Error('events:await: pass exactly one of `event`, `spec`, or `fromMsg`');
     }
 
     // ── Resolve the key: a PATTERN (glob / @macro) normalizes to a stored glob (P-201);
@@ -292,6 +335,7 @@ export default defineTool({
             ok: true,
             await_id: row.id,
             event: row.eventKey,
+            ...(args.fromMsg ? { resolved_from_msg: args.fromMsg } : {}),
             ...(patternAwait ? { pattern: true } : {}),
             ...(announcedGate ? { announced_gate: announcedGate } : {}),
             ...(nearMiss
