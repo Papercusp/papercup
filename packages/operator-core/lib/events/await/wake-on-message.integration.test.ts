@@ -66,9 +66,18 @@ describe('coord:send {wake:true} → real engine → real pump → real socket (
     log = new InMemoryCoordLog();
     configureCoordLog(log);
     tb = MultiSessionTestbed.create();
+    // This suite drives the pump ITSELF (with the testbed's isolated psu-pty host
+    // discovery) — so the internal fire-and-forget auto-pump emit kicks must NOT run:
+    // it fires with PRODUCTION host discovery, cannot see the testbed sockets, and
+    // races + mis-consumes (degrades to coord-inbox) the delivery this suite means to
+    // land over the live testbed socket. Suppressing it makes our explicit pump the
+    // sole, controlled-deps delivery path (production behaviour is untouched — the
+    // flag defaults ON everywhere else).
+    engine.setAutoPumpEnabledForTests(false);
   });
 
   afterEach(async () => {
+    engine.setAutoPumpEnabledForTests(true);
     resetCoordLog();
     if (tb) await tb.destroy();
   });

@@ -91,6 +91,31 @@ const DEFER_MS = 30_000;
 const STUCK_DELIVERING_MS = 5 * 60_000;
 const backoffMs = (attempts: number): number => Math.min(5_000 * 2 ** attempts, 10 * 60_000);
 
+/**
+ * Internal fire-and-forget auto-pump kick (the `setImmediate(pumpWakeDeliveries)`
+ * emit/deliver paths queue) — ON by default, so production behaviour is unchanged.
+ *
+ * An INTEGRATION test that drives the pump itself with an injected testbed
+ * host-discovery dep (`pumpWakeDeliveries(ws, { findPsuHost: tb.findPsuHostDep() })`)
+ * must be able to suppress this internal kick: it fires with PRODUCTION host
+ * discovery (`deps={}` → `findLiveHost`), which cannot see the testbed's isolated
+ * psu-pty sockets, so it RACES and mis-consumes (degrades to coord-inbox) the exact
+ * delivery the test means to land over its live testbed socket. The race is timing
+ * dependent — any extra `await` in emit before it returns (e.g. the WI-4014
+ * event-key subscriber lookup) lets the kicked pump win — which is precisely how
+ * `wake-on-message.integration.test.ts` started flaking. The test drives the pump
+ * explicitly, so the internal kick is redundant there; disable it to make the test
+ * the sole, controlled-deps pump. Never gate production on this flag.
+ */
+let autoPumpEnabled = true;
+/** @internal test-only: suppress/restore the internal auto-pump kick. Returns the
+ *  prior value so a test can restore it in teardown. */
+export function setAutoPumpEnabledForTests(enabled: boolean): boolean {
+  const prev = autoPumpEnabled;
+  autoPumpEnabled = enabled;
+  return prev;
+}
+
 /** System identity for the notify-path sends (mirrors green-checkpoint's). */
 function emitterIdentity(source: string | undefined, workspaceId: string): AgentIdentity {
   return {
@@ -183,9 +208,11 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
       // attributable to its source (e.g. a loop fire's `loop:<routineId>`).
       source: opts.source ?? null,
     });
-    setImmediate(() => {
-      void pumpWakeDeliveries(ws).catch((e) => log(`pump kick failed: ${e instanceof Error ? e.message : e}`));
-    });
+    if (autoPumpEnabled) {
+      setImmediate(() => {
+        void pumpWakeDeliveries(ws).catch((e) => log(`pump kick failed: ${e instanceof Error ? e.message : e}`));
+      });
+    }
   }
 
   // 2b. Composed-await leaves: propagate each claim up its threshold tree (a root trip queues
@@ -281,9 +308,11 @@ export async function deliverToSpecificAwaits(input: {
     summary: input.summary ?? null,
     source: input.source ?? null,
   });
-  setImmediate(() => {
-    void pumpWakeDeliveries(ws).catch((e) => log(`pump kick failed: ${e instanceof Error ? e.message : e}`));
-  });
+  if (autoPumpEnabled) {
+    setImmediate(() => {
+      void pumpWakeDeliveries(ws).catch((e) => log(`pump kick failed: ${e instanceof Error ? e.message : e}`));
+    });
+  }
   return { delivered: toDeliver.length };
 }
 
@@ -372,9 +401,11 @@ async function fireComposedRoot(input: {
         source: input.source ?? null,
       });
       // A composed-only emit queues no plain wake, so it never kicks the pump — kick it here.
-      setImmediate(() => {
-        void pumpWakeDeliveries(input.ws).catch((e) => log(`composed pump kick failed: ${e instanceof Error ? e.message : e}`));
-      });
+      if (autoPumpEnabled) {
+        setImmediate(() => {
+          void pumpWakeDeliveries(input.ws).catch((e) => log(`composed pump kick failed: ${e instanceof Error ? e.message : e}`));
+        });
+      }
     } else {
       log(`composed root ${input.rootId} tripped (${input.reason}) but has no anchor row — cannot deliver its wake`);
     }
