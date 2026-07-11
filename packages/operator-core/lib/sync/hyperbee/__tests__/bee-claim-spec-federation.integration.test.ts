@@ -28,8 +28,6 @@ const OUTBOX_MIGRATION = resolve(SQL_DIR, 'archive/102-substrate-outbox.sql');
 const CLAIM_SPEC_TABLE = resolve(SQL_DIR, '372-bee-claim-specs.sql');
 const ID_ONLY_MIGRATION = resolve(SQL_DIR, '389-bee-claim-spec-id-only.sql');
 const FED_MIGRATION = resolve(SQL_DIR, '438-bee-claim-specs-federation.sql');
-// P-009 Phase 2 (WI-3954): bee_claim_specs → cup_claim_specs (+ compat view).
-const PHASE2_RENAME_MIGRATION = resolve(SQL_DIR, '555-cup-lexicon-db-rename-phase2-bee-claim-specs-beekeeper.sql');
 
 const WS = 'ws_bcs';
 const HIVE = 'hive-bcs';
@@ -87,9 +85,11 @@ async function provisionPeer(db: FreshPgDb): Promise<void> {
   await applyMigrationForTest(db.sql, CLAIM_SPEC_TABLE);
   await applyMigrationForTest(db.sql, ID_ONLY_MIGRATION);
   await applyMigrationForTest(db.sql, FED_MIGRATION);
-  // P-009 Phase 2 (WI-3954): rename to cup_claim_specs (+ compat view), matching
-  // the live post-555 schema the projection (bee-claim-spec.ts) writes/deletes.
-  await applyMigrationForTest(db.sql, PHASE2_RENAME_MIGRATION);
+  // P-009 Phase 2 (WI-3954): rename bee_claim_specs → cup_claim_specs so this rig
+  // matches the live post-555 schema the projection (bee-claim-spec.ts) writes.
+  // Inline (not the full 555 file, whose unconditional beekeeper_* compat VIEWs
+  // target cup_keeper_* tables absent from this claim-spec-only rig → 42P01).
+  await db.sql.unsafe('ALTER TABLE harness_shared.bee_claim_specs RENAME TO cup_claim_specs');
   await db.sql.unsafe(FED_ORDER_KEY_DDL);
 }
 

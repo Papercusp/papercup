@@ -56,9 +56,9 @@ function enrolled(t: BenchTask): RealQueenEnrolled {
 test('buildRealQueenCoordEvents maps placements + re-placements + stranded from the ledger', () => {
   const f2i = new Map([['F-A', 'instance_a'], ['F-B', 'instance_b'], ['F-C', 'instance_c']]);
   const rows: HivePlacementRow[] = [
-    { work_item_id: 'F-A', harness_slug: 'm-a', bee_spawn_id: 's-1', status: 'completed', fail_count: 0, last_disposition: 'completed', placed_at: new Date(1000) },
-    { work_item_id: 'F-B', harness_slug: 'm-b', bee_spawn_id: 's-2', status: 'working', fail_count: 2, last_disposition: 'recover', placed_at: new Date(2000) },
-    { work_item_id: 'F-C', harness_slug: 'm-c', bee_spawn_id: null, status: 'stranded', fail_count: 3, last_disposition: 'stranded', placed_at: new Date(3000) },
+    { work_item_id: 'F-A', harness_slug: 'm-a', cup_spawn_id: 's-1', status: 'completed', fail_count: 0, last_disposition: 'completed', placed_at: new Date(1000) },
+    { work_item_id: 'F-B', harness_slug: 'm-b', cup_spawn_id: 's-2', status: 'working', fail_count: 2, last_disposition: 'recover', placed_at: new Date(2000) },
+    { work_item_id: 'F-C', harness_slug: 'm-c', cup_spawn_id: null, status: 'stranded', fail_count: 3, last_disposition: 'stranded', placed_at: new Date(3000) },
   ];
   const ev = buildRealQueenCoordEvents(rows, f2i);
   // A: placement + complete. B: placement + rework (re-placed). C: placement + rework + stranded_item.
@@ -76,8 +76,8 @@ test('buildRealQueenCoordEvents maps placements + re-placements + stranded from 
 test('buildRealQueenCoordEvents on a clean run (no fails) yields placements + completes only — no MAST signals', () => {
   const f2i = new Map([['F-A', 'instance_a'], ['F-B', 'instance_b']]);
   const rows: HivePlacementRow[] = [
-    { work_item_id: 'F-A', harness_slug: 'm-a', bee_spawn_id: 's-1', status: 'completed', fail_count: 0, last_disposition: 'completed', placed_at: new Date(1) },
-    { work_item_id: 'F-B', harness_slug: 'm-b', bee_spawn_id: 's-2', status: 'completed', fail_count: 0, last_disposition: 'completed', placed_at: new Date(2) },
+    { work_item_id: 'F-A', harness_slug: 'm-a', cup_spawn_id: 's-1', status: 'completed', fail_count: 0, last_disposition: 'completed', placed_at: new Date(1) },
+    { work_item_id: 'F-B', harness_slug: 'm-b', cup_spawn_id: 's-2', status: 'completed', fail_count: 0, last_disposition: 'completed', placed_at: new Date(2) },
   ];
   const ev = buildRealQueenCoordEvents(rows, f2i);
   assert.equal(ev.filter((e) => e.kind === 'rework').length, 0);

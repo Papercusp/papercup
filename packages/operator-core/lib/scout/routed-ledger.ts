@@ -19,7 +19,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 import { isWorkspaceCoordinationOn, workspaceBrainScopeKey, workspaceBrainReadKeys } from '../workspace-brain-scope';
-import { gatherCompletions } from '../curation/change-feed';
+import { dedupById, gatherCompletions, type ChangeFeedEntry } from '../curation/change-feed';
 import { buildChangeFeedReaders } from '../curation/change-feed-deps';
 import {
   classifyIdeaOutcome,
@@ -421,14 +421,72 @@ export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<Route
 }
 
 /**
+ * Work items that reached a LOSING terminal — status 'deprecated' — shaped as
+ * change-feed completion entries whose detail carries the status tag
+ * {@link classifyIdeaOutcome} reads. The production Change Feed deliberately
+ * surfaces only winning terminals (presence == win for its consumers), so the
+ * loss read lives here, scoped to the su-ideate outcome path
+ * (su-ideate-learning-substrate P-003): an su idea whose filed feature was
+ * deprecated must classify 'lost', not sit 'pending' forever. Deliberately NO
+ * terminal-integrity requirement — a hygiene/dedup deprecation is still a
+ * negative signal on the idea itself.
+ */
+async function readWorkItemLossEntries(): Promise<ChangeFeedEntry[]> {
+  const { sql } = getOrgPg();
+  const rows = await sql<
+    {
+      feature_id: string;
+      harness_slug: string | null;
+      title: string | null;
+      status: string | null;
+      updated_ts: string | null;
+    }[]
+  >`
+    SELECT feature_id, harness_slug, title, status, updated_ts
+      FROM harness_shared.work_items
+     WHERE status = 'deprecated'
+     ORDER BY updated_ts DESC NULLS LAST
+     LIMIT 500`;
+  return rows.map((r) => ({
+    id: `wi:${r.feature_id}`,
+    kind: 'completion' as const,
+    title: r.title || `Deprecated: ${r.feature_id}`,
+    detail: `Status: ${r.status}`,
+    harness: r.harness_slug ?? undefined,
+    workItemId: r.feature_id,
+    ref: `wi:${r.feature_id}`,
+    ts: epochMsToIso(r.updated_ts),
+  }));
+}
+
+/**
+ * The completions join for an origin-scoped outcome read. The scout path (and
+ * 'all') is byte-identical to gatherCompletions — winning terminals only, so
+ * Scout's lens learning is untouched (D-002/D-009). The 'su-ideate' path
+ * (P-003) additionally folds in losing work-item terminals so a deprecated su
+ * filing classifies 'lost'. Losses are appended AFTER the feed, so on an id
+ * collision the first-wins dedup keeps the feed's winning entry.
+ */
+async function gatherCompletionsForOrigin(
+  origin: ScoutLedgerOpts['origin'],
+): Promise<ChangeFeedEntry[]> {
+  const completions = await gatherCompletions(buildChangeFeedReaders());
+  if (origin !== 'su-ideate') return completions;
+  const losses = await readWorkItemLossEntries();
+  return losses.length > 0 ? dedupById([...completions, ...losses]) : completions;
+}
+
+/**
  * The production reader bag for the pure outcome core: routed-idea provenance
  * from the ledger + the Change Feed completions. (gatherCompletions wraps each
  * Change Feed reader defensively, so one bad source never empties the join.)
+ * `opts.origin` passes through to BOTH reads (default 'scout' — D-009): the
+ * su-ideate bag reads su provenance AND the loss-augmented completions.
  */
 export function buildScoutOutcomeReaders(opts: ScoutLedgerOpts = {}): ScoutOutcomeReaders {
   return {
     routedIdeas: () => readRoutedIdeas(opts),
-    completions: () => gatherCompletions(buildChangeFeedReaders()),
+    completions: () => gatherCompletionsForOrigin(opts.origin),
   };
 }
 
@@ -442,7 +500,7 @@ export async function getScoutLensOutcomes(
 ): Promise<LensOutcomeReport> {
   const [provenance, completions] = await Promise.all([
     readRoutedIdeas(opts),
-    gatherCompletions(buildChangeFeedReaders()),
+    gatherCompletionsForOrigin(opts.origin),
   ]);
   const report = computeLensOutcomes(provenance, completions, opts.weights);
   return { ...report, generatedAt: new Date().toISOString() };
@@ -597,6 +655,12 @@ export async function getScoutLensWeights(
  * P-033: this is also where the lens meta-learning loop closes — the per-lens
  * weights derived here are upserted into `scout_lens_weights` (best-effort) so
  * the next cycle's ideator fan-out ({@link getScoutLensWeights}) reads them back.
+ *
+ * su-ideate-learning-substrate P-003: `opts.origin` passes through (default
+ * 'scout'). A NON-scout refresh (the P-016 su backfill sweep, admin 'all'
+ * views) persists the per-idea outcome cache but NEVER writes
+ * `scout_lens_weights` — su lens learning is read-time only (D-003), so su
+ * rows can never skew Scout's diversity floor.
  */
 export async function refreshScoutOutcomes(
   opts: ScoutLedgerOpts & { weights?: LensWeightOptions } = {},
@@ -605,7 +669,7 @@ export async function refreshScoutOutcomes(
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const [provenance, completions] = await Promise.all([
     readRoutedIdeas(opts),
-    gatherCompletions(buildChangeFeedReaders()),
+    gatherCompletionsForOrigin(opts.origin),
   ]);
 
   if (provenance.length > 0) {
@@ -624,6 +688,13 @@ export async function refreshScoutOutcomes(
   }
 
   const report = computeLensOutcomes(provenance, completions, opts.weights);
+
+  // D-003 guard (P-003): only the scout origin closes the lens-weight loop.
+  // A su-ideate / 'all' refresh stops here — outcome cache written, weights
+  // untouched.
+  if ((opts.origin ?? 'scout') !== 'scout') {
+    return { ...report, generatedAt: new Date().toISOString() };
+  }
 
   // P-033: persist the per-lens weights the ideators read back next cycle.
   // Best-effort — a weight-upsert failure must not fail the outcome refresh.

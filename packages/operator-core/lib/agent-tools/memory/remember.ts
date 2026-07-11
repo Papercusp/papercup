@@ -230,10 +230,21 @@ export default defineTool({
           'memory:remember dedup-search',
         );
         // P-016 dedup-on-write (opt-in via PAPERCUSP_MEMORY_DEDUP): refuse a
-        // near-duplicate above the similarity threshold.
+        // near-duplicate above the similarity threshold. Compare against the
+        // MAX raw score, not neighbors[0] — memory decay (recency ranking
+        // bias, mem0-backend.ts) re-orders search results by freshness while
+        // leaving scores raw, so the first row is no longer guaranteed the
+        // highest-similarity one.
         if (dedupEnabled()) {
-          const top = neighbors[0];
-          const topScore = typeof top?.score === 'number' ? top.score : null;
+          let top: (typeof neighbors)[number] | undefined;
+          let best = -Infinity;
+          for (const n of neighbors) {
+            if (typeof n.score === 'number' && n.score > best) {
+              best = n.score;
+              top = n;
+            }
+          }
+          const topScore = top !== undefined ? best : null;
           if (top && topScore !== null && topScore >= dedupThreshold()) {
             return {
               content: [{

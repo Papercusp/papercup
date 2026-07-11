@@ -1614,7 +1614,7 @@ describe('Stage 6 — feature/issue content federates A↔B end-to-end through t
       //    drains the buffer for A's device + re-runs the deferred writeToPg, which now sees A ∈
       //    members and applies it. This is the P-004 fix the swarm rig can't reach. ──
       const aMember: HiveMemberRow = {
-        hive_home_slug: HIVE_HOME,
+        pot_home_slug: HIVE_HOME,
         github_user_id: idA.userId,
         github_username: 'alice',
         device_attestations: [

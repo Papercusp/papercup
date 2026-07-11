@@ -12,6 +12,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
 import { writeWatermark } from '../watermarks';
+import { settleCaughtUpInboxWakeDeliveries } from '../../../events/await/store';
 
 export default defineTool({
   name: 'coord:watermark-set',
@@ -38,6 +39,22 @@ export default defineTool({
       plan_events_since_ts: args.plan_events_since_ts,
       subscriptions_fired: args.subscriptions_fired,
     });
+    // EI-9389: a bulk coord:inbox read already showed every message up to
+    // messages_since_ts, but any coord:send{wake:true} delivery queued for
+    // those SAME messages while this agent was busy still sits pending/parked
+    // on its own standing inbox-wake key — settle those now so they don't
+    // burn a whole extra resume turn re-delivering traffic already read.
+    // Best-effort: never let a settle hiccup fail the watermark write itself.
+    if (args.messages_since_ts) {
+      try {
+        await settleCaughtUpInboxWakeDeliveries({
+          subscriberId: identity.ownerId,
+          cutoffTs: args.messages_since_ts,
+        });
+      } catch {
+        /* advisory cleanup only — the watermark write above already succeeded */
+      }
+    }
     return {
       content: [
         {

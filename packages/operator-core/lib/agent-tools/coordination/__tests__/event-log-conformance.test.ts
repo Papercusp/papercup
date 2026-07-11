@@ -356,3 +356,120 @@ describeCoordEventLogConformance(
     expect(await log.readLines('messages')).toEqual([]); // bypasses the (stale) cache entirely
   });
 });
+
+// WI-3993 (the WI-3937 class, EVENT-surface leg): readEvents used to be the
+// LAST raw unbounded full-surface body read in the seam — every call streamed
+// the whole surface (live escalations ≈ 27k rows / 14MB), and one such read
+// stuck on a jammed client event loop held the coord server down ~30min on
+// 2026-07-10. Now cached like readLines, with event-surface-specific delta
+// semantics. These tests pin the delta path (new puts), the UPSERT ts-leg (an
+// in-place re-put keeps its `id` — an id watermark alone would serve the stale
+// body forever, so this is THE event-surface regression), the TTL'd GC
+// fold-out, and the kill switch.
+(pgOk ? describe : describe.skip)('readEvents incremental cache (WI-3993)', () => {
+  const esc = (
+    msgId: string,
+    extra: Record<string, unknown> = {},
+  ): Parameters<PgCoordLog['putEvent']>[2] => ({
+    ts: '2026-01-01T00:00:00.000Z', msg_id: msgId, kind: 'escalation', from: 'agent', to: ['human'], ...extra,
+  });
+  const clear = async (): Promise<void> => {
+    await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${TEST_WS}`;
+  };
+  const savedEnv = {
+    cache: process.env.PAPERCUSP_COORD_READEVENTS_CACHE,
+    ttl: process.env.PAPERCUSP_COORD_READEVENTS_CACHE_TTL_MS,
+  };
+  const restoreEnv = (): void => {
+    if (savedEnv.cache === undefined) delete process.env.PAPERCUSP_COORD_READEVENTS_CACHE;
+    else process.env.PAPERCUSP_COORD_READEVENTS_CACHE = savedEnv.cache;
+    if (savedEnv.ttl === undefined) delete process.env.PAPERCUSP_COORD_READEVENTS_CACHE_TTL_MS;
+    else process.env.PAPERCUSP_COORD_READEVENTS_CACHE_TTL_MS = savedEnv.ttl;
+  };
+  afterAll(async () => {
+    restoreEnv();
+    await clear();
+  });
+
+  it('delta path: events put AFTER the first read appear, in order, without duplicates', async () => {
+    restoreEnv(); // cache ON (default)
+    await clear();
+    const log = new PgCoordLog({ getSql: () => sql!, ensureSchema: async () => {}, workspaceId: TEST_WS });
+    await log.putEvent('escalations', 'e1', esc('e1'));
+    await log.putEvent('escalations', 'e2', esc('e2'));
+    expect((await log.readEvents('escalations')).map((e) => e.msg_id)).toEqual(['e1', 'e2']); // full read
+    await log.putEvent('escalations', 'e3', esc('e3'));
+    // Delta read — e1/e2 land inside the id-overlap window, so the
+    // replace-by-msg_id fold is what keeps them from appearing twice.
+    expect((await log.readEvents('escalations')).map((e) => e.msg_id)).toEqual(['e1', 'e2', 'e3']);
+    // A read with nothing new is stable (and still a fresh array copy).
+    expect((await log.readEvents('escalations')).map((e) => e.msg_id)).toEqual(['e1', 'e2', 'e3']);
+  });
+
+  it('an in-place UPSERT (same msg_id, rewritten body) is visible through the cache', async () => {
+    restoreEnv();
+    await clear();
+    const log = new PgCoordLog({ getSql: () => sql!, ensureSchema: async () => {}, workspaceId: TEST_WS });
+    await log.putEvent('escalations', 'u1', esc('u1', { summary: 'v1' }));
+    expect((await log.readEvents('escalations')).map((e) => e.summary)).toEqual(['v1']); // primes the cache
+    await log.putEvent('escalations', 'u1', esc('u1', { summary: 'v2' })); // ON CONFLICT: same id, ts=now()
+    const after = await log.readEvents('escalations');
+    expect(after).toHaveLength(1); // replaced, never duplicated
+    expect(after[0].summary).toBe('v2'); // the rewritten body is served
+  });
+
+  it('the upsert ts-leg specifically: a re-put whose id fell OUTSIDE the id-overlap window is still seen', async () => {
+    // In the test above the overlap window (watermark − 1000) reaches id 0, so
+    // the id leg alone would mask a broken ts leg. Here we push the shared
+    // bigserial SEQUENCE forward past the window (harmless: sequences may skip
+    // arbitrarily; rows never collide) so the re-put's untouched id is
+    // genuinely below `maxId − overlap` and ONLY the `ts > lastRead − skew`
+    // leg can surface it — the exact hazard that would silently serve a stale
+    // escalation body forever.
+    restoreEnv();
+    await clear();
+    const log = new PgCoordLog({ getSql: () => sql!, ensureSchema: async () => {}, workspaceId: TEST_WS });
+    await log.putEvent('escalations', 't1', esc('t1', { summary: 'stale' }));
+    expect((await log.readEvents('escalations')).map((e) => e.summary)).toEqual(['stale']); // primes; maxId = id(t1)
+    // Advance the sequence 5000 past t1, then land t2 up there → maxId jumps,
+    // putting t1's id outside the 1000-id overlap window.
+    const seq = await sql!`SELECT pg_get_serial_sequence('harness_shared.coord_event_log', 'id') AS s`;
+    const seqName = seq[0].s as string;
+    await sql!`SELECT setval(${seqName}, nextval(${seqName}) + 5000)`;
+    await log.putEvent('escalations', 't2', esc('t2'));
+    expect((await log.readEvents('escalations')).map((e) => e.msg_id)).toEqual(['t1', 't2']); // folds t2, maxId≈+5000
+    await log.putEvent('escalations', 't1', esc('t1', { summary: 'fresh' })); // upsert: id(t1) unchanged, ts=now()
+    const after = await log.readEvents('escalations');
+    expect(after.map((e) => e.msg_id)).toEqual(['t1', 't2']);
+    expect(after[0].summary).toBe('fresh'); // only the ts leg can have caught this
+  });
+
+  it('serves from cache between refreshes (an out-of-band GC DELETE not seen yet), then the TTL full refresh folds it out', async () => {
+    restoreEnv();
+    await clear();
+    const log = new PgCoordLog({ getSql: () => sql!, ensureSchema: async () => {}, workspaceId: TEST_WS });
+    await log.putEvent('escalations', 'keep', esc('keep'));
+    await log.putEvent('escalations', 'gc-me', esc('gc-me'));
+    expect((await log.readEvents('escalations')).map((e) => e.msg_id)).toEqual(['keep', 'gc-me']);
+    // Out-of-band delete (what escalation-log-gc does — bypasses this instance).
+    await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${TEST_WS} AND msg_id = 'gc-me'`;
+    // Within the TTL the cache still serves the deleted row — the documented
+    // (and deliberate) staleness bound. This also PROVES the cache is in play.
+    expect((await log.readEvents('escalations')).map((e) => e.msg_id)).toEqual(['keep', 'gc-me']);
+    // Force the TTL refresh: 1ms TTL + a beat → next read is a FULL read.
+    process.env.PAPERCUSP_COORD_READEVENTS_CACHE_TTL_MS = '1';
+    await new Promise((r) => setTimeout(r, 5));
+    expect((await log.readEvents('escalations')).map((e) => e.msg_id)).toEqual(['keep']);
+  });
+
+  it('kill switch PAPERCUSP_COORD_READEVENTS_CACHE=0 restores the always-fresh full read', async () => {
+    restoreEnv();
+    await clear();
+    const log = new PgCoordLog({ getSql: () => sql!, ensureSchema: async () => {}, workspaceId: TEST_WS });
+    await log.putEvent('escalations', 'k1', esc('k1'));
+    expect((await log.readEvents('escalations')).map((e) => e.msg_id)).toEqual(['k1']); // primes the cache
+    await sql!`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${TEST_WS} AND msg_id = 'k1'`;
+    process.env.PAPERCUSP_COORD_READEVENTS_CACHE = '0';
+    expect(await log.readEvents('escalations')).toEqual([]); // bypasses the (stale) cache entirely
+  });
+});

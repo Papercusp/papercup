@@ -183,7 +183,10 @@ export interface LensWeightOptions {
  * - Not present in the feed → `pending` (no terminal record yet).
  * - `plan-run` / work-item `completion` present → `won` (the change-feed
  *   production readers only surface winning terminal states for these — plan
- *   `op_status=done`, work-item done/passed/resolved/closed — so presence == win).
+ *   `op_status=done`, work-item done/passed/resolved/closed — so presence == win)
+ *   — EXCEPT a completion entry tagged `Status: deprecated`, the losing
+ *   work-item terminal the su-ideate outcome read folds in
+ *   (su-ideate-learning-substrate P-003) → `lost`.
  * - `proposal` (gym) → status decides: accepted → `won`; rejected/superseded → `lost`.
  *
  * The gym status is read from the entry's `detail` ("Status: <status>") with a
@@ -216,11 +219,17 @@ export function classifyIdeaOutcome(
     // treat an unrecognized non-accept as a loss rather than silently pending.
     return 'lost';
   }
-  // completion (work-item) + plan-run: the feed only carries winning terminals.
+  // completion (work-item): the production feed only carries winning terminals
+  // (presence == win), but the su-ideate read (P-003) folds in losing terminals
+  // tagged "Status: deprecated" — honor the tag so a deprecated su filing
+  // classifies lost instead of sitting pending forever. Winning/untagged
+  // entries stay 'won' byte-identically.
+  if (entry.kind === 'completion' && gymStatusOf(entry) === 'deprecated') return 'lost';
+  // plan-run + winning completions: the feed only carries winning terminals.
   return 'won';
 }
 
-/** Extract a gym proposal's decision label from a change-feed entry. */
+/** Extract a status/decision label from a change-feed entry's detail ("Status: <x>") or title. */
 function gymStatusOf(entry: ChangeFeedEntry): string {
   const fromDetail = entry.detail?.match(/status:\s*([a-z]+)/i)?.[1];
   if (fromDetail) return fromDetail.toLowerCase();

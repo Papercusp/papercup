@@ -150,7 +150,7 @@ describe('hive_members federation capture trigger (real PG, mig 189)', () => {
     expect(op.hbKey).toBe(String(UID));
     if (op.type === 'put') {
       const v = op.value as HiveMemberRow;
-      expect(v.hive_home_slug).toBe(HIVE);
+      expect(v.pot_home_slug).toBe(HIVE);
       expect(v.github_user_id).toBe(UID);
       expect(v.revoked_pubkeys).toEqual(['ed25519:bad']);
     }

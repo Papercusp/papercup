@@ -282,12 +282,65 @@ function readLinesCacheEnabled(): boolean {
   return process.env.PAPERCUSP_COORD_READLINES_CACHE !== '0';
 }
 
+/**
+ * WI-3993 (the WI-3937 class, EVENT-surface leg): incremental per-
+ * (workspace, surface) cache state for `readEvents`. Event surfaces differ
+ * from LINE surfaces in two ways the readLines cache shape can't handle:
+ *   - rows are UPSERT-MUTABLE in place — putEvent's ON CONFLICT keeps the
+ *     row's `id` but rewrites `body` and sets `ts = now()` — so an
+ *     id-watermark delta alone would serve a stale body forever;
+ *   - exactly one record per (workspace, surface, msg_id) — the partial
+ *     unique index — so the cache keys by `msg_id` and REPLACES on re-read,
+ *     which is what makes both overlap windows below idempotent-safe.
+ * The delta therefore reads `id > watermark−overlap OR ts > lastRead−skew`:
+ * the id leg catches NEW rows, the ts leg catches in-place upserts (their
+ * fresh `ts = now()` stamp). GC deletions (escalation-log-gc) fold out on the
+ * TTL'd full refresh, exactly like readLines.
+ */
+interface ReadEventsCacheEntry {
+  /** Highest `id` folded (the NEW-row delta watermark). */
+  maxId: number;
+  /** One entry per msg_id (the event-surface key); REPLACED on upsert re-read. */
+  byMsgId: Map<string, { id: number; envelope: CoordEnvelope }>;
+  /** Local wall-clock captured just BEFORE the last successful read was
+   *  issued — the `ts >` delta leg re-reads anything upserted after this
+   *  (minus the skew window). */
+  lastReadStartMs: number;
+  /** When the last FULL read ran — TTL'd so GC deletions eventually fold out. */
+  fullReadAtMs: number;
+}
+
+/** How far back the upsert (`ts >`) delta leg over-reads: covers app↔PG clock
+ *  drift plus the window where an upsert's `ts = now()` (transaction start)
+ *  predates its COMMIT (putEvent is a short single statement, so minutes of
+ *  headroom is overkill by design). Over-reads are deduped by the msg_id
+ *  replace, so generosity here costs a few re-fetched rows, never wrong data. */
+const READEVENTS_CACHE_TS_SKEW_MS = 120_000;
+/** The refresh TTL, env-overridable (PAPERCUSP_COORD_READEVENTS_CACHE_TTL_MS)
+ *  so tests can force the full-refresh path without waiting 5 minutes. */
+function readEventsCacheRefreshMs(): number {
+  const env = Number(process.env.PAPERCUSP_COORD_READEVENTS_CACHE_TTL_MS);
+  return Number.isFinite(env) && env > 0 ? env : READLINES_CACHE_FULL_REFRESH_MS;
+}
+/** Kill switch: PAPERCUSP_COORD_READEVENTS_CACHE=0 restores the always-full read. */
+function readEventsCacheEnabled(): boolean {
+  return process.env.PAPERCUSP_COORD_READEVENTS_CACHE !== '0';
+}
+/** The readEvents return contract: envelopes in `id ASC` (append) order —
+ *  identical to the pre-cache `ORDER BY id ASC` read. */
+function sortedEventEnvelopes(entry: ReadEventsCacheEntry): CoordEnvelope[] {
+  return [...entry.byMsgId.values()].sort((a, b) => a.id - b.id).map((v) => v.envelope);
+}
+
 export class PgCoordLog implements CoordEventLog {
   /** Construction-time fallback scope; the per-call resolver (F-C1) overrides it. */
   private readonly fallbackWs: string;
 
   /** WI-3937 readLines incremental cache, keyed `${workspace}::${surface}`. */
   private readonly readLinesCache = new Map<string, ReadLinesCacheEntry>();
+
+  /** WI-3993 readEvents incremental cache, keyed `${workspace}::${surface}`. */
+  private readonly readEventsCache = new Map<string, ReadEventsCacheEntry>();
 
   constructor(private readonly opts: PgCoordLogOptions) {
     this.fallbackWs = opts.workspaceId ?? DEFAULT_COORD_WORKSPACE;
@@ -496,12 +549,75 @@ export class PgCoordLog implements CoordEventLog {
   async readEvents(surface: EventSurface): Promise<CoordEnvelope[]> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
-    const rows = await sql<{ body: unknown; ts: Date; msg_id: string }[]>`
-      SELECT body, ts, msg_id FROM harness_shared.coord_event_log
-       WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
+    // WI-3993 — the WI-3937 class, EVENT-surface leg. This was the LAST raw
+    // unbounded full-surface body read left in the seam (WI-3937 cached
+    // readLines; EI-1548 clamped readEventsBounded): every call streamed the
+    // whole surface (`escalations` ≈ 27k rows / 14MB), and on 2026-07-10 one
+    // such read stuck on a jammed client event loop (wait_event=ClientWrite,
+    // 276s+) held the coord server down ~30min. Same cure as readLines — ONE
+    // full read per (workspace, surface) per process + a TTL'd full refresh,
+    // then deltas only — adapted for event-surface semantics (see
+    // ReadEventsCacheEntry: upsert ts-leg, replace-by-msg_id, GC fold-out).
+    //
+    // CONTRACT (unchanged from the pre-cache read): fresh array per call,
+    // envelope OBJECTS shared across calls (callers treat them as read-only),
+    // `id ASC` order. Kill switch: PAPERCUSP_COORD_READEVENTS_CACHE=0.
+    if (!readEventsCacheEnabled()) {
+      const rows = await sql<{ body: unknown; ts: Date; msg_id: string }[]>`
+        SELECT body, ts, msg_id FROM harness_shared.coord_event_log
+         WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
+         ORDER BY id ASC
+      `;
+      return rows.map((r) => parseBody(r.body, r));
+    }
+
+    const ws = this.resolveWs();
+    const key = `${ws}::${surface}`;
+    const now = Date.now();
+    const entry = this.readEventsCache.get(key);
+
+    if (!entry || now - entry.fullReadAtMs > readEventsCacheRefreshMs()) {
+      // Full (re)read — first call for this key, or the refresh TTL elapsed
+      // (folds out escalation-log-gc deletions, which never advance id/ts).
+      // int8 `id` arrives as a STRING under default postgres-js — Number().
+      const rows = await sql<{ id: string | number; body: unknown; ts: Date; msg_id: string }[]>`
+        SELECT id, body, ts, msg_id FROM harness_shared.coord_event_log
+         WHERE workspace_id = ${ws} AND surface = ${surface}
+         ORDER BY id ASC
+      `;
+      const byMsgId = new Map<string, { id: number; envelope: CoordEnvelope }>();
+      let maxId = 0;
+      for (const r of rows) {
+        const idNum = Number(r.id);
+        byMsgId.set(r.msg_id, { id: idNum, envelope: parseBody(r.body, r) });
+        if (idNum > maxId) maxId = idNum;
+      }
+      const fresh: ReadEventsCacheEntry = { maxId, byMsgId, lastReadStartMs: now, fullReadAtMs: now };
+      this.readEventsCache.set(key, fresh);
+      return sortedEventEnvelopes(fresh);
+    }
+
+    // Delta read: NEW rows past the id watermark (minus the commit-order
+    // overlap window, same rationale as readLines) OR rows UPSERTED in place
+    // since the last read (their `ts = now()` stamp — the leg an id watermark
+    // alone would miss, serving a stale body forever). Both legs are
+    // over-inclusive by design; the replace-by-msg_id fold makes re-reads
+    // idempotent.
+    const sinceId = Math.max(0, entry.maxId - READLINES_CACHE_OVERLAP_IDS);
+    const sinceTs = new Date(entry.lastReadStartMs - READEVENTS_CACHE_TS_SKEW_MS).toISOString();
+    const rows = await sql<{ id: string | number; body: unknown; ts: Date; msg_id: string }[]>`
+      SELECT id, body, ts, msg_id FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${ws} AND surface = ${surface}
+         AND (id > ${sinceId} OR ts > ${sinceTs}::timestamptz)
        ORDER BY id ASC
     `;
-    return rows.map((r) => parseBody(r.body, r));
+    for (const r of rows) {
+      const idNum = Number(r.id);
+      entry.byMsgId.set(r.msg_id, { id: idNum, envelope: parseBody(r.body, r) });
+      if (idNum > entry.maxId) entry.maxId = idNum;
+    }
+    entry.lastReadStartMs = now;
+    return sortedEventEnvelopes(entry);
   }
 
   async readEventsBounded(

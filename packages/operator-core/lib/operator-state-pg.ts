@@ -64,13 +64,24 @@ type StateTable =
   | 'operator_rate_limit_config'
   // Migration 164 — P2P voice-channel registry (holepunch-voice-channels P-007/D-011):
   | 'operator_voice_channels'
-  // Migration 182 — P2P hive-directory offline cache (p2p-hive-directory P-003):
-  | 'hive_directory_cache'
+  // Migration 182 — P2P hive-directory offline cache (p2p-hive-directory P-003).
+  // Renamed hive_directory_cache -> pot_directory_cache by migration 557
+  // (cup-lexicon rename phase 3, 2026-07-10) — WI-953: the app code still
+  // said 'hive_directory_cache' after the table rename, so every
+  // readOperatorState/writeOperatorState call hit "relation ... does not
+  // exist" and the directory-announce cache/tombstone path silently
+  // no-opped (both catch(() => null)/catch(() => {})), starving
+  // /api/discovery/hives of the persisted announce even when the P2P
+  // gossip layer paired + accepted it in memory. Fixed here to the
+  // current table name.
+  | 'pot_directory_cache'
   // Migration 294 — withdrawal-tombstone watermarks (hive-from-repo-hardening
   // P-005). NOTE: each StateTable is its OWN harness_shared.<name> table, so
   // this needed its own migration (294) — the original "no new migration
-  // needed" assumption was wrong and broke the hive-directory join path:
-  | 'hive_directory_tombstones'
+  // needed" assumption was wrong and broke the hive-directory join path.
+  // Renamed hive_directory_tombstones -> pot_directory_tombstones by
+  // migration 557 (see the pot_directory_cache note above — same gap, same fix):
+  | 'pot_directory_tombstones'
   // Migration 190 — Queen Claude-account pool (cloud-deployment-layer Phase 7 P-019):
   | 'operator_account_pool'
   // Migration 297 — owner's session-now account override (accounts-pool-tab P-004/D-015):

@@ -676,13 +676,13 @@ function toHivePendingJoinValue(row: Record<string, unknown>): PendingJoinWireRo
 }
 
 /** Map an outbox `row` jsonb to the `HiveMemberRow` the hive-members projection
- *  INSERT consumes — the federated subset of harness_shared.pot_members. The Hive
- *  scope key (`hive_home_slug`) is the projection demux; device_attestations stays a
+ *  INSERT consumes — the federated subset of harness_shared.pot_members. The Pot
+ *  scope key (`pot_home_slug`) is the projection demux; device_attestations stays a
  *  jsonb array; github_user_id (BIGINT) → number. No TIMESTAMPTZ (joined_at/channels
  *  are machine-local, not federated). */
 function toHiveMemberValue(row: Record<string, unknown>): HiveMemberRow {
   return {
-    hive_home_slug: String(row.hive_home_slug ?? ''),
+    pot_home_slug: String(row.pot_home_slug ?? ''),
     github_user_id: numOrZero(row.github_user_id),
     github_username: String(row.github_username ?? ''),
     device_attestations: Array.isArray(row.device_attestations)

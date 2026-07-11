@@ -91,13 +91,13 @@ function productionDeps(): HiveDirectoryDeps {
     // writes via getOrgPg (admin, RLS-bypass) like the rest of operator-state.
     // Best-effort — a cache failure must never break ingest/listing.
     loadCache: async () => {
-      const row = await readOperatorState<{ hives: DiscoveredHive[] }>('hive_directory_cache').catch(
+      const row = await readOperatorState<{ hives: DiscoveredHive[] }>('pot_directory_cache').catch(
         () => null,
       );
       return row?.hives ?? [];
     },
     saveCache: async (hives) => {
-      await writeOperatorState('hive_directory_cache', { hives }).catch(() => {});
+      await writeOperatorState('pot_directory_cache', { hives }).catch(() => {});
     },
     // P-004 (hardening): fresh members/links on every announce build. Lazy
     // import keeps this module light; the enricher is best-effort internally.
