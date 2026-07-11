@@ -1494,6 +1494,16 @@ const handler = createMcpHandler(
         // superuser-mode.mdx — the bypass logic lives in
         // dispatch-projected.ts, never in dispatch().
         const projected = lookupByMcpName(toolName);
+        // EI-9510: the replay-store round-trip (lookupStoredMcpResult /
+        // storeMcpResult, both awaited on the hot path below) only matters for
+        // a WRITE — a read-only tool has no mutation to double-apply, so
+        // replaying it is a pure no-op. P-005 makes the proxy inject
+        // `_meta.idempotencyKey` on every call regardless, so without this
+        // gate every read pays one extra awaited INSERT + one extra lookup
+        // round-trip too. `projected.effect` ('read'|'write') is inferred
+        // from the tool's capability suffix at defineTool time — skip both
+        // the lookup and the store when it resolves to 'read'.
+        const skipReplayForReadOnly = projected?.effect === 'read';
         const spawnRes = await tryBuildSpawnContext(extra);
 
         // Hard-fail spawn ctx with invalid signature — do NOT fall through
@@ -1763,7 +1773,7 @@ const handler = createMcpHandler(
           // spawnId (stable for signed orchestrator spawns). Best-effort: a
           // store outage degrades to normal execution, never an error.
           const replayOwnerKey = spawnRes.ctx.uiClientId ?? spawnRes.ctx.spawnId;
-          if (idempotencyKey) {
+          if (idempotencyKey && !skipReplayForReadOnly) {
             try {
               const stored = await lookupStoredMcpResult(replayOwnerKey, idempotencyKey);
               if (stored) {
@@ -1831,7 +1841,7 @@ const handler = createMcpHandler(
               // Persist the outcome BEFORE the response hits the (possibly
               // already-closed) stream — the whole point of P-046/EI-68: the
               // result must survive the transport. Best-effort.
-              if (idempotencyKey) {
+              if (idempotencyKey && !skipReplayForReadOnly) {
                 try {
                   await storeMcpResult({
                     ownerKey: replayOwnerKey,

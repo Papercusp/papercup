@@ -769,6 +769,28 @@ export default defineTool({
         // Auto-scope the broadcast BEFORE resolve/persist, then thread the report
         // through so the rewrite (or conscious all-hive claim) shows on the result.
         const bcast = scopeBroadcastAudience({ to: msg.to, senderFleet, allHive: msg.allHive });
+        // EI-9501: a fleet leader's cue is stamped fleet-members-scoped (from the
+        // SAME senderFleet read scopeBroadcastAudience just used to decide the
+        // audience) — so if allHive kept the audience literally '*' while the
+        // stamp says "only my fleet's members should act on this", the message
+        // just told every agent in the hive to act on a cue that isn't theirs.
+        // That contradiction is never intentional (a genuinely hive-wide cue has
+        // no fleet-scoped stamp to begin with — see hiveWideCueAuthority) so
+        // refuse it with a teaching error instead of shipping the mismatch.
+        if (wasBroadcast && bcast.allHive && senderCueAuthority?.scope === 'fleet-members') {
+          return {
+            ok: false,
+            to: msg.to,
+            error: 'fleet_scoped_cue_allhive_contradiction',
+            message:
+              `allHive:true would broadcast to every agent in the hive, but as fleet leader of ` +
+              `'${senderCueAuthority.scopeRef}' your cue is stamped fleet-members(${senderCueAuthority.scopeRef}) — ` +
+              `only YOUR fleet's members are meant to act on it. Drop allHive (a bare '*' auto-scopes ` +
+              `to @fleet:${senderCueAuthority.scopeRef}, which already includes your leader) unless this ` +
+              `is a genuinely hive-wide notice unrelated to fleet control — in which case send it from a ` +
+              `non-fleet-authority context, not this fleet-leader cue.`,
+          };
+        }
         msg.to = bcast.to;
         const scoped = await effectiveFederationScope(
           msg.scope,

@@ -93,16 +93,16 @@ export function computeValiditySignals(input: ValidityInput): ValiditySignal[] {
   let queenSurvival: ValiditySignal;
   if (live && live.queenAlive != null) {
     if (live.queenAlive === false) {
-      queenSurvival = { key: 'queen-survival', label: 'Queen survival', status: 'fail', detail: 'the Queen was reclaimed/died — not a real-Queen run' };
+      queenSurvival = { key: 'queen-survival', label: 'Mug survival', status: 'fail', detail: 'the Mug was reclaimed/died — not a real-Mug run' };
     } else if ((live.queenReclaims ?? 0) > 0) {
-      queenSurvival = { key: 'queen-survival', label: 'Queen survival', status: 'fail', detail: `${live.queenReclaims} queen reclaim(s) — the orchestration was interrupted` };
+      queenSurvival = { key: 'queen-survival', label: 'Mug survival', status: 'fail', detail: `${live.queenReclaims} Mug reclaim(s) — the orchestration was interrupted` };
     } else if ((live.queenAgeSec ?? 0) < QUEEN_SURVIVAL_SEC) {
-      queenSurvival = { key: 'queen-survival', label: 'Queen survival', status: 'warn', detail: `queen age ${live.queenAgeSec ?? 0}s < ${QUEEN_SURVIVAL_SEC}s — too early to confirm survival` };
+      queenSurvival = { key: 'queen-survival', label: 'Mug survival', status: 'warn', detail: `Mug age ${live.queenAgeSec ?? 0}s < ${QUEEN_SURVIVAL_SEC}s — too early to confirm survival` };
     } else {
-      queenSurvival = { key: 'queen-survival', label: 'Queen survival', status: 'pass', detail: `survived ${live.queenAgeSec}s, 0 reclaims` };
+      queenSurvival = { key: 'queen-survival', label: 'Mug survival', status: 'pass', detail: `survived ${live.queenAgeSec}s, 0 reclaims` };
     }
   } else {
-    queenSurvival = { key: 'queen-survival', label: 'Queen survival', status: 'unknown', detail: 'survival check needs the live fleet' };
+    queenSurvival = { key: 'queen-survival', label: 'Mug survival', status: 'unknown', detail: 'survival check needs the live fleet' };
   }
 
   // EMPTY-DIFF — empty diffs are counted as unresolved (never silently). ALL-empty

@@ -43,7 +43,7 @@ import { randomBytes } from 'node:crypto';
 import postgres from 'postgres';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { loadBlueprintFromFile } from '@papercusp/orchestrator/blueprint';
-import { provisionGymDatabase } from './gym-db-init';
+import { provisionGymDatabase, GYM_PROVISION_PG_IMAGE } from './gym-db-init';
 import { buildGymOperatorBootSpec } from './boot-spec';
 import { materializeBlueprintTriggers } from '../blueprint/materialize-triggers';
 import { maskDsn } from './autoloop-cycle';
@@ -350,7 +350,7 @@ export async function runGymWakeMode(opts: WakeModeOptions = {}): Promise<WakeMo
   try {
     // 1. Dedicated gym PG (full migration baseline + preminted spawn-signing key).
     log('provisioning gym DB …');
-    pgContainer = await new PostgreSqlContainer('pgvector/pgvector:pg16').withDatabase('papercusp_wake').start();
+    pgContainer = await new PostgreSqlContainer(GYM_PROVISION_PG_IMAGE).withDatabase('papercusp_wake').start();
     const { databaseUri: gymUri } = await provisionGymDatabase({
       maintenanceUri: pgContainer.getConnectionUri(),
       dbName: DB_NAME,

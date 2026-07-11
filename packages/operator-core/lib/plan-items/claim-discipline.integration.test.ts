@@ -69,8 +69,15 @@ beforeAll(async () => {
   await db.sql`CREATE SCHEMA IF NOT EXISTS harness_shared`;
   // 140 → assignments + work-group + agent-name tables; 141 → the claim store.
   // claimPlanItem reads assignments + work-group before leasing, so both must exist.
+  // 143 (agent_activity) rides along because the EI-8997 steal-guard/sweep SQL
+  // (claims.ts acquireClaim/reconcile) joins it for the holder-activity grace
+  // check — without it every seedPeerClaim/reconcile call in this file throws
+  // "relation harness_shared.agent_activity does not exist" (EI-9509: this
+  // fixture was never updated when that dependency landed, unlike the sibling
+  // claims.integration.test.ts which already applies 143 for the same reason).
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
   await db.sql.unsafe(readMigration('141-plan-item-claims.sql')).simple();
+  await db.sql.unsafe(readMigration('143-agent-activity.sql')).simple();
 }, 90_000);
 
 afterAll(async () => {

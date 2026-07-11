@@ -254,7 +254,7 @@ describe('S1: pot:create_from_repo seeds the MEMBER routine, never the home', ()
   const REPO = `shop${RUN}`;
   const URL = `https://github.com/acme/${REPO}`;
   const MEMBER = REPO; // base slug = repo name
-  const HOME = `${REPO}-hive`;
+  const HOME = `${REPO}-pot`; // deriveSlugs' home suffix (cup-lexicon-full-rename-2026-07-09: was '-hive')
 
   /** Composition deps: only the externally-bound seams are faked (clone /
    *  lookup / blueprint / publish / harness-create), exactly the unit-test
@@ -896,7 +896,7 @@ describe('S4: handleGitSync ticks a seeded member end-to-end', () => {
 
 describe('S5: re-running add-member / the spine never clobbers a human-edited row', () => {
   const MEMBER = `shop${RUN}`; // S1's member (row exists from scenario 1)
-  const HOME = `${MEMBER}-hive`;
+  const HOME = `${MEMBER}-pot`; // deriveSlugs' home suffix (cup-lexicon-full-rename-2026-07-09: was '-hive')
 
   it('pot:add-member over an existing (human-edited) row heals nothing and changes nothing', async () => {
     // The human turns the routine off and retunes it.

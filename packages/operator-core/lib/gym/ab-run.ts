@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import postgres from 'postgres';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
-import { provisionGymDatabase } from './gym-db-init';
+import { provisionGymDatabase, GYM_PROVISION_PG_IMAGE } from './gym-db-init';
 import { buildGymOperatorBootSpec } from './boot-spec';
 import { createGymRunnerPorts } from './runner-ports';
 import { buildAbDeps } from './ab-runner-real';
@@ -113,7 +113,7 @@ async function main(): Promise<void> {
   try {
     // 1. Dedicated gym DB.
     log('provisioning gym DB …');
-    pgContainer = await new PostgreSqlContainer('pgvector/pgvector:pg16').withDatabase('papercusp_ab').start();
+    pgContainer = await new PostgreSqlContainer(GYM_PROVISION_PG_IMAGE).withDatabase('papercusp_ab').start();
     ({ databaseUri: gymUri } = await provisionGymDatabase({ maintenanceUri: pgContainer.getConnectionUri(), dbName: DB_NAME }));
     gymSql = postgres(gymUri, { max: 4, onnotice: () => {}, prepare: false });
 

@@ -178,6 +178,15 @@ const FRAMEWORK_ROLES_DDL = `
  * fed_ts/fed_hlc) so a captured row → op → remote apply round-trips faithfully.
  */
 const HARNESS_PLANS_FED_DDL = `
+  -- The shared HARNESS_FEATURES_CONSOLIDATED_DDL (applied FIRST in setupPeerSchema) creates a
+  -- MINIMAL harness_plans stub (workspace_id, harness_slug, plan_slug, status — NO content) for
+  -- the claim-path read-completeness doctrine. A bare CREATE TABLE IF NOT EXISTS below then
+  -- NO-OPs against that stub (IF NOT EXISTS can't add columns), leaving \`content\` absent — so
+  -- the capture UPDATE trigger's \`WHEN (OLD.content …)\` fails to create with
+  -- \`column old.content does not exist\` (this test regressed the day the stub landed, EI-9524).
+  -- Drop any prior stub so this AUTHORITATIVE full definition always wins; nothing has written
+  -- harness_plans yet at this point in setupPeerSchema, so the drop is safe.
+  DROP TABLE IF EXISTS harness_shared.harness_plans CASCADE;
   CREATE TABLE IF NOT EXISTS harness_shared.harness_plans (
     workspace_id  text NOT NULL,
     harness_slug  text NOT NULL,

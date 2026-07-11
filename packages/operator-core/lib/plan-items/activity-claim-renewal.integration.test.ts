@@ -42,6 +42,11 @@ beforeAll(async () => {
   h.sql = db.sql;
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
   await db.sql.unsafe(readMigration('141-plan-item-claims.sql')).simple();
+  // 143 (agent_activity) rides along because acquireClaimLocal's holder-activity
+  // grace check (EI-8997) joins it — same reason claims.integration.test.ts loads
+  // it. Without this, every claims.acquireClaimLocal call in this file fails with
+  // "relation harness_shared.agent_activity does not exist" (EI-9508).
+  await db.sql.unsafe(readMigration('143-agent-activity.sql')).simple();
 }, 90_000);
 
 afterAll(async () => {

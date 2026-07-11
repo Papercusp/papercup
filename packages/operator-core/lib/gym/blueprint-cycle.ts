@@ -31,7 +31,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import postgres from 'postgres';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
-import { provisionGymDatabase } from './gym-db-init';
+import { provisionGymDatabase, GYM_PROVISION_PG_IMAGE } from './gym-db-init';
 import { buildGymOperatorBootSpec } from './boot-spec';
 import { waitForOperatorReady } from './operator-ready';
 
@@ -120,7 +120,7 @@ export async function runGymBlueprintCycle(opts: RunGymBlueprintCycleOptions = {
   try {
     // 1. Dedicated gym DB (full migration baseline + preminted spawn-signing key).
     log('provisioning gym DB …');
-    pgContainer = await new PostgreSqlContainer('pgvector/pgvector:pg16').withDatabase('papercusp_bp').start();
+    pgContainer = await new PostgreSqlContainer(GYM_PROVISION_PG_IMAGE).withDatabase('papercusp_bp').start();
     const { databaseUri: gymUri } = await provisionGymDatabase({ maintenanceUri: pgContainer.getConnectionUri(), dbName: DB_NAME });
     gymSql = postgres(gymUri, { max: 4, onnotice: () => {}, prepare: false });
 

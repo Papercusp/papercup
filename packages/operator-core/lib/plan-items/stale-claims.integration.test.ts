@@ -42,6 +42,15 @@ beforeAll(async () => {
   h.sql = db.sql;
   await db.sql`CREATE SCHEMA IF NOT EXISTS harness_shared`;
   await db.sql.unsafe(readMigration('141-plan-item-claims.sql')).simple();
+  // 143 (agent_activity) rides along because the EI-8997 steal-guard/renewal SQL in
+  // claims.ts's acquireClaimLocal (called by this file's claim()/lapse() helpers)
+  // joins it for the holder-activity grace check inside the INSERT's ON CONFLICT
+  // clause — a missing table there fails the WHOLE statement at plan time, even on
+  // a plain non-conflicting insert. Without it every claim() call here throws
+  // "relation harness_shared.agent_activity does not exist" (EI-9502: same class of
+  // fixture gap already fixed in claim-discipline.integration.test.ts for EI-9509;
+  // this sibling fixture was never updated when the EI-8997 dependency landed).
+  await db.sql.unsafe(readMigration('143-agent-activity.sql')).simple();
   // Minimal stubs for the liveness join — the real tables live in 000-baseline;
   // only the columns the live_holder CTE reads are needed here.
   await db.sql`CREATE TABLE IF NOT EXISTS harness_shared.coord_presence (

@@ -5,7 +5,9 @@
  * (migration 184) — the integration risk that unit tests can't reach:
  *   - core libs (su-30045): identity/ed25519.ts pubkey encoding + derive-swarm-topic.ts
  *     hive federation topic.
- *   - entity store (su-02ae39e9): hive-store.ts over harness_shared.hives (migration 184).
+ *   - entity store (su-02ae39e9): hive-store.ts over harness_shared.pots (migration 184,
+ *     renamed hives->pots / home_slug->pot_home_slug by migration 557 — both are applied
+ *     below so this test's isolated DB matches the current schema, EI-9507).
  *
  * The seam asserted here is: a minted pubkey (raw-32 base64) survives the PG `bytea`
  * round-trip byte-exact, the stored pubkey derives the SAME federation topic as the
@@ -20,10 +22,9 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
-import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../test/_pg-helpers';
 import { generateEd25519KeypairDer } from './identity/ed25519';
 import { hiveKeychainId } from './identity/hive-keypair';
 import {
@@ -36,10 +37,17 @@ import {
 } from './hive-store';
 import { deriveHiveFederationTopic } from './sync/hyperbee/derive-swarm-topic';
 
-const MIG_184 = join(
+const SQL_DIR = join(
   dirname(fileURLToPath(import.meta.url)),
-  '../../../libs/papercusp/libs/db/sql/184-hives-table.sql',
+  '../../../libs/papercusp/libs/db/sql',
 );
+// 184 creates the table as `hives`/`home_slug`; 557 renames it to the CURRENT
+// `pots`/`pot_home_slug` shape hive-store.ts queries (EI-9507: applying only 184
+// left this test's DB on the pre-rename names while hive-store.ts queries the
+// post-rename ones, so every query 42P01'd "relation harness_shared.pots does not
+// exist").
+const MIG_184 = join(SQL_DIR, '184-hives-table.sql');
+const MIG_557 = join(SQL_DIR, '557-cup-lexicon-db-rename-phase3.sql');
 const WS = 'ws-phase0';
 
 /** A minted-key stand-in: EXACTLY the pubkeyBase64 encoding loadOrGenerateHiveKeypair
@@ -53,7 +61,10 @@ let db: FreshPgDb;
 
 beforeAll(async () => {
   db = await createFreshPgDb('hive-phase0');
-  await db.sql.unsafe(readFileSync(MIG_184, 'utf8')); // the REAL migration, not a fixture
+  // the REAL migrations, not a fixture — 184 creates the table, 557 renames it to
+  // the current hives->pots/home_slug->pot_home_slug shape (EI-9507).
+  await applyMigrationForTest(db.sql, MIG_184);
+  await applyMigrationForTest(db.sql, MIG_557);
 });
 
 afterAll(async () => {
@@ -61,7 +72,7 @@ afterAll(async () => {
 });
 
 afterEach(async () => {
-  await db.sql.unsafe('TRUNCATE harness_shared.hives');
+  await db.sql.unsafe('TRUNCATE harness_shared.pots');
 });
 
 describe('Phase-0 Hive identity seam (keypair encoding → hives table → federation topic)', () => {

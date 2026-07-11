@@ -66,15 +66,15 @@ export function armLabel(arm: string): string {
     case 'baseline-b-native': return 'Baseline B · native';
     case 'baseline-c-bestofn': return 'Baseline C · best-of-N';
     // Fleet arms (Phase 5)
-    case 'hive': return 'Hive';
-    case 'queen-ablated': return 'Queen-ablated';
+    case 'hive': return 'Pot';
+    case 'queen-ablated': return 'Mug-ablated';
     case 'native-serial': return 'Native (serial)';
     case 'openhands-async': return 'OpenHands';
     case 'crewai': return 'CrewAI';
     case 'langgraph': return 'LangGraph';
     // Real run-engine arms (D-004).
-    case 'hive-realqueen': return 'Hive (real Queen)';
-    case 'fifo-noqueen': return 'FIFO (no Queen)';
+    case 'hive-realqueen': return 'Pot (real Mug)';
+    case 'fifo-noqueen': return 'FIFO (no Mug)';
     case 'mini-swe-agent': return 'mini-SWE-agent';
     case 'su-independent': return 'SU agents (independent)';
     default: return arm;

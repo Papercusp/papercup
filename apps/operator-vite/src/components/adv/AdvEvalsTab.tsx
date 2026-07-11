@@ -114,8 +114,8 @@ const ARM_COLOR: Record<ArmId, string> = {
 // is local. FLEET_ARMS drives the Throughput scoreboard's fixed arm order.
 const FLEET_ARMS = ['hive', 'queen-ablated', 'native-serial'] as const;
 const FLEET_ARM_HINT: Record<string, string> = {
-  hive: 'The full Hive — Queen autonomous placement/ranking/eviction over the bee fleet. The treatment.',
-  'queen-ablated': 'The SAME fleet with the Queen replaced by a naive FIFO scheduler — the headline baseline. Hive − this = the Queen’s value.',
+  hive: 'The full Pot — Mug autonomous placement/ranking/eviction over the cup fleet. The treatment.',
+  'queen-ablated': 'The SAME fleet with the Mug replaced by a naive FIFO scheduler — the headline baseline. Pot − this = the Mug’s value.',
   'native-serial': 'One native-harness session draining the whole backlog sequentially — the serial-throughput floor (1× reference).',
 };
 /** Published MAS coordination-failure baseline band (MAST taxonomy, NeurIPS 2025). */
@@ -674,7 +674,7 @@ function ThroughputView({ runId, suites, suitesLoading }: FleetViewProps) {
       <EmptyCard
         icon={<Zap size={20} aria-hidden />}
         title="No fleet runs yet"
-        body="L2 throughput. When a whole backlog is handed to the Hive vs the Queen-ablated fleet vs the serial floor, the fleet’s wall-clock speedup, tasks/$ and backlog-drain time land here. Speedup is measured against the native-serial floor (1×)."
+        body="L2 throughput. When a whole backlog is handed to the Pot vs the Mug-ablated fleet vs the serial floor, the fleet’s wall-clock speedup, tasks/$ and backlog-drain time land here. Speedup is measured against the native-serial floor (1×)."
       />
     );
   }
@@ -706,7 +706,7 @@ function ThroughputView({ runId, suites, suitesLoading }: FleetViewProps) {
         arms={rows}
         highlightArm="hive"
         caption="Fleet wall-clock speedup + $/task vs the native-serial floor (1×)"
-        emptyHint="When the fleet drains a backlog, each arm’s speedup and $/task plot here — the Hive bar against the serial floor and the Queen-ablated fleet."
+        emptyHint="When the fleet drains a backlog, each arm’s speedup and $/task plot here — the Pot bar against the serial floor and the Mug-ablated fleet."
       />
     </section>
   );
@@ -729,7 +729,7 @@ function ValueView({ runId, suites, suitesLoading }: FleetViewProps) {
       <EmptyCard
         icon={<DollarSign size={20} aria-hidden />}
         title="No value runs yet"
-        body="L3 value-capture. On $-weighted backlogs (UpBench / SWE-Lancer) under a FIXED budget, this shows how much $ each arm captures as it spends — the Queen’s placement vs the naive scheduler. The arm that captures more $ per budget dollar wins."
+        body="L3 value-capture. On $-weighted backlogs (UpBench / SWE-Lancer) under a FIXED budget, this shows how much $ each arm captures as it spends — the Mug’s placement vs the naive scheduler. The arm that captures more $ per budget dollar wins."
       />
     );
   }
@@ -814,7 +814,7 @@ function CoordinationView({ runId, suites, suitesLoading }: FleetViewProps) {
         arms={rows}
         baselineBand={MAS_BASELINE_BAND}
         caption="Coordination-failure rates by mode (lower is better) vs the published MAS-failure band"
-        emptyHint="Each arm’s coordination-failure modes stack into a bar, shown against the shaded 41–86% published MAS baseline band — the Hive’s substrate (locks, work-item dedup, durable hand-offs) should sit well below it."
+        emptyHint="Each arm’s coordination-failure modes stack into a bar, shown against the shaded 41–86% published MAS baseline band — the Pot’s substrate (locks, work-item dedup, durable hand-offs) should sit well below it."
       />
     </section>
   );
@@ -1300,9 +1300,9 @@ function LiveFleetPanel({ live }: { live: BenchRunLive }) {
           arm="hive-realqueen"
           value={q.alive == null ? '—' : q.alive ? 'alive' : 'down'}
           sub={q.ageSec == null ? 'mug' : `mug · ${q.ageSec}s · ${q.reclaims ?? 0} reclaim(s)`}
-          hint="The Queen's survival — a reclaimed/dead Queen is not a real-Queen run."
+          hint="The Mug's survival — a reclaimed/dead Mug is not a real-Mug run."
         />
-        <FleetStat arm="hive-realqueen" value={`${live.bees.working}`} sub={`working · ${live.bees.done} done · ${live.bees.placed} placed`} hint={`Bees: ${live.bees.evicted} evicted, ${live.bees.failed} failed of ${live.bees.total}.`} />
+        <FleetStat arm="hive-realqueen" value={`${live.bees.working}`} sub={`working · ${live.bees.done} done · ${live.bees.placed} placed`} hint={`Cups: ${live.bees.evicted} evicted, ${live.bees.failed} failed of ${live.bees.total}.`} />
         <FleetStat arm="hive-realqueen" value={`${tp.graded + tp.collected}/${tp.total}`} sub={`progress · ${tp.in_progress} in-flight`} hint={`Per-task: ${tp.todo} todo, ${tp.in_progress} in-progress, ${tp.collected} collected, ${tp.graded} graded.`} />
         <FleetStat arm="hive-realqueen" value={live.spendUsd == null ? '—' : fmtUsd(live.spendUsd)} sub={live.wallSec == null ? 'spend' : `spend · ${Math.round(live.wallSec / 60)}m wall`} hint={`Models: ${live.models.distinctModels.join(', ') || 'none yet'}.`} />
       </div>
@@ -1760,7 +1760,7 @@ function PreservedRunsView() {
             <strong>Real graded run · {armLabel(s.arm)}</strong>
             <span>
               Officially graded snapshot. Caveats: ~92% opus (not strictly opus); empty diffs (no patch) score as
-              unresolved; no valid no-Queen control arm yet (single treatment arm, so the per-task table has no
+              unresolved; no valid no-Mug control arm yet (single treatment arm, so the per-task table has no
               baseline column); {s.taskCount}-task subset, not the full set.
               {s.recovered ? ' This snapshot was reconstructed from recovered fleet state (no preserved wall-clock).' : ''}
             </span>

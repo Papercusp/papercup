@@ -23,7 +23,7 @@ import postgres from 'postgres';
 // another smoke run) stopping the shared container mid-run causes ECONNREFUSED — fatal
 // to the long-lived operator the smoke boots. A dedicated container isolates the smoke.
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
-import { provisionGymDatabase } from './gym-db-init';
+import { provisionGymDatabase, GYM_PROVISION_PG_IMAGE } from './gym-db-init';
 import { buildGymOperatorBootSpec } from './boot-spec';
 import { waitForOperatorReady } from './operator-ready';
 import { collectTrace } from './collector';
@@ -49,7 +49,7 @@ async function main(): Promise<void> {
   // harness_admin is not superuser. A DEDICATED pgvector container (NOT the shared
   // reused getTestPg one) gives a superuser PG isolated from cross-process churn.
   let pgContainer: StartedPostgreSqlContainer | undefined;
-  pgContainer = await new PostgreSqlContainer('pgvector/pgvector:pg16').withDatabase('papercusp_smoke').start();
+  pgContainer = await new PostgreSqlContainer(GYM_PROVISION_PG_IMAGE).withDatabase('papercusp_smoke').start();
   const maintenanceUri = pgContainer.getConnectionUri();
 
   let operator: ChildProcess | undefined;

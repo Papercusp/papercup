@@ -493,13 +493,48 @@ describe('coord:send — fleet-scoped broadcast default (queen-fleet-authority-b
     expect(b.results[0].allHiveBroadcast).toBeUndefined();
   });
 
-  it("honors ['*'] verbatim when a fleeted sender passes allHive:true, and flags it", async () => {
-    fetchPresenceFleetM.mockResolvedValue(fleetOf('ops') as never);
+  it("honors ['*'] verbatim when a NON-leader fleeted sender (an ordinary member) passes allHive:true", async () => {
+    // A plain member carries no cueAuthority stamp (resolveCueAuthority only
+    // stamps fleetRole:'leader'), so the fleet_scoped_cue_allhive_contradiction
+    // guard (EI-9501) never fires for it — allHive stays a real conscious override.
+    fetchPresenceFleetM.mockResolvedValue(fleetOf('ops', 'member') as never);
     const b = await body({ to: ['*'], summary: 'HIVE-WIDE: PG lock stampede', allHive: true });
     expect(b.results[0].to).toEqual(['*']);
     expect(sendM.mock.calls[0][1].to).toEqual(['*']);
     expect(b.results[0].allHiveBroadcast).toBe(true);
     expect(b.results[0].scopedBroadcast).toBeUndefined();
+  });
+
+  it('honors [\'*\'] verbatim for a hive-queen sender (mug/kettle) with allHive:true — its authority IS hive-wide', async () => {
+    // A mug/kettle's cueAuthority stamp is scope:'hive-wide' (resolveCueAuthority),
+    // never 'fleet-members' — the EI-9501 guard only fires on a fleet-scoped stamp,
+    // so a genuine hive-queen broadcast is unaffected.
+    getPresenceM.mockResolvedValue({ agentRole: 'mug' } as never);
+    const b = await body({ to: ['*'], summary: 'HIVE-WIDE: pausing the whole hive', allHive: true });
+    expect(b.results[0].to).toEqual(['*']);
+    expect(b.results[0].allHiveBroadcast).toBe(true);
+  });
+
+  it("EI-9501: refuses a fleet LEADER's allHive:true broadcast — its cue is stamped fleet-members(<slug>), so blasting '*' is an internal contradiction", async () => {
+    // The 2026-07-11 incident: a fleet leader relayed an owner pause directive with
+    // allHive:true, meant only for its own fleet's members; it reached every agent
+    // in the hive instead. The stamp (fleet-leader authority is fleet-scoped ONLY,
+    // by design — queen-fleet-authority-boundary-2026-07-02) and the delivery ('*')
+    // contradicted each other and shipped silently. Refuse it instead.
+    fetchPresenceFleetM.mockResolvedValue(fleetOf('ops') as never);
+    const b = await body({ to: ['*'], summary: 'pause the fleet', allHive: true });
+    expect(b.counts).toEqual({ ok: 0, failed: 1 });
+    expect(b.results[0]).toMatchObject({ ok: false, error: 'fleet_scoped_cue_allhive_contradiction' });
+    expect(b.results[0].message).toMatch(/fleet-members\(ops\)/);
+    expect(b.results[0].message).toMatch(/@fleet:ops/);
+    expect(sendM).not.toHaveBeenCalled();
+  });
+
+  it('EI-9501 guard does not fire without allHive — the ordinary fleet-scoped rewrite still applies', async () => {
+    fetchPresenceFleetM.mockResolvedValue(fleetOf('ops') as never);
+    const b = await body({ to: ['*'], summary: 'closed WI-999' });
+    expect(b.counts).toEqual({ ok: 1, failed: 0 });
+    expect(b.results[0].to).toEqual(['@fleet:ops']);
   });
 
   it("leaves a non-fleeted sender's ['*'] as a literal hive broadcast (no fleet to scope to)", async () => {

@@ -129,6 +129,13 @@ beforeAll(async () => {
   // Signal provenance (frontier P-002, migration 241): ISSUE_COLS selects signal_origin.
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
   await db.sql.unsafe(readMigration('141-plan-item-claims.sql')).simple();
+  // 143 (agent_activity): the EI-8997 steal-guard/sweep SQL in claims.ts
+  // acquireClaim/reconcile joins it for the holder-activity grace check — the
+  // convert-at-pickup path here claims via that same code, so without 143
+  // every claim in this file throws "relation harness_shared.agent_activity
+  // does not exist" (EI-9514, same root cause as EI-9509 in the sibling
+  // claim-discipline.integration.test.ts).
+  await db.sql.unsafe(readMigration('143-agent-activity.sql')).simple();
   // Per-assignee rank columns (local-hive P-020, migration 178 §1) — the engine's
   // FEATURE_COLS/ISSUE_COLS select them. Same patch as work-items-lifecycle's setup
   // (the full 178 also rewrites work_items/fleet_assignment views this test never reads).
