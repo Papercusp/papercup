@@ -333,6 +333,15 @@ export async function listEscalations(
   return foldEscalations(opens, resolves, opts);
 }
 
+/** WI-4181: slack subtracted from the oldest open's ts when deciding whether the
+ *  resolves window covers the opens window — absorbs writer clock skew (ts is
+ *  client-side `new Date().toISOString()`) between the open and its resolution. */
+const RESOLVE_COVERAGE_SLACK_MS = 60_000;
+/** WI-4181: hard cap on EXTRA resolves pages fetched for coverage (beyond the
+ *  first window) — bounds the read to (1 + cap) × maxRecords rows even on a
+ *  pathologically resolve-heavy surface. */
+const MAX_RESOLVE_COVERAGE_PAGES = 8;
+
 /**
  * List escalation records with pagination to prevent unbounded response sizes.
  * Loads up to maxRecords events, folds them, and returns with a truncated flag.
@@ -352,14 +361,56 @@ export async function listEscalationsPaginated(
   // entirely: `escalations:[]` with a nonzero `total`/`truncated:true`, which
   // read as broken rather than "no matches in a resolve-heavy window."
   const maxRecords = Math.max(1, Math.min(opts.maxRecords ?? 50, 500));
-  const [opensRaw, resolvesRaw] = await Promise.all([
+  const [opensRaw, firstResolvePage] = await Promise.all([
     coordLog.readEventsBounded('escalations', { limit: maxRecords, kinds: ['escalation'] }),
-    coordLog.readEventsBounded('escalations', { limit: maxRecords, kinds: ['escalation_resolved'] }),
+    coordLog.readEventsBoundedCursor('escalations', { limit: maxRecords, kinds: ['escalation_resolved'] }),
   ]);
   const opens = opensRaw as EscalationRecord[];
-  const resolves = resolvesRaw.filter(
-    (rec): rec is EscalationResolvedEvent => typeof (rec as EscalationResolvedEvent).related_msg_id === 'string',
-  );
+
+  // WI-4181: the resolves window must reach at least as far BACK as the opens
+  // window. A resolution row is always NEWER than the open it closes, so every
+  // resolve that can pair with `opens` has ts >= the oldest open's ts — but the
+  // two windows are bounded by COUNT, and under resolve-heavy traffic the
+  // newest-N resolves window goes time-SHALLOWER than the newest-N opens window.
+  // An old open whose resolution was evicted then re-materializes as a ZOMBIE
+  // "open" (live incident 2026-07-11: a Jul-9 health-tick-stale escalation,
+  // resolved 4min after opening, re-listed as open once 500+ newer resolves
+  // accumulated — the infra-liveness alarm re-attempted the resolve and
+  // re-broadcast its recovery from 17 workers every ~2min for ~12h). Page the
+  // resolves cursor deeper until it covers the oldest open (with clock-skew
+  // slack), the surface is exhausted, or the hard page cap trips.
+  let resolveRows = firstResolvePage.rows;
+  let resolvesExhausted = firstResolvePage.exhausted;
+  const oldestOpenMs = opens.length
+    ? Date.parse(opens.reduce((min, o) => (o.ts < min ? o.ts : min), opens[0].ts))
+    : null;
+  const coverageTs =
+    oldestOpenMs !== null && Number.isFinite(oldestOpenMs)
+      ? new Date(oldestOpenMs - RESOLVE_COVERAGE_SLACK_MS).toISOString()
+      : null;
+  let extraPages = 0;
+  while (
+    coverageTs !== null &&
+    !resolvesExhausted &&
+    extraPages < MAX_RESOLVE_COVERAGE_PAGES &&
+    resolveRows.length > 0 &&
+    resolveRows[resolveRows.length - 1].envelope.ts > coverageTs
+  ) {
+    const page = await coordLog.readEventsBoundedCursor('escalations', {
+      limit: maxRecords,
+      kinds: ['escalation_resolved'],
+      beforeId: resolveRows[resolveRows.length - 1].id,
+    });
+    resolveRows = resolveRows.concat(page.rows);
+    resolvesExhausted = page.exhausted;
+    extraPages += 1;
+    if (page.rows.length === 0) break;
+  }
+  const resolves = resolveRows
+    .map((r) => r.envelope)
+    .filter(
+      (rec): rec is EscalationResolvedEvent => typeof (rec as EscalationResolvedEvent).related_msg_id === 'string',
+    );
 
   const escalations = foldEscalations(opens, resolves, opts);
   // `total` = escalations actually returned (matches the tool's own human-facing
@@ -367,7 +418,7 @@ export async function listEscalationsPaginated(
   // with `escalations`, unlike the old raw-event-scan count). `truncated` flags
   // that either bounded kind-window maxed out, so older matches may exist
   // beyond it (NOT the full backlog size — that would need an unbounded count).
-  const truncated = opens.length >= maxRecords || resolves.length >= maxRecords;
+  const truncated = opens.length >= maxRecords || resolveRows.length >= maxRecords;
   return { escalations, truncated, total: escalations.length };
 }
 

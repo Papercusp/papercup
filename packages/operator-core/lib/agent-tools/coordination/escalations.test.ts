@@ -125,6 +125,50 @@ describe('listEscalationsPaginated — bounded read (EI-1548)', () => {
     expect(r.escalations.map((e) => e.msg_id)).toEqual(['open1']);
     expect(r.total).toBe(1); // total matches what's actually returned — never a misleading nonzero-with-empty-array
   });
+
+  it('WI-4181: an old RESOLVED escalation whose resolution was evicted from the resolves window does not re-materialize as open (the zombie that stormed the infra-liveness recovery broadcast)', async () => {
+    // The EI-6624 dual: there, resolve-heavy traffic starved OPENS out of the
+    // window; here it starves an old open's RESOLUTION out — the open (still
+    // inside the newest-N opens window) then folded as a zombie "open" forever,
+    // because resolveEscalation on it is a no-op ('already_resolved', no write)
+    // so nothing ever re-enters the window. The fix pages the resolves cursor
+    // back until it covers the oldest open's ts.
+    configureCoordLog(new InMemoryCoordLog());
+    // z1: the oldest open — resolved 1s later.
+    await coordLog.putEvent('escalations', 'z1', {
+      ts: '2026-01-01T00:00:00.000Z', msg_id: 'z1', from: 'A', to: ['human'],
+      kind: 'escalation', severity: 'blocker', summary: 'tick stale', resolved: null,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    await coordLog.putEvent('escalations', 'rz', {
+      ts: '2026-01-01T00:00:01.000Z', msg_id: 'rz', from: 'A', to: ['human'],
+      kind: 'escalation_resolved', related_msg_id: 'z1', choice: 'auto-resolved', summary: 'resolved',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    // 4 newer still-open escalations keep z1 INSIDE the newest-5 opens window…
+    for (let i = 2; i <= 5; i++) {
+      await coordLog.putEvent('escalations', `o${i}`, {
+        ts: `2026-01-01T00:02:${String(i).padStart(2, '0')}.000Z`, msg_id: `o${i}`, from: 'A', to: ['human'],
+        kind: 'escalation', summary: `open ${i}`, resolved: null,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    }
+    // …while 6 newer unrelated resolves EVICT rz from the newest-5 resolves window.
+    for (let i = 1; i <= 6; i++) {
+      await coordLog.putEvent('escalations', `r${i}`, {
+        ts: `2026-01-01T00:03:${String(i).padStart(2, '0')}.000Z`, msg_id: `r${i}`, from: 'A', to: ['human'],
+        kind: 'escalation_resolved', related_msg_id: `unrelated${i}`, choice: 'ok', summary: 'resolved',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    }
+
+    const open = await listEscalationsPaginated({ status: 'open', maxRecords: 5 });
+    // Pre-fix this returned ['z1','o2'..'o5'] — z1 back from the dead.
+    expect(open.escalations.map((e) => e.msg_id).sort()).toEqual(['o2', 'o3', 'o4', 'o5']);
+
+    const resolved = await listEscalationsPaginated({ status: 'resolved', maxRecords: 5 });
+    expect(resolved.escalations.map((e) => e.msg_id)).toContain('z1');
+  });
 });
 
 describe('resolveEscalationsBatch — single-load drain (EI-1490)', () => {

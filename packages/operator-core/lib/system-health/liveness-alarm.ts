@@ -331,7 +331,12 @@ export interface AlarmDeps {
    *  auto-resolve source. Default reads a bounded newest-first window of the
    *  escalation log and filters to this alarm's identity. */
   listOpen?: () => Promise<EscalationRecord[]>;
-  /** Resolve one open escalation by msg_id (auto-resolve-on-recovery). */
+  /** Resolve one open escalation by msg_id (auto-resolve-on-recovery). The
+   *  RESOLVED value matters (WI-4181): resolveEscalation's no-op sentinels
+   *  ('not_found' | 'already_resolved' | 'requires_spawn_approve') mean nothing
+   *  transitioned, so the tick suppresses the recovery broadcast; any other
+   *  resolution (including undefined from a test double) counts as a real
+   *  open→resolved transition. */
   resolve?: (msg_id: string, choice: string, note: string) => Promise<unknown>;
   now?: () => number;
   snapshotStaleMs?: number;

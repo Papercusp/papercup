@@ -482,4 +482,73 @@ describe('runLivenessAlarmTick — durable dedup + auto-resolve (EI-2146)', () =
     expect(r.resolved.length).toBe(1); // the legacy pile drains
     expect(store.openCount()).toBe(0);
   });
+
+  it("WI-4181: a zombie 'open' whose resolve is a no-op (already_resolved) never re-broadcasts recovery", async () => {
+    // The live storm: a fold-window zombie re-listed as open every tick;
+    // resolveEscalation returned 'already_resolved' (no write, no throw), yet the
+    // tick still pushed the sig into the recovery broadcast — 17 workers × every
+    // ~2min for ~12h. The transition gate must swallow the no-op entirely.
+    const zombie = {
+      ts: new Date(1000).toISOString(),
+      msg_id: 'esc-zombie',
+      from: 'system:infra-liveness-alarm',
+      to: ['human'],
+      kind: 'escalation',
+      severity: 'blocker',
+      summary: '[infra-liveness] system-health tick stale for 7m — …',
+      livenessSignature: 'health-tick-stale',
+      resolved: null,
+    } as unknown as EscalationRecord;
+    const pageResolvedCalls: string[][] = [];
+    const well = mkHealth({ evaluatedAt: 100 * 60_000 });
+    const deps = {
+      readLast: () => well,
+      computeHealth: async () => well,
+      escalate: async () => {},
+      listOpen: async () => [zombie],
+      resolve: async () => 'already_resolved' as const,
+      pageResolved: async (sigs: string[]) => { pageResolvedCalls.push(sigs); },
+      now: () => 100 * 60_000 + 60_000,
+      snapshotStaleMs: 6 * 60_000,
+      debounceMs: 30 * 60_000,
+    };
+
+    const t1 = await runLivenessAlarmTick('ws', deps);
+    expect(t1.resolved).toEqual([]); // nothing actually transitioned
+    // …and across repeated ticks (the storm shape) still not one broadcast.
+    await runLivenessAlarmTick('ws', deps);
+    await runLivenessAlarmTick('ws', deps);
+    expect(pageResolvedCalls.flat()).toEqual([]);
+  });
+
+  it('WI-4181: a GENUINE blocker recovery broadcasts the all-clear exactly once — on the tick whose resolve actually transitioned the row', async () => {
+    const store = makeStore();
+    let healthy = false;
+    const sick = mkHealth({
+      evaluatedAt: 100 * 60_000,
+      panels: { workFeed: { data: { deadRoutines: 1, deadRoutineNames: ['git-sync'] } } },
+    });
+    const well = mkHealth({ evaluatedAt: 100 * 60_000 });
+    const pageResolvedCalls: string[][] = [];
+    let now = 100 * 60_000 + 60_000;
+    const deps = {
+      readLast: () => (healthy ? well : sick),
+      computeHealth: async () => (healthy ? well : sick),
+      escalate: store.escalate,
+      listOpen: store.listOpen,
+      resolve: store.resolve, // returns undefined = a real write (transition)
+      pageResolved: async (sigs: string[]) => { if (sigs.length) pageResolvedCalls.push(sigs); },
+      now: () => now,
+      snapshotStaleMs: 6 * 60_000,
+      debounceMs: 30 * 60_000,
+    };
+
+    await runLivenessAlarmTick('ws', deps); // fires the blocker
+    healthy = true;
+    now += 60_000;
+    await runLivenessAlarmTick('ws', deps); // recovery tick — resolves + announces
+    now += 60_000;
+    await runLivenessAlarmTick('ws', deps); // steady-state healthy tick — silent
+    expect(pageResolvedCalls).toEqual([['dead-routines']]);
+  });
 });
