@@ -250,7 +250,7 @@ describe('LearningTab — Improvements view (default)', () => {
     expect(screen.getByText('Decide next')).toBeTruthy();
   });
 
-  it('shows the four-stage loop and the Observe views', () => {
+  it('shows the four-stage loop and keeps Improvements inside Improve', () => {
     render(<LearningTab />);
     expect(screen.getByRole('tab', { name: 'Auto-fixable' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: 'Needs review' })).toBeTruthy();
@@ -258,8 +258,10 @@ describe('LearningTab — Improvements view (default)', () => {
     expect(screen.getByRole('tab', { name: 'Improve' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: 'Verify' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: 'Retain' })).toBeTruthy();
-    expect(screen.getByRole('tab', { name: 'Observations' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Ideas' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Gym' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Improvements/ })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Improve' }).getAttribute('aria-selected')).toBe('true');
   });
 
   it('uses visual hierarchy instead of explanatory prose', () => {
@@ -355,11 +357,13 @@ describe('LearningTab — Gym view', () => {
 });
 
 describe('LearningTab — unified Signals views', () => {
-  it('renders Observations inside Observe', () => {
+  it('renders Observations and Rubrics inside Observe', () => {
     nuqsState.lview = 'observations';
     render(<LearningTab />);
     expect(screen.getByTestId('observations-panel')).toBeTruthy();
     expect(screen.getByRole('tab', { name: 'Observe' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tab', { name: 'Observations' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Rubrics' })).toBeTruthy();
   });
 
   it('renders Ideas inside Improve', () => {
@@ -369,15 +373,26 @@ describe('LearningTab — unified Signals views', () => {
     expect(screen.getByRole('tab', { name: 'Improve' }).getAttribute('aria-selected')).toBe('true');
   });
 
-  it('renders Rubrics inside Verify and drills into a rubric', () => {
+  it('renders Rubrics inside Observe and drills into a rubric', () => {
     nuqsState.lview = 'rubrics';
     render(<LearningTab />);
     expect(screen.getByTestId('rubrics-panel')).toBeTruthy();
-    expect(screen.getByRole('tab', { name: 'Verify' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tab', { name: 'Observe' }).getAttribute('aria-selected')).toBe('true');
     fireEvent.click(screen.getByTestId('rubrics-panel'));
     expect(screen.getByTestId('rubric-detail').textContent).toContain('rubric-1');
     fireEvent.click(screen.getByText('back'));
     expect(screen.getByTestId('rubrics-panel')).toBeTruthy();
+  });
+
+  it('keeps a visited sync pane mounted when navigating to another stage', () => {
+    nuqsState.lview = 'ideas';
+    const { rerender } = render(<LearningTab />);
+    expect(document.querySelector('[data-view="ideas"]')).not.toBeNull();
+
+    nuqsState.lview = 'observations';
+    rerender(<LearningTab />);
+    expect(document.querySelector('[data-view="ideas"]')?.hasAttribute('hidden')).toBe(true);
+    expect(document.querySelector('[data-view="observations"]')?.hasAttribute('hidden')).toBe(false);
   });
 
   it('keeps operational destinations visually separate from the learning stages', () => {
@@ -412,11 +427,23 @@ describe('LearningTab — Benchmark view', () => {
     apiaryResult = { data: [{ instances: [] }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
     render(<LearningTab />);
     expect(screen.getByText('No baseline runs yet')).toBeTruthy();
-    // owner-gated copy now appears on BOTH benchmark empty cards (apiary + Hive-eval); assert the apiary one.
     expect(screen.getByText(/IQ-battery is owner-gated/)).toBeTruthy();
+    expect(screen.queryByText('No pot-eval generations yet')).toBeNull();
   });
 
-  it('renders the Hive-orchestration trend + scoreboard when generations exist (HE-07)', () => {
+  it('promotes every former benchmark section into the Verify tab row', () => {
+    render(<LearningTab />);
+    expect(screen.getByRole('tab', { name: 'Benchmark' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Pot orchestration' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Framework bake-off' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Wake efficiency' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'EKG' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Red Queen' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Experiments' })).toBeTruthy();
+  });
+
+  it('renders Pot orchestration as its own Verify view (HE-07)', () => {
+    nuqsState.lview = 'orchestration';
     hiveEvalResult = {
       data: [{ instances: [
         { instanceId: 'hev-new', codeSha: 'ccc3333', createdAt: new Date(2_000_000).toISOString(), totalRuns: 4, scoredRuns: 4, meanComposite: 7.2, meanEfficiency: 7, meanSpeed: 8, meanCriticalPathRatio: 1.3, outcomeGatePassRate: 1, fabricationRate: 0 },
@@ -427,12 +454,13 @@ describe('LearningTab — Benchmark view', () => {
     expect(screen.getByText('outcome gate')).toBeTruthy(); // a Stat label unique to the Hive-eval scoreboard
     expect(screen.getByText('1.30×')).toBeTruthy(); // latest critical-path ratio
     expect(screen.getAllByText('7.200').length).toBeGreaterThanOrEqual(1); // latest composite
-    // two trend figures now: the apiary trend + the Hive-orchestration trend.
-    expect(document.querySelectorAll('figure.pc-benchtrend')).toHaveLength(2);
+    expect(document.querySelectorAll('figure.pc-benchtrend')).toHaveLength(1);
+    expect(screen.getByRole('tab', { name: 'Verify' }).getAttribute('aria-selected')).toBe('true');
   });
 
-  it('renders the Hive-eval empty state when there are no Hive-eval generations', () => {
-    render(<LearningTab />); // hiveEvalResult defaults to empty instances
+  it('renders the Pot-eval empty state only in the Pot orchestration view', () => {
+    nuqsState.lview = 'orchestration';
+    render(<LearningTab />);
     expect(screen.getByText('No pot-eval generations yet')).toBeTruthy();
   });
 });

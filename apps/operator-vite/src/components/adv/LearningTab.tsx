@@ -146,8 +146,13 @@ export default function LearningTab() {
   // conditional unmounted every panel, forcing heavy aggregate reads to cold-
   // start again on return. This is lazy (only visited views mount), so opening
   // Learning does not fan out every query at once.
-  const visitedViews = useRef<Set<LView>>(new Set());
-  visitedViews.current.add(view);
+  const [visitedViews, setVisitedViews] = useState<ReadonlySet<LView>>(() => new Set([view]));
+  useEffect(() => {
+    setVisitedViews((current) => current.has(view) ? current : new Set([...current, view]));
+  }, [view]);
+  // Include the newly selected view in this render; the effect persists it for
+  // later renders without introducing a one-frame empty panel.
+  const mountedViews = visitedViews.has(view) ? visitedViews : new Set([...visitedViews, view]);
 
   return (
     <div className="pc-learning">
@@ -204,7 +209,7 @@ export default function LearningTab() {
 
       <div className="pc-learning__controls">
         {activeStageMeta && activeStageMeta.views.length > 1 ? (
-          <Tabs.Root value={view} onValueChange={(next) => void setLview(next as LView)}>
+          <Tabs.Root className="pc-learning__view-tabs" value={view} onValueChange={(next) => void setLview(next as LView)}>
             <Tabs.List className="pc-learning__view-list" aria-label={`${activeStageMeta.label} views`}>
               {activeStageMeta.views.map((candidate) => {
                 const Icon = candidate.icon;
@@ -242,7 +247,7 @@ export default function LearningTab() {
       </div>
 
       <div className="pc-learning__body">
-        {LVIEWS.filter((candidate) => visitedViews.current.has(candidate)).map((mountedView) => (
+        {LVIEWS.filter((candidate) => mountedViews.has(candidate)).map((mountedView) => (
           <section
             key={mountedView}
             className="pc-learning__viewpane"
@@ -316,6 +321,7 @@ function ImprovementsView({ hive }: { hive: string }) {
   const sync = useSyncQuery<ImprovementDigest & { flow?: ImprovementFlow }>({
     queryName: 'learning.improvements',
     args: hive ? { hive } : {},
+    staleTime: 30_000,
     staleTime: 30_000,
   });
   const digest = sync.data?.[0];
@@ -618,6 +624,7 @@ function GymView({ hive }: { hive: string }) {
   const sync = useSyncQuery<GymSnapshot>({
     queryName: 'learning.gym',
     args: hive ? { hive } : {},
+    staleTime: 30_000,
     staleTime: 30_000,
   });
   const snap = sync.data?.[0];
@@ -2038,6 +2045,7 @@ export function LearningStyles() {
       }
 
       .pc-learning__controls { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+      .pc-learning__view-tabs { min-width: 0; max-width: 100%; }
       .pc-learning__view-list { display: inline-flex; align-items: center; gap: 3px; max-width: 100%; padding: 3px; overflow-x: auto; scrollbar-width: thin; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-1); }
       .pc-learning__view-tab {
         display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; padding: 6px 10px;

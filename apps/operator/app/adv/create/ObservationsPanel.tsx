@@ -56,7 +56,8 @@ const CELL_TRUNCATE: CSSProperties = {
 export default function ObservationsPanel(_props?: Partial<PanelComponentProps>) {
   const [itemPlans] = useItemPlanFilter();
   const [limit, setLimit] = useState(OBSERVATIONS_PAGE);
-  useEffect(() => setLimit(OBSERVATIONS_PAGE), [itemPlans]);
+  const itemPlanKey = itemPlans.join('\u0000');
+  useEffect(() => setLimit(OBSERVATIONS_PAGE), [itemPlanKey]);
 
   const query = useSyncQuery<ObservationRow>({
     queryName: 'learning.observations',

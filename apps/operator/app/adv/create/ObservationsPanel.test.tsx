@@ -9,22 +9,45 @@
 // test seeds its own rows without a live transport.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { ReactNode } from 'react';
 
 const { sync, filters } = vi.hoisted(() => ({
-  sync: { data: [] as unknown[], loading: false },
+  sync: {
+    data: [] as unknown[], loading: false, fetching: false, error: null as { message: string } | null,
+    args: null as unknown, invalidate: vi.fn(),
+  },
   filters: { itemPlans: [] as string[] },
 }));
 
 vi.mock('@papercusp/sync', () => ({
-  useSyncQuery: () => ({
+  useSyncQuery: (opts: { args?: unknown }) => {
+    sync.args = opts.args;
+    return {
     data: sync.data,
     loading: sync.loading,
-    error: null,
-    fetching: false,
+    error: sync.error,
+    fetching: sync.fetching,
     transport: 'sse' as const,
-    invalidate: () => {},
-  }),
+    invalidate: sync.invalidate,
+    };
+  },
+}));
+vi.mock('@papercusp/grid-core', () => ({
+  VirtualGrid: ({ rows, columns, onEndReached }: {
+    rows: Row[];
+    columns: Array<{ key: string; render?: (ctx: { row: Row }) => ReactNode }>;
+    onEndReached?: () => void;
+  }) => (
+    <div data-testid="observations-grid">
+      {rows.map((row) => (
+        <div key={row.id} data-testid="observation-row">
+          {columns.map((column) => <span key={column.key}>{column.render?.({ row })}</span>)}
+        </div>
+      ))}
+      {onEndReached ? <button onClick={onEndReached}>load-more</button> : null}
+    </div>
+  ),
 }));
 vi.mock('./use-create-data', () => ({
   useItemPlanFilter: () => [filters.itemPlans, vi.fn()],
@@ -61,6 +84,10 @@ function mkRow(over: Partial<Row> = {}): Row {
 beforeEach(() => {
   sync.data = [];
   sync.loading = false;
+  sync.fetching = false;
+  sync.error = null;
+  sync.args = null;
+  sync.invalidate.mockReset();
   filters.itemPlans = [];
 });
 afterEach(() => cleanup());
@@ -82,8 +109,8 @@ describe('<ObservationsPanel />', () => {
 
   it('renders one list item per observation with its title', () => {
     sync.data = [mkRow({ id: 'a', title: 'First' }), mkRow({ id: 'b', title: 'Second' })];
-    const { container } = render(<ObservationsPanel />);
-    expect(container.querySelectorAll('ul > li')).toHaveLength(2);
+    render(<ObservationsPanel />);
+    expect(screen.getAllByTestId('observation-row')).toHaveLength(2);
     expect(screen.getByText('First')).toBeTruthy();
     expect(screen.getByText('Second')).toBeTruthy();
   });
@@ -96,8 +123,8 @@ describe('<ObservationsPanel />', () => {
       mkRow({ id: 'c', title: 'Beta', refs: ['plan-beta'] }),
       mkRow({ id: 'd', title: 'Prefix only', refs: ['plan-alphabet'] }),
     ];
-    const { container } = render(<ObservationsPanel />);
-    expect(container.querySelectorAll('ul > li')).toHaveLength(2);
+    render(<ObservationsPanel />);
+    expect(screen.getAllByTestId('observation-row')).toHaveLength(2);
     expect(screen.getByText('Alpha exact')).toBeTruthy();
     expect(screen.getByText('Alpha tagged')).toBeTruthy();
     expect(screen.queryByText('Beta')).toBeNull();
@@ -136,8 +163,34 @@ describe('<ObservationsPanel />', () => {
     render(<ObservationsPanel />);
     expect(screen.getByText('a longer note')).toBeTruthy();
     expect(screen.getByText('engineer')).toBeTruthy();
-    expect(screen.getByText(/scope: repo/)).toBeTruthy();
-    expect(screen.getByText(/conf: high/)).toBeTruthy();
-    expect(screen.getByText('F-1 · WI-2')).toBeTruthy();
+    expect(screen.getByText('engineer · repo · high · F-1 · WI-2')).toBeTruthy();
+  });
+
+  it('grows the server window at the virtualized scroll edge and shows the authoritative total', async () => {
+    sync.data = [
+      { ...mkRow({ id: 'a', title: 'First' }), _meta: { total: 450 } },
+      mkRow({ id: 'b', title: 'Second' }),
+    ];
+    render(<ObservationsPanel />);
+    expect(sync.args).toEqual({ limit: 200 });
+    expect(screen.getByTestId('observations-count').textContent).toBe('450');
+    fireEvent.click(screen.getByText('load-more'));
+    await waitFor(() => expect(sync.args).toEqual({ limit: 400 }));
+  });
+
+  it('keeps cached rows painted during a sync refresh', () => {
+    sync.data = [mkRow({ id: 'a', title: 'Still here' })];
+    sync.loading = true;
+    sync.fetching = true;
+    render(<ObservationsPanel />);
+    expect(screen.getByText('Still here')).toBeTruthy();
+    expect(screen.queryByText(/loading observations/i)).toBeNull();
+  });
+
+  it('refreshes through the shared sync query', () => {
+    sync.data = [mkRow()];
+    render(<ObservationsPanel />);
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh observations' }));
+    expect(sync.invalidate).toHaveBeenCalledTimes(1);
   });
 });

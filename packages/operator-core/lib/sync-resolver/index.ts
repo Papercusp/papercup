@@ -2671,7 +2671,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const a = (args ?? {}) as { state?: 'open' | 'resolved' | 'closed'; limit?: number };
       const { listIssues, countIssues } = await import('../issues-engineer');
       const { OBSERVATION_TOPIC } = await import('../harness/improvements/read-items');
-      const filter = { topic: OBSERVATION_TOPIC, state: a.state };
+      const filter = {
+        topic: OBSERVATION_TOPIC,
+        ...(a.state ? { state: a.state } : {}),
+      };
       const [issues, total] = await Promise.all([
         listIssues({ ...filter, limit: a.limit ?? 200 }),
         countIssues(filter),

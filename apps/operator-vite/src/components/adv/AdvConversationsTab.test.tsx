@@ -69,7 +69,7 @@ const FIXTURE_NOW = Date.now();
 const directMsg = {
   ts: TS(9),
   msg_id: 'm-direct',
-  from: 'architect',
+  from: 'system:coordinator',
   to: ['worker'],
   kind: 'message',
   surface: 'messages',
@@ -80,7 +80,7 @@ const feedRows = [
   {
     ts: TS(1),
     msg_id: 'm-bc',
-    from: 'operator',
+    from: 'system:release',
     to: ['*'],
     kind: 'message',
     surface: 'messages',
@@ -96,7 +96,7 @@ const feedRows = [
   {
     ts: TS(2),
     msg_id: 'm-esc',
-    from: 'worker',
+    from: 'system:gate',
     to: ['human'],
     kind: 'escalation',
     surface: 'escalations',
@@ -107,7 +107,7 @@ const feedRows = [
   {
     ts: TS(3),
     msg_id: 'm-notify',
-    from: 'operator',
+    from: 'system:build',
     to: ['architect'],
     kind: 'notify',
     surface: 'messages',
@@ -117,7 +117,7 @@ const feedRows = [
   {
     ts: TS(4),
     msg_id: 'm-handoff',
-    from: 'architect',
+    from: 'system:scheduler',
     to: ['worker'],
     kind: 'handoff',
     surface: 'handoffs',
@@ -128,7 +128,7 @@ const feedRows = [
   {
     ts: TS(8),
     msg_id: 'm-ack',
-    from: 'worker',
+    from: 'system:delivery',
     to: ['architect'],
     kind: 'ack',
     surface: 'messages',
@@ -174,7 +174,7 @@ vi.mock('@papercusp/sync', () => ({
 // virtualizer rather than faking DOM geometry (jsdom can't drive the real one).
 vi.mock('@tanstack/react-virtual', () => ({
   useVirtualizer: ({ count }: { count: number }) => {
-    const ROW = 64;
+    const ROW = 104;
     const items = Array.from({ length: count }, (_, index) => ({
       index,
       key: `vrow-${index}`,
@@ -202,7 +202,7 @@ vi.mock('@/app/harness/ChatPanel', () => ({
   ),
 }));
 
-import AdvConversationsTab, { composeUnifiedConversationRows } from './AdvConversationsTab';
+import AdvConversationsTab, { composeUnifiedConversationRows, isSystemConversationActor } from './AdvConversationsTab';
 
 beforeEach(() => {
   setQueryStates.mockReset();
@@ -284,6 +284,26 @@ describe('AdvConversationsTab — Create-style shell', () => {
       msg: 'msg-1',
       fmsg: null,
     });
+  });
+
+  it('keeps the same conversation list DOM mounted while the selected detail changes', async () => {
+    syncResults[syncKey('conversations.messageDetail', { id: 'msg-1' })] = ready([{
+      id: 'msg-1', harness_slug: 'papercusp', from_slug: 'architect', to_slug: 'worker', to_role: null,
+      kind: 'handoff', subject: 'pick up the UI work', body: 'the scoping is done, your turn', status: 'delivered',
+      created_at: new Date().toISOString(), from_feature_id: 'F-042', to_feature_id: 'F-042',
+    }]);
+    const { rerender } = render(<AdvConversationsTab />);
+    const listBefore = screen.getByRole('region', { name: 'Conversation list' });
+    const rowBefore = screen.getByRole('button', { name: 'Open pick up the UI work' });
+
+    nuqsState.conv = 'messages';
+    nuqsState.msg = 'msg-1';
+    rerender(<AdvConversationsTab />);
+
+    expect(screen.getByRole('region', { name: 'Conversation list' })).toBe(listBefore);
+    expect(screen.getByRole('button', { name: 'Open pick up the UI work' })).toBe(rowBefore);
+    expect(rowBefore.getAttribute('aria-current')).toBe('true');
+    expect(await screen.findByRole('heading', { name: 'pick up the UI work' })).toBeTruthy();
   });
 
   it('clears every source-owned selection atomically when returning to Conversations', () => {
@@ -578,6 +598,20 @@ describe('AdvConversationsTab — unified communication views', () => {
     ], 50);
 
     expect(rows.map((row) => row.sourceId)).toEqual(['msg-a', 'msg-c']);
+  });
+
+  it('partitions system-origin records out of every curated conversation source', () => {
+    expect(isSystemConversationActor('system:watchdog')).toBe(true);
+    expect(isSystemConversationActor('system-release')).toBe(true);
+    expect(isSystemConversationActor('architect')).toBe(false);
+    const rows = composeUnifiedConversationRows(
+      [{ id: 'system-question', kind: 'question', state: 'open', scope: 'workspace', harness_slug: null, title: 'health tick', asker_id: 'system:watchdog', topics: [], promoted_issue_id: null, created_ts: TS(1), updated_ts: TS(1) }],
+      [{ thread_id: 'agent-thread', parent_kind: null, parent_ref: null, title: 'agent decision', created_by: 'architect', harness_slug: null, created_at: TS(2), last_post_at: null, post_count: 1 }],
+      [],
+      [{ id: 'system-mail', harness_slug: null, from_slug: 'system-scheduler', to_slug: 'worker', to_role: null, kind: 'notify', subject: 'tick', body: null, status: 'sent', created_at: TS(3), from_feature_id: null, to_feature_id: null }],
+      50,
+    );
+    expect(rows.map((row) => row.sourceId)).toEqual(['agent-thread']);
   });
 
   it('does not let a busy source crowd other conversation types out of the merged window', () => {

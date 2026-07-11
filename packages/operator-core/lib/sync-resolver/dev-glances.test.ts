@@ -154,7 +154,7 @@ describe('dev.* glance resolvers', () => {
       }));
       vi.doMock('../agent-tools/coordination/feed', () => ({ readCoordFeed }));
       const { resolveNamedQueryV2: r } = await import('./index');
-      const out = (await r('dev.coordFeed', { kinds: ['message'], owner: 'op', limit: 50 })) as Array<
+      const out = (await r('dev.coordFeed', { kinds: ['message'], owner: 'op', system_only: true, limit: 50 })) as Array<
         Record<string, unknown> & { _meta?: { total: number; byKind: Record<string, number>; nextCursor: string | null } }
       >;
       expect(out).toHaveLength(2);
@@ -163,7 +163,7 @@ describe('dev.* glance resolvers', () => {
       expect(out[1]!._meta).toBeUndefined();
       // Args thread through to the read seam.
       expect(readCoordFeed).toHaveBeenCalledWith(
-        expect.objectContaining({ kinds: ['message'], owner: 'op', limit: 50 }),
+        expect.objectContaining({ kinds: ['message'], owner: 'op', system_only: true, limit: 50 }),
       );
       vi.doUnmock('../agent-tools/coordination/feed');
     });

@@ -188,6 +188,20 @@ describe('limit clamp + nextCursor', () => {
 });
 
 describe('filters', () => {
+  it('returns only system-origin envelopes when system_only is set', async () => {
+    setSurfaces({
+      messages: [
+        env({ msg_id: 'agent', from: 'architect' }),
+        env({ msg_id: 'system-colon', from: 'system:watchdog' }),
+        env({ msg_id: 'system-dash', from: 'system-release' }),
+      ],
+      handoffs: [env({ msg_id: 'human', from: 'human' })],
+    });
+    const { rows, total } = await readCoordFeed({ system_only: true });
+    expect(rows.map((row) => row.msg_id)).toEqual(['system-dash', 'system-colon']);
+    expect(total).toBe(2);
+  });
+
   it('kind filter keeps only the requested kinds', async () => {
     setSurfaces({
       messages: [env({ msg_id: 'msg', kind: 'message' }), env({ msg_id: 'ack', kind: 'ack' })],
