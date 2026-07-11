@@ -478,15 +478,29 @@ export async function runLivenessAlarmTick(
   const recoveredBlockerSigs: string[] = [];
   for (const [sig, recs] of openBySig) {
     if (currentSigs.has(sig)) continue; // still firing — keep the single open row
+    // WI-4181: only a resolve that actually TRANSITIONED the row (wrote the
+    // sibling escalation_resolved event) counts. resolveEscalation is idempotent
+    // and returns the sentinel strings 'not_found' / 'already_resolved' /
+    // 'requires_spawn_approve' WITHOUT writing — and broadcasting recovery on
+    // mere PRESENCE of an "open" row turned a fold-window zombie (an old open
+    // whose resolution had been evicted from listEscalationsPaginated's bounded
+    // resolves window) into a storm: resolve() returned 'already_resolved' every
+    // tick, nothing ever re-entered the window, and 17 request workers re-emitted
+    // "RECOVERED (health-tick-stale)" every ~2min for ~12h (6,000+ duplicates).
+    // Gating on the transition also collapses the multi-worker race on a GENUINE
+    // recovery: only the worker whose resolve actually landed announces it.
+    let transitioned = false;
     for (const rec of recs) {
       try {
-        await resolve(rec.msg_id, 'auto-resolved', `infra-liveness signal '${sig}' cleared (condition recovered)`);
+        const outcome = await resolve(rec.msg_id, 'auto-resolved', `infra-liveness signal '${sig}' cleared (condition recovered)`);
+        if (outcome === 'not_found' || outcome === 'already_resolved' || outcome === 'requires_spawn_approve') continue;
         resolved.push(rec.msg_id);
+        transitioned = true;
       } catch {
         /* a resolve failure must never crash the request worker */
       }
     }
-    if (recs.some((r) => r.severity === 'blocker')) recoveredBlockerSigs.push(sig);
+    if (transitioned && recs.some((r) => r.severity === 'blocker')) recoveredBlockerSigs.push(sig);
     // Drop the in-memory cooldown so a genuine re-occurrence after recovery
     // re-fires immediately ("re-fire only after auto-resolve").
     lastAlertedAt.delete(sig);
