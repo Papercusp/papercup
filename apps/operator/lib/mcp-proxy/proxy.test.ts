@@ -6,7 +6,14 @@
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import http from 'node:http';
-import { shouldRetry, createMcpProxy, type McpProxyTarget } from './proxy';
+import {
+  shouldRetry,
+  createMcpProxy,
+  prepareForward,
+  postConnectRetryable,
+  MAX_POST_CONNECT_RETRIES,
+  type McpProxyTarget,
+} from './proxy';
 
 describe('shouldRetry — refused-only + in-window (no double-execution)', () => {
   it('retries when NOT connected and within the window', () => {
@@ -17,6 +24,76 @@ describe('shouldRetry — refused-only + in-window (no double-execution)', () =>
   });
   it('does NOT retry past the window even if still refused', () => {
     expect(shouldRetry(false, 46_000, 45_000)).toBe(false);
+  });
+});
+
+// P-005: classify the forward + inject a per-request idempotencyKey on a tools/call so a
+// post-connect retry is write-safe (:3070 replays instead of double-applying).
+describe('prepareForward — classify + inject idempotencyKey', () => {
+  const gen = () => 'KEY123';
+  it('injects a key into a tools/call → klass "keyed", content-length fixed', () => {
+    const body = Buffer.from('{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"x","arguments":{}}}');
+    const r = prepareForward('POST', { 'content-length': String(body.length) }, body, { keyingEnabled: true, genKey: gen });
+    expect(r.klass).toBe('keyed');
+    expect(JSON.parse(r.body.toString()).params._meta.idempotencyKey).toBe('KEY123');
+    expect(r.headers['content-length']).toBe(String(r.body.length));
+  });
+  it('RESPECTS a valid client-supplied key (body unchanged)', () => {
+    const body = Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'x', arguments: {}, _meta: { idempotencyKey: 'client-key' } } }));
+    const r = prepareForward('POST', {}, body, { keyingEnabled: true, genKey: gen });
+    expect(r.klass).toBe('keyed');
+    expect(r.body).toBe(body); // not mutated
+    expect(JSON.parse(r.body.toString()).params._meta.idempotencyKey).toBe('client-key');
+  });
+  it('an INVALID client key (server would ignore it) drops to "opaque"', () => {
+    const body = Buffer.from(JSON.stringify({ method: 'tools/call', params: { name: 'x', _meta: { idempotencyKey: 'z'.repeat(201) } } }));
+    expect(prepareForward('POST', {}, body, { keyingEnabled: true, genKey: gen }).klass).toBe('opaque');
+  });
+  it('keying kill-switch off → tools/call is "opaque" (refused-only, pre-P-005 behavior)', () => {
+    const body = Buffer.from('{"method":"tools/call","params":{"name":"x"}}');
+    expect(prepareForward('POST', {}, body, { keyingEnabled: false, genKey: gen }).klass).toBe('opaque');
+  });
+  it('an idempotent method (tools/list) → "idempotent", body untouched', () => {
+    const body = Buffer.from('{"jsonrpc":"2.0","id":1,"method":"tools/list"}');
+    const r = prepareForward('POST', {}, body, { keyingEnabled: true, genKey: gen });
+    expect(r.klass).toBe('idempotent');
+    expect(r.body).toBe(body);
+  });
+  it('a batch [tools/call, tools/list] → keyed, key injected only into the call', () => {
+    const body = Buffer.from(JSON.stringify([{ method: 'tools/call', params: { name: 'a' } }, { method: 'tools/list' }]));
+    const r = prepareForward('POST', {}, body, { keyingEnabled: true, genKey: () => 'BK' });
+    expect(r.klass).toBe('keyed');
+    const arr = JSON.parse(r.body.toString());
+    expect(arr[0].params._meta.idempotencyKey).toBe('BK');
+    expect(arr[1].method).toBe('tools/list');
+    expect(arr[1].params).toBeUndefined();
+  });
+  it('non-JSON body → "opaque"', () => {
+    expect(prepareForward('POST', {}, Buffer.from('not json'), { keyingEnabled: true, genKey: gen }).klass).toBe('opaque');
+  });
+  it('GET / empty body → "opaque"', () => {
+    expect(prepareForward('GET', {}, Buffer.alloc(0), { keyingEnabled: true, genKey: gen }).klass).toBe('opaque');
+  });
+  it('an oversized tools/call is NOT rewritten (blocking guard) → "opaque"', () => {
+    const body = Buffer.from(JSON.stringify({ method: 'tools/call', params: { name: 'x', arguments: { big: 'y'.repeat(300 * 1024) } } }));
+    expect(prepareForward('POST', {}, body, { keyingEnabled: true, genKey: gen }).klass).toBe('opaque');
+  });
+});
+
+describe('postConnectRetryable — bounded, idempotent/keyed only', () => {
+  it('opaque never replays (write-safety invariant)', () => {
+    expect(postConnectRetryable('opaque', 0, 1, 100, 5_000)).toBe(false);
+  });
+  it('idempotent + keyed replay once, within the window', () => {
+    expect(postConnectRetryable('idempotent', 0, 1, 100, 5_000)).toBe(true);
+    expect(postConnectRetryable('keyed', 0, 1, 100, 5_000)).toBe(true);
+  });
+  it('is bounded by maxRetries (no unbounded post-connect replay)', () => {
+    expect(postConnectRetryable('keyed', 1, 1, 100, 5_000)).toBe(false);
+    expect(MAX_POST_CONNECT_RETRIES).toBe(1);
+  });
+  it('does not replay past the window', () => {
+    expect(postConnectRetryable('idempotent', 0, 1, 6_000, 5_000)).toBe(false);
   });
 });
 
@@ -206,4 +283,81 @@ describe('createMcpProxy — forwarding + restart recovery', () => {
       else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = prev;
     }
   });
+
+  // P-005: an upstream that RESETS the first connection post-connect, then serves.
+  function resetOnceUpstream(bodyOut: string): http.Server {
+    let hits = 0;
+    const s = track(
+      http.createServer((req, res) => {
+        hits++;
+        if (hits === 1) {
+          req.socket.destroy(); // post-connect reset (worker-recycle-mid-request class)
+          return;
+        }
+        req.on('data', () => {});
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(bodyOut);
+        });
+      }),
+    );
+    (s as http.Server & { hits: () => number }).hits = () => hits;
+    return s;
+  }
+  const TOOLS_CALL = '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"x","arguments":{}}}';
+
+  function withKeyedRetry(v: string | undefined, fn: () => Promise<void>): () => Promise<void> {
+    return async () => {
+      const prev = process.env.PAPERCUSP_MCP_PROXY_KEYED_RETRY;
+      if (v === undefined) delete process.env.PAPERCUSP_MCP_PROXY_KEYED_RETRY;
+      else process.env.PAPERCUSP_MCP_PROXY_KEYED_RETRY = v;
+      try {
+        await fn();
+      } finally {
+        if (prev === undefined) delete process.env.PAPERCUSP_MCP_PROXY_KEYED_RETRY;
+        else process.env.PAPERCUSP_MCP_PROXY_KEYED_RETRY = prev;
+      }
+    };
+  }
+
+  it(
+    'P-005: a KEYED tools/call retries ONCE after a post-connect reset and recovers (:3070 dedups the replay)',
+    withKeyedRetry('1', async () => {
+      const upstream = resetOnceUpstream('{"result":"keyed-recovered"}') as http.Server & { hits: () => number };
+      await listen(upstream);
+      const proxy = track(createMcpProxy({ listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream), retryWindowMs: 5_000, retryBackoffMs: 40, log: () => {} }));
+      await listen(proxy);
+      const r = await request(port(proxy), TOOLS_CALL);
+      expect(r.status).toBe(200);
+      expect(r.body).toBe('{"result":"keyed-recovered"}');
+      expect(upstream.hits()).toBe(2);
+    }),
+  );
+
+  it(
+    'P-005: an idempotent method (tools/list) retries post-connect EVEN with keying disabled — the toolless-session fix',
+    withKeyedRetry('0', async () => {
+      const upstream = resetOnceUpstream('{"result":{"tools":[]}}') as http.Server & { hits: () => number };
+      await listen(upstream);
+      const proxy = track(createMcpProxy({ listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream), retryWindowMs: 5_000, retryBackoffMs: 40, log: () => {} }));
+      await listen(proxy);
+      const r = await request(port(proxy), '{"jsonrpc":"2.0","id":1,"method":"tools/list"}');
+      expect(r.status).toBe(200);
+      expect(upstream.hits()).toBe(2);
+    }),
+  );
+
+  it(
+    'P-005: with keying DISABLED a tools/call does NOT retry post-connect → 502 (write-safety preserved)',
+    withKeyedRetry('0', async () => {
+      const upstream = resetOnceUpstream('{"result":"should-not-reach"}') as http.Server & { hits: () => number };
+      await listen(upstream);
+      const proxy = track(createMcpProxy({ listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream), retryWindowMs: 2_000, retryBackoffMs: 40, log: () => {} }));
+      await listen(proxy);
+      const r = await request(port(proxy), TOOLS_CALL);
+      expect(r.status).toBe(502);
+      expect(r.body).toContain('mcp_proxy_upstream_error');
+      expect(upstream.hits()).toBe(1); // opaque → not replayed
+    }),
+  );
 });
