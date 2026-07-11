@@ -411,7 +411,7 @@ describe('AdvConversationsTab — Create-style shell', () => {
     nuqsState.conv = 'feed';
     render(<AdvConversationsTab />);
 
-    expect(screen.getByText(/Raw coordination events for debugging/i)).toBeTruthy();
+    expect(screen.getByText(/System coordination messages for debugging/i)).toBeTruthy();
     expect(screen.getByText(/6 matching/)).toBeTruthy();
     expect(screen.getByRole('button', { name: /Messages/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Handoffs/i })).toBeTruthy();

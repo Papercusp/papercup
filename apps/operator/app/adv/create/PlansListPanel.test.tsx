@@ -125,14 +125,18 @@ describe('PlansListPanel — view buttons', () => {
     expect(setters.view).toHaveBeenCalledWith('sessions');
   });
 
-  it('renders the view controls as an icon-only left rail without moving New plan', () => {
+  it('renders New plan and the view controls in the icon-only left rail', () => {
     render(<><CreateViewRail /><PlansListPanel /></>);
     const rail = screen.getByRole('navigation', { name: 'Create view' });
+    const newPlan = screen.getByRole('button', { name: /New plan/i });
     const plans = screen.getByRole('button', { name: 'Plans' });
     const queue = screen.getByRole('button', { name: 'Queue' });
     const sessions = screen.getByRole('button', { name: 'Sessions' });
 
     expect(rail.classList.contains('pc-create-plans-sidebar__view-rail')).toBe(true);
+    expect(rail.contains(newPlan)).toBe(true);
+    expect(newPlan.classList.contains('pc-create-plans-sidebar__new-plan')).toBe(true);
+    expect(newPlan.querySelector('svg')).toBeTruthy();
     for (const button of [plans, queue, sessions]) {
       expect(rail.contains(button)).toBe(true);
       expect(button.classList.contains('pc-create-plans-sidebar__view-btn')).toBe(true);
@@ -141,7 +145,7 @@ describe('PlansListPanel — view buttons', () => {
     }
     expect(plans.classList.contains('is-active')).toBe(true);
     expect(queue.classList.contains('is-active')).toBe(false);
-    expect(rail.contains(screen.getByRole('button', { name: /New plan/i }))).toBe(false);
+    expect(document.querySelector('.pc-create-plans-sidebar__new-plan-action')).toBeNull();
   });
 });
 
@@ -206,7 +210,7 @@ describe('PlansListPanel — plan selection', () => {
 
 describe('PlansListPanel — New-plan launch', () => {
   it('launches an agent and toasts success on ok', async () => {
-    render(<PlansListPanel />);
+    render(<CreateViewRail />);
     fireEvent.click(screen.getByRole('button', { name: /New plan/i }));
     await waitFor(() => expect(launchAgent).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(toastSpies.success).toHaveBeenCalled());
@@ -214,7 +218,7 @@ describe('PlansListPanel — New-plan launch', () => {
 
   it('toasts the install command when launchAgent returns installCmd', async () => {
     launchAgent.mockResolvedValueOnce({ ok: false, installCmd: 'npm i -g @papercusp/omp' });
-    render(<PlansListPanel />);
+    render(<CreateViewRail />);
     fireEvent.click(screen.getByRole('button', { name: /New plan/i }));
     await waitFor(() => expect(toastSpies.error).toHaveBeenCalled());
     expect(String(toastSpies.error.mock.calls[0][0])).toContain('npm i -g @papercusp/omp');
@@ -222,7 +226,7 @@ describe('PlansListPanel — New-plan launch', () => {
 
   it('toasts a launch error when launchAgent fails without installCmd', async () => {
     launchAgent.mockResolvedValueOnce({ ok: false, error: 'psu not found' });
-    render(<PlansListPanel />);
+    render(<CreateViewRail />);
     fireEvent.click(screen.getByRole('button', { name: /New plan/i }));
     await waitFor(() => expect(toastSpies.error).toHaveBeenCalled());
     expect(String(toastSpies.error.mock.calls[0][0])).toContain('psu not found');
@@ -230,7 +234,7 @@ describe('PlansListPanel — New-plan launch', () => {
 
   it('passes the resolved harness slug into the launch when one is active', async () => {
     resolvedSlug.value = 'my-harness';
-    render(<PlansListPanel />);
+    render(<CreateViewRail />);
     fireEvent.click(screen.getByRole('button', { name: /New plan/i }));
     await waitFor(() => expect(launchAgent).toHaveBeenCalled());
     expect((launchAgent.mock.calls[0][0] as { slug: string }).slug).toBe('my-harness');

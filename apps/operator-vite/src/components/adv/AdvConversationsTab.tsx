@@ -202,7 +202,7 @@ const VIEW_DEFS: ReadonlyArray<ViewDef> = [
   { id: 'deliberations', label: 'Group decisions', desc: 'Coord threads, proposals, and votes.', group: 'curated', Icon: MessagesSquare },
   { id: 'agentchats', label: 'Agent chat', desc: "An agent's full multi-turn transcript.", group: 'curated', Icon: Bot },
   { id: 'messages', label: 'Work-item mail', desc: 'Work-item-scoped mail between agents.', group: 'curated', Icon: Mail },
-  { id: 'feed', label: 'Raw events', desc: 'The raw coordination event log — every envelope, newest first. A debug firehose beneath the curated views.', group: 'raw', Icon: Radio },
+  { id: 'feed', label: 'Raw events', desc: 'The system message log — system-origin coordination (watchdog, routines, infra), newest first. The diagnostic traffic the curated conversations filter out.', group: 'raw', Icon: Radio },
 ];
 const CURATED_VIEW_DEFS = VIEW_DEFS.filter((v) => v.id === 'inbox');
 const RAW_VIEW_DEFS = VIEW_DEFS.filter((v) => v.group === 'raw');
@@ -1288,7 +1288,7 @@ function FeedView() {
               <SlidersHorizontal size={12} aria-hidden />
               Filter activity
             </span>
-            <p>Raw coordination events for debugging, newest first.</p>
+            <p>System coordination messages for debugging, newest first.</p>
           </div>
           <div className="pc-advfeed__filtermeta">
             <strong>{meta ? `${meta.total} matching` : head.loading ? 'loading…' : '0 matching'}</strong>
@@ -1708,7 +1708,6 @@ function ThreadsView({
   });
   const list = listQuery.data ?? [];
   const detail = detailQuery.data?.[0] ?? null;
-  const detailLoading = detailQuery.loading;
   const loading = listQuery.loading;
   const error = listQuery.error ? errText(listQuery.error) : null;
 
@@ -1873,7 +1872,7 @@ function ThreadsView({
       )}
       detail={
         <section className="pc-coord__detail">
-          {detailLoading ? (
+          {sel && !detail ? (
             <ConversationDetailLoading row={loadingSummary} label="Loading conversation" />
           ) : !detail ? (
           <EmptyState
@@ -2010,7 +2009,6 @@ function DeliberationsView({
   const detail = detailQuery.data?.[0];
   const head = detail?.thread ?? null;
   const posts = detail?.posts ?? [];
-  const detailLoading = detailQuery.loading;
   const loading = listQuery.loading;
   const error = listQuery.error ? errText(listQuery.error) : null;
 
@@ -2105,7 +2103,7 @@ function DeliberationsView({
       )}
       detail={
         <section className="pc-coord__detail">
-          {detailLoading ? (
+          {sel && !head ? (
             <ConversationDetailLoading row={loadingSummary} label="Loading deliberation" />
           ) : !head ? (
           <EmptyState
@@ -2214,7 +2212,6 @@ function AgentChatsView({
   const list = listQuery.data ?? [];
   const total = readListTotal(list);
   const detail = detailQuery.data?.[0] ?? null;
-  const detailLoading = detailQuery.loading;
   const loading = listQuery.loading;
   const error = listQuery.error ? errText(listQuery.error) : null;
 
@@ -2355,7 +2352,7 @@ function AgentChatsView({
       )}
       detail={
         <section className="pc-coord__detail">
-        {detailLoading ? (
+        {sel && !detail ? (
           <ConversationDetailLoading row={loadingSummary} label="Loading chat" />
         ) : !detail ? (
           <EmptyState

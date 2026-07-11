@@ -622,8 +622,25 @@
   overflow: auto;
 }
 
-.pc-create-plans-sidebar__new-plan-action {
-  flex: 0 0 auto;
+.pc-create-plans-sidebar__new-plan.pc-plans__new-plan {
+  --pc-create-view-accent: var(--accent);
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 40px;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  min-height: 40px;
+  gap: 0;
+  overflow: hidden;
+  padding: 5px;
+  border-radius: 10px;
+}
+
+.pc-create-plans-sidebar__new-plan-label {
+  display: none;
 }
 
 .pc-create-plans-sidebar__view-btn.pc-plans__plans-btn {

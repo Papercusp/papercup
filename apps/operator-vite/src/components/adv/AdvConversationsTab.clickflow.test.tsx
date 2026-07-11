@@ -1,7 +1,18 @@
 // @vitest-environment jsdom
-// TEMPORARY reproduction — delete after diagnosis. Faithfully flows a REAL click
-// on a curated unified-inbox row through a STATEFUL nuqs mock (writes reflect +
-// re-render), which the committed suite never does (its setter is a no-op).
+//
+// Click-flow regression for the curated Conversations (unified inbox). The main
+// AdvConversationsTab suite mocks nuqs with a NO-OP setter, so it can only prove
+// "click calls setRoute" and "a manually-set route renders the detail" as two
+// SEPARATE facts — it never flows a real click end to end. This suite uses a
+// STATEFUL nuqs mock (setRoute writes a store and re-renders subscribers), so a
+// real fireEvent.click threads through route → detail exactly like the app.
+//
+// Guards WI-4216: clicking a left-pane row must bring the item into the main
+// pane. In particular, when the source detail query resolves EMPTY (a webview
+// race where the SSE cache answers before the row is materialized), the clicked
+// row's ANCHOR must stay visible — never a bare "Select a thread" that reads as
+// "the click did nothing" (the symptom Avi reported). MessagesView already had
+// this list-row fallback; ThreadsView/DeliberationsView/AgentChatsView did not.
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -73,11 +84,11 @@ vi.mock('@tanstack/react-virtual', () => ({
   },
 }));
 
-vi.mock('@/app/harness/ChatPanel', () => ({
-  default: () => <div data-testid="chat-panel-stub" />,
-}));
+vi.mock('@/app/harness/ChatPanel', () => ({ default: () => <div data-testid="chat-panel-stub" /> }));
 
 import AdvConversationsTab from './AdvConversationsTab';
+
+const THREAD_TITLE = 'why does the watchdog recycle the host?';
 
 beforeEach(() => {
   Object.assign(store, {
@@ -89,9 +100,8 @@ beforeEach(() => {
   syncResults = {
     'conversations.questionsList': ready([{
       id: 'c-1', kind: 'question', state: 'open', scope: 'harness', harness_slug: 'papercusp',
-      title: 'why does the watchdog recycle the host?', asker_id: 'oracle', topics: ['infra'],
-      promoted_issue_id: null, created_ts: new Date(Date.now() - 120_000).toISOString(),
-      updated_ts: new Date(Date.now() - 120_000).toISOString(),
+      title: THREAD_TITLE, asker_id: 'oracle', topics: ['infra'], promoted_issue_id: null,
+      created_ts: new Date(Date.now() - 120_000).toISOString(), updated_ts: new Date(Date.now() - 120_000).toISOString(),
     }]),
     'conversations.deliberationList': ready(),
     'conversations.agentChatList': ready(),
@@ -99,9 +109,8 @@ beforeEach(() => {
     'dev.coordFeed': ready([]),
     [syncKey('conversations.questionDetail', { id: 'c-1' })]: ready([{
       id: 'c-1', kind: 'question', state: 'open', scope: 'harness', harness_slug: 'papercusp',
-      title: 'why does the watchdog recycle the host?', asker_id: 'oracle', subscriber_count: 2,
-      topics: ['infra'], body: 'the host keeps recycling every few minutes', accepted_answer: null,
-      promoted_issue_id: null, posts: [],
+      title: THREAD_TITLE, asker_id: 'oracle', subscriber_count: 2, topics: ['infra'],
+      body: 'the host keeps recycling every few minutes', accepted_answer: null, promoted_issue_id: null, posts: [],
     }]),
   };
   vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({}) })));
@@ -109,21 +118,32 @@ beforeEach(() => {
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-describe('REPRO — curated row click brings detail into main pane', () => {
-  it('shows the detail heading in the main pane after a real click', async () => {
+describe('curated Conversations — a row click reaches the main pane (WI-4216)', () => {
+  it('renders the selected detail in the main pane after a real click', async () => {
     render(<AdvConversationsTab />);
-    // The row is present in the left list.
-    const row = screen.getByRole('button', { name: 'Open why does the watchdog recycle the host?' });
     expect(store.conv).toBe('inbox');
 
-    fireEvent.click(row);
+    fireEvent.click(screen.getByRole('button', { name: `Open ${THREAD_TITLE}` }));
 
-    // After the click the route must switch to the threads source + select c-1.
+    // The click atomically switches the source + selection…
     expect(store.conv).toBe('threads');
     expect(store.conversation).toBe('c-1');
+    // …and the detail lands in the main pane.
+    expect(await screen.findByRole('heading', { level: 2, name: THREAD_TITLE })).toBeTruthy();
+  });
 
-    // And the detail must render in the main pane (heading, level 2).
-    const heading = await screen.findByRole('heading', { level: 2, name: 'why does the watchdog recycle the host?' });
-    expect(heading).toBeTruthy();
+  it('keeps the clicked row anchored in the main pane even when its detail resolves empty', async () => {
+    // Webview race: the detail query answers empty (loading:false, no row) before
+    // the row materializes. The clicked item must still occupy the main pane via
+    // its anchor — NOT fall through to the "Select a thread" no-selection state.
+    syncResults[syncKey('conversations.questionDetail', { id: 'c-1' })] = ready([]);
+    render(<AdvConversationsTab />);
+
+    fireEvent.click(screen.getByRole('button', { name: `Open ${THREAD_TITLE}` }));
+
+    expect(store.conv).toBe('threads');
+    expect(await screen.findByRole('heading', { level: 2, name: THREAD_TITLE })).toBeTruthy();
+    // The generic "nothing selected" empty state must NOT be what the user sees.
+    expect(screen.queryByText('Select a thread')).toBeNull();
   });
 });

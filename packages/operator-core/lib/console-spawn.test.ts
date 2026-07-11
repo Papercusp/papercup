@@ -21,6 +21,7 @@ import {
   spawnConsole,
   spawnHeadless,
   headlessLogPath,
+  wrapHeadlessSigtermDiagnostic,
   _resetTerminalCacheForTests,
   type AppearanceOpts,
   type DesktopEnvProbes,
@@ -292,6 +293,37 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     expect(r.status).toBe('error');
     expect((r as { code: number }).code).toBe(502);
     expect((r as { error: string }).error).toMatch(/died at boot/i);
+  });
+
+  it('EI-9748: installs a TERM trap ahead of the greeting so a cgroup-restart kill logs a diagnostic instead of dying silently', async () => {
+    spawnMock.mockImplementation(() => fakeChild(7778));
+    await spawnHeadless({ envelope, label: 'hl', logDir: null });
+    const oneliner = spawnMock.mock.calls[0][1][1] as string;
+    expect(oneliner).toMatch(/^trap '.*' TERM;/);
+    expect(oneliner).toContain('EI-9748');
+    expect(oneliner).toContain('exit 143');
+    // still runs the real greeting after the trap is installed
+    expect(oneliner).toContain('psu --headless');
+  }, 10_000);
+});
+
+describe('wrapHeadlessSigtermDiagnostic (EI-9748)', () => {
+  it('prepends a TERM trap that logs + exits 143, then runs the original oneliner unmodified', () => {
+    const out = wrapHeadlessSigtermDiagnostic("cd '/proj' ; (eval 'psu --headless')");
+    expect(out.startsWith("trap '")).toBe(true);
+    expect(out).toContain(" TERM; cd '/proj' ; (eval 'psu --headless')");
+    expect(out).toContain('EI-9748');
+    expect(out).toContain("exit 143");
+  });
+
+  it('the trap body is syntactically balanced (single-quoted, no unescaped internal single-quotes)', () => {
+    const out = wrapHeadlessSigtermDiagnostic('exec claude');
+    // trap '...' TERM — everything between the first and the matching closing
+    // "' TERM" must not itself contain a bare unescaped single-quote, or bash
+    // would parse it as a premature close.
+    const m = /^trap '(.*)' TERM;/.exec(out);
+    expect(m).not.toBeNull();
+    expect(m![1]).not.toMatch(/(?<!\\)'/);
   });
 });
 

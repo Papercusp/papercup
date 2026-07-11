@@ -684,7 +684,7 @@ export default defineTool({
       .boolean()
       .optional()
       .describe(
-        'Launch the members HEADLESS — background su sessions with NO desktop window (default false = visible terminals). Identical fleet in every other way: same su members (NOT cups), same leader-led contract, they register presence + count toward the fleet, auto-start on the plan, and stay injectable for warm loop:arm wakes; they just have no window and log to a file you can tail. Use when the owner wants the fleet working invisibly / on a headless host. Orthogonal to `carry`.',
+        'Launch the members HEADLESS — background su sessions with NO desktop window (default false = visible terminals). Same su members (NOT cups), same leader-led contract, they register presence + count toward the fleet, auto-start on the plan, and stay injectable for warm loop:arm wakes; they just have no window and log to a file you can tail. KNOWN GAP (EI-9748): unlike a visible member (durably parented to a desktop terminal), a headless member is a plain detached child of the operator API process and gets silently SIGTERM-killed whenever that process\'s systemd unit restarts (papercup-staging-api.service restarts routinely — every few minutes during active dev — and papercup-dev-api.service restarts on deploy); this is NOT host load, OOM, or a crash, and a killed member\'s log now says so (see EI-9748). Prefer visible for anything that must survive hours unattended until EI-9748 lands a durable fix; use headless when the owner explicitly wants no window and accepts the risk, and check on the fleet more often. Orthogonal to `carry`.',
       ),
     carry: z
       .enum(['warm', 'cold'])

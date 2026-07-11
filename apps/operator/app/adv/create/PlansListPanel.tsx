@@ -39,9 +39,50 @@ import {
 export function CreateViewRail() {
   const t = useLexicon();
   const [view, setView] = useCreateView();
+  const resolvedSlug = useResolvedHarnessSlug();
+  const [launching, setLaunching] = useState(false);
+
+  // Preserve the existing New-plan behavior; only its visual home moves from
+  // the plan browser into the compact action rail.
+  const onNewPlan = async () => {
+    if (launching) return;
+    setLaunching(true);
+    try {
+      const result = await launchAgent({
+        slug: resolvedSlug ?? null,
+        planSlug: null,
+        label: resolvedSlug ? `new-plan · ${resolvedSlug}` : 'new-plan',
+        kickoff: { kind: 'new-plan' },
+        deferSpawn: true,
+      });
+      if (result.ok) {
+        toast.success('Plan-drafting agent queued — opening as a pane in the dock.', { duration: 3000 });
+      } else if (result.installCmd) {
+        toast.error(`${result.error ?? 'OMP launch prerequisites are missing.'} Run: ${result.installCmd}`);
+      } else {
+        toast.error(`Launch failed: ${result.error ?? 'unknown error'}`);
+      }
+    } finally {
+      setLaunching(false);
+    }
+  };
 
   return (
     <nav className="pc-create-plans-sidebar__view-rail" aria-label="Create view">
+      <Tooltip label={resolvedSlug
+            ? `Launch an agent session to draft a new plan in ${resolvedSlug}`
+            : `Launch an agent session to draft a new plan (no active ${t('pot', { lower: true })} — agent will ask)`}><button
+        type="button"
+        className="pc-plans__new-plan pc-create-plans-sidebar__new-plan"
+        onClick={onNewPlan}
+        disabled={launching}
+        aria-label={launching ? 'Launching…' : 'New plan'}
+      >
+        <span className="pc-create-plans-sidebar__view-icon" aria-hidden>
+          <Plus size={14} />
+        </span>
+        <span className="pc-create-plans-sidebar__new-plan-label">{launching ? 'Launching…' : 'New'}</span>
+      </button></Tooltip>
       <Tooltip label="Plans — open a plan from the list to view/edit it full-width."><button
         type="button"
         aria-label="Plans"
@@ -92,35 +133,6 @@ export default function PlansListPanel(_props?: PanelComponentProps) {
   const [itemPlans, setItemPlans] = useItemPlanFilter();
   const searchRef = useRef<HTMLInputElement>(null);
 
-  // ── New-plan launch (mirrors PlansClient.onNewPlan) ──
-  const resolvedSlug = useResolvedHarnessSlug();
-  const [launching, setLaunching] = useState(false);
-  const onNewPlan = async () => {
-    if (launching) return;
-    setLaunching(true);
-    try {
-      const result = await launchAgent({
-        slug: resolvedSlug ?? null,
-        planSlug: null,
-        label: resolvedSlug ? `new-plan · ${resolvedSlug}` : 'new-plan',
-        kickoff: { kind: 'new-plan' },
-        // Open as a pane in the zellij dock (owner ask, pui-dock-agent-stack):
-        // record a pending workbench launch; the dock's pui dock-driver panes it
-        // reactively instead of the server spawning an OS terminal window.
-        deferSpawn: true,
-      });
-      if (result.ok) {
-        toast.success('Plan-drafting agent queued — opening as a pane in the dock.', { duration: 3000 });
-      } else if (result.installCmd) {
-        toast.error(`${result.error ?? 'OMP launch prerequisites are missing.'} Run: ${result.installCmd}`);
-      } else {
-        toast.error(`Launch failed: ${result.error ?? 'unknown error'}`);
-      }
-    } finally {
-      setLaunching(false);
-    }
-  };
-
   const railSearchHits = usePlanSearch(debouncedQ);
   const searchHitSlugs = useMemo<Set<string>>(() => {
     const s = new Set<string>();
@@ -169,23 +181,6 @@ export default function PlansListPanel(_props?: PanelComponentProps) {
 
   return (
     <div className="pc-plans__rail pc-create-plans-sidebar__browser">
-      {/* New-plan stays in the plan browser; only the three view controls move
-          into the compact rail. */}
-      <div className="pc-plans__rail-actions pc-create-plans-sidebar__new-plan-action">
-        <Tooltip label={resolvedSlug
-              ? `Launch an agent session to draft a new plan in ${resolvedSlug}`
-              : `Launch an agent session to draft a new plan (no active ${t('pot', { lower: true })} — agent will ask)`}><button
-          type="button"
-          className="pc-plans__new-plan"
-          onClick={onNewPlan}
-          disabled={launching}
-          aria-label={launching ? 'Launching…' : 'New plan'}
-        >
-          <Plus size={14} aria-hidden />
-          {launching ? 'Launching…' : 'New'}
-        </button></Tooltip>
-      </div>
-
       <div className="pc-plans__group">
         {maps.harnessOptions.length > 1 ? (
           <div className="pc-plans__harness-filter">
