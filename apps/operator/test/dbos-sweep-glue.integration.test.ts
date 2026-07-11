@@ -114,17 +114,22 @@ vi.mock('@papercusp/operator-core/lib/embedded-pg-discovery', async () => {
   return { ...actual, getHarnessAdminUrl: () => ctl.dbUrl };
 });
 // Only STARTED hives get their work placed (placement-started-gate, start-hive-wake
-// P-004): resolveTickHarnesses filters its env candidates by listStartedHives, which
+// P-004): resolveTickHarnesses filters its env candidates by listStartedPots, which
 // reads the `operator_settings` KV on getOrgPg()'s connection — a DIFFERENT DB than
 // this test's fresh ctl.dbUrl. These tests exercise the DISPATCH sweep, not the
 // start-gate (that has its own coverage in orchestrator-tick-harnesses.test.ts), so
 // mark whatever the test env-pins as started (read at call time, so it tracks the
 // test's PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES / PAPERCUSP_WORKSPACE_ID).
-vi.mock('@papercusp/operator-core/lib/hive/started', async () => {
-  const actual = await vi.importActual<typeof import('@papercusp/operator-core/lib/hive/started')>('@papercusp/operator-core/lib/hive/started');
+// NOTE: this module lives at lib/pot/started.ts (listStartedPots) — the
+// pot->hive->pot lexicon churn left this mock pointed at a since-deleted
+// lib/hive/started path exporting a since-renamed listStartedHives, which
+// silently orphaned the mock (nothing imports that path anymore) so the REAL
+// listStartedPots ran unmocked against the empty test DB (EI-9441).
+vi.mock('@papercusp/operator-core/lib/pot/started', async () => {
+  const actual = await vi.importActual<typeof import('@papercusp/operator-core/lib/pot/started')>('@papercusp/operator-core/lib/pot/started');
   return {
     ...actual,
-    listStartedHives: async () => {
+    listStartedPots: async () => {
       const ws = process.env.PAPERCUSP_WORKSPACE_ID ?? 'default';
       return (process.env.PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES ?? '')
         .split(',')
