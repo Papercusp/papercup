@@ -42,6 +42,7 @@ import { runDbosWorkflowGcOnce } from './dbos-workflow-gc';
 import { reconcileStaleEscalationsOnce } from '../attention/reconcile-escalations';
 import { reconcileStalePendingHandoffsOnce, reconcileHandoffRepingsOnce } from '../reconcile-handoffs';
 import { runReplyDeadlineSweepOnce } from '../agent-tools/coordination/reply-deadline-sweep';
+import { runAllHiveBroadcastSweepOnce } from '../agent-tools/coordination/allhive-broadcast-sweep';
 import { runDeliveryLadderSweepOnce, DELIVERY_LADDER_OWNER } from '../agent-tools/coordination/delivery-ladder-sweep';
 import { runStorageGrowthAlarmOnce } from '../storage/storage-growth-alarm';
 import { runReplicationSlotAlarmOnce } from '../storage/replication-slot-alarm';
@@ -492,6 +493,29 @@ const replyDeadlineSweepWorkflow = idempotentRegisterWorkflow('replyDeadlineSwee
   }),
 );
 DBOS.registerScheduled(replyDeadlineSweepWorkflow, { name: 'replyDeadlineSweep', crontab: '0 */5 * * * *' });
+
+// Every 5 minutes (:45s, off the reply-deadline stampede): the H5b non-queen
+// hive-wide broadcast DETECTOR (coord-authority-hardening-2026-07-11 P-010 /
+// WI-4175, the EI-9501 class). The send-path guards down-scope/refuse a
+// fleet-authority '*' blast (tools/send.ts + messages.ts H5a), but every
+// incident is a detector failure too — a path the guards miss must still be
+// SEEN. Finds every persisted kind='message' envelope delivered to the
+// literal '*' audience whose sender is neither hive-queen-stamped nor a
+// platform principal, writes an audit row + a one-line owner notice (which
+// doubles as the per-msg idempotency marker — see allhive-broadcast-sweep.ts).
+// Cheap: the query matches the mig-576 partial index exactly.
+async function allHiveBroadcastSweepTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    if (shouldShedHeavyTick('allhive-broadcast-sweep')) return;
+    await runAllHiveBroadcastSweepOnce();
+  }, { name: 'allhive-broadcast-sweep' });
+}
+const allHiveBroadcastSweepWorkflow = idempotentRegisterWorkflow('allHiveBroadcastSweep', () =>
+  DBOS.registerWorkflow(allHiveBroadcastSweepTick, {
+    name: 'allHiveBroadcastSweep', maxRecoveryAttempts: 5,
+  }),
+);
+DBOS.registerScheduled(allHiveBroadcastSweepWorkflow, { name: 'allHiveBroadcastSweep', crontab: '45 */5 * * * *' });
 
 // Every 2 minutes (:30s, off the reply-deadline stampede): the coord delivery
 // ESCALATION LADDER (coord-delivery-residual-gaps-2026-07-11 P-004, WI-4160) —
