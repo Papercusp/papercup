@@ -23,9 +23,11 @@ vi.mock('../../events/await/store', () => ({
   registerAwait: vi.fn(async (i: Record<string, unknown>) => ({ id: 99, eventKey: i.eventKey, expiresTs: '2030-01-01', timeoutBehavior: i.timeoutBehavior })),
 }));
 vi.mock('../../events/await/engine', () => ({ startAwaitSweeper: vi.fn() }));
+vi.mock('../coordination/messages', () => ({ getMessageById: vi.fn() }));
 
 import awaitTool from './await';
 import { registerAwait } from '../../events/await/store';
+import { getMessageById } from '../coordination/messages';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { startAwaitSweeper } from '../../events/await/engine';
 import { AWAIT_DEFAULT_TIMEOUT_SEC } from '../../events/await/types';
@@ -119,5 +121,56 @@ describe('events:await wrapper defaults', () => {
     vi.clearAllMocks();
     await call({ event: 'alert:raised' });
     expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({ payloadFilter: null });
+  });
+
+  // ── coord-authority-hardening P-006: fromMsg — resolve the gate key OFF the
+  //    declaring message so the awaiter never re-types it ─────────────────────
+  describe('fromMsg (P-006)', () => {
+    it('resolves the single gateRef off the message and registers on that EXACT key', async () => {
+      vi.mocked(getMessageById).mockResolvedValue({
+        msg_id: 'm-1',
+        gateRefs: [{ key: 'fleet:p2p-git:phase1-green', status: 'declared' }],
+      } as never);
+      const out = await call({ fromMsg: 'm-1' });
+      expect(out.ok).toBe(true);
+      expect(out.resolved_from_msg).toBe('m-1');
+      expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({
+        eventKey: 'fleet:p2p-git:phase1-green',
+      });
+    });
+
+    it('msg_not_found is a loud error — nothing registered', async () => {
+      vi.mocked(getMessageById).mockResolvedValue(null as never);
+      const out = await call({ fromMsg: 'm-nope' });
+      expect(out).toMatchObject({ ok: false, error: 'msg_not_found' });
+      expect(registerAwait).not.toHaveBeenCalled();
+    });
+
+    it('a message with no gateRefs stamp is a loud no_gate_refs_on_msg', async () => {
+      vi.mocked(getMessageById).mockResolvedValue({ msg_id: 'm-2', summary: 'prose only' } as never);
+      const out = await call({ fromMsg: 'm-2' });
+      expect(out).toMatchObject({ ok: false, error: 'no_gate_refs_on_msg' });
+      expect(registerAwait).not.toHaveBeenCalled();
+    });
+
+    it('multiple gateRefs is ambiguous — the keys are listed for an explicit `event` await', async () => {
+      vi.mocked(getMessageById).mockResolvedValue({
+        msg_id: 'm-3',
+        gateRefs: [
+          { key: 'g-one', status: 'declared' },
+          { key: 'g-two', status: 'declared' },
+        ],
+      } as never);
+      const out = await call({ fromMsg: 'm-3' });
+      expect(out).toMatchObject({ ok: false, error: 'ambiguous_gate_refs', gate_refs: ['g-one', 'g-two'] });
+      expect(registerAwait).not.toHaveBeenCalled();
+    });
+
+    it('schema: event/spec/fromMsg are mutually exclusive (exactly one)', () => {
+      const schema = (awaitTool as unknown as { args: { safeParse: (v: unknown) => { success: boolean } } }).args;
+      expect(schema.safeParse({ event: 'k', fromMsg: 'm-1' }).success).toBe(false);
+      expect(schema.safeParse({}).success).toBe(false);
+      expect(schema.safeParse({ fromMsg: 'm-1' }).success).toBe(true);
+    });
   });
 });

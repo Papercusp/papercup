@@ -51,6 +51,12 @@ import { join } from 'node:path';
 /** Default on-disk ledger dir. Every fs helper takes an explicit `dir` for tests. */
 export const TURN_PROVENANCE_DIR = join(homedir(), '.papercusp', 'turn-provenance');
 
+/** Resolve the ledger dir: env override (also honored by the bash hook side —
+ *  keeps hook tests + hermetic unit runs off the real home dir) else default. */
+export function turnProvenanceDir(env: NodeJS.ProcessEnv = process.env): string {
+  return env.PAPERCUSP_TURN_PROVENANCE_DIR || TURN_PROVENANCE_DIR;
+}
+
 /** Rows older than this are dead: dropped on read, compacted on write.
  *  Short by design — the ledger answers "was THIS prompt just injected?",
  *  not history (the transcript is history). */
@@ -147,7 +153,7 @@ export function sanitizeSid(sid: string): string {
     .slice(0, 200);
 }
 
-export function ledgerPathForSid(sid: string, dir: string = TURN_PROVENANCE_DIR): string {
+export function ledgerPathForSid(sid: string, dir: string = turnProvenanceDir()): string {
   return join(dir, `${sanitizeSid(sid)}.jsonl`);
 }
 
@@ -179,7 +185,7 @@ export function appendLedgerRow(
   row: LedgerRow,
   opts: { dir?: string; nowMs?: number; ttlMs?: number } = {},
 ): boolean {
-  const dir = opts.dir ?? TURN_PROVENANCE_DIR;
+  const dir = opts.dir ?? turnProvenanceDir();
   const nowMs = opts.nowMs ?? Date.now();
   const ttlMs = opts.ttlMs ?? ledgerTtlMs();
   try {
@@ -206,7 +212,7 @@ export function readLedgerRows(
   sid: string,
   opts: { dir?: string; nowMs?: number; ttlMs?: number; includeExpired?: boolean } = {},
 ): LedgerRow[] {
-  const dir = opts.dir ?? TURN_PROVENANCE_DIR;
+  const dir = opts.dir ?? turnProvenanceDir();
   const nowMs = opts.nowMs ?? Date.now();
   const ttlMs = opts.ttlMs ?? ledgerTtlMs();
   try {
@@ -224,7 +230,7 @@ export function readLedgerRows(
 export function gcLedgerDir(
   opts: { dir?: string; nowMs?: number; ttlMs?: number } = {},
 ): { filesRemoved: number; rowsDropped: number } {
-  const dir = opts.dir ?? TURN_PROVENANCE_DIR;
+  const dir = opts.dir ?? turnProvenanceDir();
   const nowMs = opts.nowMs ?? Date.now();
   const ttlMs = opts.ttlMs ?? ledgerTtlMs();
   let filesRemoved = 0;

@@ -68,6 +68,7 @@ import {
   type ColdWakeDecision,
 } from '../../su-cold-loop';
 import { getLoopCarryNote } from '../../carry-note';
+import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import type { ResumeTurnExitRaw } from './resume-turn-outcome';
 import type { DeliveryWork, WakeOutcome } from './types';
 
@@ -271,6 +272,26 @@ export function wakeTurnText(d: DeliveryWork): string {
     `[await-event] ${d.eventKey} fired${timeout}${summary}.${note}${payload} ` +
     `(event-wake delivery #${d.id} — a delivery-log id, not your wake count; you registered this with events:await — continue the work that was waiting on it.)`
   ).replace(/\s*\n\s*/g, ' ');
+}
+
+/**
+ * turn-provenance P-002 (turn-provenance-owner-vs-agent-2026-07-11): envelope +
+ * ledger-tag a wake turn BEFORE it is typed into a PTY / submitted as a resume
+ * prompt, so the recipient's UserPromptSubmit hook classifies it as verified
+ * agent-origin instead of owner input. Applied ONLY to PTY/prompt deliveries —
+ * never to inbox bodies (coord messages carry native `from` provenance).
+ * Origin: a loop fire's wake (cold-loop marker on the payload) tags `loop-fire`;
+ * every other await delivery tags `wake-pump`. Fail-soft by construction: a
+ * failed ledger write still returns deliverable tagged text (the turn then
+ * shows as UNVERIFIED at the hook — visible, never a dropped wake).
+ */
+function tagWakeText(d: DeliveryWork, text: string, tag: typeof tagTurnForInjection): string {
+  try {
+    const origin = readColdLoopMarker(d.payload) ? 'loop-fire' : 'wake-pump';
+    return tag({ sid: d.subscriberId, origin, text }).taggedText;
+  } catch {
+    return text; // provenance must never break a wake
+  }
 }
 
 function pidAlive(pid: number | null): boolean {
@@ -654,6 +675,11 @@ export interface ExecuteWakeDeps {
    *  used to degrade a would-be DROP into a durable inbox notification.
    *  Injected for tests; defaults to the real sendMessage. */
   sendCoordMessage?: typeof sendMessage;
+  /** turn-provenance P-002: the envelope+ledger tagger applied to every PTY/prompt
+   *  wake delivery (never inbox bodies). Injected for tests (a hermetic test stubs
+   *  it to avoid real ~/.papercusp/turn-provenance writes, or to a passthrough to
+   *  assert un-tagged text); defaults to the real tagTurnForInjection. */
+  tagTurn?: typeof tagTurnForInjection;
   resumePlanRun?: (input: { runId: number; wakeText: string }) => Promise<{ ok: true } | { ok: false; error: string }>;
   /** turn-lifecycle-control Phase 3 (P-014): discover + inject into a live
    *  psu-hosted managed-pty session's control socket. The operator can't see it

@@ -33,6 +33,11 @@ vi.mock('../recipient-resolve', () => ({
 }));
 vi.mock('../../turn/interrupt', () => ({ forceEndTurn: vi.fn(async () => ({ ok: true })) }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }));
+// P-006: keep the announced-gates store OUT of this unit graph (the real store
+// pulls the coord log + flags listener, which this file mocks partially).
+// gateRef stamping semantics are covered by ref-hydrate.test.ts — here every
+// key just probes as undeclared.
+vi.mock('../../../events/await/store', () => ({ findAnnouncementsForKey: vi.fn(async () => []) }));
 // P-001 (cross-machine-coord-parity): the workspace shared-Hive scope resolver.
 // Default 'none' = today's local-only behavior for un-scoped senders.
 vi.mock('../federation-scope', () => ({

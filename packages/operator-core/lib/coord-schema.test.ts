@@ -406,6 +406,20 @@ describe('renderInjection — P-005 reply-quote hydration (related_msg_id, coord
     expect(renderInjection([bad], { relatedQuotes: quotes as never })).toContain('- ab533 weird envelope');
   });
 
+  it('P-006: a gateRefs-stamped line renders each EXACT key canonically, appended after the clip', () => {
+    const entry = {
+      ...e({ summary: `phase 1 is ready — ${'x'.repeat(300)}` }), // clipped body…
+      gateRefs: [{ key: 'fleet:p2p-git:phase1-green', status: 'declared' }],
+    } as unknown as CoordLineSource;
+    const out = renderInjection([entry]);
+    expect(out).toContain('⛩ gate fleet:p2p-git:phase1-green [declared]'); // …but the key is NEVER clipped
+  });
+
+  it('P-006: malformed gateRefs render nothing (defensive, never throws)', () => {
+    const entry = { ...e({ summary: 'plain' }), gateRefs: { key: 'not-an-array' } } as unknown as CoordLineSource;
+    expect(renderInjection([entry])).not.toContain('⛩');
+  });
+
   it('reply-quote composes with the H2 relay suffix on the same line (relay first, reply after)', () => {
     const entry = {
       ...e({ summary: 'relaying + replying', related_msg_id: 'm-orig' }),
