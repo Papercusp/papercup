@@ -123,4 +123,14 @@ describe('desktop ACL command sync (WI-2143 guard)', () => {
     expect(build.has('workspaces_list')).toBe(true);
     expect(grants.has('allow-workspaces-list')).toBe(true);
   });
+
+  maybe('clean-checkout guard validates the db-sql resource independently of serve.mjs', () => {
+    const buildRs = readFileSync(BUILD_RS, 'utf8');
+    const helper = buildRs.match(/fn ensure_sidecar_placeholder[\s\S]*?\n\}/)?.[0] ?? '';
+    expect(helper).toContain('has_db_sql_entry');
+    expect(helper).toMatch(/if has_serve && has_db_sql_entry\s*\{\s*return;/);
+    // Regression shape from the release gate: a partial sidecar retained
+    // serve.mjs but omitted db-sql, and this shortcut skipped its placeholder.
+    expect(helper).not.toMatch(/if sidecar\.join\("serve\.mjs"\)\.exists\(\)\s*\{\s*return;/);
+  });
 });

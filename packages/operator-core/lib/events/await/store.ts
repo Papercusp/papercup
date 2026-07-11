@@ -93,6 +93,14 @@ function mapAwait(r: any): AwaitRow {
     payloadFilter: parseJsonb(r.payload_filter),
     scopeKind: r.scope_kind ?? null,
     scopeRef: r.scope_ref ?? null,
+    // composable-event-awaits-2026-07-11 (migration 572). A `SELECT *` on a DB predating the
+    // migration returns these as undefined ⇒ null — so mapAwait is safe against the older
+    // hand-rolled test DDLs, and the composed fire path (engine.ts) is inert until a row
+    // actually carries a node_id.
+    nodeId: r.node_id != null ? Number(r.node_id) : null,
+    rootId: r.root_id != null ? Number(r.root_id) : null,
+    memberFiredAt: r.member_fired_at ? new Date(r.member_fired_at).toISOString() : null,
+    memberPayload: parseJsonb(r.member_payload),
   };
 }
 

@@ -99,6 +99,17 @@ export interface AwaitRow {
   scopeKind: string | null;
   /** The fleet/plan/harness slug for scopeKind; null for 'global' / ordinary rows. */
   scopeRef: string | null;
+  /** composable-event-awaits-2026-07-11 (migration 572): a composed-await LEAF carries the
+   *  parent threshold NODE it propagates its claim to (event_await_nodes.id) instead of waking.
+   *  null on an ordinary await AND on a tree's root-anchor row (which has root_id but no node_id). */
+  nodeId: number | null;
+  /** The tree this row belongs to (root node id); null on an ordinary await. Set on BOTH the
+   *  leaves and the root-anchor row, so a single root_id-scoped statement voids the whole tree. */
+  rootId: number | null;
+  /** When this leaf claimed as a tree member (it propagated instead of waking); null until then. */
+  memberFiredAt: string | null;
+  /** The emit payload captured at leaf fire → folded into the root wake's { fired: leaf→payload }. */
+  memberPayload: unknown | null;
 }
 
 export type DeliveryStatus = 'pending' | 'parked' | 'delivering' | 'delivered' | 'dropped' | 'dead';
