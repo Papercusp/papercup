@@ -1079,11 +1079,17 @@ function RosterStyles() {
          row is selected"): tinted background + a left accent bar. Placed AFTER
          :hover/.is-pinned so a selected row stays visibly selected on hover. */
       .pc-agents-roster__row.is-selected {
-        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 82%);
-        box-shadow: inset 3px 0 0 var(--accent, #38bdf8);
+        /* Owner-hit 2026-07-11 (round 2): the 18%-oklab tint read as "no
+           selection indication" in the Tauri/WebKitGTK webview (too subtle on
+           the near-black --bg-1). Stronger + srgb (broadest color-mix support)
+           so the selected row is unmistakable, matching the clearly-highlighted
+           browser render the owner approved. The 4px inset bar is the robust
+           primary cue (no color-mix dependency); the tint is the secondary. */
+        background: color-mix(in srgb, var(--accent, #38bdf8) 30%, transparent);
+        box-shadow: inset 4px 0 0 var(--accent, #38bdf8);
       }
       .pc-agents-roster__row.is-selected:hover {
-        background: color-mix(in oklab, var(--accent, #38bdf8), transparent 74%);
+        background: color-mix(in srgb, var(--accent, #38bdf8) 40%, transparent);
       }
       .pc-agents-roster__check { margin: 0 4px 0 2px; cursor: pointer; accent-color: var(--accent, #38bdf8); flex: 0 0 auto; }
       .pc-agents-roster__bulkbar {
