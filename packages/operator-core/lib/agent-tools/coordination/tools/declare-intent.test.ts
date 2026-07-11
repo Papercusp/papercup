@@ -54,6 +54,14 @@ vi.mock('../../../plan-items/agent-names', () => ({
   bestEffortOwnerUser: () => 'tester',
 }));
 
+// convertPlanItem is a downstream side-effect of a claimed lane (auto-convert
+// path, PLAN_ITEM_CLAIM_AUTO_CONVERT). These tests assert claim RECONCILIATION,
+// not the convert loop — stub it so an ON flag doesn't drive a real PG write
+// (which warns on ECONNREFUSED and trips vitest-fail-on-console) in a unit test.
+vi.mock('../../../plan-items/convert', () => ({
+  convertPlanItem: vi.fn(async () => ({})),
+}));
+
 // ── EI-9484 enrichment seams (bounded in the handler) ──
 // Kept as fast no-op resolvers so a test can WEDGE one (never-resolve) and
 // assert the bounded deadline degrades it instead of hanging the whole call.
@@ -339,6 +347,9 @@ describe('coord:declare-intent — EI-9484: bounded enrichment legs never hang t
   });
 
   it('a WEDGED @user: mailbox drain degrades to a no-op — the declaration still lands', async () => {
+    // withBoundedTimeout logs one console.warn when it degrades; assert it (the
+    // vitest-fail-on-console contract) rather than let the expected warn fail us.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();
     try {
       // The serial appendLine drain never resolves (the fleet-load stall).
@@ -350,12 +361,15 @@ describe('coord:declare-intent — EI-9484: bounded enrichment legs never hang t
       const res = parse(await p);
       expect(res.ok).toBe(true);
       expect(writePresence).toHaveBeenCalledTimes(1); // essential write ran regardless
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('declare-intent:mailbox-drain'));
     } finally {
       vi.useRealTimers();
+      warnSpy.mockRestore();
     }
   });
 
   it('a WEDGED getPresence read degrades the echoed-back presence to null — no hang', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();
     try {
       getPresence.mockImplementationOnce(() => new Promise(() => {})); // return-payload read wedged
@@ -365,12 +379,15 @@ describe('coord:declare-intent — EI-9484: bounded enrichment legs never hang t
       expect(res.ok).toBe(true);
       expect(writePresence).toHaveBeenCalledTimes(1);
       expect(res.presence).toBeNull(); // bounded fallback (record → null), never a hang
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('declare-intent:getPresence'));
     } finally {
       vi.useRealTimers();
+      warnSpy.mockRestore();
     }
   });
 
   it('a WEDGED fetchPresenceFleet lookup degrades the fleet label but still returns presence', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();
     try {
       fetchPresenceFleet.mockImplementationOnce(() => new Promise(() => {}));
@@ -380,8 +397,10 @@ describe('coord:declare-intent — EI-9484: bounded enrichment legs never hang t
       expect(res.ok).toBe(true);
       // getPresence still answered (fast) — presence is present, fleet label null.
       expect(res.presence).toMatchObject({ ownerId: 'su-test', fleetSlug: null, fleetRole: null });
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('declare-intent:fetchPresenceFleet'));
     } finally {
       vi.useRealTimers();
+      warnSpy.mockRestore();
     }
   });
 });
