@@ -31,6 +31,50 @@
  */
 import { contextUsagePct } from './inbox-context-usage';
 
+/** The envelope fields the interrupt classifier reads — structural, so the gate
+ *  keeps no import edge to the coordination core types (CoordEnvelope satisfies it). */
+export interface InterruptEnvelopeLike {
+  category?: unknown;
+  auto?: unknown;
+  lifecycle?: unknown;
+}
+
+/**
+ * WI-4179 (owner-reported 2026-07-11): is this unread envelope a REAL pending
+ * interrupt — something a human or peer deliberately wrote — or system
+ * machinery chatter? The gate's unread leg used to count the raw
+ * readInbox/filterInbox output (which drops only own + notify-kind rows), so
+ * categorized system broadcasts, `auto` lifecycle chatter (claim
+ * announcements, digests) and peers' intent-declares all read as "pending
+ * owner input": a watchdog burst of 16 IDENTICAL `severe-event-resolved` rows
+ * in ~300ms closed the gate while coord:inbox/orient showed nothing pending.
+ * The rule matches the gate's documented semantics ("a pending owner redirect
+ * / peer interrupt outranks continuing") and coord:inbox's own view layers:
+ *   - `category` present ⇒ a CATEGORIZED system broadcast (service-health,
+ *     severe-event[-resolved], doc-drift, …) — status machinery, never an
+ *     owner/peer input (and the repeat-prone class: watchdogs re-emit for
+ *     hours, so counting them wedges the gate CLOSED);
+ *   - `auto: true` ⇒ auto-generated lifecycle chatter (claim/plan-pickup
+ *     broadcasts, digests) — nobody wrote it to you;
+ *   - `lifecycle: 'intent'` ⇒ a peer's presence declare, excluded from the
+ *     default inbox view for the same reason (P-005 fleet-member-dx).
+ * Everything else (a directed peer/owner message, an owner-directive relay, an
+ * ack, a claim-discipline nag) still counts. Pure.
+ */
+export function isPendingInterrupt(e: InterruptEnvelopeLike): boolean {
+  if (typeof e.category === 'string' && e.category) return false;
+  if (e.auto === true) return false;
+  if (e.lifecycle === 'intent') return false;
+  return true;
+}
+
+/** Count the unread envelopes that are real pending interrupts ({@link isPendingInterrupt}). */
+export function countPendingInterrupts(entries: readonly InterruptEnvelopeLike[]): number {
+  let n = 0;
+  for (const e of entries) if (isPendingInterrupt(e)) n += 1;
+  return n;
+}
+
 /**
  * Context-usage ceiling (percent of the soft limit) for continuing in-turn. Below
  * it, a settled session with a scoped next unit MAY run it in the same turn; at/above

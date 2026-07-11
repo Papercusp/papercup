@@ -204,13 +204,14 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     keyTemplate: 'work-item:claimable',
     // composable-event-awaits-2026-07-11 P-007: the CANONICAL "work may exist for
     // you" key — dual-emitted alongside work-item:created (unclaimed create),
-    // claim:released:<id>, and work-item:unblocked:<id>, so an idle self-puller
-    // awaits ONE leaf instead of composing all three. Only fires for an item that
+    // claim:released:<id>, work-item:unblocked:<id>, and the bare set_state
+    // requeue edge (WI-4180, the audit's gap-(A) close), so an idle self-puller
+    // awaits ONE leaf instead of composing them. Only fires for an item that
     // is actually pool-claimable (no assignee, claimable state). The wake is a
     // HINT: scheduler:get_next / work_items:claim_next stays the authoritative claim.
     params: [],
     describe:
-      'A work item became CLAIMABLE (created unclaimed, claim released, or last blocker cleared). payload carries {id, kind, severity, harness, title, state, reason} for `when` filtering.',
+      'A work item became CLAIMABLE (created unclaimed, claim released, last blocker cleared, or requeued by a bare set_state into a claimable state). payload carries {id, kind, severity, harness, title, state, reason} for payload_filter narrowing.',
     emitter: 'work-items-events (packages/operator-core/lib/work-items-events.ts) — emitWorkItemClaimableEvent',
     exists: true,
     replacesPoll: 'the idle ~60s scheduler:get_next re-poll (and the 3-leaf composed any-spec it replaced)',

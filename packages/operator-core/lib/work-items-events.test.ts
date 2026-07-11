@@ -498,6 +498,35 @@ describe('emitWorkItemStatusEvent (P-101 — the general per-transition key)', (
     expect(emit.mock.calls[0][0].to).toBeUndefined();
   });
 
+  it('CO-FIRES work-item:claimable when a bare set_state ENTERS a claimable state (reason: requeued — WI-4180, the P-007 gap-(A) close)', async () => {
+    const emit = typedEmit();
+    const { emitWorkItemStatusEvent } = await import('./work-items-events');
+    emitWorkItemStatusEvent(wi({ id: 'WI-11', state: 'todo', assignee: null }), 'blocked', { emit });
+    await new Promise((r) => setTimeout(r, 0));
+    const keys = emit.mock.calls.map((c) => c[0].key).sort();
+    expect(keys).toEqual(['work-item:claimable', 'work-item:status:WI-11']);
+    const claimable = emit.mock.calls
+      .map((c) => (c as unknown as [{ key: string; payload: { id?: string; state?: string; reason?: string } }])[0])
+      .find((a) => a.key === 'work-item:claimable');
+    expect(claimable?.payload).toMatchObject({ id: 'WI-11', state: 'todo', reason: 'requeued' });
+  });
+
+  it('the ENTERING-EDGE guard: claimable→claimable moves and assigned/non-claimable landings do NOT re-announce', async () => {
+    const { emitWorkItemStatusEvent } = await import('./work-items-events');
+    const cases: Array<[string, Parameters<typeof wi>[0], string]> = [
+      ['todo→open (already advertised)', { id: 'WI-12', state: 'open', assignee: null }, 'todo'],
+      ['blocked→todo while ASSIGNED', { id: 'WI-13', state: 'todo', assignee: 'su-holder' }, 'blocked'],
+      ['wip→blocked (non-claimable landing)', { id: 'WI-14', state: 'blocked', assignee: null }, 'wip'],
+    ];
+    for (const [label, over, prev] of cases) {
+      const emit = typedEmit();
+      emitWorkItemStatusEvent(wi(over), prev, { emit });
+      await new Promise((r) => setTimeout(r, 0));
+      const keys = emit.mock.calls.map((c) => c[0].key);
+      expect(keys, label).toEqual([`work-item:status:${over.id}`]);
+    }
+  });
+
   it('never rejects on an emit failure (warns; a state write must never break)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { emitWorkItemStatusEvent } = await import('./work-items-events');

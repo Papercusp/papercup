@@ -132,25 +132,28 @@ const CLAIMABLE_STATES: ReadonlySet<string> = new Set(CLAIM_STATES_ALLOWLIST);
 
 /**
  * `work-item:claimable` — the CANONICAL "work may exist for you" key
- * (composable-event-awaits-2026-07-11 P-007). Dual-emitted alongside the three
+ * (composable-event-awaits-2026-07-11 P-007). Dual-emitted alongside the
  * "returns to the pool" families (`work-item:created` on an unclaimed create,
- * `claim:released:<id>`, `work-item:unblocked:<id>`) so an idle self-puller
- * parks on ONE leaf — `events:await { event: 'work-item:claimable', when:
- * { harness: … } }` — instead of the 3-leaf composed any-spec. Sugar only:
- * the three underlying families keep firing unchanged, so existing specs
+ * `claim:released:<id>`, `work-item:unblocked:<id>`, and the bare set_state
+ * requeue edge — see below) so an idle self-puller parks on ONE leaf —
+ * `events:await { event: 'work-item:claimable', payload_filter:
+ * { harness: { eq: … } } }` — instead of the 3-leaf composed any-spec. Sugar
+ * only: the underlying families keep firing unchanged, so existing specs
  * keep working.
  *
  * The claimability guard lives HERE, single-sourced for every call site: an
  * item with an assignee, or in a non-claimable state (blocked / terminal /
  * wip), never fires — the key must never advertise work a get_next pull
  * would then refuse. `payload.reason` carries which transition made it
- * claimable. NOT covered (same gap as the 3-leaf spec, no regression): a bare
- * status flip into a claimable state (e.g. blocked→todo via set_state) — that
- * still only fires `work-item:status:<id>`. Fire-and-forget; never throws.
+ * claimable. The FOURTH return-to-pool moment — a bare status flip INTO a
+ * claimable state (e.g. blocked→todo via set_state) — co-fires from
+ * emitWorkItemStatusEvent with reason 'requeued' (WI-4180, the P-007 audit's
+ * gap (A)), so it no longer strands a parked waiter to the ~30-min timeout
+ * backstop. Fire-and-forget; never throws.
  */
 export function emitWorkItemClaimableEvent(
   wi: WorkItem,
-  reason: 'created' | 'released' | 'unblocked',
+  reason: 'created' | 'released' | 'unblocked' | 'requeued',
   deps: Pick<SettledEventsDeps, 'emit'> = {},
 ): void {
   if (wi.assignee || !CLAIMABLE_STATES.has(wi.state)) return;
@@ -260,6 +263,16 @@ export function emitWorkItemStatusEvent(
       }),
     )
     .catch((e: unknown) => failSoft(`status-event for ${wi.id}`, e));
+  // WI-4180 (the P-007 audit's gap (A), owner-requested close): a bare state
+  // flip INTO a claimable state (blocked→todo, a done→open reopen) is the
+  // fourth return-to-pool moment — it used to fire only this general key,
+  // stranding a parked `work-item:claimable` waiter to its ~30-min timeout
+  // backstop. Co-fired HERE, inside the sibling emitter (ONE import edge —
+  // the vitest-4 same-literal-double-import paradox, EI-9658), behind an
+  // ENTERING-EDGE guard: a move BETWEEN claimable states (todo→open) must not
+  // re-announce an already-advertised row; the claimable emitter's own guard
+  // still drops assigned rows and non-claimable landing states.
+  if (!CLAIMABLE_STATES.has(prevState)) emitWorkItemClaimableEvent(wi, 'requeued', deps);
 }
 
 export function isSettledWorkItem(wi: Pick<WorkItem, 'family' | 'state'>): boolean {

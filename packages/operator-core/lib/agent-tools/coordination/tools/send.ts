@@ -269,6 +269,10 @@ async function sendOne(
     // null — omitting it would re-trigger sendMessage's AUTO default and defeat
     // scope:'local'.
     harnessSlug,
+    // H5a (P-002): tell the seam invariant the stamp is ALREADY resolved (null =
+    // "resolved, none") so sendMessage doesn't re-pay the presence/fleet reads
+    // this tool just did for its own down-scope/stamp pass.
+    cueAuthorityResolved: cueAuthority ?? null,
     ...(Object.keys(extra).length ? { extra } : {}),
   });
 

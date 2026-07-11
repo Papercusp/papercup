@@ -37,7 +37,7 @@ import { getLoopStatus } from '../../harness/routines/loop';
 import { getPresence } from '../coordination/presence';
 import { readInbox } from '../coordination/messages';
 import { readWatermark } from '../coordination/watermarks';
-import { continuationGateFromReads } from '../coordination/tools/continuation-gate';
+import { continuationGateFromReads, countPendingInterrupts } from '../coordination/tools/continuation-gate';
 import { COORD_READ_TOOL_NAMES } from '../coordination/inbox-read-freshness';
 import { provenanceLintField } from '../../carry-surface-provenance-lint';
 import { withBoundedTimeout } from '../../bounded-timeout';
@@ -280,8 +280,12 @@ export default defineTool({
         try {
           const wm = await readWatermark(ownerId);
         // messages_since_ts advances at turn-END, so this counts messages addressed to you
-        // that arrived since your last settle (excludeOwn + non-notify by filterInbox default
-        // = real interrupts, not ambient).
+        // that arrived since your last settle. filterInbox (inside readInbox) drops own +
+        // notify-kind rows; countPendingInterrupts then drops system machinery — categorized
+        // broadcasts, `auto` lifecycle chatter, intent declares — because WI-4179 showed the
+        // raw count reads a watchdog burst (16 identical severe-event-resolved rows in one
+        // 300ms window) as "16 unread ⇒ pending owner input" and closes the gate while
+        // coord:inbox/orient show nothing pending.
         // P-007 (fleet-member-dx, EI-9035): ALSO credit the owner's last coord:inbox/
         // coord:orient READ — use the LATER of the two cursors. A never-settled session
         // ('' watermark) that just read its inbox no longer gets a false, permanent
@@ -292,7 +296,7 @@ export default defineTool({
           const sinceTs = pickUnreadCursor(wm?.messages_since_ts, readTs);
           if (sinceTs) {
             const unread = await readInbox(ownerId, { since_ts: sinceTs, excludeOwn: true });
-            unreadInbox = unread.length;
+            unreadInbox = countPendingInterrupts(unread);
           }
         } catch {
           unreadInbox = null;

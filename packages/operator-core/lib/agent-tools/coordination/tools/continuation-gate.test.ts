@@ -3,6 +3,8 @@ import {
   CONTINUATION_CEILING_PCT,
   evaluateContinuationGate,
   continuationGateFromReads,
+  countPendingInterrupts,
+  isPendingInterrupt,
 } from './continuation-gate';
 import { COMPACTION_HINT_PCT } from './inbox-context-usage';
 import { FLUSH_GATE_PCT } from './inbox-flush-gate';
@@ -66,6 +68,33 @@ describe('evaluateContinuationGate (P-005 continuation gate)', () => {
     // compaction-urgent zone (85%) — the layering the spec fixes.
     expect(CONTINUATION_CEILING_PCT).toBeLessThan(FLUSH_GATE_PCT);
     expect(FLUSH_GATE_PCT).toBeLessThan(COMPACTION_HINT_PCT);
+  });
+});
+
+describe('isPendingInterrupt / countPendingInterrupts (WI-4179 — machinery is not an interrupt)', () => {
+  it('drops CATEGORIZED system broadcasts (the watchdog severe-event[-resolved] firehose)', () => {
+    expect(isPendingInterrupt({ category: 'severe-event-resolved' })).toBe(false);
+    expect(isPendingInterrupt({ category: 'severe-event' })).toBe(false);
+    expect(isPendingInterrupt({ category: 'service-health' })).toBe(false);
+  });
+
+  it('drops auto lifecycle chatter and peers’ intent declares', () => {
+    expect(isPendingInterrupt({ auto: true, lifecycle: 'claim' })).toBe(false);
+    expect(isPendingInterrupt({ lifecycle: 'intent' })).toBe(false);
+  });
+
+  it('KEEPS deliberate messages: directed peer mail, owner-directive relays, uncategorized system nags', () => {
+    expect(isPendingInterrupt({})).toBe(true); // a plain peer message
+    expect(isPendingInterrupt({ lifecycle: 'claim' })).toBe(true); // deliberate (not auto) lifecycle mail
+    expect(isPendingInterrupt({ category: '' })).toBe(true); // an empty category is no classification
+  });
+
+  it('the live WI-4179 shape: 16 identical watchdog resolution rows + 1 real peer message ⇒ 1, not 17', () => {
+    const watchdogRow = { category: 'severe-event-resolved' };
+    const unread = [...Array.from({ length: 16 }, () => watchdogRow), { lifecycle: undefined }];
+    expect(countPendingInterrupts(unread)).toBe(1);
+    // …and the gate verdict follows the corrected count, not the raw length.
+    expect(evaluateContinuationGate({ contextPct: 20, unreadInbox: countPendingInterrupts(unread.slice(0, 16)) }).shouldContinue).toBe(true);
   });
 });
 
