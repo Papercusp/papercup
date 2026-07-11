@@ -18,6 +18,16 @@ import { defineTool } from "@papercusp/agent-mcp";
 import type { CoordEnvelope } from "@papercusp/coordination/core";
 import { COORD_ROLES } from "../roles";
 import { coordLog, coordSql, coordWorkspaceId, coordHasPgFastPath } from "../log";
+import { MESSAGE_GC_RETENTION_DAYS } from "../message-log-gc";
+
+/** EI-9447 (WI-3937/WI-3869 furnace class): hard backstop on rows scanned by
+ *  `readConditionEnvelopes`'s PG fast path, applied even within the retention
+ *  window — the one bound that holds regardless of any burst of condition
+ *  traffic. Condition rows are a rare sliver of the `messages` surface (live
+ *  observed ~774 rows/call), so this comfortably clears any legitimate read
+ *  while still capping a genuinely pathological burst. Mirrors
+ *  INBOX_FAST_PATH_ROW_CAP (messages.ts). */
+export const CONDITIONS_FAST_PATH_ROW_CAP = 25_000;
 
 /** One condition's folded state. */
 export interface ConditionState {
@@ -136,16 +146,35 @@ export async function readConditionEnvelopes(): Promise<Record<string, unknown>[
   // PG pushdown: condition rows are a tiny sliver of the messages surface —
   // filter server-side on the jsonb keys (mirrors readInbox's fast path,
   // including the fall-through to the seam on any error / non-PG backend).
+  //
+  // EI-9447 (WI-3937/WI-3869 furnace class): this was an UNBOUNDED scan of the
+  // WHOLE `messages` surface — no ts/id lower bound, no LIMIT — averaging
+  // 7.1s/call across 3,351 calls (the `body ? ...` jsonb-existence filter has
+  // no supporting index, so every call walked the full surface, 774
+  // rows/call). Two independent bounds, mirroring readInbox (WI-3825):
+  //   (a) a `ts >=` lower bound at the message-log GC retention window
+  //       (MESSAGE_GC_RETENTION_DAYS) — nothing older survives GC anyway, so
+  //       this drops zero live state while giving the query a selective range
+  //       to seek on;
+  //   (b) a hard LIMIT backstop (CONDITIONS_FAST_PATH_ROW_CAP) regardless of
+  //       the ts bound, so a pathological burst can never re-open the
+  //       unbounded-scan hole.
+  // Both are safe: a condition whose LATEST alarm/resolution both fall
+  // outside the retention window is, by definition, not "wrong right now" —
+  // GC would have already reaped it.
   if (coordHasPgFastPath()) {
     try {
       const sql = coordSql();
+      const sinceBound = new Date(Date.now() - MESSAGE_GC_RETENTION_DAYS * 86_400_000).toISOString();
       const rows = await sql<{ body: unknown }[]>`
         SELECT body
           FROM harness_shared.coord_event_log
          WHERE workspace_id = ${coordWorkspaceId()}
            AND surface = 'messages'
+           AND ts >= ${sinceBound}
            AND (body ? 'condition_key' OR body ? 'resolves_condition')
          ORDER BY id ASC
+         LIMIT ${CONDITIONS_FAST_PATH_ROW_CAP}
       `;
       return rows.map(
         (r) =>

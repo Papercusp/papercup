@@ -254,28 +254,41 @@ export default function AgentInspectorModal({
         </span>
         <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {resumeTarget ? (
-            <Tooltip label={resumeState === 'err' && resumeErr ? resumeErr : undefined}>
-              <button
-                type="button"
-                data-testid="resume-terminal-btn"
-                onClick={resumeInNewTerminal}
-                disabled={resumeState === 'busy'}
-                style={{
-                  display: 'inline-flex', alignItems: 'center', gap: 4,
-                  font: 'inherit', fontSize: 11, cursor: resumeState === 'busy' ? 'default' : 'pointer',
-                  color: resumeState === 'err' ? TONE.bad : 'var(--fg)',
-                  background: 'var(--bg-1)', border: '1px solid var(--border)',
-                  borderRadius: 5, padding: '2px 8px', lineHeight: 1.4,
-                }}
-              >
-                <span aria-hidden>{resumeTarget.live ? '⑂' : '↻'}</span>
-                {resumeState === 'busy'
-                  ? (resumeTarget.live ? 'forking…' : 'resuming…')
-                  : resumeState === 'err'
-                    ? (resumeTarget.live ? 'fork failed' : 'resume failed')
-                    : (resumeTarget.live ? 'Fork in new terminal' : 'Resume in new terminal')}
-              </button>
-            </Tooltip>
+            // EI-9449: a Radix <Tooltip label={...}> whose label toggles falsy⇄truthy
+            // AFTER MOUNT (here: undefined → resumeErr once the launch POST fails)
+            // structurally swaps Tooltip's own render tree (its `if (!label) return
+            // <>{children}</>` guard branches from a bare Fragment to the full
+            // Provider/Root/Trigger/Portal tree — a different element TYPE at this
+            // JSX position), so React unmounts + remounts the whole subtree, INCLUDING
+            // this button — any DOM reference held across that transition (a prior
+            // `getByTestId`/focus/ref) goes stale mid-flight, silently pointing at a
+            // detached node forever. A native `title` attribute carries the same
+            // "server reason as tooltip" intent (see the getAttribute('title') assert
+            // below) without ever changing this element's type, so the button node
+            // never remounts. (Tooltip.tsx's guard is intentional + tested for STATIC
+            // per-usage labels — this is the one call site that toggles the label at
+            // runtime; fix the toggling call site, not the shared component's contract.)
+            <button
+              type="button"
+              data-testid="resume-terminal-btn"
+              onClick={resumeInNewTerminal}
+              disabled={resumeState === 'busy'}
+              title={resumeState === 'err' && resumeErr ? resumeErr : undefined}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                font: 'inherit', fontSize: 11, cursor: resumeState === 'busy' ? 'default' : 'pointer',
+                color: resumeState === 'err' ? TONE.bad : 'var(--fg)',
+                background: 'var(--bg-1)', border: '1px solid var(--border)',
+                borderRadius: 5, padding: '2px 8px', lineHeight: 1.4,
+              }}
+            >
+              <span aria-hidden>{resumeTarget.live ? '⑂' : '↻'}</span>
+              {resumeState === 'busy'
+                ? (resumeTarget.live ? 'forking…' : 'resuming…')
+                : resumeState === 'err'
+                  ? (resumeTarget.live ? 'fork failed' : 'resume failed')
+                  : (resumeTarget.live ? 'Fork in new terminal' : 'Resume in new terminal')}
+            </button>
           ) : null}
           {focusTarget ? (
             <button

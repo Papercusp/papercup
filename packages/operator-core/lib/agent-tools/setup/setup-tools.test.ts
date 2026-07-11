@@ -101,7 +101,20 @@ describe('setup:set_update_channel', () => {
 });
 
 describe('setup:complete (graduation)', () => {
+  // desktop-update-center-and-release-tooling-2026-07-10 P-1: graduation is gated on
+  // every `required` optional-setup item (today just telemetry) being decided, via the
+  // SAME collectSetupStatus probe setup:status projects. The shared top-level mock
+  // defaults to telemetry:'needs-attention' (pinned by the setup:status test below), so
+  // any test that expects an UNGATED graduation must explicitly mark telemetry decided
+  // for that one collectSetupStatus call.
+  const telemetryDecided = () =>
+    h.collect.mockResolvedValueOnce({
+      statuses: { git: 'ok', telemetry: 'ok' },
+      agentRuntime: { claude: true, codex: false, omp: false },
+    });
+
   it('stamps finished_at once and is idempotent after that', async () => {
+    telemetryDecided(); // only the first (non-early-return) call probes the gate
     const first = body(await call(complete));
     expect(first.alreadyFinished).toBe(false);
     expect(typeof first.finished_at).toBe('string');
@@ -111,7 +124,24 @@ describe('setup:complete (graduation)', () => {
   });
 
   it('force re-stamps', async () => {
+    telemetryDecided();
     await call(complete);
+    const forced = body(await call(complete, { force: true }));
+    expect(forced.alreadyFinished).toBe(false);
+    expect(typeof forced.finished_at).toBe('string');
+  });
+
+  it('refuses graduation while a required item (telemetry) is undecided', async () => {
+    // default mock: telemetry stays 'needs-attention' — the gate must block.
+    const blocked = body(await call(complete));
+    expect(blocked.alreadyFinished).toBe(false);
+    expect(blocked.error).toBe('required_setup_undecided');
+    expect(blocked.undecided).toEqual(['telemetry']);
+    expect(blocked.finished_at).toBeUndefined();
+  });
+
+  it('force bypasses the required-item gate entirely', async () => {
+    // default mock: telemetry undecided, yet force skips the gate + stamps directly.
     const forced = body(await call(complete, { force: true }));
     expect(forced.alreadyFinished).toBe(false);
     expect(typeof forced.finished_at).toBe('string');
