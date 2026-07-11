@@ -34,6 +34,24 @@ import {
 } from '../../scout/outcome-feedback';
 import { buildScoutOutcomeReaders } from '../../scout/routed-ledger';
 import { SU_IDEATION_LENSES, type SuIdeationLens } from '../../scout/types';
+// P-012 (federated-scout-gym-learning D-004/D-005): the OPTIONAL federated priming
+// fold. The pure math (crowding, config resolution, empty-frontier partition) is safe
+// at module load; the PG frontier read + owner-steering read live behind the default
+// deps' LAZY imports, so importing this tool never touches the PG edge.
+import {
+  computeDepthAwareCrowding,
+  isControlHivePriming,
+  resolveFederatedPrimingConfig,
+  DEFAULT_FEDERATED_PRIMING,
+  type FederatedPrimingConfig,
+  type FederatedEliteView,
+} from '../../scout/federated-priming';
+import {
+  hiveEmptyFrontierFromElites,
+  type FrontierEliteView,
+  type FrontierScope,
+} from '../../scout/foreign-frontier';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 
 /** One su-ideate filing joined to its routed artifact's fate (P-003). */
 export interface IdeationOutcomeEntry {
@@ -76,16 +94,167 @@ export interface IdeationFeedbackResult {
   lensWinRates: SuLensWinRate[];
   /** Present only when the outcome leg failed — the priming leg still returns (fail-open, D-016). */
   outcomesError?: string;
+  /**
+   * OPTIONAL federated priming (P-012): this hive's read-time view of the SHARED
+   * gym-QD frontier — nearby foreign elites, the most-crowded niches, and this hive's
+   * empty-frontier slice. Absent on a CONTROL-arm hive (P-016 baseline) or a
+   * NON-federated workspace (no foreign elites) — fail-soft empty either way.
+   */
+  federated?: FederatedPrimingBlock;
+  /** Present only when the federated leg threw — the rest of the read still returns. */
+  federatedError?: string;
 }
 
 const NO_GRADES_FALLBACK =
   'No graded su-ideate proposals yet — file features (improvements:capture kind:"feature") and they appear here once the owner/Queen grades them.';
 
+/** One nearby FOREIGN elite surfaced to prime an IDEATE pass (P-012). */
+export interface FederatedForeignElite {
+  nicheKey: string;
+  fitness: number;
+  sourceHive: string;
+  rationale?: string;
+}
+
+/** One CROWDED niche across the local ∪ foreign frontier (depth-aware, P-012). */
+export interface FederatedCrowdedNiche {
+  nicheKey: string;
+  totalElites: number;
+  elitesAboveBar: number;
+  contributingSources: number;
+  sourcesAboveBar: number;
+  bestFitness: number | null;
+}
+
+/** The OPTIONAL federated priming block folded into the ideation-feedback read (P-012). */
+export interface FederatedPrimingBlock {
+  /** Nearby foreign elites, best-fitness first (≤ cfg.foreignElites). */
+  foreignElites: FederatedForeignElite[];
+  /** Most-crowded niches across local ∪ foreign, deepest first (≤ cfg.crowded). */
+  crowdedNiches: FederatedCrowdedNiche[];
+  /** This hive's disjoint slice of the empty niche frontier to claim (≤ cfg.empty). */
+  emptyNiches: string[];
+}
+
+/** Injectable read seam for the federated fold — unit tests drive it with no PG. */
+export interface FederatedPrimingDeps {
+  /** Effective federated-priming config: owner-steering override ?? DEFAULT_FEDERATED_PRIMING. */
+  readConfig: (workspaceId: string, harnessSlug: string) => Promise<FederatedPrimingConfig>;
+  /** Read-time union of local gym_qd_archive ∪ foreign gym_qd_foreign_elites elites. */
+  readFrontier: (scope: FrontierScope) => Promise<FrontierEliteView[]>;
+}
+
+export const defaultFederatedPrimingDeps: FederatedPrimingDeps = {
+  readConfig: async (workspaceId, harnessSlug) => {
+    const { getOwnerSteering } = await import('../../owner-steering');
+    const steering = await getOwnerSteering(workspaceId, harnessSlug);
+    return resolveFederatedPrimingConfig(steering.federatedPriming ?? DEFAULT_FEDERATED_PRIMING);
+  },
+  readFrontier: async (scope) => {
+    const [{ listFrontierElites }, { getOrgPg }] = await Promise.all([
+      import('../../scout/foreign-frontier'),
+      import('@papercusp/db-org'),
+    ]);
+    return listFrontierElites(getOrgPg().sql, scope);
+  },
+};
+
+/**
+ * Resolve the frontier scope for a caller. The frontier is keyed by
+ * (workspace_id, harness_slug); an su read with no explicit harness defaults to
+ * 'papercusp' (this workspace's primary harness) over the active workspace.
+ */
+function resolveFrontierScope(args: { harness?: string }, ctx: unknown): FrontierScope {
+  const ctxHarness = (ctx as { harnessSlug?: unknown } | undefined)?.harnessSlug;
+  const harnessSlug =
+    (args.harness && args.harness !== '*' ? args.harness : undefined) ??
+    (typeof ctxHarness === 'string' && ctxHarness && ctxHarness !== '*' ? ctxHarness : 'papercusp');
+  const workspaceId = resolveConcreteWorkspaceId(
+    (ctx as { workspaceId?: string | null } | undefined)?.workspaceId,
+  );
+  return { workspaceId, harnessSlug };
+}
+
+/**
+ * The OPTIONAL federated priming fold (P-012, federated-scout-gym-learning
+ * D-004/D-005): this hive's read-time view of the SHARED gym-QD frontier, so an
+ * IDEATE pass leans on what PEER hives have already explored — nearby FOREIGN elites,
+ * the most-CROWDED niches (local ∪ foreign), and this hive's disjoint slice of the
+ * EMPTY niche frontier to claim. Counts come from the effective FederatedPrimingConfig
+ * (owner-steering override ?? DEFAULT_FEDERATED_PRIMING).
+ *
+ * Two omissions keep the block honest — either returns `undefined`:
+ *  - CONTROL arm (isControlHivePriming, all-zero counts): the P-016 falsifiability
+ *    baseline runs the IDENTICAL code path with NO foreign priming, so "more peers"
+ *    can be measured against "same code, no federation".
+ *  - NON-federated workspace (zero foreign elites on the frontier): nothing federated
+ *    to surface, so the block stays absent (fail-soft empty) rather than padding the
+ *    output with this hive's own empty niches.
+ *
+ * Empty-frontier note: uses the PURE hiveEmptyFrontierFromElites (the core of
+ * computeHiveEmptyFrontier) over the SINGLE frontier read — no redundant PG round trip.
+ * The HRW roster is derived from the frontier itself: potId = this workspace, hiveIds =
+ * this workspace + the distinct foreign source hives.
+ */
+export async function computeFederatedPriming(
+  scope: FrontierScope,
+  deps: FederatedPrimingDeps = defaultFederatedPrimingDeps,
+): Promise<FederatedPrimingBlock | undefined> {
+  const cfg = await deps.readConfig(scope.workspaceId, scope.harnessSlug);
+  if (isControlHivePriming(cfg)) return undefined; // P-016 baseline: no federated priming.
+
+  const frontier = await deps.readFrontier(scope);
+  const foreign = frontier.filter(
+    (e) => typeof e.sourceHive === 'string' && e.sourceHive.trim().length > 0,
+  );
+  if (foreign.length === 0) return undefined; // non-federated workspace → fail-soft empty.
+
+  const foreignElites: FederatedForeignElite[] = foreign.slice(0, cfg.foreignElites).map((e) => ({
+    nicheKey: e.nicheKey,
+    fitness: e.fitness,
+    sourceHive: e.sourceHive!.trim(),
+    ...(e.rationale ? { rationale: e.rationale } : {}),
+  }));
+
+  // Depth-aware crowding over the FULL union (local ∪ foreign), deepest first.
+  // fitnessBar 0 — the su read has no per-cycle fitness gate, so every elite counts.
+  const crowdedNiches: FederatedCrowdedNiche[] = computeDepthAwareCrowding(
+    frontier.map<FederatedEliteView>((e) => ({
+      nicheKey: e.nicheKey,
+      fitness: e.fitness,
+      sourceHive: e.sourceHive,
+    })),
+    { fitnessBar: 0 },
+  )
+    .slice(0, cfg.crowded)
+    .map((s) => ({
+      nicheKey: s.nicheKey,
+      totalElites: s.totalElites,
+      elitesAboveBar: s.elitesAboveBar,
+      contributingSources: s.contributingSources,
+      sourcesAboveBar: s.sourcesAboveBar,
+      bestFitness: s.bestFitness,
+    }));
+
+  // This hive's disjoint HRW slice of the empty niche frontier (pure core of
+  // computeHiveEmptyFrontier over the single frontier read). Roster derived from the
+  // frontier: potId = this workspace, hiveIds = this workspace + distinct foreign hives.
+  const foreignHiveIds = [...new Set(foreign.map((e) => e.sourceHive!.trim()))];
+  const emptyNiches = hiveEmptyFrontierFromElites(
+    frontier,
+    [scope.workspaceId, ...foreignHiveIds],
+    scope.workspaceId,
+  ).slice(0, cfg.empty);
+
+  return { foreignElites, crowdedNiches, emptyNiches };
+}
+
 /** The testable core: priming + outcome readback composed over the su-ideate ledger scope. */
-export async function runIdeationFeedback(args: {
-  harness?: string;
-  maxEntries?: number;
-}): Promise<IdeationFeedbackResult> {
+export async function runIdeationFeedback(
+  args: { harness?: string; maxEntries?: number },
+  ctx?: unknown,
+  deps: { federated?: FederatedPrimingDeps } = {},
+): Promise<IdeationFeedbackResult> {
   const scope = args.harness ? { harnessSlug: args.harness } : {};
   const { priming, entries } = await gatherGraderFeedbackPriming({
     origin: 'su-ideate',
@@ -152,6 +321,18 @@ export async function runIdeationFeedback(args: {
     outcomesError = err instanceof Error ? err.message : String(err);
   }
 
+  // P-012: OPTIONAL federated priming fold. Fully fail-soft — a frontier / steering
+  // read error degrades to NO block (the priming + outcome legs still return),
+  // matching the D-016 fail-open posture. Absent on a control-arm hive or a
+  // non-federated workspace.
+  let federated: FederatedPrimingBlock | undefined;
+  let federatedError: string | undefined;
+  try {
+    federated = await computeFederatedPriming(resolveFrontierScope(args, ctx), deps.federated);
+  } catch (err) {
+    federatedError = err instanceof Error ? err.message : String(err);
+  }
+
   return {
     priming: priming || NO_GRADES_FALLBACK,
     entries,
@@ -160,13 +341,15 @@ export async function runIdeationFeedback(args: {
     summary,
     lensWinRates,
     ...(outcomesError ? { outcomesError } : {}),
+    ...(federated ? { federated } : {}),
+    ...(federatedError ? { federatedError } : {}),
   };
 }
 
 export default defineTool({
   name: 'blender:ideation-feedback',
   description:
-    "Your IDEATE-pass read of your OWN past proposals: the owner/Mug grades + critiques on features you filed (improvements:capture kind:'feature') as a grader-feedback priming block, PLUS each filing's real-world outcome (outcomes[]: won / lost / pending from the routed artifact's fate — resolved ⇒ won, deprecated ⇒ lost) with a summary roll-up, PLUS lensWinRates[] — per-ideation-lens win-rates with a floored sampling weight, so you can lean into the stances that land without abandoning the rest. Read-only; su-ideate origin only — never touches Blender's lens-weight learning.",
+    "Your IDEATE-pass read of your OWN past proposals: the owner/Mug grades + critiques on features you filed (improvements:capture kind:'feature') as a grader-feedback priming block, PLUS each filing's real-world outcome (outcomes[]: won / lost / pending from the routed artifact's fate — resolved ⇒ won, deprecated ⇒ lost) with a summary roll-up, PLUS lensWinRates[] — per-ideation-lens win-rates with a floored sampling weight, so you can lean into the stances that land without abandoning the rest. On a FEDERATED workspace it also folds `federated` — nearby foreign elites, the most-crowded niches, and this hive's empty-frontier slice from the shared gym-QD archive (omitted on a control-arm or non-federated workspace). Read-only; su-ideate origin only — never touches Blender's lens-weight learning.",
   capability: 'curation:read',
   guidance: {
     when: 'Opening an IDEATE-mode grounding pre-pass — pull this to see how your past feature proposals were graded AND how they actually fared (shipped, deprecated, still pending), so the pass builds on what landed / what the grader flagged rather than starting cold. Pairs with curation:state-of-pot + rubrics:list + scorecards:freshness as the IDEATE grounding reads.',
@@ -196,8 +379,8 @@ export default defineTool({
       .optional()
       .describe('priming window size (default 10, newest-first)'),
   }),
-  async handler(args) {
-    const out = await runIdeationFeedback(args);
+  async handler(args, ctx) {
+    const out = await runIdeationFeedback(args, ctx);
     return { content: [{ type: 'text' as const, text: JSON.stringify(out) }] };
   },
 });
