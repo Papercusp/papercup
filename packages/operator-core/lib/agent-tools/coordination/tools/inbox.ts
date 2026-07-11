@@ -34,7 +34,7 @@ import {
   CONTEXT_GAUGE_LOUD_PCT,
 } from "./inbox-context-usage";
 import { classifyStaleClaims, renderFlushGateLine, FLUSH_GATE_PCT } from "./inbox-flush-gate";
-import { verifyContextTokensForAlarm } from "../../../system-health/context-estimate-verify";
+import { currentContextTokensForOwner } from "../../../compaction-usage";
 import { listActiveClaimFreshnessForOwner } from "../../../work-item-claims";
 import { activeWorkspaceId } from "../../../workspace-registry";
 import { cachedRead, type CachedReadCtx } from "../../../cache";
@@ -581,16 +581,14 @@ export default defineTool({
     let contextGauge: string | null = null;
     try {
       const pres = await getPresence(identity.ownerId);
-      // WI-4154 verify-before-alarm: the cached estimate goes stale ACROSS A COMPACTION
-      // BOUNDARY (nothing invalidates it until the next watchdog sweep), so an alarm-band
-      // reading must be re-derived from the transcript before any of the three lines below
-      // may alarm on it — the false 126%/87% post-compaction alarms that burned pointless
-      // compactions. Below the LOUD band this is a pure pass-through; never throws.
-      const tokens = await verifyContextTokensForAlarm(
-        identity.ownerId,
-        pres?.contextTokens,
-        pres?.compactionLimit,
-      );
+      // WI-4154: derive the usage from the transcript's CURRENT state (anchored
+      // incremental read — cost is the append delta), never from the watchdog's
+      // point-in-time cache, which went stale across every compaction boundary and
+      // served false 126%/87% post-compaction alarms. The presence value remains
+      // only as the fallback for owners whose transcript can't be read here (the
+      // same sessions it was the only source for before).
+      const live = await currentContextTokensForOwner(identity.ownerId);
+      const tokens = live ?? pres?.contextTokens;
       usageLine = renderContextUsageLine(tokens, pres?.compactionLimit);
       // flush-to-proceed-stretch-discipline-2026-07-04 P-002: near a compaction boundary,
       // surface any work-item claim whose checkpoint is stale (unflushed state) and NAME the

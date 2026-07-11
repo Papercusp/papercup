@@ -156,6 +156,222 @@ export async function estimateContextTokensForOwner(ownerId: string): Promise<nu
   return alt ? tokensFromFileSize(alt) : null;
 }
 
+/* ── WI-4154: anchored incremental reads — right the first time ─────────────
+ *
+ * The watchdog-cached estimate (coord_presence.context_tokens + the in-process
+ * mirror) went stale ACROSS A COMPACTION BOUNDARY: nothing invalidated it when a
+ * compaction landed, so for up to one ~2-min sweep every post-compaction render
+ * served the PRE-compaction number — false LOUD/CRITICAL alarms at exactly the
+ * compact-decision moment (two sessions burned pointless compactions on 126%/87%
+ * readings whose real usage was 14–15%). Owner directive: don't re-verify a
+ * possibly-wrong cache — make every rendered value RIGHT THE FIRST TIME.
+ *
+ * So render paths no longer read a point-in-time token cache. Each owner gets a
+ * tiny ANCHOR — {countStart (last compaction-marker offset), imageExcess,
+ * settled (last complete-line offset), sizeSeen} — and every read stats the
+ * transcript and scans ONLY the bytes appended since the last read, updating the
+ * anchor as markers/images stream past. The returned value equals the full
+ * tail-scan estimate at the current file size, at per-read cost proportional to
+ * the append delta (typically KBs) instead of an 8MB tail scan. A compaction is
+ * reflected the moment its summary line hits the transcript — no event, no TTL,
+ * no verification pass.
+ *
+ * Only COMPLETE lines settle into the anchor (JSONL lines are the atomic unit;
+ * a marker or base64 image run never spans lines), so a partially-flushed line
+ * is counted raw once and re-scanned when its newline lands — never split
+ * across scans where a marker/image match could be missed. Anchors are
+ * per-process (each :3070 cluster worker / bg-host keeps its own) — purely a
+ * cost optimization, never a correctness dependency. */
+
+const NEWLINE = 0x0a;
+
+/** A sync caller (the P-013 result annotator, a sync dispatch hot path) reads at
+ *  most this much delta per call; a bigger backlog defers to a background
+ *  (re)seed and the caller renders nothing rather than block the event loop. */
+const SYNC_DELTA_CAP = 1024 * 1024;
+
+interface TranscriptAnchor {
+  path: string;
+  /** Absolute offset where token counting starts (last seen marker start, or 0). */
+  countStart: number;
+  /** Image-payload byte excess accumulated over settled bytes in [countStart, settled). */
+  imageExcess: number;
+  /** Absolute offset just past the last complete line scanned (settled ≤ sizeSeen). */
+  settled: number;
+  /** File size at the last read; (settled, sizeSeen] is the raw-counted partial tail. */
+  sizeSeen: number;
+  at: number;
+}
+
+const anchors = new Map<string, TranscriptAnchor>();
+/** Background (re)seed dedup for the sync path. */
+const seedInFlight = new Set<string>();
+
+function anchorTokens(a: TranscriptAnchor): number {
+  return Math.max(0, Math.floor((a.sizeSeen - a.countStart - a.imageExcess) / 4));
+}
+
+/** Sum the image discount (WI-3176) over a settled latin1 slice. */
+function imageExcessIn(visible: string): number {
+  let excess = 0;
+  for (const m of visible.matchAll(IMAGE_PAYLOAD_RE)) {
+    excess += m[0].length - IMAGE_TOKEN_COST * 4;
+  }
+  return excess;
+}
+
+/** Full (tail-capped) scan → a fresh anchor. Same math as tokensFromFileSize,
+ *  but retains WHERE counting starts so later reads can advance incrementally.
+ *  Null on any fs error (caller degrades like the estimator does). */
+function seedAnchorFromFile(pathStr: string): TranscriptAnchor | null {
+  try {
+    const size = fs.statSync(pathStr).size;
+    const start = Math.max(0, size - BOUNDARY_SCAN_CAP);
+    const fd = fs.openSync(pathStr, 'r');
+    try {
+      const buf = Buffer.alloc(size - start);
+      fs.readSync(fd, buf, 0, buf.length, start);
+      const lastNl = buf.lastIndexOf(NEWLINE);
+      const settledLen = lastNl === -1 ? 0 : lastNl + 1;
+      const view = buf.subarray(0, settledLen);
+      const idx = view.lastIndexOf(COMPACT_BOUNDARY_MARKER);
+      // Marker not in the scanned window ⇒ count from 0 (whole file), exactly
+      // like tokensFromFileSize: past the 8MB cap the estimate is over every
+      // real limit anyway; discounting only the visible region stays conservative.
+      const countStart = idx === -1 ? 0 : start + idx;
+      const imageExcess = imageExcessIn(view.toString('latin1', idx === -1 ? 0 : idx));
+      return {
+        path: pathStr,
+        countStart,
+        imageExcess,
+        settled: start + settledLen,
+        sizeSeen: size,
+        at: Date.now(),
+      };
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+}
+
+/** Advance an anchor over the bytes appended since its last read.
+ *  'ok' — anchor is current (tokens readable); 'reseed' — file shrank/rotated or
+ *  the backlog exceeds the scan cap (full reseed needed); 'defer' — sync caller
+ *  hit its delta cap (a background advance/seed should run). Throws on fs errors
+ *  (missing file) — callers treat that as 'reseed'. */
+function advanceAnchor(a: TranscriptAnchor, opts: { syncCap?: number } = {}): 'ok' | 'reseed' | 'defer' {
+  const size = fs.statSync(a.path).size;
+  if (size < a.sizeSeen) return 'reseed';
+  if (size === a.sizeSeen) return 'ok';
+  const deltaLen = size - a.settled; // re-read the unsettled partial tail + new bytes
+  if (deltaLen > BOUNDARY_SCAN_CAP) return 'reseed';
+  if (opts.syncCap != null && deltaLen > opts.syncCap) return 'defer';
+  const fd = fs.openSync(a.path, 'r');
+  try {
+    const buf = Buffer.alloc(deltaLen);
+    fs.readSync(fd, buf, 0, deltaLen, a.settled);
+    const lastNl = buf.lastIndexOf(NEWLINE);
+    if (lastNl !== -1) {
+      const settledLen = lastNl + 1;
+      const view = buf.subarray(0, settledLen);
+      const idx = view.lastIndexOf(COMPACT_BOUNDARY_MARKER);
+      if (idx !== -1) {
+        // A compaction landed in this delta: counting restarts at the marker.
+        a.countStart = a.settled + idx;
+        a.imageExcess = imageExcessIn(view.toString('latin1', idx));
+      } else {
+        a.imageExcess += imageExcessIn(view.toString('latin1'));
+      }
+      a.settled += settledLen;
+    }
+    a.sizeSeen = size;
+    a.at = Date.now();
+    return 'ok';
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * The live per-render read: EXACT current context tokens for an owner, derived
+ * from the transcript's state at THIS call (anchored-incremental, so the cost is
+ * the append delta, not a tail scan). Resolution/degradation contract matches
+ * estimateContextTokensForOwner: OMP/Codex and unresolvable transcripts → null.
+ * `reseed: true` forces a fresh full scan (periodic ground-truthing / boundary
+ * refresh) instead of trusting the anchor.
+ */
+export async function currentContextTokensForOwner(
+  ownerId: string,
+  opts: { reseed?: boolean } = {},
+): Promise<number | null> {
+  const a = anchors.get(ownerId);
+  if (a && !opts.reseed) {
+    try {
+      if (advanceAnchor(a) === 'ok') return anchorTokens(a);
+    } catch {
+      /* rotated/unreadable — fall through to reseed */
+    }
+  }
+  const ref = await resolveSessionRef(ownerId);
+  if (!ref || ref.agent === 'omp' || ref.agent === 'codex') return null;
+  let p: string | null = null;
+  if (ref.sessionId) {
+    try {
+      p = await findSessionTranscript(ref.sessionId, { owner: ownerId });
+    } catch {
+      p = null;
+    }
+  }
+  // P-016 fallback: stale/rotated session_id → newest jsonl under the owner root.
+  if (!p) p = newestTranscriptUnderOwner(ownerId);
+  if (!p) return null;
+  const seeded = seedAnchorFromFile(p);
+  if (!seeded) return null;
+  anchors.set(ownerId, seeded);
+  return anchorTokens(seeded);
+}
+
+/**
+ * Sync variant for the P-013 result annotator. Returns the exact current tokens
+ * when the anchor can advance within {@link SYNC_DELTA_CAP}; otherwise kicks ONE
+ * background (re)seed and returns null — the caller renders NOTHING this call
+ * rather than a possibly-stale number, and the next call reads the corrected
+ * anchor. (An owner never read in this process before seeds in the background
+ * the same way.)
+ */
+export function currentContextTokensSyncForOwner(ownerId: string): number | null {
+  const a = anchors.get(ownerId);
+  if (a) {
+    try {
+      if (advanceAnchor(a, { syncCap: SYNC_DELTA_CAP }) === 'ok') return anchorTokens(a);
+    } catch {
+      /* rotated/unreadable — background reseed below */
+    }
+  }
+  if (!seedInFlight.has(ownerId)) {
+    seedInFlight.add(ownerId);
+    void currentContextTokensForOwner(ownerId, { reseed: true })
+      .catch(() => null)
+      .finally(() => seedInFlight.delete(ownerId));
+  }
+  return null;
+}
+
+/** Test seams: reset anchor state / seed an anchor for a known file directly
+ *  (unit tests have no adv_sessions row to resolve an owner through). */
+export function resetContextAnchorsForTests(): void {
+  anchors.clear();
+  seedInFlight.clear();
+}
+export function seedContextAnchorForTests(ownerId: string, pathStr: string): boolean {
+  const seeded = seedAnchorFromFile(pathStr);
+  if (!seeded) return false;
+  anchors.set(ownerId, seeded);
+  return true;
+}
+
 /** The context-death signature Claude writes into the transcript when the
  *  request exceeds the model window — the silent fleet-member killer
  *  (context-trimming-tiers P-019: 6 members died on it, 2026-07-01). */
