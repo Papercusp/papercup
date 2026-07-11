@@ -100,6 +100,12 @@ describe('runAllHiveBroadcastSweepOnce', () => {
     expect(inserts[0].values).toContain(ALLHIVE_AUDIT_ACTION);
     expect(inserts[0].values).toContain('m-blast-1');
     expect(inserts[0].values).toContain('default'); // workspace_id from the row
+    // The details payload must travel as a JSON STRING with a ::jsonb cast —
+    // NOT sql.json(), which mis-binds/throws on the prepare:false org pool
+    // (caught live by coord-authority-hardening.integration.test.ts; this
+    // pins the shape so a revert fails here too, without a DB).
+    expect(inserts[0].text).toContain('::jsonb');
+    expect(inserts[0].values.some((v) => typeof v === 'string' && v.includes('"detected_by"'))).toBe(true);
 
     // Owner notice: to ['human'], from the sweep identity, carrying the
     // original msg_id as related_msg_id — the idempotency marker the SQL
