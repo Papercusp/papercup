@@ -21,10 +21,53 @@
  * it and asserts the per-request server is closed once per request. Without the
  * patch, `closed` is 0 (the leak); with it, `closed === N`.
  */
-import { describe, it, expect } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+
+import { describe, it, expect, beforeAll } from 'vitest';
 import { createMcpHandler } from 'mcp-handler';
 
+// EI-9686/EI-9724: this repo shares ONE node_modules across the whole fleet.
+// `npm install` briefly leaves mcp-handler UNPATCHED between "fetch from
+// registry" and postinstall's `patch-package` re-apply step — a test that
+// happens to run in that window fails with a misleading "expected +0 to be
+// 20" that looks like a real regression (see the
+// transient-red-test-shared-node-modules-npm-install-race agent-insight doc
+// for the full diagnosis). Fail FAST with an unambiguous message instead of
+// that confusing assertion diff when the patch is verifiably absent.
+const PATCH_LANDMARK = 'Error closing per-request POST server/transport';
+
+function mcpHandlerDistPatched(): boolean | 'unknown' {
+  try {
+    const require = createRequire(import.meta.url);
+    const pkgPath = require.resolve('mcp-handler/package.json');
+    const distDir = pkgPath.replace(/package\.json$/, 'dist');
+    const candidates = [`${distDir}/index.mjs`, `${distDir}/index.js`];
+    const found = candidates.filter((p) => existsSync(p));
+    if (found.length === 0) return 'unknown';
+    return found.some((p) => readFileSync(p, 'utf8').includes(PATCH_LANDMARK));
+  } catch {
+    return 'unknown';
+  }
+}
+
 describe('mcp-handler POST path — per-request server lifecycle (EI-127)', () => {
+  beforeAll(() => {
+    const patched = mcpHandlerDistPatched();
+    if (patched === false) {
+      throw new Error(
+        "node_modules/mcp-handler is UNPATCHED right now (patches/mcp-handler+1.1.0.patch's " +
+          `finally-close landmark ("${PATCH_LANDMARK}") is absent from dist/index.{js,mjs}). ` +
+          'This almost always means a concurrent `npm install` is mid-reinstall on the shared ' +
+          'tree (postinstall\'s patch-package step has not re-applied yet) — NOT a code ' +
+          'regression. Re-run this test after the install settles; see the ' +
+          '"transient-red-test-shared-node-modules-npm-install-race" agent-insight doc.',
+      );
+    }
+    // 'unknown' (package/dist not resolvable at all) is left to the test body itself —
+    // that's a real "mcp-handler isn't installed" problem, not this race.
+  });
+
   it('closes the per-request McpServer once per POST (no leak)', async () => {
     let created = 0;
     let closed = 0;

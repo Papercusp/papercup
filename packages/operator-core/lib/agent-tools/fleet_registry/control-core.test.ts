@@ -121,7 +121,7 @@ describe('applyFleetControl', () => {
       reason: 'release cut',
       by: callerRef.ownerId,
     });
-    const sendOpts = sendM.mock.calls[0][1] as Record<string, unknown>;
+    const sendOpts = sendM.mock.calls[0][1] as unknown as Record<string, unknown>;
     expect(sendOpts.to).toEqual(['m-1', 'm-2']);
     expect(sendOpts.extra).toEqual({
       [CUE_AUTHORITY_FIELD]: {
