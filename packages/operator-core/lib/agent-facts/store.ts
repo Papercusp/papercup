@@ -361,27 +361,53 @@ export interface FactSelector {
  * The FOLD read — live (unexpired, unretracted) facts for a set of selectors,
  * newest-updated first, bounded per selector. This is what brief/dossier/orient
  * renderers call. Deterministic: no similarity, no ranking model.
+ *
+ * P-007 audience filtering (`opts.audiences`) — the RECIPIENT's audience
+ * memberships (e.g. `['fleet:p2p-git']`):
+ *   • omitted / []  → only unrestricted facts fold (audience_scope IS NULL) —
+ *                     the conservative default: a reader whose audience context
+ *                     is unknown never receives an audience-scoped fact;
+ *   • ['fleet:x']   → unrestricted facts + facts scoped to a listed audience;
+ *   • 'all'         → NO audience filter — the explicit-read escape hatch
+ *                     (facts:list): an audience-scoped fact must stay listable
+ *                     or it becomes unmanageable (you can't retract what you
+ *                     can't see). Audience is delivery RELEVANCE, not secrecy.
  */
 export async function foldFacts(
   selectors: readonly FactSelector[],
-  opts: { workspaceId?: string; limitPerSelector?: number } = {},
+  opts: {
+    workspaceId?: string;
+    limitPerSelector?: number;
+    audiences?: readonly string[] | 'all';
+  } = {},
   inject?: Sql,
 ): Promise<AgentFact[]> {
   if (selectors.length === 0) return [];
   const sql = sqlOf(inject);
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const limit = opts.limitPerSelector ?? FACTS_FOLD_LIMIT;
+  const audiences =
+    opts.audiences === 'all'
+      ? 'all'
+      : (opts.audiences ?? []).map((a) => a.trim()).filter(Boolean);
   const out: AgentFact[] = [];
   for (const sel of selectors) {
     const ref = sel.scope === 'workspace' ? '' : (sel.scopeRef ?? '').trim();
     if (sel.scope !== 'workspace' && !ref) continue; // an unset optional dimension folds nothing
     const rows = await sql<AgentFactRow[]>`
-      SELECT scope, scope_ref, key, body, source_ref, created_by,
-             updated_at::text, expires_at::text
+      SELECT scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
+             created_by, updated_at::text, expires_at::text
         FROM harness_shared.agent_facts
        WHERE workspace_id = ${ws} AND scope = ${sel.scope}
          AND coalesce(scope_ref,'') = ${ref}
          AND retracted_at IS NULL AND expires_at > now()
+         AND ${
+           audiences === 'all'
+             ? sql`TRUE`
+             : audiences.length > 0
+               ? sql`(audience_scope IS NULL OR audience_scope = ANY(${audiences as string[]}))`
+               : sql`audience_scope IS NULL`
+         }
        ORDER BY updated_at DESC
        LIMIT ${limit}`;
     out.push(...rows.map(rowToFact));
@@ -389,13 +415,20 @@ export async function foldFacts(
   return out;
 }
 
-/** List facts for one selector (the facts:list tool read; includes near-expiry). */
+/** List facts for one selector (the facts:list tool read; includes near-expiry).
+ *  Audience-UNfiltered by design ('all') — an explicit list must show
+ *  audience-scoped facts (visible `audienceScope` field) so they stay
+ *  manageable/retractable; only the automatic FOLDS filter by recipient. */
 export async function listFacts(
   sel: FactSelector,
   opts: { workspaceId?: string; limit?: number } = {},
   inject?: Sql,
 ): Promise<AgentFact[]> {
-  return foldFacts([sel], { workspaceId: opts.workspaceId, limitPerSelector: opts.limit ?? 50 }, inject);
+  return foldFacts(
+    [sel],
+    { workspaceId: opts.workspaceId, limitPerSelector: opts.limit ?? 50, audiences: 'all' },
+    inject,
+  );
 }
 
 /** Expiry sweep (routines-tick reaper pattern): hard-delete rows expired or
@@ -419,14 +452,18 @@ export function federatableElite(e: { outcome?: string | null; grade?: number | 
 }
 
 /** Render facts as the compact fold block briefs embed. Deterministic layout:
- *  one line per fact — `[scope:ref] body (src, expires in Nd)`. */
+ *  one line per fact — `[scope:ref] body (src, expires in Nd)`; P-007 adds the
+ *  audience tag (`⊸fleet:x`, only ever present when the reader matched it) and
+ *  the provenance-hydrated src form (verified quote / loud ✗unverified). */
 export function renderFactsFold(facts: readonly AgentFact[], now: number = Date.now()): string {
   if (facts.length === 0) return '';
   const lines = facts.map((f) => {
     const scope = f.scopeRef ? `${f.scope}:${f.scopeRef}` : f.scope;
+    const aud = f.audienceScope ? ` ⊸${f.audienceScope}` : '';
     const days = Math.max(0, Math.round((Date.parse(f.expiresAt) - now) / 86_400_000));
-    const src = f.sourceRef ? `, src ${f.sourceRef}` : '';
-    return `• [${scope}] ${f.body} (expires ~${days}d${src})`;
+    const rendered = renderFactSrc(f);
+    const src = rendered ? `, src ${rendered}` : '';
+    return `• [${scope}${aud}] ${f.body} (expires ~${days}d${src})`;
   });
   return `### Standing facts (deterministic — assert via facts:assert, retract when stale)\n${lines.join('\n')}`;
 }
@@ -437,6 +474,8 @@ interface AgentFactRow {
   key: string;
   body: string;
   source_ref: string | null;
+  audience_scope: string | null;
+  source_provenance: unknown;
   created_by: string;
   updated_at: string;
   expires_at: string;
@@ -449,6 +488,8 @@ function rowToFact(r: AgentFactRow): AgentFact {
     key: r.key,
     body: r.body,
     sourceRef: r.source_ref,
+    audienceScope: r.audience_scope ?? null,
+    sourceProvenance: parseFactSourceProvenance(r.source_provenance),
     createdBy: r.created_by,
     updatedAt: r.updated_at,
     expiresAt: r.expires_at,

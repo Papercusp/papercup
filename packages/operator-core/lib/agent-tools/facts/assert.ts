@@ -45,7 +45,8 @@ export default defineTool({
     // (code-run-self-state-adoption-2026-07-03 P-007 — the hard zod reject cost the WHOLE
     // write 7×/14d; truncate-not-reject preserves the fact, '…' makes it visible).
     body: z.string().min(1).max(4000).describe(`The conclusion — stored truncated to ${FACT_BODY_MAX_CHARS} chars (write tight conclusions, not documents).`),
-    sourceRef: z.string().max(200).optional().describe('Anchor that proved it (WI-/EI- id, plan slug) so readers can verify.'),
+    sourceRef: z.string().max(200).optional().describe('Anchor that proved it. A TYPED ref — msg:<id>, wi:<id>/WI-/EI- id, or "owner-turn" (the human turn you are answering) — is PLATFORM-VERIFIED at assert time and folds with the verified verbatim quote; anything else (plan slug, prose) stays a plain anchor.'),
+    audienceScope: z.string().max(160).optional().describe('Restrict WHO receives this fact in folds (v1 grammar: "fleet:<slug>") — it then folds ONLY into orients of that fleet\'s members. Omit = every reader of the scope. Orthogonal to `scope` (what the fact is about). facts:list still shows it to everyone (delivery relevance, not secrecy).'),
     ttlSec: z.number().int().positive().max(90 * 24 * 3600).optional().describe('TTL seconds (default 7d, max 90d).'),
     shareable: z.boolean().optional().describe('OPT-IN federation egress (F0-2): true = this fact may leave the pot over the substrate. Default false — facts are pot-private.'),
   }),
@@ -70,12 +71,27 @@ export default defineTool({
       args.shareable === true
         ? await (await import('../../agent-facts/store')).resolveFactFederationSlug(ctx.harnessSlug)
         : null;
+    // P-007: a TYPED sourceRef (msg:/wi:/owner-turn) is platform-verified at
+    // assert time — the stamp travels with the fact and folds render the
+    // verified quote with zero extra reads. Fail-soft: stamping never blocks
+    // the assert (the resolver degrades internally; this catch is the belt).
+    let sourceProvenance = null;
+    if (args.sourceRef) {
+      try {
+        const { resolveFactSourceProvenance } = await import('./source-provenance-resolve');
+        sourceProvenance = await resolveFactSourceProvenance(identity, args.sourceRef);
+      } catch {
+        sourceProvenance = null;
+      }
+    }
     const fact = await assertFact({
       scope: args.scope,
       scopeRef: scopeRef ?? null,
       key: args.key,
       body: args.body,
       sourceRef: args.sourceRef ?? null,
+      audienceScope: args.audienceScope ?? null,
+      sourceProvenance,
       ttlSec: args.ttlSec,
       createdBy: identity.ownerId,
       ...(args.shareable !== undefined ? { shareable: args.shareable } : {}),
