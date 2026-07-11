@@ -100,9 +100,19 @@ function mapLeaf(r: any): ComposedLeafRow {
 // ── registration inserts ────────────────────────────────────────────────────────
 
 /**
- * Insert the ROOT node and set its `root_id` to its own id in one round-trip (the
- * migration's documented "root_id equals its own id" convention). Root-only columns
- * (spec, wake_handle, expires_ts) are populated here; interior nodes leave them NULL.
+ * Insert the ROOT node and set its `root_id` to its own id (the migration's documented
+ * "root_id equals its own id" convention). Root-only columns (spec, wake_handle, expires_ts)
+ * are populated here; interior nodes leave them NULL.
+ *
+ * TWO statements, deliberately NOT a data-modifying CTE: in a single
+ * `WITH ins AS (INSERT … RETURNING id) UPDATE … FROM ins`, every sub-statement of the WITH
+ * runs against the SAME pre-statement snapshot, so the UPDATE's scan of the table cannot see
+ * the row the INSERT just added — it matches zero rows and RETURNING comes back empty. The
+ * transient `root_id = 0` between the two statements is harmless: no real query matches
+ * root_id 0 (tree ids are ≥1), and nothing references this root until the caller inserts its
+ * anchor/children (using the id returned here) after this resolves. registerComposedAwait is
+ * non-transactional by design (documented fail-safe), so a crash between the two leaves an
+ * orphan root_id=0 node that no fire path can ever trip — it simply times out.
  */
 export async function insertRootNode(input: {
   subscriberId: string;
@@ -117,23 +127,21 @@ export async function insertRootNode(input: {
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const expiresTs = input.timeoutSec != null ? new Date(Date.now() + input.timeoutSec * 1000).toISOString() : null;
+  const ins = await sql`
+    INSERT INTO harness_shared.event_await_nodes
+      (workspace_id, root_id, parent_id, subscriber_id, required_count, fired_count,
+       spec, wake_handle, note, expires_ts, timeout_behavior)
+    VALUES
+      (${ws}, 0, NULL, ${input.subscriberId}, ${input.requiredCount}, ${input.firedCount},
+       ${jsonbParam(input.spec)}::text::jsonb,
+       ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::text::jsonb,
+       ${input.note ?? null}, ${expiresTs}, ${input.timeoutBehavior})
+    RETURNING id
+  `;
+  const id = Number(ins[0].id);
   const rows = await sql`
-    WITH ins AS (
-      INSERT INTO harness_shared.event_await_nodes
-        (workspace_id, root_id, parent_id, subscriber_id, required_count, fired_count,
-         spec, wake_handle, note, expires_ts, timeout_behavior)
-      VALUES
-        (${ws}, 0, NULL, ${input.subscriberId}, ${input.requiredCount}, ${input.firedCount},
-         ${jsonbParam(input.spec)}::text::jsonb,
-         ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::text::jsonb,
-         ${input.note ?? null}, ${expiresTs}, ${input.timeoutBehavior})
-      RETURNING id
-    )
-    UPDATE harness_shared.event_await_nodes n
-       SET root_id = ins.id
-      FROM ins
-     WHERE n.id = ins.id
-    RETURNING n.*
+    UPDATE harness_shared.event_await_nodes SET root_id = ${id} WHERE id = ${id}
+    RETURNING *
   `;
   return mapNode(rows[0]);
 }
