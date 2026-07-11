@@ -37,7 +37,22 @@ import RubricsPanel from '@/app/_components/RubricsPanel';
 import RubricDetailPanel from '@/app/_components/RubricDetailPanel';
 import ObservationsPanel from '@/app/adv/create/ObservationsPanel';
 
-const LVIEWS = ['observations', 'improvements', 'ideas', 'gym', 'rubrics', 'benchmark', 'throughput', 'learnings'] as const;
+const LVIEWS = [
+  'observations',
+  'rubrics',
+  'ideas',
+  'gym',
+  'improvements',
+  'benchmark',
+  'orchestration',
+  'bakeoff',
+  'wake-efficiency',
+  'ekg',
+  'red-queen',
+  'experiments',
+  'throughput',
+  'learnings',
+] as const;
 type LView = (typeof LVIEWS)[number];
 
 type LearningStage = 'observe' | 'improve' | 'verify' | 'retain';
@@ -54,7 +69,7 @@ const STAGES: ReadonlyArray<{
     icon: Eye,
     views: [
       { id: 'observations', label: 'Observations', icon: Eye },
-      { id: 'improvements', label: 'Improvements', icon: Sparkles },
+      { id: 'rubrics', label: 'Rubrics', icon: Gauge },
     ],
   },
   {
@@ -64,6 +79,7 @@ const STAGES: ReadonlyArray<{
     views: [
       { id: 'ideas', label: 'Ideas', icon: Lightbulb },
       { id: 'gym', label: 'Gym', icon: Dumbbell },
+      { id: 'improvements', label: 'Improvements', icon: Sparkles },
     ],
   },
   {
@@ -71,8 +87,13 @@ const STAGES: ReadonlyArray<{
     label: 'Verify',
     icon: Gauge,
     views: [
-      { id: 'rubrics', label: 'Rubrics', icon: Gauge },
       { id: 'benchmark', label: 'Benchmark', icon: FlaskConical },
+      { id: 'orchestration', label: 'Pot orchestration', icon: Activity },
+      { id: 'bakeoff', label: 'Framework bake-off', icon: Repeat2 },
+      { id: 'wake-efficiency', label: 'Wake efficiency', icon: Hourglass },
+      { id: 'ekg', label: 'EKG', icon: Activity },
+      { id: 'red-queen', label: 'Red Queen', icon: Radar },
+      { id: 'experiments', label: 'Experiments', icon: FlaskConical },
     ],
   },
   {
@@ -120,6 +141,13 @@ export default function LearningTab() {
   const hive = lhive || hives[0]?.slug || '';
   const activeStage = stageForView(view);
   const activeStageMeta = STAGES.find((stage) => stage.id === activeStage) ?? null;
+  // Work Queue parity: once a view has been opened, keep its sync subscription
+  // and rendered state alive while the user moves around the loop. The old
+  // conditional unmounted every panel, forcing heavy aggregate reads to cold-
+  // start again on return. This is lazy (only visited views mount), so opening
+  // Learning does not fan out every query at once.
+  const visitedViews = useRef<Set<LView>>(new Set());
+  visitedViews.current.add(view);
 
   return (
     <div className="pc-learning">
@@ -213,33 +241,62 @@ export default function LearningTab() {
         ) : null}
       </div>
 
-      <div className="pc-learning__body" role="tabpanel" aria-label={activeStageMeta?.label ?? 'Loop health'}>
-      {view === 'observations' ? (
-        <ObservationsPanel />
-      ) : view === 'ideas' ? (
-        <ScoutView />
-      ) : view === 'rubrics' ? (
-        rubricId ? (
-          <RubricDetailPanel rubricId={rubricId} onBack={() => setRubricId(null)} />
-        ) : (
-          <RubricsPanel onSelect={setRubricId} />
-        )
-      ) : view === 'gym' ? (
-        <GymView hive={hive} />
-      ) : view === 'benchmark' ? (
-        <ApiaryView />
-      ) : view === 'throughput' ? (
-        <ThroughputView />
-      ) : view === 'learnings' ? (
-        <LearningsView hive={hive} />
-      ) : (
-        <ImprovementsView hive={hive} />
-      )}
+      <div className="pc-learning__body">
+        {LVIEWS.filter((candidate) => visitedViews.current.has(candidate)).map((mountedView) => (
+          <section
+            key={mountedView}
+            className="pc-learning__viewpane"
+            data-view={mountedView}
+            role="tabpanel"
+            aria-label={stageForView(mountedView) ?? 'Loop health'}
+            hidden={mountedView !== view}
+          >
+            <LearningViewContent
+              view={mountedView}
+              hive={hive}
+              rubricId={rubricId}
+              onRubricSelect={setRubricId}
+            />
+          </section>
+        ))}
       </div>
 
       <LearningStyles />
     </div>
   );
+}
+
+function LearningViewContent({
+  view,
+  hive,
+  rubricId,
+  onRubricSelect,
+}: {
+  view: LView;
+  hive: string;
+  rubricId: string | null;
+  onRubricSelect: (id: string | null) => void;
+}) {
+  if (view === 'observations') return <ObservationsPanel />;
+  if (view === 'ideas') return <ScoutView />;
+  if (view === 'rubrics') {
+    return rubricId ? (
+      <RubricDetailPanel rubricId={rubricId} onBack={() => onRubricSelect(null)} />
+    ) : (
+      <RubricsPanel onSelect={onRubricSelect} />
+    );
+  }
+  if (view === 'gym') return <GymView hive={hive} />;
+  if (view === 'improvements') return <ImprovementsView hive={hive} />;
+  if (view === 'benchmark') return <ApiaryView />;
+  if (view === 'orchestration') return <HiveEvalTrendView />;
+  if (view === 'bakeoff') return <BakeoffTrendView />;
+  if (view === 'wake-efficiency') return <MugWakeEfficiencyPanel />;
+  if (view === 'ekg') return <EkgPanel />;
+  if (view === 'red-queen') return <RedQueenPanel />;
+  if (view === 'experiments') return <ExperimentsPanel />;
+  if (view === 'throughput') return <ThroughputView />;
+  return <LearningsView hive={hive} />;
 }
 
 // ─── Improvements view ───────────────────────────────────────────────────────
@@ -710,18 +767,6 @@ function ApiaryView() {
       </div>
 
       <BenchmarkTrend instances={instances} />
-
-      <HiveEvalTrendView />
-
-      <BakeoffTrendView />
-
-      <MugWakeEfficiencyPanel />
-
-      <EkgPanel />
-
-      <RedQueenPanel />
-
-      <ExperimentsPanel />
 
       <div className="pc-learning__sectionhead">
         <h2>Benchmark generations</h2>
@@ -1949,7 +1994,7 @@ function Stat({ label, value, tone, hint }: { label: string; value: number | str
 export function LearningStyles() {
   return (
     <style>{`
-      .pc-learning { display: flex; flex-direction: column; min-height: 0; padding: 14px 16px 20px; gap: 12px; overflow-y: auto; }
+      .pc-learning { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 14px 16px 20px; gap: 12px; overflow: hidden; }
       .pc-learning__header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
       .pc-learning__header h1 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 20px; font-weight: 760; color: var(--fg); }
       .pc-learning__utilities { display: inline-flex; align-items: center; gap: 6px; }
@@ -1993,9 +2038,9 @@ export function LearningStyles() {
       }
 
       .pc-learning__controls { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
-      .pc-learning__view-list { display: inline-flex; align-items: center; gap: 3px; padding: 3px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-1); }
+      .pc-learning__view-list { display: inline-flex; align-items: center; gap: 3px; max-width: 100%; padding: 3px; overflow-x: auto; scrollbar-width: thin; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-1); }
       .pc-learning__view-tab {
-        display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px;
+        display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; padding: 6px 10px;
         border: 1px solid transparent; border-radius: 6px; background: transparent;
         color: var(--fg-mute); cursor: pointer; font: inherit; font-size: 11.5px; font-weight: 620;
         transition: color var(--dur-fast), border-color var(--dur-fast), background var(--dur-fast);
@@ -2009,7 +2054,9 @@ export function LearningStyles() {
         border: 1px solid var(--border); background: var(--bg-2); color: var(--fg-mute);
       }
       .pc-learning__hivepicklabel { text-transform: uppercase; font-size: 10px; letter-spacing: 0; }
-      .pc-learning__body { min-height: 240px; }
+      .pc-learning__body { flex: 1; min-height: 240px; overflow: hidden; }
+      .pc-learning__viewpane { height: 100%; min-height: 0; overflow: auto; }
+      .pc-learning__viewpane[data-view="observations"] { overflow: hidden; }
 
       @media (max-width: 720px) {
         .pc-learning__header { align-items: flex-start; }

@@ -78,6 +78,7 @@ const COMMS_LIST_LIMIT = 100;
 // projection must retain all four windows; applying the per-source cap again
 // after the merge lets a busy source starve every other conversation type.
 const UNIFIED_LIST_LIMIT = COMMS_LIST_LIMIT * 4;
+const UNIFIED_ROW_HEIGHT = 104;
 const READ_TIMEOUT_MS = 15_000;
 const INITIAL_LOAD_STALL_MS = 8_000;
 
@@ -390,6 +391,13 @@ function normalizedConversationText(value: string | null | undefined): string {
   return (value ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
 }
 
+/** System-origin coordination is diagnostic telemetry, not a curated
+ * conversation. Keep this predicate shared by every curated source so the
+ * Conversations and Raw events tabs remain a true partition. */
+export function isSystemConversationActor(value: string | null | undefined): boolean {
+  return /^system(?:$|[-_:/.])/i.test((value ?? '').trim());
+}
+
 /** A deliberately strict cross-source signature. Distinct conversations may
  * legitimately share a work-item or title, so collapse them only when every
  * user-visible identity field and the activity timestamp are identical. */
@@ -413,7 +421,7 @@ export function composeUnifiedConversationRows(
   limit: number,
 ): UnifiedConversationRow[] {
   const candidates: UnifiedConversationRow[] = [
-    ...questions.map((row) => ({
+    ...questions.filter((row) => !isSystemConversationActor(row.asker_id)).map((row) => ({
       id: `threads:${row.id}`,
       source: 'threads' as const,
       sourceId: row.id,
@@ -427,7 +435,7 @@ export function composeUnifiedConversationRows(
       relatedRef: row.promoted_issue_id,
       updatedAt: conversationEpoch(row.updated_ts ?? row.created_ts),
     })),
-    ...deliberations.map((row) => ({
+    ...deliberations.filter((row) => !isSystemConversationActor(row.created_by)).map((row) => ({
       id: `deliberations:${row.thread_id}`,
       source: 'deliberations' as const,
       sourceId: row.thread_id,
@@ -442,7 +450,7 @@ export function composeUnifiedConversationRows(
       count: row.post_count,
       updatedAt: conversationEpoch(row.last_post_at ?? row.created_at),
     })),
-    ...agentChats.map((row) => ({
+    ...agentChats.filter((row) => !isSystemConversationActor(row.role)).map((row) => ({
       id: `agentchats:${row.id}`,
       source: 'agentchats' as const,
       sourceId: row.id,
@@ -457,7 +465,7 @@ export function composeUnifiedConversationRows(
       count: row.turns,
       updatedAt: conversationEpoch(row.updated_at ?? row.created_at),
     })),
-    ...messages.map((row) => ({
+    ...messages.filter((row) => !isSystemConversationActor(row.from_slug)).map((row) => ({
       id: `messages:${row.id}`,
       source: 'messages' as const,
       sourceId: row.id,
@@ -497,7 +505,7 @@ export function composeUnifiedConversationRows(
  * list: the design guide calls that shape out as a non-RichGrid use case.
  */
 function UnifiedInboxView() {
-  const [, setRoute] = useQueryStates(CONVERSATION_ROUTE_PARAMS);
+  const [route, setRoute] = useQueryStates(CONVERSATION_ROUTE_PARAMS);
   const [search, setSearch] = useQueryState('cq', parseAsString.withDefault(''));
   const debouncedSearch = useDebouncedValue(search, DEBOUNCE_MS);
   const questions = useSyncQuery<ConvRow>({ queryName: 'conversations.questionsList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
@@ -542,7 +550,7 @@ function UnifiedInboxView() {
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLButtonElement>({
     count: filteredRows.length,
     getScrollElement: () => listRef.current,
-    estimateSize: () => 82,
+    estimateSize: () => UNIFIED_ROW_HEIGHT,
     overscan: 10,
   });
   // `measureElement` on each mounted row already keeps variable heights exact.
@@ -557,9 +565,40 @@ function UnifiedInboxView() {
     msg: row.source === 'messages' ? row.sourceId : null,
     fmsg: null,
   });
+  const selectedSourceId = route.conv === 'threads'
+    ? route.conversation
+    : route.conv === 'deliberations'
+      ? route.thread
+      : route.conv === 'agentchats'
+        ? route.chat
+        : route.conv === 'messages'
+          ? route.msg
+          : null;
+  const selectedUnifiedId = selectedSourceId ? `${route.conv}:${selectedSourceId}` : null;
+  const closeDetail = () => setRoute({ conv: 'inbox', ...EMPTY_CONVERSATION_SELECTION });
+  const detail = route.conv === 'threads' && route.conversation
+    ? <ThreadsView detailOnly />
+    : route.conv === 'deliberations' && route.thread
+      ? <DeliberationsView detailOnly />
+      : route.conv === 'agentchats' && route.chat
+        ? <AgentChatsView detailOnly />
+        : route.conv === 'messages' && route.msg
+          ? <MessagesView detailOnly />
+          : (
+            <section className="pc-coord__detail">
+              <EmptyState
+                style={{ minHeight: '100%' }}
+                icon={<Inbox size={22} aria-hidden />}
+                title="Select a conversation"
+                desc="Open a conversation to review its full context."
+              />
+            </section>
+          );
 
   return (
     <ConvFrame
+      detailOpen={selectedUnifiedId != null}
+      onBack={selectedUnifiedId ? () => void closeDetail() : undefined}
       filters={
         <>
           <div className="pc-advconv__railhead pc-advconv__railhead--unified">
@@ -637,12 +676,12 @@ function UnifiedInboxView() {
                 return (
                   <button
                     key={row.id}
-                    ref={virtualizer.measureElement}
                     type="button"
-                    className="pc-advconv__unified-row"
+                    className={`pc-advconv__unified-row${selectedUnifiedId === row.id ? ' is-active' : ''}`}
                     data-index={item.index}
                     style={{ transform: `translateY(${item.start}px)` }}
                     aria-label={`Open ${row.title}`}
+                    aria-current={selectedUnifiedId === row.id ? 'true' : undefined}
                     onClick={() => void open(row)}
                   >
                     <span className="pc-advconv__unified-source" aria-hidden><Icon size={14} /></span>
@@ -669,16 +708,7 @@ function UnifiedInboxView() {
           )}
         </div>
       }
-      detail={
-        <section className="pc-coord__detail">
-          <EmptyState
-            style={{ minHeight: '100%' }}
-            icon={<Inbox size={22} aria-hidden />}
-            title="Select a conversation"
-            desc="Open a conversation to review its full context."
-          />
-        </section>
-      }
+      detail={detail}
     />
   );
 }
@@ -699,6 +729,7 @@ function ConvFrame({
   detail,
   detailOpen = false,
   onBack,
+  detailOnly = false,
 }: {
   filters?: React.ReactNode;
   /** The sidebar list (rail|detail views). Omit for full-width stream views
@@ -707,6 +738,7 @@ function ConvFrame({
   detail: React.ReactNode;
   detailOpen?: boolean;
   onBack?: () => void;
+  detailOnly?: boolean;
 }) {
   const [route, setRoute] = useQueryStates(CONVERSATION_ROUTE_PARAMS);
   const view = route.conv;
@@ -752,6 +784,8 @@ function ConvFrame({
       </Tooltip>
     );
   };
+
+  if (detailOnly) return <>{detail}</>;
 
   return (
     <div className={`pc-advconv__shell${detailOpen ? ' is-detail-open' : ''}`}>
@@ -821,18 +855,10 @@ export default function AdvConversationsTab() {
   }, [isInternalDetailRoute, sourceSelection, setRoute]);
   return (
     <div className="pc-coord pc-advconv pc-advconv--shell">
-      {view === 'inbox' ? (
-        <UnifiedInboxView />
-      ) : view === 'feed' ? (
+      {view === 'feed' ? (
         <FeedView />
-      ) : view === 'deliberations' ? (
-        <DeliberationsView />
-      ) : view === 'agentchats' ? (
-        <AgentChatsView />
-      ) : view === 'messages' ? (
-        <MessagesView />
       ) : (
-        <ThreadsView />
+        <UnifiedInboxView />
       )}
       <AdvConvStyles />
     </div>
@@ -981,6 +1007,7 @@ function FeedView() {
       ...(agent ? { owner: agent } : {}),
       ...(plan ? { plan_slug: plan } : {}),
       ...(debouncedQ.trim() ? { q: debouncedQ.trim() } : {}),
+      system_only: true,
       limit,
     }),
     [serverKinds, agent, plan, debouncedQ, limit],
@@ -1615,7 +1642,7 @@ function ReplyComposer({
   );
 }
 
-function ThreadsView() {
+function ThreadsView({ detailOnly = false }: { detailOnly?: boolean } = {}) {
   const [state, setState] = useQueryState('cstate', parseAsStringEnum<ConvStateFilter>([...CONV_STATES]).withDefault('open'));
   const [kind, setKind] = useQueryState('ckind', parseAsStringEnum<ConvKindFilter>([...CONV_KINDS]).withDefault('all'));
   const [topic, setTopic] = useQueryState('ctopic', parseAsString.withDefault(''));
@@ -1672,14 +1699,14 @@ function ThreadsView() {
   // real heights instead of trusting one estimate.
   const railScrollRef = useRef<HTMLDivElement | null>(null);
   const rowVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
-    count: visible.length,
+    count: sel ? 0 : visible.length,
     getScrollElement: () => railScrollRef.current,
     estimateSize: () => 76,
     overscan: 10,
   });
   useEffect(() => {
-    rowVirtualizer.measure();
-  }, [visible, rowVirtualizer]);
+    if (!sel) rowVirtualizer.measure();
+  }, [visible, rowVirtualizer, sel]);
   const selectedSet = useMemo(() => new Set(sel ? [sel] : []), [sel]);
   const columns = useMemo<ColumnDef<ConvRow>[]>(
     () => [
@@ -1718,6 +1745,7 @@ function ThreadsView() {
 
   return (
     <ConvFrame
+      detailOnly={detailOnly}
       detailOpen={!!sel}
       onBack={() => void setSel(null)}
       filters={sel ? undefined : (
@@ -1911,7 +1939,7 @@ interface ThreadRow {
 interface ThreadPost { id: number; author_id: string | null; body: string | null; created_at: string; harness_slug: string | null }
 interface DeliberationDetail { thread: ThreadRow; posts: ThreadPost[] }
 
-function DeliberationsView() {
+function DeliberationsView({ detailOnly = false }: { detailOnly?: boolean } = {}) {
   const [sel, setSel] = useQueryState('thread', parseAsString);
   const listQuery = useSyncQuery<ThreadRow>({
     queryName: 'conversations.deliberationList',
@@ -1938,14 +1966,14 @@ function DeliberationsView() {
   // inline-virtualMode template). `measureAll` keeps offsets exact as titles wrap.
   const railScrollRef = useRef<HTMLDivElement | null>(null);
   const rowVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
-    count: list.length,
+    count: sel ? 0 : list.length,
     getScrollElement: () => railScrollRef.current,
     estimateSize: () => 70,
     overscan: 10,
   });
   useEffect(() => {
-    rowVirtualizer.measure();
-  }, [list, rowVirtualizer]);
+    if (!sel) rowVirtualizer.measure();
+  }, [list, rowVirtualizer, sel]);
   const selectedSet = useMemo(() => new Set(sel ? [sel] : []), [sel]);
   const columns = useMemo<ColumnDef<ThreadRow>[]>(
     () => [
@@ -1977,6 +2005,7 @@ function DeliberationsView() {
 
   return (
     <ConvFrame
+      detailOnly={detailOnly}
       detailOpen={!!sel}
       onBack={() => void setSel(null)}
       filters={sel ? undefined : (
@@ -2103,7 +2132,7 @@ function turnText(content: unknown): string {
   return content == null ? '' : JSON.stringify(content);
 }
 
-function AgentChatsView() {
+function AgentChatsView({ detailOnly = false }: { detailOnly?: boolean } = {}) {
   const [harness, setHarness] = useQueryState('acharness', parseAsString.withDefault(''));
   const [role, setRole] = useQueryState('acrole', parseAsString.withDefault(''));
   const [sel, setSel] = useQueryState('chat', parseAsString);
@@ -2143,7 +2172,7 @@ function AgentChatsView() {
   // the grouped/expandable gap the live coord feed will hit next.
   const railScrollRef = useRef<HTMLDivElement | null>(null);
   const rowVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
-    count: list.length,
+    count: sel ? 0 : list.length,
     getScrollElement: () => railScrollRef.current,
     // Three stacked lines (top meta / title / meta) inside a 7px-padded card.
     // Rows are uniform height, so a matching estimate keeps virtual offsets
@@ -2152,8 +2181,8 @@ function AgentChatsView() {
     overscan: 10,
   });
   useEffect(() => {
-    rowVirtualizer.measure();
-  }, [list, rowVirtualizer]);
+    if (!sel) rowVirtualizer.measure();
+  }, [list, rowVirtualizer, sel]);
 
   // RichGrid's selection set, derived from the nuqs `?chat=` scalar — drives
   // the cell's `isSelected` → `.pc-coord__row.is-active` styling.
@@ -2192,6 +2221,7 @@ function AgentChatsView() {
 
   return (
     <ConvFrame
+      detailOnly={detailOnly}
       detailOpen={!!sel}
       onBack={() => void setSel(null)}
       filters={sel ? undefined : (
@@ -2351,7 +2381,7 @@ interface MsgRow {
   to_feature_id: string | null;
 }
 
-function MessagesView() {
+function MessagesView({ detailOnly = false }: { detailOnly?: boolean } = {}) {
   const [open, setOpen] = useQueryState('msg', parseAsString);
   const listQuery = useSyncQuery<MsgRow>({
     queryName: 'conversations.messageList',
@@ -2379,14 +2409,14 @@ function MessagesView() {
   // re-render (and the cell's `isSelected` drives the `.is-open` styling).
   const streamRef = useRef<HTMLDivElement | null>(null);
   const rowVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
-    count: list.length,
+    count: open ? 0 : list.length,
     getScrollElement: () => streamRef.current,
     estimateSize: () => 40,
     overscan: 12,
   });
   useEffect(() => {
-    rowVirtualizer.measure();
-  }, [list, rowVirtualizer]);
+    if (!open) rowVirtualizer.measure();
+  }, [list, open, rowVirtualizer]);
   const openSet = useMemo(() => new Set(open ? [open] : []), [open]);
   const columns = useMemo<ColumnDef<MsgRow>[]>(
     () => [
@@ -2454,6 +2484,7 @@ function MessagesView() {
   if (open) {
     return (
       <ConvFrame
+        detailOnly={detailOnly}
         detailOpen
         onBack={() => void setOpen(null)}
         detail={(
@@ -2505,6 +2536,7 @@ function MessagesView() {
 
   return (
     <ConvFrame
+      detailOnly={detailOnly}
       detail={
         <div className="pc-advfeed">
       <div className="pc-advfeed__filters">
@@ -3100,7 +3132,8 @@ function AdvConvStyles() {
         position: absolute;
         inset: 0 0 auto;
         width: 100%;
-        min-height: 76px;
+        height: ${UNIFIED_ROW_HEIGHT}px;
+        overflow: clip;
         display: grid;
         grid-template-columns: 34px minmax(0, 1fr);
         gap: 9px;
@@ -3116,9 +3149,22 @@ function AdvConvStyles() {
         transition: none;
       }
       .pc-advconv__unified-row:hover,
-      .pc-advconv__unified-row:focus-visible {
+      .pc-advconv__unified-row:focus-visible,
+      .pc-advconv__unified-row.is-active {
         background: var(--advconv-accent-softer);
         border-color: color-mix(in oklab, var(--advconv-accent), transparent 62%);
+      }
+      .pc-advconv__unified-row.is-active {
+        background: var(--advconv-accent-soft);
+        border-color: color-mix(in oklab, var(--advconv-accent), transparent 42%);
+      }
+      .pc-advconv__unified-row.is-active::before {
+        content: '';
+        position: absolute;
+        inset: 9px auto 9px 0;
+        width: 3px;
+        border-radius: 0 999px 999px 0;
+        background: var(--advconv-accent);
       }
       .pc-advconv__unified-row:focus-visible {
         outline: 1px solid var(--advconv-accent);
@@ -3178,8 +3224,9 @@ function AdvConvStyles() {
       .pc-advconv__unified-content > strong {
         min-width: 0;
         overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
         color: var(--fg);
         font-size: 12.5px;
         line-height: 1.35;
@@ -3195,6 +3242,7 @@ function AdvConvStyles() {
       }
       .pc-advconv__unified-meta {
         overflow: hidden;
+        white-space: nowrap;
       }
       .pc-advconv__unified-meta span {
         min-width: 0;

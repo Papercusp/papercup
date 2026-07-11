@@ -2662,15 +2662,21 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z
       .object({
         state: z.enum(['open', 'resolved', 'closed']).optional(),
-        limit: clampedLimitOpt(500),
+        // Same generous ceiling as Work Queue. The UI grows a 200-row window;
+        // clamp instead of reject so rollout skew cannot break the pane.
+        limit: clampedLimitOpt(2000),
       })
       .optional(),
     resolve: async (args) => {
       const a = (args ?? {}) as { state?: 'open' | 'resolved' | 'closed'; limit?: number };
-      const { listIssues } = await import('../issues-engineer');
+      const { listIssues, countIssues } = await import('../issues-engineer');
       const { OBSERVATION_TOPIC } = await import('../harness/improvements/read-items');
-      const issues = await listIssues({ topic: OBSERVATION_TOPIC, state: a.state, limit: a.limit ?? 200 });
-      return issues
+      const filter = { topic: OBSERVATION_TOPIC, state: a.state };
+      const [issues, total] = await Promise.all([
+        listIssues({ ...filter, limit: a.limit ?? 200 }),
+        countIssues(filter),
+      ]);
+      const rows = issues
         .map((i) => {
           const p = i.payload && typeof i.payload === 'object' ? (i.payload as Record<string, unknown>) : {};
           const obs = p.observation && typeof p.observation === 'object' ? (p.observation as Record<string, unknown>) : {};
@@ -2688,6 +2694,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           };
         })
         .sort((x, y) => (x.createdAt < y.createdAt ? 1 : x.createdAt > y.createdAt ? -1 : 0));
+      return attachListMeta(rows, { total });
     },
   },
 
@@ -4013,6 +4020,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({
       kinds: z.array(z.string()).optional(),
       owner: z.string().optional(),
+      system_only: z.boolean().optional(),
       plan_slug: z.string().optional(),
       q: z.string().optional(),
       since_ts: z.string().optional(),
@@ -4023,6 +4031,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const a = (args ?? {}) as {
         kinds?: string[];
         owner?: string;
+        system_only?: boolean;
         plan_slug?: string;
         q?: string;
         since_ts?: string;
@@ -4033,6 +4042,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { rows, nextCursor, total, byKind } = await readCoordFeed({
         kinds: a.kinds as never,
         owner: a.owner,
+        system_only: a.system_only,
         plan_slug: a.plan_slug,
         q: a.q,
         since_ts: a.since_ts,

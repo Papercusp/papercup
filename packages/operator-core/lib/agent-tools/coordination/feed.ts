@@ -71,6 +71,9 @@ export interface ReadCoordFeedOpts {
    *  what agent X SENT" filter (e.g. verifying your own coord:send landed, or reading one
    *  peer's messages) rather than the sender-OR-recipient-plus-broadcasts `owner` match. */
   from?: string;
+  /** Restrict to system-origin envelopes. Used by diagnostic UI surfaces that
+   * must not overlap the agent-authored curated conversation stream. */
+  system_only?: boolean;
   /** Restrict to one plan slug. */
   plan_slug?: string;
   /** Restrict to envelopes addressed to this audience selector (`@fleet:<slug>` /
@@ -159,6 +162,10 @@ function matchesAudience(env: CoordEnvelope, audience: string): boolean {
   return Array.isArray(env.audience) && env.audience.includes(audience);
 }
 
+export function isSystemCoordActor(value: string | null | undefined): boolean {
+  return /^system(?:$|[-_:/.])/i.test((value ?? '').trim());
+}
+
 function matchesText(env: CoordEnvelope, needle: string): boolean {
   const hay = [
     env.summary,
@@ -222,6 +229,7 @@ export async function readCoordFeed(
     if (kindSet && !kindSet.has(env.kind)) return false;
     if (opts.owner && !matchesOwner(env, opts.owner)) return false;
     if (opts.from && env.from !== opts.from) return false; // EI-7018: strict sender-only filter
+    if (opts.system_only && !isSystemCoordActor(env.from)) return false;
     if (opts.plan_slug && env.plan_slug !== opts.plan_slug) return false;
     if (opts.audience && !matchesAudience(env, opts.audience)) return false;
     if (needle && !matchesText(env, needle)) return false;

@@ -491,13 +491,40 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
 /**
  * COUNT companion to {@link listIssues} — the true total for the same filter,
  * minus order/limit. Lets a capped read render "N of TOTAL" instead of the
- * downloaded length. Topic-filtered counts fall back to listIssues (the topic
- * edge join is rare and not on the count hot-path).
+ * downloaded length. Topic-filtered counts use the indexed coord_links join
+ * directly; re-listing every matching issue here made infinite feeds do twice
+ * the payload work for every page-window growth.
  */
 export async function countIssues(filter: ListIssuesFilter = {}): Promise<number> {
-  if (filter.topic) return (await listIssues({ ...filter, limit: 100_000 })).length;
   const { sql } = getOrgPg();
   const kindSet: readonly IssueStoreKind[] = filter.kind ? [filter.kind] : (filter.kinds ?? ISSUE_KINDS);
+  if (filter.topic) {
+    const rows = await sql<{ n: number }[]>`
+      SELECT count(DISTINCT ei.issue_id)::int AS n
+        FROM harness_shared.engineer_issues ei
+        JOIN harness_shared.coord_links cl
+          ON cl.workspace_id = ${coordScopeWorkspace()}
+         AND cl.rel = 'tagged'
+         AND cl.src_kind = ${ISSUE_KIND}
+         AND cl.src_ref = ei.issue_id
+         AND cl.dst_kind = 'topic'
+         AND cl.dst_ref = ${filter.topic}
+       WHERE ei.workspace_id = ${issuesScopeWorkspace()}
+         AND ei.kind = ANY(${kindSet as string[]}::text[])
+         AND ${filter.state ? sql`ei.state = ${filter.state}` : sql`TRUE`}
+         AND ${filter.scope ? sql`ei.scope = ${filter.scope}` : sql`TRUE`}
+         AND ${filter.assignee ? sql`ei.assignee = ${filter.assignee}` : sql`TRUE`}
+         AND ${filter.assignedBy ? sql`ei.assigned_by = ${filter.assignedBy}` : sql`TRUE`}
+         AND ${filter.severity ? sql`ei.severity = ${filter.severity}` : sql`TRUE`}
+         AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
+         AND ${filter.admissibleOnly ? sql`(ei.origin = 'local' OR ei.origin IS NULL)` : sql`TRUE`}
+         AND ${
+           filter.audit === 'no-evidence'
+             ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ei.terminal_completion_ref IS NULL)`
+             : sql`TRUE`
+         }`;
+    return rows[0]?.n ?? 0;
+  }
   const rows = await sql<{ n: number }[]>`
     SELECT count(*)::int AS n
       FROM harness_shared.engineer_issues
@@ -508,7 +535,13 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
        AND ${filter.assignee ? sql`assignee = ${filter.assignee}` : sql`TRUE`}
        AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}
        AND ${filter.severity ? sql`severity = ${filter.severity}` : sql`TRUE`}
-       AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}`;
+       AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
+       AND ${filter.admissibleOnly ? sql`(origin = 'local' OR origin IS NULL)` : sql`TRUE`}
+       AND ${
+         filter.audit === 'no-evidence'
+           ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND terminal_completion_ref IS NULL)`
+           : sql`TRUE`
+       }`;
   return rows[0]?.n ?? 0;
 }
 

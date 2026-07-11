@@ -13,7 +13,11 @@
  * promoting it to a real idea — never from this surface.
  */
 
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { RefreshCw } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
+import { VirtualGrid, type ColumnDef } from '@papercusp/grid-core';
+import { readListTotal } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
 import type { PanelComponentProps } from '@/app/harness/dock/panel-registry';
 import { useItemPlanFilter } from './use-create-data';
 
@@ -37,40 +41,110 @@ const KIND_LABEL: Record<string, string> = {
   reinforce: 'Reinforce',
 };
 
-// Browse-feed fetch cap. The resolver counts a topic-filtered set by RE-listing
-// (countIssues({topic}) does a full second list), so carrying an exact total via
-// attachListMeta isn't cheap here — instead we show an honest "newest N" note
-// when the read fills the cap, rather than silently presenting the page as all.
-const OBSERVATIONS_LIMIT = 200;
+// Same growing server window used by Working → Work Queue. VirtualGrid keeps DOM
+// work bounded while the explicit limit makes each next page part of the same
+// sync-query stream. The resolver carries the true count on row[0]._meta.
+export const OBSERVATIONS_PAGE = 200;
+
+const CELL_TRUNCATE: CSSProperties = {
+  display: 'block',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
 
 export default function ObservationsPanel(_props?: Partial<PanelComponentProps>) {
   const [itemPlans] = useItemPlanFilter();
-  const { data, loading } = useSyncQuery<ObservationRow>({
+  const [limit, setLimit] = useState(OBSERVATIONS_PAGE);
+  useEffect(() => setLimit(OBSERVATIONS_PAGE), [itemPlans]);
+
+  const query = useSyncQuery<ObservationRow>({
     queryName: 'learning.observations',
-    args: { limit: OBSERVATIONS_LIMIT },
+    args: { limit },
+    staleTime: 30_000,
   });
-  const allRows = data ?? [];
-  const rows = itemPlans.length
-    ? allRows.filter((row) => observationMatchesPlan(row, itemPlans))
-    : allRows;
-  // When the feed exactly fills the cap, there may be older observations not
-  // shown — say so instead of letting `rows.length` read as the true total.
-  const capped = !itemPlans.length && rows.length >= OBSERVATIONS_LIMIT;
+  // Keep cached rows painted while a larger window or push invalidation refetches.
+  const allRows = query.data ?? [];
+  const rows = useMemo(
+    () => itemPlans.length
+      ? allRows.filter((row) => observationMatchesPlan(row, itemPlans))
+      : allRows,
+    [allRows, itemPlans],
+  );
+  const total = readListTotal(query.data);
+  const hasMore = allRows.length < total;
+  const loadMore = useCallback(() => setLimit((current) => current + OBSERVATIONS_PAGE), []);
+
+  const columns = useMemo<ColumnDef<ObservationRow>[]>(() => [
+    {
+      key: 'kind',
+      header: 'Signal',
+      width: 1,
+      toCopyText: (row) => row.kind ? (KIND_LABEL[row.kind] ?? row.kind) : '',
+      render: ({ row }) => row.kind ? (
+        <span style={{ fontSize: 11, fontWeight: 650, color: 'var(--accent)' }}>
+          {KIND_LABEL[row.kind] ?? row.kind}
+        </span>
+      ) : null,
+    },
+    {
+      key: 'observation',
+      header: 'Observation',
+      width: 5,
+      toCopyText: (row) => [row.title, row.body].filter(Boolean).join('\n'),
+      render: ({ row }) => (
+        <span style={{ display: 'grid', gap: 2, minWidth: 0 }} title={row.body ?? row.title}>
+          <strong style={{ ...CELL_TRUNCATE, fontSize: 12, fontWeight: 620 }}>{row.title}</strong>
+          {row.body ? <span style={{ ...CELL_TRUNCATE, color: 'var(--fg-mute)', fontSize: 11 }}>{row.body}</span> : null}
+        </span>
+      ),
+    },
+    {
+      key: 'context',
+      header: 'Context',
+      width: 2.6,
+      toCopyText: (row) => [row.sourceRole, row.scope, row.confidence, ...row.refs].filter(Boolean).join(' · '),
+      render: ({ row }) => (
+        <span style={{ ...CELL_TRUNCATE, color: 'var(--fg-mute)', fontSize: 11 }} title={[row.sourceRole, row.scope, row.confidence, ...row.refs].filter(Boolean).join(' · ')}>
+          {[row.sourceRole, row.scope, row.confidence, ...row.refs].filter(Boolean).join(' · ')}
+        </span>
+      ),
+    },
+    {
+      key: 'createdAt',
+      header: 'Observed',
+      width: 1.5,
+      toCopyText: (row) => row.createdAt,
+      render: ({ row }) => (
+        <span style={{ ...CELL_TRUNCATE, color: 'var(--fg-mute)', fontSize: 11 }} title={new Date(row.createdAt).toLocaleString()}>
+          {new Date(row.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+        </span>
+      ),
+    },
+  ], []);
 
   return (
-    <div style={{ height: '100%', overflow: 'auto', padding: 16 }}>
-      <div style={{ marginBottom: 12, color: 'var(--fg-mute)', fontSize: 12, lineHeight: 1.5 }}>
-        <strong style={{ color: 'var(--fg)' }}>Observations</strong> — pre-idea sensor readings agents
-        record at the end of a turn. They never enter the work queue; a recurring one is promoted to a
-        real idea by Scout. Browse only.
-        {rows.length > 0 ? (
-          <span style={{ marginLeft: 6, color: 'var(--fg)' }}>
-            {capped ? `newest ${OBSERVATIONS_LIMIT}` : rows.length}
+    <div style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ minHeight: 30, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8 }}>
+        {total > 0 ? (
+          <span data-testid="observations-count" style={{ color: 'var(--fg-mute)', fontSize: 11, fontVariantNumeric: 'tabular-nums' }}>
+            {itemPlans.length ? `${rows.length} / ${total}` : total}
           </span>
         ) : null}
+        <button
+          type="button"
+          className="pc-advpanel__iconbtn"
+          aria-label="Refresh observations"
+          disabled={query.fetching}
+          onClick={() => query.invalidate()}
+        >
+          <RefreshCw size={13} aria-hidden />
+        </button>
       </div>
-      {loading && rows.length === 0 ? (
+      {query.loading && rows.length === 0 ? (
         <div style={{ color: 'var(--fg-mute)', padding: 12 }}>Loading observations…</div>
+      ) : query.error ? (
+        <div style={{ color: 'var(--bad)', padding: 12 }}>Could not load observations.</div>
       ) : rows.length === 0 ? (
         <div style={{ color: 'var(--fg-mute)', padding: 12 }}>
           {itemPlans.length
@@ -78,33 +152,14 @@ export default function ObservationsPanel(_props?: Partial<PanelComponentProps>)
             : 'No observations yet — they appear as agents reflect at the end of their turns.'}
         </div>
       ) : (
-        <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {rows.map((o) => (
-            <li
-              key={o.id}
-              style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px', background: 'var(--surface)' }}
-            >
-              <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
-                {o.kind ? (
-                  <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent, #f59e0b)' }}>
-                    {KIND_LABEL[o.kind] ?? o.kind}
-                  </span>
-                ) : null}
-                <span style={{ fontWeight: 500 }}>{o.title}</span>
-              </div>
-              {o.body ? (
-                <div style={{ marginTop: 4, fontSize: 12, color: 'var(--fg-mute)', whiteSpace: 'pre-wrap' }}>{o.body}</div>
-              ) : null}
-              <div style={{ marginTop: 6, display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 11, color: 'var(--fg-mute)' }}>
-                {o.sourceRole ? <span>{o.sourceRole}</span> : null}
-                {o.scope ? <span>scope: {o.scope}</span> : null}
-                {o.confidence ? <span>conf: {o.confidence}</span> : null}
-                {o.refs.length ? <span>{o.refs.join(' · ')}</span> : null}
-                <span style={{ marginLeft: 'auto' }}>{new Date(o.createdAt).toLocaleString()}</span>
-              </div>
-            </li>
-          ))}
-        </ul>
+        <VirtualGrid<ObservationRow>
+          columns={columns}
+          rows={rows}
+          getRowId={(row) => row.id}
+          rowMinHeight={48}
+          headerHeight={30}
+          onEndReached={hasMore ? loadMore : undefined}
+        />
       )}
     </div>
   );
