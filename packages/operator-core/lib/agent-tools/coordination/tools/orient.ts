@@ -906,6 +906,20 @@ export default defineTool({
         ideate = await computeIdeateOverdue({ ownerId, workspaceId: ws });
       } catch { /* fail-soft */ }
     }
+    // su-ideate-learning-substrate-2026-07-10 P-022(a): the capture-MISS advisory
+    // (D-017). A high-signal turn — an error-retry cluster / EI-* reference /
+    // durable-discovery language in the caller's boundary artifacts — that filed
+    // ZERO lane:observation rows gets ONE advisory line. A NUDGE, never a quota
+    // (D-017 rejects volume quotas). Fail-soft; the resolver short-circuits the
+    // cost for anyone who already filed, and this is ATTACHED only when it fires
+    // (a healthy session sees nothing).
+    let captureMiss: import('./orient-capture-miss-hint').CaptureMissHint | undefined;
+    if (ownerId) {
+      try {
+        const { resolveCaptureMissHint } = await import('./orient-capture-miss-hint');
+        captureMiss = await resolveCaptureMissHint({ ownerId, harness: args.harness });
+      } catch { /* fail-soft */ }
+    }
     // compaction-context-loss-2026-07-05 P-002: the post-compaction recovery
     // fold — held-item checkpoints + armed-loop status + the self-recall
     // pointer (with a self live-tail so it's fresh). Handler-side IO like
@@ -922,7 +936,7 @@ export default defineTool({
         recovery = await buildCompactionRecovery(ownerId, ws);
       } catch { /* fail-soft */ }
     }
-    const out = { ...(self ? { self } : {}), ...(modes ? { modes } : {}), ...(ideate ? { ideate } : {}), ...(recovery ? { recovery } : {}), ...(result as object) };
+    const out = { ...(self ? { self } : {}), ...(modes ? { modes } : {}), ...(ideate ? { ideate } : {}), ...(captureMiss ? { captureMiss } : {}), ...(recovery ? { recovery } : {}), ...(result as object) };
     // EI-9130: stamp the generic delta-served breadcrumb when at least one of orient's
     // bespoke cursor-delta legs actually narrowed/unchanged its response — see
     // orientServedDelta's doc comment + dispatch-stack.ts's recordTelemetry. Never

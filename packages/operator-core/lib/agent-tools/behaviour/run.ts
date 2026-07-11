@@ -27,6 +27,8 @@ import type { BehaviourContext } from '../../behaviour-suite/assertions';
 import { scoreTranscriptLines, runBehaviourSuite } from '../../behaviour-suite/runner';
 import { createNodeRunnerDeps, resolveSessionTranscript, expandHome } from '../../behaviour-suite/runner-node';
 import { emitBehaviourScorecard } from './scorecard';
+import { resolveCapturePersistenceGate, type CapturePersistenceGate } from '../../behaviour-suite/capture-persistence-gate';
+import type { BehaviourReport } from '../../behaviour-suite/report';
 import { promises as fsp } from 'node:fs';
 
 const ok = (p: Record<string, unknown>) => ({ content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...p }) }] });
@@ -54,6 +56,41 @@ function ctxFromArgs(a: { expectedModelSubstr?: string; expectedWorkItemIds?: st
     fleetExpected: a.fleetExpected,
     autoFleetMember: a.autoFleetMember,
   };
+}
+
+/** The battery's graduation decision: the graduation shape a CI/battery gate reads. */
+export interface BehaviourGraduation {
+  /** True ⇔ this battery should NOT graduate — the deterministic verdict failed OR the capture teeth block. */
+  blocked: boolean;
+  /** Short why (the first blocking cause, or "clear"). */
+  reason: string;
+  /** The 8-check deterministic verdict, kept faithful (the teeth never rewrite it). */
+  deterministicVerdict: 'pass' | 'fail';
+  /** The su-agent-behavior knowledge-capture teeth gate (P-022(b), D-017) — persistent non-capture blocks graduation. */
+  captureGate: CapturePersistenceGate;
+}
+
+/**
+ * Combine the deterministic 8-check verdict with the knowledge-capture teeth gate
+ * (P-022(b), D-017) into ONE graduation decision. The deterministic `verdict`
+ * stays a faithful record of the checks; the teeth ADD a blocking cause so
+ * persistent agent-attributed non-capture blocks graduation instead of being a
+ * note. Fail-open: a disabled / erroring gate is non-blocking, so only the
+ * deterministic verdict can block. `sourceHive` scopes the criterion history when
+ * the run's hive is known.
+ */
+async function computeGraduation(report: BehaviourReport, sourceHive?: string): Promise<BehaviourGraduation> {
+  const captureGate = await resolveCapturePersistenceGate(sourceHive ? { sourceHive } : {}).catch(
+    () => ({ blocking: false, consecutiveNonCapture: 0, threshold: 0, assessed: 0, reason: 'gate-error', error: 'gate-error' }) as CapturePersistenceGate,
+  );
+  const deterministicVerdict = report.verdict;
+  const blocked = deterministicVerdict === 'fail' || captureGate.blocking;
+  const reason = deterministicVerdict === 'fail'
+    ? `deterministic verdict FAIL: ${report.criticalFailures.join(', ') || 'critical check failed'}`
+    : captureGate.blocking
+      ? captureGate.reason
+      : 'clear — deterministic checks passed and no persistent capture-miss streak';
+  return { blocked, reason, deterministicVerdict, captureGate };
 }
 
 export const behaviourRunTool = defineTool({
@@ -111,7 +148,9 @@ export const behaviourRunTool = defineTool({
         // Dual-emit (WI-3340): file the run as ONE su-agent-behavior scorecard so the
         // checks feed rubrics:trend. Best-effort — never alters the report/verdict.
         const scorecard = await emitBehaviourScorecard(report, { sessionId: args.sessionId, transcriptPath: path }, toolCtx);
-        return ok({ report, transcriptPath: path, scorecard });
+        // P-022(b) teeth: persistent knowledge-capture non-capture BLOCKS graduation (D-017).
+        const graduation = await computeGraduation(report);
+        return ok({ report, transcriptPath: path, scorecard, graduation });
       }
 
       // launch mode
@@ -131,7 +170,8 @@ export const behaviourRunTool = defineTool({
         { sessionId: result.sessionId ?? undefined, transcriptPath: result.transcriptPath ?? undefined },
         toolCtx,
       );
-      return ok({ report: result.report, sessionId: result.sessionId, transcriptPath: result.transcriptPath, captureOutcome: result.captureOutcome, scorecard });
+      const graduation = await computeGraduation(result.report);
+      return ok({ report: result.report, sessionId: result.sessionId, transcriptPath: result.transcriptPath, captureOutcome: result.captureOutcome, scorecard, graduation });
     } catch (e) {
       return fail({ error: `behaviour:run (${mode}) failed: ${errMsg(e)}` });
     }
