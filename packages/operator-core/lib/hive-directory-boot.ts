@@ -30,6 +30,7 @@ import { isHiveUnlistFrame } from './hive-directory';
 import { publishHiveToDirectory, type HiveDirectoryMeta, type HiveOwnerIdentity } from './hive-publish';
 import type { HiveDirectory } from './hive-directory';
 import { bakedCanonicalHiveInvite } from './harness/papercusp-hive-join';
+import { requestOnlyHost } from './background-workers';
 
 /** Default re-announce cadence (5 min) — keeps a hive fresh under the TTL. */
 export const DEFAULT_REANNOUNCE_MS = 5 * 60 * 1000;
@@ -416,8 +417,25 @@ export async function wireHiveDirectoryForWorkspace(
     /** Hardening P-003 test seam — the full-publish-set reconcile for public
      *  hives. Default: hive-publish-from-repo's republishHiveAfterMemberAdd. */
     republish?: (o: { workspaceId: string; potSlug: string }) => Promise<unknown>;
+    /** EI-9534 test seam — force the request-only decision. Default: requestOnlyHost(). */
+    requestOnly?: boolean;
   } = {},
 ): Promise<HiveDirectoryWiring | null> {
+  // [EI-9534] A request-only SECONDARY host (PAPERCUSP_BACKGROUND_WORKERS=0 / the
+  // :3170 staging operator) must NOT join the directory swarm / gossip / announce:
+  // the single-writer bg-host owns the shared federation machinery (EI-126). The
+  // boot-all substrate path is already gated on backgroundWorkersEnabled(), but
+  // THIS lazy wire — fired by discovery/federation-status reads, publish, join
+  // (ensureHiveDirectoryWired) — was NOT, so a secondary host joined the global
+  // directory topic anyway, grew to ~74 swarm connections + ~3.2 GB RSS, and
+  // self-OOM-recycled (memory-watchdog exit 75). Skip the swarm join entirely.
+  // A caller that injects its OWN swarm (tests / multi-instance) opts in
+  // deliberately and bypasses the gate. requestOnlyHost() is a pure env predicate
+  // (no vitest short-circuit) so this bites in every process, tests included.
+  const requestOnly = opts.requestOnly ?? requestOnlyHost();
+  if (!opts.swarm && requestOnly) {
+    return null;
+  }
   try {
     const { resolveLocalAnnounceIdentity } = await import('./sync/hyperbee/local-announce-identity');
     const { listOwnedHiveMeta } = await import('./hive-directory-meta');

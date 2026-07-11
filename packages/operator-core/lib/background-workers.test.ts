@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { backgroundWorkersEnabled, dbosLaunchesHere, reactionMatcherShouldArm, utilityHostEnabled } from './background-workers';
+import { backgroundWorkersEnabled, dbosLaunchesHere, reactionMatcherShouldArm, requestOnlyHost, utilityHostEnabled } from './background-workers';
 
 const saved = {
   VITEST: process.env.VITEST,
@@ -97,5 +97,26 @@ describe('dbosLaunchesHere (request-only readiness false-503 fix)', () => {
     // It gates a readiness DECISION, not machinery, so it must compute the real
     // env-derived value even under vitest — the health handler tests rely on this.
     expect(dbosLaunchesHere({ VITEST: 'true', PAPERCUSP_DBOS_ENABLE: '1' } as unknown as NodeJS.ProcessEnv)).toBe(true);
+  });
+});
+
+describe('requestOnlyHost (EI-9534 — no hive-directory swarm on a secondary host)', () => {
+  it('explicit PAPERCUSP_BACKGROUND_WORKERS=0 → request-only; anything else → not', () => {
+    expect(requestOnlyHost({ PAPERCUSP_BACKGROUND_WORKERS: '0' } as unknown as NodeJS.ProcessEnv)).toBe(true);
+    expect(requestOnlyHost({ PAPERCUSP_BACKGROUND_WORKERS: '1' } as unknown as NodeJS.ProcessEnv)).toBe(false);
+  });
+
+  it('no flag: the :3170 staging host is request-only; other ports / unset are not', () => {
+    expect(requestOnlyHost({ PAPERCUSP_HONO_PORT: '3170' } as unknown as NodeJS.ProcessEnv)).toBe(true);
+    expect(requestOnlyHost({ PAPERCUSP_HONO_PORT: '3070' } as unknown as NodeJS.ProcessEnv)).toBe(false);
+    expect(requestOnlyHost({} as unknown as NodeJS.ProcessEnv)).toBe(false);
+  });
+
+  it('is the exact negation of backgroundWorkersEnabled MINUS the vitest short-circuit', () => {
+    // vitest-guard-FREE (like dbosLaunchesHere): a boot-wiring gate must bite even
+    // under vitest so a test can flip it via env — otherwise every unit test would
+    // look request-only and wrongly suppress swarm-injecting directory-wire tests.
+    expect(requestOnlyHost({ VITEST: 'true', PAPERCUSP_BACKGROUND_WORKERS: '0' } as unknown as NodeJS.ProcessEnv)).toBe(true);
+    expect(requestOnlyHost({ VITEST: 'true', PAPERCUSP_HONO_PORT: '3070' } as unknown as NodeJS.ProcessEnv)).toBe(false);
   });
 });

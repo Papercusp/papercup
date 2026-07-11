@@ -89,3 +89,30 @@ export function dbosLaunchesHere(env: NodeJS.ProcessEnv = process.env): boolean 
       : env.PAPERCUSP_HONO_PORT !== '3170';
   return backgroundHost && env.PAPERCUSP_DBOS_ENABLE === '1';
 }
+
+/**
+ * Whether THIS process is a REQUEST-ONLY secondary host that must NOT join the
+ * shared P2P substrate — the per-harness content swarm AND the hive-directory
+ * gossip topic. The single-writer bg-host owns that machinery (EI-126): a second
+ * host joining the swarm doubles the drain/announce loops and, for the directory
+ * topic specifically, pulls in every public hive's peers.
+ *
+ * Unlike backgroundWorkersEnabled(), this is a PURE env predicate with NO vitest
+ * short-circuit (like the sibling dbosLaunchesHere): it answers the boot-wiring
+ * question "did the operator DECLARE itself request-only" — an explicit
+ * PAPERCUSP_BACKGROUND_WORKERS=0, or the :3170 staging port — so a test can flip
+ * it via env and the gate bites in every process, vitest included. (Bundling the
+ * vitest short-circuit in would make every unit test look request-only, wrongly
+ * suppressing swarm-injecting directory-wire tests.)
+ *
+ * EI-9534: the LAZY hive-directory wire (fired by discovery/federation-status
+ * reads, publish, join) had no such gate — the boot-all substrate path is gated,
+ * but this one wasn't — so a secondary host with PAPERCUSP_BACKGROUND_WORKERS=0
+ * still joined the directory swarm, grew to ~74 connections + ~3.2 GB RSS, and
+ * self-OOM-recycled (memory-watchdog exit 75). `requestOnlyHost()` is the gate.
+ */
+export function requestOnlyHost(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.PAPERCUSP_BACKGROUND_WORKERS != null
+    ? env.PAPERCUSP_BACKGROUND_WORKERS === '0'
+    : env.PAPERCUSP_HONO_PORT === '3170';
+}

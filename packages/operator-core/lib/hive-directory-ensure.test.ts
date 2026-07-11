@@ -18,7 +18,16 @@ function fakeSwarm() {
   };
 }
 
+// EI-9534: the directory wire now gates on requestOnlyHost() (a pure env
+// predicate). These unit tests must therefore pin PAPERCUSP_BACKGROUND_WORKERS
+// deterministically — otherwise a run that inherits a request-only host's env
+// (the dev-api drop-in sets it to 0 service-wide) would trip the new gate and
+// red the pre-existing "force retries" wire test.
+const savedBackgroundWorkers = process.env.PAPERCUSP_BACKGROUND_WORKERS;
+
 afterEach(() => {
+  if (savedBackgroundWorkers === undefined) delete process.env.PAPERCUSP_BACKGROUND_WORKERS;
+  else process.env.PAPERCUSP_BACKGROUND_WORKERS = savedBackgroundWorkers;
   vi.doUnmock('./sync/hyperbee/local-announce-identity');
   vi.doUnmock('./hive-directory-meta');
   vi.doUnmock('./identity/hive-keypair');
@@ -30,6 +39,8 @@ afterEach(() => {
 describe('ensureHiveDirectoryWired', () => {
   it('force retries immediately after a failed unforced attempt', async () => {
     vi.resetModules();
+    // Gate OFF (a background-workers host) so the wire proceeds to identity resolution.
+    process.env.PAPERCUSP_BACKGROUND_WORKERS = '1';
     // The unforced attempt drives the identity-resolution failure path, whose
     // best-effort catch in wireHiveDirectoryForWorkspace legitimately logs a skip
     // warning. Spy on it so vitest-fail-on-console doesn't red the run AND so we
@@ -68,5 +79,29 @@ describe('ensureHiveDirectoryWired', () => {
     expect(wiring).not.toBeNull();
     expect(resolveLocalAnnounceIdentity).toHaveBeenCalledTimes(2);
     await wiring?.stop();
+  });
+
+  // EI-9534: a request-only SECONDARY host (PAPERCUSP_BACKGROUND_WORKERS=0 / :3170)
+  // must NOT join the directory swarm — the single-writer bg-host owns it (EI-126).
+  // Before the fix, the lazy wire (fired by a discovery/federation-status read)
+  // resolved getSharedSwarm() + joined the global directory topic anyway, so the
+  // secondary host grew to ~74 swarm connections + ~3.2 GB RSS and self-OOM-recycled.
+  it('EI-9534: a request-only host (PAPERCUSP_BACKGROUND_WORKERS=0) never joins the directory swarm', async () => {
+    vi.resetModules();
+    process.env.PAPERCUSP_BACKGROUND_WORKERS = '0'; // restored by afterEach
+    const getSharedSwarm = vi.fn(async () => fakeSwarm());
+    const resolveLocalAnnounceIdentity = vi.fn(); // must never be reached
+    vi.doMock('./sync/hyperbee/swarm', () => ({ getSharedSwarm }));
+    vi.doMock('./sync/hyperbee/local-announce-identity', () => ({ resolveLocalAnnounceIdentity }));
+    vi.doMock('./hive-directory-meta', () => ({ listOwnedHiveMeta: vi.fn(async () => []) }));
+
+    const { ensureHiveDirectoryWired, __resetHiveDirectoryWiring } = await import('./hive-directory-boot');
+    __resetHiveDirectoryWiring();
+
+    // `force` bypasses the 60s read-throttle — so a null here is the GATE firing,
+    // not the debounce. The gate returns BEFORE any swarm/identity resolution.
+    await expect(ensureHiveDirectoryWired('ws', { force: true })).resolves.toBeNull();
+    expect(getSharedSwarm).not.toHaveBeenCalled();
+    expect(resolveLocalAnnounceIdentity).not.toHaveBeenCalled();
   });
 });
