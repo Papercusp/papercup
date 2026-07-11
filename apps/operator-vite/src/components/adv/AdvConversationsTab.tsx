@@ -2366,6 +2366,7 @@ function MessagesView() {
   const list = listQuery.data ?? [];
   const total = readListTotal(list);
   const messageDetail = detailQuery.data?.[0] ?? null;
+  const selectedMessage = messageDetail ?? list.find((message) => message.id === open) ?? null;
   const loading = listQuery.loading;
   const error = listQuery.error ? errText(listQuery.error) : null;
 
@@ -2448,6 +2449,58 @@ function MessagesView() {
     ],
     [messageDetail, setOpen],
   );
+
+  if (open) {
+    return (
+      <ConvFrame
+        detailOpen
+        onBack={() => void setOpen(null)}
+        detail={(
+          <section className="pc-coord__detail">
+            {detailQuery.loading && !selectedMessage ? (
+              <LoadingRows rows={5} label="Loading message" />
+            ) : detailQuery.error && !selectedMessage ? (
+              <LoadError message={errText(detailQuery.error)} onRetry={() => detailQuery.invalidate()} />
+            ) : !selectedMessage ? (
+              <EmptyState
+                style={{ minHeight: '100%' }}
+                icon={<Mail size={22} aria-hidden />}
+                title="Message unavailable"
+                desc="This message is no longer available in the synchronized conversation data."
+              />
+            ) : (
+              <article className="pc-coord__card">
+                <header className="pc-advconv__detailhead">
+                  <div>
+                    <p className="pc-advconv__detailkicker">
+                      <span className="pc-advconv__unified-kind pc-advconv__unified-kind--messages">Work-item mail</span>
+                      {selectedMessage.status ? <span className={`pc-advconv__statepill pc-advconv__statepill--${selectedMessage.status}`}>{selectedMessage.status}</span> : null}
+                    </p>
+                    <h2>{selectedMessage.subject || selectedMessage.body || selectedMessage.id}</h2>
+                  </div>
+                  <div className="pc-advconv__detailstats" aria-label="Message metadata">
+                    <span><strong>{selectedMessage.from_slug}</strong> → {selectedMessage.to_slug ?? selectedMessage.to_role ?? '∅'}</span>
+                    <span>{fmtTs(selectedMessage.created_at)}</span>
+                    {selectedMessage.harness_slug ? <span>{hiveHomeLabel(selectedMessage.harness_slug)}</span> : null}
+                  </div>
+                </header>
+                {selectedMessage.body ? <p className="pc-coord__body">{selectedMessage.body}</p> : null}
+                {(selectedMessage.from_feature_id || selectedMessage.to_feature_id) ? (
+                  <div className="pc-advconv__callout pc-advconv__callout--linked">
+                    <ArrowUpRight size={15} aria-hidden />
+                    <div>
+                      <strong>Related work</strong>
+                      <p>{selectedMessage.from_feature_id ?? '—'} → {selectedMessage.to_feature_id ?? '—'}</p>
+                    </div>
+                  </div>
+                ) : null}
+              </article>
+            )}
+          </section>
+        )}
+      />
+    );
+  }
 
   return (
     <ConvFrame

@@ -11,7 +11,8 @@
 //   - a BROADCAST row is marked, and a "→ human" escalation is highlighted,
 //   - the plan-slug chip renders,
 //   - an ack groups under its parent as a reply (related_msg_id chain),
-//   - the view switch shows the curated views + the set-apart Raw events log.
+//   - one curated Conversations view replaces the source-specific sub-tabs,
+//   - each source remains legible through a type pill on its unified row.
 // Guards against render-time crashes the typecheck can't catch.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -285,7 +286,7 @@ describe('AdvConversationsTab — Create-style shell', () => {
     });
   });
 
-  it('clears source-owned selections atomically when switching conversation views', () => {
+  it('clears every source-owned selection atomically when returning to Conversations', () => {
     nuqsState.conv = 'deliberations';
     nuqsState.thread = 'issue-thread-EI-9534';
     nuqsState.conversation = 'conv-from-an-earlier-qa-visit';
@@ -294,10 +295,10 @@ describe('AdvConversationsTab — Create-style shell', () => {
     nuqsState.fmsg = 'event-from-an-earlier-feed-visit';
 
     render(<AdvConversationsTab />);
-    fireEvent.click(screen.getByRole('tab', { name: 'Q&A' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Conversations' }));
 
     expect(setQueryStates).toHaveBeenCalledWith({
-      conv: 'threads',
+      conv: 'inbox',
       conversation: null,
       thread: null,
       chat: null,
@@ -325,15 +326,15 @@ describe('AdvConversationsTab — Create-style shell', () => {
     expect(screen.getByRole('button', { name: 'Reload conversations' }).hasAttribute('disabled')).toBe(false);
   });
 
-  // The five views each get a switcher button in the sidebar rail (labels are
-  // pinned copy; the per-view one-liner is now the button's tooltip, mirroring
-  // Create's tooltip'd Plans/Queue/Sessions buttons).
-  it('renders a switcher button for every view', () => {
-    const LABELS = ['Conversations', 'Q&A', 'Deliberations', 'Agent chats', 'Messages', 'Raw events'];
+  it('keeps one curated view and one subordinate diagnostic view in the rail', () => {
     render(<AdvConversationsTab />);
-    for (const label of LABELS) {
-      expect(screen.getByRole('tab', { name: label })).toBeTruthy();
-    }
+    expect(screen.getAllByRole('tab')).toHaveLength(2);
+    expect(screen.getByRole('tab', { name: 'Conversations' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Raw events' })).toBeTruthy();
+    expect(screen.queryByRole('tab', { name: 'Q&A' })).toBeNull();
+    expect(screen.queryByRole('tab', { name: 'Deliberations' })).toBeNull();
+    expect(screen.queryByRole('tab', { name: 'Agent chats' })).toBeNull();
+    expect(screen.queryByRole('tab', { name: 'Messages' })).toBeNull();
   });
 
   // The primary communication surfaces form one visual set; the diagnostic raw
@@ -348,9 +349,9 @@ describe('AdvConversationsTab — Create-style shell', () => {
     const tablist = screen.getByRole('tablist', { name: 'Conversations view' });
     const primary = tablist.querySelector('.pc-advconv__nav-primary');
     const diagnostic = tablist.querySelector('.pc-advconv__nav-diagnostic');
-    const qa = screen.getByRole('tab', { name: 'Q&A' });
+    const conversations = screen.getByRole('tab', { name: 'Conversations' });
     const raw = screen.getByRole('tab', { name: 'Raw events' });
-    expect(primary?.contains(qa)).toBe(true);
+    expect(primary?.contains(conversations)).toBe(true);
     expect(primary?.contains(raw)).toBe(false);
     expect(diagnostic?.contains(raw)).toBe(true);
     const btnRule = styles.match(/\.pc-advconv__navbtn\s*{[^}]*}/)?.[0] ?? '';
@@ -544,13 +545,39 @@ function stubComms(byUrl: Record<string, unknown>) {
 }
 
 describe('AdvConversationsTab — unified communication views', () => {
-  it('exposes a view tab for every communication type', () => {
+  it('exposes each communication type as a pill instead of a navigation tab', () => {
+    syncResults['conversations.deliberationList'] = ready([{
+      thread_id: 'th-pill', parent_kind: 'decision', parent_ref: 'WI-7', title: 'choose the release path',
+      created_by: 'architect', harness_slug: 'papercusp', created_at: TS(4), last_post_at: TS(3), post_count: 3,
+    }]);
+    syncResults['conversations.agentChatList'] = ready([{
+      id: 'chat-pill', harness_slug: 'papercusp', role: 'worker', feature_id: 'WI-8', title: 'implement the release path',
+      created_at: Date.now() - 120_000, archived_at: null, total_input_tokens: 0, total_output_tokens: 0,
+      total_cost_usd_cents: 0, turns: 6,
+    }]);
     render(<AdvConversationsTab />);
-    expect(screen.getByRole('tab', { name: /Q&A/i })).toBeTruthy();
-    expect(screen.getByRole('tab', { name: /Deliberations/i })).toBeTruthy();
-    expect(screen.getByRole('tab', { name: /Agent chats/i })).toBeTruthy();
-    expect(screen.getByRole('tab', { name: /Messages/i })).toBeTruthy();
+    expect(screen.getByText('Questions & discussions')).toBeTruthy();
+    expect(screen.getByText('Group decisions')).toBeTruthy();
+    expect(screen.getByText('Agent chat')).toBeTruthy();
+    expect(screen.getByText('Work-item mail')).toBeTruthy();
+    expect(screen.queryByRole('tab', { name: /Agent chats/i })).toBeNull();
     expect(screen.getByRole('tab', { name: /Raw events/i })).toBeTruthy();
+  });
+
+  it('deduplicates strict copies without collapsing distinct activity', () => {
+    const base = {
+      id: 'msg-a', harness_slug: 'papercusp', from_slug: 'architect', to_slug: 'worker', to_role: null,
+      kind: 'handoff', subject: 'release path', body: 'please take this', status: 'delivered',
+      created_at: '2026-07-11T12:00:00.000Z', from_feature_id: 'WI-7', to_feature_id: 'WI-7',
+    };
+    const rows = composeUnifiedConversationRows([], [], [], [
+      base,
+      { ...base },
+      { ...base, id: 'msg-b' },
+      { ...base, id: 'msg-c', body: 'a separate follow-up' },
+    ], 50);
+
+    expect(rows.map((row) => row.sourceId)).toEqual(['msg-a', 'msg-c']);
   });
 
   it('Deliberations view lists threads and opens its posts', async () => {
@@ -612,8 +639,7 @@ describe('AdvConversationsTab — unified communication views', () => {
     expect(screen.queryByText('stale detail')).toBeNull();
   });
 
-  it('Agent chats view lists sessions and opens a transcript', async () => {
-    nuqsState.conv = 'agentchats';
+  it('keeps agent chats in Conversations after removing their standalone view', async () => {
     stubComms({
       '/comms/agent-chats/list': {
         items: [
@@ -635,13 +661,12 @@ describe('AdvConversationsTab — unified communication views', () => {
     });
     render(<AdvConversationsTab />);
     expect(await screen.findByText('implement the auth refactor')).toBeTruthy();
-    // role badge + per-row meta render
     expect(screen.getAllByText('worker').length).toBeGreaterThan(0);
-    expect(screen.getByText(/6 turns/i)).toBeTruthy();
+    expect(screen.getByText('Agent chat')).toBeTruthy();
+    expect(screen.queryByText('Agent Chat Sessions')).toBeNull();
   });
 
-  it('keeps an already-rendered rail mounted while a refresh is in flight', async () => {
-    nuqsState.conv = 'agentchats';
+  it('keeps the unified list mounted while a source refresh is in flight', async () => {
     const invalidate = vi.fn();
     syncResults['conversations.agentChatList'] = {
       ...ready([{
@@ -663,7 +688,7 @@ describe('AdvConversationsTab — unified communication views', () => {
 
     render(<AdvConversationsTab />);
     expect(await screen.findByText('stable conversation row')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Reload agent chats' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reload conversations' }));
 
     // The previous implementation swapped the complete rail for skeletons here,
     // producing the visible button flash on every slow refresh.
@@ -845,21 +870,25 @@ describe('AdvConversationsTab — unified communication views', () => {
     expect(screen.getByText('→ worker')).toBeTruthy();
   });
 
-  it('each new view degrades to an empty state with no data', async () => {
-    nuqsState.conv = 'agentchats';
-    stubComms({ '/comms/agent-chats/list': { items: [] } });
+  it('the unified view degrades to one empty state with no data', () => {
+    syncResults['conversations.questionsList'] = ready();
+    syncResults['conversations.deliberationList'] = ready();
+    syncResults['conversations.agentChatList'] = ready();
+    syncResults['conversations.messageList'] = ready();
     render(<AdvConversationsTab />);
-    await waitFor(() => expect(screen.getByText(/No agent chats/i)).toBeTruthy());
+    expect(screen.getByText('No conversations')).toBeTruthy();
   });
 
-  it('a failed list query surfaces a retry-able error instead of a stuck loader', async () => {
-    nuqsState.conv = 'deliberations';
+  it('a failed source query surfaces one retryable unified-list error', () => {
+    syncResults['conversations.questionsList'] = ready();
     syncResults['conversations.deliberationList'] = {
       ...ready(),
       error: new Error('HTTP 500'),
     };
+    syncResults['conversations.agentChatList'] = ready();
+    syncResults['conversations.messageList'] = ready();
     render(<AdvConversationsTab />);
-    await waitFor(() => expect(screen.getByText(/Couldn't load/i)).toBeTruthy());
+    expect(screen.getByText(/Couldn't load/i)).toBeTruthy();
     expect(screen.getByRole('button', { name: /Retry/i })).toBeTruthy();
     expect(screen.getByText(/HTTP 500/)).toBeTruthy();
   });
@@ -874,13 +903,14 @@ describe('AdvConversationsTab — unified communication views', () => {
 // and the filter chips still toggling via aria-pressed.
 
 describe('AdvConversationsTab — picker-kit adoption', () => {
-  it('renders the shared EmptyState (icon + title + desc) for an empty Messages view', async () => {
-    nuqsState.conv = 'messages';
-    stubComms({ '/comms/messages/list': { items: [] } });
+  it('renders the shared EmptyState (icon + title + desc) for an empty unified view', () => {
+    syncResults['conversations.questionsList'] = ready();
+    syncResults['conversations.deliberationList'] = ready();
+    syncResults['conversations.agentChatList'] = ready();
+    syncResults['conversations.messageList'] = ready();
     render(<AdvConversationsTab />);
-    await waitFor(() => expect(screen.getByText('No messages')).toBeTruthy());
-    // The shared EmptyState renders the title in a <strong> and the desc beside it.
-    expect(screen.getByText(/No agent-to-agent messages recorded/i)).toBeTruthy();
+    expect(screen.getByText('No conversations')).toBeTruthy();
+    expect(screen.getByText(/No curated communication is recorded/i)).toBeTruthy();
   });
 
   it('renders the shared EmptyState for the Raw events log when no traffic matches', () => {
@@ -923,14 +953,14 @@ describe('AdvConversationsTab — picker-kit adoption', () => {
     expect(screen.getByText('looks like the watchdog threshold')).toBeTruthy();
   });
 
-  it('the Q&A state filter chips toggle via aria-pressed (picker-kit Pill)', () => {
-    nuqsState.conv = 'threads';
-    nuqsState.cstate = 'open';
+  it('searches the unified projection and exposes the shared advanced filter bar', () => {
+    nuqsState.cq = 'watchdog';
     render(<AdvConversationsTab />);
-    // The active state filter reflects the URL via aria-pressed.
-    const openChip = screen.getByRole('button', { name: /^open$/i, pressed: true });
-    expect(openChip).toBeTruthy();
-    // A non-active filter is present but not pressed.
-    expect(screen.getByRole('button', { name: /^resolved$/i, pressed: false })).toBeTruthy();
+    expect(screen.getByRole('searchbox', { name: 'Search conversations' })).toHaveProperty('value', 'watchdog');
+    expect(screen.getByText('why does the watchdog recycle the host?')).toBeTruthy();
+    expect(screen.queryByText('pick up the UI work')).toBeNull();
+    expect(screen.getByText('1 of 2')).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: /column filter/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Reset' })).toBeTruthy();
   });
 });
