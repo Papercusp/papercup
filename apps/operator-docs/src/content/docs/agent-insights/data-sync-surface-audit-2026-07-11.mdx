@@ -127,9 +127,11 @@ what is visible without becoming another copy of the data.
   Coord, agent chat, dock, notes, Acceptance, settings, voice/preferences,
   accounts, KPI, evaluations, plugins, and action-log consumers.
 - fresh `npm --workspace @papercusp/operator-vite run build`: passed.
-- browser drive on `/adv?tab=conversations`: the tab shell and Q&A/Messages
-  navigation render correctly. The currently deployed API host is the green
-  release checkout and therefore reports the new query names as unknown until
-  this staging change reaches the green release; this is deployment skew, not
-  a client/runtime fallback. Do not interpret a staging-only verification as a
-  production rollout—verify the deployed SHA after the release gate advances.
+- full green checkpoint at `8bc35a8a`: 1,229 operator-vite tests, 5,372 web
+  tests, 91 supporting tests, 31,230 operator-core tests, and the desktop Cargo
+  suite passed.
+- deployed `8bc35a8a` to production `:3070` and drove
+  `/adv?tab=conversations` in a real browser. Initial named-query batches
+  completed in 5–383 ms; the unified rail rendered 100 rows; opening one row
+  populated its detail in 600 ms; selecting a second row replaced the right
+  pane with the second thread in 500 ms. All sync batch requests returned 200.
