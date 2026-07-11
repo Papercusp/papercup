@@ -53,7 +53,7 @@ describe('buildConsoleEnvelope resume greeting permission posture (owner-hit 202
     else process.env.AGENT_BACKEND = ORIGINAL_BACKEND;
   });
 
-  it('claude resume carries the bypass flags — permission mode is per-invocation, so a bare `claude -r` regresses to ask-per-tool', async () => {
+  it('claude resume routes through psu — psu carries the auth-correct bypass posture (WI-4159, owner-hit 2026-07-11)', async () => {
     process.env.AGENT_CMD = 'claude';
     delete process.env.AGENT_BACKEND;
     const envelope = await buildConsoleEnvelope({
@@ -63,8 +63,12 @@ describe('buildConsoleEnvelope resume greeting permission posture (owner-hit 202
       resumeSessionId: '3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8',
       skipMcpJson: true,
     });
+    // A bare `claude -r` under the session's isolated CLAUDE_CONFIG_DIR prompts
+    // /login (the isolation dir has the credential symlink but not ~/.claude.json
+    // account state) — psu's own resume path does the credential relocation that
+    // makes it authenticated, so the greeting routes through psu instead.
     expect(envelope.greetingCmd).toContain(
-      'exec claude --dangerously-skip-permissions --permission-mode bypassPermissions -r 3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8',
+      'exec psu --resume=3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8',
     );
   });
 
@@ -83,8 +87,9 @@ describe('buildConsoleEnvelope resume greeting permission posture (owner-hit 202
 
   // WI-3882: forking a LIVE session must branch into a fresh session id rather
   // than resume in place (a second CLI on the same transcript collides with the
-  // still-running original). claude does this with `--fork-session`.
-  it('claude fork appends --fork-session after -r <id> and says "forking"', async () => {
+  // still-running original). Since WI-4159 the claude path routes through psu,
+  // which takes `--fork` (not claude's own `--fork-session`) to branch.
+  it('claude fork appends --fork via psu and says "forking"', async () => {
     process.env.AGENT_CMD = 'claude';
     delete process.env.AGENT_BACKEND;
     const envelope = await buildConsoleEnvelope({
@@ -96,7 +101,7 @@ describe('buildConsoleEnvelope resume greeting permission posture (owner-hit 202
       skipMcpJson: true,
     });
     expect(envelope.greetingCmd).toContain(
-      'exec claude --dangerously-skip-permissions --permission-mode bypassPermissions -r 3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8 --fork-session',
+      'exec psu --resume=3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8 --fork',
     );
     expect(envelope.greetingCmd).toContain('forking plan-run');
   });

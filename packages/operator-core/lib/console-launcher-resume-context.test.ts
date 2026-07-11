@@ -67,9 +67,12 @@ describe('buildConsoleEnvelope resume launch-context (WI-3988/WI-3989)', () => {
     expect(env.greetingCmd).toContain('--fork');
   });
 
-  it('degrades to a bare -r (no CLAUDE_CONFIG_DIR) when the session has no adv row', async () => {
+  it('degrades to a bare psu --resume (no CLAUDE_CONFIG_DIR) when the session has no adv row', async () => {
     const env = await buildConsoleEnvelope({ ...BASE, resumeSessionId: 'ffffffff-0000-0000-0000-000000000000' });
     expect(env.env.CLAUDE_CONFIG_DIR).toBeUndefined();
-    expect(env.greetingCmd).toContain('-r ffffffff-0000-0000-0000-000000000000');
+    // psu itself re-derives + resolves the session across the isolation dirs, so
+    // the miss here just means WE didn't set CLAUDE_CONFIG_DIR up-front — the
+    // greeting still routes through psu (WI-4159), not a bare `claude -r`.
+    expect(env.greetingCmd).toContain('psu --resume=ffffffff-0000-0000-0000-000000000000');
   });
 });

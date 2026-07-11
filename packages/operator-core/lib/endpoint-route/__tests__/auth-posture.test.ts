@@ -151,6 +151,13 @@ const RULES: ReadonlyArray<{
       { method: 'GET',  path: '/admin/dogfood-substrate-health', auth: VTL },
       // (admin/plans.ts is now committed + gated to VT, so its prior deferred
       // 'public' exception was removed.)
+      // owner-presence-human-turn-signal-2026-07-11 P-002: the psu pty-host hits
+      // this fire-and-forget on every human keystroke from a cookie-less local
+      // process (EI-338 rationale, same as its admin/ VTL siblings above). It
+      // writes only a non-secret timestamp and is CSRF-guarded by
+      // requireAllowedOriginOr403 — see the route's own auth comment in
+      // admin/owner-presence-touch.ts.
+      { method: 'POST', path: '/admin/owner-presence/touch', auth: VTL },
     ],
   },
 ];
