@@ -133,9 +133,9 @@ const HIVE_AWARE_VIEWS: ReadonlySet<LView> = new Set<LView>(['improvements', 'gy
 
 export default function LearningTab() {
   const t = useLexicon();
-  const howSteps = buildHowSteps(t);
   const [lview, setLview] = useQueryState('lview', parseAsStringEnum<LView>([...LVIEWS]).withDefault('improvements'));
-  const [showHow, setShowHow] = useQueryState('how', parseAsBoolean.withDefault(true));
+  const [, setAdvTab] = useQueryState('tab', parseAsString);
+  const [rubricId, setRubricId] = useState<string | null>(null);
   // Tab-level per-Hive lens (per-hive-learning-loops P-042): ONE `?lhive=` param,
   // promoted up from the Learnings sub-view so it applies across every hive-aware
   // view. Agents drive it via ui:dispatch; the hive-creation success card
@@ -156,159 +156,124 @@ export default function LearningTab() {
   const hives = hiveList.data ?? [];
   const hiveAware = HIVE_AWARE_VIEWS.has(view);
   const hive = lhive || hives[0]?.slug || '';
+  const activeStage = stageForView(view);
+  const activeStageMeta = STAGES.find((stage) => stage.id === activeStage) ?? null;
 
   return (
     <div className="pc-learning">
       <header className="pc-learning__header">
-        <div className="pc-learning__copy">
-          <h1>
-            <GraduationCap size={18} aria-hidden /> Learning
-          </h1>
-          <p>
-            Papercusp improves itself while it works. Problems and ideas it notices are filed here as improvements — safe
-            fixes are handled automatically, the rest wait for your review — and the gym tunes the agents’ own prompts
-            through scored experiments.
-          </p>
+        <h1><Brain size={19} aria-hidden /> Learning</h1>
+        <div className="pc-learning__utilities">
+          <LearningInfraHealthChip />
+          <Tooltip label="Learning-loop throughput and placement health">
+            <button
+              type="button"
+              className={`pc-learning__utility${view === 'throughput' ? ' is-active' : ''}`}
+              aria-label="Loop health"
+              onClick={() => void setLview('throughput')}
+            >
+              <Activity size={14} aria-hidden />
+              <span>Loop health</span>
+            </button>
+          </Tooltip>
+          <Tooltip label="Open the agent runbook library">
+            <button
+              type="button"
+              className="pc-learning__utility"
+              aria-label="Insights"
+              onClick={() => void setAdvTab('insights')}
+            >
+              <BookOpen size={14} aria-hidden />
+              <span>Insights</span>
+            </button>
+          </Tooltip>
         </div>
-        <LearningInfraHealthChip />
       </header>
 
+      <Tabs.Root
+        className="pc-learning__stages"
+        value={activeStage ?? ''}
+        onValueChange={(next) => {
+          const stage = STAGES.find((candidate) => candidate.id === next);
+          if (stage) void setLview(stage.views[0].id);
+        }}
+      >
+        <Tabs.List className="pc-learning__stage-list" aria-label="Learning loop stage">
+          {STAGES.map((stage, index) => {
+            const Icon = stage.icon;
+            return (
+              <Tabs.Trigger key={stage.id} value={stage.id} className="pc-learning__stage">
+                <span className="pc-learning__stage-icon"><Icon size={16} aria-hidden /></span>
+                <span className="pc-learning__stage-label">{stage.label}</span>
+                {index < STAGES.length - 1 ? <span className="pc-learning__stage-line" aria-hidden /> : null}
+              </Tabs.Trigger>
+            );
+          })}
+        </Tabs.List>
+      </Tabs.Root>
+
       <div className="pc-learning__controls">
-        <div className="pc-learning__subnav" role="tablist" aria-label="Learning view">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={lview === 'improvements'}
-            className={`pc-learning__subtab${lview === 'improvements' ? ' is-active' : ''}`}
-            onClick={() => void setLview('improvements')}
-          >
-            <Sparkles size={13} aria-hidden />
-            <span>Improvements<em>problems & fixes</em></span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={lview === 'gym'}
-            className={`pc-learning__subtab${lview === 'gym' ? ' is-active' : ''}`}
-            onClick={() => void setLview('gym')}
-          >
-            <Dumbbell size={13} aria-hidden />
-            <span>Gym<em>prompt tuning</em></span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={lview === 'benchmark'}
-            className={`pc-learning__subtab${lview === 'benchmark' ? ' is-active' : ''}`}
-            onClick={() => void setLview('benchmark')}
-          >
-            <Gauge size={13} aria-hidden />
-            <span>Benchmark<em>getting better?</em></span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={lview === 'throughput'}
-            className={`pc-learning__subtab${lview === 'throughput' ? ' is-active' : ''}`}
-            onClick={() => void setLview('throughput')}
-          >
-            <Activity size={13} aria-hidden />
-            <span>Throughput<em>{t('brain', { lower: true })} loop</em></span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={lview === 'knowledge'}
-            className={`pc-learning__subtab${lview === 'knowledge' ? ' is-active' : ''}`}
-            onClick={() => void setLview('knowledge')}
-          >
-            <BookOpen size={13} aria-hidden />
-            <span>Knowledge<em>agent insights</em></span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={lview === 'learnings'}
-            className={`pc-learning__subtab${lview === 'learnings' ? ' is-active' : ''}`}
-            onClick={() => void setLview('learnings')}
-          >
-            <Brain size={13} aria-hidden />
-            <span>Learnings<em>{t('pot', { lower: true })} memory</em></span>
-          </button>
-        </div>
-        <div className="pc-learning__controlsright">
-          {/* Tab-level per-Hive lens (P-042). Hive-aware views read it; the
-              workspace-global views (Benchmark / Scout / Knowledge / Throughput)
-              hide the picker since they ignore it. */}
-          {hiveAware ? (
-            <Tooltip label={`Scope the ${t('pot', { lower: true })}-aware views (Improvements, Gym, Learnings) to one ${t('pot', { lower: true })} — the tenancy unit. Benchmark, ${t('scout')}, Knowledge and Throughput are workspace-wide and ignore this.`}>
-              <label className="pc-learning__hivepick">
-                <Brain size={12} aria-hidden />
-                <span className="pc-learning__hivepicklabel">{t('pot', { lower: true })}</span>
-                <Select
-                  ariaLabel={`${t('pot')} lens`}
-                  value={hive}
-                  onChange={(v: string) => void setLhive(v)}
-                  disabled={hives.length === 0}
-                  placeholder={hives.length === 0 ? `no ${t('pot', { plural: true, lower: true })} yet` : undefined}
-                  triggerStyle={{ maxWidth: 200, opacity: hives.length === 0 ? 0.6 : undefined }}
-                  options={hives.map((h) => ({
-                    value: h.slug,
-                    label: `${hiveHomeLabel(h.slug)}${h.remote ? ' (joined)' : ''}`,
-                  }))}
-                />
-              </label>
-            </Tooltip>
-          ) : null}
-          <button
-            type="button"
-            className={`pc-learning__howtoggle${showHow ? ' is-on' : ''}`}
-            aria-expanded={!!showHow}
-            onClick={() => void setShowHow(!showHow)}
-          >
-            <HelpCircle size={13} aria-hidden />
-            How this works
-          </button>
-        </div>
+        {activeStageMeta && activeStageMeta.views.length > 1 ? (
+          <Tabs.Root value={view} onValueChange={(next) => void setLview(next as LView)}>
+            <Tabs.List className="pc-learning__view-list" aria-label={`${activeStageMeta.label} views`}>
+              {activeStageMeta.views.map((candidate) => {
+                const Icon = candidate.icon;
+                return (
+                  <Tabs.Trigger key={candidate.id} value={candidate.id} className="pc-learning__view-tab">
+                    <Icon size={13} aria-hidden />
+                    {candidate.label}
+                  </Tabs.Trigger>
+                );
+              })}
+            </Tabs.List>
+          </Tabs.Root>
+        ) : <span />}
+
+        {hiveAware ? (
+          <Tooltip label={`Scope this view to one ${t('pot', { lower: true })}`}>
+            <label className="pc-learning__hivepick">
+              <Brain size={12} aria-hidden />
+              <span className="pc-learning__hivepicklabel">{t('pot', { lower: true })}</span>
+              <Select
+                ariaLabel={`${t('pot')} lens`}
+                value={hive}
+                onChange={(next: string) => void setLhive(next)}
+                disabled={hives.length === 0}
+                placeholder={hives.length === 0 ? `no ${t('pot', { plural: true, lower: true })} yet` : undefined}
+                triggerStyle={{ maxWidth: 200, opacity: hives.length === 0 ? 0.6 : undefined }}
+                options={hives.map((candidate) => ({
+                  value: candidate.slug,
+                  label: `${hiveHomeLabel(candidate.slug)}${candidate.remote ? ' (joined)' : ''}`,
+                }))}
+              />
+            </label>
+          </Tooltip>
+        ) : null}
       </div>
 
-      {showHow ? (
-        <ol className="pc-learning__how" aria-label="How this works">
-          {howSteps[view].map((s, i) => (
-            <li key={s.title} className="pc-learning__howstep">
-              <span className="pc-learning__hownum" aria-hidden>{i + 1}</span>
-              <span className="pc-learning__howbody">
-                <strong>{s.title}</strong>
-                {/* route the cast word in step copy (only the scout step names it) */}
-                <em>{s.desc.replace(/Scout/g, t('scout'))}</em>
-              </span>
-            </li>
-          ))}
-        </ol>
-      ) : null}
-
-      {view === 'gym' ? (
+      <div className="pc-learning__body" role="tabpanel" aria-label={activeStageMeta?.label ?? 'Loop health'}>
+      {view === 'observations' ? (
+        <ObservationsPanel />
+      ) : view === 'ideas' ? (
+        <ScoutView />
+      ) : view === 'rubrics' ? (
+        rubricId ? (
+          <RubricDetailPanel rubricId={rubricId} onBack={() => setRubricId(null)} />
+        ) : (
+          <RubricsPanel onSelect={setRubricId} />
+        )
+      ) : view === 'gym' ? (
         <GymView hive={hive} />
       ) : view === 'benchmark' ? (
         <ApiaryView />
-      ) : view === 'scout' ? (
-        // Ideation (routed ideas + idea grading) MOVED to the Signals tab (owner
-        // ask 2026-07-10 — one home, no duplication). A stale ?lview=scout
-        // deep-link lands here on a pointer instead of a second copy.
-        <ScoutMovedCard />
       ) : view === 'throughput' ? (
         <ThroughputView />
-      ) : view === 'knowledge' ? (
-        <KnowledgeView />
       ) : view === 'learnings' ? (
         <LearningsView hive={hive} />
       ) : (
         <ImprovementsView hive={hive} />
       )}
-
-      <p className="pc-learning__footnote">
-        Improvements fix problems, the gym tunes the agents, the benchmark checks whether it's all working, and {t('scout')} hunts for ideas — captured knowledge lives in Knowledge / Insights, and each {t('pot', { lower: true })}'s editable memory lives in Learnings.
-      </p>
+      </div>
 
       <LearningStyles />
     </div>
