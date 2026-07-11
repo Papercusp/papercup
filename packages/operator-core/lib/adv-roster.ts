@@ -736,7 +736,25 @@ export async function activeLoopOwners(): Promise<Set<string>> {
  * dead/stale agents) — the claim-keyed half a presence-primary roster can't see.
  */
 export async function mergeRosterWithAssignments(
-  opts: { workspaceId?: string | null } = {},
+  opts: {
+    workspaceId?: string | null;
+    /**
+     * WI-3924: gate the per-entry "thinking" resolution loop below. When
+     * omitted (the default — EVERY existing caller), every active entry is
+     * resolved, exactly as before. When provided, only entries the filter
+     * accepts pay the per-entry transcript-stat cost; skipped entries keep
+     * whatever pre-loop thinking/thinkingResolvable value they were created
+     * with (NOT necessarily false — varies by roster source).
+     *
+     * SAFE ONLY for a caller that never exposes a skipped entry's
+     * thinking/thinkingResolvable to its consumer — e.g. search-transcripts,
+     * which only surfaces entries reachable via matchActiveEntry (built with
+     * the IDENTICAL match rules via buildActiveEntryMatchFilter, so a
+     * skipped entry is, by construction, one the caller never returns). Do
+     * not pass this for a caller that displays the full active roster.
+     */
+    thinkingFor?: (entry: RosterEntry) => boolean;
+  } = {},
 ): Promise<RosterWithAssignments> {
   const workspaceId = opts.workspaceId ?? null;
   const [
@@ -818,11 +836,16 @@ export async function mergeRosterWithAssignments(
   // backend's transcript path is cached, so this is one cheap stat/agent. Claude
   // sessions key by sessionId (+owner fast path); codex by the adv row id (its
   // CODEX_HOME key); omp by thread id.
+  // WI-3924: `thinkingFor`, when passed, restricts this loop to the entries
+  // the caller will actually use — skipped entries pay no per-entry
+  // transcript-stat cost (see the opts.thinkingFor doc comment above for the
+  // safety condition this relies on).
+  const thinkingCandidates = opts.thinkingFor ? active.filter(opts.thinkingFor) : active;
   const { resolveSessionThinkingState, SESSION_THINKING_ACTIVE_MS } = await import('./claude-sessions');
   const { isCodexSessionThinking, isOmpThreadThinking } = await import('./session-transcript-resolvers');
   const nowMs = Date.now();
   await Promise.all(
-    active.map(async (e) => {
+    thinkingCandidates.map(async (e) => {
       if (e.sessionId) {
         // ONE resolve → both signals: `thinking` (transcript mtime recent) AND
         // `thinkingResolvable` (a transcript exists to stream at all). A parked/ended

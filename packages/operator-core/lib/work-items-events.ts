@@ -326,6 +326,39 @@ async function emitUnblockedForClearedEdges(
 }
 
 /**
+ * linking-notify-family-hardening P-006: live blocked-state probe for the
+ * `events:await` registration LATCH on `work-item:unblocked:<id>` keys. That
+ * event fires only on a blocked→unblocked EDGE, so awaiting it for an item
+ * that is ALREADY unblocked (or settled) registers a wait that can only time
+ * out — the same stranding the EI-9270 announced-gate latch closes for
+ * declared keys. Best-effort by contract: 'unknown' (unreadable / ambiguous
+ * id, e.g. a feature id whose harness the key doesn't carry) must never block
+ * a registration — callers treat it as "go ahead and register".
+ */
+export async function liveBlockedState(
+  id: string,
+  deps: Pick<SettledEventsDeps, 'getItem' | 'listIn'> = {},
+): Promise<'blocked' | 'unblocked' | 'settled' | 'unknown'> {
+  const getItem = deps.getItem ?? getWorkItem;
+  const listIn = deps.listIn ?? blockingEdgeReader.listIn;
+  try {
+    const item = await getItem(id, undefined).catch(() => null);
+    if (!item) return 'unknown';
+    if (isSettledWorkItem(item)) return 'settled';
+    const edges = await listIn(workItemObjectRef(item), { rel: 'blocks' });
+    for (const be of edges) {
+      const src = workItemIdFromRef(be.src);
+      if (!src) continue;
+      const blocker = await getItem(src.id, src.harness).catch(() => null);
+      if (blocker && !isSettledWorkItem(blocker)) return 'blocked';
+    }
+    return 'unblocked';
+  } catch {
+    return 'unknown';
+  }
+}
+
+/**
  * WI-4034 DEFECT 1 (the unlink gap): `unlinkWorkItem` deleted a `blocks` edge
  * and returned — nothing ever re-checked whether that removal was the
  * dependent's LAST live blocker, so an `events:await('work-item:unblocked:<dep>')`

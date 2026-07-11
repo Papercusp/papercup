@@ -1017,11 +1017,16 @@ function RosterStyles() {
       }
       .pc-agents-roster__group-count { font-weight: 400; color: var(--fg-mute); font-size: 10.5px; }
       .pc-agents-roster__row {
-        /* Name column HUGS its content (max-content, capped via the name's own
-           max-width) so a short id like "su-5577c" doesn't reserve a wide track
-           and leave a big gap before the description — the description follows
-           right after. The doing column takes the rest. */
-        display: grid; grid-template-columns: max-content 16px minmax(40px, max-content) minmax(0, 1fr);
+        /* Columns: [select checkbox][live dot+age][glyph][name][doing].
+           The leading checkbox column (owner ask 2026-07-11, multi-select) is
+           auto-width so it hugs the small box. Name column HUGS its content
+           (max-content, capped via the name's own max-width) so a short id like
+           "su-5577c" doesn't reserve a wide track and leave a big gap before the
+           description — the description follows right after. The doing column
+           takes the rest. The Checkbox reaches the grid directly through its
+           display:contents wrapper, so it IS the first grid item — the template
+           must carry a track for it or the row shatters. */
+        display: grid; grid-template-columns: auto max-content 16px minmax(40px, max-content) minmax(0, 1fr);
         align-items: center; gap: 8px; padding: 3px 8px; border-radius: 4px;
       }
       .pc-agents-roster__row:hover { background: var(--bg-2); }

@@ -197,7 +197,9 @@ function buildFederatedSeedPriming(
 
 /**
  * Production search-first novelty corpus: prior plans (what's been designed) +
- * their ratified decisions (settled judgments) — the substrate the novelty critic
+ * their ratified decisions (settled judgments) + routed-ledger idea titles (what
+ * the Hive already generated and routed, with its won/lost outcome — P-008,
+ * su-ideate-learning-substrate-2026-07-10) — the substrate the novelty critic
  * dedupes a fresh idea against (D-005, "reject the already-tried"). Defensive: a
  * failed query yields an empty corpus (the critic then leans on the LLM skeptic),
  * never a crashed cycle. Workspace-global on purpose — an idea must be novel vs the
@@ -230,6 +232,23 @@ export async function readNoveltyCorpus(): Promise<CorpusEntry[]> {
     for (const r of decisions) {
       if (!r.title) continue;
       out.push({ ref: `${r.plan_slug}#${r.id ?? ''}`, kind: 'decision', text: r.title });
+    }
+    // Routed-ledger idea titles (P-008): every idea the Hive already routed — the
+    // outcome CACHE maps onto the corpus's decided-state vocabulary so a lost
+    // idea reads as an already-tried prior ('dropped' ⇒ the alreadyTried penalty
+    // + the "already tried, failed" priorArt signal) and a won one as 'shipped'.
+    // Bounded: most recently routed first.
+    const ideas = await sql<{ routed_ref: string; title: string | null; outcome: string | null }[]>`
+      SELECT routed_ref, title, outcome
+        FROM harness_shared.scout_routed_ideas
+       WHERE title IS NOT NULL
+       ORDER BY routed_at DESC
+       LIMIT 500`;
+    for (const r of ideas) {
+      const text = r.title?.trim();
+      if (!text) continue;
+      const state = r.outcome === 'won' ? 'shipped' : r.outcome === 'lost' ? 'dropped' : undefined;
+      out.push({ ref: r.routed_ref, kind: 'idea', text, ...(state ? { state } : {}) });
     }
   } catch (err) {
      

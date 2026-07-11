@@ -20,6 +20,7 @@ import { notifyAgents } from '../coordination/notify-agents';
 import { issueRef, linkIssue, type IssueSeverity } from '../../issues-engineer';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
+import { noveltyPriorArt } from '../../scout/novelty-precheck';
 import { recordRoutedIdea } from '../../scout/routed-ledger';
 import { SU_IDEATION_LENSES, type SuIdeationLens } from '../../scout/types';
 import { resolveWorkItemRef } from '../../work-items';
@@ -30,7 +31,7 @@ export default defineTool({
   name: 'improvements:capture',
   profile: 'engineer',
   description:
-    'Capture a papercusp improvement you discovered (a friction, a missing affordance, a bug in the tooling) as a durable, claimable, `papercusp-improvement`-tagged work-unit. kind=bug → auto-implement-eligible later; change|feature → human-reviewed. Search-first: declines an obvious duplicate (link to it instead) unless force. Pass `paths` when you know the files involved — it feeds the protected-path safety gate. Pass lane:"observation" for a turn-end-reflection PRE-IDEA — it files into a separate lane that NEVER enters the work queue (Scout-digest + the Observations pane only).',
+    'Capture a papercusp improvement you discovered (a friction, a missing affordance, a bug in the tooling) as a durable, claimable, `papercusp-improvement`-tagged work-unit. kind=bug → auto-implement-eligible later; change|feature → human-reviewed. Search-first: declines an obvious duplicate (link to it instead) unless force. An su kind=feature filing additionally gets a REPORT-ONLY novelty pre-check in the response (`priorArt[]` — the prior plans/decisions/routed ideas it collides with, incl. already-tried-and-failed ones); it never blocks the capture. Pass `paths` when you know the files involved — it feeds the protected-path safety gate. Pass lane:"observation" for a turn-end-reflection PRE-IDEA — it files into a separate lane that NEVER enters the work queue (Scout-digest + the Observations pane only).',
   guidance: {
     when: 'You hit a papercusp DX / tooling / code friction worth fixing but out of your current scope. File it here so it lands in the triage backlog instead of being lost. Use kind=bug for something broken, kind=change for a desired improvement, kind=feature for net-new (the last two stay human-gated). Include `paths` (repo-relative files involved) when known — the auto-implement risk gate reads them.',
     notWhen: 'A problem in a MANAGED harness/project (not papercusp itself) — that is work_items:create with that harness scope. Something needing real design — write a plan (plans:new) and capture with kind=feature linking it. A passing question — coord:ask.',
@@ -264,6 +265,17 @@ export default defineTool({
           }),
         );
       }
+      // P-008 (su-ideate-learning-substrate): REPORT-ONLY novelty pre-check on the su
+      // IDEATE-pass feature path — the same eligibility as the ledger row, but independent
+      // of creation (a dedup-decline / checkDuplicatesOnly response benefits too). Surfaces
+      // the priors the title collides with (plans / decisions / routed-ledger ideas, incl.
+      // already-decided "tried, failed" ones) as response.priorArt. NEVER a gate (D-005):
+      // only the improvement-dedup above may decline; a failed check just omits the field
+      // (absent = not checked; [] = checked, nothing similar).
+      const priorArt =
+        source === 'su' && args.kind === 'feature' && args.lane !== 'observation'
+          ? await noveltyPriorArt(args.title).catch(() => undefined)
+          : undefined;
       const notified =
         args.notifyAgents?.length && captured.created && captured.issue?.id && args.lane !== 'observation'
           ? await notifyAgents(id, {
@@ -283,6 +295,7 @@ export default defineTool({
             type: 'text' as const,
             text: JSON.stringify({
               ...result,
+              ...(priorArt ? { priorArt } : {}),
               ...(notified ? { notified: notified.notified } : {}),
               ...(linked ? { linked } : {}),
             }),

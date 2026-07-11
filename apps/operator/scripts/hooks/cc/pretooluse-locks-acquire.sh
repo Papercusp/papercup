@@ -489,8 +489,6 @@ def _is_conn_refused(exc):
 # lock protection for every concurrent agent (single-shot used to fail open
 # instantly). ~2.4s max added delay, then fail open as before. Any non-refused
 # error fails open immediately (no point waiting on a 500 / parse error).
-raw_resp = None
-last_exc = None
 RETRY_BACKOFFS = (0.4, 0.8, 1.2)
 # The operator is ALWAYS local (127.0.0.1/localhost); an egress http(s)_proxy in
 # the env must NEVER intercept this call — it 502s the localhost POST, which the
@@ -498,61 +496,70 @@ RETRY_BACKOFFS = (0.4, 0.8, 1.2)
 # dropping file-lock protection for every concurrent agent (and reds the
 # pretooluse-locks-decision gate test). Bypass all proxies for the operator call.
 _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-for _attempt in range(len(RETRY_BACKOFFS) + 1):
-    try:
-        resp = _opener.open(req, timeout=10)
-        raw_resp = resp.read().decode('utf-8', errors='replace')
-        break
-    except Exception as e:
-        last_exc = e
-        if _is_conn_refused(e) and _attempt < len(RETRY_BACKOFFS):
-            time.sleep(RETRY_BACKOFFS[_attempt])
-            continue
-        break
-if raw_resp is None:
-    mark_error('connect', last_exc)
-    print(f'[locks] operator unreachable ({last_exc}); allowing edit (fail-open)',
-          file=sys.stderr)
-    allow()
 
-# Parse the first JSON-RPC result out of a JSON or text/event-stream body.
-result = None
-for line in raw_resp.splitlines():
-    line = line.strip()
-    if not line or line.startswith('event:'):
-        continue
-    if line.startswith('data:'):
-        line = line[5:].strip()
-    try:
-        cand = json.loads(line)
-        if isinstance(cand, dict) and 'result' in cand:
-            result = cand['result']
-            break
-    except Exception:
-        pass
 
-if not result:
-    mark_error('parse', 'no JSON-RPC result in response')
-    allow()
-
-inner = None
-for item in (result.get('content') or []):
-    if item.get('type') == 'text':
+def _locks_acquire_once():
+    """One locks:acquire POST → the parsed inner tool result (a dict).
+    Fail-open (allow → exit 0) on any transport or parse failure — identical
+    posture to the previous inline flow; extracted so the EI-9478 transient
+    retry below can re-attempt without duplicating the fail-open plumbing."""
+    raw_resp = None
+    last_exc = None
+    for _attempt in range(len(RETRY_BACKOFFS) + 1):
         try:
-            inner = json.loads(item['text'])
+            resp = _opener.open(req, timeout=10)
+            raw_resp = resp.read().decode('utf-8', errors='replace')
             break
-        except Exception:
+        except Exception as e:
+            last_exc = e
+            if _is_conn_refused(e) and _attempt < len(RETRY_BACKOFFS):
+                time.sleep(RETRY_BACKOFFS[_attempt])
+                continue
+            break
+    if raw_resp is None:
+        mark_error('connect', last_exc)
+        print(f'[locks] operator unreachable ({last_exc}); allowing edit (fail-open)',
+              file=sys.stderr)
+        allow()
+
+    # Parse the first JSON-RPC result out of a JSON or text/event-stream body.
+    result = None
+    for line in raw_resp.splitlines():
+        line = line.strip()
+        if not line or line.startswith('event:'):
             continue
+        if line.startswith('data:'):
+            line = line[5:].strip()
+        try:
+            cand = json.loads(line)
+            if isinstance(cand, dict) and 'result' in cand:
+                result = cand['result']
+                break
+        except Exception:
+            pass
 
-if not inner:
-    mark_error('parse', 'no text content in tool result')
-    allow()
+    if not result:
+        mark_error('parse', 'no JSON-RPC result in response')
+        allow()
 
-# We reached the operator and got a usable answer → enforcement healthy.
-mark_success()
+    inner = None
+    for item in (result.get('content') or []):
+        if item.get('type') == 'text':
+            try:
+                inner = json.loads(item['text'])
+                break
+            except Exception:
+                continue
 
-if inner.get('ok') is True:
-    lock_id = inner.get('lock_id')
+    if not inner:
+        mark_error('parse', 'no text content in tool result')
+        allow()
+    return inner
+
+
+def _grant(granted):
+    """Cache the lock_id for the matching PostToolUse release, then allow."""
+    lock_id = granted.get('lock_id')
     if lock_id and tool_use_id:
         try:
             with open(os.path.join(cache_dir, tool_use_id + '.lock'), 'w') as f:
@@ -560,6 +567,46 @@ if inner.get('ok') is True:
         except Exception:
             pass
     allow()
+
+
+def _is_transient(res):
+    """EI-9478: `workspace_contended` = the server's per-workspace advisory-lock
+    wait timed out — a TRANSIENT serialization miss (commonly THIS session's own
+    parallel edits racing each other, or a starved PG pool), with NO holder.
+    Older servers surfaced the same condition as ok:false with NO reason and an
+    EMPTY busy list — treat that shape as transient too, never as a foreign hold."""
+    return res.get('reason') == 'workspace_contended' or (
+        not res.get('reason') and not (res.get('busy') or []))
+
+
+inner = _locks_acquire_once()
+# We reached the operator and got a usable answer → enforcement healthy.
+mark_success()
+
+if inner.get('ok') is True:
+    _grant(inner)
+
+# EI-9478: transient serialization timeout — RETRY briefly before any deny, so
+# a batch of parallel edits from one session self-heals instead of one arm
+# being denied with a fabricated "held by another agent" (which could strand a
+# half-applied multi-edit batch for git-sync to auto-commit broken).
+if _is_transient(inner):
+    for _backoff in (0.6, 1.2):
+        time.sleep(_backoff)
+        inner = _locks_acquire_once()
+        if inner.get('ok') is True:
+            _grant(inner)
+        if not _is_transient(inner):
+            break
+
+if _is_transient(inner):
+    deny(
+        'locks: transient contention — the lock service could not serialize this '
+        'acquire in time (per-workspace advisory-lock timeout; commonly concurrent '
+        'edits from YOUR OWN session, or a starved DB pool). NO other agent holds '
+        'these file(s). Simply RETRY this same edit — do NOT queue wake_on_grant '
+        '(there is no holder to wait for).'
+    )
 
 # Busy (or another refusal) → deny with a reason the agent can act on.
 busy = inner.get('busy') or []

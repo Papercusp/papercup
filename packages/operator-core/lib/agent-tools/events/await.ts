@@ -18,6 +18,7 @@ import { registerAwait, findAnnouncementsForKey, findNearMissKeys } from '../../
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { startAwaitSweeper } from '../../events/await/engine';
 import { isPattern, expandPatternMacro, assertUsablePattern } from '../../events/await/pattern';
+import { liveBlockedState } from '../../work-items-events';
 import { hardText, softText, clampText, LIMITS } from '../limits';
 
 // The fallback timeout-wake window + hard cap — one shared source of truth

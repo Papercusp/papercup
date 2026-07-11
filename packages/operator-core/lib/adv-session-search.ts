@@ -99,6 +99,37 @@ export function matchActiveEntry(
   return null;
 }
 
+/**
+ * Build a fast entry-level predicate equivalent to "would matchActiveEntry
+ * select this entry for ANY of these groups" — WITHOUT scanning `active` per
+ * group. Lets a caller cheaply skip expensive per-entry roster enrichment
+ * (e.g. mergeRosterWithAssignments' thinking-state resolution, WI-3924) for
+ * roster entries no group could ever match, instead of paying that cost for
+ * the WHOLE live roster when only a handful of entries are actually used.
+ *
+ * MUST stay in exact sync with matchActiveEntry's three match rules (claude
+ * sessionId, omp threadId, owner-fallback — the fallback matches ANY
+ * sourceKind, mirrored here too). Pure; see adv-session-search.test.ts for
+ * the equivalence check against matchActiveEntry itself.
+ */
+export function buildActiveEntryMatchFilter(
+  groups: readonly Pick<SessionHitGroup, 'sourceKind' | 'sessionId' | 'hits'>[],
+): (entry: Pick<RosterEntry, 'sessionId' | 'ompThreadId' | 'ownerId'>) => boolean {
+  const claudeSessionIds = new Set<string>();
+  const ompThreadIds = new Set<string>();
+  const owners = new Set<string>();
+  for (const g of groups) {
+    if (g.sourceKind === 'claude') claudeSessionIds.add(g.sessionId);
+    if (g.sourceKind === 'omp') ompThreadIds.add(g.sessionId);
+    const owner = g.hits.find((h) => h.owner)?.owner;
+    if (owner) owners.add(owner);
+  }
+  return (entry) =>
+    (!!entry.sessionId && claudeSessionIds.has(entry.sessionId)) ||
+    (!!entry.ompThreadId && ompThreadIds.has(entry.ompThreadId)) ||
+    (!!entry.ownerId && owners.has(entry.ownerId));
+}
+
 /** The adv_sessions row a hit-session maps to, if any: claude by session_id,
  *  omp by omp_thread_id. Rows arrive newest-first; first match wins. Pure. */
 export function matchSessionRow(

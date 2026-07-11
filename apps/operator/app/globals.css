@@ -23712,16 +23712,6 @@ body:has(.operator-panel) {
   top: var(--pc-env-bar-h, 0px) !important;
 }
 /* Deck panel usability refresh */
-body.has-op-chat:has(.operator-panel) .operator-panel {
-  left: calc(var(--op-chat-w, 360px) + 16px) !important;
-}
-
-body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
-  opacity: 0.22;
-  filter: saturate(0.45) blur(4px);
-  pointer-events: none;
-}
-
 .pc-header .pc-operator-popdown,
 .pc-header .pc-operator-auto-feed {
   display: none !important;

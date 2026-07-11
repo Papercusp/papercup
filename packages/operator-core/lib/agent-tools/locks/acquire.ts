@@ -243,9 +243,13 @@ export default defineTool({
       if (routed.via !== 'remote-authority') emitScope = routed.scope;
     } catch (err) {
       // Same-workspace contention timed out the advisory lock (P-015): surface a
-      // structured busy result rather than leaking a raw PG error to the agent.
-      // The holder isn't enumerable here (we never got the lock), so busy is empty.
-      if (err instanceof WorkspaceContendedError) return await busy([]);
+      // structured result rather than leaking a raw PG error to the agent.
+      // EI-9478: this is NOT "held by another agent" — no holder is enumerable
+      // because we never got the per-workspace serialization lock (often the
+      // caller's OWN parallel edit, or a starved pool). A bare `busy: []` made
+      // the edit hook fabricate a foreign-holder denial; return an explicit
+      // transient reason instead so callers retry rather than queue a wake.
+      if (err instanceof WorkspaceContendedError) return workspaceContended();
       // Defensive fallback: a fault in the authority-routing layer must never break the
       // live per-edit lock path — degrade to the raw local acquire (pre-cutover behavior).
       // (The routing layer faulted before resolving a scope, so this rare recovery path
@@ -253,7 +257,7 @@ export default defineTool({
       try {
         first = await localAcquire();
       } catch (err2) {
-        if (err2 instanceof WorkspaceContendedError) return await busy([]);
+        if (err2 instanceof WorkspaceContendedError) return workspaceContended();
         throw err2;
       }
     }
@@ -674,6 +678,27 @@ function ok(
 function errorResult(error: string) {
   return {
     content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error }) }],
+  };
+}
+
+/** EI-9478: the advisory-lock (per-workspace serialization) wait timed out —
+ * a TRANSIENT service-side condition, not a foreign hold. Distinct `reason`
+ * so no reader can render it as "held by another agent". */
+function workspaceContended() {
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify({
+          ok: false,
+          reason: 'workspace_contended',
+          transient: true,
+          busy: [],
+          advice:
+            'The lock service could not serialize this call in time (per-workspace advisory-lock timeout — concurrent lock ops in this workspace, often your OWN parallel edits, or a starved PG pool). NO holder blocks you: do NOT queue wake_on_grant; retry the operation after a short pause.',
+        }),
+      },
+    ],
   };
 }
 

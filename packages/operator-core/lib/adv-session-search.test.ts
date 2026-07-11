@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  buildActiveEntryMatchFilter,
   classifySessionGroups,
   groupHitsBySession,
   matchActiveEntry,
@@ -75,6 +76,58 @@ describe('matchActiveEntry', () => {
   it('returns null when nothing matches', () => {
     const g = { sourceKind: 'codex', sessionId: 'nope', hits: [hit({ sourceKind: 'codex' })] };
     expect(matchActiveEntry(g, active)).toBeNull();
+  });
+});
+
+describe('buildActiveEntryMatchFilter (WI-3924)', () => {
+  // Equivalence check: for EVERY entry in `active` and EVERY group, the
+  // filter must accept an entry iff matchActiveEntry would select it for
+  // SOME group in the set — this is the property the mergeRosterWithAssignments
+  // thinkingFor gate relies on for correctness (a filtered-out entry must be
+  // one no group could ever match).
+  const active = [
+    roster({ ownerId: 'su-aaa', sessionId: 'claude-sid', ompThreadId: null }),
+    roster({ ownerId: 'su-bbb', sessionId: null, ompThreadId: 'omp-tid' }),
+    roster({ ownerId: 'su-ccc', sessionId: 'other-sid', ompThreadId: null }),
+    roster({ ownerId: 'su-ddd', sessionId: null, ompThreadId: null }),
+  ];
+
+  function assertEquivalent(groups: Array<{ sourceKind: string; sessionId: string; hits: TranscriptTurnHit[] }>) {
+    const filter = buildActiveEntryMatchFilter(groups);
+    for (const entry of active) {
+      const matchedBySomeGroup = groups.some((g) => matchActiveEntry(g, [entry]) !== null);
+      expect(filter(entry)).toBe(matchedBySomeGroup);
+    }
+  }
+
+  it('matches by claude session uuid, same as matchActiveEntry', () => {
+    assertEquivalent([{ sourceKind: 'claude', sessionId: 'claude-sid', hits: [hit()] }]);
+  });
+
+  it('matches by omp thread id, same as matchActiveEntry', () => {
+    assertEquivalent([{ sourceKind: 'omp', sessionId: 'omp-tid', hits: [hit({ sourceKind: 'omp' })] }]);
+  });
+
+  it('matches via the owner fallback, same as matchActiveEntry (any sourceKind)', () => {
+    assertEquivalent([{ sourceKind: 'claude', sessionId: 'unrelated-sid', hits: [hit({ owner: 'su-ccc' })] }]);
+  });
+
+  it('excludes an entry no group could match', () => {
+    const filter = buildActiveEntryMatchFilter([{ sourceKind: 'claude', sessionId: 'claude-sid', hits: [hit()] }]);
+    expect(filter(active[3])).toBe(false); // su-ddd: no sessionId/ompThreadId/owner hit
+  });
+
+  it('holds across a mixed multi-group set', () => {
+    assertEquivalent([
+      { sourceKind: 'claude', sessionId: 'claude-sid', hits: [hit()] },
+      { sourceKind: 'omp', sessionId: 'omp-tid', hits: [hit({ sourceKind: 'omp' })] },
+      { sourceKind: 'codex', sessionId: 'nope', hits: [hit({ sourceKind: 'codex', owner: 'su-ccc' })] },
+    ]);
+  });
+
+  it('returns false for every entry when there are no groups', () => {
+    const filter = buildActiveEntryMatchFilter([]);
+    for (const entry of active) expect(filter(entry)).toBe(false);
   });
 });
 

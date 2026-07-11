@@ -547,7 +547,7 @@ const searchTranscripts = defineTool({
         import('../../../workspace-registry'),
         import('@papercusp/db-org'),
       ]);
-    const { groupHitsBySession, classifySessionGroups } = await import('../../../adv-session-search');
+    const { groupHitsBySession, classifySessionGroups, buildActiveEntryMatchFilter } = await import('../../../adv-session-search');
     const { advSessionsByTranscriptHandles } = await import('../../../adv-sessions');
 
     const sources = SEARCH_SOURCES.filter((s) => s.name === 'session_turn');
@@ -640,8 +640,14 @@ const searchTranscripts = defineTool({
     mark('metadataHydration');
 
     const groups = groupHitsBySession(turnHits);
+    // WI-3924: only the entries a search hit could actually resolve to (via
+    // matchActiveEntry downstream) need the expensive per-agent "thinking"
+    // resolution — skip it for the rest of the (potentially dozens-large)
+    // live roster. buildActiveEntryMatchFilter mirrors matchActiveEntry's
+    // exact match rules, so this is a pure perf gate, not a behavior change.
+    const thinkingFor = buildActiveEntryMatchFilter(groups);
     const [{ active }, sessionRows] = await Promise.all([
-      mergeRosterWithAssignments({ workspaceId: null }),
+      mergeRosterWithAssignments({ workspaceId: null, thinkingFor }),
       advSessionsByTranscriptHandles({
         sessionIds: groups.filter((g) => g.sourceKind === 'claude').map((g) => g.sessionId),
         ompThreadIds: groups.filter((g) => g.sourceKind === 'omp').map((g) => g.sessionId),

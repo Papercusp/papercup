@@ -61,8 +61,17 @@ export function isBenignRequestParse(e: unknown): boolean {
  * this is recoverable + must not down the multi-tenant host.
  *
  * Scoped tightly: the null-`write` TypeError is matched ONLY when the stack is
- * inside postgres-js's connection module, so a genuine null-deref elsewhere still
- * fails fast. `CONNECTION_CLOSED` (postgres-js's closed-mid-write code) is also
+ * inside postgres-js's connection module — by module PATH (dev / node_modules
+ * installs) OR by the `nextWrite` FRAME NAME. The frame-name leg exists because
+ * the release build BUNDLES postgres-js into `dist-host/hono-host.mjs`: the
+ * stack then reads `at Immediate.nextWrite (file:///…/dist-host/hono-host.mjs:N)`
+ * and the path regex can never match — which is exactly how this
+ * documented-benign transient fatally killed :3070 cluster workers 26×/day on
+ * 2026-07-10 (mcp-reliability-hardening-2026-07-11 P-001). esbuild preserves
+ * function names, so `nextWrite` (postgres-js's detached flush fn) + the exact
+ * null-`write` TypeError message stays a postgres-js-specific signature; a
+ * genuine null-deref elsewhere (different frame name) still fails fast.
+ * `CONNECTION_CLOSED` (postgres-js's closed-mid-write code) is also
  * treated as recoverable — if one ever escapes as an unhandled rejection, keep
  * serving rather than crash-loop. (backend-connection-scaling-2026-06-17.)
  *
@@ -89,7 +98,11 @@ export function isTransientPgConnectionError(e: unknown): boolean {
   if (
     e instanceof TypeError &&
     /Cannot read properties of null \(reading 'write'\)/.test(msg) &&
-    /postgres[\\/](?:cjs[\\/])?src[\\/]connection\.js/.test(stack)
+    (/postgres[\\/](?:cjs[\\/])?src[\\/]connection\.js/.test(stack) ||
+      // Bundled build: the path is the bundle file, but the frame NAME survives
+      // (`at Immediate.nextWrite (…/dist-host/hono-host.mjs:…)` — the live
+      // 2026-07-10 26-crashes/day stack). P-001, mcp-reliability-hardening.
+      /\bat (?:\w+\.)?nextWrite\b/.test(stack))
   ) {
     return true;
   }
