@@ -14,7 +14,10 @@
 import { describe, it, expect, vi } from 'vitest';
 
 // Force lexical-only: buildQueryEmbedder resolves to null (unconfigured embedder).
-vi.mock('../search/embedder', () => ({ buildQueryEmbedder: vi.fn().mockResolvedValue(null) }));
+vi.mock('../search/embedder', () => ({
+  buildQueryEmbedder: vi.fn().mockResolvedValue(null),
+  interactiveEmbedAcquireBudgetMs: () => 4000,
+}));
 
 import toolFind, { buildEmbeddingIndex, buildCorpus, warmToolFindIndex } from './find';
 

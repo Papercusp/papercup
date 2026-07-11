@@ -385,8 +385,23 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
       for (const m of st.channels) {
         try {
           m.send(frame);
-        } catch {
-          /* best-effort per channel */
+        } catch (e) {
+          // WI-953 layer-4b diagnosability: this catch previously swallowed
+          // the error with ZERO signal — a channel counted as "open" in
+          // st.channels (added on `onopen`, removed on `onclose`) can still
+          // throw on send() if the underlying Protomux/stream is mid-close
+          // (a TOCTOU gap between "still in the Set" and "actually live").
+          // Live run4 (2026-07-10) showed a broadcast with 1 channel open
+          // (matching the create call's own reachablePeers:1) that the
+          // joiner never received and never logged as rejected — i.e. the
+          // frame was lost SOMEWHERE between a nominally-open channel and
+          // the peer's onFrame handler. Logging the send failure here is
+          // what would tell a future run whether THIS is that mechanism.
+          if (!process.env.VITEST) {
+            console.warn(
+              `[topic-gossip:${opts.protocol}] broadcast SEND FAILED on topic ${topicHex}: ${e instanceof Error ? e.message : String(e)}`,
+            );
+          }
         }
       }
     },

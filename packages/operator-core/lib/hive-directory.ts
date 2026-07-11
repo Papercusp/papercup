@@ -231,6 +231,11 @@ export class HiveDirectory {
    *  announce with ts ≤ this stays dropped; a newer one relists + clears. */
   private readonly tombstones = new Map<string, number>();
   private reannounceTimer: ManagedHandle | null = null;
+  /** WI-953: pending burst-reannounce one-shot timers, keyed by potId — so a
+   *  second publish/edit before the burst finishes replaces it instead of
+   *  stacking, and `unregisterLocalHive` can cancel a burst for a hive that's
+   *  gone. */
+  private readonly burstTimers = new Map<string, ReturnType<typeof setTimeout>[]>();
 
   constructor(private readonly deps: HiveDirectoryDeps) {}
 
@@ -481,6 +486,14 @@ export class HiveDirectory {
   }
   unregisterLocalHive(potId: string): void {
     this.owned.delete(potId);
+    this.cancelBurstReannounce(potId);
+  }
+
+  private cancelBurstReannounce(potId: string): void {
+    const timers = this.burstTimers.get(potId);
+    if (!timers) return;
+    for (const t of timers) clearTimeout(t);
+    this.burstTimers.delete(potId);
   }
 
   /** The topic a given visibility announces on (null = never announces). */
@@ -542,6 +555,41 @@ export class HiveDirectory {
     await this.deps.broadcast(hiveTopicAsHex(topic), frame);
     return frame;
   }
+
+  /**
+   * WI-953 durable fix: a single `announceLocalHive` broadcast is
+   * fire-and-forget over whatever channels happen to be open at that exact
+   * instant (topic-gossip.ts `broadcast()`) — no queue, no ack, no retry.
+   * Live gate evidence (2026-07-10, run4): a freshly-created hive's announce
+   * broadcast fired with a channel nominally open (reachablePeers:1) yet the
+   * joiner never received it and never even logged a rejection — the frame
+   * was lost somewhere in the connection-churn window right after a peer
+   * pairs. The only prior resend was the 5-minute `startReannounce` timer,
+   * which races the discovery poll's own ~300s window razor-thin.
+   *
+   * This schedules a short burst of follow-up re-announces for ONE hive
+   * (fresh frame each time, so it also self-heals a stale reachablePeers:0
+   * broadcast-into-the-void) at short, increasing delays — covering the
+   * volatile first ~45s after a create/metadata-change without changing the
+   * long-term steady-state cadence. Call once right after a publish/edit
+   * (NOT from the periodic reannounce timer itself, or every 5-min tick
+   * would re-trigger a fresh burst forever). Idempotent per potId: a second
+   * call (e.g. a quick edit) replaces the pending burst rather than stacking.
+   */
+  burstReannounce(potId: string, delaysMs: number[] = HiveDirectory.BURST_REANNOUNCE_DELAYS_MS): void {
+    this.cancelBurstReannounce(potId);
+    const timers = delaysMs.map((ms) =>
+      setTimeout(() => {
+        void this.announceLocalHive(potId).catch(() => {});
+      }, ms),
+    );
+    this.burstTimers.set(potId, timers);
+  }
+
+  /** Delays (ms) for `burstReannounce`'s follow-up re-announces. Covers the
+   *  window a fresh swarm connection is most likely to still be settling
+   *  (pairing/reconnect churn) — well inside a joiner's ~300s discovery poll. */
+  private static readonly BURST_REANNOUNCE_DELAYS_MS = [2_000, 5_000, 10_000, 20_000, 45_000];
 
   /**
    * Build signed announce frames for owned NON-private hives (no broadcast). The
