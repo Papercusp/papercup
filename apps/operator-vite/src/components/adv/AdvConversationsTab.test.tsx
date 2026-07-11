@@ -38,6 +38,8 @@ const nuqsState: Record<string, unknown> = {
   acrole: '',
   chat: null,
   msg: null,
+  cq: '',
+  cvf: {},
   opc: null,
 };
 import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
@@ -52,6 +54,7 @@ vi.mock('nuqs', () => ({
   parseAsString: { withDefault: () => ({}) },
   parseAsStringEnum: () => ({ withDefault: () => ({}) }),
   parseAsArrayOf: () => ({ withDefault: () => ({}) }),
+  createParser: () => ({ withDefault: () => ({}) }),
 }));
 
 const TS = (minsAgo: number) => new Date(Date.now() - minsAgo * 60_000).toISOString();
@@ -198,7 +201,7 @@ vi.mock('@/app/harness/ChatPanel', () => ({
   ),
 }));
 
-import AdvConversationsTab from './AdvConversationsTab';
+import AdvConversationsTab, { composeUnifiedConversationRows } from './AdvConversationsTab';
 
 beforeEach(() => {
   setQueryStates.mockReset();
@@ -209,6 +212,8 @@ beforeEach(() => {
   nuqsState.fplan = '';
   nuqsState.fq = '';
   nuqsState.fmsg = null;
+  nuqsState.cq = '';
+  nuqsState.cvf = {};
   nuqsState.conversation = null;
   nuqsState.cstate = 'open';
   nuqsState.ckind = 'all';

@@ -67,6 +67,7 @@ import {
 } from '@/app/harness/picker-kit';
 import { hiveHomeLabel } from '@/lib/hive-label';
 import '@/app/admin/coordination/coordination.css';
+import '@/app/adv/harnesses/adv-panel-chrome.css';
 
 // The comms `list` reads cap at this many rows; the server returns the true
 // `total` alongside `items`, so the rails can show "N of TOTAL" honestly.
@@ -2993,6 +2994,47 @@ function AdvConvStyles() {
       .pc-advconv__railhead--unified strong {
         margin-left: auto;
       }
+      .pc-advconv__unified-tools {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+      }
+      .pc-advconv__unified-search {
+        display: flex;
+        flex: 1 1 190px;
+        min-width: 0;
+        align-items: center;
+        gap: 6px;
+        min-height: 30px;
+        padding: 0 8px;
+        border: 1px solid var(--advconv-border);
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--bg, #07101d), transparent 16%);
+        color: var(--fg-mute);
+      }
+      .pc-advconv__unified-search:focus-within {
+        border-color: color-mix(in oklab, var(--advconv-accent), transparent 40%);
+        outline: 2px solid color-mix(in oklab, var(--advconv-accent), transparent 76%);
+        outline-offset: 1px;
+      }
+      .pc-advconv__unified-search input {
+        width: 100%;
+        min-width: 0;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        color: var(--fg);
+        font: inherit;
+        font-size: 11.5px;
+      }
+      .pc-advconv__unified-tools .pc-advpanel__filterbar {
+        flex: 0 1 auto;
+        min-width: 0;
+      }
+      .pc-advconv__unified-reset {
+        flex: 0 0 auto;
+      }
       .pc-advconv__unified {
         padding: 8px;
       }
@@ -3060,8 +3102,25 @@ function AdvConvStyles() {
         font-variant-numeric: tabular-nums;
       }
       .pc-advconv__unified-kind {
-        color: var(--fg-dim);
+        --type-accent: var(--advconv-accent);
+        display: inline-flex;
+        align-items: center;
+        min-height: 18px;
+        max-width: 170px;
+        overflow: hidden;
+        padding: 1px 6px;
+        border: 1px solid color-mix(in oklab, var(--type-accent), transparent 64%);
+        border-radius: 999px;
+        background: color-mix(in oklab, var(--type-accent), transparent 88%);
+        color: color-mix(in oklab, var(--type-accent), white 34%);
         font-weight: 750;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .pc-advconv__unified-kind--threads { --type-accent: #38bdf8; }
+      .pc-advconv__unified-kind--deliberations { --type-accent: #a78bfa; }
+      .pc-advconv__unified-kind--agentchats { --type-accent: #f472b6; }
+      .pc-advconv__unified-kind--messages { --type-accent: #fb923c; }
       }
       .pc-advconv__unified-content > strong {
         min-width: 0;
