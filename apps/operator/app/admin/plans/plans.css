@@ -589,18 +589,21 @@
 /* Create dock: Conversations-style compact view rail. The shared PlansClient
    keeps its existing horizontal controls; these selectors are deliberately
    scoped to create:filter so this remains a visual-only change to Create. */
-.pc-plans__rail.pc-create-plans-sidebar {
-  display: grid;
-  grid-template-columns: 64px minmax(0, 1fr);
-  height: 100%;
-  overflow: hidden;
+.pc-adv-create__dock {
+  position: absolute;
+  inset: 0 0 0 64px;
+  min-width: 0;
 }
 
 .pc-create-plans-sidebar__view-rail {
+  position: absolute;
+  inset: 0 auto 0 0;
+  z-index: 2;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 6px;
+  width: 64px;
   min-width: 0;
   min-height: 0;
   padding: 10px 8px;
@@ -613,6 +616,7 @@
 .pc-create-plans-sidebar__browser {
   display: flex;
   flex-direction: column;
+  height: 100%;
   min-width: 0;
   min-height: 0;
   overflow: auto;

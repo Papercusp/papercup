@@ -298,6 +298,34 @@ describe('heavy-command admission control (WI-3821)', () => {
     expectAllow(runGate(bashCmd('npm run test:affected'), { ...AGENT, ...OVER, PC_HEAVY_BYPASS: '1' }));
   });
 
+  // ── EI-9634: the two remedies the deny message itself recommends must WORK ──
+  // The hook decides BEFORE the wrapped command runs, so a child-shell env
+  // (`PC_HEAVY_BYPASS=1 …`) and the wrapper's own PC_HEAVY_BYPASS export aren't
+  // in THIS process's env yet — so both documented escape hatches were denied
+  // under the exact high load they exist for. The gate now reads them in-band
+  // from the command text (no PC_HEAVY_BYPASS in the hook's own env here).
+  it.each([
+    ['scripts/pc-heavy.sh -- <heavy> (the primary suggested remedy)', 'scripts/pc-heavy.sh -- node_modules/.bin/vitest run lib/x.test.ts'],
+    ['./scripts/pc-heavy.sh wrapping npm test', './scripts/pc-heavy.sh npm run test:affected'],
+    ['bare pc-heavy.sh invocation', 'pc-heavy.sh -- vitest run x.test.ts'],
+    ['pc-heavy.sh behind bash', 'bash scripts/pc-heavy.sh -- vitest run x.test.ts'],
+    ['env-prefixed inline PC_HEAVY_BYPASS=1', 'env PC_HEAVY_BYPASS=1 vitest run lib/x.test.ts'],
+    ['bare inline PC_HEAVY_BYPASS=1 prefix', 'PC_HEAVY_BYPASS=1 npm run test:affected'],
+    ['PC_HEAVY_BYPASS=1 among other assignments', 'FOO=bar PC_HEAVY_BYPASS=1 vitest run x.test.ts'],
+  ])('allows the in-band bypass %s even over the threshold (EI-9634)', (_label, command) => {
+    expectAllow(runGate(bashCmd(command), { ...AGENT, ...OVER }));
+  });
+
+  it.each([
+    // The in-band bypass must not become a free pass: it is command-position
+    // (re.match-anchored), so a raw heavy leading a chain is still gated even
+    // if a later segment wraps with pc-heavy.sh.
+    ['a raw heavy leading a pc-heavy chain', 'vitest run a.test.ts && scripts/pc-heavy.sh -- vitest run b.test.ts'],
+    ['PC_HEAVY_BYPASS with the wrong value does not bypass', 'env PC_HEAVY_BYPASS=0 vitest run x.test.ts'],
+  ])('does NOT over-bypass %s (EI-9634 guard)', (_label, command) => {
+    expectHeavyDeny(runGate(bashCmd(command), { ...AGENT, ...OVER }));
+  });
+
   it('is disabled by the PC_HEAVY_ADMISSION=off kill-switch', () => {
     expectAllow(runGate(bashCmd('npm run test:affected'), { ...AGENT, ...OVER, PC_HEAVY_ADMISSION: 'off' }));
   });

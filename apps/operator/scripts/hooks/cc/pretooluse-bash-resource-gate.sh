@@ -221,6 +221,25 @@ def _heavy_admission():
         return
     if os.environ.get('PC_HEAVY_BYPASS') == '1':
         return
+    # In-band bypasses (EI-9634): this hook decides BEFORE the wrapped command
+    # runs, so neither the blessed wrapper's PC_HEAVY_BYPASS export nor a child
+    # shell's inline `PC_HEAVY_BYPASS=1 …` assignment is in THIS process's env
+    # yet — so both remedies the deny message itself recommends were themselves
+    # denied under the exact high load they exist for. Read them from the
+    # command TEXT instead (both are command-position, re.match-anchored):
+    #   (a) a leading `scripts/pc-heavy.sh …` invocation — it runs its OWN flock
+    #       counting-semaphore admission and exports PC_HEAVY_BYPASS=1 to its
+    #       child, so gating it double-denies the wrapper for the check it
+    #       already satisfies.
+    _lead = command.lstrip()
+    if re.match(r'(?:env\s+(?:[A-Za-z_]\w*=\S*\s+)*)?(?:bash\s+|sh\s+)?(?:\S*/)?pc-heavy\.sh(?:\s|$)', _lead):
+        return
+    #   (b) a leading `PC_HEAVY_BYPASS=1` env-assignment prefix (bare, behind
+    #       other assignments, or behind `env`) — mirrors the message's own
+    #       `PC_HEAVY_BYPASS=1 <cmd>` remedy and the `env`-prefixed heavy form
+    #       the anchor already recognizes.
+    if re.match(r'(?:env\s+)?(?:[A-Za-z_]\w*=\S*\s+)*PC_HEAVY_BYPASS=1(?:\s|$)', _lead):
+        return
     # Only throttle agent / shared-tree sessions — never the owner's own box
     # work. Mirror the git-guard's marker-OR-tree gate so marker-less fleet
     # sessions (EI-7872) are still covered.

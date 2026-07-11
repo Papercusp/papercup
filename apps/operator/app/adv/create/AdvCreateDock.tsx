@@ -4,17 +4,15 @@
  * AdvCreateDock — the /adv "Create" tab (?tab=plans). A fixed two-region
  * dockview split used purely for its resizable, header-less divider:
  *
- *   ┌──────────────┬─────────────────────────────────┐
- *   │ create:filter│ create:main                     │
- *   │ (sidebar)    │ (active ?view)                  │
- *   │ +New / Plans │  Plans   → one full-width pane  │
- *   │ Inbox / Sess │  Inbox   → split list│detail    │
- *   │ search       │  Sessions→ split list│detail    │
- *   │ plan list    │                                 │
- *   └──────────────┴─────────────────────────────────┘
+ *   ┌────┬──────────────┬─────────────────────────────┐
+ *   │view│ create:filter│ create:main                 │
+ *   │rail│ (sidebar)    │ (active ?view)              │
+ *   │    │ +New/search  │ Plans → one full-width pane │
+ *   │    │ plan list    │ Queue/Sessions → list|detail│
+ *   └────┴──────────────┴─────────────────────────────┘
  *
- * The sidebar (create:filter) owns the New-plan + Plans/Inbox/Sessions
- * buttons and the plan-list filter; create:main renders the active ?view.
+ * The outer icon rail owns Plans/Queue/Sessions, create:filter owns New-plan
+ * and the plan-list filter, and create:main renders the active ?view.
  * Navigation is those buttons, NOT dockview tabs — so per-group tab headers
  * are hidden (adv-dock.css `.pc-adv-create`) and every group is locked, which
  * leaves only the sidebar|main sash draggable. Blue-frost theme via .pc-adv-dock.
@@ -24,7 +22,7 @@ import { useEffect } from 'react';
 import { HarnessDock } from '../../harness/dock/HarnessDock';
 import { panelRegistry } from '../../harness/dock/panel-registry';
 import { onDockApiBind } from '../../harness/dock/dock-actions';
-import PlansListPanel from './PlansListPanel';
+import PlansListPanel, { CreateViewRail } from './PlansListPanel';
 import MainViewPanel from './MainViewPanel';
 import '../harnesses/adv-dock.css';
 
@@ -70,7 +68,8 @@ export default function AdvCreateDock() {
   // WebKitGTK collapses height:100% chains under flex:1 (see HarnessesDock).
   return (
     <div className="pc-adv-create pc-adv-dock" style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-      <div style={{ position: 'absolute', inset: 0 }}>
+      <CreateViewRail />
+      <div className="pc-adv-create__dock">
         <HarnessDock layoutName="adv-create2" className="dockview-theme-dark" />
       </div>
     </div>
