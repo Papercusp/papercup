@@ -90,6 +90,16 @@ export interface LagMonitorOpts {
    * Default = same cadence as CPU profiles (`minProfileGapMs`).
    */
   minHeapSamplingDumpGapMs?: number;
+  /**
+   * WI-4189: retain at most this many `.heapprofile` files (oldest pruned).
+   * Unlike `.heapsnapshot` (pruned via `maxHeapSnapshots`), sampling-profile
+   * dumps had NO retention at all — on a host that sustains critical p95 lag
+   * for hours (one dump every `minHeapSamplingDumpGapMs`, default 5 min), they
+   * accumulate forever. Confirmed root cause of ~854MB / 1300+ stale
+   * `.heapprofile` files during the 2026-07-11 root-disk-100% incident.
+   * Default 50 (≈4hrs of dumps at the default 5-min gap).
+   */
+  maxSamplingProfiles?: number;
 }
 
 export interface LagMonitorHandle {
@@ -261,6 +271,7 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
       process.env.PAPERCUSP_HEAP_SNAPSHOT === '1' ||
       process.env.PAPERCUSP_HEAP_SNAPSHOT === 'true');
   const minHeapSamplingDumpGapMs = opts.minHeapSamplingDumpGapMs ?? minProfileGapMs;
+  const maxSamplingProfiles = opts.maxSamplingProfiles ?? 50;
   let samplingArmed = false;
   let samplingDumping = false;
   let lastSamplingDumpAt = 0;
@@ -315,6 +326,7 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
       void dumpHeapSamplingProfile({
         dir: heapSnapshotDir,
         rssMb,
+        maxProfiles: maxSamplingProfiles,
         log: (line, detail) => log(line, detail ?? {}),
       })
         .catch(() => {})
@@ -337,7 +349,7 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
         // if the full snapshot below dies mid-serialization (the 2026-07-01 mode).
         if (heapSamplingOnHighRss && !samplingDumping) {
           samplingDumping = true;
-          dumpHeapSamplingProfile({ dir: heapSnapshotDir, rssMb, log: (line, detail) => log(line, detail ?? {}) })
+          dumpHeapSamplingProfile({ dir: heapSnapshotDir, rssMb, maxProfiles: maxSamplingProfiles, log: (line, detail) => log(line, detail ?? {}) })
             .catch(() => {})
             .finally(() => {
               if (!stopped) samplingDumping = false;
@@ -633,9 +645,13 @@ export function topAllocationSites(
 export async function dumpHeapSamplingProfile(args: {
   dir?: string;
   rssMb: number;
+  /** Retain at most this many `.heapprofile` files (oldest pruned). Default 50.
+   *  WI-4189: unbounded before this — 1300+ files / 854MB accumulated on a host
+   *  that sustained critical p95 lag for hours (one dump per rate-limit gap). */
+  maxProfiles?: number;
   log: (line: string, detail?: Record<string, number | string>) => void;
 }): Promise<string | null> {
-  const { rssMb, log } = args;
+  const { rssMb, log, maxProfiles = 50 } = args;
   if (!_samplingSession) return null;
   try {
     const os = await import('node:os');
@@ -653,6 +669,21 @@ export async function dumpHeapSamplingProfile(args: {
     const top = topAllocationSites(profile.head);
     log('[heap-sampling] profile dumped on high RSS — top live allocation sites:', { rssMb: Math.round(rssMb), file });
     for (const t of top) log(`[heap-sampling]   ${t.mb} MB  ${t.site}`);
+
+    // Prune to maxProfiles oldest-first to bound disk use (WI-4189 — this was
+    // the missing counterpart to captureHeapSnapshot's own pruning below;
+    // .heapprofile files had no retention at all before this).
+    try {
+      const entries = (await fs.readdir(dir))
+        .filter((f) => f.endsWith('.heapprofile'))
+        .sort();
+      const excess = entries.length - maxProfiles;
+      for (let i = 0; i < excess; i++) {
+        await fs.rm(path.join(dir, entries[i]), { force: true }).catch(() => {});
+      }
+    } catch {
+      /* prune is best-effort */
+    }
     return file;
   } catch (e) {
     log(`[heap-sampling] dump failed: ${e instanceof Error ? e.message : String(e)}`);

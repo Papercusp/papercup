@@ -19,7 +19,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, type AgentIdentity } from '../identity';
 import { fetchPresenceFleet } from '../presence-fleet';
-import { scopeBroadcastAudience } from '../scope-broadcast';
+import { scopeBroadcastAudience, ALLHIVE_BROADCAST_FIELD } from '../scope-broadcast';
 import { resolveSenderCueAuthority } from '../cue-authority-resolve';
 import { CUE_AUTHORITY_FIELD, type CueAuthorityStamp } from '../cue-authority';
 import { RELAY_PROVENANCE_FIELD, type RelayProvenanceStamp } from '../relay-provenance';
@@ -327,6 +327,11 @@ async function sendOne(
   // P-008: the sender's body-auto-ref opt-out rides the envelope so DELIVERY
   // (the receiver's inbox seam + renderer) honors it — no receiver-side config.
   if (msg.noBodyRefs) extra[BODY_REFS_OPT_OUT_FIELD] = true;
+  // P-010 (H5b): persist the CONSCIOUS hive-wide claim on the envelope — the
+  // durable trace the allhive-broadcast-sweep detector keys on. A plain
+  // non-fleeted sender's bare '*' is NOT stamped (routine traffic, live data:
+  // hundreds/day) — only the explicit allHive:true override is.
+  if (bcast?.allHive) extra[ALLHIVE_BROADCAST_FIELD] = true;
   if (wakeMode) extra.wake = true;
   if (effectiveWakeOnReply) extra.wakeOnReply = true;
   // EI-8986: stamp an absolute deadline (epoch ms) so the reply-deadline-sweep

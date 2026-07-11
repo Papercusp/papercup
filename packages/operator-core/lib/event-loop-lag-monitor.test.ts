@@ -492,4 +492,48 @@ describe('sampling heap profiler (WI-1088 round 2 — the capture that cannot lo
       await rm(dir, { recursive: true, force: true }).catch(() => {});
     }
   });
+
+  it('WI-4189: dumpHeapSamplingProfile prunes to maxProfiles (oldest removed) — .heapprofile had NO retention before this', async () => {
+    const { ensureHeapSampling, dumpHeapSamplingProfile } = await import('./event-loop-lag-monitor');
+    const { mkdtemp, readdir, rm } = await import('node:fs/promises');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'heap-sampling-prune-'));
+    const log = vi.fn();
+    try {
+      expect(await ensureHeapSampling(log)).toBe(true);
+      // Dump 5 profiles with maxProfiles=2 — only the 2 newest must remain.
+      for (let i = 0; i < 5; i++) {
+        const file = await dumpHeapSamplingProfile({ dir, rssMb: 1, maxProfiles: 2, log });
+        expect(file).toBeTruthy();
+      }
+      const files = (await readdir(dir)).filter((f) => f.endsWith('.heapprofile'));
+      expect(files.length).toBeLessThanOrEqual(2);
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  it('WI-4189: dumpHeapSamplingProfile defaults maxProfiles to 50 when omitted', async () => {
+    const { ensureHeapSampling, dumpHeapSamplingProfile } = await import('./event-loop-lag-monitor');
+    const { mkdtemp, readdir, writeFile, rm } = await import('node:fs/promises');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'heap-sampling-default-prune-'));
+    const log = vi.fn();
+    try {
+      expect(await ensureHeapSampling(log)).toBe(true);
+      // Seed 55 fake pre-existing .heapprofile files (cheap — no real inspector dump needed
+      // to manufacture the excess), then one real dump must prune down toward the default cap.
+      for (let i = 0; i < 55; i++) {
+        await writeFile(path.join(dir, `heap-sampling-${1_700_000_000_000 + i}-pidfake-rss_1mb.heapprofile`), '{}');
+      }
+      const file = await dumpHeapSamplingProfile({ dir, rssMb: 1, log }); // maxProfiles omitted
+      expect(file).toBeTruthy();
+      const files = (await readdir(dir)).filter((f) => f.endsWith('.heapprofile'));
+      expect(files.length).toBeLessThanOrEqual(50);
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
 });
