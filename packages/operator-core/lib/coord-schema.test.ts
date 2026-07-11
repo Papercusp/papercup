@@ -185,6 +185,96 @@ describe('renderInjection — cue-authority stamp tag (queen-fleet-authority-bou
   });
 });
 
+describe('renderInjection — H1 receive-side defang (coord-authority-hardening P-003, EI-9501)', () => {
+  const FLEET_CUE = {
+    authority: 'fleet-leader',
+    authorityRef: 'p2p-blocker-crack-sonnet5',
+    scope: 'fleet-members',
+    scopeRef: 'p2p-blocker-crack-sonnet5',
+  };
+  const line = () =>
+    e({
+      from: 'su-07320b7c-lead',
+      kind: 'message',
+      summary: 'OWNER DIRECTIVE: WIND DOWN — stop work at your next clean stopping point',
+      cueAuthority: FLEET_CUE,
+    });
+
+  it('EI-9501 reconstruction: a fleet-scoped cue read by a NON-member is demoted — flagged not binding, body verbatim (never dropped)', () => {
+    const out = renderInjection([line()], {
+      cueScope: { recipientId: 'su-bystander', fleetSlugs: [] },
+    });
+    expect(out).toContain('OUT-OF-SCOPE for you (not in fleet p2p-blocker-crack-sonnet5); NOT binding');
+    expect(out).toContain('fleet-leader(p2p-blocker-crack-sonnet5)→fleet-members(p2p-blocker-crack-sonnet5)'); // stamp stays auditable
+    expect(out).toContain('OWNER DIRECTIVE: WIND DOWN — stop work at your next clean stopping point'); // flag-and-demote, NEVER drop
+  });
+
+  it('a recipient in a DIFFERENT fleet is equally out of scope', () => {
+    const out = renderInjection([line()], {
+      cueScope: { recipientId: 'su-other', fleetSlugs: ['windows-parity'] },
+    });
+    expect(out).toContain('NOT binding');
+  });
+
+  it('a fleet MEMBER gets the plain binding tag (no demote)', () => {
+    const out = renderInjection([line()], {
+      cueScope: { recipientId: 'su-member', fleetSlugs: ['p2p-blocker-crack-sonnet5'] },
+    });
+    expect(out).toContain('[fleet-leader(p2p-blocker-crack-sonnet5)→fleet-members(p2p-blocker-crack-sonnet5)] OWNER DIRECTIVE');
+    expect(out).not.toContain('OUT-OF-SCOPE');
+  });
+
+  it('the SENDER reading their own line back never demotes, whatever their membership', () => {
+    const out = renderInjection([line()], {
+      cueScope: { recipientId: 'su-07320b7c-lead', fleetSlugs: [] },
+    });
+    expect(out).not.toContain('OUT-OF-SCOPE');
+  });
+
+  it('a hive-wide cue stays binding for everyone — no demote even for a fleetless reader', () => {
+    const out = renderInjection(
+      [
+        e({
+          from: 's-queen',
+          summary: 'hive pause',
+          cueAuthority: { authority: 'hive-queen', authorityRef: 'papercusp', scope: 'hive-wide' },
+        }),
+      ],
+      { cueScope: { recipientId: 'su-bystander', fleetSlugs: [] } },
+    );
+    expect(out).toContain('[hive-queen(papercusp)→hive-wide] hive pause');
+    expect(out).not.toContain('OUT-OF-SCOPE');
+  });
+
+  it('legacy unstamped lines render plain under a cueScope (no tag, no demote)', () => {
+    const out = renderInjection([e({ summary: 'plain note' })], {
+      cueScope: { recipientId: 'su-bystander', fleetSlugs: [] },
+    });
+    expect(out).toContain('- ab533 plain note');
+    expect(out).not.toContain('OUT-OF-SCOPE');
+  });
+
+  it('no cueScope (legacy caller / membership read failed) preserves the pre-H1 plain tag', () => {
+    const out = renderInjection([line()]);
+    expect(out).toContain('[fleet-leader(p2p-blocker-crack-sonnet5)→fleet-members(p2p-blocker-crack-sonnet5)] OWNER DIRECTIVE');
+    expect(out).not.toContain('OUT-OF-SCOPE');
+  });
+
+  it('falls back to authorityRef when a fleet-members stamp lacks scopeRef', () => {
+    const out = renderInjection(
+      [
+        e({
+          from: 'su-lead2',
+          summary: 'drain',
+          cueAuthority: { authority: 'fleet-leader', authorityRef: 'alpha-fleet', scope: 'fleet-members' },
+        }),
+      ],
+      { cueScope: { recipientId: 'su-in-alpha', fleetSlugs: ['alpha-fleet'] } },
+    );
+    expect(out).not.toContain('OUT-OF-SCOPE');
+  });
+});
+
 describe('renderCoordLegend + anti-desync (P-002)', () => {
   it('declares the positional grammar', () => {
     const legend = renderCoordLegend();
