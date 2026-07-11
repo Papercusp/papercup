@@ -42,8 +42,13 @@ export const DELIVERY_MODES: readonly DeliveryMode[] = ['full', 'digest', 'menti
 /** What a subscription follows. `fleet` is the per-member delivery OVERRIDE on a
  *  named fleet (target_ref = fleet slug) — NOT a positive subscription (fleet
  *  membership is derived from coord_presence); the row only ever DOWNGRADES a
- *  member's delivery (digest/muted). No row = the derived default (full). */
-export type SubscriptionTargetKind = 'topic' | 'object' | 'fleet';
+ *  member's delivery (digest/muted). No row = the derived default (full).
+ *  `event` is a STANDING inject subscription to an arbitrary event key
+ *  (target_ref = the event key, e.g. `lock:grant:<ticket>`) — the wake:false
+ *  half of watch:create's event-key support (WI-4014 Part 2); the wake:true
+ *  half is a standing `events:await`-style row on the separate awaits table,
+ *  unrelated to this store. */
+export type SubscriptionTargetKind = 'topic' | 'object' | 'fleet' | 'event';
 
 /** Encode an object as a subscription target_ref (`<kind>:<ref>`). Topic targets
  *  use the bare topic slug, so this is only for target_kind='object'. */

@@ -3415,6 +3415,17 @@ export async function unlinkWorkItem(
   if (!wi) return { error: `work_item '${id}' not found` };
   if (wi.family === 'issue') await unlinkIssue(id, dst, rel);
   else await links.unlink(workItemObjectRef(wi), dst, rel);
+  // WI-4034 (the unlink gap): removing a `blocks` edge can be the dependent's
+  // LAST live blocker clearing — the same condition emitWorkItemSettledEvents
+  // fires `work-item:unblocked:<dst>` for when the blocker SETTLES. Before this,
+  // an unlink (vs. a settle) never re-checked it, so an events:await registrant
+  // silently strands to its 30-min timeout-wake. Fire-and-forget + lazy import
+  // (mirrors the settle-path call above) — never blocks or fails this write.
+  if (rel === 'blocks') {
+    void import('./work-items-events')
+      .then((m) => m.emitUnblockedOnEdgeRemoved(dst, id))
+      .catch(() => {});
+  }
   return { ok: true };
 }
 

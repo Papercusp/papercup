@@ -1,6 +1,6 @@
 ---
 rel_path: "memory/raw.md"
-updated_at: 1783523923870
+updated_at: 1783734659453
 _body: "content"
 ---
 
@@ -26,4 +26,6 @@ _body: "content"
 
 [2026-07-08T12:40:00Z] worker EI-7939: The fleet-wide "unassigned" invariant is `taken_by IS NULL OR taken_by = ''` (work-items.ts claimFloorsWhereSql, survey.ts, wake-frontier-guard.ts). A literal `'unassigned'` (or whitespace) taken_by violates it: the claim floor treats it as TAKEN (starved) AND the P-013 orphan-sweep fires a false "dead holder" incident. Normalize empty-ish/'unassigned'→NULL at the hyperbee projection ingest boundary (projections/harness-features.ts normalizeTakenBy), not in the sweep (the sweep MUST still clean it to break starvation).
 [2026-07-08T15:18:00Z] worker EI-8614: "Unresolved escalation ... git-sync-watchdog" is NOT always a self-clearing phantom. When evaluateGitSyncStall stays stalled via persistentReap (reaped_count≥3) on a WI-1415-wedged/semi-dead hive (oddsmith: reaped=44, no sync 16h), the one-shot watchdog never self-clears → collectEscalationSignals re-dispatches every tick (git-sync-watchdog has NO EI-8396-style guard; that's EI-8671, human-gated). Fix = manual clear via loopback POST /api/harness/:slug/escalation/resolve?phase=git-sync-watchdog {response,action:'clear'} (it APPENDS supervisor_notes + bumps mtime; works for non-project harnesses). Root cause is a protected surface (WI-1415), not auto-fixable — state-only cleanup, zero code diff.
+
+[2026-07-11T01:50:00Z] worker EI-9372: Full hermetic vitest can't run in the auto-implement sandbox — the sandbox /tmp (and everything outside the repo tree) is read-only, and libs/test-config/src/vitest-config.ts forces TMPDIR=/tmp/pcv whenever the current TMPDIR is missing or IN-REPO (tmpdirIsInsideRepo), so you can't point it at .papercusp/scratch either. For a PURE static-scan test (e.g. identity-keyed-state-inventory.test.ts — reads generated.ts, no DB/runtime), don't fight the hermetic setup: extract its IDENTITY_COLUMN_NAMES + ALLOWLIST from the test source and re-run its verbatim scan logic in a plain node script, then corroborate with harness_shared.test_runs (the gate's own recorded vitest pass/fail on the current commit). Also: a watchdog red-test EI can be re-dispatched on a STALE signal after a bg-host DBOS outage (routine freshness can't re-evaluate while routines are down) — always check test_runs for a fail→pass flip on the current commit before assuming the red is live.
 

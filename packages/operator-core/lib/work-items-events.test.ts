@@ -3,7 +3,7 @@
  * deps) (await-event-primitive-2026-06-05 P-012/P-013, D-006 #4/#5).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { emitWorkItemSettledEvents, isSettledWorkItem, workItemIdFromRef } from './work-items-events';
+import { emitUnblockedOnEdgeRemoved, emitWorkItemSettledEvents, isSettledWorkItem, workItemIdFromRef } from './work-items-events';
 import type { WorkItem } from './work-items';
 
 const wi = (over: Partial<WorkItem> = {}): WorkItem => ({
@@ -124,6 +124,85 @@ describe('emitWorkItemSettledEvents', () => {
         listOut: vi.fn(async () => []) as never,
         listIn: vi.fn(async () => []) as never,
       }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+// WI-4034 DEFECT 1 (the unlink gap): unlinkWorkItem never re-checked whether
+// the edge it just removed was the dependent's LAST live blocker, so
+// work-item:unblocked never fired on an UNLINK — only on the blocker settling.
+describe('emitUnblockedOnEdgeRemoved (WI-4034)', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  it('fires work-item:unblocked when the removed edge was the LAST live blocker', async () => {
+    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null, waiters: 0 }));
+    const dependent = wi({ id: 'WI-DEP', state: 'open', assignee: 'su-claimant' });
+    // the edge to the just-removed blocker is ALREADY gone from the store by
+    // the time this runs — listIn returns only the (settled) other blocker.
+    const otherBlockerSettled = wi({ id: 'WI-B2', state: 'closed' });
+    await emitUnblockedOnEdgeRemoved({ kind: 'issue', ref: 'WI-DEP' }, 'WI-1', {
+      emit: emit as never,
+      getItem: vi.fn(async (id: string) =>
+        id === 'WI-DEP' ? dependent : id === 'WI-B2' ? otherBlockerSettled : null,
+      ) as never,
+      listIn: vi.fn(async () => [edge('WI-B2', 'WI-DEP')]) as never,
+    });
+    expect(emit).toHaveBeenCalledOnce();
+    const arg = (emit.mock.calls[0] as unknown as [{ key: string; to: string[]; payload: { clearedBy: string } }])[0];
+    expect(arg.key).toBe('work-item:unblocked:WI-DEP');
+    expect(arg.to).toEqual(['su-claimant']);
+    expect(arg.payload.clearedBy).toBe('WI-1');
+  });
+
+  it('does NOT fire while another blocker is still live', async () => {
+    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null, waiters: 0 }));
+    const dependent = wi({ id: 'WI-DEP', state: 'open', assignee: 'su-claimant' });
+    const liveBlocker = wi({ id: 'WI-B2', state: 'open' });
+    await emitUnblockedOnEdgeRemoved({ kind: 'issue', ref: 'WI-DEP' }, 'WI-1', {
+      emit: emit as never,
+      getItem: vi.fn(async (id: string) => (id === 'WI-DEP' ? dependent : id === 'WI-B2' ? liveBlocker : null)) as never,
+      listIn: vi.fn(async () => [edge('WI-B2', 'WI-DEP')]) as never,
+    });
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('does NOT fire for an already-settled dependent', async () => {
+    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null, waiters: 0 }));
+    const settledDependent = wi({ id: 'WI-DEP', state: 'resolved' });
+    await emitUnblockedOnEdgeRemoved({ kind: 'issue', ref: 'WI-DEP' }, 'WI-1', {
+      emit: emit as never,
+      getItem: vi.fn(async () => settledDependent) as never,
+      listIn: vi.fn(async () => []) as never,
+    });
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('fires when there were never any other blockers at all (listIn empty)', async () => {
+    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null, waiters: 0 }));
+    const dependent = wi({ id: 'WI-DEP', state: 'open', assignee: 'su-claimant' });
+    await emitUnblockedOnEdgeRemoved({ kind: 'issue', ref: 'WI-DEP' }, 'WI-1', {
+      emit: emit as never,
+      getItem: vi.fn(async () => dependent) as never,
+      listIn: vi.fn(async () => []) as never,
+    });
+    expect(emit).toHaveBeenCalledOnce();
+  });
+
+  it('an emit failure is swallowed (never throws)', async () => {
+    await expect(
+      emitUnblockedOnEdgeRemoved(
+        { kind: 'issue', ref: 'WI-DEP' },
+        'WI-1',
+        {
+          emit: vi.fn(async () => {
+            throw new Error('engine down');
+          }) as never,
+          getItem: vi.fn(async () => wi({ id: 'WI-DEP', state: 'open' })) as never,
+          listIn: vi.fn(async () => []) as never,
+        },
+      ),
     ).resolves.toBeUndefined();
   });
 });

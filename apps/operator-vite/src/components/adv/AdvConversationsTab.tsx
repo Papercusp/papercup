@@ -73,14 +73,22 @@ import '@/app/admin/coordination/coordination.css';
 
 // The comms `list` reads cap at this many rows; the server returns the true
 // `total` alongside `items`, so the rails can show "N of TOTAL" honestly.
-const COMMS_LIST_LIMIT = 500;
+// A conversation rail is a navigation surface, not an archive export. Fetching
+// 500 rows made every source switch wait on a large response even though only a
+// small virtual window is visible. The server still returns `total`, so the UI
+// can say "100 of N" without downloading N.
+const COMMS_LIST_LIMIT = 100;
+const READ_TIMEOUT_MS = 15_000;
+const INITIAL_LOAD_STALL_MS = 8_000;
 
 async function coord<T = Record<string, unknown>>(verb: string, body: Record<string, unknown> = {}): Promise<T> {
+  const isRead = verb.endsWith('/list') || verb.endsWith('/get');
   const res = await fetch(`/api/admin/coordination/${verb}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
     cache: 'no-store',
+    ...(isRead ? { signal: AbortSignal.timeout(READ_TIMEOUT_MS) } : {}),
   });
   if (!res.ok) throw new Error(`${verb}: HTTP ${res.status}`);
   return (await res.json()) as T;
@@ -94,6 +102,7 @@ async function comms<T = Record<string, unknown>>(kind: string, verb: string, bo
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
     cache: 'no-store',
+    signal: AbortSignal.timeout(READ_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`${kind}/${verb}: HTTP ${res.status}`);
   return (await res.json()) as T;
@@ -374,9 +383,19 @@ function UnifiedInboxView() {
   });
   const { data, loading, error, invalidate } = useSyncQuery<UnifiedConversationRow>({
     queryName: 'conversations.unified',
-    args: { limit: 200 },
+    args: { limit: 100 },
+    staleTime: 30_000,
   });
   const rows = data ?? [];
+  const [stalled, setStalled] = useState(false);
+  useEffect(() => {
+    if (!loading || rows.length > 0) {
+      setStalled(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setStalled(true), INITIAL_LOAD_STALL_MS);
+    return () => window.clearTimeout(timer);
+  }, [loading, rows.length]);
   const listRef = useRef<HTMLDivElement | null>(null);
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLButtonElement>({
     count: rows.length,
@@ -384,9 +403,9 @@ function UnifiedInboxView() {
     estimateSize: () => 82,
     overscan: 10,
   });
-  useEffect(() => {
-    virtualizer.measure();
-  }, [rows, virtualizer]);
+  // `measureElement` on each mounted row already keeps variable heights exact.
+  // Calling measure() for every live-sync array replacement resets the whole
+  // virtual window and makes the rail visibly jump/flash during invalidations.
 
   const open = (row: UnifiedConversationRow) => setRoute({
     conv: row.source,
@@ -401,13 +420,16 @@ function UnifiedInboxView() {
       filters={
         <div className="pc-advconv__railhead pc-advconv__railhead--unified">
           <span style={sectionHeaderStyle}>Conversations</span>
-          <strong>{loading ? '…' : rows.length}</strong>
+          <strong>{loading && rows.length === 0 ? '…' : rows.length}</strong>
           <button
             type="button"
             className="pc-coord__chip pc-advconv__refresh"
             aria-label="Reload conversations"
-            disabled={loading}
-            onClick={() => void invalidate()}
+            disabled={loading && !stalled}
+            onClick={() => {
+              setStalled(false);
+              void invalidate();
+            }}
           >
             <RefreshCw size={11} aria-hidden />
           </button>
@@ -415,8 +437,13 @@ function UnifiedInboxView() {
       }
       list={
         <div className="pc-advconv__listscroll pc-advconv__unified" ref={listRef}>
-          {loading && rows.length === 0 ? (
+          {loading && rows.length === 0 && !stalled ? (
             <LoadingRows rows={6} label="Loading conversations" />
+          ) : stalled && rows.length === 0 ? (
+            <LoadError message="Conversation sync timed out." onRetry={() => {
+              setStalled(false);
+              void invalidate();
+            }} />
           ) : error && rows.length === 0 ? (
             <LoadError message={errText(error)} onRetry={() => void invalidate()} />
           ) : rows.length === 0 ? (
@@ -1546,7 +1573,7 @@ function ThreadsView() {
         <>
           <div className="pc-advconv__railhead">
             <span style={sectionHeaderStyle}>Question &amp; discussion threads</span>
-            <strong>{loading ? '…' : visible.length}</strong>
+          <strong>{loading && visible.length === 0 ? '…' : visible.length}</strong>
           </div>
           <div className="pc-coord__filters" role="group" aria-label="State filter">
             {CONV_STATES.map((s) => (
@@ -1587,9 +1614,9 @@ function ThreadsView() {
       }
       list={
         <div className="pc-advconv__listscroll" ref={railScrollRef}>
-          {loading ? (
+          {loading && visible.length === 0 ? (
             <LoadingRows />
-          ) : error ? (
+          ) : error && visible.length === 0 ? (
             <LoadError message={error} onRetry={() => void reload()} />
           ) : visible.length === 0 ? (
             <EmptyState
@@ -1839,7 +1866,7 @@ function DeliberationsView() {
       filters={
         <div className="pc-advconv__railhead">
           <span style={sectionHeaderStyle}>Deliberation threads</span>
-          <strong>{loading ? '…' : listCountLabel(list.length, total)}</strong>
+          <strong>{loading && list.length === 0 ? '…' : listCountLabel(list.length, total)}</strong>
           <button type="button" className="pc-coord__chip pc-advconv__refresh" aria-label="Reload deliberations" disabled={loading} onClick={() => void reload()}>
             <RefreshCw size={11} aria-hidden />
           </button>
@@ -1847,9 +1874,9 @@ function DeliberationsView() {
       }
       list={
         <div className="pc-advconv__listscroll" ref={railScrollRef}>
-          {loading ? (
+          {loading && list.length === 0 ? (
             <LoadingRows />
-          ) : error ? (
+          ) : error && list.length === 0 ? (
             <LoadError message={error} onRetry={() => void reload()} />
           ) : list.length === 0 ? (
             <EmptyState
@@ -2083,7 +2110,7 @@ function AgentChatsView() {
         <>
           <div className="pc-advconv__railhead">
             <span style={sectionHeaderStyle}>Agent chat sessions</span>
-            <strong>{loading ? '…' : listCountLabel(list.length, total)}</strong>
+            <strong>{loading && list.length === 0 ? '…' : listCountLabel(list.length, total)}</strong>
           </div>
           {harnesses.length > 0 && (
             <div className="pc-coord__filters" role="group" aria-label="Harness filter">
@@ -2108,9 +2135,9 @@ function AgentChatsView() {
       }
       list={
         <div className="pc-advconv__listscroll" ref={railScrollRef}>
-          {loading ? (
+          {loading && list.length === 0 ? (
             <LoadingRows />
-          ) : error ? (
+          ) : error && list.length === 0 ? (
             <LoadError message={error} onRetry={() => void reload()} />
           ) : list.length === 0 ? (
             <EmptyState
@@ -2490,7 +2517,7 @@ function AdvConvStyles() {
         font-weight: 700;
         letter-spacing: 0;
         cursor: pointer;
-        transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+        transition: none;
       }
       .pc-advconv__navicon {
         display: inline-flex;
@@ -2906,7 +2933,7 @@ function AdvConvStyles() {
         color: var(--fg);
         text-align: left;
         cursor: pointer;
-        transition: background-color 120ms ease, border-color 120ms ease;
+        transition: none;
       }
       .pc-advconv__unified-row:hover,
       .pc-advconv__unified-row:focus-visible {

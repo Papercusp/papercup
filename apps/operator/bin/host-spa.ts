@@ -37,9 +37,23 @@ import { isTestingFeaturesEnabled } from '@papercusp/operator-core/lib/posthog-c
  * whose `__dirname` is the sidecar root, so the build sets
  * `PAPERCUSP_SPA_DIST` to the bundled `dist/` location explicitly.
  */
-const SPA_DIST_ROOT = process.env.PAPERCUSP_SPA_DIST
-  ? resolve(process.env.PAPERCUSP_SPA_DIST)
-  : resolve(__dirname, '..', '..', 'operator-vite', 'dist');
+function resolveSpaDistRoot(): string {
+  // 1. Explicit — the build/env launcher sets this to the bundled SPA
+  //    (env-operator-launcher passes `<envDir>/spa`).
+  if (process.env.PAPERCUSP_SPA_DIST) return resolve(process.env.PAPERCUSP_SPA_DIST);
+  // 2. Packaged desktop: the host is esbuild-bundled into a single file at the
+  //    sidecar ROOT, and the bundled SPA lives beside it at `sidecar/spa/`. If a
+  //    launch path forgot to export PAPERCUSP_SPA_DIST (the `serve --ensure`
+  //    self/discovery operator did — it 404'd every UI route while the API stayed
+  //    up), fall back to that bundled location instead of the dev-source path,
+  //    which does not exist in the bundle. Defense-in-depth: a missing env var
+  //    must never blank the desktop UI.
+  const bundled = resolve(__dirname, 'spa');
+  if (existsSync(join(bundled, 'index.html'))) return bundled;
+  // 3. Dev (host run via `tsx` from source): `bin/` → sibling `operator-vite/dist`.
+  return resolve(__dirname, '..', '..', 'operator-vite', 'dist');
+}
+const SPA_DIST_ROOT = resolveSpaDistRoot();
 
 const EXT_CONTENT_TYPE: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',

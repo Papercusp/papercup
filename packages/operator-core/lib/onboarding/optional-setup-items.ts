@@ -35,6 +35,14 @@ export interface OptionalSetupItem {
    * FLAGS.ONBOARDING_PREVIEW_FEATURES is ON. Default installs never see these.
    */
   preview: boolean;
+  /**
+   * true ⇒ the user MUST make a decision on this item before onboarding can
+   * graduate (setup:complete). For a 'confirm' item, "no" is a valid answer
+   * that satisfies the requirement — required means "must be answered", not
+   * "must be yes". Default (undefined) = optional/skippable.
+   * (Owner-directed 2026-07-10: telemetry consent is required-but-answerable-no.)
+   */
+  required?: boolean;
 }
 
 export const OPTIONAL_SETUP_ITEMS: readonly OptionalSetupItem[] = [
@@ -66,14 +74,18 @@ export const OPTIONAL_SETUP_ITEMS: readonly OptionalSetupItem[] = [
     input: 'text',
     preview: false,
   },
-  // ── Preview items — backing feature NOT ready; gated behind ONBOARDING_PREVIEW_FEATURES ──
   {
+    // Backing feature shipped (setup:set_telemetry + the flush pipeline), so this
+    // is no longer a preview stub. REQUIRED: onboarding must collect an explicit
+    // yes/no before graduating; "no" is a valid, satisfying answer.
     key: 'telemetry',
     label: 'Telemetry consent',
-    why: 'an explicit yes/no on anonymized crash reports',
-    input: 'preview',
-    preview: true,
+    why: 'an explicit yes/no on anonymized diagnostics + crash reports',
+    input: 'confirm',
+    preview: false,
+    required: true,
   },
+  // ── Preview items — backing feature NOT ready; gated behind ONBOARDING_PREVIEW_FEATURES ──
   {
     key: 'mobile-pairing',
     label: 'Mobile pairing',
@@ -94,6 +106,34 @@ export const OPTIONAL_SETUP_ITEMS: readonly OptionalSetupItem[] = [
 export const PREVIEW_ITEM_KEYS: readonly string[] = OPTIONAL_SETUP_ITEMS.filter(
   (i) => i.preview,
 ).map((i) => i.key);
+
+/**
+ * The optional-setup items the user MUST decide before onboarding can graduate
+ * (`setup:complete`). "No" is a valid, satisfying answer — required means "must be
+ * answered". Today this is just telemetry consent (owner-directed 2026-07-10).
+ * The graduation gate (setup:complete) and the deterministic runner both derive
+ * their required-set from THIS one list so the two surfaces can't drift.
+ */
+export function requiredOptionalSetupItems(): OptionalSetupItem[] {
+  return OPTIONAL_SETUP_ITEMS.filter((i) => i.required === true);
+}
+
+/**
+ * Map an optional-setup item key → the `collectSetupStatus` StepId that proves it
+ * decided (so the graduation gate can read a single, shared status probe instead of
+ * re-deriving "decided?" per item). Most required items map straight to a step of the
+ * same name (telemetry → 'telemetry'); the fallback returns the key itself, and the
+ * gate only blocks on keys that actually exist in the status map.
+ */
+export function statusStepForItemKey(key: string): string {
+  const MAP: Record<string, string> = {
+    telemetry: 'telemetry',
+    'mobile-pairing': 'mobile-pairing',
+    'update-channel': 'auto-update',
+    'git-identity': 'git',
+  };
+  return MAP[key] ?? key;
+}
 
 /**
  * The items to actually offer, given whether preview features are enabled.

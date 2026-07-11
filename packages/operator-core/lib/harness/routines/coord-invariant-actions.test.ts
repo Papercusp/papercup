@@ -378,6 +378,61 @@ describe('evaluateInvariants', () => {
       expect(violations[0].detail).toContain('bg-host-substrate');
     });
 
+    it('EI-9420: a mean-exec-time breach is SUPPRESSED when min_exec_time proves a fast path already exists', () => {
+      // Live-verified shape (2026-07-11): a query fixed hours ago (a new index / an
+      // added LIMIT) but whose pg_stat_statements lifetime mean is still dragged up by
+      // historical pre-fix calls. min_exec_time in the low-hundreds-ms range proves the
+      // CURRENT code already has a fast/bounded route — the alarming mean is stale
+      // debris, not a live furnace.
+      const snap = {
+        ...cleanSnap,
+        coordLogFurnaces: [
+          { queryid: 'fixed-hours-ago', queryPreview: 'SELECT body FROM harness_shared.coord_event_log ...', calls: 3202, rowsPerCall: 772, meanExecMs: 7511, minExecMs: 2.3 },
+        ],
+      };
+      expect(evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW)).toEqual([]);
+    });
+
+    it('EI-9420: a mean-exec-time breach STILL fires when min_exec_time shows no fast path ever existed', () => {
+      const snap = {
+        ...cleanSnap,
+        coordLogFurnaces: [
+          { queryid: 'genuinely-still-broken', queryPreview: 'SELECT body FROM harness_shared.coord_event_log ...', calls: 500, rowsPerCall: 1000, meanExecMs: 3_000, minExecMs: 2_800 },
+        ],
+      };
+      const violations = evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW);
+      expect(violations).toHaveLength(1);
+      expect(violations[0].title).toBe('coord invariant: unbounded coord_event_log read pattern (furnace class)');
+      expect(violations[0].detail).toContain('min_exec_ms=2800');
+    });
+
+    it('EI-9420: an ABSENT min_exec_time never suppresses (unknown ⇒ still judged on mean alone)', () => {
+      // Same shape as the pre-existing "fires on mean exec time alone" test but
+      // explicit that omitting minExecMs (an older snapshot shape) is NOT treated as
+      // "proven fast" — only a known, low value suppresses.
+      const snap = {
+        ...cleanSnap,
+        coordLogFurnaces: [{ queryid: 'no-min-data', queryPreview: 'SELECT ... coord_event_log ...', calls: 10, rowsPerCall: 5, meanExecMs: 5_000 }],
+      };
+      const violations = evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW);
+      expect(violations).toHaveLength(1);
+    });
+
+    it('EI-9420: the rows/call leg fires regardless of min_exec_time (never suppressed by a fast best-case)', () => {
+      // The WI-3937 class: a habitually-huge row count IS the furnace even when every
+      // individual call (including the best case) is fast — rows/call must stay an
+      // unconditional trigger, independent of the mean-exec proven-fast-path guard.
+      const snap = {
+        ...cleanSnap,
+        coordLogFurnaces: [
+          { queryid: 'wi3937-fast-min', queryPreview: 'SELECT body FROM harness_shared.coord_event_log ORDER BY id ASC', calls: 285_000, rowsPerCall: 80_000, meanExecMs: 500, minExecMs: 1 },
+        ],
+      };
+      const violations = evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW);
+      expect(violations).toHaveLength(1);
+      expect(violations[0].title).toBe('coord invariant: unbounded coord_event_log read pattern (furnace class)');
+    });
+
     it('is a stable dedup title across repeated evaluation (never floods the backlog)', () => {
       const snap = {
         ...cleanSnap,

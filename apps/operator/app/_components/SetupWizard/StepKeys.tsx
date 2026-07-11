@@ -136,7 +136,7 @@ export function StepKeys() {
         description={
           <>
             Only needed if you pick the <strong>OpenAI</strong> memory system above, or want cloud semantic search.
-            The default EmbeddingGemma-300m needs no key. Uses{' '}
+            The default Harrier-OSS-0.6b needs no key. Uses{' '}
             <code>text-embedding-3-small</code> — very low cost per call (under $0.02 per million
             tokens at the time of writing).
           </>

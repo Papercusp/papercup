@@ -492,6 +492,28 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'scout-draft-review-sweep' },
   );
 
+  // su-ideate-learning-substrate-2026-07-10 P-006: the ungraded su-filings GRADING
+  // backstop — the scout-draft-review sweep's sibling, aimed at the routed-idea
+  // ledger instead of draft plans. su-originated filings (origin='su-ideate') only
+  // teach the learning substrate once GRADED (blender:grade-idea), but nothing made
+  // grading happen; this sweep finds filings ungraded past a deadline (default 7d)
+  // and fires ONE debounced nudge to the live Mug (event-key wake + durable
+  // @role:mug park). It never grades anything itself. D-013: epoch floor + batch
+  // cap keep the backfilled corpus out of triage. Default-safe; kill switch:
+  // PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC<=0. Debounced + fail-soft inside the module.
+  await DBOS.runStep(
+    async () => {
+      const { suIdeateUngradedSweep } = await import('../scout/ungraded-filings-watchdog');
+      const results = await suIdeateUngradedSweep();
+      for (const res of results) {
+        if (res.outcome === 'nudged' || res.outcome === 'error') {
+          console.warn(`[su-ideate-ungraded] ${res.outcome}: ${res.installSlug} — ${res.reason}`);
+        }
+      }
+    },
+    { name: 'su-ideate-ungraded-sweep' },
+  );
+
   // WI-1574 (2026-07-02): the ready-plan AUTOSTART sweep — the missing CONSUMER of
   // the review loop's `ready` terminal. The Queen ratified scout drafts to 'ready'
   // and the chain stopped: nothing ran plans:start, so promotePlanItems never ran,

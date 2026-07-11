@@ -1066,6 +1066,10 @@ import './events/await';
 import './events/emit';
 import './events/cancel';
 import './events/status';
+// WI-4014 Part 2 (linking-system follow-up to WI-3956): the lifecycle verb for a
+// standing event-key INJECT subscription (watch:create wake:false targetKind:'event')
+// — the wake:false sibling of events:cancel, mirroring topics:unsubscribe's shape.
+import './events/unsubscribe';
 // event-await-discoverability-and-coverage-2026-07-03 P-002 — the awaitable-key
 // catalog ("what can I wait on instead of polling?"), rendered from the SSOT
 // registry events/await/catalog.ts.

@@ -182,6 +182,11 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     tzid: 'machine-local schedule timezone',
     template_slug: 'machine-local scheduled-template linkage',
     run_seq: 'machine-local scheduled-run sequence',
+    // EI-9418 (mig 553): same embedder-mode-specific reasoning as
+    // harness_features_consolidated above — machine-local, re-derived from the
+    // federated `content` locally rather than shipped over the wire.
+    embedding: 'embedder-mode-specific vector, machine-local (mig 553) — foreign-space noise if federated, re-embedded locally instead',
+    embedding_mode: 'tags which embedder produced `embedding` on THIS machine, machine-local (mig 553)',
   },
   coord_conversations: {
     accepted_post_id: 'local bigserial reference; the federated answer is `accepted_answer` (mapper doc)',
@@ -329,6 +334,16 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     // Only the row timestamp is machine-local (receipt_ts is the federated time).
     created_at: 'machine-local row timestamp (federated time is receipt_ts, carried by the mapper)',
   },
+  memory_canonical: {
+    // mem0-cross-machine-federation-2026-07-10 (EI-9430 fix): the federated subset
+    // is id/payload/created_at/updated_at/harness_slug (toMemoryValue). Mirrors the
+    // agent_facts pattern below for source_hive; the memory-quality/decay fields are
+    // per-machine lifecycle state, never content.
+    source_hive: 'receiver-stamped from the admitted log identity — never carried (a sender-claimed source is never trusted, same as agent_facts)',
+    last_validated_at: 'per-machine memory-quality/decay lifecycle, re-derived independently on each peer',
+    last_surfaced_at: 'per-machine recency-of-use heartbeat, machine-local',
+    state: 'per-machine memory-quality lifecycle (active/broken_anchor/superseded/contradicted/forgotten) — each peer re-evaluates its own copy',
+  },
 };
 
 /** Run the REAL mapper over a synthetic full-column row and return the keys it
@@ -377,12 +392,13 @@ describe('federated CDC tables — every column federates or is documented-local
   it('sanity: the CDC-captured set is the 25 known federated tables', () => {
     // A new CDC table without a case here means a new federated table shipped —
     // the per-table loop below will still cover it (it iterates CDC_CAPTURED_TABLES).
-    // 26 = 17 prior + 9 added since (p2p_fleet_directory/p2p_work_offers already
-    // carried their own NOT_FEDERATED coverage when added; agent_facts,
-    // gym_qd_archive, cup_claim_specs, gate_verdicts, p2p_peer_grants, p2p_receipts
-    // did not — restored here, WI-2233). This count is a TRIPWIRE, not a target:
-    // bump it AND add the new table's NOT_FEDERATED/mapper coverage together.
-    expect(CDC_CAPTURED_TABLES.length).toBe(26);
+    // 27 = 26 prior + memory_canonical (EI-9430: the table-registry classification
+    // + capture triggers landed with mem0-cross-machine-federation-2026-07-10, but
+    // TABLE_NAME_TO_TABLE_TAG/PEER_LOG_TAG_TO_TABLE were never updated — this pass
+    // wires the real mapper (toMemoryValue) + this table's NOT_FEDERATED coverage).
+    // This count is a TRIPWIRE, not a target: bump it AND add the new table's
+    // NOT_FEDERATED/mapper coverage together.
+    expect(CDC_CAPTURED_TABLES.length).toBe(27);
   });
 
   for (const table of CDC_CAPTURED_TABLES) {

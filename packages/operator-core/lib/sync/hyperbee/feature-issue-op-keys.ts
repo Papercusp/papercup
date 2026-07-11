@@ -53,6 +53,7 @@ import type { WorkOfferWireRow } from './projections/work-offers';
 import type { FleetLeaderLeaseWireRow } from './projections/fleet-leader-leases';
 import type { AgentFactWireRow } from './projections/agent-facts';
 import type { GymQdEliteWireRow } from './projections/gym-qd-elites';
+import type { MemoryWireRow } from './projections/p2p-memories';
 
 /**
  * The two consolidated table names the Stage-1 trigger writes into the outbox
@@ -99,6 +100,13 @@ const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
   // Epoch-ENCRYPTED content (deliberately NOT in REKEY_PLAINTEXT_TAGS: fact
   // bodies must not be readable by non-members on the wire — D-006 privacy).
   agent_facts: 'agent-facts-by-key',
+  // mem0-cross-machine-federation-2026-07-10 (F1-1 mirror for memories, EI-9430 fix):
+  // SHAREABLE memories (mig 562 GENERATED `shareable` column; mig 563 capture triggers
+  // gate on it — D-006 privacy default false). Capture fires on `memory_canonical`
+  // itself (there is no separate `p2p_memories` table — that was the table-registry's
+  // classification-entry name, not a real table). Projection 'p2p-memories-by-id'
+  // (projections/p2p-memories.ts); key == id (mig 564 fed identity columns).
+  memory_canonical: 'p2p-memories-by-id',
   // federated-scout-gym-learning-2026-07-02 (F1-2/F1-5): FEDERATABLE QD elites
   // (mig 464 capture triggers gate on the D-002 eligibility stamp; wire key ==
   // niche_key ⇒ latest-per-niche-per-source on the wire). Receive side writes
@@ -889,6 +897,30 @@ function toGymQdEliteValue(row: Record<string, unknown>): GymQdEliteWireRow {
 }
 
 /**
+ * Map an outbox `row` jsonb to the `MemoryWireRow` the p2p-memories projection
+ * consumes (mem0-cross-machine-federation-2026-07-10, EI-9430 fix). Only the
+ * federated content subset — `payload`/`created_at`/`updated_at`/`id` — plus the
+ * `harness_slug` federation-identity carrier the projection's own-hive guard
+ * checks. `author_pubkey`/`origin`/`fed_ts`/`source_hive` are PROVENANCE (stamped
+ * by the projection from the op envelope, never carried here — same as
+ * agent_facts' source_hive); `last_validated_at`/`last_surfaced_at`/`state` are
+ * per-machine memory-quality/decay lifecycle, never federated (see
+ * NOT_FEDERATED['memory_canonical'] in federated-column-completeness.integration.test.ts).
+ */
+function toMemoryValue(row: Record<string, unknown>): MemoryWireRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    id: String(row.id ?? ''),
+    payload:
+      row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
+        ? (row.payload as Record<string, unknown>)
+        : {},
+    created_at: String(row.created_at ?? ''),
+    updated_at: String(row.updated_at ?? ''),
+  };
+}
+
+/**
  * Thrown when an outbox row names a `table_name` this build has no mapper for.
  * This is BOTH a programming error (a new trigger shipped without its mapper) AND
  * a legitimate forward-compat rolling-deploy state: a NEWER operator/migration may
@@ -961,10 +993,14 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
     | WorkOfferWireRow
     | FleetLeaderLeaseWireRow
     | AgentFactWireRow
-    | GymQdEliteWireRow;
+    | GymQdEliteWireRow
+    | MemoryWireRow;
   switch (outboxRow.table_name) {
     case 'harness_features_consolidated':
       value = toFeatureValue(row);
+      break;
+    case 'harness_issues_consolidated':
+      value = toIssueValue(row);
       break;
     case 'harness_plans':
       value = toPlanValue(row);
@@ -1038,8 +1074,19 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
     case 'gym_qd_archive':
       value = toGymQdEliteValue(row);
       break;
+    case 'memory_canonical':
+      value = toMemoryValue(row);
+      break;
     default:
-      value = toIssueValue(row);
+      // EI-9430: this used to silently fall back to toIssueValue() for ANY
+      // unmapped table_name (including memory_canonical before this fix) —
+      // exactly the "shipped a capture trigger + registry entry without a
+      // real mapper, and it silently drops columns instead of erroring"
+      // class the federated-column-completeness guard exists to catch. Throw
+      // instead: an unmapped table should hit UnknownOutboxTableError (the
+      // documented forward-compat skip path above), never a wrong-shape
+      // mapper that happens to share a few field names.
+      throw new UnknownOutboxTableError(outboxRow.table_name);
   }
 
   return {

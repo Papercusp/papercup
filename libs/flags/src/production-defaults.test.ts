@@ -233,6 +233,18 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // papercusp-workspace. Adding it here restores its always-intended default-OFF. Count
   // 23 → 24 — AT the raised DARK_FLAGS_HIGH_WATERMARK (24); see types.ts for the raise note.
   'papercusp-doc-steward',
+  // 2026-07-10 — papercusp-mem0-federation-egress (mem0-cross-machine-federation-2026-07-10
+  // F1-1 mirror, D-006 privacy, case: owner-authority): DELIBERATE new dark flag, not a
+  // bug-fix correction. Gates cross-machine federation of SHAREABLE memories
+  // (memory:remember with shareable=true) — when ON, capture triggers enqueue shareable
+  // memories to the peer-log outbox and receive-side projections apply remote memories
+  // locally. Memory federation affects what personal memory data leaves the machine, so
+  // only the owner ratifies when/how/which memories federate; OFF is byte-identical to
+  // today's personal-only behavior. Breaches the prior watermark of 24 with zero
+  // graduation candidates ready (see EI-9140/2026-07-10 review), so
+  // DARK_FLAGS_HIGH_WATERMARK was raised 24→25 (see types.ts's watermark constant
+  // comment). Count 24 → 25.
+  'papercusp-mem0-federation-egress',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -392,7 +404,12 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // PRE_INVERSION_DEFAULT_OFF above). Breached the prior watermark of 22 with zero
     // graduation candidates ready, so DARK_FLAGS_HIGH_WATERMARK was raised 22→24 (see
     // types.ts's 2026-07-10 watermark-raise note). Count 22 → 24.
-    expect(offCount).toBe(24);
+    // 2026-07-10 — papercusp-mem0-federation-egress (mem0-cross-machine-federation-2026-07-10,
+    // owner-authority): DELIBERATE new dark flag, not a bug-fix correction — memory
+    // federation is an owner-ratified privacy surface. Breached the watermark of 24 with
+    // zero graduation candidates ready, so DARK_FLAGS_HIGH_WATERMARK was raised 24→25 (see
+    // types.ts's watermark constant comment). Count 24 → 25.
+    expect(offCount).toBe(25);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {

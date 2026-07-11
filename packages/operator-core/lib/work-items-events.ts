@@ -24,11 +24,13 @@
  * on the caller's side); an emit failure can never break a state write.
  */
 
-import { PgLinkStore } from '@papercusp/coordination/capabilities';
+import { PgLinkStore, type ObjectRef } from '@papercusp/coordination/capabilities';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { getOrgPg } from '@papercusp/db-org';
+import { TERMINAL_STATUSES } from './dbos/frontier-readiness';
 import { emitAwaitedEvent } from './events/await/engine';
 import { FEATURE_KIND } from './issue-blocks-merge';
+import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
 import { getWorkItem, workItemObjectRef, type WorkItem, type WorkItemFamily } from './work-items';
 
 const links = new PgLinkStore({
@@ -37,9 +39,14 @@ const links = new PgLinkStore({
   workspaceId: DEFAULT_COORD_WORKSPACE,
 });
 
-const SETTLED_STATES: Record<WorkItemFamily, readonly string[]> = {
-  feature: ['passed', 'deprecated'],
-  issue: ['resolved', 'closed'],
+// WI-4034 DEFECT 2 (single-source the settled predicate): these used to be a
+// SEPARATE, hand-duplicated literal set here that happened to still agree with
+// work-item-blocking.ts's cross-family terminal sets (verified equal at audit
+// time — feature {passed,deprecated}, issue {resolved,closed}). Reusing the
+// seam's own sets means the two can never silently drift apart again.
+const SETTLED_STATES: Record<WorkItemFamily, ReadonlySet<string>> = {
+  feature: TERMINAL_STATUSES,
+  issue: ISSUE_TERMINAL_STATUSES,
 };
 
 /**
@@ -204,7 +211,7 @@ export function emitWorkItemStatusEvent(
 }
 
 export function isSettledWorkItem(wi: Pick<WorkItem, 'family' | 'state'>): boolean {
-  return SETTLED_STATES[wi.family]?.includes(wi.state) ?? false;
+  return SETTLED_STATES[wi.family]?.has(wi.state) ?? false;
 }
 
 /** Reverse of workItemObjectRef: a coord ObjectRef back to (id, harness). */
@@ -224,6 +231,73 @@ export interface SettledEventsDeps {
   getItem?: typeof getWorkItem;
   listOut?: typeof links.listOut;
   listIn?: typeof links.listIn;
+}
+
+/**
+ * WI-4034: does `dstRef` have ANY live (non-settled) `blocks` edge into it
+ * right now, other than one from `clearedById`? If not (and it isn't already
+ * settled itself), EMIT `work-item:unblocked:<dst>`.
+ *
+ * Single-sourced by BOTH callers below: the settle path (the just-settled
+ * item's own edge is still PRESENT in the store when this runs — excluded by
+ * id) and the unlink path (the triggering edge has ALREADY been removed from
+ * the store by the time this runs, so nothing needs excluding — passing the
+ * id is harmless either way). Extracted so the two call sites can never
+ * silently diverge on what "last live blocker" means.
+ */
+async function emitUnblockedIfNoLiveBlockers(
+  dstRef: ObjectRef,
+  clearedById: string,
+  emit: typeof emitAwaitedEvent,
+  getItem: typeof getWorkItem,
+  listIn: typeof links.listIn,
+): Promise<void> {
+  const dst = workItemIdFromRef(dstRef);
+  if (!dst) return;
+  const dependent = await getItem(dst.id, dst.harness).catch(() => null);
+  if (!dependent || isSettledWorkItem(dependent)) return;
+
+  const blockerEdges = await listIn(dstRef, { rel: 'blocks' });
+  for (const be of blockerEdges) {
+    const src = workItemIdFromRef(be.src);
+    if (!src || src.id === clearedById) continue; // the one that just cleared
+    const blocker = await getItem(src.id, src.harness).catch(() => null);
+    if (blocker && !isSettledWorkItem(blocker)) return; // still genuinely blocked
+  }
+
+  await emit({
+    key: `work-item:unblocked:${dependent.id}`,
+    summary: `${dependent.id} is UNBLOCKED — its last blocker (${clearedById}) cleared: ${dependent.title}`,
+    payload: { id: dependent.id, clearedBy: clearedById, harness: dependent.harness, title: dependent.title },
+    to: dependent.assignee ? [dependent.assignee] : [],
+    source: 'work-items',
+  });
+}
+
+/**
+ * WI-4034 DEFECT 1 (the unlink gap): `unlinkWorkItem` deleted a `blocks` edge
+ * and returned — nothing ever re-checked whether that removal was the
+ * dependent's LAST live blocker, so an `events:await('work-item:unblocked:<dep>')`
+ * registrant never woke on an UNLINK (only on the blocker SETTLING) — a silent
+ * strand to the awaiter's 30-min timeout-wake. Call this fire-and-forget
+ * immediately after a successful `rel==='blocks'` unlink (mirrors the
+ * settle-path's fire-and-forget shape in work-items.ts); `dst`'s remaining
+ * blockers are re-checked with the edge ALREADY gone from the store. Never
+ * throws.
+ */
+export async function emitUnblockedOnEdgeRemoved(
+  dst: ObjectRef,
+  clearedById: string,
+  deps: Pick<SettledEventsDeps, 'emit' | 'getItem' | 'listIn'> = {},
+): Promise<void> {
+  const emit = deps.emit ?? emitAwaitedEvent;
+  const getItem = deps.getItem ?? getWorkItem;
+  const listIn = deps.listIn ?? links.listIn.bind(links);
+  try {
+    await emitUnblockedIfNoLiveBlockers(dst, clearedById, emit, getItem, listIn);
+  } catch (e) {
+    failSoft(`unlink-unblocked-event for ${clearedById}`, e);
+  }
 }
 
 /**
@@ -256,33 +330,7 @@ export async function emitWorkItemSettledEvents(wi: WorkItem, deps: SettledEvent
     const ref = workItemObjectRef(wi);
     const blockEdges = await listOut(ref, { rel: 'blocks' });
     for (const edge of blockEdges) {
-      const dst = workItemIdFromRef(edge.dst);
-      if (!dst) continue;
-      const dependent = await getItem(dst.id, dst.harness).catch(() => null);
-      if (!dependent || isSettledWorkItem(dependent)) continue;
-
-      // All of the dependent's blockers must now be settled.
-      const blockerEdges = await listIn(edge.dst, { rel: 'blocks' });
-      let allClear = true;
-      for (const be of blockerEdges) {
-        const src = workItemIdFromRef(be.src);
-        if (!src) continue;
-        if (src.id === wi.id) continue; // the one that just settled
-        const blocker = await getItem(src.id, src.harness).catch(() => null);
-        if (blocker && !isSettledWorkItem(blocker)) {
-          allClear = false;
-          break;
-        }
-      }
-      if (!allClear) continue;
-
-      await emit({
-        key: `work-item:unblocked:${dependent.id}`,
-        summary: `${dependent.id} is UNBLOCKED — its last blocker (${wi.id}) settled: ${dependent.title}`,
-        payload: { id: dependent.id, clearedBy: wi.id, harness: dependent.harness, title: dependent.title },
-        to: dependent.assignee ? [dependent.assignee] : [],
-        source: 'work-items',
-      });
+      await emitUnblockedIfNoLiveBlockers(edge.dst, wi.id, emit, getItem, listIn);
     }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

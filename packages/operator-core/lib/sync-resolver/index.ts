@@ -83,6 +83,25 @@ export function jsonSafeRows(rows: unknown[]): unknown[] {
   });
 }
 
+/**
+ * The unified inbox fans in several independently-limited stores, so applying
+ * `LIMIT n` to each source is not the same as returning `n` rows. Keep the
+ * transport contract honest: globally sort, then cap the final projection.
+ */
+export function finalizeUnifiedConversationRows<T extends { updatedAt: number }>(
+  rows: readonly T[],
+  limit: number,
+): T[] {
+  const cap = Math.max(1, Math.floor(limit));
+  return [...rows].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, cap);
+}
+
+/** Bound list-preview text so one long message cannot dominate the sync payload. */
+export function clipUnifiedConversationText(value: unknown, max: number): string {
+  const text = value == null ? '' : String(value);
+  return text.length <= max ? text : `${text.slice(0, Math.max(0, max - 1))}…`;
+}
+
 // ─── Registry types ─────────────────────────────────────────────────
 
 export interface QueryEntry<TArgs = unknown> {
@@ -4062,7 +4081,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // of teaching the browser to fan out four ad-hoc REST reads. Source-specific
   // detail and mutations continue through their existing audited endpoints.
   'conversations.unified': {
-    argsSchema: z.object({ limit: clampedLimit(500, 200) }),
+    argsSchema: z.object({ limit: clampedLimit(200, 100) }),
     resolve: async (args) => {
       const { limit } = args as { limit: number };
       const { getOrgPg } = await import('@papercusp/db-org');
@@ -4100,6 +4119,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         return Number.isFinite(parsed) ? parsed : 0;
       };
       const text = (value: unknown): string => (value == null ? '' : String(value));
+      const title = (value: unknown): string => clipUnifiedConversationText(value, 180);
+      const preview = (value: unknown): string => clipUnifiedConversationText(value, 280);
       const rows = [
         ...questions.map((row) => {
           const r = row as unknown as Record<string, unknown>;
@@ -4111,12 +4132,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
             sourceId,
             kind: text(r.kind),
             state: text(r.state),
-            title: text(r.title) || sourceId,
-            preview: topics.map((topic) => `#${topic}`).join('  '),
+            title: title(r.title) || sourceId,
+            preview: preview(topics.map((topic) => `#${topic}`).join('  ')),
             actor: text(r.asker_id),
             harnessSlug: r.harness_slug == null ? null : text(r.harness_slug),
             relatedRef: r.promoted_issue_id == null ? null : text(r.promoted_issue_id),
-            updatedAt: epoch(r.created_ts ?? r.created_at),
+            updatedAt: epoch(r.updated_ts ?? r.created_ts ?? r.created_at),
           };
         }),
         ...deliberations.map((row) => {
@@ -4128,8 +4149,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
             sourceId,
             kind: text(r.parent_kind),
             state: '',
-            title: text(r.title) || sourceId,
-            preview: [text(r.parent_kind), text(r.parent_ref)].filter(Boolean).join(' · '),
+            title: title(r.title) || sourceId,
+            preview: preview([text(r.parent_kind), text(r.parent_ref)].filter(Boolean).join(' · ')),
             actor: text(r.created_by),
             harnessSlug: r.harness_slug == null ? null : text(r.harness_slug),
             relatedRef: r.parent_ref == null ? null : text(r.parent_ref),
@@ -4146,8 +4167,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
             sourceId,
             kind: text(r.role),
             state: r.archived_at == null ? 'open' : 'archived',
-            title: text(r.title) || sourceId,
-            preview: [text(r.role), text(r.feature_id)].filter(Boolean).join(' · '),
+            title: title(r.title) || sourceId,
+            preview: preview([text(r.role), text(r.feature_id)].filter(Boolean).join(' · ')),
             actor: text(r.role),
             harnessSlug: r.harness_slug == null ? null : text(r.harness_slug),
             relatedRef: r.feature_id == null ? null : text(r.feature_id),
@@ -4164,8 +4185,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
             sourceId,
             kind: text(r.kind),
             state: text(r.status),
-            title: text(r.subject) || text(r.body) || sourceId,
-            preview: text(r.body),
+            title: title(r.subject) || title(r.body) || sourceId,
+            preview: preview(r.body),
             actor: text(r.from_slug),
             recipient: text(r.to_slug ?? r.to_role),
             harnessSlug: r.harness_slug == null ? null : text(r.harness_slug),
@@ -4174,7 +4195,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           };
         }),
       ];
-      return rows.sort((a, b) => b.updatedAt - a.updatedAt);
+      return finalizeUnifiedConversationRows(rows, limit);
     },
   },
 

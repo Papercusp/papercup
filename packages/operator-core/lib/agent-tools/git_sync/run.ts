@@ -18,8 +18,20 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { projectDirForSlug } from '../../operator-notes';
 import { fireGitSyncNow } from '../../harness/git-sync/git-sync-action';
+import { withBoundedTimeout } from '../../bounded-timeout';
 
 const execFileP = promisify(execFile);
+
+/**
+ * EI-9425: fireGitSyncNow runs the FULL commit+push across the superproject + every
+ * submodule (lock, content-guard, attribution) — under PG/lock pressure (the same class
+ * as WI-3818's fleet:status legs) this routinely exceeds the ~60s MCP transport budget,
+ * so the tool watchdog saw a 94% timeout/error rate (tool_invocations, 2026-07-10) even
+ * though the underlying commit/push frequently still lands moments later. Bound the fire
+ * call so a slow tick degrades to an honest "still running" response well before the hard
+ * transport cutoff, instead of the caller getting an opaque aborted-signal timeout.
+ */
+export const GIT_SYNC_RUN_BUDGET_MS = 45_000;
 
 async function headSha(repoDir: string): Promise<string | null> {
   try {
@@ -61,10 +73,38 @@ export default defineTool({
     const repoDir = await projectDirForSlug(slug);
     const before = repoDir ? await headSha(repoDir) : null;
 
-    await fireGitSyncNow(slug, workspaceId);
+    const fired = await withBoundedTimeout(() => fireGitSyncNow(slug, workspaceId), {
+      fallback: undefined,
+      timeoutMs: GIT_SYNC_RUN_BUDGET_MS,
+      label: 'git-sync:run fireGitSyncNow',
+    });
 
     const after = repoDir ? await headSha(repoDir) : null;
     const committed = !!(before && after && before !== after);
+
+    if (fired.degraded) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: true,
+              fired: true,
+              degraded: true,
+              slug,
+              committed,
+              head_before: before,
+              head_after: after,
+              note:
+                `git-sync fired but did not finish within ${GIT_SYNC_RUN_BUDGET_MS}ms — commit+push across the ` +
+                'whole tree can be slow under PG/lock pressure. It keeps running in the background and will ' +
+                'commit/push (or self-skip if ineligible) on its own; committed:false here does NOT mean it ' +
+                'failed — re-check via `git log` / dev:pipeline_position shortly rather than re-firing immediately.',
+            }),
+          },
+        ],
+      };
+    }
 
     return {
       content: [

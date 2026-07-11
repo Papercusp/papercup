@@ -7,8 +7,8 @@ import { Tooltip } from '@/app/harness/Tooltip';
 //
 // On mount: reads the current version from Tauri, then polls the
 // configured updater endpoint (GitHub Releases /latest/download/latest.json
-// per tauri.conf.json) for a newer release. Polls again every 6 hours so
-// users running long-lived sessions still see new releases. The user can
+// per tauri.conf.json) for a newer release. Polls again every 10 minutes so
+// users running long-lived sessions see new releases promptly. The user can
 // also force-check by clicking the chip.
 //
 // One-click install: invokes `install_update`, which:
@@ -31,7 +31,7 @@ import {
 } from '@papercusp/operator-core/lib/version-tauri';
 import { useConfirmDialog } from '../harness/useConfirmDialog';
 
-const POLL_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h
+const POLL_INTERVAL_MS = 10 * 60 * 1000; // 10m
 
 export default function UpdateChip() {
   const [desktop, setDesktop] = useState(false);

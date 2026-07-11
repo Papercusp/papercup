@@ -22,6 +22,7 @@ import { decideWake } from '@papercusp/debounce-coalesce';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { withPgRetry } from '../../pg-transient-retry';
 import { sendMessage } from '../../agent-tools/coordination/messages';
+import { listEventKeySubscribers } from '../../agent-tools/coordination/event-subscriptions';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { admitSpawn } from '../../fleet/governor';
 import { activeWorkspaceId, backgroundWorkspaceIds } from '../../workspace-registry';
@@ -125,8 +126,16 @@ export interface EmitResult {
    *  "0 woken because nobody was listening on this key at all" apart from
    *  "0 woken but N were notified", and tells a caller BEFORE they decide the
    *  emit was worth it that it genuinely reached no one when `waiters` is 0
-   *  and no `to[]` was given. */
+   *  and no `to[]` was given. Does NOT include event-key inject subscribers
+   *  below (a different table/primitive — see `eventSubscribers`). */
   waiters: number;
+  /** WI-4014 Part 2: count of STANDING event-key inject subscribers
+   *  (watch:create wake:false targetKind:'event') this emit folded into the
+   *  notify audience — distinct from `waiters` (the wake:true awaits table).
+   *  Optional (not just always-0) so existing EmitResult literals/mocks built
+   *  before this field existed (predicate-watch's test double, emit.test.ts's
+   *  mocks) stay valid without every call site needing an update. */
+  eventSubscribers?: number;
 }
 
 export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<EmitResult> {
@@ -165,8 +174,26 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
 
   // 3. The notify path — one coord message to the remaining audience.
   const wokenIds = new Set(wakes.map((a) => a.subscriberId));
+
+  // WI-4014 Part 2: fold in STANDING event-key inject subscribers
+  // (watch:create { wake:false, targetKind:'event' }) — the cheap, no-token-cost
+  // sibling of the wake:true awaits above. 'muted' rows are deliberately excluded
+  // (the one delivery_mode that means "never live-deliver"); every other mode
+  // (full/digest/mention) is included here — this notify path has no per-mode
+  // rendering tiers today (unlike deliverInjectMany's object/topic fan-out), so a
+  // mention-mode row still gets the flat notify rather than being gated to
+  // @-mentions only (no @-mention concept applies to a bare event fire). Fail-soft:
+  // a lookup error must never break the emit (the wake half above already fired).
+  let eventSubscriberIds: string[] = [];
+  try {
+    const subs = await listEventKeySubscribers(opts.key);
+    eventSubscriberIds = subs.filter((s) => s.delivery_mode !== 'muted').map((s) => s.subscriber_id);
+  } catch (e) {
+    log(`event-key subscriber lookup failed for ${opts.key}: ${e instanceof Error ? e.message : e}`);
+  }
+
   const notifyTo = [
-    ...new Set([...notifyAwaits.map((a) => a.subscriberId), ...(opts.to ?? [])]),
+    ...new Set([...notifyAwaits.map((a) => a.subscriberId), ...eventSubscriberIds, ...(opts.to ?? [])]),
   ].filter((t) => !wokenIds.has(t));
 
   let msgId: string | null = null;
@@ -186,7 +213,15 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
     }
   }
 
-  return { ok: true, key: opts.key, woken: wakes.length, notified: notifyTo, msgId, waiters: fired.length };
+  return {
+    ok: true,
+    key: opts.key,
+    woken: wakes.length,
+    notified: notifyTo,
+    msgId,
+    waiters: fired.length,
+    eventSubscribers: eventSubscriberIds.length,
+  };
 }
 
 /**

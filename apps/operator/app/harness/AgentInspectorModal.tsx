@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal } from './Modal';
+import { Tooltip } from './Tooltip';
 import { TONE } from './theme';
 import {
   useAgentThinkingStream,
@@ -253,27 +254,28 @@ export default function AgentInspectorModal({
         </span>
         <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {resumeTarget ? (
-            <button
-              type="button"
-              data-testid="resume-terminal-btn"
-              onClick={resumeInNewTerminal}
-              disabled={resumeState === 'busy'}
-              title={resumeState === 'err' && resumeErr ? resumeErr : undefined}
-              style={{
-                display: 'inline-flex', alignItems: 'center', gap: 4,
-                font: 'inherit', fontSize: 11, cursor: resumeState === 'busy' ? 'default' : 'pointer',
-                color: resumeState === 'err' ? TONE.bad : 'var(--fg)',
-                background: 'var(--bg-1)', border: '1px solid var(--border)',
-                borderRadius: 5, padding: '2px 8px', lineHeight: 1.4,
-              }}
-            >
-              <span aria-hidden>{resumeTarget.live ? '⑂' : '↻'}</span>
-              {resumeState === 'busy'
-                ? (resumeTarget.live ? 'forking…' : 'resuming…')
-                : resumeState === 'err'
-                  ? (resumeTarget.live ? 'fork failed' : 'resume failed')
-                  : (resumeTarget.live ? 'Fork in new terminal' : 'Resume in new terminal')}
-            </button>
+            <Tooltip label={resumeState === 'err' && resumeErr ? resumeErr : undefined}>
+              <button
+                type="button"
+                data-testid="resume-terminal-btn"
+                onClick={resumeInNewTerminal}
+                disabled={resumeState === 'busy'}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 4,
+                  font: 'inherit', fontSize: 11, cursor: resumeState === 'busy' ? 'default' : 'pointer',
+                  color: resumeState === 'err' ? TONE.bad : 'var(--fg)',
+                  background: 'var(--bg-1)', border: '1px solid var(--border)',
+                  borderRadius: 5, padding: '2px 8px', lineHeight: 1.4,
+                }}
+              >
+                <span aria-hidden>{resumeTarget.live ? '⑂' : '↻'}</span>
+                {resumeState === 'busy'
+                  ? (resumeTarget.live ? 'forking…' : 'resuming…')
+                  : resumeState === 'err'
+                    ? (resumeTarget.live ? 'fork failed' : 'resume failed')
+                    : (resumeTarget.live ? 'Fork in new terminal' : 'Resume in new terminal')}
+              </button>
+            </Tooltip>
           ) : null}
           {focusTarget ? (
             <button

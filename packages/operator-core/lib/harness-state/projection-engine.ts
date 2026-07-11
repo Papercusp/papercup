@@ -112,6 +112,14 @@ export const PEER_LOG_TAG_TO_TABLE: Readonly<Record<string, string>> = {
   // federate over the peer-log (projections/gym-qd-elites.ts → gym_qd_archive
   // sender / gym_qd_foreign_elites receiver; migs 464/465).
   'gym-qd-elites-by-niche': 'gym_qd_archive',
+  // mem0-cross-machine-federation-2026-07-10 (F1-1 mirror for memories, EI-9430 fix):
+  // SHAREABLE memories federate over the peer-log (projections/p2p-memories.ts →
+  // memory_canonical; migs 562-563). Registered tag is 'p2p-memories-by-id'
+  // (register-all.ts) — this entry was omitted when the table-registry classification
+  // landed (and named to a `p2p_memories` table that never actually existed — see the
+  // table-registry.ts note), drifting the two out of lock-step (the exact class this
+  // bijection guard exists to catch).
+  'p2p-memories-by-id': 'memory_canonical',
 };
 
 export interface PeerLogConsistency {

@@ -138,8 +138,9 @@ export function resolveShellKey(key) {
  * but the setup reads INCOMPLETE until it's added). OPTIONAL = the `optionalItems`
  * (git identity, GitHub, backups, more keys) — surfaced so the user sees they exist.
  */
-export function setupChecklist(snapshot, labels = {}, optionalItems = []) {
+export function setupChecklist(snapshot, labels = {}, optionalItems = [], decidedKeys = []) {
   const s = snapshot ?? {};
+  const decided = new Set(decidedKeys ?? []);
   const installed =
     Boolean(s.claudeInstalled) || Boolean(s.codexInstalled) || Boolean(s.ompInstalled);
   const signedIn =
@@ -178,14 +179,53 @@ export function setupChecklist(snapshot, labels = {}, optionalItems = []) {
         : 'required — OpenAI key powers agent memory & search',
     },
   ];
-  const optional = (optionalItems ?? []).map((item) => ({
-    key: `opt-${item.key}`,
-    label: item.label,
-    status: 'optional',
-    required: false,
-    detail: item.why,
-  }));
+  // Optional-setup items. A `required:true` item (e.g. telemetry consent — owner
+  // 2026-07-10) is REQUIRED but answerable-either-way: it renders under Required with a
+  // done/todo status driven by `decidedKeys` (the items already answered, per setup-status),
+  // exactly like the core steps. Items with no `required` field stay `optional` (skippable).
+  const optional = (optionalItems ?? []).map((item) => {
+    const isRequired = item.required === true;
+    return {
+      key: `opt-${item.key}`,
+      itemKey: item.key,
+      label: item.label,
+      status: isRequired ? (decided.has(item.key) ? 'done' : 'todo') : 'optional',
+      required: isRequired,
+      detail: item.why,
+    };
+  });
   return [...required, ...optional];
+}
+
+/**
+ * Map an optional-setup item key → the `/desktop/setup-status` StepId that proves it
+ * decided. Mirrors statusStepForItemKey in onboarding/optional-setup-items.ts (the two
+ * onboarding surfaces derive "is this required item decided?" from ONE status probe, so
+ * the deterministic runner and the setup:complete gate can't disagree). Pure.
+ */
+export function statusStepForItemKey(key) {
+  const MAP = {
+    telemetry: 'telemetry',
+    'mobile-pairing': 'mobile-pairing',
+    'update-channel': 'auto-update',
+    'git-identity': 'git',
+  };
+  return MAP[key] ?? key;
+}
+
+/**
+ * The `required` optional-setup items NOT yet decided, given a setup-status `statuses`
+ * map ({ telemetry: 'ok'|'needs-attention', … }). "Decided" = the item's status step is
+ * 'ok' (telemetry flips to ok on either a yes OR a no). An item whose step is absent from
+ * the map is treated as undecided (fail-safe toward asking). Pure — powers the graduation
+ * gate in both runOptionalSetup and finishUp. */
+export function undecidedRequiredItems(items, statuses) {
+  const st = statuses ?? {};
+  return (items ?? []).filter((i) => {
+    if (i?.required !== true) return false;
+    const step = statusStepForItemKey(i.key);
+    return !(step in st) || st[step] !== 'ok';
+  });
 }
 
 /**
@@ -526,6 +566,27 @@ async function graduate(base) {
   }
 }
 
+/** Read the auto-detected setup-status map ({ telemetry: 'ok'|'needs-attention', … }).
+ *  Best-effort: on any error return {} so a required-item check fails toward asking. */
+async function fetchSetupStatuses(base) {
+  try {
+    const r = await api(base, '/desktop/setup-status');
+    return r?.statuses ?? {};
+  } catch {
+    return {};
+  }
+}
+
+/** Record the telemetry consent decision — the SAME merge-write the setup:set_telemetry
+ *  tool and the wizard PATCH perform (telemetry_enabled: true|false; both count as decided). */
+async function setTelemetry(base, enabled) {
+  await api(base, '/desktop/setup-wizard-state', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ telemetry_enabled: Boolean(enabled) }),
+  });
+}
+
 /** Run a SpawnSpec inheriting this terminal (interactive install/login flows). */
 function runSpec(spec) {
   return new Promise((resolve) => {
@@ -621,9 +682,57 @@ async function answerQuestion(base, section, question) {
 // Phase A — optional setup (deterministic; the not-ready items are already
 // filtered out server-side unless the preview flag is on).
 // ───────────────────────────────────────────────────────────────────────────
+/**
+ * Ask + apply ONE required optional-setup item (owner 2026-07-10). Required means the
+ * user MUST answer, but either answer satisfies it — a "no" is recorded and completes the
+ * step. Returns true when a decision was recorded. Today only telemetry is required; an
+ * unrecognized required item (no wired write) returns false so the gate keeps surfacing it.
+ */
+async function askRequiredItem(base, item, prompts) {
+  const { confirm } = prompts;
+  if (item.key === 'telemetry') {
+    say(`${bold(item.label)} — ${dim(item.why)}`);
+    const yes = await confirm({
+      message: 'Share anonymized diagnostics + crash reports to help improve Papercusp? (it is fine to say no)',
+      default: false,
+    });
+    try {
+      await setTelemetry(base, yes);
+      say(yes ? ok('Thanks — diagnostics are ON. ✓') : ok('No problem — diagnostics stay OFF. ✓'));
+      return true;
+    } catch (e) {
+      say(dim(`(couldn't save your telemetry choice: ${e?.message ?? e} — you can set it later in Settings)`));
+      return false;
+    }
+  }
+  say(dim(`${item.label}: configure this in Settings to finish setup.`));
+  return false;
+}
+
+/**
+ * Collect every UNDECIDED required optional-setup item (telemetry today). Reads the live
+ * setup-status so an already-answered item is never re-asked (re-entrant: `papercusp setup`
+ * won't re-nag). Returns the count still undecided AFTER the pass (0 = graduation unblocked).
+ */
+async function collectRequiredSetup(base, items, prompts) {
+  const statuses = await fetchSetupStatuses(base);
+  const todo = undecidedRequiredItems(items, statuses);
+  let remaining = todo.length;
+  for (const item of todo) {
+    if (await askRequiredItem(base, item, prompts)) remaining -= 1;
+  }
+  return remaining;
+}
+
 async function runOptionalSetup(base, items, prompts) {
   const { confirm, input } = prompts;
   if (!items?.length) return;
+  // Required items (telemetry consent) are collected FIRST and unconditionally — the
+  // "want optional?" gate below only covers the truly skippable items, so a user who
+  // skips the optional batch has still answered every required step.
+  await collectRequiredSetup(base, items, prompts);
+  const optionalOnly = items.filter((i) => i.required !== true);
+  if (!optionalOnly.length) return;
   const want = await confirm({
     message: 'Want to run through a few optional setup items now? (~2 min — or skip to the tour)',
     default: false,
@@ -632,7 +741,7 @@ async function runOptionalSetup(base, items, prompts) {
     say(dim('Skipped — you can set these later in Settings.'));
     return;
   }
-  for (const item of items) {
+  for (const item of optionalOnly) {
     say(`${bold(item.label)} — ${dim(item.why)}`);
     if (item.key === 'git-identity') {
       const doIt = await confirm({ message: 'Set your git name/email now?', default: true });
@@ -881,9 +990,21 @@ async function runSetupTab(shell) {
       return { switchTo: 'tutorial' };
     }
     const optionalItems = shell.script?.optionalSetup ?? [];
-    const steps = setupChecklist(status.snapshot, status.labels, optionalItems);
-    // Required setup is complete only when EVERY required step (incl. the mem0
-    // embeddings key) is done — the key being skipped keeps setup INCOMPLETE.
+    // Which required optional-setup items (telemetry consent) are already decided, per the
+    // live setup-status probe — so the checklist row and the completeness gate read the
+    // SAME truth the setup:complete graduation gate does.
+    const statuses = await fetchSetupStatuses(base);
+    const undecidedRequired = undecidedRequiredItems(optionalItems, statuses);
+    const decidedKeys = optionalItems
+      .filter((i) => i.required === true && !undecidedRequired.includes(i))
+      .map((i) => i.key);
+    const steps = setupChecklist(status.snapshot, status.labels, optionalItems, decidedKeys);
+    // CORE required setup = agent + sign-in + mem0 key (the non-optional steps). FULL
+    // required completeness ALSO needs every required optional item (telemetry) decided —
+    // that is what gates graduation + the "go to Tutorial" affordance.
+    const coreComplete = steps
+      .filter((s) => s.required && !String(s.key).startsWith('opt-'))
+      .every((s) => s.status === 'done');
     shell.setupComplete = steps.filter((s) => s.required).every((s) => s.status === 'done');
     const stageName = status.stage?.stage;
     const actionable = ['pick', 'install', 'login', 'embeddings'].includes(stageName);
@@ -898,17 +1019,25 @@ async function runSetupTab(shell) {
     const choices = [];
     if (actionable) {
       choices.push({ value: 'step', name: accent(`▶ Continue setup — ${SETUP_STEP_LABEL[stageName]}`) });
-    } else if (shell.setupComplete) {
-      choices.push({ value: 'tutorial', name: ok('✓ Required setup complete — go to the Tutorial') });
-    } else {
-      // A required step remains (the mem0 key was skipped this session), but the
+    } else if (!coreComplete) {
+      // A CORE required step remains (the mem0 key was skipped this session), but the
       // stage machine isn't surfacing it right now — offer to re-open it.
       choices.push({
         value: 'embeddings',
         name: accent('▶ Add your required memory (mem0) key to finish setup'),
       });
     }
-    if (optionalItems.length) {
+    // Required optional items (telemetry consent) still needing a decision — a "no" counts.
+    if (undecidedRequired.length) {
+      choices.push({
+        value: 'required',
+        name: accent(`▶ Answer required — ${undecidedRequired.map((i) => i.label).join(', ')}`),
+      });
+    }
+    if (coreComplete && shell.setupComplete) {
+      choices.push({ value: 'tutorial', name: ok('✓ Required setup complete — go to the Tutorial') });
+    }
+    if (optionalItems.some((i) => i.required !== true)) {
       choices.push({ value: 'optional', name: '⚙️  Optional items (git identity, GitHub, backups, …)' });
     }
     choices.push({ value: 'tutorial', name: '📘 Go to the Tutorial tab' });
@@ -936,13 +1065,18 @@ async function runSetupTab(shell) {
       st.session.embeddingsSkipped = false;
       continue;
     }
+    if (action === 'required') {
+      // Collect the undecided required optional-setup items (telemetry consent).
+      await collectRequiredSetup(base, optionalItems, prompts);
+      continue;
+    }
     if (action === 'optional') {
       await runOptionalSetup(base, optionalItems, prompts);
       continue;
     }
     if (action === 'tutorial') return { switchTo: 'tutorial' };
     if (action === 'finish') {
-      await finishUp(base, shell.script, shell.args);
+      await finishUp(base, shell.script, shell.args, false, prompts);
       return { exit: true };
     }
   }
@@ -1022,7 +1156,7 @@ async function tutorialSectionAction(shell, s) {
   if (action === 'menu') {
     const choice = await chapterMenu(script, prompts, false, null);
     if (choice === '__finish') {
-      await finishUp(base, script, shell.args);
+      await finishUp(base, script, shell.args, false, prompts);
       return { exit: true };
     }
     t.idx = choice === '__begin' ? 0 : Math.max(0, firstIndexOfChapter(sections, Number(choice)));
@@ -1030,7 +1164,7 @@ async function tutorialSectionAction(shell, s) {
     return {};
   }
   if (action === 'finish') {
-    await finishUp(base, script, shell.args);
+    await finishUp(base, script, shell.args, false, prompts);
     return { exit: true };
   }
   return {};
@@ -1063,7 +1197,7 @@ async function runTutorialTab(shell) {
         resumeCh ? `Chapter ${resumeCh.number} — ${resumeCh.title}` : null,
       );
       if (choice === '__finish') {
-        await finishUp(base, script, args);
+        await finishUp(base, script, args, false, prompts);
         return { exit: true };
       }
       if (choice === '__begin') t.idx = 0;
@@ -1109,7 +1243,7 @@ async function runTutorialTab(shell) {
 
   // Reached the natural end → the finale, then graduate.
   runFinale(script);
-  await finishUp(base, script, args, /* skipFinale */ true);
+  await finishUp(base, script, args, /* skipFinale */ true, prompts);
   return { exit: true };
 }
 
@@ -1243,10 +1377,21 @@ async function main() {
   return 0;
 }
 
-/** Finale (unless already shown) + graduation + close. */
-async function finishUp(base, script, args, skipFinale = false) {
+/** Finale (unless already shown) + graduation + close. On a FIRST-RUN graduation, any
+ *  undecided `required` optional-setup item (telemetry consent) is collected BEFORE the
+ *  finished_at stamp — the deterministic-runner mirror of the setup:complete gate, so a
+ *  user can't graduate the runner without having been asked. `prompts` is threaded from the
+ *  caller (the shell has it); a re-run tutorial (args.tutorial) neither graduates nor gates. */
+async function finishUp(base, script, args, skipFinale = false, prompts = null) {
   if (!skipFinale) runFinale(script);
   if (!args.tutorial) {
+    if (prompts) {
+      try {
+        await collectRequiredSetup(base, script?.optionalSetup ?? [], prompts);
+      } catch {
+        /* asking is best-effort — never trap the user at the finish line on a prompt error */
+      }
+    }
     const res = await graduate(base);
     if (res.error) say(dim(`(couldn't mark onboarding finished: ${res.error} — you can ignore this)`));
   }

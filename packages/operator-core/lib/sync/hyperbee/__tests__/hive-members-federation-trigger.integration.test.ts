@@ -1,14 +1,14 @@
 /**
- * Integration test for the pot_members (nee pot_members) CUSTOM capture trigger
- * (mig 189, column-renamed by mig 557 Phase 3, function body fixed by mig 565 —
+ * Integration test for the pot_members (nee hive_members) CUSTOM capture trigger
+ * (mig 189, table+column renamed by mig 557 Phase 3, function body fixed by mig 565 —
  * cup-lexicon-full-rename-2026-07-09 P-011) — the local-write → outbox leg of
  * multi-Swarm admission federation (shared-hive-federation-2026-06-08 P-006). Real
  * Postgres. Mirrors plan-item-assignment-federation-trigger.integration.test.ts.
  *
  * pot_members' scope column is `pot_home_slug` (not `harness_slug`), so mig 189
- * uses a BESPOKE capture fn (capture_pot_members_outbox — name unchanged by 557,
- * only the table/column it targets renamed) that sets outbox.harness_slug :=
- * NEW.pot_home_slug. This proves that bridge end-to-end:
+ * uses a BESPOKE capture fn (capture_hive_members_outbox — FUNCTION/TRIGGER name
+ * unchanged by 557, only the TABLE + COLUMN it targets renamed) that sets
+ * outbox.harness_slug := NEW.pot_home_slug. This proves that bridge end-to-end:
  *   1. CAPTURE: a local INSERT enqueues one put keyed by github_user_id, SCOPED to
  *      pot_home_slug; a remote-origin row enqueues nothing (echo-loop guard); a
  *      revoked_pubkeys UPDATE captures; a non-federated UPDATE (last_seen_at) does
@@ -97,15 +97,19 @@ describe('pot_members federation capture trigger (real PG, mig 189)', () => {
     // pot_home_slug → pot_home_slug.
     await db.sql.unsafe(stripMeta(readFileSync(resolve(SQL_DIR, '557-cup-lexicon-db-rename-phase3.sql'), 'utf8')));
 
-    // 557 renames the TABLE/COLUMN but (correctly) does not touch the function BODY —
-    // that's mig 565's job on the real dev DB. But 565 replaces the function with the
-    // mig-477 shape (op_hlc/fed_hlc), which needs infra this deliberately-narrow schema
-    // never replays (mig 314's op_hlc column etc.). So patch the ORIGINAL mig-189 (simple)
-    // shape in place with the one renamed column, matching what THIS schema can support —
-    // the live/prod fix is covered separately by outbox-drain-rekey / feature-issue-op-keys
-    // unit coverage, not this test.
+    // 557 renames the TABLE/COLUMN but (correctly) does not touch the function BODY OR
+    // its name — the trigger created by mig 189 is still bound to
+    // capture_hive_members_outbox() (557 only renames the settings/policy/pending_joins/
+    // reports/epoch_keys triggers, NOT this one). Fixing the body is mig 565's job on the
+    // real dev DB, but 565 replaces the function with the mig-477 shape (op_hlc/fed_hlc),
+    // which needs infra this deliberately-narrow schema never replays (mig 314's op_hlc
+    // column etc.). So patch the ORIGINAL mig-189 (simple) function IN PLACE, under its
+    // ORIGINAL name (capture_hive_members_outbox — a same-named CREATE OR REPLACE, so the
+    // trigger picks it up), with the one renamed column read fixed — matching what THIS
+    // schema can support. The live/prod fix is covered separately by outbox-drain-rekey /
+    // feature-issue-op-keys unit coverage, not this test.
     await db.sql.unsafe(`
-      CREATE OR REPLACE FUNCTION harness_shared.capture_pot_members_outbox() RETURNS trigger
+      CREATE OR REPLACE FUNCTION harness_shared.capture_hive_members_outbox() RETURNS trigger
           LANGUAGE plpgsql AS $fn$
           DECLARE
             v_op      TEXT;

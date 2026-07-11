@@ -202,7 +202,11 @@ export type WatchdogSource =
   // a scheduled FULL cold join (seed disabled) keeps the whole-history join path
   // exercised now that seeded installs only carry the delta. A fire records each
   // canary run (pass or fail) + doubles as the interval debounce clock.
-  | 'cold-join-canary';
+  | 'cold-join-canary'
+  // su-ideate-learning-substrate-2026-07-10 P-006: the ungraded su-filings grading
+  // backstop — a debounced Mug-triage nudge when su-originated filings sit ungraded
+  // past SU_IDEATE_UNGRADED_STALE_SEC (D-013: epoch-floored + batch-capped).
+  | 'su-ideate-ungraded';
 
 export interface FallbackArmResult {
   /** 'armed' = time wake declared; 'staged' = routed to the manual-mode review

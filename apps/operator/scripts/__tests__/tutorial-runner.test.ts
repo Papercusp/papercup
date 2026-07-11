@@ -16,6 +16,8 @@ import {
   searchSections,
   sectionChoices,
   setupChecklist,
+  statusStepForItemKey,
+  undecidedRequiredItems,
 } from '../tutorial-runner.mjs';
 
 describe('parseArgs', () => {
@@ -283,6 +285,47 @@ describe('setupChecklist — the Setup-tab status model (#4)', () => {
   });
   it('degrades gracefully with no snapshot', () => {
     expect(setupChecklist(undefined).map((s) => s.key)).toEqual(['framework', 'signin', 'embeddings']);
+  });
+  it('a required optional item (telemetry) renders under Required with done/todo from decidedKeys', () => {
+    const items = [
+      { key: 'git-identity', label: 'Git identity', why: 'commits' }, // no required field → optional
+      { key: 'telemetry', label: 'Telemetry consent', why: 'diagnostics', required: true },
+    ];
+    // Undecided (empty decidedKeys) → telemetry is a REQUIRED todo; git-identity stays optional.
+    const undecided = setupChecklist({}, {}, items, []);
+    const tel = undecided.find((s) => s.key === 'opt-telemetry')!;
+    expect(tel.required).toBe(true);
+    expect(tel.status).toBe('todo');
+    const git = undecided.find((s) => s.key === 'opt-git-identity')!;
+    expect(git.required).toBe(false);
+    expect(git.status).toBe('optional');
+    // Decided → telemetry flips to done (a "no" is still decided).
+    const decided = setupChecklist({}, {}, items, ['telemetry']);
+    expect(decided.find((s) => s.key === 'opt-telemetry')!.status).toBe('done');
+  });
+});
+
+describe('required optional-setup helpers (graduation gate — pure)', () => {
+  it('statusStepForItemKey maps to the setup-status step, else the key itself', () => {
+    expect(statusStepForItemKey('telemetry')).toBe('telemetry');
+    expect(statusStepForItemKey('update-channel')).toBe('auto-update');
+    expect(statusStepForItemKey('anything-else')).toBe('anything-else');
+  });
+  it('undecidedRequiredItems returns only required items whose status step is not ok', () => {
+    const items = [
+      { key: 'git-identity', label: 'Git', why: 'w' }, // not required
+      { key: 'telemetry', label: 'Telemetry', why: 'w', required: true },
+    ];
+    // telemetry undecided (needs-attention) → surfaced
+    expect(undecidedRequiredItems(items, { telemetry: 'needs-attention' }).map((i) => i.key)).toEqual([
+      'telemetry',
+    ]);
+    // telemetry decided (ok — a yes OR a no both flip it to ok) → nothing undecided
+    expect(undecidedRequiredItems(items, { telemetry: 'ok' })).toEqual([]);
+    // status step absent from the map → treated as undecided (fail toward asking)
+    expect(undecidedRequiredItems(items, {}).map((i) => i.key)).toEqual(['telemetry']);
+    // a non-required item is never surfaced, whatever its status
+    expect(undecidedRequiredItems([{ key: 'git-identity', label: 'Git', why: 'w' }], {})).toEqual([]);
   });
 });
 

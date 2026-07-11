@@ -54,21 +54,22 @@ describe('StepKeys (SetupWizard API-keys step)', () => {
     expect(screen.getByText(/OpenAI — embeddings/i)).toBeTruthy();
     expect(screen.getByText(/ElevenLabs — voice/i)).toBeTruthy();
     // The memory-system chooser is the one required memory step; it defaults to
-    // EmbeddingGemma so no cloud key is needed (owner ask 2026-07-10).
+    // Harrier so no cloud key is needed (owner ask 2026-07-10; P-015 flip).
     expect(screen.getByText('Memory system')).toBeTruthy();
-    expect(screen.getByText(/EmbeddingGemma-300m \(recommended\)/)).toBeTruthy();
+    expect(screen.getByText(/Harrier-OSS-0\.6b \(recommended\)/)).toBeTruthy();
     expect(screen.getByText('Required')).toBeTruthy();
     // Both key cards are now optional (memory no longer requires a cloud key).
     expect(screen.getAllByText('Optional').length).toBeGreaterThan(0);
   });
 
-  it('defaults the memory system to EmbeddingGemma and offers BGE/OpenAI/off', async () => {
+  it('defaults the memory system to Harrier and offers Gemma/BGE/OpenAI/off', async () => {
     installFetch();
     render(<StepKeys />);
     // pc-radio-card buttons (design-primitives lint: no native radio inputs) —
     // query by role + accessible name; checked-ness lives on aria-checked.
-    const gemma = await screen.findByRole('radio', { name: /EmbeddingGemma-300m/ });
-    expect(gemma.getAttribute('aria-checked')).toBe('true');
+    const harrier = await screen.findByRole('radio', { name: /Harrier-OSS-0\.6b/ });
+    expect(harrier.getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByRole('radio', { name: /EmbeddingGemma-300m/ })).toBeTruthy();
     expect(screen.getByRole('radio', { name: /BGE-small/ })).toBeTruthy();
     expect(screen.getByRole('radio', { name: /OpenAI text-embedding-3-small/ })).toBeTruthy();
     expect(screen.getByRole('radio', { name: /No persistent memory/ })).toBeTruthy();

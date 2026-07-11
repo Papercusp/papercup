@@ -535,6 +535,21 @@ export interface InvariantThresholds {
    *  (e.g. missing an index) is the same drain-starving pattern the rows check
    *  exists to catch. */
   coordLogFurnaceMeanExecMs: number;
+  /** EI-9420: gates the MEAN-EXEC-TIME leg only (never the rows/call leg —
+   *  see evaluateInvariants). pg_stat_statements aggregates a statement's stats
+   *  over its WHOLE LIFETIME since the last reset, which can span many hours or
+   *  days — well past whenever a fix for that exact query actually landed and
+   *  deployed. A query fixed hours ago (a new index, an added LIMIT) can still
+   *  carry a catastrophic lifetime MEAN forever, dragged up purely by historical
+   *  calls from BEFORE the fix — that is stale debris, not a live problem
+   *  (verified live 2026-07-11 / EI-9420: 3 "furnace" alarms all had
+   *  min_exec_time in the single-digit-to-low-hundreds ms range alongside a
+   *  multi-second mean and a 300s+ max — a proven-fast path exists NOW, the
+   *  bad mean is history). A genuinely still-unbounded scan has no fast path at
+   *  all, so even its single BEST call (min_exec_time) is slow. Set comfortably
+   *  above the observed cost of a legitimate bounded/indexed coord_event_log
+   *  read (~0.1-140ms) and well under the multi-second genuine-furnace range. */
+  coordLogFurnaceProvenFastPathMs: number;
 }
 
 export const DEFAULT_THRESHOLDS: InvariantThresholds = {
@@ -545,6 +560,7 @@ export const DEFAULT_THRESHOLDS: InvariantThresholds = {
   pendingWakeStaleHours: 24,
   coordLogFurnaceRowsPerCall: 50_000,
   coordLogFurnaceMeanExecMs: 2_000,
+  coordLogFurnaceProvenFastPathMs: 500,
 };
 
 /**
@@ -580,6 +596,13 @@ export interface CoordLogFurnaceStatement {
   calls: number;
   rowsPerCall: number;
   meanExecMs: number;
+  /** EI-9420: this statement's single FASTEST call (pg_stat_statements
+   *  min_exec_time) in the current stats window — the proven-fast-path
+   *  discriminator (see InvariantThresholds.coordLogFurnaceProvenFastPathMs).
+   *  Optional so a hand-built test snapshot (or a pg_stat_statements version
+   *  lacking the column) can omit it; evaluateInvariants treats an absent
+   *  value as "unknown" and does NOT suppress on it. */
+  minExecMs?: number;
 }
 
 /** A CURRENTLY-RUNNING pg_stat_activity row whose query text also touches
@@ -700,13 +723,26 @@ export function evaluateInvariants(snap: InvariantSnapshot, t: InvariantThreshol
   // pass timeout). Fires MAJOR (not minor, like the other substrate-hygiene
   // checks above) because this class has already once taken the whole drain
   // down, not just left debris.
-  const furnaces = snap.coordLogFurnaces.filter(
-    (f) => f.rowsPerCall > t.coordLogFurnaceRowsPerCall || f.meanExecMs > t.coordLogFurnaceMeanExecMs,
-  );
+  const furnaces = snap.coordLogFurnaces.filter((f) => {
+    // The rows/call leg stands on its own — a query that habitually returns a
+    // huge row count IS the WI-3937 class regardless of how fast any one call
+    // runs (see the "fires on rows/call alone" test).
+    if (f.rowsPerCall > t.coordLogFurnaceRowsPerCall) return true;
+    if (f.meanExecMs <= t.coordLogFurnaceMeanExecMs) return false;
+    // EI-9420: the mean-exec-time leg alone is suppressed when this exact
+    // statement has ALSO run fast at least once (min_exec_time under the
+    // proven-fast-path bar) — proof the CURRENTLY DEPLOYED code already has a
+    // bounded/indexed route for it, so the alarming mean is lifetime-average
+    // debris from before that fix landed, not a live furnace. Unknown
+    // min_exec_time (older snapshot shape) never suppresses.
+    return f.minExecMs === undefined || f.minExecMs > t.coordLogFurnaceProvenFastPathMs;
+  });
   if (furnaces.length > 0) {
     const lines = furnaces.map(
       (f) =>
-        `  queryid=${f.queryid} calls=${f.calls} rows/call=${Math.round(f.rowsPerCall)} mean_exec_ms=${Math.round(f.meanExecMs)} :: ${f.queryPreview}`,
+        `  queryid=${f.queryid} calls=${f.calls} rows/call=${Math.round(f.rowsPerCall)} mean_exec_ms=${Math.round(f.meanExecMs)}${
+          f.minExecMs !== undefined ? ` min_exec_ms=${Math.round(f.minExecMs)}` : ''
+        } :: ${f.queryPreview}`,
     );
     const offenders = snap.coordLogActiveOffenders.length
       ? `\nCurrently-active client(s) matching the pattern (best-effort text correlation): ${snap.coordLogActiveOffenders
@@ -820,13 +856,16 @@ export async function gatherCoordLogFurnaceStatements(
   sql: postgres.Sql,
   limit = 10,
 ): Promise<CoordLogFurnaceStatement[]> {
-  const rows = await sql<{ queryid: string; query_preview: string; calls: string; rows: string; mean_exec_time: number }[]>`
+  const rows = await sql<
+    { queryid: string; query_preview: string; calls: string; rows: string; mean_exec_time: number; min_exec_time: number }[]
+  >`
     SELECT
       queryid::text AS queryid,
       LEFT(query, 300) AS query_preview,
       calls::text AS calls,
       rows::text AS rows,
-      mean_exec_time
+      mean_exec_time,
+      min_exec_time
     FROM pg_stat_statements
     WHERE query ILIKE '%coord_event_log%'
       AND calls > 0
@@ -841,6 +880,8 @@ export async function gatherCoordLogFurnaceStatements(
       calls,
       rowsPerCall: Number(r.rows) / Math.max(calls, 1),
       meanExecMs: r.mean_exec_time,
+      // EI-9420: proven-fast-path discriminator — see CoordLogFurnaceStatement.minExecMs.
+      minExecMs: r.min_exec_time,
     };
   });
 }
@@ -937,7 +978,7 @@ async function gatherSnapshot(t: InvariantThresholds): Promise<InvariantSnapshot
 
 // ── shared-hive-loop P-012/P-013: the multi-swarm dispatch checks ───────────
 // (shared-hive-loop-e2e-testing-2026-06-10; plugs into THIS home per both
-// briefs — checks live in shared-hive-loop/fleet-monitors.ts, proven on the
+// briefs — checks live in shared-pot-loop/fleet-monitors.ts, proven on the
 // hermetic 2-swarm rig. Scope discovery: every harness with work_item_claims
 // rows in this workspace — i.e. exactly where the distributed lease layer is
 // actually in use; zero rows ⇒ the leg is a no-op.)
@@ -1012,7 +1053,7 @@ async function runSharedHiveLeg(ctx: SystemActionCtx): Promise<void> {
             dedupScope: 'open',
             foundDuring: 'system:coord-invariant-monitor (shared-hive leg)',
             subTopic: 'shared-hive',
-            body: `${incident.title}\n\nForensics: ${JSON.stringify(incident.detail)}\n(shared-hive-loop-e2e-testing-2026-06-10 P-012/P-013; check source: lib/shared-hive-loop/fleet-monitors.ts.)`,
+            body: `${incident.title}\n\nForensics: ${JSON.stringify(incident.detail)}\n(shared-hive-loop-e2e-testing-2026-06-10 P-012/P-013; check source: packages/operator-core/lib/shared-pot-loop/fleet-monitors.ts.)`,
           }).catch(() => {
             /* a capture failure must not abort the remaining incidents */
           });

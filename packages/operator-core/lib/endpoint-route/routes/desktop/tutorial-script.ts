@@ -12,9 +12,11 @@
  * Query:
  *   ?tutorial=1   tutorial re-entry mode (finished machine); default first-run.
  *
- * The not-ready optional-setup items (telemetry consent, mobile pairing, auto-update
- * channel) are filtered OUT unless FLAGS.ONBOARDING_PREVIEW_FEATURES is ON (P-001) —
- * evaluated server-side here so the runner never has to know the flag.
+ * The still-not-ready optional-setup items (mobile pairing, auto-update channel) are
+ * filtered OUT unless FLAGS.ONBOARDING_PREVIEW_FEATURES is ON (P-001) — evaluated
+ * server-side here so the runner never has to know the flag. Telemetry consent shipped
+ * (desktop-update-center-2026-07-10 P-1): it is preview:false + required, so it now
+ * ALWAYS appears and the runner collects it before graduation.
  */
 import { platform } from 'node:os';
 import { defineTool } from '@papercusp/agent-mcp';

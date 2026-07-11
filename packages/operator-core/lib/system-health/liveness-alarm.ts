@@ -49,6 +49,8 @@ import {
 } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { activeWorkspaceId } from '../workspace-registry';
+import { notifyAttention } from '../attention-notify';
+import { broadcastSevereEvent, broadcastSevereEventResolvedMany } from '../severe-event-broadcast';
 
 export const INFRA_LIVENESS_IDENTITY: AgentIdentity = {
   ownerId: 'system:infra-liveness-alarm',
@@ -294,6 +296,52 @@ export interface AlarmDeps {
   now?: () => number;
   snapshotStaleMs?: number;
   debounceMs?: number;
+  /** WI-4023: active paging for a NEW `blocker` signal (default: real notifyAttention +
+   *  broadcastSevereEvent). Inject a no-op in tests — the default hits the REAL owner
+   *  push + fleet broadcast, which a test exercising the blocker path must never do. */
+  page?: (s: AlarmSignal, ws: string) => Promise<void>;
+  /** WI-4023: the fleet all-clear for recovered `blocker` signatures (default: real
+   *  broadcastSevereEventResolvedMany). Inject a no-op in tests for the same reason. */
+  pageResolved?: (sigs: string[]) => Promise<void>;
+}
+
+async function defaultPage(s: AlarmSignal, ws: string): Promise<void> {
+  try {
+    await notifyAttention({
+      kind: 'intervention',
+      title: 'Infra-liveness BLOCKER',
+      body: s.summary,
+      importance: 'urgent',
+      workspaceId: ws,
+      data: { signal: s.key },
+    });
+  } catch {
+    /* best-effort: never crash the request worker */
+  }
+  try {
+    await broadcastSevereEvent({
+      summary: `${SUMMARY_PREFIX}${s.summary}`,
+      body:
+        `Detected by the request-path infra-liveness alarm (R4-3/R4-8), independent of the background ` +
+        `routine engine. Signal: ${s.key}. Workspace: ${ws}. See harness_escalations for the durable record.`,
+      category: 'severe-event',
+      conditionKey: `infra-liveness:${s.key}`,
+    });
+  } catch {
+    /* best-effort: never crash the request worker */
+  }
+}
+
+async function defaultPageResolved(sigs: string[]): Promise<void> {
+  if (sigs.length === 0) return;
+  try {
+    await broadcastSevereEventResolvedMany({
+      conditionKeys: sigs.map((sig) => `infra-liveness:${sig}`),
+      summary: `infra-liveness RECOVERED (${sigs.join(', ')}) — condition(s) no longer firing.`,
+    });
+  } catch {
+    /* best-effort: never crash the request worker */
+  }
 }
 
 /** Bound the per-tick escalation-log read: large enough to cover the recently-
@@ -332,6 +380,14 @@ export async function runLivenessAlarmTick(
       resolveEscalation({ msg_id, choice, note, resolver: INFRA_LIVENESS_IDENTITY.ownerId }));
   const staleMs = deps.snapshotStaleMs ?? DEFAULT_SNAPSHOT_STALE_MS;
   const debounceMs = deps.debounceMs ?? DEFAULT_DEBOUNCE_MS;
+  // WI-4023: paging defaults to a NO-OP here — a bare call to this pure(ish) tick
+  // function (every unit test) must NEVER fire a real owner push / fleet broadcast.
+  // The live scheduled loop (startInfraLivenessAlarm below) explicitly wires the
+  // real defaultPage/defaultPageResolved. Getting this backwards (real-by-default)
+  // is exactly the bug that fired live false alarms during this fix's own first
+  // test run — see the coord broadcast + apology, 2026-07-11 02:10Z.
+  const page = deps.page ?? (async () => {});
+  const pageResolved = deps.pageResolved ?? (async () => {});
 
   const cached = readLast(ws);
   const snapshotAgeMs = cached ? now - cached.evaluatedAt : null;
@@ -362,6 +418,7 @@ export async function runLivenessAlarmTick(
   //    signal is no longer firing. On the first post-deploy tick this drains the
   //    recovered backlog (gateway/accounts/no-bees-while-idle) so the pile clears.
   const resolved: string[] = [];
+  const recoveredBlockerSigs: string[] = [];
   for (const [sig, recs] of openBySig) {
     if (currentSigs.has(sig)) continue; // still firing — keep the single open row
     for (const rec of recs) {
@@ -372,10 +429,15 @@ export async function runLivenessAlarmTick(
         /* a resolve failure must never crash the request worker */
       }
     }
+    if (recs.some((r) => r.severity === 'blocker')) recoveredBlockerSigs.push(sig);
     // Drop the in-memory cooldown so a genuine re-occurrence after recovery
     // re-fires immediately ("re-fire only after auto-resolve").
     lastAlertedAt.delete(sig);
   }
+  // WI-4023: pair the fleet-facing all-clear with the auto-resolve above — see the
+  // paging note on the fire loop for why this is needed (a durable escalation row
+  // alone is not an active page, so its recovery deserves the same fleet visibility).
+  await pageResolved(recoveredBlockerSigs);
 
   // 2. Fire each NEW signal — durably deduped (skip a signature that already has
   //    an open escalation) then in-memory cooldown-debounced.
@@ -401,6 +463,17 @@ export async function runLivenessAlarmTick(
     } catch {
       /* an alarm-send failure must never crash the request worker */
     }
+    // WI-4023 (root-cause fix, 2026-07-11): a `blocker` signal used to reach ONLY
+    // `openEscalation` — a durable PG row with no active push. Verified live
+    // (2026-07-10 20:38-21:22 incident): this alarm fired `health-tick-stale` /
+    // `dead-routines` blockers correctly within ~1-8min of the DBOS engine dying,
+    // but NOBODY noticed for ~40min because nothing paged — the escalation just sat
+    // in `harness_escalations` behind the ambient/no-default-surface coord:inbox
+    // filter, alongside 292 OTHER escalations that had aged past the attention
+    // threshold unread. git-sync-stall-watchdog.ts already pages on its own alarms
+    // (notifyAttention + broadcastSevereEvent) — this brings the SAME active paging
+    // to every `blocker`-severity infra-liveness signal, not just git-sync's.
+    if (s.severity === 'blocker') await page(s, ws);
   }
   return { fired, signals, resolved };
 }
@@ -419,7 +492,11 @@ export function startInfraLivenessAlarm(opts: { intervalMs?: number } = {}): { s
   const timer = managedSetInterval(
     'liveness-alarm',
     intervalMs,
-    () => runLivenessAlarmTick().then(() => undefined, () => undefined),
+    () =>
+      runLivenessAlarmTick(undefined, { page: defaultPage, pageResolved: defaultPageResolved }).then(
+        () => undefined,
+        () => undefined,
+      ),
     { category: 'watchdog' },
   );
   return {

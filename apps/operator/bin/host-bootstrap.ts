@@ -1190,7 +1190,41 @@ export function runBootstrap(): void {
         const { startDbos } = await import('@papercusp/operator-core/lib/dbos/bootstrap');
         await startDbos();
       } catch (err) {
-        console.warn('[dbos] boot failed (non-fatal):', err instanceof Error ? err.message : err);
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn('[dbos] boot failed (non-fatal):', msg);
+        // WI-4015/WI-4023: this catch used to be silent beyond the console.warn above —
+        // the process stays alive and LOOKS healthy while DBOS.launch() aborted partway
+        // through registration, so routinesTick never arms and every routine (git-sync,
+        // cross-hive-outbox-drain, scout-cycle, ...) goes dark with zero active paging.
+        // The request-path infra-liveness/single-primary detectors DO catch this
+        // (verified: both fired blocker-severity escalations within ~1-8min of the
+        // 2026-07-10 20:38 incident) but only via `openEscalation` — a durable PG row,
+        // never an active page — so it sat unnoticed for ~40min until a human-equivalent
+        // manual notice. Fire a loud, NON-flag-gated page directly from the source of
+        // the failure, immediately, best-effort (must never crash this boot path further).
+        try {
+          const { notifyAttention } = await import('@papercusp/operator-core/lib/attention-notify');
+          await notifyAttention({
+            kind: 'intervention',
+            title: 'DBOS boot FAILED — routines dead, engine looks healthy',
+            body: `startDbos() threw during boot and was swallowed (process stays up): ${msg}. Every DBOS-scheduled routine (routinesTick, git-sync, cross-hive-outbox-drain, scout-cycle, ...) is now dark until this is fixed and the process restarted. This is not a transient blip — nothing will self-heal.`,
+            importance: 'urgent',
+            data: { errorMessage: msg },
+          });
+        } catch (notifyErr) {
+          console.warn('[dbos] boot-failure notifyAttention failed (non-fatal):', notifyErr instanceof Error ? notifyErr.message : notifyErr);
+        }
+        try {
+          const { broadcastSevereEvent } = await import('@papercusp/operator-core/lib/severe-event-broadcast');
+          await broadcastSevereEvent({
+            summary: `[dbos] boot FAILED on this host — DBOS routine engine is dead (process alive, nothing scheduled)`,
+            body: `startDbos() threw during boot: ${msg}. routinesTick never arms, so every DBOS-scheduled routine is dark (git-sync, cross-hive-outbox-drain, scout-cycle, ...) until fixed + restarted. Check this host's boot log for the root cause (a prior instance: duplicate module-top-level DBOS registration under a tsx-direct entrypoint, WI-4015).`,
+            category: 'severe-event',
+            conditionKey: 'dbos-boot-failed',
+          });
+        } catch (broadcastErr) {
+          console.warn('[dbos] boot-failure broadcast failed (non-fatal):', broadcastErr instanceof Error ? broadcastErr.message : broadcastErr);
+        }
       }
     })();
   }

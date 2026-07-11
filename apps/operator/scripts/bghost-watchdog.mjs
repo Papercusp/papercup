@@ -110,9 +110,18 @@ const log = (m) => {
   }
 };
 
-function sh(cmd, args) {
+function sh(cmd, args, opts = {}) {
   return new Promise((resolve_) => {
-    execFile(cmd, args, { timeout: 10_000 }, (err, stdout) => resolve_({ err, stdout: stdout || '' }));
+    const child = execFile(cmd, args, { timeout: 10_000 }, (err, stdout, stderr) =>
+      resolve_({ err, stdout: stdout || '', stderr: stderr || '' }),
+    );
+    // Optional stdin payload (EI-9419: psql only interpolates -v variables in stdin/file
+    // input, NEVER in -c strings — callers that need bind-variables must pipe the SQL).
+    if (opts.stdin != null && child.stdin) {
+      child.stdin.on('error', () => {}); // EPIPE if the child exits early — the execFile callback still fires
+      child.stdin.write(opts.stdin);
+      child.stdin.end();
+    }
   });
 }
 
@@ -246,9 +255,15 @@ export async function alertFleet(summary, deps = {}) {
     const sql =
       "INSERT INTO harness_shared.coord_event_log (id, workspace_id, surface, writer_key, msg_id, body) " +
       "VALUES (nextval('harness_shared.coord_event_log_id_seq'), 'default', 'messages', 'bghost-watchdog', :'msgid', :'jsonbody'::jsonb)";
-    const r = await shImpl('psql', [url, '-v', `msgid=${msgId}`, '-v', `jsonbody=${body}`, '-c', sql]);
+    // EI-9419 (2026-07-10 outage postmortem): the SQL MUST go via stdin, never `-c`. psql does
+    // NOT interpolate -v variables inside -c command strings — :'msgid'/:'jsonbody' reached the
+    // server literally ("syntax error at or near :"), so every alert since WI-3630 landed failed
+    // silently and the 63-min DBOS outage went fleet-unalerted. -X skips psqlrc so no user config
+    // can alter interpolation; stdin keeps the bind-variable design (no hand-rolled escaping).
+    const r = await shImpl('psql', [url, '-X', '-v', `msgid=${msgId}`, '-v', `jsonbody=${body}`, '-f', '-'], { stdin: sql });
     if (r.err) {
-      logImpl(`alertFleet FAILED (non-fatal): ${r.err.message}`);
+      const stderrNote = r.stderr && r.stderr.trim() ? ` | stderr: ${r.stderr.trim()}` : '';
+      logImpl(`alertFleet FAILED (non-fatal): ${r.err.message}${stderrNote}`);
       return false;
     }
     return true;

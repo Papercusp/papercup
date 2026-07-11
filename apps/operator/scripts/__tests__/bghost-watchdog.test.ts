@@ -12,7 +12,11 @@ let nextDebounceMs: (baseMs: number, consecutiveRestarts: number, multiplier?: n
 let shouldAlert: (consecutiveRestarts: number, alertAfter?: number) => boolean;
 let alertFleet: (
   summary: string,
-  deps?: { dbUrl?: string | null; sh?: (cmd: string, args: string[]) => Promise<{ err: Error | null; stdout: string }>; log?: (m: string) => void },
+  deps?: {
+    dbUrl?: string | null;
+    sh?: (cmd: string, args: string[], opts?: { stdin?: string }) => Promise<{ err: Error | null; stdout: string; stderr?: string }>;
+    log?: (m: string) => void;
+  },
 ) => Promise<boolean>;
 let circuitOpenMessage: (
   reason: string,
@@ -162,11 +166,11 @@ describe('bghost-watchdog — journald-independent freeze signal (EI-2434)', () 
   });
 
   describe('alertFleet — best-effort fleet-wide broadcast (WI-3630)', () => {
-    it('inserts into coord_event_log via psql -v bind-variables (never raw string interpolation)', async () => {
-      const calls: Array<{ cmd: string; args: string[] }> = [];
-      const sh = async (cmd: string, args: string[]) => {
-        calls.push({ cmd, args });
-        return { err: null, stdout: '' };
+    it('inserts into coord_event_log via psql -v bind-variables with the SQL on STDIN (never raw string interpolation)', async () => {
+      const calls: Array<{ cmd: string; args: string[]; opts?: { stdin?: string } }> = [];
+      const sh = async (cmd: string, args: string[], opts?: { stdin?: string }) => {
+        calls.push({ cmd, args, opts });
+        return { err: null, stdout: '', stderr: '' };
       };
       const ok = await alertFleet('test alert body', { dbUrl: 'postgresql://test', sh, log: () => {} });
       expect(ok).toBe(true);
@@ -179,9 +183,38 @@ describe('bghost-watchdog — journald-independent freeze signal (EI-2434)', () 
       expect(jsonBodyArg).toBeDefined();
       const parsed = JSON.parse(jsonBodyArg!.slice('jsonbody='.length));
       expect(parsed).toMatchObject({ from: 'system-watchdog', to: ['*'], kind: 'message', summary: 'test alert body', category: 'severe-event' });
-      const sqlArg = calls[0].args[calls[0].args.length - 1];
-      expect(sqlArg).toContain('harness_shared.coord_event_log');
-      expect(sqlArg).not.toContain('test alert body'); // never raw-interpolated into the SQL text itself
+      const sql = calls[0].opts?.stdin ?? '';
+      expect(sql).toContain('harness_shared.coord_event_log');
+      expect(sql).not.toContain('test alert body'); // never raw-interpolated into the SQL text itself
+    });
+
+    it('delivers the SQL via stdin, NEVER -c — psql does not interpolate -v variables in -c strings (EI-9419)', async () => {
+      // Regression guard for the 2026-07-10 DBOS outage: alertFleet used `-c "... :'msgid' ..."`,
+      // psql sent the :'var' references to the server LITERALLY ("syntax error at or near :"), and
+      // every fleet alert since WI-3630 landed failed silently — the 63-min outage went unalerted.
+      // -v variables only interpolate in stdin/-f input; pin that delivery shape.
+      const calls: Array<{ args: string[]; opts?: { stdin?: string } }> = [];
+      const sh = async (_cmd: string, args: string[], opts?: { stdin?: string }) => {
+        calls.push({ args, opts });
+        return { err: null, stdout: '', stderr: '' };
+      };
+      const ok = await alertFleet('test alert body', { dbUrl: 'postgresql://test', sh, log: () => {} });
+      expect(ok).toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].args).not.toContain('-c'); // the bug: -v vars are silently ignored under -c
+      expect(calls[0].args).toContain('-f'); // SQL arrives as a stream…
+      expect(calls[0].args).toContain('-'); // …specifically stdin
+      const sql = calls[0].opts?.stdin ?? '';
+      expect(sql).toContain(":'msgid'"); // bind-variable references live in the piped SQL
+      expect(sql).toContain(":'jsonbody'");
+    });
+
+    it('surfaces psql stderr in the failure log line (delivery failures must be diagnosable)', async () => {
+      const logs: string[] = [];
+      const sh = async () => ({ err: new Error('Command failed: psql'), stdout: '', stderr: 'ERROR:  syntax error at or near ":"' });
+      const ok = await alertFleet('test alert body', { dbUrl: 'postgresql://test', sh, log: (m: string) => logs.push(m) });
+      expect(ok).toBe(false);
+      expect(logs.some((l) => l.includes('syntax error at or near'))).toBe(true);
     });
 
     it('never throws on a failed insert — fail-soft (a broadcast failure must not break the watchdog)', async () => {

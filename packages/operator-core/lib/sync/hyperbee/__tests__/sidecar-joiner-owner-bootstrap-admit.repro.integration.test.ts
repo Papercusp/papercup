@@ -35,7 +35,7 @@
  *     npx vitest run lib/sync/hyperbee/__tests__/sidecar-joiner-owner-bootstrap-admit.repro.test.ts
  */
 
-import { afterEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -155,7 +155,27 @@ const WORKSPACE_ID = 'ws-sidecar-bootstrap';
 
 const cleanups: Array<() => void | Promise<void>> = [];
 
+// EI/WI-4027: `notifyRegistryChanged` (harness-registry.ts) fires a best-effort,
+// self-caught, fire-and-forget dynamic import of ./sync-sse after every registry
+// mutation — not wired up in this test's env, so it lands as
+// `console.warn('[harness-registry] sync invalidate failed:', ...)`. It never throws
+// into the caller, but vitest-fail-on-console treats ANY console.warn as a hard
+// failure, and — because it's fire-and-forget — the warn can resolve during a LATER
+// test in the same file (this repro calls mutateHarnessRegistry more than once per
+// scenario, mirroring the real join-hive.ts 2b-then-2c ordering). Swallow ONLY this
+// known-benign, already-self-caught message; anything else still reaches the real
+// (fail-on-console-wrapped) console.warn.
+let originalConsoleWarn: typeof console.warn;
+beforeEach(() => {
+  originalConsoleWarn = console.warn;
+  console.warn = ((...args: unknown[]) => {
+    if (String(args[0] ?? '').includes('[harness-registry] sync invalidate failed')) return;
+    originalConsoleWarn(...args);
+  }) as typeof console.warn;
+});
+
 afterEach(async () => {
+  console.warn = originalConsoleWarn;
   while (cleanups.length) {
     try {
       await cleanups.pop()!();
@@ -370,23 +390,43 @@ async function runScenario(
   `;
 
   // Registry: HIVE_HOME is a remote_hive VIEW; JOINER_SLUG is its member harness.
+  // EI/WI-4027: under `unresolvedHome`, the registry's own hive_slug must stay UNSET
+  // until the simulated rekey too. boot.ts's resolveSameHiveMember/admitsAsKnownHiveMember
+  // fall back to the REAL, registry-backed potHomeSlugForHarness — NOT the
+  // joinerPotHomeSlugOverride below — whenever the boot-time hiveHomeProjectionSlug
+  // snapshot is null, so an eagerly-seeded registry entry resolves the home EARLY
+  // regardless of the override, silently defeating the home=<none>-until-rekey
+  // precondition this scenario exists to exercise (previously: the joiner admitted the
+  // owner immediately, never exercising the scope_unresolved buffer / retryPendingOnce
+  // replay path this test is meant to prove).
   await mutateHarnessRegistry(
     (r) => ({
       ...r,
       projects: [
         ...r.projects,
         { slug: HIVE_HOME, path: '/tmp/owner-hive', harness_kind: 'hive', remote_hive: true },
-        { slug: JOINER_SLUG, path: '/tmp/joiner', hive_slug: HIVE_HOME },
+        {
+          slug: JOINER_SLUG,
+          path: '/tmp/joiner',
+          ...(unresolvedHome ? {} : { hive_slug: HIVE_HOME }),
+        },
       ],
     }),
     WORKSPACE_ID,
   );
 
-  // Sanity: the joiner's boot reads resolve as the repro relies on.
+  // Sanity: the joiner's boot reads resolve as the repro relies on — EXCEPT under
+  // unresolvedHome, where the registry deliberately has no hive_slug yet (see above),
+  // so these must read <none> until the simulated rekey backfills it below.
   const { potHomeSlugForHarness, joinerPotHomeSlug } = await import('../../../hive-federation');
   const { loadHiveOwnerDevicePubkey } = await import('../../../hive-membership-store');
-  expect(await potHomeSlugForHarness(WORKSPACE_ID, JOINER_SLUG)).toBe(HIVE_HOME);
-  expect(await joinerPotHomeSlug(WORKSPACE_ID, JOINER_SLUG)).toBe(HIVE_HOME);
+  if (unresolvedHome) {
+    expect(await potHomeSlugForHarness(WORKSPACE_ID, JOINER_SLUG)).toBeNull();
+    expect(await joinerPotHomeSlug(WORKSPACE_ID, JOINER_SLUG)).toBeNull();
+  } else {
+    expect(await potHomeSlugForHarness(WORKSPACE_ID, JOINER_SLUG)).toBe(HIVE_HOME);
+    expect(await joinerPotHomeSlug(WORKSPACE_ID, JOINER_SLUG)).toBe(HIVE_HOME);
+  }
   expect(await loadHiveOwnerDevicePubkey(WORKSPACE_ID, hivePubkeyB64)).toBe(idOwner.devicePubkey);
 
   const testnet = await createTestnet(3);
@@ -475,6 +515,13 @@ async function runScenario(
     // The 2c rekey: the hive-home now resolves → rebind → retryPendingOnce re-runs admit on the
     // buffered owner announce. PRE-FIX the announce was DROPPED at home=<none> (owner-bootstrap was
     // gated on myHiveHome != null), so there was nothing to replay → the joiner never admitted.
+    // NOTE (EI/WI-4027): deliberately NOT also stamping the registry's hive_slug here — `rekey`
+    // re-resolves `hiveHomeProjectionSlug` via `joinerPotHomeSlugOverride` (now returning HIVE_HOME
+    // since homeResolved flipped), which is boot.ts's PRIMARY resolution path everywhere; the
+    // registry-backed `potHomeSlugForHarness` fallback (see the setup comment above) is only ever
+    // consulted when that snapshot is still null, so leaving the registry unset here still lets
+    // admission succeed post-rekey while avoiding a second mutateHarnessRegistry call mid-scenario
+    // (which throws — `notifySyncInvalidate` isn't wired in this test's env, see harness-registry.ts).
     homeResolved = true;
     await joiner.handle.rekey(joinerBinding);
   }

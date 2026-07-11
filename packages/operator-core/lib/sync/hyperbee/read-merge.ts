@@ -93,6 +93,22 @@ export const MERGE_YIELD_MAX_MS = 250;
  *  after the pass returned would capture nothing (the WI-2105 REV restart loop). */
 export const MERGE_PERSIST_EVERY_OPS = 5000;
 
+/** WI-4020: default cap on `MergeCursor.winners`' entry count. `winners` is
+ *  durable-for-the-process (unlike the transient per-call map in
+ *  `mergeAdmittedLogs`) and grows by one entry per distinct (table, hbKey)
+ *  ever merged, with no eviction — a long-lived host merging a
+ *  perpetually-growing federation accumulates one entry per live row FOREVER.
+ *  Bounding it is safe because `winners` is a FAST-PATH cache layered on an
+ *  independently-authoritative floor, not the sole correctness mechanism: see
+ *  `mergeAdmittedLogsIncremental`'s "POST-CURSOR-RESET DOUBLE-APPLY SAFETY"
+ *  doc comment — every PG projection writer re-guards with its own
+ *  `fed_ts`/`fed_hlc` `ON CONFLICT` check, so a `winners` MISS (evicted OR
+ *  never-seen) only ever costs a harmless redundant `apply()` attempt (PG
+ *  accepts it if legitimately newer, no-ops if stale) — never an incorrect
+ *  write. `<= 0` disables the bound (today's unbounded behavior). Override
+ *  via `IncrementalMergeOpts.maxWinnersEntries`. */
+export const DEFAULT_MAX_WINNERS_ENTRIES = 500_000;
+
 /** `await` point that defers to the macrotask queue (setImmediate), letting
  *  timers/IO/HTTP run between merge chunks. */
 const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -616,6 +632,49 @@ function toMeta(env: OpEnvelope): WinnerMeta {
 }
 
 /**
+ * WI-4020: record a winner in `cursor.winners` under an approximate-LRU bound
+ * (see `DEFAULT_MAX_WINNERS_ENTRIES`). Approximate via `Map`'s insertion-order
+ * iteration: a key whose winner actually CHANGES is deleted+re-set so it moves
+ * to the MRU (end) position; eviction removes from the LRU (front) end. A key
+ * that is merely READ (confirmed stale, winner unchanged — the `continue` at
+ * the `beatsStored` gate) does NOT bump recency — only a real winner CHANGE
+ * does. This is deliberate, not an approximation shortcut: a row that keeps
+ * winning without changing is a settled/quiescent key, exactly the kind
+ * safest to evict first, so tracking recency-of-CHANGE (not recency-of-touch)
+ * better matches the goal of keeping actively-churning keys hot.
+ *
+ * `cap <= 0` disables bounding (today's behavior: the winner is set, nothing
+ * is ever evicted). `onEvicted` is a best-effort observability hook (same
+ * shape as `onCapped`/`onBacklog` elsewhere in this file) — it must never
+ * throw out of this function or abort the merge pass over it.
+ */
+function recordWinner(
+  cursor: MergeCursor,
+  groupKey: string,
+  meta: WinnerMeta,
+  cap: number,
+  onEvicted?: (evictedCount: number, size: number) => void,
+): void {
+  if (cursor.winners.has(groupKey)) cursor.winners.delete(groupKey); // move to MRU end
+  cursor.winners.set(groupKey, meta);
+  if (cap <= 0) return;
+  let evicted = 0;
+  while (cursor.winners.size > cap) {
+    const oldest = cursor.winners.keys().next().value;
+    if (oldest === undefined) break; // defensive: size>cap but iterator empty can't happen, but never loop forever
+    cursor.winners.delete(oldest);
+    evicted++;
+  }
+  if (evicted > 0) {
+    try {
+      onEvicted?.(evicted, cursor.winners.size);
+    } catch {
+      // Observability hook must never abort the merge pass.
+    }
+  }
+}
+
+/**
  * WI-255: how many CONSECUTIVE apply throws on the SAME op before we stop
  * retrying and QUARANTINE it. 3 gives a transient blip a couple of free retries
  * while bounding a poison op's loop.
@@ -731,6 +790,8 @@ async function applyRecordingWinner(
   apply: (op: OpEnvelope) => Promise<boolean>,
   scope = 'read-merge',
   applyTimeoutMs: number = MERGE_APPLY_TIMEOUT_MS,
+  maxWinnersEntries: number = DEFAULT_MAX_WINNERS_ENTRIES,
+  onWinnersEvicted?: (evictedCount: number, size: number) => void,
 ): Promise<boolean> {
   let ok: boolean;
   try {
@@ -751,7 +812,7 @@ async function applyRecordingWinner(
     // Persistently poison (threw OR timed out `MAX_APPLY_THROWS` times running) —
     // quarantine (record winner + drop) so it can't loop/wedge forever.
     throws.delete(ident);
-    cursor.winners.set(groupKey, toMeta(env));
+    recordWinner(cursor, groupKey, toMeta(env), maxWinnersEntries, onWinnersEvicted);
     console.error(
       isTimeout
         ? `[read-merge] WI-3896 quarantine: op ${groupKey} (ts=${env.ts ?? 0}, src=${(env.sourceLogKeyHex ?? '').slice(0, 12)}) timed out on apply (>${applyTimeoutMs}ms) ${n}× — this may be LOAD-induced (a legitimately slow write under host CPU pressure — re-check current load before assuming permanent poison) or a genuinely un-resolvable write (e.g. stale/dead-device keymat that will never decrypt/apply); recording winner + dropping to avoid a retry loop:`
@@ -761,7 +822,7 @@ async function applyRecordingWinner(
     return false;
   }
   cursor.applyThrows?.delete(opIdent(groupKey, env)); // success clears the throw streak
-  cursor.winners.set(groupKey, toMeta(env));
+  recordWinner(cursor, groupKey, toMeta(env), maxWinnersEntries, onWinnersEvicted);
   return ok;
 }
 
@@ -803,6 +864,14 @@ export interface IncrementalMergeOpts {
    * the latest positions).
    */
   onCursorAdvance?: (positions: ReadonlyMap<string, number>) => Promise<void> | void;
+  /**
+   * WI-4020: cap on `cursor.winners`' entry count (approximate LRU, evicting
+   * quiescent keys first — see `recordWinner`/`DEFAULT_MAX_WINNERS_ENTRIES`).
+   * `<= 0` disables the bound (unbounded growth, today's behavior).
+   */
+  maxWinnersEntries?: number;
+  /** Fires (best-effort) whenever a pass evicts `winners` entries under the cap. */
+  onWinnersEvicted?: (evictedCount: number, size: number) => void;
 }
 
 export interface IncrementalMergeResult {
@@ -877,6 +946,8 @@ export async function mergeAdmittedLogsIncremental(
   const applyTimeoutMs = opts?.applyTimeoutMs ?? MERGE_APPLY_TIMEOUT_MS;
   const budget = opts?.maxOpsPerPass ?? DEFAULT_MAX_OPS_PER_AUTHOR;
   const onCursorAdvance = opts?.onCursorAdvance;
+  const maxWinnersEntries = opts?.maxWinnersEntries ?? DEFAULT_MAX_WINNERS_ENTRIES;
+  const onWinnersEvicted = opts?.onWinnersEvicted;
 
   let applied = 0;
   let decoded = 0;
@@ -967,7 +1038,19 @@ export async function mergeAdmittedLogsIncremental(
           const groupKey = `${env.table}::${env.hbKey}`;
           const prev = cursor.winners.get(groupKey);
           if (prev && !beatsStored(env, prev)) continue; // stale row, never applied
-          if (await applyRecordingWinner(cursor, groupKey, env, apply, log.keyHex, applyTimeoutMs)) applied++;
+          if (
+            await applyRecordingWinner(
+              cursor,
+              groupKey,
+              env,
+              apply,
+              log.keyHex,
+              applyTimeoutMs,
+              maxWinnersEntries,
+              onWinnersEvicted,
+            )
+          )
+            applied++;
         }
         continue;
       }
@@ -975,7 +1058,19 @@ export async function mergeAdmittedLogsIncremental(
       const groupKey = `${env.table}::${env.hbKey}`;
       const prev = cursor.winners.get(groupKey);
       if (prev && !beatsStored(env, prev)) continue; // ts-guard: stale op, never applied
-      if (await applyRecordingWinner(cursor, groupKey, env, apply, log.keyHex, applyTimeoutMs)) applied++;
+      if (
+        await applyRecordingWinner(
+          cursor,
+          groupKey,
+          env,
+          apply,
+          log.keyHex,
+          applyTimeoutMs,
+          maxWinnersEntries,
+          onWinnersEvicted,
+        )
+      )
+        applied++;
     }
     cursor.positions.set(log.keyHex, pos);
     // WI-2105 REV fix: persist this log's advanced cursor (persist-after-apply —

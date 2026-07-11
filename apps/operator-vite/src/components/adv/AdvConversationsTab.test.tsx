@@ -244,6 +244,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
   vi.unstubAllGlobals();
 });
@@ -281,6 +282,18 @@ describe('AdvConversationsTab — Create-style shell', () => {
       chat: null,
       msg: 'msg-1',
     });
+  });
+
+  it('turns an indefinitely pending initial inbox read into a retryable state', async () => {
+    vi.useFakeTimers();
+    mockUnifiedResult = { data: [], loading: true, fetching: true, error: null, invalidate: vi.fn(), transport: 'SSE' };
+    render(<AdvConversationsTab />);
+    expect(screen.getByRole('status', { name: 'Loading conversations' })).toBeTruthy();
+
+    await act(async () => { vi.advanceTimersByTime(8_000); });
+
+    expect(screen.getByText("Couldn't load")).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Reload conversations' }).hasAttribute('disabled')).toBe(false);
   });
 
   // The five views each get a switcher button in the sidebar rail (labels are
@@ -611,6 +624,45 @@ describe('AdvConversationsTab — unified communication views', () => {
     // role badge + per-row meta render
     expect(screen.getAllByText('worker').length).toBeGreaterThan(0);
     expect(screen.getByText(/6 turns/i)).toBeTruthy();
+  });
+
+  it('keeps an already-rendered rail mounted while a refresh is in flight', async () => {
+    nuqsState.conv = 'agentchats';
+    const next = deferred<ReturnType<typeof response>>();
+    let listReads = 0;
+    const payload = {
+      items: [{
+        id: 'chat-stable',
+        harness_slug: 'papercusp',
+        role: 'worker',
+        feature_id: 'F-100',
+        title: 'stable conversation row',
+        created_at: Date.now(),
+        archived_at: null,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        total_cost_usd_cents: 0,
+        turns: 1,
+      }],
+      total: 1,
+    };
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (!url.includes('/comms/agent-chats/list')) return Promise.resolve(response({}));
+      listReads += 1;
+      return listReads === 1 ? Promise.resolve(response(payload)) : next.promise;
+    }));
+
+    render(<AdvConversationsTab />);
+    expect(await screen.findByText('stable conversation row')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Reload agent chats' }));
+
+    // The previous implementation swapped the complete rail for skeletons here,
+    // producing the visible button flash on every slow refresh.
+    expect(screen.getByText('stable conversation row')).toBeTruthy();
+    expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull();
+
+    await act(async () => { next.resolve(response(payload)); });
+    await waitFor(() => expect(listReads).toBe(2));
   });
 
   it('Agent chats view renders an ARCHIVED transcript read-only (no composer)', async () => {

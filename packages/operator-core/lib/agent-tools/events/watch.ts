@@ -34,6 +34,7 @@ import {
 } from '../../events/await/predicate-watch';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { subscribeTopic } from '../coordination/topics';
+import { subscribeEventKey } from '../coordination/event-subscriptions';
 import { softText, clampText, LIMITS } from '../limits';
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
@@ -51,17 +52,18 @@ function standingWakeFloorSec(): number {
 export default defineTool({
   name: 'watch:create',
   description:
-    'The unified subscription primitive — watch(pattern, {wake, once, min_sleep_sec, urgency, timeout_sec, mode}): register an interest, receive a delivery. DELIVERY — wake:false (DEFAULT, cheap) injects updates into your coord inbox (next natural turn, no token cost); wake:true (opt-in, a turn = tokens) re-invokes you when it fires. CARDINALITY — once:true is one-shot (auto-consumes — a grant); once:false is standing (re-fires per match). Sugar: events:await = watch(key,{wake:true,once:true}); topics:subscribe = watch(topic,{wake:false}). Lifecycle: events:cancel / events:status (wake) · topics:unsubscribe (inject). PREDICATE (wake:true): predicate:{tool,args,path,op,value}+interval_sec — the engine polls a read-only tool under YOUR role and wakes you on the false→true cross.',
+    'The unified subscription primitive — watch(pattern, {wake, once, min_sleep_sec, urgency, timeout_sec, mode, targetKind}): register an interest, receive a delivery. DELIVERY — wake:false (DEFAULT, cheap) injects updates into your coord inbox (next natural turn, no token cost); wake:true (opt-in, a turn = tokens) re-invokes you when it fires. CARDINALITY — once:true is one-shot (auto-consumes — a grant); once:false is standing (re-fires per match). TARGET (wake:false only) — targetKind:"topic" (DEFAULT, pattern is a curated topic slug) or targetKind:"event" (pattern is an exact event key, e.g. from events:catalog — a STANDING, cheap, no-token-cost subscription to that key; every future events:emit on it lands in your inbox). Sugar: events:await = watch(key,{wake:true,once:true}); topics:subscribe = watch(topic,{wake:false}). Lifecycle: events:cancel / events:status (wake) · topics:unsubscribe / events:unsubscribe (inject, by targetKind). PREDICATE (wake:true): predicate:{tool,args,path,op,value}+interval_sec — the engine polls a read-only tool under YOUR role and wakes you on the false→true cross.',
   guidance: {
-    when: 'Prefer wake:false (inject) for continuous awareness of a churning area — no cost. Use wake:true ONLY for specific readiness ("wake me when THIS grant/lock/deadline is ready"); for a standing wake watch set min_sleep_sec to bound the re-wake rate. once:true for a one-shot grant; once:false to keep following.',
+    when: 'Prefer wake:false (inject) for continuous awareness of a churning area — no cost. Use wake:true ONLY for specific readiness ("wake me when THIS grant/lock/deadline is ready"); for a standing wake watch set min_sleep_sec to bound the re-wake rate. once:true for a one-shot grant; once:false to keep following. A standing (once:false), no-token-cost subscription to a specific EVENT KEY (not a curated topic) — wake:false + targetKind:"event".',
     notWhen:
       'A sub-minute wait inside one turn — just do the bounded blocking call. A recurring TIME schedule — the pot/routines own time-based wakes. Ambient interest where a wake would burn turns — use wake:false.',
     chaining:
-      'wake:true → end your turn; on wake the turn text carries the event + payload. events:cancel (wake) / topics:unsubscribe (inject) to stop; events:status to inspect your active wake watches + recent wakes.',
+      'wake:true → end your turn; on wake the turn text carries the event + payload. events:cancel (wake) / topics:unsubscribe or events:unsubscribe (inject, matching the targetKind you registered with) to stop; events:status to inspect your active wake watches + recent wakes.',
     seeAlso: [
       'events:await (a one-shot wait vs this standing watch)',
       'events:cancel (retract the watch)',
       'events:status (inspect your active watches)',
+      'events:unsubscribe (retract a wake:false targetKind:"event" subscription)',
     ],
   },
   capability: 'coord:write',
@@ -113,6 +115,12 @@ export default defineTool({
       .enum(['full', 'digest', 'mention'])
       .optional()
       .describe('wake:false only — inject delivery tiering: full (default), digest (high-churn), mention (the quiet floor).'),
+    targetKind: z
+      .enum(['topic', 'event'])
+      .optional()
+      .describe(
+        'wake:false only. "topic" (DEFAULT) — pattern is a curated topic slug (topics:list). "event" (WI-4014 Part 2) — pattern is an EXACT event key (see events:catalog): a standing, no-token-cost subscription so every future events:emit on that key lands in your inbox, without ever waking you. Unsubscribe with events:unsubscribe (matching targetKind:"event").',
+      ),
     note: softText(LIMITS.ANNOTATION).optional().describe('Why you are watching — echoed into the wake turn (wake:true). Auto-truncated to 2000 chars if longer.'),
     payload_filter: dataConditionSchema
       .optional()
@@ -172,8 +180,12 @@ export default defineTool({
           'watch:create — predicate requires wake:true (the engine-side poll fires a wake await on the false→true cross; there is no inject leg).',
         );
       }
-      // ── Inject preset (D-002 cheap default) → a standing topic subscription. ──
-      const sub = await subscribeTopic(identity, args.pattern, { mode: args.mode, ttl_sec: args.timeout_sec });
+      // ── Inject preset (D-002 cheap default) → a standing topic OR event-key subscription. ──
+      const targetKind = args.targetKind ?? 'topic';
+      const sub =
+        targetKind === 'event'
+          ? await subscribeEventKey(identity, args.pattern, { mode: args.mode, ttl_sec: args.timeout_sec })
+          : await subscribeTopic(identity, args.pattern, { mode: args.mode, ttl_sec: args.timeout_sec });
       return {
         content: [
           {
@@ -182,12 +194,16 @@ export default defineTool({
               ok: true,
               watch: {
                 pattern: sub.target_ref,
+                targetKind,
                 wake: false,
                 once: false,
                 mode: sub.delivery_mode,
                 expires_ts: sub.expires_ts,
               },
-              advice: 'Watching (inject). Updates land in your coord inbox — you will see them on your next turn, no token cost.',
+              advice:
+                targetKind === 'event'
+                  ? 'Watching this EVENT KEY (inject). Every future events:emit on it lands in your coord inbox next turn, no token cost. events:unsubscribe to stop.'
+                  : 'Watching (inject). Updates land in your coord inbox — you will see them on your next turn, no token cost.',
             }),
           },
         ],

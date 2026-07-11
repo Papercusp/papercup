@@ -284,13 +284,22 @@ const PEER_LOG_WORKSPACE_OWNED = [
   // landed without this classification, which red-pinned checkSubstrateCaptureCoverage
   // for every table — flagged to the F1-1 owner su-29e3d.]
   'agent_facts',
-  // mem0-cross-machine-federation-2026-07-10 (F1-1 mirror for memories): SHAREABLE
-  // memories federate as hive state (mig 562-563 capture triggers, shareable=true rows
-  // only — D-006 privacy; apply side partitions by receiver-stamped source_hive, H6).
-  // Keyed (workspace_id, id, source_hive) → workspace-owned + peer-log. Projection
-  // 'p2p-memories' (projections/p2p-memories.ts, Phase 2). Capture triggers enqueue
-  // only shareable=true rows to the substrate outbox.
-  'p2p_memories',
+  // mem0-cross-machine-federation-2026-07-10 (F1-1 mirror for memories, EI-9430 fix):
+  // SHAREABLE memories federate as hive state (mig 562-563 capture triggers,
+  // shareable=true rows only — D-006 privacy; apply side partitions by
+  // receiver-stamped source_hive, H6). Keyed (workspace_id, id, source_hive) →
+  // slug-shared + peer-log. Projection tag 'p2p-memories-by-id'
+  // (projections/p2p-memories.ts). Capture triggers enqueue only shareable=true
+  // rows to the substrate outbox.
+  //
+  // NOTE (EI-9430): the federated table is `memory_canonical` itself — there is
+  // NO separate `p2p_memories` table (that was this entry's classification-key
+  // name, not a real table; it silently drifted the peer-log/capture-coverage
+  // guards, since neither PEER_LOG_TAG_TO_TABLE nor TABLE_NAME_TO_TABLE_TAG could
+  // ever match a table that doesn't exist). Named to the REAL table below so
+  // `resolveTableSpec('memory_canonical')` actually returns peer-log (it would
+  // otherwise fall through to the `memory_` WORKSPACE_OWNED_PREFIXES rule).
+  'memory_canonical',
   // federated-scout-gym-learning-2026-07-02 (F1-2/F1-5): the gym QD archive's
   // FEDERATABLE elites (D-002: outcome=won OR grade>=4) federate as hive state.
   // Producer = CDC capture (mig 464, gated WHEN federatable); receive side writes

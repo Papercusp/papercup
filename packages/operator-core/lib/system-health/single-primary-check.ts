@@ -38,6 +38,8 @@ import {
 } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { activeWorkspaceId } from '../workspace-registry';
+import { notifyAttention } from '../attention-notify';
+import { broadcastSevereEvent, broadcastSevereEventResolvedMany } from '../severe-event-broadcast';
 
 export const SINGLE_PRIMARY_IDENTITY: AgentIdentity = {
   ownerId: 'system:single-primary-guard',
@@ -121,6 +123,50 @@ export interface PrimaryGuardDeps {
   debounceMs?: number;
   /** Consecutive non-1 checks required before escalating (default 2). */
   sustainTicks?: number;
+  /** WI-4023: active paging for a sustained non-1 verdict (default: real notifyAttention +
+   *  broadcastSevereEvent). Inject a no-op in tests — the default hits the REAL owner push
+   *  + fleet broadcast, which a test exercising this path must never do. */
+  page?: (verdict: PrimaryVerdict, streak: number, count: number, ws: string) => Promise<void>;
+  /** WI-4023: the fleet all-clear when the guard self-clears (default: real
+   *  broadcastSevereEventResolvedMany). Inject a no-op in tests for the same reason. */
+  pageResolved?: (keys: string[]) => Promise<void>;
+}
+
+async function defaultPage(verdict: PrimaryVerdict, streak: number, count: number, ws: string): Promise<void> {
+  try {
+    await notifyAttention({
+      kind: 'intervention',
+      title: 'Single-primary guard BLOCKER',
+      body: verdict.summary,
+      importance: 'urgent',
+      workspaceId: ws,
+      data: { key: verdict.key ?? '', count },
+    });
+  } catch {
+    /* best-effort: never crash the request worker */
+  }
+  try {
+    await broadcastSevereEvent({
+      summary: `[single-primary] ${verdict.summary}`,
+      body: `Detected by the request-path single-primary guard (R4-2), SUSTAINED over ${streak} consecutive checks. Live DBOS background primaries: ${count} (expected exactly 1). Workspace: ${ws}. See harness_escalations for the durable record.`,
+      category: 'severe-event',
+      conditionKey: `single-primary:${verdict.key}`,
+    });
+  } catch {
+    /* best-effort: never crash the request worker */
+  }
+}
+
+async function defaultPageResolved(keys: string[]): Promise<void> {
+  if (keys.length === 0) return;
+  try {
+    await broadcastSevereEventResolvedMany({
+      conditionKeys: keys.map((k) => `single-primary:${k}`),
+      summary: `single-primary RECOVERED (${keys.join(', ')}) — exactly one background primary again.`,
+    });
+  } catch {
+    /* best-effort: never crash the request worker */
+  }
 }
 
 /**
@@ -139,6 +185,11 @@ export async function runSinglePrimaryCheck(
   const resolve =
     deps.resolve ??
     ((input) => resolveEscalation({ ...input, resolver: SINGLE_PRIMARY_IDENTITY.ownerId }));
+  // WI-4023: paging defaults to a NO-OP here — see the liveness-alarm.ts sibling fix's
+  // comment for why (a bare tick call, i.e. every unit test, must never page for real;
+  // the live scheduled loop below wires the real default explicitly).
+  const page = deps.page ?? (async () => {});
+  const pageResolved = deps.pageResolved ?? (async () => {});
   const count = deps.count ? await deps.count() : await countBackgroundPrimaries(getOrgPg().sql as SqlLike);
   const verdict = evaluatePrimaryCount(count);
 
@@ -147,6 +198,7 @@ export async function runSinglePrimaryCheck(
     consecutiveNon1.clear();
     let selfCleared = false;
     if (openAlarms.size > 0) {
+      const clearedKeys: string[] = [];
       for (const [key, msgId] of [...openAlarms]) {
         try {
           await resolve({
@@ -155,11 +207,15 @@ export async function runSinglePrimaryCheck(
             note: `single-primary count returned to 1 (healthy) — the ${key} alarm self-cleared against live state.`,
           });
           selfCleared = true;
+          clearedKeys.push(key);
         } catch {
           /* best-effort: never crash the request worker */
         }
       }
       openAlarms.clear();
+      // WI-4023: pair the self-clear above with a fleet-facing all-clear — see the
+      // paging note below for why an escalation row alone isn't enough.
+      await pageResolved(clearedKeys);
     }
     return { fired: false, verdict, selfCleared };
   }
@@ -188,6 +244,14 @@ export async function runSinglePrimaryCheck(
   } catch {
     /* best-effort: never crash the request worker */
   }
+  // WI-4023 (root-cause fix, 2026-07-11): verified live that this guard already
+  // detects a no-primary outage almost immediately (fired at 20:39:15, ~1min after
+  // the 20:38 incident) — but until now that only reached `openEscalation`, a
+  // durable PG row with no active push. Nobody noticed for ~40min because nothing
+  // paged. Mirror git-sync-stall-watchdog.ts's active paging so a sustained
+  // no-primary/split-brain verdict reaches the owner + fleet immediately, not just
+  // the escalation log.
+  await page(verdict, streak, count, ws);
   return { fired: true, verdict, selfCleared: false };
 }
 
@@ -203,7 +267,7 @@ export function startSinglePrimaryGuard(opts: { intervalMs?: number } = {}): { s
       // managedSetInterval's callback is `() => void | Promise<void>` — runSinglePrimaryCheck()
       // resolves a richer { fired, verdict, selfCleared } shape, so discard it via a block body
       // (no return) rather than an expression-bodied arrow, which would leak the resolved type.
-      void runSinglePrimaryCheck().catch(() => {});
+      void runSinglePrimaryCheck(undefined, { page: defaultPage, pageResolved: defaultPageResolved }).catch(() => {});
     },
     { category: 'watchdog' },
   );
