@@ -69,8 +69,14 @@ export interface CaptureMissHintDeps {
 
 // ── Pure marker detection ────────────────────────────────────────────────────
 
-/** ≥2 total occurrences ⇒ a cluster (a single "no error" mention never trips it). */
+/** ≥2 total occurrences ⇒ a cluster (a single passing mention never trips it). */
 const ERROR_RETRY_RE = /\b(?:errors?|retr(?:y|ied|ies|ying)|fail(?:ed|ing|ure)?|timed?[ -]?out|timeout|flak(?:e|y)|exception|traceback|stack ?trace)\b/gi;
+/**
+ * NEGATED forms stripped BEFORE the cluster count — a healthy status line like
+ * "2482 tests green, 0 failed, no errors" is the OPPOSITE of an error-retry
+ * cluster, but naively contributes 2 tokens (the audit-found false positive).
+ */
+const NEGATED_ERROR_RE = /\b(?:0|no|zero|none|never|without|non-)[\s-]*(?:new\s+)?(?:errors?|retr(?:y|ies)|fail(?:ed|ing|ures?)?|timeouts?|exceptions?|flak(?:es?|y))\b/gi;
 /** The engineer-issue id namespace — the durable-discovery reference. */
 const EI_REF_RE = /\bEI-\d+\b/i;
 /**
@@ -87,7 +93,10 @@ const DURABLE_DISCOVERY_RE =
  */
 export function detectHighSignalMarkers(samples: readonly string[]): HighSignalMarkers {
   const text = samples.filter((s) => typeof s === 'string' && s.trim()).join('\n');
-  const errorRetryCount = (text.match(ERROR_RETRY_RE) ?? []).length;
+  // Strip negated forms first ("0 failed", "no errors") so a healthy status
+  // line never counts toward the error-retry cluster.
+  const positiveText = text.replace(NEGATED_ERROR_RE, ' ');
+  const errorRetryCount = (positiveText.match(ERROR_RETRY_RE) ?? []).length;
   const errorRetryCluster = errorRetryCount >= 2;
   const eiReference = EI_REF_RE.test(text);
   const durableDiscovery = DURABLE_DISCOVERY_RE.test(text);
@@ -138,13 +147,24 @@ async function countLaneFilingsSinceDefault(ownerId: string, sinceMs: number): P
  * author-keyed source is the caller's loop carry-note (its `insight` / `did` /
  * `left` / `next` fields — the exact durable-discovery residual P-020 harvests
  * from, plus the EI-refs / error-retry language the harvest does NOT take) and
- * its recent journal ring. Harness-scoped: without a harness the carry-note scope
- * is unknown, so this returns [] (the advisory then silently no-ops — fail-soft,
- * advisory-only). Never throws — a store error degrades to no advisory.
+ * its recent journal ring. The carry-note scope needs a harness: when the orient
+ * call didn't pass one (most su orients don't — the audit-found coverage gap),
+ * fall back to the caller's presence `potSlug` (their home pot, the same slug a
+ * loop is scoped under). Still-unresolvable ⇒ [] (the advisory silently no-ops —
+ * fail-soft, advisory-only). Never throws — a store error degrades to no advisory.
  */
 async function gatherSignalTextDefault(ownerId: string, harness: string | undefined): Promise<string[]> {
-  if (!harness) return [];
-  const ref = { harness, ownerId };
+  let scope = harness;
+  if (!scope) {
+    try {
+      const { getPresence } = await import('../presence');
+      scope = (await getPresence(ownerId))?.potSlug ?? undefined;
+    } catch {
+      /* fall through — no advisory rather than a broken orient */
+    }
+  }
+  if (!scope) return [];
+  const ref = { harness: scope, ownerId };
   const [note, journal] = await Promise.all([
     getLoopCarryNote(ref).catch(() => null),
     getLoopCarryJournal(ref).catch(() => [] as Array<{ note: string }>),
