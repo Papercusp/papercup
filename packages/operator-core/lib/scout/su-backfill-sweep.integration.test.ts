@@ -65,7 +65,7 @@ function seedWorkItem(db: OrgTestDb, row: {
     VALUES
       (${row.ws ?? WS}, ${row.harness ?? ''}, ${row.id},
        ${row.title ?? `filing ${row.id}`}, ${row.status}, ${row.kind ?? 'change'},
-       ${row.createdTs}, ${row.createdTs + 1000}, ${JSON.stringify(payload)}::jsonb,
+       ${row.createdTs}, ${row.createdTs + 1000}, ${JSON.stringify(payload)}::text::jsonb,
        ${row.withTerminalPair ? 'someone' : null},
        ${row.withTerminalPair ? 'landed in PR #1' : null})`;
 }

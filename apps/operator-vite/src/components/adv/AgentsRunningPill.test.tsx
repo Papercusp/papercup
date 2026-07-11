@@ -39,7 +39,7 @@ vi.mock('nuqs', () => ({
   useQueryState: () => [nuqs.open, nuqs.set],
 }));
 
-import AgentsRunningPill, { groupByFleet, agentGlyph, shortOwner, displayName, hasThinking, thinkingStreamUrl, fmtCompactAge, isLiveByActivity, LIVE_TURN_MS, distinctMachineCount, machineKey, machineTabs, canFocusWindow, resumableSessionId, canForkLive, type RosterAgent } from './AgentsRunningPill';
+import AgentsRunningPill, { groupByFleet, agentGlyph, shortOwner, displayName, hasThinking, thinkingStreamUrl, fmtCompactAge, isLiveByActivity, LIVE_TURN_MS, distinctMachineCount, machineKey, machineTabs, canFocusWindow, resumableSessionId, canForkSession, type RosterAgent } from './AgentsRunningPill';
 
 function agent(over: Partial<RosterAgent> = {}): RosterAgent {
   return {
@@ -144,18 +144,18 @@ describe('resumableSessionId (pure — Fork/Resume-button guard, WI-3882)', () =
   });
 });
 
-describe('canForkLive (pure — live-Fork-button backend guard, WI-4009)', () => {
-  it('claude: forkable live', () => {
-    expect(canForkLive({ agent: 'claude' })).toBe(true);
+describe('canForkSession (pure — Fork-button backend guard, WI-4009; active+inactive 2026-07-11)', () => {
+  it('claude: forkable (--fork-session)', () => {
+    expect(canForkSession({ agent: 'claude' })).toBe(true);
   });
-  it('omp: NOT forkable live — no --fork-session support, would collide in-place', () => {
-    expect(canForkLive({ agent: 'omp' })).toBe(false);
+  it('omp: NOT forkable — no --fork-session support', () => {
+    expect(canForkSession({ agent: 'omp' })).toBe(false);
   });
-  it('codex: NOT forkable live', () => {
-    expect(canForkLive({ agent: 'codex' })).toBe(false);
+  it('codex: NOT forkable', () => {
+    expect(canForkSession({ agent: 'codex' })).toBe(false);
   });
-  it('null/unknown agent: NOT forkable live (fail closed, never a colliding button)', () => {
-    expect(canForkLive({ agent: null })).toBe(false);
+  it('null/unknown agent: NOT forkable (fail closed, never a dead Fork button)', () => {
+    expect(canForkSession({ agent: null })).toBe(false);
   });
 });
 

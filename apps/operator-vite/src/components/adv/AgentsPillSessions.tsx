@@ -20,7 +20,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import AgentInspectorModal from '@/app/harness/AgentInspectorModal';
 import {
   agentGlyph,
-  canForkLive,
+  canForkSession,
   displayName,
   fmtCompactAge,
   groupByFleet,
@@ -190,31 +190,35 @@ interface InspectTarget {
   /** WI-3882: the id to fork/resume into a new terminal (null ⇒ no
    *  Fork/Resume button — codex results, or a source with no resumable id). */
   resumeSessionId?: string | null;
-  /** true ⇒ the source agent is still RUNNING (Fork — a parallel window,
-   *  original keeps going); false ⇒ it has ENDED (Resume). */
+  /** true ⇒ the source agent is still RUNNING — tags the Resume button's
+   *  collision-warning tooltip; false ⇒ it has ENDED. Both Resume and Fork are
+   *  offered either way (owner ask 2026-07-11). */
   resumeLive?: boolean;
+  /** WI-4009 / 2026-07-11: whether the source can be FORKED (claude-only) —
+   *  gates the Fork button, independent of active/inactive. */
+  resumeCanFork?: boolean;
 }
 
 /** WI-3882: the Fork/Resume target for a matched search result — an ACTIVE
- *  result's agent is still running (Fork, a parallel window); an INACTIVE
- *  result's session has ended (Resume). null ⇒ no button (codex, or neither
- *  half of the result carries a resumable id). WI-4009: the ACTIVE/Fork case
- *  is further gated by `canForkLive` — only claude supports forking a LIVE
- *  session (`--fork-session`); a live omp agent has no fork command and
- *  resuming it in place would collide with the still-running original, so it
- *  gets no button at all rather than a degraded in-place resume. The ended/
- *  Resume case is unaffected (no fork flag involved). Pure — exported for
- *  tests. */
+ *  result's agent is still running (`live:true`, tags the Resume button's
+ *  collision tooltip); an INACTIVE result's session has ended (`live:false`).
+ *  null ⇒ no button at all (codex, or neither half of the result carries a
+ *  resumable id). Owner ask 2026-07-11 (retracted the "fork only for active /
+ *  resume only for inactive" split): BOTH Resume and Fork are offered for
+ *  active AND inactive. `live` no longer gates presence — it only tags the
+ *  Resume collision tooltip. `canFork` (claude-only — `--fork-session` has no
+ *  omp equivalent) gates the Fork button, independent of active/inactive. The
+ *  Resume button works for any resumable (claude/omp) session either way. Pure
+ *  — exported for tests. */
 export function searchResultResumeTarget(
   result: Pick<SearchSessionResult, 'active' | 'session'>,
-): { sessionId: string; live: boolean } | null {
+): { sessionId: string; live: boolean; canFork: boolean } | null {
   if (result.active) {
-    if (!canForkLive(result.active)) return null;
     const sessionId = resumableSessionId(result.active);
-    return sessionId ? { sessionId, live: true } : null;
+    return sessionId ? { sessionId, live: true, canFork: canForkSession(result.active) } : null;
   }
   const sessionId = result.session ? resumableSessionId(result.session) : null;
-  return sessionId ? { sessionId, live: false } : null;
+  return sessionId ? { sessionId, live: false, canFork: result.session ? canForkSession(result.session) : false } : null;
 }
 
 /** One matched session row + its excerpt hits. Shared by the active (fleet-
@@ -247,6 +251,7 @@ function SearchResultRow({
       highlightTerm: query,
       resumeSessionId: resumeTarget?.sessionId ?? null,
       resumeLive: resumeTarget?.live ?? false,
+      resumeCanFork: resumeTarget?.canFork ?? false,
     });
   };
   const top = result.hits[0];
@@ -427,7 +432,7 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
           streamUrl={inspecting.streamUrl}
           highlightTerm={inspecting.highlightTerm}
           resumeTarget={inspecting.resumeSessionId
-            ? { sessionId: inspecting.resumeSessionId, live: Boolean(inspecting.resumeLive) }
+            ? { sessionId: inspecting.resumeSessionId, live: Boolean(inspecting.resumeLive), canFork: Boolean(inspecting.resumeCanFork) }
             : undefined}
           open
           onClose={() => setInspecting(null)}
@@ -581,7 +586,7 @@ export function InactiveSessionsSection({
           role={endedDisplayName(inspecting)}
           streamUrl={endedSessionStreamUrl(inspecting) ?? undefined}
           resumeTarget={resumableSessionId(inspecting)
-            ? { sessionId: resumableSessionId(inspecting)!, live: false }
+            ? { sessionId: resumableSessionId(inspecting)!, live: false, canFork: canForkSession(inspecting) }
             : undefined}
           open
           onClose={() => setInspecting(null)}

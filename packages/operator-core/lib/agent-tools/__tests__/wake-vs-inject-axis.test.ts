@@ -43,6 +43,17 @@ describe('wake-vs-inject axis stays declared at tool choice (D-001)', () => {
     expect(src).toMatch(/can never wake-loop/i);
   });
 
+  it('events:await guidance carries the happy-path recipe + the unblocked-key caution (P-004)', () => {
+    const src = read('../events/await.ts');
+    // recipe: announce → await the RETURNED key → end turn → re-register for the next occurrence
+    expect(src).toMatch(/announce:true/);
+    expect(src).toMatch(/RETURNED key/);
+    expect(src).toMatch(/one-shot: a fired await is gone/);
+    // interim caution until the registration-time latch (P-006) covers unblocked keys
+    expect(src).toMatch(/work-item:unblocked:<id>/);
+    expect(src).toMatch(/STILL blocked before awaiting/);
+  });
+
   it('the su engineer prompt maps all three follow verbs onto the axis in ONE block', () => {
     const prompt = read('../../../../../apps/operator/prompts/papercusp-su-engineer.tools.md');
     const start = prompt.indexOf('notify ≠ wake');

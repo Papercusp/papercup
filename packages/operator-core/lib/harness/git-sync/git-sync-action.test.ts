@@ -86,6 +86,11 @@ vi.mock('./run-git-sync', () => ({
 const getFlagMock = vi.fn(async (_key: string, _distinctId?: string): Promise<boolean> => true);
 vi.mock('@papercusp/flags/server', () => ({
   getFlag: (...a: unknown[]) => getFlagMock(a[0] as string, a[1] as string | undefined),
+  // onFlagChange: a module-load-time subscription (agent-tools/coordination/log.ts, pulled in
+  // transitively via ./git-sync-action's `sendMessage` import) is not exercised by this suite —
+  // a no-op subscriber returning an unsubscribe fn keeps the mock a valid drop-in without
+  // needing this test to actually simulate flag-change notifications.
+  onFlagChange: (_handler: (key: string | null) => void) => () => {},
 }));
 
 const appendPipelineEventMock = vi.fn(async (_ev: Record<string, unknown>): Promise<void> => {});

@@ -3,7 +3,7 @@ URL: /internal/docs/agent-insights/distributed-gate-hermeticity
 
 >
 
-**Source of truth:** `packages/operator-core/lib/sync/hive-git/gate/hermeticity.ts`
+**Source of truth:** `packages/operator-core/lib/sync/pot-git/gate/hermeticity.ts`
 (the machine-readable registry + classifier; this page is the narrative). Audit:
 2026-07-02, plan `cross-machine-coord-parity-and-trust-2026-07-01` P-049.
 

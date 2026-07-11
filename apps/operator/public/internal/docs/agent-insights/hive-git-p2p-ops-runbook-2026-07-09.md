@@ -1,11 +1,11 @@
 # hive-git P2P ops runbook — mode flip/rollback, integrator/epoch, divergence, sigrefs, drill
 URL: /internal/docs/agent-insights/hive-git-p2p-ops-runbook-2026-07-09
 
-Operational playbook for the per-hive P2P git replication plane (lib/sync/hive-git) — how to flip/rollback hiveGit.mode, what the integrator lease + epoch fencing actually guarantee today, how to triage a github-bridge divergence escalation, the 5 sigrefs rejection reasons, how to re-run the drill, and why the git-sync stall watchdog does not false-alarm under commit-only mode.
+Operational playbook for the per-hive P2P git replication plane (lib/sync/pot-git) — how to flip/rollback hiveGit.mode, what the integrator lease + epoch fencing actually guarantee today, how to triage a github-bridge divergence escalation, the 5 sigrefs rejection reasons, how to re-run the drill, and why the git-sync stall watchdog does not false-alarm under commit-only mode.
 
 ## What this covers
 
-The P2P git replication plane (`packages/operator-core/lib/sync/hive-git/`, \~30
+The P2P git replication plane (`packages/operator-core/lib/sync/pot-git/`, \~30
 modules — storage/namespaces, sigrefs, fetch-transport, the integrator, the
 GitHub bridge, worktree-bridge, gc, secrets-guard) plus its ONE production
 wiring seam, `lib/harness/git-sync/git-sync-action.ts`. This doc is the
@@ -97,7 +97,7 @@ failed — check `metadata->>'last_synced_at'` first.
 
 ## Integrator lease + epoch semantics — what's real today, what's a known simplification
 
-The integrator (`lib/sync/hive-git/integrator.ts`, called by
+The integrator (`lib/sync/pot-git/integrator.ts`, called by
 `runIntegratorLeg`/`runIntegratorTick`) is the mechanism that turns N member
 namespace heads into one `staging` ref:
 

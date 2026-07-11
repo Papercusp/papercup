@@ -3,6 +3,8 @@ URL: /internal/docs/agent-insights/nuqs-tanstack-search-coercion-and-clobber
 
 Why ?dock=1 / ?switch=1 were unreachable, and why nuqs writes dropped TanStack-native search params. Normalize flag params to the number 1; use a functional-search nuqs adapter.
 
+import { Aside } from '@astrojs/starlight/components';
+
 ## Symptom
 
 `/harness/<slug>?dock=1` always redirected to `/adv` (the dock shell was
@@ -10,6 +12,14 @@ unreachable), and `/login?switch=1` never entered switch-account mode — even
 though the URL clearly carried the param. Diagnostic logs showed
 `window.location.search = "?dock=1"` while the route's `validateSearch` saw
 `search.dock === undefined`.
+
+The `/harness/<slug>` route tree (the `?dock=1` example above) was **retired**
+(`design-simplification-2026-07-09` P-008) — `/harness/` is now redirect-only
+to `/adv`, and the old per-slug dock shell moved to `_retired/harness-dashboard/`.
+The underlying TanStack-coercion + stock-adapter lessons below are still live
+and load-bearing: `/login?switch=1` (`apps/operator-vite/src/routes/login.tsx`)
+still uses the exact number-`1` normalization this doc describes, and
+`__root.tsx` still mounts the custom adapter.
 
 ## Two independent root causes (both Next → TanStack-Router migration regressions)
 
@@ -82,6 +92,6 @@ stock one).
   search param vanish, or params start duplicating / gaining `%22` quotes →
   suspect the stock tanstack adapter. Instrument `updateUrl`'s `to`/merge.
 
-Only 5 of \~84 operator-vite routes use `validateSearch`; the rest pass search
+Only 6 of \~90 operator-vite routes use `validateSearch`; the rest pass search
 through, so nuqs params survive there — the clobber only bit routes that mix
 both systems.

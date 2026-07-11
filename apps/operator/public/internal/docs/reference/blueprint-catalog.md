@@ -18,36 +18,37 @@ Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (43 con
 | Blueprint | Extends | Work item | Decider | Dispatch | Roles | Description |
 |---|---|---|---|---|---|---|
 | `audit` | base | audit-task (`AUD`) | auditor | inherited | 1 | The G2 user-protection gate: a read-only adversarial auditor screens a remote-authored feature and emits an admit/reject verdict; a reject quarantines the feature behind a blocker escalation until a human resolves it. |
-| `cup` | single-agent | task (`CUP`) | cup | inherited | 1 | Launch one generic Pot worker (the `cup` role) — a plain implementation agent the Mug places ranked work + a brief onto. Decoupled from the pipeline guards (no chunk, no spine); the brief rides `extras`, the persona is prompts/cup.md. A cup is kind:'harness' (NOT a pot). |
 | `calibration` | base | mining-run (`CAL`) | — | inherited | 0 | Deterministic learning loop: mature open calibration bets against their domain probes, resolving or voiding past the grace window (the calibration-markets resolution sweep) on a cadence. Pure SQL, no agent. |
 | `change-ledger` | base | mining-run (`CLG`) | — | inherited | 0 | Deterministic recorder: git-log the prompt-source roots over a trailing window and offer one behavior-change-ledger row per (commit, file) (the change-ledger repo-edit scan) on a cadence. Pure bookkeeping — git + SQL, no agent, no LLM. |
-| `coding` | base | pot-wake (`POT`) | mug | inherited | 2 | The Pot/Pot operator — the Mug in charge of the cup fleet. Wakes on its own self-declared schedule (or an event it subscribed to), surveys the work frontier and cup slots, places ranked tasks onto cups (free slot / graceful-evict+fresh / warm-inject), attaches situational briefs, and declares its next wake. Two roles, both carrying the full Mug role (two-plane coordination, steer-don't-dispatch): the `operator` (the canonical full-role judgment layer, the default decider) and the `mug` (the same role with the dial turned toward placement automation). |
+| `coding` | base | hive-wake (`POT`) | mug | inherited | 2 | The Hive/Hive operator — the Queen in charge of the bee fleet. Wakes on its own self-declared schedule (or an event it subscribed to), surveys the work frontier and bee slots, places ranked tasks onto bees (free slot / graceful-evict+fresh / warm-inject), attaches situational briefs, and declares its next wake. Two roles, both carrying the full Queen role (two-plane coordination, steer-don't-dispatch): the `operator` (the canonical full-role judgment layer, the default decider) and the `queen` (the same role with the dial turned toward placement automation). |
 | `coding-factory` | base | feature (`F`) | director | concurrency 4, plan-order | 11 | RETIRED — NOT ACTIVE (2026-06-24, owner aviynw4). Preserved-but-dormant: its `director` autoloop last fired 2026-05-01 and nothing currently instantiates it. Do NOT treat this as "the active/default coding harness" and do NOT wire new work to it. (It is the per-feature coding spine: director → scoper → architect → worker → validator → reviewer → documenter → curator, opt-in gates tester / security / crosscheck / ui-qa.) Kept intact for future revival — to revive, re-enable instantiation (generate-from-repo `extends`) and restore the director dispatch. |
 | `coding-solo` | single-agent | feature (`F`) | worker | inherited | 1 | Baseline A internal ablation: the coding harness with the multi-agent spine collapsed to a single end-to-end worker — identical model / base tools / infra / budget to the full coding spine, only orchestration OFF. The single-agent generation unit for the impartial benchmark suite (also the per-sample unit Baseline C best-of-N samples). |
 | `content-fix` | single-agent | content-fix (`CFX`) | content-fixer | inherited | 1 | Fix a git-sync content-guard quarantine: a content-fixer agent fixes ONLY the syntax of the named files so they pass their content detector (an .mdx that won't compile, a curly quote used as code), changes nothing else, leaves the tree clean, and does not push. |
+| `cup` | single-agent | task (`BEE`) | cup | inherited | 1 | Launch one generic Pot worker (the `cup` role) — a plain implementation agent the Mug places ranked work + a brief onto. Decoupled from the pipeline guards (no chunk, no spine); the brief rides `extras`, the persona is prompts/cup.md. A cup is kind:'harness' (NOT a pot). |
 | `deferral-interest` | base | mining-run (`DIR`) | — | inherited | 0 | Deterministic learning loop: backfill realized deferral costs from history and re-fit the learned deferral-pricing model the queue ranker reads (the deferral-interest refit) on a cadence. Pure SQL + math, no agent. |
 | `deliberate` | base | decision (`DLIB`) | — | inherited | 0 | Resolve a decision via the uncertainty ladder: ask the owner, then a diverse vote if unanswered, then a curated escalation if the vote is split. |
 | `deploy` | single-agent | deploy-run (`DEP`) | release-manager | inherited | 1 | The release-gate deploy launch: the release-manager agent reviews the gathered deploy plan + staged migrations, makes the go/no-go call, runs the deploy, reads health, and decides rollback. Opus-4.8 @ xhigh — the blast radius is the fleet. |
-| `dist-blackboard` | base | feature (`W`) | — | concurrency 4 | 1 | Stigmergic distributed coordination: N peer workers self-claim from a shared queue (no Mug) and coordinate ONLY via a shared blackboard (work-item/scratchpad state) — no direct messaging. |
-| `dist-broadcast` | base | feature (`W`) | — | concurrency 4 | 1 | Flat-distributed coordination: N peer workers self-claim from a shared queue (no Mug) and broadcast findings to peers. The fully-distributed pole of the central-vs-distributed study. |
-| `dist-peer-review` | base | feature (`W`) | — | concurrency 4 | 2 | Flat-distributed coordination with a peer-review gate: N peer workers self-claim from a shared queue (no Mug); each result is reviewed by a nominated peer before submit. |
-| `dist-repo-huddle` | base | feature (`W`) | — | concurrency 4 | 1 | Distributed per-repo huddle: N peer workers self-claim (no Mug); same-repo agents form a group that shares repo-understanding + peer-reviews within the repo — coordination scoped to overlap. |
+| `dist-blackboard` | base | feature (`W`) | — | concurrency 4 | 1 | Stigmergic distributed coordination: N peer workers self-claim from a shared queue (no Queen) and coordinate ONLY via a shared blackboard (work-item/scratchpad state) — no direct messaging. |
+| `dist-broadcast` | base | feature (`W`) | — | concurrency 4 | 1 | Flat-distributed coordination: N peer workers self-claim from a shared queue (no Queen) and broadcast findings to peers. The fully-distributed pole of the central-vs-distributed study. |
+| `dist-peer-review` | base | feature (`W`) | — | concurrency 4 | 2 | Flat-distributed coordination with a peer-review gate: N peer workers self-claim from a shared queue (no Queen); each result is reviewed by a nominated peer before submit. |
+| `dist-repo-huddle` | base | feature (`W`) | — | concurrency 4 | 1 | Distributed per-repo huddle: N peer workers self-claim (no Queen); same-repo agents form a group that shares repo-understanding + peer-reviews within the repo — coordination scoped to overlap. |
 | `doc-steward` | single-agent | doc-drift (`DOC`) | doc-steward | inherited | 1 | Bring drifted docs back in sync with the code: a doc-steward re-verifies/regenerates each stale doc the freshness sweep flagged (code is truth; preserve historical runbook knowledge), harness_docs:verify to clear the flag, leave the tree clean, and does NOT push. |
 | `ensemble-solve` | base | feature (`W`) | — | concurrency 4 | 2 | Ensemble: N agents solve the same task independently (no coordination during), then a judge picks the best solution. The aggregation-after control arm for the coordination-topology study. |
 | `fleet-ekg` | base | scan-run (`EKG`) | — | inherited | 0 | Deterministic learning loop: embed recent agent sessions into behavioral vectors, detect fleet-wide distribution shifts vs the trailing baseline, attribute against the behavior-change ledger, and alarm unattributable MAJOR shifts (the Fleet EKG) on a cadence. Pure SQL, no agent. |
-| `gaia-agent` | single-agent | feature (`F`) | gaia-worker | inherited | 1 | General-assistant GAIA solver: one agent researches a question with native web_search/fetch/bash/file tools and writes its FINAL ANSWER to answer.txt. The non-coding single-agent bench unit placed by the su-independent pool or the real Mug. |
+| `gaia-agent` | single-agent | feature (`F`) | gaia-worker | inherited | 1 | General-assistant GAIA solver: one agent researches a question with native web_search/fetch/bash/file tools and writes its FINAL ANSWER to answer.txt. The non-coding single-agent bench unit placed by the su-independent pool or the real Queen. |
 | `graduation` | base | mining-run (`GRD`) | — | inherited | 0 | Deterministic learning loop: count per-class clean auto-passes over the outcome rails and file an owner ratification report for any class that crosses the graduation threshold (the graduation tracker) on a cadence. Pure SQL, no agent; files an owner report — never auto-widens autoKinds. |
 | `gym` | base | gym-task (`G`) | gym-director | inherited | 6 | A meta-harness that optimizes another harness's blueprint: a gym-director drives generate-tasks → run-target-variant (sub-harness) → judge → propose → A/B-gate → accept (commit the target blueprint). The target declares its own gym rubric. |
-| `hier-lead-worker` | base | feature (`W`) | — | concurrency 4 | 2 | Hierarchical elected-lead team: one lead runs a coordination pass (plan/assign/strategize) over the team backlog, then workers execute under it. The in-team-coordinator pole between flat-distributed and the Mug. |
-| `pot-eval` | base | pot-eval-run (`HEV`) | — | inherited | 0 | Monthly Pot-run evaluation: when the code SHA changed, run one owner-budget-capped SCORED generation of the seeded scenario corpus (whole-Pot runs graded on outcome quality / efficiency / speed by the un-gameable gate) — the acceptance yardstick for whether mug-execution / wave-dispatch / autonomy made the Pot better. |
+| `hier-lead-worker` | base | feature (`W`) | — | concurrency 4 | 2 | Hierarchical elected-lead team: one lead runs a coordination pass (plan/assign/strategize) over the team backlog, then workers execute under it. The in-team-coordinator pole between flat-distributed and the Queen. |
 | `implement` | single-agent | improvement (`IMP`) | worker | inherited | 1 | Auto-implement an eligible captured improvement (kind=bug): reproduce, fix with a regression test, keep it self/inline-sized; lands via the release gate. Flag-gated OFF + seeded inactive. |
-| `iq-battery` | base | benchmark-run (`IQB`) | — | inherited | 0 | Monthly IQ-battery benchmark: when the code SHA changed, run one owner-budget-capped generation (solver/judge cups through the governed chokepoint) beside gen-0 in the beekeeper trend — the "is the system improving" yardstick. |
+| `iq-battery` | base | benchmark-run (`IQB`) | — | inherited | 0 | Monthly IQ-battery benchmark: when the code SHA changed, run one owner-budget-capped generation (solver/judge bees through the governed chokepoint) beside gen-0 in the beekeeper trend — the "is the system improving" yardstick. |
 | `memory-precision` | base | benchmark-run (`MPB`) | — | inherited | 0 | Weekly memory-precision monitoring: replay the frozen gold set against the production hybrid backend at the push floor and record FP@5 / R@10 / precision — so the injection floor (solved) is monitored, not benchmarked-once. |
 | `merge-resolution` | single-agent | merge-conflict (`MRG`) | merge-resolver | inherited | 1 | Resolve a git-sync auto-merge conflict: a merge-resolver agent redoes the merge fresh on main, resolves, commits, leaves the tree clean, and does not push. |
 | `migration` | base | migration-task (`M`) | migration-director | concurrency 4 | 4 | A migration/codemod harness: a migration-director drives a discoverer (find all sites matching the pattern), a worktree-isolated transformer (transform ONE site), and a verifier (tests/build green per site + overall) — safe large mechanical change. |
 | `negative-space` | base | mining-run (`NSM`) | — | inherited | 0 | Deterministic learning loop: recompute the zero-hit-search demand map and file the capped missing-knowledge candidates (the negative-space miner) on a cadence. Pure-SQL, no agent — the simplest deterministic blueprint. |
 | `neologism` | base | mining-run (`NEO`) | — | inherited | 0 | Deterministic learning loop: mine coord traffic + the insights corpus for emergent recurring vocabulary with no corresponding primitive and file the capped abstraction-proposal candidates (the neologism miner) on a cadence. Pure SQL/fs, no agent. |
 | `pair` | base | feature (`W`) | — | concurrency 4 | 2 | Driver/navigator pair: two agents on one task — a driver writes, a navigator continuously reviews + corrects. The tightest real-time peer-correction loop in the topology study. |
+| `papercup` | single-agent | task (`SENTINEL`) | papercup | inherited | 1 | Launch one fleet WATCHER (the `papercup` role) — the read-mostly observer split out of the overloaded operator (D-004). It sweeps fleet liveness, the coord substrate, and harness health, and raises alarms via coord:escalate/send. It never acts (no spawn/cancel/mutate) — the Mug steers, the papercup watches. |
+| `pot-eval` | base | hive-eval-run (`HEV`) | — | inherited | 0 | Monthly Pot-run evaluation: when the code SHA changed, run one owner-budget-capped SCORED generation of the seeded scenario corpus (whole-Pot runs graded on outcome quality / efficiency / speed by the un-gameable gate) — the acceptance yardstick for whether mug-execution / wave-dispatch / autonomy made the Pot better. |
 | `prompt-ablation` | base | ablation-run (`ABL`) | — | inherited | 0 | Prompt sedimentology: shadow-ablate ONE SU-playbook governance rule and replay the llm-testing `su` suite baseline-vs-ablated, recording the behavioral-delta evidence — on a weekly cadence. Never mutates a live prompt. |
 | `red-queen` | base | drill-run (`RQ`) | — | inherited | 0 | Red-queen vaccination: plant a known synthetic friction in the SANDBOX, detect + heal it with a real watchdog, and record MTTSH + the zero-leak assertion — one drill cycle per cadence tick. |
 | `regret` | base | mining-run (`RGT`) | — | inherited | 0 | Regret miner: select bad historical sessions, price candidate rule changes via a governed counterfactual replay, and file scored what-would-have-helped reports. |
@@ -56,7 +57,6 @@ Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (43 con
 | `review` | base | review-task (`RV`) | review-director | inherited | 4 | A review/audit harness: a review-director drives one dimension-reviewer per review dimension, an adversarial finding-verifier refutes each finding before it counts, and a findings-synthesizer dedups + ranks the survivors into one report. |
 | `scan` | single-agent | scan-run (`SCAN`) | scanner | inherited | 1 | Proactive workspace scan: the scanner sweeps for latent problems + improvement opportunities no agent flagged and captures each as a tracked work-item (kind=change\|improvement) into the self-improvement triage backlog. |
 | `scout` | base | ideation-cycle (`SCT`) | — | inherited | 0 | Scout autonomous-ideation cadence: idle/friction-gated, budgeted ideation cycles (ideator → critic → route to draft plans / the gym / improvements) on a frequent heartbeat. The op runs the same self-gated tick as the bespoke routine. |
-| `papercup` | single-agent | task (`PAPERCUP`) | papercup | inherited | 1 | Launch one fleet WATCHER (the `papercup` role) — the read-mostly observer split out of the overloaded operator (D-004). It sweeps fleet liveness, the coord substrate, and harness health, and raises alarms via coord:escalate/send. It never acts (no spawn/cancel/mutate) — the Mug steers, the papercup watches. |
 | `transfer` | base | distillation-run (`TRF`) | — | inherited | 0 | Transfer harness: distill transferable lessons from the day's transcripts (admitted probationary), then student-transfer-test them via a governed replay battery to promote/demote/retire — on a nightly cadence. |
 | `vote` | base | decision (`VOTE`) | — | inherited | 2 | Decide between options via a diverse-lens, confidence-weighted vote: one voter per lens + an advocate arguing against the lead; resolve decisively or escalate a curated split to the human. |
 | `worker` | base | feature (`F`) | — | inherited | 0 | Operator-hosted coding worker: run one feature's chunk loop (plan → per-chunk acquire/implement/typecheck-gate → commit / replan / escalate) as a deterministic program step. The durable-program port of the subprocess chunk-loop worker. |
@@ -68,7 +68,7 @@ Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (43 con
 | `base` | Abstract base blueprint — common knobs + defaults. Not directly runnable; extended by concrete blueprints. |
 | `external-bench` | The full Papercusp arm of the impartial benchmark suite: the complete coding spine + coordination substrate run autonomously to DONE over one cloned public benchmark task, under an iso-budget cap, graded by the benchmark's OWN external harness. The spine-ON pole of the `coding-solo` causal-isolation pairing (arm 'papercusp'); we neither author nor grade. Spun by the `instantiateBenchHarness` port (./run-loop.ts). |
 | `single-agent` | Abstract parent for single-role run-to-done launches — the shared single-role spine (one decider role + DONE/ESCALATE/IDLE edges + inline planner) plus the governed + durable launch contract. Not directly runnable; extended by implement / scan / merge-resolution / deploy. |
-| `work` | A generic (non-coding) Pot — the Mug places research / analysis / deliberation work onto a fleet of cups that produce DELIVERABLES (reports, decisions, documents). "Done" is decided by an LLM judge against a rubric; output lands in the artifacts store; the Mug co-locates work by topic, not file. Repo-less. The non-coding counterpart of the coding `pot`. |
+| `work` | A generic (non-coding) Hive — the Queen places research / analysis / deliberation work onto a fleet of bees that produce DELIVERABLES (reports, decisions, documents). "Done" is decided by an LLM judge against a rubric; output lands in the artifacts store; the Queen co-locates work by topic, not file. Repo-less. The non-coding counterpart of the coding `hive`. |
 
 ## Details
 
@@ -89,16 +89,6 @@ Abstract base blueprint — common knobs + defaults. Not directly runnable; exte
 
 - **Version:** 0.1.0
 
-### `cup`
-
-Launch one generic Pot worker (the `cup` role) — a plain implementation agent the Mug places ranked work + a brief onto. Decoupled from the pipeline guards (no chunk, no spine); the brief rides `extras`, the persona is prompts/cup.md. A cup is kind:'harness' (NOT a pot).
-
-- **Extends:** `single-agent`
-- **Version:** 0.1.0
-- **Work item:** `task` (id prefix `CUP`)
-- **Spine decider:** `cup` (maxTurns 80)
-- **Roles (1):** `cup`
-
 ### `calibration`
 
 Deterministic learning loop: mature open calibration bets against their domain probes, resolving or voiding past the grace window (the calibration-markets resolution sweep) on a cadence. Pure SQL, no agent.
@@ -117,11 +107,11 @@ Deterministic recorder: git-log the prompt-source roots over a trailing window a
 
 ### `coding`
 
-The Pot/Pot operator — the Mug in charge of the cup fleet. Wakes on its own self-declared schedule (or an event it subscribed to), surveys the work frontier and cup slots, places ranked tasks onto cups (free slot / graceful-evict+fresh / warm-inject), attaches situational briefs, and declares its next wake. Two roles, both carrying the full Mug role (two-plane coordination, steer-don't-dispatch): the `operator` (the canonical full-role judgment layer, the default decider) and the `mug` (the same role with the dial turned toward placement automation).
+The Hive/Hive operator — the Queen in charge of the bee fleet. Wakes on its own self-declared schedule (or an event it subscribed to), surveys the work frontier and bee slots, places ranked tasks onto bees (free slot / graceful-evict+fresh / warm-inject), attaches situational briefs, and declares its next wake. Two roles, both carrying the full Queen role (two-plane coordination, steer-don't-dispatch): the `operator` (the canonical full-role judgment layer, the default decider) and the `queen` (the same role with the dial turned toward placement automation).
 
 - **Extends:** `base`
 - **Version:** 0.1.0
-- **Work item:** `pot-wake` (id prefix `POT`)
+- **Work item:** `hive-wake` (id prefix `POT`)
 - **Spine decider:** `mug` (maxTurns 50)
 - **Planner:** inline
 - **Roles (2):** `operator`, `mug`
@@ -159,6 +149,16 @@ Fix a git-sync content-guard quarantine: a content-fixer agent fixes ONLY the sy
 - **Spine decider:** `content-fixer` (maxTurns 15)
 - **Roles (1):** `content-fixer`
 
+### `cup`
+
+Launch one generic Pot worker (the `cup` role) — a plain implementation agent the Mug places ranked work + a brief onto. Decoupled from the pipeline guards (no chunk, no spine); the brief rides `extras`, the persona is prompts/cup.md. A cup is kind:'harness' (NOT a pot).
+
+- **Extends:** `single-agent`
+- **Version:** 0.1.0
+- **Work item:** `task` (id prefix `BEE`)
+- **Spine decider:** `cup` (maxTurns 80)
+- **Roles (1):** `cup`
+
 ### `deferral-interest`
 
 Deterministic learning loop: backfill realized deferral costs from history and re-fit the learned deferral-pricing model the queue ranker reads (the deferral-interest refit) on a cadence. Pure SQL + math, no agent.
@@ -187,7 +187,7 @@ The release-gate deploy launch: the release-manager agent reviews the gathered d
 
 ### `dist-blackboard`
 
-Stigmergic distributed coordination: N peer workers self-claim from a shared queue (no Mug) and coordinate ONLY via a shared blackboard (work-item/scratchpad state) — no direct messaging.
+Stigmergic distributed coordination: N peer workers self-claim from a shared queue (no Queen) and coordinate ONLY via a shared blackboard (work-item/scratchpad state) — no direct messaging.
 
 - **Extends:** `base`
 - **Version:** 0.1.0
@@ -197,7 +197,7 @@ Stigmergic distributed coordination: N peer workers self-claim from a shared que
 
 ### `dist-broadcast`
 
-Flat-distributed coordination: N peer workers self-claim from a shared queue (no Mug) and broadcast findings to peers. The fully-distributed pole of the central-vs-distributed study.
+Flat-distributed coordination: N peer workers self-claim from a shared queue (no Queen) and broadcast findings to peers. The fully-distributed pole of the central-vs-distributed study.
 
 - **Extends:** `base`
 - **Version:** 0.1.0
@@ -207,7 +207,7 @@ Flat-distributed coordination: N peer workers self-claim from a shared queue (no
 
 ### `dist-peer-review`
 
-Flat-distributed coordination with a peer-review gate: N peer workers self-claim from a shared queue (no Mug); each result is reviewed by a nominated peer before submit.
+Flat-distributed coordination with a peer-review gate: N peer workers self-claim from a shared queue (no Queen); each result is reviewed by a nominated peer before submit.
 
 - **Extends:** `base`
 - **Version:** 0.1.0
@@ -217,7 +217,7 @@ Flat-distributed coordination with a peer-review gate: N peer workers self-claim
 
 ### `dist-repo-huddle`
 
-Distributed per-repo huddle: N peer workers self-claim (no Mug); same-repo agents form a group that shares repo-understanding + peer-reviews within the repo — coordination scoped to overlap.
+Distributed per-repo huddle: N peer workers self-claim (no Queen); same-repo agents form a group that shares repo-understanding + peer-reviews within the repo — coordination scoped to overlap.
 
 - **Extends:** `base`
 - **Version:** 0.1.0
@@ -262,7 +262,7 @@ Deterministic learning loop: embed recent agent sessions into behavioral vectors
 
 ### `gaia-agent`
 
-General-assistant GAIA solver: one agent researches a question with native web_search/fetch/bash/file tools and writes its FINAL ANSWER to answer.txt. The non-coding single-agent bench unit placed by the su-independent pool or the real Mug.
+General-assistant GAIA solver: one agent researches a question with native web_search/fetch/bash/file tools and writes its FINAL ANSWER to answer.txt. The non-coding single-agent bench unit placed by the su-independent pool or the real Queen.
 
 - **Extends:** `single-agent`
 - **Version:** 0.1.0
@@ -292,21 +292,13 @@ A meta-harness that optimizes another harness's blueprint: a gym-director drives
 
 ### `hier-lead-worker`
 
-Hierarchical elected-lead team: one lead runs a coordination pass (plan/assign/strategize) over the team backlog, then workers execute under it. The in-team-coordinator pole between flat-distributed and the Mug.
+Hierarchical elected-lead team: one lead runs a coordination pass (plan/assign/strategize) over the team backlog, then workers execute under it. The in-team-coordinator pole between flat-distributed and the Queen.
 
 - **Extends:** `base`
 - **Version:** 0.1.0
 - **Work item:** `feature` (id prefix `W`)
 - **Dispatch:** concurrency 4
 - **Roles (2):** `lead`, `worker`
-
-### `pot-eval`
-
-Monthly Pot-run evaluation: when the code SHA changed, run one owner-budget-capped SCORED generation of the seeded scenario corpus (whole-Pot runs graded on outcome quality / efficiency / speed by the un-gameable gate) — the acceptance yardstick for whether mug-execution / wave-dispatch / autonomy made the Pot better.
-
-- **Extends:** `base`
-- **Version:** 0.1.0
-- **Work item:** `pot-eval-run` (id prefix `HEV`)
 
 ### `implement`
 
@@ -320,7 +312,7 @@ Auto-implement an eligible captured improvement (kind=bug): reproduce, fix with 
 
 ### `iq-battery`
 
-Monthly IQ-battery benchmark: when the code SHA changed, run one owner-budget-capped generation (solver/judge cups through the governed chokepoint) beside gen-0 in the beekeeper trend — the "is the system improving" yardstick.
+Monthly IQ-battery benchmark: when the code SHA changed, run one owner-budget-capped generation (solver/judge bees through the governed chokepoint) beside gen-0 in the beekeeper trend — the "is the system improving" yardstick.
 
 - **Extends:** `base`
 - **Version:** 0.1.0
@@ -381,6 +373,24 @@ Driver/navigator pair: two agents on one task — a driver writes, a navigator c
 - **Work item:** `feature` (id prefix `W`)
 - **Dispatch:** concurrency 4
 - **Roles (2):** `driver`, `navigator`
+
+### `papercup`
+
+Launch one fleet WATCHER (the `papercup` role) — the read-mostly observer split out of the overloaded operator (D-004). It sweeps fleet liveness, the coord substrate, and harness health, and raises alarms via coord:escalate/send. It never acts (no spawn/cancel/mutate) — the Mug steers, the papercup watches.
+
+- **Extends:** `single-agent`
+- **Version:** 0.1.0
+- **Work item:** `task` (id prefix `SENTINEL`)
+- **Spine decider:** `papercup` (maxTurns 40)
+- **Roles (1):** `papercup`
+
+### `pot-eval`
+
+Monthly Pot-run evaluation: when the code SHA changed, run one owner-budget-capped SCORED generation of the seeded scenario corpus (whole-Pot runs graded on outcome quality / efficiency / speed by the un-gameable gate) — the acceptance yardstick for whether mug-execution / wave-dispatch / autonomy made the Pot better.
+
+- **Extends:** `base`
+- **Version:** 0.1.0
+- **Work item:** `hive-eval-run` (id prefix `HEV`)
 
 ### `prompt-ablation`
 
@@ -457,16 +467,6 @@ Scout autonomous-ideation cadence: idle/friction-gated, budgeted ideation cycles
 - **Version:** 0.1.0
 - **Work item:** `ideation-cycle` (id prefix `SCT`)
 
-### `papercup`
-
-Launch one fleet WATCHER (the `papercup` role) — the read-mostly observer split out of the overloaded operator (D-004). It sweeps fleet liveness, the coord substrate, and harness health, and raises alarms via coord:escalate/send. It never acts (no spawn/cancel/mutate) — the Mug steers, the papercup watches.
-
-- **Extends:** `single-agent`
-- **Version:** 0.1.0
-- **Work item:** `task` (id prefix `PAPERCUP`)
-- **Spine decider:** `papercup` (maxTurns 40)
-- **Roles (1):** `papercup`
-
 ### `single-agent`
 
 Abstract parent for single-role run-to-done launches — the shared single-role spine (one decider role + DONE/ESCALATE/IDLE edges + inline planner) plus the governed + durable launch contract. Not directly runnable; extended by implement / scan / merge-resolution / deploy.
@@ -494,7 +494,7 @@ Decide between options via a diverse-lens, confidence-weighted vote: one voter p
 
 ### `work`
 
-A generic (non-coding) Pot — the Mug places research / analysis / deliberation work onto a fleet of cups that produce DELIVERABLES (reports, decisions, documents). "Done" is decided by an LLM judge against a rubric; output lands in the artifacts store; the Mug co-locates work by topic, not file. Repo-less. The non-coding counterpart of the coding `pot`.
+A generic (non-coding) Hive — the Queen places research / analysis / deliberation work onto a fleet of bees that produce DELIVERABLES (reports, decisions, documents). "Done" is decided by an LLM judge against a rubric; output lands in the artifacts store; the Queen co-locates work by topic, not file. Repo-less. The non-coding counterpart of the coding `hive`.
 
 - **Extends:** `coding`
 - **Version:** 0.1.0

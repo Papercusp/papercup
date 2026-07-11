@@ -88,16 +88,21 @@ describe('searchHitStreamUrl', () => {
   });
 });
 
-describe('searchResultResumeTarget (pure — Fork/Resume-button wiring, WI-3882)', () => {
-  it('active claude result → live:true, sessionId from the roster agent', () => {
+describe('searchResultResumeTarget (pure — Fork/Resume-button wiring, WI-3882; active+inactive 2026-07-11)', () => {
+  it('active claude result → live:true, canFork:true, sessionId from the roster agent', () => {
     expect(
       searchResultResumeTarget({ active: rosterAgent({ agent: 'claude', sessionId: 'sid-1', ompThreadId: null }), session: null }),
-    ).toEqual({ sessionId: 'sid-1', live: true });
+    ).toEqual({ sessionId: 'sid-1', live: true, canFork: true });
   });
-  it('inactive omp result → live:false, sessionId from the ended row', () => {
+  it('inactive claude result → live:false, canFork:true (Fork now offered for inactive too)', () => {
+    expect(
+      searchResultResumeTarget({ active: null, session: endedRow({ agent: 'claude', sessionId: 'sid-2' }) }),
+    ).toEqual({ sessionId: 'sid-2', live: false, canFork: true });
+  });
+  it('inactive omp result → live:false, canFork:false (Resume ok, no Fork — omp has no --fork-session)', () => {
     expect(
       searchResultResumeTarget({ active: null, session: endedRow({ agent: 'omp', ompThreadId: 'thread-1' }) }),
-    ).toEqual({ sessionId: 'thread-1', live: false });
+    ).toEqual({ sessionId: 'thread-1', live: false, canFork: false });
   });
   it('codex (active or inactive) → null, never a dead resume/fork button', () => {
     expect(
@@ -107,15 +112,13 @@ describe('searchResultResumeTarget (pure — Fork/Resume-button wiring, WI-3882)
       searchResultResumeTarget({ active: null, session: endedRow({ agent: 'codex', sessionId: 'sid-1' }) }),
     ).toBeNull();
   });
-  it('WI-4009: active omp result → null (fork is claude-only; forking omp live would collide)', () => {
+  it('2026-07-11: active omp result → Resume offered (live:true, canFork:false), NOT null anymore', () => {
+    // Retracted the WI-4009 "active omp → null" rule: a live omp session now gets
+    // a Resume button (no Fork, since --fork-session is claude-only). live:true
+    // tags the Resume collision-warning tooltip.
     expect(
       searchResultResumeTarget({ active: rosterAgent({ agent: 'omp', sessionId: null, ompThreadId: 'thread-1' }), session: null }),
-    ).toBeNull();
-  });
-  it('WI-4009: inactive omp result still resumes fine (no fork flag involved)', () => {
-    expect(
-      searchResultResumeTarget({ active: null, session: endedRow({ agent: 'omp', ompThreadId: 'thread-1' }) }),
-    ).toEqual({ sessionId: 'thread-1', live: false });
+    ).toEqual({ sessionId: 'thread-1', live: true, canFork: false });
   });
   it('neither active nor session → null', () => {
     expect(searchResultResumeTarget({ active: null, session: null })).toBeNull();

@@ -116,6 +116,12 @@ beforeAll(async () => {
   await db.sql.unsafe(USER_TRUST_LIST_DDL); // convert→claim path LEFT-JOINs the trust list (autoPickableWhereSql)
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
   await db.sql.unsafe(readMigration('141-plan-item-claims.sql')).simple();
+  // EI-9455: claimPlanItem's activity-grace steal-guard (claims.ts) reads
+  // harness_shared.agent_activity unconditionally — without this migration every
+  // claim (even the flag-OFF bare-lease path) throws "relation ... does not exist"
+  // and the whole batch comes back { ok:false, error: ... } (see the sibling
+  // claims.integration.test.ts, which already loads this migration for the same reason).
+  await db.sql.unsafe(readMigration('143-agent-activity.sql')).simple();
   await db.sql.unsafe(`
     ALTER TABLE harness_shared.work_items
       ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,

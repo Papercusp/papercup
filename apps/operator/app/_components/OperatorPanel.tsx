@@ -839,7 +839,11 @@ export function OperatorPanel(): ReactElement | null {
           ? { ...raw, auto_dispatch: nextAuto }
           : raw;
         setSuggestions((prev) => {
+<<<<<<< Updated upstream
           const autoDispatchAt = s.auto_dispatch ? Date.now() + AUTO_FIRE_UNDO_MS : undefined;
+=======
+          const autoDispatchAt = s.auto_dispatch ? Date.now() + 10_000 : undefined;
+>>>>>>> Stashed changes
           const idx = prev.findIndex((c) => c.id === s.id);
           if (idx >= 0) {
             // Stable-id collision. Pending cards get their content
@@ -1017,7 +1021,11 @@ export function OperatorPanel(): ReactElement | null {
             ...rest,
             status,
             acceptedAt: status === 'accepted' ? _dispatchedAt : undefined,
+<<<<<<< Updated upstream
             autoDispatchAt: rest.auto_dispatch && status === 'pending' ? Date.now() + AUTO_FIRE_UNDO_MS : undefined,
+=======
+            autoDispatchAt: rest.auto_dispatch && status === 'pending' ? Date.now() + 10_000 : undefined,
+>>>>>>> Stashed changes
             undoCancelled: _undoCancelled,
           };
         }));
@@ -1093,7 +1101,11 @@ export function OperatorPanel(): ReactElement | null {
       const next = prev.map((c) => {
         if (c.status !== 'pending' || !c.auto_dispatch || c.autoDispatchAt) return c;
         touched = true;
+<<<<<<< Updated upstream
         return { ...c, autoDispatchAt: Date.now() + AUTO_FIRE_UNDO_MS };
+=======
+        return { ...c, autoDispatchAt: Date.now() + 10_000 };
+>>>>>>> Stashed changes
       });
       return touched ? next : prev;
     });
@@ -1919,9 +1931,15 @@ export function OperatorPanel(): ReactElement | null {
                             <div className="operator-entry__buttons">
                               {/* Auto-fire countdown: Keep for review turns it into a regular pending card; otherwise the timer fires the same Accept flow. */}
                               {s.status === 'pending' && s.auto_dispatch && (
+<<<<<<< Updated upstream
                                 <Button size="mini" variant="ghost" onClick={() => undoCancelSuggestion(s.id)}>
                                   Keep for review
                                 </Button>
+=======
+                                <button type="button" className="operator-mini-btn operator-mini-btn--ghost" onClick={() => undoCancelSuggestion(s.id)}>
+                                  Keep for review
+                                </button>
+>>>>>>> Stashed changes
                               )}
 
                               {/* High-risk send_directive: gate Accept behind a preview-and-confirm strip. */}

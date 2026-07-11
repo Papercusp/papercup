@@ -139,10 +139,10 @@ describe('AgentInspectorModal (pinned full inspector)', () => {
     expect(screen.queryByTestId('focus-window-btn')).toBeNull();
   });
 
-  it('shows a "Resume in new terminal" button (live:false) that POSTs resumeSessionId to console/launch', async () => {
+  it('shows a "Resume in new terminal" button (fork:false) that POSTs resumeSessionId to console/launch', async () => {
     const fetchSpy = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ status: 'ok' }) });
     vi.stubGlobal('fetch', fetchSpy);
-    renderModal({ resumeTarget: { sessionId: 'sess-abc', live: false } });
+    renderModal({ resumeTarget: { sessionId: 'sess-abc', live: false, canFork: true } });
     const btn = screen.getByTestId('resume-terminal-btn');
     expect(btn.textContent).toContain('Resume in new terminal');
     fireEvent.click(btn);
@@ -153,7 +153,7 @@ describe('AgentInspectorModal (pinned full inspector)', () => {
     // application/json, whose preflight OPTIONS fails SILENTLY in the desktop
     // webkit2gtk build and killed the request before it reached the server.
     expect(fetchSpy.mock.calls[0][1].headers['content-type']).toBe('text/plain');
-    // live:false → resume in place, so fork must be false (never branches).
+    // Resume → resume in place, so fork must be false (never branches).
     expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toEqual({
       resumeSessionId: 'sess-abc',
       fork: false,
@@ -162,16 +162,20 @@ describe('AgentInspectorModal (pinned full inspector)', () => {
     vi.unstubAllGlobals();
   });
 
-  it('shows a "Fork in new terminal" button (live:true) that POSTs fork:true so the still-live original is not collided with', async () => {
+  // Owner ask 2026-07-11: Resume + Fork are two independent buttons, BOTH offered
+  // for active AND inactive sessions. Fork (fork:true) shows only when canFork.
+  it('shows a SEPARATE "Fork in new terminal" button (canFork) that POSTs fork:true', async () => {
     const fetchSpy = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ status: 'ok' }) });
     vi.stubGlobal('fetch', fetchSpy);
-    renderModal({ resumeTarget: { sessionId: 'sess-abc', live: true } });
-    const btn = screen.getByTestId('resume-terminal-btn');
-    expect(btn.textContent).toContain('Fork in new terminal');
-    fireEvent.click(btn);
+    renderModal({ resumeTarget: { sessionId: 'sess-abc', live: true, canFork: true } });
+    // Both buttons present for a live claude session.
+    expect(screen.getByTestId('resume-terminal-btn').textContent).toContain('Resume in new terminal');
+    const fork = screen.getByTestId('fork-terminal-btn');
+    expect(fork.textContent).toContain('Fork in new terminal');
+    fireEvent.click(fork);
     await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
     expect(fetchSpy.mock.calls[0][0]).toBe('/api/agent-mcp/console/launch');
-    // live:true → fork the still-running session (branch), never resume in place.
+    // Fork → branch the session (never resume in place), fork:true.
     expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toEqual({
       resumeSessionId: 'sess-abc',
       fork: true,
@@ -180,25 +184,66 @@ describe('AgentInspectorModal (pinned full inspector)', () => {
     vi.unstubAllGlobals();
   });
 
+  it('offers BOTH Resume and Fork for an INACTIVE session too (retracted "fork only for active")', () => {
+    renderModal({ resumeTarget: { sessionId: 'sess-abc', live: false, canFork: true } });
+    expect(screen.getByTestId('resume-terminal-btn')).toBeTruthy();
+    expect(screen.getByTestId('fork-terminal-btn')).toBeTruthy();
+  });
+
+  it('hides ONLY the Fork button (keeps Resume) when the source cannot be forked (omp — canFork:false)', () => {
+    renderModal({ resumeTarget: { sessionId: 'sess-omp', live: true, canFork: false } });
+    expect(screen.getByTestId('resume-terminal-btn')).toBeTruthy();
+    // omp has no --fork-session → no Fork button, but Resume (-r) still offered.
+    expect(screen.queryByTestId('fork-terminal-btn')).toBeNull();
+  });
+
+  it('warns on the Resume button (tooltip) when the source is still LIVE — resuming in place collides', () => {
+    renderModal({ resumeTarget: { sessionId: 'sess-abc', live: true, canFork: true } });
+    const title = screen.getByTestId('resume-terminal-btn').getAttribute('title') ?? '';
+    expect(title.toLowerCase()).toContain('collide');
+    // An ended source has no collision warning.
+    cleanup();
+    renderModal({ resumeTarget: { sessionId: 'sess-abc', live: false, canFork: true } });
+    expect(screen.getByTestId('resume-terminal-btn').getAttribute('title')).toBeNull();
+  });
+
   it('surfaces a "resume failed" state + the server error as the button tooltip when the launch POST fails', async () => {
     const fetchSpy = vi.fn().mockResolvedValue({
       ok: false,
       status: 400,
-      json: () => Promise.resolve({ status: 'error', error: 'cannot fork a omp session' }),
+      json: () => Promise.resolve({ status: 'error', error: 'no conversation found' }),
     });
     vi.stubGlobal('fetch', fetchSpy);
-    renderModal({ resumeTarget: { sessionId: 'sess-abc', live: false } });
+    renderModal({ resumeTarget: { sessionId: 'sess-abc', live: false, canFork: false } });
     const btn = screen.getByTestId('resume-terminal-btn');
     fireEvent.click(btn);
     await waitFor(() => expect(btn.textContent).toContain('resume failed'));
     // WI-3988/WI-3989: the actual server reason is surfaced (button tooltip),
     // not swallowed into a bare "resume failed".
-    expect(btn.getAttribute('title')).toBe('cannot fork a omp session');
+    expect(btn.getAttribute('title')).toBe('no conversation found');
     vi.unstubAllGlobals();
   });
 
-  it('hides the Resume/Fork button when no resumeTarget is given (never a dead button)', () => {
+  it('surfaces the Fork failure independently on the Fork button (per-action state)', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: () => Promise.resolve({ status: 'error', error: 'fork blew up' }),
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    renderModal({ resumeTarget: { sessionId: 'sess-abc', live: true, canFork: true } });
+    const fork = screen.getByTestId('fork-terminal-btn');
+    fireEvent.click(fork);
+    await waitFor(() => expect(fork.textContent).toContain('fork failed'));
+    expect(fork.getAttribute('title')).toBe('fork blew up');
+    // Resume button stays idle — per-action state, not shared.
+    expect(screen.getByTestId('resume-terminal-btn').textContent).toContain('Resume in new terminal');
+    vi.unstubAllGlobals();
+  });
+
+  it('hides BOTH the Resume and Fork buttons when no resumeTarget is given (never a dead button)', () => {
     renderModal();
     expect(screen.queryByTestId('resume-terminal-btn')).toBeNull();
+    expect(screen.queryByTestId('fork-terminal-btn')).toBeNull();
   });
 });

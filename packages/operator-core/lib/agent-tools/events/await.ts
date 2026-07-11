@@ -30,10 +30,10 @@ export default defineTool({
   description:
     'Register a one-shot WAKE on an event key OR a key PATTERN. When it fires you are re-invoked, so end your turn instead of polling. A pattern (`work-item:done:*`, or the macros `@plan:<slug>` / `@fleet:<slug>`) wakes on the FIRST matching key — one await for "any lane item finished" instead of N.',
   guidance: {
-    when: 'You are blocked on a known event key: a lock grant, plan run finishing, peer answer, deploy/gate landing, or a custom key another tool/agent will emit. To wait on a WHOLE family at once (any work item done, any item in a plan) pass a glob `work-item:done:*` or a macro `@plan:<slug>` / `@fleet:<slug>` instead of one exact key. Before polling, check events:catalog for an awaitable key, register it, then end your turn. HAND-MINTED pair key? Have the completion\'s OWNER declare it first (events:emit { announce:true }) and await the RETURNED key — never re-type a key from a chat message (near-miss drift strands you).',
+    when: 'You are blocked on a known event key: a lock grant, plan run finishing, peer answer, deploy/gate landing, or a custom key another tool/agent will emit (patterns/macros cover whole families — see `event`). HAND-MINTED pair key? Have the completion\'s OWNER declare it first (events:emit { announce:true }) and await the RETURNED key — never re-type a key from a chat message (near-miss drift strands you). ⚠ work-item:unblocked:<id> fires only when a blocker clears — check the item is STILL blocked before awaiting (an already-unblocked target never fires; you\'d get only the timeout wake).',
     notWhen:
       'Ambient interest (use topics:subscribe), sub-minute waits inside one turn, or recurring schedules. Prefer the sugar verbs for common waits: deploy:await, checkpoint:await, work-item:await, service:await-up, git-sync:await, plan-item:await, fleet:await-drained.',
-    chaining: 'events:catalog → events:await { event } (or a sugar verb) → end your turn. Use events:cancel to retract and events:status to inspect active awaits.',
+    chaining: 'events:catalog → events:await { event } (or a sugar verb) → END YOUR TURN → the wake carries the payload → re-register if you need the NEXT occurrence (one-shot: a fired await is gone). events:cancel retracts; events:status inspects.',
     seeAlso: [
       'events:catalog (what CAN I wait on? — the awaitable-key registry; check before polling)',
       'deploy:await / work-item:await / … (named sugar for the common waits — build the key for you)',

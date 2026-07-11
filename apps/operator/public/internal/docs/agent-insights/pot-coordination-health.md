@@ -91,7 +91,10 @@ docs/tool-summaries), and the DRIFT MARKERS (what a big drift looks like).
 * **Model.** Scout generates grounded, systemic, evidence-backed ideas from the
   observation/change-feed corpus, AND spans diverse themes (low duplication, broad coverage of
   the friction surface) rather than converging on one theme.
-* **Method.** Read recent Scout ideas (`scout_ticks`, `routed_ideas`); judge each for grounding
+* **Method.** ACTIVITY GATE first (EI-7624): any `scout_ticks` in the window? None (scout
+  paused / budget frozen) → rate `unknown` with `idle:` evidence (cause + last tick age); if
+  ticks exist only before the window, grade the LATEST batch and state its age. Then read
+  recent Scout ideas (`scout_ticks`, `routed_ideas`); judge each for grounding
   (cites real evidence), systemic value (root-cause not symptom), and novelty. Cluster the last
   batch by theme — a healthy batch spreads; a degraded one converges (e.g. 5 of 8 on one queue
   theme, near-duplicate ideas). 0 ideas with a non-empty corpus AND zero budget spent is
@@ -117,8 +120,11 @@ docs/tool-summaries), and the DRIFT MARKERS (what a big drift looks like).
 
 * **Model.** The Queen starts/pursues the right plans in priority order and does NOT
   auto-materialize plans that are not ready (she does not force-start a draft).
-* **Method.** Look at started plans across member harnesses and the Queen's plan-selection
-  reasoning. Signal is limited when Scout is not routing plans — assess what she does with what
+* **Method.** ACTIVITY GATE first (EI-7624): any Queen wakes / plan-selection decisions in
+  the window (`hive_wake` rows, newly started plans)? None (queen paused / no started hive) →
+  rate `unknown` with `idle:` evidence (cause + last decision age); else grade the LATEST
+  decisions even if they pre-date the window, stating their age. Then look at started plans
+  across member harnesses and the Queen's plan-selection reasoning. Signal is limited when Scout is not routing plans — assess what she does with what
   is available; she should respect plan readiness (draft vs ready) and not auto-start.
 * **Drift markers.** Starts unready/draft plans; ignores a high-priority ready plan; or churns
   on a dying system's plans. Low evidence is `unknown`, not `broken`.
@@ -128,18 +134,25 @@ docs/tool-summaries), and the DRIFT MARKERS (what a big drift looks like).
 * **Model.** When multiple independent items are ready, the Queen places a parallel BATCH
   (`fleet:place_batch`), distributes across bees by affinity (disjoint files/topics), and scopes
   each bee's topic-subscriptions TIGHTLY (its own item + plan topics) to avoid chatter.
-* **Method.** Observe a parallel seed: did she batch-place concurrent bees on disjoint work? Is
-  file/topic affinity overlap minimized? Are per-bee topic subscriptions narrow? Only
-  observable when a parallel-ready frontier exists.
+* **Method.** ACTIVITY GATE first (EI-7624): any placements in the window (`hive_placements`)?
+  None → rate `unknown` with `idle:` evidence (cause + last placement age); a parallel-ready
+  frontier that was never seeded WHILE the queen ran is gradeable (as a miss) — check
+  placements before declaring idle. Then observe a parallel seed: did she batch-place
+  concurrent bees on disjoint work? Is file/topic affinity overlap minimized? Are per-bee
+  topic subscriptions narrow? Only observable when a parallel-ready frontier exists.
 * **Drift markers.** Serializes genuinely-parallel work; places overlapping bees that collide on
-  locks; over-broad topic subscriptions causing chatter. Idle is `unknown`, not `broken`.
+  locks; over-broad topic subscriptions causing chatter. Idle is `unknown` with `idle:`
+  evidence, not `broken`.
 
 ### 6. `bee-execution` — bees complete real, verified work
 
 * **Model.** A bee boots with full MCP tools, claims its item, makes real tool calls, and
   completes a well-scoped, correct, VERIFIED change in one turn (tests run, not diagnosis-only),
   then commits.
-* **Method.** For observable bees: did it boot clean (WaitForMcpServers; tools present — no
+* **Method.** ACTIVITY GATE first (EI-7624): any bee claims/turns in the window? None (hive
+  paused, no placements) → rate `unknown` with `idle:` evidence (cause + last bee-turn age);
+  else grade the LATEST completed bee turns even if they pre-date the window, stating their
+  age. For observable bees: did it boot clean (WaitForMcpServers; tools present — no
   zombie)? Did it make tool calls (a claim with 0 tool calls is the EI-1758 zombie)? Was the
   completion well-scoped + verified (tests run) vs diagnosis-only / observability-only when a
   root-cause fix was scoped? Watch token-budget exhaustion truncating non-trivial fixes.
@@ -152,8 +165,10 @@ docs/tool-summaries), and the DRIFT MARKERS (what a big drift looks like).
 * **Model.** Bees emit specific, root-cause-oriented, quantified, actionable turn-end
   observations (`lane = observation`) — the raw material Scout ideates on — reliably, not
   unevenly.
-* **Method.** Read recent `lane = observation` entries by bee authors; judge
-  specificity/root-cause/quantification. Check emission COVERAGE — every turn, or uneven?
+* **Method.** ACTIVITY GATE first (EI-7624): any active-bee turns in the window? None → rate
+  `unknown` with `idle:` evidence (cause + last observation age); if observations exist but
+  pre-date the window, grade the latest batch and state its age. Then read recent
+  `lane = observation` entries by bee authors; judge specificity/root-cause/quantification. Check emission COVERAGE — every turn, or uneven?
   Emission is prompt-driven, not enforced, so under-emission is a known risk.
 * **Drift markers.** Sparse/absent observations from active bees; vague symptom-only
   observations; no quantification or evidence.
@@ -166,10 +181,12 @@ docs/tool-summaries), and the DRIFT MARKERS (what a big drift looks like).
 * **Method.** Read recent overwatch observations/escalations — specific + self-aware (catching
   stale panels, conflations, over-fires)? Verify the structured scorecard is emitted EVERY turn
   against `pot-coordination-health` (`rubricRef` set, all 15 criteria rated, evidence
-  non-empty on each). A missing scorecard is an owner-#1 violation even if the free-form is
-  good.
+  non-empty on each). Ratings for stages that did not run in the window MUST use the `idle:`
+  evidence convention (see "How to grade" below), never a bare `unknown`. A missing scorecard
+  is an owner-#1 violation even if the free-form is good.
 * **Drift markers.** Free-form only, no structured scorecard (owner #1 violation); a scorecard
-  with missing criteria or empty evidence; stale/echoed observations that contradict live state.
+  with missing criteria or empty evidence; stale/echoed observations that contradict live
+  state; bare `unknown` on a merely-paused stage (the `idle:` convention violated).
 
 ### 9. `watchdog-determinism` — deterministic fires that self-clear
 
@@ -222,9 +239,14 @@ docs/tool-summaries), and the DRIFT MARKERS (what a big drift looks like).
   queen-scout coord+wake channel used, the `mcp-call.mjs` fallback wired into the bee path.
 * **Method.** Check usage counts + recency for key tools (`scout:grade-idea` grade count + last
   use; the queen-scout channel; the bee curl-fallback). A tool with near-zero lifetime use that
-  SHOULD be hot is a gap.
+  SHOULD be hot is a gap. ALSO grade `code:run` ADOPTION: call `dev:code_run_adoption` (of the
+  spawns that COULD batch — a same-tool burst or a fan-out — what percent folded into one
+  `code:run`; returns the fleet adoptionRate + a graded rating). A persistent low rate (the
+  baseline sits near 2%) is a tool-utilization gap, not healthy.
 * **Drift markers.** A capability built but barely invoked (8 grades ever, none recent; an
-  unused coord+wake channel); a fallback not wired into the path that needs it.
+  unused coord+wake channel); a fallback not wired into the path that needs it. `code:run`
+  UNDER-ADOPTED: agents hand-loop the same tool or fan out one-at-a-time instead of folding
+  into one `code:run` (the `dev:code_run_adoption` rate stuck low).
 
 ### 14. `scheduler-usage` — the within-hive scheduler used as designed
 
@@ -240,12 +262,15 @@ to continuously verify the scheduler is USED, not merely built.
   Resolution is deterministic, the plan-item dedup floor holds (ZERO duplicate-plan-item claims),
   and completions flow from pulled work. Model-routing (`model_fit` / per-model capability) is
   DESCOPED behind its own flag (plan D-010) — its absence is NOT a drift.
-* **Method.** Walk the live claim path: are bee claims stamped with a spec `specId@revision`
+* **Method.** ACTIVITY GATE first (EI-7624): any spec-driven hive running / `get_next` claims
+  in the window? None → rate `unknown` with `idle:` evidence (cause + last spec-claim age).
+  Then walk the live claim path: are bee claims stamped with a spec `specId@revision`
   (`get_next` records provenance), and do revisions bump when the Queen re-steers? Are there
   claims that did NOT go through `get_next` (a self-scanned / hand-claimed item — the bypass)?
   Query for duplicate-plan-item claims (two non-terminal claims sharing a `source_plan_item_id` —
   the dedup floor failing). Check pulled items reach completion (claim → working → done) rather
-  than zombie-holding. Signal is limited when no spec-driven hive is running (rate `unknown`).
+  than zombie-holding. Signal is limited when no spec-driven hive is running (rate `unknown`
+  with `idle:`-prefixed evidence — the stage did not run).
   `model_fit` is neutral until its lane ships — do NOT flag its absence.
 * **Drift markers.** Queen micro-dispatching item-by-item instead of issuing/versioning specs;
   bees bypassing the scheduler (self-prioritizing the raw frontier, hand-claiming) instead of
@@ -294,7 +319,13 @@ an empty-evidence rating):
 ```
 
 Rate only what the live evidence supports; an unobservable criterion is `unknown` with the
-reason as evidence. Never invent a rating to fill the scorecard.
+reason as evidence. IDLE CONVENTION (EI-7624): when a criterion's stage did not RUN in the
+assessment window, rate it `unknown` with evidence prefixed `idle:` naming the cause + the
+last-activity age (e.g. `idle: no bee turns in window — hive paused since 07-04; last
+completion 20h ago`) — the staleness calc excludes idle-tagged unknowns, so a paused loop
+never reads as rubric-model drift. When durable artifacts exist but merely pre-date the
+window, grade the MOST RECENT completed activity and state its age instead of rating
+`unknown`. Never invent a rating to fill the scorecard.
 
 ## See also
 

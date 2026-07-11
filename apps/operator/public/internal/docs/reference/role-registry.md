@@ -11,7 +11,7 @@ The built-in agent roles (AGENT_ROLES) joined with their spawn personas. Generat
 
 A **role** is what kind of agent a spawn is. `AGENT_ROLES` is the runtime source of truth for the built-in role ids (tool `roles:` allowlists, `byRole` guidance, quotas); a role's **persona** is its spawn prompt at `libs/papercusp/packages/harness/blueprints/<id>/prompts/<role>.md` (the `base` library is the universal one). Not every role has a persona (operator/oracle are chat surfaces), and many personas are blueprint deciders/helpers that are not themselves `AGENT_ROLES` entries.
 
-Sources: `packages/agent-mcp/src/role-config.ts` (52 built-in roles) + `libs/papercusp/packages/harness/blueprints/*/prompts/*.md` (56 personas).
+Sources: `packages/agent-mcp/src/role-config.ts` (53 built-in roles) + `libs/papercusp/packages/harness/blueprints/*/prompts/*.md` (57 personas).
 
 ## Built-in roles (`AGENT_ROLES`)
 
@@ -71,6 +71,7 @@ These ids appear in tool `roles:` allowlists, `rolesQuota` keys, and `byRole` gu
 | `test-writer` | ✓ | You are the **TEST-WRITER** in the testing phase of an autonomous coding harness. |
 | `monitor` | ✓ | You are the **MONITOR** in the production phase of an autonomous coding harness. |
 | `blender` | — | chat/runtime surface — no spawn persona |
+| `foreign-session` | ✓ | You are a **foreign-session** agent — Papercusp's execution identity for work |
 
 Built-in roles with no persona file (chat/runtime surfaces): `oracle`, `blender`.
 

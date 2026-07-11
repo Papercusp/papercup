@@ -17,11 +17,18 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-const listPresenceMock = vi.fn();
-const sweepMock = vi.fn(async () => 0);
+// vi.mock factories are hoisted above module-level consts — vi.hoisted() is the
+// sanctioned way to share spies with them (a bare `const` here hits the TDZ).
+const { listPresenceMock, sweepMock, tier1Mock, wakeabilityMock, fleetMock } = vi.hoisted(() => ({
+  listPresenceMock: vi.fn(async (..._a: unknown[]) => [] as unknown[]),
+  sweepMock: vi.fn(async (..._a: unknown[]) => 0),
+  tier1Mock: vi.fn(async (..._a: unknown[]) => new Map()),
+  wakeabilityMock: vi.fn(async (..._a: unknown[]) => new Map()),
+  fleetMock: vi.fn(async (..._a: unknown[]) => new Map()),
+}));
 vi.mock('./presence', () => ({
-  listPresence: (...a: unknown[]) => listPresenceMock(...a),
-  sweepStalePresence: (...a: unknown[]) => sweepMock(...a),
+  listPresence: listPresenceMock,
+  sweepStalePresence: sweepMock,
 }));
 vi.mock('./federated-presence', () => ({ listFederatedPresence: vi.fn(async () => []) }));
 vi.mock('../../adv-sessions', () => ({ listRecordedLiveSessions: vi.fn(async () => []) }));
@@ -30,20 +37,17 @@ vi.mock('./recorded-sessions', () => ({
   reconcileRosterSources: (rows: unknown[]) => rows,
   RECORDED_SESSION_SOURCE: 'recorded-session',
 }));
-const tier1Mock = vi.fn(async () => new Map());
 vi.mock('./presence-tier1', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  fetchPresenceTier1: (...a: unknown[]) => tier1Mock(...a),
+  fetchPresenceTier1: tier1Mock,
 }));
-const wakeabilityMock = vi.fn(async () => new Map());
 vi.mock('./presence-wakeability', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  fetchWakeability: (...a: unknown[]) => wakeabilityMock(...a),
+  fetchWakeability: wakeabilityMock,
 }));
-const fleetMock = vi.fn(async () => new Map());
 vi.mock('./presence-fleet', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  fetchPresenceFleet: (...a: unknown[]) => fleetMock(...a),
+  fetchPresenceFleet: fleetMock,
 }));
 vi.mock('../../desktop-window-liveness', () => ({
   gatherOnDesktopSessions: vi.fn(async () => ({ owners: new Set<string>() })),
