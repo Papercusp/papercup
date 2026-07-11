@@ -37,6 +37,7 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { adminClientForHarness } from './admin-pg-cache';
 import { harnessPackageDir } from '../harness-paths';
 import { buildInvokeOnce } from '../harness-invoke-once';
+import { isSidecarEnabledFromEnv } from '../process-supervision/sidecar-spawn-shared';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import {

@@ -38,11 +38,13 @@ const WS = 'default';
 const POT = 'team-pot';
 const REPO = 'acme/widgets';
 
+// Table renamed hive_members -> pot_members, column hive_home_slug -> pot_home_slug
+// by migration 557 (cup-lexicon-full-rename-2026-07-09 P-009).
 const DDL = `
   CREATE SCHEMA IF NOT EXISTS harness_shared;
-  CREATE TABLE IF NOT EXISTS harness_shared.hive_members (
+  CREATE TABLE IF NOT EXISTS harness_shared.pot_members (
     workspace_id text NOT NULL,
-    hive_home_slug text NOT NULL,
+    pot_home_slug text NOT NULL,
     github_user_id bigint NOT NULL,
     github_username text NOT NULL,
     display_name text,
@@ -52,7 +54,7 @@ const DDL = `
     binding_status text NOT NULL DEFAULT 'verified',
     repo_permission text,
     permission_checked_at bigint,
-    PRIMARY KEY (workspace_id, hive_home_slug, github_user_id)
+    PRIMARY KEY (workspace_id, pot_home_slug, github_user_id)
   );
   CREATE TABLE IF NOT EXISTS harness_shared.shared_repo_binding_cache (
     workspace_id text NOT NULL,
@@ -73,8 +75,8 @@ async function bindRepo() {
     VALUES (${WS}, 42, ${REPO}, ${POT}, 'claimed')`;
 }
 async function seedMember(opts: { githubUserId: number; username: string; bindingStatus?: string }) {
-  await db.sql`INSERT INTO harness_shared.hive_members
-    (workspace_id, hive_home_slug, github_user_id, github_username, binding_status)
+  await db.sql`INSERT INTO harness_shared.pot_members
+    (workspace_id, pot_home_slug, github_user_id, github_username, binding_status)
     VALUES (${WS}, ${POT}, ${opts.githubUserId}, ${opts.username}, ${opts.bindingStatus ?? 'verified'})`;
 }
 
@@ -88,7 +90,7 @@ afterAll(async () => {
   await db.cleanup();
 });
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.hive_members, harness_shared.shared_repo_binding_cache`;
+  await db.sql`TRUNCATE harness_shared.pot_members, harness_shared.shared_repo_binding_cache`;
   h.repoPerm.mockReset();
   setFlagOverridesForTest({ [FLAGS.POT_ROLE_TIERS]: true }); // ON for every case except the flag-off test
 });
@@ -185,8 +187,8 @@ describe('resolvePotMemberTier — cache vs live', () => {
     expect(live).toMatchObject({ tier: 'owner', reason: 'github' });
     // Cache was written.
     const row = await db.sql<{ repo_permission: string | null }[]>`
-      SELECT repo_permission FROM harness_shared.hive_members
-       WHERE workspace_id = ${WS} AND hive_home_slug = ${POT} AND github_user_id = 1`;
+      SELECT repo_permission FROM harness_shared.pot_members
+       WHERE workspace_id = ${WS} AND pot_home_slug = ${POT} AND github_user_id = 1`;
     expect(row[0]?.repo_permission).toBe('maintain');
 
     // A non-live read uses the fresh cache — no second GitHub call.

@@ -134,7 +134,7 @@ describe('learning.scout — routed ideas by rail + last tick (P-042)', () => {
 describe('learning.apiary — pre-baseline degrade (P-042)', () => {
   it('returns [{ instances: [] }] when the benchmark read fails (gen-0 baseline is owner-gated)', async () => {
     readApiaryInstanceSummaries.mockRejectedValue(
-      Object.assign(new Error('relation "harness_shared.beekeeper_instances" does not exist'), { code: '42P01' }),
+      Object.assign(new Error('relation "harness_shared.cup_keeper_instances" does not exist'), { code: '42P01' }),
     );
     const rows = (await resolveNamedQueryV2('learning.apiary', {})) as Array<{ instances: unknown[] }>;
     expect(rows).toEqual([{ instances: [] }]);

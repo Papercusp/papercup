@@ -30,6 +30,7 @@ import { spawn } from 'node:child_process';
 import { lstat, readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { projectDirForSlug } from '../../operator-notes';
+import { isSidecarEnabledFromEnv } from '../../process-supervision/sidecar-spawn-shared';
 import { detectContentOffenders, type ContentOffender } from './content-guard';
 import { DEFAULT_CONTENT_DETECTORS, type ContentDetector } from '../../content-lint/registry';
 import {

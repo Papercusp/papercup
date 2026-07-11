@@ -5,6 +5,7 @@ import { HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@papercusp/operator-
 import * as Tabs from '@radix-ui/react-tabs';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import {
+  Activity,
   BookOpen,
   Boxes,
   CalendarClock,
@@ -45,7 +46,7 @@ import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { CATEGORICAL } from '@/app/harness/theme';
 
-const ADV_TAB_IDS = ['overview', 'harnesses', 'health', 'brainstorm', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'git', 'testing', 'plans', 'calendar', 'frames', 'evals'] as const;
+const ADV_TAB_IDS = ['overview', 'harnesses', 'health', 'brainstorm', 'prs', 'insights', 'conversations', 'signals', 'learning', 'settings', 'docs', 'git', 'testing', 'plans', 'calendar', 'frames', 'evals'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 
 /**
@@ -89,6 +90,12 @@ export const ADV_TABS: ReadonlyArray<{
   { id: 'docs', label: 'Docs', icon: BookOpen, accent: CATEGORICAL.blue400.hex, accentRgb: CATEGORICAL.blue400.rgb },
   { id: 'insights', label: 'Insights', icon: TrendingUp, accent: CATEGORICAL.teal500.hex, accentRgb: CATEGORICAL.teal500.rgb },
   { id: 'conversations', label: 'Conversations', icon: MessageCircle, accent: CATEGORICAL.pink500.hex, accentRgb: CATEGORICAL.pink500.rgb },
+  // Signals — the system's self-measurement funnel: observations (raw turn-end
+  // sensor readings) → ideas (ideation proposals + grader feedback) → rubrics &
+  // scorecards (graded evidence + trends). Sits LEFT of Learning (owner ask
+  // 2026-07-10). Workspace-scoped (rubrics/observations/ideas aggregate across
+  // every pot, not one), so it also lives in WORKSPACE_TAB_IDS.
+  { id: 'signals', label: 'Signals', icon: Activity, accent: CATEGORICAL.teal400.hex, accentRgb: CATEGORICAL.teal400.rgb },
   { id: 'learning', label: 'Learning', icon: GraduationCap, accent: CATEGORICAL.emerald400.hex, accentRgb: CATEGORICAL.emerald400.rgb },
   // Evaluation — the impartial-benchmark surface (impartial-benchmark-suite-2026-06-15
   // D-007). Workspace-scoped (aggregates external benchmark runs across the whole
@@ -115,6 +122,9 @@ export const WORKSPACE_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
   // not a single pot — so it stays visible under "All Pots" (system-health-tab).
   'health',
   'conversations',
+  // Signals aggregates workspace-wide rubrics/scorecards, observations, and
+  // ideas (all cross-pot), so it stays visible under "All Pots" like Learning.
+  'signals',
   // Learning aggregates the workspace-wide papercusp-improvement backlog, so it
   // stays visible under "All Pots" (operator-learning-tab-2026-06-09).
   'learning',

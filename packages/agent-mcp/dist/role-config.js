@@ -199,6 +199,28 @@ exports.AGENT_ROLES = [
     //    `blender` is the negative-space scanner successor (was `scout` — never in
     //    this array; its coord identity + loop_id prefixes flipped with SLICE-2).
     'blender',
+    // The FOREIGN-SESSION role — the p2p D-007 SPAWN leg's execution identity for
+    // work claimed from a PEER host (WI-1937, agent-capability-confinement-2026-06-13
+    // follow-on). A remote host's offered work is executed locally under THIS role, not
+    // under the requesting fleet's own role ids, so the P-105 foreign-work sandbox +
+    // the capability envelope (`ROLE_ENVELOPES['foreign-session']`, landed alongside the
+    // launchSession wiring — SHIPS AS DEFAULT-DENY-ALL, D-007/owner-ratified 2026-07-09)
+    // have exactly ONE identity to gate, regardless of what role name the foreign
+    // offer claims for itself. Deliberately a GENUINE core member here rather than a
+    // plugin-namespaced `<plugin>:foreign-session` id: FLEET_ENVELOPE_ROLES
+    // (capability-envelope/policy.ts) is built from AGENT_ROLES minus operator/oracle,
+    // and a plugin-namespaced role is NOT in that set — it would run EXEMPT from the
+    // capability envelope entirely, which is exactly backwards for code we did not
+    // author. Read role-config.ts's FROZEN_OVERLAY_ROLES doc-comment before touching
+    // this array again: AGENT_ROLES membership is sometimes the ONLY thing standing
+    // between a role and code that assumes "unknown role ⇒ no special access" — the
+    // opposite direction to this role's own risk (adding it must NOT accidentally
+    // hand it some OTHER allowlist's default-open behavior). Audited at add-time
+    // (2026-07-09): OPERATOR_CONFIG_WRITE_ROLES / SU_ROLES / SU_WRITE_ROLES /
+    // TESTING_FULL_ACCESS_ROLES do not enumerate "all roles" — each is an explicit,
+    // short allowlist this id is not in, so it inherits none of their grants by
+    // merely existing here.
+    'foreign-session',
 ];
 /**
  * Roles that exist in AGENT_ROLES but must NEVER be applied as a gym variant

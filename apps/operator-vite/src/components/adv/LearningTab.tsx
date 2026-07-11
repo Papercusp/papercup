@@ -39,7 +39,7 @@
  * shared app tokens (--fg/--accent/…), matching AdvShell + AdvConversationsTab.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useQueryState, parseAsStringEnum, parseAsBoolean, parseAsString } from 'nuqs';
+import { useQueryState, useQueryStates, parseAsStringEnum, parseAsBoolean, parseAsString } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { GraduationCap, RefreshCw, ShieldCheck, UserRound, CheckCircle2, Dumbbell, Sparkles, XCircle, Clock, HelpCircle, Gauge, BookOpen, ArrowUpRight, ArrowUp, ArrowDown, Minus, Activity, Repeat2, Hourglass, Radar, Brain, Star, MessageSquarePlus, MessageSquareText, Send } from 'lucide-react';
 import type { ImprovementDigest, ScoredItem } from '@papercusp/operator-core/lib/harness/improvements/digest';
@@ -267,16 +267,6 @@ export default function LearningTab() {
           <button
             type="button"
             role="tab"
-            aria-selected={lview === 'scout'}
-            className={`pc-learning__subtab${lview === 'scout' ? ' is-active' : ''}`}
-            onClick={() => void setLview('scout')}
-          >
-            <Radar size={13} aria-hidden />
-            <span>{t('scout')}<em>idea radar</em></span>
-          </button>
-          <button
-            type="button"
-            role="tab"
             aria-selected={lview === 'throughput'}
             className={`pc-learning__subtab${lview === 'throughput' ? ' is-active' : ''}`}
             onClick={() => void setLview('throughput')}
@@ -361,7 +351,10 @@ export default function LearningTab() {
       ) : view === 'benchmark' ? (
         <ApiaryView />
       ) : view === 'scout' ? (
-        <ScoutView />
+        // Ideation (routed ideas + idea grading) MOVED to the Signals tab (owner
+        // ask 2026-07-10 — one home, no duplication). A stale ?lview=scout
+        // deep-link lands here on a pointer instead of a second copy.
+        <ScoutMovedCard />
       ) : view === 'throughput' ? (
         <ThroughputView />
       ) : view === 'knowledge' ? (
@@ -1416,7 +1409,43 @@ function ThroughputView() {
   );
 }
 
-function ScoutView() {
+/** Cross-link shown where the Learning "Scout" sub-view used to render. Ideation
+ *  (routed ideas + idea grading) now lives in the Signals tab, so Learning
+ *  points there rather than duplicating it (owner ask 2026-07-10, no-dup). */
+function ScoutMovedCard() {
+  const [, setNav] = useQueryStates({ tab: parseAsString, sig: parseAsString });
+  return (
+    <section className="pc-learning__section">
+      <div className="pc-learning__empty pc-learning__empty--card">
+        <Radar size={20} aria-hidden />
+        <strong>Ideas &amp; idea grading moved to the Signals tab</strong>
+        <span>
+          Scout’s routed ideas and the 1–5 idea grading now live in <strong>Signals › Ideas</strong>,
+          next to observations and rubrics &amp; scorecards — one home for the ideation funnel, so it
+          isn’t duplicated across two tabs.
+        </span>
+        <button
+          type="button"
+          onClick={() => void setNav({ tab: 'signals', sig: 'ideas' })}
+          style={{
+            marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 6,
+            font: 'inherit', fontSize: 12, cursor: 'pointer', color: 'var(--fg)',
+            background: 'var(--bg-1)', border: '1px solid var(--accent, #2dd4bf)',
+            borderRadius: 7, padding: '6px 12px',
+          }}
+        >
+          <ArrowUpRight size={13} aria-hidden />
+          Open Signals › Ideas
+        </button>
+      </div>
+    </section>
+  );
+}
+
+// Exported so the Signals tab renders the SAME ideation surface (owner ask
+// 2026-07-10) — one implementation, mounted only in Signals now. Its
+// pc-learning__* classes come from LearningStyles (also exported).
+export function ScoutView() {
   const t = useLexicon();
   const RAIL_META = railMeta(t);
   const sync = useSyncQuery<ScoutSnapshot>({ queryName: 'learning.scout', args: {}, staleTime: 30_000 });
@@ -2165,7 +2194,7 @@ function Stat({ label, value, tone, hint }: { label: string; value: number | str
   );
 }
 
-function LearningStyles() {
+export function LearningStyles() {
   return (
     <style>{`
       .pc-learning { display: flex; flex-direction: column; min-height: 0; padding: 14px 16px 20px; gap: 12px; overflow-y: auto; }

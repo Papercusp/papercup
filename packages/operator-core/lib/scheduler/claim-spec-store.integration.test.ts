@@ -1,5 +1,5 @@
 /**
- * claim-spec-store.integration.test.ts — the per-bee claim-spec store (mig 372 bee_claim_specs)
+ * claim-spec-store.integration.test.ts — the per-bee claim-spec store (mig 372 cup_claim_specs)
  * that makes get_next usable (hybrid-bee-scheduler-work-stealing-2026-06-22 spec-handoff).
  *
  * setClaimSpec validates (validateClaimSpec) + upserts a bee's spec (bumping the revision on
@@ -58,12 +58,19 @@ beforeAll(async () => {
   await db.sql.unsafe(mig('372-bee-claim-specs.sql'));
   await db.sql.unsafe(mig('389-bee-claim-spec-id-only.sql')); // id-pin tripwire column
   await db.sql.unsafe(mig('438-bee-claim-specs-federation.sql'));
+  // P-009 Phase 2 (WI-3954): rename cup_claim_specs (né bee_claim_specs) so this
+  // rig matches the live post-555 schema the store/projection now queries.
+  // Renamed inline (not the full 555 file, whose UNCONDITIONAL beekeeper_* compat
+  // VIEWs target cup_keeper_* tables absent from this claim-spec-only rig → 42P01).
+  // The store's ON CONFLICT (workspace_id, bee_id) is column-based, so a
+  // table-only rename is sufficient (constraint names are untouched, unreferenced).
+  await db.sql.unsafe('ALTER TABLE harness_shared.bee_claim_specs RENAME TO cup_claim_specs');
 }, 180_000);
 afterAll(async () => {
   await db?.cleanup?.();
 });
 
-describe('bee_claim_specs store (mig 372)', () => {
+describe('cup_claim_specs store (mig 372)', () => {
   it('stores a valid spec, returns it, and bumps the revision on re-steer', async () => {
     const r1 = await setClaimSpec({ cupId: 'su-bee-1', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug' }, db.sql);
     expect(r1.ok).toBe(true);
@@ -146,7 +153,7 @@ describe('getClaimSpecHeadsForBees (the bee-runs spec join, P-001)', () => {
     // operator-scope (potSlug null) — no capture (the mig-438 WHEN gate).
     await setClaimSpec({ cupId: 'su-bee-local', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug' }, db.sql);
     expect(
-      await db.sql`SELECT 1 FROM harness_shared.substrate_outbox WHERE table_name='bee_claim_specs' AND key='su-bee-local'`,
+      await db.sql`SELECT 1 FROM harness_shared.substrate_outbox WHERE table_name='cup_claim_specs' AND key='su-bee-local'`,
     ).toHaveLength(0);
     // hive-scoped — one put outbox row keyed by bee_id, tagged with the hive home slug.
     await setClaimSpec(
@@ -154,7 +161,7 @@ describe('getClaimSpecHeadsForBees (the bee-runs spec join, P-001)', () => {
       db.sql,
     );
     const rows = await db.sql<{ op: string; key: string; harness_slug: string }[]>`
-      SELECT op, key, harness_slug FROM harness_shared.substrate_outbox WHERE table_name='bee_claim_specs' AND key='su-bee-fed'`;
+      SELECT op, key, harness_slug FROM harness_shared.substrate_outbox WHERE table_name='cup_claim_specs' AND key='su-bee-fed'`;
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ op: 'put', key: 'su-bee-fed', harness_slug: 'my-hive' });
     // a re-steer (revision bump) of the hive-scoped spec captures again (UPDATE gate).
@@ -163,13 +170,13 @@ describe('getClaimSpecHeadsForBees (the bee-runs spec join, P-001)', () => {
       db.sql,
     );
     expect(
-      (await db.sql`SELECT 1 FROM harness_shared.substrate_outbox WHERE table_name='bee_claim_specs' AND key='su-bee-fed'`).length,
+      (await db.sql`SELECT 1 FROM harness_shared.substrate_outbox WHERE table_name='cup_claim_specs' AND key='su-bee-fed'`).length,
     ).toBeGreaterThanOrEqual(1);
   });
 
 });
 
-describe('L9 (P-058) — tombstone on scope-downgrade (bee_claim_specs re-home)', () => {
+describe('L9 (P-058) — tombstone on scope-downgrade (cup_claim_specs re-home)', () => {
   it('re-homing a spec to a DIFFERENT hive scope federates a TOMBSTONE (del) to the OLD scope + a put to the NEW', async () => {
     await db.sql`DELETE FROM harness_shared.substrate_outbox`;
     await setClaimSpec({ cupId: 'su-rehome', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', potSlug: 'hiveA' }, db.sql);
@@ -177,7 +184,7 @@ describe('L9 (P-058) — tombstone on scope-downgrade (bee_claim_specs re-home)'
     expect(r.ok).toBe(true);
     const ops = await db.sql<{ op: string; harness_slug: string }[]>`
       SELECT op, harness_slug FROM harness_shared.substrate_outbox
-       WHERE table_name='bee_claim_specs' AND key='su-rehome' ORDER BY id`;
+       WHERE table_name='cup_claim_specs' AND key='su-rehome' ORDER BY id`;
     // put(hiveA) from the first author, then the re-home: del(hiveA) = the tombstone
     // to the OLD scope's peers, put(hiveB) = the spec under the NEW scope.
     expect(ops).toEqual([
@@ -187,7 +194,7 @@ describe('L9 (P-058) — tombstone on scope-downgrade (bee_claim_specs re-home)'
     ]);
     // The LOCAL row now lives under hive B, revision preserved-and-bumped.
     const [row] = await db.sql<{ harness_slug: string; revision: number }[]>`
-      SELECT harness_slug, revision FROM harness_shared.bee_claim_specs WHERE bee_id='su-rehome'`;
+      SELECT harness_slug, revision FROM harness_shared.cup_claim_specs WHERE bee_id='su-rehome'`;
     expect(row.harness_slug).toBe('hiveB');
     expect(row.revision).toBe(DEFAULT_CLAIM_SPEC.revision + 1);
     // get_next reads the live row — one spec, under the new scope (no strand).
@@ -200,7 +207,7 @@ describe('L9 (P-058) — tombstone on scope-downgrade (bee_claim_specs re-home)'
     await setClaimSpec({ cupId: 'su-downgrade', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', potSlug: null }, db.sql);
     const ops = await db.sql<{ op: string; harness_slug: string | null }[]>`
       SELECT op, harness_slug FROM harness_shared.substrate_outbox
-       WHERE table_name='bee_claim_specs' AND key='su-downgrade' ORDER BY id`;
+       WHERE table_name='cup_claim_specs' AND key='su-downgrade' ORDER BY id`;
     // put(hiveA), then del(hiveA) tombstone; the re-insert is operator-scope (null
     // harness_slug) so its INSERT never trips the mig-438 WHEN gate → not captured.
     expect(ops).toEqual([
@@ -208,7 +215,7 @@ describe('L9 (P-058) — tombstone on scope-downgrade (bee_claim_specs re-home)'
       { op: 'del', harness_slug: 'hiveA' },
     ]);
     const [row] = await db.sql<{ harness_slug: string | null }[]>`
-      SELECT harness_slug FROM harness_shared.bee_claim_specs WHERE bee_id='su-downgrade'`;
+      SELECT harness_slug FROM harness_shared.cup_claim_specs WHERE bee_id='su-downgrade'`;
     expect(row.harness_slug).toBeNull();
   });
 
@@ -218,7 +225,7 @@ describe('L9 (P-058) — tombstone on scope-downgrade (bee_claim_specs re-home)'
     await setClaimSpec({ cupId: 'su-samescope', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', potSlug: 'hiveA' }, db.sql);
     const ops = await db.sql<{ op: string }[]>`
       SELECT op FROM harness_shared.substrate_outbox
-       WHERE table_name='bee_claim_specs' AND key='su-samescope' ORDER BY id`;
+       WHERE table_name='cup_claim_specs' AND key='su-samescope' ORDER BY id`;
     expect(ops.map((o) => o.op)).toEqual(['put', 'put']); // no 'del' — no re-home
   });
 });
@@ -247,7 +254,7 @@ describe('WI-1564 (LIVE-1 D5) — write+read+capture agree on the workspace part
 
     // ROW under the workspace partition (not 'default').
     const rows = await db.sql<{ workspace_id: string; harness_slug: string }[]>`
-      SELECT workspace_id, harness_slug FROM harness_shared.bee_claim_specs WHERE bee_id = 'wi1564-fed'`;
+      SELECT workspace_id, harness_slug FROM harness_shared.cup_claim_specs WHERE bee_id = 'wi1564-fed'`;
     expect(rows).toEqual([{ workspace_id: WS, harness_slug: HIVE }]);
 
     // READ agrees: the same workspace sees the spec; the 'default' partition
@@ -261,7 +268,7 @@ describe('WI-1564 (LIVE-1 D5) — write+read+capture agree on the workspace part
     // drain actually serves. Under ('default', HIVE) it stranded forever (D5).
     const outbox = await db.sql<{ workspace_id: string; harness_slug: string; op: string }[]>`
       SELECT workspace_id, harness_slug, op FROM harness_shared.substrate_outbox
-       WHERE table_name = 'bee_claim_specs' AND key = 'wi1564-fed'`;
+       WHERE table_name = 'cup_claim_specs' AND key = 'wi1564-fed'`;
     expect(outbox).toEqual([{ workspace_id: WS, harness_slug: HIVE, op: 'put' }]);
   });
 
@@ -296,10 +303,10 @@ describe('M6 (P-055) — federated claim-spec steer-tier authz gate (bee-claim-s
       resolveCommsTier: async () => ({ tier, githubUserId: 4242 }),
     });
   const applied = async (cupId: string) =>
-    (await db.sql`SELECT 1 FROM harness_shared.bee_claim_specs WHERE workspace_id='default' AND bee_id=${cupId}`).length > 0;
+    (await db.sql`SELECT 1 FROM harness_shared.cup_claim_specs WHERE workspace_id='default' AND bee_id=${cupId}`).length > 0;
 
   beforeEach(async () => {
-    await db.sql`DELETE FROM harness_shared.bee_claim_specs WHERE bee_id LIKE 'm6-%'`;
+    await db.sql`DELETE FROM harness_shared.cup_claim_specs WHERE bee_id LIKE 'm6-%'`;
   });
 
   it('a REMOTE spec from a BELOW-steer author (observe/message/wake) is NOT applied', async () => {

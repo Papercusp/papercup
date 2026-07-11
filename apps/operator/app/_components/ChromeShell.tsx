@@ -236,10 +236,10 @@ export default function ChromeShell() {
           {testingFlag ? (
             <RouteLink href="/installed/plugins" {...navLinkProps('/installed/plugins')}>Plugins</RouteLink>
           ) : null}
-          {/* Rubrics — grading rollup + scorecard drill-down (/rubrics, owner ask
-              2026-07-10: "I can't find the rubric tab" — the /fleet-status-style
-              URL-only convention failed discoverability, so this one is linked). */}
-          <RouteLink href="/rubrics" {...navLinkProps('/rubrics')}>Rubrics</RouteLink>
+          {/* Rubrics moved OFF the top navbar into the /adv "Signals" tab (owner
+              ask 2026-07-10): the navbar link pointed at /rubrics, a route the
+              live Vite operator never registered, so it errored. Rubrics &
+              scorecards now live in Signals → Rubrics & Scorecards (AdvShell). */}
           <RouteLink href="/support" {...navLinkProps('/support')}>Support</RouteLink>
           <RouteLink href="/settings/operator" {...navLinkProps('/settings/operator')}>Settings</RouteLink>
           {/* Admin link intentionally NOT rendered — reachable only by URL /admin */}

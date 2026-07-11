@@ -268,3 +268,16 @@ Legend: 🟢 green-with-evidence · 🔴 open → mapped to an item of THIS plan
 9. **Open, unresolved as of this synthesis**: the `p2p-live-federation-crack-2026-07-10` (P-002/P-003) and `p2p-git-live-activation-2026-07-09` (git-lane, WI-3487) lanes are running **two different live diagnoses on the SAME tower↔iMac rig** at the same time — one says "iMac hive membership absent," the other says "iMac already fixed, tower-side drain wedge is sole blocker." This synthesis does **not** resolve that discrepancy (no rig access, per this item's scope) — it is flagged here + in "current precise blocker" above so the P-002/P-003 owners reconcile before duplicating diagnosis work. Whoever lands the real fix should update this row directly with which diagnosis was correct.
 
 _History: pre-2026-07-03 content (the 06-19/20 synthesis) lives in git history of this file. The 2026-07-03 synthesis (rows 1-23, post-min-bar verdicts, discrepancies 1-6) is itself now historical on the live cross-machine rows — see the 2026-07-10 update at the top of this file for the current gate._
+
+---
+
+## v1 scope — additive features tracked (NOT release-gating)
+
+Features the owner has scoped INTO the shared-pot P2P v1 release as **additive, dark-by-default**
+capabilities. These do **NOT** gate the GO/NO-GO above — the release can ship with any of them still
+in progress (they are off by default and touch no existing behavior until flipped on). Listed here so
+the v1 release plan tracks them and the fleet picks them up.
+
+| Feature | Status | Plan / driver |
+|---|---|---|
+| **Cross-machine mem0 memory federation** | 🔨 **planned, not built** — 9-item plan active, unclaimed | Federate mem0 memory *content* cross-machine the SAME way standing facts already do (agent-facts **F1-1**, `federated-scout-gym-learning-2026-07-02`): an opt-in `shareable` flag on a memory + a `p2p_memories` peer-log projection, capture-triggered for `shareable=true` rows ONLY, gated on **pot visibility + member admission so private pots never leak**, **DARK-BY-DEFAULT**. Additive — mirrors the existing pattern, not a rewrite. Plan: **`mem0-cross-machine-federation-2026-07-10`** (9 items P-001..P-009, 3 phases: schema+capture → receive-side projection → privacy tests + live cross-machine witness). Fleet-pickup driver: **WI-3985**. `[owner:Avi 2026-07-10]` |

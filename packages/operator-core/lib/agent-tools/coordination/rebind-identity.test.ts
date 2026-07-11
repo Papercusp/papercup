@@ -91,10 +91,10 @@ function fakeSql(opts: FakeOpts = {}) {
     if (text.includes('UPDATE harness_shared.agent_fleets')) {
       return Promise.resolve((opts.leaderSlugs ?? []).map((slug) => ({ slug })));
     }
-    if (text.includes('DELETE FROM harness_shared.bee_claim_specs')) {
+    if (text.includes('DELETE FROM harness_shared.cup_claim_specs')) {
       return Promise.resolve(rows(opts.claimSpecDrop, { bee_id: FROM }));
     }
-    if (text.includes('UPDATE harness_shared.bee_claim_specs')) {
+    if (text.includes('UPDATE harness_shared.cup_claim_specs')) {
       return Promise.resolve(rows(opts.claimSpecMove, { bee_id: TO }));
     }
     if (text.includes('SELECT id, workspace_id, event_key FROM harness_shared.event_awaits')) {

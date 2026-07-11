@@ -11,15 +11,18 @@ import type { HiveStatusBeacon } from '../hive-beacon';
 import { captureBeaconSnapshot, listBeaconHistory } from './beacon-history-pg';
 
 // Mirrors migration 236 (minus the psql directives + role grants the test DB lacks).
+// Table renamed cross_hive_beacon_history -> cross_pot_beacon_history by migration 557
+// (cup-lexicon-full-rename-2026-07-09 P-009); hive_id/hive_pubkey columns deliberately
+// left as-is (557 renamed the table but not these columns — see WI-3953's checkpoint).
 const BEACON_HISTORY_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.cross_hive_beacon_history (
+  CREATE TABLE IF NOT EXISTS harness_shared.cross_pot_beacon_history (
     id           uuid        NOT NULL DEFAULT gen_random_uuid(),
     hive_id      text        NOT NULL,
     hive_pubkey  text,
     beacon       jsonb       NOT NULL,
     captured_at  timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT cross_hive_beacon_history_pkey PRIMARY KEY (id),
-    CONSTRAINT cross_hive_beacon_history_hive_id_nonempty CHECK (hive_id <> ''))`;
+    CONSTRAINT cross_pot_beacon_history_pkey PRIMARY KEY (id),
+    CONSTRAINT cross_pot_beacon_history_hive_id_nonempty CHECK (hive_id <> ''))`;
 
 let db: FreshPgDb;
 
@@ -31,7 +34,7 @@ afterAll(async () => {
   await db?.cleanup();
 });
 beforeEach(async () => {
-  await db.sql`DELETE FROM harness_shared.cross_hive_beacon_history`;
+  await db.sql`DELETE FROM harness_shared.cross_pot_beacon_history`;
 });
 
 function beacon(over: Partial<HiveStatusBeacon> = {}): HiveStatusBeacon {
@@ -51,13 +54,13 @@ describe('captureBeaconSnapshot → listBeaconHistory', () => {
     // Pin single-encoding: the column must hold a jsonb OBJECT, not a
     // double-encoded JSON string (the lanes-jsonb bug class).
     const [t] = await db.sql`
-      SELECT jsonb_typeof(beacon) AS t FROM harness_shared.cross_hive_beacon_history LIMIT 1`;
+      SELECT jsonb_typeof(beacon) AS t FROM harness_shared.cross_pot_beacon_history LIMIT 1`;
     expect((t as { t: string }).t).toBe('object');
   });
 
   it('lists newest-first (the dossier reads the evolution backwards)', async () => {
     await captureBeaconSnapshot('hid-1', 'pk-1', beacon({ liveAgents: 1 }), db.sql);
-    await db.sql`UPDATE harness_shared.cross_hive_beacon_history SET captured_at = now() - interval '1 hour'`;
+    await db.sql`UPDATE harness_shared.cross_pot_beacon_history SET captured_at = now() - interval '1 hour'`;
     await captureBeaconSnapshot('hid-1', 'pk-1', beacon({ liveAgents: 9 }), db.sql);
     const rows = await listBeaconHistory('hid-1', 50, db.sql);
     expect(rows.map((r) => r.beacon.liveAgents)).toEqual([9, 1]);

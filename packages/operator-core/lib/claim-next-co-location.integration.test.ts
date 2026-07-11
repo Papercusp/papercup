@@ -105,13 +105,13 @@ beforeAll(async () => {
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(ENGINEER_ISSUES_MIN_DDL);
   // WI-2971 (SCHEDULER_SPEC_CLAIM, default-ON): the claim_next HANDLER now routes through
-  // getNextForBee (claim-spec-store.ts), which SELECTs/UPSERTs harness_shared.bee_claim_specs
+  // getNextForBee (claim-spec-store.ts), which SELECTs/UPSERTs harness_shared.cup_claim_specs
   // unconditionally even when no spec was ever set — this hand-built rig otherwise 42703s
-  // ("relation bee_claim_specs does not exist") on every handlerClaim() call. Minimal
+  // ("relation cup_claim_specs does not exist") on every handlerClaim() call. Minimal
   // (mig 372 + 389 id_only + 438 harness_slug) shape, no federation triggers (this test
   // never sets harness_slug, so the CDC capture path is never exercised).
   await db.sql.unsafe(`
-    CREATE TABLE IF NOT EXISTS harness_shared.bee_claim_specs (
+    CREATE TABLE IF NOT EXISTS harness_shared.cup_claim_specs (
       workspace_id text        NOT NULL DEFAULT 'default',
       bee_id       text        NOT NULL,
       spec         jsonb       NOT NULL,

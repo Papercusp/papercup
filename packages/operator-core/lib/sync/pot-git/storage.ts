@@ -29,7 +29,7 @@
 import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { mkdir, access } from 'node:fs/promises';
+import { mkdir, access, rm } from 'node:fs/promises';
 
 /** The run-git seam (matches harness/git-sync/run-git-sync.ts): spawn `git
  *  <args>` in `cwd`, never throw, return the exit code + captured streams. */
@@ -131,13 +131,32 @@ export async function pathExists(p: string): Promise<boolean> {
  * if init genuinely fails (disk / permissions) — a fresh init on an existing
  * bare repo is a no-op git handles cleanly.
  */
+/** Ensure a bare repo exists at (potHomeSlug, repoKey), creating it if absent.
+ *
+ * REUSE-BY-DESIGN: when a bare repo already exists at this path, it is
+ * returned AS-IS — including every namespaced ref left over from prior runs.
+ * This is deliberate (repos are meant to persist across ticks for a given
+ * hive/repo pair), but it means a caller that hardcodes a LITERAL `repoKey`
+ * and re-runs against the same `potHomeSlug` (common in tests/drills against
+ * an "existing" throwaway hive) will silently REUSE the same repo + its
+ * leftover refs across runs — no error, just stale history bleeding into a
+ * "fresh run" assumption (bit hive-git-drill.sh's LEG D this way — fixed
+ * there via a unique `$$`-suffixed repoKey). Two ways to get isolation:
+ *   1. Key uniquely per run (e.g. suffix `repoKey` with a pid/uuid), or
+ *   2. Pass `fresh: true` to wipe + reinit unconditionally.
+ */
 export async function ensurePotGitRepo(
   potHomeSlug: string,
   repoKey: string,
   runGit: RunGit = defaultRunGit,
+  opts: { fresh?: boolean } = {},
 ): Promise<string> {
   const repoPath = hiveGitRepoPath(potHomeSlug, repoKey);
-  if (await pathExists(join(repoPath, 'HEAD'))) return repoPath; // already a bare repo
+  if (opts.fresh) {
+    await rm(repoPath, { recursive: true, force: true });
+  } else if (await pathExists(join(repoPath, 'HEAD'))) {
+    return repoPath; // already a bare repo — reused as-is, see doc-comment above
+  }
   await mkdir(repoPath, { recursive: true });
   const r = await runGit(['init', '--bare', '-q', repoPath], potGitRoot());
   if (r.code !== 0) throw new Error(`pot-git: init --bare failed for ${repoPath}: ${r.stderr.trim()}`);

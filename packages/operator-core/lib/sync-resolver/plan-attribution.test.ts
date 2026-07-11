@@ -15,7 +15,7 @@ function fakeSql(tables: {
 }): Sql {
   const unsafe = async (query: string) => {
     if (query.includes('plan_revisions')) return tables.revisions ?? [];
-    if (query.includes('hive_members')) return tables.members ?? [];
+    if (query.includes('pot_members')) return tables.members ?? [];
     if (query.includes('harness_plan_parts')) return tables.parts ?? [];
     if (query.includes('harness_shared.users')) return tables.users ?? [];
     return [];
@@ -44,7 +44,7 @@ describe('enrichPlanListRows', () => {
     expect(rows[1].lastEditor).toBeNull();
   });
 
-  it('enriches the owner to a verified github member when hive_members has a match', async () => {
+  it('enriches the owner to a verified github member when pot_members has a match', async () => {
     const sql = fakeSql({
       members: [
         { github_user_id: 42, github_username: 'aviynw2', display_name: 'Avi', avatar_url: 'https://a/42.png', device_attestations: [] },

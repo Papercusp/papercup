@@ -24,11 +24,17 @@
  *           (parseOfferPayload) is size-capped + strictly schema-validated and
  *           NEVER throws on hostile input; any downstream LLM triage must treat
  *           the offer text strictly as DATA, never as instructions.
- *   X11   — ACTIVATION is gated on the P-003 claim-path soak. Until it lands the
- *           puller stays DORMANT: evaluatePull short-circuits to a
- *           `puller_inactive` skip. `PULLER_ACTIVATION_LANDED` is the ONE
- *           structural switch P-003 flips (mirrors rollout-tiers.TIER2_PREREQS_
- *           LANDED); `pullerActivationInvariant()` guards the dormancy contract.
+ *   X11   — ACTIVATION was gated on the P-003 claim-path soak (both halves:
+ *           the software soak — standing-puller.claim-path-soak.test.ts, 3000+
+ *           2000 randomized fast-check runs, zero throws — AND a LIVE 2-device
+ *           witness). BOTH landed 2026-07-10 (WI-1936): software soak green
+ *           per WI-1936's own checkpoint; live witness via WI-3546 (state=passed,
+ *           terminal 23:13:49Z — tower↔VM coord/data-merge witnessed BOTH
+ *           directions live, verified by su-0e1a65bd + su-4c5f0 via direct psql
+ *           on both machines). `PULLER_ACTIVATION_LANDED` is the ONE structural
+ *           switch P-003 flips (mirrors rollout-tiers.TIER2_PREREQS_LANDED); it
+ *           is now `true` and the puller is ACTIVE. `pullerActivationInvariant()`
+ *           is the (now largely historical) dormancy-contract guard.
  *
  * PURE module (offer-authorship.ts / claim-authority.ts / rollout-tiers.ts
  * discipline): no PG, no IO, no clock, no keychain. Every world edge the receiver
@@ -71,12 +77,18 @@ import { resolveForeignWorkAdmission, type P2pSettings } from './settings';
 import type { P2pEffectiveTier } from './rollout-tiers';
 
 /* ─────────────────────────────────────────────────────────────────────────
- * X11 — the ONE activation switch. Flip to `true` in P-003 (and only then),
- * once the claim-path soak proves the puller safe to run live. Until then the
- * puller is DORMANT: it can still be exercised in tests / simulation, but
- * evaluatePull refuses to emit a claim/steal for a real run.
+ * X11 — the ONE activation switch. Flipped to `true` 2026-07-10 (WI-1936)
+ * once BOTH gates were confirmed green:
+ *   (a) software claim-path soak — standing-puller.claim-path-soak.test.ts,
+ *       42/42 green, 3000+2000 randomized fast-check runs, zero throws;
+ *   (b) LIVE 2-device witness — WI-3546 (state=passed, terminal 23:13:49Z):
+ *       tower↔VM coord/data-merge witnessed BOTH directions live, one owner
+ *       identity, both device pubkeys admitted, independently verified via
+ *       direct psql on both machines (su-0e1a65bd + su-4c5f0956).
+ * The puller is now ACTIVE: evaluatePull emits real claims/steals for a live
+ * run (no `puller_inactive` short-circuit on the defaulted path).
  * ───────────────────────────────────────────────────────────────────────── */
-export const PULLER_ACTIVATION_LANDED = false;
+export const PULLER_ACTIVATION_LANDED = true;
 
 /* ─────────────────────────────────────────────────────────────────────────
  * The publisher DESIGNATION stamp (C1→C4) — resolved & signature-verified by
@@ -509,6 +521,15 @@ export function evaluatePull(input: PullEvaluationInput): PullDecision {
  * Recurrence guard for the X11 dormancy contract (called by the test; cheap
  * enough to assert at boot). Returns the list of VIOLATED invariants (empty =
  * healthy). Mirrors rollout-tiers.rolloutTiersInvariant.
+ *
+ * X11 LANDED 2026-07-10 (WI-1936, PULLER_ACTIVATION_LANDED now `true`): the
+ * real call site (the default-arg `pullerActivationInvariant()`) always
+ * resolves `activationLanded` to the current (now-true) module constant, so
+ * its `!activationLanded` branch below no longer fires there — the dormancy
+ * contract it encodes only ever applied to the pre-landing world. The branch
+ * is kept (not deleted) purely so a caller who explicitly passes `false` (a
+ * hypothetical "what if it were still dormant" check) still gets a correctly
+ * worded violation rather than a silently-vacuous pass.
  * ───────────────────────────────────────────────────────────────────────── */
 export function pullerActivationInvariant(activationLanded = PULLER_ACTIVATION_LANDED): string[] {
   const violations: string[] = [];

@@ -26,6 +26,12 @@ vi.mock('nuqs', () => ({
     const setter = (nuqsSetters[key] ??= vi.fn((v: unknown) => { nuqsState[key] = v; }));
     return [nuqsState[key], setter];
   },
+  // ScoutMovedCard's cross-link writes tab+sig atomically via useQueryStates.
+  useQueryStates: (defs: Record<string, unknown>) => {
+    const setter = vi.fn((patch: Record<string, unknown>) => { Object.assign(nuqsState, patch); });
+    const values = Object.fromEntries(Object.keys(defs).map((k) => [k, nuqsState[k]]));
+    return [values, setter];
+  },
   parseAsStringEnum: () => ({ withDefault: () => ({}) }),
   parseAsBoolean: { withDefault: () => ({}) },
   parseAsString: { withDefault: () => ({}) },
@@ -201,7 +207,7 @@ vi.mock('@papercusp/sync', () => ({
 // flag hook so assertions pin the ROUTED KEY, not a pack word (restore-pot-lexicon P-006).
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
-import LearningTab from './LearningTab';
+import LearningTab, { ScoutView } from './LearningTab';
 
 beforeEach(() => {
   nuqsState.lview = 'improvements';
@@ -249,10 +255,10 @@ describe('LearningTab — Improvements view (default)', () => {
     expect(screen.getByRole('tab', { name: /Improvements/ })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Gym/ })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Benchmark/ })).toBeTruthy();
-    // tab label pack-routes via t('scout'); the identity useLexicon mock echoes
-    // the key, so the tab reads "scout" (live classic/Pot label is "Blender").
-    expect(screen.getByRole('tab', { name: /scout/i })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Knowledge/ })).toBeTruthy();
+    // Scout is no longer a Learning sub-tab — the ideation surface moved to the
+    // Signals tab (owner ask 2026-07-10, no-dup), so no scout tab appears here.
+    expect(screen.queryByRole('tab', { name: /scout/i })).toBeNull();
   });
 
   it('renders the how-this-works strip for the improvements pipeline, hidden when toggled off', () => {
@@ -407,13 +413,17 @@ describe('LearningTab — Benchmark view', () => {
   });
 });
 
-describe('LearningTab — Scout view', () => {
+// ScoutView (the ideation surface) MOVED to the Signals tab (owner ask
+// 2026-07-10). It is exported from LearningTab and rendered ONLY in SignalsTab
+// now, so we test it directly here; a stale ?lview=scout deep-link in Learning
+// shows a cross-link card instead of a second copy.
+describe('ScoutView (Signals › Ideas) — routed ideas + tick', () => {
   beforeEach(() => {
     nuqsState.lview = 'scout';
   });
 
   it('renders the scoreboard, the routed-idea ledger rows, and the last-tick chip', () => {
-    render(<LearningTab />);
+    render(<ScoutView />);
     // Scoreboard: totalRouted stat + one Stat per rail (labelled via RAIL_META).
     expect(screen.getAllByText('4').length).toBeGreaterThanOrEqual(1); // totalRouted stat (also the Grade how-strip step number)
     expect(screen.getAllByText('plan draft').length).toBeGreaterThanOrEqual(1); // rail stat label + ledger row rail label
@@ -433,30 +443,28 @@ describe('LearningTab — Scout view', () => {
     expect(tickChip.textContent).toContain('gated · min-interval'); // status + the self-gate that withheld the cycle
   });
 
-  it('renders the scout how-this-works strip (watch → gate → route → grade)', () => {
+  it('shows the "moved to Signals" cross-link where Learning\'s Scout tab used to be (stale ?lview=scout deep-link)', () => {
     render(<LearningTab />);
-    expect(screen.getByText('Watch')).toBeTruthy();
-    expect(screen.getByText('Gate')).toBeTruthy();
-    expect(screen.getByText('Route')).toBeTruthy();
-    expect(screen.getByText('Grade')).toBeTruthy(); // P-007 steering-visibility sentence
+    expect(screen.getByText(/moved to the Signals tab/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Open Signals/i })).toBeTruthy();
   });
 
   it('renders the graceful empty state when nothing has been routed and no tick exists', () => {
     scoutResult = { data: [{ totalRouted: 0, railCounts: [], lastTick: null }], loading: false, fetching: false, error: null, invalidate: vi.fn() };
-    render(<LearningTab />);
+    render(<ScoutView />);
     expect(screen.getByText('scout has not routed ideas yet')).toBeTruthy();
     expect(screen.getByLabelText('scout tick health').textContent).toContain('none yet');
   });
 });
 
-describe('LearningTab — Scout grading (B-07, scout-idea-grading-2026-06-12)', () => {
+describe('ScoutView (Signals › Ideas) — idea grading (B-07, scout-idea-grading-2026-06-12)', () => {
   beforeEach(() => {
     nuqsState.lview = 'scout';
   });
   afterEach(() => vi.unstubAllGlobals());
 
   it('renders the star control on every routed row and the attribution chip on graded rows', () => {
-    render(<LearningTab />);
+    render(<ScoutView />);
     // 5 stars per row × 2 rows — each star is a radio named "Grade N of 5".
     expect(screen.getAllByRole('radio', { name: 'Grade 3 of 5' }).length).toBe(2);
     // idea-2 is Queen-graded ★4 in the fixture (gradedBy:'Queen' is the raw server
@@ -471,7 +479,7 @@ describe('LearningTab — Scout grading (B-07, scout-idea-grading-2026-06-12)', 
   it('writes a star click through the blender:grade-idea proxy optimistically and invalidates', async () => {
     const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ applied: true }) }));
     vi.stubGlobal('fetch', fetchMock);
-    render(<LearningTab />);
+    render(<ScoutView />);
     fireEvent.click(screen.getAllByRole('radio', { name: 'Grade 5 of 5' })[0]); // idea-1's row
     // Optimistic: the owner chip appears before any refetch.
     expect(screen.getByText('★5 · Owner')).toBeTruthy();
@@ -485,7 +493,7 @@ describe('LearningTab — Scout grading (B-07, scout-idea-grading-2026-06-12)', 
   it('rolls back the optimistic grade and surfaces the error when the write fails', async () => {
     const fetchMock = vi.fn(async () => ({ ok: false, status: 404, json: async () => ({}) }));
     vi.stubGlobal('fetch', fetchMock);
-    render(<LearningTab />);
+    render(<ScoutView />);
     fireEvent.click(screen.getAllByRole('radio', { name: 'Grade 5 of 5' })[0]);
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('HTTP 404'));
     expect(screen.queryByText('★5 · Owner')).toBeNull(); // rolled back to ungraded
@@ -495,7 +503,7 @@ describe('LearningTab — Scout grading (B-07, scout-idea-grading-2026-06-12)', 
     const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ applied: true }) }));
     vi.stubGlobal('fetch', fetchMock);
     nuqsState.grade = 'idea-1';
-    render(<LearningTab />);
+    render(<ScoutView />);
     const panel = screen.getByLabelText('Grading note').closest('.pc-learning__gradepanel') as HTMLElement;
     expect(panel).toBeTruthy();
     const save = within(panel).getByRole('button', { name: 'save grade' }) as HTMLButtonElement;
@@ -511,14 +519,14 @@ describe('LearningTab — Scout grading (B-07, scout-idea-grading-2026-06-12)', 
 
   it('renders the lens-weight strip as shares sorted descending, hidden when absent', () => {
     // Default fixture carries no lensWeights → no strip.
-    render(<LearningTab />);
+    render(<ScoutView />);
     expect(screen.queryByLabelText('Lens sampling weights')).toBeNull();
     cleanup();
     scoutResult = {
       data: [{ ...scoutSnapshot, lensWeights: { reframing: 3, analogical: 1 } }],
       loading: false, fetching: false, error: null, invalidate: vi.fn(),
     };
-    render(<LearningTab />);
+    render(<ScoutView />);
     const strip = screen.getByLabelText('Lens sampling weights');
     expect(strip.textContent).toContain('lens weights');
     expect(strip.textContent).toContain('75%');

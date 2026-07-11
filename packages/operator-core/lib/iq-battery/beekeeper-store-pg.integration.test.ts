@@ -51,7 +51,7 @@ beforeAll(async () => {
   await sql.unsafe(`CREATE SCHEMA harness_shared`);
   // FAITHFUL to migration 180 + 201 (the three fractional metrics are numeric post-201).
   await sql.unsafe(`
-    CREATE TABLE harness_shared.beekeeper_instances (
+    CREATE TABLE harness_shared.cup_keeper_instances (
       instance_id TEXT PRIMARY KEY,
       workspace_id TEXT NOT NULL,
       code_sha TEXT NOT NULL,
@@ -62,9 +62,9 @@ beforeAll(async () => {
       UNIQUE (workspace_id, code_sha, genome_id)
     )`);
   await sql.unsafe(`
-    CREATE TABLE harness_shared.beekeeper_runs (
+    CREATE TABLE harness_shared.cup_keeper_runs (
       run_id TEXT PRIMARY KEY,
-      instance_id TEXT NOT NULL REFERENCES harness_shared.beekeeper_instances(instance_id) ON DELETE CASCADE,
+      instance_id TEXT NOT NULL REFERENCES harness_shared.cup_keeper_instances(instance_id) ON DELETE CASCADE,
       case_id TEXT NOT NULL,
       case_variant TEXT NOT NULL,
       case_title TEXT,
@@ -77,8 +77,8 @@ beforeAll(async () => {
       UNIQUE (instance_id, case_id)
     )`);
   await sql.unsafe(`
-    CREATE TABLE harness_shared.beekeeper_scores (
-      run_id TEXT NOT NULL REFERENCES harness_shared.beekeeper_runs(run_id) ON DELETE CASCADE,
+    CREATE TABLE harness_shared.cup_keeper_scores (
+      run_id TEXT NOT NULL REFERENCES harness_shared.cup_keeper_runs(run_id) ON DELETE CASCADE,
       judge_model TEXT NOT NULL,
       rubric_hash TEXT NOT NULL,
       judge_temp REAL,
@@ -106,14 +106,14 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await sql`TRUNCATE harness_shared.beekeeper_instances CASCADE`;
+  await sql`TRUNCATE harness_shared.cup_keeper_instances CASCADE`;
 });
 
 describe('BeekeeperStorePg (PG)', () => {
   it('upsertInstance is idempotent on the instance_id PK — a re-run at the same commit is a no-op', async () => {
     await store.upsertInstance(manifest({ instanceId: 'gen0-shaA', codeSha: 'shaA' }));
     await store.upsertInstance(manifest({ instanceId: 'gen0-shaA', codeSha: 'DIFFERENT' })); // same PK
-    const rows = await sql`SELECT code_sha FROM harness_shared.beekeeper_instances WHERE instance_id = 'gen0-shaA'`;
+    const rows = await sql`SELECT code_sha FROM harness_shared.cup_keeper_instances WHERE instance_id = 'gen0-shaA'`;
     expect(rows).toHaveLength(1); // DO NOTHING — no crash, no dup
     expect(rows[0]!.code_sha).toBe('shaA'); // original preserved
   });
@@ -121,7 +121,7 @@ describe('BeekeeperStorePg (PG)', () => {
   it('two distinct instances sharing (workspace, code_sha) with NULL genome_id BOTH insert (NULLs never match the UNIQUE)', async () => {
     await store.upsertInstance(manifest({ instanceId: 'a', codeSha: 'shaX', genomeId: null }));
     await store.upsertInstance(manifest({ instanceId: 'b', codeSha: 'shaX', genomeId: null }));
-    const n = await sql`SELECT count(*)::int AS c FROM harness_shared.beekeeper_instances WHERE code_sha = 'shaX'`;
+    const n = await sql`SELECT count(*)::int AS c FROM harness_shared.cup_keeper_instances WHERE code_sha = 'shaX'`;
     expect(n[0]!.c).toBe(2); // the UNIQUE(workspace, code_sha, genome) does not block — genome NULLs are distinct
   });
 
@@ -129,12 +129,12 @@ describe('BeekeeperStorePg (PG)', () => {
     await store.upsertInstance(manifest({ instanceId: 'inst', codeSha: 'shaA' }));
     await store.startRun({ runId: 'r1', instanceId: 'inst', caseId: 'c1', caseVariant: 'v', caseTitle: 'T' });
     await store.finishRun('r1', { terminalState: 'green', deterministicSignals: { ok: true }, traceRef: 'tr', elapsedMs: 1234 });
-    let row = (await sql`SELECT terminal_state, elapsed_ms, finished_at FROM harness_shared.beekeeper_runs WHERE run_id='r1'`)[0]!;
+    let row = (await sql`SELECT terminal_state, elapsed_ms, finished_at FROM harness_shared.cup_keeper_runs WHERE run_id='r1'`)[0]!;
     expect(row.terminal_state).toBe('green'); // finishRun populated it
     expect(Number(row.elapsed_ms)).toBe(1234);
 
     await store.startRun({ runId: 'r1', instanceId: 'inst', caseId: 'c1', caseVariant: 'v', caseTitle: 'T' }); // re-run
-    row = (await sql`SELECT terminal_state, elapsed_ms, finished_at FROM harness_shared.beekeeper_runs WHERE run_id='r1'`)[0]!;
+    row = (await sql`SELECT terminal_state, elapsed_ms, finished_at FROM harness_shared.cup_keeper_runs WHERE run_id='r1'`)[0]!;
     expect(row.terminal_state).toBeNull(); // RESET — not the prior 'green'
     expect(row.elapsed_ms).toBeNull();
     expect(row.finished_at).toBeNull();
@@ -145,17 +145,17 @@ describe('BeekeeperStorePg (PG)', () => {
     await store.startRun({ runId: 'r1', instanceId: 'inst', caseId: 'c1', caseVariant: 'v', caseTitle: 'T' });
     // tokens 90.377 is the exact value that broke the INTEGER column pre-201.
     await store.recordScore('r1', score({ rubricHash: 'rh1', composite: 0.4 }), metrics({ tokensPerSolvedTask: 90.377, recallHit: 0.5 }));
-    let s = (await sql`SELECT tokens_per_task, recall_hit, composite FROM harness_shared.beekeeper_scores WHERE run_id='r1' AND rubric_hash='rh1'`)[0]!;
+    let s = (await sql`SELECT tokens_per_task, recall_hit, composite FROM harness_shared.cup_keeper_scores WHERE run_id='r1' AND rubric_hash='rh1'`)[0]!;
     expect(Number(s.tokens_per_task)).toBeCloseTo(90.377, 3); // fractional persisted
     expect(Number(s.recall_hit)).toBeCloseTo(0.5, 5);
     expect(Number(s.composite)).toBeCloseTo(0.4, 5);
 
     await store.recordScore('r1', score({ rubricHash: 'rh1', composite: 0.9 }), metrics({})); // re-judge, same rubric
-    const all = await sql`SELECT composite FROM harness_shared.beekeeper_scores WHERE run_id='r1'`;
+    const all = await sql`SELECT composite FROM harness_shared.cup_keeper_scores WHERE run_id='r1'`;
     expect(all).toHaveLength(1); // overwrite, not a second row
     expect(Number(all[0]!.composite)).toBeCloseTo(0.9, 5);
 
     await store.recordScore('r1', score({ rubricHash: 'rh2', composite: 0.7 }), metrics({})); // different rubric → new row
-    expect(await sql`SELECT 1 FROM harness_shared.beekeeper_scores WHERE run_id='r1'`).toHaveLength(2);
+    expect(await sql`SELECT 1 FROM harness_shared.cup_keeper_scores WHERE run_id='r1'`).toHaveLength(2);
   });
 });

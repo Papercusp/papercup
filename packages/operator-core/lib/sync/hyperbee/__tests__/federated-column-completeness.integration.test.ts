@@ -292,7 +292,7 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     // guard (WI-2233). Tracked as a candidate gap, not silently ignored.
     source: 'sender-local seed-origin tag (gym|scout) — receive-side gym_qd_foreign_elites has no matching column yet; a real but small future gap, not carried today',
   },
-  bee_claim_specs: {
+  cup_claim_specs: {
     // P-016 (mig 438): federated subset is spec/revision/updated_by. updated_at is
     // machine-local. id_only is a DENORMALIZED observability tripwire the projection
     // now recomputes locally from the federated `spec` via isIdOnlySelector (never
@@ -368,7 +368,7 @@ describe('federated CDC tables — every column federates or is documented-local
     // the per-table loop below will still cover it (it iterates CDC_CAPTURED_TABLES).
     // 26 = 17 prior + 9 added since (p2p_fleet_directory/p2p_work_offers already
     // carried their own NOT_FEDERATED coverage when added; agent_facts,
-    // gym_qd_archive, bee_claim_specs, gate_verdicts, p2p_peer_grants, p2p_receipts
+    // gym_qd_archive, cup_claim_specs, gate_verdicts, p2p_peer_grants, p2p_receipts
     // did not — restored here, WI-2233). This count is a TRIPWIRE, not a target:
     // bump it AND add the new table's NOT_FEDERATED/mapper coverage together.
     expect(CDC_CAPTURED_TABLES.length).toBe(26);

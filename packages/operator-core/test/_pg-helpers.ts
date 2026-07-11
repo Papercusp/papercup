@@ -89,6 +89,26 @@ export const FED_ORDER_KEY_DDL = `
   $fed_apply_wins$;
 `;
 
+/**
+ * ⚠ THIS DOES NOT RUN REAL MIGRATIONS. It provisions a genuinely EMPTY database
+ * (`CREATE SCHEMA harness_shared` + the fed-order-key fns only) — every table your
+ * test needs, YOU hand-roll as inline DDL in the calling `*.integration.test.ts`
+ * file. There is no schema replay to fall back on.
+ *
+ * The footgun (EI-9387): when a table/column rename migration lands, a hand-rolled
+ * DDL fixture using the OLD name still "successfully" creates a table — just the
+ * wrong one — and the test then fails with `relation "harness_shared.<new_name>"
+ * does not exist`, which reads EXACTLY like a genuine migration-replay bug. Two
+ * agents burned a full session (P-009, 2026-07-09) chasing that theory against
+ * migration 557 before finding the fixtures, not the migrations, were stale. If
+ * you're hunting a "does not exist" failure from a test that uses this helper,
+ * check the inline DDL in the test file FIRST — it is never auto-replayed from
+ * `libs/papercusp/libs/db/sql/`.
+ *
+ * Need real migrations replayed instead? Use `createMigratedTestDb` /
+ * `provisionRestartTestDb` (@papercusp/test-config) — those DO apply the actual
+ * migration files.
+ */
 export async function createFreshPgDb(prefix = 'eng'): Promise<FreshPgDb> {
   const db = await createFreshTestDb({ prefix });
 

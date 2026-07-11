@@ -31,6 +31,8 @@ const {
   bootstrapFromPeerMock,
   resolveUsageActorMock,
   unsafeMock,
+  getBootedHarnessMock,
+  openHiveGitDuplexToDeviceMock,
 } = vi.hoisted(() => ({
   loadHarnessRegistryMock: vi.fn<() => Promise<{ projects: RegistryProject[] }>>(async () => ({
     projects: [{ slug: 'shop-hive', hive_slug: 'shop-hive', self_repo: true }],
@@ -40,6 +42,21 @@ const {
   ]),
   hiveGitRepoPathMock: vi.fn((potHomeSlug: string, repoKey: string) => `/repos/${potHomeSlug}/${repoKey}`),
   listNamespacesMock: vi.fn(async (_repoPath: string) => [] as string[]),
+  // DIAL-REGISTRY (WI-3583/P-302): getBootedHarness is dynamically imported
+  // (see git-sync-action.ts's own comment on why) so it must be mocked here
+  // too, or the dynamic import pulls in boot-all.ts's real module graph —
+  // which reaches back into '../../harness-registry' for exports this file's
+  // OWN partial mock of that module doesn't define (deregisterEphemeralForeignHarness
+  // et al), crashing with a confusing "no export is defined on the mock" error
+  // that looks unrelated to this leg. Defaults to "no live swarm join yet" —
+  // the same fail-soft floor the real code falls back to — so the existing
+  // happy-path assertions below (any Duplex, selfDevicePubkey passed through)
+  // stay valid without a real swarm.
+  getBootedHarnessMock: vi.fn((_ws: string, _hive: string) => null as { swarm?: { topicHex?: string } } | null),
+  openHiveGitDuplexToDeviceMock: vi.fn(async (_topic: Buffer, _device: string, _req: unknown) => {
+    const d = { on: (_ev: string, _cb: () => void) => {} };
+    return d;
+  }),
   // Mirrors the REAL bootstrapFromPeer → fetchOverDuplex contract: it always
   // attaches an 'error' listener to the duplex before ever awaiting anything
   // (fetch-transport.ts's own fix for the DIAL-REGISTRY GAP idiom's
@@ -70,6 +87,8 @@ vi.mock('../../sync/pot-git/storage', () => ({
 }));
 vi.mock('../../sync/pot-git/bootstrap', () => ({ bootstrapFromPeer: bootstrapFromPeerMock }));
 vi.mock('../usage-actor', () => ({ resolveUsageActor: resolveUsageActorMock }));
+vi.mock('../../sync/hyperbee/boot-all', () => ({ getBootedHarness: getBootedHarnessMock }));
+vi.mock('../../sync/pot-git/peer-dial-registry', () => ({ openHiveGitDuplexToDevice: openHiveGitDuplexToDeviceMock }));
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, getOrgPg: () => ({ sql: { unsafe: unsafeMock } }) };
@@ -93,6 +112,9 @@ const bootstrapRejection = (err: Error) => async (_repoPath: string, duplex: Fak
   throw err;
 };
 
+const SELF_DEVICE = 'c2VsZi1kZXZpY2UtcHVia2V5LWJhc2U2NC0zMmJ5dGVzISEhISE=';
+const PEER_DEVICE = 'cGVlci1kZXZpY2UtcHVia2V5LWJhc2U2NC0zMmJ5dGVzISE=';
+
 beforeEach(() => {
   loadHarnessRegistryMock.mockClear();
   listHiveMembersMock.mockClear();
@@ -101,11 +123,13 @@ beforeEach(() => {
   bootstrapFromPeerMock.mockClear();
   resolveUsageActorMock.mockClear();
   unsafeMock.mockClear();
+  getBootedHarnessMock.mockClear();
+  openHiveGitDuplexToDeviceMock.mockClear();
   loadHarnessRegistryMock.mockResolvedValue({
     projects: [{ slug: SLUG, hive_slug: SLUG, self_repo: true }],
   });
   listHiveMembersMock.mockResolvedValue([
-    { deviceAttestations: [{ device_pubkey: 'cGVlci1kZXZpY2UtcHVia2V5LWJhc2U2NC0zMmJ5dGVzISE=' }] },
+    { deviceAttestations: [{ device_pubkey: PEER_DEVICE }] },
   ]);
   listNamespacesMock.mockResolvedValue([]);
   bootstrapFromPeerMock.mockImplementation(bootstrapOutcome({
@@ -115,6 +139,8 @@ beforeEach(() => {
     skippedSelf: null,
     stderr: '',
   }));
+  getBootedHarnessMock.mockReturnValue(null); // default: no live swarm join — the fail-soft floor
+  openHiveGitDuplexToDeviceMock.mockImplementation(async () => ({ on: (_ev: string, _cb: () => void) => {} }));
 });
 
 describe('runBootstrapLeg', () => {
@@ -175,6 +201,31 @@ describe('runBootstrapLeg', () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  it('self-gates as a no-op when the only attested member device IS this device (no peer to bootstrap from)', async () => {
+    listHiveMembersMock.mockResolvedValue([{ deviceAttestations: [{ device_pubkey: SELF_DEVICE }] }]);
+    await runBootstrapLeg(SLUG, WS);
+    expect(bootstrapFromPeerMock).not.toHaveBeenCalled();
+    expect(openHiveGitDuplexToDeviceMock).not.toHaveBeenCalled();
+  });
+
+  it('P-302: dials the peer device over the real duplex when a live swarm topic exists (WI-3583 wiring)', async () => {
+    getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
+    await runBootstrapLeg(SLUG, WS);
+    expect(openHiveGitDuplexToDeviceMock).toHaveBeenCalledTimes(1);
+    const [topic, device, req] = openHiveGitDuplexToDeviceMock.mock.calls[0];
+    expect(Buffer.isBuffer(topic) && (topic as Buffer).toString('hex')).toBe('deadbeef');
+    expect(device).toBe(PEER_DEVICE); // dials a peer, never self (WI-1559 squat guard stays in bootstrapFromPeer)
+    expect((req as { repoKey: string }).repoKey).toBe(SLUG);
+    expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the pre-WI-3583 destroyed stub (never dials) when no live swarm topic exists', async () => {
+    getBootedHarnessMock.mockReturnValue(null);
+    await runBootstrapLeg(SLUG, WS);
+    expect(openHiveGitDuplexToDeviceMock).not.toHaveBeenCalled();
+    expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1);
   });
 
   it('never throws and skips the DB patch when bootstrapFromPeer reports ok:false', async () => {

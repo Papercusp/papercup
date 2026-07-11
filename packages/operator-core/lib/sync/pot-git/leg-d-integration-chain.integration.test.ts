@@ -74,6 +74,15 @@ async function initWorktree(dir: string): Promise<void> {
   await git(['config', 'user.email', 't@t'], dir);
 }
 
+/** A commit minted in `src` (a separate worktree/repo) only exists in src's
+ *  own object database — writeNamespaceRef(repoPath, ...) update-refs
+ *  against the pot-git bare repo, which has never seen those objects, so it
+ *  fails with "nonexistent object" unless they're transferred first. Mirrors
+ *  the real publishToPeer() helper in worktree-bridge.integration.test.ts. */
+async function importFromSrc(repoPath: string, srcPath: string, branch: string): Promise<void> {
+  await git(['fetch', '-q', srcPath, `+refs/heads/${branch}:refs/bridge-import/${branch}`], repoPath);
+}
+
 const WS = 'ws-legd';
 const POT_SLUG = 'hive-legd';
 const REPO_KEY = 'repo-legd';
@@ -129,6 +138,7 @@ describe('Leg D chain (P-305): integrator-tick → real PG queue receipt → wor
     await git(['add', '.'], src);
     await git(['commit', '-q', '-m', 'S1'], src);
     const steerSha = await git(['rev-parse', 'HEAD'], src);
+    await importFromSrc(repo, src, 'main');
     await writeNamespaceRef(repo, memberSteer.pubkeyBase64, WORK_REF, steerSha);
 
     // The below-steer member publishes its OWN (unrelated) head — never merged.
@@ -138,8 +148,13 @@ describe('Leg D chain (P-305): integrator-tick → real PG queue receipt → wor
     await git(['add', 'below.txt'], src);
     await git(['commit', '-q', '-m', 'below'], src);
     const belowSha = await git(['rev-parse', 'HEAD'], src);
+    await importFromSrc(repo, src, 'below');
     await writeNamespaceRef(repo, memberBelowSteer.pubkeyBase64, WORK_REF, belowSha);
-    await git(['checkout', '-q', 'main'], src);
+    // `git rm -rq --cached .` above unstaged f.txt but left it on disk, so it's
+    // now untracked in the 'below' branch view; switching back to 'main' (which
+    // tracks f.txt) refuses without -f even though content is identical — force
+    // it, since this is a scratch worktree with nothing worth preserving here.
+    await git(['checkout', '-q', '-f', 'main'], src);
 
     const out = await runIntegratorTick({
       potHomeSlug: POT_SLUG,
@@ -214,6 +229,7 @@ describe('Leg D chain (P-305): integrator-tick → real PG queue receipt → wor
     await git(['add', '.'], src);
     await git(['commit', '-q', '-m', 'S2'], src);
     const steerSha2 = await git(['rev-parse', 'HEAD'], src);
+    await importFromSrc(repo, src, 'main');
     await writeNamespaceRef(repo, memberSteer.pubkeyBase64, WORK_REF, steerSha2);
 
     const out2 = await runIntegratorTick({

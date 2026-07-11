@@ -237,20 +237,35 @@ describe('AdvConversationsTab — Create-style shell', () => {
     }
   });
 
-  // design-pass: the old horizontal tablist is replaced by a persistent left
-  // sidebar rail (Create-style). Guard the new layout primitives and the
-  // removal of the old tablist CSS.
-  it('renders the view switcher in a persistent sidebar rail, not a horizontal tab strip', () => {
+  // The primary communication surfaces form one visual set; the diagnostic raw
+  // stream is subordinate inside the same accessible tablist. No heading/copy is
+  // added to explain the split — hierarchy does that work.
+  it('groups primary views separately from the subordinate diagnostic view', () => {
     render(<AdvConversationsTab />);
     const styles = [...document.querySelectorAll('style')].map((s) => s.textContent).join('\n');
     expect(styles).not.toContain('pc-advconv__viewtabs');
     const navRule = styles.match(/\.pc-advconv__nav\s*{[^}]*}/)?.[0] ?? '';
     expect(navRule).toContain('width:');
-    // The switcher buttons tile two-per-row (flex:1 wrap, mirroring Create's
-    // rail-actions button sizing), not full-width stacked.
+    const tablist = screen.getByRole('tablist', { name: 'Conversations view' });
+    const primary = tablist.querySelector('.pc-advconv__nav-primary');
+    const diagnostic = tablist.querySelector('.pc-advconv__nav-diagnostic');
+    const qa = screen.getByRole('tab', { name: 'Q&A' });
+    const raw = screen.getByRole('tab', { name: 'Raw events' });
+    expect(primary?.contains(qa)).toBe(true);
+    expect(primary?.contains(raw)).toBe(false);
+    expect(diagnostic?.contains(raw)).toBe(true);
     const btnRule = styles.match(/\.pc-advconv__navbtn\s*{[^}]*}/)?.[0] ?? '';
     expect(btnRule).toContain('flex: 1');
-    expect(btnRule).not.toContain('width: 100%');
+    expect(styles).toContain('.pc-advconv__navbtn.is-active::before');
+    expect(styles).toContain('.pc-advconv__navlabel { display: none; }');
+  });
+
+  it('connects the selected tab to one labelled detail panel', () => {
+    render(<AdvConversationsTab />);
+    const selected = screen.getByRole('tab', { name: 'Q&A', selected: true });
+    const panel = screen.getByRole('tabpanel');
+    expect(selected.getAttribute('aria-controls')).toBe(panel.id);
+    expect(panel.getAttribute('aria-labelledby')).toBe(selected.id);
   });
 
   it('opens the Ask composer from the + Ask action', async () => {

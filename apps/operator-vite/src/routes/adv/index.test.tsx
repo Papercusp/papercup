@@ -26,7 +26,7 @@ vi.mock('../../components/adv/AdvShell', () => ({
   // Inlined (not a top-level const) — vi.mock factories are hoisted above
   // module-scope declarations, so referencing an outer `const` throws.
   ADV_TABS: [
-    'overview', 'conversations', 'learning', 'harnesses', 'health', 'frames',
+    'overview', 'conversations', 'signals', 'learning', 'harnesses', 'health', 'frames',
     'evals', 'calendar', 'plans', 'brainstorm', 'prs', 'insights', 'settings',
     'docs', 'git', 'testing',
   ].map((id) => ({ id })),
@@ -34,6 +34,7 @@ vi.mock('../../components/adv/AdvShell', () => ({
 vi.mock('../../components/adv/AdvOverviewTab', () => ({ default: () => <div data-testid="tab-overview" /> }));
 vi.mock('../../components/adv/AdvConversationsTab', () => ({ default: () => <div data-testid="tab-conversations" /> }));
 vi.mock('../../components/adv/LearningTab', () => ({ default: () => <div data-testid="tab-learning" /> }));
+vi.mock('../../components/adv/SignalsTab', () => ({ default: () => <div data-testid="tab-signals" /> }));
 vi.mock('../../components/adv/AdvFramesTab', () => ({ default: () => <div data-testid="tab-frames" /> }));
 vi.mock('../../components/adv/AdvEvalsTab', () => ({ default: () => <div data-testid="tab-evals" /> }));
 vi.mock('../../components/adv/ScheduledCalendarTab', () => ({ default: () => <div data-testid="tab-calendar" /> }));
@@ -63,6 +64,7 @@ describe('/adv tab router', () => {
   const FIRST_CLASS = [
     { tab: 'overview', t: 'Overview', child: 'tab-overview' },
     { tab: 'conversations', t: 'Conversations', child: 'tab-conversations' },
+    { tab: 'signals', t: 'Signals', child: 'tab-signals' },
     { tab: 'learning', t: 'Learning', child: 'tab-learning' },
     { tab: 'harnesses', t: 'Working', child: 'tab-harnesses' },
     { tab: 'health', t: 'Health', child: 'tab-health' },

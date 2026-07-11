@@ -138,7 +138,7 @@ beforeAll(async () => {
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL); // claim path LEFT-JOINs the trust list (autoPickableWhereSql)
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // the dep table the readiness clause reads
-  // The bee_claim_specs store getNextForBee → getClaimSpec reads (absent bee ⇒ DEFAULT_CLAIM_SPEC).
+  // The cup_claim_specs store getNextForBee → getClaimSpec reads (absent bee ⇒ DEFAULT_CLAIM_SPEC).
   // 372 (base table) + 389 (id_only tripwire column) + 438 (harness_slug federation column) —
   // getClaimSpecRecord / setClaimSpec (claim-spec-store.ts) select/upsert both columns, so 372
   // alone leaves this test failing with `column "harness_slug" does not exist` whenever

@@ -30,7 +30,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { resolveAgentIdentity } from '../identity';
+import { resolveAgentIdentity, type ResolveIdentityCtx } from '../identity';
 import { COORD_ROLES } from '../roles';
 import { hardText, LIMITS } from '../../limits';
 import { findUnknownFromItems } from '../promote';
@@ -446,6 +446,145 @@ async function runDestructiveReplan(opts: {
   return { outcome: { ...base, deprecated, deprecateErrors } };
 }
 
+/**
+ * WI-3972: back-fill a plan's `## Promoted` block from features it ALREADY
+ * promoted (rows in `harness_features_consolidated` with this plan as
+ * `source_plan_slug`) when the plan has no `## Promote` policy to derive a
+ * NEW promotion from. Returns `null` (no-op — caller falls through to its
+ * normal `no_promote_policy` failure) when there is nothing on record to
+ * back-fill; otherwise returns the tool result to send straight back to the
+ * caller (a preview in `apply:false`, or the write outcome in `apply:true`).
+ */
+async function backfillPromotedFromConsolidated(opts: {
+  ctx: ResolveIdentityCtx & { log?: (msg: string) => void };
+  slug: string;
+  apply: boolean;
+  planTitle: string;
+  planRaw: string;
+  fail: (error: string, detail?: string) => {
+    content: Array<{ type: 'text'; text: string }>;
+    isError: true;
+  };
+}) {
+  const { ctx, slug, apply, planTitle, planRaw, fail } = opts;
+  type ConsolidatedRow = {
+    feature_id: string;
+    title: string | null;
+    source_plan_item_ids: string[] | null;
+    wave: string | null;
+    feature_order: number | null;
+  };
+  let existingRows: ConsolidatedRow[] = [];
+  try {
+    const { sql } = getOrgPg();
+    const workspaceId = ctx.workspaceId ?? '';
+    existingRows = await sql<ConsolidatedRow[]>`
+      SELECT feature_id, title, source_plan_item_ids, wave, feature_order
+        FROM harness_shared.harness_features_consolidated
+       WHERE workspace_id = ${workspaceId}
+         AND source_plan_slug = ${slug}
+       ORDER BY feature_order NULLS LAST, feature_id
+    `;
+  } catch (e) {
+    ctx.log?.(`[plans:promote] WI-3972 backfill lookup failed: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  }
+  if (existingRows.length === 0) return null;
+
+  const backfillFeatures: PromotedRowFeature[] = existingRows.map((r) => ({
+    title: r.title ?? r.feature_id,
+    from_items: r.source_plan_item_ids ?? undefined,
+    order: r.feature_order ?? undefined,
+    wave: r.wave ?? undefined,
+  }));
+  const backfillIds = existingRows.map((r) => r.feature_id);
+  const backfillRows = buildPromotedRows(backfillFeatures, backfillIds);
+
+  if (!apply) {
+    const newRows = /^## Promoted\b/m.test(planRaw)
+      ? backfillRows.filter((row) => {
+          const m = /^\- \[[ x]\] (F-[A-Z0-9-]+)/.exec(row);
+          return m ? !new RegExp(`\\b${m[1]}\\b`).test(planRaw) : true;
+        })
+      : backfillRows;
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: true,
+            mode: 'preview',
+            backfill: true,
+            plan_title: planTitle,
+            detail:
+              `plan has ${existingRows.length} already-promoted feature(s) on record but no \`## Promote\` policy — ` +
+              `apply:true would BACK-FILL the \`## Promoted\` block from them (no new import, no items marked, no assertions) ` +
+              `rather than promoting anything new.`,
+            would_record: newRows,
+            already_recorded: backfillRows.length - newRows.length,
+          }),
+        },
+      ],
+    };
+  }
+
+  let wrote = false;
+  const writeResult = await withPlanLock<null>(
+    ctx as never,
+    { slug, intent: 'plans:promote → WI-3972 backfill ## Promoted block (no policy, already-promoted features)' },
+    async (current): Promise<{ newBody: string | null; value: null }> => {
+      if (current === null) return { newBody: null, value: null };
+      const newBody = upsertPromotedBlock(current, backfillRows);
+      if (newBody === current) return { newBody: null, value: null };
+      wrote = true;
+      return { newBody: bumpUpdatedDate(newBody), value: null };
+    },
+  );
+  if (writeResult.kind === 'busy') {
+    return fail('plan_locked', `plan ${slug} is locked by another writer — retry the backfill`);
+  }
+  if (!wrote) {
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: true,
+            mode: 'backfill',
+            plan_title: planTitle,
+            backfilled: { feature_ids: [], count: 0 },
+            detail: 'all already-promoted features were already recorded in `## Promoted` — nothing to back-fill.',
+          }),
+        },
+      ],
+    };
+  }
+  await emitPlanEventForCaller(ctx, {
+    planSlug: slug,
+    event: 'promoted',
+    after: {
+      harness_slug: null,
+      feature_count: existingRows.length,
+      feature_ids: backfillIds,
+      mode: 'backfill',
+    },
+    detail: `WI-3972: backfilled \`## Promoted\` block from ${existingRows.length} already-promoted feature(s) (no \`## Promote\` policy on the plan; no new import)`,
+  });
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify({
+          ok: true,
+          mode: 'backfill',
+          plan_title: planTitle,
+          backfilled: { feature_ids: backfillIds, count: backfillIds.length },
+        }),
+      },
+    ],
+  };
+}
+
 export default defineTool({
   name: 'plans:promote',
   profile: 'engineer',
@@ -562,6 +701,35 @@ export default defineTool({
       // fall back to parsing the raw for a not-yet-repopulated row (null column, pre-mig-331 plans).
       const { policy, warnings } = planFile.row.promotePolicy ?? parsePromotePolicy(planFile.parsed.raw);
       if (!policy) {
+        // WI-3972: lint's `missing_promoted_block` finding fires when a plan
+        // ALREADY promoted feature(s) (rows in harness_features_consolidated
+        // carrying this plan as source_plan_slug — e.g. promoted before the
+        // `## Promoted` write-back existed, or the block was dropped/never
+        // written for some other reason) but the body has no `## Promoted`
+        // record. Its suggested remedy is a BARE `plans:promote apply=true`
+        // call — no `features`/`wave`/`all_waves`. Without this branch that
+        // bare call falls straight into the `no_promote_policy` failure below,
+        // a catch-22: the tool's own suggested fix can never succeed, because
+        // deriving NEW features from a policy is not what's needed here — the
+        // features already exist, only the record of them is missing.
+        //
+        // So: when the caller supplied nothing to derive a new promotion from,
+        // treat it as a backfill request first. If this plan already has
+        // promoted features on record, just write/preview the `## Promoted`
+        // block from them (no new import, no items marked, no assertions) —
+        // only fall through to `no_promote_policy` when there is genuinely
+        // nothing to promote AND nothing to backfill.
+        if (!explicitWave && !args.all_waves) {
+          const backfillResult = await backfillPromotedFromConsolidated({
+            ctx,
+            slug: args.slug,
+            apply: args.apply === true,
+            planTitle,
+            planRaw: planFile.parsed.raw,
+            fail,
+          });
+          if (backfillResult) return backfillResult;
+        }
         return fail('no_promote_policy', `plan ${args.slug} has no valid \`## Promote\` policy${warnings.length ? ': ' + warnings.join('; ') : ''}`);
       }
       // The resolver's glob/sql need the target harness — resolve it first.

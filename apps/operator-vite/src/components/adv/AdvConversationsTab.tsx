@@ -365,15 +365,19 @@ function ConvFrame({
   const navBtn = (d: ViewDef) => (
     <Tooltip key={d.id} label={d.desc}>
       <button
+        id={`adv-conversations-tab-${d.id}`}
         type="button"
         role="tab"
         aria-selected={view === d.id}
-        className={`pc-advconv__navbtn${view === d.id ? ' is-active' : ''}`}
+        aria-controls="adv-conversations-panel"
+        className={`pc-advconv__navbtn pc-advconv__navbtn--${d.group}${view === d.id ? ' is-active' : ''}`}
         style={{ ['--nav-accent' as string]: VIEW_ACCENT[d.id] } as React.CSSProperties}
         onClick={() => void setView(d.id)}
       >
-        <d.Icon size={14} aria-hidden />
-        <span>{d.label}</span>
+        <span className="pc-advconv__navicon" aria-hidden>
+          <d.Icon size={14} />
+        </span>
+        <span className="pc-advconv__navlabel">{d.label}</span>
       </button>
     </Tooltip>
   );
@@ -381,18 +385,24 @@ function ConvFrame({
   return (
     <div className="pc-advconv__shell">
       <aside className="pc-plans__rail pc-advconv__nav">
-        {/* One wrapping action group — the + Ask primary plus the view-switcher
-            buttons, each flex:1 so they tile two-per-row exactly like the Create
-            sidebar's rail-actions, not full-width stacked. */}
-        <div className="pc-plans__rail-actions pc-advconv__nav-actions" aria-label="Conversations view">
+        <div className="pc-plans__rail-actions pc-advconv__nav-actions">
           <Tooltip label="Ask the agents a question — opens a question conversation routed to topic subscribers; answers land in Q&A.">
             <button type="button" className="pc-plans__new-plan" onClick={() => setAskOpen(true)} aria-label="Ask the agents">
-              <Plus size={14} aria-hidden /> Ask
+              <span className="pc-advconv__navicon" aria-hidden>
+                <Plus size={14} />
+              </span>
+              <span className="pc-advconv__navlabel">Ask</span>
             </button>
           </Tooltip>
-          {CURATED_VIEW_DEFS.map(navBtn)}
-          <span className="pc-advconv__nav-sep" role="separator" aria-orientation="horizontal" />
-          {RAW_VIEW_DEFS.map(navBtn)}
+          <div className="pc-advconv__nav-switcher" role="tablist" aria-label="Conversations view">
+            <div className="pc-advconv__nav-primary" role="presentation">
+              {CURATED_VIEW_DEFS.map(navBtn)}
+            </div>
+            <div className="pc-advconv__nav-diagnostic" role="presentation">
+              <span className="pc-advconv__nav-sep" role="separator" aria-orientation="horizontal" />
+              {RAW_VIEW_DEFS.map(navBtn)}
+            </div>
+          </div>
         </div>
         {filters != null && <div className="pc-plans__group pc-advconv__navfilters">{filters}</div>}
         {list != null && <div className="pc-advconv__navlist">{list}</div>}
@@ -404,7 +414,14 @@ function ConvFrame({
           return d ? <p className="pc-advconv__nav-hint">{d.desc}</p> : null;
         })()}
       </aside>
-      <main className={`pc-advconv__main${list == null ? ' pc-advconv__main--wide' : ''}`}>{detail}</main>
+      <main
+        id="adv-conversations-panel"
+        role="tabpanel"
+        aria-labelledby={`adv-conversations-tab-${view}`}
+        className={`pc-advconv__main${list == null ? ' pc-advconv__main--wide' : ''}`}
+      >
+        {detail}
+      </main>
       <AskComposer open={askOpen} onOpenChange={setAskOpen} onAsked={() => void setView('threads')} />
     </div>
   );
@@ -2091,7 +2108,7 @@ function MessagesView() {
                 >
                   {m.subject || m.body || <em className="pc-advfeed__nosum">(no subject)</em>}
                 </button>
-                {m.status && <span className="pc-advconv__statepill">{m.status}</span>}
+                {m.status && <span className={`pc-advconv__statepill pc-advconv__statepill--${m.status}`}>{m.status}</span>}
                 <span className="pc-advfeed__rel">{fmtRel(m.created_at)}</span>
               </div>
               {isOpen && hasDetail && (
@@ -2214,60 +2231,135 @@ function AdvConvStyles() {
         min-height: 0;
         display: flex;
         align-items: stretch;
+        background:
+          radial-gradient(circle at 15% 0%, color-mix(in oklab, var(--advconv-accent), transparent 94%), transparent 30%),
+          var(--advconv-bg);
       }
       /* The nav reuses .pc-plans__rail (border-right + column flex + bg) for
          pixel parity with the Create sidebar; only its width is set here. */
       .pc-advconv__nav {
         flex: 0 0 auto;
-        width: clamp(232px, 23vw, 300px);
+        width: clamp(272px, 24vw, 320px);
         min-height: 0;
       }
-      /* The Ask primary + view buttons share one wrapping group (pc-plans__rail-actions
-         from plans.css gives the flex-wrap + 6px gap + padding + border-bottom);
-         we only force equal heights so the Ask button lines up with the tabs. */
       .pc-advconv__nav-actions {
+        display: flex;
+        flex-direction: column;
         align-items: stretch;
+        gap: 8px;
+        padding: 10px;
       }
-      /* Sizing/display lifted verbatim from the Create sidebar's button
-         (pc-plans__plans-btn): flex:1, 8px 12px padding, 12px/700, centered
-         icon+label, 8px radius — only the accent is per-view (--nav-accent). */
+      .pc-advconv__nav-actions .pc-plans__new-plan {
+        flex: 0 0 auto;
+        width: 100%;
+        min-height: 40px;
+        justify-content: flex-start;
+        padding: 6px 8px;
+        border-color: color-mix(in oklab, var(--advconv-accent), transparent 44%);
+        background: linear-gradient(135deg,
+          color-mix(in oklab, var(--advconv-accent), transparent 72%),
+          color-mix(in oklab, var(--advconv-accent), transparent 86%));
+      }
+      .pc-advconv__nav-switcher {
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+        min-width: 0;
+      }
+      .pc-advconv__nav-primary {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px;
+      }
+      .pc-advconv__nav-diagnostic {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 6px;
+        padding-top: 7px;
+        border-top: 1px solid var(--advconv-border);
+      }
       .pc-advconv__navbtn {
         position: relative;
         display: inline-flex;
         align-items: center;
-        justify-content: center;
-        gap: 6px;
+        justify-content: flex-start;
+        gap: 8px;
         flex: 1;
-        padding: 8px 12px;
-        border: 1px solid color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 64%);
-        border-radius: 8px;
-        background: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 90%);
-        color: var(--fg, #e7f7ff);
+        min-width: 0;
+        min-height: 44px;
+        overflow: hidden;
+        padding: 6px 8px;
+        border: 1px solid color-mix(in srgb, var(--advconv-border), transparent 28%);
+        border-radius: 10px;
+        background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 36%);
+        color: var(--fg-dim, #b9d4e8);
         font-size: 12px;
         font-weight: 700;
         letter-spacing: 0;
         cursor: pointer;
-        transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+        transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease;
       }
-      .pc-advconv__navbtn > svg { color: var(--nav-accent, #38bdf8); flex: 0 0 auto; }
+      .pc-advconv__navicon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        flex: 0 0 28px;
+        border-radius: 8px;
+        color: var(--nav-accent, var(--advconv-accent-strong));
+        background: color-mix(in oklab, var(--nav-accent, var(--advconv-accent)), transparent 86%);
+        border: 1px solid color-mix(in oklab, var(--nav-accent, var(--advconv-accent)), transparent 72%);
+      }
+      .pc-advconv__navlabel {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
       .pc-advconv__navbtn:hover {
-        background: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 82%);
-        border-color: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 44%);
+        background: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 90%);
+        border-color: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 58%);
         color: var(--fg, #e7f7ff);
+        transform: translateY(-1px);
       }
       .pc-advconv__navbtn.is-active {
-        background: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 76%);
-        border-color: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 30%);
+        background: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 84%);
+        border-color: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 44%);
         color: var(--fg, #e7f7ff);
         font-weight: 700;
+        box-shadow: 0 8px 20px color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 90%);
       }
-      /* Full-width row break between the curated views and the raw event log —
-         forces "Raw events" onto its own line below the divider. */
+      .pc-advconv__navbtn.is-active::before {
+        content: '';
+        position: absolute;
+        inset: 7px auto 7px 0;
+        width: 3px;
+        border-radius: 0 999px 999px 0;
+        background: var(--nav-accent, #38bdf8);
+      }
+      .pc-advconv__navbtn.is-active .pc-advconv__navicon {
+        background: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 72%);
+        border-color: color-mix(in oklab, var(--nav-accent, #38bdf8), transparent 48%);
+      }
       .pc-advconv__nav-sep {
-        flex-basis: 100%;
-        height: 0;
-        margin: 1px 0;
-        border-top: 1px solid var(--advconv-border);
+        display: none;
+      }
+      .pc-advconv__navbtn--raw {
+        min-height: 36px;
+        color: var(--fg-mute, #7f9bb4);
+        background: transparent;
+        opacity: 0.78;
+      }
+      .pc-advconv__navbtn--raw .pc-advconv__navicon {
+        width: 24px;
+        height: 24px;
+        flex-basis: 24px;
+        border-radius: 7px;
+      }
+      .pc-advconv__navbtn--raw:hover,
+      .pc-advconv__navbtn--raw.is-active {
+        opacity: 1;
       }
       .pc-advconv__navfilters {
         display: flex;
@@ -2294,7 +2386,8 @@ function AdvConvStyles() {
         flex: 1 1 auto;
         min-height: 0;
         overflow-y: auto;
-        padding: 6px 8px 10px;
+        padding: 8px 10px 12px;
+        background: color-mix(in srgb, var(--bg-deeper, #040b14), transparent 35%);
       }
       .pc-advconv__main {
         flex: 1 1 auto;
@@ -2549,6 +2642,9 @@ function AdvConvStyles() {
         background: var(--advconv-panel);
         backdrop-filter: blur(12px);
         padding: 12px;
+        box-shadow:
+          inset 3px 0 0 color-mix(in oklab, var(--advconv-accent), transparent 70%),
+          0 12px 32px rgba(0, 0, 0, 0.12);
       }
       .pc-advconv__railhead {
         display: flex;
@@ -2573,6 +2669,7 @@ function AdvConvStyles() {
         border: 1px solid var(--advconv-border);
       }
       .pc-advconv .pc-coord__row {
+        position: relative;
         display: flex;
         flex-direction: column;
         align-items: stretch;
@@ -2581,16 +2678,27 @@ function AdvConvStyles() {
         border-radius: 8px;
         border-color: color-mix(in srgb, var(--border, rgba(125, 211, 252, 0.15)), transparent 48%);
         background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 38%);
-        transition: background-color 140ms, border-color 140ms;
+        cursor: pointer;
+        transition: background-color 140ms, border-color 140ms, transform 140ms, box-shadow 140ms;
       }
       .pc-advconv .pc-coord__row:hover {
         background: var(--advconv-accent-softer);
         border-color: var(--advconv-border);
+        transform: translateX(2px);
       }
       .pc-advconv .pc-coord__row.is-active {
         background: var(--advconv-accent-soft);
-        border-color: color-mix(in oklab, var(--advconv-accent), transparent 50%);
-        box-shadow: none;
+        border-color: color-mix(in oklab, var(--advconv-accent), transparent 42%);
+        box-shadow: 0 8px 20px color-mix(in oklab, var(--advconv-accent), transparent 92%);
+        transform: translateX(3px);
+      }
+      .pc-advconv .pc-coord__row.is-active::before {
+        content: '';
+        position: absolute;
+        inset: 8px auto 8px -1px;
+        width: 3px;
+        border-radius: 0 999px 999px 0;
+        background: var(--advconv-accent);
       }
       .pc-advconv__threadtop {
         display: flex;
@@ -2622,6 +2730,20 @@ function AdvConvStyles() {
         background: var(--advconv-good-soft);
         color: var(--fg, #e7f7ff);
       }
+      .pc-advconv__statepill--open::before,
+      .pc-advconv__statepill--resolved::before,
+      .pc-advconv__statepill--closed::before,
+      .pc-advconv__statepill--delivered::before,
+      .pc-advconv__statepill--sent::before,
+      .pc-advconv__statepill--read::before {
+        content: '';
+        width: 5px;
+        height: 5px;
+        flex: 0 0 5px;
+        border-radius: 50%;
+        background: currentColor;
+        opacity: 0.9;
+      }
       .pc-advconv__statepill--resolved {
         border-color: color-mix(in oklab, var(--advconv-accent), transparent 58%);
         background: var(--advconv-accent-soft);
@@ -2631,6 +2753,13 @@ function AdvConvStyles() {
         border-color: color-mix(in srgb, var(--fg-mute, #7f9bb4), transparent 80%);
         background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 48%);
         color: var(--fg-mute, #7f9bb4);
+      }
+      .pc-advconv__statepill--delivered,
+      .pc-advconv__statepill--sent,
+      .pc-advconv__statepill--read {
+        border-color: color-mix(in oklab, var(--good, #22c55e), transparent 64%);
+        background: var(--advconv-good-soft);
+        color: var(--good, #22c55e);
       }
       /* Kind pill — bring the coordination.css base (a square, hardcoded-#9bd chip)
          in line with the site's rounded, semantic-token pills (StatusPill family).
@@ -3189,6 +3318,28 @@ function AdvConvStyles() {
       @media (max-width: 920px) {
         .pc-advconv__shell { flex-direction: column; }
         .pc-advconv__nav { width: auto; border-right: none; border-bottom: 1px solid var(--advconv-border); }
+        .pc-advconv__nav-actions {
+          flex-direction: row;
+          align-items: stretch;
+          overflow-x: auto;
+          overscroll-behavior-x: contain;
+          scrollbar-width: thin;
+        }
+        .pc-advconv__nav-actions .pc-plans__new-plan {
+          flex: 0 0 auto;
+          width: auto;
+          min-width: 92px;
+        }
+        .pc-advconv__nav-switcher { flex: 0 0 auto; flex-direction: row; gap: 6px; }
+        .pc-advconv__nav-primary { display: flex; gap: 6px; }
+        .pc-advconv__nav-diagnostic {
+          display: flex;
+          padding: 0 0 0 7px;
+          border-top: none;
+          border-left: 1px solid var(--advconv-border);
+        }
+        .pc-advconv__navbtn { flex: 0 0 auto; min-width: 112px; }
+        .pc-advconv__navbtn--raw { min-width: 104px; }
         .pc-advconv__detailhead { flex-direction: column; }
         .pc-advconv__detailstats { justify-content: flex-start; max-width: none; }
         .pc-advconv__replyhead { flex-direction: column; }
@@ -3208,6 +3359,26 @@ function AdvConvStyles() {
         }
       }
       @media (max-width: 620px) {
+        .pc-advconv__nav-actions { padding: 7px 8px; gap: 5px; }
+        .pc-advconv__nav-actions .pc-plans__new-plan,
+        .pc-advconv__navbtn,
+        .pc-advconv__navbtn--raw {
+          min-width: 40px;
+          width: 40px;
+          min-height: 40px;
+          justify-content: center;
+          padding: 5px;
+        }
+        .pc-advconv__navlabel { display: none; }
+        .pc-advconv__navicon,
+        .pc-advconv__navbtn--raw .pc-advconv__navicon {
+          width: 28px;
+          height: 28px;
+          flex-basis: 28px;
+        }
+        .pc-advconv__main { padding: 6px; }
+        .pc-advconv__main--wide { padding: 0; }
+        .pc-advconv__main .pc-coord__detail { border-radius: 10px; padding: 9px; }
         .pc-advfeed__filterhead,
         .pc-advfeed__filtermeta,
         .pc-advfeed__needsline {

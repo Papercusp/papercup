@@ -497,7 +497,7 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
     const actor = { githubUserId: 279242982, devicePubkey: 'DEV-THIS' };
     const members = [
       {
-        hive_home_slug: 'papercusp',
+        pot_home_slug: 'papercusp',
         device_attestations: [
           { device_pubkey: 'DEV-THIS', device_label: 'tower', created_at: 1_700_000_000_000, gist_url: 'https://g' },
         ],
@@ -522,7 +522,7 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
     const actor = { githubUserId: 279242982, devicePubkey: 'DEV-THIS' };
     const members = [
       {
-        hive_home_slug: 'papercusp',
+        pot_home_slug: 'papercusp',
         device_attestations: [{ device_pubkey: 'DEV-OTHER', device_label: 'imac', created_at: 1_700_000_000_000 }],
         revoked_pubkeys: [],
       },

@@ -197,16 +197,18 @@ describe('parseOfferPayload (H17 intake)', () => {
   });
 });
 
-/* ── evaluatePull — X11 dormancy ──────────────────────────────────────── */
+/* ── evaluatePull — X11 activation ────────────────────────────────────── */
 
 describe('evaluatePull — X11 activation gate', () => {
-  it('is DORMANT when active is unset (defaults to PULLER_ACTIVATION_LANDED=false)', () => {
+  // WI-1936 (2026-07-10): X11 LANDED — both gates green (software claim-path
+  // soak + WI-3546 live 2-device witness, state=passed). The defaulted path
+  // now runs ACTIVE, not dormant.
+  it('is ACTIVE when active is unset (defaults to PULLER_ACTIVATION_LANDED=true, X11 landed — WI-1936)', () => {
     const d = evaluatePull({ ...pullInput(), active: undefined });
-    expect(d.outcome).toBe('skip');
-    if (d.outcome === 'skip') expect(d.reason).toBe('puller_inactive');
+    expect(d.outcome).toBe('claim');
   });
 
-  it('is DORMANT when active:false even with an otherwise-claimable offer', () => {
+  it('is still DORMANT when active:false is explicitly forced (an ops rollback override still works)', () => {
     const d = evaluatePull(pullInput({ active: false }));
     expect(d.outcome).toBe('skip');
     if (d.outcome === 'skip') expect(d.reason).toBe('puller_inactive');
@@ -371,11 +373,27 @@ describe('revalidateExecutionEpoch (H9)', () => {
   });
 });
 
-/* ── X11 dormancy invariant ───────────────────────────────────────────── */
+/* ── X11 activation invariant ─────────────────────────────────────────── */
 
 describe('pullerActivationInvariant', () => {
-  it('the module ships DORMANT (PULLER_ACTIVATION_LANDED === false) with no violations', () => {
-    expect(PULLER_ACTIVATION_LANDED).toBe(false);
+  // WI-1936 (2026-07-10): flipped ACTIVE — both gates confirmed green:
+  //   (a) software claim-path soak: standing-puller.claim-path-soak.test.ts,
+  //       42/42 green (3000+2000 randomized fast-check runs, zero throws);
+  //   (b) live 2-device witness: WI-3546 state=passed (terminal 23:13:49Z),
+  //       tower<->VM coord/data-merge witnessed both directions live,
+  //       independently verified via direct psql on both machines.
+  it('the module now ships ACTIVE (PULLER_ACTIVATION_LANDED === true, X11 landed — WI-1936) with no violations', () => {
+    expect(PULLER_ACTIVATION_LANDED).toBe(true);
     expect(pullerActivationInvariant()).toEqual([]);
+  });
+
+  it('still flags a hypothetical dormant call against a since-landed module (the pre-X11 contract, now vestigial)', () => {
+    // Passing activationLanded:false explicitly simulates "what if it were
+    // still dormant" against the now-true module constant — the original
+    // dormancy-contract branch still fires in that shape; it simply never
+    // occurs on the real call site (pullerActivationInvariant()) post-landing.
+    expect(pullerActivationInvariant(false)).toEqual([
+      'PULLER_ACTIVATION_LANDED must be false until the P-003 claim-path soak lands (X11).',
+    ]);
   });
 });

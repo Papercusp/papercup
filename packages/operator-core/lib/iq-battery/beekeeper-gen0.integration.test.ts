@@ -28,7 +28,13 @@ import type { GymJudgeRubric } from '../gym/judge-scoring';
 function migrationDdl(name: string): string {
   // Depth-/machine-proof (DG-6 P-049): walk up to the checkout root — no
   // hardcoded dev-box paths; runnable from (stagingSha, shard) on any machine.
-  return readRepoFile(__dirname, `libs/papercusp/libs/db/sql/${name}`);
+  // Strip psql meta (`\\set …`) + standalone BEGIN;/COMMIT; so sql.unsafe
+  // (which speaks SQL, not psql) can apply any migration file, incl. the
+  // newer expand-contract renames (e.g. 555) that carry the txn wrapper.
+  return readRepoFile(__dirname, `libs/papercusp/libs/db/sql/${name}`)
+    .split('\n')
+    .filter((l) => !l.trimStart().startsWith('\\') && !/^(BEGIN|COMMIT);\s*$/i.test(l.trim()))
+    .join('\n');
 }
 
 const RUBRIC: GymJudgeRubric = {
@@ -109,6 +115,17 @@ describe('beekeeper gen-0 battery — the de-stub contract (real PG)', () => {
     await sql.unsafe(migrationDdl('179-iq-battery-corpus.sql'));
     await sql.unsafe(migrationDdl('180-beekeeper-runner.sql'));
     await sql.unsafe(migrationDdl('217-beekeeper-repeats-and-gen0-uniqueness.sql'));
+    // P-009 Phase 2 (WI-3954): rename beekeeper_* -> cup_keeper_* so this rig
+    // mirrors the live post-555 schema the store (BeekeeperStorePg) now writes.
+    // Only the iq-battery tables are renamed inline (not the full 555 file, whose
+    // UNCONDITIONAL compat VIEW targets cup_claim_specs — absent here → 42P01).
+    // The store's ON CONFLICT targets are column lists (not constraint names), so
+    // a table-only rename is sufficient.
+    await sql.unsafe(`
+      ALTER TABLE harness_shared.beekeeper_instances RENAME TO cup_keeper_instances;
+      ALTER TABLE harness_shared.beekeeper_runs      RENAME TO cup_keeper_runs;
+      ALTER TABLE harness_shared.beekeeper_scores    RENAME TO cup_keeper_scores;
+    `);
   }, 120_000);
 
   afterAll(async () => {
@@ -118,7 +135,7 @@ describe('beekeeper gen-0 battery — the de-stub contract (real PG)', () => {
 
   beforeEach(async () => {
     await sql.unsafe(
-      'TRUNCATE harness_shared.beekeeper_scores, harness_shared.beekeeper_runs, harness_shared.beekeeper_instances CASCADE',
+      'TRUNCATE harness_shared.cup_keeper_scores, harness_shared.cup_keeper_runs, harness_shared.cup_keeper_instances CASCADE',
     );
   });
 
@@ -185,8 +202,8 @@ describe('beekeeper gen-0 battery — the de-stub contract (real PG)', () => {
     const result = await runBeekeeperBattery(config, deps);
 
     expect(result.passedCases).toBe(2);
-    const [{ runs }] = await sql<{ runs: string }[]>`SELECT count(*)::text AS runs FROM harness_shared.beekeeper_runs`;
-    const [{ scores }] = await sql<{ scores: string }[]>`SELECT count(*)::text AS scores FROM harness_shared.beekeeper_scores`;
+    const [{ runs }] = await sql<{ runs: string }[]>`SELECT count(*)::text AS runs FROM harness_shared.cup_keeper_runs`;
+    const [{ scores }] = await sql<{ scores: string }[]>`SELECT count(*)::text AS scores FROM harness_shared.cup_keeper_scores`;
     expect(Number(runs)).toBe(2);
     expect(Number(scores)).toBe(2);
   });
@@ -196,7 +213,7 @@ describe('beekeeper gen-0 battery — the de-stub contract (real PG)', () => {
     // (`gen0-<sha>-<case>-r<repeat>`), so a re-run at the same commit reuses every id.
     // upsertInstance/startRun/recordScore must be idempotent (D-005) — the prior store did a
     // plain INSERT (+ a mis-targeted instance ON CONFLICT) and threw
-    // `duplicate key … beekeeper_instances_pkey`. NOTE: no TRUNCATE here — that is the whole
+    // `duplicate key … cup_keeper_instances_pkey`. NOTE: no TRUNCATE here — that is the whole
     // point; the other tests truncate in beforeEach, which is why this never got caught.
     const cases = [caseOf('find-the-flaw', 'idem-a'), caseOf('build-spec', 'idem-b')];
     const config: BeekeeperConfig = {
@@ -217,9 +234,9 @@ describe('beekeeper gen-0 battery — the de-stub contract (real PG)', () => {
     expect(second.outcomes.filter((o) => o.status === 'errored').length).toBe(0);
 
     // Idempotent: still exactly one instance, N runs, N scores — re-run overwrote, didn't append.
-    const [{ insts }] = await sql<{ insts: string }[]>`SELECT count(*)::text AS insts FROM harness_shared.beekeeper_instances`;
-    const [{ runs }] = await sql<{ runs: string }[]>`SELECT count(*)::text AS runs FROM harness_shared.beekeeper_runs`;
-    const [{ scores }] = await sql<{ scores: string }[]>`SELECT count(*)::text AS scores FROM harness_shared.beekeeper_scores`;
+    const [{ insts }] = await sql<{ insts: string }[]>`SELECT count(*)::text AS insts FROM harness_shared.cup_keeper_instances`;
+    const [{ runs }] = await sql<{ runs: string }[]>`SELECT count(*)::text AS runs FROM harness_shared.cup_keeper_runs`;
+    const [{ scores }] = await sql<{ scores: string }[]>`SELECT count(*)::text AS scores FROM harness_shared.cup_keeper_scores`;
     expect(Number(insts)).toBe(1);
     expect(Number(runs)).toBe(2);
     expect(Number(scores)).toBe(2);
@@ -244,7 +261,7 @@ describe('beekeeper gen-0 battery — the de-stub contract (real PG)', () => {
     // errored repeat 2, and `scored >= 1` masked it — mig 217 dropped it).
     expect(scored).toBe(2);
     // Invariant: exactly the scored runs are persisted (one beekeeper_run each).
-    const [{ runs }] = await sql<{ runs: string }[]>`SELECT count(*)::text AS runs FROM harness_shared.beekeeper_runs`;
+    const [{ runs }] = await sql<{ runs: string }[]>`SELECT count(*)::text AS runs FROM harness_shared.cup_keeper_runs`;
     expect(Number(runs)).toBe(scored);
   });
 

@@ -1312,11 +1312,12 @@ async function runGithubBridgeLeg(slug: string, workspaceId: string): Promise<vo
 }
 
 /**
- * p2p-git-live-activation P-205 (WI-3591): the G-8 cold-clone bootstrap leg —
- * the production path a fresh JOINER's git-sync tick actually hits. Best-
- * effort: never throws; outcome persists on the routine metadata under the
- * `bootstrap` key (distinct from `ref_announce`/`integrator`/`worktree_bridge`
- * so the four legs never clobber each other's watermark).
+ * p2p-git-live-activation P-205 (WI-3591) / P-302 (dial wiring): the G-8
+ * cold-clone bootstrap leg — the production path a fresh JOINER's git-sync
+ * tick actually hits. Best-effort: never throws; outcome persists on the
+ * routine metadata under the `bootstrap` key (distinct from
+ * `ref_announce`/`integrator`/`worktree_bridge` so the four legs never
+ * clobber each other's watermark).
  *
  * SELF-GATE (the "reachable but only when it matters" contract): fast no-op
  * unless the local hive-git bare store has ZERO `refs/namespaces/*` yet
@@ -1327,18 +1328,23 @@ async function runGithubBridgeLeg(slug: string, workspaceId: string): Promise<vo
  * contract), but gating here avoids paying a wildcard-fetch attempt on every
  * tick once a repo is warm.
  *
- * DIAL-REGISTRY GAP (same documented simplification as P-202/P-204's legs
- * below): `openDuplex` has no live per-peer connection to dial yet from this
- * call site (git-sync-action.ts does not resolve a hive-git swarm topic —
- * that only exists inside the shared-swarm connection handler, swarm.ts). A
- * cold repo therefore reports a clean `ok:false` (`fetch-failed`, matching
- * `fetchOverDuplex`'s fail-soft contract) and retries next tick — reachable
- * and exercised, but real cross-machine proof is Phase 3's job (P-302 "VM
- * cold-joins via G-8 bootstrap from the tower peer" against the live rig).
- * Once a shared topic-resolution helper is wired into this file for the
- * ref-announce/worktree-bridge legs' own OPENDUPLEX/DIAL-REGISTRY gaps, this
- * leg should adopt the same real dial (peer-dial-registry.ts's
- * `openHiveGitDuplexToDevice` already exists and is ready for that — WI-3583).
+ * DIAL-REGISTRY (WI-3583, landed 2026-07-10; wired HERE 2026-07-10 P-302):
+ * this leg used to always hand `bootstrapFromPeer` an already-destroyed stub
+ * duplex (no way to name a peer to dial), the ONE of the four Phase-3 legs
+ * left on that pre-WI-3583 shape after `runRefAnnounceLeg`/worktree-bridge
+ * picked up the real dial. Same pattern as `runRefAnnounceLeg`'s `openStream`
+ * above: resolve this harness's live swarm topic via
+ * `getBootedHarness(...).swarm.topicHex`, pick any ONE attested member peer
+ * that is not this device (bootstrap only needs ONE source — "the caller
+ * picks any live peer", per bootstrap.ts's own doc), and dial it through
+ * `openHiveGitDuplexToDevice`. Two fail-soft floors, neither ever throws: (a)
+ * no live swarm join yet for this harness ⇒ an already-destroyed local stub,
+ * same shape as before WI-3583; (b) no member peer other than self yet (a
+ * lone device) ⇒ skip, nothing to bootstrap from. Either way a cold repo
+ * reports the documented clean `ok:false` (`fetch-failed`, matching
+ * `fetchOverDuplex`'s fail-soft contract) and retries next tick; only genuine
+ * cross-machine reachability (Phase 3's live rig, P-302) exercises the happy
+ * path end-to-end.
  */
 export async function runBootstrapLeg(slug: string, workspaceId: string): Promise<void> {
   try {
@@ -1365,19 +1371,36 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     const actor = await resolveUsageActor();
     const selfDevicePubkey = actor?.devicePubkey;
 
-    // DIAL-REGISTRY GAP — see module doc above (WI-3583). Mirrors
-    // serve-wiring.ts's own "resolve a pre-destroyed duplex, never reject"
-    // fail-soft contract, so this always reports a clean `fetch-failed`
-    // outcome rather than an uncaught throw.
-    const stub = new Duplex({
-      read() {},
-      write(_chunk, _enc, cb) {
-        cb();
-      },
-    });
-    stub.destroy(new Error('hive-git: no live per-peer dial registry wired into this leg yet (WI-3583)'));
+    const peerDevicePubkeyBase64 = memberDevicePubkeysBase64.find((d) => d !== selfDevicePubkey);
+    if (!peerDevicePubkeyBase64) return; // no member peer other than self yet — nothing to seed from
 
-    const outcome = await bootstrapFromPeer(repoPath, stub, { selfDevicePubkey });
+    // DIAL-REGISTRY (WI-3583) — see module doc above. Real per-device dial
+    // once this harness has a live swarm topic; falls back to the same
+    // pre-WI-3583 destroyed stub when it doesn't (private/local-only harness,
+    // or not yet booted onto a swarm) — mirrors runRefAnnounceLeg's own
+    // openStream floor exactly.
+    let duplex: Duplex;
+    {
+      const { getBootedHarness } = await import('../../sync/hyperbee/boot-all');
+      const topicHex = getBootedHarness(workspaceId, potHomeSlug)?.swarm?.topicHex;
+      if (!topicHex) {
+        const stub = new Duplex({
+          read() {},
+          write(_chunk, _enc, cb) {
+            cb();
+          },
+        });
+        stub.destroy(new Error('hive-git: no live swarm join for this harness yet'));
+        duplex = stub;
+      } else {
+        duplex = await openHiveGitDuplexToDevice(Buffer.from(topicHex, 'hex'), peerDevicePubkeyBase64, {
+          repoKey: slug,
+          peerGithubUserId: actor?.githubUserId,
+        });
+      }
+    }
+
+    const outcome = await bootstrapFromPeer(repoPath, duplex, { selfDevicePubkey });
     await patchRoutineMetadata(slug, {
       bootstrap: {
         at: Date.now(),

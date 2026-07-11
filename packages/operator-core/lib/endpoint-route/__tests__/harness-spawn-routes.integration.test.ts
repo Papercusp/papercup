@@ -58,10 +58,10 @@ vi.mock('../../adv-sessions', () => ({
 // wake path traverses — EI-995's durable seam bypassed the old launcher-side
 // compute). Default null = compute degraded → the EI-506 kickoff fallback applies;
 // per-test overrides return a brief to assert the computed path.
-const computeQueenWakeBrief = vi.fn(async (): Promise<string | null> => null);
+const computeMugWakeBrief = vi.fn(async (): Promise<string | null> => null);
 vi.mock('../../pot/mug-brief-launch', () => ({
-  computeQueenWakeBrief: (...a: unknown[]) =>
-    (computeQueenWakeBrief as (...args: unknown[]) => unknown)(...a),
+  computeMugWakeBrief: (...a: unknown[]) =>
+    (computeMugWakeBrief as (...args: unknown[]) => unknown)(...a),
 }));
 vi.mock('../../superuser-token', () => ({ SUPERUSER_TOKEN_PATH: '/fake/su-token' }));
 vi.mock('../../plugin-host-runtime', () => ({
@@ -183,7 +183,7 @@ beforeEach(() => {
   spawnMock.mockImplementation(() => makeFakeChild(0));
   // clearAllMocks below clears CALLS but not resolved values — re-pin the
   // documented null default so one test's mockResolvedValue can't leak forward.
-  computeQueenWakeBrief.mockResolvedValue(null);
+  computeMugWakeBrief.mockResolvedValue(null);
 });
 afterEach(() => {
   vi.clearAllMocks();
@@ -342,7 +342,7 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
     expect(arg?.extraEnv ?? {}).not.toHaveProperty('MUG_BRIEF');
     expect(arg?.extraEnv).toMatchObject({ MUG_WAKE_BRIEF: expect.stringContaining('Woke by') });
     // WI-682: a pre-supplied body.queenBrief is respected verbatim — no recompute.
-    expect(computeQueenWakeBrief).not.toHaveBeenCalled();
+    expect(computeMugWakeBrief).not.toHaveBeenCalled();
   });
 
   // WI-682: the route is the ONE chokepoint every Queen wake path traverses
@@ -351,10 +351,10 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
   // EI-995's durable seam bypassed the old launcher-side compute, so a scheduled
   // Queen woke briefless with her nudges stranded — this pins the route-side seam.
   it('WI-682: computes the Queen wake brief at the route when the body has none', async () => {
-    computeQueenWakeBrief.mockResolvedValue('## Your wake brief\n**Woke by:** timer\n### Frontier');
+    computeMugWakeBrief.mockResolvedValue('## Your wake brief\n**Woke by:** timer\n### Frontier');
     const res = await appWith(invoke).request('/harness/papercup/invoke?role=queen', post({ kickoff: 'timer' }));
     expect(res.status).toBe(200);
-    expect(computeQueenWakeBrief).toHaveBeenCalledWith(expect.any(String), 'papercup', { wokeBy: 'timer' });
+    expect(computeMugWakeBrief).toHaveBeenCalledWith(expect.any(String), 'papercup', { wokeBy: 'timer' });
     const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
     expect(arg?.extraEnv).toMatchObject({ MUG_WAKE_BRIEF: expect.stringContaining('Woke by') });
     expect(arg?.extraEnv ?? {}).not.toHaveProperty('MUG_BRIEF'); // EI-506 suppression applies to the computed brief too
@@ -363,17 +363,17 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
   it('WI-682: a non-queen invoke never computes a Queen wake brief', async () => {
     const res = await appWith(invoke).request('/harness/papercup/invoke?role=worker', post({ kickoff: 'go' }));
     expect(res.status).toBe(200);
-    expect(computeQueenWakeBrief).not.toHaveBeenCalled();
+    expect(computeMugWakeBrief).not.toHaveBeenCalled();
   });
 
   // EI-506 fallback: if the wake brief is absent (best-effort compute failed — the
-  // computeQueenWakeBrief mock defaults to null here), the kickoff is still threaded
+  // computeMugWakeBrief mock defaults to null here), the kickoff is still threaded
   // as MUG_BRIEF so the queen isn't left with no idea why she woke (preserves the
   // P-071 "why you woke" signal).
   it('EI-506: keeps MUG_BRIEF for a queen wake whose brief compute degrades to null', async () => {
     const res = await appWith(invoke).request('/harness/papercup/invoke?role=queen', post({ kickoff: 'timer' }));
     expect(res.status).toBe(200);
-    expect(computeQueenWakeBrief).toHaveBeenCalledTimes(1); // it tried — the route-side seam is live
+    expect(computeMugWakeBrief).toHaveBeenCalledTimes(1); // it tried — the route-side seam is live
     const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
     expect(arg?.extraEnv).toMatchObject({ MUG_BRIEF: 'timer' });
     expect(arg?.extraEnv ?? {}).not.toHaveProperty('MUG_WAKE_BRIEF');
@@ -416,7 +416,7 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
       agent: 'claude',
       role: 'mug',
       cwd: '/proj',
-      label: 'hive · papercup/queen',
+      label: 'pot · papercup/queen',
       sessionId: expect.stringMatching(/[0-9a-f-]{36}/),
       coordOwnerId: expect.stringMatching(/^s-\d+-[0-9a-f]+$/),
     }));

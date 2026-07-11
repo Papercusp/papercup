@@ -761,6 +761,44 @@ export async function ackDelivery(input: {
   return rows.length > 0;
 }
 
+/**
+ * Settle PENDING/PARKED deliveries on the caller's OWN standing inbox-wake key
+ * that were queued at-or-before a cutoff the caller has now read past — the
+ * coord:watermark-set counterpart of `ackDelivery` (EI-9389). The standing
+ * inbox-wake await (`once = false`) is matched but never consumed by
+ * `fireAwaitsForKey`, so every `coord:send {wake:true}` while the recipient is
+ * busy queues its OWN delivery row, independent of the recipient's inbox READ
+ * cursor. A later bulk `coord:inbox` read already shows all of those messages,
+ * but the queued delivery rows don't know that — each still fires a full
+ * (billable) resume turn once the recipient goes idle, even for traffic
+ * already seen and acted on. Settling them here — at `coord:watermark-set`,
+ * the canonical "I've now seen everything up to X" signal — closes that gap
+ * the same way `ackDelivery` does for a single delivery: `delivered`,
+ * channel `'coalesced'` (no turn burned, WAKE_TURN_CHANNELS-excluded), never
+ * touching another subscriber's rows (subscriber_id-scoped, like ackDelivery).
+ * Deliveries created AFTER the cutoff are left alone — a message that arrived
+ * mid-read must still wake normally next time. Returns rows settled.
+ */
+export async function settleCaughtUpInboxWakeDeliveries(input: {
+  subscriberId: string;
+  cutoffTs: string;
+}): Promise<number> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const key = `${INBOX_WAKE_KEY_PREFIX}${input.subscriberId}`;
+  const rows = await sql`
+    UPDATE harness_shared.event_wake_deliveries
+       SET status = 'delivered', channel = 'coalesced', delivered_at = now(),
+           last_error = 'caught up via coord:watermark-set — already seen in a bulk coord:inbox read (EI-9389)'
+     WHERE workspace_id = ${ws} AND subscriber_id = ${input.subscriberId}
+       AND event_key = ${key}
+       AND status IN ('pending', 'parked')
+       AND created_at <= ${input.cutoffTs}
+    RETURNING id
+  `;
+  return rows.length;
+}
+
 /** Recent deliveries for a subscriber (events:status). */
 export async function listRecentDeliveries(subscriberId: string, limit = 10): Promise<DeliveryRow[]> {
   const { sql } = getOrgPg();

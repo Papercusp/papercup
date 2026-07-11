@@ -8,6 +8,7 @@ import {
   gracefulStopChild,
   registerSidecarShutdownHooks,
   _resetSidecarShutdownHookRegistryForTests,
+  isSidecarEnabledFromEnv,
 } from './sidecar-spawn-shared';
 
 describe('resolveSidecarSpawnPlan (WI-3079)', () => {
@@ -49,6 +50,68 @@ describe('resolveSidecarSpawnPlan (WI-3079)', () => {
       execPath: '/usr/bin/node',
     });
     expect(plan).toEqual({ cmd: '/usr/bin/node', args: ['/repo/bin/x.js'], env: {}, mode: 'dev-tsx' });
+  });
+});
+
+describe('isSidecarEnabledFromEnv (WI-3793)', () => {
+  const OPTS = { enableVar: 'PAPERCUSP_SPAWNER_SIDECAR', modeVar: 'PAPERCUSP_SPAWNER_SIDECAR_MODE' };
+
+  it('off when the enable var is unset (the default)', () => {
+    expect(isSidecarEnabledFromEnv(OPTS, {})).toBe(false);
+  });
+
+  it('on when the enable var reads "1"', () => {
+    expect(isSidecarEnabledFromEnv(OPTS, { PAPERCUSP_SPAWNER_SIDECAR: '1' })).toBe(true);
+  });
+
+  it('off for any non-"1" enable-var value (no truthy-string coercion)', () => {
+    expect(isSidecarEnabledFromEnv(OPTS, { PAPERCUSP_SPAWNER_SIDECAR: 'true' })).toBe(false);
+    expect(isSidecarEnabledFromEnv(OPTS, { PAPERCUSP_SPAWNER_SIDECAR: 'yes' })).toBe(false);
+  });
+
+  it('the mode var (re-exec divert) ALWAYS wins — never self-enables inside the sidecar child, even with an inherited enable var', () => {
+    expect(
+      isSidecarEnabledFromEnv(OPTS, {
+        PAPERCUSP_SPAWNER_SIDECAR: '1',
+        PAPERCUSP_SPAWNER_SIDECAR_MODE: '1',
+      }),
+    ).toBe(false);
+  });
+
+  it('an explicitVar override forces ON regardless of the enable var', () => {
+    const opts = { ...OPTS, explicitVar: 'PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR' };
+    expect(
+      isSidecarEnabledFromEnv(opts, { PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR: '1' }),
+    ).toBe(true);
+    expect(
+      isSidecarEnabledFromEnv(opts, { PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR: 'true' }),
+    ).toBe(true);
+  });
+
+  it('an explicitVar override forces OFF even when the enable var is on', () => {
+    const opts = { ...OPTS, explicitVar: 'PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR' };
+    expect(
+      isSidecarEnabledFromEnv(opts, {
+        PAPERCUSP_SPAWNER_SIDECAR: '1',
+        PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR: '0',
+      }),
+    ).toBe(false);
+  });
+
+  it('explicitVar unset falls through to the plain enable-var check', () => {
+    const opts = { ...OPTS, explicitVar: 'PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR' };
+    expect(isSidecarEnabledFromEnv(opts, { PAPERCUSP_SPAWNER_SIDECAR: '1' })).toBe(true);
+    expect(isSidecarEnabledFromEnv(opts, {})).toBe(false);
+  });
+
+  it('the mode var wins even over an explicitVar override', () => {
+    const opts = { ...OPTS, explicitVar: 'PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR' };
+    expect(
+      isSidecarEnabledFromEnv(opts, {
+        PAPERCUSP_SPAWNER_SIDECAR_MODE: '1',
+        PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR: '1',
+      }),
+    ).toBe(false);
   });
 });
 

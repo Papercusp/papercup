@@ -1,5 +1,5 @@
 /**
- * bee_claim_specs federation integration (real PG) — closes the coverage gap
+ * cup_claim_specs federation integration (real PG) — closes the coverage gap
  * left by bee-claim-spec.test.ts (pure decode/guard unit tests only): the M6
  * comms-tier STEER gate (audit D-013), the PG-level LWW guard (fed_order_key,
  * EI-1698), the `id_only` denormalized tripwire recompute, and the full
@@ -28,6 +28,8 @@ const OUTBOX_MIGRATION = resolve(SQL_DIR, 'archive/102-substrate-outbox.sql');
 const CLAIM_SPEC_TABLE = resolve(SQL_DIR, '372-bee-claim-specs.sql');
 const ID_ONLY_MIGRATION = resolve(SQL_DIR, '389-bee-claim-spec-id-only.sql');
 const FED_MIGRATION = resolve(SQL_DIR, '438-bee-claim-specs-federation.sql');
+// P-009 Phase 2 (WI-3954): bee_claim_specs → cup_claim_specs (+ compat view).
+const PHASE2_RENAME_MIGRATION = resolve(SQL_DIR, '555-cup-lexicon-db-rename-phase2-bee-claim-specs-beekeeper.sql');
 
 const WS = 'ws_bcs';
 const HIVE = 'hive-bcs';
@@ -85,14 +87,17 @@ async function provisionPeer(db: FreshPgDb): Promise<void> {
   await applyMigrationForTest(db.sql, CLAIM_SPEC_TABLE);
   await applyMigrationForTest(db.sql, ID_ONLY_MIGRATION);
   await applyMigrationForTest(db.sql, FED_MIGRATION);
+  // P-009 Phase 2 (WI-3954): rename to cup_claim_specs (+ compat view), matching
+  // the live post-555 schema the projection (bee-claim-spec.ts) writes/deletes.
+  await applyMigrationForTest(db.sql, PHASE2_RENAME_MIGRATION);
   await db.sql.unsafe(FED_ORDER_KEY_DDL);
 }
 
-describe('bee_claim_specs federation (real PG)', () => {
+describe('cup_claim_specs federation (real PG)', () => {
   let db: FreshPgDb;
 
   beforeAll(async () => {
-    db = await createFreshPgDb('bee_claim_specs_fed');
+    db = await createFreshPgDb('cup_claim_specs_fed');
     await provisionPeer(db);
   }, 120_000);
 
@@ -103,7 +108,7 @@ describe('bee_claim_specs federation (real PG)', () => {
   async function fetchRow(beeId: string) {
     const rows = await db.sql<
       { revision: number; updated_by: string | null; id_only: boolean; origin: string; author_pubkey: string | null }[]
-    >`SELECT revision, updated_by, id_only, origin, author_pubkey FROM harness_shared.bee_claim_specs
+    >`SELECT revision, updated_by, id_only, origin, author_pubkey FROM harness_shared.cup_claim_specs
        WHERE workspace_id=${WS} AND bee_id=${beeId}`;
     return rows[0] ?? null;
   }
@@ -245,7 +250,7 @@ describe('bee_claim_specs federation (real PG)', () => {
       const beeId = 'su-bee-lww-idem';
       await proj().writeToPg(row({ bee_id: beeId, revision: 3 }), { authorPubkey: 'p', origin: 'remote', ts: 5000 });
       await proj().writeToPg(row({ bee_id: beeId, revision: 3 }), { authorPubkey: 'p', origin: 'remote', ts: 5000 });
-      expect(await db.sql`SELECT 1 FROM harness_shared.bee_claim_specs WHERE workspace_id=${WS} AND bee_id=${beeId}`).toHaveLength(1);
+      expect(await db.sql`SELECT 1 FROM harness_shared.cup_claim_specs WHERE workspace_id=${WS} AND bee_id=${beeId}`).toHaveLength(1);
     });
   });
 
@@ -275,14 +280,14 @@ describe('bee_claim_specs federation (real PG)', () => {
     async function outbox(): Promise<OutboxDbRow[]> {
       return db.sql<OutboxDbRow[]>`
         SELECT table_name, op, key, row, ts, harness_slug FROM harness_shared.substrate_outbox
-        WHERE table_name = 'bee_claim_specs' ORDER BY id`;
+        WHERE table_name = 'cup_claim_specs' ORDER BY id`;
     }
     async function clearOutbox() {
-      await db.sql`DELETE FROM harness_shared.substrate_outbox WHERE table_name = 'bee_claim_specs'`;
+      await db.sql`DELETE FROM harness_shared.substrate_outbox WHERE table_name = 'cup_claim_specs'`;
     }
     async function insertLocal(beeId: string, revision = 1, harnessSlug: string | null = HIVE) {
       await db.sql`
-        INSERT INTO harness_shared.bee_claim_specs (workspace_id, bee_id, spec, revision, updated_by, harness_slug, origin)
+        INSERT INTO harness_shared.cup_claim_specs (workspace_id, bee_id, spec, revision, updated_by, harness_slug, origin)
         VALUES (${WS}, ${beeId}, ${JSON.stringify(spec())}::text::jsonb, ${revision}, 'su-queen-1', ${harnessSlug}, 'local')
       `;
     }
@@ -307,13 +312,13 @@ describe('bee_claim_specs federation (real PG)', () => {
       await insertLocal('su-bee-noop');
       await clearOutbox();
       await db.sql`
-        UPDATE harness_shared.bee_claim_specs SET spec = spec, revision = revision, updated_by = updated_by
+        UPDATE harness_shared.cup_claim_specs SET spec = spec, revision = revision, updated_by = updated_by
         WHERE workspace_id = ${WS} AND bee_id = 'su-bee-noop'`;
       expect(await outbox()).toHaveLength(0);
     });
 
     it('two-peer convergence: a queen spec-bump on A lands on B (origin=remote) via the real reshape→decode→project chain', async () => {
-      const dbB = await createFreshPgDb('bee_claim_specs_fed_b');
+      const dbB = await createFreshPgDb('cup_claim_specs_fed_b');
       try {
         await provisionPeer(dbB);
         const projB = buildBeeClaimSpecProjection({ workspaceId: WS, harnessSlug: HIVE, sql: dbB.sql });
@@ -330,15 +335,15 @@ describe('bee_claim_specs federation (real PG)', () => {
         await insertLocal('su-bee-conv', 7);
         for (const r of await outbox()) await applyOnB(r);
         const [onB] = await dbB.sql<{ revision: number; updated_by: string }[]>`
-          SELECT revision, updated_by FROM harness_shared.bee_claim_specs WHERE workspace_id=${WS} AND bee_id='su-bee-conv'`;
+          SELECT revision, updated_by FROM harness_shared.cup_claim_specs WHERE workspace_id=${WS} AND bee_id='su-bee-conv'`;
         expect(onB.revision).toBe(7);
         expect(onB.updated_by).toBe('su-queen-1');
 
         // DELETE on A converges to absent on B.
         await clearOutbox();
-        await db.sql`DELETE FROM harness_shared.bee_claim_specs WHERE workspace_id=${WS} AND bee_id='su-bee-conv'`;
+        await db.sql`DELETE FROM harness_shared.cup_claim_specs WHERE workspace_id=${WS} AND bee_id='su-bee-conv'`;
         for (const r of await outbox()) await applyOnB(r);
-        expect(await dbB.sql`SELECT 1 FROM harness_shared.bee_claim_specs WHERE workspace_id=${WS} AND bee_id='su-bee-conv'`).toHaveLength(0);
+        expect(await dbB.sql`SELECT 1 FROM harness_shared.cup_claim_specs WHERE workspace_id=${WS} AND bee_id='su-bee-conv'`).toHaveLength(0);
       } finally {
         await dbB.cleanup();
       }
