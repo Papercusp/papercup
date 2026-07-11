@@ -23,16 +23,20 @@ const SLUG = 'canary-h';
 process.env.PAPERCUSP_WORKSPACE_ID = WS;
 process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
 
-// EI-7655: hive-canary-action's Phase 2 now wakes the Hive after queuing a
-// genuinely NEW canary (requestUrgentHiveWake — the same bypass work_items:
+// EI-7655: hive-canary-action's Phase 2 now wakes the Pot after queuing a
+// genuinely NEW canary (requestUrgentPotWake — the same bypass work_items:
 // create's `urgent` flag uses) so the demand isn't invisible to the
 // event-driven wake path. That function's real implementation fires an actual
-// hive launch (fireLaunchBlueprint) — far too heavy/slow for this unit, and
+// pot launch (fireLaunchBlueprint) — far too heavy/slow for this unit, and
 // exactly the kind of side effect a routine-level test must NOT perform for
 // real. Mock it and assert the ROUTINE calls it correctly instead.
+// (EI-9503: renamed from requestUrgentHiveWake to match the cup-lexicon
+// rename of the real export in ../../pot/urgent-wake — the mock had drifted,
+// so vi.mock supplied no `requestUrgentPotWake` export and the routine's
+// real call threw "No 'requestUrgentPotWake' export is defined on the mock".)
 const urgentWakeSpy = vi.fn().mockResolvedValue({ fired: true, coalesced: false });
 vi.mock('../../pot/urgent-wake', () => ({
-  requestUrgentHiveWake: (...args: unknown[]) => urgentWakeSpy(...args),
+  requestUrgentPotWake: (...args: unknown[]) => urgentWakeSpy(...args),
 }));
 
 let db: OrgTestDb;

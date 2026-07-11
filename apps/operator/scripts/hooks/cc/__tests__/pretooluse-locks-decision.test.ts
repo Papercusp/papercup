@@ -27,6 +27,11 @@ let server: Server;
 let port: number;
 /** The inner tools/call result the stub returns next ({ ok, lock_id?, busy?, reason? }). */
 let nextInner: unknown = { ok: true, lock_id: 'stub-lock' };
+/** Optional SEQUENCE of inner results, one shifted per operator call — lets a test
+ * drive the hook's EI-9478 transient-retry loop across multiple attempts (e.g.
+ * contended on attempt 1, ok on attempt 2). When null/empty the static `nextInner`
+ * is used for every call, so existing tests are unaffected. */
+let nextInnerSeq: unknown[] | null = null;
 /** Optionally frame the response as text/event-stream (the hook parses both). */
 let useSse = false;
 
@@ -42,16 +47,19 @@ beforeAll(async () => {
   fs.writeFileSync(join(repo, '.git'), 'gitdir: /nonexistent\n');
 
   // Stub operator: respond to the hook's POST /api/mcp with a JSON-RPC result
-  // wrapping `nextInner` as the tools/call text content (the exact shape the
-  // hook parses).
+  // wrapping the next inner payload as the tools/call text content (the exact
+  // shape the hook parses). A `nextInnerSeq` (when set) is drained one entry per
+  // request so a test can script attempt-1-vs-attempt-2 outcomes; otherwise the
+  // static `nextInner` answers every request.
   server = createServer((req, res) => {
     let body = '';
     req.on('data', (d) => (body += d));
     req.on('end', () => {
+      const payload = nextInnerSeq && nextInnerSeq.length ? nextInnerSeq.shift() : nextInner;
       const rpc = {
         jsonrpc: '2.0',
         id: 1,
-        result: { content: [{ type: 'text', text: JSON.stringify(nextInner) }] },
+        result: { content: [{ type: 'text', text: JSON.stringify(payload) }] },
       };
       if (useSse) {
         res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -73,6 +81,7 @@ afterAll(async () => {
 
 afterEach(() => {
   nextInner = { ok: true, lock_id: 'stub-lock' };
+  nextInnerSeq = null;
   useSse = false;
 });
 
@@ -264,5 +273,58 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
     expect(out.hookSpecificOutput.permissionDecisionReason).toContain('canonical staging tree');
     // …but the guard fired first, so no lock was acquired/cached.
     expect(fs.existsSync(join(cache, 'tu-linked-elsewhere.lock'))).toBe(false);
+  });
+
+  // ── EI-9478: transient workspace-contention must never be rendered as a foreign hold ──
+  // The server's per-workspace advisory-lock wait can time out (commonly THIS
+  // session's own parallel edits racing each other, or a starved PG pool). That
+  // is a TRANSIENT serialization miss with NO holder. Before the fix, acquire.ts
+  // returned a bare busy:[], which this hook printed under a "file(s) held by
+  // another agent:" header with zero holders — a fabricated attribution that
+  // could strand a half-applied multi-edit batch. The hook must instead retry
+  // briefly, then (if still contended) deny with plain retry guidance.
+
+  it('EI-9478: workspace_contended (transient) → RETRIES then denies HONESTLY (never "held by another agent", never wake_on_grant)', async () => {
+    nextInner = { ok: false, reason: 'workspace_contended', transient: true, busy: [] };
+    const r = await run(editOf('sub/contended.ts', 'tu-contended'));
+    expect(r.status).toBe(0); // deny emits JSON then exits 0
+    const out = JSON.parse(r.stdout);
+    expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+    const reason: string = out.hookSpecificOutput.permissionDecisionReason;
+    expect(reason).toMatch(/transient contention/i);
+    expect(reason).toMatch(/RETRY this same edit/i);
+    expect(reason).toMatch(/do NOT queue wake_on_grant/i);
+    // The fabricated-holder wording must NOT appear for a zero-holder condition.
+    expect(reason).not.toContain('held by another agent');
+    // Nothing was granted, so nothing is cached to release.
+    expect(fs.existsSync(join(cache, 'tu-contended.lock'))).toBe(false);
+  });
+
+  it('EI-9478: transient on attempt 1 but ok on the retry → allow + cache (self-heals a parallel-edit race)', async () => {
+    // First operator call reports contention; the retry succeeds. The hook must
+    // ride the retry to a grant, not deny.
+    nextInnerSeq = [
+      { ok: false, reason: 'workspace_contended', transient: true, busy: [] },
+      { ok: true, lock_id: 'healed-lock' },
+    ];
+    const r = await run(editOf('sub/healed.ts', 'tu-healed'));
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe(''); // allow = no decision
+    expect(fs.readFileSync(join(cache, 'tu-healed.lock'), 'utf8')).toBe('healed-lock');
+  });
+
+  it('EI-9478: legacy ok:false with NO reason and an EMPTY busy list is treated as transient (retry+deny), never a foreign hold', async () => {
+    // Older servers surfaced the same advisory-lock timeout as a bare empty-busy
+    // refusal. The hook must classify that shape as transient too — otherwise the
+    // "file(s) held by another agent" header renders with ZERO holders.
+    nextInner = { ok: false, busy: [] };
+    const r = await run(editOf('sub/legacy.ts', 'tu-legacy'));
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+    const reason: string = out.hookSpecificOutput.permissionDecisionReason;
+    expect(reason).toMatch(/transient contention/i);
+    expect(reason).not.toContain('held by another agent');
+    expect(fs.existsSync(join(cache, 'tu-legacy.lock'))).toBe(false);
   });
 });

@@ -122,17 +122,17 @@ interface TestResult {
 
 const ROLE_ROUTING_ROWS = [
   {
-    label: 'Queen',
+    label: 'Mug',
     role: 'mug',
     description: 'Places work, prioritizes the fleet, and decides which agents to launch next.',
   },
   {
-    label: 'Overwatch',
+    label: 'Kettle',
     role: 'kettle',
     description: 'Supervises live system health, nudges running agents, and records observations.',
   },
   {
-    label: 'scout',
+    label: 'Blender',
     role: 'scanner',
     description: 'Runs negative-space scans for missing work, latent issues, and improvement opportunities.',
   },

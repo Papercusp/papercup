@@ -73,7 +73,7 @@ export function deriveSlugFromRepo(repo: string): string {
 // Covers the hives/from-repo route's codes (clone_-prefixed + hive codes).
 // The bare (un-prefixed) clone codes are kept too — they're harmless aliases.
 
-export function errorCodeToCopy(code: string | undefined, raw: string, hiveLower = 'hive'): string {
+export function errorCodeToCopy(code: string | undefined, raw: string, hiveLower = 'pot'): string {
   switch (code) {
     case 'invalid_url':
       return 'That doesn’t look like a GitHub repository URL. Paste a link like https://github.com/owner/repo.';

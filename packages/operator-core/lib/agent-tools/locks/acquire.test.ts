@@ -107,10 +107,19 @@ describe('locks:acquire — outcome branches', () => {
     expect(b).toMatchObject({ ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] });
   });
 
-  it('a WorkspaceContendedError degrades to a structured empty busy (no raw PG leak)', async () => {
+  it('a WorkspaceContendedError degrades to a structured TRANSIENT workspace_contended (never a false holder, never a raw PG leak) — EI-9478', async () => {
     routeM.mockRejectedValue(new WorkspaceContendedError('ws', '55P03', new Error('advisory lock timeout')));
     const b = body(await call({}));
-    expect(b).toMatchObject({ ok: false, busy: [] });
+    // EI-9478: an EXPLICIT transient reason with an EMPTY busy list — so no
+    // downstream reader (esp. the edit hook) can render it as "held by another
+    // agent" with a fabricated holder. The pre-fix code returned a bare busy:[],
+    // which the hook then printed under a "file(s) held by another agent:" header
+    // with zero holders.
+    expect(b).toMatchObject({ ok: false, reason: 'workspace_contended', transient: true, busy: [] });
+    // The advice steers to a plain RETRY and explicitly AWAY from wake_on_grant
+    // (there is no holder to wait on).
+    expect(String(b.advice)).toMatch(/retry/i);
+    expect(String(b.advice)).toMatch(/do NOT queue wake_on_grant/i);
   });
 
   it('wake_on_grant queues a waiter + await and returns immediately', async () => {

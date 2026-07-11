@@ -51,9 +51,23 @@ describe('wake pump — C6 idempotency + cross-agent isolation (real PG)', () =>
   // because the integration config auto-restores spies between tests.
   beforeEach(() => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // Every test in this suite drives the pump ITSELF (deterministic explicit
+    // `pumpWakeDeliveries` calls, the third test with the testbed's isolated
+    // psu-pty host discovery). The internal fire-and-forget auto-pump kick that
+    // `emitAwaitedEvent` schedules via `setImmediate` must NOT run alongside: it
+    // fires with PRODUCTION host discovery (never the testbed's isolated dir),
+    // is unawaited, and can straggle across the test boundary — e.g. test 2's
+    // emit kicks a background pump that doesn't get to run until test 3 is
+    // already mid-flight, where it claims test 3's freshly-inserted delivery for
+    // A under `pumpsInFlight`'s single-flight guard before test 3's own explicit,
+    // testbed-scoped `pumpWakeDeliveries` call does — leaving the delivery
+    // claimed-but-undelivered (mirrors the fix already applied in
+    // wake-on-message.integration.test.ts for the identical race).
+    engine.setAutoPumpEnabledForTests(false);
   });
 
   afterEach(async () => {
+    engine.setAutoPumpEnabledForTests(true);
     if (tb) await tb.destroy();
   });
 
