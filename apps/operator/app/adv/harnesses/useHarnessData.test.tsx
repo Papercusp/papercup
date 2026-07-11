@@ -1,22 +1,16 @@
 // @vitest-environment jsdom
 /**
- * useHarnessData — the /adv Harness-tab data hooks (REST bootstrap + Zero
- * overlay; no polling).
+ * useHarnessData — authoritative shared-sync hooks for the /adv Harness tab.
  *
  * Covers:
  *  - `parseWorkingUsers` (exported): number[] / string[] / JSON-string /
  *    Postgres array-literal "{1,2}" normalization, junk → undefined,
  *    non-positive + non-integer ids dropped;
- *  - `useHarnessFeatures`: REST row mapping (needs_human_review →
- *    needsReview, non-array tags dropped), REST error → error + loading
- *    false, the Zero overlay applied only when NON-EMPTY (an empty Zero
- *    result never clobbers the REST baseline), the overlay's defensive
- *    mappings (claims JSON parse, attempts Number-coercion, snake/camel
- *    needs-review fallback, workingUsers literal parse), and patchFeature's
- *    optimistic merge;
- *  - `useHarnessIssues`: pendingCount = live pending rows when present,
- *    REST `pending` fallback otherwise; overlay foundAt epoch→ISO mapping;
- *  - `useHarnessAgents`: refresh() re-pulls REST.
+ *  - empty sync arrays are authoritative (last-row deletion never resurrects
+ *    a stale REST bootstrap);
+ *  - defensive feature/issue/agent row mapping;
+ *  - optimistic local patches; and
+ *  - refresh invalidates the same shared agent-run cache entry.
  *
  * `@papercusp/sync` is mocked with a per-queryName fixture map; fetch is
  * stubbed per-URL. setup-fail-on-console is active — renders must be clean.
@@ -27,12 +21,16 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 
 // ── @papercusp/sync mock ────────────────────────────────────────────────────
 
-type SyncState = { data: unknown; loading: boolean };
+type SyncState = { data: unknown; loading: boolean; error?: unknown };
 const syncState = new Map<string, SyncState>();
+const invalidates = new Map<string, ReturnType<typeof vi.fn>>();
 
 vi.mock('@papercusp/sync', () => ({
-  useSyncQuery: ({ queryName }: { queryName: string }) =>
-    syncState.get(queryName) ?? { data: undefined, loading: false },
+  useSyncQuery: ({ queryName }: { queryName: string }) => ({
+    ...(syncState.get(queryName) ?? { data: undefined, loading: false }),
+    error: syncState.get(queryName)?.error ?? null,
+    invalidate: invalidates.get(queryName) ?? vi.fn(),
+  }),
 }));
 
 import {
@@ -46,27 +44,11 @@ import {
 
 const mockFetch = vi.fn<typeof fetch>();
 
-function okJson(body: unknown): Response {
-  return { ok: true, status: 200, json: async () => body } as unknown as Response;
-}
-function errStatus(status: number): Response {
-  return { ok: false, status, json: async () => ({}) } as unknown as Response;
-}
-
-/** Route fetches by URL substring. Unrouted URLs reject loudly. */
-function routeFetch(routes: Record<string, () => Response>) {
-  mockFetch.mockImplementation(async (input: RequestInfo | URL) => {
-    const url = String(input);
-    for (const [needle, make] of Object.entries(routes)) {
-      if (url.includes(needle)) return make();
-    }
-    throw new Error(`unrouted fetch: ${url}`);
-  });
-}
-
 beforeEach(() => {
   syncState.clear();
+  invalidates.clear();
   mockFetch.mockReset();
+  mockFetch.mockRejectedValue(new Error('durable harness reads must not fetch REST'));
   vi.stubGlobal('fetch', mockFetch);
 });
 
@@ -117,43 +99,14 @@ describe('parseWorkingUsers', () => {
 
 // ── useHarnessFeatures ──────────────────────────────────────────────────────
 
-const REST_FEATURE = {
-  id: 'F-001',
-  title: 'Auth',
-  status: 'todo',
-  attempts: 2,
-  summary: 'sum',
-  needs_human_review: true,
-  tags: ['auth'],
-};
-
 describe('useHarnessFeatures', () => {
-  it('maps the REST bootstrap (needs_human_review → needsReview; non-array tags dropped)', async () => {
-    routeFetch({
-      '/status': () => okJson({ features: [REST_FEATURE, { ...REST_FEATURE, id: 'F-002', tags: 'nope' }] }),
-    });
+  it('surfaces a sync failure without issuing a REST fallback', async () => {
+    syncState.set('featuresConsolidated.bySlug', { data: undefined, loading: false, error: new Error('sync unavailable') });
     const { result } = renderHook(() => useHarnessFeatures('sheets'));
-    expect(result.current.loading).toBe(true);
-    await waitFor(() => expect(result.current.features).not.toBeNull());
-    expect(result.current.loading).toBe(false);
-    expect(result.current.features![0]).toEqual({
-      id: 'F-001',
-      title: 'Auth',
-      status: 'todo',
-      attempts: 2,
-      summary: 'sum',
-      needsReview: true,
-      tags: ['auth'],
-    });
-    expect(result.current.features![1].tags).toBeUndefined();
-  });
-
-  it('surfaces a REST failure as error (and stops loading)', async () => {
-    routeFetch({ '/status': () => errStatus(500) });
-    const { result } = renderHook(() => useHarnessFeatures('sheets'));
-    await waitFor(() => expect(result.current.error).toBe('status 500'));
+    await waitFor(() => expect(result.current.error).toBe('sync unavailable'));
     expect(result.current.features).toBeNull();
     expect(result.current.loading).toBe(false);
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it('returns null features without fetching when slug is empty', () => {
@@ -162,14 +115,13 @@ describe('useHarnessFeatures', () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it('applies a NON-EMPTY Zero overlay with the defensive row mappings', async () => {
-    routeFetch({ '/status': () => okJson({ features: [] }) });
+  it('maps sync rows defensively', async () => {
     syncState.set('featuresConsolidated.bySlug', {
       loading: false,
       data: [
         {
           featureId: 'F-010',
-          title: 'Zero row',
+          title: 'Sync row',
           status: 'validating',
           attempts: '3', // string → Number
           claims: '["VAL-1"]', // JSON string → string[]
@@ -183,7 +135,7 @@ describe('useHarnessFeatures', () => {
     await waitFor(() => expect(result.current.features).not.toBeNull());
     expect(result.current.features![0]).toEqual({
       id: 'F-010',
-      title: 'Zero row',
+      title: 'Sync row',
       summary: undefined,
       status: 'validating',
       attempts: 3,
@@ -195,18 +147,19 @@ describe('useHarnessFeatures', () => {
     });
   });
 
-  it('never clobbers the REST baseline with an empty Zero result', async () => {
-    routeFetch({ '/status': () => okJson({ features: [REST_FEATURE] }) });
+  it('treats an empty sync result as authoritative', async () => {
     syncState.set('featuresConsolidated.bySlug', { loading: false, data: [] });
     const { result } = renderHook(() => useHarnessFeatures('sheets'));
     await waitFor(() => expect(result.current.features).not.toBeNull());
-    expect(result.current.features![0].id).toBe('F-001');
+    expect(result.current.features).toEqual([]);
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it('patchFeature merges a partial into the matching feature only', async () => {
-    routeFetch({
-      '/status': () => okJson({ features: [REST_FEATURE, { ...REST_FEATURE, id: 'F-002' }] }),
-    });
+    syncState.set('featuresConsolidated.bySlug', { loading: false, data: [
+      { featureId: 'F-001', title: 'One', status: 'todo', attempts: 0 },
+      { featureId: 'F-002', title: 'Two', status: 'todo', attempts: 0 },
+    ] });
     const { result } = renderHook(() => useHarnessFeatures('sheets'));
     await waitFor(() => expect(result.current.features).not.toBeNull());
     act(() => result.current.patchFeature('F-002', { status: 'passed' }));
@@ -220,30 +173,9 @@ describe('useHarnessFeatures', () => {
 
 // ── useHarnessIssues ────────────────────────────────────────────────────────
 
-const REST_ISSUE = {
-  id: 'I-1',
-  title: 'Broken',
-  severity: 'major',
-  source: 'validator',
-  status: 'open',
-  foundAt: '2026-06-01T00:00:00.000Z',
-  attempts: 0,
-  notes: [],
-};
-
 describe('useHarnessIssues', () => {
-  it('bootstraps from REST and uses the REST pending count as the fallback', async () => {
-    routeFetch({
-      '/issues-list': () => okJson({ issues: [REST_ISSUE], pending: [{ title: 'p1' }, { title: 'p2' }] }),
-    });
-    const { result } = renderHook(() => useHarnessIssues('sheets'));
-    await waitFor(() => expect(result.current.issues).not.toBeNull());
-    expect(result.current.issues![0].id).toBe('I-1');
-    expect(result.current.pendingCount).toBe(2);
-  });
-
-  it('prefers the live pending stream over the REST count when it is an array', async () => {
-    routeFetch({ '/issues-list': () => okJson({ issues: [], pending: [{ title: 'stale' }] }) });
+  it('uses the live pending stream and has no REST count fallback', async () => {
+    syncState.set('issuesConsolidated.bySlug', { loading: false, data: [] });
     syncState.set('harnessPendingIssues.byHarness', {
       loading: false,
       data: [{ issueId: 'p-a' }, { issueId: 'p-b' }, { issueId: 'p-c' }],
@@ -253,8 +185,7 @@ describe('useHarnessIssues', () => {
     expect(result.current.pendingCount).toBe(3);
   });
 
-  it('maps a Zero issue overlay row (epoch foundAt → ISO; invalid → empty string)', async () => {
-    routeFetch({ '/issues-list': () => okJson({ issues: [] }) });
+  it('maps a sync issue row (epoch foundAt → ISO; invalid → empty string)', async () => {
     syncState.set('issuesConsolidated.bySlug', {
       loading: false,
       data: [
@@ -292,22 +223,18 @@ describe('useHarnessIssues', () => {
 // ── useHarnessAgents ────────────────────────────────────────────────────────
 
 describe('useHarnessAgents', () => {
-  it('bootstraps from REST and refresh() re-pulls', async () => {
-    let calls = 0;
-    mockFetch.mockImplementation(async (input: RequestInfo | URL) => {
-      expect(String(input)).toContain('/agents');
-      calls += 1;
-      return okJson({ runs: [{ runId: `r-${calls}`, role: 'worker', sizeBytes: 1, running: false }] });
-    });
+  it('refresh() invalidates the authoritative agent-run query', async () => {
+    const invalidate = vi.fn();
+    invalidates.set('agentRunsConsolidated.bySlug', invalidate);
+    syncState.set('agentRunsConsolidated.bySlug', { loading: false, data: [] });
     const { result } = renderHook(() => useHarnessAgents('sheets'));
     await waitFor(() => expect(result.current.agents).not.toBeNull());
-    expect(result.current.agents![0].runId).toBe('r-1');
     act(() => result.current.refresh());
-    await waitFor(() => expect(calls).toBe(2));
+    expect(invalidate).toHaveBeenCalledTimes(1);
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it('applies the Zero overlay with ts coercion', async () => {
-    routeFetch({ '/agents': () => okJson({ runs: [] }) });
+  it('maps sync rows with timestamp coercion', async () => {
     syncState.set('agentRunsConsolidated.bySlug', {
       loading: false,
       data: [

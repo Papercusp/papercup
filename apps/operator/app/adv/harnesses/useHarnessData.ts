@@ -3,16 +3,12 @@
 // Shared data hooks for the /adv Harness tab panels (Features, Issues,
 // Detail). Phase 3 of adv-harness-tab-migration-2026-05-30.
 //
-// Pattern (mirrors HarnessDashboard's feature subscription): a one-shot
-// REST bootstrap + a live Zero overlay.
-//   - REST (`/api/harness/<slug>/status`, `/issues-list`) reads the base
-//     `harness_features` / issues tables and guarantees initial data even
-//     when the consolidated tables (the Zero source) lag.
-//   - Zero (`useSyncQuery`) pushes live updates over SSE/IPC and is applied
-//     only when it returns a NON-EMPTY array, so an initial empty Zero
-//     result never clobbers the REST baseline.
-// There is no polling timer — the periodic 5–6s `setInterval` the panels
-// shipped with is gone; live freshness comes from Zero.
+// Durable harness rows have one owner: the root @papercusp/sync cache. Older
+// versions kept one-shot REST bootstraps beside the live queries and ignored
+// empty sync results. That made deletion/last-row transitions impossible to
+// represent and let a late REST response resurrect stale rows. Empty arrays
+// are authoritative here; mutations may patch local state optimistically, then
+// the pushed named-query result reconciles it.
 
 import { useCallback, useEffect, useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
@@ -47,17 +43,7 @@ export interface HarnessFeature {
   workingUsers?: number[];
 }
 
-type RestFeature = {
-  id: string;
-  title: string;
-  status: string;
-  attempts?: number;
-  summary?: string;
-  needs_human_review?: boolean;
-  tags?: string[];
-};
-
-// Consolidated row exported to Zero (camelCase). claims is a JSON-stringified
+// Consolidated sync row (camelCase). claims is a JSON-stringified
 // string[]; needs-review may surface under either casing depending on the
 // generated row — read both defensively.
 type ZeroFeatureRow = {
@@ -132,51 +118,20 @@ export function useHarnessFeatures(slug: string): {
   const [features, setFeatures] = useState<HarnessFeature[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // One-shot REST bootstrap (no interval). Clears on slug change.
-  useEffect(() => {
-    if (!slug) {
-      setFeatures(null);
-      return;
-    }
-    let cancel = false;
-    setFeatures(null);
-    setError(null);
-    fetch(`/api/harness/${encodeURIComponent(slug)}/status?phase=staging`)
-      .then((r) => (r.ok ? (r.json() as Promise<{ features?: RestFeature[] }>) : Promise.reject(new Error(`status ${r.status}`))))
-      .then((j) => {
-        if (cancel) return;
-        const mapped = (j.features ?? []).map(
-          (f): HarnessFeature => ({
-            id: f.id,
-            title: f.title,
-            status: f.status as FeatureStatus,
-            attempts: f.attempts,
-            summary: f.summary,
-            needsReview: f.needs_human_review,
-            tags: Array.isArray(f.tags) ? f.tags : undefined,
-          }),
-        );
-        // Don't clobber a Zero overlay that already landed for this slug.
-        setFeatures((prev) => (prev && prev.length ? prev : mapped));
-      })
-      .catch((e: Error) => {
-        if (!cancel) setError(e.message);
-      });
-    return () => {
-      cancel = true;
-    };
-  }, [slug]);
-
-  // Live Zero overlay.
-  const { data: zeroRows, loading } = useSyncQuery<ZeroFeatureRow>({
+  const { data: syncRows, loading, error: syncError } = useSyncQuery<ZeroFeatureRow>({
     queryName: 'featuresConsolidated.bySlug',
     args: slug ? { harnessSlug: slug, workspaceId } : undefined,
     enabled: !!slug,
   });
   useEffect(() => {
-    if (loading || !Array.isArray(zeroRows) || zeroRows.length === 0) return;
+    if (!slug) {
+      setFeatures(null);
+      setError(null);
+      return;
+    }
+    if (loading || !Array.isArray(syncRows)) return;
     setFeatures(
-      zeroRows.map(
+      syncRows.map(
         (zf): HarnessFeature => ({
           id: zf.featureId,
           title: zf.title,
@@ -191,7 +146,10 @@ export function useHarnessFeatures(slug: string): {
         }),
       ),
     );
-  }, [zeroRows, loading]);
+  }, [slug, syncRows, loading]);
+  useEffect(() => {
+    setError(syncError ? (syncError instanceof Error ? syncError.message : String(syncError)) : null);
+  }, [syncError]);
 
   // Optimistic local patch — merge a partial into one feature in the local
   // state for instant feedback on a mutation. The Zero overlay reconciles to
@@ -243,11 +201,6 @@ function zeroRowToIssue(r: ZeroIssueRow): Issue {
   };
 }
 
-type RestIssuesResponse = {
-  issues?: Issue[];
-  pending?: Array<{ title: string }>;
-};
-
 export function useHarnessIssues(slug: string): {
   issues: Issue[] | null;
   pendingCount: number;
@@ -257,44 +210,24 @@ export function useHarnessIssues(slug: string): {
 } {
   const workspaceId = useWorkspaceId(); // EI-1763: tenant-scope sync reads
   const [issues, setIssues] = useState<Issue[] | null>(null);
-  const [restPending, setRestPending] = useState(0);
   const [error, setError] = useState<string | null>(null);
-
-  // One-shot REST bootstrap.
-  useEffect(() => {
-    if (!slug) {
-      setIssues(null);
-      setRestPending(0);
-      return;
-    }
-    let cancel = false;
-    setIssues(null);
-    setError(null);
-    fetch(`/api/harness/${encodeURIComponent(slug)}/issues-list?phase=staging`)
-      .then((r) => (r.ok ? (r.json() as Promise<RestIssuesResponse>) : Promise.reject(new Error(`issues-list ${r.status}`))))
-      .then((j) => {
-        if (cancel) return;
-        setIssues((prev) => (prev && prev.length ? prev : j.issues ?? []));
-        setRestPending(j.pending?.length ?? 0);
-      })
-      .catch((e: Error) => {
-        if (!cancel) setError(e.message);
-      });
-    return () => {
-      cancel = true;
-    };
-  }, [slug]);
-
-  // Live Zero overlay for issues.
-  const { data: zeroRows, loading } = useSyncQuery<ZeroIssueRow>({
+  const { data: syncRows, loading, error: syncError } = useSyncQuery<ZeroIssueRow>({
     queryName: 'issuesConsolidated.bySlug',
     args: slug ? { harnessSlug: slug, workspaceId } : undefined,
     enabled: !!slug,
   });
   useEffect(() => {
-    if (loading || !Array.isArray(zeroRows) || zeroRows.length === 0) return;
-    setIssues(zeroRows.map(zeroRowToIssue));
-  }, [zeroRows, loading]);
+    if (!slug) {
+      setIssues(null);
+      setError(null);
+      return;
+    }
+    if (loading || !Array.isArray(syncRows)) return;
+    setIssues(syncRows.map(zeroRowToIssue));
+  }, [slug, syncRows, loading]);
+  useEffect(() => {
+    setError(syncError ? (syncError instanceof Error ? syncError.message : String(syncError)) : null);
+  }, [syncError]);
 
   // Pending validator findings stream from harness_pending_issues (Zero).
   const { data: pendingRows } = useSyncQuery<{ issueId: string }>({
@@ -302,7 +235,7 @@ export function useHarnessIssues(slug: string): {
     args: slug ? { harnessSlug: slug, phase: 'staging', workspaceId } : undefined,
     enabled: !!slug,
   });
-  const pendingCount = Array.isArray(pendingRows) ? pendingRows.length : restPending;
+  const pendingCount = Array.isArray(pendingRows) ? pendingRows.length : 0;
 
   // Optimistic local patch (see patchFeature). Reconciled by the Zero overlay.
   const patchIssue = useCallback((id: string, partial: Partial<Issue>) => {
@@ -346,12 +279,8 @@ function toMs(v: number | string | null | undefined): number | undefined {
 }
 
 /**
- * Recent agent runs for a harness. Same shape as the Features/Issues
- * hooks: one-shot REST bootstrap (`/agents`) + a live Zero overlay
- * (`agentRunsConsolidated.bySlug`) applied only when non-empty, so an
- * initial empty Zero result never clobbers the REST baseline. No polling
- * timer — the legacy panel's 5s `setInterval` is replaced by Zero. The
- * `refresh()` re-pulls REST (useful when the harness isn't consolidated).
+ * Recent agent runs for a harness. The shared sync query is authoritative,
+ * including an empty result. `refresh()` invalidates that same cache entry.
  */
 export function useHarnessAgents(slug: string): {
   agents: HarnessAgentRun[] | null;
@@ -361,40 +290,23 @@ export function useHarnessAgents(slug: string): {
 } {
   const [agents, setAgents] = useState<HarnessAgentRun[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tick, setTick] = useState(0);
-  const refresh = useCallback(() => setTick((t) => t + 1), []);
 
-  useEffect(() => {
-    if (!slug) {
-      setAgents(null);
-      return;
-    }
-    let cancel = false;
-    setError(null);
-    fetch(`/api/harness/${encodeURIComponent(slug)}/agents?phase=staging`)
-      .then((r) => (r.ok ? (r.json() as Promise<{ runs?: HarnessAgentRun[] }>) : Promise.reject(new Error(`agents ${r.status}`))))
-      .then((j) => {
-        if (cancel) return;
-        // Don't clobber a Zero overlay that already landed for this slug.
-        setAgents((prev) => (prev && prev.length ? prev : j.runs ?? []));
-      })
-      .catch((e: Error) => {
-        if (!cancel) setError(e.message);
-      });
-    return () => {
-      cancel = true;
-    };
-  }, [slug, tick]);
-
-  const { data: zeroRows, loading } = useSyncQuery<ZeroAgentRow>({
+  const query = useSyncQuery<ZeroAgentRow>({
     queryName: 'agentRunsConsolidated.bySlug',
     args: slug ? { harnessSlug: slug } : undefined,
     enabled: !!slug,
   });
+  const { data: syncRows, loading, error: syncError } = query;
+  const refresh = useCallback(() => query.invalidate(), [query]);
   useEffect(() => {
-    if (loading || !Array.isArray(zeroRows) || zeroRows.length === 0) return;
+    if (!slug) {
+      setAgents(null);
+      setError(null);
+      return;
+    }
+    if (loading || !Array.isArray(syncRows)) return;
     setAgents(
-      zeroRows.map(
+      syncRows.map(
         (r): HarnessAgentRun => ({
           runId: r.runId,
           role: r.role,
@@ -407,7 +319,10 @@ export function useHarnessAgents(slug: string): {
         }),
       ),
     );
-  }, [zeroRows, loading]);
+  }, [slug, syncRows, loading]);
+  useEffect(() => {
+    setError(syncError ? (syncError instanceof Error ? syncError.message : String(syncError)) : null);
+  }, [syncError]);
 
   return { agents, loading: agents === null && !error, error, refresh };
 }
