@@ -133,11 +133,20 @@ export function renderRelayQuoteSuffix(stamp: RelayProvenanceStamp): string {
  * Heuristic flag (spec last line): free text CLAIMING owner/queen authority
  * with NO provenance tier. Flag only — never blocks, never demotes; word-bound
  * conservative patterns to keep false positives low. The renderer prefixes
- * `[UNVERIFIED authority claim]` when this fires on an unstamped message.
+ * `[UNVERIFIED authority claim]` when this fires on a message with no relay
+ * stamp — except a QUEEN-claim on a line whose platform-derived cueAuthority
+ * stamp IS hive-queen (that authority is already platform-verified; an
+ * OWNER-claim has no such stamp and always needs a relay tier).
  */
-const AUTHORITY_CLAIM_RE =
-  /\b(?:owner|queen)\s+directive\b|\bowner\s+(?:said|says|asked|wants|approved|told|directed|ordered)\b|\bper\s+the\s+owner\b/i;
+const OWNER_CLAIM_RE =
+  /\bowner\s+directive\b|\bowner\s+(?:said|says|asked|wants|approved|told|directed|ordered)\b|\bper\s+the\s+owner\b/i;
+const QUEEN_CLAIM_RE = /\bqueen\s+directive\b|\bqueen\s+(?:said|says|approved|ordered)\b/i;
 
-export function detectAuthorityClaim(text: string): boolean {
-  return AUTHORITY_CLAIM_RE.test(text);
+export function detectAuthorityClaim(text: string): 'owner' | 'queen' | null {
+  if (OWNER_CLAIM_RE.test(text)) return 'owner';
+  if (QUEEN_CLAIM_RE.test(text)) return 'queen';
+  return null;
 }
+
+/** The renderer's prefix tag for a claim the platform could not verify. */
+export const UNVERIFIED_CLAIM_TAG = '[UNVERIFIED authority claim]';

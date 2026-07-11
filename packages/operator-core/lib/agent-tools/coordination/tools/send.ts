@@ -22,6 +22,8 @@ import { fetchPresenceFleet } from '../presence-fleet';
 import { scopeBroadcastAudience } from '../scope-broadcast';
 import { resolveSenderCueAuthority } from '../cue-authority-resolve';
 import { CUE_AUTHORITY_FIELD, type CueAuthorityStamp } from '../cue-authority';
+import { RELAY_PROVENANCE_FIELD, type RelayProvenanceStamp } from '../relay-provenance';
+import { resolveRelayProvenance } from '../relay-provenance-resolve';
 import { sendMessage, getMessageById } from '../messages';
 import { parseSlotSelector } from '../slot-selector';
 import { wakeRecipients, reportIdleRecipients, buildStagedWakeNote } from '../inbox-wake';
@@ -47,6 +49,14 @@ interface SendMsg {
   files?: string[];
   plan_slug?: string;
   related_msg_id?: string;
+  /** H2 (coord-authority-hardening P-004): relay provenance — the coord msg_id
+   *  of the ORIGINAL you are relaying, or the 'owner-turn' sentinel for the
+   *  human turn you are currently answering. Platform-verified at send. */
+  relayOf?: string;
+  /** H2 Tier 3: a verbatim snippet of the owner turn being relayed, verified
+   *  against the CALLER's own transcript (hit → owner-verified(transcript-match),
+   *  miss → delivered stamped `unverified`). */
+  relayQuote?: string;
   wake?: boolean | 'required' | 'optimistic';
   wakeOnReply?: boolean;
   /** EI-8986: "nudge if silent" — the dual of wakeOnReply (which wakes you when
@@ -147,6 +157,20 @@ const allHiveArg = z
     "fleet-scoped-broadcast-default: consciously claim a HIVE-WIDE broadcast. If YOU are in a fleet, a bare to:['*'] is auto-scoped to your fleet (@fleet:<slug>, leader included) so routine status doesn't flood every agent — the result reports the rewrite as `scopedBroadcast`. Set allHive:true to keep '*' literal and reach EVERY agent, for system-wide issues / urgent notices only. No effect for a non-fleeted sender or a directed send.",
   );
 
+const relayOfArg = z
+  .string()
+  .optional()
+  .describe(
+    "Relaying someone else's directive/decision? Pass the ORIGINAL's coord msg_id — or the literal sentinel 'owner-turn' when relaying what the owner told you in your CURRENT turn (a TUI human turn has no msg_id). The platform verifies the reference SERVER-SIDE at send, stamps the provenance tier (coord-origin / owner-verified(turn)) and auto-inlines a bounded VERBATIM quote at delivery — receivers see the original's words, never your paraphrase, and neither side makes an extra call. A dangling msg_id is a loud relay_origin_not_found (nothing sent).",
+  );
+
+const relayQuoteArg = z
+  .string()
+  .optional()
+  .describe(
+    "Relay-provenance Tier 3 (older turns 'owner-turn' can't reach): a VERBATIM snippet of the owner turn you are relaying. Verified against your own transcript's human turns — hit → stamped owner-verified(transcript-match); miss → still delivered, stamped 'UNVERIFIED relay'.",
+  );
+
 const itemSpec = z.object({
   to: toArg,
   summary: summaryArg,
@@ -154,6 +178,8 @@ const itemSpec = z.object({
   files: z.array(z.string()).optional(),
   plan_slug: z.string().optional(),
   related_msg_id: z.string().optional(),
+  relayOf: relayOfArg,
+  relayQuote: relayQuoteArg,
   wake: wakeArg,
   wakeOnReply: wakeOnReplyArg,
   replyDeadlineSec: replyDeadlineSecArg,
@@ -225,6 +251,31 @@ async function sendOne(
     }
   }
 
+  // H2 (coord-authority-hardening P-004): resolve the sender's relay reference
+  // into a platform-verified provenance stamp — server-side, zero extra sender
+  // calls (the reference rides the send itself). A dangling tier-1 msg_id
+  // REFUSES the message (loud beats laundering a reference nobody can verify);
+  // everything else fail-softs to a stamped-but-unverified delivery.
+  let relayStamp: RelayProvenanceStamp | null = null;
+  if (msg.relayOf || msg.relayQuote) {
+    const r = await resolveRelayProvenance(identity, {
+      relayOf: msg.relayOf,
+      relayQuote: msg.relayQuote,
+    });
+    if (r.error) {
+      return {
+        ok: false,
+        to: msg.to,
+        error: r.error,
+        message:
+          `relayOf '${msg.relayOf}' matches no coord message — nothing was sent. Pass the ` +
+          `ORIGINAL's msg_id (from your inbox/feed line), the 'owner-turn' sentinel for the ` +
+          `human turn you are answering, or relayQuote with a verbatim snippet of it.`,
+      };
+    }
+    relayStamp = r.stamp;
+  }
+
   // EI-279: persist the wake intent ON the envelope so it federates — a recipient
   // homed on a REMOTE instance is woken by the coord-message projection's fan when
   // the row arrives there (the local fan below only covers THIS instance's await
@@ -232,6 +283,7 @@ async function sendOne(
   // send opted in, so a FUTURE reply (which looks the original up by msg_id) can see
   // the opt-in and wake us back. Both keys merge onto the persisted envelope.
   const extra: Record<string, unknown> = {};
+  if (relayStamp) extra[RELAY_PROVENANCE_FIELD] = relayStamp;
   if (wakeMode) extra.wake = true;
   if (effectiveWakeOnReply) extra.wakeOnReply = true;
   // EI-8986: stamp an absolute deadline (epoch ms) so the reply-deadline-sweep
@@ -693,6 +745,8 @@ export default defineTool({
     files: z.array(z.string()).optional(),
     plan_slug: z.string().optional(),
     related_msg_id: z.string().optional(),
+    relayOf: relayOfArg,
+    relayQuote: relayQuoteArg,
     wake: wakeArg,
     wakeOnReply: wakeOnReplyArg,
     endTurn: endTurnArg,
@@ -729,6 +783,8 @@ export default defineTool({
             files: args.files,
             plan_slug: args.plan_slug,
             related_msg_id: args.related_msg_id,
+            relayOf: args.relayOf,
+            relayQuote: args.relayQuote,
             wake: args.wake,
             wakeOnReply: args.wakeOnReply,
             endTurn: args.endTurn,

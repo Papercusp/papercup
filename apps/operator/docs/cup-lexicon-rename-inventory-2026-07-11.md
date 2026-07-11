@@ -71,15 +71,26 @@ otherwise), and the `THE_HIVE`/`RED_QUEEN` flag identifiers.
 
 ---
 
-## 2. ⚠ COLLISION MAP — the p2p fleet is LIVE (as of 2026-07-11 ~11:30 EDT)
+## 2. COLLISION MAP — the p2p backend surface (verify QUIET before editing)
 
-The owner's earlier "I've paused the p2p fleet until you finish" was **reversed**
-— `p2p-parity-lanes`, `p2p-rest-sonnet-5`, `p2p-git`, `p2p-blocker-crack-sonnet5`,
-`p2p-live-federation-crack` are **actively editing** the sync/federation layer
-right now (~20 agents). **Re-verify live state before editing any backend file**:
-`coord:presence { scope:'workspace' }` + `locks:list` on the target path.
+The bulk of the operator-core rename mass is the p2p/sync/cross-hive/federation
+layer — the shared surface a p2p fleet edits when active. **As of 2026-07-11
+11:49 EDT this surface is QUIET, not under active edit:** the p2p fleet members
+are **parked/idle** (last activity 2.5h–20h ago), `git status` shows **ZERO
+uncommitted p2p-backend edits**, and the newest write to any p2p file was
+**~08:58 EDT**. There is NO active collision right now; the risk is **latent** —
+parked members are wakeable and could be re-assigned p2p work.
 
-### DEFER until the p2p fleet verifiably pauses/finishes (or coordinate per-file):
+⚠ **Do not infer edit-activity from the roster.** Fleet MEMBERSHIP
+(`fleet: p2p-*`), session `state: live`/`parked`, and a present-tense declared
+INTENT ("resume drain") are NOT evidence anyone is editing — most are stale
+post-compaction intents on idle sessions (`intentStale: true`, `lastActiveSecAgo`
+in the thousands). **Check the WORKING TREE + locks (ground truth) per file at
+edit time:** `git status --porcelain <path>` (uncommitted edits), file mtime, and
+`locks:list` / `coord:presence { include_detail:true }` heldFiles. If those are
+clean, the file is safe to edit now.
+
+### p2p-hot surface (edit only after a working-tree/lock check; coordinate if a member is genuinely re-activated):
 Everything under `packages/operator-core/lib/` matching the p2p/sync/federation
 surface — this is the MAJORITY of the 20,777 operator-core hits and the 373
 operator-core file-renames:
