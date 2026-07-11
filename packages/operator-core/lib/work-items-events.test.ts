@@ -373,6 +373,88 @@ describe('emitWorkItemCreatedEvent (EI-8296)', () => {
   });
 });
 
+describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
+  it('fires the GLOBAL work-item:claimable key with id/kind/severity/harness/title/state/reason', async () => {
+    const emit = typedEmit();
+    const { emitWorkItemClaimableEvent } = await import('./work-items-events');
+    emitWorkItemClaimableEvent(
+      wi({ id: 'WI-30', kind: 'task', state: 'todo', assignee: null, harness: 'papercusp', title: 'fresh work' }),
+      'created',
+      { emit },
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit).toHaveBeenCalledOnce();
+    expect(emit.mock.calls[0][0]).toMatchObject({
+      key: 'work-item:claimable',
+      source: 'work-items',
+      payload: expect.objectContaining({
+        id: 'WI-30',
+        kind: 'task',
+        harness: 'papercusp',
+        title: 'fresh work',
+        state: 'todo',
+        reason: 'created',
+      }),
+    });
+  });
+
+  it('the guard drops an ASSIGNED item — claimable never advertises work a pull would refuse', async () => {
+    const emit = typedEmit();
+    const { emitWorkItemClaimableEvent } = await import('./work-items-events');
+    emitWorkItemClaimableEvent(wi({ id: 'WI-31', state: 'todo', assignee: 'su-holder' }), 'created', { emit });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('the guard drops a NON-CLAIMABLE state (wip / blocked / terminal); claimable states pass', async () => {
+    const { emitWorkItemClaimableEvent } = await import('./work-items-events');
+    for (const state of ['wip', 'blocked', 'resolved', 'closed']) {
+      const emit = typedEmit();
+      emitWorkItemClaimableEvent(wi({ id: 'WI-32', state, assignee: null }), 'released', { emit });
+      await new Promise((r) => setTimeout(r, 0));
+      expect(emit, `state '${state}' must not fire`).not.toHaveBeenCalled();
+    }
+    for (const state of ['todo', 'open', 'failing']) {
+      const emit = typedEmit();
+      emitWorkItemClaimableEvent(wi({ id: 'WI-33', state, assignee: null }), 'released', { emit });
+      await new Promise((r) => setTimeout(r, 0));
+      expect(emit, `state '${state}' must fire`).toHaveBeenCalledOnce();
+    }
+  });
+
+  it('CO-FIRES from the unblocked path for an unassigned claimable dependent (reason: unblocked)', async () => {
+    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null, waiters: 0 }));
+    const dependent = wi({ id: 'WI-DEP', state: 'open', assignee: null });
+    const otherBlockerSettled = wi({ id: 'WI-B2', state: 'closed' });
+    await emitUnblockedOnEdgeRemoved({ kind: 'issue', ref: 'WI-DEP' }, 'WI-1', {
+      emit: emit as never,
+      getItem: vi.fn(async (id: string) =>
+        id === 'WI-DEP' ? dependent : id === 'WI-B2' ? otherBlockerSettled : null,
+      ) as never,
+      listIn: vi.fn(async () => [edge('WI-B2', 'WI-DEP')]) as never,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    const keys = emit.mock.calls.map((c) => (c as unknown as [{ key: string }])[0].key).sort();
+    expect(keys).toEqual(['work-item:claimable', 'work-item:unblocked:WI-DEP']);
+    const claimable = emit.mock.calls
+      .map((c) => (c as unknown as [{ key: string; payload: { reason?: string } }])[0])
+      .find((a) => a.key === 'work-item:claimable');
+    expect(claimable?.payload.reason).toBe('unblocked');
+  });
+
+  it('never rejects on an emit failure (warns instead)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { emitWorkItemClaimableEvent } = await import('./work-items-events');
+    const emit = vi.fn(async () => { throw new Error('pg down'); });
+    expect(() =>
+      emitWorkItemClaimableEvent(wi({ state: 'todo', assignee: null }), 'created', { emit: emit as never }),
+    ).not.toThrow();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('claimable-event'));
+    warn.mockRestore();
+  });
+});
+
 describe('emitWorkItemStatusEvent (P-101 — the general per-transition key)', () => {
   it('fires work-item:status:<id> carrying prevState → state on the payload', async () => {
     const emit = typedEmit();
