@@ -89,4 +89,17 @@ describe('P-006 idle-loop recipe pin (composable-event-awaits-2026-07-11)', () =
       expect(text).toMatch(/authoritative claim/i);
     });
   }
+
+  // P-007 audit follow-up: the OTHER claim-spec self-pullers — a pot cup and the
+  // blueprint fleet-member su — park on the same one-leaf recipe when drained
+  // (get_next's own notWhen names exactly these two as the self-puller personas).
+  // Mug/kettle/blender do NOT self-pull, so their prompts stay recipe-free.
+  const BLUEPRINT_PROMPTS = join(REPO, 'libs/papercusp/packages/harness/blueprints/base/prompts');
+  for (const file of ['cup.base.md', 'su.md']) {
+    it(`${file} teaches the idle claimable-await park (the blueprint self-puller surface)`, () => {
+      const text = readFileSync(join(BLUEPRINT_PROMPTS, file), 'utf8');
+      for (const m of RECIPE_MARKERS) expect(text).toContain(m);
+      expect(text).toMatch(/authoritative claim/i);
+    });
+  }
 });
