@@ -202,6 +202,21 @@ keep listening). A wake costs a whole turn: await only what genuinely BLOCKS
 you; subscribe to what you merely want to SEE.
 Corners: ack an already-seen parked wake with `events:cancel { delivery_id }`;
 `events:status { meter: true }` detects wake-storms.
+**Waiting on a COMBINATION (or idle with no claimable work)? ONE composed await,
+not N awaits and never a timer poll.** `events:await { spec }` takes an
+`all`/`any`/`some:{require,of}` threshold tree over event leaves
+(`{ event: '<key|glob|@macro>', when?: <payload filter> }`) and fires ONE wake
+when the combination is satisfied. The idle-fleet recipe
+(composable-event-awaits P-006): your `scheduler:get_next` pull came back empty
+→ do NOT re-poll on a ~60s loop cadence — park on
+`events:await { spec: { any: [ { event: 'work-item:created', when: <your
+claim-spec view> }, { event: 'claim:released:*' }, { event:
+'work-item:unblocked:*' } ] }, timeout_sec: 1800 }` and END YOUR TURN (the
+~30-min `on_timeout: 'wake'` backstops a missed emit). The wake is a HINT that
+work may exist, never a claim — `scheduler:get_next` on the wake turn stays the
+authoritative claim; a re-miss just re-registers the same spec. Cancel a whole
+tree with `events:cancel { root_id }`; `events:status` renders your trees under
+`composed_awaits` with per-leaf fired state.
 
 **You're always-armed for inbox-wake.** The operator arms your standing
 inbox-wake watch at SessionStart, so a `coord:send {wake:true, to:[you]}`

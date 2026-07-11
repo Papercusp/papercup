@@ -388,7 +388,7 @@ describe('new-hive mode', () => {
 
   it('shows + copies the FULL invite link when present, instead of the bare secret (hardening P-006)', async () => {
     const user = userEvent.setup();
-    const inviteLink = `papercusp://hive?pubkey=${encodeURIComponent('B'.repeat(43) + '=')}&secret=${'ab12'.repeat(8)}&title=web-hive`;
+    const inviteLink = `papercusp://pot?pubkey=${encodeURIComponent('B'.repeat(43) + '=')}&secret=${'ab12'.repeat(8)}&title=web-hive`;
     respondByUrl({
       '/api/harness/pots/from-repo': {
         status: 200,

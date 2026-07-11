@@ -544,7 +544,7 @@ function ExistingLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () 
 // ── Hive-invite join form (hive-from-repo-hardening P-006 / D-006) ─────────
 
 /**
- * The INVITEE side of a `papercusp://hive?...` invite artifact: paste the
+ * The INVITEE side of a `papercusp://pot?...` invite artifact: paste the
  * link → POST /api/discovery/join-invite → the loopback route joins the
  * invite-scoped directory topic, so the hive's announce lands in the Hives
  * panel. No clone, no harness — joining the directory is the whole action.
@@ -569,7 +569,7 @@ function HiveInviteForm({
     const trimmed = link.trim();
     // Same strict parser the route runs — instant feedback, zero round-trip.
     if (!parseHiveInviteLink(trimmed)) {
-      setError(`That doesn’t look like a ${hiveLower} invite link — expected papercusp://hive?secret=…`);
+      setError(`That doesn’t look like a ${hiveLower} invite link — expected papercusp://pot?secret=…`);
       return;
     }
     setBusy(true);
@@ -586,7 +586,7 @@ function HiveInviteForm({
           body.code === 'directory_unavailable'
             ? `The ${hiveLower} directory isn’t available on this machine — run \`gh auth login\` in your terminal, then retry.`
             : body.code === 'invalid_link'
-              ? `That doesn’t look like a ${hiveLower} invite link — expected papercusp://hive?secret=…`
+              ? `That doesn’t look like a ${hiveLower} invite link — expected papercusp://pot?secret=…`
               : body.error || `HTTP ${res.status}`,
         );
         setBusy(false);
@@ -635,12 +635,12 @@ function HiveInviteForm({
         <textarea
           value={link}
           onChange={(e) => { setLink(e.target.value); setError(null); }}
-          placeholder="papercusp://hive?pubkey=…&secret=…&title=…"
+          placeholder="papercusp://pot?pubkey=…&secret=…&title=…"
           rows={3}
           style={{ ...inputStyle, resize: 'vertical', fontFamily: 'var(--font-mono, monospace)' }}
           autoFocus
         />
-        <HintText>The full papercusp://hive?… link — the bare secret alone won&rsquo;t work.</HintText>
+        <HintText>The full papercusp://pot?… link — the bare secret alone won&rsquo;t work.</HintText>
       </Label>
       <SubmitRow busy={busy} label="Join" busyLabel="Joining…" onBack={onBack} />
     </form>
@@ -828,7 +828,7 @@ function buildSections(opts: {
           key: 'hive-invite',
           step: 'hive-invite',
           label: `${capitalize(hiveLower)} invite`,
-          description: `Paste a papercusp://hive invite link to join a private ${hiveLower}.`,
+          description: `Paste a papercusp://pot invite link to join a private ${hiveLower}.`,
           icon: '✉️',
         },
       ],

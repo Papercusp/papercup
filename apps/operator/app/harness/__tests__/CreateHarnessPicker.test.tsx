@@ -501,14 +501,14 @@ describe('P-009 — Search GitHub entry', () => {
 // ── P-006 — the Join "Hive invite" card (invitee side) ─────────────────────
 
 describe('P-006 — Hive invite card', () => {
-  const INVITE_LINK = `papercusp://hive?secret=${'deadbeef'.repeat(4)}&title=Acme+Shop`;
+  const INVITE_LINK = `papercusp://pot?secret=${'deadbeef'.repeat(4)}&title=Acme+Shop`;
 
   it('the card opens the join form', async () => {
     const user = userEvent.setup();
     renderPicker();
     await user.click(screen.getByText('Hive invite'));
     screen.getByRole('heading', { name: 'Join a hive by invite' });
-    screen.getByPlaceholderText('papercusp://hive?pubkey=…&secret=…&title=…');
+    screen.getByPlaceholderText('papercusp://pot?pubkey=…&secret=…&title=…');
   });
 
   it('joining POSTs the artifact to /api/discovery/join-invite and shows the success copy', async () => {
@@ -523,7 +523,7 @@ describe('P-006 — Hive invite card', () => {
     });
     await user.click(screen.getByText('Hive invite'));
     await user.type(
-      screen.getByPlaceholderText('papercusp://hive?pubkey=…&secret=…&title=…'),
+      screen.getByPlaceholderText('papercusp://pot?pubkey=…&secret=…&title=…'),
       INVITE_LINK,
     );
     await user.click(screen.getByRole('button', { name: 'Join' }));
@@ -555,7 +555,7 @@ describe('P-006 — Hive invite card', () => {
     renderPicker();
     await user.click(screen.getByText('Hive invite'));
     await user.type(
-      screen.getByPlaceholderText('papercusp://hive?pubkey=…&secret=…&title=…'),
+      screen.getByPlaceholderText('papercusp://pot?pubkey=…&secret=…&title=…'),
       'not-an-invite-link',
     );
     await user.click(screen.getByRole('button', { name: 'Join' }));
@@ -573,7 +573,7 @@ describe('P-006 — Hive invite card', () => {
     );
     await user.click(screen.getByText('Hive invite'));
     await user.type(
-      screen.getByPlaceholderText('papercusp://hive?pubkey=…&secret=…&title=…'),
+      screen.getByPlaceholderText('papercusp://pot?pubkey=…&secret=…&title=…'),
       INVITE_LINK,
     );
     await user.click(screen.getByRole('button', { name: 'Join' }));

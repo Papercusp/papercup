@@ -10,7 +10,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
  *   - visibility (public / invite / private) with consequence copy per option
  *   - title + description (the directory listing's face)
  *   - the member repos the publish will list (derived server-side, fresh)
- *   - the `papercusp://hive` invite artifact for invite mode — REUSING the
+ *   - the `papercusp://pot` invite artifact for invite mode — REUSING the
  *     stored secret on edit (re-minting would orphan every link already
  *     handed out; mint only when none exists)
  *

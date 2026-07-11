@@ -165,7 +165,7 @@ export function HowSharingWorksModal({ open, onClose }: { open: boolean; onClose
       </Section>
 
       <Section summary="Invite links">
-        An invite link (<code>papercusp://hive?…</code>) lets someone join an invite-only {hive} without it
+        An invite link (<code>papercusp://pot?…</code>) lets someone join an invite-only {hive} without it
         appearing in the public directory. The secret is shown <strong style={{ color: 'var(--fg)' }}>once</strong>{' '}
         at publish — share it only with people you’re inviting; anyone holding the link can join.
       </Section>

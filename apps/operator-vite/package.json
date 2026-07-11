@@ -8,7 +8,8 @@
     "dev:nohmr": "bin/vite-watch-singleton",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@bprogress/react": "^1.2.7",

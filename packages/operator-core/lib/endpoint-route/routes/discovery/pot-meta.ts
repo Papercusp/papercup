@@ -7,7 +7,7 @@
  * published — the "unpublished" chrome state), title/description prefill for
  * the Share-Hive dialog, the invite secret (so the owner can re-copy the
  * invite artifact instead of losing it after the first mint), the hive
- * identity pubkey (for the FULL `papercusp://hive` artifact), and the member
+ * identity pubkey (for the FULL `papercusp://pot` artifact), and the member
  * repos the next publish will list (derived fresh, same as the announce-build
  * enricher — member additions surface here before a republish).
  *

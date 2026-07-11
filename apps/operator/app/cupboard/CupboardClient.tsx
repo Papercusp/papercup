@@ -1366,7 +1366,7 @@ export function HiveRollupHeaderCard({
             <input
               value={inviteLink}
               onChange={(e) => setInviteLink(e.target.value)}
-              placeholder="papercusp://hive?pubkey=…&secret=… invite link"
+              placeholder="papercusp://pot?pubkey=…&secret=… invite link"
               data-testid="cupboard-hive-invite-input"
               className="pc-input"
               style={{ flex: 1, minWidth: 220, fontFamily: FONTS.mono, fontSize: 12 }}

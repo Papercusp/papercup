@@ -102,8 +102,8 @@ describe('POST /api/discovery/join-invite (P-006)', () => {
     ['empty link', { link: '' }],
     ['not a hive link', { link: 'papercusp://harness?topic=' + 'a'.repeat(64) }],
     ['bare secret, not an artifact', { link: SECRET }],
-    ['extra param', { link: `papercusp://hive?secret=${SECRET}&evil=1` }],
-    ['short secret', { link: 'papercusp://hive?secret=abcd' }],
+    ['extra param', { link: `papercusp://pot?secret=${SECRET}&evil=1` }],
+    ['short secret', { link: 'papercusp://pot?secret=abcd' }],
   ])('400s a malformed body (%s) without touching the wiring', async (_label, body) => {
     const { status, body: out } = await post(body);
     expect(status).toBe(400);

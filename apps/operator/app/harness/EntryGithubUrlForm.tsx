@@ -226,7 +226,7 @@ interface ExistingOffer {
 interface PublishOutcome {
   announced?: boolean;
   inviteSecret?: string;
-  /** Hardening P-006 (D-006): the full shareable `papercusp://hive?...` artifact. */
+  /** Hardening P-006 (D-006): the full shareable `papercusp://pot?...` artifact. */
   inviteLink?: string;
   cupboard?: { attempted?: boolean; rowsCreated?: number; rowsFailed?: number; errors?: string[]; skipped?: string };
   // True-private is RETIRED — a private repo now publishes a hidden invite

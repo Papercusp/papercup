@@ -1,5 +1,5 @@
 /**
- * hive-invite-link.test.ts — the `papercusp://hive?...` invite artifact
+ * hive-invite-link.test.ts — the `papercusp://pot?...` invite artifact
  * (hive-from-repo-hardening-2026-06-11 P-006 / D-006). Round-trip + the
  * strict malformed matrix (null on anything off-shape, never a throw).
  */
@@ -17,7 +17,7 @@ const SECRET = 'a1b2c3d4e5f60718a1b2c3d4e5f60718'; // 32 hex chars
 describe('formatHiveInviteLink ↔ parseHiveInviteLink round-trip', () => {
   it('round-trips the full artifact (pubkey + secret + title)', () => {
     const link = formatHiveInviteLink({ pubkeyBase64: PUBKEY, secret: SECRET, title: 'Acme Shop' });
-    expect(link.startsWith('papercusp://hive?')).toBe(true);
+    expect(link.startsWith('papercusp://pot?')).toBe(true);
     expect(parseHiveInviteLink(link)).toEqual({
       secret: SECRET,
       pubkeyBase64: PUBKEY,
@@ -63,8 +63,8 @@ describe('formatHiveInviteLink ↔ parseHiveInviteLink round-trip', () => {
   // raised from 16 (64 bits) to match the 256-bit minting. Defense-in-depth.
   it('X-1: accepts exactly 32 hex (128-bit floor) but REJECTS 31 hex and the old 16-hex floor', () => {
     expect(parseHiveInviteLink(formatHiveInviteLink({ secret: 'a'.repeat(32) }))).not.toBeNull(); // 128-bit ok
-    expect(parseHiveInviteLink(`papercusp://hive?secret=${'a'.repeat(31)}`)).toBeNull(); // one under the floor
-    expect(parseHiveInviteLink(`papercusp://hive?secret=${'deadbeef'.repeat(2)}`)).toBeNull(); // 16 hex (old floor) now rejected
+    expect(parseHiveInviteLink(`papercusp://pot?secret=${'a'.repeat(31)}`)).toBeNull(); // one under the floor
+    expect(parseHiveInviteLink(`papercusp://pot?secret=${'deadbeef'.repeat(2)}`)).toBeNull(); // 16 hex (old floor) now rejected
     expect(parseHiveInviteLink(formatHiveInviteLink({ secret: 'a'.repeat(64) }))).not.toBeNull(); // the real 256-bit minted length
   });
 });
@@ -78,28 +78,29 @@ describe('parseHiveInviteLink — malformed matrix (null, never throw)', () => {
     ['not a url', 'not a url'],
     ['wrong scheme', `https://hive?secret=${SECRET}`],
     ['wrong host (harness)', `papercusp://harness?secret=${SECRET}`],
-    ['wrong host (hives)', `papercusp://hives?secret=${SECRET}`],
-    ['missing secret', `papercusp://hive?pubkey=${encodeURIComponent(PUBKEY)}`],
-    ['empty secret', 'papercusp://hive?secret='],
-    ['secret too short (<32)', 'papercusp://hive?secret=abcdef0123'],
-    ['secret too long (>128)', `papercusp://hive?secret=${'a'.repeat(129)}`],
-    ['secret not hex', `papercusp://hive?secret=${'g'.repeat(32)}`],
+    ['wrong host (pots)', `papercusp://pots?secret=${SECRET}`],
+    ['old host (hive) now rejected', `papercusp://hive?secret=${SECRET}`],
+    ['missing secret', `papercusp://pot?pubkey=${encodeURIComponent(PUBKEY)}`],
+    ['empty secret', 'papercusp://pot?secret='],
+    ['secret too short (<32)', 'papercusp://pot?secret=abcdef0123'],
+    ['secret too long (>128)', `papercusp://pot?secret=${'a'.repeat(129)}`],
+    ['secret not hex', `papercusp://pot?secret=${'g'.repeat(32)}`],
     ['extra param', `${valid}&evil=1`],
-    ['duplicated secret param', `papercusp://hive?secret=${SECRET}&secret=${SECRET}`],
-    ['pubkey not base64', `papercusp://hive?pubkey=${'!'.repeat(44)}&secret=${SECRET}`],
+    ['duplicated secret param', `papercusp://pot?secret=${SECRET}&secret=${SECRET}`],
+    ['pubkey not base64', `papercusp://pot?pubkey=${'!'.repeat(44)}&secret=${SECRET}`],
     [
       'pubkey wrong byte length (31B)',
-      `papercusp://hive?pubkey=${encodeURIComponent(Buffer.alloc(31, 7).toString('base64'))}&secret=${SECRET}`,
+      `papercusp://pot?pubkey=${encodeURIComponent(Buffer.alloc(31, 7).toString('base64'))}&secret=${SECRET}`,
     ],
     [
       'pubkey wrong byte length (33B)',
-      `papercusp://hive?pubkey=${encodeURIComponent(Buffer.alloc(33, 7).toString('base64'))}&secret=${SECRET}`,
+      `papercusp://pot?pubkey=${encodeURIComponent(Buffer.alloc(33, 7).toString('base64'))}&secret=${SECRET}`,
     ],
-    ['empty pubkey', `papercusp://hive?pubkey=&secret=${SECRET}`],
-    ['empty title', `papercusp://hive?secret=${SECRET}&title=`],
+    ['empty pubkey', `papercusp://pot?pubkey=&secret=${SECRET}`],
+    ['empty title', `papercusp://pot?secret=${SECRET}&title=`],
     [
       'title over 200 chars',
-      `papercusp://hive?secret=${SECRET}&title=${encodeURIComponent('x'.repeat(201))}`,
+      `papercusp://pot?secret=${SECRET}&title=${encodeURIComponent('x'.repeat(201))}`,
     ],
   ])('%s → null', (_label, input) => {
     expect(parseHiveInviteLink(input)).toBeNull();

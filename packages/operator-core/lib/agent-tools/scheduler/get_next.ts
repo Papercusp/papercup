@@ -21,6 +21,28 @@ import { getNextForBee, resolveClaimSpecWorkspace } from '../../scheduler/claim-
 import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
 import { matchRoutingGateHint } from '../../routing-gate-hints';
 
+/**
+ * P-006 (composable-event-awaits-2026-07-11): the idle-puller recipe, delivered at the
+ * exact moment it applies — an EMPTY pull. Retires the ~60s idle re-poll cadence: park
+ * on ONE composed threshold-tree await over the three "new work may exist" families
+ * (work-item:created fires on EVERY create with {id,kind,severity,harness,title} in the
+ * payload — EI-8296 — so `when` can narrow it to your claim spec's view; claim:released:<id>
+ * fires on voluntary release + reaper reclaim — P-105; work-item:unblocked:<id> fires on a
+ * blocked→unblocked edge), with the ~30-min on_timeout 'wake' as the missed-emit backstop.
+ * The wake is a HINT, never a claim — get_next stays the single authoritative claim path,
+ * so a spurious/racing wake costs one cheap re-miss, never a double-claim.
+ * Exported for the recurrence-guard pin test (idle-loop-recipe-pin.test.ts).
+ */
+export const IDLE_PULL_MISS_ADVICE =
+  'Idle recipe (composable-event-awaits P-006): do NOT re-poll on a timer — register ONE composed await and END YOUR TURN: ' +
+  'events:await { spec: { any: [ ' +
+  '{ event: "work-item:created", when: { harness: { eq: "<your-harness>" } } /* narrow to your claim spec\'s view */ }, ' +
+  '{ event: "claim:released:*" }, ' +
+  '{ event: "work-item:unblocked:*" } ' +
+  '] }, timeout_sec: 1800 } — the ~30-min on_timeout "wake" is the missed-emit backstop. ' +
+  'The wake is a HINT that work may exist, never a claim: scheduler:get_next stays the AUTHORITATIVE claim on the wake turn; ' +
+  'if it misses again, re-register the same spec and end your turn again.';
+
 export default defineTool({
   name: 'scheduler:get_next',
   profile: 'engineer',
@@ -31,7 +53,7 @@ export default defineTool({
     notWhen:
       'You are a coding-FACTORY pipeline role (scoper/architect/worker/validator/…): you are PUSHED a FEATURE_ID by the orchestrator spine and do NOT self-pull — never call get_next. Claiming a SPECIFIC item by id — that is work_items:claim. Plain oldest-first self-select with NO per-agent spec — work_items:claim_next.',
     chaining:
-      'scheduler:get_next → work_items:set_state (progress) → work_items:release. Your queen or fleet leader re-steers you via scheduler:set_claim_spec (the spec revision bumps; you pick it up on your next get_next).',
+      'scheduler:get_next → work_items:set_state (progress) → work_items:release. Your queen or fleet leader re-steers you via scheduler:set_claim_spec (the spec revision bumps; you pick it up on your next get_next). A MISS returns the idle recipe: park on ONE composed events:await spec — never a timer re-poll.',
     seeAlso: [
       'work_items:claim_next (plain oldest-first self-select, no spec)',
       'work_items:claim (claim a SPECIFIC item by id)',
@@ -124,7 +146,13 @@ export default defineTool({
                   ...(warning ? { warning } : {}),
                   ...(routingHint ? { routingHint } : {}),
                 }
-              : { ok: false, error: 'no claimable work-item matched your spec within the floors' },
+              : {
+                  ok: false,
+                  error: 'no claimable work-item matched your spec within the floors',
+                  // P-006: teach the composed-await idle recipe exactly where the idle
+                  // moment happens, instead of leaving the caller to a 60s re-poll.
+                  advice: IDLE_PULL_MISS_ADVICE,
+                },
           ),
         },
       ],

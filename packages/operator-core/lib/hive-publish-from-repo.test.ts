@@ -156,7 +156,7 @@ describe('publishCreatedHive (P-007)', () => {
     const out = await publishCreatedHive({ ...BASE, visibility: 'invite' }, deps);
     expect(out.hivePubkey).toBe(HIVE_PUBKEY);
     expect(out.inviteLink).toBeDefined();
-    expect(out.inviteLink!.startsWith('papercusp://hive?')).toBe(true);
+    expect(out.inviteLink!.startsWith('papercusp://pot?')).toBe(true);
     expect(parseHiveInviteLink(out.inviteLink!)).toEqual({
       secret: INVITE_SECRET,
       pubkeyBase64: HIVE_PUBKEY,

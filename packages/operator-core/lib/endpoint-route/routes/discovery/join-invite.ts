@@ -2,7 +2,7 @@
  * POST /api/discovery/join-invite — the INVITEE side of a hive invite
  * (hive-from-repo-hardening-2026-06-11 P-006 / D-006).
  *
- * Body: { link: 'papercusp://hive?pubkey=…&secret=…&title=…' }. Parses the
+ * Body: { link: 'papercusp://pot?pubkey=…&secret=…&title=…' }. Parses the
  * invite artifact strictly (parseHiveInviteLink — null on anything off-shape),
  * lazily wires the hive directory if needed, and joins the invite-scoped
  * directory topic derived from the secret so the invite hive's announce is

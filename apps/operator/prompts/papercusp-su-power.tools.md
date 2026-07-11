@@ -179,6 +179,18 @@ awake → ack with `events:cancel { delivery_id }`; `events:status
 { meter: true }` detects wake-storms. **notify ≠ wake** — `topics:subscribe`
 never wakes you, and a wake costs a whole turn: await only what genuinely
 blocks you. (`await-event-primitive-2026-06-05`.)
+**Waiting on a COMBINATION (or idle with no claimable work)? ONE composed
+await** — `events:await { spec }` takes an `all`/`any`/`some:{require,of}`
+threshold tree over event leaves (`{ event: '<key|glob|@macro>', when? }`) and
+fires ONE wake when satisfied. Idle-fleet recipe
+(composable-event-awaits P-006): an empty `scheduler:get_next` pull parks on
+`events:await { spec: {
+any: [ { event: 'work-item:created', when: <your claim-spec view> }, { event:
+'claim:released:*' }, { event: 'work-item:unblocked:*' } ] }, timeout_sec:
+1800 }` — never a ~60s re-poll. The wake is a HINT; `scheduler:get_next` on
+the wake turn stays the authoritative claim (re-register on a re-miss).
+`events:cancel { root_id }` kills a whole tree; `events:status` shows
+`composed_awaits`.
 
 **You're always-armed for inbox-wake.** The operator arms your standing
 `coord:inbox-wake:<self>` watch at SessionStart, so a `coord:send {wake:true,

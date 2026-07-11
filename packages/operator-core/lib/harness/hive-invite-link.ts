@@ -1,12 +1,12 @@
 /**
- * hive-invite-link — format + parse `papercusp://hive?...` invite links
+ * hive-invite-link — format + parse `papercusp://pot?...` invite links
  * (hive-from-repo-hardening-2026-06-11 P-006, design D-006).
  *
  * One shareable invite ARTIFACT instead of a bare secret:
- *   papercusp://hive?pubkey=<base64-32B>&secret=<hex>&title=<urlencoded>
+ *   papercusp://pot?pubkey=<base64-32B>&secret=<hex>&title=<urlencoded>
  *
  * Strict rules (patterned on `url-scheme.ts`):
- *   - Protocol must be `papercusp:`; host must be `hive`.
+ *   - Protocol must be `papercusp:`; host must be `pot`.
  *   - Param allowlist: `pubkey`, `secret`, `title`. Extra params rejected;
  *     duplicated params rejected.
  *   - `secret`: REQUIRED — the invite-topic secret, 32–128 hex chars
@@ -21,7 +21,7 @@
  * SPA-bundle-safe (no node:crypto/Buffer — same rule as harness-link-types).
  */
 
-/** Parsed representation of a `papercusp://hive?...` invite link. */
+/** Parsed representation of a `papercusp://pot?...` invite link. */
 export interface HiveInviteLink {
   /** The invite-topic secret, verbatim as shared (32–128 hex chars = 128–512 bits). */
   secret: string;
@@ -31,7 +31,7 @@ export interface HiveInviteLink {
   title?: string;
 }
 
-export const HIVE_INVITE_LINK_PREFIX = 'papercusp://hive';
+export const HIVE_INVITE_LINK_PREFIX = 'papercusp://pot';
 
 /** Exact set of accepted query-param keys. Any extra key → null. */
 const ALLOWED_PARAMS = ['pubkey', 'secret', 'title'] as const;
@@ -70,7 +70,7 @@ export function isValidHivePubkeyBase64(s: string): boolean {
 }
 
 /**
- * Build a `papercusp://hive?...` invite link. `secret` is required; `pubkey`
+ * Build a `papercusp://pot?...` invite link. `secret` is required; `pubkey`
  * and `title` are emitted only when provided. Title is clamped to
  * HIVE_INVITE_TITLE_MAX so the artifact always round-trips through
  * `parseHiveInviteLink`. Caller is responsible for a valid secret/pubkey
@@ -89,7 +89,7 @@ export function formatHiveInviteLink(input: {
 }
 
 /**
- * Parse a `papercusp://hive?...` invite link. Returns `HiveInviteLink` on
+ * Parse a `papercusp://pot?...` invite link. Returns `HiveInviteLink` on
  * success, `null` on any malformed input. Never throws.
  */
 export function parseHiveInviteLink(url: string): HiveInviteLink | null {
@@ -106,7 +106,7 @@ export function parseHiveInviteLink(url: string): HiveInviteLink | null {
   }
 
   if (parsed.protocol !== 'papercusp:') return null;
-  if (parsed.host !== 'hive') return null;
+  if (parsed.host !== 'pot') return null;
 
   // Reject extra params; reject duplicated allowlisted params.
   for (const key of parsed.searchParams.keys()) {

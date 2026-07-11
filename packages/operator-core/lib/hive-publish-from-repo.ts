@@ -48,7 +48,7 @@ export interface PublishCreatedHiveOutcome {
   inviteSecret?: string;
   /**
    * Hardening P-006 (D-006): the shareable invite ARTIFACT —
-   * `papercusp://hive?pubkey=…&secret=…&title=…` — formatted whenever an
+   * `papercusp://pot?pubkey=…&secret=…&title=…` — formatted whenever an
    * inviteSecret is minted (secret-only when the pubkey isn't loadable).
    */
   inviteLink?: string;
