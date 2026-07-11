@@ -35,6 +35,7 @@ import {
   writeSleepUntilMs,
 } from '@papercusp/operator-core/lib/operator-converse-tags';
 import { useLexicon } from '@/lib/useLexicon';
+import { loadVoicePrefsClient, subscribeVoicePrefsClient } from './voice/voice-prefs-client';
 
 const MODE_CHANGE_EVENT = 'papercusp:operatorMode';
 const SLEEP_CHANGE_EVENT = 'papercusp:operatorSleep';
@@ -141,18 +142,9 @@ export function setOperatorMode(next: OperatorMode): void {
  *  override. Drives the toggle's "Off" state — the same flag the old
  *  "Pause Sentinel" control set (sentinel-tui-shared-backend §9, 2026-06-22). */
 function useOperatorSilenced(): [boolean, (v: boolean) => void] {
-  const [silenced, setSilencedLocal] = useState(false);
+  const [silenced, setSilencedLocal] = useState(() => loadVoicePrefsClient().silenceVoice ?? false);
   useEffect(() => {
-    if (typeof fetch !== 'function') return;
-    let cancelled = false;
-    fetch('/api/agent-mcp/operator-voice-prefs')
-      .then((r) => (r.ok ? r.json() : null))
-      .then((p) => {
-        const v = (p as { silenceVoice?: unknown } | null)?.silenceVoice;
-        if (!cancelled && typeof v === 'boolean') setSilencedLocal(v);
-      })
-      .catch(() => { /* prefs unreadable — default unmuted */ });
-    return () => { cancelled = true; };
+    return subscribeVoicePrefsClient((prefs) => setSilencedLocal(prefs.silenceVoice ?? false));
   }, []);
   const setSilenced = useCallback((v: boolean) => {
     setSilencedLocal(v); // optimistic

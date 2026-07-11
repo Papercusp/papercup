@@ -17,6 +17,18 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('@/app/_components/RouteLink', () => ({
   default: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a>,
 }));
+const { syncPrefs } = vi.hoisted(() => ({
+  syncPrefs: { user: {} as Record<string, unknown>, workspace: {} as Record<string, unknown> },
+}));
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: ({ queryName }: { queryName: string }) => ({
+    data: queryName === 'userPreferences.current' ? [{ payload: syncPrefs.user }] : [syncPrefs.workspace],
+    loading: false,
+    fetching: false,
+    error: null,
+    invalidate: vi.fn(),
+  }),
+}));
 
 import UserSettingsPage from './page';
 
@@ -24,6 +36,8 @@ const ME = { user: { id: 'u1', username: 'ada', display_name: 'Ada', has_passwor
 
 /** workspace defaults + the user override map drive the override surface. */
 function stubFetches(opts: { workspace: Record<string, unknown>; user: Record<string, unknown> }) {
+  syncPrefs.workspace = opts.workspace;
+  syncPrefs.user = opts.user;
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init?: RequestInit) => {

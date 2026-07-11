@@ -22,6 +22,7 @@ import { setVoicePrefsClient } from '@/app/_components/voice/voice-prefs-client'
 import type { VoicePrefs, SttEngineKind, TtsEngineKind } from '@papercusp/operator-core/lib/voice-prefs';
 import type { TtsSpendState } from '@papercusp/operator-core/lib/tts-spend';
 import type { SttSpendState } from '@papercusp/operator-core/lib/stt-spend';
+import { useSyncQuery } from '@papercusp/sync';
 
 const KNOWN_ROLES = [
   'system:operator',
@@ -84,6 +85,7 @@ export default function VoiceSettingsPage() {
 
   // v4 prefs + engine state
   const [prefs, setPrefs] = useState<VoicePrefs | null>(null);
+  const voicePrefsSync = useSyncQuery<VoicePrefs>({ queryName: 'voicePrefs.effective', staleTime: 30_000 });
   const [savingPrefs, setSavingPrefs] = useState(false);
   const [credentials, setCredentials] = useState<ElevenLabsKeyState>({ configured: false, apiKey: null });
   const [allCreds, setAllCreds] = useState<CloudCredentialsSnapshot | null>(null);
@@ -95,6 +97,10 @@ export default function VoiceSettingsPage() {
   const [sttSpend, setSttSpend] = useState<SttSpendState | null>(null);
   const [showLeakWarning, setShowLeakWarning] = useState(false);
   const { askConfirm, confirmEl } = useConfirmDialog();
+
+  useEffect(() => {
+    if (voicePrefsSync.data?.[0]) setPrefs(voicePrefsSync.data[0]);
+  }, [voicePrefsSync.data]);
 
   useEffect(() => {
     initVoiceMode();
@@ -147,7 +153,6 @@ export default function VoiceSettingsPage() {
         .then((v) => { if (v) apply(v); })
         .catch(() => { /* section stays in its empty state */ });
     };
-    load('/api/agent-mcp/operator-voice-prefs', (p) => setPrefs(p as VoicePrefs));
     load('/api/agent-mcp/operator-credentials', (c) => {
       const snap = c as CloudCredentialsSnapshot & { elevenlabs?: ElevenLabsKeyState };
       if (snap.elevenlabs) setCredentials(snap.elevenlabs);
@@ -179,13 +184,14 @@ export default function VoiceSettingsPage() {
       // Push into the module-level cache so subscribers
       // (voice-card router, announcer, etc.) see live updates.
       setVoicePrefsClient(next);
+      voicePrefsSync.invalidate();
     } catch (err) {
       // A silent failure reads as "saved" — surface it.
       toast.error(`voice setting not saved: ${(err as Error).message}`);
     } finally {
       setSavingPrefs(false);
     }
-  }, []);
+  }, [voicePrefsSync]);
 
   const onTestVoice = useCallback(() => {
     speak('Voice mode is working.', 'system:operator', 'polite', { force: true });
@@ -212,11 +218,8 @@ export default function VoiceSettingsPage() {
     // providers have a key configured — all server-side, no key in the browser.
     const t = toast.loading('Re-detecting engines…');
     try {
-      const [health, freshPrefs] = await Promise.all([
-        fetch('/api/agent-mcp/operator-voice-engine-health').then((r) => (r.ok ? r.json() : null)),
-        fetch('/api/agent-mcp/operator-voice-prefs').then((r) => (r.ok ? r.json() : null)),
-      ]);
-      if (freshPrefs) setPrefs(freshPrefs as VoicePrefs);
+      const health = await fetch('/api/agent-mcp/operator-voice-engine-health').then((r) => (r.ok ? r.json() : null));
+      voicePrefsSync.invalidate();
       if (!health) {
         toast.error('Engine detection failed', { id: t });
         return;
@@ -230,7 +233,7 @@ export default function VoiceSettingsPage() {
     } catch (e) {
       toast.error(`Engine detection failed: ${(e as Error).message}`, { id: t });
     }
-  }, []);
+  }, [voicePrefsSync]);
 
   const setSttEngine = useCallback((kind: SttEngineKind) => {
     if ((kind === 'webspeech' || kind === 'deepgram') && !prefs?.webSpeechLeakAcked) {
@@ -1586,4 +1589,3 @@ function ConvAgentVoice(): JSX.Element {
 const lbl: React.CSSProperties = { display: 'block', fontWeight: 700, fontSize: 12, marginBottom: 4 };
 const sel: React.CSSProperties = { padding: '6px 10px', width: '100%', fontSize: 13 };
 const hint: React.CSSProperties = { fontSize: 12, color: 'var(--fg-mute)', marginTop: 6 };
-

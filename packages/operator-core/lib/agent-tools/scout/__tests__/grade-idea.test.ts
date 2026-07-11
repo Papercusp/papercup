@@ -46,6 +46,8 @@ function fakeDeps(over: Partial<GradeIdeaDeps> = {}): GradeIdeaDeps {
     gradeRoutedIdea: vi.fn(async () => ({ applied: true })),
     resolveIdeaIdFromRef: vi.fn(async () => 'idea-1'),
     readIdeaSummary: vi.fn(async () => summary()),
+    // D-012: default row is UNattributed (created_by null) — no self-grade path.
+    readCreatedBy: vi.fn(async () => null),
     sendRevisionNotice: vi.fn(async () => ({ woken: 0 })),
     ...over,
   };
@@ -184,6 +186,55 @@ describe('runGradeIdea', () => {
   });
 });
 
+describe('D-012 no-self-grade guard (su-ideate-learning-substrate-2026-07-10 WI-4108)', () => {
+  const SELF = 'su-ideator-self';
+
+  it('REFUSES when the caller authored the row (created_by === caller ownerId): no write, no notice, reason no-self-grade', async () => {
+    const deps = fakeDeps({ readCreatedBy: vi.fn(async () => SELF) });
+    const out = await runGradeIdea({ ideaId: 'idea-1', grade: 5, feedback: 'love my own idea' }, { ownerId: SELF }, deps);
+
+    expect(out).toEqual({ applied: false, reason: 'no-self-grade', gradedBy: 'owner', ideaId: 'idea-1', idea: null });
+    // The pollution the guard exists to prevent never happens: no ledger write,
+    // no read-back, no revision wake fed by a self-authored grade.
+    expect(deps.readCreatedBy).toHaveBeenCalledWith('idea-1');
+    expect(deps.gradeRoutedIdea).not.toHaveBeenCalled();
+    expect(deps.readIdeaSummary).not.toHaveBeenCalled();
+    expect(deps.sendRevisionNotice).not.toHaveBeenCalled();
+  });
+
+  it('catches a self-grade keyed by routedRef too (guard runs AFTER ref→ideaId resolution)', async () => {
+    const deps = fakeDeps({
+      resolveIdeaIdFromRef: vi.fn(async () => 'idea-9'),
+      readCreatedBy: vi.fn(async () => SELF),
+    });
+    const out = await runGradeIdea({ routedRef: 'wi:F-9', grade: 4, feedback: 'mine' }, { ownerId: SELF }, deps);
+    expect(deps.resolveIdeaIdFromRef).toHaveBeenCalledWith('wi:F-9');
+    expect(deps.readCreatedBy).toHaveBeenCalledWith('idea-9');
+    expect(out).toMatchObject({ applied: false, reason: 'no-self-grade', ideaId: 'idea-9' });
+    expect(deps.gradeRoutedIdea).not.toHaveBeenCalled();
+  });
+
+  it('a CROSS-author grade is unaffected — the write proceeds and role-derived attribution is preserved', async () => {
+    const deps = fakeDeps({
+      readCreatedBy: vi.fn(async () => 'someone-else'),
+      readIdeaSummary: vi.fn(async () => summary({ gradedBy: 'Queen' })),
+    });
+    const out = await runGradeIdea({ ideaId: 'idea-1', grade: 4, feedback: 'sharp' }, { role: 'mug', ownerId: SELF }, deps);
+    expect(deps.readCreatedBy).toHaveBeenCalledWith('idea-1');
+    expect(deps.gradeRoutedIdea).toHaveBeenCalledWith({ ideaId: 'idea-1', grade: 4, feedback: 'sharp', gradedBy: 'Queen' });
+    expect(out.applied).toBe(true);
+    expect(out.gradedBy).toBe('Queen'); // C-3 attribution intact for a non-author
+  });
+
+  it('fails OPEN on an unattributable ctx (no ownerId): the guard never fires and never even reads created_by', async () => {
+    const deps = fakeDeps({ readCreatedBy: vi.fn(async () => SELF) }); // would match IF we could attribute
+    const out = await runGradeIdea({ ideaId: 'idea-1', grade: 5, feedback: 'x' }, undefined, deps);
+    expect(deps.readCreatedBy).not.toHaveBeenCalled(); // short-circuit on null callerOwnerId
+    expect(deps.gradeRoutedIdea).toHaveBeenCalledTimes(1);
+    expect(out.applied).toBe(true);
+  });
+});
+
 describe('revision notice (su-ideate-learning-substrate-2026-07-10 P-005 / D-008) — fake send port', () => {
   const suRow = (over: Partial<GradedIdeaSummary> = {}): GradedIdeaSummary =>
     summary({ origin: 'su-ideate', createdBy: 'su-originator-1', routedRef: 'wi:F-101', ...over });
@@ -296,10 +347,14 @@ describe('revision notice (su-ideate-learning-substrate-2026-07-10 P-005 / D-008
 describe('toToolResult envelope', () => {
   const base = { applied: true, gradedBy: 'owner' as const, ideaId: 'i1', idea: null };
 
-  it('is not an error for applied writes nor for the sovereign no-op', () => {
+  it('is not an error for applied writes, the sovereign no-op, nor the D-012 self-grade refusal', () => {
     expect(toToolResult(base).isError).toBeUndefined();
     expect(
       toToolResult({ ...base, applied: false, reason: 'owner-grade-sovereign' }).isError,
+    ).toBeUndefined();
+    // no-self-grade is designed behavior (a refusal), not a not-found error.
+    expect(
+      toToolResult({ ...base, applied: false, reason: 'no-self-grade' }).isError,
     ).toBeUndefined();
   });
 

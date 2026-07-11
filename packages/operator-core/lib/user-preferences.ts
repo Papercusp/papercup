@@ -58,6 +58,13 @@ export async function saveUserPreferences(
           updated_at = now()
     RETURNING payload
   `;
+  try {
+    const { notifySyncInvalidate } = await import('./sync-sse');
+    await Promise.all([
+      notifySyncInvalidate('userPreferences.current', {}),
+      notifySyncInvalidate('voicePrefs.effective', {}),
+    ]);
+  } catch { /* table bridge remains the fallback */ }
   return rows[0]?.payload ?? {};
 }
 
@@ -73,6 +80,13 @@ export async function clearUserPreferenceKey(userId: string, key: string): Promi
            updated_at = now()
      WHERE user_id = ${userId} AND workspace_id = ${activeWorkspaceId()}
   `;
+  try {
+    const { notifySyncInvalidate } = await import('./sync-sse');
+    await Promise.all([
+      notifySyncInvalidate('userPreferences.current', {}),
+      notifySyncInvalidate('voicePrefs.effective', {}),
+    ]);
+  } catch { /* table bridge remains the fallback */ }
 }
 
 /**

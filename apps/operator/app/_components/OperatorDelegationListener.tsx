@@ -14,6 +14,7 @@
 
 import { useEffect, useRef } from 'react';
 import type { NarrationHandle } from '@papercusp/operator-core/lib/voice-narration';
+import { loadVoicePrefsClient } from './voice/voice-prefs-client';
 
 export default function OperatorDelegationListener() {
   const narrationHandle = useRef<NarrationHandle | null>(null);
@@ -38,14 +39,7 @@ export default function OperatorDelegationListener() {
       if (!detail) return;
 
       // Read pref to decide auto-open. Don't block the panel update on it.
-      let autoOpen = true;
-      try {
-        const r = await fetch('/api/agent-mcp/operator-voice-prefs');
-        if (r.ok) {
-          const prefs = await r.json();
-          autoOpen = prefs.voicePanelAutoOpen !== false;
-        }
-      } catch { /* default true */ }
+      const autoOpen = loadVoicePrefsClient().voicePanelAutoOpen !== false;
 
       try {
         const { setOperatorState } = await import('@papercusp/operator-core/lib/operator-shared-state');

@@ -25,6 +25,8 @@ import { Plus, TerminalSquare } from "lucide-react";
 import PiPanel from './PiPanel';
 import ChatPanel from './ChatPanel';
 import { Tooltip } from './Tooltip';
+import { fetchSyncQuery } from '@papercusp/sync';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 
 interface PiTerminalsDockProps {
   slug: string;
@@ -148,7 +150,7 @@ function drainPendingOpens(api: DockviewApi, slug: string): void {
  *
  * Async + best-effort: if the fetch fails, leave the layout alone.
  */
-async function pruneStaleChatPanels(api: DockviewApi, slug: string): Promise<void> {
+async function pruneStaleChatPanels(api: DockviewApi, slug: string, workspaceId: string): Promise<void> {
   const chatPanelIds = api.panels
     .map((p) => p.id)
     .filter((id) => id.startsWith('chat-'));
@@ -156,10 +158,12 @@ async function pruneStaleChatPanels(api: DockviewApi, slug: string): Promise<voi
 
   let liveChatIds: Set<string>;
   try {
-    const r = await fetch(`/api/harness/${encodeURIComponent(slug)}/agent-chats`);
-    if (!r.ok) return;
-    const body = await r.json() as { chats?: Array<{ id: string }> };
-    liveChatIds = new Set((body.chats ?? []).map((c) => c.id));
+    const rows = await fetchSyncQuery<{ id: string }>({
+      queryName: 'agentChats.byHarness',
+      args: { harnessSlug: slug, workspaceId, limit: 500 },
+      staleTime: 30_000,
+    });
+    liveChatIds = new Set(rows.map((c) => c.id));
   } catch {
     return;
   }
@@ -245,6 +249,7 @@ function AddTerminalAction({ api, slug }: { api: DockviewApi | null; slug: strin
 
 
 export default function PiTerminalsDock({ slug, initialLaneId }: PiTerminalsDockProps) {
+  const workspaceId = useWorkspaceId();
   // Fire prewarm DURING render — must run before child PiPanel effects
   // POST /pty/spawn. Both keys: the lane-scoped one for the seed terminal
   // (initialLaneId) and the no-laneId one used by the + button. Dedup'd
@@ -342,11 +347,16 @@ export default function PiTerminalsDock({ slug, initialLaneId }: PiTerminalsDock
       // per mount, after the sync restore + initial seed run.
       void (async () => {
         try {
-          const resp = await fetch(
-            `/api/dock-layouts/${encodeURIComponent(layoutNameForPg)}`,
-          );
-          if (!resp.ok) return;
-          const row = await resp.json();
+          const row = (await fetchSyncQuery<{
+            layoutJson?: { schemaVersion?: number; dockviewJson?: unknown };
+            updatedTs: number;
+            createdTs?: number;
+          }>({
+            queryName: 'dockLayouts.byName',
+            args: { workspaceId, name: layoutNameForPg },
+            staleTime: 30_000,
+          }))[0];
+          if (!row) return;
           const body = row?.layoutJson;
           if (
             body &&
@@ -396,9 +406,9 @@ export default function PiTerminalsDock({ slug, initialLaneId }: PiTerminalsDock
       // (deleted, archived, expired). Runs after drain so we don't race
       // against new additions. Best-effort — fetches the live chat list
       // and closes panels whose chatId isn't in it.
-      void pruneStaleChatPanels(event.api, slug);
+      void pruneStaleChatPanels(event.api, slug, workspaceId);
     },
-    [slug, initialLaneId],
+    [slug, initialLaneId, workspaceId],
   );
 
   // Reset stored layout when the harness slug changes (defensive — DockviewReact

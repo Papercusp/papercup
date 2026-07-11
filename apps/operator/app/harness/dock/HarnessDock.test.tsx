@@ -63,6 +63,8 @@ vi.mock('./useRegisterPluginPanels', () => ({ useRegisterPluginPanels: appMocks.
 vi.mock('../useConfirmDialog', () => ({
   useConfirmDialog: () => ({ confirm: appMocks.confirm, element: null }),
 }));
+vi.mock('@/lib/use-workspace-id', () => ({ useWorkspaceId: () => 'default' }));
+vi.mock('@papercusp/sync', () => ({ fetchSyncQuery: vi.fn(async () => []) }));
 
 import { HarnessDock } from './HarnessDock';
 
@@ -98,7 +100,7 @@ describe('HarnessDock (shared DockWorkspace adapter)', () => {
       resetEventName: 'papercusp:dock-reset-layout',
       loadEventName: 'papercusp:dock-load-layout',
     });
-    expect(lastDockProps().store).toEqual({ kind: 'fetch-store' });
+    expect(lastDockProps().store).toMatchObject({ kind: 'fetch-store', load: expect.any(Function) });
     expect(lastDockProps().canClosePanel).toBe(appMocks.canClosePanel);
   });
 

@@ -8,6 +8,7 @@ import { installWorkspaceParamEventSource } from '@papercusp/operator-core/lib/t
 import { installCallToolResolver } from '@papercusp/operator-core/lib/call-tool-resolver';
 import { installIpcInspector } from '@papercusp/operator-core/lib/dev/ipc-inspector-client';
 import UpdateMismatchNotifier from './UpdateMismatchNotifier';
+import { VoicePrefsSyncBridge } from './voice/VoicePrefsSyncBridge';
 
 /**
  * Root sync provider. Wraps the app in `HarnessSyncProvider` and, on
@@ -58,6 +59,7 @@ export function RootSyncProvider({ children }: { children: ReactNode }) {
     <HarnessSyncProvider>
       {/* P-013: surface a post-update stale-operator mismatch (EI-9002) to the user. */}
       <UpdateMismatchNotifier />
+      <VoicePrefsSyncBridge />
       {children}
     </HarnessSyncProvider>
   );

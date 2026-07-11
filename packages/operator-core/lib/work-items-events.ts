@@ -30,6 +30,10 @@ import { emitAwaitedEvent } from './events/await/engine';
 import { FEATURE_KIND } from './issue-blocks-merge';
 import { blockingEdgeReader, ISSUE_TERMINAL_STATUSES, type BlockingEdgeReader } from './work-item-blocking';
 import { getWorkItem, workItemObjectRef, type WorkItem, type WorkItemFamily } from './work-items';
+// Type-only (erased at runtime) — the subscriber inject shape. The concrete
+// fanoutForObject is lazy-imported inside the default seam below so this module
+// keeps no static edge to the fan-out projection (cycle-safe).
+import type { InjectEvent } from './agent-tools/coordination/fanout-delivery';
 
 // WI-4034 DEFECT 2 (single-source the settled predicate): these used to be a
 // SEPARATE, hand-duplicated literal set here that happened to still agree with
@@ -226,6 +230,19 @@ export interface SettledEventsDeps {
   listIn?: BlockingEdgeReader['listIn'];
   /** Batched in-edge read; when absent it is DERIVED from `listIn` (test compat). */
   listInMany?: BlockingEdgeReader['listInMany'];
+  /** P-010: inject-notify a fix-target's subscribers. Default = fanoutForObject
+   *  (lazy-imported to avoid a static import cycle); tests inject a stub. */
+  notifySubscribers?: NotifySubscribers;
+}
+
+/** Inject-notify the subscribers of an object (P-010) — the fanoutForObject shape. */
+type NotifySubscribers = (object: ObjectRef, ev: InjectEvent) => Promise<number>;
+
+/** Default subscriber-notify: the shared best-effort fan-out. Lazy-imported so
+ *  this module carries no static edge to the fan-out projection (cycle-safe). */
+async function defaultNotifySubscribers(object: ObjectRef, ev: InjectEvent): Promise<number> {
+  const { fanoutForObject } = await import('./sync/hyperbee/fanout-projection');
+  return fanoutForObject(object, ev);
 }
 
 /**
@@ -384,6 +401,73 @@ export async function emitUnblockedOnEdgeRemoved(
 }
 
 /**
+ * linking-notify-family-hardening P-010 (WI-4014 Part 3 owner-fork, resolved as
+ * Option A): when an item SETTLES, notify across its fixes/duplicates edges.
+ * INJECT-ONLY (the wake-vs-inject axis, D-001) — settle-notify never wakes;
+ * anyone who needs a WAKE uses events:await on work-item:done:<id>.
+ *
+ *  - `fixes` (wi FIXES target — an OUTGOING edge): the fix just landed, so
+ *    inject-notify the FIXED target's existing SUBSCRIBERS ("the fix for your
+ *    issue settled"). Routed through the shared subscriber fan-out, which reaches
+ *    issue- AND feature-family subscribers uniformly; isResolution:true so even
+ *    mention-mode followers receive this lifecycle resolution.
+ *  - `duplicates` (dup DUPLICATES wi — an INCOMING edge; wi is the canonical):
+ *    the canonical settled, so inject-notify each duplicate-holder's ASSIGNEE
+ *    ("the item you were a duplicate of resolved"), keyed
+ *    work-item:duplicate-settled:<wi> — a targeted `to`, not a subscriber fan-out.
+ *
+ * Fire-and-forget; the caller wraps this in its own failSoft scope (P-008) so a
+ * notify failure can never drop the sibling done / unblocked emits.
+ *
+ * Only reads edges at settle time (no writes) — deliberately NOT the
+ * subscribe{followBlockers} branch (Option B), which adds writes to the link hot
+ * path and is deferred per D-003 until the work_item_deps backend flip.
+ */
+async function emitFixDuplicateSettledNotify(
+  wi: WorkItem,
+  emit: typeof emitAwaitedEvent,
+  getItem: typeof getWorkItem,
+  listOut: BlockingEdgeReader['listOut'],
+  listIn: BlockingEdgeReader['listIn'],
+  notifySubscribers: NotifySubscribers,
+): Promise<void> {
+  const ref = workItemObjectRef(wi);
+
+  // fixes: wi FIXES dst (outgoing) → tell the fixed target's subscribers.
+  const fixEdges = await listOut(ref, { rel: 'fixes' });
+  for (const fe of fixEdges) {
+    const t = workItemIdFromRef(fe.dst);
+    const target = t ? await getItem(t.id, t.harness).catch(() => null) : null;
+    await notifySubscribers(fe.dst, {
+      from: wi.assignee ?? 'substrate',
+      subject: `${fe.dst.kind}:${fe.dst.ref}`,
+      summary: `${target?.id ?? t?.id ?? fe.dst.ref} — its fix ${wi.id} settled → ${wi.state}: ${wi.title}`,
+      notify_kind: 'work_item_fix_settled',
+      isResolution: true,
+    });
+  }
+
+  // duplicates: dup DUPLICATES wi (incoming); wi is the canonical → tell each
+  // distinct duplicate-holder's assignee (never the canonical's own agent).
+  const dupEdges = await listIn(ref, { rel: 'duplicates' });
+  const dupAssignees = new Set<string>();
+  for (const de of dupEdges) {
+    const s = workItemIdFromRef(de.src);
+    const dup = s ? await getItem(s.id, s.harness).catch(() => null) : null;
+    if (dup?.assignee && dup.assignee !== wi.assignee) dupAssignees.add(dup.assignee);
+  }
+  if (dupAssignees.size > 0) {
+    await emit({
+      key: `work-item:duplicate-settled:${wi.id}`,
+      summary: `${wi.id} (the canonical item) settled → ${wi.state}: ${wi.title}`,
+      payload: { id: wi.id, state: wi.state, kind: wi.kind, harness: wi.harness, title: wi.title },
+      to: [...dupAssignees],
+      source: 'work-items',
+    });
+  }
+}
+
+/**
  * Fire the settled-item events for `wi` (which has ALREADY transitioned to a
  * settled state). Never throws.
  */
@@ -391,7 +475,9 @@ export async function emitWorkItemSettledEvents(wi: WorkItem, deps: SettledEvent
   const emit = deps.emit ?? emitAwaitedEvent;
   const getItem = deps.getItem ?? getWorkItem;
   const listOut = deps.listOut ?? blockingEdgeReader.listOut;
+  const listIn = deps.listIn ?? blockingEdgeReader.listIn;
   const listInMany = resolveListInMany(deps);
+  const notifySubscribers = deps.notifySubscribers ?? defaultNotifySubscribers;
 
   // P-008 (linking-notify-family-hardening) durability split: the done-emit and
   // the unblocked loop each run in their OWN fail-soft scope. A single try used
@@ -429,5 +515,12 @@ export async function emitWorkItemSettledEvents(wi: WorkItem, deps: SettledEvent
     await emitUnblockedForClearedEdges(blockEdges.map((e) => e.dst), wi.id, emit, getItem, listInMany);
   } catch (e) {
     failSoft(`settled unblocked-loop for ${wi.id}`, e);
+  }
+
+  // ── fix/duplicate settle-notify (P-010) — its own fail-soft scope ─────
+  try {
+    await emitFixDuplicateSettledNotify(wi, emit, getItem, listOut, listIn, notifySubscribers);
+  } catch (e) {
+    failSoft(`settled fix/dup-notify for ${wi.id}`, e);
   }
 }

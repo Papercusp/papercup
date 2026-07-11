@@ -482,6 +482,10 @@ const patchAssertion = defineTool({
        WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND val_id = ${valId}
        RETURNING val_id, requires_test`;
     if (rows.length === 0) return Response.json({ error: 'assertion_not_found' }, { status: 404 });
+    try {
+      const { notifySyncInvalidate } = await import('../../../sync-sse');
+      await notifySyncInvalidate('testing.assertionsByHarness', { harnessSlug: slug, workspaceId: ws });
+    } catch { /* table bridge remains the fallback */ }
     return Response.json({ ok: true, val_id: rows[0].val_id, requires_test: rows[0].requires_test });
   },
 });

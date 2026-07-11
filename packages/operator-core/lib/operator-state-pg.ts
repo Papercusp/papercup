@@ -159,6 +159,23 @@ export function invalidateOperatorStateCache(table: StateTable, ws: string): voi
   opStateCache.delete(opStateCacheKey(table, ws));
 }
 
+const OPERATOR_STATE_SYNC_NAMES: Partial<Record<StateTable, readonly string[]>> = {
+  operator_prompt_user: ['operatorConfig.byWorkspace'],
+  operator_preferences: ['operatorConfig.byWorkspace', 'operatorPreferences.byWorkspace'],
+  operator_voice_prefs: ['voicePrefs.effective', 'voicePrefs.workspace'],
+  operator_account_override: ['accounts.sessionOverride', 'accounts.pool'],
+  operator_standing_candidates: ['operatorStandingApprovals.byWorkspace'],
+};
+
+async function notifyOperatorStateSync(table: StateTable): Promise<void> {
+  const names = OPERATOR_STATE_SYNC_NAMES[table];
+  if (!names?.length) return;
+  try {
+    const { notifySyncInvalidate } = await import('./sync-sse');
+    await Promise.all(names.map((name) => notifySyncInvalidate(name, {})));
+  } catch { /* the PG trigger remains the out-of-process guard */ }
+}
+
 /**
  * Read the single row for the active workspace, or null if missing.
  * Callers cast the JSONB payload to their module's type. For tables in
@@ -249,6 +266,7 @@ export async function writeOperatorState<T>(
             updated_at = EXCLUDED.updated_at
     `;
     invalidateOperatorStateCache(table, ws); // P-004: same-process read-after-write consistency
+    await notifyOperatorStateSync(table);
     return;
   }
 
@@ -261,6 +279,7 @@ export async function writeOperatorState<T>(
           updated_at = EXCLUDED.updated_at
   `;
   invalidateOperatorStateCache(table, ws); // P-004: same-process read-after-write consistency
+  await notifyOperatorStateSync(table);
 }
 
 /**
@@ -339,5 +358,6 @@ export async function updateOperatorState<T>(
     return next;
   })) as T;
   invalidateOperatorStateCache(table, ws); // P-004: same-process read-after-write consistency
+  await notifyOperatorStateSync(table);
   return updated;
 }

@@ -4132,19 +4132,21 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   },
 
   'dockLayouts.byName': {
-    argsSchema: z.object({ workspaceId: z.string(), userId: z.string(), name: z.string().min(1) }),
+    argsSchema: z.object({ workspaceId: z.string(), userId: z.string().optional(), name: z.string().min(1) }),
     resolve: async (args) => {
-      const { workspaceId, userId, name } = args as { workspaceId: string; userId: string; name: string };
-      const { getLayout } = await import('../dock-layouts');
-      return [await getLayout({ workspaceId, userId }, name)];
+      const { workspaceId, userId, name } = args as { workspaceId: string; userId?: string; name: string };
+      const { getLayout, getUserIdForLayouts } = await import('../dock-layouts');
+      const principal = userId ? { workspaceId, userId } : { ...(await getUserIdForLayouts()), workspaceId };
+      return [await getLayout(principal, name)];
     },
   },
   'dockLayouts.list': {
-    argsSchema: z.object({ workspaceId: z.string(), userId: z.string() }),
+    argsSchema: z.object({ workspaceId: z.string(), userId: z.string().optional() }),
     resolve: async (args) => {
-      const { workspaceId, userId } = args as { workspaceId: string; userId: string };
-      const { listLayouts } = await import('../dock-layouts');
-      return listLayouts({ workspaceId, userId });
+      const { workspaceId, userId } = args as { workspaceId: string; userId?: string };
+      const { listLayouts, getUserIdForLayouts } = await import('../dock-layouts');
+      const principal = userId ? { workspaceId, userId } : { ...(await getUserIdForLayouts()), workspaceId };
+      return listLayouts(principal);
     },
   },
 

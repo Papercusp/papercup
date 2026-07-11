@@ -5,11 +5,10 @@
  *
  * The server-side `voice-prefs.ts` reads the filesystem directly and
  * can't run in the browser. Client surfaces (toasts, panel commands)
- * use this cache, kept in sync with the API.
+ * use this cache, fed by VoicePrefsSyncBridge from the root sync query.
  *
- * The cache hydrates on first read and refreshes whenever
- * /api/agent-mcp/operator-voice-prefs is PUT (settings page exposes
- * `setVoicePrefsClient` for that path).
+ * Writes still update it optimistically through setVoicePrefsClient; the
+ * named-query invalidation then reconciles it with server truth.
  */
 
 import type { VoicePrefs } from '@papercusp/operator-core/lib/voice-prefs';
@@ -42,7 +41,6 @@ const DEFAULT_CLIENT_PREFS: VoicePrefs = {
 };
 
 let cache: VoicePrefs = { ...DEFAULT_CLIENT_PREFS };
-let hydrated = false;
 
 type Listener = (prefs: VoicePrefs) => void;
 const listeners = new Set<Listener>();
@@ -54,14 +52,6 @@ function notify(): void {
 }
 
 export function loadVoicePrefsClient(): VoicePrefs {
-  if (!hydrated && typeof window !== 'undefined') {
-    // Lazy fetch on first access; subsequent reads use the cache.
-    hydrated = true;
-    void fetch('/api/agent-mcp/operator-voice-prefs')
-      .then((r) => (r.ok ? r.json() : null))
-      .then((p) => { if (p) { cache = p as VoicePrefs; notify(); } })
-      .catch(() => {});
-  }
   return cache;
 }
 
@@ -71,13 +61,6 @@ export function setVoicePrefsClient(next: VoicePrefs): void {
 }
 
 export async function refreshVoicePrefsClient(): Promise<VoicePrefs> {
-  try {
-    const r = await fetch('/api/agent-mcp/operator-voice-prefs');
-    if (r.ok) {
-      cache = (await r.json()) as VoicePrefs;
-      notify();
-    }
-  } catch { /* keep last */ }
   return cache;
 }
 

@@ -1064,9 +1064,7 @@ async function maybeStartFullAgentInner(): Promise<boolean> {
     // user previously enabled it. 10s was right at the boundary and we'd
     // see a startup "[voice] realtime start failed at stage=prefs" warning
     // on a cold tab; 30s leaves headroom without affecting a real hang.
-    const prefsR = await fetch('/api/agent-mcp/operator-voice-prefs', { signal: AbortSignal.timeout(30000) });
-    if (!prefsR.ok) return false;
-    const prefs = await prefsR.json();
+    const prefs = loadVoicePrefsClient();
     // Pull idle-timeout pref so both EL and Realtime paths can use it.
     if (typeof prefs.fullAgentIdleTimeoutMin === 'number') {
       idleTimeoutMs = Math.max(0, prefs.fullAgentIdleTimeoutMin) * 60_000;
@@ -1698,9 +1696,7 @@ async function maybeStartWhisperCapture(mode: VoiceMode): Promise<void> {
     return;
   }
   try {
-    const prefsR = await fetch('/api/agent-mcp/operator-voice-prefs');
-    if (!prefsR.ok) { startWakeWordListening(); return; }
-    const prefs = await prefsR.json();
+    const prefs = loadVoicePrefsClient();
     // Porcupine gate: when enabled, run wake-word detection only.
     // Whisper spins up only on wake — big idle-CPU win.
     if (await maybeStartWakeWordGate(prefs)) return;
@@ -2217,16 +2213,10 @@ async function fetchPreferredEngine(): Promise<string> {
   // prefs route once per utterance.
   const now = Date.now();
   if (adapterEngineCache && now - adapterEngineCacheAt < 30_000) return adapterEngineCache;
-  try {
-    const r = await fetch('/api/agent-mcp/operator-voice-prefs');
-    if (r.ok) {
-      const prefs = await r.json();
-      adapterEngineCache = prefs.ttsEngine ?? 'kokoro';
-      adapterEngineCacheAt = now;
-      return adapterEngineCache!;
-    }
-  } catch { /* fall through */ }
-  return 'kokoro';
+  const prefs = loadVoicePrefsClient();
+  adapterEngineCache = prefs.ttsEngine ?? 'kokoro';
+  adapterEngineCacheAt = now;
+  return adapterEngineCache;
 }
 
 async function synthViaAdapter(text: string, role: string): Promise<void> {

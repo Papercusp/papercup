@@ -45,6 +45,12 @@ const edge = (srcId: string, dstId: string) => ({
   rel: 'blocks',
 });
 
+const edgeRel = (srcId: string, dstId: string, rel: string) => ({
+  src: { kind: 'issue', ref: srcId },
+  dst: { kind: 'issue', ref: dstId },
+  rel,
+});
+
 describe('helpers', () => {
   it('isSettledWorkItem matches the per-family terminal sets', () => {
     expect(isSettledWorkItem({ family: 'issue', state: 'resolved' })).toBe(true);
@@ -89,8 +95,8 @@ describe('emitWorkItemSettledEvents', () => {
       getItem: vi.fn(async (id: string) =>
         id === 'WI-DEP' ? dependent : id === 'WI-B2' ? otherBlockerSettled : null,
       ) as never,
-      listOut: vi.fn(async () => [edge('WI-1', 'WI-DEP')]) as never,
-      listIn: vi.fn(async () => [edge('WI-1', 'WI-DEP'), edge('WI-B2', 'WI-DEP')]) as never,
+      listOut: vi.fn(async (_r: unknown, o?: { rel?: string }) => (o?.rel === 'blocks' ? [edge('WI-1', 'WI-DEP')] : [])) as never,
+      listIn: vi.fn(async (_r: unknown, o?: { rel?: string }) => (o?.rel === 'blocks' ? [edge('WI-1', 'WI-DEP'), edge('WI-B2', 'WI-DEP')] : [])) as never,
     });
     const keys = emit.mock.calls.map((c) => (c as unknown as [{ key: string }])[0].key);
     expect(keys).toContain('work-item:done:WI-1');
@@ -110,8 +116,8 @@ describe('emitWorkItemSettledEvents', () => {
       getItem: vi.fn(async (id: string) =>
         id === 'WI-DEP' ? dependent : id === 'WI-B2' ? liveBlocker : id === 'WI-DONE-DEP' ? settledDep : null,
       ) as never,
-      listOut: vi.fn(async () => [edge('WI-1', 'WI-DEP'), edge('WI-1', 'WI-DONE-DEP')]) as never,
-      listIn: vi.fn(async () => [edge('WI-1', 'WI-DEP'), edge('WI-B2', 'WI-DEP')]) as never,
+      listOut: vi.fn(async (_r: unknown, o?: { rel?: string }) => (o?.rel === 'blocks' ? [edge('WI-1', 'WI-DEP'), edge('WI-1', 'WI-DONE-DEP')] : [])) as never,
+      listIn: vi.fn(async (_r: unknown, o?: { rel?: string }) => (o?.rel === 'blocks' ? [edge('WI-1', 'WI-DEP'), edge('WI-B2', 'WI-DEP')] : [])) as never,
     });
     const keys = emit.mock.calls.map((c) => (c as unknown as [{ key: string }])[0].key);
     expect(keys).toEqual(['work-item:done:WI-1']); // no unblocked fires
@@ -518,5 +524,91 @@ describe('liveBlockedState (P-006 latch probe)', () => {
         }) as never,
       }),
     ).resolves.toBe('unknown');
+  });
+});
+
+// P-010 (linking-notify-family-hardening, WI-4014 Part 3 owner-fork → Option A):
+// on settle, notify across fixes/duplicates edges (inject-only) — the fixed
+// target's subscribers (fixes) and each duplicate-holder's assignee (duplicates).
+// Option B (subscribe{followBlockers}) deliberately NOT built (hot-path, D-003).
+describe('fix/duplicate settle-notify (P-010)', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  const okEmit = () => vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null, waiters: 0 }));
+
+  it('fixes: notifies the fixed target subscribers (isResolution, inject-only) when the fixer settles', async () => {
+    const notifySubscribers = vi.fn(async () => 1);
+    const target = wi({ id: 'WI-BUG', state: 'open' });
+    await emitWorkItemSettledEvents(wi({ id: 'WI-FIX', assignee: 'su-fixer' }), {
+      emit: okEmit() as never,
+      getItem: vi.fn(async (id: string) => (id === 'WI-BUG' ? target : null)) as never,
+      listOut: vi.fn(async (_ref: unknown, opts?: { rel?: string }) =>
+        opts?.rel === 'fixes' ? [edgeRel('WI-FIX', 'WI-BUG', 'fixes')] : [],
+      ) as never,
+      listIn: vi.fn(async () => []) as never,
+      notifySubscribers: notifySubscribers as never,
+    });
+    expect(notifySubscribers).toHaveBeenCalledOnce();
+    const [obj, ev] = notifySubscribers.mock.calls[0] as unknown as [{ kind: string; ref: string }, { notify_kind: string; isResolution: boolean; summary: string }];
+    expect(obj).toEqual({ kind: 'issue', ref: 'WI-BUG' }); // the TARGET's ref, not the fixer's
+    expect(ev.notify_kind).toBe('work_item_fix_settled');
+    expect(ev.isResolution).toBe(true); // mention-mode followers still receive the resolution
+    expect(ev.summary).toContain('WI-FIX');
+  });
+
+  it('duplicates: notifies each distinct duplicate-holder assignee when the canonical settles', async () => {
+    const emit = okEmit();
+    const dup1 = wi({ id: 'WI-DUP1', state: 'open', assignee: 'su-a' });
+    const dup2 = wi({ id: 'WI-DUP2', state: 'open', assignee: 'su-b' });
+    await emitWorkItemSettledEvents(wi({ id: 'WI-CANON', assignee: 'su-canon' }), {
+      emit: emit as never,
+      getItem: vi.fn(async (id: string) => (id === 'WI-DUP1' ? dup1 : id === 'WI-DUP2' ? dup2 : null)) as never,
+      listOut: vi.fn(async () => []) as never,
+      listIn: vi.fn(async (_ref: unknown, opts?: { rel?: string }) =>
+        opts?.rel === 'duplicates' ? [edgeRel('WI-DUP1', 'WI-CANON', 'duplicates'), edgeRel('WI-DUP2', 'WI-CANON', 'duplicates')] : [],
+      ) as never,
+      notifySubscribers: vi.fn(async () => 0) as never,
+    });
+    const dupCall = emit.mock.calls.find((c) => (c as unknown as [{ key: string }])[0].key.startsWith('work-item:duplicate-settled'));
+    expect(dupCall).toBeDefined();
+    const arg = (dupCall as unknown as [{ key: string; to: string[] }])[0];
+    expect(arg.key).toBe('work-item:duplicate-settled:WI-CANON');
+    expect([...arg.to].sort()).toEqual(['su-a', 'su-b']);
+  });
+
+  it('no fixes/duplicates edges → only work-item:done fires (no spurious notify)', async () => {
+    const emit = okEmit();
+    const notifySubscribers = vi.fn(async () => 0);
+    await emitWorkItemSettledEvents(wi({ id: 'WI-1' }), {
+      emit: emit as never,
+      getItem: vi.fn(async () => null) as never,
+      listOut: vi.fn(async () => []) as never,
+      listIn: vi.fn(async () => []) as never,
+      notifySubscribers: notifySubscribers as never,
+    });
+    expect(notifySubscribers).not.toHaveBeenCalled();
+    const keys = emit.mock.calls.map((c) => (c as unknown as [{ key: string }])[0].key);
+    expect(keys).toEqual(['work-item:done:WI-1']);
+  });
+
+  it('a throwing fix/dup notify is swallowed and does NOT drop the done emit (independent fail-soft scope, P-008)', async () => {
+    const emit = okEmit();
+    await expect(
+      emitWorkItemSettledEvents(wi({ id: 'WI-FIX' }), {
+        emit: emit as never,
+        getItem: vi.fn(async () => wi({ id: 'WI-BUG', state: 'open' })) as never,
+        listOut: vi.fn(async (_ref: unknown, opts?: { rel?: string }) =>
+          opts?.rel === 'fixes' ? [edgeRel('WI-FIX', 'WI-BUG', 'fixes')] : [],
+        ) as never,
+        listIn: vi.fn(async () => []) as never,
+        notifySubscribers: vi.fn(async () => {
+          throw new Error('fanout down');
+        }) as never,
+      }),
+    ).resolves.toBeUndefined();
+    const keys = emit.mock.calls.map((c) => (c as unknown as [{ key: string }])[0].key);
+    expect(keys).toContain('work-item:done:WI-FIX'); // done still fired despite fix-notify throwing
   });
 });

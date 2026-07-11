@@ -75,6 +75,16 @@ export type LayoutDoc = {
 
 export type LayoutPrincipal = { workspaceId: string; userId: string };
 
+async function notifyDockLayout(principal: LayoutPrincipal, name: string): Promise<void> {
+  try {
+    const { notifySyncInvalidate } = await import('./sync-sse');
+    await Promise.all([
+      notifySyncInvalidate('dockLayouts.byName', { workspaceId: principal.workspaceId, name }),
+      notifySyncInvalidate('dockLayouts.list', { workspaceId: principal.workspaceId }),
+    ]);
+  } catch { /* table bridge remains the fallback */ }
+}
+
 /**
  * Returns the (workspaceId, userId) tuple to scope a layout request.
  *
@@ -775,7 +785,9 @@ export async function saveLayout(
         `stale write: expected updated_ts ${expectedUpdatedTs}`,
       );
     }
-    return rowToLayout(updated[0]);
+    const row = rowToLayout(updated[0]);
+    await notifyDockLayout(principal, name);
+    return row;
   }
   const upserted = await sql<
     Array<{
@@ -801,7 +813,9 @@ export async function saveLayout(
           updated_ts     = EXCLUDED.updated_ts
     RETURNING *
   `;
-  return rowToLayout(upserted[0]);
+  const row = rowToLayout(upserted[0]);
+  await notifyDockLayout(principal, name);
+  return row;
 }
 
 export async function deleteLayout(
@@ -815,6 +829,7 @@ export async function deleteLayout(
        AND user_id = ${principal.userId}
        AND layout_name = ${name}
   `;
+  await notifyDockLayout(principal, name);
 }
 
 export async function listLayouts(

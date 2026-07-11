@@ -1064,36 +1064,21 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   // pref fetch fails, default to 'active' so the operator-as-collaborator
   // experience works even without persisted prefs.
   useEffect(() => {
-    let cancelled = false;
-
     const seedFromSession = readOperatorModeFromSession();
     if (seedFromSession) {
       // Mid-session value is authoritative.
       if (seedFromSession !== state.mode) dispatch({ type: 'set_mode', mode: seedFromSession });
     } else {
-      // First time this session — seed from the saved pref.
-      // Render immediately as 'active' (the safe default); flip if the
-      // pref says otherwise once the fetch lands.
+      // First time this session — seed from the root-fed preference cache.
       writeOperatorModeToSession('active');
-      void (async () => {
+      const wantActive = loadVoicePrefsClient().operatorActiveOnStartup !== false;
+      if (!wantActive) {
+        writeOperatorModeToSession('passive');
+        dispatch({ type: 'set_mode', mode: 'passive' });
         try {
-          const res = await fetch('/api/agent-mcp/operator-voice-prefs');
-          if (!res.ok) return;
-          const prefs = (await res.json()) as { operatorActiveOnStartup?: boolean };
-          if (cancelled) return;
-          // Treat undefined as `true` (matches DEFAULT_VOICE_PREFS).
-          const wantActive = prefs.operatorActiveOnStartup !== false;
-          if (!wantActive) {
-            writeOperatorModeToSession('passive');
-            dispatch({ type: 'set_mode', mode: 'passive' });
-            try {
-              window.dispatchEvent(
-                new CustomEvent('papercusp:operatorMode', { detail: { mode: 'passive' } }),
-              );
-            } catch { /* ignore */ }
-          }
-        } catch { /* keep default */ }
-      })();
+          window.dispatchEvent(new CustomEvent('papercusp:operatorMode', { detail: { mode: 'passive' } }));
+        } catch { /* ignore */ }
+      }
     }
 
     // Subscribe to mode-change events fired by the navbar toggle
@@ -1185,7 +1170,6 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     window.addEventListener('papercusp:operatorUserTurn', onVoiceUserTurn as EventListener);
 
     return () => {
-      cancelled = true;
       window.removeEventListener('papercusp:operatorMode', onModeEvent as EventListener);
       window.removeEventListener('papercusp:operatorUserTurn', onVoiceUserTurn as EventListener);
     };

@@ -487,6 +487,66 @@ describe('evaluateInvariants', () => {
       expect(isBackupOrMaintenanceStatement("SELECT body FROM harness_shared.coord_event_log WHERE body->>'kind' = 'copy'")).toBe(false);
     });
 
+    it('EI-9525: the exact 4-furnace snapshot that filed EI-9525 no longer alarms under the CURRENT detector', () => {
+      // Regression pin for EI-9525 (auto-filed 2026-07-11 01:38 by a PRE-EI-9420
+      // monitor — its snapshot carried no minExecMs, so nothing could be proven
+      // fast). Every one of the four statements it flagged is now closed by an
+      // EXISTING guard, verified against LIVE pg_stat_statements (2026-07-11):
+      //   1. the pg_dump COPY ... TO stdout (~102k rows/call) → excluded by
+      //      isBackupOrMaintenanceStatement (EI-9506) — a backup, not an app read.
+      //   2. readInbox's jsonb_exists membership scan (mean 2082ms) → LIMIT +
+      //      ts-index (WI-3825); live min_exec_time 68ms proves the fast path.
+      //   3. the conditions `(body ? .. OR body ? ..)` scan (mean 6755ms) → ts +
+      //      LIMIT + partial index (migration 561); live min_exec_time 2ms.
+      //   4. readEventsBounded's `body->>'kind' = ANY(..) LIMIT` (mean 4432ms) →
+      //      already LIMIT-clamped + index; live min_exec_time 0ms.
+      // With EI-9420's proven-fast-path suppression + EI-9506's COPY exemption both
+      // in the deployed code, this snapshot must produce ZERO furnace violations —
+      // the alarming means are lifetime debris from before those bounds landed.
+      const snap = {
+        ...cleanSnap,
+        coordLogFurnaces: [
+          {
+            queryid: '-6142784371100098654',
+            queryPreview:
+              'COPY harness_shared.coord_event_log (id, surface, writer_key, msg_id, body, ts, workspace_id, harness_slug, origin, author_pubkey, fed_ts, fed_hlc) TO stdout',
+            calls: 1,
+            rowsPerCall: 102_306,
+            meanExecMs: 2733,
+            minExecMs: 2733,
+          },
+          {
+            queryid: '7163057393307833526',
+            queryPreview:
+              'SELECT body FROM harness_shared.coord_event_log WHERE workspace_id = $1 AND surface = $3 AND jsonb_typeof(body->$4) = $5 AND (jsonb_exists(body->$6, $2) OR jsonb_exists(body->$7, $8)) ORDER BY id ASC',
+            calls: 11_704,
+            rowsPerCall: 12_444,
+            meanExecMs: 2082,
+            minExecMs: 68,
+          },
+          {
+            queryid: '-5934058039784757788',
+            queryPreview:
+              'SELECT body FROM harness_shared.coord_event_log WHERE workspace_id = $1 AND surface = $2 AND (body ? $3 OR body ? $4) ORDER BY id ASC',
+            calls: 3520,
+            rowsPerCall: 780,
+            meanExecMs: 6765,
+            minExecMs: 2,
+          },
+          {
+            queryid: '-1079103094344669412',
+            queryPreview:
+              "SELECT body FROM harness_shared.coord_event_log WHERE workspace_id = $1 AND surface = $2 AND body->>$5 = ANY($3::text[]) ORDER BY id DESC LIMIT $4",
+            calls: 22_034,
+            rowsPerCall: 497,
+            meanExecMs: 4432,
+            minExecMs: 0,
+          },
+        ],
+      };
+      expect(evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW)).toEqual([]);
+    });
+
     it('is a stable dedup title across repeated evaluation (never floods the backlog)', () => {
       const snap = {
         ...cleanSnap,

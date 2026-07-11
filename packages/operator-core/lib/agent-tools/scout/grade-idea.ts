@@ -479,6 +479,10 @@ export default defineTool({
   agentRoles: [...SU_ROLES],
   args: gradeIdeaArgs,
   async handler(args, ctx) {
-    return toToolResult(await runGradeIdea(args, ctx));
+    // Thread the caller's coord ownerId (D-012 self-grade guard) alongside the role
+    // (C-3 attribution). Both are DERIVED from ctx here, never caller-supplied.
+    const ownerId = resolveCallerOwnerId(ctx as ResolveIdentityCtx | undefined);
+    const role = (ctx as { role?: string } | undefined)?.role;
+    return toToolResult(await runGradeIdea(args, { role, ownerId }));
   },
 });

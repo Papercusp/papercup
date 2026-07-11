@@ -10,8 +10,10 @@
 
 'use client';
 
-import { useCallback, useEffect } from 'react';
-import { DockWorkspace, createFetchDockLayoutStore } from '@papercusp/dock-workbench';
+import { useCallback, useEffect, useMemo } from 'react';
+import { DockWorkspace, createFetchDockLayoutStore, type DockLayoutRow, type DockLayoutStore } from '@papercusp/dock-workbench';
+import { fetchSyncQuery } from '@papercusp/sync';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 import './dock-drawer-guard.css';
 import { MissingPanel } from './MissingPanel';
 import { bindDockApi } from './dock-actions';
@@ -39,9 +41,22 @@ interface HarnessDockProps {
   slug?: string;
 }
 
-const layoutStore = createFetchDockLayoutStore('/api/dock-layouts');
+const httpLayoutStore = createFetchDockLayoutStore('/api/dock-layouts');
 
 export function HarnessDock({ layoutName, className, slug }: HarnessDockProps) {
+  const workspaceId = useWorkspaceId();
+  const layoutStore = useMemo<DockLayoutStore>(() => ({
+    ...httpLayoutStore,
+    async load(name) {
+      const rows = await fetchSyncQuery<DockLayoutRow>({
+        queryName: 'dockLayouts.byName',
+        args: { workspaceId, name },
+        staleTime: 30_000,
+      });
+      if (!rows[0]) throw new Error(`layout ${name} not found`);
+      return rows[0];
+    },
+  }), [workspaceId]);
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   useEffect(() => {

@@ -69,7 +69,9 @@ vi.mock('dockview-react/dist/styles/dockview.css', () => ({}));
 // Make the localStorage layout key predictable (skip the workspace prefix).
 vi.mock('@papercusp/operator-core/lib/browser-workspace', () => ({
   wsLocalKey: (k: string) => k,
+  getBrowserWorkspaceId: () => 'default',
 }));
+vi.mock('@papercusp/sync', () => ({ fetchSyncQuery: vi.fn(async () => []) }));
 vi.mock('./PiPanel', () => ({ default: () => null }));
 vi.mock('./ChatPanel', () => ({ default: () => null }));
 vi.mock('./Tooltip', () => ({
