@@ -298,6 +298,14 @@ function copyInheritedCodexPrompts(codexHome: string): boolean {
  * the installer §4f + an earlier version of this wrote, which codex silently
  * ignored). We write `hooks.json`.
  *
+ * TURN PROVENANCE (turn-provenance-owner-vs-agent-2026-07-11 P-004): codex fires
+ * ONLY PreToolUse/PostToolUse — no UserPromptSubmit-equivalent event exists in
+ * its hooks.json, so the trust-layer classification hook cannot attach here.
+ * Codex sessions run LAYER-1 ONLY: injected turns still carry the
+ * `⟦turn-origin:… nonce:…⟧` envelope (tagged operator-side, backend-agnostic),
+ * visible to the model but not ledger-VERIFIED. Revisit if codex adds a
+ * prompt-submit hook event.
+ *
  * LOCK HOOKS: current Codex discovers this per-session `hooks.json` and fires
  * PreToolUse/PostToolUse for `apply_patch` (plus the Edit/Write aliases) and
  * shell/MCP tool names. The launcher passes `--dangerously-bypass-hook-trust`

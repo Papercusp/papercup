@@ -476,6 +476,10 @@ const CC_HOOK_FILES = [
   'posttooluse-objective-title.sh',
   'pretooluse-bash-resource-gate.sh',
   'workitem-verify-nudge.sh',
+  // turn-provenance-owner-vs-agent-2026-07-11 P-003: classify every submitted
+  // prompt against the injectors' envelope+nonce ledger → additionalContext
+  // stamp (VERIFIED agent-origin / UNVERIFIED claim / affirmative OWNER).
+  'userpromptsubmit-provenance.sh',
   // Shared python lib, NOT a hook: statusline-fleet.sh + posttooluse-objective-title.sh
   // `import pc_tty` off their own dirname to resolve the terminal they title. Omit it and
   // both raise ImportError, fail OPEN, and the packaged app silently stops setting the
@@ -1191,6 +1195,12 @@ export function mergeClaudeHookSettings(
     hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-bash-resource-gate.sh'), {
       matcher: 'Bash',
       hooks: cmd('pretooluse-bash-resource-gate.sh'),
+    });
+  // merge_provenance_hook — UserPromptSubmit, no matcher (fires on every prompt).
+  // turn-provenance-owner-vs-agent-2026-07-11 P-003: verified owner-vs-agent stamps.
+  if (has('userpromptsubmit-provenance.sh'))
+    hooks.UserPromptSubmit = replaceOurHookEntries(ev('UserPromptSubmit'), ours('userpromptsubmit-provenance.sh'), {
+      hooks: cmd('userpromptsubmit-provenance.sh'),
     });
 
   return cfg;

@@ -63,9 +63,18 @@ function makeDeps(overrides: Partial<JoinLinkDeps> = {}): JoinLinkDeps {
       cron: '0 0,10,20,30,40,50 * * * *',
     })),
     resolveWorkspaceId: vi.fn(() => 'ws-test'),
+    seedOwnerBinding: vi.fn(async () => ({ seeded: true as const })),
     ...overrides,
   };
 }
+
+const VALID_LINK_WITH_OWNER_BINDING: HarnessLink = {
+  ...VALID_LINK,
+  hivePubkey: 'a'.repeat(44),
+  ownerDevicePubkey: 'b'.repeat(44),
+  ownerGithubUserId: 42,
+  attestationGistId: 'c'.repeat(20),
+};
 
 const VALID_INPUT: JoinLinkInput = {
   slug: 'my-harness',
@@ -303,6 +312,47 @@ describe('handleJoinLink', () => {
       }),
     });
     const res = await handleJoinLink(VALID_INPUT, deps);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+  });
+
+  // ── D-007 / WI-4134: owner-binding seed uses the current `-pot` slug suffix ──
+
+  it('D-007: seeds the owner binding with a `-pot`-suffixed potId (not the stale `-hive` suffix)', async () => {
+    const deps = makeDeps();
+    await handleJoinLink({ ...VALID_INPUT, link: VALID_LINK_WITH_OWNER_BINDING }, deps);
+
+    expect(deps.seedOwnerBinding).toHaveBeenCalledTimes(1);
+    const seedArg = (deps.seedOwnerBinding as ReturnType<typeof vi.fn>).mock.calls[0]![0];
+    expect(seedArg).toMatchObject({
+      workspaceId: 'ws-test',
+      hivePubkey: VALID_LINK_WITH_OWNER_BINDING.hivePubkey,
+      ownerDevicePubkey: VALID_LINK_WITH_OWNER_BINDING.ownerDevicePubkey,
+      ownerGithubUserId: VALID_LINK_WITH_OWNER_BINDING.ownerGithubUserId,
+      // cup-lexicon-full-rename-2026-07-09: MUST match createPotFromRepo's
+      // deriveSlugs() `-pot` convention — a real owner announce stamps
+      // hive_id: desc.potId (HiveDirectory.announceLocalHive), so a stale
+      // `-hive` suffix here would key the synthetic seed entry differently
+      // from the later real beacon entry, landing as a duplicate in
+      // HiveDirectory.discovered (keyed on potId) instead of merging.
+      potId: `${VALID_LINK.repoName}-pot`,
+    });
+  });
+
+  it('does NOT seed the owner binding when the link lacks the full binding (no hivePubkey/ownerDevicePubkey/etc.)', async () => {
+    const deps = makeDeps();
+    await handleJoinLink(VALID_INPUT, deps); // plain VALID_LINK — no owner-binding fields
+    expect(deps.seedOwnerBinding).not.toHaveBeenCalled();
+  });
+
+  it('swallows seedOwnerBinding errors — the join still returns 200', async () => {
+    const deps = makeDeps({
+      seedOwnerBinding: vi.fn(async () => {
+        throw new Error('seed boom (attestation unreachable)');
+      }),
+    });
+    const res = await handleJoinLink({ ...VALID_INPUT, link: VALID_LINK_WITH_OWNER_BINDING }, deps);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.ok).toBe(true);

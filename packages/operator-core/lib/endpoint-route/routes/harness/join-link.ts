@@ -357,7 +357,18 @@ export async function handleJoinLink(
           ownerGithubLogin: link.repoOwner,
           attestationGistId: link.attestationGistId,
           topic: link.topic,
-          potId: `${link.repoName}-hive`,
+          // cup-lexicon-full-rename-2026-07-09: pot slugs are suffixed `-pot`
+          // (createPotFromRepo's deriveSlugs), matching what a real owner
+          // announce stamps as `hive_id` (HiveDirectory.announceLocalHive
+          // sends `hive_id: desc.potId`). A stale `-hive` suffix here doesn't
+          // match, so the synthetic seed keeps HiveDirectory.discovered keyed
+          // on the wrong potId (its `discovered.set(h.potId, h)` keys on this
+          // literal string) — the later real beacon then lands as a SEPARATE,
+          // duplicate entry instead of merging, visible in the federation UI
+          // panels (HiveFederationStatus / WorkbenchHiveDirectoryPanel, both
+          // keyed/displayed by `h.potId`). Doesn't affect bootstrap-admit
+          // itself (loadHiveOwnerDeviceBindings matches on hivePubkey only).
+          potId: `${link.repoName}-pot`,
         });
       } catch {
         // Non-fatal — the announce-beacon ingest can still seed it later.

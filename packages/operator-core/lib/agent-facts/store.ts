@@ -30,11 +30,35 @@ export const FACT_SCOPES = ['workspace', 'role', 'owner', 'harness', 'work_item'
 export type FactScope = (typeof FACT_SCOPES)[number];
 
 export const FACT_BODY_MAX_CHARS = 500;
+/** P-007: bounded verbatim quote inside a source-provenance stamp (fold-friendly —
+ *  mirrors RELAY_RENDER_CHARS; a fold can carry 12+ facts, so quotes stay short). */
+export const FACT_PROVENANCE_QUOTE_CHARS = 160;
 export const FACT_DEFAULT_TTL_SEC = 7 * 24 * 3600;
 /** Per-(scope,ref) live-fact cap — oldest-updated evicted past this. */
 export const FACTS_PER_SCOPE_CAP = 50;
 /** Fold budget: max facts per scope-selector in one fold read. */
 export const FACTS_FOLD_LIMIT = 12;
+
+/**
+ * P-007 (coord-authority-hardening): the platform-VERIFIED stamp for a TYPED
+ * sourceRef (`msg:<id>` / `wi:<id>`/WI-/EI- / `owner-turn`), captured
+ * server-side AT ASSERT TIME (H2-tier reuse — see
+ * agent-tools/facts/source-provenance-resolve.ts). Folds render it verbatim
+ * with zero extra reads. NULL/absent for free-text sourceRefs + legacy rows.
+ */
+export interface FactSourceProvenance {
+  kind: 'msg' | 'work-item' | 'owner-turn';
+  /** Did the ref resolve against the platform's own store at assert time? */
+  verified: boolean;
+  /** Bounded verbatim quote of the source (msg summary/body, WI title, the
+   *  owner's human-turn text) — captured server-side, never caller-supplied. */
+  quote?: string;
+  /** Compact source label, e.g. `msg <id> (<handle> → <to>, <ts>)` / `WI-4172 [feature/wip]`. */
+  label?: string;
+  /** When !verified: why (not_found / resolve_error / …) — rendered LOUDLY. */
+  error?: string;
+  verifiedAt: string;
+}
 
 export interface AgentFact {
   scope: FactScope;
@@ -42,6 +66,11 @@ export interface AgentFact {
   key: string;
   body: string;
   sourceRef: string | null;
+  /** P-007: fold-delivery audience restriction (v1 grammar `fleet:<slug>`);
+   *  null = unrestricted. Orthogonal to `scope` (what the fact is ABOUT). */
+  audienceScope: string | null;
+  /** P-007: assert-time verification stamp for a typed sourceRef; null otherwise. */
+  sourceProvenance: FactSourceProvenance | null;
   createdBy: string;
   updatedAt: string;
   expiresAt: string;
@@ -55,6 +84,13 @@ export interface AssertFactInput {
   key: string;
   body: string;
   sourceRef?: string | null;
+  /** P-007: restrict fold delivery to an audience (v1: `fleet:<slug>`).
+   *  Validated via {@link validateAudienceScope} — reject a typo loudly rather
+   *  than silently hiding the fact from every reader. */
+  audienceScope?: string | null;
+  /** P-007: the assert-time verification stamp (resolved by the tool layer —
+   *  the store persists it verbatim). */
+  sourceProvenance?: FactSourceProvenance | null;
   createdBy: string;
   ttlSec?: number;
   workspaceId?: string;
@@ -81,6 +117,59 @@ export function validateFactScope(scope: string, scopeRef?: string | null): stri
   if (scope === 'workspace' && ref) return "scope 'workspace' carries no scope_ref";
   if (scope !== 'workspace' && !ref) return `scope '${scope}' requires scope_ref`;
   return null;
+}
+
+/** P-007 v1 audience grammar: `fleet:<slug>`. Grows by adding alternatives HERE
+ *  (one grammar, shared by assert-validation and any future selector renderer). */
+const AUDIENCE_SCOPE_RE = /^fleet:[a-z0-9][a-z0-9._-]*$/i;
+
+/**
+ * Validate an audienceScope value. Returns an error string or null. STRICT by
+ * design: an unknown/typo'd audience is REJECTED at assert rather than stored —
+ * a stored-but-unmatchable audience would silently hide the fact from every
+ * reader, the worst failure for a deterministic-delivery surface. PURE.
+ */
+export function validateAudienceScope(audienceScope: string | null | undefined): string | null {
+  const a = (audienceScope ?? '').trim();
+  if (!a) return null; // absent = unrestricted
+  if (!AUDIENCE_SCOPE_RE.test(a)) {
+    return `audienceScope '${a}' does not match the v1 grammar 'fleet:<slug>' — an unmatchable audience would hide the fact from everyone`;
+  }
+  return null;
+}
+
+/**
+ * P-007: defensive read of a source_provenance jsonb round-trip. Absent /
+ * malformed / forged-shape → null, never throws (a bad row can't crash a fold).
+ * PURE.
+ */
+export function parseFactSourceProvenance(raw: unknown): FactSourceProvenance | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const s = raw as Record<string, unknown>;
+  if (s.kind !== 'msg' && s.kind !== 'work-item' && s.kind !== 'owner-turn') return null;
+  if (typeof s.verified !== 'boolean') return null;
+  if (typeof s.verifiedAt !== 'string' || !s.verifiedAt) return null;
+  return {
+    kind: s.kind,
+    verified: s.verified,
+    verifiedAt: s.verifiedAt,
+    ...(typeof s.quote === 'string' && s.quote ? { quote: s.quote } : {}),
+    ...(typeof s.label === 'string' && s.label ? { label: s.label } : {}),
+    ...(typeof s.error === 'string' && s.error ? { error: s.error } : {}),
+  };
+}
+
+/**
+ * P-007: render a fact's source anchor for folds — the provenance-hydrated form
+ * when a stamp exists (`<sourceRef> ✓ "<quote>"` / `<sourceRef> ✗unverified (err)`),
+ * else the plain sourceRef. '' when the fact has no source at all. PURE.
+ */
+export function renderFactSrc(f: Pick<AgentFact, 'sourceRef' | 'sourceProvenance'>): string {
+  const ref = f.sourceRef ?? '';
+  const p = f.sourceProvenance;
+  if (!p) return ref;
+  if (!p.verified) return `${ref} ✗unverified${p.error ? ` (${p.error})` : ''}`;
+  return p.quote ? `${ref} ✓ "${p.quote}"` : `${ref} ✓${p.label ? ` ${p.label}` : ''}`;
 }
 
 /**
@@ -161,6 +250,11 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // schema-validation path already avoids via InvalidInputError).
   const err = validateFactScope(input.scope, input.scopeRef);
   if (err) throw new InvalidInputError(`facts:assert — ${err}`);
+  // P-007: a typo'd audience is a caller-input mistake — reject loudly (stored
+  // unmatchable = fact hidden from everyone; see validateAudienceScope).
+  const audienceErr = validateAudienceScope(input.audienceScope);
+  if (audienceErr) throw new InvalidInputError(`facts:assert — ${audienceErr}`);
+  const audienceScope = (input.audienceScope ?? '').trim() || null;
   const key = input.key.trim();
   if (!key) throw new InvalidInputError('facts:assert — key required (stable slug)');
   const body = clampFactBody(input.body);
@@ -189,11 +283,14 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // at plan time (found 2026-07-03: zero fact writes since 461 applied).
   const rows = await sql<AgentFactRow[]>`
     INSERT INTO harness_shared.agent_facts
-      (workspace_id, harness_slug, scope, scope_ref, key, body, source_ref, created_by, expires_at, shareable)
+      (workspace_id, harness_slug, scope, scope_ref, key, body, source_ref, created_by, expires_at, shareable,
+       audience_scope, source_provenance)
     VALUES
       (${ws}, ${input.potHomeSlug ?? null}, ${input.scope}, ${ref}, ${key}, ${body},
        ${input.sourceRef ?? null}, ${input.createdBy},
-       now() + make_interval(secs => ${ttl}), ${input.shareable === true})
+       now() + make_interval(secs => ${ttl}), ${input.shareable === true},
+       ${audienceScope},
+       ${input.sourceProvenance ? JSON.stringify(input.sourceProvenance) : null}::jsonb)
     ON CONFLICT (workspace_id, scope, coalesce(scope_ref, ''), key, coalesce(source_hive, ''))
     DO UPDATE SET body = EXCLUDED.body,
                   source_ref = EXCLUDED.source_ref,
@@ -203,9 +300,14 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
                   updated_at = now(),
                   expires_at = EXCLUDED.expires_at,
                   retracted_at = NULL,
-                  shareable = EXCLUDED.shareable
-    RETURNING scope, scope_ref, key, body, source_ref, created_by,
-              updated_at::text, expires_at::text`;
+                  shareable = EXCLUDED.shareable,
+                  -- P-007: a re-assert REPLACES audience + provenance — the fresh
+                  -- assert is the current truth (omitting them clears, matching
+                  -- source_ref's existing replace semantics).
+                  audience_scope = EXCLUDED.audience_scope,
+                  source_provenance = EXCLUDED.source_provenance
+    RETURNING scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
+              created_by, updated_at::text, expires_at::text`;
   // Cap enforcement — evict oldest-updated live facts past the cap for this
   // (scope, ref). LOCAL partition only (H6): the local writer's cap must never
   // evict foreign-source observations (those are bounded per-source by the
