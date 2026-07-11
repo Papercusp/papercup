@@ -32,6 +32,7 @@ import {
   CONTEXT_GAUGE_LOUD_PCT,
 } from "./inbox-context-usage";
 import { classifyStaleClaims, renderFlushGateLine, FLUSH_GATE_PCT } from "./inbox-flush-gate";
+import { verifyContextTokensForAlarm } from "../../../system-health/context-estimate-verify";
 import { listActiveClaimFreshnessForOwner } from "../../../work-item-claims";
 import { activeWorkspaceId } from "../../../workspace-registry";
 import { cachedRead, type CachedReadCtx } from "../../../cache";
@@ -536,16 +537,26 @@ export default defineTool({
     let contextGauge: string | null = null;
     try {
       const pres = await getPresence(identity.ownerId);
-      usageLine = renderContextUsageLine(pres?.contextTokens, pres?.compactionLimit);
+      // WI-4154 verify-before-alarm: the cached estimate goes stale ACROSS A COMPACTION
+      // BOUNDARY (nothing invalidates it until the next watchdog sweep), so an alarm-band
+      // reading must be re-derived from the transcript before any of the three lines below
+      // may alarm on it — the false 126%/87% post-compaction alarms that burned pointless
+      // compactions. Below the LOUD band this is a pure pass-through; never throws.
+      const tokens = await verifyContextTokensForAlarm(
+        identity.ownerId,
+        pres?.contextTokens,
+        pres?.compactionLimit,
+      );
+      usageLine = renderContextUsageLine(tokens, pres?.compactionLimit);
       // flush-to-proceed-stretch-discipline-2026-07-04 P-002: near a compaction boundary,
       // surface any work-item claim whose checkpoint is stale (unflushed state) and NAME the
       // action (work_items:checkpoint) — the flush invariant enforced on the ONE surface in
       // front of the agent at the moment it matters. The claims read fires ONLY at/above the
       // gate pct, so normal low-% turns pay nothing extra. Best-effort: any failure omits the
       // line and never breaks the inbox read.
-      const pct = contextUsagePct(pres?.contextTokens, pres?.compactionLimit);
+      const pct = contextUsagePct(tokens, pres?.compactionLimit);
       if (pct != null && pct >= CONTEXT_GAUGE_LOUD_PCT) {
-        contextGauge = renderBandedContextGauge(pres?.contextTokens, pres?.compactionLimit);
+        contextGauge = renderBandedContextGauge(tokens, pres?.compactionLimit);
       }
       if (pct != null && pct >= FLUSH_GATE_PCT) {
         try {
