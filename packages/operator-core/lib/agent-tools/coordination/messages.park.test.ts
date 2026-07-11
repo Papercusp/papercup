@@ -7,7 +7,13 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  // Only the pg handle is faked — the generated schema exports must survive
+  // (agent-mcp's bootstrap, pulled in transitively via cue-authority-resolve's
+  // classifyAgentPane import, reads them at module load — EI/WI-4159-adjacent).
+  ...(await importOriginal<object>()),
+  getOrgPg: () => ({ sql: {} }),
+}));
 vi.mock('../../adv-sessions', () => ({ listRecordedLiveSessions: vi.fn(async () => []) }));
 vi.mock('./slot-parked-store', () => ({ parkSlotMessage: vi.fn(async () => ({ id: 'x' })) }));
 vi.mock('./federation-scope', () => ({

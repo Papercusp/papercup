@@ -10,6 +10,13 @@
  * tests pin that a claude resume now: (1) sets CLAUDE_CONFIG_DIR to the session's
  * isolation home, (2) lands in the session's original cwd, (3) rematerializes the
  * archived transcript from PG first — and that a miss degrades to a bare -r.
+ *
+ * WI-4159 (owner-hit 2026-07-11): the greeting itself now routes a claude
+ * resume/fork THROUGH `psu --resume=<id>` (not a bare `claude -r <id>`) — psu's
+ * own resume path does the CLAUDE_CONFIG_DIR→credential relocation that makes
+ * the isolated config dir authenticated, which a bare `claude -r` under it does
+ * not get (it hit /login). The CLAUDE_CONFIG_DIR/cwd/rematerialize behavior
+ * this suite pins is UNCHANGED by that — only the final greetingCmd shape is.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -42,7 +49,7 @@ describe('buildConsoleEnvelope resume launch-context (WI-3988/WI-3989)', () => {
     const env = await buildConsoleEnvelope({ ...BASE, resumeSessionId: '3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8' });
     expect(env.env.CLAUDE_CONFIG_DIR).toBe('/tmp/session-claude/su-owner-1');
     expect(env.cwd).toBe(process.cwd());
-    expect(env.greetingCmd).toContain('-r 3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8');
+    expect(env.greetingCmd).toContain('psu --resume=3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8');
   });
 
   it('rematerializes the archived session from PG before resuming', async () => {
@@ -57,7 +64,7 @@ describe('buildConsoleEnvelope resume launch-context (WI-3988/WI-3989)', () => {
   it('a fork still branches (--fork-session) AND points at the isolation home', async () => {
     const env = await buildConsoleEnvelope({ ...BASE, resumeSessionId: '7a3f6064-4904-4c00-ab63-33a72e6c419d', fork: true });
     expect(env.env.CLAUDE_CONFIG_DIR).toBe('/tmp/session-claude/su-owner-1');
-    expect(env.greetingCmd).toContain('--fork-session');
+    expect(env.greetingCmd).toContain('--fork');
   });
 
   it('degrades to a bare -r (no CLAUDE_CONFIG_DIR) when the session has no adv row', async () => {
