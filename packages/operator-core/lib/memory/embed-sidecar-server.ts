@@ -74,6 +74,13 @@ const MAX_BODY_BYTES = 16 * 1024 * 1024;
  *  JS numbers, so the default cap bounds the cache near ~8MB. */
 export const EMBED_CACHE_MAX_DEFAULT = 1024;
 
+/** P-004 (memory-public-release-hardening-2026-07-11): max embeds in flight.
+ *  Default 1 = the historical strictly-serial FIFO. Raising it lets ONNX runs
+ *  overlap inside ORT's own thread pool without loading extra model copies —
+ *  but effective CPU ≈ concurrency × intraOpNumThreads (WI-3792 caps 4/run),
+ *  so raise the unit env only with benchmarked host headroom. */
+export const EMBED_SIDECAR_CONCURRENCY_ENV = 'PAPERCUSP_EMBED_SIDECAR_CONCURRENCY';
+
 type EmbedFn = (text: string) => Promise<number[]>;
 
 /** Models this sidecar serves. 'gemma' and 'harrier' are asymmetric (kind
@@ -171,6 +178,8 @@ export interface EmbedSidecarOptions {
   log?: (line: string) => void;
   /** Max entries in the text→vector LRU (0 disables caching; tests). */
   cacheMax?: number;
+  /** Max embeds in flight (default EMBED_SIDECAR_CONCURRENCY_ENV, else 1). */
+  concurrency?: number;
 }
 
 export interface EmbedSidecarHandle {
@@ -243,16 +252,42 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     return p;
   };
 
-  // Single-flight FIFO: concurrent HTTP requests are serialized through one
-  // chain so a burst can't interleave-flood the (one-at-a-time anyway) ONNX
-  // worker — fair ordering, bounded memory, no starvation of small requests
-  // stuck behind their own giant batch peers. Rejections are swallowed on the
-  // chain (each caller gets its own rejection via `run`'s returned promise).
-  let queue: Promise<unknown> = Promise.resolve();
+  // Bounded-concurrency FIFO (P-004 memory-public-release-hardening): work
+  // units (one TEXT each — see WI-4196 below) START in arrival order, with at
+  // most `concurrency` in flight. The default 1 is the historical single-
+  // flight chain: strictly serial, fair, bounded memory. Raising it lets ONNX
+  // runs overlap inside ORT's own thread pool — the worker's async message
+  // handler never blocks its event loop, so no extra worker or model copy is
+  // needed — but effective CPU ≈ concurrency × intraOpNumThreads (WI-3792
+  // caps 4 per run): raise the unit env only with benchmarked host headroom.
+  // Rejections stay per-caller; a failed unit frees its slot via finally.
+  const concurrency = Math.max(
+    1,
+    Math.floor(
+      opts.concurrency ??
+        (Number(process.env[EMBED_SIDECAR_CONCURRENCY_ENV]) > 0
+          ? Number(process.env[EMBED_SIDECAR_CONCURRENCY_ENV])
+          : 1),
+    ),
+  );
+  let active = 0;
+  const waiting: Array<() => void> = [];
   const enqueue = <T>(work: () => Promise<T>): Promise<T> => {
-    const run = queue.then(work);
-    queue = run.catch(() => undefined);
-    return run;
+    const start = (): Promise<T> => {
+      active++;
+      return Promise.resolve()
+        .then(work)
+        .finally(() => {
+          active--;
+          waiting.shift()?.();
+        });
+    };
+    if (active < concurrency) return start();
+    return new Promise<T>((resolve, reject) => {
+      waiting.push(() => {
+        start().then(resolve, reject);
+      });
+    });
   };
 
   // WI-4196: per-text coalescing + bounded LRU over the text→vector mapping.
@@ -357,6 +392,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
         runtime: EMBED_SIDECAR_RUNTIME,
         models: { ...warm },
         cache: { hits: cacheHits, misses: cacheMisses, size: vecCache.size },
+        concurrency,
       });
       return;
     }
