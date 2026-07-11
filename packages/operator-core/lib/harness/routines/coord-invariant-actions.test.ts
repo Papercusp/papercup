@@ -530,13 +530,16 @@ describe('evaluateInvariants', () => {
       expect(isBackupOrMaintenanceStatement("SELECT 'analyze this' FROM harness_shared.coord_event_log")).toBe(false);
     });
 
-    it('EI-9525/EI-9539: the exact 4-furnace snapshot those EIs filed no longer alarms under the CURRENT detector', () => {
-      // Regression pin for EI-9525 (auto-filed 2026-07-11 01:38) AND its exact
-      // duplicate EI-9539 (auto-filed 2026-07-11 03:38) — both minted by a
-      // PRE-EI-9420 monitor whose snapshot carried no minExecMs, so nothing could
-      // be proven fast, and both flagging the IDENTICAL four queryids below. Every
-      // one of the four statements they flagged is now closed by an EXISTING
-      // guard, re-verified against LIVE pg_stat_statements (2026-07-11, EI-9539):
+    it('EI-9525/EI-9539/EI-9556: the exact 4-furnace snapshot those EIs filed no longer alarms under the CURRENT detector', () => {
+      // Regression pin for EI-9525 (auto-filed 2026-07-11 01:38), its exact
+      // duplicate EI-9539 (03:38), AND the third identical recurrence EI-9556
+      // (06:38) — the same 2h cadence, all minted by a PRE-EI-9420 monitor whose
+      // snapshot carried no minExecMs, so nothing could be proven fast, and all
+      // flagging the IDENTICAL four queryids below. (The alarm keeps re-filing
+      // only because the deployed :3070 operator predates the EI-9420/9506/9533
+      // guards; the fix is in-tree and this pin proves it.) Every one of the four
+      // statements they flagged is now closed by an EXISTING guard, re-verified
+      // against LIVE pg_stat_statements (2026-07-11, EI-9556):
       //   (queryid min_exec_time live values: 7163…=68ms, -5934…=2.3ms, -1079…=0ms)
       //   1. the pg_dump COPY ... TO stdout (~102k rows/call) → excluded by
       //      isBackupOrMaintenanceStatement (EI-9506) — a backup, not an app read.
