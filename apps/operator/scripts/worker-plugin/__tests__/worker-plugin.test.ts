@@ -8,8 +8,10 @@
  * is the remaining distribution work documented in the bundle README.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, writeFileSync, chmodSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 
 const ROOT = join(__dirname, '..');
 const manifest = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8'));
@@ -84,5 +86,71 @@ describe('papercusp-worker hooks.json', () => {
     // Must probe for the binary before invoking it, and exit clean (0) when absent.
     expect(rtkCmd).toMatch(/command -v rtk/);
     expect(rtkCmd).toMatch(/\|\|\s*exit 0/);
+  });
+});
+
+/**
+ * EI-9471 regression: the rtk PreToolUse rewrite hook hijacked a scoped single-file
+ * `npx vitest run <file> | grep | head` into a FULL-SUITE run (10k suites, 11MB) when
+ * rtk's vitest output-parser failed on the piped/compound form — it dropped the file
+ * filter and re-synthesized an UNSCOPED run. Fix: our fleet rtk hook now SKIPS vitest
+ * commands entirely (fail-open — skip = run verbatim, never a deny), so rtk's buggy
+ * vitest parser can never touch a vitest command. We execute the ACTUAL shipped hook
+ * command string against a hermetic fake `rtk` and assert vitest never reaches it while
+ * a non-vitest command still does. Fails BEFORE the fix (rtk was invoked for vitest).
+ */
+describe('papercusp-worker rtk hook — vitest skip (EI-9471)', () => {
+  const rtkCommand = (() => {
+    const bashEntry = (hooks.hooks.PreToolUse as Array<{ matcher: string; hooks: Array<{ command: string }> }>).find(
+      (e) => e.matcher === 'Bash',
+    );
+    const cmd = bashEntry!.hooks.map((h) => h.command).find((c) => c.includes('rtk hook claude'));
+    if (!cmd) throw new Error('rtk hook command not found in the Bash PreToolUse entry');
+    return cmd;
+  })();
+
+  // Run the exact shipped hook command with a fake `rtk` first on PATH; return whether
+  // rtk was actually invoked (`rtk hook …`) and what the hook emitted on stdout.
+  function runRtkHook(command: string): { stdout: string; rtkInvoked: boolean } {
+    const dir = mkdtempSync(join(tmpdir(), 'rtk-guard-'));
+    try {
+      const marker = join(dir, 'invoked');
+      const fakeRtk = join(dir, 'rtk');
+      writeFileSync(
+        fakeRtk,
+        `#!/usr/bin/env bash\nif [ "$1" = "hook" ]; then cat >/dev/null; printf X >> ${JSON.stringify(
+          marker,
+        )}; printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","updatedInput":{"command":"rtk-rewritten"}}}'; fi\n`,
+      );
+      chmodSync(fakeRtk, 0o755);
+      const payload = JSON.stringify({ tool_name: 'Bash', tool_input: { command } });
+      const stdout = execFileSync('bash', ['-c', rtkCommand], {
+        input: payload,
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${dir}:${process.env.PATH ?? ''}` },
+      });
+      return { stdout, rtkInvoked: existsSync(marker) };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('does NOT route a piped single-file vitest run through rtk (runs verbatim, filter preserved)', () => {
+    const res = runRtkHook(
+      'cd packages/operator-core && npx vitest run lib/agent-tools/coordination/presence-snapshot-targeted.test.ts 2>&1 | grep -A 30 "error when mocking" | head -50',
+    );
+    expect(res.rtkInvoked).toBe(false); // rtk never sees vitest → it cannot hijack it into a full-suite run
+    expect(res.stdout.trim()).toBe(''); // no updatedInput emitted → Claude runs the original command verbatim
+  });
+
+  it('skips rtk for a bare (non-piped) vitest run too — any vitest form, not just the piped one', () => {
+    const res = runRtkHook('npx vitest run some/file.test.ts');
+    expect(res.rtkInvoked).toBe(false);
+  });
+
+  it('still routes a non-vitest command (git status) through rtk for compression', () => {
+    const res = runRtkHook('git status');
+    expect(res.rtkInvoked).toBe(true);
+    expect(res.stdout).toContain('updatedInput'); // rtk produced its rewrite as before
   });
 });
