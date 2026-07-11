@@ -487,6 +487,49 @@ describe('evaluateInvariants', () => {
       expect(isBackupOrMaintenanceStatement("SELECT body FROM harness_shared.coord_event_log WHERE body->>'kind' = 'copy'")).toBe(false);
     });
 
+    it('EI-9533: a slow VACUUM/ANALYZE maintenance op on coord_event_log is NOT judged a furnace', () => {
+      // Live-verified shape (2026-07-11, EI-9533): autovacuum/maintenance
+      // `VACUUM ANALYZE` / `ANALYZE harness_shared.coord_event_log` runs multi-second
+      // (2.4–3.4s observed) — it touches the whole table BY DESIGN, exactly like the
+      // EI-9506 COPY dump, so it must never be judged an application furnace. It trips
+      // the MEAN-exec leg (>2000ms) and has NO fast path (min_exec is high too, so
+      // EI-9420's suppression cannot rescue it) — the only correct fix is to classify
+      // it out by statement kind. (Before this it escaped only incidentally, via the
+      // top-N-by-rows/call gather window that its rows/call=0 always ranked below.)
+      const snap = {
+        ...cleanSnap,
+        coordLogFurnaces: [
+          {
+            queryid: 'vacuum-analyze',
+            queryPreview: 'VACUUM ANALYZE harness_shared.coord_event_log',
+            calls: 1,
+            rowsPerCall: 0,
+            meanExecMs: 3432,
+            minExecMs: 3432,
+          },
+          {
+            queryid: 'analyze',
+            queryPreview: 'ANALYZE harness_shared.coord_event_log',
+            calls: 2,
+            rowsPerCall: 0,
+            meanExecMs: 2378,
+            minExecMs: 2209,
+          },
+        ],
+      };
+      expect(evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW)).toEqual([]);
+    });
+
+    it('EI-9533: isBackupOrMaintenanceStatement matches VACUUM/ANALYZE but not a SELECT that mentions them', () => {
+      expect(isBackupOrMaintenanceStatement('VACUUM ANALYZE harness_shared.coord_event_log')).toBe(true);
+      expect(isBackupOrMaintenanceStatement('vacuum harness_shared.coord_event_log')).toBe(true);
+      expect(isBackupOrMaintenanceStatement('ANALYZE harness_shared.coord_event_log')).toBe(true);
+      expect(isBackupOrMaintenanceStatement('  analyze (verbose) harness_shared.coord_event_log')).toBe(true);
+      // Not a false-positive on a SELECT whose body merely mentions vacuum/analyze.
+      expect(isBackupOrMaintenanceStatement("SELECT body FROM harness_shared.coord_event_log WHERE body->>'op' = 'vacuum'")).toBe(false);
+      expect(isBackupOrMaintenanceStatement("SELECT 'analyze this' FROM harness_shared.coord_event_log")).toBe(false);
+    });
+
     it('EI-9525: the exact 4-furnace snapshot that filed EI-9525 no longer alarms under the CURRENT detector', () => {
       // Regression pin for EI-9525 (auto-filed 2026-07-11 01:38 by a PRE-EI-9420
       // monitor — its snapshot carried no minExecMs, so nothing could be proven
