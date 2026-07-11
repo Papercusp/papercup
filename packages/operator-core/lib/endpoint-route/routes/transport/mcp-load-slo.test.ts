@@ -75,8 +75,9 @@ describe('evaluateMcpLoad — the verdict', () => {
   });
 
   it('a p95 over budget ⇒ FAIL with a p95 breach', () => {
-    // 95 fast + 5 slow: nearest-rank p95 lands on the first slow sample.
-    const samples = [...Array.from({ length: 95 }, () => ok(100)), ...Array.from({ length: 5 }, () => ok(9000))];
+    // N=100, nearest-rank p95 = sortedAsc[94]. 94 fast + 6 slow pushes index 94
+    // into the slow band, so p95 lands at 9000ms > the 3000ms budget.
+    const samples = [...Array.from({ length: 94 }, () => ok(100)), ...Array.from({ length: 6 }, () => ok(9000))];
     const r = evaluateMcpLoad(samples, BUDGETS);
     expect(r.passed).toBe(false);
     expect(r.p95Ms).toBe(9000);
