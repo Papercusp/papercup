@@ -2,6 +2,11 @@
  * work_items:subscribe — Subscribable (D-003). Follow a work-item to receive its
  * change fan-out (full | digest | mention).
  *
+ * INJECT-ONLY (the wake-vs-inject axis, linking-notify-family-hardening P-001):
+ * updates are injected into the subscriber's context at their NEXT turn — a
+ * subscription never re-invokes an idle session. The only WAKING verb is
+ * events:await (one-shot, on an exact event key like work-item:done:<id>).
+ *
  * Bulk by default (bulk-endpoint-standardization-2026-06-21): pass `id` for one or
  * `ids` for several (shared `mode`/`harness`) → { ok, results:[{ ok, id, error? }], counts }.
  */
@@ -16,11 +21,13 @@ export default defineTool({
   name: 'work_items:subscribe',
   profile: 'engineer',
   description:
-    'Subscribe to one OR many work-items so their updates fan out to your inbox — pass `id` for one or `ids` for several (shared `mode`: full | digest | mention). Returns { ok, results:[{ ok, id, error? }], counts }.',
+    'Follow one OR many work-items: their updates are INJECTED into your inbox at your next turn — inject-only, this never WAKES an idle session (to be re-invoked when a specific item settles, use events:await on its event key instead). mode tiers the injected volume: full = every update (default) | digest = coalesced summaries | mention = only @-mentions and resolution. Pass `id` for one or `ids` for several. Returns { ok, results:[{ ok, id, error? }], counts }.',
   guidance: {
-    when: 'You want to follow one or more work-items you do not own (e.g. ones that block yours). Subscribe to several at once via `ids`.',
+    when: 'You want to SEE the progress of one or more work-items you do not own (e.g. ones that block yours). Subscribe to several at once via `ids`.',
+    notWhen: 'You are BLOCKED until an item settles and need to be woken — that is events:await { event: "work-item:done:<id>" } (one-shot wake), not a subscription (inject-only, never wakes).',
     chaining: 'work_items:get → work_items:subscribe.',
     seeAlso: [
+      'events:await (the ONLY waking verb — one-shot wake when an item settles)',
       'work_items:comment (post to the thread you are following)',
       'work_items:link (record that this item blocks yours)',
     ],
@@ -32,7 +39,10 @@ export default defineTool({
     .object({
       id: z.string().min(1).optional().describe('a single work-item id (n=1 shorthand for ids:[id])'),
       ids: z.array(z.string().min(1)).max(100).optional().describe('work-item ids to subscribe to (1–100)'),
-      mode: z.enum(['full', 'digest', 'mention']).optional(),
+      mode: z
+        .enum(['full', 'digest', 'mention'])
+        .optional()
+        .describe('injected-notification volume: full = every update (default) | digest = coalesced summaries | mention = only @-mentions and resolution'),
       harness: z.string().max(80).optional(),
     })
     .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, { message: 'pass `id` (one) or `ids` (many)' }),

@@ -861,7 +861,13 @@ export async function gatherCoordLogFurnaceStatements(
   >`
     SELECT
       queryid::text AS queryid,
-      LEFT(query, 300) AS query_preview,
+      -- EI-9447: 300 was cutting off a query's trailing clauses (a real
+      -- LIMIT clause routinely fell just past the boundary) — the forensics
+      -- then read identically to a genuinely-unbounded scan, misdirecting
+      -- triage toward the wrong fix. 600 comfortably covers every real
+      -- coord_event_log statement in this codebase (verified: none exceeds
+      -- ~420 chars) while still never returning a truly huge ad-hoc string.
+      LEFT(query, 600) AS query_preview,
       calls::text AS calls,
       rows::text AS rows,
       mean_exec_time,

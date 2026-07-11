@@ -1938,7 +1938,7 @@ const handler = createMcpHandler(
                 type: 'text' as const,
                 text: idempotencyKey
                   ? `request_timeout: tool "${toolName}" exceeded ${MCP_DEADLINE_MS}ms (still running server-side; retry with the same _meta.idempotencyKey to replay its result once it completes).`
-                  : `request_timeout: tool "${toolName}" exceeded ${MCP_DEADLINE_MS}ms (still running server-side; pass _meta.idempotencyKey to make a retry replay-safe instead of re-executing).`,
+                  : `request_timeout: tool "${toolName}" exceeded ${MCP_DEADLINE_MS}ms (still running server-side — this call had no idempotencyKey, so a blind retry now risks double-applying a mutation that may already have landed. Do NOT retry yet: first re-read the current state via the matching *:get/*:list to confirm whether it landed before deciding your next step. For future calls, pass _meta.idempotencyKey up front so a timeout-retry can safely replay instead of re-executing).`,
               }],
             }));
           };

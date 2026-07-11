@@ -32,12 +32,13 @@ const itemSpec = z.object({
 export default defineTool({
   name: 'topics:subscribe',
   description:
-    'Subscribe to one OR many topics so their updates are injected into your inbox — the named sugar for watch(topic,{wake:false}). mode = full | digest | mention (D-006 noise tiering). Subscribe to the built-in `new_topic` to learn of new topics as they appear. Idempotent — re-subscribing updates the mode/TTL. Single: { topic, mode?, ttl_sec? }. Many same mode: { topics:[…], mode?, ttl_sec? }. Many heterogeneous: items:[{ topic, mode?, ttl_sec? }]. Returns { ok, results:[{ ok, topic, subscription? | error }], counts } — correlate by topic, not position; one failure never fails the rest.',
+    'Subscribe to one OR many topics so their updates are INJECTED into your inbox at your next turn — inject-only, this never WAKES an idle session (the named sugar for watch(topic,{wake:false}); to be re-invoked on a specific announced key, use events:await instead — the only waking verb, one-shot). mode tiers the injected volume (D-006): full = every update | digest = coalesced count + one-line | mention = only when @-addressed or on resolution. Subscribe to the built-in `new_topic` to learn of new topics as they appear. Idempotent — re-subscribing updates the mode/TTL. Single: { topic, mode?, ttl_sec? }. Many same mode: { topics:[…], mode?, ttl_sec? }. Many heterogeneous: items:[{ topic, mode?, ttl_sec? }]. Returns { ok, results:[{ ok, topic, subscription? | error }], counts } — correlate by topic, not position; one failure never fails the rest.',
   guidance: {
     when: 'A topic in topics:list is relevant to your current work and you want its updates pushed to you. Pick digest for high-churn areas, mention to stay quiet. Subscribe to several at once via topics:[…] or items:[…].',
-    notWhen: 'You only need a one-time look — just topics:list. To follow a specific object (one thread/issue), that is the object’s own subscribe, not a topic.',
+    notWhen: 'You only need a one-time look — just topics:list. To follow a specific object (one thread/issue), that is the object’s own subscribe, not a topic. To be WOKEN by one specific event, that is events:await (a subscription is inject-only and never wakes).',
     chaining: 'topics:list → topics:subscribe; topics:unsubscribe to stop.',
     seeAlso: [
+      'events:await (the ONLY waking verb — one-shot wake on an exact event key)',
       'topics:unsubscribe (stop following)',
       'topics:feed (read the topic you subscribed to)',
       'topics:list (find topics to follow)',

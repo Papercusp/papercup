@@ -61,8 +61,29 @@ export async function setupBaselineCoordFixture(): Promise<BaselineCoordFixture>
   // are workstation-class, so the suite is green there and red here.)
   const prevPgb = process.env.PAPERCUSP_PGBOUNCER;
   const prevSkipDisc = process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
+  const prevReadLinesCache = process.env.PAPERCUSP_COORD_READLINES_CACHE;
+  const prevReadEventsCache = process.env.PAPERCUSP_COORD_READEVENTS_CACHE;
   process.env.PAPERCUSP_PGBOUNCER = '0';
   process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
+  // WI-3937/WI-3993's readLines/readEvents in-process caches are built for an
+  // append-only table with rare, eventually-consistent-after-5-min-TTL GC
+  // deletes — NOT for a table that gets hard TRUNCATEd between test cases (as
+  // every consumer of this fixture's `admin` client does, via `beforeEach`
+  // seed-isolation). A cache entry surviving a TRUNCATE still holds the
+  // PRE-truncate rows; the next delta read then finds the SAME msg_id
+  // reinserted at a fresh `id` and APPENDS it (dedup is by `id`, not
+  // `msg_id`), producing a phantom duplicate envelope for the remainder of
+  // the test file's 5-minute TTL window (EI-9450 — readInbox pushdown vs.
+  // reference() went out of sync because reference()'s readLines() call hit
+  // this stale cache while the SQL fast path always reads fresh). Disable
+  // both caches for the coordination integration-test fixture: no test using
+  // this fixture exercises the cache mechanism itself (that lives in
+  // event-log-conformance.test.ts, which does not use this fixture), so the
+  // kill switches are a safe, zero-behavior-change fix scoped to the actual
+  // root cause (test-only TRUNCATE isolation colliding with a
+  // production-shaped cache assumption) rather than the individual test.
+  process.env.PAPERCUSP_COORD_READLINES_CACHE = '0';
+  process.env.PAPERCUSP_COORD_READEVENTS_CACHE = '0';
   process.env.HARNESS_DATABASE_URL = withUser(dsn, 'harness_app', 'harness_app_pwd');
   process.env.HARNESS_ADMIN_DATABASE_URL = withUser(dsn, 'harness_admin', 'harness_admin_pwd');
   _resetUrlCacheForTests();
@@ -83,6 +104,10 @@ export async function setupBaselineCoordFixture(): Promise<BaselineCoordFixture>
     else process.env.PAPERCUSP_PGBOUNCER = prevPgb;
     if (prevSkipDisc === undefined) delete process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
     else process.env.PAPERCUSP_SKIP_PG_DISCOVERY = prevSkipDisc;
+    if (prevReadLinesCache === undefined) delete process.env.PAPERCUSP_COORD_READLINES_CACHE;
+    else process.env.PAPERCUSP_COORD_READLINES_CACHE = prevReadLinesCache;
+    if (prevReadEventsCache === undefined) delete process.env.PAPERCUSP_COORD_READEVENTS_CACHE;
+    else process.env.PAPERCUSP_COORD_READEVENTS_CACHE = prevReadEventsCache;
     _resetUrlCacheForTests();
     _resetHarnessAdminUrlCacheForTests();
     await _resetForTests();

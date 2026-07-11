@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal } from './Modal';
-import { Tooltip } from './Tooltip';
 import { TONE } from './theme';
 import {
   useAgentThinkingStream,
