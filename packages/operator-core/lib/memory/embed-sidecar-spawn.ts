@@ -103,7 +103,8 @@ function scheduleRespawn(): void {
     gaveUp = true;
     console.error(
       `[embed-sidecar] ${MAX_RESPAWN_ATTEMPTS} crashes within ${Math.round(RESPAWN_WINDOW_MS / 1000)}s — giving up auto-respawn. ` +
-        'Embedding stays on the in-process fallback until an explicit spawnEmbedSidecar() call.',
+        'Embedding on this host will FAIL (no in-process fallback, WI-4021) until an explicit spawnEmbedSidecar() call ' +
+        'or a supervised sidecar answers the port.',
     );
     return;
   }
@@ -271,7 +272,7 @@ export async function ensureEmbedSidecar(): Promise<string | null> {
     registerEmbedSidecarShutdownHooks();
     return url;
   } catch (err) {
-    console.warn('[embed-sidecar] ensure failed (embedding stays in-process):', err instanceof Error ? err.message : err);
+    console.warn('[embed-sidecar] ensure failed (no sidecar → pure in-process engine):', err instanceof Error ? err.message : err);
     return null;
   }
 }

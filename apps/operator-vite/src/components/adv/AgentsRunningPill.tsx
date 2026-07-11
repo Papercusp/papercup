@@ -1099,7 +1099,7 @@ function RosterStyles() {
          (owner-hit 2026-07-11 r2). This class fully owns the appearance because
          the shared Checkbox primitive drops its inline ROOT_STYLE when given a
          className. Radix renders a <button role=checkbox data-state=…>; the
-         lucide <Check size=10> indicator inherits `color`. Compact 12px box,
+         lucide <Check size=10> indicator inherits the current color. Compact 12px box,
          fills solid --accent with a dark check when selected — a clean native
          accent-color checkbox, not the faint bordered box the default gave. */
       .pc-agents-roster__check {

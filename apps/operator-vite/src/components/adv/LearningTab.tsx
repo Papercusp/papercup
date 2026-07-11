@@ -39,9 +39,10 @@
  * shared app tokens (--fg/--accent/…), matching AdvShell + AdvConversationsTab.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useQueryState, useQueryStates, parseAsStringEnum, parseAsBoolean, parseAsString } from 'nuqs';
+import { useQueryState, useQueryStates, parseAsStringEnum, parseAsString } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { GraduationCap, RefreshCw, ShieldCheck, UserRound, CheckCircle2, Dumbbell, Sparkles, XCircle, Clock, HelpCircle, Gauge, BookOpen, ArrowUpRight, ArrowUp, ArrowDown, Minus, Activity, Repeat2, Hourglass, Radar, Brain, Star, MessageSquarePlus, MessageSquareText, Send } from 'lucide-react';
+import * as Tabs from '@radix-ui/react-tabs';
+import { RefreshCw, ShieldCheck, UserRound, CheckCircle2, Dumbbell, Sparkles, XCircle, Clock, HelpCircle, Gauge, BookOpen, ArrowUpRight, ArrowUp, ArrowDown, Minus, Activity, Repeat2, Hourglass, Radar, Brain, Star, MessageSquarePlus, MessageSquareText, Send, Eye, Lightbulb, FlaskConical } from 'lucide-react';
 import type { ImprovementDigest, ScoredItem } from '@papercusp/operator-core/lib/harness/improvements/digest';
 import { CATEGORICAL, SEVERITY } from '@/app/harness/theme';
 import type { ImprovementFlow } from '@papercusp/operator-core/lib/harness/improvements/flow-metrics';
@@ -70,118 +71,58 @@ import MemoryHealthCard from './MemoryHealthCard';
 import LearningEfficacyPanel from './LearningEfficacyPanel';
 import HumanQueueDrain from './HumanQueueDrain';
 import LearningPackCandidates from './LearningPackCandidates';
+import RubricsPanel from '@/app/_components/RubricsPanel';
+import RubricDetailPanel from '@/app/_components/RubricDetailPanel';
+import ObservationsPanel from '@/app/adv/create/ObservationsPanel';
 
-const LVIEWS = ['improvements', 'gym', 'benchmark', 'scout', 'throughput', 'knowledge', 'learnings'] as const;
+const LVIEWS = ['observations', 'improvements', 'ideas', 'gym', 'rubrics', 'benchmark', 'throughput', 'learnings'] as const;
 type LView = (typeof LVIEWS)[number];
 
-/** The plain-language pipeline behind each sub-view, rendered as the "how this works" strip.
- *  Built per-render from the active lexicon so agent-noun copy (brain / contributor /
- *  pot, or their swarm-skin aliases) tracks the FLAGS.THE_HIVE pack (restore-pot-lexicon P-006). */
-function buildHowSteps(t: ReturnType<typeof useLexicon>): Record<LView, { title: string; desc: string }[]> {
-  return {
-  improvements: [
-    {
-      title: 'Notice',
-      desc: 'A background watchdog files objective problems (failing tests, broken tools, down services), and agents file friction they hit while working.',
-    },
-    {
-      title: 'Triage',
-      desc: 'Every item is scored by severity and age, then sorted: safe bug-fixes go to the auto-fixable lane; anything risky or judgment-shaped waits for your review.',
-    },
-    {
-      title: 'Resolve',
-      desc: 'Fixes land and items close. A problem that comes back is re-filed and climbs the queue.',
-    },
-  ],
-  gym: [
-    {
-      title: 'Experiment',
-      desc: 'The gym rewrites one agent role’s prompt and proposes the variant as a candidate.',
-    },
-    {
-      title: 'Score',
-      desc: 'A frozen judge benchmarks the variant against the current prompt — Δ is the score change, positive means better.',
-    },
-    {
-      title: 'Promote',
-      desc: 'Winners are accepted as champions and become the role’s live prompt; losers are rejected.',
-    },
-  ],
-  benchmark: [
-    {
-      title: 'Run',
-      desc: 'A fixed battery of coding tasks is run against the agent fleet — the same tasks every time, so generations are comparable.',
-    },
-    {
-      title: 'Score',
-      desc: 'A frozen judge grades each run, and we record the composite score, time-to-green, tokens, and how often a human was needed.',
-    },
-    {
-      title: 'Track',
-      desc: 'Each run becomes one point on the trend. Rising scores (and falling time/tokens/escalations) are the proof the improvements and the gym are actually working.',
-    },
-  ],
-  scout: [
-    {
-      title: 'Watch',
-      desc: 'On a cadence, Scout sweeps the system through creative lenses, hunting for patterns and improvement ideas the day-to-day loop misses.',
-    },
-    {
-      title: 'Gate',
-      desc: 'Each tick passes gates (idle, friction, budget, circuit-breaker) before spending anything — most ticks correctly decide to do nothing.',
-    },
-    {
-      title: 'Route',
-      desc: 'Ideas that survive critique are routed into a rail — a plan draft, a gym experiment, or a work item — and their outcomes feed back into which lenses get used.',
-    },
-    {
-      title: 'Grade',
-      desc: `Grade routed ideas 1–5 with an optional note — the ${t('brain')} auto-grades the rest, and your grade always wins. Grades shift the lens weights below, and recent notes are quoted to the next cycle’s ideators.`,
-    },
-  ],
-  throughput: [
-    {
-      title: 'Place',
-      desc: `The ${t('brain')} ranks the ready work and fans it onto ${t('contributor', { plural: true, lower: true })} — as many per wake as there are free slots. Frontier depth is how much waits; placements/wake is how fast she pours.`,
-    },
-    {
-      title: 'Run',
-      desc: `Each placed ${t('contributor', { lower: true })} runs to completion. Busy-vs-cap is fleet utilization, mean-time-to-complete is how long a placement takes, and a stuck count flags ${t('contributor', { plural: true, lower: true })} that stopped advancing.`,
-    },
-    {
-      title: 'Unblock',
-      desc: `When a ${t('contributor', { lower: true })} hits a question, where it resolves — itself, a peer vote, the ${t('brain')}, or you — is the question-rung split. A loop operating well keeps the frontier draining without pegging the fleet or stranding placements.`,
-    },
-  ],
-  knowledge: [
-    {
-      title: 'Hit something non-obvious',
-      desc: 'When an agent works through a confusing failure or a subtle invariant, it writes a short runbook so the next agent doesn’t lose the same hour.',
-    },
-    {
-      title: 'Review',
-      desc: 'Those insights are PR-reviewed docs — durable, searchable knowledge, not chat that scrolls away.',
-    },
-    {
-      title: 'Reuse',
-      desc: 'The fleet reads them before grepping code. Open the Insights tab to browse the full library.',
-    },
-  ],
-  learnings: [
-    {
-      title: 'Seeded',
-      desc: `A new ${t('pot', { lower: true })} starts with a learning pack — curated working wisdom copied into its shared memory, badged so you can always tell it apart from what the ${t('pot', { lower: true })} learned itself.`,
-    },
-    {
-      title: 'Grown',
-      desc: 'Agents bind the pack’s discovery rules to your project (the test command, the design system) and record their own conventions into the same pool.',
-    },
-    {
-      title: 'Yours to edit',
-      desc: 'Everything here is editable — fix a learning that doesn’t fit your project, remove what you disagree with, add what’s missing. Agents treat the pool as strong defaults, not gospel.',
-    },
-  ],
-  };
+type LearningStage = 'observe' | 'improve' | 'verify' | 'retain';
+
+const STAGES: ReadonlyArray<{
+  id: LearningStage;
+  label: string;
+  icon: typeof Eye;
+  views: ReadonlyArray<{ id: LView; label: string; icon: typeof Eye }>;
+}> = [
+  {
+    id: 'observe',
+    label: 'Observe',
+    icon: Eye,
+    views: [
+      { id: 'observations', label: 'Observations', icon: Eye },
+      { id: 'improvements', label: 'Improvements', icon: Sparkles },
+    ],
+  },
+  {
+    id: 'improve',
+    label: 'Improve',
+    icon: Lightbulb,
+    views: [
+      { id: 'ideas', label: 'Ideas', icon: Lightbulb },
+      { id: 'gym', label: 'Gym', icon: Dumbbell },
+    ],
+  },
+  {
+    id: 'verify',
+    label: 'Verify',
+    icon: Gauge,
+    views: [
+      { id: 'rubrics', label: 'Rubrics', icon: Gauge },
+      { id: 'benchmark', label: 'Benchmark', icon: FlaskConical },
+    ],
+  },
+  {
+    id: 'retain',
+    label: 'Retain',
+    icon: Brain,
+    views: [{ id: 'learnings', label: 'Learnings', icon: Brain }],
+  },
+];
+
+function stageForView(view: LView): LearningStage | null {
+  return STAGES.find((stage) => stage.views.some((candidate) => candidate.id === view))?.id ?? null;
 }
 
 /** Sub-views whose data is scoped to ONE Hive (the tenancy unit, D-008) — they

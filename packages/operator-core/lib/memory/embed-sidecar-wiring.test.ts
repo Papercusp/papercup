@@ -3,7 +3,9 @@
  * seam between the embedder cascade and the sidecar. Contracts:
  *  - explicit PAPERCUSP_EMBED_SIDECAR_URL wins and never triggers a spawn;
  *  - no URL + opt-in ensure() supplies the URL (lazy spawn/adopt);
- *  - neither ⇒ pure in-process fallback (today's behavior, no sidecar I/O).
+ *  - a RESOLVED sidecar is REQUIRED — a dead one throws, no in-process
+ *    failover (WI-4021, D-003 retired);
+ *  - neither ⇒ pure in-process engine (no sidecar I/O).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as http from 'node:http';
@@ -70,7 +72,7 @@ describe('buildSidecarAwareEmbedder', () => {
     expect(stub.hits.length).toBe(1);
   });
 
-  it('dead sidecar URL ⇒ degrades to the real in-process fallback without throwing', async () => {
+  it('dead sidecar URL ⇒ THROWS sidecar_required_unavailable — never loads an in-process model (WI-4021)', async () => {
     // The expected down-transition warn is the CORRECT behavior under test —
     // silence it so vitest-fail-on-console doesn't flag the intended log.
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -81,15 +83,13 @@ describe('buildSidecarAwareEmbedder', () => {
         resolveUrl: () => null,
         ensure: async () => stub.url,
       });
-      // A dead sidecar must NOT reject the embed — buildSidecarFirstEmbedder
-      // falls back to the REAL gemma builder in-process (D-003). The vector
-      // must be a real 384-dim gemma embedding, never a sidecar network error.
-      const vec = await embed('x');
-      expect(vec).toBeInstanceOf(Array);
-      expect(vec.length).toBe(384);
+      // A resolved-but-dead sidecar must reject loudly (D-003 retired): if this
+      // ever silently falls back to a real in-process gemma load again, this
+      // rejects-assertion fails instead of a 384-dim vector appearing.
+      await expect(embed('x')).rejects.toThrow(/sidecar_required_unavailable/);
       expect(warnSpy).toHaveBeenCalled(); // exactly the down-transition log
     } finally {
       warnSpy.mockRestore();
     }
-  }, 120_000);
+  }, 30_000);
 });
