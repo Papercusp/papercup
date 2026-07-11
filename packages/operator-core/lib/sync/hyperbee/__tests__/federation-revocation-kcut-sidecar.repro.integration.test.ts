@@ -15,12 +15,17 @@
  *
  * THE WITNESSED SEQUENCE (real wire, real testcontainer PG, real XChaCha20-Poly1305 +
  * sealed-box crypto):
- *   1. EPOCH 0 — owner + member B federate. The owner grants epoch-0 keys to {owner, B}
- *      (real `grantEpochKeysToMembers`), authors epoch-0 content ENCRYPTED-on-drain (the
- *      real `drainOutboxOnce({ epochEncrypt })` + `buildEpochEncryptCapability`), and it
- *      crosses the real swarm. B admits the owner (D-053 bootstrap-admit), federates the
- *      wrapped epoch-0 key row, UNWRAPS it with its device key, and DECRYPTS the content
- *      into its own Postgres (origin='remote').
+ *   1. EPOCH 0 (BASELINE) — owner + member B federate. Epoch 0 is the PRE-re-key baseline:
+ *      per WI-2102 (`buildEpochEncryptCapability` returns null at `BASELINE_EPOCH`), baseline
+ *      content federates PLAINTEXT (no epoch stamp) — a never-rekeyed hive does NOT demand an
+ *      epoch-0 key on every drain. So the owner still grants epoch-0 keys to {owner, B} (real
+ *      `grantEpochKeysToMembers`) and authors epoch-0 content, but that content crosses the
+ *      real swarm as PLAINTEXT; B admits the owner (D-053 bootstrap-admit), federates the
+ *      wrapped epoch-0 key row, and reads the plaintext plan into its own Postgres
+ *      (origin='remote'). The READ CUT proper lands at the first ENCRYPTED epoch (epoch 1,
+ *      post-ban) below — epoch 0 is the readable pre-boundary content.
+ *      (Pre-WI-2102 this baseline epoch was itself encrypted; the plaintext-baseline bypass
+ *      is the deliberate live production path — see `hive-epoch-op-gate.ts`.)
  *   2. BAN — the owner advances the epoch 0→1 EXCLUDING B (real `advanceEpochOnHiveBoundary`
  *      with `cutOffPubkeys:[B]`, the boundary the `pot:ban_member` / revoke path drives):
  *      the epoch-1 key is wrapped to the REMAINING device (owner) ONLY — never to B.
@@ -506,17 +511,27 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
         VALUES (${WORKSPACE_ID}, ${HIVE_HOME}, 'plan-epoch0', 'Epoch0 plan', ${EPOCH0_BODY}, 'active')
       `;
       const drained0 = await drainOutboxOnce(owner.handle, dbOwner.adminSql, { epochEncrypt: ownerEpochEncrypt });
-      expect(drained0, 'owner drained the epoch-0 key rows + the encrypted plan').toBeGreaterThanOrEqual(3);
+      expect(drained0, 'owner drained the epoch-0 key rows + the (baseline-plaintext) plan').toBeGreaterThanOrEqual(3);
 
-      // Sanity: the federated epoch-0 plan op is GENUINELY ciphertext (no plaintext on the wire).
+      // WI-2102: epoch 0 is the pre-re-key BASELINE — `buildEpochEncryptCapability` returns
+      // null at `BASELINE_EPOCH`, so the epoch-0 plan federates PLAINTEXT with NO epoch stamp
+      // (a never-rekeyed hive must not demand an epoch-0 key on every drain). So the epoch-0
+      // plan op is genuinely plaintext on the wire — B reads it WITHOUT needing to decrypt.
+      // The read CUT (the security core of this repro) lands at the first ENCRYPTED epoch —
+      // the post-ban epoch 1 below — not here.
       const wireOps0 = await readOwnLogOps(owner.handle);
       const planWire0 = wireOps0.find((o) => o.table === 'plans-by-slug' && o.hbKey === 'plan-epoch0');
-      expect(planWire0?.epoch, 'epoch-0 plan op carries the epoch stamp').toBe(0);
-      expect(JSON.stringify(planWire0?.value ?? {}), 'epoch-0 plan federates as ciphertext, not plaintext')
-        .not.toContain('SECRET epoch-0');
+      expect(planWire0, 'epoch-0 plan op federated on the owner log').toBeTruthy();
+      expect(planWire0?.epoch, 'epoch-0 (baseline) plan op carries NO epoch stamp — it federates plaintext (WI-2102)')
+        .toBeUndefined();
+      expect(JSON.stringify(planWire0?.value ?? {}), 'epoch-0 (baseline) plan federates as PLAINTEXT (WI-2102 baseline bypass)')
+        .toContain('SECRET epoch-0');
 
-      // B admits the owner (D-053 bootstrap-admit), federates the epoch-0 key + the ciphertext,
-      // unwraps + DECRYPTS the plan into its own PG (origin='remote').
+      // B admits the owner (D-053 bootstrap-admit), federates the epoch-0 key row + the
+      // (baseline-PLAINTEXT, WI-2102) plan, and reads the plan into its own PG (origin='remote').
+      // The epoch-0 key row still federates (the grant wrapped it) — it just isn't needed to
+      // read baseline-plaintext content; it is the wrapped-key path B would use for an
+      // encrypted epoch it remains a member of.
       const epoch0 = await pollUntil(
         async () => {
           await Promise.all([owner.mergeNow(), bPeer.mergeNow()]);
@@ -547,7 +562,7 @@ describe('SIDECAR revocation K-CUT — a banned member CANNOT decrypt post-bound
       }
       expect(epoch0, 'EPOCH-0: B never federated its epoch-0 key / never decrypted the owner plan').toBeTruthy();
       expect(epoch0!.plan).toMatchObject({ plan_slug: 'plan-epoch0', origin: 'remote' });
-      expect(epoch0!.plan.content, 'B decrypted the real epoch-0 plaintext').toContain('SECRET epoch-0');
+      expect(epoch0!.plan.content, 'B read the real epoch-0 (baseline-plaintext) plan body').toContain('SECRET epoch-0');
 
       // ── BAN: the owner advances the epoch 0→1 EXCLUDING B (the revoke boundary). The
       //    epoch-1 key is wrapped to the REMAINING device (owner) ONLY — never to B. ──
