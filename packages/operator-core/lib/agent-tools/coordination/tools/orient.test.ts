@@ -20,9 +20,24 @@ vi.mock('../../../events/await/store', () => ({
   listActiveAnnouncements: listActiveAnnouncementsMock,
 }));
 
+// P-009 (H4): the fleet control-state fold reads the fleet registry directly
+// (dynamic import) — mock the read so a fleet-caller test never attempts a real
+// PG connect. Default: fleet unknown (fold absent). Pure exports stay real.
+const getFleetMock = vi.hoisted(() => vi.fn(async (): Promise<unknown> => null));
+
+vi.mock('../../../agent-fleets-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../agent-fleets-store')>()),
+  getFleet: getFleetMock,
+}));
+vi.mock('../../../workspace-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../workspace-registry')>()),
+  activeWorkspaceId: () => 'ws-test',
+}));
+
 beforeEach(() => {
   foldFactsMock.mockResolvedValue([]);
   listActiveAnnouncementsMock.mockResolvedValue([]);
+  getFleetMock.mockResolvedValue(null);
 });
 
 function fakeCall(handlers: Record<string, (args: Record<string, unknown>) => unknown>): {
@@ -677,6 +692,55 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       expect(r.facts).toEqual([
         { scope: 'workspace', ref: null, body: 'b', src: 'msg:m-gone ✗unverified (not_found)' },
       ]);
+    });
+  });
+
+  // ── P-009 (coord-authority-hardening H4): fleet control-state fold — the
+  // late-joiner read of a typed wind-down ──
+  describe('P-009 fleet control-state fold', () => {
+    const FLEET_CTX = {
+      'coord:whoami': () => ({ fleetSlug: 'backend' }),
+      'coord:catch-up': () => ({ total: 0, rows: [] }),
+    };
+
+    it('a winding-down fleet folds fleetControl for a member orient (the late-joiner read)', async () => {
+      getFleetMock.mockResolvedValue({
+        fleetSlug: 'backend',
+        controlState: 'winding-down',
+        controlReason: 'release cut',
+        controlBy: 'su-lead',
+        controlAt: 1234,
+      });
+      const { call } = fakeCall({ ...CORE, ...FLEET_CTX });
+      const r = await composeOrient({ harness: 'h' }, call, 'me');
+      expect(getFleetMock).toHaveBeenCalledWith('ws-test', 'backend');
+      expect(r.fleetControl).toEqual({
+        fleet: 'backend',
+        state: 'winding-down',
+        reason: 'release cut',
+        by: 'su-lead',
+        since: 1234,
+      });
+    });
+
+    it('an ACTIVE fleet folds nothing (zero noise on the common path)', async () => {
+      getFleetMock.mockResolvedValue({ fleetSlug: 'backend', controlState: 'active', controlReason: null, controlBy: null, controlAt: null });
+      const { call } = fakeCall({ ...CORE, ...FLEET_CTX });
+      const r = await composeOrient({ harness: 'h' }, call, 'me');
+      expect(r.fleetControl).toBeUndefined();
+    });
+
+    it('a NON-fleet caller never reads the registry; a registry hiccup degrades to absent', async () => {
+      getFleetMock.mockClear(); // this file never clearAllMocks — scope the call count to THIS test
+      const { call } = fakeCall({ ...CORE });
+      const r1 = await composeOrient({}, call, 'me');
+      expect(r1.fleetControl).toBeUndefined();
+      expect(getFleetMock).not.toHaveBeenCalled();
+
+      getFleetMock.mockRejectedValue(new Error('registry down'));
+      const { call: call2 } = fakeCall({ ...CORE, ...FLEET_CTX });
+      const r2 = await composeOrient({ harness: 'h' }, call2, 'me');
+      expect(r2.fleetControl).toBeUndefined(); // best-effort — orientation never breaks
     });
   });
 });

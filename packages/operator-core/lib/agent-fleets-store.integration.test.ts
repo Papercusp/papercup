@@ -19,7 +19,13 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config';
-import { claimFleetLaunchSlot, releaseFleetLaunchSlot } from './agent-fleets-store';
+import {
+  claimFleetLaunchSlot,
+  createFleetIfAbsent,
+  getFleet,
+  releaseFleetLaunchSlot,
+  setFleetControlState,
+} from './agent-fleets-store';
 
 const WS = 'ws-flguard';
 const WINDOW = 60_000;
@@ -49,7 +55,8 @@ beforeAll(async () => {
   // max > 1 so the concurrency test is a genuine multi-connection race.
   rootSql = postgres(u.toString(), { max: 6, onnotice: () => {} });
   await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
-  // The agent_fleets shape: 417 baseline + the 484 launch-guard columns.
+  // The agent_fleets shape: 417 baseline + the 484 launch-guard columns + the
+  // 575 control-state columns (P-009 / H4).
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.agent_fleets (
       workspace_id      text NOT NULL,
@@ -59,6 +66,10 @@ beforeAll(async () => {
       owner             text,
       leader_owner_id   text,
       color_scheme      text,
+      control_state     text DEFAULT 'active' NOT NULL,
+      control_reason    text,
+      control_by        text,
+      control_at        bigint,
       created_at        bigint NOT NULL,
       updated_at        bigint DEFAULT 0 NOT NULL,
       last_launch_at    bigint,
@@ -117,6 +128,57 @@ describe('claimFleetLaunchSlot (P-005 cross-worker idempotency)', () => {
       workspaceId: WS, fleetSlug: 'no-such-fleet', count: 1, windowMs: WINDOW, now: 5_000, sql: rootSql,
     });
     expect(r.won).toBe(true);
+  });
+});
+
+describe('fleet control state (P-009 / mig 575) — typed wind-down round-trip', () => {
+  it('a new fleet is born active; wind-down persists state+reason+by+ts; resume clears back', async () => {
+    const { record } = await createFleetIfAbsent(
+      { workspaceId: WS, fleetSlug: 'ctl-fleet', leaderOwnerId: 'su-lead' },
+      rootSql,
+    );
+    expect(record.controlState).toBe('active');
+    expect(record.controlReason).toBeNull();
+
+    const wound = await setFleetControlState(
+      WS, 'ctl-fleet',
+      { state: 'winding-down', reason: 'release cut', by: 'su-lead' },
+      rootSql,
+    );
+    expect(wound).toMatchObject({
+      controlState: 'winding-down',
+      controlReason: 'release cut',
+      controlBy: 'su-lead',
+    });
+    expect(wound?.controlAt).toBeGreaterThan(0);
+
+    // The read path every consumer (orient fold, fleet:status) uses.
+    const read = await getFleet(WS, 'ctl-fleet', rootSql);
+    expect(read?.controlState).toBe('winding-down');
+
+    const resumed = await setFleetControlState(
+      WS, 'ctl-fleet',
+      { state: 'active', reason: 'incident cleared', by: 'su-lead' },
+      rootSql,
+    );
+    expect(resumed?.controlState).toBe('active');
+    expect(resumed?.controlReason).toBe('incident cleared');
+  });
+
+  it('a missing fleet returns null (no phantom control rows)', async () => {
+    expect(
+      await setFleetControlState(WS, 'no-such', { state: 'winding-down' }, rootSql),
+    ).toBeNull();
+  });
+
+  it('a forged control_state reads back as active (defensive rowToRecord)', async () => {
+    await insertFleet('forged-ctl');
+    await rootSql.unsafe(
+      `UPDATE harness_shared.agent_fleets SET control_state = 'god-mode' WHERE workspace_id = $1 AND fleet_slug = $2`,
+      [WS, 'forged-ctl'],
+    );
+    const read = await getFleet(WS, 'forged-ctl', rootSql);
+    expect(read?.controlState).toBe('active');
   });
 });
 

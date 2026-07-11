@@ -11,6 +11,7 @@ import { describe, it, expect } from 'vitest';
 import {
   resolveCueAuthority,
   hiveWideCueAuthority,
+  fleetScopedCueAuthority,
   renderCueAuthorityTag,
   readCueAuthority,
   CUE_AUTHORITY_FIELD,
@@ -68,6 +69,18 @@ describe('hiveWideCueAuthority (intrinsic hive-level actions — pot:pause / ket
       scope: 'hive-wide',
     });
     expect(hiveWideCueAuthority(null).authorityRef).toBe('(hive)');
+  });
+});
+
+describe('fleetScopedCueAuthority (P-009 — intrinsic fleet-control actions: fleet:wind-down / resume)', () => {
+  it('always stamps fleet-leader / fleet-members(<slug>) regardless of the (guard-checked) invoker', () => {
+    expect(fleetScopedCueAuthority('backend')).toEqual({
+      authority: 'fleet-leader',
+      authorityRef: 'backend',
+      scope: 'fleet-members',
+      scopeRef: 'backend',
+    });
+    expect(fleetScopedCueAuthority('  ').authorityRef).toBe('(fleet)');
   });
 });
 
