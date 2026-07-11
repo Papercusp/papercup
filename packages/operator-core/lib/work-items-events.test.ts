@@ -150,8 +150,8 @@ describe('emitWorkItemSettledEvents', () => {
       emitWorkItemSettledEvents(wi(), {
         emit: emit as never,
         getItem: vi.fn(async (id: string) => (id === 'WI-DEP' ? dependent : null)) as never,
-        listOut: vi.fn(async () => [edge('WI-1', 'WI-DEP')]) as never,
-        listIn: vi.fn(async () => [edge('WI-1', 'WI-DEP')]) as never,
+        listOut: vi.fn(async (_r: unknown, o?: { rel?: string }) => (o?.rel === 'blocks' ? [edge('WI-1', 'WI-DEP')] : [])) as never,
+        listIn: vi.fn(async (_r: unknown, o?: { rel?: string }) => (o?.rel === 'blocks' ? [edge('WI-1', 'WI-DEP')] : [])) as never,
       }),
     ).resolves.toBeUndefined();
     const keys = emit.mock.calls.map((c) => (c as unknown as [{ key: string }])[0].key);
@@ -444,7 +444,10 @@ describe('batched unblocked core (P-005)', () => {
     await emitWorkItemSettledEvents(wi(), {
       emit: emit as never,
       getItem: getItem as never,
-      listOut: vi.fn(async () => [edge('WI-1', 'WI-D1'), edge('WI-1', 'WI-D2')]) as never,
+      listOut: vi.fn(async (_r: unknown, o?: { rel?: string }) =>
+        o?.rel === 'blocks' ? [edge('WI-1', 'WI-D1'), edge('WI-1', 'WI-D2')] : [],
+      ) as never,
+      listIn: vi.fn(async () => []) as never,
       listInMany: listInMany as never,
     });
     // THE batch pin: one query for both dependents' in-edges, never per-dst.

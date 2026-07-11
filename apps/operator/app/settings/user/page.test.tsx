@@ -18,11 +18,16 @@ vi.mock('@/app/_components/RouteLink', () => ({
   default: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a>,
 }));
 const { syncPrefs } = vi.hoisted(() => ({
-  syncPrefs: { user: {} as Record<string, unknown>, workspace: {} as Record<string, unknown> },
+  syncPrefs: {
+    user: {} as Record<string, unknown>,
+    workspace: {} as Record<string, unknown>,
+    userRows: [] as Array<{ payload: Record<string, unknown> }>,
+    workspaceRows: [] as Array<Record<string, unknown>>,
+  },
 }));
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: ({ queryName }: { queryName: string }) => ({
-    data: queryName === 'userPreferences.current' ? [{ payload: syncPrefs.user }] : [syncPrefs.workspace],
+    data: queryName === 'userPreferences.current' ? syncPrefs.userRows : syncPrefs.workspaceRows,
     loading: false,
     fetching: false,
     error: null,
@@ -38,6 +43,8 @@ const ME = { user: { id: 'u1', username: 'ada', display_name: 'Ada', has_passwor
 function stubFetches(opts: { workspace: Record<string, unknown>; user: Record<string, unknown> }) {
   syncPrefs.workspace = opts.workspace;
   syncPrefs.user = opts.user;
+  syncPrefs.workspaceRows = [opts.workspace];
+  syncPrefs.userRows = [{ payload: opts.user }];
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init?: RequestInit) => {

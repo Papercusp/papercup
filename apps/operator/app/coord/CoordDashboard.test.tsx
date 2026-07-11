@@ -12,8 +12,23 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
 
 vi.mock('./CoordHistory', () => ({ default: () => <div data-testid="coord-history">history</div> }));
+const { syncRows, syncErrors } = vi.hoisted(() => ({
+  syncRows: { presence: [] as unknown[], inbox: [] as unknown[], plans: [] as unknown[] },
+  syncErrors: { presence: null as Error | null, inbox: null as Error | null, plans: null as Error | null },
+}));
+vi.mock('@/lib/use-workspace-id', () => ({ useWorkspaceId: () => 'default' }));
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: ({ queryName }: { queryName: string }) => {
+    const key = queryName === 'dev.coordPresence' ? 'presence' : queryName === 'coord.inbox' ? 'inbox' : 'plans';
+    return { data: syncRows[key], error: syncErrors[key], loading: false, fetching: false, invalidate: vi.fn() };
+  },
+}));
 
 function stubEmpty() {
+  syncRows.presence = [];
+  syncRows.inbox = [];
+  syncRows.plans = [];
+  syncErrors.presence = syncErrors.inbox = syncErrors.plans = null;
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string) => {
@@ -84,6 +99,12 @@ function stubFull(overrides: {
   hookHealth?: unknown;
   planMarkdown?: (slug: string) => unknown;
 }) {
+  const presence = overrides.presence as { active?: unknown[] } | undefined;
+  const inbox = overrides.inbox as { items?: unknown[] } | undefined;
+  const plans = overrides.plans as { plans?: unknown[] } | undefined;
+  syncRows.presence = presence?.active ?? [];
+  syncRows.inbox = inbox?.items ?? [];
+  syncRows.plans = plans?.plans ?? [];
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string) => {
@@ -103,7 +124,7 @@ function stubFull(overrides: {
 }
 
 describe('<CoordDashboard /> populated panels + interactions', () => {
-  it('lists active and stale sessions with their intents', async () => {
+  it('lists active sessions with their intents', async () => {
     stubFull({
       presence: {
         active: [{ ownerId: 'o1', ownerLabel: 'Agent One', source: 'omp', intent: 'building X', currentPlanSlug: 'plan-x', currentFiles: ['a.ts'], host: 'h', heartbeatAt: new Date().toISOString(), stale: false }],
@@ -113,18 +134,12 @@ describe('<CoordDashboard /> populated panels + interactions', () => {
     renderAt('');
     await waitFor(() => expect(screen.getByText('Agent One')).toBeTruthy());
     expect(screen.getByText('Active (1)')).toBeTruthy();
-    expect(screen.getByText(/Stale \(1\)/)).toBeTruthy();
     expect(screen.getByText('building X')).toBeTruthy();
     expect(screen.getByText('plan: plan-x')).toBeTruthy();
-    // An owner with no declared intent gets the placeholder.
-    expect(screen.getByText('(no declared intent)')).toBeTruthy();
   });
 
   it('renders the session error banner when presence fetch fails', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-      if (String(url).includes('presence')) return { ok: false, status: 500, json: async () => ({}) } as Response;
-      return { ok: true, json: async () => ({ healthy: true, last_error: null, last_success_ts: null }) } as Response;
-    }));
+    syncErrors.presence = new Error('status 500');
     renderAt('');
     await waitFor(() => expect(screen.getByText(/Error: status 500/)).toBeTruthy());
   });

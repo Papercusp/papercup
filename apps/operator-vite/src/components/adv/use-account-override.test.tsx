@@ -10,6 +10,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+const { syncRows, invalidateSpy } = vi.hoisted(() => ({ syncRows: [] as unknown[], invalidateSpy: vi.fn() }));
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: () => ({ data: syncRows, loading: false, fetching: false, error: null, invalidate: invalidateSpy }),
+}));
 
 import { useAccountOverride } from './use-account-override';
 
@@ -34,6 +38,7 @@ function deferred<T>() {
 const json = (ok: boolean, body: unknown) => ({ ok, json: async () => body });
 
 afterEach(() => {
+  syncRows.splice(0);
   cleanup();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
@@ -72,6 +77,7 @@ describe('useAccountOverride', () => {
       return Promise.resolve(json(true, { ok: true, override: { forcedAccounts: ['acct-seed'], excludeAccounts: [] } }));
     });
     vi.stubGlobal('fetch', fetchMock);
+    syncRows.push({ forcedAccounts: ['acct-seed'], excludeAccounts: [] });
 
     render(<Harness />);
     await waitFor(() => expect(screen.getByTestId('forced').textContent).toBe('acct-seed'));

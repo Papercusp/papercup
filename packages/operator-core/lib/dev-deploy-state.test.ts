@@ -221,4 +221,18 @@ describe('devDeployState caching (P-015 — collapse the git fan-out under the p
     expect(a).not.toBe(b);
     expect(a.deployed?.sha).toBe(b.deployed?.sha);
   });
+
+  it('the DEFAULT TTL (no env override) is a positive caching window that de-amplifies the poll storm (P-009)', async () => {
+    // Guards the storm-de-amplification lever: with no PAPERCUSP_DEPLOY_STATE_TTL_MS
+    // set, the built-in default must be a real >0 window so rapid repeat reads from
+    // the poll-storm-amplified hot paths (system-health, sync-resolver dev.deployState)
+    // skip the git fan-out. A regression to 0 (or an accidental disable) would let the
+    // git spawn cost — ≈59% of on-loop work under the Jul-10 saturation — flood back.
+    delete process.env.PAPERCUSP_DEPLOY_STATE_TTL_MS;
+    resetDevDeployStateCache();
+    const first = await devDeployState();
+    const cached = await devDeployState();
+    expect(cached).toBe(first); // same object → default TTL window served it from cache
+    expect(first.mainHead?.sha).toBe(shaC);
+  });
 });

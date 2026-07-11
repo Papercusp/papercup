@@ -40,6 +40,7 @@ import {
   appVersion,
   checkForUpdate,
   installUpdate,
+  revertTo,
   isDesktop,
 } from '@papercusp/operator-core/lib/version-tauri';
 import { useConfirmDialog } from '../harness/useConfirmDialog';
@@ -107,6 +108,9 @@ export default function UpdateChip() {
   const [info, setInfo] = useState<UpdateInfo | null>(null);
   const [checking, setChecking] = useState(false);
   const [installing, setInstalling] = useState(false);
+  // The tag currently being reverted to (null = idle) — gates re-entry and
+  // drives the per-row button label/disabled state.
+  const [reverting, setReverting] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [channel, setChannel] = useState<Channel>('alpha');
   const [savingChannel, setSavingChannel] = useState(false);
@@ -283,18 +287,35 @@ export default function UpdateChip() {
     }
   }, [installing, info, askConfirm]);
 
-  // Roll back to an older release. The Tauri `revert_to(tag)` command (fetch
-  // target release → minisign-verify → swap → restart) lands in P-4; until
-  // then there is no client command to call, so we confirm intent and surface
-  // that it's coming rather than invoking something that doesn't exist yet.
+  // Roll back to an older release. The Tauri `revert_to(tag)` command (P-4)
+  // resolves the tag via GET /api/updates/rollback, minisign-verifies the
+  // asset against the baked pubkey, swaps the binary, and relaunches — the
+  // deliberate-downgrade sibling of installUpdate. On success the app restarts
+  // (so we never reach the post-await code); a returned error surfaces as a
+  // toast, mirroring onInstall's fallbacks.
   const onRevert = useCallback(async (entry: HistoryEntry) => {
+    if (reverting) return;
     if (!await askConfirm({
       title: `Revert to v${entry.version}?`,
       body: `Reinstall the older v${entry.version} build and restart Papercusp. Rolling back can lose data written by the newer version.`,
       confirmLabel: 'Revert',
     })) return;
-    toast.info(`Rollback to v${entry.version} isn’t available yet — it ships with the next desktop update.`);
-  }, [askConfirm]);
+    setReverting(entry.tag);
+    try {
+      await revertTo(entry.tag);
+      // revert_to ends in app.restart(); if we're still here the swap didn't
+      // relaunch — tell the user rather than leaving the button spinning.
+      toast.info(`Reverting to v${entry.version}… restarting Papercusp.`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('no_compatible_assets')) {
+        toast.error(`This install can't auto-revert (not an AppImage). Reinstall v${entry.version} manually.`);
+      } else {
+        toast.error(`Revert to v${entry.version} failed: ${msg}`);
+      }
+      setReverting(null);
+    }
+  }, [reverting, askConfirm]);
 
   if (!desktop) return null;
   if (!version) return null;
@@ -509,19 +530,21 @@ export default function UpdateChip() {
                   <button
                     type="button"
                     onClick={() => void onRevert(e)}
+                    disabled={reverting !== null}
                     style={{
                       background: 'transparent',
                       border: '1px solid var(--border, #2a2a2a)',
                       color: 'var(--fg-mute, #aaa)',
                       padding: '3px 9px',
                       borderRadius: 5,
-                      cursor: 'pointer',
+                      cursor: reverting !== null ? 'default' : 'pointer',
+                      opacity: reverting !== null && reverting !== e.tag ? 0.5 : 1,
                       font: 'inherit',
                       fontSize: 12,
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    Revert
+                    {reverting === e.tag ? 'Reverting…' : 'Revert'}
                   </button>
                 ) : null}
               </li>

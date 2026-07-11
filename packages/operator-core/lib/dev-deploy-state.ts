@@ -108,16 +108,24 @@ function resolveConfig(): Pick<
 /** sha + commit date + subject for a ref in `repo`, or null on any failure. */
 async function commitRef(repo: string, ref: string): Promise<CommitRef | null> {
   try {
-    const sha = await git(repo, ['rev-parse', '--verify', ref + '^{commit}']);
-    // Two separate reads instead of a delimited format — %ct (committer date,
-    // epoch seconds) and %s (subject) come back clean with no field parsing.
-    const ct = await git(repo, ['show', '-s', '--format=%ct', sha]);
-    const subject = await git(repo, ['show', '-s', '--format=%s', sha]);
+    // ONE `git log -1` fork/exec resolves+peels the ref AND formats sha + committer
+    // epoch + subject, replacing the former 3-exec fan-out (rev-parse --verify ^{commit}
+    // + show -s %ct + show -s %s). `log -1 <ref>^{commit}` peels a branch/tag to its
+    // commit and exits non-zero (→ caught → null) on an unresolvable ref — the exact
+    // same contract as the old rev-parse --verify. %s is git's single-LINE subject, so
+    // the two %n separators split cleanly (sha \n ct \n subject); an empty subject
+    // yields a trailing empty field, handled by `rest.join`. Cutting commitRef 3→1 exec
+    // drops the whole snapshot fan-out from ~12 to ~6 git fork/execs — the #1
+    // application-attributable event-loop cost under the poll storm (P-009 cpuprofile
+    // attribution, mcp-reliability-hardening-2026-07-11: git spawn from THIS file was
+    // ≈59% of real on-loop work during the Jul-10 4–6s-lag saturation).
+    const out = await git(repo, ['log', '-1', '--format=%H%n%ct%n%s', ref + '^{commit}']);
+    const [sha, ct, ...rest] = out.split('\n');
     return {
       sha,
       shortSha: sha.slice(0, 8),
       committedAtMs: Number(ct) * 1000,
-      subject,
+      subject: rest.join('\n'),
     };
   } catch {
     return null;
@@ -197,12 +205,16 @@ function lastDeployMtime(releaseRoot: string): number | null {
  * with `errors[]` populated rather than throwing, so the panel always renders.
  *
  * NOT exported — every caller goes through the cached `devDeployState()` wrapper
- * below. One call here fans out ~10 `git` subprocess fork/execs (3×commitRef ×
- * {rev-parse, show ×2} + 3×aheadCount), which cpuprofile attribution
- * (infra-perf-reliability-audit-round4 P-015) pinned as the single largest
- * application-attributable cost on the :3070 request-worker event loop (~26% of
- * real on-CPU work), amplified by the poll storm hitting system-health +
- * sync-resolver `dev.deployState`. The cache collapses that fan-out.
+ * below. One call here fans out ~6 `git` subprocess fork/execs (3×commitRef, each
+ * a single `git log -1`, + 3×aheadCount `rev-list`). git spawning on the request-
+ * worker loop has been pinned by cpuprofile attribution as the single largest
+ * application-attributable event-loop cost TWICE — round-4 P-015
+ * (infra-perf-reliability-audit-round4, ~26% of real on-CPU work) and again
+ * P-009 (mcp-reliability-hardening-2026-07-11, ≈59% of on-loop work in the Jul-10
+ * 4–6s-lag storm) — amplified by the poll storm hitting system-health +
+ * sync-resolver `dev.deployState`. Two levers keep it off the hot path: this
+ * fan-out was halved 12→6 execs (commitRef 3→1, P-009) and the cache below
+ * collapses concurrent/rapid callers to one fan-out per TTL.
  */
 async function computeDevDeployState(): Promise<DevDeployState> {
   const cfg = resolveConfig();
@@ -254,8 +266,12 @@ async function computeDevDeployState(): Promise<DevDeployState> {
 // (single-flight) so a BURST of concurrent callers collapses to ONE git fan-out
 // instead of N. TTL is read per-call so it's runtime-tunable and test-overridable
 // (set PAPERCUSP_DEPLOY_STATE_TTL_MS=0 to disable, e.g. when a test mutates refs
-// then re-reads). Default 3s: well under the deploy cadence, so the Deploy panel
-// stays effectively live while the storm is de-amplified.
+// then re-reads). Default 10s (raised from 3s in P-009): the underlying refs only
+// move on the git-sync commit (minutes) / deploy (≤15min, ~46s of :3070 downtime)
+// cadence, so a read-only display panel is fully live at 10s resolution while the
+// steady per-TTL git drip that survives single-flight during an 8-minute poll storm
+// drops ~3× (480/3s→480/10s fan-outs). Combined with the 12→6 exec halving above,
+// git fork/exec load on the loop falls ~6–7× under the storm.
 
 interface DeployStateCacheEntry {
   at: number;
@@ -265,9 +281,9 @@ let deployStateCache: DeployStateCacheEntry | null = null;
 
 function deployStateTtlMs(): number {
   const raw = process.env.PAPERCUSP_DEPLOY_STATE_TTL_MS;
-  if (raw == null || raw === '') return 3000;
+  if (raw == null || raw === '') return 10_000;
   const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? n : 3000;
+  return Number.isFinite(n) && n >= 0 ? n : 10_000;
 }
 
 /**

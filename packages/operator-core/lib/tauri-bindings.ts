@@ -43,6 +43,7 @@ export const commands = {
 	appVersion: () => __TAURI_INVOKE<string>("app_version"),
 	checkForUpdate: () => typedError<UpdateInfo, string>(__TAURI_INVOKE("check_for_update")),
 	installUpdate: () => typedError<null, string>(__TAURI_INVOKE("install_update")),
+	revertTo: (tag: string) => typedError<null, string>(__TAURI_INVOKE("revert_to", { tag })),
 	/**
 	 *  Spawn a new native pty and start a reader thread that emits
 	 *  `pty-data` events as bytes arrive. Returns an id the renderer uses

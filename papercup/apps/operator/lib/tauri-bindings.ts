@@ -44,6 +44,23 @@ export const commands = {
 	checkForUpdate: () => typedError<UpdateInfo, string>(__TAURI_INVOKE("check_for_update")),
 	installUpdate: () => typedError<null, string>(__TAURI_INVOKE("install_update")),
 	/**
+	 *  Roll the desktop app BACK to an older, already-released `tag` — the Update
+	 *  Center "Revert" action (desktop-update-center-and-release-tooling P-4). It is the
+	 *  deliberate-downgrade sibling of `install_update`: the SAME download → plugin
+	 *  minisign-verify (against the updater pubkey baked into `tauri.conf.json`) →
+	 *  sidecar-safe teardown → atomic swap → relaunch path, but pointed at
+	 *  `/api/updates/rollback?tag=…` and with the updater's default "remote must be
+	 *  NEWER" gate overridden so an OLDER target is accepted (`version_comparator`).
+	 * 
+	 *  The rollback route (P-5 Unit A) already bounds the tag to the caller's channel
+	 *  window, so a stable user can't land on an alpha build; here we only need to tell
+	 *  the plugin to install exactly the release the route resolved. The post-update
+	 *  self-check (P-013, `run_update_self_check`) keys off the INSTALLED build's OWN
+	 *  baked `PAPERCUSP_BUILD_SHA`, so after the downgrade the running operator's sha
+	 *  matches the now-current (older) build — a rollback does not false-alarm (D-002).
+	 */
+	revertTo: (tag: string) => typedError<null, string>(__TAURI_INVOKE("revert_to", { tag })),
+	/**
 	 *  Spawn a new native pty and start a reader thread that emits
 	 *  `pty-data` events as bytes arrive. Returns an id the renderer uses
 	 *  for subsequent write/resize/kill calls.
