@@ -26,7 +26,13 @@
 
 import type { CoordKind } from '@papercusp/coordination/core';
 import { LIFECYCLE_CATEGORIES } from './coord-lifecycle/records';
-import { readCueAuthority, renderCueAuthorityTag } from './agent-tools/coordination/cue-authority';
+import {
+  isCueInScopeFor,
+  readCueAuthority,
+  renderCueAuthorityTag,
+  renderOutOfScopeCueTag,
+  type RecipientCueScope,
+} from './agent-tools/coordination/cue-authority';
 
 export interface LegendEntry {
   glyph: string;
@@ -229,6 +235,16 @@ export interface RenderInjectionOpts {
   maxLines?: number;
   /** Per-line text cap. Default 200. */
   textCap?: number;
+  /**
+   * H1 receive-side defang (coord-authority-hardening-2026-07-11 P-003): the
+   * rendering RECIPIENT + their live fleet memberships. When present, a
+   * `fleet-members(X)`-stamped line whose X the recipient is NOT in (and did not
+   * send) renders with the OUT-OF-SCOPE demote tag instead of the plain authority
+   * tag — flag-and-demote, never dropped. Absent (legacy caller / membership read
+   * failed) ⇒ prior behavior, plain tag: mis-demoting a real member is worse than
+   * not demoting, so the check only engages on a SUCCESSFUL membership read.
+   */
+  cueScope?: RecipientCueScope;
 }
 
 /**
@@ -267,8 +283,18 @@ export function renderInjection(entries: CoordLineSource[], opts: RenderInjectio
     // a structured authority+scope stamp — surface it as a leading `[…]` tag so the
     // reader distinguishes a hive-wide Queen pause from a fleet leader draining its
     // own members. Malformed/absent → readCueAuthority returns null → no tag.
+    // coord-authority-hardening P-003 (H1, EI-9501): when the caller supplied the
+    // recipient's scope context and the stamp is fleet-scoped to a fleet the
+    // recipient is NOT in, DEMOTE the tag — the reader is told explicitly the cue
+    // is not binding on them. Membership is LIVE at render time, so drift between
+    // send and read (TOCTOU) resolves to the recipient's CURRENT membership.
     const stamp = readCueAuthority(e as unknown as Record<string, unknown>);
-    const text = stamp ? `[${renderCueAuthorityTag(stamp)}] ${body}` : body;
+    const tag = stamp
+      ? opts.cueScope && !isCueInScopeFor(stamp, opts.cueScope, e.from)
+        ? renderOutOfScopeCueTag(stamp)
+        : renderCueAuthorityTag(stamp)
+      : null;
+    const text = tag ? `[${tag}] ${body}` : body;
     lines.push(`${glyph} ${handle} ${text}`);
   }
   return lines.join('\n');

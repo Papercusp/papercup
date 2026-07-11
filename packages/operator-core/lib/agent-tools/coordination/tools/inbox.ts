@@ -23,6 +23,8 @@ import {
 } from "../presence-snapshot";
 import { COORD_ROLES } from "../roles";
 import { renderInjection, type CoordLineSource } from "../../../coord-schema";
+import { fetchPresenceFleet } from "../presence-fleet";
+import type { RecipientCueScope } from "../cue-authority";
 import {
   renderContextUsageLine,
   contextUsagePct,
@@ -471,8 +473,28 @@ export default defineTool({
     // single-source `coord-schema` so the cc + omp hooks are dumb pipes (they
     // echo `injection` + advance the cursor from `summary.newest_ts`). The
     // cursor/summary metadata stays OUT of the injection body, alongside it.
+    //
+    // coord-authority-hardening P-003 (H1, EI-9501): resolve the READER's live
+    // fleet membership so the renderer can demote a fleet-scoped control cue the
+    // reader is not in scope of ("OUT-OF-SCOPE … NOT binding" — never dropped).
+    // Best-effort: a failed membership read ⇒ cueScope undefined ⇒ plain tags
+    // (mis-demoting a real member is worse than not demoting); a SUCCESSFUL read
+    // with no fleet ⇒ fleetSlugs [] ⇒ every fleet-scoped cue demotes — exactly
+    // the EI-9501 bystander case. Live-at-read, so membership drift since send
+    // (TOCTOU) resolves to current truth.
+    let cueScope: RecipientCueScope | undefined;
+    try {
+      const fleet = (await fetchPresenceFleet([identity.ownerId])).get(identity.ownerId);
+      cueScope = {
+        recipientId: identity.ownerId,
+        fleetSlugs: fleet?.fleetSlug ? [fleet.fleetSlug] : [],
+      };
+    } catch {
+      cueScope = undefined;
+    }
     const coordInjection = renderInjection(
       injectionEntries as unknown as CoordLineSource[],
+      { cueScope },
     );
 
     // P-010 re-bootstrap-on-compaction (D-007): on the first read after a fresh

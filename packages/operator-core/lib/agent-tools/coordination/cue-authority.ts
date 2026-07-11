@@ -105,6 +105,50 @@ export function renderCueAuthorityTag(stamp: CueAuthorityStamp): string {
 }
 
 /**
+ * The rendering RECIPIENT's scope context — who is reading the line and which
+ * fleets they currently belong to (coord-authority-hardening-2026-07-11 P-003 /
+ * H1 receive-side defang). Resolved by the CALLER (IO — live presence-fleet read
+ * at render time, so membership drift between send and read is handled by
+ * construction); this module stays pure + import-free.
+ */
+export interface RecipientCueScope {
+  recipientId: string;
+  /** Fleet slugs the recipient is CURRENTLY a member of (leader counts). */
+  fleetSlugs: readonly string[];
+}
+
+/**
+ * Is a stamped cue BINDING for this recipient? (H1, the EI-9501 class.)
+ *   - hive-wide scope        → binding for everyone → true
+ *   - fleet-members(X) scope → true only for members of X — or the sender itself
+ *     (your own line rendered back never demotes).
+ * Pure; the caller resolves membership. A cue that fails this check is DEMOTED
+ * at render (flag-and-demote — NEVER dropped: the body still shows verbatim).
+ */
+export function isCueInScopeFor(
+  stamp: CueAuthorityStamp,
+  recipient: RecipientCueScope,
+  senderId?: string | null,
+): boolean {
+  if (stamp.scope !== 'fleet-members') return true;
+  if (senderId != null && senderId === recipient.recipientId) return true;
+  const slug = stamp.scopeRef ?? stamp.authorityRef;
+  return recipient.fleetSlugs.includes(slug);
+}
+
+/**
+ * The DEMOTED tag for an out-of-scope fleet-scoped cue: keeps the full authority
+ * stamp visible (the reader can audit who claimed what) and states plainly that
+ * the line is not binding on THEM. Rendered instead of renderCueAuthorityTag —
+ * the message body itself is untouched.
+ */
+export function renderOutOfScopeCueTag(stamp: CueAuthorityStamp): string {
+  const slug =
+    stamp.scope === 'fleet-members' ? (stamp.scopeRef ?? stamp.authorityRef) : stamp.authorityRef;
+  return `${renderCueAuthorityTag(stamp)} — OUT-OF-SCOPE for you (not in fleet ${slug}); NOT binding`;
+}
+
+/**
  * Read + validate a cue-authority stamp off a coord envelope / inbox entry. Returns
  * null when absent or malformed (defensive — never throws), so a hand-forged or
  * legacy envelope can't crash the inbox renderer.
