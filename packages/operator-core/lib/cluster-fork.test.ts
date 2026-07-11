@@ -92,16 +92,44 @@ describe('startCluster (P3-2)', () => {
     expect(onPrimary).not.toHaveBeenCalled();
   });
 
-  it('respawns a crashed worker, bounded by maxRespawns (no fork-bomb)', () => {
+  it('respawns a crashed worker, bounded by maxRespawns within the rolling window (no fork-bomb)', () => {
     const cl = new MockCluster(true);
-    startCluster({ workers: 2, onWorker: () => {}, cluster: cl, maxRespawns: 2, log: () => {} });
+    let t = 0;
+    startCluster({ workers: 2, onWorker: () => {}, cluster: cl, maxRespawns: 2, now: () => t, log: () => {} });
     expect(cl.forks).toBe(2);
     cl.emitExit(cl.workers[0]); // respawn 1
     expect(cl.forks).toBe(3);
     cl.emitExit(cl.workers[1]); // respawn 2
     expect(cl.forks).toBe(4);
-    cl.emitExit(cl.workers[2]); // budget exhausted → no respawn
+    cl.emitExit(cl.workers[2]); // budget exhausted within window → no respawn
     expect(cl.forks).toBe(4);
+  });
+
+  // P-003 (mcp-reliability-hardening-2026-07-11): the budget is a ROLLING window,
+  // not a lifetime counter. Once the window drains, respawns resume — a healthy-again
+  // cluster recovers its full size instead of shrinking until the next deploy (the
+  // 59/80 lifetime-budget burn observed 2026-07-10).
+  it('rolling respawn budget: recovers after the window drains (not a permanent shrink)', () => {
+    const cl = new MockCluster(true);
+    let t = 0;
+    startCluster({ workers: 2, onWorker: () => {}, cluster: cl, maxRespawns: 2, respawnWindowMs: 1000, now: () => t, log: () => {} });
+    cl.emitExit(cl.workers[0]); // respawn 1 @t=0
+    cl.emitExit(cl.workers[1]); // respawn 2 @t=0
+    expect(cl.forks).toBe(4);
+    cl.emitExit(cl.workers[2]); // @t=0 budget full → denied
+    expect(cl.forks).toBe(4);
+    t = 1500; // window (1000ms) has drained past the two @t=0 respawns
+    cl.emitExit(cl.workers[3]); // → respawns again
+    expect(cl.forks).toBe(5);
+  });
+
+  it('liveWorkerCount reflects forks minus not-yet-respawned exits', () => {
+    const cl = new MockCluster(true);
+    let t = 0;
+    const h = startCluster({ workers: 3, onWorker: () => {}, cluster: cl, maxRespawns: 0, now: () => t, log: () => {} });
+    expect(h.liveWorkerCount?.()).toBe(3);
+    cl.emitExit(cl.workers[0]); // maxRespawns 0 → no respawn, cluster shrinks
+    expect(h.liveWorkerCount?.()).toBe(2);
   });
 
   it('drain stops respawns + signals every worker to exit', () => {
