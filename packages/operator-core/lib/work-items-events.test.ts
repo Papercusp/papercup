@@ -129,6 +129,31 @@ describe('emitWorkItemSettledEvents', () => {
       }),
     ).resolves.toBeUndefined();
   });
+
+  // P-008 (linking-notify-family-hardening) recurrence guard: the done-emit and
+  // the unblocked loop are INDEPENDENT fail-soft scopes. A single shared try
+  // used to drop the unblocked emits the moment the done-emit threw — so pin
+  // that a throwing work-item:done STILL lets work-item:unblocked fire.
+  it('a throwing work-item:done still lets the unblocked loop fire (independent fail-soft scopes)', async () => {
+    const emit = vi.fn(async (opts: { key: string }) => {
+      if (opts.key.startsWith('work-item:done')) throw new Error('done-emit engine down');
+      return { ok: true as const, key: opts.key, woken: 0, notified: [] as string[], msgId: null, waiters: 0 };
+    });
+    const dependent = wi({ id: 'WI-DEP', state: 'open', assignee: 'su-claimant' });
+    await expect(
+      emitWorkItemSettledEvents(wi(), {
+        emit: emit as never,
+        getItem: vi.fn(async (id: string) => (id === 'WI-DEP' ? dependent : null)) as never,
+        listOut: vi.fn(async () => [edge('WI-1', 'WI-DEP')]) as never,
+        listIn: vi.fn(async () => [edge('WI-1', 'WI-DEP')]) as never,
+      }),
+    ).resolves.toBeUndefined();
+    const keys = emit.mock.calls.map((c) => (c as unknown as [{ key: string }])[0].key);
+    expect(keys).toContain('work-item:done:WI-1'); // the done-emit was attempted and threw…
+    expect(keys).toContain('work-item:unblocked:WI-DEP'); // …yet the freed dependent was still woken
+    const unblocked = (emit.mock.calls.find((c) => (c as unknown as [{ key: string }])[0].key.startsWith('work-item:unblocked')) as unknown as [{ to: string[] }])[0];
+    expect(unblocked.to).toEqual(['su-claimant']);
+  });
 });
 
 // WI-4034 DEFECT 1 (the unlink gap): unlinkWorkItem never re-checked whether

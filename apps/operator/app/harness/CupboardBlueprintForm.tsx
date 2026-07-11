@@ -331,7 +331,7 @@ export function CupboardBlueprintForm({ onBack, onCreated, hiveLabel }: Cupboard
       <h2 style={{ margin: '0 0 6px', fontSize: 15, fontWeight: 600 }}>New {hiveLower} from a {combLabel} blueprint</h2>
       <p style={{ margin: '0 0 14px', fontSize: 12.5, color: 'var(--fg-dim)', lineHeight: 1.5 }}>
         Search published blueprints on the {combLabel} and instantiate one as a new {hiveLower}. The blueprint defines how
-        the {hiveLower}’s Queen decomposes work and what its bees do.
+        the {hiveLower}&rsquo;s {t('brain')} decomposes work and what its {t('contributor', { plural: true }).toLowerCase()} do.
       </p>
       <label style={{ display: 'block', marginBottom: 14 }}>
         <FieldLabel>Search the {combLabel}</FieldLabel>

@@ -12,6 +12,8 @@
  */
 import { useSyncQuery } from '@papercusp/sync';
 
+import { useLexicon } from '@/lib/useLexicon';
+
 interface DecisionRowLite {
   id: number;
 }
@@ -19,6 +21,7 @@ interface DecisionRowLite {
 const HANDLED_CAP = 100;
 
 export default function QueueSummary({ waitingOnYou }: { waitingOnYou: number }) {
+  const t = useLexicon();
   const { data } = useSyncQuery<DecisionRowLite>({
     queryName: 'decision.ledger',
     args: { layer: 'disposition', limit: HANDLED_CAP },
@@ -30,7 +33,7 @@ export default function QueueSummary({ waitingOnYou }: { waitingOnYou: number })
     <div className="pc-queue__summary" role="status">
       <span className="pc-queue__summary-you">{waitingOnYou} waiting on you</span>
       <span className="pc-queue__summary-sep">·</span>
-      <span className="pc-queue__summary-queen">{handledLabel} handled by the Queen</span>
+      <span className="pc-queue__summary-queen">{handledLabel} handled by the {t('brain')}</span>
     </div>
   );
 }

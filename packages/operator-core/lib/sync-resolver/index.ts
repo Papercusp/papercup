@@ -4079,7 +4079,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // the browser, so opening a source view reuses the exact same React Query cache
   // entry instead of unmounting the inbox and starting a cold REST lifecycle.
   // Detail reads are independently keyed by id and only enabled while selected.
-  'conversations.questions.list': {
+  'conversations.questionsList': {
     argsSchema: z.object({ limit: clampedLimit(200, 100) }),
     resolve: async (args) => {
       const { limit } = args as { limit: number };
@@ -4100,7 +4100,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       }));
     },
   },
-  'conversations.questions.detail': {
+  'conversations.questionDetail': {
     argsSchema: z.object({ id: z.string().min(1) }),
     resolve: async (args) => {
       const { id } = args as { id: string };
@@ -4116,7 +4116,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         : [];
     },
   },
-  'conversations.deliberations.list': {
+  'conversations.deliberationList': {
     argsSchema: z.object({ limit: clampedLimit(1000, 100) }),
     resolve: async (args) => {
       const { limit } = args as { limit: number };
@@ -4133,7 +4133,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return attachListMeta(rows, { total: totalRows[0]?.n ?? rows.length });
     },
   },
-  'conversations.deliberations.detail': {
+  'conversations.deliberationDetail': {
     argsSchema: z.object({ id: z.string().min(1) }),
     resolve: async (args) => {
       const { id } = args as { id: string };
@@ -4157,7 +4157,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return [{ thread: thread[0], posts: safePosts }];
     },
   },
-  'conversations.agentChats.list': {
+  'conversations.agentChatList': {
     argsSchema: z.object({
       limit: clampedLimit(1000, 100),
       harness: z.string().optional(),
@@ -4186,7 +4186,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return attachListMeta(rows, { total: totalRows[0]?.n ?? rows.length });
     },
   },
-  'conversations.agentChats.detail': {
+  'conversations.agentChatDetail': {
     argsSchema: z.object({ id: z.string().min(1) }),
     resolve: async (args) => {
       const { id } = args as { id: string };
@@ -4202,7 +4202,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return rows;
     },
   },
-  'conversations.messages.list': {
+  'conversations.messageList': {
     argsSchema: z.object({ limit: clampedLimit(1000, 100) }),
     resolve: async (args) => {
       const { limit } = args as { limit: number };
@@ -4220,7 +4220,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return attachListMeta(rows, { total: totalRows[0]?.n ?? rows.length });
     },
   },
-  'conversations.messages.detail': {
+  'conversations.messageDetail': {
     argsSchema: z.object({ id: z.string().min(1) }),
     resolve: async (args) => {
       const { id } = args as { id: string };

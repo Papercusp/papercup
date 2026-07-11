@@ -199,7 +199,7 @@ export default function PlanOtherList({
       {groupByAuthorizer && allItems.length ? (
         <p className="pc-queue__intro">
           Things an agent paused on because acting needed sign-off. Clear the ones only you can
-          decide; let the Queen take the rest by widening her autonomy.
+          decide; let the {t('brain')} take the rest by widening its autonomy.
         </p>
       ) : null}
       {inner}

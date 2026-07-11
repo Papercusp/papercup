@@ -393,8 +393,18 @@ export async function emitWorkItemSettledEvents(wi: WorkItem, deps: SettledEvent
   const listOut = deps.listOut ?? blockingEdgeReader.listOut;
   const listInMany = resolveListInMany(deps);
 
+  // P-008 (linking-notify-family-hardening) durability split: the done-emit and
+  // the unblocked loop each run in their OWN fail-soft scope. A single try used
+  // to wrap BOTH, so a throw while resolving/emitting `work-item:done` (a parent
+  // getItem, or the emit itself) silently skipped the unblocked loop — every
+  // dependent whose last blocker just cleared went un-woken because a SIBLING
+  // notification failed. They are independent signals; one failing must not drop
+  // the other. (Full outbox durability is deferred — D-003; this is the bounded
+  // fix.) Both scopes route through the shared `failSoft` so expected teardown
+  // noise (CONNECTION_ENDED / partial-schema "does not exist") stays silent.
+
+  // ── work-item:done — the children-done / delegated-work signal ────────
   try {
-    // ── work-item:done — the children-done / delegated-work signal ────────
     const notifyDone = new Set<string>();
     if (wi.assignedBy && wi.assignedBy !== wi.assignee) notifyDone.add(wi.assignedBy);
     if (wi.parent) {
@@ -408,16 +418,16 @@ export async function emitWorkItemSettledEvents(wi: WorkItem, deps: SettledEvent
       to: [...notifyDone],
       source: 'work-items',
     });
+  } catch (e) {
+    failSoft(`settled done-event for ${wi.id}`, e);
+  }
 
-    // ── work-item:unblocked — dependents whose LAST live blocker cleared ──
+  // ── work-item:unblocked — dependents whose LAST live blocker cleared ──
+  try {
     const ref = workItemObjectRef(wi);
     const blockEdges = await listOut(ref, { rel: 'blocks' });
     await emitUnblockedForClearedEdges(blockEdges.map((e) => e.dst), wi.id, emit, getItem, listInMany);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    // A missing event_awaits relation = pre-migration-163 substrate (or a
-    // partial test schema) — expected fail-soft, not warn-worthy noise.
-    if (/does not exist/.test(msg)) return;
-    console.warn(`[work-items-events] settled-event emit failed for ${wi.id}: ${msg}`);
+    failSoft(`settled unblocked-loop for ${wi.id}`, e);
   }
 }

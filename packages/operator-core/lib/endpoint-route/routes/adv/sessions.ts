@@ -271,32 +271,65 @@ const list = defineTool({
   },
 });
 
+/**
+ * Resolve an X11 window id for a session-control action (focus / kill), trying
+ * the cheapest → most-general source in order:
+ *   1. an explicit windowId in the request body,
+ *   2. the adv_sessions row's recorded window_id,
+ *   3. the recorded pid → its window,
+ *   4. the "[adv:<id>]" launch-title tag — set ONLY by the operator's own
+ *      console-spawn (terminals it launched),
+ *   5. the coord-owner SHORT id in the window title — psu / fleet-launched
+ *      INTERACTIVE sessions carry NO window_id/pid and are NOT tagged
+ *      "[adv:<id>]"; they title themselves "… · su-78d15 · …", so match that
+ *      (owner-hit 2026-07-11: focus + kill both failed for such a session).
+ * Any title-resolved id is written back to the row so the next action is a
+ * direct hit. Returns null when nothing resolves (headless agent, wmctrl
+ * missing, or no DISPLAY) — the caller turns that into a 404.
+ */
+async function resolveSessionWindowId(
+  body: { id?: number; pid?: number; windowId?: string | null },
+  latestRow: Awaited<ReturnType<typeof getAdvSession>>,
+): Promise<string | null> {
+  let wid = body.windowId ?? null;
+  if (!wid && latestRow?.windowId) wid = latestRow.windowId;
+  if (!wid && typeof body.pid === 'number') wid = await resolveWindowIdForPid(body.pid);
+  if (!wid && latestRow?.id) {
+    wid = await resolveWindowIdForTitleFragment(`[adv:${latestRow.id}]`);
+    if (wid) await setAdvSessionWindowId(latestRow.id, wid);
+  }
+  if (!wid && latestRow?.coordOwnerId) {
+    // psu short id = the first 8 chars of the coord owner id ("su-78d15") — the
+    // exact handle a psu/fleet terminal puts in its window title. Guard against
+    // a too-short fragment matching unrelated windows.
+    const shortId = latestRow.coordOwnerId.slice(0, 8);
+    if (shortId.length >= 6) {
+      wid = await resolveWindowIdForTitleFragment(shortId);
+      if (wid && latestRow.id) await setAdvSessionWindowId(latestRow.id, wid);
+    }
+  }
+  return wid;
+}
+
+async function parseControlBody(
+  req: Request,
+): Promise<{ id?: number; pid?: number; windowId?: string | null }> {
+  try {
+    const text = await req.text();
+    if (text.trim()) return JSON.parse(text);
+  } catch { /* ignore — empty/invalid body handled by the resolver returning null */ }
+  return {};
+}
+
 const focus = defineTool({
   method: 'POST',
   path: '/adv/sessions/focus',
   auth: 'loopback',
   async handler(req) {
-    let body: { id?: number; pid?: number; windowId?: string | null } = {};
-    try {
-      const text = await req.text();
-      if (text.trim()) body = JSON.parse(text);
-    } catch { /* ignore */ }
-
-    let wid = body.windowId ?? null;
+    const body = await parseControlBody(req);
     const latestRow =
-      typeof body.id === 'number' && body.id > 0
-        ? await getAdvSession(body.id)
-        : null;
-    if (!wid && latestRow?.windowId) {
-      wid = latestRow.windowId;
-    }
-    if (!wid && typeof body.pid === 'number') {
-      wid = await resolveWindowIdForPid(body.pid);
-    }
-    if (!wid && latestRow?.id) {
-      wid = await resolveWindowIdForTitleFragment(`[adv:${latestRow.id}]`);
-      if (wid) await setAdvSessionWindowId(latestRow.id, wid);
-    }
+      typeof body.id === 'number' && body.id > 0 ? await getAdvSession(body.id) : null;
+    const wid = await resolveSessionWindowId(body, latestRow);
     if (!wid) {
       return new Response(
         JSON.stringify({
@@ -314,39 +347,23 @@ const focus = defineTool({
   },
 });
 
-// "Kill agent" for a windowed session — resolve the window exactly like focus,
-// then GRACEFULLY close it (wmctrl -ic → WM_DELETE_WINDOW → the terminal tears
-// down and SIGHUPs the CLI). The roster's bulk-kill (owner ask 2026-07-11).
-// Same resolution chain as focus (windowId → adv row → pid → [adv:<id>] title),
-// so a fleet/psu-launched agent whose windowId wasn't pre-resolved is still
-// killable. A headless agent has no window ⇒ 404 'no window' (the caller reports
-// it un-killable rather than the endpoint guessing at a pid).
+// "Kill agent" for a windowed session — resolve the window exactly like focus
+// (the SHARED resolveSessionWindowId chain), then GRACEFULLY close it
+// (wmctrl -ic → WM_DELETE_WINDOW → the terminal tears down and SIGHUPs the CLI).
+// The roster's bulk-kill (owner ask 2026-07-11). Because it reuses the focus
+// chain, a fleet/psu-launched agent whose windowId wasn't pre-resolved — matched
+// by its coord-owner short id in the title — is still killable. A headless agent
+// has no window ⇒ 404 'no window' (the caller reports it un-killable rather than
+// the endpoint guessing at a pid).
 const closeWindow = defineTool({
   method: 'POST',
   path: '/adv/sessions/close-window',
   auth: 'loopback',
   async handler(req) {
-    let body: { id?: number; pid?: number; windowId?: string | null } = {};
-    try {
-      const text = await req.text();
-      if (text.trim()) body = JSON.parse(text);
-    } catch { /* ignore */ }
-
-    let wid = body.windowId ?? null;
+    const body = await parseControlBody(req);
     const latestRow =
-      typeof body.id === 'number' && body.id > 0
-        ? await getAdvSession(body.id)
-        : null;
-    if (!wid && latestRow?.windowId) {
-      wid = latestRow.windowId;
-    }
-    if (!wid && typeof body.pid === 'number') {
-      wid = await resolveWindowIdForPid(body.pid);
-    }
-    if (!wid && latestRow?.id) {
-      wid = await resolveWindowIdForTitleFragment(`[adv:${latestRow.id}]`);
-      if (wid) await setAdvSessionWindowId(latestRow.id, wid);
-    }
+      typeof body.id === 'number' && body.id > 0 ? await getAdvSession(body.id) : null;
+    const wid = await resolveSessionWindowId(body, latestRow);
     if (!wid) {
       return new Response(
         JSON.stringify({

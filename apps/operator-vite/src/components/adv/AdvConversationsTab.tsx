@@ -8,8 +8,7 @@
  *
  *  - **Q&A** (default, `conv=threads`): the conversations substrate (questions +
  *    discussions) — the human counterpart to the agents' conversations:* tools.
- *    Reads the in-process admin-coordination dispatch (one data path, no Zero
- *    entity). Detail = seed + topics + thread + accepted answer + linked
+ *    Reads the shared SSE named-query cache. Detail = seed + topics + thread + accepted answer + linked
  *    work-item + promote/reply/resolve actions.
  *
  *  - **Deliberations** (`conv=deliberations`): the threaded coord:thread /
@@ -34,10 +33,9 @@
  *    the same observer read the high-tier `coord:feed` tool exposes); "load
  *    older" paginates by cursor.
  *
- * The Threads/Feed views read the admin-coordination dispatch; the other three
- * (Deliberations / Agent chats / Messages) read the global communication-surface
- * dispatch (`/api/admin/comms/:kind/:verb`, see routes/admin/comms.ts) since those
- * tables had no global view before.
+ * All query-shaped reads use the shared SSE named-query cache. Mutations keep
+ * their audited admin/tool endpoints; table-trigger invalidations push the
+ * resulting state into the cached list/detail keys.
  *
  * All user-meaningful state is in the URL via nuqs (CLAUDE.md); only mid-edit
  * reply drafts + loading/busy lifecycle + the expand-set are useState.
@@ -49,7 +47,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { AlertTriangle, ArrowLeft, ArrowUpRight, Bot, CheckCircle2, Inbox, Mail, MessageCircle, MessagesSquare, Plus, RefreshCw, Radio, Megaphone, Search, Send, SlidersHorizontal, UserRound } from 'lucide-react';
-import { listCountLabel } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
+import { listCountLabel, readListTotal } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { Modal } from '@/app/harness/Modal';
 import ChatPanel from '@/app/harness/ChatPanel';
@@ -91,20 +89,6 @@ async function coord<T = Record<string, unknown>>(verb: string, body: Record<str
     ...(isRead ? { signal: AbortSignal.timeout(READ_TIMEOUT_MS) } : {}),
   });
   if (!res.ok) throw new Error(`${verb}: HTTP ${res.status}`);
-  return (await res.json()) as T;
-}
-
-// The global communication-surface reads (agent chats / deliberation threads /
-// work-item messages) the coordination dispatch doesn't cover — see routes/admin/comms.ts.
-async function comms<T = Record<string, unknown>>(kind: string, verb: string, body: Record<string, unknown> = {}): Promise<T> {
-  const res = await fetch(`/api/admin/comms/${kind}/${verb}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-    cache: 'no-store',
-    signal: AbortSignal.timeout(READ_TIMEOUT_MS),
-  });
-  if (!res.ok) throw new Error(`${kind}/${verb}: HTTP ${res.status}`);
   return (await res.json()) as T;
 }
 
@@ -366,9 +350,84 @@ interface UnifiedConversationRow {
 
 const SOURCE_DEF = new Map(VIEW_DEFS.map((definition) => [definition.id, definition]));
 
+function conversationEpoch(value: unknown): number {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  const parsed = Date.parse(String(value ?? ''));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/** Compose the inbox from the SAME four cached list queries the source views
+ * consume. A row click therefore remounts onto a warm list cache instead of
+ * replacing one aggregate query with a cold REST request. */
+function composeUnifiedConversationRows(
+  questions: readonly ConvRow[],
+  deliberations: readonly ThreadRow[],
+  agentChats: readonly AgentChatRow[],
+  messages: readonly MsgRow[],
+  limit: number,
+): UnifiedConversationRow[] {
+  return [
+    ...questions.map((row) => ({
+      id: `threads:${row.id}`,
+      source: 'threads' as const,
+      sourceId: row.id,
+      kind: row.kind,
+      state: row.state,
+      title: row.title ?? row.id,
+      preview: (row.topics ?? []).map((topic) => `#${topic}`).join('  '),
+      actor: row.asker_id,
+      harnessSlug: row.harness_slug,
+      relatedRef: row.promoted_issue_id,
+      updatedAt: conversationEpoch(row.updated_ts ?? row.created_ts),
+    })),
+    ...deliberations.map((row) => ({
+      id: `deliberations:${row.thread_id}`,
+      source: 'deliberations' as const,
+      sourceId: row.thread_id,
+      kind: row.parent_kind ?? '',
+      state: '',
+      title: row.title ?? row.thread_id,
+      preview: [row.parent_kind, row.parent_ref].filter(Boolean).join(' · '),
+      actor: row.created_by ?? undefined,
+      harnessSlug: row.harness_slug,
+      relatedRef: row.parent_ref,
+      count: row.post_count,
+      updatedAt: conversationEpoch(row.last_post_at ?? row.created_at),
+    })),
+    ...agentChats.map((row) => ({
+      id: `agentchats:${row.id}`,
+      source: 'agentchats' as const,
+      sourceId: row.id,
+      kind: row.role ?? '',
+      state: row.archived_at == null ? 'open' : 'archived',
+      title: row.title ?? row.id,
+      preview: [row.role, row.feature_id].filter(Boolean).join(' · '),
+      actor: row.role ?? undefined,
+      harnessSlug: row.harness_slug,
+      relatedRef: row.feature_id,
+      count: row.turns,
+      updatedAt: conversationEpoch(row.updated_at ?? row.created_at),
+    })),
+    ...messages.map((row) => ({
+      id: `messages:${row.id}`,
+      source: 'messages' as const,
+      sourceId: row.id,
+      kind: row.kind,
+      state: row.status,
+      title: row.subject || row.body || row.id,
+      preview: row.body ?? '',
+      actor: row.from_slug,
+      recipient: row.to_slug ?? row.to_role ?? undefined,
+      harnessSlug: row.harness_slug,
+      relatedRef: row.to_feature_id ?? row.from_feature_id,
+      updatedAt: conversationEpoch(row.created_at),
+    })),
+  ].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit);
+}
+
 /**
  * The unified inbox is a projection, not a new communication store. Its rows
- * ride the shared SSE resolver and open the existing source-specific detail,
+ * compose four focused shared SSE list queries and open the source-specific detail,
  * keeping replies/resolution/live-chat behavior on the audited paths that
  * already own it. This is intentionally a custom virtualized master-detail
  * list: the design guide calls that shape out as a non-RichGrid use case.
@@ -381,12 +440,18 @@ function UnifiedInboxView() {
     chat: parseAsString,
     msg: parseAsString,
   });
-  const { data, loading, error, invalidate } = useSyncQuery<UnifiedConversationRow>({
-    queryName: 'conversations.unified',
-    args: { limit: 100 },
-    staleTime: 30_000,
-  });
-  const rows = data ?? [];
+  const questions = useSyncQuery<ConvRow>({ queryName: 'conversations.questionsList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
+  const deliberations = useSyncQuery<ThreadRow>({ queryName: 'conversations.deliberationList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
+  const agentChats = useSyncQuery<AgentChatRow>({ queryName: 'conversations.agentChatList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
+  const messages = useSyncQuery<MsgRow>({ queryName: 'conversations.messageList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
+  const rows = useMemo(
+    () => composeUnifiedConversationRows(questions.data ?? [], deliberations.data ?? [], agentChats.data ?? [], messages.data ?? [], COMMS_LIST_LIMIT),
+    [questions.data, deliberations.data, agentChats.data, messages.data],
+  );
+  const queries = [questions, deliberations, agentChats, messages];
+  const loading = queries.some((query) => query.loading);
+  const error = queries.find((query) => query.error)?.error ?? null;
+  const invalidate = () => queries.forEach((query) => query.invalidate());
   const [stalled, setStalled] = useState(false);
   useEffect(() => {
     if (!loading || rows.length > 0) {
@@ -1322,6 +1387,7 @@ interface ConvRow {
   topics?: string[];
   promoted_issue_id?: string | null;
   created_ts: string;
+  updated_ts?: string;
 }
 interface ConvPost {
   id: number;
@@ -1344,13 +1410,6 @@ interface ConvDetailT {
   posts: ConvPost[];
   subscriber_count: number;
 }
-interface ConvGetResponse {
-  conversation?: Omit<ConvDetailT, 'topics' | 'posts' | 'subscriber_count'>;
-  topics?: string[];
-  posts?: ConvPost[];
-  subscriber_count?: number;
-}
-
 /**
  * The Q&A thread reply box (P3 extract). Owns its own mid-edit draft (useState —
  * a draft is render-only, never user-meaningful URL state per the nuqs rule); the
@@ -1416,93 +1475,40 @@ function ThreadsView() {
   const [kind, setKind] = useQueryState('ckind', parseAsStringEnum<ConvKindFilter>([...CONV_KINDS]).withDefault('all'));
   const [topic, setTopic] = useQueryState('ctopic', parseAsString.withDefault(''));
   const [sel, setSel] = useQueryState('conversation', parseAsString);
-  const [list, setList] = useState<ConvRow[]>([]);
-  const [detail, setDetail] = useState<ConvDetailT | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-
-  const reload = useCallback(async () => {
-    setLoading(true);
-    const body: Record<string, unknown> = {};
-    if (state !== 'all') body.state = state;
-    if (kind !== 'all') body.kind = kind;
-    try {
-      const r = await coord<{ conversations?: ConvRow[]; items?: ConvRow[] }>('conversations/list', body);
-      setList(r.conversations ?? r.items ?? []);
-      setError(null);
-    } catch (e) {
-      setError(errText(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [state, kind]);
-  useEffect(() => {
-    void reload();
-  }, [reload]);
-
-  const loadDetail = useCallback(async (id: string) => {
-    try {
-      const r = await coord<ConvGetResponse>('conversations/get', { conversation_id: id });
-      setDetail(
-        r.conversation
-          ? { ...r.conversation, topics: r.topics ?? [], posts: r.posts ?? [], subscriber_count: r.subscriber_count ?? 0 }
-          : null,
-      );
-    } catch {
-      setDetail(null);
-    }
-  }, []);
-  // The OPEN thread is fully driven by the nuqs `conversation` (`sel`) id — same
-  // shape as the Feed's `?fmsg` deep-link. A refresh or a pasted deep-link with
-  // `?conversation=<id>` reloads that thread from scratch: `detail` is cleared the
-  // instant `sel` changes (so the prior thread never lingers under a new id) and
-  // an in-flight `get` is ignored if `sel` moved on before it resolved (race guard).
-  useEffect(() => {
-    if (!sel) {
-      setDetail(null);
-      setDetailLoading(false);
-      return;
-    }
-    let live = true;
-    setDetail(null);
-    setDetailLoading(true);
-    void (async () => {
-      try {
-        const r = await coord<ConvGetResponse>('conversations/get', { conversation_id: sel });
-        if (!live) return;
-        setDetail(
-          r.conversation
-            ? { ...r.conversation, topics: r.topics ?? [], posts: r.posts ?? [], subscriber_count: r.subscriber_count ?? 0 }
-            : null,
-        );
-      } catch {
-        if (live) setDetail(null);
-      } finally {
-        if (live) setDetailLoading(false);
-      }
-    })();
-    return () => {
-      live = false;
-    };
-  }, [sel]);
+  const listQuery = useSyncQuery<ConvRow>({
+    queryName: 'conversations.questionsList',
+    args: { limit: COMMS_LIST_LIMIT },
+    staleTime: 30_000,
+  });
+  const detailQuery = useSyncQuery<ConvDetailT>({
+    queryName: 'conversations.questionDetail',
+    args: { id: sel ?? '' },
+    enabled: !!sel,
+    staleTime: 30_000,
+  });
+  const list = listQuery.data ?? [];
+  const detail = detailQuery.data?.[0] ?? null;
+  const detailLoading = detailQuery.loading;
+  const loading = listQuery.loading;
+  const error = listQuery.error ? errText(listQuery.error) : null;
 
   const allTopics = useMemo(() => {
     const s = new Set<string>();
     for (const c of list) for (const t of c.topics ?? []) s.add(t);
     return [...s].sort();
   }, [list]);
-  const visible = useMemo(
-    () => (topic ? list.filter((c) => (c.topics ?? []).includes(topic)) : list),
-    [list, topic],
-  );
+  const visible = useMemo(() => list.filter((conversation) => (
+    (state === 'all' || conversation.state === state)
+    && (kind === 'all' || conversation.kind === kind)
+    && (!topic || (conversation.topics ?? []).includes(topic))
+  )), [list, state, kind, topic]);
   const act = async (verb: string, body: Record<string, unknown>): Promise<boolean> => {
     setBusy(true);
     try {
       await coord(verb, body);
-      await reload();
-      if (sel) await loadDetail(sel);
+      listQuery.invalidate();
+      if (sel) detailQuery.invalidate();
       return true;
     } catch (e) {
       toast.error(`Action failed: ${errText(e)}`);
@@ -1593,7 +1599,7 @@ function ThreadsView() {
               className="pc-coord__chip pc-advconv__refresh"
               aria-label="Reload conversations"
               disabled={loading}
-              onClick={() => void reload()}
+              onClick={() => listQuery.invalidate()}
             >
               <RefreshCw size={11} aria-hidden />
             </button>
@@ -1617,7 +1623,7 @@ function ThreadsView() {
           {loading && visible.length === 0 ? (
             <LoadingRows />
           ) : error && visible.length === 0 ? (
-            <LoadError message={error} onRetry={() => void reload()} />
+            <LoadError message={error} onRetry={() => listQuery.invalidate()} />
           ) : visible.length === 0 ? (
             <EmptyState
               icon={<MessageCircle size={22} aria-hidden />}
@@ -1758,64 +1764,29 @@ interface ThreadRow {
   post_count: number;
 }
 interface ThreadPost { id: number; author_id: string | null; body: string | null; created_at: string; harness_slug: string | null }
+interface DeliberationDetail { thread: ThreadRow; posts: ThreadPost[] }
 
 function DeliberationsView() {
   const [sel, setSel] = useQueryState('thread', parseAsString);
-  const [list, setList] = useState<ThreadRow[]>([]);
-  const [total, setTotal] = useState<number | undefined>(undefined);
-  const [posts, setPosts] = useState<ThreadPost[]>([]);
-  const [head, setHead] = useState<ThreadRow | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const reload = useCallback(async () => {
-    setLoading(true);
-    try {
-      const r = await comms<{ items?: ThreadRow[]; total?: number }>('threads', 'list', { limit: COMMS_LIST_LIMIT });
-      setList(r.items ?? []);
-      setTotal(r.total);
-      setError(null);
-    } catch (e) {
-      setError(errText(e));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-  useEffect(() => {
-    void reload();
-  }, [reload]);
-
-  useEffect(() => {
-    if (!sel) {
-      setPosts([]);
-      setHead(null);
-      setDetailLoading(false);
-      return;
-    }
-    let live = true;
-    setPosts([]);
-    setHead(null);
-    setDetailLoading(true);
-    void (async () => {
-      try {
-        const r = await comms<{ thread?: ThreadRow | null; posts?: ThreadPost[] }>('threads', 'get', { thread_id: sel });
-        if (!live) return;
-        setHead(r.thread ?? null);
-        setPosts(r.posts ?? []);
-      } catch {
-        if (live) {
-          setHead(null);
-          setPosts([]);
-        }
-      } finally {
-        if (live) setDetailLoading(false);
-      }
-    })();
-    return () => {
-      live = false;
-    };
-  }, [sel]);
+  const listQuery = useSyncQuery<ThreadRow>({
+    queryName: 'conversations.deliberationList',
+    args: { limit: COMMS_LIST_LIMIT },
+    staleTime: 30_000,
+  });
+  const detailQuery = useSyncQuery<DeliberationDetail>({
+    queryName: 'conversations.deliberationDetail',
+    args: { id: sel ?? '' },
+    enabled: !!sel,
+    staleTime: 30_000,
+  });
+  const list = listQuery.data ?? [];
+  const total = readListTotal(list);
+  const detail = detailQuery.data?.[0];
+  const head = detail?.thread ?? null;
+  const posts = detail?.posts ?? [];
+  const detailLoading = detailQuery.loading;
+  const loading = listQuery.loading;
+  const error = listQuery.error ? errText(listQuery.error) : null;
 
   // U1 (operator-vite-ui-consolidation): the deliberations rail renders through
   // the shared, virtualized @papercusp/grid-core RichGrid (the agent-chats
@@ -1867,7 +1838,7 @@ function DeliberationsView() {
         <div className="pc-advconv__railhead">
           <span style={sectionHeaderStyle}>Deliberation threads</span>
           <strong>{loading && list.length === 0 ? '…' : listCountLabel(list.length, total)}</strong>
-          <button type="button" className="pc-coord__chip pc-advconv__refresh" aria-label="Reload deliberations" disabled={loading} onClick={() => void reload()}>
+          <button type="button" className="pc-coord__chip pc-advconv__refresh" aria-label="Reload deliberations" disabled={loading} onClick={() => listQuery.invalidate()}>
             <RefreshCw size={11} aria-hidden />
           </button>
         </div>
@@ -1877,7 +1848,7 @@ function DeliberationsView() {
           {loading && list.length === 0 ? (
             <LoadingRows />
           ) : error && list.length === 0 ? (
-            <LoadError message={error} onRetry={() => void reload()} />
+            <LoadError message={error} onRetry={() => listQuery.invalidate()} />
           ) : list.length === 0 ? (
             <EmptyState
               icon={<MessagesSquare size={22} aria-hidden />}
@@ -1966,8 +1937,9 @@ interface AgentChatRow {
   role: string | null;
   feature_id: string | null;
   title: string | null;
-  created_at: number;
-  archived_at: number | null;
+  created_at: string | number;
+  updated_at?: string | number | null;
+  archived_at: string | number | null;
   total_input_tokens: number;
   total_output_tokens: number;
   total_cost_usd_cents: number;
@@ -1990,57 +1962,28 @@ function AgentChatsView() {
   const [harness, setHarness] = useQueryState('acharness', parseAsString.withDefault(''));
   const [role, setRole] = useQueryState('acrole', parseAsString.withDefault(''));
   const [sel, setSel] = useQueryState('chat', parseAsString);
-  const [list, setList] = useState<AgentChatRow[]>([]);
-  const [total, setTotal] = useState<number | undefined>(undefined);
-  const [detail, setDetail] = useState<AgentChatDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const reload = useCallback(async () => {
-    setLoading(true);
-    try {
-      const r = await comms<{ items?: AgentChatRow[]; total?: number }>('agent-chats', 'list', {
-        limit: COMMS_LIST_LIMIT,
-        ...(harness ? { harness } : {}),
-        ...(role ? { role } : {}),
-      });
-      setList(r.items ?? []);
-      setTotal(r.total);
-      setError(null);
-    } catch (e) {
-      setError(errText(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [harness, role]);
-  useEffect(() => {
-    void reload();
-  }, [reload]);
-
-  useEffect(() => {
-    if (!sel) {
-      setDetail(null);
-      setDetailLoading(false);
-      return;
-    }
-    let live = true;
-    setDetail(null);
-    setDetailLoading(true);
-    void (async () => {
-      try {
-        const r = await comms<{ chat?: AgentChatDetail }>('agent-chats', 'get', { id: sel });
-        if (live) setDetail(r.chat ?? null);
-      } catch {
-        if (live) setDetail(null);
-      } finally {
-        if (live) setDetailLoading(false);
-      }
-    })();
-    return () => {
-      live = false;
-    };
-  }, [sel]);
+  const listArgs = useMemo(() => ({
+    limit: COMMS_LIST_LIMIT,
+    ...(harness ? { harness } : {}),
+    ...(role ? { role } : {}),
+  }), [harness, role]);
+  const listQuery = useSyncQuery<AgentChatRow>({
+    queryName: 'conversations.agentChatList',
+    args: listArgs,
+    staleTime: 30_000,
+  });
+  const detailQuery = useSyncQuery<AgentChatDetail>({
+    queryName: 'conversations.agentChatDetail',
+    args: { id: sel ?? '' },
+    enabled: !!sel,
+    staleTime: 30_000,
+  });
+  const list = listQuery.data ?? [];
+  const total = readListTotal(list);
+  const detail = detailQuery.data?.[0] ?? null;
+  const detailLoading = detailQuery.loading;
+  const loading = listQuery.loading;
+  const error = listQuery.error ? errText(listQuery.error) : null;
 
   const harnesses = useMemo(() => [...new Set(list.map((c) => c.harness_slug).filter(Boolean))].sort() as string[], [list]);
   const roles = useMemo(() => [...new Set(list.map((c) => c.role).filter(Boolean))].sort() as string[], [list]);
@@ -2118,7 +2061,7 @@ function AgentChatsView() {
               {harnesses.map((h) => (
                 <Pill key={h} active={harness === h} accent="var(--advconv-accent)" aria-pressed={harness === h} onClick={() => void setHarness(harness === h ? '' : h)}>{h}</Pill>
               ))}
-              <button type="button" className="pc-coord__chip pc-advconv__refresh" aria-label="Reload agent chats" disabled={loading} onClick={() => void reload()}>
+              <button type="button" className="pc-coord__chip pc-advconv__refresh" aria-label="Reload agent chats" disabled={loading} onClick={() => listQuery.invalidate()}>
                 <RefreshCw size={11} aria-hidden />
               </button>
             </div>
@@ -2138,7 +2081,7 @@ function AgentChatsView() {
           {loading && list.length === 0 ? (
             <LoadingRows />
           ) : error && list.length === 0 ? (
-            <LoadError message={error} onRetry={() => void reload()} />
+            <LoadError message={error} onRetry={() => listQuery.invalidate()} />
           ) : list.length === 0 ? (
             <EmptyState
               icon={<Bot size={22} aria-hidden />}
@@ -2214,7 +2157,8 @@ function AgentChatsView() {
                   chatId={detail.id}
                   onArchive={() => {
                     void setSel(null);
-                    void reload();
+                    listQuery.invalidate();
+                    detailQuery.invalidate();
                   }}
                 />
               </div>
@@ -2263,27 +2207,23 @@ interface MsgRow {
 }
 
 function MessagesView() {
-  const [list, setList] = useState<MsgRow[]>([]);
-  const [total, setTotal] = useState<number | undefined>(undefined);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useQueryState('msg', parseAsString);
-  const reload = useCallback(async () => {
-    setLoading(true);
-    try {
-      const r = await comms<{ items?: MsgRow[]; total?: number }>('messages', 'list', { limit: COMMS_LIST_LIMIT });
-      setList(r.items ?? []);
-      setTotal(r.total);
-      setError(null);
-    } catch (e) {
-      setError(errText(e));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-  useEffect(() => {
-    void reload();
-  }, [reload]);
+  const listQuery = useSyncQuery<MsgRow>({
+    queryName: 'conversations.messageList',
+    args: { limit: COMMS_LIST_LIMIT },
+    staleTime: 30_000,
+  });
+  const detailQuery = useSyncQuery<MsgRow>({
+    queryName: 'conversations.messageDetail',
+    args: { id: open ?? '' },
+    enabled: !!open,
+    staleTime: 30_000,
+  });
+  const list = listQuery.data ?? [];
+  const total = readListTotal(list);
+  const messageDetail = detailQuery.data?.[0] ?? null;
+  const loading = listQuery.loading;
+  const error = listQuery.error ? errText(listQuery.error) : null;
 
   // U1 (operator-vite-ui-consolidation): the messages stream (up to 500 rows)
   // renders through the shared, virtualized @papercusp/grid-core RichGrid instead
@@ -2312,7 +2252,8 @@ function MessagesView() {
         toCopyText: (m) => m.subject ?? m.body ?? '',
         cellStyle: { display: 'block', padding: 0, overflow: 'visible' },
         render: ({ row: m, isSelected: isOpen }) => {
-          const hasDetail = !!m.body || !!m.from_feature_id || !!m.to_feature_id || !!m.harness_slug;
+          const full = isOpen && messageDetail?.id === m.id ? messageDetail : m;
+          const hasDetail = !!full.body || !!full.from_feature_id || !!full.to_feature_id || !!full.harness_slug;
           return (
             <div className={`pc-advfeed__item${isOpen ? ' is-open' : ''}`}>
               <div className="pc-advfeed__row">
@@ -2336,22 +2277,22 @@ function MessagesView() {
               </div>
               {isOpen && hasDetail && (
                 <div className="pc-advfeed__detail">
-                  {m.body && (
+                  {full.body && (
                     <div className="pc-advfeed__bodycard">
                       <strong>Body</strong>
-                      <p className="pc-advfeed__body">{m.body}</p>
+                      <p className="pc-advfeed__body">{full.body}</p>
                     </div>
                   )}
-                  {(m.from_feature_id || m.to_feature_id) && (
+                  {(full.from_feature_id || full.to_feature_id) && (
                     <div className="pc-advfeed__kv">
                       <strong>work-item</strong>
-                      <span>{m.from_feature_id ?? '—'} → {m.to_feature_id ?? '—'}</span>
+                      <span>{full.from_feature_id ?? '—'} → {full.to_feature_id ?? '—'}</span>
                     </div>
                   )}
-                  {m.harness_slug && (
+                  {full.harness_slug && (
                     <div className="pc-advfeed__kv">
                       <strong>harness</strong>
-                      <span>{hiveHomeLabel(m.harness_slug)}</span>
+                      <span>{hiveHomeLabel(full.harness_slug)}</span>
                     </div>
                   )}
                 </div>
@@ -2361,7 +2302,7 @@ function MessagesView() {
         },
       },
     ],
-    [setOpen],
+    [messageDetail, setOpen],
   );
 
   return (
@@ -2376,7 +2317,7 @@ function MessagesView() {
           </div>
           <div className="pc-advfeed__filtermeta">
             <strong>{loading ? 'loading…' : `${listCountLabel(list.length, total)} messages`}</strong>
-            <button type="button" className="pc-coord__chip pc-advfeed__refresh" aria-label="Reload messages" disabled={loading} onClick={() => void reload()}>
+            <button type="button" className="pc-coord__chip pc-advfeed__refresh" aria-label="Reload messages" disabled={loading} onClick={() => listQuery.invalidate()}>
               <RefreshCw size={11} aria-hidden />
             </button>
           </div>
@@ -2386,7 +2327,7 @@ function MessagesView() {
         {loading && list.length === 0 ? (
           <LoadingRows rows={6} label="Loading messages" />
         ) : error && list.length === 0 ? (
-          <LoadError message={error} onRetry={() => void reload()} />
+          <LoadError message={error} onRetry={() => listQuery.invalidate()} />
         ) : list.length === 0 ? (
           <EmptyState
             icon={<Mail size={22} aria-hidden />}

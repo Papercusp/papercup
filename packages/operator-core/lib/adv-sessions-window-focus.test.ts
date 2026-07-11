@@ -111,3 +111,43 @@ describe('closeWindowId — the "Kill agent" window close (owner ask 2026-07-11)
     expect(focusWindowByTitleMock).not.toHaveBeenCalled();
   });
 });
+
+describe('matchWindowIdInWmctrlOutput — full-title match (owner-hit 2026-07-11: focus/kill missed psu windows)', () => {
+  // Real `wmctrl -lp` shape: <win-id> <desktop> <pid> <host> <title…>. A psu/fleet
+  // terminal titles itself with the coord-owner short id DEEP in the title; the
+  // operator's own console-spawn LEADS the title with an "[adv:<id>]" tag.
+  const SAMPLE = [
+    '0x01a0000a  2 12345 main-server-Precision-7865-Tower ▶ · ☕2 · 3p · su-78d15 · 🔭 Investigate MCP flakiness',
+    '0x03400017  0 999 main-server-Precision-7865-Tower Claude — Mozilla Firefox',
+    '0x01b00002  1 6789 main-server-Precision-7865-Tower [adv:11569] resuming plan-run 11569…',
+  ].join('\n');
+
+  it('matches a psu short owner-id that sits DEEP in the title (the fix)', async () => {
+    const { matchWindowIdInWmctrlOutput } = await import('./adv-sessions');
+    expect(matchWindowIdInWmctrlOutput(SAMPLE, 'su-78d15')).toBe('0x01a0000a');
+  });
+
+  it('still matches a leading "[adv:<id>]" console-spawn tag (no regression)', async () => {
+    const { matchWindowIdInWmctrlOutput } = await import('./adv-sessions');
+    expect(matchWindowIdInWmctrlOutput(SAMPLE, '[adv:11569]')).toBe('0x01b00002');
+  });
+
+  it('returns null when no title contains the fragment', async () => {
+    const { matchWindowIdInWmctrlOutput } = await import('./adv-sessions');
+    expect(matchWindowIdInWmctrlOutput(SAMPLE, 'su-99999')).toBeNull();
+  });
+
+  it('does NOT match the host/pid columns — only the title (no wrong-window kill)', async () => {
+    const { matchWindowIdInWmctrlOutput } = await import('./adv-sessions');
+    // "Precision-7865" lives in the host column, which is skipped.
+    expect(matchWindowIdInWmctrlOutput(SAMPLE, 'Precision-7865')).toBeNull();
+    // The pid "12345" is likewise a skipped column.
+    expect(matchWindowIdInWmctrlOutput(SAMPLE, '12345')).toBeNull();
+  });
+
+  it('returns null on empty / whitespace-only fragment', async () => {
+    const { matchWindowIdInWmctrlOutput } = await import('./adv-sessions');
+    expect(matchWindowIdInWmctrlOutput(SAMPLE, '')).toBeNull();
+    expect(matchWindowIdInWmctrlOutput(SAMPLE, '   ')).toBeNull();
+  });
+});

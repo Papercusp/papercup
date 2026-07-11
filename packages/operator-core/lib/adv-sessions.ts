@@ -952,6 +952,25 @@ export async function resolveWindowIdForPid(pid: number): Promise<string | null>
   }
 }
 
+/**
+ * Pure matcher over `wmctrl -lp` stdout: return the FIRST window id whose TITLE
+ * contains `fragment`, else null. Columns are `<win-id> <desktop> <pid> <host>
+ * <title…>` and the title is free-form (contains spaces + unicode) — so we skip
+ * exactly the four leading fields and test the WHOLE remaining title. Extracted
+ * as a pure fn so the parse is unit-testable without shelling out to wmctrl.
+ */
+export function matchWindowIdInWmctrlOutput(stdout: string, fragment: string): string | null {
+  const wanted = fragment.trim();
+  if (!wanted) return null;
+  for (const line of stdout.split('\n')) {
+    const m = line.match(/^(\S+)\s+\S+\s+\S+\s+\S+\s+(.*)$/);
+    if (!m) continue;
+    const [, winId, title] = m;
+    if (title.includes(wanted)) return winId;
+  }
+  return null;
+}
+
 export async function resolveWindowIdForTitleFragment(fragment: string): Promise<string | null> {
   const wanted = fragment.trim();
   if (!wanted) return null;
@@ -984,12 +1003,11 @@ export async function resolveWindowIdForTitleFragment(fragment: string): Promise
   try {
     const r = spawnSync('wmctrl', ['-lp'], { encoding: 'utf8' });
     if (r.status !== 0) return null;
-    for (const line of r.stdout.split('\n')) {
-      const parts = line.trim().split(/\s+/, 5);
-      if (parts.length < 5) continue;
-      if (parts[4]?.includes(wanted)) return parts[0];
-    }
-    return null;
+    // A psu/fleet terminal titles itself "▶ · ☕2 · 3p · su-78d15 · 🔭 …" — the
+    // matched fragment (e.g. a coord-owner short id) can sit DEEP in the title,
+    // so match the whole title, not just its first token. (owner-hit 2026-07-11:
+    // the old first-token-only parse silently missed psu-launched windows.)
+    return matchWindowIdInWmctrlOutput(r.stdout, wanted);
   } catch {
     return null;
   }
