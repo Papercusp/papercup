@@ -46,7 +46,20 @@ urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHa
 
 raw, operator_url, token, agent_id = sys.argv[1:5]
 
+# Soft advisory attached to an ALLOW verdict (coord-delivery-residual-gaps
+# P-003). None = plain silent allow; a string rides out as additionalContext
+# on an explicit permissionDecision:'allow' payload. Denies always win — the
+# advisory only decorates commands every gate already passed.
+ADVISORY = None
+
 def allow():
+    if ADVISORY:
+        json.dump({'hookSpecificOutput': {
+            'hookEventName': 'PreToolUse',
+            'permissionDecision': 'allow',
+            'permissionDecisionReason': 'long-foreground-exec advisory (non-blocking)',
+            'additionalContext': ADVISORY,
+        }}, sys.stdout)
     sys.exit(0)
 
 def deny(reason):
@@ -72,6 +85,39 @@ if tool_name.lower() not in ('bash', 'exec_command', 'local_shell', 'shell'):
 command = tool_input.get('command') if isinstance(tool_input, dict) else None
 if not isinstance(command, str) or not command.strip():
     allow()
+
+# ── Long-foreground-exec advisory (coord-delivery-residual-gaps P-003) ──────
+# A foreground Bash run blocks the session's turn for its whole duration: coord
+# messages, wakes, and yields cannot reach the agent until it returns — the
+# mid-exec deafness window (see the coord-mid-turn-delivery insight). When the
+# caller EXPLICITLY requests a foreground timeout past the 2-min default, that
+# is a declared intent to hold the turn for minutes — nudge it toward the
+# native background primitive instead. STRICTLY per-backend: only Claude's
+# `Bash` tool has `run_in_background` (same-session detach — the harness
+# re-invokes the SAME session on exit; no delegation, no context loss), so only
+# tool_name 'bash' gets the nudge. Codex shells (exec_command/local_shell/
+# shell) have no native background primitive in our integration — no nudge
+# (their deafness window is covered by the wake + escalation-ladder legs); OMP
+# nudges its own `job` primitive from its own hook, not this script. SOFT by
+# design: sets the ADVISORY string only — the command always proceeds, and any
+# later deny gate still wins.
+try:
+    if tool_name.lower() == 'bash':
+        _t = tool_input.get('timeout')
+        _bg = tool_input.get('run_in_background')
+        if not _bg and isinstance(_t, (int, float)) and _t > 120_000:
+            ADVISORY = (
+                f'long-foreground-exec advisory: this Bash call requests a FOREGROUND '
+                f'timeout of {int(_t / 1000)}s. A foreground run holds your turn for its whole '
+                f'duration — coord messages, wakes, and yield requests cannot reach you '
+                f'until it returns (the mid-exec deafness window). For anything expected '
+                f'to run >2min, prefer `run_in_background: true`: it stays in THIS session '
+                f'(no delegation, no context loss) — the command detaches, you keep taking '
+                f'turns, and you are re-invoked when it exits. Advisory only; this command '
+                f'is proceeding as issued.'
+            )
+except Exception:
+    pass  # advisory must never wedge a command
 
 # Native-scheduler lockout (native-scheduler-lockout-2026-06-09 P-010): agent
 # sessions must not create persistent OS schedules — a crontab entry outlives

@@ -383,3 +383,62 @@ describe('compound `cd <canonical> && …` coverage (WI-3853 — marker-less fle
     expectAllow(runGate(bashCmd('cd && npm run test:affected', { cwd: OUTSIDE }), { ...CANON_ENV, ...OVER }));
   });
 });
+
+describe('long-foreground-exec advisory (coord-delivery-residual-gaps P-003)', () => {
+  // Claude-Bash-only soft nudge: explicit foreground timeout > 120s → allow
+  // WITH additionalContext advising run_in_background (same-session detach).
+  // Never a deny; never fired for backends without the native primitive.
+  const bashWithInput = (tool_input: Record<string, unknown>, tool = 'Bash') => ({
+    tool_name: tool,
+    tool_input,
+    session_id: 's-test',
+  });
+
+  const expectAdvisory = (out: { stdout: string; status: number | null }) => {
+    expect(out.status).toBe(0);
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.permissionDecision).toBe('allow'); // soft — command proceeds
+    expect(hso.additionalContext).toContain('run_in_background');
+    expect(hso.additionalContext).toContain('THIS session');
+  };
+
+  it('fires on Claude Bash with an explicit foreground timeout > 120s', () => {
+    expectAdvisory(runGate(bashWithInput({ command: 'npm ci', timeout: 300_000 })));
+  });
+
+  it('names the requested duration in seconds', () => {
+    const out = runGate(bashWithInput({ command: 'sleep 400', timeout: 400_000 }));
+    expect(JSON.parse(out.stdout).hookSpecificOutput.additionalContext).toContain('400s');
+  });
+
+  it('silent when the call is already backgrounded', () => {
+    expectAllow(runGate(bashWithInput({ command: 'npm ci', timeout: 300_000, run_in_background: true })));
+  });
+
+  it('silent at/under the 120s default (no explicit long-hold intent)', () => {
+    expectAllow(runGate(bashWithInput({ command: 'npm ci', timeout: 120_000 })));
+    expectAllow(runGate(bashWithInput({ command: 'npm ci', timeout: 5_000 })));
+  });
+
+  it('silent when no timeout is requested at all', () => {
+    expectAllow(runGate(bashWithInput({ command: 'npm ci' })));
+  });
+
+  it('does NOT nudge codex shells — no native background primitive there', () => {
+    for (const tool of ['exec_command', 'local_shell', 'shell']) {
+      expectAllow(runGate(bashWithInput({ command: 'npm ci', timeout: 300_000 }, tool)));
+    }
+  });
+
+  it('a deny gate still WINS over the advisory (advisory never masks a block)', () => {
+    const out = runGate(
+      { tool_name: 'Bash', tool_input: { command: 'crontab -e', timeout: 300_000 }, session_id: 's-test' },
+      AGENT,
+    );
+    expect(JSON.parse(out.stdout).hookSpecificOutput.permissionDecision).toBe('deny');
+  });
+
+  it('a non-numeric timeout never fires or throws', () => {
+    expectAllow(runGate(bashWithInput({ command: 'npm ci', timeout: 'lots' })));
+  });
+});

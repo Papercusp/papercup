@@ -372,7 +372,7 @@ describe('coord:declare-intent — EI-9484: bounded enrichment legs never hang t
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();
     try {
-      getPresence.mockImplementationOnce(() => new Promise(() => {})); // return-payload read wedged
+      getPresence.mockImplementationOnce(() => new Promise<never>(() => {})); // return-payload read wedged
       const p = tool.handler({ intent: 'work' }, ctx);
       await vi.advanceTimersByTimeAsync(40_000);
       const res = parse(await p);
@@ -390,7 +390,7 @@ describe('coord:declare-intent — EI-9484: bounded enrichment legs never hang t
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();
     try {
-      fetchPresenceFleet.mockImplementationOnce(() => new Promise(() => {}));
+      fetchPresenceFleet.mockImplementationOnce(() => new Promise<never>(() => {}));
       const p = tool.handler({ intent: 'work' }, ctx);
       await vi.advanceTimersByTimeAsync(40_000);
       const res = parse(await p);
