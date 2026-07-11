@@ -46,6 +46,7 @@ import {
   findLikelyDuplicates,
   signatureRecurrence,
 } from '../harness/improvements/digest';
+import { clusterFrictionByEmbedding } from './digest-embed-cluster-leg';
 import type { ImprovementCandidate } from '../harness/improvements/policy';
 import {
   computeDepthAwareCrowding,
@@ -560,7 +561,13 @@ function buildRecurringFriction(
   byId: Map<string, ImprovementCandidate>,
   nowMs: number,
   limit: number,
+  // P-018(b): which clusterer produced these clusters. 'lexical' (the control +
+  // DEFAULT) renders byte-identically to the pre-experiment output; 'embed' appends a
+  // ` · via:embed-cluster` origin tag so the flag-gated experiment's patterns are
+  // attributable in a downstream idea-grade/outcome comparison.
+  clusterOrigin: 'lexical' | 'embed' = 'lexical',
 ): MetaPattern[] {
+  const originTag = clusterOrigin === 'embed' ? ' · via:embed-cluster' : '';
   const scored: Scored[] = clusters.map((cluster) => {
     const members = cluster.ids
       .map((id) => byId.get(id))
@@ -576,7 +583,7 @@ function buildRecurringFriction(
       pattern: {
         category: 'recurring-friction' as MetaPatternCategory,
         summary: newest ? truncate(newest.title) : cluster.signature,
-        detail: `recurred ${members.length}× (${openCount} open), last ${decayDays}d ago`,
+        detail: `recurred ${members.length}× (${openCount} open), last ${decayDays}d ago${originTag}`,
         ref: newest ? `wi:${newest.id}` : `friction:${cluster.signature.slice(0, 40)}`,
       },
     };
@@ -925,12 +932,22 @@ export async function synthesizeStateOfHive(
 
   // Shared friction clustering (computed ONCE): recurringFriction + rubricGaps read
   // the SAME clusters (P-008 "reuse data the digest already has"), so the O(n²)
-  // near-dup pass in findLikelyDuplicates runs once, not twice.
+  // near-dup pass runs once, not twice.
+  //
+  // P-018(b) frontier experiment: the lexical `findLikelyDuplicates` (token-set
+  // Jaccard) is the CONTROL + DEFAULT; the flag-gated embedding-cosine clusterer
+  // returns null — fail-open — unless PAPERCUSP_SU_DIGEST_EMBED_CLUSTER=on AND it
+  // resolves a verdict, in which case its `{signature,ids}` clusters drop in
+  // unchanged and recurringFriction is origin-tagged for a falsifiable comparison.
   const frictionForMining = frictionMiningCandidates(friction);
   const frictionById = new Map(frictionForMining.map((c) => [c.id, c] as const));
-  const frictionClusters = findLikelyDuplicates(frictionForMining).filter((c) => c.ids.length > 1);
+  const embedClusters = await clusterFrictionByEmbedding(frictionForMining);
+  const clusterOrigin: 'lexical' | 'embed' = embedClusters ? 'embed' : 'lexical';
+  const frictionClusters = (embedClusters ?? findLikelyDuplicates(frictionForMining)).filter(
+    (c) => c.ids.length > 1,
+  );
 
-  const recurringFriction = buildRecurringFriction(frictionClusters, frictionById, nowMs, limit);
+  const recurringFriction = buildRecurringFriction(frictionClusters, frictionById, nowMs, limit, clusterOrigin);
   const timeTokenSinks = buildTimeTokenSinks(spend, limit);
   const chronicDeferrals = buildChronicDeferrals(deferrals, limit);
   const capabilityGaps = buildCapabilityGaps(frictionForMining, nowMs, limit);
