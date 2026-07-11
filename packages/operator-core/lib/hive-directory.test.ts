@@ -201,6 +201,63 @@ describe('HiveDirectory.announceLocalHive — routes by visibility (D-004)', () 
     await expect(dir.announceLocalHive('my-hive')).rejects.toThrow(/inviteSecret/);
   });
 
+  it('burstReannounce (WI-953): schedules follow-up broadcasts at short delays, one per delay', async () => {
+    const kp = keypair();
+    const deps = makeDeps({ sign: (b) => Promise.resolve(nodeSign(null, b, kp.privateKey)) });
+    const dir = new HiveDirectory(deps);
+    dir.registerLocalHive({ ...localBase, visibility: 'public', ownerDevicePubkey: kp.pubkey });
+    vi.useFakeTimers();
+    try {
+      await dir.announceLocalHive('my-hive'); // the initial broadcast (not counted below)
+      expect(deps.broadcasts).toHaveLength(1);
+      dir.burstReannounce('my-hive', [10, 20, 30]);
+      expect(deps.broadcasts).toHaveLength(1); // nothing fires synchronously
+      await vi.advanceTimersByTimeAsync(10);
+      expect(deps.broadcasts).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(deps.broadcasts).toHaveLength(3);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(deps.broadcasts).toHaveLength(4);
+      // no further broadcasts after the burst is exhausted
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(deps.broadcasts).toHaveLength(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('burstReannounce (WI-953): a second call for the same potId replaces the pending burst, not stacks', async () => {
+    const kp = keypair();
+    const deps = makeDeps({ sign: (b) => Promise.resolve(nodeSign(null, b, kp.privateKey)) });
+    const dir = new HiveDirectory(deps);
+    dir.registerLocalHive({ ...localBase, visibility: 'public', ownerDevicePubkey: kp.pubkey });
+    vi.useFakeTimers();
+    try {
+      dir.burstReannounce('my-hive', [10, 1000]);
+      dir.burstReannounce('my-hive', [10, 1000]); // replaces — should NOT double-fire at t=10
+      await vi.advanceTimersByTimeAsync(10);
+      expect(deps.broadcasts).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('burstReannounce (WI-953): unregisterLocalHive cancels a pending burst', async () => {
+    const kp = keypair();
+    const deps = makeDeps({ sign: (b) => Promise.resolve(nodeSign(null, b, kp.privateKey)) });
+    const dir = new HiveDirectory(deps);
+    dir.registerLocalHive({ ...localBase, visibility: 'public', ownerDevicePubkey: kp.pubkey });
+    vi.useFakeTimers();
+    try {
+      dir.burstReannounce('my-hive', [10]);
+      dir.unregisterLocalHive('my-hive');
+      await vi.advanceTimersByTimeAsync(50);
+      expect(deps.broadcasts).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('reannounceAll broadcasts every owned non-private hive', async () => {
     const kp = keypair();
     const deps = makeDeps({ sign: (b) => Promise.resolve(nodeSign(null, b, kp.privateKey)) });

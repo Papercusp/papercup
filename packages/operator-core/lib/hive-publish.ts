@@ -114,6 +114,12 @@ export async function publishHiveToDirectory(
   // private never announces (announceLocalHive returns null for it).
   const frame = await dir.announceLocalHive(meta.potId);
   const announced = frame !== null;
+  // WI-953: the single announce above is fire-and-forget over whatever
+  // channels happen to be open right now — schedule a short follow-up burst
+  // so a broadcast lost to connection churn (or a reachablePeers:0 void
+  // broadcast right after create, before any peer has paired yet) self-heals
+  // within ~45s instead of waiting on the 5-minute reannounce timer.
+  if (announced) dir.burstReannounce(meta.potId);
   // Deceptive-publish fix: report how many peers the broadcast could actually
   // reach. announced && reachablePeers===0 ⇒ "registered but nobody heard it".
   // G-001: scope the count to THIS hive's announce topic (reachablePeersForHive),

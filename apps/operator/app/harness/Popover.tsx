@@ -109,6 +109,12 @@ export function Popover({
   if (tooltipLabel) {
     return (
       <RP.Root open={open} onOpenChange={onOpenChange}>
+        {/* Own Provider (like harness/Tooltip.tsx): a bare RT.Root throws when no
+            app-level TooltipProvider is above it, which crashed every consumer
+            rendered standalone (each tooltipLabel test used to wrap itself in a
+            provider to survive — EI-9468). Nesting under an app provider is fine;
+            this one just pins the 250/150 delays these tooltips already use. */}
+        <RT.Provider delayDuration={250} skipDelayDuration={150}>
         <RT.Root>
           <RT.Trigger asChild>
             <RP.Trigger asChild>{trigger}</RP.Trigger>
@@ -137,6 +143,7 @@ export function Popover({
             </RT.Content>
           </RT.Portal>
         </RT.Root>
+        </RT.Provider>
         {popoverContent}
       </RP.Root>
     );

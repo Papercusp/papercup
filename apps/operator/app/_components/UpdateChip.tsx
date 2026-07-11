@@ -2,6 +2,7 @@
 
 
 import { Popover } from '../harness/Popover';
+import { Tooltip } from '../harness/Tooltip';
 // Footer chip + Update Center for the desktop app.
 //
 // The chip shows the running version and, when a newer release is out, an
@@ -543,10 +544,14 @@ export default function UpdateChip() {
           side="top"
           align="end"
           ariaLabel="Update Center"
+          // Popover composes Tooltip.Trigger OUTSIDE Popover.Trigger around the
+          // same button — the sanctioned trigger-tooltip route (a native title=
+          // trips the design-primitives lint; a <Tooltip> wrapper inside
+          // `trigger` breaks Slot prop-forwarding, per Popover's doc-comment).
+          tooltipLabel={triggerLabel}
           trigger={
             <button
               type="button"
-              title={triggerLabel}
               style={{
                 background: 'transparent',
                 border: `1px solid ${updateAvailable ? 'var(--accent, #2d7a40)' : 'var(--border, #2a2a2a)'}`,
@@ -573,11 +578,14 @@ export default function UpdateChip() {
         </Popover>
 
         {updateAvailable && (
+          // Label is constant-truthy for the button's lifetime (it only renders
+          // while updateAvailable), so the WI-4059 falsy<->truthy Tooltip
+          // remount trap does not apply here.
+          <Tooltip label={info?.notes ?? `New version v${info!.new_version} available`}>
           <button
             type="button"
             onClick={onInstall}
             disabled={installing}
-            title={info?.notes ?? `New version v${info!.new_version} available`}
             style={{
               background: 'var(--accent)',
               border: '1px solid var(--accent, #2d7a40)',
@@ -595,6 +603,7 @@ export default function UpdateChip() {
             <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'currentColor' }} />
             {installing ? 'Installing…' : `Update to v${info!.new_version}`}
           </button>
+          </Tooltip>
         )}
       </span>
     </>

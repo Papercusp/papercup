@@ -72,6 +72,12 @@ beforeAll(async () => {
   h.sql = db.sql;
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
   await db.sql.unsafe(readMigration('141-plan-item-claims.sql')).simple();
+  // 143 (agent_activity) rides along because claims.ts's steal-guard/sweep SQL
+  // (EI-8997 holder-activity grace check) joins it — without this table the
+  // `active`/`claimed-mismatch` disposition cases below hit
+  // `relation "harness_shared.agent_activity" does not exist` (EI-9473). Mirrors
+  // the same pairing already applied in the sibling claims.integration.test.ts.
+  await db.sql.unsafe(readMigration('143-agent-activity.sql')).simple();
   // Minimal contributors table for the shared-ness (liveness-mode) heuristic.
   await db.sql
     .unsafe(

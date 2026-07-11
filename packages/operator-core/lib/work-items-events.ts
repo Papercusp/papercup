@@ -24,20 +24,12 @@
  * on the caller's side); an emit failure can never break a state write.
  */
 
-import { PgLinkStore, type ObjectRef } from '@papercusp/coordination/capabilities';
-import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
-import { getOrgPg } from '@papercusp/db-org';
+import type { LinkRow, ObjectRef } from '@papercusp/coordination/capabilities';
 import { TERMINAL_STATUSES } from './dbos/frontier-readiness';
 import { emitAwaitedEvent } from './events/await/engine';
 import { FEATURE_KIND } from './issue-blocks-merge';
-import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
+import { blockingEdgeReader, ISSUE_TERMINAL_STATUSES, type BlockingEdgeReader } from './work-item-blocking';
 import { getWorkItem, workItemObjectRef, type WorkItem, type WorkItemFamily } from './work-items';
-
-const links = new PgLinkStore({
-  getSql: () => getOrgPg().sql,
-  ensureSchema: async () => {},
-  workspaceId: DEFAULT_COORD_WORKSPACE,
-});
 
 // WI-4034 DEFECT 2 (single-source the settled predicate): these used to be a
 // SEPARATE, hand-duplicated literal set here that happened to still agree with
@@ -225,53 +217,112 @@ export function workItemIdFromRef(ref: { kind: string; ref: string }): { id: str
   return null;
 }
 
-/** Injectable seams for tests. */
+/** Injectable seams for tests. Edge reads go through the work-item-blocking
+ *  seam (P-005) — this module owns NO store of its own. */
 export interface SettledEventsDeps {
   emit?: typeof emitAwaitedEvent;
   getItem?: typeof getWorkItem;
-  listOut?: typeof links.listOut;
-  listIn?: typeof links.listIn;
+  listOut?: BlockingEdgeReader['listOut'];
+  listIn?: BlockingEdgeReader['listIn'];
+  /** Batched in-edge read; when absent it is DERIVED from `listIn` (test compat). */
+  listInMany?: BlockingEdgeReader['listInMany'];
 }
 
 /**
- * WI-4034: does `dstRef` have ANY live (non-settled) `blocks` edge into it
- * right now, other than one from `clearedById`? If not (and it isn't already
- * settled itself), EMIT `work-item:unblocked:<dst>`.
+ * Resolve the batched in-edge reader: an injected `listInMany` wins; else an
+ * injected per-dst `listIn` is lifted into a batch (existing tests inject only
+ * `listIn` and stay a faithful spec of the shared core); else the seam reader.
+ */
+function resolveListInMany(deps: Pick<SettledEventsDeps, 'listIn' | 'listInMany'>): BlockingEdgeReader['listInMany'] {
+  if (deps.listInMany) return deps.listInMany;
+  const listIn = deps.listIn;
+  if (listIn) return async (dsts, opts) => (await Promise.all(dsts.map((d) => listIn(d, opts)))).flat();
+  return blockingEdgeReader.listInMany;
+}
+
+/** (kind, ref) identity for grouping/dedup — refs are opaque, kinds disjoint. */
+const refKey = (r: ObjectRef): string => `${r.kind} ${r.ref}`;
+
+/**
+ * WI-4034: for each dependent in `dstRefs` that is NOT itself settled and has
+ * NO other live (non-settled) `blocks` edge into it beyond one from
+ * `clearedById`, EMIT `work-item:unblocked:<dst>`.
  *
  * Single-sourced by BOTH callers below: the settle path (the just-settled
- * item's own edge is still PRESENT in the store when this runs — excluded by
+ * item's own edges are still PRESENT in the store when this runs — excluded by
  * id) and the unlink path (the triggering edge has ALREADY been removed from
  * the store by the time this runs, so nothing needs excluding — passing the
  * id is harmless either way). Extracted so the two call sites can never
  * silently diverge on what "last live blocker" means.
+ *
+ * Batched (P-005): ONE `listInMany` query fetches every dependent's in-edges
+ * (the old shape was a per-dst listIn + per-blocker getItem — N+1 on a fan-out
+ * settle), then each distinct work-item is fetched ONCE, in parallel (no bulk
+ * getWorkItem exists — dedup is the available batching).
  */
-async function emitUnblockedIfNoLiveBlockers(
-  dstRef: ObjectRef,
+async function emitUnblockedForClearedEdges(
+  dstRefs: readonly ObjectRef[],
   clearedById: string,
   emit: typeof emitAwaitedEvent,
   getItem: typeof getWorkItem,
-  listIn: typeof links.listIn,
+  listInMany: BlockingEdgeReader['listInMany'],
 ): Promise<void> {
-  const dst = workItemIdFromRef(dstRef);
-  if (!dst) return;
-  const dependent = await getItem(dst.id, dst.harness).catch(() => null);
-  if (!dependent || isSettledWorkItem(dependent)) return;
+  // Dedup dsts — a duplicate src→dst edge must not double-emit for one dependent.
+  const dsts = [...new Map(dstRefs.map((r) => [refKey(r), r])).values()];
+  if (dsts.length === 0) return;
 
-  const blockerEdges = await listIn(dstRef, { rel: 'blocks' });
-  for (const be of blockerEdges) {
-    const src = workItemIdFromRef(be.src);
-    if (!src || src.id === clearedById) continue; // the one that just cleared
-    const blocker = await getItem(src.id, src.harness).catch(() => null);
-    if (blocker && !isSettledWorkItem(blocker)) return; // still genuinely blocked
+  const inEdges = await listInMany(dsts, { rel: 'blocks' });
+  const edgesByDst = new Map<string, LinkRow[]>();
+  for (const e of inEdges) {
+    const k = refKey(e.dst);
+    const arr = edgesByDst.get(k);
+    if (arr) arr.push(e);
+    else edgesByDst.set(k, [e]);
   }
 
-  await emit({
-    key: `work-item:unblocked:${dependent.id}`,
-    summary: `${dependent.id} is UNBLOCKED — its last blocker (${clearedById}) cleared: ${dependent.title}`,
-    payload: { id: dependent.id, clearedBy: clearedById, harness: dependent.harness, title: dependent.title },
-    to: dependent.assignee ? [dependent.assignee] : [],
-    source: 'work-items',
-  });
+  // Every item the checks below consult — dependents + candidate blockers (the
+  // cleared one never is) — fetched once per unique (id, harness), in parallel.
+  const wantKey = (w: { id: string; harness?: string }) => `${w.id} ${w.harness ?? ''}`;
+  const wanted = new Map<string, { id: string; harness?: string }>();
+  for (const d of dsts) {
+    const w = workItemIdFromRef(d);
+    if (w) wanted.set(wantKey(w), w);
+  }
+  for (const e of inEdges) {
+    const w = workItemIdFromRef(e.src);
+    if (w && w.id !== clearedById) wanted.set(wantKey(w), w);
+  }
+  const fetched = new Map<string, WorkItem | null>();
+  await Promise.all(
+    [...wanted.entries()].map(async ([k, w]) => {
+      fetched.set(k, await getItem(w.id, w.harness).catch(() => null));
+    }),
+  );
+  const itemFor = (ref: ObjectRef): WorkItem | null => {
+    const w = workItemIdFromRef(ref);
+    return w ? (fetched.get(wantKey(w)) ?? null) : null;
+  };
+
+  for (const dstRef of dsts) {
+    const dependent = itemFor(dstRef);
+    if (!dependent || isSettledWorkItem(dependent)) continue;
+
+    const stillBlocked = (edgesByDst.get(refKey(dstRef)) ?? []).some((be) => {
+      const src = workItemIdFromRef(be.src);
+      if (!src || src.id === clearedById) return false; // the one that just cleared
+      const blocker = itemFor(be.src);
+      return Boolean(blocker && !isSettledWorkItem(blocker)); // still genuinely blocked
+    });
+    if (stillBlocked) continue;
+
+    await emit({
+      key: `work-item:unblocked:${dependent.id}`,
+      summary: `${dependent.id} is UNBLOCKED — its last blocker (${clearedById}) cleared: ${dependent.title}`,
+      payload: { id: dependent.id, clearedBy: clearedById, harness: dependent.harness, title: dependent.title },
+      to: dependent.assignee ? [dependent.assignee] : [],
+      source: 'work-items',
+    });
+  }
 }
 
 /**
@@ -288,13 +339,12 @@ async function emitUnblockedIfNoLiveBlockers(
 export async function emitUnblockedOnEdgeRemoved(
   dst: ObjectRef,
   clearedById: string,
-  deps: Pick<SettledEventsDeps, 'emit' | 'getItem' | 'listIn'> = {},
+  deps: Pick<SettledEventsDeps, 'emit' | 'getItem' | 'listIn' | 'listInMany'> = {},
 ): Promise<void> {
   const emit = deps.emit ?? emitAwaitedEvent;
   const getItem = deps.getItem ?? getWorkItem;
-  const listIn = deps.listIn ?? links.listIn.bind(links);
   try {
-    await emitUnblockedIfNoLiveBlockers(dst, clearedById, emit, getItem, listIn);
+    await emitUnblockedForClearedEdges([dst], clearedById, emit, getItem, resolveListInMany(deps));
   } catch (e) {
     failSoft(`unlink-unblocked-event for ${clearedById}`, e);
   }
@@ -307,8 +357,8 @@ export async function emitUnblockedOnEdgeRemoved(
 export async function emitWorkItemSettledEvents(wi: WorkItem, deps: SettledEventsDeps = {}): Promise<void> {
   const emit = deps.emit ?? emitAwaitedEvent;
   const getItem = deps.getItem ?? getWorkItem;
-  const listOut = deps.listOut ?? links.listOut.bind(links);
-  const listIn = deps.listIn ?? links.listIn.bind(links);
+  const listOut = deps.listOut ?? blockingEdgeReader.listOut;
+  const listInMany = resolveListInMany(deps);
 
   try {
     // ── work-item:done — the children-done / delegated-work signal ────────
@@ -329,9 +379,7 @@ export async function emitWorkItemSettledEvents(wi: WorkItem, deps: SettledEvent
     // ── work-item:unblocked — dependents whose LAST live blocker cleared ──
     const ref = workItemObjectRef(wi);
     const blockEdges = await listOut(ref, { rel: 'blocks' });
-    for (const edge of blockEdges) {
-      await emitUnblockedIfNoLiveBlockers(edge.dst, wi.id, emit, getItem, listIn);
-    }
+    await emitUnblockedForClearedEdges(blockEdges.map((e) => e.dst), wi.id, emit, getItem, listInMany);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     // A missing event_awaits relation = pre-migration-163 substrate (or a

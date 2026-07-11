@@ -17,6 +17,7 @@ import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { Popover } from '@/app/harness/Popover';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { Checkbox } from '@/app/harness/Checkbox';
 import { LivenessDot } from '@/app/coord/presence-ui';
 import AgentInspectorModal from '@/app/harness/AgentInspectorModal';
 import { ThinkingDot } from '@/app/harness/AgentThinkingStream';
@@ -667,49 +668,56 @@ export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: 
           >
             ✉ Message
           </button>
-          <button
-            type="button"
-            className="pc-agents-roster__bulk-btn"
-            data-testid="agents-bulk-wake"
-            disabled={bulkBusy === 'wake'}
-            onClick={wakeSelected}
-            title="Re-invoke the selected agents (coord wake)"
-          >
-            {bulkBusy === 'wake' ? 'nudging…' : '⏰ Wake'}
-          </button>
-          <button
-            type="button"
-            className="pc-agents-roster__bulk-btn"
-            data-testid="agents-bulk-focus"
-            disabled={bulkBusy === 'focus'}
-            onClick={focusSelected}
-            title="Raise the selected agents' terminal windows"
-          >
-            {bulkBusy === 'focus' ? 'focusing…' : '⤢ Focus all'}
-          </button>
-          <button
-            type="button"
-            className="pc-agents-roster__bulk-btn"
-            data-testid="agents-bulk-copy"
-            onClick={copyIds}
-            title="Copy the selected owner ids to the clipboard"
-          >
-            ⧉ Copy ids
-          </button>
-          <button
-            type="button"
-            className={`pc-agents-roster__bulk-btn pc-agents-roster__bulk-btn--danger${killArmed ? ' is-armed' : ''}`}
-            data-testid="agents-bulk-kill"
-            disabled={bulkBusy === 'kill'}
-            onClick={killSelected}
-            title="Close the selected agents' terminal windows (graceful — SIGHUPs the CLI)"
-          >
-            {bulkBusy === 'kill'
-              ? 'killing…'
-              : killArmed
-                ? `⚠ Confirm kill ${selectedAgents.length}?`
-                : '✕ Kill'}
-          </button>
+          {/* Bulk-action hints ride the shared Tooltip primitive (constant labels,
+              so the WI-4059 falsy<->truthy remount trap does not apply) — native
+              title= on a button trips the design-primitives lint (EI-9468). */}
+          <Tooltip label="Re-invoke the selected agents (coord wake)">
+            <button
+              type="button"
+              className="pc-agents-roster__bulk-btn"
+              data-testid="agents-bulk-wake"
+              disabled={bulkBusy === 'wake'}
+              onClick={wakeSelected}
+            >
+              {bulkBusy === 'wake' ? 'nudging…' : '⏰ Wake'}
+            </button>
+          </Tooltip>
+          <Tooltip label="Raise the selected agents' terminal windows">
+            <button
+              type="button"
+              className="pc-agents-roster__bulk-btn"
+              data-testid="agents-bulk-focus"
+              disabled={bulkBusy === 'focus'}
+              onClick={focusSelected}
+            >
+              {bulkBusy === 'focus' ? 'focusing…' : '⤢ Focus all'}
+            </button>
+          </Tooltip>
+          <Tooltip label="Copy the selected owner ids to the clipboard">
+            <button
+              type="button"
+              className="pc-agents-roster__bulk-btn"
+              data-testid="agents-bulk-copy"
+              onClick={copyIds}
+            >
+              ⧉ Copy ids
+            </button>
+          </Tooltip>
+          <Tooltip label="Close the selected agents' terminal windows (graceful — SIGHUPs the CLI)">
+            <button
+              type="button"
+              className={`pc-agents-roster__bulk-btn pc-agents-roster__bulk-btn--danger${killArmed ? ' is-armed' : ''}`}
+              data-testid="agents-bulk-kill"
+              disabled={bulkBusy === 'kill'}
+              onClick={killSelected}
+            >
+              {bulkBusy === 'kill'
+                ? 'killing…'
+                : killArmed
+                  ? `⚠ Confirm kill ${selectedAgents.length}?`
+                  : '✕ Kill'}
+            </button>
+          </Tooltip>
           <span className="pc-agents-roster__bulk-spacer" />
           <button
             type="button"
@@ -797,17 +805,19 @@ export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: 
                   }
                 }}
               >
-                <input
-                  type="checkbox"
-                  className="pc-agents-roster__check"
-                  data-testid={`agent-select-${a.ownerId}`}
-                  checked={selected.has(a.ownerId)}
-                  aria-label={`Select ${displayName(a)}`}
-                  // stopPropagation so ticking the box never opens the inspector /
-                  // pins the row (the row's own onClick).
-                  onClick={(e) => e.stopPropagation()}
-                  onChange={() => toggleSelected(a.ownerId)}
-                />
+                {/* Shared Checkbox primitive (native <input type=checkbox> trips the
+                    design-primitives lint, EI-9468). The display:contents wrapper
+                    carries the stopPropagation the primitive doesn't expose —
+                    ticking the box must never open the inspector / pin the row
+                    (the row's own onClick). */}
+                <span style={{ display: 'contents' }} onClick={(e) => e.stopPropagation()}>
+                  <Checkbox
+                    dataTestId={`agent-select-${a.ownerId}`}
+                    checked={selected.has(a.ownerId)}
+                    ariaLabel={`Select ${displayName(a)}`}
+                    onChange={() => toggleSelected(a.ownerId)}
+                  />
+                </span>
                 <span className="pc-agents-roster__live">
                   {a.thinking ? (
                     <ThinkingDot size={7} title={`${displayName(a)} — thinking`} />

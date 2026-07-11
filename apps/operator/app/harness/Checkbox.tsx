@@ -36,6 +36,7 @@ export function Checkbox({
   ariaLabel,
   style,
   className,
+  dataTestId,
 }: {
   checked: boolean;
   onChange: (checked: boolean) => void;
@@ -44,6 +45,9 @@ export function Checkbox({
   ariaLabel?: string;
   style?: CSSProperties;
   className?: string;
+  /** Forwarded as data-testid on the checkbox element itself, so tests that
+   * click getByTestId(...) hit the real toggle target (EI-9468 migration). */
+  dataTestId?: string;
 }) {
   const value: boolean | 'indeterminate' = indeterminate ? 'indeterminate' : checked;
   return (
@@ -52,6 +56,7 @@ export function Checkbox({
       onCheckedChange={(v) => onChange(v === true)}
       disabled={disabled}
       aria-label={ariaLabel}
+      data-testid={dataTestId}
       className={className}
       style={className ? undefined : { ...ROOT_STYLE, ...style }}
     >

@@ -13,6 +13,9 @@
  * passed/deprecated, an ISSUE at resolved/closed — so an issue blocking a feature counts as
  * satisfied when resolved (the shared predicate previously only knew the feature set).
  */
+import { PgLinkStore, type LinkRow, type ObjectRef } from '@papercusp/coordination/capabilities';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { getOrgPg } from '@papercusp/db-org';
 import { getFeatureBlockers } from './dbos/feature-blockers-edges';
 import { getWorkItemDepBlockers } from './dbos/work-item-deps-store';
 import { selectReady, TERMINAL_STATUSES, type ReadinessNode } from './dbos/frontier-readiness';
@@ -71,6 +74,38 @@ export const workItemDepsBlockingStore: BlockingStore = {
  * coord_links blocks edges remain dual-written as a safety net until the full edge migration drops them.
  */
 export const defaultBlockingStore: BlockingStore = workItemDepsBlockingStore;
+
+/**
+ * The edge-LEVEL blocking seam (linking-notify-family-hardening P-005) — the
+ * unblocked-EVENT emitter's counterpart to `BlockingStore`.
+ *
+ * `blockersFor` is a within-harness, id-only projection: it CANNOT represent the
+ * polymorphic (kind, ref) edges the emitter needs — a bug can block a feature
+ * across harnesses; `work_items:link` keys on ObjectRef, not the physical table.
+ * So edge consumers read through THIS interface instead. TODAY it is backed by
+ * coord_links (`rel='blocks'` edges are still dual-written there); when
+ * `work_item_deps` grows polymorphic refs, this ONE binding is the emitter-side
+ * flip point — mirror of the `defaultBlockingStore` cutover above.
+ */
+export interface BlockingEdgeReader {
+  listOut(src: ObjectRef, opts?: { rel?: string }): Promise<LinkRow[]>;
+  listIn(dst: ObjectRef, opts?: { rel?: string }): Promise<LinkRow[]>;
+  /** Batched listIn: ONE kind-grouped query for many dsts — never a per-dst loop. */
+  listInMany(dsts: ObjectRef[], opts?: { rel?: string }): Promise<LinkRow[]>;
+}
+
+const edgeLinkStore = new PgLinkStore({
+  getSql: () => getOrgPg().sql,
+  ensureSchema: async () => {},
+  workspaceId: DEFAULT_COORD_WORKSPACE,
+});
+
+/** The production edge reader: coord_links via PgLinkStore (see BlockingEdgeReader). */
+export const blockingEdgeReader: BlockingEdgeReader = {
+  listOut: (src, opts) => edgeLinkStore.listOut(src, opts),
+  listIn: (dst, opts) => edgeLinkStore.listIn(dst, opts),
+  listInMany: (dsts, opts) => edgeLinkStore.listInMany(dsts, opts),
+};
 
 /** Build readiness nodes from items + a blocker map (pure). */
 export function toReadinessNodes(

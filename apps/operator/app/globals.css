@@ -23821,7 +23821,7 @@ body.has-op-chat:has(.operator-panel) .op-chat-sidebar {
 }
 
 .operator-feed-search__icon {
-  color: rgb(from var(--sky-300) r g b / 0.74) !important;
+  color: rgb(from var(--accent-strong) r g b / 0.74) !important;
 }
 
 .operator-entry__why,

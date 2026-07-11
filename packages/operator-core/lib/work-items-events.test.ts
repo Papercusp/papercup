@@ -3,6 +3,8 @@
  * deps) (await-event-primitive-2026-06-05 P-012/P-013, D-006 #4/#5).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { emitUnblockedOnEdgeRemoved, emitWorkItemSettledEvents, isSettledWorkItem, workItemIdFromRef } from './work-items-events';
 import type { WorkItem } from './work-items';
 
@@ -382,5 +384,53 @@ describe('emitWorkItemStatusEvent (P-101 — the general per-transition key)', (
     await new Promise((r) => setTimeout(r, 0));
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+// P-005 (linking-notify-family-hardening): a fan-out settle reads every
+// dependent's in-edges in ONE listInMany call (was: per-dst listIn +
+// per-blocker getItem — N+1), and the emitter reads edges through the
+// work-item-blocking seam instead of instantiating its own PgLinkStore.
+describe('batched unblocked core (P-005)', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  it('a fan-out settle makes exactly ONE listInMany call, fetches each distinct item once, and emits only for genuinely-unblocked dependents', async () => {
+    const emit = typedEmit();
+    const dep1 = wi({ id: 'WI-D1', state: 'open', assignee: 'su-a' });
+    const dep2 = wi({ id: 'WI-D2', state: 'open', assignee: 'su-b' });
+    const liveBlocker = wi({ id: 'WI-B2', state: 'open' });
+    const listInMany = vi.fn(async () => [
+      edge('WI-1', 'WI-D1'), // D1: only the just-settled blocker → unblocked
+      edge('WI-1', 'WI-D2'),
+      edge('WI-B2', 'WI-D2'), // D2: WI-B2 still live → stays blocked
+    ]);
+    const getItem = vi.fn(async (id: string) =>
+      id === 'WI-D1' ? dep1 : id === 'WI-D2' ? dep2 : id === 'WI-B2' ? liveBlocker : null,
+    );
+    await emitWorkItemSettledEvents(wi(), {
+      emit: emit as never,
+      getItem: getItem as never,
+      listOut: vi.fn(async () => [edge('WI-1', 'WI-D1'), edge('WI-1', 'WI-D2')]) as never,
+      listInMany: listInMany as never,
+    });
+    // THE batch pin: one query for both dependents' in-edges, never per-dst.
+    expect(listInMany).toHaveBeenCalledTimes(1);
+    expect(listInMany.mock.calls[0]).toEqual([
+      [{ kind: 'issue', ref: 'WI-D1' }, { kind: 'issue', ref: 'WI-D2' }],
+      { rel: 'blocks' },
+    ]);
+    const keys = emit.mock.calls.map((c) => c[0].key);
+    expect(keys).toContain('work-item:unblocked:WI-D1');
+    expect(keys).not.toContain('work-item:unblocked:WI-D2');
+    // Dedup pin: each involved item fetched once; the cleared blocker never is.
+    expect(getItem.mock.calls.map((c) => c[0]).sort()).toEqual(['WI-B2', 'WI-D1', 'WI-D2']);
+  });
+
+  it('the emitter reads edges through the seam, never its own store (source pin)', () => {
+    const src = readFileSync(fileURLToPath(new URL('./work-items-events.ts', import.meta.url)), 'utf8');
+    expect(src).not.toMatch(/new PgLinkStore/);
+    expect(src).toMatch(/blockingEdgeReader/);
   });
 });

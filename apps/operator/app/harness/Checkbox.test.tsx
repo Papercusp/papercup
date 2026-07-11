@@ -51,4 +51,13 @@ describe('Checkbox', () => {
     render(<Checkbox checked onChange={() => {}} ariaLabel="Enable telemetry" />);
     expect(screen.getByRole('checkbox', { name: 'Enable telemetry' })).toBeTruthy();
   });
+
+  it('forwards dataTestId onto the toggle element itself — clicking getByTestId toggles (EI-9468)', () => {
+    const onChange = vi.fn();
+    render(<Checkbox checked={false} onChange={onChange} ariaLabel="x" dataTestId="pick-me" />);
+    const box = screen.getByTestId('pick-me');
+    expect(box).toBe(screen.getByRole('checkbox'));
+    fireEvent.click(box);
+    expect(onChange).toHaveBeenCalledWith(true);
+  });
 });
