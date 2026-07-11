@@ -18,8 +18,13 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { ensureCoordCapabilityTables, PgEntitySubscriptionStore, PgLinkStore, PgTopicStore } from '@papercusp/coordination/capabilities';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../test/_work-items-schema";
+import {
+  ensureCoordCapabilityTables,
+  PgEntitySubscriptionStore,
+  PgLinkStore,
+  PgTopicStore,
+} from '@papercusp/coordination/capabilities';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL } from './../test/_work-items-schema';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -31,10 +36,7 @@ const readMigration = (f: string) =>
     // strip psql \meta, GRANTs (no roles in the test db), and the transaction
     // markers `BEGIN;`/`COMMIT;` (the pooled test client rejects explicit txns) —
     // but NOT a plpgsql function's bare `BEGIN` (no trailing semicolon).
-    .filter(
-      (line) =>
-        !/^\s*\\/.test(line) && !/\bGRANT\b/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line),
-    )
+    .filter((line) => !/^\s*\\/.test(line) && !/\bGRANT\b/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line))
     .join('\n');
 
 const COORD_EVENT_LOG_DDL = `
@@ -106,7 +108,11 @@ let db: FreshPgDb;
 let subs: PgEntitySubscriptionStore;
 let topicStore: PgTopicStore;
 
-interface Notify { notify_kind: string; subject: string; summary: string }
+interface Notify {
+  notify_kind: string;
+  subject: string;
+  summary: string;
+}
 async function inboxOf(owner: string): Promise<Notify[]> {
   const rows = await db.sql<{ body: unknown }[]>`
     SELECT body FROM harness_shared.coord_event_log
@@ -154,7 +160,13 @@ beforeEach(async () => {
 
 describe('engineer issues surface (real PG)', () => {
   it('create → get round-trip; ids allocate EI-1, EI-2', async () => {
-    const a = await issues.createIssue({ title: 'shop freezes', body: 'in firefox', severity: 'major', source: 'su', createdBy: 'agA' });
+    const a = await issues.createIssue({
+      title: 'shop freezes',
+      body: 'in firefox',
+      severity: 'major',
+      source: 'su',
+      createdBy: 'agA',
+    });
     expect(a.id).toBe('EI-1');
     expect(a.severity).toBe('major');
     expect(a.source).toBe('su');
@@ -201,7 +213,12 @@ describe('engineer issues surface (real PG)', () => {
     const created = await issues.createIssue({ title: 'has a real body', body: longBody, createdBy: 'agA' });
 
     const tripped = await issues.updateIssue(created.id, { body: 'placeholder' });
-    expect(tripped).toMatchObject({ shrinkGuardTripped: true, field: 'body', existingLength: longBody.length, newLength: 'placeholder'.length });
+    expect(tripped).toMatchObject({
+      shrinkGuardTripped: true,
+      field: 'body',
+      existingLength: longBody.length,
+      newLength: 'placeholder'.length,
+    });
     // Untouched: re-reading the issue shows the original body, not the rejected edit.
     expect((await issues.getIssue(created.id))?.body).toBe(longBody);
 
@@ -263,7 +280,13 @@ describe('engineer issues surface (real PG)', () => {
 
   it('close→resolved reaches a mention-mode subscriber (Lifecycle + D-006)', async () => {
     await topicStore.create({ slug: 'area', description: 'an area', created_ts: NOW });
-    await subs.subscribe({ subscriber_id: 'agC', target_kind: 'topic', target_ref: 'area', delivery_mode: 'mention', created_ts: NOW });
+    await subs.subscribe({
+      subscriber_id: 'agC',
+      target_kind: 'topic',
+      target_ref: 'area',
+      delivery_mode: 'mention',
+      created_ts: NOW,
+    });
     await issues.createIssue({ title: 't', topics: ['area'], createdBy: 'agA' });
     expect(await inboxOf('agC')).toHaveLength(0); // mention-mode: not notified of a normal create
     const resolved = await issues.setIssueState('EI-1', 'resolved', 'agA', 'test');
@@ -275,8 +298,20 @@ describe('engineer issues surface (real PG)', () => {
     await issues.createIssue({ title: 'alpha bug', severity: 'critical', createdBy: 'agA' });
     await issues.createIssue({ title: 'beta nit', severity: 'nit', createdBy: 'agA' });
     expect((await issues.listIssues({ severity: 'critical' })).map((i) => i.title)).toEqual(['alpha bug']);
-    expect((await issues.listIssues({ topic: 'nonexistent' }))).toEqual([]);
+    expect(await issues.listIssues({ topic: 'nonexistent' })).toEqual([]);
     expect((await issues.searchIssues('beta')).map((i) => i.title)).toEqual(['beta nit']);
+  });
+
+  it('counts a topic through the indexed tag-edge join with the same state filters as listIssues', async () => {
+    await topicStore.create({ slug: 'observations', description: 'learning signals', created_ts: NOW });
+    await issues.createIssue({ title: 'open observation', topics: ['observations'], createdBy: 'agA' });
+    await issues.createIssue({ title: 'resolved observation', topics: ['observations'], createdBy: 'agA' });
+    await issues.createIssue({ title: 'not tagged', createdBy: 'agA' });
+    await issues.setIssueState('EI-2', 'resolved', 'agA');
+
+    expect(await issues.countIssues({ topic: 'observations' })).toBe(2);
+    expect(await issues.countIssues({ topic: 'observations', state: 'open' })).toBe(1);
+    expect(await issues.countIssues({ topic: 'observations', state: 'resolved' })).toBe(1);
   });
 
   it('promote → mints + links an F-FIX feature; issue stays open', async () => {
@@ -310,7 +345,12 @@ describe('engineer issues surface (real PG)', () => {
 
   it('issue_blocks: an open blocking issue marks a plan item; closing it clears (Phase 2)', async () => {
     await issues.createIssue({ title: 'blocker', createdBy: 'agA' }); // EI-1, open
-    await issues.linkIssue('EI-1', { kind: blocks.PLAN_ITEM_KIND, ref: blocks.planItemRef('myplan', 'P-003') }, 'blocks', 'agA');
+    await issues.linkIssue(
+      'EI-1',
+      { kind: blocks.PLAN_ITEM_KIND, ref: blocks.planItemRef('myplan', 'P-003') },
+      'blocks',
+      'agA',
+    );
     let info = await blocks.getBlockingIssuesForPlan('myplan');
     expect(info.blockedItems.get('P-003')).toEqual(['EI-1']);
     // a different plan is unaffected
@@ -323,9 +363,19 @@ describe('engineer issues surface (real PG)', () => {
 
   it('issue_blocks: getAllBlockedPlanItems batches every plan (keyed <slug>#<item>) + overlay flips status (plans:list/items path)', async () => {
     await issues.createIssue({ title: 'blockerA', createdBy: 'agA' }); // EI-1, open
-    await issues.linkIssue('EI-1', { kind: blocks.PLAN_ITEM_KIND, ref: blocks.planItemRef('planA', 'P-003') }, 'blocks', 'agA');
+    await issues.linkIssue(
+      'EI-1',
+      { kind: blocks.PLAN_ITEM_KIND, ref: blocks.planItemRef('planA', 'P-003') },
+      'blocks',
+      'agA',
+    );
     await issues.createIssue({ title: 'blockerB', createdBy: 'agA' }); // EI-2, open
-    await issues.linkIssue('EI-2', { kind: blocks.PLAN_ITEM_KIND, ref: blocks.planItemRef('planB', 'P-001') }, 'blocks', 'agA');
+    await issues.linkIssue(
+      'EI-2',
+      { kind: blocks.PLAN_ITEM_KIND, ref: blocks.planItemRef('planB', 'P-001') },
+      'blocks',
+      'agA',
+    );
 
     const all = await blocks.getAllBlockedPlanItems();
     expect(all.get('planA#P-003')).toEqual(['EI-1']);
@@ -368,8 +418,18 @@ describe('engineer issues surface (real PG)', () => {
     await issues.createIssue({ title: 'high impact blocker', topics: ['papercusp-improvement'], createdBy: 'agA' }); // EI-1 (tag edge must NOT count)
     await issues.createIssue({ title: 'quiet item', createdBy: 'agA' }); // EI-2
     // EI-1 blocks two downstream things (outbound) …
-    await issues.linkIssue('EI-1', { kind: blocks.PLAN_ITEM_KIND, ref: blocks.planItemRef('myplan', 'P-001') }, 'blocks', 'agA');
-    await issues.linkIssue('EI-1', { kind: blocks.FEATURE_KIND, ref: blocks.featureRef('sheets', 'F-1') }, 'blocks', 'agA');
+    await issues.linkIssue(
+      'EI-1',
+      { kind: blocks.PLAN_ITEM_KIND, ref: blocks.planItemRef('myplan', 'P-001') },
+      'blocks',
+      'agA',
+    );
+    await issues.linkIssue(
+      'EI-1',
+      { kind: blocks.FEATURE_KIND, ref: blocks.featureRef('sheets', 'F-1') },
+      'blocks',
+      'agA',
+    );
     // … is referenced by a plan (inbound, counts) and blocked by another issue
     // (inbound `blocks` = upstream dependency, excluded).
     const links = new PgLinkStore({ getSql: () => db.sql, ensureSchema: async () => {}, workspaceId: 'default' });
@@ -398,7 +458,11 @@ describe('engineer issues surface (real PG)', () => {
   });
 
   it('updateIssue corrects a mislabeled kind (bug↔change — the auto-lane selector, close-loop D-002)', async () => {
-    const a = await issues.createIssue({ title: 'design follow-on mislabeled by the column default', kind: 'bug', createdBy: 'agA' });
+    const a = await issues.createIssue({
+      title: 'design follow-on mislabeled by the column default',
+      kind: 'bug',
+      createdBy: 'agA',
+    });
     expect(a.kind).toBe('bug');
     const updated = await issues.updateIssue(a.id, { kind: 'change', by: 'agA', silent: true });
     expect(updated?.kind).toBe('change');
