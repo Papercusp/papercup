@@ -7,6 +7,7 @@ import { installWorkspaceHeaderFetch } from '@papercusp/operator-core/lib/transp
 import { installWorkspaceParamEventSource } from '@papercusp/operator-core/lib/transport-adapters/workspace-eventsource';
 import { installCallToolResolver } from '@papercusp/operator-core/lib/call-tool-resolver';
 import { installIpcInspector } from '@papercusp/operator-core/lib/dev/ipc-inspector-client';
+import UpdateMismatchNotifier from './UpdateMismatchNotifier';
 
 /**
  * Root sync provider. Wraps the app in `HarnessSyncProvider` and, on
@@ -53,5 +54,11 @@ if (typeof window !== 'undefined') {
 }
 
 export function RootSyncProvider({ children }: { children: ReactNode }) {
-  return <HarnessSyncProvider>{children}</HarnessSyncProvider>;
+  return (
+    <HarnessSyncProvider>
+      {/* P-013: surface a post-update stale-operator mismatch (EI-9002) to the user. */}
+      <UpdateMismatchNotifier />
+      {children}
+    </HarnessSyncProvider>
+  );
 }
