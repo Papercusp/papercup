@@ -298,10 +298,23 @@ async function maybeForceCompact(
     const host = findLiveHost(ownerId);
     if (!host) return false;
     const focus = await resolveForceCompactFocus(ownerId);
+    // turn-provenance P-002: the forced continuation note is typed into the
+    // target's PTY as a prompt — tag it `watchdog` so the target's hook labels
+    // it machine-generated, not owner input. The bare `/compact <focus>`
+    // fallback is a slash COMMAND — never tagged. Fail-soft on any tag error.
+    const continuation = await (async () => {
+      const note = forceCompactContinueNote(est, limit, forceAt, bound);
+      try {
+        const { tagTurnForInjection } = await import('../turn-provenance/turn-provenance');
+        return tagTurnForInjection({ sid: ownerId, origin: 'watchdog', text: note }).taggedText;
+      } catch {
+        return note;
+      }
+    })();
     const ok = hostSupports(host, 'compact')
       ? await injectIntoHost(host.sock, {
           mode: 'compact',
-          data: forceCompactContinueNote(est, limit, forceAt, bound),
+          data: continuation,
           focus,
         })
       : await injectIntoHost(host.sock, { mode: 'turn', data: `/compact ${focus}` });

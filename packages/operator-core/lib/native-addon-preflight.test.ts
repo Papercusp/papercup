@@ -165,15 +165,36 @@ describe('runBootAddonPreflight (A2 boot self-check)', () => {
   });
 });
 
-describe('discovery + real load (integration against installed binaries)', () => {
-  const requireFromHere = createRequire(import.meta.url);
-  // Hoisted workspace node_modules (operator-core → packages/operator-core → repo root).
-  const repoNodeModules = join(import.meta.dirname ?? __dirname, '..', '..', '..', 'node_modules');
+describe('discoverAddonPackages (synthetic fixture — deterministic)', () => {
+  it('finds only addon-shipping packages (build/Release or prebuilds), scope-aware', () => {
+    // A throwaway node_modules with a controlled mix, so the discovery LOGIC is
+    // tested WITHOUT depending on the concurrently-rebuilt real install. The
+    // real from-source better-sqlite3 deletes+regenerates its build/Release
+    // during any `npm ci`/rebuild, so scanning the live tree flaked the old
+    // "finds better-sqlite3 in the workspace node_modules" assertion — it saw
+    // the dir mid-rebuild with no addon marker (EI-9688). The real-install
+    // signal is kept by the "better-sqlite3 actually loads" test below.
+    const dir = mkdtempSync(join(tmpdir(), 'addon-discover-'));
+    try {
+      mkdirSync(join(dir, 'from-source-pkg', 'build', 'Release'), { recursive: true });
+      mkdirSync(join(dir, 'prebuilt-pkg', 'prebuilds'), { recursive: true });
+      mkdirSync(join(dir, '@scope', 'native', 'build', 'Release'), { recursive: true });
+      mkdirSync(join(dir, 'pure-js-pkg', 'lib'), { recursive: true }); // no addon → excluded
+      mkdirSync(join(dir, '.cache', 'prebuilds'), { recursive: true }); // dot-dir → skipped
 
-  it('discoverAddonPackages finds better-sqlite3 in the workspace node_modules', () => {
-    const found = discoverAddonPackages(repoNodeModules);
-    expect(found).toContain('better-sqlite3');
+      expect(discoverAddonPackages(dir)).toEqual(['@scope/native', 'from-source-pkg', 'prebuilt-pkg']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
+
+  it('returns [] for a missing directory', () => {
+    expect(discoverAddonPackages(join(tmpdir(), 'papercusp-addon-no-such-dir-xyz'))).toEqual([]);
+  });
+});
+
+describe('real load (integration against installed binaries)', () => {
+  const requireFromHere = createRequire(import.meta.url);
 
   it('better-sqlite3 actually loads under this runtime Node (the outage regression)', () => {
     const r = checkNativeAddons({

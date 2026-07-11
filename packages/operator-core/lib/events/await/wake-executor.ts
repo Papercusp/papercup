@@ -805,9 +805,13 @@ async function injectPsuHostWake(
     } catch {
       /* note-only injection */
     }
+    // turn-provenance P-002: the cold injection is composed HERE (not by the
+    // callers, who tag the warm text) — tag it as a loop fire so the reset/
+    // recycle continuation prompt classifies as verified agent-origin.
+    const coldText = tagWakeText(d, renderColdWakeInjection(decision.carryNote, extras), deps.tagTurn ?? tagTurnForInjection);
     const ok = await injectPsuHost(sock, {
       mode: decision.mode,
-      data: renderColdWakeInjection(decision.carryNote, extras),
+      data: coldText,
     });
     if (ok) {
       return {
@@ -860,6 +864,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const injectPsuHost = deps.injectPsuHost ?? injectIntoHost;
   const fireHiveWake = deps.fireHiveWake ?? defaultFireHiveWake;
   const sendCoordMessage = deps.sendCoordMessage ?? sendMessage;
+  const tagTurn = deps.tagTurn ?? tagTurnForInjection;
   const collectSessionFiles = deps.collectSessionFiles ?? defaultCollectSessionFiles;
   const rematerializeSession = deps.rematerializeSession ?? defaultRematerializeSession;
   const findArchivedSessionIdForAdv = deps.findArchivedSessionIdForAdv ?? defaultFindArchivedSessionIdForAdv;
@@ -875,7 +880,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // because the socket inject below sat under this early-return).
       const outcome = await injectPsuHostWakeWithReverify(
         d,
-        wakeTurnText(d),
+        tagWakeText(d, wakeTurnText(d), tagTurn),
         findPsuHost,
         injectPsuHost,
         deps,
@@ -895,7 +900,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // static plans-tool dependency.
       const resumePlanRun =
         deps.resumePlanRun ?? (await import('./plan-run-wake')).resumePlanRunForWake;
-      const r = await resumePlanRun({ runId: handle.runId, wakeText: wakeTurnText(d) });
+      const r = await resumePlanRun({ runId: handle.runId, wakeText: tagWakeText(d, wakeTurnText(d), tagTurn) });
       if (r.ok) return { kind: 'delivered', channel: 'plan-run-resume' };
       return { kind: 'error', error: r.error };
     }
@@ -920,7 +925,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       isAlive = Boolean(p && !p.stale && !p.revoked);
     }
 
-    const text = wakeTurnText(d);
+    const text = tagWakeText(d, wakeTurnText(d), tagTurn);
 
     // Channel 1b (turn-lifecycle-control Phase 3, P-014): a live INTERACTIVE psu
     // session hosts its pty + control socket in the psu PROCESS (D-006), so our

@@ -20,6 +20,7 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { findLiveHost, injectIntoHost, hostSupports } from '../../events/await/psu-pty-discovery';
+import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { provenanceLintField } from '../../carry-surface-provenance-lint';
 
 /** Focus applied when the agent names none AND the carry-brief read fails —
@@ -224,10 +225,23 @@ export default defineTool({
       }
     } catch { /* best-effort */ }
     const canAutoContinue = autoContinue && hostSupports(host, 'compact');
+    // turn-provenance P-002 (turn-provenance-owner-vs-agent-2026-07-11): the
+    // continuation note is typed into the PTY after the compaction turn ends —
+    // byte-identical to the owner typing — so envelope+ledger-tag it as
+    // `self-compaction` for the UserPromptSubmit hook. The bare `/compact <focus>`
+    // fallback is a TUI slash COMMAND, not a prompt — tagging would break it.
+    const continuation = (() => {
+      const note = (args.continueNote ?? defaultContinueNote(focus)).trim();
+      try {
+        return tagTurnForInjection({ sid: identity.ownerId, origin: 'self-compaction', text: note }).taggedText;
+      } catch {
+        return note; // provenance must never break a compaction
+      }
+    })();
     const ok = canAutoContinue
       ? await injectIntoHost(host.sock, {
           mode: 'compact',
-          data: (args.continueNote ?? defaultContinueNote(focus)).trim(),
+          data: continuation,
           focus,
         })
       : await injectIntoHost(host.sock, { mode: 'turn', data: `/compact ${focus}` });
