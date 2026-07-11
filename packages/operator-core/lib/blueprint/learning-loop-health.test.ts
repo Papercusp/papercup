@@ -184,6 +184,56 @@ describe('computeLearningLoopHealth — per-loop routine verdict', () => {
   });
 });
 
+describe('computeActivityLaneHealth — routine-less activity-only lane (su-ideate P-013)', () => {
+  const lane = (lastActivityAt: string | null) => ({
+    blueprintId: 'su-ideation',
+    lastActivityAt,
+    source: 'su-ideate-ticks+ungraded-watchdog',
+  });
+
+  it('never any activity → dark-by-design (built, not yet turning — no routine to be "absent")', () => {
+    const h = computeActivityLaneHealth(lane(null), { nowMs: NOW });
+    expect(h.status).toBe('dark-by-design');
+    expect(h.active).toBe(false);
+    expect(h.singletonRow).toBeNull();
+    expect(h.legacyRow).toBeNull();
+    expect(h.collision).toBe(false);
+    expect(h.alwaysOn).toBe(false);
+    expect(h.lastFiredAt).toBeNull();
+    expect(h.activityLastAt).toBeNull();
+    expect(h.activitySource).toBe('su-ideate-ticks+ungraded-watchdog');
+  });
+
+  it('fresh activity within the stale window → firing', () => {
+    const h = computeActivityLaneHealth(lane(daysAgo(0)), { nowMs: NOW, staleAfterDays: 3 });
+    expect(h.status).toBe('firing');
+    expect(h.active).toBe(true);
+    expect(h.daysSinceActivity).toBe(0);
+  });
+
+  it('activity older than the stale window → stale (the "a dead loop shows" signal)', () => {
+    const h = computeActivityLaneHealth(lane(daysAgo(5)), { nowMs: NOW, staleAfterDays: 3 });
+    expect(h.status).toBe('stale');
+    expect(h.active).toBe(true);
+    expect(h.daysSinceActivity).toBe(5);
+  });
+
+  it('a stale activity-only lane is surfaced by summarize needs-attention', () => {
+    const stale = computeActivityLaneHealth(lane(daysAgo(10)), { nowMs: NOW, staleAfterDays: 3 });
+    const s = summarizeLearningLoopHealth([stale]);
+    expect(s.total).toBe(1);
+    expect(s.stale).toBe(1);
+    expect(s.needsAttention).toEqual(['su-ideation']);
+  });
+
+  it('a dark-by-design activity-only lane is NOT flagged (silence on a judgment-driven lane is not a wedge)', () => {
+    const dark = computeActivityLaneHealth(lane(null), { nowMs: NOW });
+    const s = summarizeLearningLoopHealth([dark]);
+    expect(s.darkByDesign).toBe(1);
+    expect(s.needsAttention).toEqual([]);
+  });
+});
+
 describe('summarizeLearningLoopHealth — rollup + needs-attention partition', () => {
   it('counts by status and surfaces only the loops that warrant a look', () => {
     const rows = computeLearningLoopHealth(

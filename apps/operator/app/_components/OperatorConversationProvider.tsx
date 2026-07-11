@@ -815,94 +815,73 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   const INITIAL_PAGE = 200;
   const PAGE_SIZE = 200;
 
+  type TurnPage = { turns: OperatorTurnRow[]; hasMoreEarlier: boolean };
+  const conversationSync = useSyncQuery<{ id: string }>({
+    queryName: 'operatorConversations.current',
+    args: { workspaceId },
+    staleTime: 30_000,
+  });
+  const currentConversation = conversationSync.data?.[0];
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(`/api/operator/conversations?limit=${INITIAL_PAGE}`);
-        if (!res.ok) return;
-        const json = (await res.json()) as {
-          conversation: { id: string };
-          turns: Array<{
-            id?: string;
-            seq: number;
-            role: 'user' | 'assistant' | 'system';
-            text: string;
-            createdAt?: number;
-            tools?: ChatToolCall[] | null;
-          }>;
-          hasMoreEarlier: boolean;
-        };
-        if (cancelled) return;
-        conversationIdRef.current = json.conversation.id;
-        setConvId(json.conversation.id);
-        if (json.turns.length > 0) {
-          oldestLoadedSeqRef.current = json.turns[0].seq;
-          newestLoadedSeqRef.current = json.turns[json.turns.length - 1].seq;
-          setHasMoreEarlier(json.hasMoreEarlier);
-          // Anchor lastTurnAtMs to the most-recent turn's createdAt so
-          // the silence ladder doesn't fire "Still with me?" on mount
-          // of an old conversation. G13 of the audit.
-          const lastCreated = json.turns[json.turns.length - 1].createdAt ?? 0;
-          dispatch({
-            type: 'replace_messages',
-            messages: json.turns.map((t) => ({
-              role: t.role,
-              content: t.text,
-              id: typeof t.id === 'string' ? t.id : undefined,
-              seq: typeof t.seq === 'number' ? t.seq : undefined,
-              tools: Array.isArray(t.tools) ? t.tools : undefined,
-            })),
-            lastTurnAtMs: lastCreated,
-          });
-        } else {
-          // Brand-new conversation — keep the sessionStorage seed for
-          // any in-progress unsaved input but reset cursors.
-          oldestLoadedSeqRef.current = null;
-          newestLoadedSeqRef.current = null;
-          setHasMoreEarlier(false);
-          // Replace any sessionStorage seed with empty so the live tail
-          // doesn't see "messages.length>0 but cursors null" as a flood.
-          dispatch({ type: 'replace_messages', messages: [] });
-        }
-        hydratedRef.current = true;
-      } catch {
-        /* offline / dev startup — fall back to sessionStorage seed */
-        hydratedRef.current = true;
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    if (!currentConversation?.id || currentConversation.id === conversationIdRef.current) return;
+    conversationIdRef.current = currentConversation.id;
+    setConvId(currentConversation.id);
+    hydratedRef.current = false;
+  }, [currentConversation?.id]);
 
-  const loadEarlier = useCallback(async (): Promise<void> => {
-    const id = conversationIdRef.current;
-    if (!id) return;
-    if (loadingEarlier) return;
-    if (oldestLoadedSeqRef.current === null) return;
-    if (!hasMoreEarlier) return;
-    setLoadingEarlier(true);
-    try {
-      const beforeSeq = oldestLoadedSeqRef.current;
-      const res = await fetch(
-        `/api/operator/conversations/${id}/turns?beforeSeq=${beforeSeq}&limit=${PAGE_SIZE}`,
-      );
-      if (!res.ok) return;
-      const page = (await res.json()) as {
-        turns: Array<{
-          id?: string;
-          seq: number;
-          role: 'user' | 'assistant' | 'system';
-          text: string;
-          tools?: ChatToolCall[] | null;
-        }>;
-        hasMoreEarlier: boolean;
-      };
-      if (page.turns.length === 0) {
-        setHasMoreEarlier(false);
-        return;
-      }
+  const initialPageSync = useSyncQuery<TurnPage>({
+    queryName: 'operatorTurns.page',
+    args: { conversationId: convId ?? '', limit: INITIAL_PAGE },
+    enabled: !!convId,
+    staleTime: 30_000,
+  });
+  const initialPage = initialPageSync.data?.[0];
+  const hydratedConversationRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!convId || !initialPage || hydratedConversationRef.current === convId) return;
+    const turns = initialPage.turns ?? [];
+    hydratedConversationRef.current = convId;
+    if (turns.length > 0) {
+      oldestLoadedSeqRef.current = turns[0].seq;
+      newestLoadedSeqRef.current = turns[turns.length - 1].seq;
+      setHasMoreEarlier(initialPage.hasMoreEarlier);
+      dispatch({
+        type: 'replace_messages',
+        messages: turns.map((t) => ({
+          role: t.role,
+          content: t.text,
+          id: typeof t.id === 'string' ? t.id : undefined,
+          seq: typeof t.seq === 'number' ? t.seq : undefined,
+          tools: Array.isArray(t.tools) ? t.tools : undefined,
+        })),
+        lastTurnAtMs: turns[turns.length - 1].createdAt ?? 0,
+      });
+    } else {
+      oldestLoadedSeqRef.current = null;
+      newestLoadedSeqRef.current = null;
+      setHasMoreEarlier(false);
+      dispatch({ type: 'replace_messages', messages: [] });
+    }
+    hydratedRef.current = true;
+  }, [convId, initialPage]);
+
+  const [olderBeforeSeq, setOlderBeforeSeq] = useState<number | null>(null);
+  const olderPageSync = useSyncQuery<TurnPage>({
+    queryName: 'operatorTurns.page',
+    args: { conversationId: convId ?? '', beforeSeq: olderBeforeSeq ?? 0, limit: PAGE_SIZE },
+    enabled: !!convId && olderBeforeSeq !== null,
+    staleTime: 60_000,
+  });
+  const consumedOlderPageRef = useRef<string | null>(null);
+  useEffect(() => {
+    const page = olderPageSync.data?.[0];
+    if (!page || olderBeforeSeq === null || !convId) return;
+    const key = `${convId}:${olderBeforeSeq}`;
+    if (consumedOlderPageRef.current === key) return;
+    consumedOlderPageRef.current = key;
+    if (page.turns.length === 0) {
+      setHasMoreEarlier(false);
+    } else {
       oldestLoadedSeqRef.current = page.turns[0].seq;
       setHasMoreEarlier(page.hasMoreEarlier);
       dispatch({
@@ -915,11 +894,15 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           tools: Array.isArray(t.tools) ? t.tools : undefined,
         })),
       });
-    } catch {
-      /* swallow — chat is still functional with the rows already loaded */
-    } finally {
-      setLoadingEarlier(false);
     }
+    setOlderBeforeSeq(null);
+    setLoadingEarlier(false);
+  }, [convId, olderBeforeSeq, olderPageSync.data]);
+
+  const loadEarlier = useCallback(async (): Promise<void> => {
+    if (!conversationIdRef.current || loadingEarlier || oldestLoadedSeqRef.current === null || !hasMoreEarlier) return;
+    setLoadingEarlier(true);
+    setOlderBeforeSeq(oldestLoadedSeqRef.current);
   }, [hasMoreEarlier, loadingEarlier]);
 
   // Cross-tab live tail. Subscribe to the most-recent N turns; the

@@ -1043,6 +1043,11 @@ export async function pgHealth(): Promise<PgHealth> {
     idle: number;
     server_wide: number;
     max_conn: number;
+    // P-008 (mcp-reliability-hardening): the postmaster boot time, epoch SECONDS
+    // (float8 so postgres.js returns a JS number, not a numeric string). A CHANGE
+    // in this value across health ticks means PG was restarted — every backend
+    // connection was dropped. The infra-liveness alarm watches it for drift.
+    postmaster_start_epoch: number | null;
   };
   const rows = (await sql`
     SELECT
@@ -1051,7 +1056,8 @@ export async function pgHealth(): Promise<PgHealth> {
       count(*) FILTER (WHERE datname = current_database() AND state = 'active')::int AS active,
       count(*) FILTER (WHERE datname = current_database() AND state = 'idle')::int AS idle,
       count(*)::int AS server_wide,
-      current_setting('max_connections')::int AS max_conn
+      current_setting('max_connections')::int AS max_conn,
+      extract(epoch from pg_postmaster_start_time())::float8 AS postmaster_start_epoch
     FROM pg_stat_activity
   `) as Row[];
   const r = rows[0];
@@ -1074,6 +1080,8 @@ export async function pgHealth(): Promise<PgHealth> {
     serverWideConnections: serverWide,
     saturationPct: maxConnections > 0 ? Math.round((serverWide / maxConnections) * 1000) / 10 : 0,
     byApplication: apps.map((a) => ({ name: a.name, count: a.count })),
+    postmasterStartMs:
+      r?.postmaster_start_epoch != null ? Math.round(r.postmaster_start_epoch * 1000) : null,
   };
 }
 

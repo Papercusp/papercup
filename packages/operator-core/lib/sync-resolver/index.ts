@@ -4157,7 +4157,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       ]);
       const { sql } = getOrgPg();
       const ws = workspaceId ?? activeWorkspaceId();
-      return planSlug
+      const rows = await (planSlug
         ? sql`SELECT val_id, plan_slug, item_id, verify_text, status, requires_test
               FROM harness_shared.harness_plan_assertions
              WHERE workspace_id = ${ws} AND harness_slug = ${harnessSlug} AND plan_slug = ${planSlug}
@@ -4165,7 +4165,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         : sql`SELECT val_id, plan_slug, item_id, verify_text, status, requires_test
               FROM harness_shared.harness_plan_assertions
              WHERE workspace_id = ${ws} AND harness_slug = ${harnessSlug}
-             ORDER BY val_id`;
+             ORDER BY val_id`);
+      return [...rows] as unknown[];
     },
   },
 
