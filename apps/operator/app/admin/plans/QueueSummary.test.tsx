@@ -17,6 +17,18 @@ vi.mock('@papercusp/sync', () => ({
 
 import QueueSummary from './QueueSummary';
 
+// The Queen/brain term renders via the lexicon (t('brain')) as its own node, so
+// "{N} handled by the Queen" is split across text nodes and a flat getByText()
+// can't match it. Assert on the strip element's full textContent instead — this
+// is split-agnostic (works whether the lexicon term is a string or an element)
+// and still verifies the exact rendered label.
+const handledBadge = (full: string) =>
+  screen.getByText(
+    (_content, el) =>
+      el?.classList.contains('pc-queue__summary-queen') === true &&
+      el?.textContent?.replace(/\s+/g, ' ').trim() === full,
+  );
+
 beforeEach(() => {
   syncResult = { data: [] };
 });
@@ -32,20 +44,20 @@ describe('QueueSummary (queue-authorization-redesign P-006/B1)', () => {
     syncResult = { data: [] };
     render(<QueueSummary waitingOnYou={0} />);
     expect(screen.getByText('0 waiting on you')).toBeTruthy();
-    expect(screen.getByText('0 handled by the Queen')).toBeTruthy();
+    expect(handledBadge('0 handled by the Queen')).toBeTruthy();
   });
 
   it('counts the disposition rows the ledger returns', () => {
     syncResult = { data: [{ id: 1 }, { id: 2 }, { id: 3 }] };
     render(<QueueSummary waitingOnYou={1} />);
-    expect(screen.getByText('3 handled by the Queen')).toBeTruthy();
+    expect(handledBadge('3 handled by the Queen')).toBeTruthy();
   });
 
   it('caps the handled count at HANDLED_CAP with a "100+" label', () => {
     // The hook is capped at limit:100; a full page reads as the cap → "100+".
     syncResult = { data: Array.from({ length: 100 }, (_, i) => ({ id: i })) };
     render(<QueueSummary waitingOnYou={7} />);
-    expect(screen.getByText('100+ handled by the Queen')).toBeTruthy();
+    expect(handledBadge('100+ handled by the Queen')).toBeTruthy();
   });
 
   it('renders the separator between the two halves', () => {

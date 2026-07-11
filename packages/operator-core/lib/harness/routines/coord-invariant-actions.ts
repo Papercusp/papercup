@@ -741,6 +741,12 @@ export function evaluateInvariants(snap: InvariantSnapshot, t: InvariantThreshol
   // checks above) because this class has already once taken the whole drain
   // down, not just left debris.
   const furnaces = snap.coordLogFurnaces.filter((f) => {
+    // EI-9506: a backup/maintenance dump (pg_dump `COPY ... TO stdout`) reads the
+    // whole table BY DESIGN — it is never an application furnace to bound. Exclude
+    // it BEFORE any threshold leg: the rows/call leg below is immune to EI-9420's
+    // min_exec suppression, so a full-table dump (~100k rows/call) would otherwise
+    // flag as an unbounded scan forever with nothing to fix.
+    if (isBackupOrMaintenanceStatement(f.queryPreview)) return false;
     // The rows/call leg stands on its own — a query that habitually returns a
     // huge row count IS the WI-3937 class regardless of how fast any one call
     // runs (see the "fires on rows/call alone" test).
@@ -892,6 +898,13 @@ export async function gatherCoordLogFurnaceStatements(
     FROM pg_stat_statements
     WHERE query ILIKE '%coord_event_log%'
       AND calls > 0
+      -- EI-9506: exclude backup/maintenance dumps (a pg_dump-style COPY ... TO
+      -- stdout). A full-table dump is not an application read pattern, so it must
+      -- neither be judged a furnace nor consume a top-N diagnostic slot (which,
+      -- ranked by rows/call DESC, it always would -- ~100k rows/call outranks every
+      -- real query, masking a genuine furnace at rank 11+). evaluateInvariants
+      -- excludes it too, via isBackupOrMaintenanceStatement, as defense-in-depth.
+      AND query NOT ILIKE 'COPY %'
     ORDER BY (rows::float8 / GREATEST(calls, 1)) DESC
     LIMIT ${limit}
   `;

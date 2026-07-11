@@ -14,6 +14,7 @@ import {
   breachDisposition,
   runProbeCycle,
   evaluateInvariants,
+  isBackupOrMaintenanceStatement,
   planStaleHandoffAccepts,
   planSharedHiveCapture,
   planClaimIntegrityAlarms,
@@ -431,6 +432,59 @@ describe('evaluateInvariants', () => {
       const violations = evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW);
       expect(violations).toHaveLength(1);
       expect(violations[0].title).toBe('coord invariant: unbounded coord_event_log read pattern (furnace class)');
+    });
+
+    it('EI-9506: a backup/maintenance COPY dump is NOT judged a furnace (rows/call leg exempt)', () => {
+      // Live-verified shape (2026-07-11, EI-9506): a pg_dump-style full-table
+      // `COPY ... TO stdout` returns the WHOLE table (~102k rows/call) every time —
+      // it is a backup, not an application read pattern, so there is nothing to
+      // bound. It trips the rows/call leg (>50k) and, having no fast path, is NOT
+      // rescued by EI-9420's min_exec suppression — so before this fix it fired the
+      // furnace alarm forever with no fixable target.
+      const snap = {
+        ...cleanSnap,
+        coordLogFurnaces: [
+          {
+            queryid: '-6142784371100098654',
+            queryPreview:
+              'COPY harness_shared.coord_event_log (id, surface, writer_key, msg_id, body, ts, workspace_id, harness_slug, origin, author_pubkey, fed_ts, fed_hlc) TO stdout',
+            calls: 1,
+            rowsPerCall: 102_306,
+            meanExecMs: 2733,
+            minExecMs: 2733,
+          },
+        ],
+      };
+      expect(evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW)).toEqual([]);
+    });
+
+    it('EI-9506: a genuine application query with the SAME huge rows/call STILL fires (guard is COPY-specific)', () => {
+      // The exemption must key on the backup STATEMENT KIND, never on "huge rows are
+      // fine" — an app SELECT that habitually returns 100k rows is exactly the
+      // WI-3937 furnace the rows/call leg exists to catch.
+      const snap = {
+        ...cleanSnap,
+        coordLogFurnaces: [
+          {
+            queryid: 'app-full-scan',
+            queryPreview: 'SELECT body FROM harness_shared.coord_event_log WHERE workspace_id = $1 AND surface = $2 ORDER BY id ASC',
+            calls: 285_000,
+            rowsPerCall: 102_306,
+            meanExecMs: 500,
+          },
+        ],
+      };
+      const violations = evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW);
+      expect(violations).toHaveLength(1);
+      expect(violations[0].title).toBe('coord invariant: unbounded coord_event_log read pattern (furnace class)');
+    });
+
+    it('EI-9506: isBackupOrMaintenanceStatement matches COPY (any case / leading whitespace) but not a SELECT', () => {
+      expect(isBackupOrMaintenanceStatement('COPY harness_shared.coord_event_log (...) TO stdout')).toBe(true);
+      expect(isBackupOrMaintenanceStatement('  copy harness_shared.coord_event_log TO stdout')).toBe(true);
+      expect(isBackupOrMaintenanceStatement('SELECT body FROM harness_shared.coord_event_log ORDER BY id ASC')).toBe(false);
+      // Not a false-positive on a query that merely mentions COPY in a string/column.
+      expect(isBackupOrMaintenanceStatement("SELECT body FROM harness_shared.coord_event_log WHERE body->>'kind' = 'copy'")).toBe(false);
     });
 
     it('is a stable dedup title across repeated evaluation (never floods the backlog)', () => {
