@@ -20,7 +20,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve as resolvePath } from 'node:path';
 
-import { resolveAgentBin, resolveBackend } from '@papercusp/papercusp-shared/agent';
+import { resolveBackend } from '@papercusp/papercusp-shared/agent';
 
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
@@ -308,67 +308,86 @@ export async function buildConsoleEnvelope(
   } else if (opts.runPsu && !opts.resumeSessionId && (await getFlag(FLAGS.PSU_END_USER, 'system'))) {
     greetingCmd = 'psu';
   } else if (opts.resumeSessionId) {
-    // resolveBackend/resolveAgentBin take a RunAgentChatOptions with
-    // `promptText` required; we only consume the env-driven branches,
-    // so a stub options object is fine — cast to satisfy the type.
-    const stubOpts = { promptText: '' };
-    const backend = resolveBackend(stubOpts);
-    const bin = resolveAgentBin(stubOpts, backend);
-    // Both `claude` and `omp` accept `-r <session-id>`. The shell
-    // greeting echoes the run id so a stale terminal is identifiable.
     const id = shellSafeId(opts.resumeSessionId);
+    // Resolve THIS session's backend from its OWN adv_sessions row — NOT the
+    // operator's AGENT_CMD/AGENT_BACKEND env. Those env vars describe how the
+    // operator spawns HEADLESS agents and are irrelevant to which CLI a given
+    // recorded session belongs to. TWO owner-hit bugs (2026-07-11, resume+fork
+    // "still failed") both traced to the old env-based resolution:
+    //   1. resolveAgentBin() returned AGENT_CMD VERBATIM — here "claude -p
+    //      [--model haiku]". The "-p" is PRINT / non-interactive mode, so the
+    //      greeting `claude -p … -r <id>` printed once and EXITED — the resumed
+    //      terminal died on the spot (and on the wrong model). An INTERACTIVE
+    //      resume must exec the BARE binary with no -p / automation flags.
+    //   2. a codex/omp session would have resumed under whatever CLI the env
+    //      named rather than its own.
+    const agentToBackend = (
+      agent: string | null | undefined,
+    ): ReturnType<typeof resolveBackend> | null => {
+      switch ((agent ?? '').toLowerCase()) {
+        case 'claude':
+        case 'claude-code':
+          return 'claude-code';
+        case 'omp':
+        case 'pi':
+          return 'omp';
+        case 'codex':
+          return 'codex';
+        default:
+          return null;
+      }
+    };
+    // Fetch the row up-front — it drives BOTH the backend choice and the
+    // CLAUDE_CONFIG_DIR/cwd resolution below.
+    let row: Awaited<ReturnType<typeof advSessionsByTranscriptHandles>>[number] | undefined;
+    try {
+      const rows = await advSessionsByTranscriptHandles({ sessionIds: [opts.resumeSessionId] });
+      row = rows[0];
+    } catch { /* best-effort — fall back to env-derived backend below */ }
+    // The session's OWN agent wins; env is only a fallback when the row is gone.
+    const backend = agentToBackend(row?.agent) ?? resolveBackend({ promptText: '' });
+    // BARE interactive binary for the backend — deliberately NOT resolveAgentBin
+    // (that returns the operator's "-p"/automation-model AGENT_CMD).
+    const bin = backend === 'omp' ? 'omp' : backend === 'codex' ? 'codex' : 'claude';
     // WI-3882: forking a LIVE session must NOT resume it in place — that opens a
     // second CLI on the SAME transcript and collides with the still-running
-    // original. Only claude has a native branch-the-session flag reachable via
-    // this `-r` resume path (`--fork-session` mints a fresh session id and
-    // leaves the original untouched — the exact flag psu-launcher's
-    // resumeArgsFor emits). omp has no fork command, so a fork request there is
-    // refused rather than silently degraded to a colliding plain resume.
+    // original. Only claude has `--fork-session`; omp/codex refuse a fork rather
+    // than silently degrade to a colliding plain resume.
     if (opts.fork && backend !== 'claude-code') {
       throw new Error(
         `cannot fork a ${bin} session: only claude sessions support --fork-session on the console resume path`,
       );
     }
-    // WI-3988/WI-3989: `claude -r <id>` only finds the conversation if it runs
-    // with the SAME CLAUDE_CONFIG_DIR + cwd the original agent used. papercusp
-    // runs each claude agent in a per-session ISOLATION home
-    // (~/.papercusp/session-claude/<owner>, keyed by coord owner id), and the
-    // move-inactive-sessions-to-PG lifecycle ARCHIVES + DELETES an ended
-    // session's on-disk jsonl. A plain `claude -r` against the default ~/.claude
-    // therefore reported "No conversation found with session ID: <id>" and exited
-    // 1 (owner-hit 2026-07-11). Resolve the session's launch context from its
-    // adv_sessions row and point the resume at it, rematerializing the archived
-    // transcript from PG first. All best-effort: on any miss we fall through to a
-    // bare -r (no worse than before).
-    if (backend === 'claude-code') {
+    // WI-3988/WI-3989: `claude -r <id>` only finds the conversation with the SAME
+    // CLAUDE_CONFIG_DIR + cwd the original agent used. papercusp runs each claude
+    // agent in a per-session ISOLATION home (~/.papercusp/session-claude/<owner>,
+    // keyed by coord owner id), and the move-inactive-to-PG lifecycle archives +
+    // deletes an ended session's on-disk jsonl. So point claude at the session's
+    // isolation home + original cwd, rematerializing an archived transcript from
+    // PG first. Best-effort — on any miss we fall through to a bare -r.
+    if (backend === 'claude-code' && row) {
+      // Point claude at the session's isolation config dir so `-r` reads the
+      // right conversation store (not the default ~/.claude).
+      if (row.coordOwnerId) env.CLAUDE_CONFIG_DIR = sessionClaudeConfigDir(row.coordOwnerId);
+      // Land in the session's ORIGINAL project dir — claude scopes resume by cwd.
+      // Only override when it still exists (an ended session's cwd may be gone).
+      if (row.cwd && existsSync(row.cwd)) cwd = row.cwd;
+      // An ENDED session's jsonl was archived + deleted after death — rematerialize
+      // it from PG (session_archives) first. Lazy import: session-archive fails
+      // LOUD at import when zstd is unavailable, so keep that off this module's
+      // load path. A LIVE session isn't archived → rematerialize is a no-op miss.
       try {
-        const rows = await advSessionsByTranscriptHandles({ sessionIds: [opts.resumeSessionId] });
-        const row = rows[0];
-        // Point claude at the session's isolation config dir so `-r` reads the
-        // right conversation store (not the default ~/.claude).
-        if (row?.coordOwnerId) env.CLAUDE_CONFIG_DIR = sessionClaudeConfigDir(row.coordOwnerId);
-        // Land in the session's ORIGINAL project dir — claude scopes resume by
-        // cwd. Only override when it still exists (an ended session's cwd may be
-        // gone); else keep the harness/workspace cwd.
-        if (row?.cwd && existsSync(row.cwd)) cwd = row.cwd;
-        // An ENDED session's jsonl was archived + deleted after death, so `-r`
-        // finds nothing even with the right config dir — rematerialize it from PG
-        // (session_archives) first. Lazy import: session-archive fails LOUD at
-        // import when zstd is unavailable, so keep that off this module's load
-        // path. A LIVE session isn't archived → rematerialize is a no-op miss.
-        try {
-          const { pgSessionArchiveStore, rematerializeSession } = await import('./session-archive');
-          await rematerializeSession(
-            { sourceKind: 'claude', sessionId: opts.resumeSessionId },
-            pgSessionArchiveStore(),
-          );
-        } catch { /* best-effort — nothing to restore / archive unavailable */ }
-      } catch { /* best-effort — fall through to a bare -r */ }
+        const { pgSessionArchiveStore, rematerializeSession } = await import('./session-archive');
+        await rematerializeSession(
+          { sourceKind: 'claude', sessionId: opts.resumeSessionId },
+          pgSessionArchiveStore(),
+        );
+      } catch { /* best-effort — nothing to restore / archive unavailable */ }
     }
-    // Permission mode is per-INVOCATION, not inherited from the resumed
-    // session: a bare `claude -r` lands the user in default ask-per-tool
-    // mode (owner-hit on the Windows app, 2026-07-07). Re-assert the same
-    // frictionless posture psu-launcher's resumeArgsFor/suLaunchArgs use.
+    // Permission mode is per-INVOCATION, not inherited from the resumed session:
+    // a bare `claude -r` lands in default ask-per-tool mode (owner-hit on the
+    // Windows app, 2026-07-07). Re-assert the frictionless posture psu-launcher
+    // uses.
     const bypass =
       backend === 'claude-code'
         ? '--dangerously-skip-permissions --permission-mode bypassPermissions '

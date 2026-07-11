@@ -56,9 +56,17 @@ import { resolveAgentMcpBaseUrl } from '../mcp-base-url';
 /** The default operator url baked as the `${PAPERCUSP_OPERATOR_URL:-…}` fallback.
  *  Only used for a bare `claude` (no psu); psu exports a resolved url. Kept
  *  STATIC (never the dynamic boot port) so the written entry is byte-stable →
- *  the merge stays idempotent across boots. */
-const DEFAULT_OPERATOR_URL_FALLBACK = 'http://localhost:3070';
-const DESKTOP_OPERATOR_URL_FALLBACK = 'http://127.0.0.1:9071';
+ *  the merge stays idempotent across boots.
+ *
+ *  P-007 (mcp-reliability-hardening-2026-07-11): this is now the RESILIENT MCP
+ *  PROXY (:9071), not a bare direct :3070, on EVERY host — desktop AND dev box.
+ *  The proxy fronts :3070 and survives its deploy-restarts (WI-1457), so a bare
+ *  `claude` rides the restart-invisible path by default. A dev-box reconcile with
+ *  neither PAPERCUSP_MCP_PROXY_BASE nor PAPERCUSP_DESKTOP set used to re-bake the
+ *  deploy-fragile direct :3070 here (silently reverting the P-006 cutover minutes
+ *  after every manual re-point); defaulting to the proxy port closes that class.
+ *  An explicit PAPERCUSP_MCP_PROXY_BASE still overrides (resolveAgentMcpBaseUrl). */
+const DEFAULT_OPERATOR_URL_FALLBACK = 'http://127.0.0.1:9071';
 
 export interface ClaudeIntegrationOptions {
   /** Override ~/. Tests pass this. Defaults to os.homedir(). */

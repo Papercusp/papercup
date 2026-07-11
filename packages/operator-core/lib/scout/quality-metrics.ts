@@ -34,7 +34,8 @@ import type { RoutedIdeaProvenance, LensOutcomeReport, LensWeightOptions } from 
 import { gatherLensOutcomes } from './outcome-feedback';
 import type { ScoutTickRecord } from './tick-ledger';
 import type { ScoutLedgerOpts } from './routed-ledger';
-import { CREATIVE_LENSES, type CreativeLens } from './types';
+import { CREATIVE_LENSES, type CreativeLens, SU_IDEATION_LENSES, type SuIdeationLens } from './types';
+import { computeNoveltyGainReport, mapProvenanceToNoveltyRow } from './novelty-metrics';
 
 // ── pure core: the report ─────────────────────────────────────────────────────
 
@@ -47,18 +48,23 @@ import { CREATIVE_LENSES, type CreativeLens } from './types';
  */
 export const SCOUT_TICK_GATES = ['min-interval', 'no-trigger', 'circuit', 'claim-lost'] as const;
 
-/** Injected snapshots the pure core folds — production via {@link buildQualityReportInputs}, tests via fixtures. */
-export interface ScoutQualityInputs {
+/**
+ * Injected snapshots the pure core folds — production via {@link buildQualityReportInputs},
+ * tests via fixtures. Generic over the lens roster `L` (su-ideate-learning-substrate P-013):
+ * default {@link CreativeLens} keeps the Scout path byte-identical; the su-ideate partition
+ * folds over {@link SuIdeationLens}.
+ */
+export interface ScoutQualityInputs<L extends string = CreativeLens> {
   /** Tick-ledger window snapshot (readScoutTicks rows; ScoutTickRecord is the load-bearing subset). */
   ticks: readonly ScoutTickRecord[];
   /** Routed-idea ledger snapshot (readRoutedIdeas). */
   routedIdeas: readonly RoutedIdeaProvenance[];
-  /** The per-lens outcome report (gatherLensOutcomes / getScoutLensOutcomes). */
-  lensOutcomes: LensOutcomeReport;
+  /** The per-lens outcome report (gatherLensOutcomes / getScoutLensOutcomes) over the roster `L`. */
+  lensOutcomes: LensOutcomeReport<L>;
 }
 
 /** The standing quality report — every rate is null (never NaN) when its denominator is zero. */
-export interface ScoutQualityReport {
+export interface ScoutQualityReport<L extends string = CreativeLens> {
   /** Full cycles in the tick window (status 'ran'). */
   windowCycles: number;
   /** All ticks in the window (ran + gated + error). */
@@ -82,9 +88,17 @@ export interface ScoutQualityReport {
   /** accepted / totalIdeasGenerated — how many raw ideas actually ship; null when none generated. */
   ideaToShippedConversion: number | null;
   /** Per-lens win rate over decided outcomes (outcome-feedback's winRate); null when undecided. */
-  perLensWinRates: Record<CreativeLens, number | null>;
+  perLensWinRates: Record<L, number | null>;
   /** totalSpendUsd / accepted; null when nothing accepted (zero-division guard). */
   costPerAcceptedIdeaUsd: number | null;
+  /**
+   * Fraction of routed ideas flagged near-duplicate at routing time — the reused
+   * {@link computeNoveltyGainReport} dedup-rate (P-013). Present ONLY on the su-ideate
+   * partition (opt-in `includeDedupRate`, so the Scout report stays byte-identical);
+   * null until an idea-level duplicate flag is threaded onto the ledger read (the
+   * novelty-metrics "shape live, value null until the input lands" convention).
+   */
+  dedupRate?: number | null;
 }
 
 /**
@@ -92,8 +106,17 @@ export interface ScoutQualityReport {
  * deterministic over the inputs, no IO. Acceptance comes from the lens-outcome
  * report (won = accepted, lost = rejected — the change-feed classification);
  * volume + spend come from the tick window; the routed total from the ledger.
+ *
+ * `opts.lenses` (default {@link CREATIVE_LENSES}) picks the roster the perLensWinRates
+ * span — the su-ideate partition passes {@link SU_IDEATION_LENSES} (P-013). `opts.includeDedupRate`
+ * folds in the reused novelty-metrics dedup-rate; it is opt-in so the Scout call
+ * (`computeScoutQualityReport(inputs)`) emits NO `dedupRate` key and stays byte-identical.
  */
-export function computeScoutQualityReport(inputs: ScoutQualityInputs): ScoutQualityReport {
+export function computeScoutQualityReport<L extends string = CreativeLens>(
+  inputs: ScoutQualityInputs<L>,
+  opts: { lenses?: readonly L[]; includeDedupRate?: boolean } = {},
+): ScoutQualityReport<L> {
+  const lenses = opts.lenses ?? (CREATIVE_LENSES as readonly string[] as readonly L[]);
   let windowCycles = 0;
   let errorTicks = 0;
   let totalIdeasGenerated = 0;
@@ -120,8 +143,8 @@ export function computeScoutQualityReport(inputs: ScoutQualityInputs): ScoutQual
   let accepted = 0;
   let rejected = 0;
   let pending = 0;
-  const perLensWinRates = {} as Record<CreativeLens, number | null>;
-  for (const lens of CREATIVE_LENSES) {
+  const perLensWinRates = {} as Record<L, number | null>;
+  for (const lens of lenses) {
     const s = inputs.lensOutcomes.byLens[lens];
     perLensWinRates[lens] = s?.winRate ?? null;
     if (!s) continue;
@@ -146,7 +169,22 @@ export function computeScoutQualityReport(inputs: ScoutQualityInputs): ScoutQual
     ideaToShippedConversion: totalIdeasGenerated > 0 ? accepted / totalIdeasGenerated : null,
     perLensWinRates,
     costPerAcceptedIdeaUsd: accepted > 0 ? totalSpendUsd / accepted : null,
+    ...(opts.includeDedupRate ? { dedupRate: suIdeationDedupRate(inputs.routedIdeas) } : {}),
   };
+}
+
+/**
+ * Reuse the novelty-metrics dedup fold over the routed-idea snapshot: the fraction of
+ * ideas flagged near-duplicate of the existing corpus at routing time. Runs
+ * {@link computeNoveltyGainReport} with no elites (only the dedup leg is read). Null
+ * until a per-idea duplicate flag is threaded onto the ledger read — the novelty-metrics
+ * convention (the report shape is live; the value lights up when the input lands).
+ */
+function suIdeationDedupRate(routedIdeas: readonly RoutedIdeaProvenance[]): number | null {
+  return computeNoveltyGainReport({
+    elites: [],
+    ideas: routedIdeas.map(mapProvenanceToNoveltyRow),
+  }).dedupRate;
 }
 
 // ── pure core: degradation ────────────────────────────────────────────────────

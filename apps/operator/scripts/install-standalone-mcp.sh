@@ -76,7 +76,25 @@ if [ "$MINT_ENV_AUTHORITATIVE" = "0" ] && [ "${PAPERCUSP_MCP_PROXY:-1}" != "0" ]
     echo "  (inherited PAPERCUSP_OPERATOR_URL=${PAPERCUSP_OPERATOR_URL} is the plain direct default — not baked into durable config)"
   fi
 else
-  OPERATOR_URL="${PAPERCUSP_OPERATOR_URL:-http://localhost:3070}"
+  # P-007 (mcp-reliability-hardening-2026-07-11): the resilient MCP proxy is the
+  # DEFAULT fallback — never a bare direct :3070. The else branch is reached in
+  # three sub-cases; keep them distinct so a transient proxy-inactive at mint time
+  # can no longer silently bake the deploy-fragile direct default (the exact
+  # WI-1457 / P-006-cutover regression the block above warns about):
+  #   (A) an explicit NON-default PAPERCUSP_OPERATOR_URL  → honour it verbatim;
+  #   (B) an explicit proxy opt-out (PAPERCUSP_MCP_PROXY=0) → direct :3070 by design;
+  #   (C) the proxy systemd unit is merely inactive right now → STILL mint against
+  #       the proxy port (:9071). The proxy is the always-up resilient front; if it
+  #       is momentarily down the per-launch env (resolveOperatorUrl) overrides, and
+  #       baking a direct :3070 fallback here is the permanent regression, not a fix.
+  if [ "$MINT_ENV_AUTHORITATIVE" = "1" ]; then
+    OPERATOR_URL="${PAPERCUSP_OPERATOR_URL}"                 # (A) explicit override wins
+  elif [ "${PAPERCUSP_MCP_PROXY:-1}" = "0" ]; then
+    OPERATOR_URL="http://localhost:3070"                     # (B) explicit opt-out → direct
+  else
+    OPERATOR_URL="http://127.0.0.1:${MCP_PROXY_PORT}"        # (C) proxy is the resilient default
+    echo "→ Resilient MCP proxy unit not active right now — minting configs against its default port :${MCP_PROXY_PORT} anyway (WI-1457/P-007: a direct :3070 fallback is the regression, not a fix)"
+  fi
 fi
 TOKEN_PATH="${HOME}/.papercusp/superuser-token"
 
