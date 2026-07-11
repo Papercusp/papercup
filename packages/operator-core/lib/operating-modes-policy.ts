@@ -247,8 +247,11 @@ session** and carries **across turns AND topics**, until the owner says **"exit 
   converging on the same corner.
 - **Close each su pass as a ledgered LOOP, not a blank-page start — the same Scout rails, su-shaped.**
   The grounding read above (\`blender:ideation-feedback\`) already hands back your prior grades, the
-  realized OUTCOMES on what you filed, per-lens WIN-RATES, and the federated frontier — so run the
-  pass under one lens, then: **file each idea lens-tagged**, adding a \`bet\` / \`cheapExperiment\`
+  realized OUTCOMES on what you filed, per-lens WIN-RATES, and the federated frontier — open it
+  \`{ scope: 'mine', intent: '<your pass focus>' }\`: \`scope\` folds in \`observationsImpact\` (which
+  of YOUR observations surfaced as digest patterns and grounded routed ideas — your filings visibly
+  becoming consequence), and \`intent\` re-ranks the priming by relevance to this pass instead of
+  newest-first. Run the pass under one lens, then: **file each idea lens-tagged**, adding a \`bet\` / \`cheapExperiment\`
   when it is a real bet; **route the broad ones onward** with \`blender:route-idea\` (the plan rail);
   and **close the pass** with \`blender:ideate-pass-record\` so it lands as a measurable su-ideate
   tick, not a lost turn. And when you \`blender:grade-idea\` an su-filed idea, a low grade + feedback

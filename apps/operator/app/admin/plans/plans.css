@@ -586,6 +586,132 @@
   box-shadow: 0 0 0 2px color-mix(in oklab, #f472b6, transparent 58%);
 }
 
+/* Create dock: Conversations-style compact view rail. The shared PlansClient
+   keeps its existing horizontal controls; these selectors are deliberately
+   scoped to create:filter so this remains a visual-only change to Create. */
+.pc-plans__rail.pc-create-plans-sidebar {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  height: 100%;
+  overflow: hidden;
+}
+
+.pc-create-plans-sidebar__view-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 0;
+  padding: 10px 8px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border-right: 1px solid var(--pc-plans-border);
+  background: color-mix(in srgb, var(--bg-deeper), transparent 24%);
+}
+
+.pc-create-plans-sidebar__browser {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.pc-create-plans-sidebar__new-plan-action {
+  flex: 0 0 auto;
+}
+
+.pc-create-plans-sidebar__view-btn.pc-plans__plans-btn {
+  --pc-create-view-accent: #22c55e;
+}
+
+.pc-create-plans-sidebar__view-btn.pc-plans__queue-btn {
+  --pc-create-view-accent: #f87171;
+}
+
+.pc-create-plans-sidebar__view-btn.pc-plans__sessions-btn {
+  --pc-create-view-accent: #f472b6;
+}
+
+.pc-create-plans-sidebar__view-btn.pc-plans__plans-btn,
+.pc-create-plans-sidebar__view-btn.pc-plans__queue-btn,
+.pc-create-plans-sidebar__view-btn.pc-plans__sessions-btn {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 40px;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  min-height: 40px;
+  gap: 0;
+  overflow: hidden;
+  padding: 5px;
+  border: 1px solid color-mix(in srgb, var(--pc-plans-border), transparent 28%);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-2, rgba(255, 255, 255, 0.045)), transparent 36%);
+  color: var(--pc-plans-fg);
+  box-shadow: none;
+  transition: none;
+}
+
+.pc-create-plans-sidebar__view-icon {
+  display: inline-flex;
+  flex: 0 0 28px;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid color-mix(in oklab, var(--pc-create-view-accent), transparent 72%);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--pc-create-view-accent), transparent 86%);
+  color: var(--pc-create-view-accent);
+}
+
+.pc-create-plans-sidebar__view-btn.pc-plans__plans-btn:hover,
+.pc-create-plans-sidebar__view-btn.pc-plans__queue-btn:hover,
+.pc-create-plans-sidebar__view-btn.pc-plans__sessions-btn:hover {
+  border-color: color-mix(in oklab, var(--pc-create-view-accent), transparent 58%);
+  background: color-mix(in oklab, var(--pc-create-view-accent), transparent 90%);
+  color: var(--pc-plans-fg-strong);
+}
+
+.pc-create-plans-sidebar__view-btn.pc-plans__plans-btn.is-active,
+.pc-create-plans-sidebar__view-btn.pc-plans__queue-btn.is-active,
+.pc-create-plans-sidebar__view-btn.pc-plans__sessions-btn.is-active {
+  border-color: color-mix(in oklab, var(--pc-create-view-accent), transparent 44%);
+  background: color-mix(in oklab, var(--pc-create-view-accent), transparent 84%);
+  color: var(--pc-plans-fg-strong);
+  box-shadow: none;
+}
+
+.pc-create-plans-sidebar__view-btn.is-active::before {
+  content: '';
+  position: absolute;
+  inset: 7px auto 7px 0;
+  width: 3px;
+  border-radius: 0 999px 999px 0;
+  background: var(--pc-create-view-accent);
+}
+
+.pc-create-plans-sidebar__view-btn.pc-plans__plans-btn.is-active::after,
+.pc-create-plans-sidebar__view-btn.pc-plans__queue-btn.is-active::after,
+.pc-create-plans-sidebar__view-btn.pc-plans__sessions-btn.is-active::after {
+  content: none;
+}
+
+.pc-create-plans-sidebar__view-btn.is-active .pc-create-plans-sidebar__view-icon {
+  border-color: color-mix(in oklab, var(--pc-create-view-accent), transparent 48%);
+  background: color-mix(in oklab, var(--pc-create-view-accent), transparent 72%);
+}
+
+.pc-create-plans-sidebar__view-btn:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--pc-create-view-accent), white 24%);
+  outline-offset: 2px;
+}
+
 /* ── Shared "selected ✓" badge ───────────────────────────────────────────
    A single, high-visibility checkmark on the RIGHT of every active filter
    button — inbox facets, quick date chips, quick toggles, and the Plans /

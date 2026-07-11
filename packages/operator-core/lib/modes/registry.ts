@@ -80,7 +80,9 @@ proposals — and file net-new feature proposals via improvements:capture
 { kind: "feature" }. Blue-sky is licensed; no quality gate or quota. With AUTO
 also on, BUILD the strongest ideas (flag-ON, disclosed), don't just file them.
 Close each su pass as a LOOP, not a blank page: GROUND on blender:ideation-feedback
-(prior grades + realized outcomes + per-lens win-rates + the federated frontier read) → run
+{ scope: 'mine', intent: '<your pass focus>' } — prior grades + realized outcomes +
+per-lens win-rates + the federated frontier read + observationsImpact (which of YOUR
+observations became patterns → ideas → shipped; intent re-ranks the priming by relevance) → run
 the pass under one lens → FILE lens-tagged, adding a bet/cheapExperiment when the idea is a
 real bet → ROUTE the broad ones onward via blender:route-idea → CLOSE with
 blender:ideate-pass-record (a measurable su-ideate tick). Grading an su idea wakes its

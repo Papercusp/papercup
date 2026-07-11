@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
 // PlansListPanel — the create:filter sidebar. Real logic: the New-plan launch
-// (launchAgent → toast success/error/install branches), the 5 view buttons
+// (launchAgent → toast success/error/install branches), the 3 view buttons
 // (set ?view), the harness filter select (shown only with >1 harness option),
 // and onSelectPlan's view-dependent behaviour (Plans view → ?plan; other views
 // → toggle the ?itemPlans filter). The data hooks (use-create-data /
@@ -123,6 +123,25 @@ describe('PlansListPanel — view buttons', () => {
     expect(setters.view).toHaveBeenCalledWith('queue');
     fireEvent.click(screen.getByRole('button', { name: /Sessions/i }));
     expect(setters.view).toHaveBeenCalledWith('sessions');
+  });
+
+  it('renders the view controls as an icon-only left rail without moving New plan', () => {
+    render(<PlansListPanel />);
+    const rail = screen.getByRole('navigation', { name: 'Create view' });
+    const plans = screen.getByRole('button', { name: 'Plans' });
+    const queue = screen.getByRole('button', { name: 'Queue' });
+    const sessions = screen.getByRole('button', { name: 'Sessions' });
+
+    expect(rail.classList.contains('pc-create-plans-sidebar__view-rail')).toBe(true);
+    for (const button of [plans, queue, sessions]) {
+      expect(rail.contains(button)).toBe(true);
+      expect(button.classList.contains('pc-create-plans-sidebar__view-btn')).toBe(true);
+      expect(button.textContent).toBe('');
+      expect(button.querySelector('svg')).toBeTruthy();
+    }
+    expect(plans.classList.contains('is-active')).toBe(true);
+    expect(queue.classList.contains('is-active')).toBe(false);
+    expect(rail.contains(screen.getByRole('button', { name: /New plan/i }))).toBe(false);
   });
 });
 

@@ -411,14 +411,14 @@ export async function runIdeationFeedback(
 export default defineTool({
   name: 'blender:ideation-feedback',
   description:
-    "Your IDEATE-pass read of your OWN past proposals: the owner/Mug grades + critiques on features you filed (improvements:capture kind:'feature') as a grader-feedback priming block, PLUS each filing's real-world outcome (outcomes[]: won / lost / pending from the routed artifact's fate — resolved ⇒ won, deprecated ⇒ lost) with a summary roll-up, PLUS lensWinRates[] — per-ideation-lens win-rates with a floored sampling weight, so you can lean into the stances that land without abandoning the rest. On a FEDERATED workspace it also folds `federated` — nearby foreign elites, the most-crowded niches, and this hive's empty-frontier slice from the shared gym-QD archive (omitted on a control-arm or non-federated workspace). Read-only; su-ideate origin only — never touches Blender's lens-weight learning.",
+    "Your IDEATE-pass read of your OWN past proposals: the owner/Mug grades + critiques on features you filed (improvements:capture kind:'feature') as a grader-feedback priming block, PLUS each filing's real-world outcome (outcomes[]: won / lost / pending from the routed artifact's fate — resolved ⇒ won, deprecated ⇒ lost) with a summary roll-up, PLUS lensWinRates[] — per-ideation-lens win-rates with a floored sampling weight, so you can lean into the stances that land without abandoning the rest. Open every pass { scope:'mine', intent:'<your pass focus>' }: scope:'mine' also folds observationsImpact — your 7d lane:observation filings, which corpus-digest meta-patterns cite them, and which routed ideas ground on those patterns (your filings visibly becoming pattern → idea → shipped); `intent` re-ranks grades+outcomes by semantic relevance to this pass instead of newest-first (fail-open to newest-first). On a FEDERATED workspace it also folds `federated` — nearby foreign elites, the most-crowded niches, and this hive's empty-frontier slice from the shared gym-QD archive (omitted on a control-arm or non-federated workspace). Read-only; su-ideate origin only — never touches Blender's lens-weight learning.",
   capability: 'curation:read',
   guidance: {
     when: 'Opening an IDEATE-mode grounding pre-pass — pull this to see how your past feature proposals were graded AND how they actually fared (shipped, deprecated, still pending), so the pass builds on what landed / what the grader flagged rather than starting cold. Pairs with curation:state-of-pot + rubrics:list + scorecards:freshness as the IDEATE grounding reads.',
     notWhen:
       "Grading an idea — that is blender:grade-idea. Reading Blender's OWN lens-routed ideas or lens weights — a different, lens-learning surface; this returns your su-ORIGINATED ideas only.",
     chaining:
-      'curation:state-of-pot + rubrics:list + scorecards:freshness + blender:ideation-feedback → your IDEATE pass, grounded.',
+      "curation:state-of-pot + rubrics:list + scorecards:freshness + blender:ideation-feedback { scope:'mine', intent } → your IDEATE pass, grounded → improvements:capture { ideation:{lens} } → blender:route-idea → blender:ideate-pass-record.",
     seeAlso: [
       'blender:grade-idea (record a grade on a routed idea)',
       'improvements:capture (file a kind:"feature" — it becomes a su-ideate ledger row)',

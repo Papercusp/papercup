@@ -128,9 +128,44 @@ export default function PlansListPanel(_props?: PanelComponentProps) {
   const selectedSlugs = view === 'plans' ? (plan ? [plan] : []) : itemPlans;
 
   return (
-    <div className="pc-plans__rail" style={{ height: '100%', overflow: 'auto' }}>
-      {/* New plan + the 3 view buttons — above the plan list, exactly as before. */}
-      <div className="pc-plans__rail-actions">
+    <div className="pc-plans__rail pc-create-plans-sidebar">
+      <nav className="pc-create-plans-sidebar__view-rail" aria-label="Create view">
+        <Tooltip label="Plans — open a plan from the list to view/edit it full-width."><button
+          type="button"
+          aria-label="Plans"
+          className={`pc-plans__plans-btn pc-create-plans-sidebar__view-btn${view === 'plans' ? ' is-active' : ''}`}
+          onClick={() => void setView('plans')}
+        >
+          <span className="pc-create-plans-sidebar__view-icon" aria-hidden>
+            <ClipboardList size={14} />
+          </span>
+        </button></Tooltip>
+        <Tooltip label={`Queue — every decision & action surface across plans the ${t('brain')} did not auto-handle (list + detail).`}><button
+          type="button"
+          aria-label="Queue"
+          className={`pc-plans__queue-btn pc-create-plans-sidebar__view-btn${view === 'queue' ? ' is-active' : ''}`}
+          onClick={() => void setView('queue')}
+        >
+          <span className="pc-create-plans-sidebar__view-icon" aria-hidden>
+            <Inbox size={14} />
+          </span>
+        </button></Tooltip>
+        <Tooltip label="Sessions — live agent roster (list + detail)."><button
+          type="button"
+          aria-label="Sessions"
+          className={`pc-plans__sessions-btn pc-create-plans-sidebar__view-btn${view === 'sessions' ? ' is-active' : ''}`}
+          onClick={() => void setView('sessions')}
+        >
+          <span className="pc-create-plans-sidebar__view-icon" aria-hidden>
+            <Terminal size={14} />
+          </span>
+        </button></Tooltip>
+      </nav>
+
+      <div className="pc-create-plans-sidebar__browser">
+        {/* New-plan stays in the plan browser; only the three view controls move
+            into the compact rail. */}
+        <div className="pc-plans__rail-actions pc-create-plans-sidebar__new-plan-action">
         <Tooltip label={resolvedSlug
               ? `Launch an agent session to draft a new plan in ${resolvedSlug}`
               : `Launch an agent session to draft a new plan (no active ${t('pot', { lower: true })} — agent will ask)`}><button
@@ -143,73 +178,45 @@ export default function PlansListPanel(_props?: PanelComponentProps) {
           <Plus size={14} aria-hidden />
           {launching ? 'Launching…' : 'New'}
         </button></Tooltip>
-        <Tooltip label="Plans — open a plan from the list to view/edit it full-width."><button
-          type="button"
-          className={`pc-plans__plans-btn${view === 'plans' ? ' is-active' : ''}`}
-          onClick={() => void setView('plans')}
+        </div>
 
-        >
-          <ClipboardList size={14} aria-hidden />
-          Plans
-        </button></Tooltip>
-        <Tooltip label={`Queue — every decision & action surface across plans the ${t('brain')} did not auto-handle (list + detail).`}><button
-          type="button"
-          className={`pc-plans__queue-btn${view === 'queue' ? ' is-active' : ''}`}
-          onClick={() => void setView('queue')}
+        <div className="pc-plans__group">
+          {maps.harnessOptions.length > 1 ? (
+            <div className="pc-plans__harness-filter">
+              <label className="pc-plans__harness-filter-label" htmlFor="pc-create-harness-filter">
+                {t('pot')}
+              </label>
+              <Select
+                id="pc-create-harness-filter"
+                triggerClassName="pc-plans__harness-filter-select"
+                value={harnessFilter ?? ''}
+                onChange={(value) => void setHarnessFilter(value === '_all' ? null : value)}
+                ariaLabel={`Filter plans by ${t('pot', { lower: true })}`}
+                options={[
+                  { value: '_all', label: `All (${maps.planList.data?.plans.length ?? 0})` },
+                  ...maps.harnessOptions.map((h) => {
+                    const count = (maps.planList.data?.plans ?? []).filter((p) => p.harness === h).length;
+                    return { value: h, label: `${h} (${count})` };
+                  }),
+                ]}
+              />
+            </div>
+          ) : null}
 
-        >
-          <Inbox size={14} aria-hidden />
-          <span className="pc-plans__queue-btn-label">Queue</span>
-        </button></Tooltip>
-        <Tooltip label="Sessions — live agent roster (list + detail)."><button
-          type="button"
-          className={`pc-plans__sessions-btn${view === 'sessions' ? ' is-active' : ''}`}
-          onClick={() => void setView('sessions')}
+          <PlanFilters list={filteredPlanList} query={q} onQueryChange={setQ} searchRef={searchRef} />
+          <PlanBucketTabs plans={maps.visiblePlans} query={debouncedQ} searchHitSlugs={searchHitSlugs} />
+        </div>
 
-        >
-          <Terminal size={14} aria-hidden />
-          <span className="pc-plans__queue-btn-label">Sessions</span>
-        </button></Tooltip>
-        {/* Observations moved to the /adv Signals tab (owner ask 2026-07-11) — no
-            longer a Create-dock view. */}
-      </div>
-
-      <div className="pc-plans__group">
-        {maps.harnessOptions.length > 1 ? (
-          <div className="pc-plans__harness-filter">
-            <label className="pc-plans__harness-filter-label" htmlFor="pc-create-harness-filter">
-              {t('pot')}
-            </label>
-            <Select
-              id="pc-create-harness-filter"
-              triggerClassName="pc-plans__harness-filter-select"
-              value={harnessFilter ?? ''}
-              onChange={(value) => void setHarnessFilter(value === '_all' ? null : value)}
-              ariaLabel={`Filter plans by ${t('pot', { lower: true })}`}
-              options={[
-                { value: '_all', label: `All (${maps.planList.data?.plans.length ?? 0})` },
-                ...maps.harnessOptions.map((h) => {
-                  const count = (maps.planList.data?.plans ?? []).filter((p) => p.harness === h).length;
-                  return { value: h, label: `${h} (${count})` };
-                }),
-              ]}
-            />
-          </div>
-        ) : null}
-
-        <PlanFilters list={filteredPlanList} query={q} onQueryChange={setQ} searchRef={searchRef} />
-        <PlanBucketTabs plans={maps.visiblePlans} query={debouncedQ} searchHitSlugs={searchHitSlugs} />
-      </div>
-
-      <div className="pc-plans__list" aria-label="Plans">
-        <PlanRail
-          list={filteredPlanList}
-          selectedSlugs={selectedSlugs}
-          query={debouncedQ}
-          searchHitSlugs={searchHitSlugs}
-          onSelect={onSelectPlan}
-          onStartToggle={onStartToggle}
-        />
+        <div className="pc-plans__list" aria-label="Plans">
+          <PlanRail
+            list={filteredPlanList}
+            selectedSlugs={selectedSlugs}
+            query={debouncedQ}
+            searchHitSlugs={searchHitSlugs}
+            onSelect={onSelectPlan}
+            onStartToggle={onStartToggle}
+          />
+        </div>
       </div>
     </div>
   );
