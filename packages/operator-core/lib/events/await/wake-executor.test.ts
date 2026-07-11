@@ -986,6 +986,112 @@ describe('codex home + rollout recovery (P-009/P-010)', () => {
   });
 });
 
+describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agent-2026-07-11 P-002)', () => {
+  // A spy tagger with the REAL TaggedTurn shape — marks the text so each
+  // delivery channel's assertion can see exactly what was tagged, and captures
+  // {sid, origin} so the origin-derivation rule is verifiable.
+  function spyTagger() {
+    const calls: { sid: string; origin: string; text: string }[] = [];
+    const tag = ((args: { sid: string; origin: string; text: string }) => {
+      calls.push(args);
+      return {
+        taggedText: `⟦tagged:${args.origin}⟧\n${args.text}`,
+        envelope: `⟦tagged:${args.origin}⟧`,
+        nonce: 'spy',
+        origin: args.origin,
+        ledgerWritten: true,
+      };
+    }) as never;
+    return { calls, tag };
+  }
+
+  it('warm psu-socket inject delivers TAGGED text (origin wake-pump, sid = subscriber)', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const { calls, tag } = spyTagger();
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        injectPsuHost: injectPsuHost as never,
+        tagTurn: tag,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    const [, msg] = injectPsuHost.mock.calls[0] as unknown as [string, { data: string }];
+    expect(msg.data).toMatch(/^⟦tagged:wake-pump⟧\n\[await-event\]/);
+    expect(calls).toEqual([expect.objectContaining({ sid: 'su-abc', origin: 'wake-pump' })]);
+  });
+
+  it('a loop wake (cold-loop marker on the payload) tags origin loop-fire — even on the warm path', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const { calls, tag } = spyTagger();
+    await executeWake(
+      work({ wakeHandle: advHandle(), payload: { carry: 'warm', wakeCount: 3, harness: 'papercusp' } }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        injectPsuHost: injectPsuHost as never,
+        tagTurn: tag,
+      }),
+    );
+    expect(calls[0]).toMatchObject({ origin: 'loop-fire' });
+  });
+
+  it('the COLD injection is tagged too (origin loop-fire wraps renderColdWakeInjection)', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const { tag } = spyTagger();
+    await executeWake(
+      work({ wakeHandle: advHandle(), payload: { carry: 'cold', wakeCount: 1, harness: 'papercusp' } }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        injectPsuHost: injectPsuHost as never,
+        coldAutoEnabled: vi.fn(async () => true),
+        getLoopCarryNoteFn: vi.fn(async () => '## Next action\nresume'),
+        tagTurn: tag,
+      }),
+    );
+    const [, msg] = injectPsuHost.mock.calls[0] as unknown as [string, { mode: string; data: string }];
+    expect(msg.mode).toBe('reset');
+    expect(msg.data).toMatch(/^⟦tagged:loop-fire⟧\n/);
+    expect(msg.data).toContain('## Next action\nresume');
+  });
+
+  it('the degrade-to-inbox body is NEVER tagged (coord messages carry native provenance)', async () => {
+    const sendCoordMessage = vi.fn(async () => ({}) as never);
+    const { tag } = spyTagger();
+    const out = await executeWake(
+      work({ wakeHandle: null }),
+      deps({
+        findPsuHost: vi.fn(() => null) as never,
+        presence: vi.fn(async () => ({ ...livePresence, stale: true })) as never,
+        sendCoordMessage: sendCoordMessage as never,
+        tagTurn: tag,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'inbox' });
+    const [, msg] = sendCoordMessage.mock.calls[0] as unknown as [unknown, { body: string }];
+    expect(msg.body).not.toContain('⟦tagged:');
+    expect(msg.body).toContain('[await-event]');
+  });
+
+  it('a tagger that throws never breaks the wake — untagged text still delivers', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle() }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        injectPsuHost: injectPsuHost as never,
+        tagTurn: (() => {
+          throw new Error('ledger disk full');
+        }) as never,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    const [, msg] = injectPsuHost.mock.calls[0] as unknown as [string, { data: string }];
+    expect(msg.data).toContain('[await-event]');
+    expect(msg.data).not.toContain('⟦');
+  });
+});
+
 describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 Phase 2)', () => {
   // A cold loop-wake payload marker (loop-fire stamps carry/wakeCount/harness).
   const coldPayload = (over: Record<string, unknown> = {}) => ({

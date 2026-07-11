@@ -16,7 +16,7 @@
 // Guards against render-time crashes the typecheck can't catch.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 // nuqs: every useQueryState call needs the adapter context — stub each param to
 // a stable [value, noop]. The component reads `conv` (view), the activity filters
@@ -173,11 +173,11 @@ vi.mock('@papercusp/sync', () => ({
 // mirrors grid-core's own RichGrid.virtual.test.tsx, which feeds a stub
 // virtualizer rather than faking DOM geometry (jsdom can't drive the real one).
 vi.mock('@tanstack/react-virtual', () => ({
-  useVirtualizer: ({ count }: { count: number }) => {
+  useVirtualizer: ({ count, getItemKey }: { count: number; getItemKey?: (index: number) => string | number }) => {
     const ROW = 104;
     const items = Array.from({ length: count }, (_, index) => ({
       index,
-      key: `vrow-${index}`,
+      key: getItemKey?.(index) ?? `vrow-${index}`,
       start: index * ROW,
       end: index * ROW + ROW,
       size: ROW,
@@ -378,9 +378,11 @@ describe('AdvConversationsTab — Create-style shell', () => {
     expect(btnRule).toContain('width: 40px');
     expect(styles).toContain('.pc-advconv__navbtn.is-active::before');
     expect(styles).toContain('.pc-advconv__navlabel { display: none; }');
-    expect(styles).toContain('.pc-advconv__shell:not(.is-detail-open) .pc-advconv__main:not(.pc-advconv__main--wide)');
-    expect(styles).toContain('.pc-advconv__shell.is-detail-open .pc-advconv__inbox');
-    expect(styles).toContain('.pc-advconv__shell.is-detail-open .pc-advconv__back');
+    const shellRule = styles.match(/\.pc-advconv__shell\s*{[^}]*}/)?.[0] ?? '';
+    expect(shellRule).toContain('min-width: 760px');
+    expect(styles).not.toContain('.pc-advconv__shell:not(.is-detail-open) .pc-advconv__main:not(.pc-advconv__main--wide)');
+    expect(styles).not.toContain('.pc-advconv__shell.is-detail-open .pc-advconv__inbox');
+    expect(styles).not.toContain('.pc-advconv__shell.is-detail-open .pc-advconv__back');
   });
 
   it('connects the selected tab to one labelled detail panel', () => {
@@ -584,7 +586,7 @@ describe('AdvConversationsTab — unified communication views', () => {
     expect(screen.getByRole('tab', { name: /Raw events/i })).toBeTruthy();
   });
 
-  it('deduplicates strict copies without collapsing distinct activity', () => {
+  it('deduplicates semantic copies across timestamps without collapsing distinct content', () => {
     const base = {
       id: 'msg-a', harness_slug: 'papercusp', from_slug: 'architect', to_slug: 'worker', to_role: null,
       kind: 'handoff', subject: 'release path', body: 'please take this', status: 'delivered',
@@ -593,11 +595,32 @@ describe('AdvConversationsTab — unified communication views', () => {
     const rows = composeUnifiedConversationRows([], [], [], [
       base,
       { ...base },
-      { ...base, id: 'msg-b' },
+      { ...base, id: 'msg-b', created_at: '2026-07-11T13:00:00.000Z' },
       { ...base, id: 'msg-c', body: 'a separate follow-up' },
     ], 50);
 
-    expect(rows.map((row) => row.sourceId)).toEqual(['msg-a', 'msg-c']);
+    expect(rows.map((row) => row.sourceId)).toEqual(['msg-b', 'msg-c']);
+  });
+
+  it('positions virtual rows without compositor transforms and keys them by conversation identity', () => {
+    render(<AdvConversationsTab />);
+    const row = screen.getByRole('button', { name: 'Open pick up the UI work' });
+    expect(row.style.top).not.toBe('');
+    expect(row.style.transform).toBe('');
+  });
+
+  it('shows the selected synchronized row in the detail pane while its detail query warms', () => {
+    nuqsState.conv = 'threads';
+    nuqsState.conversation = 'c-1';
+    syncResults['conversations.questionDetail'] = {
+      data: [], loading: true, fetching: true, error: null, invalidate: vi.fn(), transport: 'SSE',
+    };
+
+    render(<AdvConversationsTab />);
+
+    const panel = screen.getByRole('tabpanel');
+    expect(within(panel).getByRole('heading', { name: 'why does the watchdog recycle the host?' })).toBeTruthy();
+    expect(within(panel).getByRole('status', { name: 'Loading conversation' })).toBeTruthy();
   });
 
   it('partitions system-origin records out of every curated conversation source', () => {

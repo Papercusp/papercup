@@ -60,6 +60,7 @@ import {
   roleLaunchArgs,
   suLaunchArgs,
   kickoffPositionalArgs,
+  tagKickoffProvenance,
   resolveKickoffText,
   agentInvalidForRole,
   suWrapperExtraArgs,
@@ -169,6 +170,43 @@ describe('backend-not-installed helpers (owner req 2026-07-06 — psu prompt-to-
     } finally {
       rmSync(winHome, { recursive: true, force: true });
     }
+  });
+});
+
+describe('tagKickoffProvenance (turn-provenance-owner-vs-agent-2026-07-11 P-002)', () => {
+  let provDir: string;
+  beforeEach(() => {
+    provDir = mkdtempSync(join(tmpdir(), 'kickoff-prov-'));
+  });
+  afterEach(() => {
+    rmSync(provDir, { recursive: true, force: true });
+  });
+  const envFor = () => ({ PAPERCUSP_TURN_PROVENANCE_DIR: provDir }) as NodeJS.ProcessEnv;
+
+  it('prefixes the fleet-kickoff envelope and writes the ledger row FIRST (lockstep JSONL shape)', () => {
+    const tagged = tagKickoffProvenance('Begin: advance this plan.', 'su-kick-1', envFor(), 1_760_000_000_000);
+    expect(tagged).toMatch(/^⟦turn-origin:fleet-kickoff nonce:[a-f0-9]{16}⟧\nBegin: advance this plan\.$/);
+    const raw = readFileSync(join(provDir, 'su-kick-1.jsonl'), 'utf8').trim();
+    const row = JSON.parse(raw);
+    expect(row).toMatchObject({ sid: 'su-kick-1', origin: 'fleet-kickoff', ts: 1_760_000_000_000 });
+    expect(row.nonce).toMatch(/^[a-f0-9]{16}$/);
+    expect(row.sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(tagged).toContain(row.nonce); // the typed envelope references the ledger row
+  });
+
+  it('no sid (interactive/untracked launch) → untagged text, no ledger write', () => {
+    expect(tagKickoffProvenance('hello', null, envFor())).toBe('hello');
+    expect(existsSync(join(provDir, 'unknown.jsonl'))).toBe(false);
+  });
+
+  it('fail-soft: an unwritable ledger dir still returns the untagged text (never a broken launch)', () => {
+    const env = { PAPERCUSP_TURN_PROVENANCE_DIR: '/proc/definitely-unwritable' } as NodeJS.ProcessEnv;
+    expect(tagKickoffProvenance('hello', 'su-kick-2', env)).toBe('hello');
+  });
+
+  it('sanitizes the sid into the ledger filename', () => {
+    tagKickoffProvenance('x', 'su/../evil id', envFor());
+    expect(existsSync(join(provDir, 'su_.._evil_id.jsonl'))).toBe(true);
   });
 });
 

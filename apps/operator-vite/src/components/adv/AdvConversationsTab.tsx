@@ -367,6 +367,39 @@ interface UnifiedConversationRow {
   updatedAt: number;
 }
 
+/**
+ * Keep the selected conversation visibly anchored in the right pane while its
+ * detail query warms. A bare shimmer made a successful click look like a no-op
+ * in the desktop webview, especially on the first cross-source selection.
+ * Everything rendered here comes from the already-synchronized list row, so
+ * this adds no second request and is replaced by the canonical detail as soon
+ * as it arrives.
+ */
+function ConversationDetailLoading({
+  row,
+  label,
+}: {
+  row: UnifiedConversationRow | undefined;
+  label: string;
+}) {
+  return (
+    <article className="pc-coord__card pc-advconv__detail-loading" aria-busy="true">
+      {row ? (
+        <header className="pc-advconv__detailhead">
+          <div>
+            <p className="pc-advconv__detailkicker">
+              <span className={`pc-advconv__unified-kind pc-advconv__unified-kind--${row.source}`}>{row.typeLabel}</span>
+              {row.state ? <span className={`pc-advconv__statepill pc-advconv__statepill--${row.state}`}>{row.state}</span> : null}
+            </p>
+            <h2>{row.title}</h2>
+          </div>
+        </header>
+      ) : null}
+      <LoadingRows rows={4} label={label} />
+    </article>
+  );
+}
+
 const SOURCE_DEF = new Map(VIEW_DEFS.map((definition) => [definition.id, definition]));
 
 const UNIFIED_FILTER_COLUMNS: readonly FilterableColumn<UnifiedConversationRow>[] = [
@@ -409,7 +442,6 @@ function unifiedConversationSignature(row: UnifiedConversationRow): string {
     normalizedConversationText(row.recipient),
     normalizedConversationText(row.harnessSlug),
     normalizedConversationText(row.relatedRef),
-    String(row.updatedAt),
   ].join('|');
 }
 
@@ -551,6 +583,11 @@ function UnifiedInboxView() {
     count: filteredRows.length,
     getScrollElement: () => listRef.current,
     estimateSize: () => UNIFIED_ROW_HEIGHT,
+    // The synchronized sources can reorder when activity arrives. Index keys
+    // make React replace the button occupying that slot, which WebKit paints as
+    // a flash. Track the conversation identity instead so a moved row remains
+    // the same DOM node across invalidations.
+    getItemKey: (index) => filteredRows[index]?.id ?? index,
     overscan: 10,
   });
   // `measureElement` on each mounted row already keeps variable heights exact.
@@ -575,13 +612,14 @@ function UnifiedInboxView() {
           ? route.msg
           : null;
   const selectedUnifiedId = selectedSourceId ? `${route.conv}:${selectedSourceId}` : null;
+  const selectedRow = selectedUnifiedId ? rows.find((row) => row.id === selectedUnifiedId) : undefined;
   const closeDetail = () => setRoute({ conv: 'inbox', ...EMPTY_CONVERSATION_SELECTION });
   const detail = route.conv === 'threads' && route.conversation
-    ? <ThreadsView detailOnly />
+    ? <ThreadsView detailOnly loadingSummary={selectedRow} />
     : route.conv === 'deliberations' && route.thread
-      ? <DeliberationsView detailOnly />
+      ? <DeliberationsView detailOnly loadingSummary={selectedRow} />
       : route.conv === 'agentchats' && route.chat
-        ? <AgentChatsView detailOnly />
+        ? <AgentChatsView detailOnly loadingSummary={selectedRow} />
         : route.conv === 'messages' && route.msg
           ? <MessagesView detailOnly />
           : (
@@ -675,11 +713,14 @@ function UnifiedInboxView() {
                 const Icon = definition?.Icon ?? MessageCircle;
                 return (
                   <button
-                    key={row.id}
+                    key={item.key}
                     type="button"
                     className={`pc-advconv__unified-row${selectedUnifiedId === row.id ? ' is-active' : ''}`}
                     data-index={item.index}
-                    style={{ transform: `translateY(${item.start}px)` }}
+                    // Fixed-height rows do not need compositor transforms.
+                    // Absolute `top` positioning avoids WebKit layer flashes
+                    // when live sync moves a row to a new sorted position.
+                    style={{ top: item.start }}
                     aria-label={`Open ${row.title}`}
                     aria-current={selectedUnifiedId === row.id ? 'true' : undefined}
                     onClick={() => void open(row)}
@@ -1642,7 +1683,13 @@ function ReplyComposer({
   );
 }
 
-function ThreadsView({ detailOnly = false }: { detailOnly?: boolean } = {}) {
+function ThreadsView({
+  detailOnly = false,
+  loadingSummary,
+}: {
+  detailOnly?: boolean;
+  loadingSummary?: UnifiedConversationRow;
+} = {}) {
   const [state, setState] = useQueryState('cstate', parseAsStringEnum<ConvStateFilter>([...CONV_STATES]).withDefault('open'));
   const [kind, setKind] = useQueryState('ckind', parseAsStringEnum<ConvKindFilter>([...CONV_KINDS]).withDefault('all'));
   const [topic, setTopic] = useQueryState('ctopic', parseAsString.withDefault(''));
@@ -1827,7 +1874,7 @@ function ThreadsView({ detailOnly = false }: { detailOnly?: boolean } = {}) {
       detail={
         <section className="pc-coord__detail">
           {detailLoading ? (
-            <LoadingRows rows={5} label="Loading conversation" />
+            <ConversationDetailLoading row={loadingSummary} label="Loading conversation" />
           ) : !detail ? (
           <EmptyState
             style={{ minHeight: '100%' }}
@@ -1939,7 +1986,13 @@ interface ThreadRow {
 interface ThreadPost { id: number; author_id: string | null; body: string | null; created_at: string; harness_slug: string | null }
 interface DeliberationDetail { thread: ThreadRow; posts: ThreadPost[] }
 
-function DeliberationsView({ detailOnly = false }: { detailOnly?: boolean } = {}) {
+function DeliberationsView({
+  detailOnly = false,
+  loadingSummary,
+}: {
+  detailOnly?: boolean;
+  loadingSummary?: UnifiedConversationRow;
+} = {}) {
   const [sel, setSel] = useQueryState('thread', parseAsString);
   const listQuery = useSyncQuery<ThreadRow>({
     queryName: 'conversations.deliberationList',
@@ -2053,7 +2106,7 @@ function DeliberationsView({ detailOnly = false }: { detailOnly?: boolean } = {}
       detail={
         <section className="pc-coord__detail">
           {detailLoading ? (
-            <LoadingRows rows={5} label="Loading deliberation" />
+            <ConversationDetailLoading row={loadingSummary} label="Loading deliberation" />
           ) : !head ? (
           <EmptyState
             style={{ minHeight: '100%' }}
@@ -2132,7 +2185,13 @@ function turnText(content: unknown): string {
   return content == null ? '' : JSON.stringify(content);
 }
 
-function AgentChatsView({ detailOnly = false }: { detailOnly?: boolean } = {}) {
+function AgentChatsView({
+  detailOnly = false,
+  loadingSummary,
+}: {
+  detailOnly?: boolean;
+  loadingSummary?: UnifiedConversationRow;
+} = {}) {
   const [harness, setHarness] = useQueryState('acharness', parseAsString.withDefault(''));
   const [role, setRole] = useQueryState('acrole', parseAsString.withDefault(''));
   const [sel, setSel] = useQueryState('chat', parseAsString);
@@ -2297,7 +2356,7 @@ function AgentChatsView({ detailOnly = false }: { detailOnly?: boolean } = {}) {
       detail={
         <section className="pc-coord__detail">
         {detailLoading ? (
-          <LoadingRows rows={5} label="Loading chat" />
+          <ConversationDetailLoading row={loadingSummary} label="Loading chat" />
         ) : !detail ? (
           <EmptyState
             style={{ minHeight: '100%' }}
@@ -2613,6 +2672,8 @@ function AdvConvStyles() {
         padding: 0;
         color: var(--fg, #dceaf6);
         background: var(--advconv-bg);
+        overflow-x: auto;
+        overflow-y: hidden;
       }
       /* Shell — a persistent left nav rail + a main pane, mirroring the Create
          dock's sidebar│main split. The page title now lives in the AdvShell
@@ -2624,6 +2685,7 @@ function AdvConvStyles() {
         grid-template-columns: 64px minmax(300px, 360px) minmax(0, 1fr);
         align-items: stretch;
         background: var(--advconv-bg);
+        min-width: 760px;
       }
       /* The nav reuses .pc-plans__rail (border-right + column flex + bg) for
          pixel parity with the Create sidebar; only its width is set here. */
@@ -3130,7 +3192,8 @@ function AdvConvStyles() {
       }
       .pc-advconv__unified-row {
         position: absolute;
-        inset: 0 0 auto;
+        left: 0;
+        right: 0;
         width: 100%;
         height: ${UNIFIED_ROW_HEIGHT}px;
         overflow: clip;
@@ -3895,59 +3958,15 @@ function AdvConvStyles() {
       .pc-advfeed__loadolder:hover { color: var(--fg, #e7f7ff); border-color: var(--advconv-border-strong); background: var(--advconv-accent-soft); }
       .pc-advfeed__refresh { flex: 0 0 auto; }
       @media (max-width: 920px) {
-        .pc-advconv__shell {
-          grid-template-columns: minmax(0, 1fr);
-          grid-template-rows: auto minmax(0, 1fr);
-        }
-        .pc-advconv__nav {
-          grid-column: 1;
-          grid-row: 1;
-          width: auto;
-          border-right: none;
-          border-bottom: 1px solid var(--advconv-border);
-        }
-        .pc-advconv__inbox,
-        .pc-advconv__main {
-          grid-column: 1;
-          grid-row: 2;
-        }
-        .pc-advconv__shell:not(.is-detail-open) .pc-advconv__main:not(.pc-advconv__main--wide) {
-          display: none;
-        }
-        .pc-advconv__shell.is-detail-open .pc-advconv__inbox {
-          display: none;
-        }
-        .pc-advconv__shell.is-detail-open .pc-advconv__back {
-          display: inline-flex;
-        }
-        .pc-advconv__nav-actions {
-          flex-direction: row;
-          align-items: stretch;
-          overflow-x: auto;
-          overscroll-behavior-x: contain;
-          scrollbar-width: thin;
-        }
-        .pc-advconv__nav-actions .pc-plans__new-plan {
-          flex: 0 0 auto;
-          width: 40px;
-          min-width: 40px;
-        }
-        .pc-advconv__nav-switcher { flex: 0 0 auto; flex-direction: row; gap: 6px; }
-        .pc-advconv__nav-primary { display: flex; gap: 6px; }
-        .pc-advconv__nav-diagnostic {
-          display: flex;
-          padding: 0 0 0 7px;
-          border-top: none;
-          border-left: 1px solid var(--advconv-border);
-        }
-        .pc-advconv__navbtn { flex: 0 0 auto; min-width: 40px; }
-        .pc-advconv__navbtn--raw { min-width: 40px; }
+        /* Desktop master-detail is invariant at every supported window size:
+           selecting a row updates the right pane and never replaces the left
+           inbox. Narrow windows scroll horizontally instead of changing the
+           information architecture underneath the user. */
         .pc-advconv__detailhead { flex-direction: column; }
         .pc-advconv__detailstats { justify-content: flex-start; max-width: none; }
         .pc-advconv__replyhead { flex-direction: column; }
         .pc-advconv__replyhead em { max-width: none; text-align: left; }
         .pc-advfeed__refresh { justify-content: center; }
-        .pc-advconv__navlist { max-height: none; }
         .pc-advfeed__row {
           grid-template-columns: auto auto minmax(0, 1fr) auto;
         }

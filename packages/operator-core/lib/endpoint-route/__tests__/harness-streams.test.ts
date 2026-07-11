@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { parseAgentTimelineChunks, capEntryText, THINKING_ENTRY_TEXT_CAP } from '../routes/harness/streams';
+import {
+  parseAgentTimelineChunks,
+  capEntryText,
+  THINKING_ENTRY_TEXT_CAP,
+  sessionTurnEntryKind,
+  pickSessionTurnWindow,
+} from '../routes/harness/streams';
 
 describe('capEntryText (UI-bound thinking entry cap)', () => {
   it('leaves short/absent text untouched (same object, no copy)', () => {
@@ -93,5 +99,75 @@ describe('harness agent thinking stream parsing', () => {
       { kind: 'text', text: 'hello world', ts: T }, // first delta's time, not the flush
       { kind: 'text', text: 'done', ts: '2026-07-01T03:00:06.000Z' },
     ]);
+  });
+});
+
+describe('session_turns fallback backfill (WI-4194 — pruned-transcript ended session)', () => {
+  describe('sessionTurnEntryKind', () => {
+    it('maps user/human turns to the prompt turn-boundary, everything else to text', () => {
+      expect(sessionTurnEntryKind('user')).toBe('prompt');
+      expect(sessionTurnEntryKind('human')).toBe('prompt');
+      expect(sessionTurnEntryKind('assistant')).toBe('text');
+      expect(sessionTurnEntryKind('tool')).toBe('text');
+      expect(sessionTurnEntryKind(null)).toBe('text');
+      expect(sessionTurnEntryKind(undefined)).toBe('text');
+    });
+  });
+
+  describe('pickSessionTurnWindow', () => {
+    // Monotonic, always-valid timestamps: turn i is i minutes after the base
+    // (epoch math, so it scales past 59 without rolling into an invalid field).
+    const BASE = Date.parse('2026-06-05T00:00:00.000Z');
+    const tsAt = (i: number) => new Date(BASE + i * 60_000).toISOString();
+    const list = (n: number) => Array.from({ length: n }, (_, i) => tsAt(i));
+
+    it('tails the last cap turns when no anchor is given', () => {
+      const { start, anchorPos } = pickSessionTurnWindow(list(1000), 200);
+      expect(start).toBe(800);
+      expect(anchorPos).toBeNull();
+    });
+
+    it('returns start 0 when the session is shorter than the cap', () => {
+      const { start, anchorPos } = pickSessionTurnWindow(list(50), 200);
+      expect(start).toBe(0);
+      expect(anchorPos).toBeNull();
+    });
+
+    it('centers the window on the turn nearest anchorTs', () => {
+      const { start, anchorPos } = pickSessionTurnWindow(list(1000), 200, tsAt(500));
+      expect(anchorPos).toBe(500);
+      expect(start).toBe(400); // 500 - cap/2
+    });
+
+    it('clamps the centered window to the end of the list', () => {
+      const { start, anchorPos } = pickSessionTurnWindow(list(1000), 200, tsAt(990));
+      expect(anchorPos).toBe(990);
+      expect(start).toBe(800); // clamped so start+cap never exceeds length
+    });
+
+    it('clamps the centered window to the start of the list', () => {
+      const { start, anchorPos } = pickSessionTurnWindow(list(1000), 200, tsAt(10));
+      expect(anchorPos).toBe(10);
+      expect(start).toBe(0); // 10 - 100 would be negative
+    });
+
+    it('picks the NEAREST turn by timestamp for an anchor between turns', () => {
+      // anchor at 00:07:30 sits between turn 7 (00:07:00) and turn 8 (00:08:00);
+      // turn 7 is 30s away, turn 8 is 30s away — the first-seen closest (7) wins.
+      const { anchorPos } = pickSessionTurnWindow(list(20), 200, '2026-06-05T00:07:30.000Z');
+      expect(anchorPos).toBe(7);
+    });
+
+    it('falls back to the tail when anchorTs is unparseable', () => {
+      const { start, anchorPos } = pickSessionTurnWindow(list(1000), 200, 'not-a-date');
+      expect(start).toBe(800);
+      expect(anchorPos).toBeNull();
+    });
+
+    it('ignores turns with null ts when matching an anchor', () => {
+      const withGaps: Array<string | null> = [tsAt(0), null, tsAt(2), null, tsAt(4)];
+      const { anchorPos } = pickSessionTurnWindow(withGaps, 2, tsAt(2));
+      expect(anchorPos).toBe(2); // the null rows are skipped, exact ts match wins
+    });
   });
 });

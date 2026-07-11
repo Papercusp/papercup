@@ -634,6 +634,50 @@ const logStream = defineTool({
  * each row's text in SQL. Returns null when the corpus has no rows (caller falls
  * back to the honest empty-backfill terminate). Exported for tests.
  */
+/** A stored session_turns speaker → the timeline entry kind. A user/human turn
+ *  is the frontend's turn boundary (`prompt`); everything else is `text`. Pure —
+ *  exported for tests. */
+export function sessionTurnEntryKind(speaker: string | null | undefined): 'prompt' | 'text' {
+  return speaker === 'user' || speaker === 'human' ? 'prompt' : 'text';
+}
+
+/** Pick the [start, start+cap) slice of an ordered turn list to backfill, and —
+ *  when a search deep-link supplied anchorTs — the position of the turn nearest
+ *  that timestamp (so the window centers on it). Without an anchor, tails the
+ *  last `cap` turns. `tsList` is the ts of each turn in turn order. Returns the
+ *  window start and the absolute anchor position (or null). Pure — exported for
+ *  tests. */
+export function pickSessionTurnWindow(
+  tsList: ReadonlyArray<string | null>,
+  cap: number,
+  anchorTs?: string | null,
+): { start: number; anchorPos: number | null } {
+  const n = tsList.length;
+  const c = Math.max(1, cap);
+  let start = Math.max(0, n - c);
+  let anchorPos: number | null = null;
+  if (anchorTs) {
+    const at = Date.parse(anchorTs);
+    if (!Number.isNaN(at)) {
+      let bestI = -1;
+      let bestD = Infinity;
+      for (let i = 0; i < n; i++) {
+        const raw = tsList[i];
+        const t = raw ? Date.parse(raw) : NaN;
+        if (!Number.isNaN(t)) {
+          const d = Math.abs(t - at);
+          if (d < bestD) { bestD = d; bestI = i; }
+        }
+      }
+      if (bestI >= 0) {
+        start = Math.max(0, Math.min(bestI - Math.floor(c / 2), Math.max(0, n - c)));
+        anchorPos = bestI;
+      }
+    }
+  }
+  return { start, anchorPos };
+}
+
 export async function backfillFromSessionTurns(
   key: { sourceKind: 'claude' | 'omp' | 'codex'; sessionId: string },
   opts: { anchorTs?: string | null; cap?: number } = {},
@@ -650,29 +694,7 @@ export async function backfillFromSessionTurns(
      ORDER BY turn_idx ASC
   `;
   if (idxRows.length === 0) return null;
-  // Window: center on the anchored turn (search deep-link) else tail the last cap.
-  let start = Math.max(0, idxRows.length - cap);
-  let anchorPos: number | null = null;
-  if (opts.anchorTs) {
-    const at = Date.parse(opts.anchorTs);
-    if (!Number.isNaN(at)) {
-      let bestI = -1;
-      let bestD = Infinity;
-      for (let i = 0; i < idxRows.length; i++) {
-        const raw = idxRows[i].ts;
-        const t = raw ? Date.parse(raw) : NaN;
-        if (!Number.isNaN(t)) {
-          const d = Math.abs(t - at);
-          if (d < bestD) { bestD = d; bestI = i; }
-        }
-      }
-      if (bestI >= 0) {
-        start = Math.max(0, Math.min(bestI - Math.floor(cap / 2), idxRows.length - cap));
-        anchorPos = bestI;
-      }
-    }
-  }
-  if (start < 0) start = 0;
+  const { start, anchorPos } = pickSessionTurnWindow(idxRows.map((r) => r.ts), cap, opts.anchorTs);
   const end = Math.min(idxRows.length, start + cap);
   const startIdx = idxRows[start].turn_idx;
   // 2) Windowed fetch — text capped in SQL (+ a margin so capEntryText still
@@ -688,7 +710,7 @@ export async function backfillFromSessionTurns(
   `;
   const entries: AgentTimelineEntry[] = rows.map((r) =>
     capEntryText({
-      kind: r.speaker === 'user' || r.speaker === 'human' ? 'prompt' : 'text',
+      kind: sessionTurnEntryKind(r.speaker),
       text: r.text ?? '',
       ts: r.ts ?? undefined,
     }),
