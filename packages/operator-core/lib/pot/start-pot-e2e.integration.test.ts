@@ -245,7 +245,7 @@ beforeAll(async () => {
   // actually record. Self-contained migration, no deps.
   await rootSql.unsafe(readMigration('253-calibration-predictions.sql')).simple();
   await rootSql.unsafe(readMigration('158-pot-wake-state.sql')).simple();
-  await rootSql.unsafe(readMigration('198-rename-pot-wake-to-pot-wake.sql')).simple();
+  await rootSql.unsafe(readMigration('198-rename-pot-wake-to-hive-wake.sql')).simple();
   await rootSql.unsafe(readMigration('122-harness-plans.sql')).simple();
   // Stage-3 derived-index columns (items/decisions/now_*) — the write path
   // (with-plan-lock) and the start tool's source reads expect them at head.

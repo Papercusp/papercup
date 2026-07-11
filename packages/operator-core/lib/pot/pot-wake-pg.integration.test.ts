@@ -115,10 +115,10 @@ beforeAll(async () => {
     )
   `);
   // 158 creates the legacy `pot_wake` table; 198 renames it to `hive_wake`
-  // (the unify-launch-mechanics pot→pot rename) — apply BOTH so the test DB
+  // (the unify-launch-mechanics pot→hive rename) — apply BOTH so the test DB
   // matches head, where readPotWakeState('hive_wake') reads the renamed table.
   await rootSql.unsafe(readMigration('158-pot-wake-state.sql')).simple();
-  await rootSql.unsafe(readMigration('198-rename-pot-wake-to-pot-wake.sql')).simple();
+  await rootSql.unsafe(readMigration('198-rename-pot-wake-to-hive-wake.sql')).simple();
   // 472 — the Mug carry-note converged onto the shared carry-note substrate
   // (su-cold-auto-mode P-001): setPotCarryNote now writes carry_notes, not the
   // hive_wake payload. The data-fold's work_item_checkpoints branch is IF-EXISTS

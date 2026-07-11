@@ -515,14 +515,19 @@ async function runScenario(
     // The 2c rekey: the hive-home now resolves → rebind → retryPendingOnce re-runs admit on the
     // buffered owner announce. PRE-FIX the announce was DROPPED at home=<none> (owner-bootstrap was
     // gated on myHiveHome != null), so there was nothing to replay → the joiner never admitted.
-    // NOTE (EI/WI-4027): deliberately NOT also stamping the registry's hive_slug here — `rekey`
-    // re-resolves `hiveHomeProjectionSlug` via `joinerPotHomeSlugOverride` (now returning HIVE_HOME
-    // since homeResolved flipped), which is boot.ts's PRIMARY resolution path everywhere; the
-    // registry-backed `potHomeSlugForHarness` fallback (see the setup comment above) is only ever
-    // consulted when that snapshot is still null, so leaving the registry unset here still lets
-    // admission succeed post-rekey while avoiding a second mutateHarnessRegistry call mid-scenario
-    // (which throws — `notifySyncInvalidate` isn't wired in this test's env, see harness-registry.ts).
+    // Mirror the REAL join-hive.ts ordering here too (EI/WI-4027): step 2b stamps the registry's
+    // hive_slug BEFORE the 2c rekey RPC runs — do that now, then rekey. This is load-bearing, not
+    // cosmetic: `rekey`'s re-resolve of `hiveHomeProjectionSlug` still falls through to the
+    // registry-backed `potHomeSlugForHarness` fallback in places (confirmed empirically — without
+    // this the post-rekey merge stays stuck at `guardHome=<none>` and the joiner never admits).
     homeResolved = true;
+    await mutateHarnessRegistry(
+      (r) => ({
+        ...r,
+        projects: r.projects.map((p) => (p.slug === JOINER_SLUG ? { ...p, hive_slug: HIVE_HOME } : p)),
+      }),
+      WORKSPACE_ID,
+    );
     await joiner.handle.rekey(joinerBinding);
   }
 
