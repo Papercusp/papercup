@@ -1241,7 +1241,7 @@ MCP — plain \`codex\` (CODEX_HOME=~/.codex) stays fully vanilla.
 
 OMP-native Hindsight memory is enabled by this installer:
   memory.backend=hindsight
-  hindsight.apiUrl=${HINDSIGHT_URL}
+  hindsight.apiUrl=${PAPERCUSP_HINDSIGHT_API_URL:-${HINDSIGHT_API_URL:-http://localhost:8888}}
   hindsight.scoping=per-project-tagged
 Start a local server if you are not using Hindsight Cloud:
   docker run -p 8888:8888 ghcr.io/vectorize-io/hindsight:latest

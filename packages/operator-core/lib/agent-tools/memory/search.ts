@@ -15,9 +15,15 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { getMemoryBackend, type MemoryEntry } from '../../memory/backend';
+import { getMemoryBackend, MemoryUnavailableError, type MemoryEntry } from '../../memory/backend';
 import { isMemoryWorkspaceScopedRecallOn, keepUserPoolHitForWorkspace } from '../../memory/workspace-scope-recall';
-import { MemoryTimeoutError, withMemoryToolTimeout, embedFailureReason } from '../../memory/op-deadline';
+import {
+  MemoryTimeoutError,
+  withMemoryToolTimeout,
+  withMemoryTimeout,
+  memoryLexicalFallbackTimeoutMs,
+  embedFailureReason,
+} from '../../memory/op-deadline';
 import { isOpenAiEmbedInCooldown } from '../../memory/configure';
 import { getSessionUserOrDefault } from '../../auth';
 import { loadHarnessRegistry } from '../../harness-registry';
@@ -130,85 +136,122 @@ export default defineTool({
     const backend = getMemoryBackend();
     const limit = args.limit ?? 8;
 
+    // Scope resolution — registry/flag reads only, never a memory-backend
+    // call, so it sits AHEAD of the deadline-guarded region: the degraded
+    // lexical fallback below needs the SAME scopes after the semantic leg
+    // has already failed (WI-4214).
+    let harnessSlugs: string[];
+    if (args.harness_slug) {
+      harnessSlugs = [args.harness_slug];
+    } else {
+      try {
+        // The principal carries the resolved workspace (incl. a per-call
+        // `workspace` pin from an unscoped SU session); the old
+        // `ctx.workspaceId` read was never populated on principal-gated
+        // handlers, so the fan-out silently degraded to user-pool-only (P-004).
+        const reg = await loadHarnessRegistry(ctx.principal?.workspaceId ?? '');
+        // P-016: exclude ephemeral/benchmark harness scopes from unscoped
+        // production recall so benchmark memories don't pollute results.
+        // Explicit harness_slug (above) bypasses this filter intentionally.
+        harnessSlugs = reg.projects
+          .map((p) => p.slug)
+          .filter((s) => !isEphemeralBenchmarkHarnessSlug(s));
+        // P-018 (scoped-superuser-workspace-clamp / D-009 P-016b): confine the
+        // DEFAULT fan-out to the session's hive subtree so a hive-confined
+        // session (concrete `ctx.harnessSlug` — a bee or a hive-scoped su) does
+        // NOT recall SIBLING hives' harness pools — a cross-hive recall bleed,
+        // live now that the workspace runs multiple hives. A workspace/unscoped
+        // session (harness '*') is left untouched (the workspace-scoped Queen
+        // recalls across its hives). Gated by the clamp flag (rides its rollout;
+        // a kill-switch). Fail-OPEN — a flag-read error keeps the full fan-out,
+        // matching the clamp's fail-open-on-infra-error posture (no recall loss
+        // on a flag hiccup; the worst case is over-broad recall, never a leak).
+        try {
+          if (await getFlag(FLAGS.SCOPED_SUPERUSER_CLAMP, systemDistinctId())) {
+            harnessSlugs = narrowHarnessSlugsToSessionHive(reg.projects, harnessSlugs, ctx.harnessSlug);
+          }
+        } catch {
+          /* fail-open: keep the full workspace fan-out */
+        }
+      } catch {
+        harnessSlugs = [];
+      }
+    }
+
+    // Scope: user-pool + harness-pool(s) normally. With harnessOnly (+ a harness_slug), scope to ONLY the
+    // harness pool — drop the user pool — so an ISOLATED per-run pool (a benchmark capability-injection arm)
+    // recalls just its own facts, not the user's personal memories (which would be noise / confound the
+    // measurement). harnessOnly without harness_slug is meaningless (no pool to isolate to) → ignored.
+    const harnessScopes = harnessSlugs.map((slug) => `harness:${slug}`);
+    const scope = args.harnessOnly && args.harness_slug ? harnessScopes : [user.id, ...harnessScopes];
+
     // B1 (infra-fail-fast-build-integrity-2026-06-19): bound EVERY backend call
     // with a deadline. `available()` itself can hang when the store is wedged
     // (the 2026-06-19 outage), so it is inside the guarded region too. A timeout
     // returns the same `{ ok:false, reason, results:[] }` envelope as a clean
     // "store down" probe — but with `memory_timeout` — instead of an infinite hang.
     let hits: MemoryEntry[];
+    // WI-4214 (P-005 memory-public-release-hardening): set when the SEMANTIC leg
+    // failed but the embed-free lexical fallback served the hits — the envelope
+    // is stamped degraded + fallback:'lexical' so callers know these are token
+    // matches (paraphrase recall is out), never a full-fidelity result.
+    let overloadDegradedReason: string | null = null;
     try {
       const avail = await withMemoryToolTimeout(backend.available(), 'memory:search available');
       if (!avail.ok) {
+        // A down store is a DEGRADED recall, not an informative empty (same
+        // EI-9031 posture as the embed-failure branch below).
         return {
-          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: avail.reason, results: [] }) }],
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: avail.reason, degraded: true, results: [] }) }],
         };
       }
-
-      let harnessSlugs: string[];
-      if (args.harness_slug) {
-        harnessSlugs = [args.harness_slug];
-      } else {
-        try {
-          // The principal carries the resolved workspace (incl. a per-call
-          // `workspace` pin from an unscoped SU session); the old
-          // `ctx.workspaceId` read was never populated on principal-gated
-          // handlers, so the fan-out silently degraded to user-pool-only (P-004).
-          const reg = await loadHarnessRegistry(ctx.principal?.workspaceId ?? '');
-          // P-016: exclude ephemeral/benchmark harness scopes from unscoped
-          // production recall so benchmark memories don't pollute results.
-          // Explicit harness_slug (above) bypasses this filter intentionally.
-          harnessSlugs = reg.projects
-            .map((p) => p.slug)
-            .filter((s) => !isEphemeralBenchmarkHarnessSlug(s));
-          // P-018 (scoped-superuser-workspace-clamp / D-009 P-016b): confine the
-          // DEFAULT fan-out to the session's hive subtree so a hive-confined
-          // session (concrete `ctx.harnessSlug` — a bee or a hive-scoped su) does
-          // NOT recall SIBLING hives' harness pools — a cross-hive recall bleed,
-          // live now that the workspace runs multiple hives. A workspace/unscoped
-          // session (harness '*') is left untouched (the workspace-scoped Queen
-          // recalls across its hives). Gated by the clamp flag (rides its rollout;
-          // a kill-switch). Fail-OPEN — a flag-read error keeps the full fan-out,
-          // matching the clamp's fail-open-on-infra-error posture (no recall loss
-          // on a flag hiccup; the worst case is over-broad recall, never a leak).
-          try {
-            if (await getFlag(FLAGS.SCOPED_SUPERUSER_CLAMP, systemDistinctId())) {
-              harnessSlugs = narrowHarnessSlugsToSessionHive(reg.projects, harnessSlugs, ctx.harnessSlug);
-            }
-          } catch {
-            /* fail-open: keep the full workspace fan-out */
-          }
-        } catch {
-          harnessSlugs = [];
-        }
-      }
-
-      // Scope: user-pool + harness-pool(s) normally. With harnessOnly (+ a harness_slug), scope to ONLY the
-      // harness pool — drop the user pool — so an ISOLATED per-run pool (a benchmark capability-injection arm)
-      // recalls just its own facts, not the user's personal memories (which would be noise / confound the
-      // measurement). harnessOnly without harness_slug is meaningless (no pool to isolate to) → ignored.
-      const harnessScopes = harnessSlugs.map((slug) => `harness:${slug}`);
-      const scope = args.harnessOnly && args.harness_slug ? harnessScopes : [user.id, ...harnessScopes];
       // The backend fans out per scope (limit applies per pool), merges,
       // de-dupes by id and sorts by score; we apply the global cap here.
       hits = await withMemoryToolTimeout(backend.search(args.query, { scope, limit }), 'memory:search search');
     } catch (err) {
-      if (err instanceof MemoryTimeoutError) {
+      // Classify the failure to a CLEAN reason (mem0-timeout-fix-2026-06-24 /
+      // EI-9031 / WI-4183): a hang → memory_timeout; a clean store-down probe
+      // mid-flight → its own reason (previously an opaque handler_error); an
+      // embed failure (429/5xx/stall/sidecar) → its classified reason.
+      const reason =
+        err instanceof MemoryTimeoutError
+          ? 'memory_timeout'
+          : err instanceof MemoryUnavailableError
+            ? err.reason
+            : embedFailureReason(err);
+      if (!reason) throw err;
+      // WI-4214: the semantic leg is unusable (saturated/overloaded embedder,
+      // or an embed-path failure) but the store itself may be fine — attempt
+      // the EMBED-FREE lexical fallback under its own short deadline before
+      // giving up. Feature-tested: a backend without the capability (or a
+      // fallback that itself fails/times out) degrades to the honest empty
+      // envelope below, exactly as before.
+      const lexical = backend.searchLexical?.bind(backend);
+      let fallbackHits: MemoryEntry[] | null = null;
+      if (lexical) {
+        try {
+          fallbackHits = await withMemoryTimeout(
+            lexical(args.query, { scope, limit }),
+            'memory:search lexical fallback',
+            memoryLexicalFallbackTimeoutMs(),
+          );
+        } catch {
+          fallbackHits = null;
+        }
+      }
+      if (fallbackHits === null) {
+        // EI-9031: a failed recall is a DEGRADED recall, not an informative
+        // empty — stamp it loudly (in addition to the reason) so agents /
+        // orient never read the `[]` as "nothing relevant exists".
         return {
-          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'memory_timeout', results: [] }) }],
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason, degraded: true, results: [] }) }],
         };
       }
-      // mem0-timeout-fix-2026-06-24: a fast-failed embed (org TPM 429 / 5xx / stall) surfaces
-      // as a CLEAN reason + empty results, not an opaque handler_error.
-      const embedReason = embedFailureReason(err);
-      if (embedReason) {
-        // EI-9031: a failed embed is a DEGRADED recall, not an informative empty —
-        // stamp it loudly (in addition to the reason) so agents / orient never read
-        // the `[]` as "nothing relevant exists".
-        return {
-          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: embedReason, degraded: true, results: [] }) }],
-        };
-      }
-      throw err;
+      // Lexical hits ride the NORMAL post-processing below (workspace-scope
+      // filter, feedback rerank, tier shaping) — degraded recall still honors
+      // every hygiene/scoping invariant of the healthy path.
+      hits = fallbackHits;
+      overloadDegradedReason = reason;
     }
 
     // data-scoping-audit P-006 / D-004 / D-012 (dark cutover): workspace-scope the USER

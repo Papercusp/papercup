@@ -45,6 +45,21 @@ export function memoryToolTimeoutMs(): number {
 }
 
 /**
+ * Deadline for the EMBED-FREE lexical fallback memory:search attempts after
+ * its semantic leg failed (timeout / embed failure — WI-4214). Deliberately
+ * short and separate from the main tool deadline: by the time the fallback
+ * runs the caller has already waited out one full tool deadline, so the
+ * total (deadline + fallback) must stay well inside the ~55–60s MCP
+ * transport cap — and the fallback is a plain PG token query that either
+ * answers fast or isn't worth waiting for (a PG-wide wedge means the store
+ * is down, not overloaded). Env-tunable; evaluated at call time for tests.
+ */
+export function memoryLexicalFallbackTimeoutMs(): number {
+  const raw = Number(process.env.PAPERCUSP_MEMORY_LEXICAL_FALLBACK_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 2_500;
+}
+
+/**
  * How long a memory timeout quiets the auto-inject path. SELF-HEALING: the latch
  * was previously a permanent boolean cleared only on restart — so ONE transient
  * timeout (a load spike, a client cold-init window) disabled memory auto-injection
