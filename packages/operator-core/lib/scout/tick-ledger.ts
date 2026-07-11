@@ -48,26 +48,38 @@ export interface RecordScoutTickInput extends ScoutTickRecord {
   installSlug?: string;
   /** Override the active workspace (tests). */
   workspaceId?: string;
+  /**
+   * Provenance partition (migration 571). 'scout' (default) = the scout-cycle
+   * routine; 'su-ideate' = an su ideate pass (blender:ideate-pass-record). Scout
+   * cadence/health readers filter origin='scout', so a su-ideate tick rides this
+   * ledger WITHOUT resetting Scout's cadence floor or faking Scout liveness.
+   */
+  origin?: string;
 }
 
 /** Persist one tick row. Callers treat this as best-effort (errors swallowed upstream). */
 export async function recordScoutTick(input: RecordScoutTickInput): Promise<void> {
   const { sql } = getOrgPg();
   const ws = input.workspaceId ?? activeWorkspaceId();
+  const origin = input.origin ?? 'scout';
   await sql`
     INSERT INTO harness_shared.scout_ticks
       (workspace_id, install_slug, status, gate,
-       ideas_generated, ideas_routed, ideas_deduped, budget_used_usd, detail)
+       ideas_generated, ideas_routed, ideas_deduped, budget_used_usd, detail, origin)
     VALUES
       (${ws}, ${input.installSlug ?? null}, ${input.status}, ${input.gate ?? null},
        ${input.ideasGenerated ?? 0}, ${input.ideasRouted ?? 0}, ${input.ideasDeduped ?? 0},
-       ${input.budgetUsedUsd ?? null}, ${JSON.stringify(input.detail ?? null)}::text::jsonb)`;
-  // Push the Learning tab's Scout view (learning.scout shows the last tick).
-  // Fire-and-forget via a lazy import so the PG seam (+ its tests) never
-  // statically depends on the SSE layer; a missing SSE bus is a no-op.
-  void import('../sync-sse')
-    .then((m) => m.notifySyncInvalidate('learning.scout'))
-    .catch(() => {});
+       ${input.budgetUsedUsd ?? null}, ${JSON.stringify(input.detail ?? null)}::text::jsonb, ${origin})`;
+  // Push the Learning tab's Scout view (learning.scout shows the last tick) —
+  // ONLY for Scout-origin ticks. A su-ideate pass rides this ledger but is not a
+  // Scout tick, so it must not ping the Scout view (its own observability surface
+  // lands with the Phase 3 observability item). Fire-and-forget via a lazy import
+  // so the PG seam (+ its tests) never statically depends on the SSE layer.
+  if (origin === 'scout') {
+    void import('../sync-sse')
+      .then((m) => m.notifySyncInvalidate('learning.scout'))
+      .catch(() => {});
+  }
 }
 
 /**
@@ -90,6 +102,12 @@ export interface ReadScoutTicksOpts {
   installSlug?: string;
   /** Max rows, newest-first. Default 500 — the standing-quality window. */
   limit?: number;
+  /**
+   * Provenance partition to read (migration 571). Default 'scout' — a su-ideate
+   * pass is not a Scout tick, so Scout consumers (quality-metrics, system-health)
+   * never see one. Pass 'su-ideate' for the su-partition read.
+   */
+  origin?: string;
 }
 
 interface TickRow {
@@ -114,11 +132,13 @@ export async function readScoutTicks(opts: ReadScoutTicksOpts = {}): Promise<Sco
   const { sql } = getOrgPg();
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const limit = opts.limit ?? 500;
+  const origin = opts.origin ?? 'scout';
   const rows = await sql<TickRow[]>`
     SELECT install_slug, tick_at, status, gate, ideas_generated, ideas_routed,
            ideas_deduped, budget_used_usd, detail
       FROM harness_shared.scout_ticks
      WHERE workspace_id = ${ws}
+       AND origin = ${origin}
        ${opts.installSlug ? sql`AND install_slug = ${opts.installSlug}` : sql``}
      ORDER BY tick_at DESC
      LIMIT ${limit}`;
@@ -157,18 +177,23 @@ export async function readScoutTicks(opts: ReadScoutTicksOpts = {}): Promise<Sco
  * — passing them reconciles the @singleton ↔ legacy-per-hive rows so the read picks
  * up runs recorded under either key (the install slug the tick recorder writes
  * under). Omit to read across all of the workspace's scout ticks.
+ *
+ * `origin` (migration 571) defaults to 'scout' — su-ideate ticks share this
+ * ledger but must NOT reset the Scout cadence floor, so they are excluded here.
  */
 export async function readLastScoutRunAtMs(
-  opts: { workspaceId?: string; installSlugs?: string[] } = {},
+  opts: { workspaceId?: string; installSlugs?: string[]; origin?: string } = {},
 ): Promise<number | null> {
   const { sql } = getOrgPg();
   const ws = opts.workspaceId ?? activeWorkspaceId();
+  const origin = opts.origin ?? 'scout';
   const slugs = (opts.installSlugs ?? []).filter((s) => typeof s === 'string' && s.length > 0);
   const rows = await sql<Array<{ tick_at: string | Date }>>`
     SELECT tick_at
       FROM harness_shared.scout_ticks
      WHERE workspace_id = ${ws}
        AND status = 'ran'
+       AND origin = ${origin}
        ${slugs.length > 0 ? sql`AND install_slug IN ${sql(slugs)}` : sql``}
      ORDER BY tick_at DESC
      LIMIT 1`;
@@ -198,18 +223,23 @@ export async function readLastScoutRunAtMs(
  * `installSlugs` reconciles across the workspace-brain re-key (K1): pass the write
  * key plus its read-fallbacks (workspaceBrainReadKeys) so a sentinel/legacy split
  * still resolves the true last run. Empty/omitted ⇒ workspace-wide (all installs).
+ *
+ * `origin` (migration 571) defaults to 'scout' — a su-ideate pass's 'ran' tick
+ * shares this ledger but is excluded so it never resets the Scout cadence floor.
  */
 export async function readLastRanTickAtMs(
-  opts: { installSlugs?: string[]; workspaceId?: string } = {},
+  opts: { installSlugs?: string[]; workspaceId?: string; origin?: string } = {},
 ): Promise<number | null> {
   const { sql } = getOrgPg();
   const ws = opts.workspaceId ?? activeWorkspaceId();
+  const origin = opts.origin ?? 'scout';
   const slugs = (opts.installSlugs ?? []).filter((s) => typeof s === 'string' && s.length > 0);
   const rows = await sql<Array<{ last_ran: string | Date | null }>>`
     SELECT max(tick_at) AS last_ran
       FROM harness_shared.scout_ticks
      WHERE workspace_id = ${ws}
        AND status IN ('ran', 'fired')
+       AND origin = ${origin}
        ${slugs.length > 0 ? sql`AND install_slug = ANY(${slugs}::text[])` : sql``}`;
   const v = rows[0]?.last_ran ?? null;
   if (v == null) return null;

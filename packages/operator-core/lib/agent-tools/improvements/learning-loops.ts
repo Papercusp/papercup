@@ -93,10 +93,13 @@ export default defineTool({
       lastFiredAt: r.last_fired_at == null ? null : new Date(r.last_fired_at).toISOString(),
       nextFireAt: r.next_fire_at == null ? null : new Date(r.next_fire_at).toISOString(),
     }));
+    // origin='scout' (migration 571): su-ideate ticks share this ledger but are
+    // NOT Scout activity — counting them here would mask a dead Scout loop.
     const scoutTicks = (await sql<{ last_tick_at: Date | string | null }[]>`
       SELECT max(tick_at) AS last_tick_at
         FROM harness_shared.scout_ticks
-       WHERE workspace_id = ${workspaceId}`) as { last_tick_at: Date | string | null }[];
+       WHERE workspace_id = ${workspaceId}
+         AND origin = 'scout'`) as { last_tick_at: Date | string | null }[];
     const lastScoutTickAt = scoutTicks[0]?.last_tick_at ?? null;
 
     const loops = computeLearningLoopHealth(LEARNING_SINGLETONS, routines, {

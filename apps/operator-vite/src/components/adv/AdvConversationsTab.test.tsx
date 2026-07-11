@@ -140,44 +140,22 @@ let mockResult: Record<string, unknown> = {
   invalidate: vi.fn(),
   transport: 'SSE',
 };
-const unifiedRows = [
-  {
-    id: 'messages:msg-1',
-    source: 'messages',
-    sourceId: 'msg-1',
-    kind: 'handoff',
-    state: 'delivered',
-    title: 'pick up the UI work',
-    preview: 'the scoping is done, your turn',
-    actor: 'architect',
-    recipient: 'worker',
-    harnessSlug: 'papercusp',
-    relatedRef: 'F-042',
-    updatedAt: Date.now() - 60_000,
-  },
-  {
-    id: 'threads:c-1',
-    source: 'threads',
-    sourceId: 'c-1',
-    kind: 'question',
-    state: 'open',
-    title: 'why does the watchdog recycle the host?',
-    preview: '#infra',
-    actor: 'oracle',
-    harnessSlug: 'papercusp',
-    updatedAt: Date.now() - 120_000,
-  },
-];
-let mockUnifiedResult: Record<string, unknown> = {
-  data: unifiedRows,
+const ready = (data: unknown[] = []): Record<string, unknown> => ({
+  data,
   loading: false,
   fetching: false,
   error: null,
   invalidate: vi.fn(),
   transport: 'SSE',
-};
+});
+const syncKey = (queryName: string, args: Record<string, unknown> = {}) => `${queryName}:${JSON.stringify(args)}`;
+let syncResults: Record<string, Record<string, unknown>> = {};
 vi.mock('@papercusp/sync', () => ({
-  useSyncQuery: ({ queryName }: { queryName: string }) => queryName === 'conversations.unified' ? mockUnifiedResult : mockResult,
+  useSyncQuery: ({ queryName, args = {}, enabled = true }: { queryName: string; args?: Record<string, unknown>; enabled?: boolean }) => {
+    if (queryName === 'dev.coordFeed') return mockResult;
+    if (!enabled) return ready();
+    return syncResults[syncKey(queryName, args)] ?? syncResults[queryName] ?? ready();
+  },
 }));
 
 // @tanstack/react-virtual: the agent-chats rail (U1) renders through a
@@ -239,7 +217,21 @@ beforeEach(() => {
   nuqsState.msg = null;
   nuqsState.opc = null;
   mockResult = { data: feedRows, loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'SSE' };
-  mockUnifiedResult = { data: unifiedRows, loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'SSE' };
+  syncResults = {
+    'conversations.questionsList': ready([{
+      id: 'c-1', kind: 'question', state: 'open', scope: 'harness', harness_slug: 'papercusp',
+      title: 'why does the watchdog recycle the host?', asker_id: 'oracle', topics: ['infra'],
+      promoted_issue_id: null, created_ts: new Date(Date.now() - 120_000).toISOString(),
+      updated_ts: new Date(Date.now() - 120_000).toISOString(),
+    }]),
+    'conversations.deliberationList': ready(),
+    'conversations.agentChatList': ready(),
+    'conversations.messageList': ready([{
+      id: 'msg-1', harness_slug: 'papercusp', from_slug: 'architect', to_slug: 'worker', to_role: null,
+      kind: 'handoff', subject: 'pick up the UI work', body: 'the scoping is done, your turn', status: 'delivered',
+      created_at: new Date(Date.now() - 60_000).toISOString(), from_feature_id: 'F-042', to_feature_id: 'F-042',
+    }]),
+  };
   vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ conversations: [] }) })));
 });
 
@@ -286,7 +278,14 @@ describe('AdvConversationsTab — Create-style shell', () => {
 
   it('turns an indefinitely pending initial inbox read into a retryable state', async () => {
     vi.useFakeTimers();
-    mockUnifiedResult = { data: [], loading: true, fetching: true, error: null, invalidate: vi.fn(), transport: 'SSE' };
+    for (const name of [
+      'conversations.questionsList',
+      'conversations.deliberationList',
+      'conversations.agentChatList',
+      'conversations.messageList',
+    ]) {
+      syncResults[name] = { data: [], loading: true, fetching: true, error: null, invalidate: vi.fn(), transport: 'SSE' };
+    }
     render(<AdvConversationsTab />);
     expect(screen.getByRole('status', { name: 'Loading conversations' })).toBeTruthy();
 
@@ -486,33 +485,33 @@ describe('AdvConversationsTab — Create-style shell', () => {
 // ─── The unified communication views (every type, not just coord threads) ──────
 //
 // the-conversations-tab-surfaces-every-comm-type: the tab gained three views that
-// read the global communication-surface dispatch (/api/admin/comms/:kind/:verb):
-// agent chats, work-item messages, and operator chats. These guard the new views
+// read the shared named-query cache: agent chats, work-item messages, and
+// deliberations. These guard the new views
 // against render-time crashes the typecheck can't catch and assert each one
 // surfaces its data.
 
-/** Stub fetch to answer the comms dispatch by URL, everything else empty. */
+/** Adapt the old endpoint-shaped fixtures into the named-query row contract. */
 function stubComms(byUrl: Record<string, unknown>) {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (url: string) => {
-      const match = Object.keys(byUrl).find((frag) => url.includes(frag));
-      return { ok: true, status: 200, json: async () => (match ? byUrl[match] : { conversations: [] }) };
-    }),
-  );
+  for (const [path, raw] of Object.entries(byUrl)) {
+    const payload = raw as Record<string, unknown>;
+    if (path.includes('/threads/list')) syncResults['conversations.deliberationList'] = ready((payload.items as unknown[]) ?? []);
+    if (path.includes('/threads/get')) syncResults['conversations.deliberationDetail'] = ready([payload]);
+    if (path.includes('/agent-chats/list')) syncResults['conversations.agentChatList'] = ready((payload.items as unknown[]) ?? []);
+    if (path.includes('/agent-chats/get')) syncResults['conversations.agentChatDetail'] = ready(payload.chat ? [payload.chat] : []);
+    if (path.includes('/messages/list')) syncResults['conversations.messageList'] = ready((payload.items as unknown[]) ?? []);
+    if (path.includes('/messages/get')) syncResults['conversations.messageDetail'] = ready(payload.message ? [payload.message] : []);
+    if (path.includes('/coordination/conversations/list')) syncResults['conversations.questionsList'] = ready((payload.conversations as unknown[]) ?? []);
+    if (path.includes('/coordination/conversations/get')) {
+      const conversation = payload.conversation as Record<string, unknown> | undefined;
+      syncResults['conversations.questionDetail'] = ready(conversation ? [{
+        ...conversation,
+        topics: payload.topics ?? [],
+        posts: payload.posts ?? [],
+        subscriber_count: payload.subscriber_count ?? 0,
+      }] : []);
+    }
+  }
 }
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => { resolve = done; });
-  return { promise, resolve };
-}
-
-const response = (payload: unknown) => ({
-  ok: true,
-  status: 200,
-  json: async () => payload,
-});
 
 describe('AdvConversationsTab — unified communication views', () => {
   it('exposes a view tab for every communication type', () => {
@@ -566,36 +565,21 @@ describe('AdvConversationsTab — unified communication views', () => {
     expect(screen.getByText('looks like the watchdog threshold')).toBeTruthy();
   });
 
-  it('keeps the newest deliberation when an earlier detail request resolves late', async () => {
+  it('keys deliberation detail by the current selected id', async () => {
     nuqsState.conv = 'deliberations';
     nuqsState.thread = 'th-a';
-    const first = deferred<ReturnType<typeof response>>();
-    const second = deferred<ReturnType<typeof response>>();
-    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
-      if (url.includes('/comms/threads/list')) return Promise.resolve(response({ items: [] }));
-      const body = JSON.parse(String(init?.body ?? '{}')) as { thread_id?: string };
-      return body.thread_id === 'th-a' ? first.promise : second.promise;
-    }));
-
+    const detail = (id: string, body: string) => ({
+      thread: { thread_id: id, title: id, parent_kind: null, parent_ref: null, created_by: null, harness_slug: null, created_at: new Date().toISOString(), last_post_at: null, post_count: 1 },
+      posts: [{ id: id === 'th-a' ? 1 : 2, author_id: 'worker', body, created_at: new Date().toISOString(), harness_slug: null }],
+    });
+    syncResults[syncKey('conversations.deliberationDetail', { id: 'th-a' })] = ready([detail('th-a', 'stale detail')]);
+    syncResults[syncKey('conversations.deliberationDetail', { id: 'th-b' })] = ready([detail('th-b', 'newest detail')]);
     const { rerender } = render(<AdvConversationsTab />);
-    await waitFor(() => expect(screen.getByRole('status', { name: 'Loading deliberation' })).toBeTruthy());
+    expect(await screen.findByText('stale detail')).toBeTruthy();
     nuqsState.thread = 'th-b';
     rerender(<AdvConversationsTab />);
-    await act(async () => {
-      second.resolve(response({
-        thread: { thread_id: 'th-b', title: 'newest thread', parent_kind: null, parent_ref: null, created_by: null, harness_slug: null, created_at: new Date().toISOString(), last_post_at: null, post_count: 1 },
-        posts: [{ id: 2, author_id: 'worker', body: 'newest detail', created_at: new Date().toISOString(), harness_slug: null }],
-      }));
-    });
     expect(await screen.findByText('newest detail')).toBeTruthy();
-    await act(async () => {
-      first.resolve(response({
-        thread: { thread_id: 'th-a', title: 'stale thread', parent_kind: null, parent_ref: null, created_by: null, harness_slug: null, created_at: new Date().toISOString(), last_post_at: null, post_count: 1 },
-        posts: [{ id: 1, author_id: 'worker', body: 'stale detail', created_at: new Date().toISOString(), harness_slug: null }],
-      }));
-    });
     expect(screen.queryByText('stale detail')).toBeNull();
-    expect(screen.getByText('newest detail')).toBeTruthy();
   });
 
   it('Agent chats view lists sessions and opens a transcript', async () => {
@@ -628,10 +612,9 @@ describe('AdvConversationsTab — unified communication views', () => {
 
   it('keeps an already-rendered rail mounted while a refresh is in flight', async () => {
     nuqsState.conv = 'agentchats';
-    const next = deferred<ReturnType<typeof response>>();
-    let listReads = 0;
-    const payload = {
-      items: [{
+    const invalidate = vi.fn();
+    syncResults['conversations.agentChatList'] = {
+      ...ready([{
         id: 'chat-stable',
         harness_slug: 'papercusp',
         role: 'worker',
@@ -643,14 +626,10 @@ describe('AdvConversationsTab — unified communication views', () => {
         total_output_tokens: 0,
         total_cost_usd_cents: 0,
         turns: 1,
-      }],
-      total: 1,
+      }]),
+      fetching: true,
+      invalidate,
     };
-    vi.stubGlobal('fetch', vi.fn((url: string) => {
-      if (!url.includes('/comms/agent-chats/list')) return Promise.resolve(response({}));
-      listReads += 1;
-      return listReads === 1 ? Promise.resolve(response(payload)) : next.promise;
-    }));
 
     render(<AdvConversationsTab />);
     expect(await screen.findByText('stable conversation row')).toBeTruthy();
@@ -660,9 +639,7 @@ describe('AdvConversationsTab — unified communication views', () => {
     // producing the visible button flash on every slow refresh.
     expect(screen.getByText('stable conversation row')).toBeTruthy();
     expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull();
-
-    await act(async () => { next.resolve(response(payload)); });
-    await waitFor(() => expect(listReads).toBe(2));
+    expect(invalidate).toHaveBeenCalledTimes(1);
   });
 
   it('Agent chats view renders an ARCHIVED transcript read-only (no composer)', async () => {
@@ -696,21 +673,9 @@ describe('AdvConversationsTab — unified communication views', () => {
     expect(screen.queryByTestId('advconv-live-chat')).toBeNull();
   });
 
-  it('keeps the newest agent chat when an earlier detail request resolves late', async () => {
+  it('keys agent-chat detail by the current selected id', async () => {
     nuqsState.conv = 'agentchats';
     nuqsState.chat = 'chat-a';
-    const first = deferred<ReturnType<typeof response>>();
-    const second = deferred<ReturnType<typeof response>>();
-    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
-      if (url.includes('/comms/agent-chats/list')) return Promise.resolve(response({ items: [] }));
-      const body = JSON.parse(String(init?.body ?? '{}')) as { id?: string };
-      return body.id === 'chat-a' ? first.promise : second.promise;
-    }));
-
-    const { rerender } = render(<AdvConversationsTab />);
-    await waitFor(() => expect(screen.getByRole('status', { name: 'Loading chat' })).toBeTruthy());
-    nuqsState.chat = 'chat-b';
-    rerender(<AdvConversationsTab />);
     const chat = (id: string, content: string) => ({
       id,
       harness_slug: null,
@@ -725,11 +690,14 @@ describe('AdvConversationsTab — unified communication views', () => {
       turns: 1,
       transcript: [{ role: 'assistant', content }],
     });
-    await act(async () => { second.resolve(response({ chat: chat('chat-b', 'newest chat detail') })); });
+    syncResults[syncKey('conversations.agentChatDetail', { id: 'chat-a' })] = ready([chat('chat-a', 'stale chat detail')]);
+    syncResults[syncKey('conversations.agentChatDetail', { id: 'chat-b' })] = ready([chat('chat-b', 'newest chat detail')]);
+    const { rerender } = render(<AdvConversationsTab />);
+    expect(await screen.findByText('stale chat detail')).toBeTruthy();
+    nuqsState.chat = 'chat-b';
+    rerender(<AdvConversationsTab />);
     expect(await screen.findByText('newest chat detail')).toBeTruthy();
-    await act(async () => { first.resolve(response({ chat: chat('chat-a', 'stale chat detail') })); });
     expect(screen.queryByText('stale chat detail')).toBeNull();
-    expect(screen.getByText('newest chat detail')).toBeTruthy();
   });
 
   // WI-125: the conversations tab is no longer a read-only transcript browser —
@@ -854,9 +822,12 @@ describe('AdvConversationsTab — unified communication views', () => {
     await waitFor(() => expect(screen.getByText(/No agent chats/i)).toBeTruthy());
   });
 
-  it('a failed list fetch surfaces a retry-able error instead of a stuck loader', async () => {
+  it('a failed list query surfaces a retry-able error instead of a stuck loader', async () => {
     nuqsState.conv = 'deliberations';
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 500, json: async () => ({}) })));
+    syncResults['conversations.deliberationList'] = {
+      ...ready(),
+      error: new Error('HTTP 500'),
+    };
     render(<AdvConversationsTab />);
     await waitFor(() => expect(screen.getByText(/Couldn't load/i)).toBeTruthy());
     expect(screen.getByRole('button', { name: /Retry/i })).toBeTruthy();

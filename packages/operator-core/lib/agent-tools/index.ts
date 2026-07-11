@@ -1030,6 +1030,10 @@ import './scout/ideation-feedback';
 // rail: a draft plan + an origin='su-ideate' routed-idea ledger row (grade/outcome
 // attribution rides the same plan:<slug> terminal-state read).
 import './scout/route-idea';
+// su-ideate-learning-substrate-2026-07-10 P-010 — record one su IDEATE pass as a
+// status='ran', origin='su-ideate' tick on the Scout ledger (migration 571): the
+// su analogue of a scout-cycle tick, partitioned OFF Scout's cadence/health reads.
+import './scout/ideate-pass-record';
 
 // self-learning-frontier-2026-06-12 P-004 (FB-02, D-003) — the behavior-change
 // ledger read surface: recent prompt/rule mutations (change_ledger:list) + the

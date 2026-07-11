@@ -11,17 +11,33 @@
  * restart is invisible to the agent.
  *
  * SAFETY — no double-execution (the load-bearing invariant): a tools/call is often a
- * non-idempotent WRITE. We therefore RETRY ONLY when the upstream connection was
+ * non-idempotent WRITE. The base rule: RETRY freely only when the upstream connection was
  * REFUSED (ECONNREFUSED / pre-connect error) — i.e. the request provably never reached
- * :3070, so replaying it cannot double-apply. Once the socket has connected, an error
- * MIGHT mean :3070 already processed the call, so we do NOT retry — we surface a 502.
- * That trades a rare mid-flight failure (client re-issues) for the guarantee that a
- * restart-window retry never re-runs a write.
+ * :3070, so replaying it cannot double-apply. Once the socket has CONNECTED, an error
+ * MIGHT mean :3070 already processed the call, so by default we do NOT retry — we surface
+ * a 502.
+ *
+ * P-005 (mcp-reliability-hardening-2026-07-11) refines the post-connect case — the
+ * "retry-once on a stale-socket reset" this header long anticipated — by CLASSIFYING the
+ * forward (see prepareForward):
+ *   - 'idempotent' (no tools/call: initialize / tools/list / ping / resources / prompts /
+ *     notifications) → replaying has no side effect, so a post-connect failure IS retried
+ *     (bounded, in-window). This directly targets the dropped-handshake "toolless session".
+ *   - 'keyed' (a tools/call into which the proxy injects a per-request `_meta.idempotencyKey`,
+ *     reused across retries) → a post-connect retry is write-safe because :3070 REPLAYS the
+ *     stored result (harness_shared.mcp_tool_results) instead of re-executing. Bounded to
+ *     MAX_POST_CONNECT_RETRIES so the documented commit→store race is exposed at most once.
+ *   - 'opaque' (a tools/call with no usable key — keying kill-switched off, body unparseable,
+ *     or oversized) → the original invariant stands: NEVER replay a post-connect failure.
+ * Kill-switch: PAPERCUSP_MCP_PROXY_KEYED_RETRY=0 forces every tools/call to 'opaque'
+ * (exactly the pre-P-005 refused-only behavior); the idempotent-method retry is always safe
+ * and stays on.
  *
  * The endpoint is STATELESS streamable-HTTP (no Mcp-Session-Id / handshake), so the
  * proxy is a pure per-request passthrough — no session state to lose across a restart.
  */
 import http from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -133,6 +149,102 @@ export function shouldRetry(connected: boolean, elapsedMs: number, windowMs: num
   return elapsedMs < windowMs;
 }
 
+/** Post-connect failures are retried AT MOST this many times — a bounded "retry-once on a
+ *  stale-socket reset". Bounding it caps the exposure of the server's documented
+ *  commit→store race (a write that committed but died before persisting its replay row)
+ *  to a single replay attempt. */
+export const MAX_POST_CONNECT_RETRIES = 1;
+/** Above this serialized size we do NOT rewrite the body to inject a key: re-stringifying a
+ *  pathologically large tools/call would block the proxy loop, and that call is exactly the
+ *  one we must not block on. Forgoing its key only drops it to 'opaque' (refused-only). */
+const INJECT_MAX_BODY_BYTES = 256 * 1024;
+/** Mirrors the server's validIdempotencyKey bound (_mcp-result-replay.ts KEY_MAX=200) so a
+ *  client-supplied key we "respect" is one :3070 will actually honor for replay. */
+const IDEM_KEY_MAX = 200;
+
+function isValidIdemKey(v: unknown): v is string {
+  return typeof v === 'string' && v.trim().length > 0 && v.trim().length <= IDEM_KEY_MAX;
+}
+
+/** How a forwarded request may be retried AFTER the socket connected:
+ *  - 'idempotent' — no tools/call present → replaying has no side effect, always safe.
+ *  - 'keyed'      — every tools/call carries a valid idempotencyKey → a replay dedups
+ *                   server-side instead of double-applying the write.
+ *  - 'opaque'     — a tools/call with no usable key → NEVER replay (write-safety default). */
+export type ForwardClass = 'idempotent' | 'keyed' | 'opaque';
+
+export interface PreparedForward {
+  body: Buffer;
+  headers: http.IncomingHttpHeaders;
+  klass: ForwardClass;
+}
+
+/**
+ * Classify a forward and, for a tools/call, inject a per-request `_meta.idempotencyKey`
+ * so a post-connect retry is write-safe (:3070 replays the stored result). PURE +
+ * unit-tested; `genKey` is injected for determinism. A VALID client-supplied key is
+ * respected (never overwritten); an INVALID one (the server would ignore it) drops the
+ * whole request to 'opaque'. Only a POST JSON body can carry a tools/call.
+ */
+export function prepareForward(
+  method: string,
+  headers: http.IncomingHttpHeaders,
+  body: Buffer,
+  opts: { keyingEnabled: boolean; genKey: () => string },
+): PreparedForward {
+  if (method !== 'POST' || body.length === 0) return { body, headers, klass: 'opaque' };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body.toString('utf8'));
+  } catch {
+    return { body, headers, klass: 'opaque' }; // non-JSON — cannot classify → safe default
+  }
+  const msgs = Array.isArray(parsed) ? parsed : [parsed];
+  const isCall = (m: unknown): m is { method?: unknown; params?: Record<string, unknown> } =>
+    !!m && typeof m === 'object' && (m as { method?: unknown }).method === 'tools/call';
+  const calls = msgs.filter(isCall);
+  if (calls.length === 0) return { body, headers, klass: 'idempotent' }; // no write → free safe retry
+
+  if (!opts.keyingEnabled) return { body, headers, klass: 'opaque' }; // kill-switch → refused-only
+  if (body.length > INJECT_MAX_BODY_BYTES) return { body, headers, klass: 'opaque' };
+
+  let mutated = false;
+  for (const m of calls) {
+    const params =
+      m.params && typeof m.params === 'object' ? m.params : (m.params = {} as Record<string, unknown>);
+    const meta =
+      params._meta && typeof params._meta === 'object' ? (params._meta as Record<string, unknown>) : {};
+    if (isValidIdemKey(meta.idempotencyKey)) continue; // respect a valid client key
+    if (meta.idempotencyKey !== undefined) return { body, headers, klass: 'opaque' }; // invalid client key → can't safely retry
+    meta.idempotencyKey = opts.genKey();
+    params._meta = meta;
+    m.params = params;
+    mutated = true;
+  }
+  if (!mutated) return { body, headers, klass: 'keyed' }; // already client-keyed, body unchanged
+  const newBody = Buffer.from(JSON.stringify(parsed), 'utf8');
+  const newHeaders: http.IncomingHttpHeaders = { ...headers, 'content-length': String(newBody.length) };
+  delete newHeaders['transfer-encoding'];
+  return { body: newBody, headers: newHeaders, klass: 'keyed' };
+}
+
+/**
+ * Post-connect retry decision (PURE + unit-tested): a forward that CONNECTED and then failed
+ * may be replayed only when it is 'idempotent' or server-dedup 'keyed', bounded to
+ * `maxRetries` and within the window. 'opaque' never replays — the load-bearing invariant.
+ */
+export function postConnectRetryable(
+  klass: ForwardClass,
+  retriesUsed: number,
+  maxRetries: number,
+  elapsedMs: number,
+  windowMs: number,
+): boolean {
+  if (klass === 'opaque') return false;
+  if (retriesUsed >= maxRetries) return false;
+  return elapsedMs < windowMs;
+}
+
 interface ForwardOutcome {
   /** The upstream response, when one was received. */
   ures?: http.IncomingMessage;
@@ -228,15 +340,23 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     });
     req.on('end', () => {
       void (async () => {
-        const body = Buffer.concat(chunks);
+        const rawBody = Buffer.concat(chunks);
+        // P-005: classify the forward + (for a tools/call) inject a per-request
+        // idempotencyKey ONCE, reused across every retry of THIS request so :3070 dedups a
+        // replay instead of double-applying the write. Kill-switch:
+        // PAPERCUSP_MCP_PROXY_KEYED_RETRY=0 forces tools/call to 'opaque' (refused-only).
+        const keyingEnabled = process.env.PAPERCUSP_MCP_PROXY_KEYED_RETRY !== '0';
+        const fwd = prepareForward(req.method ?? 'GET', req.headers, rawBody, { keyingEnabled, genKey: randomUUID });
         const started = Date.now();
         let attempts = 0;
+        let postConnectRetries = 0;
         let last: ForwardOutcome | undefined;
-        // Retry loop — guarded by shouldRetry (refused-only + window).
+        // Retry loop: refused → replay across the window (shouldRetry); post-connect →
+        // replay only an idempotent/keyed request, bounded (postConnectRetryable).
         // eslint-disable-next-line no-constant-condition
         while (true) {
           attempts++;
-          const outcome = await forwardOnce(opts, req.method ?? 'GET', req.url ?? '/', req.headers, body);
+          const outcome = await forwardOnce(opts, req.method ?? 'GET', req.url ?? '/', fwd.headers, fwd.body);
           if (outcome.ures) {
             const ures = outcome.ures;
             const status = ures.statusCode ?? 502;
@@ -244,7 +364,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             ures.pipe(res);
             if (attempts > 1) {
               log(`recovered after ${attempts} attempts (${Date.now() - started}ms) — :3070 came back`);
-              recordProxyFailure({ kind: 'recovered', method: req.method, path: req.url, status, attempts, elapsedMs: Date.now() - started });
+              recordProxyFailure({ kind: 'recovered', method: req.method, path: req.url, status, attempts, postConnectRetries, klass: fwd.klass, elapsedMs: Date.now() - started });
             }
             // Forwarded a non-2xx: previously INVISIBLE (no tool_invocations row). A 4xx with
             // `connection: close` is the stale-socket-400 signature (W1.3) — record it so any
@@ -255,10 +375,25 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             return;
           }
           last = outcome;
-          if (!shouldRetry(outcome.connected, Date.now() - started, opts.retryWindowMs)) break;
-          await new Promise((r) => setTimeout(r, backoff));
+          const elapsed = Date.now() - started;
+          if (!outcome.connected) {
+            // Refused / pre-connect: the request provably never reached :3070 → always safe to replay.
+            if (shouldRetry(false, elapsed, opts.retryWindowMs)) {
+              await new Promise((r) => setTimeout(r, backoff));
+              continue;
+            }
+            break;
+          }
+          // Post-connect failure: replay ONLY an idempotent or server-keyed request, bounded.
+          if (postConnectRetryable(fwd.klass, postConnectRetries, MAX_POST_CONNECT_RETRIES, elapsed, opts.retryWindowMs)) {
+            postConnectRetries++;
+            recordProxyFailure({ kind: 'post_connect_retry', method: req.method, path: req.url, klass: fwd.klass, attempts, elapsedMs: elapsed, detail: String(outcome.err?.message ?? '') });
+            await new Promise((r) => setTimeout(r, backoff));
+            continue;
+          }
+          break;
         }
-        // Exhausted the window (or a post-connect error we must not replay).
+        // Exhausted the window (or a post-connect error we must not / no longer replay).
         const refused = last && !last.connected;
         res.writeHead(refused ? 503 : 502, { 'content-type': 'application/json', 'retry-after': '5' });
         res.end(
@@ -269,11 +404,13 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             windowMs: opts.retryWindowMs,
             note: refused
               ? ':3070 refused connections for the whole retry window (restart took too long or is down)'
-              : 'upstream errored AFTER connecting — not retried (avoids double-applying a non-idempotent tools/call)',
+              : fwd.klass === 'opaque'
+                ? 'upstream errored AFTER connecting — not retried (avoids double-applying a non-idempotent tools/call)'
+                : `upstream errored AFTER connecting; retried ${postConnectRetries}× (${fwd.klass}) then surfaced the error`,
           }),
         );
         log(`upstream ${refused ? 'unavailable' : 'error'} after ${attempts} attempt(s): ${last?.err?.message ?? last?.err}`);
-        recordProxyFailure({ kind: refused ? 'exhausted_refused' : 'upstream_error', method: req.method, path: req.url, status: refused ? 503 : 502, attempts, elapsedMs: Date.now() - started, detail: String(last?.err?.message ?? last?.err ?? 'unknown') });
+        recordProxyFailure({ kind: refused ? 'exhausted_refused' : 'upstream_error', method: req.method, path: req.url, status: refused ? 503 : 502, attempts, postConnectRetries, klass: fwd.klass, elapsedMs: Date.now() - started, detail: String(last?.err?.message ?? last?.err ?? 'unknown') });
       })();
     });
   });

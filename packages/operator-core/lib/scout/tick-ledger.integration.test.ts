@@ -149,4 +149,48 @@ describe('scout_ticks ledger (real PG)', () => {
       expect(await readLastRanTickAtMs({ workspaceId: ws, installSlugs: [ws, 'legacy-hive'] })).not.toBeNull();
     });
   });
+
+  // P-010 (migration 571): su-ideate ticks share this ledger but Scout readers
+  // filter origin='scout'. A su-ideate 'ran' tick must be invisible to the Scout
+  // read AND must NOT reset the Scout cadence clock (else a su pass would gate the
+  // next real Scout cycle as 'min-interval' — the EI-1600 dark-Scout failure).
+  describe('origin partition (su-ideate vs scout)', () => {
+    it("hides su-ideate ticks from the default (scout) read, but shows them under origin:'su-ideate'", async () => {
+      const ws = 'ws-scout-origin';
+      await recordScoutTick({ workspaceId: ws, status: 'ran', installSlug: 's', ideasRouted: 4, ideasGenerated: 9 });
+      await recordScoutTick({
+        workspaceId: ws,
+        status: 'ran',
+        origin: 'su-ideate',
+        installSlug: 's',
+        ideasRouted: 2,
+        ideasGenerated: 7,
+        detail: { owner: 'su-x' },
+      });
+      const scout = await readScoutTicks({ workspaceId: ws });
+      expect(scout).toHaveLength(1);
+      expect(scout[0].ideasRouted).toBe(4);
+      const ideate = await readScoutTicks({ workspaceId: ws, origin: 'su-ideate' });
+      expect(ideate).toHaveLength(1);
+      expect(ideate[0]).toMatchObject({ ideasRouted: 2, ideasGenerated: 7, detail: { owner: 'su-x' } });
+    });
+
+    it("a su-ideate 'ran' tick does NOT reset the Scout cadence clock", async () => {
+      const ws = 'ws-scout-origin-cadence';
+      const slug = '@singleton';
+      await recordScoutTick({ workspaceId: ws, installSlug: slug, status: 'ran' });
+      await new Promise((r) => setTimeout(r, 25));
+      const scoutRanAt = await readLastRanTickAtMs({ workspaceId: ws, installSlugs: [slug] });
+      // A su-ideate run lands AFTER — it must not advance the Scout cadence clock.
+      await new Promise((r) => setTimeout(r, 25));
+      await recordScoutTick({ workspaceId: ws, installSlug: slug, status: 'ran', origin: 'su-ideate' });
+      const after = await readLastRanTickAtMs({ workspaceId: ws, installSlugs: [slug] });
+      expect(scoutRanAt).not.toBeNull();
+      expect(after).toBe(scoutRanAt);
+      // …but the su-ideate partition DOES see its own run.
+      expect(
+        await readLastRanTickAtMs({ workspaceId: ws, installSlugs: [slug], origin: 'su-ideate' }),
+      ).not.toBeNull();
+    });
+  });
 });

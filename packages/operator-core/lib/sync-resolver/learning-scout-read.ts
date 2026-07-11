@@ -174,6 +174,7 @@ export async function readScoutSnapshot(sql: Sql, workspaceId: string): Promise<
     const ticks = (await sql`
       SELECT * FROM harness_shared.scout_ticks
        WHERE workspace_id = ${workspaceId}
+         AND origin = 'scout'
        ORDER BY tick_at DESC
        LIMIT 1
     `) as Array<Record<string, unknown>>;

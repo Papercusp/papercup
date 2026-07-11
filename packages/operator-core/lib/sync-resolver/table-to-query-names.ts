@@ -153,12 +153,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.harness_screenshots': ['harnessScreenshots.byHarness'],
   'harness_shared.agent_chats_consolidated': [
     'agentChats.byHarness',
-    'conversations.unified',
     'conversations.agentChatList',
     { name: 'conversations.agentChatDetail', scope: idScope },
   ],
   'harness_shared.coord_conversations': [
-    'conversations.unified',
     'conversations.questionsList',
     { name: 'conversations.questionDetail', scope: idScope },
   ],
@@ -166,13 +164,11 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // to a Q&A conversation. These tables do not expose a trigger id that matches
   // the parent/detail key, so detail queries intentionally full-bust by name.
   'harness_shared.coord_threads': [
-    'conversations.unified',
     'conversations.deliberationList',
     'conversations.deliberationDetail',
     'conversations.questionDetail',
   ],
   'harness_shared.coord_thread_posts': [
-    'conversations.unified',
     'conversations.deliberationList',
     'conversations.deliberationDetail',
     'conversations.questionDetail',
@@ -181,7 +177,6 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // though the conversation scalar row itself does not change.
   'harness_shared.coord_entity_subscriptions': ['conversations.questionDetail'],
   'harness_shared.messages_consolidated': [
-    'conversations.unified',
     'conversations.messageList',
     { name: 'conversations.messageDetail', scope: idScope },
   ],

@@ -5,8 +5,6 @@ import {
   resolveNamedQueryV2,
   NAME_NOT_FOUND,
   jsonSafeRows,
-  finalizeUnifiedConversationRows,
-  clipUnifiedConversationText,
 } from './index';
 
 describe('jsonSafeRows (BigInt → Number for the JSON.stringify rest-query serializer)', () => {
@@ -30,26 +28,6 @@ describe('jsonSafeRows (BigInt → Number for the JSON.stringify rest-query seri
 
   it('passes through non-object rows', () => {
     expect(jsonSafeRows(['a', 3, null])).toEqual(['a', 3, null]);
-  });
-});
-
-describe('unified Conversations projection bounds', () => {
-  it('applies the requested limit after globally sorting all sources', () => {
-    const rows = finalizeUnifiedConversationRows(
-      [
-        { id: 'older-a', updatedAt: 10 },
-        { id: 'newest', updatedAt: 40 },
-        { id: 'older-b', updatedAt: 20 },
-        { id: 'newer', updatedAt: 30 },
-      ],
-      2,
-    );
-    expect(rows.map((row) => row.id)).toEqual(['newest', 'newer']);
-  });
-
-  it('bounds message previews without changing short text', () => {
-    expect(clipUnifiedConversationText('short', 10)).toBe('short');
-    expect(clipUnifiedConversationText('0123456789abcdef', 10)).toBe('012345678…');
   });
 });
 
@@ -211,8 +189,17 @@ describe('sync-resolver v2 registry', () => {
       }
     });
 
-    it('includes the unified Conversations inbox projection', () => {
-      expect(knownQueryNamesV2()).toContain('conversations.unified');
+    it('includes every Conversations list/detail query', () => {
+      expect(knownQueryNamesV2()).toEqual(expect.arrayContaining([
+        'conversations.questionsList',
+        'conversations.questionDetail',
+        'conversations.deliberationList',
+        'conversations.deliberationDetail',
+        'conversations.agentChatList',
+        'conversations.agentChatDetail',
+        'conversations.messageList',
+        'conversations.messageDetail',
+      ]));
     });
 
     it('includes the plans.* Create-tab live queries', () => {

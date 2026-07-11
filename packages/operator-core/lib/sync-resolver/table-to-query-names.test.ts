@@ -156,7 +156,12 @@ describe('per-row scoped invalidation (caching-layer-tag-eca P-006)', () => {
     // mapped query name today is still a bare string (full-bust); name each
     // scoped exception explicitly so a future accidental object-ification
     // elsewhere in the map still fails loud here.
-    const KNOWN_SCOPED = new Set(['plans.get']);
+    const KNOWN_SCOPED = new Set([
+      'plans.get',
+      'conversations.questionDetail',
+      'conversations.agentChatDetail',
+      'conversations.messageDetail',
+    ]);
     for (const [table, targets] of Object.entries(TABLE_TO_QUERY_NAMES)) {
       for (const t of targets) {
         if (typeof t === 'string') continue;
@@ -279,16 +284,31 @@ describe('TABLE_TO_QUERY_NAMES vs v2 registry consistency', () => {
     expect(new Set(names).size, 'bridged query names are distinct').toBe(names.length);
   });
 
-  it('refreshes the unified Conversations inbox from every curated source table', () => {
-    for (const table of [
-      'harness_shared.coord_conversations',
-      'harness_shared.coord_threads',
-      'harness_shared.coord_thread_posts',
-      'harness_shared.agent_chats_consolidated',
-      'harness_shared.messages_consolidated',
-    ]) {
-      expect(TABLE_TO_QUERY_NAMES[table]).toContain('conversations.unified');
+  it('refreshes every Conversations source list/detail from its backing tables', () => {
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.coord_conversations']).toEqual(expect.arrayContaining([
+      'conversations.questionsList',
+      expect.objectContaining({ name: 'conversations.questionDetail' }),
+    ]));
+    for (const table of ['harness_shared.coord_threads', 'harness_shared.coord_thread_posts']) {
+      expect(TABLE_TO_QUERY_NAMES[table]).toEqual(expect.arrayContaining([
+        'conversations.deliberationList',
+        'conversations.deliberationDetail',
+        'conversations.questionDetail',
+      ]));
     }
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.agent_chats_consolidated']).toEqual(expect.arrayContaining([
+      'conversations.agentChatList',
+      expect.objectContaining({ name: 'conversations.agentChatDetail' }),
+    ]));
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.messages_consolidated']).toEqual(expect.arrayContaining([
+      'conversations.messageList',
+      expect.objectContaining({ name: 'conversations.messageDetail' }),
+    ]));
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.coord_links']).toEqual(expect.arrayContaining([
+      'conversations.questionsList',
+      'conversations.questionDetail',
+    ]));
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.coord_entity_subscriptions']).toContain('conversations.questionDetail');
   });
 });
 
