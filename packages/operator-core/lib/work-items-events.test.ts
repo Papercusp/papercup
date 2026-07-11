@@ -442,6 +442,24 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
     expect(claimable?.payload.reason).toBe('unblocked');
   });
 
+  it('CO-FIRES from emitWorkItemCreatedEvent for an unclaimed-claimable create (one hook at the call site)', async () => {
+    const emit = typedEmit();
+    const { emitWorkItemCreatedEvent } = await import('./work-items-events');
+    emitWorkItemCreatedEvent(wi({ id: 'WI-34', state: 'todo', assignee: null, severity: null }), { emit });
+    await new Promise((r) => setTimeout(r, 0));
+    const keys = emit.mock.calls.map((c) => c[0].key).sort();
+    expect(keys).toEqual(['work-item:claimable', 'work-item:created']);
+  });
+
+  it('CO-FIRES from emitClaimReleasedEvent when the row returned to a claimable state', async () => {
+    const emit = typedEmit();
+    const { emitClaimReleasedEvent } = await import('./work-items-events');
+    emitClaimReleasedEvent(wi({ id: 'WI-35', state: 'todo', assignee: null }), { emit });
+    await new Promise((r) => setTimeout(r, 0));
+    const keys = emit.mock.calls.map((c) => c[0].key).sort();
+    expect(keys).toEqual(['claim:released:WI-35', 'work-item:claimable']);
+  });
+
   it('never rejects on an emit failure (warns instead)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { emitWorkItemClaimableEvent } = await import('./work-items-events');

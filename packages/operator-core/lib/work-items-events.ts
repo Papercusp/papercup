@@ -121,6 +121,10 @@ export function emitWorkItemCreatedEvent(wi: WorkItem, deps: Pick<SettledEventsD
       .then(() => emit({ key: `work-item:created:${wi.severity}`, summary, payload, source: 'work-items' }))
       .catch((e: unknown) => failSoft(`created-event(severity) for ${wi.id}`, e));
   }
+  // P-007: a create that lands unclaimed-claimable also announces the canonical
+  // pool key — co-fired HERE (not at the createWorkItem call site) so the event
+  // family's semantics live in one module; the guard drops born-claimed items.
+  emitWorkItemClaimableEvent(wi, 'created', deps);
 }
 
 /** The states an unassigned item can be pulled from — get_next/claim_next's floor. */
@@ -194,6 +198,9 @@ export function emitClaimReleasedEvent(wi: WorkItem, deps: Pick<SettledEventsDep
       }),
     )
     .catch((e: unknown) => failSoft(`claim-released-event for ${wi.id}`, e));
+  // P-007: a released item is back in the pool — co-fire the canonical claimable
+  // key (the guard drops rows that released into a non-claimable end state).
+  emitWorkItemClaimableEvent(wi, 'released', deps);
 }
 
 /**

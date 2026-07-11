@@ -892,16 +892,9 @@ function maybeFireClaimedEvent(assignTo: string | null, wi: WorkItem): void {
  * fire-and-forget: an emit-path failure must never break the create.
  */
 function maybeFireCreatedEvent(wi: WorkItem): void {
+  // P-007: emitWorkItemCreatedEvent internally co-fires the canonical
+  // `work-item:claimable` key for an unclaimed-claimable create — one hook here.
   void import('./work-items-events').then((m) => m.emitWorkItemCreatedEvent(wi)).catch(() => {});
-}
-
-/**
- * Fire the canonical `work-item:claimable` key (composable-event-awaits P-007) —
- * the emitter's own guard drops assigned / non-claimable items, so call sites
- * just report the transition. Lazy import + fire-and-forget, same as above.
- */
-function maybeFireClaimableEvent(wi: WorkItem, reason: 'created' | 'released' | 'unblocked'): void {
-  void import('./work-items-events').then((m) => m.emitWorkItemClaimableEvent(wi, reason)).catch(() => {});
 }
 
 /** Create a work-item of any kind, minting a kind-independent WI-NNN id (D-008). */
@@ -945,7 +938,6 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     maybeFireUrgentWake(input, created);
     maybeFireClaimedEvent(assignTo, created);
     maybeFireCreatedEvent(created);
-    maybeFireClaimableEvent(created, 'created');
     return created;
   }
 
@@ -1105,7 +1097,6 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   maybeFireUrgentWake(input, wi);
   maybeFireClaimedEvent(assignTo, wi);
   maybeFireCreatedEvent(wi);
-  maybeFireClaimableEvent(wi, 'created');
   return wi;
 }
 
@@ -3022,10 +3013,9 @@ export async function releaseWorkItem(
   // events imports THIS module statically — the lazy import breaks the cycle).
   const emitReleased = (released: WorkItem | null): void => {
     if (released && wasClaimed) {
+      // P-007: emitClaimReleasedEvent internally co-fires `work-item:claimable`
+      // for a row that returned to a claimable state — one hook here.
       void import('./work-items-events').then((m) => m.emitClaimReleasedEvent(released)).catch(() => {});
-      // P-007: a released item is back in the pool — co-fire the canonical
-      // claimable key (the emitter's guard drops non-claimable end states).
-      maybeFireClaimableEvent(released, 'released');
     }
   };
   if (wi.family === 'issue') {
