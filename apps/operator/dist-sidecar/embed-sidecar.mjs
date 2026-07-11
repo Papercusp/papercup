@@ -5429,6 +5429,7 @@ var MAX_TEXTS_PER_CALL = 256;
 var MAX_TEXT_CHARS = 32e3;
 var MAX_BODY_BYTES = 16 * 1024 * 1024;
 var EMBED_CACHE_MAX_DEFAULT = 1024;
+var EMBED_SIDECAR_CONCURRENCY_ENV = "PAPERCUSP_EMBED_SIDECAR_CONCURRENCY";
 var EMBED_SIDECAR_MODELS = ["gemma", "local", "harrier"];
 var EMBED_SIDECAR_RUNTIME = "node-onnx-worker";
 var MODEL_REVS = {
@@ -5525,11 +5526,28 @@ function createEmbedSidecarServer(opts = {}) {
     }
     return p;
   };
-  let queue = Promise.resolve();
+  const concurrency = Math.max(
+    1,
+    Math.floor(
+      opts.concurrency ?? (Number(process.env[EMBED_SIDECAR_CONCURRENCY_ENV]) > 0 ? Number(process.env[EMBED_SIDECAR_CONCURRENCY_ENV]) : 1)
+    )
+  );
+  let active = 0;
+  const waiting = [];
   const enqueue = (work) => {
-    const run = queue.then(work);
-    queue = run.catch(() => void 0);
-    return run;
+    const start = () => {
+      active++;
+      return Promise.resolve().then(work).finally(() => {
+        active--;
+        waiting.shift()?.();
+      });
+    };
+    if (active < concurrency) return start();
+    return new Promise((resolve2, reject) => {
+      waiting.push(() => {
+        start().then(resolve2, reject);
+      });
+    });
   };
   const cacheMax = opts.cacheMax ?? EMBED_CACHE_MAX_DEFAULT;
   const vecCache = /* @__PURE__ */ new Map();
@@ -5617,7 +5635,8 @@ function createEmbedSidecarServer(opts = {}) {
         uptimeMs: Date.now() - startedAt,
         runtime: EMBED_SIDECAR_RUNTIME,
         models: { ...warm },
-        cache: { hits: cacheHits, misses: cacheMisses, size: vecCache.size }
+        cache: { hits: cacheHits, misses: cacheMisses, size: vecCache.size },
+        concurrency
       });
       return;
     }
