@@ -81,6 +81,26 @@ export function computeIntentStale(
   return lastActiveSecAgo > thresholdSec;
 }
 
+/** Pure: render an idle-age in seconds as the compact human string a reader
+ *  actually thinks in — "42s", "9m", "2h41m", "3d2h" (two units max; sub-unit
+ *  remainders drop past the hour scale). Raw seconds ("9641") read as noise
+ *  next to a present-tense intent string — EI-9696: a roster reader took ~20
+ *  hours-idle agents for active editors because the staleness signals sat in
+ *  adjacent numeric/boolean columns — so the emitted prefix carries this form. */
+export function formatIdleAge(sec: number): string {
+  const s = Math.max(0, Math.floor(sec));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) {
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return m ? `${h}h${m}m` : `${h}h`;
+  }
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  return h ? `${d}d${h}h` : `${d}d`;
+}
+
 /** How much older `intentAgeSec` may run past `lastActiveSecAgo` before the gap
  *  itself counts as drift (EI-8988) — a busy agent (fresh lastActiveSecAgo) whose
  *  declared intent TEXT hasn't been touched in a while. Deliberately smaller than

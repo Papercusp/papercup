@@ -3,6 +3,7 @@ import {
   computeIntentStale,
   computeIntentDivergent,
   computeLastActiveSecAgo,
+  formatIdleAge,
   INTENT_STALE_SEC,
   INTENT_DIVERGENCE_SEC,
   mergeTier1,
@@ -48,6 +49,28 @@ describe('computeIntentStale', () => {
   it('honors an explicit threshold override', () => {
     expect(computeIntentStale(100, 60)).toBe(true);
     expect(computeIntentStale(50, 60)).toBe(false);
+  });
+});
+
+describe('formatIdleAge', () => {
+  it('renders each scale in the form a reader thinks in (EI-9696: never raw seconds)', () => {
+    expect(formatIdleAge(0)).toBe('0s');
+    expect(formatIdleAge(42)).toBe('42s');
+    expect(formatIdleAge(59)).toBe('59s');
+    expect(formatIdleAge(60)).toBe('1m');
+    expect(formatIdleAge(9 * 60 + 30)).toBe('9m'); // sub-minute remainder dropped
+    expect(formatIdleAge(3599)).toBe('59m');
+    expect(formatIdleAge(3600)).toBe('1h');
+    expect(formatIdleAge(2 * 3600 + 41 * 60)).toBe('2h41m');
+    // the misread fixture: 9641s looked like noise, 2h40m does not
+    expect(formatIdleAge(9641)).toBe('2h40m');
+    expect(formatIdleAge(86400)).toBe('1d');
+    expect(formatIdleAge(3 * 86400 + 2 * 3600 + 5 * 60)).toBe('3d2h'); // two units max
+  });
+
+  it('clamps negatives and truncates fractions', () => {
+    expect(formatIdleAge(-5)).toBe('0s');
+    expect(formatIdleAge(61.9)).toBe('1m');
   });
 });
 

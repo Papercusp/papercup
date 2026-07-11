@@ -114,6 +114,7 @@ describe('scenario registry', () => {
       'su-S27-woke-to-dispatch-claims',
       'su-S28-ideate-pass-closes-loop',
       'su-S29-grade-low-wakes-originator',
+      'su-S30-bug-filing-unconditional',
       // queen triage-grading (scout-idea-grading-2026-06-12 B-06/B-08)
       'queen-Q01-grade-routed-on-triage',
       'queen-Q02-owner-grade-sovereign-no-retry',

@@ -198,6 +198,52 @@ describe('byte-stability (D-006)', () => {
   });
 });
 
+describe('stale-intent idle prefix (EI-9696)', () => {
+  it('prefixes a STALE row\'s intent with its human idle-age — the string itself carries the staleness', () => {
+    const emitted = toStableRosterRow({
+      ...MAXIMAL_ROW,
+      intent: 'UNPAUSE fleet — resume drain',
+      intentStale: true,
+      lastActiveSecAgo: 2 * 3600 + 41 * 60,
+      sessionState: 'parked',
+    });
+    expect(emitted.intent).toBe('[idle 2h41m] UNPAUSE fleet — resume drain');
+  });
+
+  it('falls back to a bare [idle] marker when the age is unknown (sessionState-forced staleness)', () => {
+    const emitted = toStableRosterRow({
+      ...MAXIMAL_ROW,
+      intent: 'remote work',
+      intentStale: true,
+      lastActiveSecAgo: null,
+    });
+    expect(emitted.intent).toBe('[idle] remote work');
+  });
+
+  it('leaves a FRESH row\'s intent untouched', () => {
+    const emitted = toStableRosterRow({ ...MAXIMAL_ROW, intent: 'doing things', intentStale: false, lastActiveSecAgo: 42 });
+    expect(emitted.intent).toBe('doing things');
+    // unknown staleness (null) is also not prefixed — never guess
+    const unknown = toStableRosterRow({ ...MAXIMAL_ROW, intent: 'doing things', intentStale: null });
+    expect(unknown.intent).toBe('doing things');
+  });
+
+  it('never resurrects the normalized placeholder intent (stale placeholder stays null)', () => {
+    const emitted = toStableRosterRow({
+      ...MAXIMAL_ROW,
+      intent: '(active — see coord:presence for current work)',
+      intentStale: true,
+      lastActiveSecAgo: 9641,
+    });
+    expect(emitted.intent).toBeNull();
+  });
+
+  it('does not touch the delta-eligible projection (the prefix is emit-side only)', () => {
+    const stale: RosterRow = { ...MAXIMAL_ROW, intent: 'doing things', intentStale: true, lastActiveSecAgo: 9641 };
+    expect(deltaEligibleProjection(stale).intent).toBe('doing things');
+  });
+});
+
 describe('two-lane drift guard (D-005)', () => {
   const overlap = (a: readonly string[], b: readonly string[]) => a.filter((x) => b.includes(x));
 

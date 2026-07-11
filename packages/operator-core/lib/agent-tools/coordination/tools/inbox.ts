@@ -25,6 +25,8 @@ import { COORD_ROLES } from "../roles";
 import { renderInjection, type CoordLineSource } from "../../../coord-schema";
 import { fetchPresenceFleet } from "../presence-fleet";
 import type { RecipientCueScope } from "../cue-authority";
+import { hydrateRefs } from "../ref-hydrate-resolve";
+import type { HydratedRef } from "../ref-hydrate";
 import {
   renderContextUsageLine,
   contextUsagePct,
@@ -47,6 +49,11 @@ import { cachedRead, type CachedReadCtx } from "../../../cache";
  * tank the hit-rate; this short soft TTL bounds worst-case staleness alongside the debounce.
  */
 const COORD_INBOX_SOFT_TTL_MS = 5_000;
+
+/** P-005 reply-quote hydration budget (D-004): ~200 verbatim chars per quote,
+ *  at most one quote per shown injection line (default window = 8 lines). */
+const RELATED_QUOTE_SNIPPET_CHARS = 200;
+const RELATED_QUOTE_MAX_REFS = 8;
 
 /**
  * EI-6797: per-owner throttle for the inbox liveness heartbeat. `coord:inbox`
@@ -493,9 +500,46 @@ export default defineTool({
     } catch {
       cueScope = undefined;
     }
+    // coord-authority-hardening P-005: hydrate related_msg_id (replies +
+    // escalation resolutions) into a compact VERBATIM quote of the REFERENCED
+    // message — sender, ts, ~200 chars — so the receiver reads the exchange
+    // without a fetch, even when they compacted the original away. Zero
+    // sender-side change: the back-reference is the canonical envelope field
+    // senders already set. This is the IO half (the renderer stays pure);
+    // best-effort BY CONTRACT — any failure ⇒ undefined map ⇒ plain lines.
+    // Acks are skipped (a pure receipt glyph — quoting what was acked is
+    // noise); a dangling ref still renders, marked unresolved (visible, not
+    // papered over). Capped to the shown-window size, newest-biased to match
+    // renderInjection's newest-kept overflow policy.
+    let relatedQuotes: Map<string, HydratedRef> | undefined;
+    try {
+      const relatedIds = [
+        ...new Set(
+          (injectionEntries as unknown as Array<Record<string, unknown>>)
+            .filter(
+              (en) =>
+                en.kind !== "ack" &&
+                typeof en.related_msg_id === "string" &&
+                en.related_msg_id,
+            )
+            .map((en) => en.related_msg_id as string),
+        ),
+      ].slice(-RELATED_QUOTE_MAX_REFS);
+      if (relatedIds.length) {
+        const hydrated = await hydrateRefs(
+          relatedIds.map((id) => ({ kind: "msg" as const, id })),
+          { budget: { snippetChars: RELATED_QUOTE_SNIPPET_CHARS, maxRefs: relatedIds.length } },
+        );
+        relatedQuotes = new Map(
+          hydrated.flatMap((h) => (h.ref.kind === "msg" ? [[h.ref.id, h] as const] : [])),
+        );
+      }
+    } catch {
+      relatedQuotes = undefined;
+    }
     const coordInjection = renderInjection(
       injectionEntries as unknown as CoordLineSource[],
-      { cueScope },
+      { cueScope, relatedQuotes },
     );
 
     // P-010 re-bootstrap-on-compaction (D-007): on the first read after a fresh

@@ -35,7 +35,7 @@
  */
 
 import type { UnifiedPresenceRecord } from './federated-presence';
-import type { PresenceTier1Joins } from './presence-tier1';
+import { formatIdleAge, type PresenceTier1Joins } from './presence-tier1';
 import type { SessionState } from './presence-wakeability';
 import type { ContextPressureBucket } from './context-pressure';
 
@@ -278,5 +278,19 @@ export function toStableRosterRow(row: RosterRow): Record<string, unknown> {
   // P-004: the self-referential placeholder intent is a non-signal — normalize it to
   // null so a reader (and the Queen) never mistakes it for a real declared intent.
   if (out.intent === PLACEHOLDER_INTENT) out.intent = null;
+  // EI-9696: bake staleness INTO the intent string readers consume. A stale
+  // declared intent renders in confident present tense ("UNPAUSE fleet — resume
+  // drain") hours after the agent's last real activity, and the adjacent
+  // intentStale boolean + raw-seconds lastActiveSecAgo were demonstrably read
+  // past (a reader took ~20 parked agents for active editors). Prefixing the
+  // string itself makes that misread impossible. Applied HERE (emit-side
+  // projection only), never upstream: the etag + [coord+N] delta channel diff
+  // the RAW rows, so the minute-churning age never breaks the byte-stable
+  // delta contract (D-005/D-006).
+  if (out.intentStale === true && typeof out.intent === 'string' && out.intent) {
+    const age = out.lastActiveSecAgo;
+    out.intent =
+      typeof age === 'number' ? `[idle ${formatIdleAge(age)}] ${out.intent}` : `[idle] ${out.intent}`;
+  }
   return out;
 }

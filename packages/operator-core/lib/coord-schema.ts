@@ -39,6 +39,10 @@ import {
   renderRelayQuoteSuffix,
   UNVERIFIED_CLAIM_TAG,
 } from './agent-tools/coordination/relay-provenance';
+import {
+  renderReplyQuoteSuffix,
+  type HydratedRef,
+} from './agent-tools/coordination/ref-hydrate';
 
 export interface LegendEntry {
   glyph: string;
@@ -105,6 +109,10 @@ export interface CoordLineSource {
   body?: string;
   ts: string;
   plan_slug?: string;
+  /** The canonical reply / escalation-resolution back-reference (envelope field).
+   *  Read ONLY by the P-005 reply-quote hydration — guarded at use, so a
+   *  malformed value degrades to "no quote", never throws. */
+  related_msg_id?: string;
   // digest-notify coalescing fields
   subject?: string;
   digest?: boolean;
@@ -251,6 +259,15 @@ export interface RenderInjectionOpts {
    * not demoting, so the check only engages on a SUCCESSFUL membership read.
    */
   cueScope?: RecipientCueScope;
+  /**
+   * P-005 reply-quote hydration (coord-authority-hardening-2026-07-11): map of
+   * related_msg_id → resolved hydration of the REFERENCED message, built by the
+   * DELIVERY seam (inbox.ts — the IO half; this renderer stays pure). A line
+   * whose envelope carries `related_msg_id` with a map hit gets an inline
+   * `⤷ re msg <id> (<sender> → <to>, <ts>): "<verbatim snippet>"` suffix.
+   * Absent map / missing key ⇒ prior behavior (no suffix) — fail-soft.
+   */
+  relatedQuotes?: ReadonlyMap<string, HydratedRef>;
 }
 
 /**
@@ -315,8 +332,17 @@ export function renderInjection(entries: CoordLineSource[], opts: RenderInjectio
       claim === 'owner' || (claim === 'queen' && stamp?.authority !== 'hive-queen')
         ? `${UNVERIFIED_CLAIM_TAG} `
         : '';
+    // coord-authority-hardening P-005: a reply / escalation resolution quotes the
+    // message it answers — the delivery seam resolved related_msg_id into a
+    // verbatim hydration (relatedQuotes); render it as an inline `⤷ re` suffix so
+    // the receiver reads the exchange even after compacting the original away.
+    const relatedHydration =
+      typeof e.related_msg_id === 'string' && e.related_msg_id
+        ? opts.relatedQuotes?.get(e.related_msg_id)
+        : undefined;
+    const replySuffix = relatedHydration ? renderReplyQuoteSuffix(relatedHydration) : '';
     const text = tag ? `[${tag}] ${body}` : body;
-    lines.push(`${glyph} ${handle} ${claimFlag}${text}${relaySuffix}`);
+    lines.push(`${glyph} ${handle} ${claimFlag}${text}${relaySuffix}${replySuffix}`);
   }
   return lines.join('\n');
 }

@@ -143,6 +143,9 @@ import { SU_S27_WOKE_TO_DISPATCH_CLAIMS } from './su/S27-woke-to-dispatch-claims
 // S29: a GRADE-mode low grade + critique on a (peer-authored) su idea wakes the originator (woken:1).
 import { SU_S28_IDEATE_PASS_CLOSES_LOOP } from './su/S28-ideate-pass-closes-loop';
 import { SU_S29_GRADE_LOW_WAKES_ORIGINATOR } from './su/S29-grade-low-wakes-originator';
+// SU-S30: unconditional-bug-filing-prompt-hardening-2026-07-11 — a suspected bug (INCLUDING a
+// false-alarm / self-recovered / "transient" signal) is FILED unconditionally, not a judgment call.
+import { SU_S30_BUG_FILING_UNCONDITIONAL } from './su/S30-bug-filing-unconditional';
 // QUEEN-Q01/Q02: scout-idea-grading-2026-06-12 (B-06/B-08) — Mug grades
 // routed Scout drafts while triaging; owner-grade-sovereign refusals stand.
 import { QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE } from './mug/Q01-grade-routed-on-triage';
@@ -289,6 +292,8 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   // su-ideate learning-loop mode-batteries (su-ideate-learning-substrate-2026-07-10 P-015)
   SU_S28_IDEATE_PASS_CLOSES_LOOP,
   SU_S29_GRADE_LOW_WAKES_ORIGINATOR,
+  // unconditional bug-filing hardening (unconditional-bug-filing-prompt-hardening-2026-07-11)
+  SU_S30_BUG_FILING_UNCONDITIONAL,
   // queen triage-grading behavioral coverage (scout-idea-grading-2026-06-12)
   QUEEN_Q01_GRADE_ROUTED_ON_TRIAGE,
   QUEEN_Q02_OWNER_GRADE_SOVEREIGN_NO_RETRY,

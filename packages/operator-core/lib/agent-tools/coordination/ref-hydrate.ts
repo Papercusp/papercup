@@ -171,3 +171,17 @@ export function renderHydratedRef(h: HydratedRef): string {
 export function renderHydratedRefs(hs: HydratedRef[]): string {
   return hs.map(renderHydratedRef).join('\n');
 }
+
+/**
+ * The P-005 related_msg_id REPLY-QUOTE inline suffix: appended to a delivered
+ * [coord+N] line whose envelope carries `related_msg_id` (a reply / escalation
+ * resolution), quoting the REFERENCED message — sender, ts, bounded verbatim
+ * snippet — so the receiver reads the exchange without a fetch, even when they
+ * compacted the original away. `⤷ re` (not `↪`) so a reply-quote reads
+ * distinctly from a relay/ref hydration on the same line. An unresolved ref
+ * stays VISIBLE (the fail-soft contract) — never silently dropped.
+ */
+export function renderReplyQuoteSuffix(h: HydratedRef): string {
+  if (!h.ok) return ` ⤷ re ${h.label} — unresolved (${h.error ?? 'unknown'})`;
+  return h.snippet ? ` ⤷ re ${h.label}: "${h.snippet}"` : ` ⤷ re ${h.label}`;
+}
