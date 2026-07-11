@@ -132,5 +132,7 @@ describe('desktop ACL command sync (WI-2143 guard)', () => {
     // Regression shape from the release gate: a partial sidecar retained
     // serve.mjs but omitted db-sql, and this shortcut skipped its placeholder.
     expect(helper).not.toMatch(/if sidecar\.join\("serve\.mjs"\)\.exists\(\)\s*\{\s*return;/);
+    expect(buildRs).toContain('std::env::var_os("CARGO_MANIFEST_DIR")');
+    expect(buildRs).not.toContain('env!("CARGO_MANIFEST_DIR")');
   });
 });

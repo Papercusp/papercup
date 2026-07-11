@@ -640,20 +640,28 @@ export interface Violation {
 }
 
 /**
- * EI-9506: a backup / maintenance statement — a `pg_dump`-style
- * `COPY harness_shared.coord_event_log (...) TO stdout` — legitimately reads the
- * WHOLE table: that is what a backup is FOR, not an application read pattern to
- * bound. It is issued by the backup process (kopia/pg_dump), never by the app,
- * so the furnace detector must never treat it as a furnace. The rows/call leg
- * would otherwise flag every full-table dump (~100k rows/call) as an "unbounded
- * scan", and — critically — the EI-9420 min_exec suppression cannot rescue it:
- * that suppression gates only the MEAN-exec leg, whereas the rows/call leg
- * stands on its own, and a dump has no fast path (every call reads the whole
- * table, so min_exec is high too). Match on the leading keyword of the
- * (already length-clamped) query preview. Exported for unit tests.
+ * EI-9506 / EI-9533: a backup / maintenance statement — a `pg_dump`-style
+ * `COPY harness_shared.coord_event_log (...) TO stdout`, or an autovacuum/maintenance
+ * `VACUUM [ANALYZE]` / `ANALYZE harness_shared.coord_event_log` — legitimately touches
+ * the WHOLE table: that is what a backup / table maintenance is FOR, not an application
+ * read pattern to bound. These are issued by the backup process (kopia/pg_dump) or the
+ * autovacuum daemon / a maintenance job, never by the app, so the furnace detector must
+ * never treat them as furnaces. The rows/call leg would otherwise flag a full-table dump
+ * (~100k rows/call) as an "unbounded scan", and the MEAN-exec leg flags a slow
+ * `VACUUM ANALYZE` / `ANALYZE` (live-observed 2.4–3.4s on this table) — and, critically,
+ * the EI-9420 min_exec suppression cannot rescue EITHER: it gates only the MEAN-exec leg
+ * (so the rows/call leg stands alone for the dump), and a maintenance op has no fast path
+ * (every call scans the whole table, so its min_exec is high too — nothing to suppress on).
+ * VACUUM/ANALYZE escape flagging today ONLY incidentally (rows/call=0 keeps them below the
+ * top-N-by-rows/call gather window), so this is the durable fix that classifies them
+ * correctly by STATEMENT KIND rather than relying on that ranking accident (EI-9533: the
+ * same maintenance-op class as EI-9506's COPY). Match on the leading keyword of the
+ * (already length-clamped) query preview — anchored at start + a word boundary so a SELECT
+ * that merely mentions COPY/VACUUM/ANALYZE in a string/column is never a false positive.
+ * Exported for unit tests.
  */
 export function isBackupOrMaintenanceStatement(queryPreview: string): boolean {
-  return /^\s*COPY\b/i.test(queryPreview);
+  return /^\s*(?:COPY|VACUUM|ANALYZE)\b/i.test(queryPreview);
 }
 
 /** Pure: judge a snapshot against the thresholds. */
@@ -898,13 +906,19 @@ export async function gatherCoordLogFurnaceStatements(
     FROM pg_stat_statements
     WHERE query ILIKE '%coord_event_log%'
       AND calls > 0
-      -- EI-9506: exclude backup/maintenance dumps (a pg_dump-style COPY ... TO
-      -- stdout). A full-table dump is not an application read pattern, so it must
-      -- neither be judged a furnace nor consume a top-N diagnostic slot (which,
-      -- ranked by rows/call DESC, it always would -- ~100k rows/call outranks every
-      -- real query, masking a genuine furnace at rank 11+). evaluateInvariants
-      -- excludes it too, via isBackupOrMaintenanceStatement, as defense-in-depth.
+      -- EI-9506 / EI-9533: exclude backup/maintenance statements — a pg_dump-style
+      -- COPY ... TO stdout, and autovacuum/maintenance VACUUM [ANALYZE] / ANALYZE.
+      -- None is an application read pattern, so none must be judged a furnace nor
+      -- consume a top-N diagnostic slot. The COPY dump (ranked by rows/call DESC)
+      -- always would -- ~100k rows/call outranks every real query, masking a genuine
+      -- furnace at rank 11+; a slow VACUUM/ANALYZE (live-observed 2.4–3.4s on this
+      -- table) would trip the MEAN-exec leg. evaluateInvariants excludes the same set
+      -- via isBackupOrMaintenanceStatement, as defense-in-depth. (Prefix ILIKEs, not a
+      -- regex word boundary: Postgres regex treats \b as backspace, so ~* '\bVACUUM'
+      -- would not match — the JS predicate uses \b correctly in its own regex flavor.)
       AND query NOT ILIKE 'COPY %'
+      AND query NOT ILIKE 'VACUUM %'
+      AND query NOT ILIKE 'ANALYZE %'
     ORDER BY (rows::float8 / GREATEST(calls, 1)) DESC
     LIMIT ${limit}
   `;

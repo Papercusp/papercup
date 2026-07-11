@@ -388,6 +388,97 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
       ['script'],
     ),
   },
+  // --- su-ideate learning loop: the IDEATE/GRADE ritual (su-ideate-learning-substrate-2026-07-10) ---
+  // The verbs the P-014 IDEATE/GRADE contracts mandate — advertised so the mode-batteries (SU-S28
+  // ground→file lens-tagged→close-tick; SU-S29 low grade + critique wakes the originator) can
+  // actually exercise the ritual. Arg shapes mirror the real blender:* / improvements:capture tools.
+  {
+    name: 'blender:ideation-feedback',
+    description:
+      'GROUND an IDEATE pass: the composite learning read over the su-ideate ledger — prior grades + ' +
+      'critiques (prior art), realized won/lost outcomes, per-lens win-rates, and the federated frontier. ' +
+      'Open every pass with this instead of a blank page.',
+    input: obj({
+      scope: { type: 'string', description: "'mine' = your own graded ideas/outcomes; default = the pot-wide su-ideate read." },
+      intent: { type: 'string', description: "the pass's one-line focus — ranks priming by relevance when passed." },
+    }),
+  },
+  {
+    name: 'improvements:capture',
+    description:
+      'FILE a papercusp improvement you found (friction / gap / idea). For an IDEATE pass use ' +
+      "kind:'feature' and TAG the lens you ran via ideation.lens (+ a bet + cheapExperiment when it is a " +
+      'real bet) so the row is attributable to the lens that produced it. No quality gate, no quota.',
+    input: obj(
+      {
+        kind: { type: 'string', enum: ['bug', 'change', 'feature'], description: "feature = a proposal worth designing; bug/change = a concrete defect/tweak." },
+        title: { type: 'string' },
+        summary: { type: 'string', description: 'the body — what/why/how.' },
+        lane: { type: 'string', enum: ['improvement', 'observation'], description: "'observation' = a raw signal to mine later; default = improvement." },
+        ideation: {
+          type: 'object',
+          description: "IDEATE-pass provenance for a kind:'feature' origination (persisted on payload.ideation).",
+          properties: {
+            lens: { type: 'string', description: "the generative stance that produced the idea (analogical / first-principles / reframing / constraint-removal / risk-first / user-value / cost-leverage)." },
+            bet: { type: 'string', description: 'the concrete upside if the idea pans out.' },
+            cheapExperiment: { type: 'string', description: 'the cheap falsifiable first experiment (the anti-bullshit gate on "bettable").' },
+          },
+        },
+      },
+      ['kind', 'title', 'summary'],
+    ),
+  },
+  {
+    name: 'blender:route-idea',
+    description:
+      'ROUTE a broad-scope idea onward — the ones that want a plan draft, not a single change. Writes a ' +
+      'routed-idea ledger row (what later attributes the outcome back to the lens). Re-route an already-' +
+      'filed feature by id, or route a fresh draft straight to a draft plan.',
+    input: obj({
+      featureId: { type: 'string', description: 'an already-filed su feature (EI id) to re-route onto the plan rail (XOR draft).' },
+      draft: {
+        type: 'object',
+        description: 'a fresh idea to route straight to a draft plan (XOR featureId).',
+        properties: {
+          title: { type: 'string' },
+          framing: { type: 'string', description: 'the why / the reframe.' },
+          mechanism: { type: 'string', description: 'the how — the concrete mechanism.' },
+          bet: { type: 'string' },
+          lens: { type: 'string' },
+        },
+        required: ['title', 'framing', 'mechanism'],
+      },
+      rail: { type: 'string', enum: ['plan'], description: "the routing rail (plan rail first)." },
+    }, ['rail']),
+  },
+  {
+    name: 'blender:ideate-pass-record',
+    description:
+      'CLOSE the pass with a ledgered su-ideate tick (ideas filed, observations mined) — the measurable ' +
+      'record that makes the loop a loop. A pass that files ideas but records no tick is an OPEN loop: it ' +
+      'forfeits the priming the next pass grounds on.',
+    input: obj(
+      {
+        ideasFiled: { type: 'number', description: 'how many ideas this pass filed/routed onward.' },
+        observationsMined: { type: 'number', description: 'how many raw observations the pass examined (the denominator of yield).' },
+        notes: { type: 'string', description: 'a short note on the pass (theme, corpus, what was skipped).' },
+      },
+      ['ideasFiled'],
+    ),
+  },
+  {
+    name: 'blender:grade-idea',
+    description:
+      'GRADE a routed su-ideate idea 1–5 (5 = clear win, 1 = clear loss) with a critique. A LOW grade ' +
+      '(≤3) plus feedback WAKES the originator to revise (P-005); above it, the feedback is an unwoken FYI. ' +
+      'REFUSES a row you authored — no self-grading (D-012), the teaching signal must stay honest.',
+    input: obj({
+      ideaId: { type: 'string', description: "the routed idea's ledger id (XOR routedRef)." },
+      routedRef: { type: 'string', description: 'the routed artifact ref — "plan:<slug>" | "wi:<id>" | "gym:<id>" (XOR ideaId).' },
+      grade: { type: 'number', description: '1–5 integer.' },
+      feedback: { type: 'string', description: 'the critique shown to the originator / next cycles — the signal to revise against.' },
+    }, ['grade']),
+  },
 ];
 
 /**
