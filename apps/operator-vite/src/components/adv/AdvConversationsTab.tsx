@@ -76,6 +76,10 @@ import '@/app/adv/harnesses/adv-panel-chrome.css';
 // small virtual window is visible. The server still returns `total`, so the UI
 // can say "100 of N" without downloading N.
 const COMMS_LIST_LIMIT = 100;
+// Each synchronized source owns an independently bounded window. The unified
+// projection must retain all four windows; applying the per-source cap again
+// after the merge lets a busy source starve every other conversation type.
+const UNIFIED_LIST_LIMIT = COMMS_LIST_LIMIT * 4;
 const READ_TIMEOUT_MS = 15_000;
 const INITIAL_LOAD_STALL_MS = 8_000;
 
@@ -503,7 +507,7 @@ function UnifiedInboxView() {
   const agentChats = useSyncQuery<AgentChatRow>({ queryName: 'conversations.agentChatList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
   const messages = useSyncQuery<MsgRow>({ queryName: 'conversations.messageList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
   const rows = useMemo(
-    () => composeUnifiedConversationRows(questions.data ?? [], deliberations.data ?? [], agentChats.data ?? [], messages.data ?? [], COMMS_LIST_LIMIT),
+    () => composeUnifiedConversationRows(questions.data ?? [], deliberations.data ?? [], agentChats.data ?? [], messages.data ?? [], UNIFIED_LIST_LIMIT),
     [questions.data, deliberations.data, agentChats.data, messages.data],
   );
   const columnFilters = useColumnFilters(UNIFIED_FILTER_COLUMNS, rows, { ns: 'cv' });

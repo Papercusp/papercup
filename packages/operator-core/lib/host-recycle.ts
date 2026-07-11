@@ -74,6 +74,25 @@ export interface GracefulRecycleOpts {
    * showed this can fire below the 'critical' threshold).
    */
   isSaturated?: () => boolean;
+  /**
+   * UNCONDITIONALLY skip the native substrate close (independent of
+   * `isSaturated`). EI-9649: a MEMORY-watchdog recycle is inherently high-risk
+   * for the P2P-substrate teardown — RSS is over the cap precisely because the
+   * substrate (Hypercores/Hyperswarm sessions across every booted harness) is
+   * large, so tearing that much native state down concurrently is exactly the
+   * op that throws the uncaught `Napi::Error` → SIGABRT (same binding root cause
+   * as WI-3795/WI-3848/WI-3849). Unlike the SIGTERM/lag paths, a memory recycle
+   * can trip while the event loop is NOT yet elevated (RSS crosses the cap in a
+   * calm loop), so the `isSaturated` skip does not fire and the risky close runs
+   * and crashes the process below the JS layer — turning a routine recycle into
+   * a hard crash + webview reconnect flash. Since the process is fully exiting
+   * (systemd/supervisor restarts a fresh low-RSS host) the OS reclaims every
+   * socket/fd/PG-LISTEN backend on exit anyway; the only cost of skipping is the
+   * same "sockets linger until peer timeout" this file already accepts under
+   * saturation — strictly cheaper than a SIGABRT. Default false (SIGTERM + lag
+   * paths keep their existing `isSaturated`-gated behavior unchanged).
+   */
+  skipSubstrateTeardown?: boolean;
 }
 
 /**
@@ -88,6 +107,7 @@ export function gracefulHostRecycle(opts: GracefulRecycleOpts): void {
   const exit = opts.exit ?? ((code: number) => process.exit(code));
   const closeSubstrate = opts.closeSubstrate ?? closeAllBootedHarnesses;
   const isSaturated = opts.isSaturated ?? isLoopElevated;
+  const skipSubstrateTeardown = opts.skipSubstrateTeardown ?? false;
 
   let exited = false;
   const exitOnce = (code: number) => {
@@ -108,6 +128,12 @@ export function gracefulHostRecycle(opts: GracefulRecycleOpts): void {
   // pre-existing "sockets linger until peer timeout" cost this file already
   // accepts for a clean exit instead of a crash.
   const substrateDown = (async () => {
+    if (skipSubstrateTeardown) {
+      console.warn(
+        '[host-recycle] skipping substrate teardown (skipSubstrateTeardown) — a memory-watchdog recycle tears down a large substrate that can throw an uncaught Napi::Error/SIGABRT below the JS layer regardless of loop pressure (EI-9649); the OS reclaims sockets/fds/LISTEN backends on exit, so this only defers the same peer-timeout socket-linger already accepted under saturation',
+      );
+      return;
+    }
     if (isSaturated()) {
       console.warn(
         '[host-recycle] event loop under pressure at drain time — skipping substrate teardown to avoid the WI-3795/WI-3848 Napi::Error/SIGABRT race (sockets will linger until peer timeout, same as an abandoned-on-crash exit)',

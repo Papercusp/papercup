@@ -580,6 +580,30 @@ describe('AdvConversationsTab — unified communication views', () => {
     expect(rows.map((row) => row.sourceId)).toEqual(['msg-a', 'msg-c']);
   });
 
+  it('does not let a busy source crowd other conversation types out of the merged window', () => {
+    syncResults['conversations.deliberationList'] = ready(Array.from({ length: 100 }, (_, index) => ({
+      thread_id: `th-${index}`,
+      parent_kind: 'issue',
+      parent_ref: `WI-${index}`,
+      title: `decision ${index}`,
+      created_by: 'architect',
+      harness_slug: 'papercusp',
+      created_at: new Date(Date.now() - index * 1_000).toISOString(),
+      last_post_at: new Date(Date.now() - index * 1_000).toISOString(),
+      post_count: 1,
+    })));
+    syncResults['conversations.agentChatList'] = ready([{
+      id: 'older-chat', harness_slug: 'papercusp', role: 'worker', feature_id: 'WI-older',
+      title: 'older agent chat remains discoverable', created_at: Date.now() - 86_400_000,
+      archived_at: null, total_input_tokens: 0, total_output_tokens: 0, total_cost_usd_cents: 0, turns: 2,
+    }]);
+
+    render(<AdvConversationsTab />);
+
+    expect(screen.getByText('older agent chat remains discoverable')).toBeTruthy();
+    expect(screen.getByText('103')).toBeTruthy();
+  });
+
   it('Deliberations view lists threads and opens its posts', async () => {
     nuqsState.conv = 'deliberations';
     nuqsState.thread = 'th-1';

@@ -2,10 +2,12 @@
  * idle-loop-recipe-pin.test.ts — the P-006 idle-loop recipe RECURRENCE GUARD
  * (composable-event-awaits-2026-07-11).
  *
- * The recipe (an idle self-puller parks on ONE composed events:await spec over
- * work-item:created / claim:released:* / work-item:unblocked:* with the ~30-min
- * on_timeout backstop, instead of a ~60s re-poll; the pull stays the authoritative
- * claim) lives on THREE prompt surfaces that drift independently:
+ * The recipe (an idle self-puller parks on ONE await over the canonical
+ * work-item:claimable key — the P-007 dual-emit that collapses the original
+ * work-item:created / claim:released:* / work-item:unblocked:* 3-leaf composed
+ * spec — with the ~30-min on_timeout backstop, instead of a ~60s re-poll; the
+ * pull stays the authoritative claim) lives on THREE prompt surfaces that
+ * drift independently:
  *   1. scheduler:get_next's miss advice (IDLE_PULL_MISS_ADVICE — the point of need),
  *   2. DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE (the loop wake's empty-wake step),
  *   3. the su prompts (papercusp-su-engineer.tools.md / papercusp-su-power.tools.md).
@@ -46,16 +48,14 @@ const PROMPTS_DIR = join(REPO, 'apps/operator/prompts');
 
 /** The load-bearing recipe markers a surface must carry to count as teaching it. */
 const RECIPE_MARKERS = [
-  'work-item:created', // the every-create family (EI-8296) — `when`-narrowable
-  'claim:released:*', // the release/reclaim family (P-105)
-  'work-item:unblocked:*', // the blocked→unblocked edge family
+  'work-item:claimable', // the canonical P-007 dual-emit key — `when`-narrowable
   '1800', // the ~30-min on_timeout backstop
 ];
 
 describe('P-006 idle-loop recipe pin (composable-event-awaits-2026-07-11)', () => {
-  it('IDLE_PULL_MISS_ADVICE carries the full recipe: three families, backstop, hint-not-claim, re-register, no timer poll', () => {
+  it('IDLE_PULL_MISS_ADVICE carries the full recipe: claimable key, backstop, hint-not-claim, re-register, no timer poll', () => {
     for (const m of RECIPE_MARKERS) expect(IDLE_PULL_MISS_ADVICE).toContain(m);
-    expect(IDLE_PULL_MISS_ADVICE).toContain('spec');
+    expect(IDLE_PULL_MISS_ADVICE).toContain('events:await');
     expect(IDLE_PULL_MISS_ADVICE).toContain('AUTHORITATIVE');
     expect(IDLE_PULL_MISS_ADVICE).toContain('re-register');
     expect(IDLE_PULL_MISS_ADVICE).toMatch(/do NOT re-poll/i);

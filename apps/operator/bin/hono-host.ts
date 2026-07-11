@@ -315,11 +315,24 @@ function startRequestServers(): void {
           `[memory-watchdog] RSS high-water mark tripped — draining + recycling host (${supervisor})`,
           { rssMb, rssLimitMb: limitMb },
         );
-        // Drain in-flight HTTP + tear down the P2P substrate (Hypercores,
-        // Hyperswarm sockets, PG LISTEN close-hooks) before exit — a bare
-        // process.exit() abandons those handles (audit P-002, EI-127). The
-        // helper hard-exits after 8s if either side hangs.
-        gracefulHostRecycle({ server: server as { close?: (cb?: () => void) => void } });
+        // Drain in-flight HTTP before exit; the helper hard-exits after 8s if
+        // the drain hangs. EI-9649: SKIP the P2P substrate teardown on a memory
+        // recycle. A bare process.exit() abandoning those handles is the EI-127
+        // resource-leak this drain exists to prevent — BUT a memory recycle
+        // trips because RSS is over the cap, i.e. the substrate is large, and
+        // tearing that much native Hypercore/Hyperswarm state down concurrently
+        // throws an uncaught Napi::Error → SIGABRT below the JS layer (same
+        // binding root cause as WI-3795/WI-3848/WI-3849). Unlike the SIGTERM +
+        // lag-recycle paths, a memory recycle can fire while the loop is NOT
+        // elevated, so gracefulHostRecycle's isSaturated skip does not catch it
+        // and the crash turns a routine recycle into a hard SIGABRT + webview
+        // reconnect flash. The process is fully exiting, so the OS reclaims the
+        // sockets/fds/LISTEN backends anyway — skipping only defers the same
+        // peer-timeout socket-linger the saturated path already accepts.
+        gracefulHostRecycle({
+          server: server as { close?: (cb?: () => void) => void },
+          skipSubstrateTeardown: true,
+        });
       },
     });
   }

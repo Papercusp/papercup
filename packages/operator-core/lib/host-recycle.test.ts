@@ -163,6 +163,61 @@ describe('gracefulHostRecycle', () => {
       expect(exit).toHaveBeenCalledExactlyOnceWith(75);
     });
   });
+
+  // EI-9649: a MEMORY-watchdog recycle trips when RSS is over the cap — i.e. the
+  // substrate is large — and can fire while the event loop is NOT yet elevated,
+  // so the WI-3795 isSaturated skip does not catch it and the risky native
+  // substrate close runs and throws an uncaught Napi::Error → SIGABRT below the
+  // JS layer (a routine recycle becomes a hard crash + webview reconnect flash).
+  // skipSubstrateTeardown lets the memory-recycle caller opt out of the native
+  // close unconditionally (the process exits anyway; the OS reclaims the handles).
+  describe('EI-9649 — skipSubstrateTeardown never starts the native substrate close', () => {
+    it('does NOT call closeSubstrate when skipSubstrateTeardown is true, and still exits cleanly', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const exit = vi.fn();
+      const closeSubstrate = vi.fn(() => Promise.resolve());
+      const { server, drain } = makeServer();
+
+      gracefulHostRecycle({ server, exit, closeSubstrate, skipSubstrateTeardown: true });
+      expect(closeSubstrate).not.toHaveBeenCalled(); // the risky native op is never started
+
+      drain();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(exit).toHaveBeenCalledExactlyOnceWith(75);
+      expect(closeSubstrate).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('skips even when the loop is NOT saturated (the EI-9649 gap: a memory recycle in a calm loop)', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const exit = vi.fn();
+      const closeSubstrate = vi.fn(() => Promise.resolve());
+      const isSaturated = vi.fn(() => false); // calm loop → WI-3795 skip would NOT fire
+      const { server, drain } = makeServer();
+
+      gracefulHostRecycle({ server, exit, closeSubstrate, isSaturated, skipSubstrateTeardown: true });
+      // skipSubstrateTeardown wins regardless of the isSaturated verdict.
+      expect(closeSubstrate).not.toHaveBeenCalled();
+
+      drain();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(exit).toHaveBeenCalledExactlyOnceWith(75);
+      warnSpy.mockRestore();
+    });
+
+    it('defaults to false — the SIGTERM/lag paths still close the substrate as before', async () => {
+      const exit = vi.fn();
+      const closeSubstrate = vi.fn(() => Promise.resolve());
+      const { server, drain } = makeServer();
+
+      gracefulHostRecycle({ server, exit, closeSubstrate }); // no skipSubstrateTeardown
+      expect(closeSubstrate).toHaveBeenCalledTimes(1);
+
+      drain();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(exit).toHaveBeenCalledExactlyOnceWith(75);
+    });
+  });
 });
 
 describe('installGracefulShutdown (D4/P-017 — SIGTERM connection-drain)', () => {
