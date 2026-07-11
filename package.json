@@ -268,7 +268,9 @@
     "zustand": "^5.0.12"
   },
   "overrides": {
-    "livekit-client": "^2.16.1"
+    "livekit-client": "^2.16.1",
+    "@assistant-ui/store": "0.2.9",
+    "@assistant-ui/tap": "0.5.16"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.8",
