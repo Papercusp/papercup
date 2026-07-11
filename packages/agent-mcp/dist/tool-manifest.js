@@ -1,4 +1,3 @@
-"use strict";
 /**
  * Pinned tool manifest — freezes the MCP `tools/list` surface so it is
  * byte-stable across reconnects/reloads.
@@ -24,26 +23,19 @@
  * Absent / empty / unparseable manifest => expose everything (no-op default),
  * so this is fully backward-compatible until you generate a snapshot.
  */
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.reloadToolManifest = reloadToolManifest;
-exports.hasToolManifest = hasToolManifest;
-exports.applyToolManifest = applyToolManifest;
-const node_path_1 = __importDefault(require("node:path"));
-const host_platform_1 = require("@papercusp/host-platform");
+import path from 'node:path';
+import { getHostPlatform } from '@papercusp/host-platform';
 // `undefined` = not yet loaded; `null` = no manifest (expose all).
 let cache;
 function manifestPath() {
     return (process.env.AGENT_MCP_TOOL_MANIFEST ||
-        node_path_1.default.join((0, host_platform_1.getHostPlatform)().homedir(), '.papercusp', 'tool-manifest.json'));
+        path.join(getHostPlatform().homedir(), '.papercusp', 'tool-manifest.json'));
 }
 function load() {
     if (cache !== undefined)
         return cache;
     try {
-        const text = (0, host_platform_1.getHostPlatform)().readTextFileSync(manifestPath());
+        const text = getHostPlatform().readTextFileSync(manifestPath());
         if (text === null) {
             cache = null; // missing or unreadable → expose all
             return cache;
@@ -64,11 +56,11 @@ function load() {
     return cache;
 }
 /** Drop the cached manifest so the next call re-reads from disk. */
-function reloadToolManifest() {
+export function reloadToolManifest() {
     cache = undefined;
 }
 /** True if a non-empty manifest is currently configured. */
-function hasToolManifest() {
+export function hasToolManifest() {
     return load() !== null;
 }
 /**
@@ -79,7 +71,7 @@ function hasToolManifest() {
  * Generic over `{ name }` so it works for both `listMcpProjections()` results
  * and the stdio catalog mapping.
  */
-function applyToolManifest(tools, opts) {
+export function applyToolManifest(tools, opts) {
     if (opts?.bypass)
         return [...tools];
     const m = load();

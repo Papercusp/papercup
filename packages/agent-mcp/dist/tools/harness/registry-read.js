@@ -1,4 +1,3 @@
-"use strict";
 /**
  * Read the harness registry (`harness_shared.harness_registry` — single
  * JSONB row per workspace, written by `harness:create` and the desktop
@@ -10,10 +9,8 @@
  * autoloop-pot-operator-rebuild-2026-06-05 P-004 (before that they read
  * only `projects`, hiding every registry harness from the operator).
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.readRegistryProjects = readRegistryProjects;
 /** Registry projects for `workspaceId`, or `[]` when no row / bad payload. */
-async function readRegistryProjects(tx, workspaceId) {
+export async function readRegistryProjects(tx, workspaceId) {
     const rows = await tx `
     SELECT payload FROM harness_shared.harness_registry
      WHERE workspace_id = ${workspaceId}

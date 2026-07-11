@@ -1,4 +1,3 @@
-"use strict";
 /**
  * Papercusp's capability → tier table — the host half of plan P-012 / D-006.
  *
@@ -15,10 +14,7 @@
  * adding a capability without a deliberate tier choice should raise an eyebrow
  * at install time, not silently land at low.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.setCapabilityTierOverride = setCapabilityTierOverride;
-exports.papercuspTierFor = papercuspTierFor;
-const tooldef_1 = require("@papercusp/tooldef");
+import { setCapabilityTierResolver } from '@papercusp/tooldef';
 /**
  * Exact-match table. Wildcards (`secrets:read:*`) are matched by prefix
  * after this lookup misses.
@@ -142,14 +138,14 @@ const PREFIX_HIGH = ['secrets:', 'http:fetch:', 'data:read:'];
 const PREFIX_MEDIUM = ['events:', 'roles:register:'];
 let capabilityTierOverride;
 /** Install (or clear, with `undefined`) the host override resolver. Called once by operator-core at boot. */
-function setCapabilityTierOverride(fn) {
+export function setCapabilityTierOverride(fn) {
     capabilityTierOverride = fn;
 }
 /**
  * Papercusp's capability→tier policy. Returns `'medium'` when no deliberate
  * classification is found — see file header.
  */
-function papercuspTierFor(capability) {
+export function papercuspTierFor(capability) {
     const override = capabilityTierOverride?.(capability);
     if (override)
         return override;
@@ -167,4 +163,4 @@ function papercuspTierFor(capability) {
 }
 // Register on import (load-time side effect). Imported at the top of index.ts
 // before bootstrap so the resolver is active before any tool self-registers.
-(0, tooldef_1.setCapabilityTierResolver)(papercuspTierFor);
+setCapabilityTierResolver(papercuspTierFor);

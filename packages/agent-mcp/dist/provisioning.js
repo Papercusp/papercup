@@ -1,4 +1,3 @@
-"use strict";
 /**
  * Provisioning for system:<name> principals.
  *
@@ -13,15 +12,9 @@
  * Idempotent per (workspace, name): re-running with the same name skips
  * if a row already exists (use `force: true` to rotate the bearer).
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.reconcileCapabilities = reconcileCapabilities;
-exports.normalizeCapabilities = normalizeCapabilities;
-exports.provisionSystemPrincipal = provisionSystemPrincipal;
-exports.startPiSession = startPiSession;
-exports.endPiSession = endPiSession;
-const node_crypto_1 = require("node:crypto");
-const db_org_1 = require("@papercusp/db-org");
-const auth_1 = require("./auth");
+import { createHash, randomBytes } from 'node:crypto';
+import { withWorkspace } from '@papercusp/db-org';
+import { PRINCIPAL_INVALIDATE_CHANNEL } from './auth';
 /**
  * Tell every live auth cache (auth.ts LISTEN) that this principal's
  * capabilities changed. Runs inside the write tx — PG queues the NOTIFY
@@ -29,7 +22,7 @@ const auth_1 = require("./auth");
  */
 async function notifyPrincipalChanged(tx, workspaceId, slug) {
     const payload = JSON.stringify({ workspace_id: workspaceId, slug });
-    await tx `SELECT pg_notify(${auth_1.PRINCIPAL_INVALIDATE_CHANNEL}, ${payload})`;
+    await tx `SELECT pg_notify(${PRINCIPAL_INVALIDATE_CHANNEL}, ${payload})`;
 }
 /**
  * The ADDITIVE capability-reconcile decision (EI-2048), pure + exported for tests.
@@ -38,12 +31,12 @@ async function notifyPrincipalChanged(tx, workspaceId, slug) {
  * an attended `force` reprovision, not an automatic forceless-deploy side effect. When
  * `missing` is empty the live row is already current and the caller writes nothing.
  */
-function reconcileCapabilities(stored, code) {
+export function reconcileCapabilities(stored, code) {
     const have = new Set(stored);
     const missing = code.filter((c) => !have.has(c));
     return { missing, merged: missing.length ? [...stored, ...missing] : [...stored] };
 }
-function normalizeCapabilities(raw) {
+export function normalizeCapabilities(raw) {
     if (Array.isArray(raw))
         return raw.filter((x) => typeof x === 'string');
     if (typeof raw !== 'string')
@@ -59,15 +52,15 @@ function normalizeCapabilities(raw) {
     }
 }
 function genBearer() {
-    return (0, node_crypto_1.randomBytes)(32).toString('base64url');
+    return randomBytes(32).toString('base64url');
 }
 function hash(s) {
-    return (0, node_crypto_1.createHash)('sha256').update(s).digest('hex');
+    return createHash('sha256').update(s).digest('hex');
 }
-async function provisionSystemPrincipal(args) {
+export async function provisionSystemPrincipal(args) {
     const { workspaceId, name, capabilities, papercuspRoot, force } = args;
     const configPath = `${papercuspRoot}/system/${name}/config.json`;
-    return (0, db_org_1.withWorkspace)(workspaceId, async (tx) => {
+    return withWorkspace(workspaceId, async (tx) => {
         const existing = await tx `
       SELECT bearer_hash, capabilities
         FROM harness_shared.system_principals
@@ -142,10 +135,10 @@ const DEFAULT_PI_CAPABILITIES = [
     'messages:read',
     'search:read',
 ];
-async function startPiSession(args) {
+export async function startPiSession(args) {
     const { workspaceId, sessionId } = args;
     const caps = args.capabilities.length ? args.capabilities : DEFAULT_PI_CAPABILITIES;
-    return (0, db_org_1.withWorkspace)(workspaceId, async (tx) => {
+    return withWorkspace(workspaceId, async (tx) => {
         const bearer = genBearer();
         const bearerHash = hash(bearer);
         await tx `
@@ -161,8 +154,8 @@ async function startPiSession(args) {
         return { bearer, sessionId };
     });
 }
-async function endPiSession(workspaceId, sessionId) {
-    await (0, db_org_1.withWorkspace)(workspaceId, async (tx) => {
+export async function endPiSession(workspaceId, sessionId) {
+    await withWorkspace(workspaceId, async (tx) => {
         await tx `
       UPDATE harness_shared.pi_sessions
          SET ended_at = now()

@@ -1,4 +1,3 @@
-"use strict";
 /**
  * harness:status — live status of one OR many harnesses (current iteration
  * phase, recent activity, in-flight work). "What is harness X doing right now?"
@@ -17,15 +16,14 @@
  * rest and the Queen/overwatch polling all members reads by slug (not array
  * position). The registry is read ONCE for the whole batch.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-const zod_1 = require("zod");
-const tooldef_1 = require("@papercusp/tooldef");
+import { z } from 'zod';
+import { defineTool } from '@papercusp/tooldef';
 // The bulk helpers' LEAF module — relative, NOT the '@papercusp/agent-mcp'
 // barrel (the barrel forms an ESM circular init leaving the symbols undefined,
 // and the package-subpath self-ref fails the production `node` moduleResolution).
-const _bulk_1 = require("../../_bulk");
-const registry_read_1 = require("./registry-read");
-exports.default = (0, tooldef_1.defineTool)({
+import { mergeIds, runBulk, bulkContent } from '../../_bulk';
+import { readRegistryProjects } from './registry-read';
+export default defineTool({
     name: 'harness:status',
     profile: 'engineer',
     capability: 'harness:read',
@@ -34,10 +32,10 @@ exports.default = (0, tooldef_1.defineTool)({
         when: 'User asks "what is harness X doing right now?", "is sheets active?", or you need recent-activity counts + phase. Polling all hive members? Pass every slug at once via `slugs` instead of calling per harness.',
         notWhen: 'For "what\'s WRONG with X", use `work_items:list` (problems-side view). For static facts about the harness, use `harness:get`. Bulk: single `slug` | `slugs[]` → { ok, results, counts }; correlate by slug not position; one not-found never fails the rest.',
     },
-    args: zod_1.z
+    args: z
         .object({
-        slug: zod_1.z.string().min(1).optional().describe('a single harness slug (n=1 shorthand for slugs:[slug])'),
-        slugs: zod_1.z.array(zod_1.z.string().min(1)).min(1).max(100).optional().describe('harness slugs to read (1–100)'),
+        slug: z.string().min(1).optional().describe('a single harness slug (n=1 shorthand for slugs:[slug])'),
+        slugs: z.array(z.string().min(1)).min(1).max(100).optional().describe('harness slugs to read (1–100)'),
     })
         .refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
         message: 'pass `slug` (one) or `slugs` (many)',
@@ -45,11 +43,11 @@ exports.default = (0, tooldef_1.defineTool)({
     async handler(args, ctx) {
         const tx = ctx.tx;
         const ws = ctx.principal?.workspaceId ?? '';
-        const slugs = (0, _bulk_1.mergeIds)(args.slug, args.slugs);
+        const slugs = mergeIds(args.slug, args.slugs);
         // Read the registry ONCE for the whole batch (it returns the full project list).
-        const registry = await (0, registry_read_1.readRegistryProjects)(tx, ws);
+        const registry = await readRegistryProjects(tx, ws);
         const regBySlug = new Map(registry.map((r) => [r.slug, r]));
-        const env = await (0, _bulk_1.runBulk)(slugs, async (slug) => {
+        const env = await runBulk(slugs, async (slug) => {
             const regEntry = regBySlug.get(slug) ?? null;
             const projectRows = (await tx `
           SELECT slug, status, updated_ts, spent_cents, budget_cents
@@ -80,6 +78,6 @@ exports.default = (0, tooldef_1.defineTool)({
                 recentActivity,
             };
         }, { keyOf: (slug) => ({ slug }) });
-        return (0, _bulk_1.bulkContent)(env);
+        return bulkContent(env);
     },
 });

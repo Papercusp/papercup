@@ -1,4 +1,3 @@
-"use strict";
 /**
  * Papercusp's auth-tier → gate-bypass mapping — the host half of plan P-014 /
  * D-006.
@@ -17,11 +16,6 @@
  *     `isSuperuser`, so the carve-out is `quota: superuser && !powerUser`.
  *   - **neither**: no bypass (every gate enforces).
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.TESTING_FULL_ACCESS_ROLES = void 0;
-exports.setTestingFullAccessResolver = setTestingFullAccessResolver;
-exports.testingFullAccess = testingFullAccess;
-exports.papercuspGateBypass = papercuspGateBypass;
 /**
  * TESTING-PHASE FULL TOOL ACCESS (owner directive 2026-06-20, EI-2048).
  *
@@ -49,7 +43,7 @@ exports.papercuspGateBypass = papercuspGateBypass;
  * not lift it. If a watcher role needs code-exec tools under test, lift its
  * envelope too.
  */
-exports.TESTING_FULL_ACCESS_ROLES = new Set([
+export const TESTING_FULL_ACCESS_ROLES = new Set([
     'operator',
     'mug',
     'cup',
@@ -59,10 +53,10 @@ exports.TESTING_FULL_ACCESS_ROLES = new Set([
 ]);
 let testingFullAccessResolver;
 /** Install (or clear, with `undefined`) the host resolver. Called once by operator-core at boot. */
-function setTestingFullAccessResolver(fn) {
+export function setTestingFullAccessResolver(fn) {
     testingFullAccessResolver = fn;
 }
-function testingFullAccess(role) {
+export function testingFullAccess(role) {
     // Test/launch-time kill-switch (kept; the operator-controllable runtime equivalent is the
     // papercusp-testing-full-access flag, applied via the resolver below).
     if (process.env.PAPERCUSP_TESTING_FULL_ACCESS_ROLES === 'off')
@@ -70,9 +64,9 @@ function testingFullAccess(role) {
     const override = testingFullAccessResolver?.(role);
     if (typeof override === 'boolean')
         return override;
-    return role != null && exports.TESTING_FULL_ACCESS_ROLES.has(role);
+    return role != null && TESTING_FULL_ACCESS_ROLES.has(role);
 }
-function papercuspGateBypass(opts) {
+export function papercuspGateBypass(opts) {
     const su = opts.isSuperuser === true;
     const pu = opts.isPowerUser === true;
     const testRole = testingFullAccess(opts.role);

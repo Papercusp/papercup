@@ -1,4 +1,3 @@
-"use strict";
 /**
  * Federated search across workspace state.
  *
@@ -9,9 +8,8 @@
  * jsonb columns (audit_log.details) are not searched in v1; FTS over jsonb
  * requires a generated text-flattened column deferred to v1.5.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-const zod_1 = require("zod");
-const tooldef_1 = require("@papercusp/tooldef");
+import { z } from 'zod';
+import { defineTool } from '@papercusp/tooldef';
 const KINDS = ['tasks', 'goals', 'projects', 'audit', 'messages'];
 /**
  * Run one kind's search: FTS first, ILIKE fallback on failure — and if
@@ -37,17 +35,17 @@ async function searchKind(kind, hits, degradedReasons, fts, ilike) {
         degradedReasons.push(`${kind}_unavailable`);
     }
 }
-exports.default = (0, tooldef_1.defineTool)({
+export default defineTool({
     name: 'search:query',
     capability: 'search:read',
     guidance: {
         when: 'User asks an open-ended question that could match anything in the workspace ("anything about auth?", "find references to budget guard"). Cross-resource full-text search over tasks, goals, projects, audit, messages.',
         notWhen: 'For a SPECIFIC resource type, use the dedicated list/get tool — search is broader but ranked less precisely. For code-graph queries, use `gitnexus:query`.',
     },
-    args: zod_1.z.object({
-        query: zod_1.z.string().min(1),
-        kinds: zod_1.z.array(zod_1.z.enum(KINDS)).optional(),
-        limit: zod_1.z.number().int().positive().max(100).default(25),
+    args: z.object({
+        query: z.string().min(1),
+        kinds: z.array(z.enum(KINDS)).optional(),
+        limit: z.number().int().positive().max(100).default(25),
     }),
     async handler(args, ctx) {
         const wantKind = (k) => !args.kinds || args.kinds.includes(k);

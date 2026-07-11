@@ -1,4 +1,3 @@
-"use strict";
 /**
  * Papercusp's quota windowing policy — the host half of plan P-011 / D-006.
  *
@@ -22,9 +21,7 @@
  *     session. `perRun` cap. See omp-power-user-bundle-2026-05-20.md §4.1.
  *   - **everyone else** — run-windowed (`run:<runId>`), capped by `perRun`.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.papercuspComputeQuotaWindow = papercuspComputeQuotaWindow;
-function papercuspComputeQuotaWindow(ctx, roleQuota) {
+export function papercuspComputeQuotaWindow(ctx, roleQuota) {
     if (ctx.role === 'worker') {
         return {
             key: ctx.chunkId ? `chunk:${ctx.chunkId}` : null,

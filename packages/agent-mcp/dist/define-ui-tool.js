@@ -1,4 +1,3 @@
-"use strict";
 /**
  * defineUITool — convenience helper for tools that return UI fragments.
  *
@@ -26,22 +25,20 @@
  *     },
  *   });
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.defineUITool = defineUITool;
-const server_1 = require("@mcp-ui/server");
-const tooldef_1 = require("@papercusp/tooldef");
+import { createUIResource } from '@mcp-ui/server';
+import { defineTool } from '@papercusp/tooldef';
 function rand() {
     return Math.random().toString(36).slice(2, 10);
 }
-function defineUITool(input) {
-    return (0, tooldef_1.defineTool)({
+export function defineUITool(input) {
+    return defineTool({
         ...input,
         handler: async (args, ctx) => {
             const r = await input.handler(args, ctx);
             const uiResources = [];
             if (r.html || r.externalUrl) {
                 const uri = (r.uri ?? `ui://${input.name ?? 'tool'}/${rand()}`);
-                const ui = (0, server_1.createUIResource)({
+                const ui = createUIResource({
                     uri,
                     content: r.html
                         ? { type: 'rawHtml', htmlString: r.html }

@@ -46,22 +46,22 @@ describe('hive_directory_cache (real PG, migration 182)', () => {
   });
 
   it('round-trips the discovered set through the cache table', async () => {
-    await writeOperatorState('hive_directory_cache', { hives: [hive('ash'), hive('cup')] });
-    const row = await readOperatorState<{ hives: DiscoveredHive[] }>('hive_directory_cache');
+    await writeOperatorState('pot_directory_cache', { hives: [hive('ash'), hive('cup')] });
+    const row = await readOperatorState<{ hives: DiscoveredHive[] }>('pot_directory_cache');
     expect(row?.hives.map((x) => x.potId)).toEqual(['ash', 'cup']);
     expect(row?.hives[0]).toMatchObject({ title: 'ash', visibility: 'public', attested: true });
   });
 
   it('overwrites on re-save (single row per workspace)', async () => {
-    await writeOperatorState('hive_directory_cache', { hives: [hive('only')] });
-    const row = await readOperatorState<{ hives: DiscoveredHive[] }>('hive_directory_cache');
+    await writeOperatorState('pot_directory_cache', { hives: [hive('only')] });
+    const row = await readOperatorState<{ hives: DiscoveredHive[] }>('pot_directory_cache');
     expect(row?.hives).toHaveLength(1);
     expect(row?.hives[0].potId).toBe('only');
   });
 
   it('returns null before any write (cold cache)', async () => {
     h.ws = 'ws-hive-cache-empty';
-    expect(await readOperatorState('hive_directory_cache')).toBeNull();
+    expect(await readOperatorState('pot_directory_cache')).toBeNull();
     h.ws = 'ws-hive-cache';
   });
 });

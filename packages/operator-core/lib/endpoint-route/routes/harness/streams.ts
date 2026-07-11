@@ -675,6 +675,14 @@ const sessionThinkingStream = defineTool({
     const find = (url.searchParams.get('find') ?? '').slice(0, 300);
     const anchorTsRaw = (url.searchParams.get('anchorTs') ?? '').trim();
     const anchorTs = anchorTsRaw && !Number.isNaN(Date.parse(anchorTsRaw)) ? anchorTsRaw : null;
+    // ended=1 (WI-3990): the caller (InactiveSessionsSection / an inactive search
+    // hit) knows this session has ENDED. That lets us distinguish "no transcript
+    // on disk because the agent hasn't taken its first turn yet" (a LIVE session —
+    // keep waiting) from "no transcript on disk because it was archived+deleted
+    // after death" (an ENDED session — rematerialize it from the archive, or
+    // terminate the stream). Without it the route polls forever and the inspector
+    // shows "waiting for the first output" indefinitely instead of the history.
+    const ended = url.searchParams.get('ended') === '1' || url.searchParams.get('ended') === 'true';
     return sseResponse({
       signal: req.signal,
       heartbeatMs: 15_000,
@@ -697,6 +705,30 @@ const sessionThinkingStream = defineTool({
               : null;
         if (!source) { sink.event('backfill', []); sink.done({}); return; }
         let path = await source.resolve();
+
+        // WI-3990: an ENDED session whose transcript was archived + deleted after
+        // death resolves to no on-disk path. Rather than fall through to the
+        // "wait for a first turn" poll below (which never terminates for a
+        // session that already ended), rematerialize the transcript from the
+        // session archive ONCE, then re-resolve. claude is keyed by its session
+        // uuid, omp by its thread id; codex's archive keying differs so it's
+        // skipped here (it terminates cleanly in the ended branch below instead).
+        // Best-effort + lazy import (session-archive fails LOUD at import when
+        // zstd is unavailable — keep that off this module's load path).
+        if (!path && ended) {
+          const rematKey = sessionId
+            ? ({ sourceKind: 'claude', sessionId } as const)
+            : ompThreadId
+              ? ({ sourceKind: 'omp', sessionId: ompThreadId } as const)
+              : null;
+          if (rematKey) {
+            try {
+              const { pgSessionArchiveStore, rematerializeSession } = await import('../../../session-archive');
+              const r = await rematerializeSession(rematKey, pgSessionArchiveStore());
+              if (r.ok) path = await source.resolve();
+            } catch { /* best-effort — the ended-terminate branch below handles the miss */ }
+          }
+        }
 
         // ── Follow state (shared by the backfill + the live-follow tick) ──
         let pos = 0;
@@ -808,6 +840,16 @@ const sessionThinkingStream = defineTool({
 
         if (path) {
           emitThinking(find ? await anchoredBackfillFrom(path) : backfillFrom(path));
+        } else if (ended) {
+          // WI-3990: an ENDED session with no recoverable transcript (never
+          // archived, archive incomplete, or a codex session we don't
+          // rematerialize) — emit an empty backfill and TERMINATE. The pane shows
+          // its honest "no output" / ended state instead of "waiting for the
+          // first output" FOREVER (an ended session will never take a first turn,
+          // so the live-follow poll below would never resolve a path).
+          sink.event('backfill', []);
+          sink.done({});
+          return;
         } else {
           // No transcript file YET — for a LIVE session that hasn't taken its
           // first turn this is "waiting", NOT "run ended": send the empty

@@ -38,6 +38,24 @@ export interface IdeationOutcomeEntry {
   gradedBy?: RoutedIdeaProvenance['gradedBy'];
 }
 
+/**
+ * One su lens's win-rate row (P-004) — read-time only, never persisted (D-003).
+ * `won`/`lost` are MASS, fractional when grades exist (a grade dominates the
+ * change-feed outcome as winCredit, exactly like Scout's weight tally).
+ */
+export interface SuLensWinRate {
+  lens: SuIdeationLens;
+  /** su-ideate filings declared under this lens (sentinel/unlensed rows appear in no lens row). */
+  ideas: number;
+  won: number;
+  lost: number;
+  pending: number;
+  /** won / (won + lost) over decided mass; null when nothing decided yet. */
+  winRate: number | null;
+  /** Sampling share over SU_IDEATION_LENSES with the anti-strangle floor baked in — sums to 1. */
+  weight: number;
+}
+
 export interface IdeationFeedbackResult {
   priming: string;
   entries: string[];
@@ -45,6 +63,8 @@ export interface IdeationFeedbackResult {
   /** Newest-first, one per su-ideate ledger row (P-003). */
   outcomes: IdeationOutcomeEntry[];
   summary: { won: number; lost: number; pending: number; graded: number; total: number };
+  /** Per-su-lens win-rates + floored sampling weights, SU_IDEATION_LENSES order (P-004). */
+  lensWinRates: SuLensWinRate[];
   /** Present only when the outcome leg failed — the priming leg still returns (fail-open, D-016). */
   outcomesError?: string;
 }

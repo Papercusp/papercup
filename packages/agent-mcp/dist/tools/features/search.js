@@ -1,4 +1,3 @@
-"use strict";
 /**
  * Search a harness's features. Filters by FTS query, tags, and status.
  *
@@ -9,11 +8,10 @@
  * Returns ranked feature summaries — id, title, status, tags,
  * updated_ts. Capped at `limit` (default 25, max 100).
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-const zod_1 = require("zod");
-const tooldef_1 = require("@papercusp/tooldef");
+import { z } from 'zod';
+import { defineTool } from '@papercusp/tooldef';
 const SLUG_RE = /^[a-z0-9._-]+$/i;
-exports.default = (0, tooldef_1.defineTool)({
+export default defineTool({
     name: 'features:search',
     profile: 'engineer',
     capability: 'features:read',
@@ -21,15 +19,15 @@ exports.default = (0, tooldef_1.defineTool)({
         when: 'Free-text query for features matching a topic ("auth", "error handling") — use when the user names a concept, not a specific feature id.',
         notWhen: 'For specific feature id, use `features:get`. For ALL features in a harness, use `harness:list_features`. For cross-resource search, use `search:query`.',
     },
-    args: zod_1.z.object({
-        slug: zod_1.z.string().min(1),
+    args: z.object({
+        slug: z.string().min(1),
         /** FTS query string. Optional — omit for tag/status-only filtering. */
-        query: zod_1.z.string().optional(),
+        query: z.string().optional(),
         /** Match features whose tags JSONB array contains ANY of these. */
-        tags: zod_1.z.array(zod_1.z.string().min(1)).optional(),
+        tags: z.array(z.string().min(1)).optional(),
         /** Filter by status. Single value (the consolidated table is one row per feature). */
-        status: zod_1.z.string().optional(),
-        limit: zod_1.z.number().int().positive().max(100).default(25),
+        status: z.string().optional(),
+        limit: z.number().int().positive().max(100).default(25),
     }),
     async handler(args, ctx) {
         if (!SLUG_RE.test(args.slug)) {

@@ -1,4 +1,3 @@
-"use strict";
 /**
  * intel:spawn_tree — read tool_invocations as a parent→child tree.
  *
@@ -17,10 +16,9 @@
  * The shape is forward-compatible: when Phase 9 lands, depth>0 rows
  * appear without code change here.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-const zod_1 = require("zod");
-const tooldef_1 = require("@papercusp/tooldef");
-exports.default = (0, tooldef_1.defineTool)({
+import { z } from 'zod';
+import { defineTool } from '@papercusp/tooldef';
+export default defineTool({
     name: 'intel:spawn_tree',
     profile: 'engineer',
     guidance: {
@@ -28,15 +26,15 @@ exports.default = (0, tooldef_1.defineTool)({
         notWhen: 'For LIVE running spawns only, use `orchestrator.list_active`. spawn_tree is historical + structural; list_active is the now-snapshot.',
     },
     capability: 'intel:read',
-    args: zod_1.z.object({
+    args: z.object({
         /** Restrict to a specific harness slug. Required — Intel is per-harness. */
-        harness: zod_1.z.string().min(1),
+        harness: z.string().min(1),
         /** Optional cutoff (epoch ms). Default: last 24 hours. */
-        sinceMs: zod_1.z.number().int().optional(),
+        sinceMs: z.number().int().optional(),
         /** Optional cap. Default 200; max 2000. */
-        limit: zod_1.z.number().int().positive().max(2000).default(200),
+        limit: z.number().int().positive().max(2000).default(200),
         /** Optional status filter. */
-        status: zod_1.z.enum(['ok', 'error', 'timeout', 'quota-exceeded', 'role-not-allowed']).optional(),
+        status: z.enum(['ok', 'error', 'timeout', 'quota-exceeded', 'role-not-allowed']).optional(),
     }),
     async handler(args, ctx) {
         const sinceMs = args.sinceMs ?? Date.now() - 24 * 60 * 60 * 1000;

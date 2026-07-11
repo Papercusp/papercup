@@ -1,7 +1,3 @@
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.nearestByLevenshtein = nearestByLevenshtein;
-exports.fuzzyEnum = fuzzyEnum;
 /**
  * fuzzyEnum — the generic CLOSED-SET argument validator (generic-tool-arg-fuzzy-validation-2026-07-03,
  * D-001). The argument analogue of fuzzy tool-NAME resolution: a zod string schema that checks a
@@ -27,7 +23,7 @@ exports.fuzzyEnum = fuzzyEnum;
  * FAIL-OPEN: when the resolved set is empty (an unavailable/cold resolver), no issue is added — an
  * unavailable validator never blocks a real call.
  */
-const zod_1 = require("zod");
+import { z } from 'zod';
 /** Levenshtein edit distance (iterative two-row, O(n·m)). */
 function levenshtein(a, b) {
     const al = a.length;
@@ -51,7 +47,7 @@ function levenshtein(a, b) {
 }
 /** Top-k candidates nearest to `target` by NORMALIZED edit distance (≤ maxRatio) — a wildly-wrong
  *  value returns [] (so the caller shows the full list), a near-miss returns the suggestion(s). */
-function nearestByLevenshtein(target, candidates, opts = {}) {
+export function nearestByLevenshtein(target, candidates, opts = {}) {
     const k = opts.k ?? 3;
     const maxRatio = opts.maxRatio ?? 0.4;
     return candidates
@@ -66,11 +62,11 @@ function nearestByLevenshtein(target, candidates, opts = {}) {
  * STATIC list or a SYNC resolver (cache-backed). Returns a `.custom` issue carrying a rich `message`
  * (`… Did you mean \`x\`? Allowed: [ … ]`) + structured `params { got, nearest, allowed }`.
  */
-function fuzzyEnum(allowed, opts = {}) {
+export function fuzzyEnum(allowed, opts = {}) {
     const label = opts.label ?? 'value';
     const maxListed = opts.maxListed ?? 25;
     const norm = opts.normalize;
-    return zod_1.z.string().superRefine((value, ctx) => {
+    return z.string().superRefine((value, ctx) => {
         if (opts.applies && !opts.applies(value))
             return;
         const list = typeof allowed === 'function' ? allowed() : allowed;

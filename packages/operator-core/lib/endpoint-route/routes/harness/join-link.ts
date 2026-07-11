@@ -122,7 +122,7 @@ async function defaultSeedOwnerBinding(
     const now = Date.now();
     let didSeed = false;
     await updateOperatorState<{ hives: DiscoveredHive[] }>(
-      'hive_directory_cache',
+      'pot_directory_cache',
       { hives: [] },
       (cur) => {
         const hives = Array.isArray(cur?.hives) ? cur.hives : [];

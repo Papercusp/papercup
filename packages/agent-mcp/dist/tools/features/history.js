@@ -1,4 +1,3 @@
-"use strict";
 /**
  * features:history — the rendered feature-history block for one OR many features.
  *
@@ -18,25 +17,24 @@
  * history? | error }], counts }. Each result self-describes its (slug,
  * feature_id); a degraded / invalid-slug item fails only itself.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-const zod_1 = require("zod");
-const tooldef_1 = require("@papercusp/tooldef");
+import { z } from 'zod';
+import { defineTool } from '@papercusp/tooldef';
 // The bulk helpers' LEAF module — relative, NOT the '@papercusp/agent-mcp'
 // barrel (see features/get.ts for why: ESM circular-init + node-moduleResolution).
-const _bulk_1 = require("../../_bulk");
+import { runBulk, bulkContent } from '../../_bulk';
 const SLUG_RE = /^[a-z0-9._-]+$/i;
 /** Per-section caps — defaults match the orchestrator's prompt injection. */
 const CapsShape = {
-    notes_max_chars: zod_1.z.number().int().positive().max(20000).default(4000),
-    debug_max_chars: zod_1.z.number().int().positive().max(20000).default(4000),
-    audit_rows: zod_1.z.number().int().positive().max(100).default(10),
+    notes_max_chars: z.number().int().positive().max(20000).default(4000),
+    debug_max_chars: z.number().int().positive().max(20000).default(4000),
+    audit_rows: z.number().int().positive().max(100).default(10),
 };
-const HistoryItem = zod_1.z.object({
-    slug: zod_1.z.string().min(1),
-    feature_id: zod_1.z.string().min(1),
+const HistoryItem = z.object({
+    slug: z.string().min(1),
+    feature_id: z.string().min(1),
     ...CapsShape,
 });
-exports.default = (0, tooldef_1.defineTool)({
+export default defineTool({
     name: 'features:history',
     profile: 'engineer',
     capability: 'features:read',
@@ -46,12 +44,12 @@ exports.default = (0, tooldef_1.defineTool)({
         notWhen: 'For the CURRENT body, use `features:get`. For cross-feature audit, use `audit:list`.',
         chaining: 'Bulk: single { slug, feature_id, … } | items[] → { ok, results, counts }; correlate by (slug, feature_id) not position; one failure never fails the rest.',
     },
-    args: zod_1.z
+    args: z
         .object({
-        slug: zod_1.z.string().min(1).optional().describe('a single feature\'s harness slug (n=1 shorthand, paired with feature_id)'),
-        feature_id: zod_1.z.string().min(1).optional().describe('a single feature id (n=1 shorthand, paired with slug)'),
+        slug: z.string().min(1).optional().describe('a single feature\'s harness slug (n=1 shorthand, paired with feature_id)'),
+        feature_id: z.string().min(1).optional().describe('a single feature id (n=1 shorthand, paired with slug)'),
         ...CapsShape,
-        items: zod_1.z
+        items: z
             .array(HistoryItem)
             .min(1)
             .max(100)
@@ -77,7 +75,7 @@ exports.default = (0, tooldef_1.defineTool)({
         // workspace_id (sourced from the principal). Other tools that target
         // per-harness schemas can rely on the tx's app.workspace_id GUC + RLS.
         const ws = ctx.principal.workspaceId;
-        const env = await (0, _bulk_1.runBulk)(items, async (item) => {
+        const env = await runBulk(items, async (item) => {
             const { slug, feature_id, notes_max_chars, debug_max_chars, audit_rows } = item;
             if (!SLUG_RE.test(slug)) {
                 return { ok: false, slug, feature_id, error: `invalid slug ${JSON.stringify(slug)}` };
@@ -122,7 +120,7 @@ exports.default = (0, tooldef_1.defineTool)({
             const rendered = [`## This feature's history (${feature_id})`, ...sections].join('\n');
             return { ok: true, slug, feature_id, history: rendered };
         }, { keyOf: ({ slug, feature_id }) => ({ slug, feature_id }) });
-        return (0, _bulk_1.bulkContent)(env);
+        return bulkContent(env);
     },
 });
 function truncate(s, maxChars) {

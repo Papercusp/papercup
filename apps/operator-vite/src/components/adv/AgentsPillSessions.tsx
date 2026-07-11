@@ -80,15 +80,20 @@ export function searchHitStreamUrl(
   query: string,
 ): string | null {
   const anchor = `&find=${encodeURIComponent(query)}${hit.ts ? `&anchorTs=${encodeURIComponent(hit.ts)}` : ''}`;
+  // A hit on an INACTIVE (no live roster agent) session is ended → ended=1 so the
+  // thinking route rematerializes an archived transcript / terminates instead of
+  // polling forever (WI-3990). An ACTIVE result's agent is still running, so its
+  // transcript is live on disk — no flag.
+  const ended = s.active ? '' : '&ended=1';
   if (s.sourceKind === 'claude') {
     const owner = hit.owner ?? s.active?.ownerId ?? s.session?.coordOwnerId ?? null;
-    return `/api/adv/session/thinking?sessionId=${encodeURIComponent(s.sessionId)}${owner ? `&owner=${encodeURIComponent(owner)}` : ''}${anchor}`;
+    return `/api/adv/session/thinking?sessionId=${encodeURIComponent(s.sessionId)}${owner ? `&owner=${encodeURIComponent(owner)}` : ''}${anchor}${ended}`;
   }
   if (s.sourceKind === 'omp') {
-    return `/api/adv/session/thinking?ompThreadId=${encodeURIComponent(s.sessionId)}${anchor}`;
+    return `/api/adv/session/thinking?ompThreadId=${encodeURIComponent(s.sessionId)}${anchor}${ended}`;
   }
   if (s.sourceKind === 'codex') {
-    return `/api/adv/session/thinking?codexRolloutId=${encodeURIComponent(s.sessionId)}${anchor}`;
+    return `/api/adv/session/thinking?codexRolloutId=${encodeURIComponent(s.sessionId)}${anchor}${ended}`;
   }
   return null;
 }
@@ -100,11 +105,17 @@ export function searchHitStreamUrl(
 export function endedSessionStreamUrl(
   r: Pick<EndedSessionRow, 'id' | 'agent' | 'sessionId' | 'ompThreadId' | 'coordOwnerId'>,
 ): string | null {
+  // ended=1 (WI-3990): this session has ENDED, so a transcript that isn't on
+  // disk (archived + deleted ~after death) must be rematerialized-from-archive
+  // and backfilled — or the stream terminated. WITHOUT this the thinking route
+  // can't tell an ended session from a live one pre-first-turn, so it polls
+  // forever and the inspector shows "waiting for the first output" indefinitely
+  // instead of the stored history.
   if (r.sessionId) {
-    return `/api/adv/session/thinking?sessionId=${encodeURIComponent(r.sessionId)}${r.coordOwnerId ? `&owner=${encodeURIComponent(r.coordOwnerId)}` : ''}`;
+    return `/api/adv/session/thinking?sessionId=${encodeURIComponent(r.sessionId)}${r.coordOwnerId ? `&owner=${encodeURIComponent(r.coordOwnerId)}` : ''}&ended=1`;
   }
-  if (r.ompThreadId) return `/api/adv/session/thinking?ompThreadId=${encodeURIComponent(r.ompThreadId)}`;
-  if (r.agent === 'codex') return `/api/adv/session/thinking?codexSessionKey=${encodeURIComponent(String(r.id))}`;
+  if (r.ompThreadId) return `/api/adv/session/thinking?ompThreadId=${encodeURIComponent(r.ompThreadId)}&ended=1`;
+  if (r.agent === 'codex') return `/api/adv/session/thinking?codexSessionKey=${encodeURIComponent(String(r.id))}&ended=1`;
   return null;
 }
 

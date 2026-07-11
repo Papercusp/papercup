@@ -1,4 +1,3 @@
-"use strict";
 /**
  * Delta replay/eval harness — the measurement instrument Lane A owes Phase 4+
  * (agent-tool-delta-protocol-2026-06-22, P-003; gates the exemplar P-014 and the
@@ -31,47 +30,8 @@
  * bypass threshold), and `js-tiktoken`. Pure + side-effect-free → unit tier; the
  * real-tool re-execution that feeds it lives in the integration test alongside.
  */
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.tokens = tokens;
-exports.checksumRows = checksumRows;
-exports.computeListDelta = computeListDelta;
-exports.applyListDelta = applyListDelta;
-exports.evalSnapshotTransition = evalSnapshotTransition;
-const result_encoding_1 = require("@papercusp/result-encoding");
-const tooldef_1 = require("@papercusp/tooldef");
+import { encode } from '@papercusp/result-encoding';
+import { encodeDeltaCursor, DELTA_SMALL_RESPONSE_BYTES } from '@papercusp/tooldef';
 // PERF (FCP): `js-tiktoken` ships multi-MB BPE rank tables (`o200k_base` ≈ 5.5MB).
 // This module is reachable from the `@papercusp/agent-mcp` barrel, which the
 // operator webview imports — a STATIC `import` here put
@@ -83,16 +43,16 @@ const tooldef_1 = require("@papercusp/tooldef");
 let _encPromise;
 function loadEnc() {
     if (!_encPromise) {
-        _encPromise = Promise.resolve().then(() => __importStar(require('js-tiktoken'))).then((m) => m.getEncoding('o200k_base'));
+        _encPromise = import('js-tiktoken').then((m) => m.getEncoding('o200k_base'));
     }
     return _encPromise;
 }
 /** Token count of a string under the frontier-proxy tokenizer. Async: the tokenizer is lazy-loaded (see above). */
-async function tokens(s) {
+export async function tokens(s) {
     return (await loadEnc()).encode(s).length;
 }
 /** Deterministic FNV-1a over the canonical JSON of `next` — the merge-verification checksum. */
-function checksumRows(rows, itemKey) {
+export function checksumRows(rows, itemKey) {
     // Canonicalize: stable row order by id + stable key order, so the checksum is
     // identity-stable (two equal lists hash equal regardless of input ordering noise).
     const canonical = JSON.stringify([...rows].map((r) => stableStringify(r)).sort()) + `|k=${itemKey}|n=${rows.length}`;
@@ -129,7 +89,7 @@ function idOf(row, itemKey) {
  * duplicate identity keys — D-002: "must not claim safe removed deltas" without
  * stable identity).
  */
-function computeListDelta(base, next, opts = {}) {
+export function computeListDelta(base, next, opts = {}) {
     const itemKey = opts.itemKey ?? 'id';
     if (base === null)
         return { mode: 'full', reason: 'base_absent' };
@@ -191,7 +151,7 @@ function computeListDelta(base, next, opts = {}) {
  * Throws on a `full` delta (nothing to merge — the caller must use the full body)
  * or on an inconsistent delta (an `order` id with no source row).
  */
-function applyListDelta(base, delta, opts = {}) {
+export function applyListDelta(base, delta, opts = {}) {
     const itemKey = opts.itemKey ?? 'id';
     if (delta.mode === 'full') {
         throw new Error(`applyListDelta: mode 'full' (${delta.reason}) carries no body — use the full snapshot`);
@@ -226,7 +186,7 @@ function applyListDelta(base, delta, opts = {}) {
  * ────────────────────────────────────────────────────────────────────────── */
 /** A representative delta cursor (Lane B's real encoder) so the envelope cost is real, not guessed. */
 function evalCursor(checksum) {
-    return (0, tooldef_1.encodeDeltaCursor)({ v: 1, fp: 'eval', rev: checksum });
+    return encodeDeltaCursor({ v: 1, fp: 'eval', rev: checksum });
 }
 /** Bulk envelope shape the dominant tools ship (`{ data: rows }`) — TOON's object-with-array path. */
 function envelope(rows) {
@@ -240,13 +200,13 @@ function deepEqual(a, b) {
  * pick the winner, and verify the delta merge. `base === null` models a missing
  * base (post-compaction) → the only correct answer is a full re-send.
  */
-async function evalSnapshotTransition(base, next, opts = {}) {
+export async function evalSnapshotTransition(base, next, opts = {}) {
     const fullJsonText = JSON.stringify(envelope(next));
-    const fullToonText = `format: toon\n${(0, result_encoding_1.encode)(envelope(next), 'toon')}`;
+    const fullToonText = `format: toon\n${encode(envelope(next), 'toon')}`;
     const fullJson = await tokens(fullJsonText);
     const fullToon = await tokens(fullToonText);
     const delta = computeListDelta(base, next, opts);
-    const smallResponse = Buffer.byteLength(fullJsonText) < tooldef_1.DELTA_SMALL_RESPONSE_BYTES;
+    const smallResponse = Buffer.byteLength(fullJsonText) < DELTA_SMALL_RESPONSE_BYTES;
     let notModified = null;
     let deltaTok = null;
     let correct = null;
@@ -259,7 +219,7 @@ async function evalSnapshotTransition(base, next, opts = {}) {
     else if (delta.mode === 'delta') {
         const cursor = evalCursor(delta.checksum);
         const wire = { put: delta.put, remove: delta.remove, order: delta.order, counts: delta.counts };
-        deltaTok = await tokens(`mode: delta\nformat: toon\n${(0, result_encoding_1.encode)(wire, 'toon')}\ncursor: ${cursor}`);
+        deltaTok = await tokens(`mode: delta\nformat: toon\n${encode(wire, 'toon')}\ncursor: ${cursor}`);
         correct = base !== null && deepEqual(applyListDelta(base, delta, opts), next);
     }
     // Winner: the negotiator serves the smallest faithful mode. The small-response

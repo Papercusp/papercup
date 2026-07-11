@@ -1,13 +1,11 @@
-"use strict";
 /**
  * `papercusp://workspace/goals` — workspace goal inventory.
  *
  * Concrete resource mirroring the `goals:list` tool's full-detail
  * output.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-const tooldef_1 = require("@papercusp/tooldef");
-exports.default = (0, tooldef_1.defineResource)({
+import { defineResource } from '@papercusp/tooldef';
+export default defineResource({
     name: 'goals:list',
     uri: 'papercusp://workspace/goals',
     capability: 'goals:read',

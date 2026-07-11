@@ -1,4 +1,3 @@
-"use strict";
 /**
  * JSON-Schema → wire-kind classifier + validator for plugin event
  * declarations. Phase 4 T3.2.
@@ -20,13 +19,8 @@
  *
  * Plan ref: phase-4-endpoint-system-2026-05-12.md § T3.2.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.PluginEventSchemaError = exports.REJECTED_KEYWORDS = exports.SUPPORTED_KEYWORDS = void 0;
-exports.classifyEventWireFromJsonSchema = classifyEventWireFromJsonSchema;
-exports.validatePluginEventSchema = validatePluginEventSchema;
-exports.validateAndClassifyPluginEvents = validateAndClassifyPluginEvents;
 /** Reserved JSON-Schema keywords we explicitly support. */
-exports.SUPPORTED_KEYWORDS = new Set([
+export const SUPPORTED_KEYWORDS = new Set([
     // Type discriminator + structural.
     'type',
     'properties',
@@ -49,7 +43,7 @@ exports.SUPPORTED_KEYWORDS = new Set([
  * Keywords we deliberately reject. The plugin author hits a clear
  * error rather than a silent "this didn't take effect."
  */
-exports.REJECTED_KEYWORDS = new Set([
+export const REJECTED_KEYWORDS = new Set([
     'format',
     'pattern',
     'minLength',
@@ -81,13 +75,12 @@ exports.REJECTED_KEYWORDS = new Set([
     'dependentSchemas',
     'dependentRequired',
 ]);
-class PluginEventSchemaError extends Error {
+export class PluginEventSchemaError extends Error {
     constructor(message) {
         super(message);
         this.name = 'PluginEventSchemaError';
     }
 }
-exports.PluginEventSchemaError = PluginEventSchemaError;
 /**
  * Classify a JSON-Schema-typed event into a wire kind. Mirrors
  * `classifyEventWire` (the Zod-based classifier in tool-projection.ts).
@@ -99,7 +92,7 @@ exports.PluginEventSchemaError = PluginEventSchemaError;
  * Doesn't validate the schema — call `validatePluginEventSchema`
  * separately for that.
  */
-function classifyEventWireFromJsonSchema(schema) {
+export function classifyEventWireFromJsonSchema(schema) {
     const type = schema.type;
     if (type === 'string' && schema.contentEncoding === 'base64')
         return 'binary';
@@ -116,16 +109,16 @@ function classifyEventWireFromJsonSchema(schema) {
  * `path` is a dotted breadcrumb (e.g. "delta.text") used in error
  * messages to point at nested violations.
  */
-function validatePluginEventSchema(eventName, schema, path = eventName) {
+export function validatePluginEventSchema(eventName, schema, path = eventName) {
     if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
         throw new PluginEventSchemaError(`event "${path}" schema must be a JSON-Schema object; got ${Array.isArray(schema) ? 'array' : typeof schema}`);
     }
     for (const key of Object.keys(schema)) {
-        if (exports.REJECTED_KEYWORDS.has(key)) {
-            throw new PluginEventSchemaError(`unsupported JSON-Schema keyword "${key}" in event "${path}". Supported keywords: ${[...exports.SUPPORTED_KEYWORDS].sort().join(', ')}.`);
+        if (REJECTED_KEYWORDS.has(key)) {
+            throw new PluginEventSchemaError(`unsupported JSON-Schema keyword "${key}" in event "${path}". Supported keywords: ${[...SUPPORTED_KEYWORDS].sort().join(', ')}.`);
         }
-        if (!exports.SUPPORTED_KEYWORDS.has(key)) {
-            throw new PluginEventSchemaError(`unknown JSON-Schema keyword "${key}" in event "${path}". Supported keywords: ${[...exports.SUPPORTED_KEYWORDS].sort().join(', ')}.`);
+        if (!SUPPORTED_KEYWORDS.has(key)) {
+            throw new PluginEventSchemaError(`unknown JSON-Schema keyword "${key}" in event "${path}". Supported keywords: ${[...SUPPORTED_KEYWORDS].sort().join(', ')}.`);
         }
     }
     // `additionalProperties` may be `false` (allowed) or absent. A
@@ -177,7 +170,7 @@ function validatePluginEventSchema(eventName, schema, path = eventName) {
  * events to registerProjectedTool. Returns a wire-kind map computed
  * in the same pass (saves a second tree walk).
  */
-function validateAndClassifyPluginEvents(events) {
+export function validateAndClassifyPluginEvents(events) {
     const out = {};
     for (const [name, schema] of Object.entries(events)) {
         validatePluginEventSchema(name, schema);

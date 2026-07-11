@@ -1,4 +1,3 @@
-"use strict";
 /**
  * `papercusp://harness/{slug}/issues` — per-harness issue list.
  *
@@ -7,10 +6,9 @@
  * entry per active harness. This is the cross-harness consolidation
  * that the `issues:list` tool degraded out of.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-const tooldef_1 = require("@papercusp/tooldef");
-const tooldef_2 = require("@papercusp/tooldef");
-exports.default = (0, tooldef_1.defineResource)({
+import { defineResource } from '@papercusp/tooldef';
+import { matchResource } from '@papercusp/tooldef';
+export default defineResource({
     name: 'harness:issues',
     uri: 'papercusp://harness/{slug}/issues',
     capability: 'issues:read',
@@ -28,7 +26,7 @@ exports.default = (0, tooldef_1.defineResource)({
         }));
     },
     async read(uri, ctx) {
-        const matched = (0, tooldef_2.matchResource)(uri);
+        const matched = matchResource(uri);
         const slug = matched?.vars.slug;
         if (!slug) {
             throw new Error(`Invalid harness/issues URI: ${uri}`);

@@ -1,4 +1,3 @@
-"use strict";
 /**
  * Papercusp's role configuration — the host half of plan P-010 / D-005.
  *
@@ -15,16 +14,13 @@
  * roles (operator/oracle), then the cross-cutting roles that show up
  * in tool `roles:` allowlists.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.BRAIN_PRINCIPAL_ROLE = exports.OPERATOR_CONFIG_WRITE_ROLES = exports.SU_WRITE_ROLES = exports.SU_ROLES = exports.FROZEN_OVERLAY_ROLES = exports.AGENT_ROLES = void 0;
-exports.isOperatorConfigWriteRole = isOperatorConfigWriteRole;
 /**
  * The built-in Papercusp agent roles, as they appear in tool `roles:`
  * allowlists, `rolesQuota` keys, and `byRole` guidance overrides. The set is
  * open — plugins contribute additional roles at runtime (namespaced
  * `<plugin>:<role>`), which stay typed as bare `string`.
  */
-exports.AGENT_ROLES = [
+export const AGENT_ROLES = [
     // Pipeline roles (scoper → curator).
     'scoper',
     'architect',
@@ -237,7 +233,7 @@ exports.AGENT_ROLES = [
  * AGENT_ROLES can't re-open it. `satisfies` pins each member to AGENT_ROLES, so
  * renaming `judge` breaks compilation here instead of silently orphaning the freeze.
  */
-exports.FROZEN_OVERLAY_ROLES = ['judge'];
+export const FROZEN_OVERLAY_ROLES = ['judge'];
 /**
  * The standard SU-tool `agentRoles:` allowlist — the eight pipeline roles +
  * the operator chat role. THE single source for this set (audit P-072,
@@ -248,7 +244,7 @@ exports.FROZEN_OVERLAY_ROLES = ['judge'];
  * `satisfies` pins every member to AGENT_ROLES, so renaming a role there
  * breaks compilation here instead of silently orphaning an allowlist.
  */
-exports.SU_ROLES = [
+export const SU_ROLES = [
     'scoper',
     'architect',
     'worker',
@@ -267,7 +263,7 @@ exports.SU_ROLES = [
  * roles — they read artifacts/state but never author it (the artifacts
  * tools' allowlist; audit P-072 "shared READ/WRITE role consts").
  */
-exports.SU_WRITE_ROLES = [
+export const SU_WRITE_ROLES = [
     'scoper',
     'architect',
     'worker',
@@ -295,7 +291,7 @@ exports.SU_WRITE_ROLES = [
  * back out of sync across those tools (and the `isOperatorConfigWriteRole` guard
  * fails CI if the literal is re-introduced).
  */
-exports.OPERATOR_CONFIG_WRITE_ROLES = [
+export const OPERATOR_CONFIG_WRITE_ROLES = [
     'operator',
     'architect',
     'mug',
@@ -306,8 +302,8 @@ exports.OPERATOR_CONFIG_WRITE_ROLES = [
  * tools gate their mutating op on. Plugin-namespaced (`<plugin>:<role>`) and
  * unknown roles are not operator-equivalent → false (fail-closed).
  */
-function isOperatorConfigWriteRole(role) {
-    return role != null && exports.OPERATOR_CONFIG_WRITE_ROLES.includes(role);
+export function isOperatorConfigWriteRole(role) {
+    return role != null && OPERATOR_CONFIG_WRITE_ROLES.includes(role);
 }
 /**
  * The PRINCIPAL role that marks "the brain" — the operator/orchestration intelligence
@@ -320,4 +316,4 @@ function isOperatorConfigWriteRole(role) {
  * approvable ONLY by the brain (or a superuser, which bypasses RBAC) — making "only
  * the brain decides spawns" enforced at the dispatch layer, not prompt convention.
  */
-exports.BRAIN_PRINCIPAL_ROLE = 'brain';
+export const BRAIN_PRINCIPAL_ROLE = 'brain';

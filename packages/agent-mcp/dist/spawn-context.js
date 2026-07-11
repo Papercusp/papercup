@@ -1,4 +1,3 @@
-"use strict";
 /**
  * Parses the seven per-spawn URL params from inbound MCP requests.
  *
@@ -24,10 +23,7 @@
  *
  * Spec: apps/operator/docs/plugin-mcp-host-design.md (D4).
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.InvalidRequestContextError = void 0;
-exports.parseRequestContext = parseRequestContext;
-class InvalidRequestContextError extends Error {
+export class InvalidRequestContextError extends Error {
     missing;
     constructor(missing) {
         super(`request URL is missing required params: ${missing.join(', ')}`);
@@ -35,8 +31,7 @@ class InvalidRequestContextError extends Error {
         this.name = 'InvalidRequestContextError';
     }
 }
-exports.InvalidRequestContextError = InvalidRequestContextError;
-function parseRequestContext(url) {
+export function parseRequestContext(url) {
     const u = typeof url === 'string' ? new URL(url) : url;
     const harnessSlug = (u.searchParams.get('harness') ?? '').trim();
     const workspaceId = (u.searchParams.get('workspace') ?? '').trim();

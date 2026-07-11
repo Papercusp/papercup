@@ -1,4 +1,3 @@
-"use strict";
 /**
  * Return the tag vocabulary for a harness — every distinct tag with
  * its usage count, ordered by count DESC.
@@ -9,11 +8,10 @@
  *   - Operator UI tag-input autocomplete.
  *   - Tag-governance review: spot near-duplicate tags before they sprawl.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-const zod_1 = require("zod");
-const tooldef_1 = require("@papercusp/tooldef");
+import { z } from 'zod';
+import { defineTool } from '@papercusp/tooldef';
 const SLUG_RE = /^[a-z0-9._-]+$/i;
-exports.default = (0, tooldef_1.defineTool)({
+export default defineTool({
     name: 'features:tag_vocabulary',
     profile: 'engineer',
     capability: 'features:read',
@@ -21,10 +19,10 @@ exports.default = (0, tooldef_1.defineTool)({
         when: 'You need the set of known feature tags before tagging a new one — keeps tags consistent across the harness.',
         notWhen: 'For finding features BY a tag, use `features:search` (free-text) or `features:list_related`.',
     },
-    args: zod_1.z.object({
-        slug: zod_1.z.string().min(1),
+    args: z.object({
+        slug: z.string().min(1),
         /** Hard cap on the returned list. Default 100. */
-        limit: zod_1.z.number().int().positive().max(500).default(100),
+        limit: z.number().int().positive().max(500).default(100),
     }),
     async handler(args, ctx) {
         if (!SLUG_RE.test(args.slug)) {

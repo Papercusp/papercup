@@ -1,10 +1,3 @@
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.scalarOrArray = scalarOrArray;
-exports.toList = toList;
-exports.mergeIds = mergeIds;
-exports.runBulk = runBulk;
-exports.bulkContent = bulkContent;
 /**
  * _bulk.ts — the ONE keyed-array bulk I/O contract for agent-facing tools
  * (bulk-endpoint-standardization-2026-06-21, D-001).
@@ -39,15 +32,15 @@ exports.bulkContent = bulkContent;
  * This is the single implementation every bulk verb routes through — reuse it,
  * do NOT re-hand-roll the loop + envelope in each tool.
  */
-const zod_1 = require("zod");
+import { z } from 'zod';
 /** A Zod schema that accepts a scalar `item` OR an array of them; normalize the
  *  parsed value with `toList`. (The n=1 ergonomic seam for tools that take a
  *  single logical id field rather than `items`.) */
-function scalarOrArray(item) {
-    return zod_1.z.union([item, zod_1.z.array(item)]);
+export function scalarOrArray(item) {
+    return z.union([item, z.array(item)]);
 }
 /** Normalize a scalar | array | nullish into a flat list. */
-function toList(v) {
+export function toList(v) {
     if (v === undefined || v === null)
         return [];
     return Array.isArray(v) ? [...v] : [v];
@@ -58,7 +51,7 @@ function toList(v) {
  * and `ids`, and callers use whichever reads naturally (`id:"X"` for one,
  * `ids:[…]` for many) — there is one endpoint, the single call is just n=1.
  */
-function mergeIds(single, many) {
+export function mergeIds(single, many) {
     const out = [];
     const seen = new Set();
     for (const id of [...(single ? [single] : []), ...(many ?? [])]) {
@@ -80,7 +73,7 @@ function mergeIds(single, many) {
  * pool. Result order follows input order as a convenience; the CONTRACT is the
  * embedded key, not the index.
  */
-async function runBulk(items, op, opts) {
+export async function runBulk(items, op, opts) {
     const results = [];
     let ok = 0;
     let failed = 0;
@@ -122,6 +115,6 @@ async function runBulk(items, op, opts) {
  * so a `{data}`/output-schema lint can see them (P-003) and there is one canonical
  * return shape across all bulk tools.
  */
-function bulkContent(payload) {
+export function bulkContent(payload) {
     return { data: payload };
 }

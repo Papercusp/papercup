@@ -1,4 +1,3 @@
-"use strict";
 /**
  * Shared `requires:` preconditions for the artifacts:* tools
  * (adopt-event-rules-engines-2026-06-04, the requires:-half — D-012).
@@ -19,14 +18,10 @@
  * error }` result rather than rejecting the whole batch. The n=1 single path
  * (`{ slug?, rel_path }`) is gated here exactly as before.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.SLUG_RE = void 0;
-exports.slugRequires = slugRequires;
-exports.resolveSlug = resolveSlug;
 /** Mirrors each tool's `args.slug` zod regex — one slug grammar everywhere. */
-exports.SLUG_RE = /^[a-z0-9._-]+$/i;
+export const SLUG_RE = /^[a-z0-9._-]+$/i;
 /** The two harness-slug preconditions, parameterized by tool name (errors only). */
-function slugRequires(toolName) {
+export function slugRequires(toolName) {
     return [
         {
             id: 'harness-slug',
@@ -45,7 +40,7 @@ function slugRequires(toolName) {
                 any: [
                     { 'args.items': { truthy: true } },
                     { 'args.slug': { truthy: true } },
-                    { 'ctx.harnessSlug': { matches: { source: exports.SLUG_RE.source, flags: 'i' } } },
+                    { 'ctx.harnessSlug': { matches: { source: SLUG_RE.source, flags: 'i' } } },
                 ],
             },
             error: `${toolName} — invalid harnessSlug in spawn context`,
@@ -59,12 +54,12 @@ function slugRequires(toolName) {
  * the spawn ctx, and must be SLUG_RE-valid. Returns the resolved slug or an
  * error string (the per-item op turns the string into `{ ok:false, error }`).
  */
-function resolveSlug(toolName, itemSlug, ctxHarnessSlug) {
+export function resolveSlug(toolName, itemSlug, ctxHarnessSlug) {
     const slug = itemSlug ?? ctxHarnessSlug ?? undefined;
     if (!slug) {
         return { error: `${toolName} — \`slug\` required (no harnessSlug in spawn context)` };
     }
-    if (!exports.SLUG_RE.test(slug)) {
+    if (!SLUG_RE.test(slug)) {
         return { error: `${toolName} — invalid slug ${JSON.stringify(slug)}` };
     }
     return { slug };

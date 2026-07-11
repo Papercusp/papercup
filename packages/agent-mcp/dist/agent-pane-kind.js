@@ -1,4 +1,3 @@
-"use strict";
 /**
  * agent-pane-kind.ts — the shared AgentPaneKind taxonomy
  * (hive-agent-tabs-psu-tui-2026-06-09, P-001 / D-001..D-008).
@@ -41,11 +40,8 @@
  * agent waits for the owner. It is the DEFAULT for the kind — the per-agent wake
  * mode (D-005) can still flip an `auto` agent to manual at runtime.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.DRIVE_MODES = exports.AGENT_PANE_KINDS = void 0;
-exports.classifyAgentPane = classifyAgentPane;
-exports.AGENT_PANE_KINDS = ['mug', 'kettle', 'cup', 'papercup', 'planner', 'su'];
-exports.DRIVE_MODES = ['auto', 'responsive'];
+export const AGENT_PANE_KINDS = ['mug', 'kettle', 'cup', 'papercup', 'planner', 'su'];
+export const DRIVE_MODES = ['auto', 'responsive'];
 /**
  * Classify an agent into its dock pane-kind + drive mode from its role, an
  * optional launch hint, and (for hint-less roster entries) its coord owner id.
@@ -62,7 +58,7 @@ exports.DRIVE_MODES = ['auto', 'responsive'];
  *   6. everything else       → bee / auto   (pipeline roles, the generic `bee`,
  *                              the `sentinel` WATCHER role, reviewers, orchestrator…)
  */
-function classifyAgentPane(input) {
+export function classifyAgentPane(input) {
     const role = (input.role ?? '').trim().toLowerCase();
     // The Queen is the brain: a `psu --brain` launch (hint), the `brain` principal
     // role an active brain session carries (BRAIN_PRINCIPAL_ROLE), or the

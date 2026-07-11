@@ -1,4 +1,3 @@
-"use strict";
 /**
  * messages:inbox — read messages addressed to a harness, or (with
  * `feature_id`) to a specific feature's pipeline lane within it.
@@ -11,28 +10,27 @@
  * (Subsumes the old `messages:feature_inbox` — one verb, optional feature
  * scope.)
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-const zod_1 = require("zod");
-const tooldef_1 = require("@papercusp/tooldef");
+import { z } from 'zod';
+import { defineTool } from '@papercusp/tooldef';
 // No dots: the slug feeds a schema IDENTIFIER below, and a dot would survive
 // into it (postgres-js splits dotted identifiers into qualified parts) —
 // harness slugs are [a-z0-9-] per migration 044's derivation (audit P-029).
 const SLUG_RE = /^[a-z0-9_-]+$/i;
 const FEATURE_ID_RE = /^[A-Z][A-Z0-9-]+(-[A-Z0-9-]+)?$/;
-exports.default = (0, tooldef_1.defineTool)({
+export default defineTool({
     name: 'messages:inbox',
     capability: 'messages:read',
     guidance: {
         when: 'What\'s pending for me? Harness-level messages (directives, worker replies) — or pass `feature_id` for one feature\'s thread.',
         notWhen: 'For sent items use `messages:outbox`. To soft-hide a handled message use `messages:dismiss`.',
     },
-    args: zod_1.z.object({
-        slug: zod_1.z.string().min(1),
+    args: z.object({
+        slug: z.string().min(1),
         /** Scope to one feature's thread. Omit for harness-level messages. */
-        feature_id: zod_1.z.string().regex(FEATURE_ID_RE, 'feature_id must match F-XXX[-NNN]').optional(),
-        detail: zod_1.z.enum(['summary', 'full']).default('summary'),
-        status: zod_1.z.enum(['pending', 'acknowledged', 'archived', 'all']).default('pending'),
-        limit: zod_1.z.number().int().positive().max(200).default(50),
+        feature_id: z.string().regex(FEATURE_ID_RE, 'feature_id must match F-XXX[-NNN]').optional(),
+        detail: z.enum(['summary', 'full']).default('summary'),
+        status: z.enum(['pending', 'acknowledged', 'archived', 'all']).default('pending'),
+        limit: z.number().int().positive().max(200).default(50),
     }),
     // Output schema (token-efficient-tool-result-formats P-011) — mirrors
     // audit:list: the default `summary` shape is a flat array of scalar rows,
@@ -42,12 +40,12 @@ exports.default = (0, tooldef_1.defineTool)({
     // downgrades those to TOON gracefully, so declaring the summary shape is
     // correct + lossless for both modes. `feature` is nullable (harness-level
     // messages have no feature lane).
-    result: zod_1.z.array(zod_1.z.object({
-        id: zod_1.z.string(),
-        from: zod_1.z.string(),
-        feature: zod_1.z.string().nullable(),
-        kind: zod_1.z.string(),
-        subject: zod_1.z.string(),
+    result: z.array(z.object({
+        id: z.string(),
+        from: z.string(),
+        feature: z.string().nullable(),
+        kind: z.string(),
+        subject: z.string(),
     })),
     async handler(args, ctx) {
         if (!SLUG_RE.test(args.slug)) {

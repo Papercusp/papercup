@@ -107,12 +107,12 @@ function productionDeps(): HiveDirectoryDeps {
     // cache so a reboot can't resurrect a withdrawn hive from it.
     loadTombstones: async () => {
       const row = await readOperatorState<{ tombstones: Record<string, number> }>(
-        'hive_directory_tombstones',
+        'pot_directory_tombstones',
       ).catch(() => null);
       return row?.tombstones ?? {};
     },
     saveTombstones: async (tombstones) => {
-      await writeOperatorState('hive_directory_tombstones', { tombstones }).catch(() => {});
+      await writeOperatorState('pot_directory_tombstones', { tombstones }).catch(() => {});
     },
     // P-014 item 2: capture beacon history for the tier-4 dossier. Lazy-import
     // keeps this module from pulling in PG at startup; the capture itself is

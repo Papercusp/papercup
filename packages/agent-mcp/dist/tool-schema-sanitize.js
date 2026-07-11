@@ -1,4 +1,3 @@
-"use strict";
 /**
  * tool-schema-sanitize — make a tool `inputSchema` parseable by strict
  * tool-schema consumers.
@@ -28,8 +27,6 @@
  * the literal `additionalProperties: false`. Everything else is copied
  * byte-for-byte.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.sanitizeToolSchema = sanitizeToolSchema;
 /** JSON-Schema keywords that ANNOTATE but do not CONSTRAIN. A sub-schema whose
  *  every key is in this set is semantically "matches anything" — exactly the
  *  shape OMP's outbound serialization collapses back to the bare boolean `true`
@@ -95,7 +92,7 @@ function boolToSchema(b) {
  * positions. Returns a new value; the input is not mutated. Non-object
  * input (incl. a top-level boolean) is returned as-is.
  */
-function sanitizeToolSchema(node) {
+export function sanitizeToolSchema(node) {
     if (Array.isArray(node)) {
         return node.map((n) => sanitizeToolSchema(n));
     }

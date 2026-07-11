@@ -117,9 +117,14 @@ export interface RoutedIdeaProvenance {
   createdBy?: string;
 }
 
-/** Per-lens outcome tally + the weight P-004 reads back. */
-export interface LensOutcomeStat {
-  lens: CreativeLens;
+/**
+ * Per-lens outcome tally + the weight P-004 reads back. Generic over the lens
+ * roster (su-ideate-learning-substrate P-004): Scout's surfaces use the default
+ * {@link CreativeLens}; the su read-time win-rates instantiate with
+ * `SuIdeationLens` — same math, wider vocabulary, no persistence.
+ */
+export interface LensOutcomeStat<L extends string = CreativeLens> {
+  lens: L;
   /** Ideas from this lens that were routed (won + lost + pending). */
   routed: number;
   /**
@@ -141,16 +146,19 @@ export interface LensOutcomeStat {
   weight: number;
 }
 
-/** The full P-013 report: per-lens stats + the ranked roster, all four lenses always present. */
-export interface LensOutcomeReport {
+/** The full P-013 report: per-lens stats + the ranked roster, every roster lens always present. */
+export interface LensOutcomeReport<L extends string = CreativeLens> {
   /** ISO timestamp the report was computed (stamped by the caller; pure core leaves it undefined). */
   generatedAt?: string;
-  /** Total routed ideas considered. */
+  /**
+   * Total routed ideas considered — INCLUDING rows whose lens is outside the
+   * roster (e.g. the su 'su-ideate' sentinel), which appear in no per-lens stat.
+   */
   total: number;
-  /** Stats keyed by lens — every {@link CREATIVE_LENSES} member is present. */
-  byLens: Record<CreativeLens, LensOutcomeStat>;
+  /** Stats keyed by lens — every roster member (default {@link CREATIVE_LENSES}) is present. */
+  byLens: Record<L, LensOutcomeStat<L>>;
   /** The lenses sorted best-first (by weight, then winRate, then volume). */
-  ranked: LensOutcomeStat[];
+  ranked: LensOutcomeStat<L>[];
 }
 
 /** Injectable reader bag (unit tests inject fakes; production wires PG + the change feed). */
@@ -238,7 +246,7 @@ function gymStatusOf(entry: ChangeFeedEntry): string {
 }
 
 /** Empty stat for a lens with no routed ideas (neutral, floor-eligible). */
-function emptyStat(lens: CreativeLens): LensOutcomeStat {
+function emptyStat<L extends string>(lens: L): LensOutcomeStat<L> {
   return { lens, routed: 0, won: 0, lost: 0, pending: 0, winRate: null, weight: 0 };
 }
 
@@ -265,15 +273,23 @@ function validGradeOf(prov: RoutedIdeaProvenance): number | null {
 
 /**
  * Compute the per-lens outcome report from routed-idea provenance + the change
- * feed. Pure. Every lens in {@link CREATIVE_LENSES} appears in `byLens` (so the
- * roster P-004 reads is always complete), and `weight` is the smoothed, floored,
- * normalized sampling share.
+ * feed. Pure. Every lens in the roster (`opts.lenses`, default
+ * {@link CREATIVE_LENSES} — the Scout path is byte-identical) appears in
+ * `byLens` (so the roster P-004 reads is always complete), and `weight` is the
+ * smoothed, floored, normalized sampling share.
+ *
+ * su-ideate-learning-substrate P-004: the su read-time win-rates pass
+ * `lenses: SU_IDEATION_LENSES`. A provenance row whose lens is OUTSIDE the
+ * roster (the 'su-ideate' sentinel on unlensed filings) enters no per-lens
+ * stat but still counts in `total` — sentinel volume is visible without
+ * polluting any lens's win-rate.
  */
-export function computeLensOutcomes(
+export function computeLensOutcomes<L extends string = CreativeLens>(
   provenance: readonly RoutedIdeaProvenance[],
   completions: readonly ChangeFeedEntry[],
-  opts: LensWeightOptions = {},
-): LensOutcomeReport {
+  opts: LensWeightOptions & { lenses?: readonly L[] } = {},
+): LensOutcomeReport<L> {
+  const lenses = opts.lenses ?? (CREATIVE_LENSES as readonly string[] as readonly L[]);
   const completionByRef = new Map<string, ChangeFeedEntry>();
   for (const e of completions) {
     // First-wins matches gatherCompletions' dedup; refs are unique per artifact.
@@ -281,12 +297,14 @@ export function computeLensOutcomes(
   }
 
   const byLens = Object.fromEntries(
-    CREATIVE_LENSES.map((l) => [l, emptyStat(l)]),
-  ) as Record<CreativeLens, LensOutcomeStat>;
+    lenses.map((l) => [l, emptyStat(l)]),
+  ) as Record<L, LensOutcomeStat<L>>;
 
   for (const prov of provenance) {
-    const stat = byLens[prov.lens];
-    if (!stat) continue; // ignore an unknown lens rather than throwing
+    // A row's lens is data (ledger text column) — index as a plain string so a
+    // lens outside the roster falls through to the skip, never a type hole.
+    const stat = (byLens as Record<string, LensOutcomeStat<L> | undefined>)[prov.lens];
+    if (!stat) continue; // ignore an unknown/sentinel lens rather than throwing
     stat.routed += 1;
     const grade = validGradeOf(prov);
     if (grade !== null) {
@@ -305,20 +323,20 @@ export function computeLensOutcomes(
     }
   }
 
-  for (const lens of CREATIVE_LENSES) {
+  for (const lens of lenses) {
     const s = byLens[lens];
     const decided = s.won + s.lost;
     s.winRate = decided > 0 ? s.won / decided : null;
   }
 
-  applyLensWeights(byLens, opts);
+  applyLensWeights(byLens, lenses, opts);
 
-  const ranked = [...CREATIVE_LENSES.map((l) => byLens[l])].sort(rankStats);
+  const ranked = [...lenses.map((l) => byLens[l])].sort(rankStats);
   return { total: provenance.length, byLens, ranked };
 }
 
 /** Sort best-first: weight desc, then winRate desc (nulls last), then volume desc, then lens name. */
-function rankStats(a: LensOutcomeStat, b: LensOutcomeStat): number {
+function rankStats(a: LensOutcomeStat<string>, b: LensOutcomeStat<string>): number {
   if (b.weight !== a.weight) return b.weight - a.weight;
   const ar = a.winRate ?? -1;
   const br = b.winRate ?? -1;
@@ -333,15 +351,16 @@ function rankStats(a: LensOutcomeStat, b: LensOutcomeStat): number {
  *   2. normalize to a probability mass over lenses;
  *   3. floor every share at minShare and re-normalize (diversity guarantee).
  */
-function applyLensWeights(
-  byLens: Record<CreativeLens, LensOutcomeStat>,
+function applyLensWeights<L extends string>(
+  byLens: Record<L, LensOutcomeStat<L>>,
+  lenses: readonly L[],
   opts: LensWeightOptions,
 ): void {
   const prior = opts.priorStrength ?? 1;
-  const lensCount = CREATIVE_LENSES.length;
+  const lensCount = lenses.length;
   const minShare = clampMinShare(opts.minShare ?? 0.05, lensCount);
 
-  const smoothed = CREATIVE_LENSES.map((l) => {
+  const smoothed = lenses.map((l) => {
     const s = byLens[l];
     return (s.won + prior) / (s.won + s.lost + 2 * prior);
   });
@@ -351,7 +370,7 @@ function applyLensWeights(
   const floored = normalized.map((v) => Math.max(v, minShare));
   const flooredSum = floored.reduce((a, b) => a + b, 0);
 
-  CREATIVE_LENSES.forEach((l, i) => {
+  lenses.forEach((l, i) => {
     byLens[l].weight = floored[i] / flooredSum;
   });
 }
@@ -472,41 +491,46 @@ export const SAMPLING_FLOOR_FRACTION = 0.15;
  *
  * A lens absent from `raw` (e.g. a partial persisted set) contributes 0 raw
  * weight and lands exactly on the floor — alive, never starved.
+ *
+ * Generic over the roster (P-004): `opts.lenses` (default
+ * {@link CREATIVE_LENSES}) — the su read-time weights floor over
+ * SU_IDEATION_LENSES with the same math.
  */
-export function samplingWeightsWithFloor(
-  raw: Partial<Record<CreativeLens, number>> | null | undefined,
-  opts: { floorFraction?: number } = {},
-): Record<CreativeLens, number> {
-  const lensCount = CREATIVE_LENSES.length;
+export function samplingWeightsWithFloor<L extends string = CreativeLens>(
+  raw: Partial<Record<L, number>> | null | undefined,
+  opts: { floorFraction?: number; lenses?: readonly L[] } = {},
+): Record<L, number> {
+  const lenses = opts.lenses ?? (CREATIVE_LENSES as readonly string[] as readonly L[]);
+  const lensCount = lenses.length;
   const uniform = 1 / lensCount;
   const requested = opts.floorFraction ?? SAMPLING_FLOOR_FRACTION;
   const fraction =
     Number.isFinite(requested) && requested >= 0 ? Math.min(requested, 1) : SAMPLING_FLOOR_FRACTION;
   const floor = fraction * uniform;
 
-  const vals = CREATIVE_LENSES.map((l) => {
+  const vals = lenses.map((l) => {
     const v = raw?.[l];
     return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0;
   });
   const sum = vals.reduce((a, b) => a + b, 0);
   if (sum <= 0) {
-    return Object.fromEntries(CREATIVE_LENSES.map((l) => [l, uniform])) as Record<CreativeLens, number>;
+    return Object.fromEntries(lenses.map((l) => [l, uniform])) as Record<L, number>;
   }
 
   const headroom = 1 - lensCount * floor; // ≥ 0 because fraction ≤ 1
   return Object.fromEntries(
-    CREATIVE_LENSES.map((l, i) => [l, floor + headroom * (vals[i] / sum)]),
-  ) as Record<CreativeLens, number>;
+    lenses.map((l, i) => [l, floor + headroom * (vals[i] / sum)]),
+  ) as Record<L, number>;
 }
 
 /**
  * Top-level P-013 entry: read routed-idea provenance + the change feed and
  * compute the lens-outcome report. The caller stamps `generatedAt`.
  */
-export async function gatherLensOutcomes(
+export async function gatherLensOutcomes<L extends string = CreativeLens>(
   readers: ScoutOutcomeReaders,
-  opts: LensWeightOptions = {},
-): Promise<LensOutcomeReport> {
+  opts: LensWeightOptions & { lenses?: readonly L[] } = {},
+): Promise<LensOutcomeReport<L>> {
   const [provenance, completions] = await Promise.all([
     readers.routedIdeas().catch(() => [] as RoutedIdeaProvenance[]),
     readers.completions().catch(() => [] as ChangeFeedEntry[]),

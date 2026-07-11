@@ -1,4 +1,3 @@
-"use strict";
 /**
  * Get a single harness by slug.
  *
@@ -7,17 +6,16 @@
  *
  * Typed via `schemaOf(projects).select`.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-const postgres_js_1 = require("drizzle-orm/postgres-js");
-const drizzle_orm_1 = require("drizzle-orm");
-const zod_1 = require("zod");
-const db_org_1 = require("@papercusp/db-org");
-const tooldef_1 = require("@papercusp/tooldef");
-const registry_read_1 = require("./registry-read");
-const projects = db_org_1.generated.projectsInHarnessShared;
-const features = db_org_1.generated.harnessFeaturesConsolidatedInHarnessShared;
-const ProjectSelect = (0, db_org_1.schemaOf)(projects).select;
-exports.default = (0, tooldef_1.defineTool)({
+import { drizzle } from 'drizzle-orm/postgres-js';
+import { count, eq } from 'drizzle-orm';
+import { z } from 'zod';
+import { generated, schemaOf } from '@papercusp/db-org';
+import { defineTool } from '@papercusp/tooldef';
+import { readRegistryProjects } from './registry-read';
+const projects = generated.projectsInHarnessShared;
+const features = generated.harnessFeaturesConsolidatedInHarnessShared;
+const ProjectSelect = schemaOf(projects).select;
+export default defineTool({
     name: 'harness:get',
     profile: 'engineer',
     capability: 'harness:read',
@@ -26,16 +24,16 @@ exports.default = (0, tooldef_1.defineTool)({
         notWhen: 'For a list of all harnesses, use `harness:list`. For LIVE health (escalated/blocked), prefer `harness:status` or `escalations:get` — `harness:get` is the static record.',
         chaining: 'Follow `harness:list` if you don\'t have the slug. Follow with `harness:status` if you also need live counts.',
     },
-    args: zod_1.z.object({
-        slug: zod_1.z.string().min(1),
-        detail: zod_1.z.enum(['summary', 'full']).default('summary'),
+    args: z.object({
+        slug: z.string().min(1),
+        detail: z.enum(['summary', 'full']).default('summary'),
     }),
     async handler(args, ctx) {
-        const txDb = (0, postgres_js_1.drizzle)(ctx.tx);
+        const txDb = drizzle(ctx.tx);
         const rows = (await txDb
             .select()
             .from(projects)
-            .where((0, drizzle_orm_1.eq)(projects.slug, args.slug))
+            .where(eq(projects.slug, args.slug))
             .limit(1));
         if (!rows.length) {
             // EI-1834: harness:get is a PROJECT lookup — a registered HIVE (or any non-project
@@ -47,7 +45,7 @@ exports.default = (0, tooldef_1.defineTool)({
             // there, report its kind — so the caller never reads "not found" as "doesn't exist".
             // Best-effort: a registry read failure falls back to the plain miss.
             const ws = ctx.principal?.workspaceId ?? '';
-            const reg = (await (0, registry_read_1.readRegistryProjects)(ctx.tx, ws).catch(() => [])).find((p) => p.slug === args.slug);
+            const reg = (await readRegistryProjects(ctx.tx, ws).catch(() => [])).find((p) => p.slug === args.slug);
             if (reg) {
                 const kind = reg.harness_kind ?? 'unknown';
                 const surface = kind === 'hive' ? 'hives' : 'non-project harness kinds';
@@ -83,9 +81,9 @@ exports.default = (0, tooldef_1.defineTool)({
             };
         }
         const counts = await txDb
-            .select({ status: features.status, n: (0, drizzle_orm_1.count)() })
+            .select({ status: features.status, n: count() })
             .from(features)
-            .where((0, drizzle_orm_1.eq)(features.harnessSlug, args.slug))
+            .where(eq(features.harnessSlug, args.slug))
             .groupBy(features.status);
         const featureCounts = {};
         for (const c of counts) {

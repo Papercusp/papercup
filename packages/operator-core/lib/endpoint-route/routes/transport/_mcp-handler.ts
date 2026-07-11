@@ -36,6 +36,7 @@ import {
   parseRequestContext,
   InvalidRequestContextError,
   lookupByMcpName,
+  resolveMcpName,
   listMcpProjections,
   applyToolManifest,
   papercuspGateBypass,
@@ -1064,13 +1065,21 @@ async function buildMcpToolContext(
   // universal reachability path for a client that can't grow its own tool list.
   const ctxRef: { current: UnifiedToolContext | undefined } = { current: undefined };
   const dispatchTool: UnifiedToolContext['dispatchTool'] = async (toolName, toolArgs) => {
-    const target = lookupByMcpName(toolName);
+    // WI-3930: resolve TOLERANTLY — an agent commonly pastes a tool name into
+    // tools:invoke in the underscore/group_verb (`curation_state-of-pot`) or
+    // fully client-mangled (`mcp__papercusp-su__curation_state-of-pot`) form it
+    // sees in its own advertised list, not the canonical colon form. Exact match
+    // is still the fast path; the normalized fallback (unambiguous only) saves a
+    // wasted unknown-tool round-trip. Dispatch downstream under the CANONICAL
+    // registered name so telemetry/quota attribution keys off the real tool.
+    const target = resolveMcpName(toolName);
     if (!target?.expose?.mcp) {
       // EI-9011 (generalized): moment-of-failure referral — closest catalog matches +
       // the tools:find/tools:invoke routing hint, so a typo'd or client-format name
       // never reads as "the tool doesn't exist".
       return { isError: true, content: [{ type: 'text' as const, text: unknownToolReferral(toolName) }] };
     }
+    const canonicalName = target.expose.mcp.name;
     // EI-6982: bind the tx/principal the TARGET tool needs — NOT the outer
     // tools:invoke ctx (requirePrincipal:false, so tx-less). Without this, every
     // crossWorkspace/needsTx target (memory:*, flags:set, harness:list, …) threw

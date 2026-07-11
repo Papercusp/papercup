@@ -1,4 +1,3 @@
-"use strict";
 /**
  * Tool auto-loader. Importing this module side-effect-imports every
  * `tools/<group>/<verb>.ts`, causing each to call `defineTool` and
@@ -7,35 +6,34 @@
  * Add a tool by dropping a file under `tools/<group>/<verb>.ts`. The
  * registry will pick it up at startup; no manual list to maintain.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
 // Read tools — workspace state surface
-require("./tools/harness/list");
-require("./tools/harness/get");
-require("./tools/harness/status");
-require("./tools/tasks/list");
-require("./tools/tasks/get");
-require("./tools/features/get");
-require("./tools/features/history");
-require("./tools/features/search");
-require("./tools/features/list_related");
-require("./tools/features/tag_vocabulary");
-require("./tools/goals/list");
-require("./tools/goals/get");
+import './tools/harness/list';
+import './tools/harness/get';
+import './tools/harness/status';
+import './tools/tasks/list';
+import './tools/tasks/get';
+import './tools/features/get';
+import './tools/features/history';
+import './tools/features/search';
+import './tools/features/list_related';
+import './tools/features/tag_vocabulary';
+import './tools/goals/list';
+import './tools/goals/get';
 // issues:* fully RETIRED onto the unified work_items:* surface (coordination-unification-
 // 2026-06-23 P-015 / D-011). The engineer-issues STORE persists; work_items:* dispatches to it.
-require("./tools/messages/inbox");
-require("./tools/messages/outbox");
-require("./tools/audit/list");
-require("./tools/intel/spawn_tree");
-require("./tools/intel/artifacts");
-require("./tools/papercusp/list_workspaces");
-require("./tools/pending_events/list");
-require("./tools/search/query");
+import './tools/messages/inbox';
+import './tools/messages/outbox';
+import './tools/audit/list';
+import './tools/intel/spawn_tree';
+import './tools/intel/artifacts';
+import './tools/papercusp/list_workspaces';
+import './tools/pending_events/list';
+import './tools/search/query';
 // Artifacts — PG-canonical text store, role-gated (D1a)
-require("./tools/artifacts/load");
-require("./tools/artifacts/save");
-require("./tools/artifacts/append");
-require("./tools/artifacts/delete");
+import './tools/artifacts/load';
+import './tools/artifacts/save';
+import './tools/artifacts/append';
+import './tools/artifacts/delete';
 // Write tools formerly here (tasks:create, messages:send, messages:dismiss)
 // moved to apps/operator/lib/agent-tools/{tasks,messages}/ after the
 // function-as-truth audit: they call executeAction() in-process now
@@ -47,11 +45,11 @@ require("./tools/artifacts/delete");
 // REMOVED from the catalog — audit P-047. Bring a real mcp-ui tool when
 // one lands; the registration shape is one defineTool import here.
 // Resources — read-only browsable URIs (Phase A: agent-mcp resources)
-require("./resources/harness/list");
-require("./resources/harness/issues");
-require("./resources/goals/list");
-require("./resources/audit/recent");
+import './resources/harness/list';
+import './resources/harness/issues';
+import './resources/goals/list';
+import './resources/audit/recent';
 // Prompts — discoverable templates (Phase B: agent-mcp prompts)
-require("./prompts/agent/role");
-require("./prompts/operator/scanner");
-require("./prompts/dispatch/framing");
+import './prompts/agent/role';
+import './prompts/operator/scanner';
+import './prompts/dispatch/framing';

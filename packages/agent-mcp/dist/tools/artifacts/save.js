@@ -1,4 +1,3 @@
-"use strict";
 /**
  * artifacts:save — upsert one OR many PG-canonical text artifacts.
  *
@@ -16,25 +15,24 @@
  * rel_path, bytes, updated_at | error }], counts }. Each result self-describes
  * its (slug, rel_path); a missing-slug / invalid-slug item fails only itself.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-const zod_1 = require("zod");
-const tooldef_1 = require("@papercusp/tooldef");
-const _slug_requires_1 = require("./_slug-requires");
-const role_config_1 = require("../../role-config");
+import { z } from 'zod';
+import { defineTool } from '@papercusp/tooldef';
+import { SLUG_RE, slugRequires, resolveSlug } from './_slug-requires';
+import { SU_WRITE_ROLES } from '../../role-config';
 // The bulk helpers' LEAF module — relative, NOT the '@papercusp/agent-mcp'
 // barrel (see artifacts/load.ts for why: ESM circular-init + node-moduleResolution).
-const _bulk_1 = require("../../_bulk");
+import { runBulk, bulkContent } from '../../_bulk';
 // NB: 'tester' is not an AGENT_ROLES member and never was — the phantom
 // entry gated nothing (audit P-047).
 function normalizeRelPath(rel) {
     return rel.replace(/^\.papercusp\//, '');
 }
-const SaveItem = zod_1.z.object({
-    slug: zod_1.z.string().min(1).regex(_slug_requires_1.SLUG_RE).optional(),
-    rel_path: zod_1.z.string().min(1),
-    content: zod_1.z.string(),
+const SaveItem = z.object({
+    slug: z.string().min(1).regex(SLUG_RE).optional(),
+    rel_path: z.string().min(1),
+    content: z.string(),
 });
-exports.default = (0, tooldef_1.defineTool)({
+export default defineTool({
     name: 'artifacts:save',
     description: 'Upsert one OR many PG-canonical text artifacts (harness_text_artifacts) by (harness_slug, rel_path); replaces existing content. Pass a single `{ slug?, rel_path, content }` or `items:[{ slug?, rel_path, content }]` for several. Returns { ok, results:[{ ok, slug, rel_path, bytes, updated_at | error }], counts } — correlate by (slug, rel_path), not by position; a missing / invalid-slug item fails only itself.',
     capability: 'artifacts:write',
@@ -44,19 +42,19 @@ exports.default = (0, tooldef_1.defineTool)({
         chaining: 'Bulk: single { slug?, rel_path, content } | items[] → { ok, results, counts }; correlate by (slug, rel_path) not position; one failure never fails the rest.',
     },
     requirePrincipal: false,
-    agentRoles: [...role_config_1.SU_WRITE_ROLES],
+    agentRoles: [...SU_WRITE_ROLES],
     rolesQuota: {
         worker: { perChunk: 20 },
         architect: { perRun: 50 },
         scoper: { perRun: 50 },
         operator: { perRun: 200 },
     },
-    args: zod_1.z
+    args: z
         .object({
-        slug: zod_1.z.string().min(1).regex(_slug_requires_1.SLUG_RE).optional(),
-        rel_path: zod_1.z.string().min(1).optional(),
-        content: zod_1.z.string().optional(),
-        items: zod_1.z.array(SaveItem).min(1).max(100).optional().describe('artifacts to upsert (1–100), each { slug?, rel_path, content }'),
+        slug: z.string().min(1).regex(SLUG_RE).optional(),
+        rel_path: z.string().min(1).optional(),
+        content: z.string().optional(),
+        items: z.array(SaveItem).min(1).max(100).optional().describe('artifacts to upsert (1–100), each { slug?, rel_path, content }'),
     })
         .refine((a) => Boolean(a.items?.length) || (Boolean(a.rel_path) && a.content !== undefined), {
         message: 'pass `{ rel_path, content }` (one) or `items:[{ rel_path, content }]` (many)',
@@ -64,7 +62,7 @@ exports.default = (0, tooldef_1.defineTool)({
     // Declarative preconditions (adopt-event-rules-engines requires:-half):
     // the former in-handler slug guards, lifted — see ./_slug-requires. The bulk
     // (`items`) path re-asserts per-item slug presence/validity in the handler.
-    requires: (0, _slug_requires_1.slugRequires)('artifacts:save'),
+    requires: slugRequires('artifacts:save'),
     async handler(args, ctx) {
         const items = args.items?.length
             ? args.items
@@ -81,8 +79,8 @@ exports.default = (0, tooldef_1.defineTool)({
         // arm ADOPTS a blank-stamped legacy row instead of tripping the
         // policy on it.
         const wsFallback = ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : '';
-        const env = await (0, _bulk_1.runBulk)(items, async (item) => {
-            const r = (0, _slug_requires_1.resolveSlug)('artifacts:save', item.slug, ctx.harnessSlug);
+        const env = await runBulk(items, async (item) => {
+            const r = resolveSlug('artifacts:save', item.slug, ctx.harnessSlug);
             const key = normalizeRelPath(item.rel_path);
             if ('error' in r) {
                 return { ok: false, slug: item.slug ?? null, rel_path: key, error: r.error };
@@ -101,6 +99,6 @@ exports.default = (0, tooldef_1.defineTool)({
         `;
             return { ok: true, slug, rel_path: key, bytes: item.content.length, updated_at: now };
         }, { keyOf: (item) => ({ slug: item.slug ?? null, rel_path: normalizeRelPath(item.rel_path) }) });
-        return (0, _bulk_1.bulkContent)(env);
+        return bulkContent(env);
     },
 });

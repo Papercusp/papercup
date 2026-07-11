@@ -327,7 +327,7 @@ export async function loadHiveOwnerDeviceBindings(
     const { readOperatorState } = await import('./operator-state-pg');
     const row = await readOperatorState<{
       hives?: Array<{ hivePubkey?: string; ownerDevicePubkey?: string }>;
-    }>('hive_directory_cache', workspaceId).catch(() => null);
+    }>('pot_directory_cache', workspaceId).catch(() => null);
     for (const h of row?.hives ?? []) {
       accept(h?.hivePubkey, h?.ownerDevicePubkey);
     }

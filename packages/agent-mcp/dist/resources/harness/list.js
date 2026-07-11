@@ -1,4 +1,3 @@
-"use strict";
 /**
  * `papercusp://workspace/harnesses` — workspace-scoped harness inventory.
  *
@@ -6,9 +5,8 @@
  * tool; exposed as a resource so agents can browse and cache without
  * a tool call.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-const tooldef_1 = require("@papercusp/tooldef");
-exports.default = (0, tooldef_1.defineResource)({
+import { defineResource } from '@papercusp/tooldef';
+export default defineResource({
     name: 'harness:list',
     uri: 'papercusp://workspace/harnesses',
     capability: 'harness:read',

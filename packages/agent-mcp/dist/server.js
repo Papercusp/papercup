@@ -1,4 +1,3 @@
-"use strict";
 /**
  * Agent MCP server.
  *
@@ -14,26 +13,18 @@
  *     in the same Node process call the same handlers without going
  *     over a wire — same contract, no transport overhead).
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.unwrapDoubleEncodedArgs = unwrapDoubleEncodedArgs;
-exports.dispatch = dispatch;
-exports.listResources = listResources;
-exports.readResource = readResource;
-exports.listPrompts = listPrompts;
-exports.getPrompt = getPrompt;
-exports.startServer = startServer;
-const index_js_1 = require("@modelcontextprotocol/sdk/server/index.js");
-const stdio_js_1 = require("@modelcontextprotocol/sdk/server/stdio.js");
-const types_js_1 = require("@modelcontextprotocol/sdk/types.js");
-const zod_1 = require("zod");
-const db_org_1 = require("@papercusp/db-org");
-const result_encoding_1 = require("@papercusp/result-encoding");
-const auth_1 = require("./auth");
-const tool_schema_sanitize_1 = require("./tool-schema-sanitize");
-const tooldef_1 = require("@papercusp/tooldef");
-const tool_manifest_1 = require("./tool-manifest");
-const tooldef_2 = require("@papercusp/tooldef");
-const tooldef_3 = require("@papercusp/tooldef");
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { CallToolRequestSchema, GetPromptRequestSchema, ListPromptsRequestSchema, ListResourcesRequestSchema, ListToolsRequestSchema, ReadResourceRequestSchema, } from '@modelcontextprotocol/sdk/types.js';
+import { z } from 'zod';
+import { withWorkspace } from '@papercusp/db-org';
+import { advertisedArgsSchema } from '@papercusp/result-encoding';
+import { resolveBearer } from './auth';
+import { sanitizeToolSchema } from './tool-schema-sanitize';
+import { getCatalog, lookup, lookupByMcpName, standardValidate, serializeToolResponse, formatOptsFromCtx, } from '@papercusp/tooldef';
+import { applyToolManifest } from './tool-manifest';
+import { getResourceCatalog, matchResource, } from '@papercusp/tooldef';
+import { getPromptCatalog, lookupPrompt } from '@papercusp/tooldef';
 /** Walk a dotted path into the raw input to recover the offending value. */
 function valueAtPath(input, segs) {
     let cur = input;
@@ -90,7 +81,7 @@ function formatInvalidArgs(issues, input) {
  * extra sibling keys, non-JSON string, array/primitive) passes through
  * untouched and hits normal per-tool validation as before.
  */
-function unwrapDoubleEncodedArgs(input) {
+export function unwrapDoubleEncodedArgs(input) {
     if (typeof input !== 'object' || input === null || Array.isArray(input))
         return input;
     const keys = Object.keys(input);
@@ -115,12 +106,12 @@ function unwrapDoubleEncodedArgs(input) {
  * point used by both the MCP transport handler and in-process callers
  * (Operator/Oracle).
  */
-async function dispatch(opts) {
-    const tool = (0, tooldef_1.lookup)(opts.toolName);
+export async function dispatch(opts) {
+    const tool = lookup(opts.toolName);
     if (!tool) {
         return { ok: false, error: { code: 'unknown_tool', message: `No tool named "${opts.toolName}"` } };
     }
-    const principal = await (0, auth_1.resolveBearer)(opts.bearer);
+    const principal = await resolveBearer(opts.bearer);
     if (!principal) {
         return { ok: false, error: { code: 'invalid_bearer', message: 'Bearer token did not resolve to a principal' } };
     }
@@ -136,7 +127,7 @@ async function dispatch(opts) {
     // Validate args via the tool's Standard Schema validator. EI-7068: unwrap a
     // degenerate double-encoded { args: "<json-string>" } shape FIRST, so a
     // client bug at the transport layer doesn't 400 every tool it touches.
-    const parsed = await (0, tooldef_1.standardValidate)(tool.args, unwrapDoubleEncodedArgs(opts.args));
+    const parsed = await standardValidate(tool.args, unwrapDoubleEncodedArgs(opts.args));
     if (!parsed.ok) {
         return {
             ok: false,
@@ -144,7 +135,7 @@ async function dispatch(opts) {
         };
     }
     try {
-        const response = await (0, db_org_1.withWorkspace)(principal.workspaceId, async (tx) => {
+        const response = await withWorkspace(principal.workspaceId, async (tx) => {
             const ctx = {
                 principal,
                 tx,
@@ -173,14 +164,14 @@ async function dispatch(opts) {
  * resources expand via their `list` callback (one URI per harness, etc.);
  * concrete resources contribute one entry each.
  */
-async function listResources(bearer) {
-    const principal = await (0, auth_1.resolveBearer)(bearer);
+export async function listResources(bearer) {
+    const principal = await resolveBearer(bearer);
     if (!principal) {
         return { ok: false, error: { code: 'invalid_bearer', message: 'Bearer did not resolve to a principal' } };
     }
-    const visible = (0, tooldef_2.getResourceCatalog)().filter((r) => principal.capabilities.has(r.capability));
+    const visible = getResourceCatalog().filter((r) => principal.capabilities.has(r.capability));
     try {
-        const collected = await (0, db_org_1.withWorkspace)(principal.workspaceId, async (tx) => {
+        const collected = await withWorkspace(principal.workspaceId, async (tx) => {
             const out = [];
             for (const def of visible) {
                 const ctx = {
@@ -227,12 +218,12 @@ async function listResources(bearer) {
  * templates, capability-checks the bearer, then runs the resource's
  * `read` callback inside a workspace-bound transaction.
  */
-async function readResource(opts) {
-    const matched = (0, tooldef_2.matchResource)(opts.uri);
+export async function readResource(opts) {
+    const matched = matchResource(opts.uri);
     if (!matched) {
         return { ok: false, error: { code: 'unknown_resource', message: `No resource matches URI "${opts.uri}"` } };
     }
-    const principal = await (0, auth_1.resolveBearer)(opts.bearer);
+    const principal = await resolveBearer(opts.bearer);
     if (!principal) {
         return { ok: false, error: { code: 'invalid_bearer', message: 'Bearer did not resolve to a principal' } };
     }
@@ -246,7 +237,7 @@ async function readResource(opts) {
         };
     }
     try {
-        const contents = await (0, db_org_1.withWorkspace)(principal.workspaceId, async (tx) => {
+        const contents = await withWorkspace(principal.workspaceId, async (tx) => {
             const ctx = {
                 principal,
                 tx,
@@ -267,12 +258,12 @@ async function readResource(opts) {
     }
 }
 /** Enumerate prompts visible to the bearer. */
-async function listPrompts(bearer) {
-    const principal = await (0, auth_1.resolveBearer)(bearer);
+export async function listPrompts(bearer) {
+    const principal = await resolveBearer(bearer);
     if (!principal) {
         return { ok: false, error: { code: 'invalid_bearer', message: 'Bearer did not resolve to a principal' } };
     }
-    const visible = (0, tooldef_3.getPromptCatalog)().filter((p) => !p.capability || principal.capabilities.has(p.capability));
+    const visible = getPromptCatalog().filter((p) => !p.capability || principal.capabilities.has(p.capability));
     return {
         ok: true,
         prompts: visible.map((p) => ({
@@ -283,12 +274,12 @@ async function listPrompts(bearer) {
     };
 }
 /** Render a prompt by name with the given args. */
-async function getPrompt(opts) {
-    const def = (0, tooldef_3.lookupPrompt)(opts.name);
+export async function getPrompt(opts) {
+    const def = lookupPrompt(opts.name);
     if (!def) {
         return { ok: false, error: { code: 'unknown_prompt', message: `No prompt named "${opts.name}"` } };
     }
-    const principal = await (0, auth_1.resolveBearer)(opts.bearer);
+    const principal = await resolveBearer(opts.bearer);
     if (!principal) {
         return { ok: false, error: { code: 'invalid_bearer', message: 'Bearer did not resolve to a principal' } };
     }
@@ -314,7 +305,7 @@ async function getPrompt(opts) {
         }
     }
     try {
-        const result = await (0, db_org_1.withWorkspace)(principal.workspaceId, async (tx) => {
+        const result = await withWorkspace(principal.workspaceId, async (tx) => {
             const ctx = {
                 principal,
                 tx,
@@ -334,31 +325,31 @@ async function getPrompt(opts) {
         };
     }
 }
-async function startServer(opts = {}) {
+export async function startServer(opts = {}) {
     const stdio = opts.stdio ?? true;
     const bearerEnv = opts.bearerEnv ?? 'AGENT_MCP_BEARER';
-    const server = new index_js_1.Server({ name: 'agent-mcp', version: '0.1.0' }, { capabilities: { tools: {}, resources: {}, prompts: {} } });
-    server.setRequestHandler(types_js_1.ListToolsRequestSchema, async () => {
+    const server = new Server({ name: 'agent-mcp', version: '0.1.0' }, { capabilities: { tools: {}, resources: {}, prompts: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => {
         const bearer = process.env[bearerEnv] ?? '';
-        const principal = bearer ? await (0, auth_1.resolveBearer)(bearer) : null;
-        const catalog = (0, tooldef_1.getCatalog)();
+        const principal = bearer ? await resolveBearer(bearer) : null;
+        const catalog = getCatalog();
         const tools = catalog
             .filter((t) => !principal || principal.capabilities.has(t.capability))
             .map((t) => {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const inputSchema = zod_1.z.toJSONSchema(t.args);
+            const inputSchema = z.toJSONSchema(t.args);
             delete inputSchema.$schema;
             // Registry write-positional tools advertise a single `row` string (P-008).
-            const advertised = (0, result_encoding_1.advertisedArgsSchema)(t.name, inputSchema);
+            const advertised = advertisedArgsSchema(t.name, inputSchema);
             // Objectify boolean sub-schemas (z.unknown() → `true`) so strict
             // consumers (Ollama) can parse the tool surface. See tool-schema-sanitize.ts.
-            return { name: t.name, description: t.description, inputSchema: (0, tool_schema_sanitize_1.sanitizeToolSchema)(advertised) };
+            return { name: t.name, description: t.description, inputSchema: sanitizeToolSchema(advertised) };
         });
         // Pin to the tool manifest (if configured) for cache-stable parity with
         // the HTTP transport. No-op when no manifest is present. See tool-manifest.ts.
-        return { tools: (0, tool_manifest_1.applyToolManifest)(tools) };
+        return { tools: applyToolManifest(tools) };
     });
-    server.setRequestHandler(types_js_1.CallToolRequestSchema, async (req) => {
+    server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const bearer = process.env[bearerEnv] ?? '';
         const result = await dispatch({
             toolName: req.params.name,
@@ -381,19 +372,19 @@ async function startServer(opts = {}) {
         if ('content' in r)
             return r;
         const meta = req.params._meta;
-        const serialized = (0, tooldef_1.serializeToolResponse)(r, (0, tooldef_1.formatOptsFromCtx)({ requestedFormat: meta?.format, requestedStructured: meta?.structured === true, transport: 'mcp' }, (0, tooldef_1.lookupByMcpName)(req.params.name)?.resultEligibility));
+        const serialized = serializeToolResponse(r, formatOptsFromCtx({ requestedFormat: meta?.format, requestedStructured: meta?.structured === true, transport: 'mcp' }, lookupByMcpName(req.params.name)?.resultEligibility));
         return {
             content: serialized.content,
             ...(Object.keys(serialized._meta).length > 0 ? { _meta: serialized._meta } : {}),
             ...(serialized.structuredContent !== undefined ? { structuredContent: serialized.structuredContent } : {}),
         };
     });
-    server.setRequestHandler(types_js_1.ListResourcesRequestSchema, async () => {
+    server.setRequestHandler(ListResourcesRequestSchema, async () => {
         const bearer = process.env[bearerEnv] ?? '';
         const result = await listResources(bearer);
         return { resources: result.ok ? (result.resources ?? []) : [] };
     });
-    server.setRequestHandler(types_js_1.ReadResourceRequestSchema, async (req) => {
+    server.setRequestHandler(ReadResourceRequestSchema, async (req) => {
         const bearer = process.env[bearerEnv] ?? '';
         const result = await readResource({ uri: req.params.uri, bearer });
         if (!result.ok) {
@@ -401,12 +392,12 @@ async function startServer(opts = {}) {
         }
         return { contents: [result.contents] };
     });
-    server.setRequestHandler(types_js_1.ListPromptsRequestSchema, async () => {
+    server.setRequestHandler(ListPromptsRequestSchema, async () => {
         const bearer = process.env[bearerEnv] ?? '';
         const result = await listPrompts(bearer);
         return { prompts: result.ok ? (result.prompts ?? []) : [] };
     });
-    server.setRequestHandler(types_js_1.GetPromptRequestSchema, async (req) => {
+    server.setRequestHandler(GetPromptRequestSchema, async (req) => {
         const bearer = process.env[bearerEnv] ?? '';
         const result = await getPrompt({
             name: req.params.name,
@@ -422,7 +413,7 @@ async function startServer(opts = {}) {
         };
     });
     if (stdio) {
-        const transport = new stdio_js_1.StdioServerTransport();
+        const transport = new StdioServerTransport();
         await server.connect(transport);
     }
 }

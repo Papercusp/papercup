@@ -48,7 +48,7 @@ export function placementOverride(): PotControlPolicy {
 
 export async function refreshPotControlPolicy(): Promise<void> {
   try {
-    cached = (await readOperatorState<PotControlPolicy>('operator_hive_control_policy')) ?? {};
+    cached = (await readOperatorState<PotControlPolicy>('operator_pot_control_policy')) ?? {};
   } catch {
     /* keep the last value (empty at boot ⇒ env defaults) — never throw on the config path */
   }
@@ -56,18 +56,18 @@ export async function refreshPotControlPolicy(): Promise<void> {
 void refreshPotControlPolicy();
 
 export async function readPotControlPolicy(): Promise<PotControlPolicy> {
-  return (await readOperatorState<PotControlPolicy>('operator_hive_control_policy')) ?? {};
+  return (await readOperatorState<PotControlPolicy>('operator_pot_control_policy')) ?? {};
 }
 
 export async function writePotControlPolicy(patch: PotControlPolicy): Promise<PotControlPolicy> {
   const next = { ...(await readPotControlPolicy()), ...patch };
-  await writeOperatorState<PotControlPolicy>('operator_hive_control_policy', next);
+  await writeOperatorState<PotControlPolicy>('operator_pot_control_policy', next);
   cached = next; // same-process immediate effect
   return next;
 }
 
 export async function setPotControlPolicy(cfg: PotControlPolicy): Promise<void> {
-  await writeOperatorState<PotControlPolicy>('operator_hive_control_policy', cfg);
+  await writeOperatorState<PotControlPolicy>('operator_pot_control_policy', cfg);
   cached = cfg;
 }
 

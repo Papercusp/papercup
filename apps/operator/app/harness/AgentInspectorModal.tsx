@@ -141,7 +141,11 @@ export default function AgentInspectorModal({
     try {
       const res = await fetch('/api/adv/sessions/focus', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        // text/plain → CORS "simple request", no preflight OPTIONS (webkit2gtk in
+        // the desktop build fails preflight handshakes silently — see the resume
+        // handler below + native-console.ts). The route parses the raw body as
+        // JSON regardless of content-type.
+        headers: { 'content-type': 'text/plain' },
         body: JSON.stringify({
           id: focusTarget.advSessionId ?? undefined,
           windowId: focusTarget.windowId ?? undefined,
@@ -158,13 +162,25 @@ export default function AgentInspectorModal({
   // terminal + psu-session-resume path (plan-agent-launch P-023) via the same
   // console-launch route the "+" console button / capability:terminal use.
   const [resumeState, setResumeState] = useState<'idle' | 'busy' | 'err'>('idle');
+  // The server's actual failure reason (WI-3988/WI-3989) — shown as the button
+  // tooltip so a failure is diagnosable instead of a bare "fork failed".
+  const [resumeErr, setResumeErr] = useState<string | null>(null);
   const resumeInNewTerminal = useCallback(async () => {
     if (!resumeTarget) return;
     setResumeState('busy');
+    setResumeErr(null);
     try {
       const res = await fetch('/api/agent-mcp/console/launch', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        // WI-3988/WI-3989: use text/plain, NOT application/json. application/json
+        // is not a CORS "simple request", so it triggers a preflight OPTIONS —
+        // which webkit2gtk in the desktop build fails SILENTLY, so the POST never
+        // reached the server and Fork/Resume died with a bare "failed" (the
+        // console-launch debug log showed no browser request at all). text/plain
+        // is a simple request (no preflight); the route parses the raw body as
+        // JSON regardless of content-type. Mirrors the proven native-console.ts
+        // console-launch path (the working "+" console button uses text/plain).
+        headers: { 'content-type': 'text/plain' },
         body: JSON.stringify({
           resumeSessionId: resumeTarget.sessionId,
           // WI-3882: a LIVE source session FORKS (branch into a new session —
@@ -176,8 +192,14 @@ export default function AgentInspectorModal({
         }),
       });
       const data = await res.json().catch(() => null);
-      setResumeState(res.ok && data?.status === 'ok' ? 'idle' : 'err');
-    } catch {
+      if (res.ok && data?.status === 'ok') {
+        setResumeState('idle');
+      } else {
+        setResumeErr(data?.error ?? `HTTP ${res.status}`);
+        setResumeState('err');
+      }
+    } catch (e) {
+      setResumeErr(e instanceof Error ? e.message : 'request failed');
       setResumeState('err');
     }
   }, [resumeTarget, role]);
@@ -232,6 +254,7 @@ export default function AgentInspectorModal({
               data-testid="resume-terminal-btn"
               onClick={resumeInNewTerminal}
               disabled={resumeState === 'busy'}
+              title={resumeState === 'err' && resumeErr ? resumeErr : undefined}
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: 4,
                 font: 'inherit', fontSize: 11, cursor: resumeState === 'busy' ? 'default' : 'pointer',

@@ -1,4 +1,3 @@
-"use strict";
 /**
  * intel:artifacts — list pack/diff scratch-dir outputs for a harness.
  *
@@ -8,10 +7,9 @@
  * is 'ok'. Today the only producers are repomix.pack and
  * code2prompt.{diff,pack}.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-const zod_1 = require("zod");
-const tooldef_1 = require("@papercusp/tooldef");
-exports.default = (0, tooldef_1.defineTool)({
+import { z } from 'zod';
+import { defineTool } from '@papercusp/tooldef';
+export default defineTool({
     name: 'intel:artifacts',
     profile: 'engineer',
     guidance: {
@@ -19,12 +17,12 @@ exports.default = (0, tooldef_1.defineTool)({
         notWhen: 'For loading a specific artifact body, use `artifacts:load`. For listing artifacts a tool produced, use the tool\'s response. intel:artifacts is the panel feed.',
     },
     capability: 'intel:read',
-    args: zod_1.z.object({
-        harness: zod_1.z.string().min(1),
+    args: z.object({
+        harness: z.string().min(1),
         /** Optional kind filter. 'pack' matches *.pack tools; 'diff' matches *.diff tools. */
-        kind: zod_1.z.enum(['pack', 'diff', 'all']).default('all'),
-        sinceMs: zod_1.z.number().int().optional(),
-        limit: zod_1.z.number().int().positive().max(500).default(100),
+        kind: z.enum(['pack', 'diff', 'all']).default('all'),
+        sinceMs: z.number().int().optional(),
+        limit: z.number().int().positive().max(500).default(100),
     }),
     async handler(args, ctx) {
         const sinceMs = args.sinceMs ?? Date.now() - 7 * 24 * 60 * 60 * 1000;

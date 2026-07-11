@@ -1,4 +1,3 @@
-"use strict";
 /**
  * features:list_related — features related to one OR many given features via
  * tags + see_also.
@@ -22,19 +21,18 @@
  * result self-describes its (slug, feature_id); a missing-source / invalid-slug
  * / query-error item fails only itself.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-const zod_1 = require("zod");
-const tooldef_1 = require("@papercusp/tooldef");
+import { z } from 'zod';
+import { defineTool } from '@papercusp/tooldef';
 // The bulk helpers' LEAF module — relative, NOT the '@papercusp/agent-mcp'
 // barrel (see features/get.ts for why: ESM circular-init + node-moduleResolution).
-const _bulk_1 = require("../../_bulk");
+import { runBulk, bulkContent } from '../../_bulk';
 const SLUG_RE = /^[a-z0-9._-]+$/i;
-const RelatedItem = zod_1.z.object({
-    slug: zod_1.z.string().min(1),
-    feature_id: zod_1.z.string().min(1),
-    limit: zod_1.z.number().int().positive().max(20).default(5),
+const RelatedItem = z.object({
+    slug: z.string().min(1),
+    feature_id: z.string().min(1),
+    limit: z.number().int().positive().max(20).default(5),
 });
-exports.default = (0, tooldef_1.defineTool)({
+export default defineTool({
     name: 'features:list_related',
     profile: 'engineer',
     capability: 'features:read',
@@ -44,12 +42,12 @@ exports.default = (0, tooldef_1.defineTool)({
         notWhen: 'For free-text "find features about X", use `features:search`. For ALL features in a harness, use `harness:list_features`.',
         chaining: 'After `features:get`, use this to discover the neighborhood. Bulk: single { slug, feature_id, limit? } | items[] → { ok, results, counts }; correlate by (slug, feature_id) not position; one failure never fails the rest.',
     },
-    args: zod_1.z
+    args: z
         .object({
-        slug: zod_1.z.string().min(1).optional().describe('a single source feature\'s harness slug (n=1 shorthand, paired with feature_id)'),
-        feature_id: zod_1.z.string().min(1).optional().describe('a single source feature id (n=1 shorthand, paired with slug)'),
-        limit: zod_1.z.number().int().positive().max(20).default(5).describe('max related rows for the n=1 single call (default 5, max 20)'),
-        items: zod_1.z
+        slug: z.string().min(1).optional().describe('a single source feature\'s harness slug (n=1 shorthand, paired with feature_id)'),
+        feature_id: z.string().min(1).optional().describe('a single source feature id (n=1 shorthand, paired with slug)'),
+        limit: z.number().int().positive().max(20).default(5).describe('max related rows for the n=1 single call (default 5, max 20)'),
+        items: z
             .array(RelatedItem)
             .min(1)
             .max(100)
@@ -63,7 +61,7 @@ exports.default = (0, tooldef_1.defineTool)({
         const items = args.items?.length
             ? args.items
             : [{ slug: args.slug, feature_id: args.feature_id, limit: args.limit }];
-        const env = await (0, _bulk_1.runBulk)(items, async (item) => {
+        const env = await runBulk(items, async (item) => {
             const { slug, feature_id, limit } = item;
             if (!SLUG_RE.test(slug)) {
                 return { ok: false, slug, feature_id, error: `invalid slug ${JSON.stringify(slug)}` };
@@ -119,6 +117,6 @@ exports.default = (0, tooldef_1.defineTool)({
             }
             return { ok: true, slug, feature_id, related: rows };
         }, { keyOf: ({ slug, feature_id }) => ({ slug, feature_id }) });
-        return (0, _bulk_1.bulkContent)(env);
+        return bulkContent(env);
     },
 });

@@ -1,4 +1,3 @@
-"use strict";
 /**
  * papercusp:list_workspaces — discovery helper for shell-launched OMP
  * agents in superuser mode.
@@ -10,11 +9,10 @@
  * Available to all roles via the standard tool surface, but most useful
  * when called from `?superuser=1` shells.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-const zod_1 = require("zod");
-const tooldef_1 = require("@papercusp/tooldef");
-const db_org_1 = require("@papercusp/db-org");
-exports.default = (0, tooldef_1.defineTool)({
+import { z } from 'zod';
+import { defineTool } from '@papercusp/tooldef';
+import { getOrgPg } from '@papercusp/db-org';
+export default defineTool({
     name: 'papercusp:list_workspaces',
     profile: 'engineer',
     // Role-gated (no principal needed) — it's a discovery tool that reads the
@@ -30,14 +28,14 @@ exports.default = (0, tooldef_1.defineTool)({
         notWhen: 'For the CURRENT workspace details, use the operator-state APIs. papercusp:list_workspaces is the cross-workspace enumerator.',
     },
     capability: 'workspaces:read',
-    args: zod_1.z.object({}).strict(),
+    args: z.object({}).strict(),
     async handler() {
         // Cross-workspace enumerator: read the admin (rolbypassrls) handle directly
         // so it returns every workspace regardless of transport scoping. The MCP
         // transport only opens a workspace-scoped tx for concrete-workspace calls,
         // so ctx.tx is absent for the superuser/'*' discovery case this tool exists
         // for — getOrgPg() sidesteps that (matches multi_workspace / generators:*).
-        const { sql } = (0, db_org_1.getOrgPg)();
+        const { sql } = getOrgPg();
         // harness_registry is ONE JSONB-blob row per workspace
         // (workspace_id PK, payload JSONB, updated_at BIGINT — see migration 025);
         // the harnesses live in payload.projects[].slug. There is no harness_slug

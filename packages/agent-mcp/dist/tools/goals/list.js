@@ -1,4 +1,3 @@
-"use strict";
 /**
  * List goals in the current workspace.
  *
@@ -7,15 +6,14 @@
  * matches the column shape declared in the migration — no hand-typed
  * `Record<string, unknown>`.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-const postgres_js_1 = require("drizzle-orm/postgres-js");
-const drizzle_orm_1 = require("drizzle-orm");
-const zod_1 = require("zod");
-const db_org_1 = require("@papercusp/db-org");
-const tooldef_1 = require("@papercusp/tooldef");
-const goals = db_org_1.generated.goalsInHarnessShared;
-const GoalSelect = (0, db_org_1.schemaOf)(goals).select;
-exports.default = (0, tooldef_1.defineTool)({
+import { drizzle } from 'drizzle-orm/postgres-js';
+import { desc } from 'drizzle-orm';
+import { z } from 'zod';
+import { generated, schemaOf } from '@papercusp/db-org';
+import { defineTool } from '@papercusp/tooldef';
+const goals = generated.goalsInHarnessShared;
+const GoalSelect = schemaOf(goals).select;
+export default defineTool({
     name: 'goals:list',
     capability: 'goals:read',
     guidance: {
@@ -23,15 +21,15 @@ exports.default = (0, tooldef_1.defineTool)({
         notWhen: 'For TASKS (concrete TODOs), use `tasks:list`. Goals are the higher-level intent; tasks are how you get there.',
         chaining: 'Pair with `goals:get` for the full body.',
     },
-    args: zod_1.z.object({
-        detail: zod_1.z.enum(['summary', 'full']).default('summary'),
-        limit: zod_1.z.number().int().positive().max(200).default(50),
+    args: z.object({
+        detail: z.enum(['summary', 'full']).default('summary'),
+        limit: z.number().int().positive().max(200).default(50),
     }),
     // Output schema (token-efficient-tool-result-formats P-013) — flat scalar
     // array (default `summary` shape) → unlocks CSV + outputSchema advertisement.
-    result: zod_1.z.array(zod_1.z.object({ id: zod_1.z.string(), title: zod_1.z.string() })),
+    result: z.array(z.object({ id: z.string(), title: z.string() })),
     async handler(args, ctx) {
-        const txDb = (0, postgres_js_1.drizzle)(ctx.tx);
+        const txDb = drizzle(ctx.tx);
         const rows = (await txDb
             .select({
             id: goals.id,
@@ -42,7 +40,7 @@ exports.default = (0, tooldef_1.defineTool)({
             created_at: goals.createdAt,
         })
             .from(goals)
-            .orderBy((0, drizzle_orm_1.desc)(goals.createdAt))
+            .orderBy(desc(goals.createdAt))
             .limit(args.limit));
         if (args.detail === 'summary') {
             return { data: rows.map((r) => ({ id: r.id, title: r.title })) };

@@ -194,6 +194,8 @@ export {
   registerProjectedTool,
   unregisterProjectedToolsForPlugin,
   lookupByMcpName,
+  resolveMcpName,
+  normalizeMcpName,
   lookupByHttpPath,
   listAllProjectedTools,
   listMcpProjections,

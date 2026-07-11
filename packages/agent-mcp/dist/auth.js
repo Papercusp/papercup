@@ -1,4 +1,3 @@
-"use strict";
 /**
  * Bearer-token resolution → Principal.
  *
@@ -17,14 +16,9 @@
  * this module LISTENs to in order to invalidate eagerly; the TTL bounds
  * staleness if the LISTEN is unavailable.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-exports._authCacheTuning = exports.PRINCIPAL_INVALIDATE_CHANNEL = void 0;
-exports.resolveBearer = resolveBearer;
-exports.invalidate = invalidate;
-exports._resetAuthCacheForTests = _resetAuthCacheForTests;
-const node_crypto_1 = require("node:crypto");
-const db_org_1 = require("@papercusp/db-org");
-const role_config_1 = require("./role-config");
+import { createHash } from 'node:crypto';
+import { getOrgPg, withWorkspace } from '@papercusp/db-org';
+import { BRAIN_PRINCIPAL_ROLE } from './role-config';
 /**
  * The RBAC `roles` a resolved principal carries (the fail-closed `requireRoles`
  * dispatch axis). Derived from the principal's verified identity — NEVER
@@ -34,7 +28,7 @@ const role_config_1 = require("./role-config");
  */
 function rolesForPrincipal(kind, slug) {
     if (kind === 'system' && (slug === 'system:operator' || slug === 'operator')) {
-        return new Set([role_config_1.BRAIN_PRINCIPAL_ROLE]);
+        return new Set([BRAIN_PRINCIPAL_ROLE]);
     }
     return undefined;
 }
@@ -45,7 +39,7 @@ function rolesForPrincipal(kind, slug) {
  * Payload: JSON `{ workspace_id, slug }` (slug as stored in token_index,
  * e.g. "system:operator" / "pi:<session_id>").
  */
-exports.PRINCIPAL_INVALIDATE_CHANNEL = 'agent_mcp_principal_invalidate';
+export const PRINCIPAL_INVALIDATE_CHANNEL = 'agent_mcp_principal_invalidate';
 /** Positive entries: revocation lag is bounded by this even if LISTEN is down. */
 const CACHE_TTL_MS = 60_000;
 /** Negative entries (ended session / missing row / hash mismatch): short, so a
@@ -103,14 +97,14 @@ function ensureInvalidationListener() {
     if (listenerStarted)
         return;
     listenerStarted = true;
-    const { sql } = (0, db_org_1.getOrgPg)();
+    const { sql } = getOrgPg();
     // Unit tests (and any non-postgres-js stand-in) mock sql as a bare tagged
     // template without .listen — skip silently there.
     const listen = sql.listen;
     if (typeof listen !== 'function')
         return;
     void sql
-        .listen(exports.PRINCIPAL_INVALIDATE_CHANNEL, (payload) => {
+        .listen(PRINCIPAL_INVALIDATE_CHANNEL, (payload) => {
         try {
             const parsed = JSON.parse(payload);
             if (typeof parsed.workspace_id === 'string' && typeof parsed.slug === 'string') {
@@ -133,7 +127,7 @@ function ensureInvalidationListener() {
     });
 }
 function bearerHash(bearer) {
-    return (0, node_crypto_1.createHash)('sha256').update(bearer).digest('hex');
+    return createHash('sha256').update(bearer).digest('hex');
 }
 /**
  * Resolve a bearer to its token_index identity, served from TOKEN_INDEX_CACHE
@@ -152,7 +146,7 @@ async function resolveTokenIdentity(bearer, bearerHashHex) {
     // time). Without that grant the policy `workspace_id =
     // current_setting('app.workspace_id', true)` would filter out every
     // row because the GUC is unset outside withWorkspace.
-    const { sql } = (0, db_org_1.getOrgPg)();
+    const { sql } = getOrgPg();
     // token_index column is named `harness_slug` per the original 008 migration.
     // It holds slugs for harnesses; for system: and pi: principals (added in
     // 009) the same column stores the prefixed slug (e.g. "system:operator").
@@ -176,7 +170,7 @@ async function resolveTokenIdentity(bearer, bearerHashHex) {
     lruSet(TOKEN_INDEX_CACHE, bearerHashHex, identity);
     return identity;
 }
-async function resolveBearer(bearer) {
+export async function resolveBearer(bearer) {
     if (!bearer)
         return null;
     // bearer → token_index identity, served from a per-bearer-hash cache (the
@@ -216,7 +210,7 @@ async function resolveBearer(bearer) {
     return principal;
 }
 async function loadCapabilities(workspaceId, kind, slug, expectedHash) {
-    return (0, db_org_1.withWorkspace)(workspaceId, async (tx) => {
+    return withWorkspace(workspaceId, async (tx) => {
         if (kind === 'system') {
             const name = slug.startsWith('system:') ? slug.slice('system:'.length) : slug;
             const rows = await tx `
@@ -254,18 +248,18 @@ function setOf(raw) {
     return new Set();
 }
 /** Invalidate cache entry. Called by the LISTEN handler when capabilities change. */
-function invalidate(workspaceId, slug) {
+export function invalidate(workspaceId, slug) {
     CACHE.delete(cacheKey(workspaceId, slug));
 }
 /** Test-only. */
-function _resetAuthCacheForTests() {
+export function _resetAuthCacheForTests() {
     CACHE.clear();
     TOKEN_INDEX_CACHE.clear();
     listenerStarted = false;
     listenerWarned = false;
 }
 /** Test-only — TTL/bound constants for the cache tests. */
-exports._authCacheTuning = {
+export const _authCacheTuning = {
     ttlMs: CACHE_TTL_MS,
     negativeTtlMs: NEGATIVE_TTL_MS,
     max: CACHE_MAX,

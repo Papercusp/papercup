@@ -1,4 +1,3 @@
-"use strict";
 /**
  * `dispatch:framing` — small template Oracle uses when delegating to
  * an agent role via dispatchToAgent. Args:
@@ -10,9 +9,8 @@
  * Oracle/delegate emit consistent dispatch messages and lets external
  * agents borrow the convention.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-const tooldef_1 = require("@papercusp/tooldef");
-exports.default = (0, tooldef_1.definePrompt)({
+import { definePrompt } from '@papercusp/tooldef';
+export default definePrompt({
     name: 'dispatch:framing',
     description: 'Boilerplate first-message framing for dispatchToAgent. Args: role, context, feature?.',
     arguments: [

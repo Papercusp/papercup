@@ -1,4 +1,3 @@
-"use strict";
 /**
  * List harnesses registered in the current workspace.
  *
@@ -16,11 +15,10 @@
  * Returns slug, status, and source for each. Use to answer "what harnesses
  * do I have?" or to find a slug before calling harness:get / harness:status.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-const zod_1 = require("zod");
-const tooldef_1 = require("@papercusp/tooldef");
-const registry_read_1 = require("./registry-read");
-exports.default = (0, tooldef_1.defineTool)({
+import { z } from 'zod';
+import { defineTool } from '@papercusp/tooldef';
+import { readRegistryProjects } from './registry-read';
+export default defineTool({
     name: 'harness:list',
     profile: 'engineer',
     capability: 'harness:read',
@@ -29,11 +27,11 @@ exports.default = (0, tooldef_1.defineTool)({
         notWhen: 'For ONE specific harness, use `harness:get`. For a single harness\'s live health (active/done counts), use `harness:status`.',
         chaining: 'Pair with `harness:get` (detail) or `harness:status` (live counts) once you have the slug.',
     },
-    args: zod_1.z.object({
-        detail: zod_1.z.enum(['summary', 'full']).default('summary'),
-        limit: zod_1.z.number().int().positive().max(200).default(50),
-        cursor: zod_1.z.string().optional(),
-        workspace: zod_1.z
+    args: z.object({
+        detail: z.enum(['summary', 'full']).default('summary'),
+        limit: z.number().int().positive().max(200).default(50),
+        cursor: z.string().optional(),
+        workspace: z
             .string()
             .min(1)
             .optional()
@@ -43,15 +41,15 @@ exports.default = (0, tooldef_1.defineTool)({
     // flat scalar arrays → unlock CSV + MCP outputSchema advertisement. Declared
     // as the default `summary` shape; `full` adds more scalar columns the runtime
     // flatness check still serves as CSV.
-    result: zod_1.z.array(zod_1.z.object({
-        slug: zod_1.z.string(),
-        status: zod_1.z.string().nullable(),
-        source: zod_1.z.enum(['registry', 'project']),
+    result: z.array(z.object({
+        slug: z.string(),
+        status: z.string().nullable(),
+        source: z.enum(['registry', 'project']),
     })),
     async handler(args, ctx) {
         const tx = ctx.tx;
         const ws = ctx.principal?.workspaceId ?? '';
-        const registry = await (0, registry_read_1.readRegistryProjects)(tx, ws);
+        const registry = await readRegistryProjects(tx, ws);
         const projectRows = (await tx `
       SELECT slug, name, status, updated_ts
         FROM harness_shared.projects
