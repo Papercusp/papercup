@@ -307,7 +307,7 @@ describe('engineer issues surface (real PG)', () => {
     await issues.createIssue({ title: 'open observation', topics: ['observations'], createdBy: 'agA' });
     await issues.createIssue({ title: 'resolved observation', topics: ['observations'], createdBy: 'agA' });
     await issues.createIssue({ title: 'not tagged', createdBy: 'agA' });
-    await issues.setIssueState('EI-2', 'resolved', 'agA');
+    await issues.setIssueState('EI-2', 'resolved', 'agA', 'integration-test completion');
 
     expect(await issues.countIssues({ topic: 'observations' })).toBe(2);
     expect(await issues.countIssues({ topic: 'observations', state: 'open' })).toBe(1);
