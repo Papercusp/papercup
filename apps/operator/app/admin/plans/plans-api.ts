@@ -252,6 +252,27 @@ export interface AttentionGroup {
   maxImportance: Importance;
 }
 
+/**
+ * Live-query deltas can briefly expose a sparse row while a keyed attention
+ * group is being replaced. The Queue reads `.kind` synchronously, so one
+ * undefined/null item used to take down the entire Create tab. Normalize at
+ * the shared sync hook — the same boundary every Create/Plans consumer uses —
+ * instead of teaching each panel to survive malformed cache snapshots.
+ */
+export function normalizeAttentionGroups(rows: readonly unknown[]): AttentionGroup[] {
+  const groups: AttentionGroup[] = [];
+  for (const value of rows) {
+    if (!value || typeof value !== 'object') continue;
+    const group = value as Partial<AttentionGroup> & { items?: unknown };
+    if (typeof group.key !== 'string' || !Array.isArray(group.items)) continue;
+    const items = group.items.filter(
+      (item): item is AttentionItem => !!item && typeof item === 'object' && typeof (item as { kind?: unknown }).kind === 'string',
+    );
+    groups.push({ ...group, items } as AttentionGroup);
+  }
+  return groups;
+}
+
 /** Per-tier counts the reader returns alongside `groups` (for badges). */
 export type TierCounts = Record<AttentionTier, number>;
 
@@ -917,7 +938,15 @@ export function usePlanAttention(params?: {
     }),
     [params?.harnessSlug, params?.includeArchived],
   );
-  return useSyncResource<AttentionGroup, 'groups'>('plans.attention', args, 'groups', enabled);
+  const raw = useSyncResource<unknown, 'groups'>('plans.attention', args, 'groups', enabled);
+  const groups = useMemo(
+    () => normalizeAttentionGroups(raw.data?.groups ?? []),
+    [raw.data?.groups],
+  );
+  return {
+    ...raw,
+    data: { groups },
+  };
 }
 
 export function usePlanSearch(query: string): AsyncResult<{ hits: PlanSearchHit[] }> {

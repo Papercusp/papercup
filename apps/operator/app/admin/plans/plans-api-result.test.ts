@@ -18,8 +18,28 @@ import {
   staleConflictOf,
   planLockPath,
   PROMOTABLE_PLAN_STATUSES,
+  normalizeAttentionGroups,
   type SetContentResult,
 } from './plans-api';
+
+describe('normalizeAttentionGroups', () => {
+  it('removes sparse and malformed live-sync entries before Create reads item.kind', () => {
+    const valid = { id: 'a', kind: 'coord-message' };
+    const rows = normalizeAttentionGroups([
+      undefined,
+      { key: 'alerts:workspace', items: [undefined, null, valid, { id: 'missing-kind' }] },
+      { key: 'missing-items' },
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.key).toBe('alerts:workspace');
+    expect(rows[0]?.items).toEqual([valid]);
+  });
+
+  it('returns an empty snapshot for a completely malformed payload', () => {
+    expect(normalizeAttentionGroups([null, false, 'group', { items: [] }])).toEqual([]);
+  });
+});
 
 describe('staleConflictOf', () => {
   it('returns the conflict when error==="stale" and currentContent is a string', () => {
