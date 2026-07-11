@@ -29,7 +29,7 @@ import { TERMINAL_STATUSES } from './dbos/frontier-readiness';
 import { emitAwaitedEvent } from './events/await/engine';
 import { FEATURE_KIND } from './issue-blocks-merge';
 import { blockingEdgeReader, ISSUE_TERMINAL_STATUSES, type BlockingEdgeReader } from './work-item-blocking';
-import { getWorkItem, workItemObjectRef, type WorkItem, type WorkItemFamily } from './work-items';
+import { CLAIM_STATES_ALLOWLIST, getWorkItem, workItemObjectRef, type WorkItem, type WorkItemFamily } from './work-items';
 // Type-only (erased at runtime) — the subscriber inject shape. The concrete
 // fanoutForObject is lazy-imported inside the default seam below so this module
 // keeps no static edge to the fan-out projection (cycle-safe).
@@ -121,6 +121,55 @@ export function emitWorkItemCreatedEvent(wi: WorkItem, deps: Pick<SettledEventsD
       .then(() => emit({ key: `work-item:created:${wi.severity}`, summary, payload, source: 'work-items' }))
       .catch((e: unknown) => failSoft(`created-event(severity) for ${wi.id}`, e));
   }
+}
+
+/** The states an unassigned item can be pulled from — get_next/claim_next's floor. */
+const CLAIMABLE_STATES: ReadonlySet<string> = new Set(CLAIM_STATES_ALLOWLIST);
+
+/**
+ * `work-item:claimable` — the CANONICAL "work may exist for you" key
+ * (composable-event-awaits-2026-07-11 P-007). Dual-emitted alongside the three
+ * "returns to the pool" families (`work-item:created` on an unclaimed create,
+ * `claim:released:<id>`, `work-item:unblocked:<id>`) so an idle self-puller
+ * parks on ONE leaf — `events:await { event: 'work-item:claimable', when:
+ * { harness: … } }` — instead of the 3-leaf composed any-spec. Sugar only:
+ * the three underlying families keep firing unchanged, so existing specs
+ * keep working.
+ *
+ * The claimability guard lives HERE, single-sourced for every call site: an
+ * item with an assignee, or in a non-claimable state (blocked / terminal /
+ * wip), never fires — the key must never advertise work a get_next pull
+ * would then refuse. `payload.reason` carries which transition made it
+ * claimable. NOT covered (same gap as the 3-leaf spec, no regression): a bare
+ * status flip into a claimable state (e.g. blocked→todo via set_state) — that
+ * still only fires `work-item:status:<id>`. Fire-and-forget; never throws.
+ */
+export function emitWorkItemClaimableEvent(
+  wi: WorkItem,
+  reason: 'created' | 'released' | 'unblocked',
+  deps: Pick<SettledEventsDeps, 'emit'> = {},
+): void {
+  if (wi.assignee || !CLAIMABLE_STATES.has(wi.state)) return;
+  const emit = deps.emit ?? emitAwaitedEvent;
+  const payload = {
+    id: wi.id,
+    kind: wi.kind,
+    severity: wi.severity,
+    harness: wi.harness,
+    title: wi.title,
+    state: wi.state,
+    reason,
+  };
+  void Promise.resolve()
+    .then(() =>
+      emit({
+        key: 'work-item:claimable',
+        summary: `${wi.id} claimable (${reason}): ${wi.title}`,
+        payload,
+        source: 'work-items',
+      }),
+    )
+    .catch((e: unknown) => failSoft(`claimable-event for ${wi.id}`, e));
 }
 
 /**
@@ -339,6 +388,10 @@ async function emitUnblockedForClearedEdges(
       to: dependent.assignee ? [dependent.assignee] : [],
       source: 'work-items',
     });
+    // P-007: an unblocked dependent may have just become pool-claimable — the
+    // canonical key co-fires here so BOTH unblock paths (settle + unlink) are
+    // covered; the emitter's own guard drops assigned / non-claimable items.
+    emitWorkItemClaimableEvent(dependent, 'unblocked', { emit });
   }
 }
 

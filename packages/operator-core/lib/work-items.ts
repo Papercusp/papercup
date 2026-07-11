@@ -895,6 +895,15 @@ function maybeFireCreatedEvent(wi: WorkItem): void {
   void import('./work-items-events').then((m) => m.emitWorkItemCreatedEvent(wi)).catch(() => {});
 }
 
+/**
+ * Fire the canonical `work-item:claimable` key (composable-event-awaits P-007) —
+ * the emitter's own guard drops assigned / non-claimable items, so call sites
+ * just report the transition. Lazy import + fire-and-forget, same as above.
+ */
+function maybeFireClaimableEvent(wi: WorkItem, reason: 'created' | 'released' | 'unblocked'): void {
+  void import('./work-items-events').then((m) => m.emitWorkItemClaimableEvent(wi, reason)).catch(() => {});
+}
+
 /** Create a work-item of any kind, minting a kind-independent WI-NNN id (D-008). */
 export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkItem> {
   // P-001 generic-kind: accept a built-in kind OR a workspace-registered generic-kind
@@ -936,6 +945,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     maybeFireUrgentWake(input, created);
     maybeFireClaimedEvent(assignTo, created);
     maybeFireCreatedEvent(created);
+    maybeFireClaimableEvent(created, 'created');
     return created;
   }
 
@@ -1095,6 +1105,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   maybeFireUrgentWake(input, wi);
   maybeFireClaimedEvent(assignTo, wi);
   maybeFireCreatedEvent(wi);
+  maybeFireClaimableEvent(wi, 'created');
   return wi;
 }
 
@@ -3012,6 +3023,9 @@ export async function releaseWorkItem(
   const emitReleased = (released: WorkItem | null): void => {
     if (released && wasClaimed) {
       void import('./work-items-events').then((m) => m.emitClaimReleasedEvent(released)).catch(() => {});
+      // P-007: a released item is back in the pool — co-fire the canonical
+      // claimable key (the emitter's guard drops non-claimable end states).
+      maybeFireClaimableEvent(released, 'released');
     }
   };
   if (wi.family === 'issue') {

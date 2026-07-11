@@ -199,6 +199,23 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     replacesPoll: 'a scheduled poll+diff plan for "alert on new WI matching <severity>" (e.g. critical-severity-alert-2026-07-06)',
     payloadFiltered: true,
   },
+  {
+    family: 'work-item-claimable',
+    keyTemplate: 'work-item:claimable',
+    // composable-event-awaits-2026-07-11 P-007: the CANONICAL "work may exist for
+    // you" key — dual-emitted alongside work-item:created (unclaimed create),
+    // claim:released:<id>, and work-item:unblocked:<id>, so an idle self-puller
+    // awaits ONE leaf instead of composing all three. Only fires for an item that
+    // is actually pool-claimable (no assignee, claimable state). The wake is a
+    // HINT: scheduler:get_next / work_items:claim_next stays the authoritative claim.
+    params: [],
+    describe:
+      'A work item became CLAIMABLE (created unclaimed, claim released, or last blocker cleared). payload carries {id, kind, severity, harness, title, state, reason} for `when` filtering.',
+    emitter: 'work-items-events (packages/operator-core/lib/work-items-events.ts) — emitWorkItemClaimableEvent',
+    exists: true,
+    replacesPoll: 'the idle ~60s scheduler:get_next re-poll (and the 3-leaf composed any-spec it replaced)',
+    payloadFiltered: true,
+  },
   // ── git-sync / session / services (Phase 2 additions) ─────────────────────
   {
     family: 'git-sync',

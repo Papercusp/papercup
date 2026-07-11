@@ -4,9 +4,10 @@
 import { Tooltip } from '@/app/harness/Tooltip';
 /**
  * create:filter — the left FILTER sidebar of the Create dock, always visible.
- * Top: New plan + the Plans/Inbox/Sessions view buttons (set ?view, which
- * create:main renders). Below: search + plan-status bucket filters, then the
- * plan list. The plan list acts as a filter on whichever view is active —
+ * A compact left rail owns the Plans/Queue/Sessions view buttons (set ?view,
+ * which create:main renders). The adjacent browser keeps New plan, search,
+ * plan-status bucket filters, and the plan list. The plan list acts as a
+ * filter on whichever view is active —
  * clicking a plan in Inbox/Sessions toggles the ?itemPlans item filter; in
  * Plans view it opens that plan full-width on the right (?plan).
  *
@@ -166,18 +167,18 @@ export default function PlansListPanel(_props?: PanelComponentProps) {
         {/* New-plan stays in the plan browser; only the three view controls move
             into the compact rail. */}
         <div className="pc-plans__rail-actions pc-create-plans-sidebar__new-plan-action">
-        <Tooltip label={resolvedSlug
-              ? `Launch an agent session to draft a new plan in ${resolvedSlug}`
-              : `Launch an agent session to draft a new plan (no active ${t('pot', { lower: true })} — agent will ask)`}><button
-          type="button"
-          className="pc-plans__new-plan"
-          onClick={onNewPlan}
-          disabled={launching}
-          aria-label={launching ? 'Launching…' : 'New plan'}
-        >
-          <Plus size={14} aria-hidden />
-          {launching ? 'Launching…' : 'New'}
-        </button></Tooltip>
+          <Tooltip label={resolvedSlug
+                ? `Launch an agent session to draft a new plan in ${resolvedSlug}`
+                : `Launch an agent session to draft a new plan (no active ${t('pot', { lower: true })} — agent will ask)`}><button
+            type="button"
+            className="pc-plans__new-plan"
+            onClick={onNewPlan}
+            disabled={launching}
+            aria-label={launching ? 'Launching…' : 'New plan'}
+          >
+            <Plus size={14} aria-hidden />
+            {launching ? 'Launching…' : 'New'}
+          </button></Tooltip>
         </div>
 
         <div className="pc-plans__group">
