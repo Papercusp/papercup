@@ -333,3 +333,103 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
     expect(finished).toEqual(['slow', 'fast']);
   });
 });
+
+describe('bounded concurrency (P-004 memory-public-release-hardening-2026-07-11)', () => {
+  let handle: EmbedSidecarHandle | null = null;
+  let baseUrl = '';
+
+  afterEach(async () => {
+    await handle?.close();
+    handle = null;
+  });
+
+  /** Gated fake: every embed records its start and blocks until released. */
+  const makeGated = () => {
+    const started: string[] = [];
+    const release = new Map<string, () => void>();
+    const embed = (text: string) =>
+      new Promise<number[]>((res) => {
+        started.push(text);
+        release.set(text, () => res([1]));
+      });
+    const builders: EmbedderBuilders = {
+      gemma: async () => embed,
+      local: async () => embed,
+      harrier: async () => embed,
+    };
+    return { started, release, builders };
+  };
+  let gated: ReturnType<typeof makeGated>;
+
+  const waitFor = async (cond: () => boolean): Promise<void> => {
+    const deadline = Date.now() + 1_000;
+    while (!cond() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
+    expect(cond()).toBe(true);
+  };
+
+  const boot = async (concurrency?: number): Promise<void> => {
+    handle = createEmbedSidecarServer({
+      port: 0,
+      warmAtBoot: false,
+      log: () => {},
+      builders: gated.builders,
+      concurrency,
+    });
+    baseUrl = `http://127.0.0.1:${await handle.listening}`;
+  };
+
+  const post = (texts: string[]) =>
+    fetch(`${baseUrl}/embed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'query', texts }),
+    });
+
+  it('concurrency 2: two units run in flight, the third starts only when a slot frees', async () => {
+    gated = makeGated();
+    await boot(2);
+    const req = post(['a', 'b', 'c']);
+    await waitFor(() => gated.started.length === 2);
+    expect(gated.started).toEqual(['a', 'b']); // c queued — both slots busy
+    gated.release.get('a')!();
+    await waitFor(() => gated.started.length === 3);
+    expect(gated.started).toEqual(['a', 'b', 'c']); // freed slot starts c, arrival order
+    gated.release.get('b')!();
+    gated.release.get('c')!();
+    expect((await req).status).toBe(200);
+  });
+
+  it('concurrency 1 (the default contract): strictly serial starts', async () => {
+    gated = makeGated();
+    await boot(1);
+    const req = post(['a', 'b']);
+    await waitFor(() => gated.started.length === 1);
+    expect(gated.started).toEqual(['a']);
+    gated.release.get('a')!();
+    await waitFor(() => gated.started.length === 2);
+    gated.release.get('b')!();
+    expect((await req).status).toBe(200);
+  });
+
+  it('a failed unit frees its slot for the next waiter', async () => {
+    gated = makeGated();
+    const inner = gated.builders.gemma;
+    gated.builders.gemma = async (kind) => {
+      const embed = await inner(kind);
+      return (text: string) =>
+        text === 'boom' ? Promise.reject(new Error('synthetic embed failure')) : embed(text);
+    };
+    await boot(1);
+    const req = post(['boom', 'after']); // Promise.all rejects the request…
+    await waitFor(() => gated.started.includes('after')); // …but the slot freed
+    gated.release.get('after')!();
+    expect((await req).status).toBe(500);
+  });
+
+  it('healthz reports the configured concurrency', async () => {
+    gated = makeGated();
+    await boot(3);
+    const body = (await (await fetch(`${baseUrl}/healthz`)).json()) as { concurrency: number };
+    expect(body.concurrency).toBe(3);
+  });
+});
