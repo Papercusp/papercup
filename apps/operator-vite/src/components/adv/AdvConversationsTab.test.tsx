@@ -45,7 +45,10 @@ const { setQueryStates } = vi.hoisted(() => ({ setQueryStates: vi.fn() }));
 vi.mock('nuqs', () => ({
   ...nuqsParsers,
   useQueryState: (key: string) => [nuqsState[key], vi.fn()],
-  useQueryStates: () => [{}, setQueryStates],
+  useQueryStates: (parsers: Record<string, unknown>) => [
+    Object.fromEntries(Object.keys(parsers).map((key) => [key, nuqsState[key]])),
+    setQueryStates,
+  ],
   parseAsString: { withDefault: () => ({}) },
   parseAsStringEnum: () => ({ withDefault: () => ({}) }),
   parseAsArrayOf: () => ({ withDefault: () => ({}) }),
@@ -273,6 +276,28 @@ describe('AdvConversationsTab — Create-style shell', () => {
       thread: null,
       chat: null,
       msg: 'msg-1',
+      fmsg: null,
+    });
+  });
+
+  it('clears source-owned selections atomically when switching conversation views', () => {
+    nuqsState.conv = 'deliberations';
+    nuqsState.thread = 'issue-thread-EI-9534';
+    nuqsState.conversation = 'conv-from-an-earlier-qa-visit';
+    nuqsState.chat = 'chat-from-an-earlier-agent-visit';
+    nuqsState.msg = 'message-from-an-earlier-message-visit';
+    nuqsState.fmsg = 'event-from-an-earlier-feed-visit';
+
+    render(<AdvConversationsTab />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Q&A' }));
+
+    expect(setQueryStates).toHaveBeenCalledWith({
+      conv: 'threads',
+      conversation: null,
+      thread: null,
+      chat: null,
+      msg: null,
+      fmsg: null,
     });
   });
 

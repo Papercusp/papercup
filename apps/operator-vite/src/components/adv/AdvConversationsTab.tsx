@@ -163,6 +163,23 @@ const streamRowProps = () => STREAM_ROW_PROPS;
 const CONV_VIEWS = ['inbox', 'threads', 'deliberations', 'agentchats', 'messages', 'feed'] as const;
 type ConvView = (typeof CONV_VIEWS)[number];
 
+const CONVERSATION_ROUTE_PARAMS = {
+  conv: parseAsStringEnum<ConvView>([...CONV_VIEWS]).withDefault('inbox'),
+  conversation: parseAsString,
+  thread: parseAsString,
+  chat: parseAsString,
+  msg: parseAsString,
+  fmsg: parseAsString,
+};
+
+const EMPTY_CONVERSATION_SELECTION = {
+  conversation: null,
+  thread: null,
+  chat: null,
+  msg: null,
+  fmsg: null,
+} as const;
+
 interface ViewDef {
   id: ConvView;
   label: string;
@@ -433,13 +450,7 @@ function composeUnifiedConversationRows(
  * list: the design guide calls that shape out as a non-RichGrid use case.
  */
 function UnifiedInboxView() {
-  const [, setRoute] = useQueryStates({
-    conv: parseAsStringEnum<ConvView>([...CONV_VIEWS]).withDefault('inbox'),
-    conversation: parseAsString,
-    thread: parseAsString,
-    chat: parseAsString,
-    msg: parseAsString,
-  });
+  const [, setRoute] = useQueryStates(CONVERSATION_ROUTE_PARAMS);
   const questions = useSyncQuery<ConvRow>({ queryName: 'conversations.questionsList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
   const deliberations = useSyncQuery<ThreadRow>({ queryName: 'conversations.deliberationList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
   const agentChats = useSyncQuery<AgentChatRow>({ queryName: 'conversations.agentChatList', args: { limit: COMMS_LIST_LIMIT }, staleTime: 30_000 });
@@ -478,6 +489,7 @@ function UnifiedInboxView() {
     thread: row.source === 'deliberations' ? row.sourceId : null,
     chat: row.source === 'agentchats' ? row.sourceId : null,
     msg: row.source === 'messages' ? row.sourceId : null,
+    fmsg: null,
   });
 
   return (
@@ -599,8 +611,26 @@ function ConvFrame({
   detailOpen?: boolean;
   onBack?: () => void;
 }) {
-  const [view, setView] = useQueryState('conv', parseAsStringEnum<ConvView>([...CONV_VIEWS]).withDefault('inbox'));
+  const [route, setRoute] = useQueryStates(CONVERSATION_ROUTE_PARAMS);
+  const view = route.conv;
   const [askOpen, setAskOpen] = useState(false);
+
+  const switchView = (nextView: ConvView) => {
+    // A view switch is a navigation boundary: selections belong to their source
+    // view and must not survive into another source's URL. When the already-active
+    // tab is clicked, preserve only its own selection while cleaning legacy/stale
+    // keys left by older builds.
+    const preserveActiveSelection = nextView === view;
+    void setRoute({
+      conv: nextView,
+      ...EMPTY_CONVERSATION_SELECTION,
+      conversation: preserveActiveSelection && nextView === 'threads' ? route.conversation : null,
+      thread: preserveActiveSelection && nextView === 'deliberations' ? route.thread : null,
+      chat: preserveActiveSelection && nextView === 'agentchats' ? route.chat : null,
+      msg: preserveActiveSelection && nextView === 'messages' ? route.msg : null,
+      fmsg: preserveActiveSelection && nextView === 'feed' ? route.fmsg : null,
+    });
+  };
 
   const navBtn = (d: ViewDef) => (
     <Tooltip key={d.id} label={d.desc}>
@@ -613,7 +643,7 @@ function ConvFrame({
         aria-controls="adv-conversations-panel"
         className={`pc-advconv__navbtn pc-advconv__navbtn--${d.group}${view === d.id ? ' is-active' : ''}`}
         style={{ ['--nav-accent' as string]: VIEW_ACCENT[d.id] } as React.CSSProperties}
-        onClick={() => void setView(d.id)}
+        onClick={() => switchView(d.id)}
       >
         <span className="pc-advconv__navicon" aria-hidden>
           <d.Icon size={14} />
@@ -667,7 +697,7 @@ function ConvFrame({
         ) : null}
         {detail}
       </main>
-      <AskComposer open={askOpen} onOpenChange={setAskOpen} onAsked={() => void setView('threads')} />
+      <AskComposer open={askOpen} onOpenChange={setAskOpen} onAsked={() => switchView('threads')} />
     </div>
   );
 }
