@@ -619,7 +619,27 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
         const bak = join(envelope.cwd, '.mcp.json.papercusp.bak');
         if (!existsSync(bak)) renameSync(mcpPath, bak);
       }
-      writeFileSync(mcpPath, envelope.mcpJsonContents);
+      // Atomic write via temp-file + rename instead of a direct writeFileSync.
+      // WHY (owner-hit 2026-07-11: resume/fork consoles failed with HTTP 500
+      // "write .mcp.json: EACCES"): the one-shot backup above is guarded by
+      // `!existsSync(bak)`, so once a `.mcp.json.papercusp.bak` exists the stale
+      // `.mcp.json` is NOT moved aside — and if that stale file is read-only
+      // (a 0444 .mcp.json had been sitting at the repo root), the in-place
+      // `writeFileSync(mcpPath, …)` opens it O_WRONLY and throws EACCES, so
+      // EVERY console launch (resume, fork, and the "+" button) 500'd. A rename
+      // only needs write permission on the DIRECTORY (which we have) — it
+      // replaces the directory entry regardless of the target file's mode — so
+      // this succeeds over a read-only .mcp.json, is atomic against concurrent
+      // launches, and lands the fresh file at the default 0644 (self-healing the
+      // read-only state). tmp lives in the same dir so the rename stays on one fs.
+      const tmp = join(envelope.cwd, `.mcp.json.tmp-${process.pid}-${Date.now()}`);
+      writeFileSync(tmp, envelope.mcpJsonContents);
+      try {
+        renameSync(tmp, mcpPath);
+      } catch (e) {
+        try { unlinkSync(tmp); } catch { /* best-effort temp cleanup */ }
+        throw e;
+      }
     } catch (e: any) {
       return { status: 'error', error: `write .mcp.json: ${e?.message}`, code: 500 };
     }
