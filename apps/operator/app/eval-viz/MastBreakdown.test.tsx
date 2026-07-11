@@ -37,7 +37,7 @@ describe('<MastBreakdown />', () => {
     expect(container.querySelectorAll('rect[fill]').length).toBeGreaterThanOrEqual(8);
     expect(getByTestId('mast-band')).not.toBeNull();
     const titles = [...container.querySelectorAll('rect title')].map((t) => t.textContent ?? '');
-    expect(titles.some((t) => t.includes('Hive') && t.includes('duplication') && t.includes('8%'))).toBe(true);
+    expect(titles.some((t) => t.includes('Pot') && t.includes('duplication') && t.includes('8%'))).toBe(true);
   });
 
   it('renders the default 41–86% band label', () => {

@@ -167,6 +167,13 @@ beforeAll(async () => {
   await db.sql.unsafe(readMigration('372-bee-claim-specs.sql')).simple();
   await db.sql.unsafe(readMigration('389-bee-claim-spec-id-only.sql')).simple();
   await db.sql.unsafe(readMigration('438-bee-claim-specs-federation.sql')).simple();
+  // P-009 Phase 2 (WI-3954 / EI-9520): rename bee_claim_specs -> cup_claim_specs so this
+  // rig matches the live post-555 schema getNextForBee/claim-spec-store.ts now queries.
+  // Renamed inline (not the full 555 file, whose UNCONDITIONAL beekeeper_* compat VIEWs
+  // target cup_keeper_* tables absent from this claim-only rig -> 42P01) — same pattern as
+  // claim-spec-store.integration.test.ts. The store's ON CONFLICT (workspace_id, bee_id) is
+  // column-based, so a table-only rename is sufficient (constraint names untouched/unreferenced).
+  await db.sql.unsafe('ALTER TABLE harness_shared.bee_claim_specs RENAME TO cup_claim_specs').simple();
   // Columns get-next / claim-readiness fixtures add on top of the base superset.
   await db.sql.unsafe(`
     ALTER TABLE harness_shared.work_items

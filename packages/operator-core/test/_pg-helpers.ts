@@ -18,8 +18,12 @@
  * integration run doesn't pay the ~2s boot per file.
  */
 import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 import { createFreshTestDb } from '@papercusp/test-config';
+
+const SQL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../libs/papercusp/libs/db/sql');
 
 export interface FreshPgDb {
   sql: postgres.Sql;
@@ -49,6 +53,23 @@ export async function applyMigrationForTest(sql: postgres.Sql, filePath: string)
     .filter((l) => !l.trimStart().startsWith('\\') && !/^(BEGIN|COMMIT);\s*$/i.test(l.trim()))
     .join('\n');
   await sql.unsafe(sqlText);
+}
+
+/**
+ * Apply the migrations `claims.ts`'s `acquireClaimLocal` path needs against a
+ * hand-provisioned test DB: 140 (plan-item assignments), 141 (leased claims),
+ * 143 (agent_activity — the EI-8997 holder-activity grace join). Every
+ * plan-items integration test that exercises claims.ts used to hand-copy this
+ * list itself; when 143 was added as a dependency, at least four files missed
+ * it independently and each generated its own watchdog red-test ticket
+ * (EI-9508, EI-9509, EI-9513, EI-9515 — see EI-9613). Call this once in
+ * `beforeAll` instead of listing the files by hand; a future migration
+ * `claims.ts` starts depending on becomes a one-line addition here.
+ */
+export async function applyPlanItemClaimMigrations(sql: postgres.Sql): Promise<void> {
+  for (const f of ['140-plan-item-assignments.sql', '141-plan-item-claims.sql', '143-agent-activity.sql']) {
+    await applyMigrationForTest(sql, resolve(SQL_DIR, f));
+  }
 }
 
 /**

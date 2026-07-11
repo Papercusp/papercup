@@ -36,18 +36,20 @@ import {
   deleteHive,
 } from './hive-store';
 import { deriveHiveFederationTopic } from './sync/hyperbee/derive-swarm-topic';
+import { applyPot557RenameAndFixups } from './sync/hyperbee/__tests__/_hive-substrate-rig';
 
 const SQL_DIR = join(
   dirname(fileURLToPath(import.meta.url)),
   '../../../libs/papercusp/libs/db/sql',
 );
-// 184 creates the table as `hives`/`home_slug`; 557 renames it to the CURRENT
-// `pots`/`pot_home_slug` shape hive-store.ts queries (EI-9507: applying only 184
-// left this test's DB on the pre-rename names while hive-store.ts queries the
-// post-rename ones, so every query 42P01'd "relation harness_shared.pots does not
-// exist").
+// 184 creates the table as `hives`/`home_slug`; applyPot557RenameAndFixups (EI-9396's
+// shared rig helper) forwards it to the CURRENT `pots`/`pot_home_slug` shape
+// hive-store.ts queries — the same helper the sibling hive-membership-store rig
+// already uses, so this fix reuses it instead of hand-rolling migration 557
+// (EI-9507: applying only 184 left this test's DB on the pre-rename names while
+// hive-store.ts queries the post-rename ones, so every query 42P01'd "relation
+// harness_shared.pots does not exist").
 const MIG_184 = join(SQL_DIR, '184-hives-table.sql');
-const MIG_557 = join(SQL_DIR, '557-cup-lexicon-db-rename-phase3.sql');
 const WS = 'ws-phase0';
 
 /** A minted-key stand-in: EXACTLY the pubkeyBase64 encoding loadOrGenerateHiveKeypair
@@ -61,10 +63,10 @@ let db: FreshPgDb;
 
 beforeAll(async () => {
   db = await createFreshPgDb('hive-phase0');
-  // the REAL migrations, not a fixture — 184 creates the table, 557 renames it to
-  // the current hives->pots/home_slug->pot_home_slug shape (EI-9507).
+  // the REAL migration, not a fixture — then forward to the current pots/
+  // pot_home_slug shape via the shared rig helper (EI-9507).
   await applyMigrationForTest(db.sql, MIG_184);
-  await applyMigrationForTest(db.sql, MIG_557);
+  await applyPot557RenameAndFixups(db.sql);
 });
 
 afterAll(async () => {

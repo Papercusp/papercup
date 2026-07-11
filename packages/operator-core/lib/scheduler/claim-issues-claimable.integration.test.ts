@@ -498,10 +498,10 @@ describe('claim-hold exclusion — a do-not-opportunistically-claim item is NOT 
     expect(await claimOne('drain-member')).toBe('EI-HOLD-3');
   });
 
-  it('setWorkItemClaimHold on a feature-family id is a no-op (applicable:false) — issue-family only', async () => {
+  it('setWorkItemClaimHold on a feature-family id IS applicable (fleet-deltas-leader-primitives P-006 extended the hold to both families; full coverage lives in work-items-claim-hold.integration.test.ts)', async () => {
     await seedFeature('F-HOLD-4', { status: 'todo', createdTs: 100 });
     const held = await wi.setWorkItemClaimHold('F-HOLD-4', true, { harness: H });
-    expect(held?.applicable).toBe(false);
+    expect(held?.applicable).toBe(true);
   });
 
   it('an ordinary issue (no hold tag, NULL payload) is unaffected by the floor', async () => {

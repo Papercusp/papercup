@@ -16,8 +16,13 @@
  * the `createGymDatabase` describe below.)
  */
 import { describe, expect, it } from 'vitest';
+import { readFileSync, readdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { TEST_PG_IMAGE } from '@papercusp/test-config';
 import { GYM_PROVISION_PG_IMAGE, createGymDatabase } from './gym-db-init';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 describe('gym provisioning PG image', () => {
   it('matches the shared integration-test container image (no pg16↔pg18 drift)', () => {
@@ -29,6 +34,32 @@ describe('gym provisioning PG image', () => {
     // shipped major (PostgreSQL 18.x). Not the stale pg16 that stranded the gym.
     expect(GYM_PROVISION_PG_IMAGE).toMatch(/^pgvector\/pgvector:pg18$/);
     expect(GYM_PROVISION_PG_IMAGE).not.toContain('pg16');
+  });
+
+  /**
+   * EI-9497: the constant above being correct was NOT enough — WI-2942 fixed only
+   * `autoloop-cycle.ts`, and FOUR sibling call sites (ab-run.ts, blueprint-cycle.ts,
+   * smoke.ts, wake-mode.ts) kept a LITERAL `'pgvector/pgvector:pg16'` string passed
+   * to `new PostgreSqlContainer(...)` instead of importing the constant — so those
+   * gym cycles provisioned on PG16 regardless of this test passing, and 554's
+   * `RENAME CONSTRAINT hive_placements_fail_count_not_null` (PG16 never catalogs an
+   * inline `NOT NULL` column modifier as a named pg_constraint row — that's a PG17+
+   * feature) died with "constraint ... does not exist" on live-boot. This is the
+   * class-level guard: no *.ts file under gym/ may spell a literal pg16 (or any
+   * non-pg18) `pgvector/pgvector:pgNN` image — every call site must go through the
+   * one shared constant, so a future edit (or a new call site) can't silently drift
+   * again the way these four did.
+   */
+  it('every gym/*.ts file provisioning a PostgreSqlContainer uses GYM_PROVISION_PG_IMAGE, not a literal image string', () => {
+    const files = readdirSync(__dirname).filter(
+      (f) => f.endsWith('.ts') && !f.endsWith('.test.ts') && f !== 'gym-db-init.ts',
+    );
+    const offenders: string[] = [];
+    for (const f of files) {
+      const src = readFileSync(join(__dirname, f), 'utf8');
+      if (/pgvector\/pgvector:pg\d+/.test(src)) offenders.push(f);
+    }
+    expect(offenders).toEqual([]);
   });
 });
 

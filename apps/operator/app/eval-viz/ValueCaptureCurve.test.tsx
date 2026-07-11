@@ -53,7 +53,7 @@ describe('<ValueCaptureCurve />', () => {
     expect(container.querySelectorAll('polyline')).toHaveLength(2);
     expect(getByTestId('value-cap')).not.toBeNull();
     const titles = [...container.querySelectorAll('circle title')].map((t) => t.textContent ?? '');
-    expect(titles.some((t) => t.includes('Hive') && t.includes('$900'))).toBe(true);
+    expect(titles.some((t) => t.includes('Pot') && t.includes('$900'))).toBe(true);
   });
 
   it('renders an empty state when there are no series', () => {

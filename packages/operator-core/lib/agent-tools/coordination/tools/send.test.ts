@@ -509,7 +509,7 @@ describe('coord:send — fleet-scoped broadcast default (queen-fleet-authority-b
     // A mug/kettle's cueAuthority stamp is scope:'hive-wide' (resolveCueAuthority),
     // never 'fleet-members' — the EI-9501 guard only fires on a fleet-scoped stamp,
     // so a genuine hive-queen broadcast is unaffected.
-    getPresenceM.mockResolvedValue({ agentRole: 'mug' } as never);
+    getPresenceM.mockResolvedValueOnce({ agentRole: 'mug' } as never);
     const b = await body({ to: ['*'], summary: 'HIVE-WIDE: pausing the whole hive', allHive: true });
     expect(b.results[0].to).toEqual(['*']);
     expect(b.results[0].allHiveBroadcast).toBe(true);

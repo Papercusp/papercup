@@ -47,7 +47,7 @@ describe('<ThroughputBars />', () => {
     expect(container.querySelectorAll('.pc-tput__bar--hi')).toHaveLength(1); // hive
     expect(container.querySelector('.pc-tput__ref')).not.toBeNull();
     const titles = [...container.querySelectorAll('rect title')].map((t) => t.textContent ?? '');
-    expect(titles.some((t) => t.includes('Hive') && t.includes('3×') && t.includes('tasks/hr'))).toBe(true);
+    expect(titles.some((t) => t.includes('Pot') && t.includes('3×') && t.includes('tasks/hr'))).toBe(true);
   });
 
   it('renders an empty state when there are no arms', () => {

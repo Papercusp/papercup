@@ -71,6 +71,12 @@ beforeAll(async () => {
   h.sql = db.sql;
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
   await db.sql.unsafe(readMigration('141-plan-item-claims.sql')).simple();
+  // EI-9515: claims.ts's activity-grace check (D-00x) queries
+  // harness_shared.agent_activity (migration 143) — added after this test's
+  // migration list was last updated, so it was never applied here and every
+  // claim-store test failed with `relation "harness_shared.agent_activity"
+  // does not exist`.
+  await db.sql.unsafe(readMigration('143-agent-activity.sql')).simple();
   // Minimal contributors table for the shared-ness heuristic (subset of baseline cols).
   await db.sql.unsafe(`
     CREATE TABLE IF NOT EXISTS harness_shared.contributors (
