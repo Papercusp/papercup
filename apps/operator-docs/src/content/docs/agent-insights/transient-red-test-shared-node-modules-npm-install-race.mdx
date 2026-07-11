@@ -41,6 +41,25 @@ of the failing run) and `node_modules/.package-lock.json`'s mtime was
 immediately (and 3× more) after the install settled passed cleanly every time,
 with the patch confirmed present in both `dist/index.js` and `dist/index.mjs`.
 
+### The race isn't specific to patched packages — any dynamic `import()` can hit it
+
+`EI-9687` (`packages/operator-core/lib/inference-gateway/egress-probe.test.ts`)
+fired the **same class** of watchdog red-test **one second later**
+(`2026-07-11T14:15:15Z`) — different package, same underlying event. That test
+doesn't touch a patched dependency at all: `probeEgress` → `fetchExitIp` →
+`buildEgressDispatcher` does a real `await import('undici')` (the test only
+injects `fetchImpl`/`reputationLookup`, not `importUndici`), so it hits
+`node_modules/undici` directly off disk. A `npm install` mid-flight can leave
+`node_modules/undici` in a half-written state for the same reason as above —
+no patch-package step involved, just the install itself rewriting the
+package's files while something else tries to `import()` from it. Re-ran 3×
+clean once the install settled. **The generalized tell:** any red watchdog
+signal on a test that touches real `node_modules` content (a patched package,
+or a plain dynamic `import()` of a real dependency) occurring within the same
+narrow window as another such failure is very likely ONE shared-tree npm
+reinstall event, not N independent regressions — check them together before
+investigating each in isolation.
+
 ## What to do when you hit this
 
 1. **Don't assume a red watchdog test means the code regressed.** Re-run it

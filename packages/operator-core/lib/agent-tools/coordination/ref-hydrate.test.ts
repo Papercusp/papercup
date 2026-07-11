@@ -199,6 +199,77 @@ describe('gate refs (P-006) — read/render pure core + send-time stamping', () 
   });
 });
 
+describe('body auto-refs (P-008) — eligibility, opt-out, entry detection, tail clamp, suffix', () => {
+  it('isBodyRefEligible: free-prose kinds only; any lifecycle stamp disqualifies', () => {
+    expect(isBodyRefEligible({ kind: 'message' })).toBe(true);
+    expect(isBodyRefEligible({ kind: 'escalation' })).toBe(true);
+    expect(isBodyRefEligible({ kind: 'handoff' })).toBe(true);
+    expect(isBodyRefEligible({ kind: 'escalation_resolved' })).toBe(true);
+    // machine-stamped status lines: the id is structural, not a citation
+    expect(isBodyRefEligible({ kind: 'message', lifecycle: 'intent' })).toBe(false);
+    expect(isBodyRefEligible({ kind: 'message', lifecycle: 'claim' })).toBe(false);
+    expect(isBodyRefEligible({ kind: 'plan_event' })).toBe(false);
+    expect(isBodyRefEligible({ kind: 'ack' })).toBe(false);
+    expect(isBodyRefEligible({ kind: 'notify' })).toBe(false);
+    // defensive: malformed shapes degrade to ineligible, never throw
+    expect(isBodyRefEligible(null)).toBe(false);
+    expect(isBodyRefEligible({ kind: 42 as never })).toBe(false);
+  });
+
+  it('readBodyRefsOptOut: only a literal true opts out (forged values ignored)', () => {
+    expect(readBodyRefsOptOut({ [BODY_REFS_OPT_OUT_FIELD]: true })).toBe(true);
+    expect(readBodyRefsOptOut({ [BODY_REFS_OPT_OUT_FIELD]: 'yes' })).toBe(false);
+    expect(readBodyRefsOptOut({ [BODY_REFS_OPT_OUT_FIELD]: false })).toBe(false);
+    expect(readBodyRefsOptOut({})).toBe(false);
+    expect(readBodyRefsOptOut(null)).toBe(false);
+  });
+
+  it('detectEntryBodyRefs: detects over summary AND body, de-duped across both, capped', () => {
+    expect(
+      detectEntryBodyRefs({ summary: 'fixing WI-1 now', body: 'WI-1 blocks EI-2; also WI-3 WI-4' }, 3),
+    ).toEqual([
+      { kind: 'work-item', id: 'WI-1' },
+      { kind: 'work-item', id: 'EI-2' },
+      { kind: 'work-item', id: 'WI-3' },
+    ]);
+    // non-string / absent fields degrade to empty, never throw
+    expect(detectEntryBodyRefs({ summary: 42 as never })).toEqual([]);
+    expect(detectEntryBodyRefs(null)).toEqual([]);
+  });
+
+  it('clampSnippetTail keeps the TAIL with a leading ellipsis, one-lined, bounded', () => {
+    expect(clampSnippetTail('short note', 60)).toBe('short note');
+    const long = `${'x'.repeat(100)} next: wire the opt-out\nflag + tests`;
+    const out = clampSnippetTail(long, 30);
+    expect(out.length).toBeLessThanOrEqual(30);
+    expect(out.startsWith('…')).toBe(true);
+    expect(out.endsWith('flag + tests')).toBe(true); // the freshest end survives
+    expect(out).not.toContain('\n');
+  });
+
+  it('renderBodyRefsSuffix renders resolved refs `; `-joined — and SILENTLY skips misses (auto-detect is opportunistic, unlike declared refs)', () => {
+    const ok1 = {
+      ref: { kind: 'work-item', id: 'WI-4173' },
+      ok: true,
+      label: 'WI-4173 [feature/wip @4c85f]',
+      snippet: 'D: auto-detect ids ⌁ …wire into delivery render',
+    } as const;
+    const ok2 = { ref: { kind: 'work-item', id: 'EI-9719' }, ok: true, label: 'EI-9719 [bug/open]', snippet: '' } as const;
+    const miss = {
+      ref: { kind: 'work-item', id: 'WI-9999' },
+      ok: false,
+      label: 'work-item:WI-9999',
+      snippet: '',
+      error: 'not_found',
+    } as const;
+    expect(renderBodyRefsSuffix([ok1, miss, ok2])).toBe(
+      ' ↪ WI-4173 [feature/wip @4c85f]: "D: auto-detect ids ⌁ …wire into delivery render"; ↪ EI-9719 [bug/open]',
+    );
+    expect(renderBodyRefsSuffix([miss])).toBe('');
+    expect(renderBodyRefsSuffix([])).toBe('');
+  });
+});
+
 describe('hydrateRefs (injected resolvers — DB-free)', () => {
   const wiResolver: RefResolver = async (ref, budget) =>
     ref.kind === 'work-item' && ref.id === 'WI-4070'

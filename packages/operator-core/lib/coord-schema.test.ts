@@ -432,6 +432,86 @@ describe('renderInjection — P-005 reply-quote hydration (related_msg_id, coord
   });
 });
 
+describe('renderInjection — P-008 body auto-ref hydration (coord-authority-hardening)', () => {
+  const WI_HIT = {
+    ref: { kind: 'work-item', id: 'WI-4173' },
+    ok: true,
+    label: 'WI-4173 [feature/wip @4c85f]',
+    snippet: 'D: auto-detect ids ⌁ …wire into delivery render + tests',
+  } as const;
+  const EI_MISS = {
+    ref: { kind: 'work-item', id: 'EI-9999' },
+    ok: false,
+    label: 'work-item:EI-9999',
+    snippet: '',
+    error: 'not_found',
+  } as const;
+  const refs = new Map<string, unknown>([
+    ['WI-4173', WI_HIT],
+    ['EI-9999', EI_MISS],
+  ]);
+
+  it('a free-prose line citing a mapped id gets the inline ↪ status+title+checkpoint suffix', () => {
+    const out = renderInjection([e({ summary: 'picking WI-4173 back up after the compaction' })], {
+      bodyRefs: refs as never,
+    });
+    expect(out).toContain(
+      'picking WI-4173 back up after the compaction ↪ WI-4173 [feature/wip @4c85f]: "D: auto-detect ids ⌁ …wire into delivery render + tests"',
+    );
+  });
+
+  it('detection covers the BODY too (the shown summary line still gets the suffix)', () => {
+    const out = renderInjection([e({ summary: 'status update', body: 'blocked on WI-4173 until render lands' })], {
+      bodyRefs: refs as never,
+    });
+    expect(out).toContain('status update ↪ WI-4173 [feature/wip @4c85f]');
+  });
+
+  it("the sender's noBodyRefs opt-out (envelope stamp) suppresses the suffix", () => {
+    const entry = { ...e({ summary: 'historical: WI-4173 was the old approach' }), bodyRefsOptOut: true } as never;
+    expect(renderInjection([entry], { bodyRefs: refs as never })).not.toContain('↪');
+  });
+
+  it('lifecycle/status machinery is ineligible — its ids are structural, not citations', () => {
+    const out = renderInjection(
+      [
+        e({ summary: 'claiming WI-4173', lifecycle: 'claim' }),
+        e({ kind: 'plan_event', summary: 'P-002 converted → WI-4173 — picked up', ts: '2026-06-06T00:00:01.000Z' }),
+      ],
+      { bodyRefs: refs as never },
+    );
+    expect(out).not.toContain('↪');
+  });
+
+  it('an unresolved auto-detected mention renders NOTHING (silent-skip — the prose already carries the id verbatim)', () => {
+    const out = renderInjection([e({ summary: 'peer filed EI-9999 upstream' })], { bodyRefs: refs as never });
+    expect(out).toContain('- ab533 peer filed EI-9999 upstream');
+    expect(out).not.toContain('unresolved');
+    expect(out).not.toContain('↪');
+  });
+
+  it('no bodyRefs map (legacy caller / hydration failed) ⇒ prior behavior, plain line', () => {
+    expect(renderInjection([e({ summary: 'see WI-4173' })])).not.toContain('↪');
+  });
+
+  it('composes LAST on the line — after relay, reply-quote, and gate suffixes', () => {
+    const entry = {
+      ...e({ summary: 'done — see WI-4173', related_msg_id: 'm-orig' }),
+      gateRefs: [{ key: 'fleet:x:green', status: 'declared' }],
+    } as unknown as CoordLineSource;
+    const quotes = new Map([
+      ['m-orig', { ref: { kind: 'msg', id: 'm-orig' }, ok: true, label: 'msg m-orig', snippet: 'is it done?' }],
+    ]);
+    const out = renderInjection([entry], { relatedQuotes: quotes as never, bodyRefs: refs as never });
+    const line = out.split('\n')[1];
+    const gateAt = line.indexOf('⛩ gate fleet:x:green');
+    const bodyRefAt = line.indexOf('↪ WI-4173 [feature/wip');
+    expect(line.indexOf('⤷ re msg m-orig')).toBeGreaterThan(-1);
+    expect(gateAt).toBeGreaterThan(line.indexOf('⤷ re msg m-orig'));
+    expect(bodyRefAt).toBeGreaterThan(gateAt);
+  });
+});
+
 describe('renderCoordLegend + anti-desync (P-002)', () => {
   it('declares the positional grammar', () => {
     const legend = renderCoordLegend();

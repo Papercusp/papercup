@@ -276,6 +276,28 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
   });
 });
 
+describe('coord:send body auto-refs opt-out (coord-authority-hardening P-008)', () => {
+  it('noBodyRefs:true stamps bodyRefsOptOut on the envelope extra (single form)', async () => {
+    await body({ to: ['bee-1'], summary: 'historical: WI-1 was the old approach', noBodyRefs: true });
+    const opts = sendM.mock.calls[0][1] as { extra?: Record<string, unknown> };
+    expect(opts.extra).toMatchObject({ bodyRefsOptOut: true });
+  });
+
+  it('noBodyRefs rides per-item in the items form; default (omitted) stamps nothing', async () => {
+    await body({
+      items: [
+        { to: ['bee-1'], summary: 'live: see WI-2' },
+        { to: ['bee-2'], summary: 'stale quote of WI-3', noBodyRefs: true },
+      ],
+    });
+    expect(sendM).toHaveBeenCalledTimes(2);
+    const first = sendM.mock.calls[0][1] as { extra?: Record<string, unknown> };
+    const second = sendM.mock.calls[1][1] as { extra?: Record<string, unknown> };
+    expect(first.extra?.bodyRefsOptOut).toBeUndefined();
+    expect(second.extra).toMatchObject({ bodyRefsOptOut: true });
+  });
+});
+
 describe('coord:send zero-recipient audience (EI-6874)', () => {
   it("an EXPLICIT @fleet: selector resolving to ZERO live members → ok:false zero_recipients, NOT a silent ok:true", async () => {
     // The incident: a leader's drain order to @fleet:p2p-dist resolved to 0 members
