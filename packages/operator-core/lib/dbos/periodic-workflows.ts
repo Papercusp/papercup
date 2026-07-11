@@ -499,11 +499,12 @@ DBOS.registerScheduled(replyDeadlineSweepWorkflow, { name: 'replyDeadlineSweep',
 // WI-4175, the EI-9501 class). The send-path guards down-scope/refuse a
 // fleet-authority '*' blast (tools/send.ts + messages.ts H5a), but every
 // incident is a detector failure too — a path the guards miss must still be
-// SEEN. Finds every persisted kind='message' envelope delivered to the
-// literal '*' audience whose sender is neither hive-queen-stamped nor a
+// SEEN. Finds every persisted CONSCIOUSLY-CLAIMED hive-wide broadcast (the
+// allHiveBroadcast envelope stamp — NOT every literal '*', which is routine
+// solo-agent traffic) whose sender is neither hive-queen-stamped nor a
 // platform principal, writes an audit row + a one-line owner notice (which
 // doubles as the per-msg idempotency marker — see allhive-broadcast-sweep.ts).
-// Cheap: the query matches the mig-576 partial index exactly.
+// Cheap: the query rides the mig-576 partial index.
 async function allHiveBroadcastSweepTick(): Promise<void> {
   await DBOS.runStep(async () => {
     if (shouldShedHeavyTick('allhive-broadcast-sweep')) return;

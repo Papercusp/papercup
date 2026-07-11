@@ -8,10 +8,20 @@
  * invariant (H5a) at the one seam every writer passes. But every incident is
  * a DETECTOR failure too — a path the guards miss (a new verb, a federated
  * relay, a guard regression) must still be SEEN. This sweep is that detector:
- * it finds every persisted kind='message' envelope delivered to the literal
- * `'*'` audience whose sender was NOT the hive queen, writes an audit row,
- * and sends the owner a one-liner — detection + visibility only, never a
- * defang/retract (that's H5c, coord:retract).
+ * it finds every persisted CONSCIOUSLY-CLAIMED hive-wide broadcast (the
+ * `allHiveBroadcast` envelope stamp tools/send.ts persists for `allHive:true`
+ * on a real `'*'` — ALLHIVE_BROADCAST_FIELD) whose sender was NOT the hive
+ * queen, writes an audit row, and sends the owner a one-liner — detection +
+ * visibility only, never a defang/retract (that's H5c, coord:retract).
+ *
+ * WHY THE FLAG, NOT THE WILDCARD: a NON-fleeted sender's bare `to:['*']`
+ * legitimately stays literal (scope-broadcast only down-scopes fleeted
+ * senders), so plain-'*' kind='message' delivery is ROUTINE solo-agent
+ * traffic — live data at build time: 285 such rows/24h across a dozen
+ * ordinary su sessions. Sweeping the wildcard would storm the owner with
+ * hundreds of false alarms on the first tick and train them to ignore the
+ * detector. The flag marks the OVERRIDE — the conscious "reach everyone"
+ * claim that is the EI-9501 incident shape — which is rare by construction.
  *
  * WHAT COUNTS AS "QUEEN": the persisted cue-authority stamp
  * (`body->'cueAuthority'->>'authority' = 'hive-queen'`) — stamped server-side
@@ -34,15 +44,16 @@
  * REPLY to a broadcast must never suppress detection) selects each broadcast
  * at most once. No side-table, no watermark row.
  *
- * CHEAP BY CONSTRUCTION: the WHERE matches the mig-576 PARTIAL index
- * (surface='messages' AND kind='message' AND to ∋ '*') exactly — hive-wide
- * message-kind broadcasts are rare (lifecycle kinds like plan_event broadcast
- * '*' constantly but are excluded by kind), so the index is tiny and the
- * 5-min tick is an index range scan, never a JSONB seq scan.
+ * CHEAP BY CONSTRUCTION: the WHERE keeps the mig-576 PARTIAL index's exact
+ * predicate (surface='messages' AND kind='message' AND to ∋ '*') so the tick
+ * is an index range scan over the wildcard rows (tiny — lifecycle kinds like
+ * plan_event broadcast '*' constantly but are excluded by kind), with the
+ * flag + exemption clauses filtering that already-small candidate set.
  */
 
 import { getOrgPg } from '@papercusp/db-org';
 import { sendMessage } from './messages';
+import { ALLHIVE_BROADCAST_FIELD } from './scope-broadcast';
 import type { AgentIdentity } from './identity';
 
 /** Sweep identity stamped on the audit trail + owner notices. The 'system'
@@ -94,13 +105,14 @@ interface DetectedRow {
 }
 
 /**
- * Every kind='message' envelope delivered to the literal '*' audience within
- * the lookback window whose sender is neither hive-queen-stamped nor a
- * platform principal, and which THIS sweep has not already flagged (NOT
+ * Every CONSCIOUSLY-CLAIMED hive-wide broadcast (the allHiveBroadcast stamp)
+ * within the lookback window whose sender is neither hive-queen-stamped nor
+ * a platform principal, and which THIS sweep has not already flagged (NOT
  * EXISTS a sibling notice from the sweep's own identity carrying
  * related_msg_id — scoped to our `from` so a genuine peer reply never
- * suppresses detection). Oldest first so a batch-limited tick drains in
- * arrival order.
+ * suppresses detection). The kind/to clauses are semantically implied by the
+ * stamp but kept verbatim so the planner can use the mig-576 partial index.
+ * Oldest first so a batch-limited tick drains in arrival order.
  */
 async function findUnflaggedAllHiveBroadcasts(
   nowMs: number,
@@ -120,6 +132,7 @@ async function findUnflaggedAllHiveBroadcasts(
      WHERE e1.surface = 'messages'
        AND e1.body->>'kind' = 'message'
        AND e1.body->'to' @> '["*"]'::jsonb
+       AND e1.body ? ${ALLHIVE_BROADCAST_FIELD}
        AND e1.ts >= to_timestamp(${sinceMs} / 1000.0)
        AND COALESCE(e1.body->'cueAuthority'->>'authority', '') <> 'hive-queen'
        AND COALESCE(e1.body->>'from', '') NOT LIKE 'system%'
@@ -206,7 +219,7 @@ export async function runAllHiveBroadcastSweepOnce(
         to: ['human'],
         summary: `📣 non-queen HIVE-WIDE broadcast by ${d.from}: "${clampSummary(d.summary)}" (${d.msgId})`,
         body:
-          `Agent ${d.from} broadcast to EVERY agent in the hive (to:['*'], kind message)` +
+          `Agent ${d.from} consciously broadcast to EVERY agent in the hive (allHive:true on to:['*'])` +
           `${d.authority ? ` carrying a '${d.authority}' authority stamp` : ' with no hive-queen authority stamp'}` +
           `${d.sentAt ? ` at ${d.sentAt}` : ''}. Only the hive queen (or a platform principal) is expected to ` +
           `blast the whole hive — this is the EI-9501 class the send-path guards down-scope/refuse, so either ` +

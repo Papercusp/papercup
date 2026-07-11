@@ -535,6 +535,17 @@ describe('coord:send — fleet-scoped broadcast default (queen-fleet-authority-b
     expect(sendM.mock.calls[0][1].to).toEqual(['*']);
     expect(b.results[0].allHiveBroadcast).toBe(true);
     expect(b.results[0].scopedBroadcast).toBeUndefined();
+    // P-010 (H5b): the conscious claim is PERSISTED on the envelope — the
+    // durable trace the allhive-broadcast-sweep detector keys on.
+    expect(sendM.mock.calls[0][1].extra?.allHiveBroadcast).toBe(true);
+  });
+
+  it("does NOT stamp allHiveBroadcast on a non-fleeted sender's routine bare ['*'] (P-010 detector scope)", async () => {
+    // Routine solo-agent traffic (live data: hundreds/day) must never trip the
+    // H5b detector — only the explicit allHive:true override is stamped.
+    const b = await body({ to: ['*'], summary: 'closed WI-777' });
+    expect(b.results[0].to).toEqual(['*']);
+    expect(sendM.mock.calls[0][1].extra?.allHiveBroadcast).toBeUndefined();
   });
 
   it('honors [\'*\'] verbatim for a hive-queen sender (mug/kettle) with allHive:true — its authority IS hive-wide', async () => {

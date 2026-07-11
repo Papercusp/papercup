@@ -167,9 +167,13 @@ describe('runAllHiveBroadcastSweepOnce', () => {
     expect(selects).toHaveLength(1);
     expect(selects[0].values).toContain(NOW - 60_000); // the ts window bound
     expect(selects[0].values).toContain(ALLHIVE_SWEEP_OWNER); // the dedupe scope
-    // The static predicates (queen exemption / system exemption / '*'
-    // audience / kind=message) live in the SQL text — pin them so an
-    // accidental predicate drop fails a test, not just live behavior.
+    // The FLAG scope (the conscious allHive claim — NOT every literal '*',
+    // which is routine solo-agent traffic) is bound as a value.
+    expect(selects[0].values).toContain('allHiveBroadcast');
+    // The static predicates (queen exemption / system exemption / the
+    // mig-576-index-matching '*'/kind clauses) live in the SQL text — pin
+    // them so an accidental predicate drop fails a test, not just live
+    // behavior.
     expect(selects[0].text).toContain(`'hive-queen'`);
     expect(selects[0].text).toContain(`NOT LIKE 'system%'`);
     expect(selects[0].text).toContain(`'["*"]'::jsonb`);
