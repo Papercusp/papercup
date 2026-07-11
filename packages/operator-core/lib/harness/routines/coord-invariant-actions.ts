@@ -639,6 +639,23 @@ export interface Violation {
   severity: 'critical' | 'major' | 'minor' | 'nit';
 }
 
+/**
+ * EI-9506: a backup / maintenance statement — a `pg_dump`-style
+ * `COPY harness_shared.coord_event_log (...) TO stdout` — legitimately reads the
+ * WHOLE table: that is what a backup is FOR, not an application read pattern to
+ * bound. It is issued by the backup process (kopia/pg_dump), never by the app,
+ * so the furnace detector must never treat it as a furnace. The rows/call leg
+ * would otherwise flag every full-table dump (~100k rows/call) as an "unbounded
+ * scan", and — critically — the EI-9420 min_exec suppression cannot rescue it:
+ * that suppression gates only the MEAN-exec leg, whereas the rows/call leg
+ * stands on its own, and a dump has no fast path (every call reads the whole
+ * table, so min_exec is high too). Match on the leading keyword of the
+ * (already length-clamped) query preview. Exported for unit tests.
+ */
+export function isBackupOrMaintenanceStatement(queryPreview: string): boolean {
+  return /^\s*COPY\b/i.test(queryPreview);
+}
+
 /** Pure: judge a snapshot against the thresholds. */
 export function evaluateInvariants(snap: InvariantSnapshot, t: InvariantThresholds, nowMs: number): Violation[] {
   const out: Violation[] = [];
