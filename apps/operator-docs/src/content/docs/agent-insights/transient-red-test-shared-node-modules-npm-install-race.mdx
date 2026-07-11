@@ -74,11 +74,26 @@ investigating each in isolation.
    evidence — don't spend time bisecting commits for a change that never
    happened.
 
-## What this does NOT fix
+## What was built (EI-9724): a fail-fast guard for THIS test, not a fleet-wide install lock
 
-This doc records the diagnosis pattern; it does not add a durable guard
-against the race itself (e.g. serializing `npm install` across the fleet, or a
-`pretest` patch-verification step). That would be a real infra fix worth
-doing if this recurs often enough to cost real time — filed as an observation
-rather than built here, since a single transient occurrence didn't justify the
-scope of a fleet-wide install lock.
+EI-9724 proposed two options: (a) serialize `npm install` across the fleet via
+a named resource lock, or (b) a `pretest` check that fails fast with an
+unambiguous message instead of a misleading assertion diff. **(a) was not
+built** — there is no single choke point through which every fleet agent's ad
+hoc `npm install` invocations pass, so a lock around "the" install command
+isn't enforceable without a behavior change from every agent; a single
+transient occurrence didn't justify that scope.
+
+**(b) was built**, scoped to the one test that hit this
+(`mcp-handler-poststream-leak.test.ts`): a `beforeAll` reads
+`node_modules/mcp-handler/dist/index.{js,mjs}` directly and checks for the
+patch's landmark string (`"Error closing per-request POST server/transport"`,
+from the `finally` block `patches/mcp-handler+1.1.0.patch` adds). If the
+landmark is verifiably **absent**, the test now throws a message naming the
+race explicitly ("this almost always means a concurrent `npm install` is
+mid-reinstall … re-run after the install settles") instead of the confusing
+`expected +0 to be 20`. If the package/dist can't be resolved at all (a real
+"not installed" problem, not this race), the check is inert and the test body
+runs as normal. This closes the diagnostic-ambiguity gap for this specific
+test; it remains a per-test pattern to replicate on any other test that hits
+this class of failure, not a repo-wide install-verification pass.
