@@ -27,6 +27,13 @@ import { parkSlotMessage, drainUserMailbox } from './slot-parked-store';
 import type { AgentIdentity } from './identity';
 import { resolveBestEffortAgainstRoster } from './recipient-resolve';
 import { resolveWorkspaceHiveScope } from './federation-scope';
+import {
+  CUE_AUTHORITY_FIELD,
+  readCueAuthority,
+  renderCueAuthorityTag,
+  type CueAuthorityStamp,
+} from './cue-authority';
+import { resolveSenderCueAuthority } from './cue-authority-resolve';
 
 export type { InboxOptions };
 
@@ -66,6 +73,35 @@ export interface SendOptions {
    *  coord:send — coord-lifecycle-automation-2026-06-04). Reserved envelope
    *  fields (ts/msg_id/from/to/kind) are NOT overridable. */
   extra?: Record<string, unknown>;
+  /** The sender's ALREADY-RESOLVED cue-authority stamp (or explicit null =
+   *  "resolved, sender holds none"). tools/send resolves it once per bulk call
+   *  for its own down-scope/stamp logic and threads it here so the H5a seam
+   *  invariant (below) doesn't re-pay the presence/fleet reads. `undefined` =
+   *  not resolved yet — the seam resolves it itself for a `'*'` message-kind
+   *  broadcast. */
+  cueAuthorityResolved?: CueAuthorityStamp | null;
+}
+
+/**
+ * H5a (coord-authority-hardening-2026-07-11 P-002): the typed refusal thrown
+ * when a fleet-scoped control authority attempts a hive-wide `'*'` delivery —
+ * the shipped self-contradiction of the EI-9501 leak (stamped
+ * `fleet-members(X)`, delivered to everyone). Carries the same error code the
+ * landed coord:send guard uses so every surface teaches one lesson.
+ */
+export class FleetScopedBroadcastRefusedError extends Error {
+  readonly code = 'fleet_scoped_cue_allhive_contradiction';
+  readonly stamp: CueAuthorityStamp;
+  constructor(stamp: CueAuthorityStamp) {
+    super(
+      `broadcast to '*' refused: your control authority is ${renderCueAuthorityTag(stamp)} — ` +
+        `only fleet '${stamp.scopeRef ?? stamp.authorityRef}' members are meant to act on your cues. ` +
+        `Address @fleet:${stamp.scopeRef ?? stamp.authorityRef} (leader included), or send a genuinely ` +
+        `hive-wide notice from a non-fleet-authority context.`,
+    );
+    this.name = 'FleetScopedBroadcastRefusedError';
+    this.stamp = stamp;
+  }
 }
 
 /** Append a new envelope to the caller's outbox. */
@@ -99,6 +135,44 @@ export async function sendMessage(
   // + any inbox-wake hit the right recipient. Best-effort + fail-soft; an
   // all-selector/broadcast `to` skips the roster read entirely.
   const to = await resolveBestEffortAgainstRoster(toExpanded, identity.workspaceId);
+  // H5a — the audience⊆authority INVARIANT, enforced at the ONE seam every
+  // message writer passes (coord-authority-hardening-2026-07-11 P-002,
+  // generalizing the EI-9501 guard that lives only in tools/send.ts): a sender
+  // whose control authority is FLEET-scoped must never deliver a hive-wide
+  // `'*'` message — the stamped intent (fleet-members) would contradict the
+  // actual delivery (everyone), which is the exact shipped contradiction of
+  // the 2026-07-11 leak. Scoped to kind 'message' (the human-authored /
+  // control channel both incidents used): lifecycle kinds (plan_event / ack /
+  // notify / …) legitimately broadcast `'*'` from any sender and carry no
+  // control weight, so they pass untouched. tools/send.ts still refuses its
+  // own allHive path with a per-item bulk error BEFORE reaching here (and
+  // down-scopes bare `'*'` for fleeted senders, so its sends arrive without a
+  // wildcard); THIS check catches every OTHER path — emit, dispatch, system
+  // emitters, federated relays through local tools, and tomorrow's new verb.
+  // The resolved stamp is ALSO written onto the envelope so a permitted
+  // broadcast (hive-queen, or an unstamped ordinary sender) stays legible to
+  // the receive-side defang (P-003 H1).
+  const kind = opts.kind ?? 'message';
+  if (kind === 'message' && to.includes('*')) {
+    let stamp: CueAuthorityStamp | null;
+    if (opts.cueAuthorityResolved !== undefined) {
+      stamp = opts.cueAuthorityResolved;
+    } else if (opts.extra && CUE_AUTHORITY_FIELD in opts.extra) {
+      stamp = readCueAuthority(opts.extra);
+    } else {
+      try {
+        stamp = await resolveSenderCueAuthority(identity);
+      } catch {
+        stamp = null; // presence outage must never block a send (house rule)
+      }
+    }
+    if (stamp?.scope === 'fleet-members') {
+      throw new FleetScopedBroadcastRefusedError(stamp);
+    }
+    if (stamp && !(opts.extra && CUE_AUTHORITY_FIELD in opts.extra)) {
+      opts = { ...opts, extra: { ...opts.extra, [CUE_AUTHORITY_FIELD]: stamp } };
+    }
+  }
   const env: CoordEnvelope = {
     ts: new Date().toISOString(),
     msg_id: newMsgId(),
