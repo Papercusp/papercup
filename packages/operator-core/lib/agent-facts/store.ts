@@ -141,9 +141,19 @@ export function validateAudienceScope(audienceScope: string | null | undefined):
 /**
  * P-007: defensive read of a source_provenance jsonb round-trip. Absent /
  * malformed / forged-shape → null, never throws (a bad row can't crash a fold).
- * PURE.
+ * Accepts BOTH an already-parsed object and raw JSON text — whether a jsonb
+ * column arrives parsed depends on the postgres.js client's `types` config
+ * (a custom types map suppresses the built-in json parser: the test-helper
+ * client returns jsonb as text while getOrgPg returns objects). PURE.
  */
 export function parseFactSourceProvenance(raw: unknown): FactSourceProvenance | null {
+  if (typeof raw === 'string') {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
   if (!raw || typeof raw !== 'object') return null;
   const s = raw as Record<string, unknown>;
   if (s.kind !== 'msg' && s.kind !== 'work-item' && s.kind !== 'owner-turn') return null;

@@ -70,6 +70,10 @@ export const MAX_TEXTS_PER_CALL = 256;
 export const MAX_TEXT_CHARS = 32_000;
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
 
+/** WI-4196: default cap for the text→vector LRU. A 1024-dim vector is ~8KB of
+ *  JS numbers, so the default cap bounds the cache near ~8MB. */
+export const EMBED_CACHE_MAX_DEFAULT = 1024;
+
 type EmbedFn = (text: string) => Promise<number[]>;
 
 /** Models this sidecar serves. 'gemma' and 'harrier' are asymmetric (kind
@@ -165,6 +169,8 @@ export interface EmbedSidecarOptions {
   /** Skip the boot warm-up (tests). Production warms gemma at boot. */
   warmAtBoot?: boolean;
   log?: (line: string) => void;
+  /** Max entries in the text→vector LRU (0 disables caching; tests). */
+  cacheMax?: number;
 }
 
 export interface EmbedSidecarHandle {
@@ -249,6 +255,69 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     return run;
   };
 
+  // WI-4196: per-text coalescing + bounded LRU over the text→vector mapping.
+  // mem0's per-scope fan-out embeds the SAME query text once per pool, and each
+  // of those requests would pay a full serial inference (~2.5s) through the
+  // FIFO above — enough to blow memory:search's budget on its own. A vector is
+  // deterministic for a fixed model rev + kind + text, so joining concurrent
+  // identical texts into ONE inference and caching results is semantically
+  // free. The FIFO's unit of work becomes one TEXT (not a whole request
+  // batch), which also delivers the fairness the FIFO exists for — a small
+  // request no longer waits out a peer's giant batch.
+  const cacheMax = opts.cacheMax ?? EMBED_CACHE_MAX_DEFAULT;
+  const vecCache = new Map<string, number[]>(); // Map insertion order as LRU
+  const inflight = new Map<string, Promise<number[]>>();
+  let cacheHits = 0;
+  let cacheMisses = 0;
+  const cacheGet = (key: string): number[] | undefined => {
+    const hit = vecCache.get(key);
+    if (hit) {
+      vecCache.delete(key);
+      vecCache.set(key, hit); // refresh recency
+    }
+    return hit;
+  };
+  const cachePut = (key: string, vec: number[]): void => {
+    if (cacheMax <= 0) return;
+    vecCache.delete(key);
+    vecCache.set(key, vec);
+    while (vecCache.size > cacheMax) {
+      const oldest = vecCache.keys().next().value;
+      if (oldest === undefined) break;
+      vecCache.delete(oldest);
+    }
+  };
+  const embedOneCached = (
+    model: EmbedSidecarModel,
+    kind: GemmaEmbedKind,
+    text: string,
+  ): Promise<number[]> => {
+    const key = `${model}:${kind} ${text}`;
+    const cached = cacheGet(key);
+    if (cached) {
+      cacheHits++;
+      return Promise.resolve(cached);
+    }
+    const joined = inflight.get(key);
+    if (joined) {
+      cacheHits++;
+      return joined;
+    }
+    cacheMisses++;
+    const run = enqueue(async () => {
+      const embed = await getEmbedder(model, kind);
+      const vec = await embed(text);
+      cachePut(key, vec);
+      return vec;
+    });
+    inflight.set(key, run);
+    void run.then(
+      () => inflight.delete(key),
+      () => inflight.delete(key),
+    );
+    return run;
+  };
+
   const handleEmbed = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
     let parsed: unknown;
     try {
@@ -263,12 +332,9 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
       return;
     }
     try {
-      const vectors = await enqueue(async () => {
-        const embed = await getEmbedder(v.model, v.kind);
-        const out: number[][] = [];
-        for (const text of v.texts) out.push(await embed(text));
-        return out;
-      });
+      const vectors = await Promise.all(
+        v.texts.map((text) => embedOneCached(v.model, v.kind, text)),
+      );
       const body: EmbedResponse = {
         vectors,
         dims: vectors[0]?.length ?? 0,
@@ -290,6 +356,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
         uptimeMs: Date.now() - startedAt,
         runtime: EMBED_SIDECAR_RUNTIME,
         models: { ...warm },
+        cache: { hits: cacheHits, misses: cacheMisses, size: vecCache.size },
       });
       return;
     }

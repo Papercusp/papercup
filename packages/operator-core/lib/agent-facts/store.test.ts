@@ -293,6 +293,13 @@ describe('parseFactSourceProvenance (defensive jsonb round-trip read)', () => {
     });
   });
 
+  it('accepts raw JSON text too (a custom postgres.js `types` config returns jsonb as text)', () => {
+    expect(
+      parseFactSourceProvenance('{"kind":"msg","verified":true,"quote":"q","verifiedAt":"t"}'),
+    ).toEqual({ kind: 'msg', verified: true, quote: 'q', verifiedAt: 't' });
+    expect(parseFactSourceProvenance('not json {')).toBeNull();
+  });
+
   it('rejects absent/malformed/forged shapes → null, never throws', () => {
     for (const junk of [
       null,
