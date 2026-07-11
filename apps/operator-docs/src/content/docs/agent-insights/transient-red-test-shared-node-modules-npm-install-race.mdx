@@ -1,0 +1,65 @@
+---
+title: A watchdog red-test can be a transient shared-node_modules race, not a regression
+description: >-
+  mcp-handler-poststream-leak.test.ts fired a watchdog red-test signal
+  (EI-9686) while passing cleanly on re-run — root-caused to a concurrent
+  `npm install` in the shared tree racing patch-package's re-patch of
+  node_modules/mcp-handler, not a code regression.
+---
+
+## The symptom
+
+`packages/operator-core/lib/endpoint-route/routes/transport/mcp-handler-poststream-leak.test.ts`
+(the EI-127 leak-regression guard) fired a watchdog `red-test` signal — failed
+3× in 6h, `expected +0 to be 20` (the per-request `McpServer.close()` count
+stayed 0 instead of matching the 20 POSTs). That assertion only fails when
+`node_modules/mcp-handler`'s `patch-package` patch
+(`patches/mcp-handler+1.1.0.patch`, which adds the `finally` block closing the
+per-request server + transport) is **not currently applied** — i.e. when
+`node_modules/mcp-handler/dist/index.{js,mjs}` is the *unpatched* upstream
+build.
+
+## Root cause: this is a shared-tree race, not a code defect
+
+This repo runs `npm install` from **one shared `node_modules`** used
+concurrently by every fleet agent's test runs (per the git-sync-owned single
+checkout model). `npm install` rewrites `node_modules/mcp-handler` from the
+registry tarball (unpatched) and only re-applies
+`patches/mcp-handler+1.1.0.patch` in the subsequent `postinstall` step
+(`patch-package`, see the root `package.json` `postinstall` script). Between
+those two steps there is a real window — however short — where
+`node_modules/mcp-handler` is unpatched. Any test that happens to run in that
+window (this test, or in principle any other test exercising the same
+dependency) sees the pre-patch behavior and fails, **on an unmodified
+codebase**.
+
+Confirmed for EI-9686 by correlating timestamps: the watchdog's failure was
+recorded at `2026-07-11T14:15:14Z`; `node_modules/mcp-handler/dist/index.mjs`'s
+mtime was `2026-07-11 14:15:51 -04:00` (~37s later — mid-reinstall at the time
+of the failing run) and `node_modules/.package-lock.json`'s mtime was
+`2026-07-11 14:22:30 -04:00` (a later install completing). Re-running the test
+immediately (and 3× more) after the install settled passed cleanly every time,
+with the patch confirmed present in both `dist/index.js` and `dist/index.mjs`.
+
+## What to do when you hit this
+
+1. **Don't assume a red watchdog test means the code regressed.** Re-run it
+   locally first (`node_modules/.bin/vitest run --config
+   packages/operator-core/vitest.config.ts <path>`), 2–3× if it's a dependency-patch
+   guard like this one.
+2. If it passes cleanly on re-run, check for a **concurrent `npm install`**
+   around the failure timestamp: `stat -c '%y %n' node_modules/<pkg>/<file>
+   node_modules/.package-lock.json` — a package file's mtime landing within a
+   minute of the failure (and *after* it) is the tell.
+3. Close as **transient / not a regression**, with the timestamp-correlation
+   evidence — don't spend time bisecting commits for a change that never
+   happened.
+
+## What this does NOT fix
+
+This doc records the diagnosis pattern; it does not add a durable guard
+against the race itself (e.g. serializing `npm install` across the fleet, or a
+`pretest` patch-verification step). That would be a real infra fix worth
+doing if this recurs often enough to cost real time — filed as an observation
+rather than built here, since a single transient occurrence didn't justify the
+scope of a fleet-wide install lock.

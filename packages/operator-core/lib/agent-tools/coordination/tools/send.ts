@@ -24,7 +24,7 @@ import { resolveSenderCueAuthority } from '../cue-authority-resolve';
 import { CUE_AUTHORITY_FIELD, type CueAuthorityStamp } from '../cue-authority';
 import { RELAY_PROVENANCE_FIELD, type RelayProvenanceStamp } from '../relay-provenance';
 import { resolveRelayProvenance } from '../relay-provenance-resolve';
-import { GATE_REFS_FIELD } from '../ref-hydrate';
+import { BODY_REFS_OPT_OUT_FIELD, GATE_REFS_FIELD } from '../ref-hydrate';
 import { resolveGateRefStamps } from '../ref-hydrate-resolve';
 import { sendMessage, getMessageById } from '../messages';
 import { parseSlotSelector } from '../slot-selector';
@@ -64,6 +64,12 @@ interface SendMsg {
    *  rendered canonically — un-clipped — at delivery; `events:await { fromMsg }`
    *  resolves them hands-free. Kills hand-typed gate-key drift. */
   gateRefs?: string[];
+  /** P-008: opt OUT of receiver-side auto-hydration of WI-/EI- ids mentioned in
+   *  this message's summary/body (by default the first 3 hydrate at delivery
+   *  into a one-line status+title+checkpoint suffix). Stamped on the envelope;
+   *  set when inline LIVE status would mislead — historical/illustrative ids,
+   *  or deliberately quoted stale state. */
+  noBodyRefs?: boolean;
   wake?: boolean | 'required' | 'optimistic';
   wakeOnReply?: boolean;
   /** EI-8986: "nudge if silent" — the dual of wakeOnReply (which wakes you when
@@ -186,6 +192,13 @@ const gateRefsArg = z
     'Declaring/referencing announced gate(s)? Pass the EXACT event key(s) (≤3 — e.g. the key events:emit { announce:true } RETURNED). The platform verifies each against the announced-gates store at send and stamps its status (declared/fired/undeclared); delivery renders the exact keys UN-CLIPPED, and receivers can skip copying entirely via events:await { fromMsg: <this msg_id> }. Kills hand-typed gate-key drift — a near-miss key never rendezvouses.',
   );
 
+const noBodyRefsArg = z
+  .boolean()
+  .optional()
+  .describe(
+    "P-008 body auto-refs OPT-OUT: by default, WI-/EI- ids mentioned in your summary/body auto-hydrate at delivery into a one-line live status+title+checkpoint suffix on the receiver's [coord+N] line (first 3 ids, ~150 chars each — receivers stop re-fetching cited items). Set true when that live status would MISLEAD: the ids are historical/illustrative examples, or you are deliberately quoting stale state.",
+  );
+
 const itemSpec = z.object({
   to: toArg,
   summary: summaryArg,
@@ -196,6 +209,7 @@ const itemSpec = z.object({
   relayOf: relayOfArg,
   relayQuote: relayQuoteArg,
   gateRefs: gateRefsArg,
+  noBodyRefs: noBodyRefsArg,
   wake: wakeArg,
   wakeOnReply: wakeOnReplyArg,
   replyDeadlineSec: replyDeadlineSecArg,
@@ -310,6 +324,9 @@ async function sendOne(
       /* fail-soft: gate stamping never blocks a send */
     }
   }
+  // P-008: the sender's body-auto-ref opt-out rides the envelope so DELIVERY
+  // (the receiver's inbox seam + renderer) honors it — no receiver-side config.
+  if (msg.noBodyRefs) extra[BODY_REFS_OPT_OUT_FIELD] = true;
   if (wakeMode) extra.wake = true;
   if (effectiveWakeOnReply) extra.wakeOnReply = true;
   // EI-8986: stamp an absolute deadline (epoch ms) so the reply-deadline-sweep
@@ -774,6 +791,7 @@ export default defineTool({
     relayOf: relayOfArg,
     relayQuote: relayQuoteArg,
     gateRefs: gateRefsArg,
+    noBodyRefs: noBodyRefsArg,
     wake: wakeArg,
     wakeOnReply: wakeOnReplyArg,
     endTurn: endTurnArg,
@@ -813,6 +831,7 @@ export default defineTool({
             relayOf: args.relayOf,
             relayQuote: args.relayQuote,
             gateRefs: args.gateRefs,
+            noBodyRefs: args.noBodyRefs,
             wake: args.wake,
             wakeOnReply: args.wakeOnReply,
             endTurn: args.endTurn,

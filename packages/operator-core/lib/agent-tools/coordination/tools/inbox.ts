@@ -25,8 +25,14 @@ import { COORD_ROLES } from "../roles";
 import { renderInjection, type CoordLineSource } from "../../../coord-schema";
 import { fetchPresenceFleet } from "../presence-fleet";
 import type { RecipientCueScope } from "../cue-authority";
-import { hydrateRefs } from "../ref-hydrate-resolve";
-import type { HydratedRef } from "../ref-hydrate";
+import { bodyRefWorkItemResolver, hydrateRefs } from "../ref-hydrate-resolve";
+import {
+  BODY_REF_SNIPPET_CHARS,
+  detectEntryBodyRefs,
+  isBodyRefEligible,
+  readBodyRefsOptOut,
+  type HydratedRef,
+} from "../ref-hydrate";
 import {
   renderContextUsageLine,
   contextUsagePct,
@@ -54,6 +60,12 @@ const COORD_INBOX_SOFT_TTL_MS = 5_000;
  *  at most one quote per shown injection line (default window = 8 lines). */
 const RELATED_QUOTE_SNIPPET_CHARS = 200;
 const RELATED_QUOTE_MAX_REFS = 8;
+
+/** P-008 body auto-ref budget (D-004): ≤3 mentions hydrate per message
+ *  (detectEntryBodyRefs' cap), ~150 chars each (BODY_REF_SNIPPET_CHARS), and a
+ *  window-global distinct-id cap matching the shown-window size, newest-biased
+ *  — the same overflow policy as RELATED_QUOTE_MAX_REFS above. */
+const BODY_REF_MAX_TOTAL = 8;
 
 /**
  * EI-6797: per-owner throttle for the inbox liveness heartbeat. `coord:inbox`
@@ -537,9 +549,47 @@ export default defineTool({
     } catch {
       relatedQuotes = undefined;
     }
+    // coord-authority-hardening P-008: auto-detect WI-/EI- ids loose in the
+    // shown FREE-PROSE lines and hydrate each distinct id ONCE into a one-line
+    // status + title + checkpoint-tail suffix at delivery — the receiver stops
+    // re-fetching or half-remembering cited items. Same IO-half contract as the
+    // P-005 block above: best-effort BY CONTRACT (any failure ⇒ undefined map ⇒
+    // plain lines). Machine-stamped lifecycle / plan-event / ack lines are
+    // excluded (their ids are structural, not citations — isBodyRefEligible),
+    // and a sender's noBodyRefs opt-out is honored here (no lookups) and again
+    // at render. A local miss stays SILENT — unlike a declared ref, an
+    // auto-detected mention carries no promise this store can resolve it (a
+    // federated peer's id, prose that merely looks like an id); the id still
+    // travels verbatim in the prose. Newest-biased global cap, like P-005.
+    let bodyRefs: Map<string, HydratedRef> | undefined;
+    try {
+      const ids = [
+        ...new Set(
+          (injectionEntries as unknown as Array<Record<string, unknown>>)
+            .filter((en) => isBodyRefEligible(en) && !readBodyRefsOptOut(en))
+            .flatMap((en) =>
+              detectEntryBodyRefs(en).flatMap((r) => (r.kind === "work-item" ? [r.id] : [])),
+            ),
+        ),
+      ].slice(-BODY_REF_MAX_TOTAL);
+      if (ids.length) {
+        const hydrated = await hydrateRefs(
+          ids.map((id) => ({ kind: "work-item" as const, id })),
+          {
+            budget: { snippetChars: BODY_REF_SNIPPET_CHARS, maxRefs: ids.length },
+            resolvers: { "work-item": bodyRefWorkItemResolver },
+          },
+        );
+        bodyRefs = new Map(
+          hydrated.flatMap((h) => (h.ref.kind === "work-item" ? [[h.ref.id, h] as const] : [])),
+        );
+      }
+    } catch {
+      bodyRefs = undefined;
+    }
     const coordInjection = renderInjection(
       injectionEntries as unknown as CoordLineSource[],
-      { cueScope, relatedQuotes },
+      { cueScope, relatedQuotes, bodyRefs },
     );
 
     // P-010 re-bootstrap-on-compaction (D-007): on the first read after a fresh

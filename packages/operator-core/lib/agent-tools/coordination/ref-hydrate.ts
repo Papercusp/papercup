@@ -240,3 +240,91 @@ export function renderGateRefsSuffix(stamps: GateRefStamp[]): string {
   if (!stamps.length) return '';
   return ` ⛩ ${stamps.map((s) => `gate ${s.key} [${s.status}]`).join('; ')}`;
 }
+
+// ─────────────────────────── P-008: body auto-refs ───────────────────────────
+
+/** The envelope field `coord:send { noBodyRefs: true }` stamps — the SENDER's
+ *  opt-out from receiver-side auto-hydration of WI-/EI- ids in this message's
+ *  prose (e.g. the ids are historical/illustrative and inline live status would
+ *  mislead). Honored at collect (no lookups) AND render (no suffix). */
+export const BODY_REFS_OPT_OUT_FIELD = 'bodyRefsOptOut';
+
+/** P-008 delivery budget: ~150 verbatim chars per hydrated mention (title/state/
+ *  assignee + checkpoint tail), ≤3 mentions per message (detectBodyRefs' cap). */
+export const BODY_REF_SNIPPET_CHARS = 150;
+/** Of the per-ref budget, at most this much goes to the checkpoint TAIL. */
+export const BODY_REF_CHECKPOINT_TAIL_CHARS = 60;
+
+/** Read the sender opt-out off an envelope. Defensive: only a literal `true`
+ *  opts out (a forged/malformed value degrades to "hydrate as usual"). */
+export function readBodyRefsOptOut(env: Record<string, unknown> | null | undefined): boolean {
+  return env?.[BODY_REFS_OPT_OUT_FIELD] === true;
+}
+
+/** Kinds whose text is agent-authored FREE PROSE — the only place an id mention
+ *  is a CITATION worth hydrating. Machine-stamped lifecycle lines (intent /
+ *  claim / completion / …), plan events, acks and subscription deltas name
+ *  their item STRUCTURALLY (the line is already about it); hydrating those
+ *  would burn the budget on ceremony and double-render on high-volume status. */
+const BODY_REF_PROSE_KINDS: ReadonlySet<string> = new Set([
+  'message',
+  'escalation',
+  'escalation_resolved',
+  'handoff',
+  'handoff_accepted',
+  'contract',
+  'yield',
+]);
+
+/** Whether an entry's prose is eligible for body auto-ref hydration (P-008).
+ *  Pure + defensive: a lifecycle-stamped entry (whatever its kind) and any
+ *  non-prose kind are ineligible; malformed shapes degrade to ineligible. */
+export function isBodyRefEligible(
+  entry: { kind?: unknown; lifecycle?: unknown } | null | undefined,
+): boolean {
+  if (!entry) return false;
+  if (typeof entry.lifecycle === 'string' && entry.lifecycle) return false;
+  return typeof entry.kind === 'string' && BODY_REF_PROSE_KINDS.has(entry.kind);
+}
+
+/**
+ * Detect body refs over an ENTRY's full prose (summary + body) — the shared
+ * text derivation the delivery seam (collect) and the renderer (attach) must
+ * agree on, so a ref hydrated from the body still decorates the summary line.
+ */
+export function detectEntryBodyRefs(
+  entry: { summary?: unknown; body?: unknown } | null | undefined,
+  max = DEFAULT_REF_BUDGET.maxRefs,
+): HydratableRef[] {
+  const text = [entry?.summary, entry?.body]
+    .filter((v): v is string => typeof v === 'string' && v.length > 0)
+    .join(' ');
+  return detectBodyRefs(text, max);
+}
+
+/**
+ * Clamp verbatim content to a single bounded line keeping the TAIL (the
+ * freshest end — a checkpoint's "next action" lives there), with a LEADING
+ * ellipsis. Same verbatim contract as clampSnippet: trims, never rewrites.
+ */
+export function clampSnippetTail(text: string, n: number): string {
+  const oneLine = (text ?? '').replace(/\s+/g, ' ').trim();
+  if (oneLine.length <= n) return oneLine;
+  return `…${oneLine.slice(oneLine.length - Math.max(0, n - 1)).trimStart()}`;
+}
+
+/**
+ * The P-008 inline delivery suffix: each RESOLVED auto-detected mention as
+ * `↪ <label>: "<snippet>"`, joined `; `. Unresolved hydrations are SILENTLY
+ * skipped — deliberately unlike renderHydratedRef/renderReplyQuoteSuffix's
+ * loud-unresolved: an auto-detected mention carries no sender-declared pointer
+ * (the id still travels verbatim in the prose), and a local miss is ROUTINE
+ * (a federated peer's item, a foreign-harness id, prose that merely looks like
+ * an id) — decorating every one with "unresolved" would be pure noise. The
+ * fail-soft "visible, not papered over" contract binds DECLARED refs only.
+ */
+export function renderBodyRefsSuffix(hs: HydratedRef[]): string {
+  const ok = hs.filter((h) => h.ok);
+  if (!ok.length) return '';
+  return ` ${ok.map((h) => (h.snippet ? `↪ ${h.label}: "${h.snippet}"` : `↪ ${h.label}`)).join('; ')}`;
+}

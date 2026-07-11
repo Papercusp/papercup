@@ -22,8 +22,10 @@ import { getWorkItem } from '../../work-items';
 import { findAnnouncementsForKey } from '../../events/await/store';
 import {
   applyRefBudget,
+  BODY_REF_CHECKPOINT_TAIL_CHARS,
   canonicalRefKey,
   clampSnippet,
+  clampSnippetTail,
   DEFAULT_REF_BUDGET,
   GATE_REFS_MAX,
   type GateRefStamp,
@@ -80,6 +82,45 @@ const DEFAULT_RESOLVERS: RefResolvers = {
   // plan-item / gate / owner-turn: installed by their consuming plan items
   // (P-006 gateRefs, P-004 owner-turn) via the `resolvers` arg — a ref of a
   // kind with no installed resolver degrades to `resolver_not_installed`.
+};
+
+/**
+ * P-008 delivery resolver for AUTO-DETECTED work-item mentions: the default
+ * label (id [kind/state @assignee]) + title snippet, EXTENDED with the item's
+ * checkpoint TAIL (`⌁ …<end of checkpoint>`) — the freshest "where is it
+ * actually" a receiver otherwise re-fetches or half-remembers. The checkpoint
+ * read is a DYNAMIC import: this module's STATIC chain must not grow (suites
+ * that partial-mock `@papercusp/flags/server` — send.test — import it; a new
+ * static store chain here re-arms the flags/server partial-mock trap). The
+ * tail is decoration on decoration: any failure just omits it. The combined
+ * snippet stays within `budget.snippetChars` (the tail eats into the title's
+ * share, never past the cap).
+ */
+export const bodyRefWorkItemResolver: RefResolver = async (ref, budget) => {
+  if (ref.kind !== 'work-item') return null;
+  const wi = await getWorkItem(ref.id);
+  if (!wi) return null;
+  const assignee = wi.assignee ? ` @${shortHandle(wi.assignee)}` : '';
+  let tail = '';
+  try {
+    const [{ getWorkItemCheckpoint }, { activeWorkspaceId }] = await Promise.all([
+      import('../../work-item-checkpoint'),
+      import('../../workspace-registry'),
+    ]);
+    const cp = await getWorkItemCheckpoint({
+      workItemId: wi.id,
+      harness: wi.harness,
+      workspaceId: activeWorkspaceId(),
+    });
+    if (cp) tail = ` ⌁ ${clampSnippetTail(cp, BODY_REF_CHECKPOINT_TAIL_CHARS)}`;
+  } catch {
+    /* fail-soft: no tail */
+  }
+  const head = clampSnippet(
+    [wi.title, wi.summary].filter(Boolean).join(' — '),
+    Math.max(0, budget.snippetChars - tail.length),
+  );
+  return { label: `${wi.id} [${wi.kind}/${wi.state}${assignee}]`, snippet: `${head}${tail}` };
 };
 
 /**

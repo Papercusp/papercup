@@ -40,7 +40,11 @@ import {
   UNVERIFIED_CLAIM_TAG,
 } from './agent-tools/coordination/relay-provenance';
 import {
+  detectEntryBodyRefs,
+  isBodyRefEligible,
+  readBodyRefsOptOut,
   readGateRefs,
+  renderBodyRefsSuffix,
   renderGateRefsSuffix,
   renderReplyQuoteSuffix,
   type HydratedRef,
@@ -270,6 +274,18 @@ export interface RenderInjectionOpts {
    * Absent map / missing key ⇒ prior behavior (no suffix) — fail-soft.
    */
   relatedQuotes?: ReadonlyMap<string, HydratedRef>;
+  /**
+   * P-008 body auto-refs (coord-authority-hardening-2026-07-11): map of
+   * work-item id (canonical uppercase, `WI-123`/`EI-9`) → resolved hydration,
+   * built by the delivery seam (inbox.ts — the IO half; this renderer stays
+   * pure). An ELIGIBLE free-prose line (isBodyRefEligible — lifecycle/status
+   * machinery excluded) whose summary/body mentions a mapped id gets an inline
+   * `↪ <id> [kind/state @holder]: "<title … ⌁ …checkpoint tail>"` suffix, first
+   * 3 mentions per line. A sender's noBodyRefs opt-out (stamped on the
+   * envelope) suppresses it. Absent map / miss / unresolved hydration ⇒ plain
+   * line — an auto-detected mention is opportunistic decoration, never loud.
+   */
+  bodyRefs?: ReadonlyMap<string, HydratedRef>;
 }
 
 /**
@@ -348,8 +364,29 @@ export function renderInjection(entries: CoordLineSource[], opts: RenderInjectio
     // the clip, so the key is never truncated (a receiver copies it, or resolves
     // it hands-free via events:await { fromMsg }). Pure read: [] when absent.
     const gateSuffix = renderGateRefsSuffix(readGateRefs(e as unknown as Record<string, unknown>));
+    // coord-authority-hardening P-008: WI-/EI- ids loose in a FREE-PROSE line
+    // auto-hydrate to a one-line status + title + checkpoint-tail suffix (the
+    // seam resolved them into opts.bodyRefs; detection here re-runs the same
+    // pure detectEntryBodyRefs, so seam and renderer can't disagree on which
+    // ids a line cites). Lifecycle/status lines are excluded (their ids are
+    // structural, not citations); the sender opt-out is honored; a map miss
+    // or unresolved hydration renders nothing — see renderBodyRefsSuffix.
+    let bodyRefsSuffix = '';
+    if (
+      opts.bodyRefs?.size &&
+      isBodyRefEligible(e) &&
+      !readBodyRefsOptOut(e as unknown as Record<string, unknown>)
+    ) {
+      const refs = opts.bodyRefs;
+      const hits = detectEntryBodyRefs(e).flatMap((r) => {
+        if (r.kind !== 'work-item') return [];
+        const h = refs.get(r.id);
+        return h ? [h] : [];
+      });
+      bodyRefsSuffix = renderBodyRefsSuffix(hits);
+    }
     const text = tag ? `[${tag}] ${body}` : body;
-    lines.push(`${glyph} ${handle} ${claimFlag}${text}${relaySuffix}${replySuffix}${gateSuffix}`);
+    lines.push(`${glyph} ${handle} ${claimFlag}${text}${relaySuffix}${replySuffix}${gateSuffix}${bodyRefsSuffix}`);
   }
   return lines.join('\n');
 }
