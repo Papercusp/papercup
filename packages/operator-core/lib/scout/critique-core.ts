@@ -41,8 +41,12 @@ export interface CorpusEntry {
 export interface CorpusMatch {
   ref: string;
   kind: CorpusKind;
-  /** Token-set Jaccard over the stable signature, [0,1]. */
+  /** Blended similarity [0,1]: lexical token-set Jaccard, or — when a semantic
+   *  (cosine) similarity was resolved for this prior and beat lexical — that. */
   similarity: number;
+  /** True when the P-017 embedding leg's cosine BEAT lexical for this prior — the
+   *  match was caught semantically (a re-worded re-encounter the token matcher missed). */
+  semantic?: boolean;
   state?: string;
 }
 
@@ -67,6 +71,15 @@ export interface CorpusNoveltyOptions {
   /** Extra novelty penalty when the closest above-floor match is an already-decided
    *  prior — we've literally tried/shipped/dropped this before (default 0.15). */
   decidedPenalty?: number;
+  /**
+   * P-017 hybrid embedding leg (D-016): a per-corpus-ref cosine similarity [0,1] in
+   * the active embedding space, resolved JOIN-WISE by the caller (semantic-novelty-leg).
+   * When present for an entry, its score is blended as `max(lexical, cosine)` — so a
+   * re-worded re-encounter the lexical matcher misses is still caught by its semantic
+   * neighbour. Keeps this core PURE (the impure vector IO lives in the caller); absent
+   * the map, scoring is byte-identical to the lexical-only original.
+   */
+  semanticSimByRef?: ReadonlyMap<string, number>;
 }
 
 const DEFAULT_DECIDED_STATES = ['dropped', 'shipped', 'resolved', 'closed', 'done'] as const;
@@ -105,6 +118,7 @@ export function corpusNovelty(
   const maxMatches = opts.maxMatches ?? DEFAULT_CORPUS_NOVELTY_OPTIONS.maxMatches;
   const decidedStates = opts.decidedStates ?? DEFAULT_CORPUS_NOVELTY_OPTIONS.decidedStates;
   const decidedPenalty = opts.decidedPenalty ?? DEFAULT_CORPUS_NOVELTY_OPTIONS.decidedPenalty;
+  const semanticSimByRef = opts.semanticSimByRef;
 
   // No comparable tokens (e.g. empty / punctuation-only) — maximally novel, but
   // we surface nothing (there is nothing to compare).
@@ -114,9 +128,21 @@ export function corpusNovelty(
 
   const scored: CorpusMatch[] = [];
   for (const e of corpus) {
-    const similarity = round2(titleSimilarity(text, e.text));
+    const lexical = round2(titleSimilarity(text, e.text));
+    // P-017 hybrid leg: blend the caller-resolved cosine as max(lexical, cosine).
+    // Computed BEFORE the <=0 skip on purpose — a re-worded re-encounter with zero
+    // lexical overlap (the 2026-07-10 dupe-storm class) is only caught this way.
+    const cos = semanticSimByRef?.get(e.ref);
+    const useSemantic = typeof cos === 'number' && cos > lexical;
+    const similarity = useSemantic ? round2(cos as number) : lexical;
     if (similarity <= 0) continue;
-    scored.push({ ref: e.ref, kind: e.kind, similarity, ...(e.state ? { state: e.state } : {}) });
+    scored.push({
+      ref: e.ref,
+      kind: e.kind,
+      similarity,
+      ...(useSemantic ? { semantic: true } : {}),
+      ...(e.state ? { state: e.state } : {}),
+    });
   }
   scored.sort((a, b) => b.similarity - a.similarity);
 

@@ -228,7 +228,8 @@ describe('MugTab (Colony sidebar, round 2)', () => {
     render(<MugTab active={true} />, { wrapper: Wrap });
     await openLane('Capacity');
     fireEvent.click(screen.getByRole('button', { name: 'Expand models' }));
-    fireEvent.change(screen.getByLabelText('std model spec'), { target: { value: 'unsaved:model' } });
+    const stdModel = await screen.findByLabelText('std model spec');
+    fireEvent.change(stdModel, { target: { value: 'unsaved:model' } });
     fireEvent.click(screen.getByRole('button', { name: 'Reset Capacity controls' }));
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     expect(setSteeringBody().args).toEqual({

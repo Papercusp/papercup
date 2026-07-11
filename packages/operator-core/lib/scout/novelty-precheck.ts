@@ -10,11 +10,13 @@
  * capture — only the existing improvement-dedup may. Already-decided matches
  * (dropped/shipped/…) are the point ("already tried, failed"), never filtered.
  *
- * Matching core = `corpusNovelty` (lexical token-set Jaccard today). P-017's
- * hybrid lexical+embedding upgrade lands INSIDE that seam, so this pre-check
- * inherits it without changes.
+ * Matching core = `corpusNovelty` (lexical token-set Jaccard) blended with the
+ * P-017 hybrid embedding leg via `corpusNoveltyHybrid` — a re-worded re-encounter
+ * the lexical matcher misses is caught by its semantic neighbour, fail-open to
+ * pure lexical when the embedder is unavailable.
  */
-import { corpusNovelty, type CorpusEntry, type CorpusKind, type CorpusNoveltyOptions } from './critique-core';
+import { type CorpusEntry, type CorpusKind, type CorpusNoveltyOptions } from './critique-core';
+import { corpusNoveltyHybrid, type SemanticNoveltyDeps } from './semantic-novelty-leg';
 import { readNoveltyCorpus } from './cycle-deps';
 
 /** One prior the filed idea collides with (similarity ≥ the match floor). */
@@ -35,6 +37,9 @@ export interface NoveltyPriorArtOptions {
   corpus?: readonly CorpusEntry[];
   /** Matcher knobs (floor / cap); defaults = DEFAULT_CORPUS_NOVELTY_OPTIONS. */
   novelty?: CorpusNoveltyOptions;
+  /** Injectable P-017 embedding-leg deps (tests / a caller wiring a non-backfill space);
+   *  default = the real leg (fail-open, VITEST-inert). */
+  semanticDeps?: SemanticNoveltyDeps;
 }
 
 /**
@@ -45,7 +50,7 @@ export interface NoveltyPriorArtOptions {
  */
 export async function noveltyPriorArt(text: string, opts: NoveltyPriorArtOptions = {}): Promise<PriorArtMatch[]> {
   const corpus = opts.corpus ?? (await readNoveltyCorpus());
-  const { matches } = corpusNovelty(text, corpus, opts.novelty);
+  const { matches } = await corpusNoveltyHybrid(text, corpus, opts.novelty, opts.semanticDeps);
   const titleByRef = new Map<string, string>();
   for (const e of corpus) if (!titleByRef.has(e.ref)) titleByRef.set(e.ref, e.text);
   return matches.map((m) => ({

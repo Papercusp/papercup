@@ -19,13 +19,13 @@
  */
 import type { Idea, ScoutLlmCall, ScoredIdea } from './types';
 import {
-  corpusNovelty,
   bucketByCritique,
   verdictFor,
   type CorpusEntry,
   type CorpusNoveltyOptions,
   type BucketOptions,
 } from './critique-core';
+import { corpusNoveltyHybrid } from './semantic-novelty-leg';
 import { parseLlmJson } from './llm-json';
 import { DEFAULT_SCOUT_CRITIC_MODEL } from './models';
 
@@ -182,7 +182,9 @@ export async function critiqueIdea(
   deps: { llmCall: ScoutLlmCall },
   opts: CritiqueOptions = {},
 ): Promise<ScoredIdea> {
-  const cn = corpusNovelty(`${idea.title} ${idea.body}`, corpus, opts.novelty);
+  // P-017: the deterministic search-first novelty, now blended with the hybrid
+  // embedding leg (fail-open to pure lexical). Still a CEILING the LLM may only lower.
+  const cn = await corpusNoveltyHybrid(`${idea.title} ${idea.body}`, corpus, opts.novelty);
   const raw = await runCritic(
     idea,
     cn.matches.map((m) => ({ ref: m.ref, similarity: m.similarity, state: m.state })),
