@@ -558,6 +558,30 @@ describe("LearningTab — Improvements view (default)", () => {
     expect(screen.getByText("Nothing in this lane")).toBeTruthy();
   });
 
+  it("skips the dashboard and duplicate decision rail for a sparse queue", () => {
+    improvementsResult = {
+      data: [
+        {
+          ...improvementsDigest,
+          total: 1,
+          open: 1,
+          autoEligible: [],
+          humanQueue: [improvementsDigest.humanQueue[0]],
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<LearningTab />);
+    expect(
+      document.querySelector(".pc-learning-visual__layout--improvements"),
+    ).toBeNull();
+    expect(document.querySelector(".pc-hqdrain")).toBeNull();
+    expect(screen.getByText("Peer restarts massacre in-flight spawns")).toBeTruthy();
+  });
+
   it("renders the P-041 flow strip above the scoreboard — in/out, net, median age, recurrence, watchdog health", () => {
     render(<LearningTab />);
     fireEvent.click(screen.getByRole("button", { name: "Loop diagnostics" }));
@@ -637,11 +661,11 @@ describe("LearningTab — Gym view", () => {
     nuqsState.lview = "gym";
   });
 
-  it("renders the gym champion flow and recent challengers", () => {
+  it("leads directly with sparse gym challengers", () => {
     render(<LearningTab />);
     expect(screen.getByText("Prompt gym")).toBeTruthy();
     expect(screen.getByText("Recent challengers")).toBeTruthy();
-    expect(document.querySelector(".pc-learning__gymflow")).not.toBeNull();
+    expect(document.querySelector(".pc-learning__gymflow")).toBeNull();
     expect(
       screen.getByText("tighten the worker acceptance check"),
     ).toBeTruthy();
@@ -773,6 +797,40 @@ describe("LearningTab — Benchmark view", () => {
     expect(screen.queryByText("No pot-eval runs")).toBeNull();
   });
 
+  it("keeps the latest scored generation primary while showing a newer unscored run as pending", () => {
+    apiaryResult = {
+      data: [
+        {
+          instances: [
+            {
+              ...apiarySnapshot.instances[0],
+              instanceId: "pending-run",
+              codeSha: "pending7",
+              totalRuns: 4,
+              successfulRuns: 0,
+              successRate: 0,
+              meanComposite: null,
+              meanTimeToGreenSecs: null,
+              meanTokens: null,
+              escalationRate: null,
+            },
+            ...apiarySnapshot.instances,
+          ],
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<LearningTab />);
+    expect(screen.getByText("pending7")).toBeTruthy();
+    expect(screen.getByText(/waiting for a scored result/)).toBeTruthy();
+    expect(screen.getAllByText("5.950").length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText("first generation")).toBeNull();
+    expect(document.querySelector(".pc-learning__statusdot.is-warn")).not.toBeNull();
+  });
+
   it("promotes every former benchmark section into the Verify tab row", () => {
     render(<LearningTab />);
     expect(screen.getByRole("tab", { name: "Benchmark" })).toBeTruthy();
@@ -838,7 +896,12 @@ describe("LearningTab — Benchmark view", () => {
       screen
         .getByRole("tab", { name: "Observe" })
         .getAttribute("data-complete"),
-    ).toBe("true");
+    ).toBeNull();
+    expect(
+      screen
+        .getByRole("tab", { name: "Verify" })
+        .querySelector(".pc-learning__statusdot.is-good"),
+    ).not.toBeNull();
   });
 
   it("renders the Pot-eval empty state only in the Pot orchestration view", () => {

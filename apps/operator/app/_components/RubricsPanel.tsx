@@ -10,7 +10,7 @@
  * live server-side).
  */
 import { useSyncQuery } from "@papercusp/sync";
-import type { CSSProperties } from "react";
+import { useEffect, type CSSProperties } from "react";
 import { Table, type TableColumn } from "../harness/Table";
 
 interface RubricRow {
@@ -42,15 +42,21 @@ export default function RubricsPanel({
   onSelect,
   selectedId = null,
   compact = false,
+  onStatus,
 }: {
   onSelect?: (rubricId: string) => void;
   selectedId?: string | null;
   compact?: boolean;
+  onStatus?: (status: "neutral" | "good" | "warn" | "bad") => void;
 }) {
   const { data, error, loading } = useSyncQuery<RubricRow>({
     queryName: "rubrics.list",
     args: {},
   });
+  const rowCount = data?.length ?? 0;
+  useEffect(() => {
+    onStatus?.(error ? "bad" : rowCount > 0 ? "good" : "neutral");
+  }, [error, onStatus, rowCount]);
 
   if (loading) {
     return (

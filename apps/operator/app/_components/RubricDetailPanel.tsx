@@ -10,7 +10,8 @@
  */
 import { useState } from "react";
 import { useSyncQuery } from "@papercusp/sync";
-import { X } from "lucide-react";
+import * as Collapsible from "@radix-ui/react-collapsible";
+import { ChevronDown, X } from "lucide-react";
 import { Table, type TableColumn } from "../harness/Table";
 import ScorecardDetail, {
   RatingChip,
@@ -63,6 +64,8 @@ export default function RubricDetailPanel({
   onBack?: () => void;
 }) {
   const [selected, setSelected] = useState<ScorecardRow | null>(null);
+  const [stableOpen, setStableOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const scorecards = useSyncQuery<ScorecardRow>({
     queryName: "scorecards.list",
@@ -98,6 +101,18 @@ export default function RubricDetailPanel({
     trendRow?.criteria.filter(
       (criterion) => directionGlyph(criterion.direction) === "↓",
     ).length ?? 0;
+  const priorityCriteria =
+    trendRow?.criteria
+      .filter((criterion) => directionGlyph(criterion.direction) !== "→")
+      .sort((a, b) => {
+        const rank = (criterion: CriterionTrend) =>
+          directionGlyph(criterion.direction) === "↓" ? 0 : 1;
+        return rank(a) - rank(b) || a.criterion.localeCompare(b.criterion);
+      }) ?? [];
+  const stableCriteria =
+    trendRow?.criteria
+      .filter((criterion) => directionGlyph(criterion.direction) === "→")
+      .sort((a, b) => a.criterion.localeCompare(b.criterion)) ?? [];
 
   const trendColumns: TableColumn<CriterionTrend>[] = trendRow
     ? [
@@ -219,29 +234,41 @@ export default function RubricDetailPanel({
       ) : !trendRow || trendRow.criteria.length === 0 ? (
         <div role="status">No graded criteria yet.</div>
       ) : (
-        <div style={{ overflowX: "auto" }}>
-          <Table
-            className="pc-rubric-trend"
-            caption={
-              <>
-                {trendRow.scorecardCount} scorecard
-                {trendRow.scorecardCount === 1 ? "" : "s"} in window{" "}
-                {trendRow.window.from
-                  ? `${new Date(trendRow.window.from).toLocaleDateString()} – `
-                  : ""}
-                {trendRow.window.to
-                  ? new Date(trendRow.window.to).toLocaleDateString()
-                  : ""}
-              </>
-            }
-            columns={trendColumns}
-            rows={trendRow.criteria}
-            getRowKey={(c) => c.criterion}
-          />
-        </div>
+        <>
+          {priorityCriteria.length > 0 ? (
+            <div style={{ overflowX: "auto" }}>
+              <Table
+                className="pc-rubric-trend"
+                caption={`${priorityCriteria.length} changing criteria, regressions first`}
+                columns={trendColumns}
+                rows={priorityCriteria}
+                getRowKey={(c) => c.criterion}
+              />
+            </div>
+          ) : null}
+          {stableCriteria.length > 0 ? (
+            <Collapsible.Root open={stableOpen} onOpenChange={setStableOpen}>
+              <Collapsible.Trigger className="pc-rubric-detail__disclosure">
+                <ChevronDown size={13} aria-hidden />
+                Stable criteria
+                <strong>{stableCriteria.length}</strong>
+              </Collapsible.Trigger>
+              <Collapsible.Content>
+                <div style={{ overflowX: "auto" }}>
+                  <Table
+                    className="pc-rubric-trend"
+                    caption={`${stableCriteria.length} stable criteria`}
+                    columns={trendColumns}
+                    rows={stableCriteria}
+                    getRowKey={(c) => c.criterion}
+                  />
+                </div>
+              </Collapsible.Content>
+            </Collapsible.Root>
+          ) : null}
+        </>
       )}
 
-      <h3>Grading history</h3>
       {scorecards.loading ? (
         <div role="status">Loading scorecards…</div>
       ) : scorecards.error ? (
@@ -251,21 +278,25 @@ export default function RubricDetailPanel({
       ) : rows.length === 0 ? (
         <div role="status">No scorecards filed against this rubric yet.</div>
       ) : (
-        <div style={{ overflowX: "auto" }}>
-          <Table
-            className="pc-rubric-history"
-            caption={
-              <>
-                {rows.length} scorecard{rows.length === 1 ? "" : "s"} (newest
-                first) — click a row for full ratings + evidence
-              </>
-            }
-            columns={historyColumns}
-            rows={rows}
-            getRowKey={(row) => row.issueId}
-            onRowClick={(row) => setSelected(row)}
-          />
-        </div>
+        <Collapsible.Root open={historyOpen} onOpenChange={setHistoryOpen}>
+          <Collapsible.Trigger className="pc-rubric-detail__disclosure">
+            <ChevronDown size={13} aria-hidden />
+            Grading history
+            <strong>{rows.length}</strong>
+          </Collapsible.Trigger>
+          <Collapsible.Content>
+            <div style={{ overflowX: "auto" }}>
+              <Table
+                className="pc-rubric-history"
+                caption={`${rows.length} scorecard${rows.length === 1 ? "" : "s"}, newest first — click a row for full ratings and evidence`}
+                columns={historyColumns}
+                rows={rows}
+                getRowKey={(row) => row.issueId}
+                onRowClick={(row) => setSelected(row)}
+              />
+            </div>
+          </Collapsible.Content>
+        </Collapsible.Root>
       )}
       <style>{`
         .pc-rubric-detail { display: flex; flex-direction: column; gap: 9px; min-height: 100%; padding: 10px; background: var(--bg-1); }
@@ -282,6 +313,10 @@ export default function RubricDetailPanel({
         .pc-rubric-detail__overview .is-good strong { color: #34d399; }
         .pc-rubric-detail__overview .is-bad strong { color: #fb7185; }
         .pc-rubric-detail > h3 { margin: 4px 0 -5px; color: var(--fg); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0; }
+        .pc-rubric-detail__disclosure { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 31px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); color: var(--fg-mute); font: inherit; font-size: 10.5px; font-weight: 650; cursor: pointer; }
+        .pc-rubric-detail__disclosure svg { transition: transform 140ms ease; }
+        .pc-rubric-detail__disclosure[data-state="open"] svg { transform: rotate(180deg); }
+        .pc-rubric-detail__disclosure strong { margin-left: auto; color: var(--fg); font-variant-numeric: tabular-nums; }
         @media (max-width: 720px) { .pc-rubric-detail__overview { grid-template-columns: repeat(2, 1fr); } }
       `}</style>
     </div>

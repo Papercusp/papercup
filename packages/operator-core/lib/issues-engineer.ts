@@ -190,6 +190,24 @@ export function issuesScopeWorkspace(): string {
   return issuesPerWorkspaceOn ? activeWorkspaceId() : DEFAULT_COORD_WORKSPACE;
 }
 
+/**
+ * WI-4308 interim mitigation: workspace ids to consult for DEDUP-ONLY reads
+ * (`searchIssuesForDedup`, `findIssuesByWatchdogKeys`). ~1404 open engineer_issues
+ * rows filed before ISSUES_PER_WORKSPACE flipped ON are permanently stuck under
+ * workspace_id=DEFAULT_COORD_WORKSPACE ('default') and invisible to a single-scope
+ * `issuesScopeWorkspace()` filter, so dedup can no longer see them at all — a
+ * detector re-firing the same signal (same watchdogKey, same title) creates a fresh
+ * duplicate instead of finding its still-open pre-flip twin. Additive/low-risk
+ * stopgap: only widens DEDUP reads (never `searchIssues` itself, which also backs
+ * the caller-visible `work_items:search` tool — see WI-4308 for the full
+ * row+coord-metadata migration this is a stopgap for, and why a blind backfill of
+ * the 1404 rows is NOT done here).
+ */
+function dedupScopeWorkspaces(): string[] {
+  const active = issuesScopeWorkspace();
+  return active === DEFAULT_COORD_WORKSPACE ? [active] : [active, DEFAULT_COORD_WORKSPACE];
+}
+
 // Substrate stores resolve under the COORD scope (axis 2 above) so writes land where every
 // consumer reads. The engineer_issues ROW queries below keep issuesScopeWorkspace() (axis 1).
 const coordOpts = {
@@ -1137,6 +1155,27 @@ export async function searchIssues(query: string, limit = 50): Promise<EngineerI
 }
 
 /**
+ * WI-4308 interim mitigation: the SAME lexical search as `searchIssues`, widened
+ * to ALSO match rows still sitting under the legacy DEFAULT_COORD_WORKSPACE
+ * (see `dedupScopeWorkspaces`'s doc). For DEDUP READS ONLY — wired into
+ * capture-core.ts's search-first pass so a fresh capture can find (and decline
+ * to re-duplicate) a still-open pre-flip twin. Deliberately a SEPARATE function
+ * rather than widening `searchIssues` in place: `searchIssues` also backs the
+ * general, caller-visible `work_items:search` tool (via work-items.ts), which
+ * must NOT start surfacing the pre-flip backlog to ordinary listing/search.
+ */
+export async function searchIssuesForDedup(query: string, limit = 50): Promise<EngineerIssue[]> {
+  const { sql } = getOrgPg();
+  const rows = await sql<IssueRowDb[]>`
+    SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
+     WHERE workspace_id = ANY(${dedupScopeWorkspaces()}::text[])
+       AND _search @@ websearch_to_tsquery('english', ${query})
+     ORDER BY ts_rank(_search, websearch_to_tsquery('english', ${query})) DESC
+     LIMIT ${Math.min(limit, 200)}`;
+  return rows.map(toIssue);
+}
+
+/**
  * Semantic (cosine top-k) search over the issue store — the P-008 leg
  * (shared-embedding-sidecar-and-enrichment-2026-07-10) work_items:search
  * merges with the lexical hits above. `mode` is the ACTIVE embedder mode the
@@ -1180,13 +1219,22 @@ export async function semanticSearchIssues(vec: number[], mode: string, limit = 
  * (engineer_issues_watchdog_key_idx, migration 207). The improvement watchdog
  * pre-filters its collected signals against this BEFORE planning captures, so a
  * standing already-filed signal never consumes the per-tick capture budget.
+ *
+ * WI-4308 interim mitigation: scoped via `dedupScopeWorkspaces()` (not a bare
+ * `issuesScopeWorkspace()`) so a still-open watchdogKey match filed under the
+ * legacy DEFAULT_COORD_WORKSPACE is found too — every caller of this function
+ * (the improvement watchdog, scorecard-emission-pulse, overwatch's
+ * scorecard-backstop, known-open-aging's coalescing sweep, p2p-perf-actions,
+ * the calibration resolve-sweep) is itself a dedup/aging/coalescing consumer,
+ * never a general caller-visible listing — so widening here is safe by the
+ * same reasoning as `searchIssuesForDedup` above.
  */
 export async function findIssuesByWatchdogKeys(keys: string[]): Promise<EngineerIssue[]> {
   if (keys.length === 0) return [];
   const { sql } = getOrgPg();
   const rows = await sql<IssueRowDb[]>`
     SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
-     WHERE workspace_id = ${issuesScopeWorkspace()}
+     WHERE workspace_id = ANY(${dedupScopeWorkspaces()}::text[])
        AND payload ? 'watchdogKey'
        AND payload->>'watchdogKey' = ANY(${keys}::text[])
      ORDER BY updated_at DESC`;

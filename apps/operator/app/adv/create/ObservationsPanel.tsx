@@ -62,7 +62,9 @@ const CELL_TRUNCATE: CSSProperties = {
 };
 
 export default function ObservationsPanel(
-  _props?: Partial<PanelComponentProps>,
+  props?: Partial<PanelComponentProps> & {
+    onStatus?: (status: "neutral" | "good" | "warn" | "bad") => void;
+  },
 ) {
   const [itemPlans] = useItemPlanFilter();
   const [limit, setLimit] = useState(OBSERVATIONS_PAGE);
@@ -106,6 +108,11 @@ export default function ObservationsPanel(
       setSignalFilter(null);
     }
   }, [signalCounts, signalFilter]);
+  useEffect(() => {
+    props?.onStatus?.(
+      query.error ? "bad" : scopedRows.length > 0 ? "good" : "neutral",
+    );
+  }, [props, query.error, scopedRows.length]);
   const loadMore = useCallback(
     () => setLimit((current) => current + OBSERVATIONS_PAGE),
     [],
@@ -223,19 +230,31 @@ export default function ObservationsPanel(
             aria-label="Loaded signal distribution"
           >
             {signalCounts.map(([kind, count]) => (
-              <Tooltip key={kind} label={`${KIND_LABEL[kind] ?? kind}: ${count}`}>
+              <Tooltip
+                key={kind}
+                label={`${KIND_LABEL[kind] ?? kind}: ${count}`}
+              >
                 <button
                   type="button"
                   aria-label={`Filter by ${KIND_LABEL[kind] ?? kind}, ${count}`}
                   aria-pressed={signalFilter === kind}
                   onClick={() =>
-                    setSignalFilter((current) => (current === kind ? null : kind))
+                    setSignalFilter((current) =>
+                      current === kind ? null : kind,
+                    )
                   }
-                  style={{
-                    background: OBSERVATION_KIND_COLOR[kind] ?? "var(--accent)",
-                    flexGrow: count,
-                  }}
-                />
+                  className={kind === "other" ? "is-other" : undefined}
+                >
+                  <i
+                    aria-hidden
+                    style={{
+                      background:
+                        OBSERVATION_KIND_COLOR[kind] ?? "var(--fg-mute)",
+                    }}
+                  />
+                  <span>{KIND_LABEL[kind] ?? kind}</span>
+                  <strong>{count}</strong>
+                </button>
               </Tooltip>
             ))}
           </div>
@@ -290,10 +309,12 @@ export default function ObservationsPanel(
       )}
       <style>{`
         .pc-observations__toolbar { min-height: 30px; display: flex; align-items: center; justify-content: flex-end; gap: 9px; }
-        .pc-observations__distribution { display: flex; flex: 1 1 auto; max-width: 360px; height: 6px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--fg) 5%, transparent); }
-        .pc-observations__distribution button { min-width: 4px; padding: 0; border: 0; border-radius: 0; opacity: .72; cursor: pointer; transition: opacity 140ms ease, filter 140ms ease; }
-        .pc-observations__distribution button:hover, .pc-observations__distribution button[aria-pressed="true"] { opacity: 1; filter: saturate(1.35) brightness(1.08); }
-        .pc-observations__distribution button[aria-pressed="true"] { box-shadow: inset 0 0 0 1px color-mix(in srgb, white 65%, transparent); }
+        .pc-observations__distribution { display: flex; flex: 1 1 auto; align-items: center; gap: 5px; min-width: 0; overflow-x: auto; }
+        .pc-observations__distribution button { display: inline-flex; flex: none; align-items: center; gap: 5px; min-height: 25px; padding: 3px 7px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-2); color: var(--fg-mute); font: inherit; font-size: 9.5px; cursor: pointer; transition: color 140ms ease, border-color 140ms ease, background 140ms ease; }
+        .pc-observations__distribution button:hover, .pc-observations__distribution button[aria-pressed="true"] { border-color: color-mix(in srgb, var(--accent) 48%, var(--border)); background: color-mix(in srgb, var(--accent) 7%, var(--bg-2)); color: var(--fg); }
+        .pc-observations__distribution button.is-other { margin-left: 4px; border-style: dashed; opacity: .82; }
+        .pc-observations__distribution button > i { width: 6px; height: 6px; flex: none; border-radius: 50%; }
+        .pc-observations__distribution button > strong { color: var(--fg); font-size: 9.5px; font-variant-numeric: tabular-nums; }
         .pc-observations__signal { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-dim); font-size: 10.5px; font-weight: 680; }
         .pc-observations__signal i { width: 7px; height: 7px; flex: none; border-radius: 50%; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 6%, transparent); }
       `}</style>

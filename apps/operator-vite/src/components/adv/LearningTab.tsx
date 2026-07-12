@@ -296,6 +296,7 @@ export default function LearningTab() {
                 key={stage.id}
                 value={stage.id}
                 className="pc-learning__stage"
+                aria-label={stage.label}
               >
                 <span className="pc-learning__stage-icon">
                   <Icon size={16} aria-hidden />
@@ -309,10 +310,7 @@ export default function LearningTab() {
                   />
                 ) : null}
                 {index < STAGES.length - 1 ? (
-                  <span
-                    className="pc-learning__stage-line"
-                    aria-hidden
-                  />
+                  <span className="pc-learning__stage-line" aria-hidden />
                 ) : null}
               </Tabs.Trigger>
             );
@@ -339,6 +337,7 @@ export default function LearningTab() {
                     key={candidate.id}
                     value={candidate.id}
                     className="pc-learning__view-tab"
+                    aria-label={candidate.label}
                   >
                     <Icon size={13} aria-hidden />
                     {candidate.label}
@@ -463,7 +462,9 @@ function LearningViewContent({
     );
   }
   if (view === "gym") {
-    return <GymView hive={hive} onStatus={(status) => onStatus(view, status)} />;
+    return (
+      <GymView hive={hive} onStatus={(status) => onStatus(view, status)} />
+    );
   }
   if (view === "improvements") {
     return (
@@ -1361,9 +1362,15 @@ function ApiaryView({
             ? `${pending.successfulRuns}/${pending.totalRuns} pending`
             : latest
               ? `${latest.successfulRuns}/${latest.totalRuns} solved`
-            : undefined
+              : undefined
         }
-        tone={pending ? "warn" : latest && latest.successRate >= 0.8 ? "good" : "neutral"}
+        tone={
+          pending
+            ? "warn"
+            : latest && latest.successRate >= 0.8
+              ? "good"
+              : "neutral"
+        }
         action={
           <button
             type="button"
@@ -1401,99 +1408,99 @@ function ApiaryView({
           ) : null}
           {latest ? (
             <>
-          <div className="pc-learning-visual__layout">
-            <LearningHeroMetric
-              eyebrow={shortSha(latest.codeSha)}
-              value={compositeLabel(latest.meanComposite)}
-              status={
-                currentDelta == null
-                  ? "baseline"
-                  : currentDelta > 0
-                    ? "improved"
-                    : currentDelta < 0
-                      ? "regressed"
-                      : "unchanged"
-              }
-              tone={
-                currentDelta == null
-                  ? "accent"
-                  : currentDelta > 0
-                    ? "good"
-                    : currentDelta < 0
-                      ? "bad"
-                      : "neutral"
-              }
-            >
-              {currentDelta != null
-                ? `Δ ${currentDeltaMeta.text}`
-                : "first generation"}
-            </LearningHeroMetric>
-            <LearningComparisonBars
-              title="Previous vs current"
-              baselineName="Previous"
-              treatmentName="Current"
-              rows={[
-                {
-                  label: "Composite",
-                  baseline: previous?.meanComposite ?? null,
-                  treatment: latest.meanComposite,
-                  baselineLabel: compositeLabel(
-                    previous?.meanComposite ?? null,
-                  ),
-                  treatmentLabel: compositeLabel(latest.meanComposite),
-                  max: 10,
-                  treatmentWins:
-                    latest.meanComposite != null &&
-                    latest.meanComposite >=
-                      (previous?.meanComposite ?? -Infinity),
-                },
-                {
-                  label: "Success",
-                  baseline: previous?.successRate ?? null,
-                  treatment: latest.successRate,
-                  baselineLabel: pctLabel(previous?.successRate ?? null),
-                  treatmentLabel: pctLabel(latest.successRate),
-                  max: 1,
-                  treatmentWins:
-                    latest.successRate >= (previous?.successRate ?? -Infinity),
-                },
-                {
-                  label: "Time to green",
-                  baseline: previous?.meanTimeToGreenSecs ?? null,
-                  treatment: latest.meanTimeToGreenSecs,
-                  baselineLabel: secsLabel(
-                    previous?.meanTimeToGreenSecs ?? null,
-                  ),
-                  treatmentLabel: secsLabel(latest.meanTimeToGreenSecs),
-                  treatmentWins:
-                    latest.meanTimeToGreenSecs != null &&
-                    latest.meanTimeToGreenSecs <=
-                      (previous?.meanTimeToGreenSecs ?? Infinity),
-                },
-              ]}
-            />
-            <LearningEvidenceRail>
-              <div className="pc-learning-visual__evidence-grid">
-                <div className="pc-learning-visual__evidence-metric">
-                  <span>Success</span>
-                  <strong>{pctLabel(latest.successRate)}</strong>
-                </div>
-                <div className="pc-learning-visual__evidence-metric">
-                  <span>Time</span>
-                  <strong>{secsLabel(latest.meanTimeToGreenSecs)}</strong>
-                </div>
-                <div className="pc-learning-visual__evidence-metric">
-                  <span>Tokens</span>
-                  <strong>{tokensLabel(latest.meanTokens)}</strong>
-                </div>
-                <div className="pc-learning-visual__evidence-metric">
-                  <span>Escalations</span>
-                  <strong>{pctLabel(latest.escalationRate)}</strong>
-                </div>
+              <div className="pc-learning-visual__layout">
+                <LearningHeroMetric
+                  eyebrow={shortSha(latest.codeSha)}
+                  value={compositeLabel(latest.meanComposite)}
+                  status={
+                    currentDelta == null
+                      ? "baseline"
+                      : currentDelta > 0
+                        ? "improved"
+                        : currentDelta < 0
+                          ? "regressed"
+                          : "unchanged"
+                  }
+                  tone={
+                    currentDelta == null
+                      ? "accent"
+                      : currentDelta > 0
+                        ? "good"
+                        : currentDelta < 0
+                          ? "bad"
+                          : "neutral"
+                  }
+                >
+                  {currentDelta != null
+                    ? `Δ ${currentDeltaMeta.text}`
+                    : "first generation"}
+                </LearningHeroMetric>
+                <LearningComparisonBars
+                  title="Previous vs current"
+                  baselineName="Previous"
+                  treatmentName="Current"
+                  rows={[
+                    {
+                      label: "Composite",
+                      baseline: previous?.meanComposite ?? null,
+                      treatment: latest.meanComposite,
+                      baselineLabel: compositeLabel(
+                        previous?.meanComposite ?? null,
+                      ),
+                      treatmentLabel: compositeLabel(latest.meanComposite),
+                      max: 10,
+                      treatmentWins:
+                        latest.meanComposite != null &&
+                        latest.meanComposite >=
+                          (previous?.meanComposite ?? -Infinity),
+                    },
+                    {
+                      label: "Success",
+                      baseline: previous?.successRate ?? null,
+                      treatment: latest.successRate,
+                      baselineLabel: pctLabel(previous?.successRate ?? null),
+                      treatmentLabel: pctLabel(latest.successRate),
+                      max: 1,
+                      treatmentWins:
+                        latest.successRate >=
+                        (previous?.successRate ?? -Infinity),
+                    },
+                    {
+                      label: "Time to green",
+                      baseline: previous?.meanTimeToGreenSecs ?? null,
+                      treatment: latest.meanTimeToGreenSecs,
+                      baselineLabel: secsLabel(
+                        previous?.meanTimeToGreenSecs ?? null,
+                      ),
+                      treatmentLabel: secsLabel(latest.meanTimeToGreenSecs),
+                      treatmentWins:
+                        latest.meanTimeToGreenSecs != null &&
+                        latest.meanTimeToGreenSecs <=
+                          (previous?.meanTimeToGreenSecs ?? Infinity),
+                    },
+                  ]}
+                />
+                <LearningEvidenceRail>
+                  <div className="pc-learning-visual__evidence-grid">
+                    <div className="pc-learning-visual__evidence-metric">
+                      <span>Success</span>
+                      <strong>{pctLabel(latest.successRate)}</strong>
+                    </div>
+                    <div className="pc-learning-visual__evidence-metric">
+                      <span>Time</span>
+                      <strong>{secsLabel(latest.meanTimeToGreenSecs)}</strong>
+                    </div>
+                    <div className="pc-learning-visual__evidence-metric">
+                      <span>Tokens</span>
+                      <strong>{tokensLabel(latest.meanTokens)}</strong>
+                    </div>
+                    <div className="pc-learning-visual__evidence-metric">
+                      <span>Escalations</span>
+                      <strong>{pctLabel(latest.escalationRate)}</strong>
+                    </div>
+                  </div>
+                </LearningEvidenceRail>
               </div>
-            </LearningEvidenceRail>
-          </div>
-
             </>
           ) : null}
 
@@ -2417,11 +2424,7 @@ export function ScoutView({
   useEffect(() => setShowEarlier(false), [railFilter]);
   useEffect(() => {
     onStatus?.(
-      sync.error
-        ? "bad"
-        : snap && snap.totalRouted > 0
-          ? "good"
-          : "neutral",
+      sync.error ? "bad" : snap && snap.totalRouted > 0 ? "good" : "neutral",
     );
   }, [onStatus, snap, sync.error]);
 
@@ -2814,9 +2817,7 @@ function LearningsView({
   const rows = snap?.rows ?? [];
   const filtered = rows;
   useEffect(() => {
-    onStatus?.(
-      sync.error ? "bad" : rows.length > 0 ? "good" : "neutral",
-    );
+    onStatus?.(sync.error ? "bad" : rows.length > 0 ? "good" : "neutral");
   }, [onStatus, rows.length, sync.error]);
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const { prompt: askPrompt, element: promptEl } = usePromptDialog();

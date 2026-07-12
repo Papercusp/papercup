@@ -187,7 +187,7 @@ describe("<ObservationsPanel />", () => {
     expect(screen.getByText("mystery-kind")).toBeTruthy(); // unknown → raw
   });
 
-  it("uses the distribution segments as direct, reversible signal filters", () => {
+  it("uses visible count chips as direct, reversible signal filters", () => {
     sync.data = [
       mkRow({ id: "f1", title: "Friction row", kind: "friction" }),
       mkRow({ id: "g1", title: "Gap row", kind: "gap" }),
@@ -196,6 +196,8 @@ describe("<ObservationsPanel />", () => {
     const friction = screen.getByRole("button", {
       name: "Filter by Friction, 1",
     });
+    expect(friction.textContent).toContain("Friction");
+    expect(friction.textContent).toContain("1");
     fireEvent.click(friction);
     expect(friction.getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByText("Friction row")).toBeTruthy();

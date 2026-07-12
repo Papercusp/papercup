@@ -27,7 +27,7 @@
 import {
   createIssue,
   getIssue,
-  searchIssues,
+  searchIssuesForDedup,
   type EngineerIssue,
   type IssueSeverity,
   type IssueSource,
@@ -197,7 +197,9 @@ export interface CaptureDeps {
   getIssue?: (id: string) => Promise<EngineerIssue | null>;
 }
 
-const defaultDeps: CaptureDeps = { searchIssues, createIssue, loadRubric: getRubric };
+// WI-4308: use the dedup-widened search (also checks the legacy DEFAULT_COORD_WORKSPACE
+// for pre-ISSUES_PER_WORKSPACE-flip rows) — see searchIssuesForDedup's doc in issues-engineer.ts.
+const defaultDeps: CaptureDeps = { searchIssues: searchIssuesForDedup, createIssue, loadRubric: getRubric };
 
 /** The native column kind for a capture: feature is a payload refinement of change. */
 export function storageKindOf(kind: ImprovementKind): 'bug' | 'change' {

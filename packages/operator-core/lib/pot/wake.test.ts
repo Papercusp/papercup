@@ -4,22 +4,41 @@
  * and the subscription → live-reaction-rule projection (against the real
  * in-memory registry — no PG).
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import {
-  clampWakeAt,
-  decidePotWakeAdmission,
-  getPotTimeWake,
-  potWakeFloorSec,
-  resolvePotHomeSlug,
-  syncPotWakeRules,
-  withinWakeFloor,
-} from './wake';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import {
   _resetReactionsForTests,
   listReactionRules,
   matchReactions,
 } from '../events/registry';
+
+// EI-3282 regression: `registerPotWakeRules` is the boot-time re-projection of
+// PERSISTED event subscriptions into the in-memory reaction registry (see the
+// module doc comment on wake.ts: "Re-registered at boot ... since the rule
+// registry is in-memory"). Mock the operator-state-pg layer it reads through
+// (readPotWakeState → readOperatorState) so the test can simulate "a fresh
+// process boots with the in-memory registry EMPTY, while Postgres still holds
+// subscriptions a prior (now-dead) process persisted" — exactly the EI-3282
+// incident shape (a host reboot wiped the Queen's live event subscriptions).
+const potWakeStateStore = new Map<string, unknown>();
+vi.mock('../operator-state-pg', () => ({
+  readOperatorState: async (_table: string, ws?: string) =>
+    potWakeStateStore.get(ws ?? '') ?? null,
+  updateOperatorState: async () => {
+    throw new Error('updateOperatorState not mocked for this test file');
+  },
+}));
+
+const {
+  clampWakeAt,
+  decidePotWakeAdmission,
+  getPotTimeWake,
+  potWakeFloorSec,
+  registerPotWakeRules,
+  resolvePotHomeSlug,
+  syncPotWakeRules,
+  withinWakeFloor,
+} = await import('./wake');
 
 const ENV_KEYS = ['PAPERCUSP_POT_WAKE_FLOOR_SEC', 'PAPERCUSP_POT_HOME_SLUG'] as const;
 const saved: Record<string, string | undefined> = {};
@@ -29,6 +48,7 @@ beforeEach(() => {
     saved[k] = process.env[k];
     delete process.env[k];
   }
+  potWakeStateStore.clear();
 });
 afterEach(() => {
   for (const k of ENV_KEYS) {
@@ -36,6 +56,7 @@ afterEach(() => {
     else process.env[k] = saved[k];
   }
   _resetReactionsForTests();
+  potWakeStateStore.clear();
 });
 
 describe('potWakeFloorSec', () => {
@@ -207,6 +228,65 @@ describe('syncPotWakeRules (subscriptions → live reaction rules)', () => {
       ctx: {} as never,
     });
     expect(unmatched.some((m) => m.rule.id === `pot-wake:${WS}#0`)).toBe(false);
+  });
+});
+
+describe('registerPotWakeRules (EI-3282: event-wake subscriptions survive a host reboot)', () => {
+  const WS = 'ws-reboot-test';
+
+  it('re-projects PERSISTED subscriptions into the live registry when it starts EMPTY (simulated post-reboot boot)', async () => {
+    // Simulate a prior process having persisted subscriptions to PG, then dying —
+    // the in-memory registry (listReactionRules) starts genuinely empty, exactly
+    // what a fresh operator boot sees before this runs.
+    potWakeStateStore.set(WS, {
+      subscriptions: [{ on: 'coord:escalate', note: 'watch escalations' }],
+      declaredAt: 1,
+    });
+    expect(listReactionRules().filter((r) => r.id.startsWith(`pot-wake:${WS}#`))).toHaveLength(0);
+
+    const n = await registerPotWakeRules(WS);
+
+    expect(n).toBe(1);
+    const mine = listReactionRules().filter((r) => r.id.startsWith(`pot-wake:${WS}#`));
+    expect(mine).toHaveLength(1);
+    expect(mine[0].fire).toBe('pot:wake');
+    expect(mine[0].source).toBe('pot-wake');
+  });
+
+  it('is a no-op (0 rules, no throw) when nothing was ever persisted for this workspace', async () => {
+    const n = await registerPotWakeRules('ws-never-declared');
+    expect(n).toBe(0);
+    expect(
+      listReactionRules().filter((r) => r.id.startsWith('pot-wake:ws-never-declared#')),
+    ).toHaveLength(0);
+  });
+
+  it('is idempotent — calling it twice (e.g. two boot passes) does not duplicate rules', async () => {
+    potWakeStateStore.set(WS, { subscriptions: [{ on: 'coord:handoff' }], declaredAt: 1 });
+    await registerPotWakeRules(WS);
+    await registerPotWakeRules(WS);
+    expect(listReactionRules().filter((r) => r.id.startsWith(`pot-wake:${WS}#`))).toHaveLength(1);
+  });
+
+  it('fails soft (returns 0, never throws) when the underlying read errors — a boot-blocking failure here must never block boot', async () => {
+    potWakeStateStore.set(WS, { subscriptions: [{ on: 'coord:escalate' }] }); // valid shape...
+    // ...but force a read failure by making the mocked table lookup throw for this ws.
+    const original = potWakeStateStore.get;
+    potWakeStateStore.get = ((key: string) => {
+      if (key === WS) throw new Error('simulated PG hiccup / pre-migration missing table');
+      return original.call(potWakeStateStore, key);
+    }) as typeof potWakeStateStore.get;
+    // registerPotWakeRules deliberately logs a warning on this fail-soft path
+    // (never blocks boot) — expect it explicitly rather than letting the
+    // repo's vitest-fail-on-console guard fail the test on an unasserted call.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(registerPotWakeRules(WS)).resolves.toBe(0);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[pot] wake-rule registration skipped'));
+    } finally {
+      potWakeStateStore.get = original;
+      warnSpy.mockRestore();
+    }
   });
 });
 
