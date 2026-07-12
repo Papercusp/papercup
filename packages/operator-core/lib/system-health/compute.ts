@@ -846,7 +846,7 @@ async function collectEscalations(ctx: HealthCtx): Promise<HealthPanel<Escalatio
         m('open', openCount, openCount > 0 ? 'warn' : undefined),
         m('blockers', bySeverity.blocker ?? 0, (bySeverity.blocker ?? 0) > 0 ? 'warn' : undefined),
         m('new aging', agingNew, agingNew > 0 ? 'warn' : undefined),
-        m('standing', standing, standing > 0 ? 'mute' : undefined),
+        m('standing', standing, standing > 0 ? 'unknown' : undefined),
         m('oldest', agoMin(oldest, ctx.now)),
       ],
     };
