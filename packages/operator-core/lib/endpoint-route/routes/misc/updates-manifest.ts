@@ -89,7 +89,7 @@ interface LatestJson {
 const UPDATE_URL_PLACEHOLDER = 'papercusp-update-base-unset://';
 
 /**
- * LOCAL-only release discovery (WI-4365). Fetches `<host>/latest.json` from the
+ * LOCAL-only release discovery (WI-4389). Fetches `<host>/latest.json` from the
  * static release host — no GitHub API, no token. This is the whole point: since
  * 2026-07-08 releases are NOT published to GitHub, so there is no release for
  * the GitHub path below to discover.
@@ -280,7 +280,7 @@ function upToDateResponse(): Response {
 }
 
 /**
- * Decide the response from an AUTHORITATIVE static-host latest.json (WI-4365).
+ * Decide the response from an AUTHORITATIVE static-host latest.json (WI-4389).
  * Once the release host publishes a usable manifest it settles the question —
  * GitHub is never consulted, so every outcome (offer / up-to-date / refuse) is
  * returned from here.
@@ -360,7 +360,7 @@ export default defineTool({
     const stored = await readOperatorState<{ update_channel?: string }>('setup_wizard_state');
     const channel = resolveChannel(params, stored?.update_channel);
 
-    // ── LOCAL-only releases: the static release host is AUTHORITATIVE (WI-4365).
+    // ── LOCAL-only releases: the static release host is AUTHORITATIVE (WI-4389).
     //
     // [owner:Avi 2026-07-08, restated 07-12] "We are no longer using github for
     // our releases so just build the installer locally and I will upload it to

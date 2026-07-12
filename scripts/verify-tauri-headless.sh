@@ -11,17 +11,44 @@
 # same week (EI-9005, WI-3658) — evidence it's recurring, not one-off.
 #
 # THE FIX: package the already-documented isolated-instance recipe as ONE
-# script. Boots a genuinely isolated `papercusp-desktop` dev instance — its
-# own devUrl port, its own operator sidecar (own embedded-PG, own workspace
-# state; NOT just a second window pointed at shared backend state), under an
-# isolated Xvfb + VirtualGL X server (real GPU, so screenshots aren't blank —
-# see the GL trap in agent-e2e.mdx §15.4) — waits for its dev-bridge to come
-# up, execs the caller's assertion command against it, then tears the whole
-# process tree + X server down. It NEVER touches DISPLAY :0/:1 (the owner's
-# real desktop) and never sets PAPERCUSP_CLUSTER_WORKERS (the WI-3556 shadow
-# trap documented in agent-e2e.mdx §1.3 — the wrapper script already pins
-# PAPERCUSP_CLUSTER=0 for exactly this reason; setting CLUSTER_WORKERS
-# ourselves would silently shadow that safety pin).
+# script. Boots a `papercusp-desktop` dev instance with its own devUrl port and
+# its own operator sidecar process, under an isolated Xvfb + VirtualGL X server
+# (real GPU, so screenshots aren't blank — see the GL trap in agent-e2e.mdx
+# §15.4) — waits for its dev-bridge to come up, execs the caller's assertion
+# command against it, then tears the whole process tree + X server down. It
+# NEVER touches DISPLAY :0/:1 (the owner's real desktop) and never sets
+# PAPERCUSP_CLUSTER_WORKERS (the WI-3556 shadow trap documented in
+# agent-e2e.mdx §1.3 — the wrapper script already pins PAPERCUSP_CLUSTER=0 for
+# exactly this reason; setting CLUSTER_WORKERS ourselves would silently shadow
+# that safety pin).
+#
+# ⚠️  WHAT IS **NOT** ISOLATED — READ THIS BEFORE YOU CLICK ANYTHING (EI-10387)
+#
+#   ISOLATED:      the X display, the devUrl port, the pty port, the sidecar
+#                  *process*.
+#   **NOT** ISOLATED: the DATABASE and the WORKSPACE. The sidecar inherits the
+#                  ambient env, so it connects to the SAME `DATABASE_URL` /
+#                  `PAPERCUSP_WORKSPACE` as the live system.
+#
+#   => **EVERY WRITE YOU MAKE IN THIS WINDOW IS A REAL WRITE TO LIVE STATE.**
+#      Clicking a Mug steering control here mutates the owner's real steering
+#      AND calls requestUrgentHiveWake() — waking the real Mug and burning real
+#      tokens. Toggling a routine here really toggles it (git-sync included).
+#
+#   This header used to claim "own embedded-PG, own workspace state; NOT just a
+#   second window pointed at shared backend state". That was FALSE, and it is
+#   exactly the kind of claim an agent takes on trust before clicking a
+#   destructive button — so it is corrected here rather than left to mislead.
+#   Making it TRUE (per-run temp PG + scrubbed PAPERCUSP_HOME/WORKSPACE + a
+#   boot-assert that the resolved DB is not the live one) is tracked as EI-10387.
+#
+#   Until then: to exercise WRITE paths safely, intercept them in the webview
+#   instead of letting them reach the backend — stub `window.fetch` for
+#   POST /api/agent-mcp/run-tool, capture the request body, return a synthetic
+#   `{ ok:true, result:{ content:[{ text:'{"ok":true}' }] } }`, and validate the
+#   captured payloads offline against the tool's own zod schema. That proves the
+#   full UI→wire contract with zero live mutations (the method used for the
+#   2026-07-12 Mug/Kettle/Papercup button sweep). READ paths are safe as-is.
 #
 # Reuses fed_pick_free_port from bin/lib/federation-asserts.sh (the same
 # staggered free-port picker the two-instance federation smokes already use)

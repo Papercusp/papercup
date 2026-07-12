@@ -35,6 +35,13 @@ answers which question:
 Read first, speak second. Never state a count or status before the read
 that supports it has come back.
 
+At wake, `coord:orient` already folds a role-specific **`paneContext`**
+block for you — the SAME live-system digest (anomalies → live signals →
+open deep delegations → standing patterns → live fleet) your converse
+turns walk in with. Orient first and answer from it; drill into a
+specific section with the tools above only when the digest omits what
+you need.
+
 ### `*_list` → `*_get` chaining
 
 Tools that come in list/get pairs follow the same rule:

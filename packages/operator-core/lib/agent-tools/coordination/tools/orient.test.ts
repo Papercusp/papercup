@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import { composeOrient, orientServedDelta, ORIENT_MEMORY_NOTE } from './orient';
+import { composeOrient, orientServedDelta, orientRoleFolds, ORIENT_MEMORY_NOTE, ORIENT_DEEP_WORK_NOTE } from './orient';
 import type { InnerCall } from '../../_compound-dispatch';
 
 const foldFactsMock = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
@@ -1261,5 +1261,100 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
       expect(warnSpy).toHaveBeenCalled();
       warnSpy.mockRestore();
     });
+  });
+});
+
+// ── P-016 (voice-public-release-readiness-2026-07-12): role-specific pane folds —
+// the papercup FAST dock pane orients with the SAME live-system digest the converse
+// brain walks in with (papercup-context.ts), and the papercup-deep pane orients with
+// its OPEN QUESTION THREAD (unanswered directed messages awaiting its reply). The
+// handler resolves ctx.role through the PURE orientRoleFolds gate and injects the
+// fold CLOSURES, so composeOrient stays IO-free — these tests drive the injected
+// seam exactly like the cursor/fleetMembership params above.
+describe('P-016 role-specific pane folds (papercup paneContext / papercup-deep deepWork)', () => {
+  it('orientRoleFolds: papercup earns paneContext, papercup-deep earns deepWork, monitor + every other role neither', () => {
+    expect(orientRoleFolds('papercup', undefined)).toEqual({ paneContext: true, deepWork: false });
+    expect(orientRoleFolds('papercup', 'full')).toEqual({ paneContext: true, deepWork: false });
+    expect(orientRoleFolds('papercup-deep', 'full')).toEqual({ paneContext: false, deepWork: true });
+    // A monitor tick skips both — even for the pane roles (the EI-8300 cost
+    // discipline every heavy leg follows).
+    expect(orientRoleFolds('papercup', 'monitor')).toEqual({ paneContext: false, deepWork: false });
+    expect(orientRoleFolds('papercup-deep', 'monitor')).toEqual({ paneContext: false, deepWork: false });
+    for (const other of ['cup', 'mug', 'kettle', 'worker', 'operator', 'su', null, undefined]) {
+      expect(orientRoleFolds(other as string | null | undefined, 'full')).toEqual({
+        paneContext: false,
+        deepWork: false,
+      });
+    }
+  });
+
+  it('folds an injected paneContext render into the result (the fast pane walks in with the pot picture)', async () => {
+    const { call } = fakeCall({ ...CORE });
+    const digest = '## Live system status — papercusp\n### Anomalies — detected drift (act on these)\n_no anomalies — system healthy._';
+    const r = await composeOrient({}, call, 'me', undefined, undefined, undefined, undefined, undefined, undefined, {
+      paneContext: async () => digest,
+    });
+    expect(r.ok).toBe(true);
+    expect(r.paneContext).toBe(digest);
+    expect(r.deepWork).toBeUndefined(); // the OTHER pane's fold never rides along
+  });
+
+  it('folds an injected deepWork thread into the result (the deep pane leads with what it owes answers to)', async () => {
+    const { call } = fakeCall({ ...CORE });
+    const thread = {
+      count: 2,
+      oldestAgeMs: 60_000,
+      newest: [{ msgId: 'm-2', from: 'sentinel-1', summary: 'why is the deploy red?', ageMs: 10_000 }],
+      note: ORIENT_DEEP_WORK_NOTE,
+    };
+    const r = await composeOrient({}, call, 'me', undefined, undefined, undefined, undefined, undefined, undefined, {
+      deepWork: async () => thread,
+    });
+    expect(r.deepWork).toEqual(thread);
+    expect(r.paneContext).toBeUndefined();
+  });
+
+  it('neither fold is present when no roleFolds are injected (every non-pane caller is byte-identical)', async () => {
+    const { call } = fakeCall({ ...CORE });
+    const r = await composeOrient({}, call, 'me');
+    expect('paneContext' in r).toBe(false);
+    expect('deepWork' in r).toBe(false);
+  });
+
+  it('a THROWING fold degrades to null — orientation never breaks on a pane-context/deep-work failure', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { call } = fakeCall({ ...CORE });
+    const r = await composeOrient({}, call, 'me', undefined, undefined, undefined, undefined, undefined, undefined, {
+      paneContext: async () => {
+        throw new Error('digest gather exploded');
+      },
+      deepWork: async () => {
+        throw new Error('unanswered read exploded');
+      },
+    });
+    expect(r.ok).toBe(true);
+    expect(r.paneContext).toBeNull();
+    expect(r.deepWork).toBeNull();
+    expect(r.claimable).toHaveLength(2); // the rest of orient completed normally
+    warnSpy.mockRestore();
+  });
+
+  it('a HANGING paneContext gather degrades to null at its own budget (never hangs orientation — WI-3818)', async () => {
+    vi.useFakeTimers();
+    try {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { call } = fakeCall({ ...CORE });
+      const resultPromise = composeOrient({}, call, 'me', undefined, undefined, undefined, undefined, undefined, undefined, {
+        paneContext: () => new Promise(() => {}),
+      });
+      await vi.advanceTimersByTimeAsync(10_000);
+      const r = await resultPromise;
+      expect(r.ok).toBe(true);
+      expect(r.paneContext).toBeNull();
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

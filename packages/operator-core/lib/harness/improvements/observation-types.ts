@@ -47,6 +47,13 @@ export interface ObservationRatingEntry {
   /** Concrete evidence backing the rating — a metric, a query result, a cite.
    *  MANDATORY + non-empty. */
   evidence: string;
+  /** OPTIONAL grader suggestion (blender-self-learning-2026-07-12 P-005): the
+   *  grader's own concrete improvement idea for THIS criterion, born of the
+   *  specific context only the grader saw. Folded into the digest's
+   *  rubric-rating pattern detail so the Blender's ideators SEE it and can
+   *  adopt/adapt it (the owner's "graders also have more specific context"
+   *  ruling — the Blender chooses, the grader seeds). */
+  suggestion?: string;
 }
 
 /**

@@ -186,9 +186,19 @@ function normalizeObservationRatings(raw: unknown): Record<string, ObservationRa
   const out: Record<string, ObservationRating> = {};
   for (const [criterion, val] of Object.entries(raw as Record<string, unknown>)) {
     if (!criterion || !val || typeof val !== 'object') continue;
-    const { rating, evidence } = val as { rating?: unknown; evidence?: unknown };
+    const { rating, evidence, suggestion } = val as {
+      rating?: unknown;
+      evidence?: unknown;
+      suggestion?: unknown;
+    };
     if (typeof rating !== 'string' || !rating.trim()) continue;
-    out[criterion] = { rating, evidence: typeof evidence === 'string' ? evidence : '' };
+    out[criterion] = {
+      rating,
+      evidence: typeof evidence === 'string' ? evidence : '',
+      // P-005 (blender-self-learning-2026-07-12): the grader's improvement idea
+      // rides through to the rubric-rating pattern detail.
+      ...(typeof suggestion === 'string' && suggestion.trim() ? { suggestion } : {}),
+    };
   }
   return Object.keys(out).length ? out : undefined;
 }

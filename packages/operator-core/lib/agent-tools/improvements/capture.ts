@@ -96,6 +96,7 @@ export default defineTool({
             z.object({
               rating: z.string().min(1).describe("a value from the criterion's ratingScale — default ['healthy','degraded','broken','unknown'] ('unknown' = not-assessable this wake)"),
               evidence: z.string().min(1).describe('MANDATORY concrete evidence backing the rating — a metric, a query result, a reference (a rating without evidence is rejected)'),
+              suggestion: z.string().min(1).max(2000).optional().describe('OPTIONAL: your concrete improvement idea for this criterion — the Blender ideators see it as a seed'),
             }),
           )
           .optional()

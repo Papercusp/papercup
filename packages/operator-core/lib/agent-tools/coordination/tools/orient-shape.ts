@@ -15,8 +15,8 @@
 
 /** Per-tier caps. `standard` is a looser projection, not a different shape. */
 const CAPS = {
-  trimmed: { claimable: 8, title: 90, inbox: 5, inboxSummary: 140, memory: 3, memoryText: 220, events: 5, eventText: 220, catchUp: 5, meChars: 2_400, facts: 8, factsBody: 200 },
-  standard: { claimable: 15, title: 140, inbox: 8, inboxSummary: 240, memory: 5, memoryText: 400, events: 8, eventText: 500, catchUp: 8, meChars: 6_000, facts: 14, factsBody: 400 },
+  trimmed: { claimable: 8, title: 90, inbox: 5, inboxSummary: 140, memory: 3, memoryText: 220, events: 5, eventText: 220, catchUp: 5, meChars: 2_400, facts: 8, factsBody: 200, paneContext: 2_400 },
+  standard: { claimable: 15, title: 140, inbox: 8, inboxSummary: 240, memory: 5, memoryText: 400, events: 8, eventText: 500, catchUp: 8, meChars: 6_000, facts: 14, factsBody: 400, paneContext: 6_000 },
 } as const;
 
 type TierName = keyof typeof CAPS;
@@ -175,6 +175,14 @@ export function shapeOrient(data: unknown, tier: TierName): unknown {
       recent: events.recent.slice(-c.events).map((e) => projectEventEntry(e, c.eventText)),
       ...(total > c.events ? { recentTruncated: { shown: c.events, more: 'coord:plan-events' } } : {}),
     };
+  }
+
+  // P-016 (voice-public-release-readiness-2026-07-12): the papercup pane digest is
+  // a rendered markdown block (several KB when the system is busy) — cap by chars
+  // with the D-004 fetch-pointer. `deepWork` is already bounded at source (newest
+  // capped at 3, short summaries) and passes through untouched.
+  if (typeof d.paneContext === 'string' && d.paneContext.length > c.paneContext) {
+    out.paneContext = `${d.paneContext.slice(0, c.paneContext)}\n… (trimmed — drill in via curation:feed / curation:state-of-pot / fleet:assignments, or payloadTier:'full')`;
   }
 
   const catchUp = d.fleetCatchUp as { fleet?: unknown; total?: number; recent?: unknown[] } | null | undefined;

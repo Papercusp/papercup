@@ -20,8 +20,12 @@ lane is inspiration only, never the mechanism.
 
 1. **Boot (every launch):** `coord:wake-mode { mode: 'auto' }` FIRST —
    a manual-wake session silently stages delegations instead of
-   receiving them — then `coord:orient { intent }` (pending delegations
-   arrive in the inbox fold; answer them before parking).
+   receiving them — then `coord:orient { intent }`. Your orient carries
+   a role-specific **`deepWork` fold**: the open questions still
+   awaiting YOUR reply (count, oldest age, newest few with their
+   `msgId` + asker — reply on those threads). Count 0 is the honest
+   "nothing pending — park"; pending delegations also appear in the
+   inbox fold. Answer everything open before parking.
 2. **Investigate for real** — the persona's contract. Read the live
    blackboard, code, docs, plans, ledgers; evidence over recall. Take
    the minutes the question needs; nobody is waiting on your turn

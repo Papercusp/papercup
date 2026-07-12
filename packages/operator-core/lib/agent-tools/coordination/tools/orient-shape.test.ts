@@ -221,3 +221,35 @@ describe('shapeOrient — compaction folds (compaction-fold-audit-2026-07-06)', 
     }
   });
 });
+
+// P-016 (voice-public-release-readiness-2026-07-12): the papercup pane digest is a
+// rendered markdown block — cap by chars with the D-004 fetch-pointer; deepWork is
+// bounded at source (newest≤3) and must pass through untouched.
+describe('P-016 role-fold shaping (paneContext cap / deepWork pass-through)', () => {
+  it('caps a fat paneContext by chars with a fetch-pointer; deepWork passes through unchanged', () => {
+    const digest = `## Live system status — papercusp\n${'x'.repeat(8_000)}`;
+    const deepWork = {
+      count: 1,
+      oldestAgeMs: 5_000,
+      newest: [{ msgId: 'm1', from: 'sentinel-1', summary: 'why is the deploy red?', ageMs: 5_000 }],
+    };
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const out = shapeOrient({ ...fixture(), paneContext: digest, deepWork }, tier) as {
+        paneContext: string;
+        deepWork: unknown;
+      };
+      expect(out.paneContext.length).toBeLessThan(digest.length);
+      expect(out.paneContext).toContain('… (trimmed');
+      expect(out.paneContext.startsWith('## Live system status')).toBe(true);
+      expect(out.deepWork).toEqual(deepWork);
+    }
+  });
+
+  it('a small paneContext passes through byte-identical (no gratuitous truncation)', () => {
+    const small = '## Live system status — papercusp\n_no anomalies — system healthy._';
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const out = shapeOrient({ ...fixture(), paneContext: small }, tier) as { paneContext: string };
+      expect(out.paneContext).toBe(small);
+    }
+  });
+});

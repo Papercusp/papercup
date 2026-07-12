@@ -119,6 +119,10 @@ export interface DeferralRecord {
 export interface ObservationRating {
   rating: string;
   evidence: string;
+  /** OPTIONAL grader suggestion (blender-self-learning-2026-07-12 P-005): the
+   *  grader's concrete improvement idea for this criterion — surfaced on the
+   *  rubric-rating pattern detail so the ideators can adopt/adapt it. */
+  suggestion?: string;
 }
 
 /**
@@ -855,6 +859,8 @@ interface RatingGroup {
   total: number;
   /** The most-recent rating + its evidence (for the detail line). */
   latest?: { rating: string; evidence: string; ms: number };
+  /** The most-recent non-empty grader suggestion (P-005 — a seed the ideators see). */
+  suggestion?: { text: string; ms: number };
 }
 
 /**
@@ -886,6 +892,10 @@ function buildRubricRatings(observations: StructuredObservationRecord[], limit: 
       if (!g.latest || ms >= g.latest.ms) {
         g.latest = { rating, evidence: (r.evidence ?? '').trim(), ms };
       }
+      const sugg = (r?.suggestion ?? '').trim();
+      if (sugg && (!g.suggestion || ms >= g.suggestion.ms)) {
+        g.suggestion = { text: sugg, ms };
+      }
       groups.set(key, g);
     }
   }
@@ -900,12 +910,13 @@ function buildRubricRatings(observations: StructuredObservationRecord[], limit: 
       .join(', ');
     const hiveSuffix = g.sourceHive ? ` @ ${g.sourceHive}` : '';
     const evidence = g.latest?.evidence ? `; latest: ${truncate(g.latest.evidence, 100)}` : '';
+    const suggests = g.suggestion ? `; grader suggests: ${truncate(g.suggestion.text, 160)}` : '';
     scored.push({
       salience: g.severity,
       pattern: {
         category: 'rubric-rating' as MetaPatternCategory,
         summary: `${g.rubricRef} · ${g.criterion}${hiveSuffix}: ${worst}`,
-        detail: `${dist} over ${g.total} obs${evidence}`,
+        detail: `${dist} over ${g.total} obs${evidence}${suggests}`,
         ref: `rubric:${g.rubricRef}#${g.criterion}${g.sourceHive ? `@${g.sourceHive}` : ''}`,
       },
     });

@@ -258,7 +258,7 @@ describe('GET /api/updates/manifest — manifest contract with tauri-plugin-upda
         'papercusp-latest-desktop-v0.0.4-alpha.json',
       ]),
     };
-    // HYBRID deployment (WI-4365): the release host serves the oversized BYTES
+    // HYBRID deployment (WI-4389): the release host serves the oversized BYTES
     // but publishes no `<host>/latest.json`, so discovery still falls through to
     // GitHub and the manifest comes from the release's latest.json ASSET. A
     // URL-aware mock is required — the route now probes the host first, and a
@@ -347,7 +347,7 @@ describe('GET /api/updates/manifest — graceful degradation when GitHub is unre
 });
 
 /**
- * WI-4365: LOCAL-only release discovery. Releases are no longer published to
+ * WI-4389: LOCAL-only release discovery. Releases are no longer published to
  * GitHub [owner:Avi 2026-07-08], so the GitHub path finds no candidate and
  * returns a 204 the updater reads as "up to date" — auto-update dies silently.
  * When PAPERCUSP_RELEASE_HOST is set it is now the AUTHORITATIVE source and
