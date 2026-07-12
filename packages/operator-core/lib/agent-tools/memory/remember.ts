@@ -28,6 +28,7 @@ import { checkConflicts, conflictCheckEnabled } from '../../memory/conflict-chec
 import { createAnthropicJudge } from '../../memory/anthropic-judge';
 import { persistAnchorsSql } from '../../memory/persist-anchors';
 import { journalPendingWrite, markJournalCommitted } from '../../memory/write-journal';
+import { isMemoryPaused, MEMORY_PAUSED_REFUSAL } from '../../memory/memory-pause';
 import { getSessionUserOrDefault } from '../../auth';
 import { hardText, LIMITS } from '../limits';
 import { coerceMemoryKind } from './remember-coerce';
@@ -158,6 +159,15 @@ export default defineTool({
   ),
   async handler(args, ctx) {
     const user = await getSessionUserOrDefault();
+    // EI-10355: the user's "stop remembering things about me" switch. Checked
+    // BEFORE journalPendingWrite() below — a paused write must leave NO pending
+    // journal row, or the embed-backfill drain would resurrect it and store the
+    // memory anyway on resume (a pause that merely defers is not a pause).
+    if (await isMemoryPaused(user.id)) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify(MEMORY_PAUSED_REFUSAL) }],
+      };
+    }
     const backend = getMemoryBackend();
     if (args.harness_slug && args.hive_slug) {
       return {

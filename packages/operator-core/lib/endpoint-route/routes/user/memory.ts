@@ -30,6 +30,7 @@ import {
 import { MemoryTimeoutError, withMemoryToolTimeout, embedFailureReason } from '../../../memory/op-deadline';
 import { journalPendingWrite, markJournalCommitted } from '../../../memory/write-journal';
 import { listUserMemories } from '../../../memory/list-user-memories';
+import { isMemoryPaused, setMemoryPaused } from '../../../memory/memory-pause';
 import { recordFeedback } from '../../../memory/feedback';
 import { readClaudeHygiene } from '../../../memory/claude-hygiene';
 import { notifySyncInvalidate } from '../../../sync-sse';
@@ -104,7 +105,57 @@ const backendInfo = defineTool({
       userId: user.id,
       harnesses,
       hygiene,
+      // EI-10355: the user's memory-pause state rides the envelope the page
+      // already fetches — no extra round-trip for the toggle to render truthfully.
+      paused: await isMemoryPaused(user.id),
     });
+  },
+});
+
+/**
+ * GET/POST /api/user/memory/pause — the user's "stop remembering things about
+ * me" switch (EI-10355). Before this, the only way to stop memory writes was
+ * PAPERCUSP_MEMORY_BACKEND=noop: an operator-wide env var + restart, i.e. an
+ * infra kill-switch, not a user control.
+ *
+ * A pause stops the AGENT write paths (memory:remember,
+ * memory:recover-from-transcripts) — the ways things get remembered ABOUT you
+ * without you asking. It deliberately does NOT gate list/edit/delete/export:
+ * pausing must never lock a user out of their own data.
+ */
+const getPause = defineTool({
+  method: 'GET',
+  path: '/user/memory/pause',
+  auth: 'public',
+  async handler(req) {
+    const user = await getSessionUserOrDefault(req.headers);
+    return Response.json({ paused: await isMemoryPaused(user.id) });
+  },
+});
+
+const setPause = defineTool({
+  method: 'POST',
+  path: '/user/memory/pause',
+  auth: 'public',
+  async handler(req) {
+    const user = await getSessionUserOrDefault(req.headers);
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return Response.json({ error: 'invalid_json' }, { status: 400 });
+    }
+    const paused = (body as { paused?: unknown } | null)?.paused;
+    if (typeof paused !== 'boolean') {
+      return Response.json({ error: 'paused must be a boolean' }, { status: 400 });
+    }
+    // NOTE: intentionally NOT gated on backend.available(). A user must be able
+    // to pause memory even while the store is down — the pause is a statement of
+    // consent, not a store operation, and refusing it during an outage would
+    // deny the one control that matters most when things are broken.
+    const applied = await setMemoryPaused(user.id, paused);
+    invalidateMemoryList();
+    return Response.json({ ok: true, paused: applied });
   },
 });
 
@@ -417,4 +468,4 @@ const exportAll = defineTool({
   },
 });
 
-export default [list, create, del, patch, setBackend, backendInfo, exportAll];
+export default [list, create, del, patch, setBackend, backendInfo, exportAll, getPause, setPause];

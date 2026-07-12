@@ -22,6 +22,7 @@ import * as os from 'os';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { journalPendingWrite } from '../../memory/write-journal';
+import { isMemoryPaused, MEMORY_PAUSED_REFUSAL } from '../../memory/memory-pause';
 
 /** Failure signatures a lost write's tool_result carries (the live classes
  *  observed in the 2026-07-10 forensic pass + the remember.ts envelope set). */
@@ -227,6 +228,15 @@ export default defineTool({
 
     const { getSessionUserOrDefault } = await import('../../auth');
     const user = await getSessionUserOrDefault();
+    // EI-10355: honour the user's memory PAUSE here too. This path bulk-mines
+    // facts out of transcripts — exactly the "remembered about me without
+    // asking" class the pause exists to stop. Checked before the journal loop
+    // so a paused run parks nothing for the drain to replay.
+    if (await isMemoryPaused(user.id)) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ ...MEMORY_PAUSED_REFUSAL, recovered: 0, candidates: candidates.length }) }],
+      };
+    }
     let journaled = 0;
     const failedToJournal: string[] = [];
     for (const c of candidates) {
