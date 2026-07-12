@@ -29,6 +29,7 @@ import {
   COMPACTION_OVERSHOOT_FACTOR,
   COMPACTION_WINDOW_MARGIN_TOKENS,
   defaultCompactionLimitForSpec,
+  MODEL_WINDOW_1M,
   modelWindowForSpec,
   type ModelTier,
 } from '../agent-config-constants';
@@ -76,6 +77,27 @@ const WINDOW_CONTRADICTED_FACTOR = 2;
 /** Max limit-less live sessions seeded per pass — bounds fs/PG work per sweep. */
 const MAX_SEEDS_PER_PASS = 25;
 
+/** EI-10434 defense-in-depth, rung 2 (independent of the compaction-usage.ts
+ *  root-cause fix — a bounded-scan misread — so a FUTURE misread source is
+ *  caught the same way): a reading past this many × MODEL_WINDOW_1M is
+ *  PHYSICALLY IMPOSSIBLE — no shipped model has ever had a window that large
+ *  (MODEL_WINDOW_1M is the largest window this platform ever assigns; a
+ *  per-owner window resolution is deliberately NOT needed here — a reading
+ *  this far past the platform-wide MAXIMUM is impossible for every session,
+ *  not just one owner's, so this is a cheap in-memory comparison, no DB
+ *  round-trip). Discarded and re-sampled next sweep — never acted on: not
+ *  cached, not counted toward overLimit, never force-compacted. This is
+ *  DELIBERATELY stricter than "never act on a single anomaly" (the informal
+ *  framing that motivated it) — it discards EVERY implausible reading, not
+ *  just the first, because a genuinely-impossible number is never trustworthy
+ *  no matter how many times it repeats; a session that is actually near its
+ *  real limit will report a real (sub-ceiling) reading on recovery, so this
+ *  can never durably suppress a legitimate crossing. */
+const IMPLAUSIBLE_READING_FACTOR = 2;
+/** The absolute plausibility ceiling: no live session should EVER read above
+ *  this many tokens. (2 × 1,000,000 = 2,000,000.) */
+const IMPLAUSIBLE_READING_ABSOLUTE_CEILING = MODEL_WINDOW_1M * IMPLAUSIBLE_READING_FACTOR;
+
 /** In-memory escalation dedup: warn only on the FIRST crossing; clear on recovery. */
 const overLimitOwners = new Set<string>();
 
@@ -110,6 +132,16 @@ const bootConfigEscalated = new Set<string>();
 /** P-018 dark-telemetry counter: consecutive sweeps a live limit-carrying session's
  *  context estimate stayed null. Cleared when it resolves. */
 const nullEstimateStreak = new Map<string, number>();
+
+/** EI-10434: warn ONCE per owner while its readings stay implausible; cleared
+ *  the moment a plausible reading is seen again so a later genuine crossing
+ *  re-warns. Mirrors the overLimitOwners dedup pattern. */
+const implausibleWarned = new Set<string>();
+
+/** Test seam (EI-10434). */
+export function resetImplausibleReadingsForTests(): void {
+  implausibleWarned.clear();
+}
 /** P-018 dark-telemetry: escalate after this many consecutive null estimates. A
  *  normally-booting session reads null for a sweep or two (transcript not yet on
  *  disk); 3 sweeps (~6min) of grace keeps a healthy boot from tripping it, while a
@@ -480,6 +512,9 @@ export interface CompactionComplianceResult {
    *  blind to the session), so it can silently overflow. One entry per owner; escalated once per
    *  owner via escalateBootConfig. */
   bootConfigAlerts: Array<{ owner: string; kind: 'dark-telemetry'; detail: string }>;
+  /** EI-10434: readings DISCARDED this pass for exceeding the plausibility ceiling —
+   *  never cached, never counted toward overLimit/forceCompacted. One entry per owner. */
+  implausibleReadings: Array<{ owner: string; est: number; ceiling: number }>;
 }
 
 /**
@@ -491,7 +526,7 @@ export interface CompactionComplianceResult {
  * Never throws (best-effort backstop).
  */
 export async function checkCompactionCompliance(sql: Sql): Promise<CompactionComplianceResult> {
-  const out: CompactionComplianceResult = { estimated: [], overLimit: [], forceCompacted: [], relimited: [], seeded: [], contextDeaths: [], unflushedClaims: [], bootConfigAlerts: [] };
+  const out: CompactionComplianceResult = { estimated: [], overLimit: [], forceCompacted: [], relimited: [], seeded: [], contextDeaths: [], unflushedClaims: [], bootConfigAlerts: [], implausibleReadings: [] };
   // P-013 flag mirror: read FLAGS.CONTEXT_GAUGE once per pass and mirror it into the
   // in-process gauge switch the (sync) result-annotator reads. Best-effort — a flag-infra
   // hiccup leaves the previous value untouched (fail to the default-ON gauge).
@@ -661,6 +696,25 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
         continue;
       }
       nullEstimateStreak.delete(r.owner_id); // estimate resolved — clear the dark-telemetry streak
+      // EI-10434 sanity clamp — discard + re-sample BEFORE this reading can drive
+      // anything (cache, gauge, over-limit warn, or force-compact). See the
+      // IMPLAUSIBLE_READING_* constants above for the full rationale.
+      if (est > IMPLAUSIBLE_READING_ABSOLUTE_CEILING) {
+        if (!implausibleWarned.has(r.owner_id)) {
+          implausibleWarned.add(r.owner_id);
+          console.warn(
+            `[compaction-watchdog] ${r.owner_label} (${r.owner_id}): DISCARDING an implausible ` +
+              `estimate ~${est} tokens — exceeds ${IMPLAUSIBLE_READING_ABSOLUTE_CEILING} ` +
+              `(${IMPLAUSIBLE_READING_FACTOR}× MODEL_WINDOW_1M=${MODEL_WINDOW_1M}, the largest window ` +
+              `any shipped model has). No shipped model has a window this large, so this is a misread, ` +
+              `not real usage — NEVER acting on it (no cache write, no over-limit warn, no ` +
+              `force-compact); re-sampling next sweep (EI-10434).`,
+          );
+        }
+        out.implausibleReadings.push({ owner: r.owner_id, est, ceiling: IMPLAUSIBLE_READING_ABSOLUTE_CEILING });
+        continue;
+      }
+      implausibleWarned.delete(r.owner_id); // plausible again — re-arm the dedup for a future misread
       await setContextEstimate(r.owner_id, est).catch(() => {});
       // P-013/P-015: mirror the fresh estimate into the in-process gauge cache so the
       // result-annotator + native-tool hook render the banded gauge with ZERO per-call
