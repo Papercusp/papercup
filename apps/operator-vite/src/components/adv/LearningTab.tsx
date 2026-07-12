@@ -466,43 +466,66 @@ function ImprovementsView({ hive }: { hive: string }) {
     () => (src ? allRows.filter((it) => it.source === src) : allRows),
     [allRows, src],
   );
+  const autoRows = useMemo(
+    () =>
+      (digest?.autoEligible ?? []).filter(
+        (item) => !src || item.source === src,
+      ),
+    [digest, src],
+  );
+  const humanRows = useMemo(
+    () =>
+      (digest?.humanQueue ?? []).filter(
+        (item) => !src || item.source === src,
+      ),
+    [digest, src],
+  );
 
   const resolved = digest?.byState?.resolved ?? 0;
 
   return (
     <section className="pc-learning__section">
+      <LearningPageHeader
+        icon={Sparkles}
+        title="Improvements"
+        signal={digest ? `${digest.open} open` : undefined}
+        tone={digest && digest.open === 0 ? "good" : "accent"}
+      />
       {digest?.flow ? <FlowStrip flow={digest.flow} /> : null}
       <LearningEfficacyPanel />
 
-      <div
-        className="pc-learning__scoreboard"
-        aria-label="Improvements summary"
-      >
-        <Stat
-          label="captured"
-          value={digest?.total ?? "—"}
-          hint="Everything ever filed — problems, friction, and ideas, open or not."
-        />
-        <Stat label="open" value={digest?.open ?? "—"} hint="Not fixed yet." />
-        <Stat
-          label="auto-fixable"
-          value={digest?.autoEligible.length ?? "—"}
-          tone="auto"
-          hint="Open bugs that touch no protected surface — agents may fix these without asking you."
-        />
-        <Stat
-          label="needs review"
-          value={digest?.humanQueue.length ?? "—"}
-          tone="human"
-          hint="Open items that need your judgment — risky surfaces, behaviour changes, or new features."
-        />
-        <Stat
-          label="resolved"
-          value={resolved}
-          tone="good"
-          hint="Fixed and closed."
-        />
-      </div>
+      {digest ? (
+        <div className="pc-learning-visual__layout pc-learning-visual__layout--improvements">
+          <LearningHeroMetric
+            eyebrow="Open"
+            value={String(digest.open)}
+            status={digest.open === 0 ? "clear" : "active"}
+            tone={digest.open === 0 ? "good" : "accent"}
+          >
+            {resolved} resolved
+          </LearningHeroMetric>
+          <div className="pc-learning__improvementflow" aria-label="Improvement routing">
+            <span><small>Captured</small><strong>{digest.total}</strong></span>
+            <i aria-hidden />
+            <span className="is-auto"><small>Automatic</small><strong>{digest.autoEligible.length}</strong></span>
+            <span className="is-human"><small>Review</small><strong>{digest.humanQueue.length}</strong></span>
+            <i aria-hidden />
+            <span className="is-good"><small>Resolved</small><strong>{resolved}</strong></span>
+          </div>
+          <LearningEvidenceRail>
+            <div className="pc-learning-visual__evidence-grid">
+              <div className="pc-learning-visual__evidence-metric">
+                <span>Automatic</span>
+                <strong>{digest.autoEligible.length}</strong>
+              </div>
+              <div className="pc-learning-visual__evidence-metric">
+                <span>Review</span>
+                <strong>{digest.humanQueue.length}</strong>
+              </div>
+            </div>
+          </LearningEvidenceRail>
+        </div>
+      ) : null}
 
       {/* The owner's drain ritual (consume-edges P-022): top of the human queue
           in the resolver's blocking-impact order; click highlights the row. */}
@@ -578,14 +601,35 @@ function ImprovementsView({ hive }: { hive: string }) {
           Improvements feed unavailable: {sync.error.message}
         </p>
       ) : rows.length === 0 ? (
-        <div className="pc-learning__empty pc-learning__empty--card">
-          <CheckCircle2 size={20} aria-hidden />
-          <strong>Nothing in this lane</strong>
-          <span>
-            The watchdog auto-files objective signals (failing tests, down
-            services, repeated tool errors) and agents capture friction as they
-            work — they’ll appear here.
-          </span>
+        <LearningVisualEmpty icon={CheckCircle2} title="Nothing in this lane" />
+      ) : lane === "all" ? (
+        <div className="pc-learning__lanegrid">
+          <section className="pc-learning__lanecol is-auto">
+            <header><span>Automatic</span><strong>{autoRows.length}</strong></header>
+            <ul className="pc-learning__list">
+              {autoRows.map((it) => (
+                <ImprovementRow
+                  key={it.id}
+                  item={it}
+                  selected={it.id === lsel}
+                  onDismissSelect={() => void setLsel(null)}
+                />
+              ))}
+            </ul>
+          </section>
+          <section className="pc-learning__lanecol is-human">
+            <header><span>Review</span><strong>{humanRows.length}</strong></header>
+            <ul className="pc-learning__list">
+              {humanRows.map((it) => (
+                <ImprovementRow
+                  key={it.id}
+                  item={it}
+                  selected={it.id === lsel}
+                  onDismissSelect={() => void setLsel(null)}
+                />
+              ))}
+            </ul>
+          </section>
         </div>
       ) : (
         <ul className="pc-learning__list">
@@ -2158,6 +2202,23 @@ export function ScoutView() {
 
   return (
     <section className="pc-learning__section">
+      <LearningPageHeader
+        icon={Lightbulb}
+        title="Ideas"
+        signal={snap ? `${snap.totalRouted} routed` : undefined}
+        tone={snap && snap.totalRouted > 0 ? "good" : "neutral"}
+        action={
+          <button
+            type="button"
+            className="pc-learning__refresh"
+            aria-label={`Reload the ${t("scout", { lower: true })} feed`}
+            disabled={sync.fetching}
+            onClick={() => sync.invalidate()}
+          >
+            <RefreshCw size={13} aria-hidden />
+          </button>
+        }
+      />
       <div
         className="pc-learning__flow"
         aria-label={`${t("scout")} tick health`}
@@ -2183,25 +2244,28 @@ export function ScoutView() {
         </span>
       </div>
 
-      <div
-        className="pc-learning__scoreboard"
-        aria-label={`${t("scout")} summary`}
-      >
-        <Stat
-          label="routed ideas"
-          value={snap ? snap.totalRouted : "—"}
-          hint={`Ideas ${t("scout")} has dispatched into a rail (plan draft, gym experiment, or work item) — its only output that counts.`}
-        />
-        {rails.map((r) => (
-          <Stat
-            key={r.rail}
-            label={RAIL_META[r.rail]?.label ?? r.rail}
-            value={r.count}
-            tone="auto"
-            hint={RAIL_META[r.rail]?.desc}
-          />
-        ))}
-      </div>
+      {snap ? (
+        <div className="pc-learning__idea-route" aria-label="Idea routing">
+          <span className="pc-learning__idea-source">
+            <Radar size={15} aria-hidden />
+            <strong>{snap.totalRouted}</strong>
+          </span>
+          <i aria-hidden />
+          <div>
+            {rails.map((rail) => {
+              const meta = RAIL_META[rail.rail];
+              const share = snap.totalRouted > 0 ? rail.count / snap.totalRouted : 0;
+              return (
+                <span key={rail.rail} title={meta?.desc}>
+                  <em>{meta?.label ?? rail.rail}</em>
+                  <b><i style={{ width: `${Math.max(4, share * 100)}%`, background: meta?.color }} /></b>
+                  <strong>{rail.count}</strong>
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
 
       {lensEntries.length > 0 ? (
         <div className="pc-learning__flow" aria-label="Lens sampling weights">
@@ -2230,15 +2294,6 @@ export function ScoutView() {
 
       <div className="pc-learning__sectionhead">
         <h2>Routed ideas</h2>
-        <button
-          type="button"
-          className="pc-learning__refresh"
-          aria-label={`Reload the ${t("scout", { lower: true })} feed`}
-          disabled={sync.fetching}
-          onClick={() => sync.invalidate()}
-        >
-          <RefreshCw size={13} aria-hidden />
-        </button>
       </div>
 
       {sync.loading && !snap ? (
@@ -2250,17 +2305,7 @@ export function ScoutView() {
           {t("scout")} feed unavailable: {sync.error.message}
         </p>
       ) : recent.length === 0 ? (
-        <div className="pc-learning__empty pc-learning__empty--card">
-          <Radar size={20} aria-hidden />
-          <strong>{t("scout")} has not routed ideas yet</strong>
-          <span>
-            {t("scout")} sweeps the system on a cadence, but spends nothing
-            unless its gates (idle, friction, budget, circuit-breaker) open —
-            most ticks correctly do nothing. When an idea survives critique it’s
-            routed into a plan draft, a gym experiment, an improvement
-            work-item, or an instance candidate, and it appears here.
-          </span>
-        </div>
+        <LearningVisualEmpty icon={Radar} title={`No routed ideas`} />
       ) : (
         <>
           {gradeError ? (
@@ -2570,6 +2615,23 @@ function LearningsView({ hive }: { hive: string }) {
       {confirmEl}
       {promptEl}
       <section className="pc-learning__section">
+        <LearningPageHeader
+          icon={Brain}
+          title="Shared learnings"
+          signal={snap ? `${rows.length} retained` : undefined}
+          tone={rows.length > 0 ? "good" : "neutral"}
+          action={
+            <button
+              type="button"
+              className="pc-learning__refresh"
+              aria-label="Reload the learnings"
+              disabled={sync.fetching}
+              onClick={() => sync.invalidate()}
+            >
+              <RefreshCw size={13} aria-hidden />
+            </button>
+          }
+        />
         {/* The hive picker now lives in the tab header (P-042) — this strip keeps
           only the origin filter, scoped to the header-selected hive. */}
         <div className="pc-learning__flow" aria-label="Learnings scope">
@@ -2594,28 +2656,39 @@ function LearningsView({ hive }: { hive: string }) {
           </label>
         </div>
 
-        <div className="pc-learning__scoreboard" aria-label="Learnings summary">
-          <Stat
-            label="learnings"
-            value={snap ? rows.length : "—"}
-            hint={`Everything in this ${t("pot", { lower: true })}'s shared memory pool — every agent in the ${t("pot", { lower: true })} recalls these.`}
-          />
-          {(snap?.packs ?? []).map((p) => (
-            <Stat
-              key={p.packId}
-              label={`${p.packId}${p.packVersion ? ` v${p.packVersion}` : ""}`}
-              value={`${p.present}${p.packTotal ? `/${p.packTotal}` : ""}`}
-              tone="auto"
-              hint={`Seeded from the ${p.packId} learning pack — ${p.present} present (${p.modified} edited), ${p.notPresent} not seeded or removed.`}
-            />
-          ))}
-          <Stat
-            label={`${t("pot", { lower: true })}-learned`}
-            value={snap ? snap.organicCount : "—"}
-            tone="good"
-            hint={`Conventions and gotchas this ${t("pot", { lower: true })}'s agents (or you) recorded — not from a pack.`}
-          />
-        </div>
+        {snap ? (
+          <div className="pc-learning-visual__layout pc-learning-visual__layout--memory">
+            <LearningHeroMetric
+              eyebrow="Retained"
+              value={String(rows.length)}
+              status={rows.length > 0 ? "available" : "empty"}
+              tone={rows.length > 0 ? "good" : "neutral"}
+            >
+              {snap.organicCount} {t("pot", { lower: true })}-learned
+            </LearningHeroMetric>
+            <div className="pc-learning__memorymap" aria-label="Learning origin map">
+              {rows.slice(0, 96).map((row) => (
+                <i
+                  key={row.id}
+                  className={row.packId ? "is-pack" : "is-organic"}
+                  title={row.text}
+                />
+              ))}
+            </div>
+            <LearningEvidenceRail>
+              <div className="pc-learning-visual__evidence-grid">
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Organic</span>
+                  <strong>{snap.organicCount}</strong>
+                </div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Packs</span>
+                  <strong>{snap.packs.length}</strong>
+                </div>
+              </div>
+            </LearningEvidenceRail>
+          </div>
+        ) : null}
 
         {/* Pack management (P-009/P-013): mute / uninstall / adopt-new + add-pack. */}
         {hive !== "" && (
@@ -2907,27 +2980,10 @@ function LearningsView({ hive }: { hive: string }) {
 
         <div className="pc-learning__sectionhead">
           <h2>Shared memory</h2>
-          <button
-            type="button"
-            className="pc-learning__refresh"
-            aria-label="Reload the learnings"
-            disabled={sync.fetching}
-            onClick={() => sync.invalidate()}
-          >
-            <RefreshCw size={13} aria-hidden />
-          </button>
         </div>
 
         {hive === "" ? (
-          <div className="pc-learning__empty pc-learning__empty--card">
-            <Brain size={20} aria-hidden />
-            <strong>No {t("pot", { plural: true, lower: true })} yet</strong>
-            <span>
-              Create a {t("pot", { lower: true })} and it starts with a default
-              learning pack — curated working wisdom its agents inherit from the
-              first wake. It appears here, fully editable.
-            </span>
-          </div>
+          <LearningVisualEmpty icon={Brain} title={`No ${t("pot", { plural: true, lower: true })}`} />
         ) : sync.loading && !snap ? (
           <p className="pc-learning__empty">
             Loading the {t("pot", { lower: true })}&rsquo;s shared memory…
@@ -2937,15 +2993,7 @@ function LearningsView({ hive }: { hive: string }) {
             Memory store unavailable — try reloading.
           </p>
         ) : filtered.length === 0 ? (
-          <div className="pc-learning__empty pc-learning__empty--card">
-            <Brain size={20} aria-hidden />
-            <strong>Nothing here yet</strong>
-            <span>
-              This {t("pot", { lower: true })}&rsquo;s shared memory is empty
-              for this filter. Seeded pack learnings and agent-recorded
-              conventions both land here.
-            </span>
-          </div>
+          <LearningVisualEmpty icon={Brain} title="No learnings in this filter" />
         ) : (
           <ul className="pc-learning__list">
             {filtered.map((r) => (

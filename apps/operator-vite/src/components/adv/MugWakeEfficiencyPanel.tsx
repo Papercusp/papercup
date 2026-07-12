@@ -19,6 +19,13 @@ import { useSyncQuery } from '@papercusp/sync';
 import { Crown, RefreshCw } from 'lucide-react';
 import { useLexicon } from '@/lib/useLexicon';
 import type { MugWakeEfficiency } from '@papercusp/operator-core/lib/pot/mug-wake-efficiency';
+import {
+  LearningComparisonBars,
+  LearningEvidenceRail,
+  LearningHeroMetric,
+  LearningPageHeader,
+  LearningVisualEmpty,
+} from './LearningVisuals';
 
 /** A [0,1] ratio → integer percent. */
 const pct = (r: number): string => `${Math.round((Number.isFinite(r) ? r : 0) * 100)}%`;
@@ -43,56 +50,66 @@ export function MugWakeEfficiencyPanel() {
   const recent = samples.slice(0, 8);
 
   return (
-    <section className="pc-qeff" aria-label={`${t('brain')} per-wake efficiency`}>
-      <div className="pc-qeff__head">
-        <h3 className="pc-qeff__title">
-          <Crown size={14} aria-hidden /> {t('brain')} efficiency
-        </h3>
-        <span className="pc-qeff__sub">per-wake prompt cache (Win-1) + round-trips (Win-2) for the live {t('brain')}</span>
-        <button
-          type="button"
-          className="pc-qeff__refresh"
-          aria-label={`Reload ${t('brain')} efficiency`}
-          disabled={sync.fetching}
-          onClick={() => sync.invalidate()}
-        >
-          <RefreshCw size={12} aria-hidden />
-        </button>
-      </div>
+    <section className="pc-learning__section pc-qeff" aria-label={`${t('brain')} per-wake efficiency`}>
+      <LearningPageHeader
+        icon={Crown}
+        title={`${t('brain')} efficiency`}
+        signal={wakes > 0 ? `${wakes} wakes` : undefined}
+        tone={snap && snap.cacheHitRatio >= 0.7 ? 'good' : 'warn'}
+        action={
+          <button
+            type="button"
+            className="pc-learning__refresh"
+            aria-label={`Reload ${t('brain')} efficiency`}
+            disabled={sync.fetching}
+            onClick={() => sync.invalidate()}
+          >
+            <RefreshCw size={12} aria-hidden />
+          </button>
+        }
+      />
 
       {wakes === 0 ? (
-        <p className="pc-qeff__empty">
-          No {t('brain')} wakes recorded yet. Per-wake cache + turn efficiency appears once the {t('brain')} runs — the brief-cache
-          (frozen prefix + precomputed brief) is what these numbers measure.
-        </p>
+        <LearningVisualEmpty icon={Crown} title={`No ${t('brain')} wakes`} />
       ) : (
         <>
-          <div className="pc-qeff__stats">
-            <div className="pc-qeff__stat" title="cache_read ÷ (cache_read + cache_creation + uncached input)">
-              <strong>{pct(snap!.cacheHitRatio)}</strong>
-              <span>cache hit</span>
-            </div>
-            <div className="pc-qeff__stat" title="wakes with a non-zero cache read — the 'cache is real' signal (P-003)">
-              <strong>
-                {snap!.cachedWakes}/{wakes}
-              </strong>
-              <span>cached wakes</span>
-            </div>
-            <div className="pc-qeff__stat" title="mean assistant turns over wakes that reported one (Win-2 round-trips)">
-              <strong>{snap!.avgTurns == null ? '—' : snap!.avgTurns.toFixed(1)}</strong>
-              <span>turns/wake</span>
-            </div>
-            <div className="pc-qeff__stat" title="provider-reported cost across these wakes">
-              <strong>${snap!.totalCostUsd.toFixed(2)}</strong>
-              <span>cost</span>
-            </div>
+          <div className="pc-learning-visual__layout">
+            <LearningHeroMetric
+              eyebrow="Cache hit"
+              value={pct(snap!.cacheHitRatio)}
+              status={snap!.cacheHitRatio >= 0.7 ? 'efficient' : 'warming'}
+              tone={snap!.cacheHitRatio >= 0.7 ? 'good' : 'warn'}
+            >
+              {snap!.cachedWakes}/{wakes} cached wakes
+            </LearningHeroMetric>
+            <LearningComparisonBars
+              title="Prompt composition"
+              baselineName="Created / uncached"
+              treatmentName="Cache read"
+              rows={[
+                {
+                  label: 'Tokens',
+                  baseline: snap!.totalCacheCreationTokens + snap!.totalInputTokens,
+                  treatment: snap!.totalCacheReadTokens,
+                  baselineLabel: compact(snap!.totalCacheCreationTokens + snap!.totalInputTokens),
+                  treatmentLabel: compact(snap!.totalCacheReadTokens),
+                  treatmentWins:
+                    snap!.totalCacheReadTokens >= snap!.totalCacheCreationTokens + snap!.totalInputTokens,
+                },
+              ]}
+            />
+            <LearningEvidenceRail>
+              <div className="pc-learning-visual__evidence-grid">
+                <div className="pc-learning-visual__evidence-metric"><span>Turns / wake</span><strong>{snap!.avgTurns == null ? '—' : snap!.avgTurns.toFixed(1)}</strong></div>
+                <div className="pc-learning-visual__evidence-metric"><span>Cost</span><strong>${snap!.totalCostUsd.toFixed(2)}</strong></div>
+                <div className="pc-learning-visual__evidence-metric"><span>Cached</span><strong>{snap!.cachedWakes}</strong></div>
+                <div className="pc-learning-visual__evidence-metric"><span>Reported</span><strong>{snap!.turnsReportedWakes}</strong></div>
+              </div>
+            </LearningEvidenceRail>
           </div>
-          <p className="pc-qeff__rollup">
-            {wakes} wake{wakes === 1 ? '' : 's'} · {compact(snap!.totalCacheReadTokens)} cache-read /{' '}
-            {compact(snap!.totalCacheCreationTokens)} create / {compact(snap!.totalInputTokens)} uncached prompt tokens
-            {snap!.turnsReportedWakes > 0 ? ` · ${snap!.turnsReportedWakes} reported turns` : ' · no turn counts yet'}
-          </p>
           {recent.length > 0 ? (
+            <>
+            <div className="pc-learning__sectionhead"><h2>Recent wakes</h2></div>
             <ul className="pc-qeff__list" aria-label={`recent ${t('brain')} wakes (newest first)`}>
               {recent.map((s, i) => {
                 const prompt = s.cacheReadTokens + s.cacheCreationTokens + s.inputTokens;
@@ -115,22 +132,11 @@ export function MugWakeEfficiencyPanel() {
                 );
               })}
             </ul>
+            </>
           ) : null}
         </>
       )}
       <style>{`
-        .pc-qeff { margin: 10px 0 4px; padding: 10px 12px; border: 1px solid var(--border, rgba(125, 211, 252, 0.18)); border-radius: 12px; background: var(--bg-2, rgba(255, 255, 255, 0.03)); }
-        .pc-qeff__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-        .pc-qeff__title { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 12.5px; font-weight: 650; }
-        .pc-qeff__sub { flex: 1 1 auto; font-size: 11px; color: var(--fg-mute, #7f9bb4); }
-        .pc-qeff__refresh { display: inline-flex; align-items: center; border: none; background: none; color: var(--fg-mute, #7f9bb4); cursor: pointer; padding: 2px; }
-        .pc-qeff__refresh:disabled { opacity: 0.5; cursor: default; }
-        .pc-qeff__empty { margin: 8px 0 2px; font-size: 11.5px; color: var(--fg-mute, #7f9bb4); }
-        .pc-qeff__stats { display: flex; flex-wrap: wrap; gap: 14px; margin: 8px 0 4px; }
-        .pc-qeff__stat { display: flex; flex-direction: column; gap: 1px; }
-        .pc-qeff__stat strong { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--fg, #dbeafe); }
-        .pc-qeff__stat span { font-size: 10px; text-transform: uppercase; letter-spacing: 0; color: var(--fg-mute, #7f9bb4); }
-        .pc-qeff__rollup { margin: 4px 0; font-size: 11px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }
         .pc-qeff__list { list-style: none; margin: 4px 0 2px; padding: 0; display: flex; flex-direction: column; gap: 2px; }
         .pc-qeff__row { display: flex; align-items: center; gap: 8px; padding: 2px 0; border-top: 1px solid rgba(255, 255, 255, 0.04); font-variant-numeric: tabular-nums; }
         .pc-qeff__cache { flex: none; width: 38px; font-size: 11px; font-weight: 650; color: var(--fg, #dbeafe); text-align: right; }

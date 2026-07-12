@@ -8,13 +8,23 @@
  * read in-context exactly when the wasteful pattern is happening. That beats base-prompt prose for
  * adoption (the prose already existed while code:run adoption was ~0).
  *
- * TWO TRIGGERS (a 2026-06-26 adoption audit showed the original same-tool-only trigger could even
- * FIRE on only ~30% of multi-call SU spawns — it was BLIND to the dominant pattern):
+ * THREE TRIGGERS (a 2026-06-26 adoption audit showed the original same-tool-only trigger could even
+ * FIRE on only ~30% of multi-call SU spawns — it was BLIND to the dominant pattern; the pipeline
+ * kind + tools:invoke unwrap + arg prefill landed 2026-07-12, plan code-run-batch-adoption):
  *  - SAME-TOOL: the same tool ≥ BATCH_NUDGE_THRESHOLD× inside the recent window (a `get` per id, a
- *    check per file) → the list-then-loop skeleton.
+ *    check per file) → the list-then-loop skeleton, `inputs` prefilled with the args just seen.
+ *  - PIPELINE: ≥ FANOUT_DISTINCT_THRESHOLD distinct tools AND the same distinctive arg value (an
+ *    id/slug) threaded through ≥2 DIFFERENT tools — a chained burst (release → claim → comment on
+ *    one object). The old fan-out text mislabeled this "independent", handing the agent a false
+ *    exemption ("mine are dependent, so the hint doesn't apply"); the pipeline skeleton shows the
+ *    chain sequenced INSIDE one script instead (2026-07-11 release-fleet audit, 8 round-trips).
  *  - FAN-OUT: ≥ FANOUT_DISTINCT_THRESHOLD DISTINCT tools inside the recent window (the
  *    "many-different-reads-once" pattern the old nudge missed) → a Promise.all skeleton over the exact
  *    tools just seen.
+ *
+ * TOOLS:INVOKE UNWRAP (P-001): a call routed through the tools:invoke wrapper counts as its INNER
+ * tool — the same audit showed 3× work_items:release via tools:invoke read as "one distinct tool",
+ * silencing the same-tool trigger exactly when it was needed most.
  *
  * WINDOWED, not lifetime: counts are over a sliding NUDGE_WINDOW_MS window of recent calls, so only a
  * BURSTY flurry (the actually-batchable shape) trips it — three calls spread across ten minutes do
@@ -39,8 +49,9 @@
  *
  * Flag-gated at the call site, PER KIND, so each trigger has its own runtime kill-switch / A/B knob:
  * the same-tool path under FLAGS.CODE_RUN_BATCH_NUDGE, the newer fan-out path under
- * FLAGS.CODE_RUN_FANOUT_NUDGE. The gate is only consulted when a hint actually fires (rare), so the
- * per-call cost stays the ring push.
+ * FLAGS.CODE_RUN_FANOUT_NUDGE; the pipeline kind rides CODE_RUN_FANOUT_NUDGE (same multi-tool
+ * trigger family — telemetry records the kind verbatim, so the two stay distinguishable). The gate
+ * is only consulted when a hint actually fires (rare), so the per-call cost stays the ring push.
  */
 import { AGENT_ROLES } from '@papercusp/agent-mcp';
 import { ROLE_ENVELOPES, matchesAny } from './capability-envelope/policy';
@@ -63,6 +74,35 @@ const MAX_RECENT_PER_SESSION = 64;
 
 /** How many distinct tools the fan-out skeleton enumerates before it elides the rest. */
 const MAX_SKELETON_TOOLS = 6;
+
+/** Cap on the per-call args literal kept for skeleton prefill (P-003). Absolute worst-case memory:
+ *  MAX_TRACKED_SESSIONS × MAX_RECENT_PER_SESSION × ~(cap + name) ≈ 4000 × 64 × ~220B ≈ 56MB
+ *  ceiling; in practice rings hold a handful of calls (the 90s window trims on every active call). */
+const ARGS_RENDER_MAX = 160;
+
+/** How many distinctive scalar arg values per call feed the chained-burst detector (P-002). */
+const CHAIN_VALUES_PER_CALL = 8;
+
+/** Arg keys whose values are ambient context (harness, workspace, free-text prose, …), not object
+ *  identity — a cross-tool match on these must NOT read as "same object threaded through verbs". */
+const CHAIN_SKIP_KEYS: ReadonlySet<string> = new Set<string>([
+  'harness',
+  'harnessslug',
+  'workspace',
+  'workspaceid',
+  'scope',
+  'format',
+  'status',
+  'state',
+  'kind',
+  'reason',
+  'summary',
+  'body',
+  'comment',
+  'checkpoint',
+  'intent',
+  'query',
+]);
 
 /** Insertion-order cap on tracked sessions (backstop against unbounded growth). */
 const MAX_TRACKED_SESSIONS = 4000;
@@ -105,6 +145,10 @@ const EXCLUDED_NORMALIZED: ReadonlySet<string> = new Set<string>([
 interface RecentCall {
   tool: string;
   at: number;
+  /** Bounded, template-literal-safe literal of the call's args (P-003) — pasted into skeletons. */
+  argsRender?: string;
+  /** Distinctive scalar arg values (ids/slugs) — the chained-burst signal (P-002). */
+  argValues?: string[];
 }
 
 interface SessionState {
