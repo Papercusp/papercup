@@ -19,11 +19,15 @@ import launchOnPlan, {
   isOmpLocalModel,
   resolveFleetAgent,
   buildFleetKindClaimSpec,
+  buildFleetPlanClaimSpec,
+  isLeaderAuthoredClaimSpec,
+  mergeKindIntoClaimSpec,
   clampFleetTopUpToCapacity,
   composeMemberLaunchContext,
   renderMemberBaseline,
   type MemberLaunchOpts,
 } from './launch-on-plan';
+import { DEFAULT_CLAIM_SPEC, type ClaimSpec } from '../../scheduler/claim-spec';
 
 const base: MemberLaunchOpts = {
   fleetSlug: 'atlas-fleet',
@@ -336,6 +340,88 @@ describe('buildFleetKindClaimSpec (EI-7671 — fleet-level kind-filter claim spe
     const spec = buildFleetKindClaimSpec('atlas-fleet', ['bug']);
     expect(spec.rank).toBeTruthy();
     expect(spec.limits).toBeTruthy();
+  });
+});
+
+// EI-10409: fleet:launch-on-plan used to ALWAYS overwrite the fleet claim spec on launch,
+// silently clobbering a spec the leader had just hand-authored (e.g. a vetted id-pinned wave)
+// and replacing it with a bare `plan=` filter that ordinary (non-promoted) backlog work-items
+// don't carry — starving a claimKinds backlog-drain fleet. isLeaderAuthoredClaimSpec is the pure
+// classifier that distinguishes a leader-set spec from one this tool generated itself (or the
+// untouched default); mergeKindIntoClaimSpec is the pure merge the handler applies instead of
+// overwriting when the leader spec must be narrowed by claimKinds.
+describe('isLeaderAuthoredClaimSpec (EI-10409 — distinguish a leader-set spec from a generated one)', () => {
+  it('is false for the DEFAULT_CLAIM_SPEC sentinel (nothing customized yet)', () => {
+    expect(isLeaderAuthoredClaimSpec(DEFAULT_CLAIM_SPEC.specId, 'atlas-fleet')).toBe(false);
+  });
+
+  it('is false for a spec this tool generated itself (buildFleetKindClaimSpec)', () => {
+    const spec = buildFleetKindClaimSpec('atlas-fleet', ['bug']);
+    expect(isLeaderAuthoredClaimSpec(spec.specId as string, 'atlas-fleet')).toBe(false);
+  });
+
+  it('is false for a spec this tool generated itself (buildFleetPlanClaimSpec)', () => {
+    const spec = buildFleetPlanClaimSpec('atlas-fleet', 'p-plan');
+    expect(isLeaderAuthoredClaimSpec(spec.specId as string, 'atlas-fleet')).toBe(false);
+  });
+
+  it('is true for any other specId (a leader/human authored it via scheduler:set_claim_spec)', () => {
+    expect(isLeaderAuthoredClaimSpec('bug-drain-relaunch-0712b', 'atlas-fleet')).toBe(true);
+  });
+
+  it('a self-generated specId for a DIFFERENT fleet still counts as leader-authored (no cross-fleet collision)', () => {
+    const spec = buildFleetKindClaimSpec('other-fleet', ['bug']);
+    expect(isLeaderAuthoredClaimSpec(spec.specId as string, 'atlas-fleet')).toBe(true);
+  });
+});
+
+describe('mergeKindIntoClaimSpec (EI-10409 — merge, never discard, a leader-authored spec)', () => {
+  it('ANDs the kind leaf onto an existing non-empty filter', () => {
+    const existing: ClaimSpec = {
+      specVersion: '1.0',
+      specId: 'bug-drain-relaunch-0712b',
+      revision: 27,
+      view: { filter: { field: 'id', op: 'in', value: ['WI-1', 'WI-2'] } },
+      rank: DEFAULT_CLAIM_SPEC.rank,
+      limits: DEFAULT_CLAIM_SPEC.limits,
+    };
+    const merged = mergeKindIntoClaimSpec(existing, ['bug', 'change']);
+    expect(merged).toMatchObject({
+      specId: 'bug-drain-relaunch-0712b',
+      revision: 28,
+      view: {
+        filter: {
+          all: [
+            { field: 'id', op: 'in', value: ['WI-1', 'WI-2'] },
+            { field: 'kind', op: 'in', value: ['bug', 'change'] },
+          ],
+        },
+      },
+    });
+  });
+
+  it('the kind leaf becomes the whole filter when the existing filter is empty (view: {})', () => {
+    const existing: ClaimSpec = { ...DEFAULT_CLAIM_SPEC, specId: 'leader-custom-empty-view', revision: 3 };
+    const merged = mergeKindIntoClaimSpec(existing, ['bug']);
+    expect(merged).toMatchObject({
+      revision: 4,
+      view: { filter: { field: 'kind', op: 'in', value: ['bug'] } },
+    });
+  });
+
+  it('preserves specId, rank, and limits from the existing spec', () => {
+    const existing: ClaimSpec = {
+      specVersion: '1.0',
+      specId: 'my-custom-wave',
+      revision: 5,
+      view: { filter: { field: 'priority', op: '>=', value: 50 } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+      limits: { maxConcurrentClaims: 3 },
+    };
+    const merged = mergeKindIntoClaimSpec(existing, ['task']);
+    expect(merged.specId).toBe('my-custom-wave');
+    expect(merged.rank).toEqual(existing.rank);
+    expect(merged.limits).toEqual(existing.limits);
   });
 });
 

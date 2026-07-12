@@ -250,7 +250,7 @@ describe('issue-family is a no-op (not the dispatched backlog)', () => {
 });
 
 describe('priority surfaces on the unified WorkItem (the work_items:list/get field)', () => {
-  it('getWorkItem / listWorkItems carry feature_order as `priority`; unprioritized + issue-family are null', async () => {
+  it('getWorkItem / listWorkItems carry feature_order as `priority`; unprioritized is null', async () => {
     await seedFeature('F-1', { createdTs: 100, order: 7 });
     await seedFeature('F-2', { createdTs: 200 }); // unprioritized
     await db.sql`
@@ -260,12 +260,33 @@ describe('priority surfaces on the unified WorkItem (the work_items:list/get fie
     // get — the Queen reads any one item's backlog priority off the unified shape.
     expect((await wi.getWorkItem('F-1', H))?.priority).toBe(7);
     expect((await wi.getWorkItem('F-2', H))?.priority).toBeNull();
-    expect((await wi.getWorkItem('EI-1', H))?.priority).toBeNull(); // issue-family is never the dispatched backlog
+    expect((await wi.getWorkItem('EI-1', H))?.priority).toBeNull(); // never explicitly prioritized
 
     // list — the Queen sees the whole backlog's order in one call (the B7 deferred follow-up).
     const listed = await wi.listWorkItems({ harness: H });
     expect(listed.find((w) => w.id === 'F-1')?.priority).toBe(7);
     expect(listed.find((w) => w.id === 'F-2')?.priority).toBeNull();
+  });
+
+  // EI-10421: `setWorkItemPriority` writes `feature_order` on the `work_items` base row for
+  // issue-family items too (P-007/EI-7407), and `claimNextIssueWorkItem`'s claim order already
+  // read it unconditionally — but the READ side (issueToWorkItem, backed by the
+  // `engineer_issues` view) never surfaced it: the view didn't select `feature_order` and
+  // `issueToWorkItem` hardcoded `priority: null`. So a caller who wrote a priority via
+  // `work_items:set_priority` (confirmed `written:true`) and then read it back via
+  // `work_items:get`/`work_items:list` always saw `priority: null` — indistinguishable from a
+  // silent no-op even though the write AND the claim ordering were both already correct
+  // (migration 588 + this fix close the read-side gap).
+  it('an EXPLICITLY prioritized issue-family item surfaces its priority on get/list too', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, title)
+      VALUES ('default', 'EI-2', 'a prioritized bug')`;
+    const set = await wi.setWorkItemPriority('EI-2', 12, { harness: H });
+    expect(set).toMatchObject({ priority: 12, applicable: true });
+
+    expect((await wi.getWorkItem('EI-2', H))?.priority).toBe(12);
+    const listed = await wi.listWorkItems({ harness: H });
+    expect(listed.find((w) => w.id === 'EI-2')?.priority).toBe(12);
   });
 });
 

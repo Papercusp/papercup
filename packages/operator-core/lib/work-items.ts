@@ -333,7 +333,13 @@ function issueToWorkItem(i: EngineerIssue): WorkItem {
     rank: i.assigneeRank,
     rankWriter: i.rankWriter,
     rankUpdatedAt: i.rankUpdatedAt,
-    priority: null, // issue-family (bug/change/task) isn't the dispatched backlog — no feature_order
+    // EI-10421: was hardcoded null with the (stale, pre-P-007/EI-7407) comment "issue-family
+    // isn't the dispatched backlog — no feature_order". Issue-family items HAVE been part of
+    // the dispatched backlog and steerable via `feature_order` since SCHEDULER_ISSUES_CLAIMABLE
+    // (setWorkItemPriority writes it, claimNextIssueWorkItem's claim order reads it
+    // unconditionally) — this read path was the one place left not reflecting that (the
+    // `engineer_issues` view never selected the column; fixed alongside, migration 588).
+    priority: i.featureOrder,
     terminalOwner: i.terminalOwner,
     terminalCompletionRef: i.terminalCompletionRef,
     terminalCompletionEvidence: extractTerminalCompletionEvidence(i.payload),
@@ -3157,9 +3163,14 @@ export async function getWorkItemSwarmAffinity(
  *
  * It is DISTINCT from `reorderWorkItem` (work_items:reorder), which ranks ONE bee's
  * already-CLAIMED work-list (`assignee_rank`). Priority = the GLOBAL backlog order
- * (pre-claim); rank = a per-assignee queue (post-claim). Feature-family only — the
- * issue-family table (bugs/changes) has no `feature_order` and is not the dispatched
- * backlog, so for an issue-family id these are no-ops returning `applicable: false`.
+ * (pre-claim); rank = a per-assignee queue (post-claim). Was feature-family only when
+ * this comment was first written; since SCHEDULER_ISSUES_CLAIMABLE (P-007/EI-7407)
+ * joined issue-family (bug/change/task) into the SAME dispatched backlog,
+ * `setWorkItemPriority`/`getWorkItemPriority` apply to them too (writing/reading
+ * `feature_order` on the shared `harness_shared.work_items` base row) — `applicable:
+ * false` now means only "the SCHEDULER_ISSUES_CLAIMABLE flag is off", not "issue-family
+ * is categorically excluded". EI-10421: the READ side of this (issueToWorkItem /
+ * `engineer_issues` view) lagged this fix until migration 588 — see its comment.
  */
 export interface WorkItemPriorityResult {
   id: string;

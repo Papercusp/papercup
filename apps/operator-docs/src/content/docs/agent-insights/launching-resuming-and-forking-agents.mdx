@@ -1,0 +1,125 @@
+---
+title: "Launching, resuming and forking agents — capability:launch-agent"
+description: "The one tool for putting an agent on work that is NOT a plan-fleet: an ad-hoc brief, bringing a DEAD agent back mid-thread (resume), or branching a LIVE one (fork). Covers the account-pin login trap, why a live source must be forked, and how the first turn actually gets delivered."
+discovered: 2026-07-12
+tags: ["fleet", "launch-agent", "resume", "fork", "psu", "spawn", "coordination"]
+status: active
+documents:
+  - "packages/operator-core/lib/agent-launch-core.ts"
+  - "packages/operator-core/lib/agent-tools/capability/launch-agent.ts"
+  - "packages/operator-core/lib/agent-tools/capability/terminal.ts"
+  - "packages/operator-core/lib/agent-tools/fleet_registry/status.ts"
+  - "apps/operator/scripts/psu-launcher.mjs"
+  - "apps/operator/scripts/psu-pty-host.mjs"
+  - "libs/papercusp/libs/db/sql/586-agent-launch-idempotency.sql"
+plans:
+  - "agent-launch-resume-primitives-2026-07-12"
+---
+
+## What this tool is for
+
+`capability:launch-agent` puts an agent on work in the three cases a **plan-fleet
+launch cannot express**:
+
+| You want | Call |
+|---|---|
+| An agent on an **ad-hoc brief** (no plan, no fleet ceremony) | `capability:launch-agent { brief }` |
+| A **dead** agent back, mid-thread, with its context intact | `capability:launch-agent { resume: { agentId }, brief }` |
+| To **branch** a live agent's thread without disturbing it | `capability:launch-agent { resume: { agentId }, fork: true, brief }` |
+
+It is NOT a replacement for `fleet:launch-on-plan` — that stays the right tool for
+"open N members and work this plan". The routing rule:
+
+> **Work is a plan** → `fleet:launch-on-plan`. **Work is a brief, or the agent
+> already exists** → `capability:launch-agent`. **Headless background grinder on
+> ranked work** → `cup:spawn` (see
+> [desktop-fleet-vs-loop-cup](/agent-insights/desktop-fleet-vs-loop-cup)).
+
+All three sit on ONE shared core (`agent-launch-core.ts`) — command construction,
+fleet/launched-by/account injection, resume resolution. There is deliberately no
+second spawn path to drift out of sync.
+
+## Trap 1: a scripted resume that does not pin an account stops on the login picker
+
+This is the owner-visible bug that motivated the whole thing — *"why is it asking
+me to log in?"*
+
+`psu`'s `resumeAccountPlan` shows an **interactive account picker** when a resume
+carries neither `--account` nor `--no-picker`. A human typing `psu --resume` picks
+an account and moves on. A *scripted* launch has nobody to pick, so the agent sits
+on a login prompt forever, looking hung.
+
+Both `capability:launch-agent` and `capability:terminal` now inject
+`--account=default` into any `--resume` command that lacks one, and
+`buildAgentLaunchCommand` always emits `--no-picker --account=<acct>`. **If you
+construct a psu resume command by hand anywhere else, pin the account yourself.**
+
+On **macOS the default is `--account=auto`**, not `default`: a per-session config
+dir cannot reach the Keychain login, so darwin routes through the gateway account
+(`defaultLaunchAccount`).
+
+## Trap 2: resuming a LIVE agent is not what you want — fork it
+
+An in-place resume **re-attaches the original coord `ownerId`**. Do that to an
+agent that is still alive and you now have two processes answering to one identity:
+wakes, claims and messages land in a coin-flip. (This is WI-3882.)
+
+So: `resolveResumeTarget` detects a live source and the tool **auto-forks it**,
+with a loud note in the report. A fork gets a **fresh identity** — which is the
+other half of the trade:
+
+> A forked agent is a NEW ownerId that nobody — not you, not the fleet — can
+> address until it boots and registers presence. You cannot pre-wake it, and you
+> cannot hand it work by id in the same turn you launch it.
+
+That is exactly why the brief matters (below).
+
+## How the first turn actually gets delivered
+
+A launched agent that opens IDLE is useless — someone has to give it its first
+turn, and the seam differs by mode:
+
+- **Fresh launch** → the brief rides the spawn-safe env var
+  `PAPERCUSP_KICKOFF_PROMPT`, and `psu-launcher` turns it into the CLI's positional
+  prompt (`kickoffPositionalArgs`, gated on `--no-picker`, suppressed by
+  `--no-kickoff`). Free-form text must NOT be passed as `--kickoff=<text>` inside a
+  console greeting one-liner — it gets double-quoted and breaks the shell.
+- **Resume / fork** → there is no CLI seam at all (`claude --resume <id> "<prompt>"`
+  is not a supported form, and a fork's fresh ownerId is unaddressable from
+  outside). Instead **psu's own managed pty host injects the first turn**: it waits
+  for the agent to settle at its prompt, writes the turn, and *verifies submission*
+  (`injectTurnAtPrompt` in `psu-pty-host.mjs`). This is the same
+  wait-at-prompt + submit-verify machinery the WI-1941 recycle carry-note already
+  used — one delivery path, guaranteed or **loudly dropped**, never silently lost.
+
+**Always pass a `brief`.** Without one the agent boots and sits there; the tool
+warns you, but a warning is not a turn.
+
+## No "resume the fleet" verb — and why
+
+There is deliberately no one-shot fleet revival. Any single verb has to *guess*
+which dead members to bring back (all of them? only the ones that died this hour?
+not the one you killed on purpose yesterday?) and every guess is wrong for someone.
+
+Instead `fleet:status` hands the leader the **facts**, per ended member:
+
+- `endedAt` — when it died
+- `resumable` / `resumableSessionId` — whether a native session actually exists
+- `resumeHint` — when it does not (an omp thread, or a row predating native-id
+  tracking → launch that lane fresh instead)
+
+The leader then composes the revival *per member* — resume, fork, or fresh.
+
+## Odds and ends
+
+- **Idempotency.** Pass `idempotencyKey` and a retry/duplicate call returns
+  "Already launched (deduped)" instead of spawning a second agent
+  (`agent_launch_idempotency`, migration 586). A PG failure never blocks a launch —
+  it warns and launches unguarded.
+- **Shell safety.** `buildAgentLaunchCommand` *validates* rather than quotes: every
+  value must match `/^[A-Za-z0-9._:=@/,+-]+$/` or it throws. Free-form text (the
+  brief) never goes on the command line at all — it rides the env.
+- **Headless.** `headless: true` launches with no window. Note EI-9748: headless
+  children are reaped by the service cgroup on a `:3170` restart.
+- **Fleet.** An explicit `fleet` wins; otherwise the launch inherits the *caller's*
+  fleet (WI-4234), so a leader's ad-hoc launches join its own fleet by default.

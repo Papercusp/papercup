@@ -641,6 +641,47 @@ export function buildFleetPlanClaimSpec(
   };
 }
 
+/**
+ * EI-10409: true when `specId` was authored by a leader/human (via
+ * `scheduler:set_claim_spec`) rather than by this tool itself or the "nothing
+ * customized yet" sentinel. Distinguishes a deliberate, leader-set fleet claim
+ * spec (e.g. a vetted id-pinned wave) — which must be PRESERVED or MERGED into,
+ * never silently clobbered — from one this tool generated on a prior launch
+ * (safe to regenerate) or `DEFAULT_CLAIM_SPEC` (nothing to preserve).
+ */
+export function isLeaderAuthoredClaimSpec(specId: string, fleetSlug: string): boolean {
+  if (specId === DEFAULT_CLAIM_SPEC.specId) return false;
+  if (specId === `fleet-launch-${fleetSlug}-plan`) return false;
+  if (specId === `fleet-launch-${fleetSlug}-kinds`) return false;
+  return true;
+}
+
+/**
+ * EI-10409: AND a `kind ∈ kinds` leaf onto an EXISTING (leader-authored) claim
+ * spec's filter, preserving everything else (specId, rank, limits) and bumping
+ * `revision`. Used when a launch carries `claimKinds` over a pre-set leader spec
+ * — merges the kind constraint in rather than discarding the leader's view
+ * (EI-10409 defect (a): a silent clobber). When the existing filter is empty
+ * (`view: {}` — the `DEFAULT_CLAIM_SPEC` shape), the kind leaf becomes the whole
+ * filter.
+ */
+export function mergeKindIntoClaimSpec(
+  existing: ClaimSpec,
+  kinds: readonly string[],
+): Record<string, unknown> {
+  const kindLeaf = { field: 'kind', op: 'in', value: [...kinds] };
+  const existingFilter = existing.view?.filter;
+  const filter =
+    existingFilter && Object.keys(existingFilter).length > 0
+      ? { all: [existingFilter, kindLeaf] }
+      : kindLeaf;
+  return {
+    ...existing,
+    view: { filter },
+    revision: existing.revision + 1,
+  };
+}
+
 function err(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true };
 }
@@ -933,22 +974,69 @@ export default defineTool({
       return err(`Failed to create/join fleet \`${fleetSlug}\`: ${e?.message ?? e}`);
     }
 
-    // #4 (fleet-launch-plan-scoped-claim-spec, 2026-07-08) + EI-7671: ALWAYS set the fleet-level
-    // claim spec BEFORE any member terminal opens — scoping every member's scheduler:get_next
-    // self-pull to THIS plan (`plan = <slug>`), AND to args.claimKinds when given. Applied here,
-    // pre-spawn, closing the boot-race where members self-pull under the empty-filter
-    // DEFAULT_CLAIM_SPEC (admits every kind + every plan in the harness) before the leader gets
-    // around to calling scheduler:set_claim_spec by hand. Best-effort: a spec-write failure never
-    // blocks the launch (members still start; get_next's harness floor still scopes them to this pot).
+    // #4 (fleet-launch-plan-scoped-claim-spec, 2026-07-08) + EI-7671 + EI-10409: set the
+    // fleet-level claim spec BEFORE any member terminal opens — scoping every member's
+    // scheduler:get_next self-pull to THIS plan (`plan = <slug>`), AND to args.claimKinds when
+    // given. Applied here, pre-spawn, closing the boot-race where members self-pull under the
+    // empty-filter DEFAULT_CLAIM_SPEC (admits every kind + every plan in the harness) before the
+    // leader gets around to calling scheduler:set_claim_spec by hand.
+    //
+    // EI-10409: this used to ALWAYS overwrite, which (a) silently clobbered a spec the leader had
+    // just hand-authored seconds earlier (e.g. a vetted id-pinned wave) with no warning, and (b)
+    // replaced it with a bare `plan = <slug>` filter that ordinary backlog work-items don't carry
+    // (only items PROMOTED from the plan do) — starving a `claimKinds` backlog-drain fleet, which
+    // is the exact flow claimKinds advertises. So: read the CURRENT spec first; a leader-authored
+    // spec is preserved (merging in the kind constraint when claimKinds is given, never discarded);
+    // only a not-yet-customized spec gets (re)generated, preferring a kind-only filter over a
+    // plan= filter whenever claimKinds is given. Best-effort throughout: a spec read/write failure
+    // never blocks the launch (members still start; get_next's harness floor still scopes them to
+    // this pot).
     let claimSpecApplied: { ok: boolean; revision?: number; warning?: string; errors?: string[] } | null = null;
     try {
-      claimSpecApplied = await setClaimSpec({
-        cupId: fleetSpecBeeKey(fleetSlug),
-        workspaceId: resolveClaimSpecWorkspace(workspaceId),
-        spec: buildFleetPlanClaimSpec(fleetSlug, args.plan, args.claimKinds),
-        updatedBy: ownerId,
-        potSlug: null,
-      });
+      const claimSpecWorkspaceId = resolveClaimSpecWorkspace(workspaceId);
+      const cupId = fleetSpecBeeKey(fleetSlug);
+      let existingSpec: ClaimSpec = DEFAULT_CLAIM_SPEC;
+      try {
+        existingSpec = await getClaimSpec({ cupId, workspaceId: claimSpecWorkspaceId });
+      } catch {
+        existingSpec = DEFAULT_CLAIM_SPEC; // never block the launch on a read failure
+      }
+
+      if (isLeaderAuthoredClaimSpec(existingSpec.specId, fleetSlug)) {
+        if (args.claimKinds?.length) {
+          claimSpecApplied = await setClaimSpec({
+            cupId,
+            workspaceId: claimSpecWorkspaceId,
+            spec: mergeKindIntoClaimSpec(existingSpec, args.claimKinds),
+            updatedBy: ownerId,
+            potSlug: null,
+          });
+          if (claimSpecApplied?.ok) {
+            claimSpecApplied.warning =
+              `EI-10409: merged kind∈[${args.claimKinds.join(',')}] into pre-existing leader-authored ` +
+              `claim spec '${existingSpec.specId}'@${existingSpec.revision} rather than overwriting it`;
+          }
+        } else {
+          claimSpecApplied = {
+            ok: true,
+            revision: existingSpec.revision,
+            warning:
+              `EI-10409: preserved pre-existing leader-authored claim spec '${existingSpec.specId}'` +
+              `@${existingSpec.revision} — not overwritten`,
+          };
+        }
+      } else {
+        const spec = args.claimKinds?.length
+          ? buildFleetKindClaimSpec(fleetSlug, args.claimKinds)
+          : buildFleetPlanClaimSpec(fleetSlug, args.plan);
+        claimSpecApplied = await setClaimSpec({
+          cupId,
+          workspaceId: claimSpecWorkspaceId,
+          spec,
+          updatedBy: ownerId,
+          potSlug: null,
+        });
+      }
     } catch (e: any) {
       claimSpecApplied = { ok: false, errors: [e?.message ?? String(e)] };
     }

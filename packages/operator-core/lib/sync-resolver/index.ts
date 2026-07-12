@@ -2744,6 +2744,33 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── learning.observations.counts — signal distribution with real DB counts ──
+  //
+  // (system-health-dashboard-batch WI-4374). Queries the authoritative database
+  // to get true counts per observation kind, instead of using the loaded-list
+  // length as a fallback (which is a bug when total > limit). Returns an array
+  // with one row per kind: { kind, count }. Used by the Observations panel to
+  // render signal distribution buttons with "500+" guard when count >= 500.
+  'learning.observations.counts': {
+    argsSchema: z
+      .object({
+        state: z.enum(['open', 'resolved', 'closed']).optional(),
+      })
+      .optional(),
+    resolve: async (args) => {
+      const a = (args ?? {}) as { state?: 'open' | 'resolved' | 'closed' };
+      const { countObservationsByKind } = await import('../issues-engineer');
+      const { OBSERVATION_TOPIC } = await import('../harness/improvements/read-items');
+      const filter = {
+        topic: OBSERVATION_TOPIC,
+        ...(a.state ? { state: a.state } : {}),
+      };
+      const counts = await countObservationsByKind(filter);
+      // Return as array of { kind, count } rows for sync compatibility
+      return Object.entries(counts).map(([kind, count]) => ({ kind, count }));
+    },
+  },
+
   // ── learning.health — the composite learning-infra status chip ──
   //
   // (self-improvement-consume-edges-2026-06-12 P-003 / D-002). ONE

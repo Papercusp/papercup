@@ -128,6 +128,15 @@ export interface EngineerIssue {
    *  or plan-item ref) recorded for the CURRENT terminal state. Both are required
    *  together — a terminal transition without either is rejected by setIssueState. */
   terminalCompletionRef: string | null;
+  /** EI-10421: the SHARED backlog priority (`feature_order` on the `work_items` base
+   *  row) — the Queen's steer-don't-dispatch lever, DISTINCT from `assigneeRank` (a
+   *  per-assignee post-claim queue order). Issue-family items joined the dispatched
+   *  backlog under P-007/EI-7407 (`setWorkItemPriority` writes this for bug/change/task
+   *  too, and `claimNextIssueWorkItem`'s claim order already reads it unconditionally);
+   *  this column exposes that on the read side (was hardcoded null — migration 588).
+   *  LOWER = claimed sooner (inverted scale, same convention as feature-family); null =
+   *  unprioritized. */
+  featureOrder: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -255,6 +264,7 @@ interface IssueRowDb {
   rank_updated_at: unknown;
   terminal_owner: string | null;
   terminal_completion_ref: string | null;
+  feature_order: number | null;
   created_at: unknown;
   updated_at: unknown;
 }
@@ -292,6 +302,7 @@ function toIssue(r: IssueRowDb): EngineerIssue {
     rankUpdatedAt: tsIsoOrNull(r.rank_updated_at),
     terminalOwner: r.terminal_owner,
     terminalCompletionRef: r.terminal_completion_ref,
+    featureOrder: r.feature_order,
     createdAt: tsIso(r.created_at),
     updatedAt: tsIso(r.updated_at),
   };
@@ -466,6 +477,22 @@ export interface ListIssuesFilter {
    * record (`terminal_completion_ref IS NULL`). Composes with an explicit `state`.
    */
   audit?: 'no-evidence';
+  /**
+   * EI-10422: exclude a `payload.lane === 'observation'` row — a turn-end reflection /
+   * rubric scorecard filed via `improvements:capture { lane:'observation' }` that, by
+   * design (D-005), "never enters the work queue/triage/auto-implement — only Scout's
+   * corpus-digest + the Observations pane read it". The self-select claim path
+   * (claimNextIssueWorkItem, via observationLaneExclusionSql in work-items.ts) already
+   * honors this; `listIssues`/`countIssues` did not, so 2,677 open observation notes
+   * masqueraded as claimable `change` work in every backlog/triage read that goes
+   * through `work_items:list`/`search`/`count` (EI-10422). Default false/omitted:
+   * byte-identical to before (a caller that wants the raw issue store, unfiltered,
+   * keeps seeing observations) — `listWorkItems`/`countWorkItems` pass this as `true`
+   * by default (via `includeObservations`) so the GENERAL work-item surface excludes
+   * them; a curation surface reads observations directly via
+   * harness/improvements/read-items.ts, not this general path.
+   */
+  excludeObservationLane?: boolean;
 }
 
 /** Issue-family terminal states for the P-005 audit (subset of the cross-family set). */
@@ -501,6 +528,11 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
            ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND terminal_completion_ref IS NULL)`
            : sql`TRUE`
        }
+       -- EI-10422: mirrors observationLaneExclusionSql (work-items.ts) — the self-select
+       -- claim path already excludes a lane:'observation' row; this hoists the SAME
+       -- floor into the general list read when the caller opts in (listWorkItems does,
+       -- by default, via includeObservations).
+       AND ${filter.excludeObservationLane ? sql`COALESCE(payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'` : sql`TRUE`}
      ORDER BY created_at DESC
      LIMIT ${Math.min(filter.limit ?? 100, ISSUES_MAX_LIMIT)}`;
   return rows.map(toIssue);
@@ -540,7 +572,8 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
            filter.audit === 'no-evidence'
              ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ei.terminal_completion_ref IS NULL)`
              : sql`TRUE`
-         }`;
+         }
+         AND ${filter.excludeObservationLane ? sql`COALESCE(ei.payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'` : sql`TRUE`}`;
     return rows[0]?.n ?? 0;
   }
   const rows = await sql<{ n: number }[]>`
@@ -559,8 +592,77 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
          filter.audit === 'no-evidence'
            ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND terminal_completion_ref IS NULL)`
            : sql`TRUE`
-       }`;
+       }
+       AND ${filter.excludeObservationLane ? sql`COALESCE(payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'` : sql`TRUE`}`;
   return rows[0]?.n ?? 0;
+}
+
+/**
+ * Count observations by kind — returns a map of kind → count for the observations
+ * matching the filter. Used by the Observations panel to show signal distribution
+ * with real database counts instead of loaded-list-length fallback (WI-4374).
+ * Each NULL kind is mapped to 'other'.
+ */
+export async function countObservationsByKind(filter: ListIssuesFilter = {}): Promise<Record<string, number>> {
+  const { sql } = getOrgPg();
+  const kindSet: readonly IssueStoreKind[] = filter.kind ? [filter.kind] : (filter.kinds ?? ISSUE_KINDS);
+  if (filter.topic) {
+    const rows = await sql<{ kind: string | null; count: number }[]>`
+      SELECT (ei.payload->'observation'->>'kind')::text AS kind, count(*)::int AS count
+        FROM harness_shared.engineer_issues ei
+        JOIN harness_shared.coord_links cl
+          ON cl.workspace_id = ${coordScopeWorkspace()}
+         AND cl.rel = 'tagged'
+         AND cl.src_kind = ${ISSUE_KIND}
+         AND cl.src_ref = ei.issue_id
+         AND cl.dst_kind = 'topic'
+         AND cl.dst_ref = ${filter.topic}
+       WHERE ei.workspace_id = ${issuesScopeWorkspace()}
+         AND ei.kind = ANY(${kindSet as string[]}::text[])
+         AND ${filter.state ? sql`ei.state = ${filter.state}` : sql`TRUE`}
+         AND ${filter.scope ? sql`ei.scope = ${filter.scope}` : sql`TRUE`}
+         AND ${filter.assignee ? sql`ei.assignee = ${filter.assignee}` : sql`TRUE`}
+         AND ${filter.assignedBy ? sql`ei.assigned_by = ${filter.assignedBy}` : sql`TRUE`}
+         AND ${filter.severity ? sql`ei.severity = ${filter.severity}` : sql`TRUE`}
+         AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
+         AND ${filter.admissibleOnly ? sql`(ei.origin = 'local' OR ei.origin IS NULL)` : sql`TRUE`}
+         AND ${
+           filter.audit === 'no-evidence'
+             ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ei.terminal_completion_ref IS NULL)`
+             : sql`TRUE`
+         }
+      GROUP BY kind`;
+    const result: Record<string, number> = {};
+    for (const row of rows) {
+      const k = row.kind || 'other';
+      result[k] = row.count;
+    }
+    return result;
+  }
+  const rows = await sql<{ kind: string | null; count: number }[]>`
+    SELECT (payload->'observation'->>'kind')::text AS kind, count(*)::int AS count
+      FROM harness_shared.engineer_issues
+     WHERE workspace_id = ${issuesScopeWorkspace()}
+       AND kind = ANY(${kindSet as string[]}::text[])
+       AND ${filter.state ? sql`state = ${filter.state}` : sql`TRUE`}
+       AND ${filter.scope ? sql`scope = ${filter.scope}` : sql`TRUE`}
+       AND ${filter.assignee ? sql`assignee = ${filter.assignee}` : sql`TRUE`}
+       AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}
+       AND ${filter.severity ? sql`severity = ${filter.severity}` : sql`TRUE`}
+       AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
+       AND ${filter.admissibleOnly ? sql`(origin = 'local' OR origin IS NULL)` : sql`TRUE`}
+       AND ${
+         filter.audit === 'no-evidence'
+           ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND terminal_completion_ref IS NULL)`
+           : sql`TRUE`
+       }
+    GROUP BY kind`;
+  const result: Record<string, number> = {};
+  for (const row of rows) {
+    const k = row.kind || 'other';
+    result[k] = row.count;
+  }
+  return result;
 }
 
 export async function getIssue(id: string): Promise<EngineerIssue | null> {
