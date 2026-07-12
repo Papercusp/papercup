@@ -30,11 +30,8 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
-import { readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
-import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { createFreshPgDb, applyPlanItemClaimMigrations, type FreshPgDb } from '../../test/_pg-helpers';
 import { routeToAuthority, type LockAuthorityDeps } from '../authority/lock-authority';
 import { setPeerRpcTransport, __resetPeerRpcTransportForTests } from '../authority/peer-rpc-transport';
 import { HttpPeerRpcTransport } from '../authority/http-peer-rpc-transport';
@@ -48,14 +45,6 @@ import { registerPlanItemClaimAuthorityOps } from './plan-item-claim-authority-o
 import { acquireClaimLocal, acquireClaim, PLAN_ITEM_CLAIM_OP_KINDS, type AcquireResult, type AcquireOpts } from './claims';
 import { SwarmClaimAuthority } from './claim-authority-swarm';
 import { setClaimAuthority, resetClaimAuthority } from './claim-authority';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
-const readMigration = (f: string) =>
-  readFileSync(resolve(SQL_DIR, f), 'utf8')
-    .split('\n')
-    .filter((line) => !/^\s*\\/.test(line) && !/\bGRANT\b/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line))
-    .join('\n');
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {
@@ -95,14 +84,9 @@ let rpcCount = 0;
 beforeAll(async () => {
   db = await createFreshPgDb('plan-item-claim-2i');
   h.sql = db.sql;
-  await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
-  await db.sql.unsafe(readMigration('141-plan-item-claims.sql')).simple();
-  // 143 (agent_activity) rides along because acquireClaimLocal's holder-activity
-  // grace check (EI-8997) joins it — same reason activity-claim-renewal /
-  // claims.integration.test.ts load it (EI-9508/EI-9509). Without this, every
-  // acquireClaimLocal call in this file fails with "relation
-  // harness_shared.agent_activity does not exist" (EI-9513).
-  await db.sql.unsafe(readMigration('143-agent-activity.sql')).simple();
+  // 140/141/143 — see EI-9613: shared helper instead of a hand-copied list
+  // (this file's own copy is what originally missed 143 → EI-9513).
+  await applyPlanItemClaimMigrations(db.sql);
 
   // The authority peer's receiving side: register the REAL plan-item claim handlers
   // (default coordinator → acquireClaimLocal SQL against THIS test PG) + an http

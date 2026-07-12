@@ -9,22 +9,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
-
-const readMigration = (f: string) =>
-  readFileSync(resolve(SQL_DIR, f), 'utf8')
-    .split('\n')
-    .filter(
-      (line) =>
-        !/^\s*\\/.test(line) && !/\bGRANT\b/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line),
-    )
-    .join('\n');
+import { createFreshPgDb, applyPlanItemClaimMigrations, type FreshPgDb } from '../../test/_pg-helpers';
 
 const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql,
@@ -69,14 +54,9 @@ let db: FreshPgDb;
 beforeAll(async () => {
   db = await createFreshPgDb('plan-items');
   h.sql = db.sql;
-  await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
-  await db.sql.unsafe(readMigration('141-plan-item-claims.sql')).simple();
-  // EI-9515: claims.ts's activity-grace check (D-00x) queries
-  // harness_shared.agent_activity (migration 143) — added after this test's
-  // migration list was last updated, so it was never applied here and every
-  // claim-store test failed with `relation "harness_shared.agent_activity"
-  // does not exist`.
-  await db.sql.unsafe(readMigration('143-agent-activity.sql')).simple();
+  // 140/141/143 — see EI-9613: shared helper instead of a hand-copied list
+  // (this file's own copy is what originally missed 143 → EI-9515).
+  await applyPlanItemClaimMigrations(db.sql);
   // Minimal contributors table for the shared-ness heuristic (subset of baseline cols).
   await db.sql.unsafe(`
     CREATE TABLE IF NOT EXISTS harness_shared.contributors (

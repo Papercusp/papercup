@@ -8,18 +8,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
-const readMigration = (f: string) =>
-  readFileSync(resolve(SQL_DIR, f), 'utf8')
-    .split('\n')
-    .filter((line) => !/^\s*\\/.test(line) && !/\bGRANT\b/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line))
-    .join('\n');
+import { createFreshPgDb, applyPlanItemClaimMigrations, type FreshPgDb } from '../../test/_pg-helpers';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {
@@ -40,13 +29,9 @@ let db: FreshPgDb;
 beforeAll(async () => {
   db = await createFreshPgDb('activity-renew');
   h.sql = db.sql;
-  await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
-  await db.sql.unsafe(readMigration('141-plan-item-claims.sql')).simple();
-  // 143 (agent_activity) rides along because acquireClaimLocal's holder-activity
-  // grace check (EI-8997) joins it — same reason claims.integration.test.ts loads
-  // it. Without this, every claims.acquireClaimLocal call in this file fails with
-  // "relation harness_shared.agent_activity does not exist" (EI-9508).
-  await db.sql.unsafe(readMigration('143-agent-activity.sql')).simple();
+  // 140/141/143 — see EI-9613: shared helper instead of a hand-copied list
+  // (this file's own copy is what originally missed 143 → EI-9508).
+  await applyPlanItemClaimMigrations(db.sql);
 }, 90_000);
 
 afterAll(async () => {

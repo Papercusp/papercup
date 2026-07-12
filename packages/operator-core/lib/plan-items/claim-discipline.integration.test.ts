@@ -26,18 +26,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
-const readMigration = (f: string) =>
-  readFileSync(resolve(SQL_DIR, f), 'utf8')
-    .split('\n')
-    .filter((line) => !/^\s*\\/.test(line) && !/\bGRANT\b/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line))
-    .join('\n');
+import { createFreshPgDb, applyPlanItemClaimMigrations, type FreshPgDb } from '../../test/_pg-helpers';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {
@@ -67,17 +56,9 @@ beforeAll(async () => {
     DO $r$ BEGIN CREATE ROLE harness_zero; EXCEPTION WHEN duplicate_object THEN NULL; END $r$;
   `).simple();
   await db.sql`CREATE SCHEMA IF NOT EXISTS harness_shared`;
-  // 140 → assignments + work-group + agent-name tables; 141 → the claim store.
-  // claimPlanItem reads assignments + work-group before leasing, so both must exist.
-  // 143 (agent_activity) rides along because the EI-8997 steal-guard/sweep SQL
-  // (claims.ts acquireClaim/reconcile) joins it for the holder-activity grace
-  // check — without it every seedPeerClaim/reconcile call in this file throws
-  // "relation harness_shared.agent_activity does not exist" (EI-9509: this
-  // fixture was never updated when that dependency landed, unlike the sibling
-  // claims.integration.test.ts which already applies 143 for the same reason).
-  await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
-  await db.sql.unsafe(readMigration('141-plan-item-claims.sql')).simple();
-  await db.sql.unsafe(readMigration('143-agent-activity.sql')).simple();
+  // 140/141/143 — see EI-9613: shared helper instead of a hand-copied list
+  // (this file's own copy is what originally missed 143 → EI-9509).
+  await applyPlanItemClaimMigrations(db.sql);
 }, 90_000);
 
 afterAll(async () => {

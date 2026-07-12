@@ -65,10 +65,30 @@ export async function applyMigrationForTest(sql: postgres.Sql, filePath: string)
  * (EI-9508, EI-9509, EI-9513, EI-9515 — see EI-9613). Call this once in
  * `beforeAll` instead of listing the files by hand; a future migration
  * `claims.ts` starts depending on becomes a one-line addition here.
+ *
+ * GRANT-stripped (unlike `applyMigrationForTest`): 4 of the 5 call sites this
+ * replaces (plan-item-claim-two-instance / plan-items / activity-claim-renewal
+ * / claim-discipline .integration.test.ts) already hand-filtered GRANT lines
+ * out of these exact 3 migrations rather than pre-creating the `harness_app`
+ * / `harness_zero` roles the GRANTs target — a fresh testcontainer DB has
+ * neither role until some file creates them, and role creation order across a
+ * shared/reused container isn't guaranteed. The 5th site
+ * (claims.integration.test.ts) instead pre-creates both roles via a DO block;
+ * stripping GRANT here makes that block redundant but harmless, and keeps
+ * this helper a true behavior-preserving drop-in for every call site (the
+ * DDL itself is identical either way — GRANTs never affect table/column
+ * shape, only a role's runtime privileges the test's own superuser/owner
+ * connection doesn't need).
  */
 export async function applyPlanItemClaimMigrations(sql: postgres.Sql): Promise<void> {
   for (const f of ['140-plan-item-assignments.sql', '141-plan-item-claims.sql', '143-agent-activity.sql']) {
-    await applyMigrationForTest(sql, resolve(SQL_DIR, f));
+    const sqlText = readFileSync(resolve(SQL_DIR, f), 'utf8')
+      .split('\n')
+      .filter(
+        (l) => !l.trimStart().startsWith('\\') && !/\bGRANT\b/.test(l) && !/^(BEGIN|COMMIT);\s*$/i.test(l.trim()),
+      )
+      .join('\n');
+    await sql.unsafe(sqlText);
   }
 }
 

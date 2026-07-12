@@ -25,14 +25,8 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { createFreshPgDb, applyPlanItemClaimMigrations, type FreshPgDb } from '../../test/_pg-helpers';
 import type { AcquireOpts } from './claims';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 
@@ -59,17 +53,12 @@ beforeAll(async () => {
     DO $r$ BEGIN CREATE ROLE harness_zero; EXCEPTION WHEN duplicate_object THEN NULL; END $r$;
   `).simple();
   // Apply the REAL migrations — we test the shipped schema, not a hand-rolled
-  // copy. Strip psql meta-commands + the BEGIN/COMMIT wrapper (postgres-js
-  // rejects script-level transactions on a pooled connection). 143
-  // (agent_activity) rides along because the EI-8997 steal-guard/sweep SQL
-  // joins it for the holder-activity grace check.
-  for (const file of ['141-plan-item-claims.sql', '143-agent-activity.sql']) {
-    const ddl = readFileSync(resolve(SQL_DIR, file), 'utf8')
-      .split('\n')
-      .filter((line) => !/^\s*\\/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line))
-      .join('\n');
-    await db.sql.unsafe(ddl).simple();
-  }
+  // copy. 140/141/143 — see EI-9613: shared helper instead of a hand-copied
+  // list (this file previously loaded only 141+143 by hand; 140 rides along
+  // now too — it's a self-contained CREATE TABLE with no FK on 141/143's
+  // tables, harmless to apply even though this file's own tests don't touch
+  // plan_item_assignments).
+  await applyPlanItemClaimMigrations(db.sql);
 });
 
 afterAll(async () => {

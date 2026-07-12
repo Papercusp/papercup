@@ -399,6 +399,15 @@ export default function MemoryPage() {
         setDraftText('');
         void setAddOpen(false);
         void refreshMeta();
+      } else if (j.journaled) {
+        // WI-4208: the memory store is down/saturated, but the fact is parked in
+        // the write journal and replays automatically — it is SAVED, just not
+        // searchable yet. Reporting "failed" here would push the user to retype
+        // it (a duplicate once the drain lands) or assume it was lost.
+        toast.success('Saved — finishing indexing once the memory store recovers');
+        setDraftText('');
+        void setAddOpen(false);
+        void refreshMeta();
       } else {
         toast.error(`Save failed: ${j.error ?? r.status}`);
       }
