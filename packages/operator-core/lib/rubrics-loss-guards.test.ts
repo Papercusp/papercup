@@ -23,6 +23,7 @@ import {
   type ProposeRubricInput,
 } from './rubrics';
 import { rubricCriterionSchema, rubricTemplateDataSchema } from './agent-tools/plans/rubric-template';
+import { classifyToolError } from './harness/improvements/tool-error-classifier';
 
 const LONG_DRILL =
   `${REPLICATION_DRILL_MARKER} — full end-to-end procedure: create two SYNTHETIC work items, ` +
@@ -86,6 +87,24 @@ describe('assertNoSilentRubricLoss (WI-4287 propose loss-guard)', () => {
     expect(() => assertNoSilentRubricLoss(stored, proposal([crit({ key: 'a' })]))).toThrowError(
       /SILENTLY LOSE[\s\S]*'batched-tool-calls'[\s\S]*dropKeys/,
     );
+  });
+
+  it('EI-10148: the loss-guard rejection classifies as `caller`, not `structural` (no spurious auto-implement EI)', () => {
+    const stored = rubric([crit({ key: 'a' }), crit({ key: 'batched-tool-calls' })]);
+    let thrown: unknown;
+    try {
+      assertNoSilentRubricLoss(stored, proposal([crit({ key: 'a' })]));
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    const msg = (thrown as Error).message;
+    // The teaching content is preserved (the caller still learns the fix)...
+    expect(msg).toMatch(/SILENTLY LOSE[\s\S]*dropKeys/);
+    // ...but it now carries the `invalid_args:` caller convention, so the tool-error
+    // watchdog classifies it `caller` (DX/schema) instead of the `structural` default —
+    // the loss-guard is a caller-input rejection, NOT a tool bug for the auto-implement lane.
+    expect(classifyToolError(undefined, 'handler_error', msg)).toBe('caller');
   });
 
   it('dropping a stored criterion WITH the dropKeys ack passes', () => {

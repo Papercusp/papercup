@@ -528,8 +528,14 @@ export function assertNoSilentRubricLoss(stored: Rubric | null, input: ProposeRu
   }
 
   if (violations.length > 0) {
+    // EI-10148: this is a CALLER error (the proposal args would silently lose stored
+    // content — the caller must ack via dropKeys / allowMethodShrink), NOT a tool bug.
+    // Prefix with the `invalid_args:` convention so the tool-error classifier buckets
+    // it `caller` (DX/schema) instead of falling through to `structural` — otherwise
+    // the improvement-watchdog mis-files this deterministic loss-guard rejection as a
+    // structural tool-bug into the auto-implement lane (the false alarm this fixes).
     throw new Error(
-      `proposeRubric: rubrics:propose REPLACES the whole rubric document, and this proposal would SILENTLY LOSE content from stored rubric '${stored.rubricId}':\n` +
+      `invalid_args: proposeRubric: rubrics:propose REPLACES the whole rubric document, and this proposal would SILENTLY LOSE content from stored rubric '${stored.rubricId}':\n` +
         violations.map((v) => `  • ${v}`).join('\n'),
     );
   }
