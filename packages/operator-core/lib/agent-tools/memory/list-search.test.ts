@@ -148,14 +148,14 @@ describe('the byte-stable wire envelope (TUI Memory tab contract)', () => {
     expect(out.results.find((r) => r.id === 'weak')?.score).toBe(0.18);
   });
 
-  it('unavailable backend → { ok:false, reason, results: [] } on both tools', async () => {
+  it('unavailable backend keeps list empty and marks semantic search degraded', async () => {
     const b = fakeBackend([], false);
     useBackend(b);
     expect(parse(await list.handler({}, ctx))).toEqual({
       ok: false, reason: 'memory_backend_disabled', results: [],
     });
     expect(parse(await search.handler({ query: 'q' }, ctx))).toEqual({
-      ok: false, reason: 'memory_backend_disabled', results: [],
+      ok: false, reason: 'memory_backend_disabled', degraded: true, results: [],
     });
     expect(b.list).not.toHaveBeenCalled();
     expect(b.search).not.toHaveBeenCalled();

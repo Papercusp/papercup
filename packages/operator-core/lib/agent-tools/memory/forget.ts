@@ -24,12 +24,12 @@ export default defineTool({
   name: 'memory:forget',
   capability: 'memory:write',
   description:
-    'Delete one OR many memory entries by id — pass `id` for one or `ids` for several. Returns { ok, results:[{ ok, id, error? }], counts } — correlate each result by its id, not by position; a not-found / timed-out id comes back as that item\'s { ok:false } without failing the rest.',
+    'Delete one OR many memory entries by id — pass `id` for one or `ids` for several. Default is a HARD delete (gone for good — the right call for privacy asks). Pass soft:true to instead close the memory\'s validity window (temporal-lite): it drops out of recall but stays retrievable via include_superseded / as_of on memory:search. Returns { ok, results:[{ ok, id, error? }], counts } — correlate each result by its id, not by position; a not-found / timed-out id comes back as that item\'s { ok:false } without failing the rest.',
   guidance: {
     when:
-      'When the user explicitly says "forget X" / "don\'t remember that anymore" / "that\'s wrong, drop it". Pass every id to drop at once via `ids`. Always inform the user out loud ("Removed that from memory").',
+      'When the user explicitly says "forget X" / "don\'t remember that anymore" / "that\'s wrong, drop it". Pass every id to drop at once via `ids`. Use soft:true when the fact STOPPED BEING TRUE but its history has value ("we no longer use gemma") — hard-delete (the default) when the user wants it GONE (privacy). Always inform the user out loud ("Removed that from memory").',
     notWhen:
-      'To CORRECT a memory (replace its content), use memory:update — preserves history. Only use forget for outright removal.',
+      'To CORRECT a memory (replace its content), use memory:update — preserves history and can record supersession (`supersedes`). Only use forget for removal.',
     chaining:
       'memory:search / memory:list → memory:forget { ids:[…] } to drop several found memories in one call. Bulk: single | ids[] → { ok, results, counts }; correlate by id not position; one failure never fails the rest.',
     seeAlso: [
@@ -56,6 +56,12 @@ export default defineTool({
     .object({
       id: z.string().min(1).optional().describe('a single memory id (n=1 shorthand for ids:[id])'),
       ids: z.array(z.string().min(1)).min(1).max(200).optional().describe('memory ids to delete (1–200)'),
+      soft: z
+        .boolean()
+        .optional()
+        .describe(
+          'true = close the validity window instead of deleting (excluded from default recall, retrievable via include_superseded/as_of). Default false = HARD delete — the privacy-safe default.',
+        ),
     })
     .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, {
       message: 'pass `id` (one) or `ids` (many)',
