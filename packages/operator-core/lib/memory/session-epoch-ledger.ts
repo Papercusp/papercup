@@ -67,11 +67,17 @@ export async function currentSessionEpoch(sql: SqlTag, sessionId: string): Promi
 
 /**
  * Bump the session's epoch (the compaction boundary). Returns the NEW epoch,
- * or null on failure. Also garbage-collects: the session's rows from older
- * epochs can never be read again (reads always use the current epoch), and a
- * coarse age sweep removes rows from sessions that never compact — both
- * piggybacked here because epoch bumps are infrequent (once per compaction),
- * so no new scheduler surface is needed.
+ * or null on failure. Also garbage-collects via a coarse age sweep (rows older
+ * than SURFACED_GC_DAYS), piggybacked here because epoch bumps are infrequent
+ * (once per compaction), so no new scheduler surface is needed.
+ *
+ * Superseded-epoch rows are deliberately KEPT until the age sweep (rubric-
+ * system-improvements-2026-07-12 P-005): they are inert for dedup (reads
+ * always filter on the CURRENT epoch) but they are the forensic record the
+ * memory-recall-health replication drills query — an immediate delete here
+ * erased a drill subject's pre-compaction claim stamps mid-grade on
+ * 2026-07-12 (recall drill 2), forcing the delivery leg to be graded from
+ * secondary evidence.
  */
 export async function bumpSessionEpoch(sql: SqlTag, sessionId: string): Promise<number | null> {
   if (!sessionId || relationMissing) return null;
@@ -84,12 +90,8 @@ export async function bumpSessionEpoch(sql: SqlTag, sessionId: string): Promise<
       RETURNING epoch
     `) as unknown as { epoch: number }[];
     const epoch = rows.length > 0 ? Number(rows[0].epoch) : null;
-    // GC 1: this session's superseded epochs.
-    await sql`
-      DELETE FROM harness_shared.memory_session_surfaced
-      WHERE session_id = ${sessionId} AND epoch < ${epoch ?? 0}
-    `;
-    // GC 2: coarse age sweep for sessions that never bump.
+    // Coarse age sweep — the ONLY ledger GC (superseded epochs stay readable
+    // for forensics until they age out; see the function doc).
     await sql`
       DELETE FROM harness_shared.memory_session_surfaced
       WHERE surfaced_at < now() - make_interval(days => ${SURFACED_GC_DAYS})

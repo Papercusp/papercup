@@ -50,13 +50,14 @@ export const gatewayStatusTool = defineTool({
 export const accountsPinTool = defineTool({
   name: 'accounts:pin',
   description:
-    "Pin an agent to a pool account on the inference gateway, LIVE (no respawn). `agent` = the TARGET agent's owner/spawn id — pass your OWN id to pin yourself, or another agent's id to pin them. `account` = a pool account id (see gateway:status / accounts:list). `hard:true` ⇒ NEVER fail over off it (waits / 429s on that account); default (soft) prefers it but yields if it is paused/exhausted. The gateway routes that agent's SUBSEQUENT requests to the account, overriding its spawn-time pin. CAUTION: concentrating many agents on one account rate-throttles it — prefer accounts with headroom (gateway:status) and spread load. In-memory: re-apply after a gateway restart. Returns {ok, ownerId, pin}.",
+    "Pin an agent to a pool account on the inference gateway, LIVE (no respawn) — the dynamic account re-pin verb (WI-4402). `agent` = the TARGET agent's owner/spawn id — pass your OWN id to pin yourself, or another agent's id to pin them. `account` = a pool account id (see gateway:status / accounts:list). `hard:true` ⇒ NEVER fail over off it (waits / 429s on that account); default (soft) prefers it but yields if it is paused/exhausted. Effective on that agent's NEXT model call — no respawn, no lost context. Reaches any session whose launch path forwards the `x-papercusp-owner` identity header (every fresh spawn, and every `psu --resume`'d session routed `auto`/a pool account). A `--account=default` session is a deliberate gateway-free escape hatch and CANNOT be dynamically re-pinned — respawn it instead. CAUTION: concentrating many agents on one account rate-throttles it — spread load. DURABLE (survives a gateway restart). Returns {ok, ownerId, pin}.",
   guidance: {
     when: 'Dynamically routing an agent (yourself or another) to a specific pool account without respawning it.',
-    notWhen: 'Steering which account NEW spawns get fleet-wide — that is accounts:set-session-override.',
-    chaining: 'gateway:status (pick an account with headroom) → accounts:pin { agent, account } → accounts:unpin to revert.',
+    notWhen: 'Steering which account NEW spawns get fleet-wide — that is accounts:set-session-override. Re-pinning a `--account=default` session — not reachable; respawn it instead.',
+    chaining: 'gateway:status (pick an account with headroom) → accounts:pin { agent, account } → gateway:owner_report { agent } (confirm it took) → accounts:unpin to revert.',
     seeAlso: [
       'accounts:unpin (revert the pin)',
+      'gateway:owner_report (read an agent\'s current routing/pin — the "what is this session pinned to" read)',
       'gateway:status (pick an account with headroom)',
       'accounts:set-session-override (steer NEW spawns fleet-wide instead)',
     ],
@@ -172,9 +173,9 @@ export const gatewayReloadTool = defineTool({
 export const gatewayOwnerReportTool = defineTool({
   name: 'gateway:owner_report',
   description:
-    "Per-owner inference-gateway outcome report (GET :8788/admin/owner-report) — gateway-rayobyte-hardening P-008. With `agent` (an owner/spawn id): that agent's ledger {requests, ok, upstream429, upstreamErrors, sheds, stalls, pinYields, lastAccount, lastStatus, recent events} + its last-routed account + live pin. Without `agent`: the top ~25 owners ranked by bad outcomes (429s+errors+sheds+stalls) — 'who is having a bad time right now' in one call. Counters are since the last gateway restart.",
+    "Per-owner inference-gateway outcome report (GET :8788/admin/owner-report) — gateway-rayobyte-hardening P-008. With `agent` (an owner/spawn id): that agent's ledger {requests, ok, upstream429, upstreamErrors, sheds, stalls, pinYields, lastAccount, lastStatus, recent events} + its last-routed account + live pin — this IS the 'what account is this session actually routed to right now' read (the dual of accounts:pin). Without `agent`: the top ~25 owners ranked by bad outcomes (429s+errors+sheds+stalls) — 'who is having a bad time right now' in one call. Counters are since the last gateway restart.",
   guidance: {
-    when: "An agent reports API errors / slow turns and you need the gateway's view of THAT agent: what it got (429? shed? stall? pin yield?), on which account, when. Also fleet-wide triage (no args) after an error storm.",
+    when: "An agent reports API errors / slow turns and you need the gateway's view of THAT agent: what it got (429? shed? stall? pin yield?), on which account, when. Also fleet-wide triage (no args) after an error storm. Also: confirming an accounts:pin actually took effect / reading a session's current routing before deciding whether to re-pin it.",
     notWhen: 'Pool-level health — gateway:status (config/AIMD) or the /stats endpoint. Per-account usage — accounts:list.',
     chaining: 'gateway:owner_report { agent } → (if pin yields/429s on a capped pin) accounts:pin to move it, or accounts:list to find headroom.',
     seeAlso: ['gateway:status (live pool + admission)', 'accounts:pin (re-route the agent)', 'accounts:list (account headroom)'],

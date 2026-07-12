@@ -65,7 +65,6 @@ import { hiveHomeLabel } from "@/lib/hive-label";
 import { useLexicon } from "@/lib/useLexicon";
 import LearningInfraHealthChip from "./LearningInfraHealthChip";
 import LearningEfficacyPanel from "./LearningEfficacyPanel";
-import HumanQueueDrain from "./HumanQueueDrain";
 import RubricsPanel from "@/app/_components/RubricsPanel";
 import RubricDetailPanel from "@/app/_components/RubricDetailPanel";
 import ObservationsPanel from "@/app/adv/create/ObservationsPanel";
@@ -563,7 +562,9 @@ function ImprovementsView({
     if (!digest) return [];
     if (lane === "auto") return digest.autoEligible;
     if (lane === "human") return digest.humanQueue;
-    return [...digest.autoEligible, ...digest.humanQueue];
+    return [...digest.autoEligible, ...digest.humanQueue].sort(
+      (a, b) => b.score - a.score || a.id.localeCompare(b.id),
+    );
   }, [digest, lane]);
 
   const sources = useMemo<string[]>(() => {
@@ -580,18 +581,6 @@ function ImprovementsView({
   const rows = useMemo<ScoredItem[]>(
     () => (src ? allRows.filter((it) => it.source === src) : allRows),
     [allRows, src],
-  );
-  const autoRows = useMemo(
-    () =>
-      (digest?.autoEligible ?? []).filter(
-        (item) => !src || item.source === src,
-      ),
-    [digest, src],
-  );
-  const humanRows = useMemo(
-    () =>
-      (digest?.humanQueue ?? []).filter((item) => !src || item.source === src),
-    [digest, src],
   );
   const sparseRows = useMemo(
     () => [...(digest?.autoEligible ?? []), ...(digest?.humanQueue ?? [])],
@@ -688,15 +677,6 @@ function ImprovementsView({
         </div>
       ) : null}
 
-      {/* The owner's drain ritual (consume-edges P-022): top of the human queue
-          in the resolver's blocking-impact order; click highlights the row. */}
-      {digest && showDashboard && lane !== "auto" ? (
-        <HumanQueueDrain
-          items={digest.humanQueue}
-          onSelect={(id) => void setLsel(id)}
-        />
-      ) : null}
-
       {showDashboard ? (
         <div className="pc-learning__sectionhead pc-learning__sectionhead--tools">
           <div className="pc-learning__inlinetools">
@@ -774,47 +754,6 @@ function ImprovementsView({
             />
           ))}
         </ul>
-      ) : lane === "all" ? (
-        <div
-          className={`pc-learning__lanegrid${autoRows.length === 0 || humanRows.length === 0 ? " is-single" : ""}`}
-        >
-          {autoRows.length > 0 ? (
-            <section className="pc-learning__lanecol is-auto">
-              <header>
-                <span>Automatic</span>
-                <strong>{autoRows.length}</strong>
-              </header>
-              <ul className="pc-learning__list">
-                {autoRows.map((it) => (
-                  <ImprovementRow
-                    key={it.id}
-                    item={it}
-                    selected={it.id === lsel}
-                    onDismissSelect={() => void setLsel(null)}
-                  />
-                ))}
-              </ul>
-            </section>
-          ) : null}
-          {humanRows.length > 0 ? (
-            <section className="pc-learning__lanecol is-human">
-              <header>
-                <span>Review</span>
-                <strong>{humanRows.length}</strong>
-              </header>
-              <ul className="pc-learning__list">
-                {humanRows.map((it) => (
-                  <ImprovementRow
-                    key={it.id}
-                    item={it}
-                    selected={it.id === lsel}
-                    onDismissSelect={() => void setLsel(null)}
-                  />
-                ))}
-              </ul>
-            </section>
-          ) : null}
-        </div>
       ) : (
         <ul className="pc-learning__list">
           {rows.map((it) => (
@@ -2472,7 +2411,6 @@ export function ScoutView({
       railFilter ? recent.filter((item) => item.rail === railFilter) : recent,
     [railFilter, recent],
   );
-  const queueItems = showEarlier ? filteredRecent : filteredRecent.slice(0, 8);
   useEffect(() => setShowEarlier(false), [railFilter]);
   useEffect(() => {
     onStatus?.(
@@ -2490,6 +2428,9 @@ export function ScoutView({
       gradedBy: item.gradedBy ?? "owner",
     };
   };
+  const reviewItems = filteredRecent.filter((item) => !effectiveGrade(item));
+  const reviewedItems = filteredRecent.filter((item) => effectiveGrade(item));
+  const queueItems = showEarlier ? reviewItems : reviewItems.slice(0, 8);
 
   const submitGrade = async (
     item: ScoutRoutedItem,
@@ -2580,6 +2521,113 @@ export function ScoutView({
       void setSrcSel(null);
       void setLviewRaw("improvements");
     }
+  };
+  const renderIdeaRow = (item: ScoutRoutedItem) => {
+    const meta = RAIL_META[item.rail] ?? {
+      label: item.rail,
+      desc: "Routed idea",
+      color: "#94a3b8",
+    };
+    const when = item.routedAt ? Date.parse(item.routedAt) : NaN;
+    const eff = effectiveGrade(item);
+    const isOpen = gradeOpen === item.ideaId;
+    const saving = savingId === item.ideaId;
+    return (
+      <li
+        key={item.ideaId}
+        className="pc-learning__row pc-learning__row--scout"
+      >
+        <button
+          type="button"
+          className="pc-learning__rowmain"
+          onClick={() => openRouted(item)}
+          title={`${meta.desc}\n${item.routedRef}`}
+        >
+          <span
+            className="pc-learning__sev"
+            style={{ background: meta.color }}
+            aria-hidden
+          />
+          <span className="pc-learning__id" style={{ color: meta.color }}>
+            {meta.label}
+          </span>
+          <span className="pc-learning__title">
+            {item.title ?? item.routedRef}
+          </span>
+        </button>
+        <span className="pc-learning__meta">
+          <span
+            className="pc-learning__chip pc-learning__chip--idea"
+            title="Creative lens that produced this idea"
+          >
+            {item.lens}
+          </span>
+          {item.outcome && item.outcome !== "pending" ? (
+            <span
+              className="pc-learning__score"
+              title="Outcome from the change feed"
+            >
+              {item.outcome}
+            </span>
+          ) : null}
+          <span className="pc-learning__age">
+            {!Number.isNaN(when) ? whenLabel(when) : ""}
+          </span>
+          <span
+            className="pc-learning__grade"
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
+          >
+            {eff ? (
+              <span
+                className="pc-learning__gradechip"
+                title={
+                  eff.feedback
+                    ? `Graded by ${graderLabel(eff.gradedBy, t("brain"))}: “${eff.feedback}”`
+                    : `Graded by ${graderLabel(eff.gradedBy, t("brain"))}`
+                }
+              >
+                ★{eff.grade} · {graderLabel(eff.gradedBy, t("brain"))}
+              </span>
+            ) : null}
+            <Popover
+              open={isOpen}
+              onOpenChange={(open) =>
+                void setGradeOpen(open ? item.ideaId : null)
+              }
+              trigger={
+                <button
+                  type="button"
+                  className="pc-learning__notebtn"
+                  aria-label={eff ? "Review idea grade" : "Grade this idea"}
+                  aria-expanded={isOpen}
+                >
+                  {eff ? (
+                    <Star size={12} fill="currentColor" aria-hidden />
+                  ) : (
+                    <MessageSquarePlus size={12} aria-hidden />
+                  )}
+                </button>
+              }
+              tooltipLabel={eff ? "Review this grade" : "Grade this idea"}
+              ariaLabel={`Grade ${item.title ?? item.routedRef}`}
+              contentClassName="pc-learning__gradepopover"
+            >
+              <GradePanel
+                current={eff}
+                busy={saving}
+                onSave={(grade, feedback) => {
+                  void submitGrade(item, grade, feedback).then(
+                    () => void setGradeOpen(null),
+                  );
+                }}
+                onClose={() => void setGradeOpen(null)}
+              />
+            </Popover>
+          </span>
+        </span>
+      </li>
+    );
   };
 
   return (
@@ -2706,130 +2754,14 @@ export function ScoutView({
               Grade failed: {gradeError}
             </p>
           ) : null}
-          <ul className="pc-learning__list">
-            {queueItems.map((item) => {
-              const meta = RAIL_META[item.rail] ?? {
-                label: item.rail,
-                desc: "Routed idea",
-                color: "#94a3b8",
-              };
-              const when = item.routedAt ? Date.parse(item.routedAt) : NaN;
-              const eff = effectiveGrade(item);
-              const isOpen = gradeOpen === item.ideaId;
-              const saving = savingId === item.ideaId;
-              return (
-                <li
-                  key={item.ideaId}
-                  className="pc-learning__row pc-learning__row--scout"
-                >
-                  <span
-                    className="pc-learning__rowmain"
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => openRouted(item)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        openRouted(item);
-                      }
-                    }}
-                    title={`${meta.desc}\n${item.routedRef}`}
-                  >
-                    <span
-                      className="pc-learning__sev"
-                      style={{ background: meta.color }}
-                      aria-hidden
-                    />
-                    <span
-                      className="pc-learning__id"
-                      style={{ color: meta.color }}
-                    >
-                      {meta.label}
-                    </span>
-                    <span className="pc-learning__title">
-                      {item.title ?? item.routedRef}
-                    </span>
-                  </span>
-                  <span className="pc-learning__meta">
-                    <span
-                      className="pc-learning__chip pc-learning__chip--idea"
-                      title="Creative lens that produced this idea"
-                    >
-                      {item.lens}
-                    </span>
-                    {item.outcome && item.outcome !== "pending" ? (
-                      <span
-                        className="pc-learning__score"
-                        title="Outcome from the change feed"
-                      >
-                        {item.outcome}
-                      </span>
-                    ) : null}
-                    <span className="pc-learning__age">
-                      {!Number.isNaN(when) ? whenLabel(when) : ""}
-                    </span>
-                    <span
-                      className="pc-learning__grade"
-                      onClick={(e) => e.stopPropagation()}
-                      onKeyDown={(e) => e.stopPropagation()}
-                    >
-                      {eff ? (
-                        <span
-                          className="pc-learning__gradechip"
-                          title={
-                            eff.feedback
-                              ? `Graded by ${graderLabel(eff.gradedBy, t("brain"))}: “${eff.feedback}”`
-                              : `Graded by ${graderLabel(eff.gradedBy, t("brain"))}`
-                          }
-                        >
-                          ★{eff.grade} · {graderLabel(eff.gradedBy, t("brain"))}
-                        </span>
-                      ) : null}
-                      <Popover
-                        open={isOpen}
-                        onOpenChange={(open) =>
-                          void setGradeOpen(open ? item.ideaId : null)
-                        }
-                        trigger={
-                          <button
-                            type="button"
-                            className="pc-learning__notebtn"
-                            aria-label={
-                              eff ? "Review idea grade" : "Grade this idea"
-                            }
-                            aria-expanded={isOpen}
-                          >
-                            {eff ? (
-                              <Star size={12} fill="currentColor" aria-hidden />
-                            ) : (
-                              <MessageSquarePlus size={12} aria-hidden />
-                            )}
-                          </button>
-                        }
-                        tooltipLabel={
-                          eff ? "Review this grade" : "Grade this idea"
-                        }
-                        ariaLabel={`Grade ${item.title ?? item.routedRef}`}
-                        contentClassName="pc-learning__gradepopover"
-                      >
-                        <GradePanel
-                          current={eff}
-                          busy={saving}
-                          onSave={(grade, feedback) => {
-                            void submitGrade(item, grade, feedback).then(
-                              () => void setGradeOpen(null),
-                            );
-                          }}
-                          onClose={() => void setGradeOpen(null)}
-                        />
-                      </Popover>
-                    </span>
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
-          {filteredRecent.length > 8 ? (
+          {queueItems.length > 0 ? (
+            <ul className="pc-learning__list">
+              {queueItems.map(renderIdeaRow)}
+            </ul>
+          ) : (
+            <LearningVisualEmpty icon={CheckCircle2} title="Review queue clear" />
+          )}
+          {reviewItems.length > 8 ? (
             <button
               type="button"
               className="pc-learning__earlierbtn"
@@ -2838,8 +2770,18 @@ export function ScoutView({
             >
               {showEarlier
                 ? "Show decision queue only"
-                : `Earlier routed ideas · ${filteredRecent.length - 8}`}
+                : `Earlier ungraded ideas · ${reviewItems.length - 8}`}
             </button>
+          ) : null}
+          {reviewedItems.length > 0 ? (
+            <LearningDisclosure
+              label="Reviewed ideas"
+              count={reviewedItems.length}
+            >
+              <ul className="pc-learning__list">
+                {reviewedItems.map(renderIdeaRow)}
+              </ul>
+            </LearningDisclosure>
           ) : null}
         </>
       )}
@@ -3372,7 +3314,7 @@ export function LearningStyles() {
          never fight the open-the-artifact click. */
       .pc-learning__row--scout { grid-template-columns: minmax(0, 1fr) auto; }
       .pc-learning__row--scout .pc-learning__meta { flex-wrap: wrap; justify-content: flex-end; }
-      .pc-learning__rowmain { display: grid; grid-template-columns: 4px auto minmax(0, 1fr); align-items: center; gap: 9px; min-width: 0; cursor: pointer; border-radius: 6px; }
+      .pc-learning__rowmain { width: 100%; display: grid; grid-template-columns: 4px auto minmax(0, 1fr); align-items: center; gap: 9px; min-width: 0; padding: 0; border: 0; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; font: inherit; text-align: left; }
       .pc-learning__rowmain:hover .pc-learning__title, .pc-learning__rowmain:focus-visible .pc-learning__title { color: var(--accent, #7dd3fc); }
       .pc-learning__grade { display: inline-flex; align-items: center; gap: 5px; }
       .pc-learning__stars { display: inline-flex; }

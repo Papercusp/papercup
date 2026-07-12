@@ -504,13 +504,11 @@ describe("LearningTab — Improvements view (default)", () => {
     expect(
       screen.getByText("cup:spawn children are coordination-MUTE"),
     ).toBeTruthy();
-    // The human-lane title renders twice: the list row + the "Decide next"
-    // drain panel over the blocking-impact order (consume-edges P-022 / B-08).
     expect(
-      screen.getAllByText("Peer restarts massacre in-flight spawns").length,
-    ).toBeGreaterThanOrEqual(1);
+      screen.getAllByText("Peer restarts massacre in-flight spawns"),
+    ).toHaveLength(1);
     expect(screen.getByText("EI-75")).toBeTruthy();
-    expect(screen.getByText("Decide next")).toBeTruthy();
+    expect(screen.queryByText("Decide next")).toBeNull();
   });
 
   it("shows the four-stage loop and keeps Improvements inside Improve", () => {
