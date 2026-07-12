@@ -228,6 +228,40 @@ describe('maybeBatchNudge — scoping guards (teeth)', () => {
     expect(maybeBatchNudge({ sessionKey: 'amb', toolName: 'work_items:get', canCodeRun: true, now: t })).toBeNull();
   });
 
+  it('does NOT nudge LOCK-LIFECYCLE tools — an acquire/edit/release cycle is not a batchable burst (EI-10168)', () => {
+    // The agent's real work happens BETWEEN acquire and release via native (non-MCP) edits, so a
+    // repeated acquire→edit→release cycle is serialized by that intervening work and can NEVER be
+    // folded into one code:run loop. Live fires 2026-07-12 (EI-10168): the residual nudge fires
+    // after the ambient exclusion were exactly these lock cycles (locks:acquire + locks:release).
+    let t = 0;
+    // Without the exclusion, the 2nd locks:acquire alone trips the same-tool nudge → this loop reds.
+    for (const toolName of ['locks:acquire', 'locks:release', 'locks:acquire', 'locks:release', 'locks:acquire', 'locks:release']) {
+      t += 1000;
+      expect(maybeBatchNudge({ sessionKey: 'lk', toolName, canCodeRun: true, now: t })).toBeNull();
+    }
+    // The granular / resource / heartbeat variants are lock lifecycle too — none nudge, however bursty.
+    for (const toolName of [
+      'locks:acquire_granular',
+      'locks:release_granular',
+      'locks:acquire_resource',
+      'locks:release_resource',
+      'locks:heartbeat',
+      'locks:heartbeat_resource',
+    ]) {
+      for (let i = 0; i < BATCH_NUDGE_THRESHOLD + 1; i++) {
+        t += 500;
+        expect(maybeBatchNudge({ sessionKey: 'lk', toolName, canCodeRun: true, now: t })).toBeNull();
+      }
+    }
+    // The lock storm above must NOT have populated the window: 2 real distinct reads right after it
+    // stay below both thresholds (proves lock-lifecycle calls short-circuit before recording — they
+    // can neither trigger a nudge themselves nor inflate a fan-out/same-tool tally).
+    t += 500;
+    expect(maybeBatchNudge({ sessionKey: 'lk', toolName: 'plans:get', canCodeRun: true, now: t })).toBeNull();
+    t += 500;
+    expect(maybeBatchNudge({ sessionKey: 'lk', toolName: 'work_items:get', canCodeRun: true, now: t })).toBeNull();
+  });
+
   it('does NOT fire on an empty session key or empty tool name', () => {
     let t = 0;
     for (let i = 0; i < BATCH_NUDGE_THRESHOLD + 1; i++) {
