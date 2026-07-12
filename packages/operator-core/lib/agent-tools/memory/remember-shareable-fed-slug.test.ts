@@ -70,8 +70,14 @@ beforeEach(() => {
 });
 
 /** The metadata the handler actually handed the store. */
-const metadataOf = () =>
-  (backend.remember.mock.calls[0]?.[1] as unknown as { metadata: Record<string, unknown> })?.metadata;
+const metadataOf = (): Record<string, unknown> | undefined => {
+  // The fake's `remember` is declared with no params, so its `mock.calls` type is
+  // an empty tuple — read the recorded args through the real call signature.
+  const calls = backend.remember.mock.calls as unknown as Array<
+    [string, { metadata?: Record<string, unknown> }]
+  >;
+  return calls[0]?.[1]?.metadata;
+};
 
 describe('memory:remember — shareable memories need a federation routing key (EI-10432)', () => {
   it('REFUSES a shareable PERSONAL memory — it has no hive to federate to', async () => {
