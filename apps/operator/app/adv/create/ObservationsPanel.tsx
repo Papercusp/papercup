@@ -101,7 +101,11 @@ export default function ObservationsPanel({
       const kind = row.kind ?? "other";
       counts.set(kind, (counts.get(kind) ?? 0) + 1);
     }
-    return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    return [...counts.entries()].sort((a, b) => {
+      if (a[0] === "other") return 1;
+      if (b[0] === "other") return -1;
+      return b[1] - a[1] || a[0].localeCompare(b[0]);
+    });
   }, [scopedRows]);
   useEffect(() => {
     if (signalFilter && !signalCounts.some(([kind]) => kind === signalFilter)) {
@@ -262,15 +266,15 @@ export default function ObservationsPanel({
         {total > 0 ? (
           <span
             data-testid="observations-count"
+            aria-label={`${allRows.length} observations loaded of ${total} total`}
+            title="Loaded observations / total available"
             style={{
               color: "var(--fg-mute)",
               fontSize: 11,
               fontVariantNumeric: "tabular-nums",
             }}
           >
-            {itemPlans.length || signalFilter
-              ? `${rows.length} / ${total}`
-              : total}
+            {allRows.length.toLocaleString()} / {total.toLocaleString()}
           </span>
         ) : null}
         <button

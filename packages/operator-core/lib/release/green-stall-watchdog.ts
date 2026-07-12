@@ -41,6 +41,7 @@ import { execFileSync } from 'node:child_process';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { broadcastSevereEvent, broadcastSevereEventResolved } from '../severe-event-broadcast';
 import { readRoutineEngineLiveness } from './routine-engine-liveness';
+import { resolveWorkspaceForHarness } from '../harness/workspace-for-harness';
 
 /** An ACTIVE green-checkpoint that hasn't FIRED in this long ⇒ the scheduler isn't
  *  running it (cron is hourly at :15, so this is ~3 missed fires). */

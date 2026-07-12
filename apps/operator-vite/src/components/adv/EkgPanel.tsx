@@ -15,6 +15,7 @@
  * lines. Defensive about the snapshot shape — anything but the expected
  * {shifts: []} renders the empty state, never a crash.
  */
+import { useEffect } from "react";
 import { useSyncQuery } from "@papercusp/sync";
 import { Activity, RefreshCw } from "lucide-react";
 import type { EkgSnapshot } from "@papercusp/operator-core/lib/fleet-ekg/ekg-read";
@@ -37,7 +38,11 @@ function dateShort(iso: string | null): string {
     : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-export function EkgPanel() {
+export function EkgPanel({
+  onStatus,
+}: {
+  onStatus?: (status: "neutral" | "good" | "warn" | "bad") => void;
+} = {}) {
   const sync = useSyncQuery<EkgSnapshot>({
     queryName: "learning.ekg",
     args: {},
@@ -48,6 +53,17 @@ export function EkgPanel() {
   const major = shifts.filter((shift) => shift.severity === "major").length;
   const visible = shifts.slice(0, 8);
   const earlier = shifts.slice(8);
+  useEffect(() => {
+    onStatus?.(
+      sync.error
+        ? "bad"
+        : shifts.length === 0
+          ? "neutral"
+          : major > 0 || (snap?.unattributedShifts ?? 0) > 0
+            ? "warn"
+            : "good",
+    );
+  }, [major, onStatus, shifts.length, snap?.unattributedShifts, sync.error]);
 
   const renderShift = (s: (typeof shifts)[number]) => (
     <li key={s.id} className="pc-ekg__row">

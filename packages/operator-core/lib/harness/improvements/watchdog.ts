@@ -29,6 +29,8 @@
  */
 
 import postgres from 'postgres';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import { getOrgPg } from '@papercusp/db-org';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
@@ -176,6 +178,14 @@ export interface WatchdogSignal {
    * exists NOW, so a re-file after resolve is always legitimate.
    */
   latestAt?: string;
+  /**
+   * OLDEST evidence timestamp (ISO) backing this signal, when the collector
+   * knows the span (EI-10102: the red-test debounce needs BOTH ends of the
+   * failure window, not just the newest, to ask "was the file being edited
+   * anywhere across the whole run of failures"). Omitted by collectors that
+   * never window a span.
+   */
+  earliestAt?: string;
   /**
    * Resolution cooldown (ms). When set, a signal whose key matches only RESOLVED
    * dups is suppressed (→ `staleResolved`) if the newest resolution landed within
@@ -536,7 +546,15 @@ export function normalizeRedTestPath(filePath: string): string | null {
   return normalized;
 }
 
-interface RedTestRow { file_path: string; framework: string; fails: number; sample: string | null; latest_fail_at?: string | Date | null }
+interface RedTestRow {
+  file_path: string;
+  framework: string;
+  fails: number;
+  sample: string | null;
+  latest_fail_at?: string | Date | null;
+  /** Oldest fail in the window (EI-10102 debounce span). */
+  earliest_fail_at?: string | Date | null;
+}
 
 /** ISO-or-undefined from a pg timestamp value (Date under postgres.js, string in tests). */
 function toIsoOrUndefined(v: string | Date | null | undefined): string | undefined {

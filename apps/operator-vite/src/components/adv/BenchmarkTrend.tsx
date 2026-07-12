@@ -15,7 +15,8 @@
  * self-carried (pc-benchtrend__*), mirroring LearningTab's inline-style idiom,
  * so the hotspot file's wiring stays at two lines.
  */
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { Maximize2, Minimize2 } from "lucide-react";
 
 export interface BenchmarkTrendInstance {
   instanceId: string;
@@ -85,6 +86,7 @@ export function BenchmarkTrend({
   instances: BenchmarkTrendInstance[];
 }) {
   const points = useMemo(() => computeTrendPoints(instances), [instances]);
+  const [expanded, setExpanded] = useState(false);
   if (points.length < 2) return null;
 
   const composites = points.map((p) => p.composite);
@@ -116,11 +118,26 @@ export function BenchmarkTrend({
 
   return (
     <figure
-      className="pc-benchtrend"
+      className={`pc-benchtrend${expanded ? " is-expanded" : ""}`}
       aria-label={`Benchmark composite trend across ${points.length} generations, from ${first.composite.toFixed(3)} (${dateLabel(first.inst.createdAt)}) to ${last.composite.toFixed(3)} (${dateLabel(last.inst.createdAt)})`}
     >
       <figcaption className="pc-benchtrend__caption">
-        Composite per generation <em>oldest → newest</em>
+        <span>
+          Composite per generation <em>oldest → newest</em>
+        </span>
+        <button
+          type="button"
+          aria-label={expanded ? "Collapse benchmark trend" : "Expand benchmark trend"}
+          aria-expanded={expanded}
+          title={expanded ? "Collapse trend" : "Expand trend"}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          {expanded ? (
+            <Minimize2 size={12} aria-hidden />
+          ) : (
+            <Maximize2 size={12} aria-hidden />
+          )}
+        </button>
       </figcaption>
       <svg
         viewBox={`0 0 ${W} ${H}`}
@@ -188,10 +205,13 @@ export function BenchmarkTrend({
 }
 
 const trendStyles = `
-        .pc-benchtrend { margin: 0 0 4px; padding: 10px 12px 6px; border: 1px solid var(--border, rgba(125, 211, 252, 0.18)); border-radius: 12px; background: var(--bg-2, rgba(255, 255, 255, 0.03)); }
-        .pc-benchtrend__caption { margin: 0 0 4px; font-size: 11px; font-weight: 650; color: var(--fg-mute, #7f9bb4); }
+        .pc-benchtrend { margin: 0 0 4px; padding: 7px 10px 5px; border: 1px solid var(--border, rgba(125, 211, 252, 0.18)); border-radius: 10px; background: var(--bg-2, rgba(255, 255, 255, 0.03)); }
+        .pc-benchtrend__caption { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 3px; font-size: 10.5px; font-weight: 650; color: var(--fg-mute, #7f9bb4); }
         .pc-benchtrend__caption em { font-style: normal; font-weight: 500; opacity: 0.8; }
-        .pc-benchtrend svg { display: block; width: 100%; height: auto; }
+        .pc-benchtrend__caption button { display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--fg-mute); cursor: pointer; }
+        .pc-benchtrend__caption button:hover { color: var(--fg); border-color: var(--border-strong); }
+        .pc-benchtrend svg { display: block; width: 100%; height: 72px; transition: height 160ms ease; }
+        .pc-benchtrend.is-expanded svg { height: 180px; }
         .pc-benchtrend__grid { stroke: rgba(255, 255, 255, 0.08); stroke-width: 1; stroke-dasharray: 3 4; }
         .pc-benchtrend__axis { fill: var(--fg-mute, #7f9bb4); font-size: 9.5px; font-variant-numeric: tabular-nums; }
         .pc-benchtrend__line { stroke: #34d399; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }

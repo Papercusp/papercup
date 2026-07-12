@@ -598,6 +598,10 @@ function ImprovementsView({
       (digest?.humanQueue ?? []).filter((item) => !src || item.source === src),
     [digest, src],
   );
+  const sparseRows = useMemo(
+    () => [...(digest?.autoEligible ?? []), ...(digest?.humanQueue ?? [])],
+    [digest],
+  );
 
   const resolved = digest?.byState?.resolved ?? 0;
   const showDashboard = (digest?.open ?? 0) >= 4;
@@ -622,11 +626,24 @@ function ImprovementsView({
         title="Improvements"
         signal={digest ? `${digest.open} open` : undefined}
         tone={digest && digest.open === 0 ? "good" : "accent"}
+        action={
+          <button
+            type="button"
+            className="pc-learning__refresh"
+            aria-label="Reload the improvements feed"
+            disabled={sync.fetching}
+            onClick={() => sync.invalidate()}
+          >
+            <RefreshCw size={13} aria-hidden />
+          </button>
+        }
       />
-      <LearningDisclosure label="Loop diagnostics">
-        {digest?.flow ? <FlowStrip flow={digest.flow} /> : null}
-        <LearningEfficacyPanel />
-      </LearningDisclosure>
+      {showDashboard ? (
+        <LearningDisclosure label="Loop diagnostics">
+          {digest?.flow ? <FlowStrip flow={digest.flow} /> : null}
+          <LearningEfficacyPanel />
+        </LearningDisclosure>
+      ) : null}
 
       {digest && showDashboard ? (
         <div className="pc-learning-visual__layout pc-learning-visual__layout--improvements">
@@ -685,8 +702,8 @@ function ImprovementsView({
         />
       ) : null}
 
-      <div className="pc-learning__sectionhead">
-        <h2>Captured improvements</h2>
+      {showDashboard ? (
+        <div className="pc-learning__sectionhead pc-learning__sectionhead--tools">
         <div className="pc-learning__inlinetools">
           {sources.length > 0 ? (
             <Select
@@ -737,17 +754,9 @@ function ImprovementsView({
               </Tooltip>
             ))}
           </div>
-          <button
-            type="button"
-            className="pc-learning__refresh"
-            aria-label="Reload the improvements feed"
-            disabled={sync.fetching}
-            onClick={() => sync.invalidate()}
-          >
-            <RefreshCw size={13} aria-hidden />
-          </button>
         </div>
-      </div>
+        </div>
+      ) : null}
 
       {sync.loading && !digest ? (
         <p className="pc-learning__empty">Loading the improvements backlog…</p>
@@ -755,8 +764,19 @@ function ImprovementsView({
         <p className="pc-learning__empty">
           Improvements feed unavailable: {sync.error.message}
         </p>
-      ) : rows.length === 0 ? (
+      ) : (showDashboard ? rows : sparseRows).length === 0 ? (
         <LearningVisualEmpty icon={CheckCircle2} title="Nothing in this lane" />
+      ) : !showDashboard ? (
+        <ul className="pc-learning__list pc-learning__list--direct">
+          {sparseRows.map((it) => (
+            <ImprovementRow
+              key={it.id}
+              item={it}
+              selected={it.id === lsel}
+              onDismissSelect={() => void setLsel(null)}
+            />
+          ))}
+        </ul>
       ) : lane === "all" ? (
         <div
           className={`pc-learning__lanegrid${autoRows.length === 0 || humanRows.length === 0 ? " is-single" : ""}`}
@@ -1084,13 +1104,14 @@ function GymView({
   const snap = sync.data?.[0];
   const proposals = snap?.proposals ?? [];
   const autoloops = snap?.autoloops ?? [];
+  const activeAutoloops = autoloops.filter(
+    (autoloop) => autoloop.enabled || autoloop.status === "running",
+  );
 
   const champions = proposals.filter((p) => p.status === "accepted").length;
   const pending = proposals.filter((p) => p.status === "pending").length;
   const rejected = proposals.filter((p) => p.status === "rejected").length;
-  const running = autoloops.filter(
-    (a) => a.enabled || a.status === "running",
-  ).length;
+  const running = activeAutoloops.length;
   useEffect(() => {
     onStatus?.(
       sync.error
@@ -1166,9 +1187,9 @@ function GymView({
         </div>
       ) : null}
 
-      {autoloops.length > 0 && (
+      {activeAutoloops.length > 0 && (
         <div className="pc-learning__loops" aria-label="Gym autoloops">
-          {autoloops.map((a) => (
+          {activeAutoloops.map((a) => (
             <span
               key={a.harnessSlug}
               className={`pc-learning__loop pc-learning__loop--${a.status}`}
@@ -1330,7 +1351,7 @@ function ApiaryView({
       sync.error
         ? "bad"
         : pending
-          ? "warn"
+          ? "good"
           : latest && latest.successRate >= 0.8
             ? "good"
             : "neutral",
@@ -1399,7 +1420,7 @@ function ApiaryView({
         }
         tone={
           pending
-            ? "warn"
+            ? "accent"
             : latest && latest.successRate >= 0.8
               ? "good"
               : "neutral"
@@ -2142,35 +2163,38 @@ function GradePanel({
             ? "Pick a grade — 5 counts as a win for this lens, 1 as a loss."
             : `★${grade} — ${GRADE_MEANING[grade]}`}
         </span>
-      </div>
-      <textarea
-        value={draft}
-        rows={2}
-        maxLength={2000}
-        aria-label="Grading note"
-        placeholder={`Why? ${t("scout")} quotes recent grading notes to the next cycle’s ideators.`}
-        onChange={(e) => setDraft(e.target.value)}
-      />
-      <div className="pc-learning__gradepanelactions">
         <button
           type="button"
-          className="pc-learning__panelbtn"
+          className="pc-learning__panelbtn pc-learning__gradecancel"
           onClick={onClose}
         >
           cancel
         </button>
-        <button
-          type="button"
-          className="pc-learning__panelbtn pc-learning__panelbtn--primary"
-          disabled={grade == null || busy}
-          onClick={() => {
-            if (grade != null)
-              onSave(grade, draft.trim() ? draft.trim() : null);
-          }}
-        >
-          {busy ? "saving…" : "save grade"}
-        </button>
       </div>
+      {grade != null ? (
+        <>
+          <textarea
+            value={draft}
+            rows={2}
+            maxLength={2000}
+            aria-label="Grading note"
+            placeholder={`Why? ${t("scout")} quotes recent grading notes to the next cycle’s ideators.`}
+            onChange={(e) => setDraft(e.target.value)}
+          />
+          <div className="pc-learning__gradepanelactions">
+            <button
+              type="button"
+              className="pc-learning__panelbtn pc-learning__panelbtn--primary"
+              disabled={busy}
+              onClick={() =>
+                onSave(grade, draft.trim() ? draft.trim() : null)
+              }
+            >
+              {busy ? "saving…" : "save grade"}
+            </button>
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }
@@ -3112,17 +3136,22 @@ export function LearningStyles() {
       .pc-learning__stage-icon {
         position: relative; z-index: 1; display: grid; place-items: center; width: 30px; height: 30px;
         border: 1px solid var(--border-strong); border-radius: 50%; background: var(--bg-1); color: var(--fg-mute);
-        transition: color var(--dur-fast), border-color var(--dur-fast), background var(--dur-fast);
+        transition: color var(--dur-fast), border-color var(--dur-fast), background var(--dur-fast), box-shadow var(--dur-fast);
       }
       .pc-learning__stage-line {
         position: absolute; z-index: 0; top: 15px; left: calc(50% + 15px); width: calc(100% - 30px); height: 1px;
         background: var(--border-strong); pointer-events: none;
       }
       .pc-learning__stage-label { font-size: 11px; font-weight: 650; }
-      .pc-learning__statusdot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--fg-mute); box-shadow: 0 0 0 2px color-mix(in srgb, var(--fg-mute) 10%, transparent); }
-      .pc-learning__statusdot.is-good { background: #34d399; box-shadow: 0 0 0 2px color-mix(in srgb, #34d399 13%, transparent); }
-      .pc-learning__statusdot.is-warn { background: #fbbf24; box-shadow: 0 0 0 2px color-mix(in srgb, #fbbf24 13%, transparent); }
-      .pc-learning__statusdot.is-bad { background: #fb7185; box-shadow: 0 0 0 2px color-mix(in srgb, #fb7185 13%, transparent); }
+      .pc-learning__statusmark { position: absolute; right: -2px; bottom: -2px; width: 7px; height: 7px; border: 2px solid var(--bg-1); border-radius: 50%; background: var(--fg-mute); }
+      .pc-learning__stage-icon.has-active, .pc-learning__view-icon.has-active { --learning-status: var(--accent); }
+      .pc-learning__stage-icon.has-attention, .pc-learning__view-icon.has-attention { --learning-status: #fbbf24; }
+      .pc-learning__stage-icon.has-failure, .pc-learning__view-icon.has-failure { --learning-status: #fb7185; }
+      .pc-learning__stage-icon.has-dormant, .pc-learning__view-icon.has-dormant { --learning-status: var(--fg-mute); }
+      .pc-learning__stage-icon[class*="has-"], .pc-learning__view-icon[class*="has-"] { border-color: color-mix(in srgb, var(--learning-status) 64%, var(--border)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--learning-status) 8%, transparent); }
+      .pc-learning__stage-icon.has-dormant, .pc-learning__view-icon.has-dormant { border-style: dashed; box-shadow: none; opacity: .78; }
+      .pc-learning__stage-icon .pc-learning__statusmark, .pc-learning__view-icon .pc-learning__statusmark { background: var(--learning-status); }
+      .pc-learning__stage-icon.has-active .pc-learning__statusmark { box-shadow: 0 0 5px color-mix(in srgb, var(--learning-status) 70%, transparent); }
       .pc-learning__stage:hover .pc-learning__stage-icon { color: var(--fg); border-color: var(--stage-accent); background: var(--bg-2); }
       .pc-learning__stage[aria-selected="true"] { color: var(--fg); }
       .pc-learning__stage[aria-selected="true"] .pc-learning__stage-icon {
@@ -3138,6 +3167,8 @@ export function LearningStyles() {
         color: var(--fg-mute); cursor: pointer; font: inherit; font-size: 11.5px; font-weight: 620;
         transition: color var(--dur-fast), border-color var(--dur-fast), background var(--dur-fast);
       }
+      .pc-learning__view-icon { position: relative; display: grid; place-items: center; width: 18px; height: 18px; flex: none; border: 1px solid transparent; border-radius: 50%; }
+      .pc-learning__view-icon .pc-learning__statusmark { right: -3px; bottom: -3px; width: 6px; height: 6px; border-width: 1.5px; }
       .pc-learning__view-tab:hover { color: var(--fg); background: color-mix(in srgb, var(--accent) 5%, transparent); }
       .pc-learning__view-tab[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
 
@@ -3163,6 +3194,11 @@ export function LearningStyles() {
         .pc-learning__stage-line { left: calc(50% + 15px); width: calc(100% - 30px); }
         .pc-learning__rubricsplit:has(.pc-learning__rubricdetail) { grid-template-columns: 1fr; overflow: auto; }
         .pc-learning__rubricdetail { min-height: 420px; }
+      }
+      @media (max-width: 1100px) {
+        .pc-learning__view-tabs[data-stage="verify"] .pc-learning__view-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+        .pc-learning__view-tabs[data-stage="verify"] .pc-learning__view-tab { padding-inline: 7px; }
+        .pc-learning__view-tabs[data-stage="verify"] .pc-learning__view-icon { width: 22px; height: 22px; }
       }
 
       /* Flow strip (P-041) — compact in/out chips above the stock scoreboard. */
@@ -3204,6 +3240,7 @@ export function LearningStyles() {
 
       .pc-learning__section { display: flex; flex-direction: column; gap: 7px; }
       .pc-learning__sectionhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+      .pc-learning__sectionhead--tools { justify-content: flex-end; min-height: 28px; }
       .pc-learning__sectionhead h2 { margin: 0; font-size: 13px; font-weight: 720; text-transform: uppercase; letter-spacing: 0; color: var(--fg-dim, #b9d4e8); }
       .pc-learning__inlinetools { display: inline-flex; align-items: center; gap: 8px; }
       .pc-learning__lanes { display: inline-flex; gap: 4px; }
@@ -3282,6 +3319,7 @@ export function LearningStyles() {
       .pc-learning__notebtn:hover { color: var(--fg-dim, #b9d4e8); border-color: var(--border-strong, rgba(125, 211, 252, 0.32)); }
       .pc-learning__gradepanel { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 7px; margin-top: 7px; padding-top: 9px; border-top: 1px dashed var(--border, rgba(125, 211, 252, 0.2)); cursor: default; }
       .pc-learning__gradepanelrow { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+      .pc-learning__gradecancel { margin-left: auto; }
       .pc-learning__gradepanelhint { font-size: 11px; color: var(--fg-mute, #7f9bb4); }
       .pc-learning__gradepanel textarea { background: var(--bg-2, rgba(255, 255, 255, 0.03)); border: 1px solid var(--border, rgba(125, 211, 252, 0.2)); border-radius: 7px; color: var(--fg, #e7f7ff); font-size: 12px; font-family: inherit; line-height: 1.45; padding: 6px 9px; resize: vertical; }
       .pc-learning__gradepanelactions { display: flex; justify-content: flex-end; gap: 8px; }
@@ -3356,8 +3394,8 @@ export function LearningStyles() {
       .pc-learning__idea-filters button:hover, .pc-learning__idea-filters button[aria-pressed="true"] { border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); background: color-mix(in srgb, var(--accent) 8%, var(--bg-2)); color: var(--fg); }
       .pc-learning__idea-filters button > i { width: 6px; height: 6px; border-radius: 50%; }
       .pc-learning__idea-filters strong { color: var(--fg); font-size: 10px; font-variant-numeric: tabular-nums; }
-      .pc-learning__pendingrun { display: flex; align-items: center; gap: 7px; min-height: 30px; padding: 5px 9px; border: 1px solid color-mix(in srgb, #fbbf24 34%, var(--border)); border-radius: 8px; background: color-mix(in srgb, #fbbf24 6%, transparent); color: var(--fg-mute); font-size: 10.5px; }
-      .pc-learning__pendingrun svg { color: #fbbf24; }
+      .pc-learning__pendingrun { display: flex; align-items: center; gap: 7px; min-height: 30px; padding: 5px 9px; border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--accent) 6%, transparent); color: var(--fg-mute); font-size: 10.5px; }
+      .pc-learning__pendingrun svg { color: var(--accent); }
       .pc-learning__pendingrun strong { color: var(--fg); font-family: var(--font-mono, ui-monospace, monospace); }
       .pc-learning__pendingrun em { margin-left: auto; color: var(--fg-mute); font-style: normal; font-variant-numeric: tabular-nums; }
       .pc-learning__provenance { display: inline-grid; place-items: center; width: 18px; height: 18px; border: 1px solid var(--border); border-radius: 50%; color: var(--fg-mute); }

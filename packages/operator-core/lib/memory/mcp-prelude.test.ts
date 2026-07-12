@@ -11,7 +11,7 @@ vi.mock('./insights-index', async () => {
   };
 });
 
-import { buildMcpPrelude, _testing } from './mcp-prelude';
+import { buildMcpPrelude, initializeQueryForHarness, _testing } from './mcp-prelude';
 import { buildMemoryContextBlock } from './injection';
 import { readInsightsDir } from './insights-index';
 
@@ -60,8 +60,8 @@ describe('buildMcpPrelude — flag gating', () => {
   });
 });
 
-describe('buildMcpPrelude — harness slug resolution', () => {
-  it('reads harness from URL param', async () => {
+describe('buildMcpPrelude — harness slug resolution + launch-profile query (D-005)', () => {
+  it('reads harness from URL param and queries with the harness identity', async () => {
     vi.mocked(buildMemoryContextBlock).mockResolvedValue('## Memory\n- foo');
     const url = new URL('http://op/api/mcp?superuser=1&harness=sheets');
     const r = await buildMcpPrelude({ userId: 'u1', workspaceId: 'w1', url });
@@ -69,13 +69,16 @@ describe('buildMcpPrelude — harness slug resolution', () => {
       userId: 'u1',
       workspaceId: 'w1',
       harnessSlugs: ['sheets'],
-      queryContext: '',
+      // D-005 owner-approved rung: harness-bound sessions DO vector-query
+      // at initialize, with the harness-identity query.
+      queryContext: initializeQueryForHarness('sheets'),
     });
+    expect(initializeQueryForHarness('sheets')).toContain('sheets');
     expect(r?.sources.harnessSlug).toBe('sheets');
     expect(r?.sources.harnessSource).toBe('env');
   });
 
-  it('omits harness when no URL param + no cwd', async () => {
+  it('bare session (no harness): empty query — recall defers to turn-start', async () => {
     vi.mocked(buildMemoryContextBlock).mockResolvedValue('## Memory\n- foo');
     const r = await buildMcpPrelude({ userId: 'u1', workspaceId: 'w1' });
     expect(buildMemoryContextBlock).toHaveBeenCalledWith({
@@ -84,7 +87,25 @@ describe('buildMcpPrelude — harness slug resolution', () => {
       harnessSlugs: [],
       queryContext: '',
     });
+    expect(initializeQueryForHarness(null)).toBe('');
     expect(r?.sources.harnessSlug).toBeNull();
+  });
+
+  it('explicit queryContext overrides the derived one (P-007 resolver seam)', async () => {
+    vi.mocked(buildMemoryContextBlock).mockResolvedValue('## Memory\n- foo');
+    const url = new URL('http://op/api/mcp?superuser=1&harness=sheets');
+    await buildMcpPrelude({ userId: 'u1', workspaceId: 'w1', url, queryContext: 'RESOLVER Q' });
+    expect(buildMemoryContextBlock).toHaveBeenCalledWith(
+      expect.objectContaining({ queryContext: 'RESOLVER Q' }),
+    );
+  });
+
+  it('sessionId plumbs the epoch-ledger identity under port initialize (P-002)', async () => {
+    vi.mocked(buildMemoryContextBlock).mockResolvedValue('## Memory\n- foo');
+    await buildMcpPrelude({ userId: 'u1', workspaceId: 'w1', sessionId: 'sid-42' });
+    expect(buildMemoryContextBlock).toHaveBeenCalledWith(
+      expect.objectContaining({ session: { sessionId: 'sid-42', port: 'initialize' } }),
+    );
   });
 });
 

@@ -12,6 +12,7 @@
  * DemandPanel) so the LearningTab wiring stays one line. Defensive about the row
  * shape — anything unexpected renders the empty state, never a crash.
  */
+import { useEffect } from "react";
 import { useSyncQuery } from "@papercusp/sync";
 import { FlaskConical, RefreshCw } from "lucide-react";
 import type { ExperimentRunSummary } from "@papercusp/operator-core/lib/experiment/ledger";
@@ -48,7 +49,11 @@ function scoreLabel(n: number | null): string {
   return n === null || Number.isNaN(n) ? "—" : n.toFixed(1);
 }
 
-export function ExperimentsPanel() {
+export function ExperimentsPanel({
+  onStatus,
+}: {
+  onStatus?: (status: "neutral" | "good" | "warn" | "bad") => void;
+} = {}) {
   const sync = useSyncQuery<ExperimentRunSummary>({
     queryName: "learning.experiments",
     args: {},
@@ -64,6 +69,19 @@ export function ExperimentsPanel() {
     latestArms.find((arm) => arm.id !== latest?.winner) ?? null;
   const visible = runs.slice(0, 4);
   const earlier = runs.slice(4);
+  useEffect(() => {
+    onStatus?.(
+      sync.error
+        ? "bad"
+        : !latest
+          ? "neutral"
+          : latest.decision === "applied"
+            ? "good"
+            : latest.decision === "rejected"
+              ? "bad"
+              : "warn",
+    );
+  }, [latest, onStatus, sync.error]);
 
   const renderRun = (r: (typeof runs)[number]) => {
     const arms = Array.isArray(r.arms) ? r.arms : [];

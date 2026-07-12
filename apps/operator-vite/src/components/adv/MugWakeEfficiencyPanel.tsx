@@ -15,6 +15,7 @@
  * about the snapshot shape — anything but the expected aggregate renders the
  * no-wakes state, never a crash.
  */
+import { useEffect } from "react";
 import { useSyncQuery } from "@papercusp/sync";
 import { Crown, RefreshCw } from "lucide-react";
 import { useLexicon } from "@/lib/useLexicon";
@@ -40,7 +41,11 @@ function compact(n: number): string {
   return String(Math.round(n));
 }
 
-export function MugWakeEfficiencyPanel() {
+export function MugWakeEfficiencyPanel({
+  onStatus,
+}: {
+  onStatus?: (status: "neutral" | "good" | "warn" | "bad") => void;
+} = {}) {
   const t = useLexicon();
   const sync = useSyncQuery<MugWakeEfficiency>({
     queryName: "learning.mugWakeEfficiency",
@@ -53,6 +58,17 @@ export function MugWakeEfficiencyPanel() {
   const recent = samples.slice(0, 8);
   const visible = recent.slice(0, 4);
   const earlier = recent.slice(4);
+  useEffect(() => {
+    onStatus?.(
+      sync.error
+        ? "bad"
+        : !snap || wakes === 0
+          ? "neutral"
+          : snap.cacheHitRatio >= 0.7
+            ? "good"
+            : "warn",
+    );
+  }, [onStatus, snap, sync.error, wakes]);
 
   const renderWake = (s: (typeof recent)[number], i: number) => {
     const prompt = s.cacheReadTokens + s.cacheCreationTokens + s.inputTokens;

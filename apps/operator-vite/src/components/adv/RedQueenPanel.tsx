@@ -16,6 +16,7 @@
  * about the snapshot shape — anything but the expected {classes: []} renders
  * the empty state, never a crash.
  */
+import { useEffect } from "react";
 import { useSyncQuery } from "@papercusp/sync";
 import { HeartPulse, RefreshCw } from "lucide-react";
 import type { MttshVitals } from "@papercusp/operator-core/lib/red-queen/mttsh";
@@ -41,7 +42,11 @@ function dateShort(iso: string | null): string {
     : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-export function RedQueenPanel() {
+export function RedQueenPanel({
+  onStatus,
+}: {
+  onStatus?: (status: "neutral" | "good" | "warn" | "bad") => void;
+} = {}) {
   const sync = useSyncQuery<MttshVitals>({
     queryName: "learning.redQueen",
     args: {},
@@ -61,6 +66,17 @@ export function RedQueenPanel() {
   const triage = phaseAverage("triageMs");
   const fix = phaseAverage("fixMs");
   const phaseTotal = Math.max(1, detect + triage + fix);
+  useEffect(() => {
+    onStatus?.(
+      sync.error
+        ? "bad"
+        : classes.length === 0 || !snap
+          ? "neutral"
+          : snap.leakFailures > 0
+            ? "bad"
+            : "good",
+    );
+  }, [classes.length, onStatus, snap, sync.error]);
 
   return (
     <section
