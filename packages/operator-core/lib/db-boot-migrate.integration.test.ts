@@ -23,7 +23,7 @@
  *     collects the bad one in `failed`, and coord-broadcasts the failure — and
  *     never throws (boot continues).
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi, type Mock } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
@@ -37,7 +37,12 @@ import { applyPendingMigrations } from '@papercusp/embedded-postgres-server';
 const h = vi.hoisted(() => ({
   bootUrl: '' as string,
   bootSqlDir: '' as string,
-  sendMessage: undefined as unknown as ReturnType<typeof vi.fn>,
+  // TS6/vitest4: `ReturnType<typeof vi.fn>` resolves to `Mock<Procedure |
+  // Constructable>`, whose call signature is not directly invocable (TS2348,
+  // WI-2017). This holder is BOTH called directly (line ~59) AND read via
+  // `.mock.calls` / `toHaveBeenCalledTimes` (below) — a concrete function-typed
+  // `Mock<...>` supports both.
+  sendMessage: undefined as unknown as Mock<(...args: unknown[]) => Promise<void>>,
 }));
 
 // db-boot-migrate builds its OWN max:1 client from getHarnessAdminUrl() and
