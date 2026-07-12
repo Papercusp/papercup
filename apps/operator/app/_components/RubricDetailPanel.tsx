@@ -268,16 +268,16 @@ export default function RubricDetailPanel({
         </div>
       )}
       <style>{`
-        .pc-rubric-detail { display: flex; flex-direction: column; gap: 12px; min-height: 100%; padding: 14px; background: var(--bg-1); }
-        .pc-rubric-detail__head { display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; align-items: center; padding-bottom: 11px; border-bottom: 1px solid var(--border); }
+        .pc-rubric-detail { display: flex; flex-direction: column; gap: 9px; min-height: 100%; padding: 10px; background: var(--bg-1); }
+        .pc-rubric-detail__head { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: center; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
         .pc-rubric-detail__head > span { grid-column: 1; color: var(--fg-mute); font-size: 9.5px; font-weight: 750; text-transform: uppercase; letter-spacing: 0; }
         .pc-rubric-detail__head > strong { grid-column: 1; overflow: hidden; color: var(--fg); font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
         .pc-rubric-detail__head button { grid-column: 2; grid-row: 1 / 3; display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 7px; background: transparent; color: var(--fg-mute); cursor: pointer; }
         .pc-rubric-detail__overview { display: grid; grid-template-columns: 1.4fr repeat(3, minmax(70px, 1fr)); gap: 7px; }
-        .pc-rubric-detail__overview > div { display: flex; flex-direction: column; justify-content: center; gap: 3px; min-height: 68px; padding: 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); }
+        .pc-rubric-detail__overview > div { display: flex; flex-direction: column; justify-content: center; gap: 2px; min-height: 54px; padding: 7px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); }
         .pc-rubric-detail__overview span { color: var(--fg-mute); font-size: 8.5px; font-weight: 700; text-transform: uppercase; }
-        .pc-rubric-detail__overview strong { color: var(--fg); font-size: 18px; font-variant-numeric: tabular-nums; }
-        .pc-rubric-detail__overview .pc-rubric-detail__hero strong { color: var(--accent); font-size: 28px; letter-spacing: 0; }
+        .pc-rubric-detail__overview strong { color: var(--fg); font-size: 16px; font-variant-numeric: tabular-nums; }
+        .pc-rubric-detail__overview .pc-rubric-detail__hero strong { color: var(--accent); font-size: 23px; letter-spacing: 0; }
         .pc-rubric-detail__overview small { color: var(--fg-mute); font-size: 9px; }
         .pc-rubric-detail__overview .is-good strong { color: #34d399; }
         .pc-rubric-detail__overview .is-bad strong { color: #fb7185; }

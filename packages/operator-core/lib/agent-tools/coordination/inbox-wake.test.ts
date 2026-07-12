@@ -11,17 +11,23 @@ vi.mock('../../events/await/engine', () => ({ emitAwaitedEvent: vi.fn() }));
 vi.mock('./recipient-resolve', async (importActual) => ({
   ...(await importActual<typeof import('./recipient-resolve')>()),
   resolveBestEffortAgainstRoster: vi.fn(async (recipients: readonly string[]) => [...recipients]),
+  // EI-9971: default to "roster unavailable" (null = fail OPEN) so every EXISTING
+  // test below (none of which mock this) keeps staging exactly as before — only
+  // the dedicated tests further down override it to exercise the skip path.
+  knownOwnerIdSet: vi.fn(async () => null),
 }));
 
 import { wakeRecipients, buildStagedWakeNote } from './inbox-wake';
 import { resolveWakeMode } from './wake-mode';
 import { stagePendingWake } from './pending-wakes';
 import { emitAwaitedEvent } from '../../events/await/engine';
+import { knownOwnerIdSet } from './recipient-resolve';
 
 beforeEach(() => {
   vi.mocked(resolveWakeMode).mockResolvedValue('auto' as never);
   vi.mocked(stagePendingWake).mockResolvedValue(undefined as never);
   vi.mocked(emitAwaitedEvent).mockResolvedValue({ woken: 1 } as never);
+  vi.mocked(knownOwnerIdSet).mockResolvedValue(null);
 });
 afterEach(() => vi.clearAllMocks());
 

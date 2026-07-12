@@ -65,6 +65,7 @@ export default function ObservationsPanel(
 ) {
   const [itemPlans] = useItemPlanFilter();
   const [limit, setLimit] = useState(OBSERVATIONS_PAGE);
+  const [signalFilter, setSignalFilter] = useState<string | null>(null);
   const itemPlanKey = itemPlans.join("\u0000");
   useEffect(() => setLimit(OBSERVATIONS_PAGE), [itemPlanKey]);
 
@@ -75,23 +76,38 @@ export default function ObservationsPanel(
   });
   // Keep cached rows painted while a larger window or push invalidation refetches.
   const allRows = query.data ?? [];
-  const rows = useMemo(
+  const scopedRows = useMemo(
     () =>
       itemPlans.length
         ? allRows.filter((row) => observationMatchesPlan(row, itemPlans))
         : allRows,
     [allRows, itemPlans],
   );
+  const rows = useMemo(
+    () =>
+      signalFilter
+        ? scopedRows.filter((row) => (row.kind ?? "other") === signalFilter)
+        : scopedRows,
+    [scopedRows, signalFilter],
+  );
   const total = readListTotal(query.data);
   const hasMore = allRows.length < total;
   const signalCounts = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const row of rows) {
+    for (const row of scopedRows) {
       const kind = row.kind ?? "other";
       counts.set(kind, (counts.get(kind) ?? 0) + 1);
     }
     return [...counts.entries()].sort((a, b) => b[1] - a[1]);
-  }, [rows]);
+  }, [scopedRows]);
+  useEffect(() => {
+    if (
+      signalFilter &&
+      !signalCounts.some(([kind]) => kind === signalFilter)
+    ) {
+      setSignalFilter(null);
+    }
+  }, [signalCounts, signalFilter]);
   const loadMore = useCallback(
     () => setLimit((current) => current + OBSERVATIONS_PAGE),
     [],
@@ -206,9 +222,15 @@ export default function ObservationsPanel(
             aria-label="Loaded signal distribution"
           >
             {signalCounts.map(([kind, count]) => (
-              <span
+              <button
+                type="button"
                 key={kind}
                 title={`${KIND_LABEL[kind] ?? kind}: ${count}`}
+                aria-label={`Filter by ${KIND_LABEL[kind] ?? kind}, ${count}`}
+                aria-pressed={signalFilter === kind}
+                onClick={() =>
+                  setSignalFilter((current) => (current === kind ? null : kind))
+                }
                 style={{
                   background: OBSERVATION_KIND_COLOR[kind] ?? "var(--accent)",
                   flexGrow: count,
@@ -226,7 +248,9 @@ export default function ObservationsPanel(
               fontVariantNumeric: "tabular-nums",
             }}
           >
-            {itemPlans.length ? `${rows.length} / ${total}` : total}
+            {itemPlans.length || signalFilter
+              ? `${rows.length} / ${total}`
+              : total}
           </span>
         ) : null}
         <button
@@ -249,8 +273,8 @@ export default function ObservationsPanel(
         </div>
       ) : rows.length === 0 ? (
         <div style={{ color: "var(--fg-mute)", padding: 12 }}>
-          {itemPlans.length
-            ? "No observations match the selected plan."
+          {itemPlans.length || signalFilter
+            ? "No observations match the selected filters."
             : "No observations yet — they appear as agents reflect at the end of their turns."}
         </div>
       ) : (
@@ -266,8 +290,9 @@ export default function ObservationsPanel(
       <style>{`
         .pc-observations__toolbar { min-height: 30px; display: flex; align-items: center; justify-content: flex-end; gap: 9px; }
         .pc-observations__distribution { display: flex; flex: 1 1 auto; max-width: 360px; height: 6px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--fg) 5%, transparent); }
-        .pc-observations__distribution span { min-width: 4px; opacity: .82; transition: opacity 140ms ease; }
-        .pc-observations__distribution span:hover { opacity: 1; }
+        .pc-observations__distribution button { min-width: 4px; padding: 0; border: 0; border-radius: 0; opacity: .72; cursor: pointer; transition: opacity 140ms ease, filter 140ms ease; }
+        .pc-observations__distribution button:hover, .pc-observations__distribution button[aria-pressed="true"] { opacity: 1; filter: saturate(1.35) brightness(1.08); }
+        .pc-observations__distribution button[aria-pressed="true"] { box-shadow: inset 0 0 0 1px color-mix(in srgb, white 65%, transparent); }
         .pc-observations__signal { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-dim); font-size: 10.5px; font-weight: 680; }
         .pc-observations__signal i { width: 7px; height: 7px; flex: none; border-radius: 50%; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 6%, transparent); }
       `}</style>

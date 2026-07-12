@@ -44,6 +44,17 @@ export const rubricCriterionSchema = z
       .min(1)
       .optional()
       .describe("optional per-criterion override of the rubric's default rating scale"),
+    replication: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "the criterion's own REPLICATION DRILL — the full end-to-end testing procedure a future " +
+          'agent can copy-run to re-grade this criterion (fixtures → verbatim subject prompt → ' +
+          'spawn/measurement → grading queries → cleanup). Structured slot, so a rubric revision ' +
+          "can't silently drop it as 'verbose method prose' (WI-4287; rubrics:propose loss-guards " +
+          'key off it)',
+      ),
   })
   .strict();
 

@@ -174,7 +174,7 @@ export default function LearningTab() {
     parseAsStringEnum<LView>([...LVIEWS]).withDefault("improvements"),
   );
   const [, setAdvTab] = useQueryState("tab", parseAsString);
-  const [rubricId, setRubricId] = useState<string | null>(null);
+  const [rubricId, setRubricId] = useQueryState("rrubric", parseAsString);
   // Tab-level per-Hive lens (per-hive-learning-loops P-042): ONE `?lhive=` param,
   // promoted up from the Learnings sub-view so it applies across every hive-aware
   // view. Agents drive it via ui:dispatch; the hive-creation success card
@@ -409,10 +409,14 @@ function LearningViewContent({
   if (view === "rubrics") {
     return (
       <div className="pc-learning__rubricsplit">
-        <RubricsPanel onSelect={onRubricSelect} />
+        <RubricsPanel
+          onSelect={onRubricSelect}
+          selectedId={rubricId}
+          compact={Boolean(rubricId)}
+        />
         {rubricId ? (
           <aside
-            className="pc-learning__rubricdrawer"
+            className="pc-learning__rubricdetail"
             aria-label="Rubric evidence"
           >
             <RubricDetailPanel
@@ -512,8 +516,10 @@ function ImprovementsView({ hive }: { hive: string }) {
         signal={digest ? `${digest.open} open` : undefined}
         tone={digest && digest.open === 0 ? "good" : "accent"}
       />
-      {digest?.flow ? <FlowStrip flow={digest.flow} /> : null}
-      <LearningEfficacyPanel />
+      <LearningDisclosure label="Loop diagnostics">
+        {digest?.flow ? <FlowStrip flow={digest.flow} /> : null}
+        <LearningEfficacyPanel />
+      </LearningDisclosure>
 
       {digest ? (
         <div className="pc-learning-visual__layout pc-learning-visual__layout--improvements">
@@ -591,7 +597,13 @@ function ImprovementsView({ hive }: { hive: string }) {
             role="tablist"
             aria-label="Triage lane"
           >
-            {LANES.map((l) => (
+            {LANES.filter(
+              (l) =>
+                l === "all" ||
+                (l === "auto"
+                  ? (digest?.autoEligible.length ?? 0) > 0
+                  : (digest?.humanQueue.length ?? 0) > 0),
+            ).map((l) => (
               <Tooltip
                 key={l}
                 label={
@@ -639,8 +651,10 @@ function ImprovementsView({ hive }: { hive: string }) {
       ) : rows.length === 0 ? (
         <LearningVisualEmpty icon={CheckCircle2} title="Nothing in this lane" />
       ) : lane === "all" ? (
-        <div className="pc-learning__lanegrid">
-          <section className="pc-learning__lanecol is-auto">
+        <div
+          className={`pc-learning__lanegrid${autoRows.length === 0 || humanRows.length === 0 ? " is-single" : ""}`}
+        >
+          {autoRows.length > 0 ? <section className="pc-learning__lanecol is-auto">
             <header>
               <span>Automatic</span>
               <strong>{autoRows.length}</strong>
@@ -655,8 +669,8 @@ function ImprovementsView({ hive }: { hive: string }) {
                 />
               ))}
             </ul>
-          </section>
-          <section className="pc-learning__lanecol is-human">
+          </section> : null}
+          {humanRows.length > 0 ? <section className="pc-learning__lanecol is-human">
             <header>
               <span>Review</span>
               <strong>{humanRows.length}</strong>
@@ -671,7 +685,7 @@ function ImprovementsView({ hive }: { hive: string }) {
                 />
               ))}
             </ul>
-          </section>
+          </section> : null}
         </div>
       ) : (
         <ul className="pc-learning__list">
@@ -981,7 +995,7 @@ function GymView({ hive }: { hive: string }) {
         }
       />
 
-      {snap ? (
+      {snap && (proposals.length > 0 || autoloops.length > 0) ? (
         <div className="pc-learning-visual__layout pc-learning-visual__layout--gym">
           <LearningHeroMetric
             eyebrow="Champions"
@@ -2197,11 +2211,22 @@ export function ScoutView() {
   // server derives gradedBy from the caller — C-3); owner regrade is always
   // allowed, so the stars stay interactive on graded rows.
   const [gradeOpen, setGradeOpen] = useQueryState("grade", parseAsString);
+  const [railFilter, setRailFilter] = useQueryState("irail", parseAsString);
+  const [showEarlier, setShowEarlier] = useState(false);
   const [optimistic, setOptimistic] = useState<Record<string, EffectiveGrade>>(
     {},
   );
   const [savingId, setSavingId] = useState("");
   const [gradeError, setGradeError] = useState("");
+  const filteredRecent = useMemo(
+    () =>
+      railFilter
+        ? recent.filter((item) => item.rail === railFilter)
+        : recent,
+    [railFilter, recent],
+  );
+  const queueItems = showEarlier ? filteredRecent : filteredRecent.slice(0, 8);
+  useEffect(() => setShowEarlier(false), [railFilter]);
 
   const effectiveGrade = (item: ScoutRoutedItem): EffectiveGrade | null => {
     const opt = optimistic[item.ideaId];
@@ -2362,7 +2387,17 @@ export function ScoutView() {
               const share =
                 snap.totalRouted > 0 ? rail.count / snap.totalRouted : 0;
               return (
-                <span key={rail.rail} title={meta?.desc}>
+                <button
+                  type="button"
+                  key={rail.rail}
+                  title={meta?.desc}
+                  aria-pressed={railFilter === rail.rail}
+                  onClick={() =>
+                    void setRailFilter(
+                      railFilter === rail.rail ? null : rail.rail,
+                    )
+                  }
+                >
                   <em>{meta?.label ?? rail.rail}</em>
                   <b>
                     <i
@@ -2373,7 +2408,7 @@ export function ScoutView() {
                     />
                   </b>
                   <strong>{rail.count}</strong>
-                </span>
+                </button>
               );
             })}
           </div>
@@ -2381,6 +2416,7 @@ export function ScoutView() {
       ) : null}
 
       {lensEntries.length > 0 ? (
+        <LearningDisclosure label="Lens weights" count={lensEntries.length}>
         <div className="pc-learning__flow" aria-label="Lens sampling weights">
           <span
             className="pc-learning__flowchip"
@@ -2403,6 +2439,7 @@ export function ScoutView() {
             </span>
           ))}
         </div>
+        </LearningDisclosure>
       ) : null}
 
       <div className="pc-learning__sectionhead">
@@ -2417,7 +2454,7 @@ export function ScoutView() {
         <p className="pc-learning__empty">
           {t("scout")} feed unavailable: {sync.error.message}
         </p>
-      ) : recent.length === 0 ? (
+      ) : filteredRecent.length === 0 ? (
         <LearningVisualEmpty icon={Radar} title={`No routed ideas`} />
       ) : (
         <>
@@ -2427,7 +2464,7 @@ export function ScoutView() {
             </p>
           ) : null}
           <ul className="pc-learning__list">
-            {recent.map((item) => {
+            {queueItems.map((item) => {
               const meta = RAIL_META[item.rail] ?? {
                 label: item.rail,
                 desc: "Routed idea",
@@ -2488,54 +2525,35 @@ export function ScoutView() {
                     <span className="pc-learning__age">
                       {!Number.isNaN(when) ? whenLabel(when) : ""}
                     </span>
-                    {/* Grade controls (P-006). A bare star click writes immediately
-                        (preserving any existing note); the note button opens the
-                        popover. stopPropagation so grading never opens the artifact. */}
                     <span
                       className="pc-learning__grade"
                       onClick={(e) => e.stopPropagation()}
                       onKeyDown={(e) => e.stopPropagation()}
                     >
-                      <StarControl
-                        value={eff?.grade ?? null}
-                        busy={saving}
-                        onRate={(n) =>
-                          void submitGrade(item, n, eff?.feedback ?? null)
-                        }
-                      />
                       {eff ? (
                         <span
                           className="pc-learning__gradechip"
                           title={
                             eff.feedback
                               ? `Graded by ${graderLabel(eff.gradedBy, t("brain"))}: “${eff.feedback}”`
-                              : `Graded by ${graderLabel(eff.gradedBy, t("brain"))} — click the stars to regrade (your grade always wins)`
+                              : `Graded by ${graderLabel(eff.gradedBy, t("brain"))}`
                           }
                         >
                           ★{eff.grade} · {graderLabel(eff.gradedBy, t("brain"))}
                         </span>
                       ) : null}
-                      <Tooltip
-                        label={
-                          eff?.feedback
-                            ? `Edit the grading note: “${eff.feedback}”`
-                            : "Grade with a note — ideators read recent notes next cycle"
-                        }
-                      >
+                      <Tooltip label={eff ? "Review this grade" : "Grade this idea"}>
                         <button
                           type="button"
                           className="pc-learning__notebtn"
-                          aria-label={
-                            eff?.feedback
-                              ? "Edit the grading note"
-                              : "Grade with a note"
-                          }
+                          aria-label={eff ? "Review idea grade" : "Grade this idea"}
+                          aria-expanded={isOpen}
                           onClick={() =>
                             void setGradeOpen(isOpen ? null : item.ideaId)
                           }
                         >
-                          {eff?.feedback ? (
-                            <MessageSquareText size={12} aria-hidden />
+                          {eff ? (
+                            <Star size={12} fill="currentColor" aria-hidden />
                           ) : (
                             <MessageSquarePlus size={12} aria-hidden />
                           )}
@@ -2559,6 +2577,18 @@ export function ScoutView() {
               );
             })}
           </ul>
+          {filteredRecent.length > 8 ? (
+            <button
+              type="button"
+              className="pc-learning__earlierbtn"
+              aria-expanded={showEarlier}
+              onClick={() => setShowEarlier((current) => !current)}
+            >
+              {showEarlier
+                ? "Show decision queue only"
+                : `Earlier routed ideas · ${filteredRecent.length - 8}`}
+            </button>
+          ) : null}
         </>
       )}
     </section>
@@ -2578,6 +2608,10 @@ function LearningsView({ hive }: { hive: string }) {
   const [lpack, setLpack] = useQueryState(
     "lpack",
     parseAsString.withDefault("all"),
+  );
+  const [selectedLearning, setSelectedLearning] = useQueryState(
+    "lretain",
+    parseAsString,
   );
 
   const sync = useSyncQuery<HiveLearningsSnapshot>({
@@ -2723,10 +2757,12 @@ function LearningsView({ hive }: { hive: string }) {
     padding: "1px 7px",
   };
 
-  const renderLearning = (r: HiveLearningRowT) => (
+  const renderLearning = (r: HiveLearningRowT) => {
+    const selected = selectedLearning === r.id;
+    return (
     <li
       key={r.id}
-      className="pc-learning__row"
+      className={`pc-learning__row pc-learning__row--retained${selected ? " is-selected" : ""}`}
       style={{ alignItems: "flex-start" }}
     >
       <span
@@ -2737,15 +2773,21 @@ function LearningsView({ hive }: { hive: string }) {
         }}
         aria-hidden
       />
-      <span style={{ flex: 1, minWidth: 0 }}>
+      <span
+        className="pc-learning__retainedmain"
+        role="button"
+        tabIndex={0}
+        aria-expanded={selected}
+        onClick={() => void setSelectedLearning(selected ? null : r.id)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            void setSelectedLearning(selected ? null : r.id);
+          }
+        }}
+      >
         <span
-          style={{
-            display: "block",
-            fontSize: 12.5,
-            lineHeight: 1.5,
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
-          }}
+          className={`pc-learning__retainedtext${selected ? " is-expanded" : ""}`}
         >
           {r.text}
         </span>
@@ -2786,7 +2828,7 @@ function LearningsView({ hive }: { hive: string }) {
           {r.kind ? <span>{r.kind}</span> : null}
         </span>
       </span>
-      <span style={{ display: "flex", gap: 6, marginTop: 2 }}>
+      {selected ? <span className="pc-learning__retainedactions">
         <Tooltip label="Edit the learning text">
           <button type="button" style={actionBtn} onClick={() => void edit(r)}>
             edit
@@ -2803,9 +2845,10 @@ function LearningsView({ hive }: { hive: string }) {
             remove
           </button>
         </Tooltip>
-      </span>
+      </span> : null}
     </li>
-  );
+    );
+  };
 
   return (
     <>

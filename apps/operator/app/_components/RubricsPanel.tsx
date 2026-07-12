@@ -40,8 +40,12 @@ function formatWhen(iso: string | null): string {
 
 export default function RubricsPanel({
   onSelect,
+  selectedId = null,
+  compact = false,
 }: {
   onSelect?: (rubricId: string) => void;
+  selectedId?: string | null;
+  compact?: boolean;
 }) {
   const { data, error, loading } = useSyncQuery<RubricRow>({
     queryName: "rubrics.list",
@@ -162,9 +166,24 @@ export default function RubricsPanel({
       ),
     },
   ];
+  const visibleColumns = compact
+    ? columns.filter((column) =>
+        ["rubric", "avgScore", "lastGraded"].includes(column.key),
+      )
+    : columns;
 
   return (
-    <section className="pc-rubrics" aria-label="Rubric coverage">
+    <section
+      className={`pc-rubrics${compact ? " is-compact" : ""}`}
+      aria-label="Rubric coverage"
+    >
+      {compact ? (
+        <div className="pc-rubrics__compact-summary">
+          <span><strong>{rows.length}</strong> rubrics</span>
+          <span><strong>{avgScore == null ? "—" : avgScore.toFixed(1)}</strong> average</span>
+          <span><strong>{fresh}</strong> fresh</span>
+        </div>
+      ) : (
       <div className="pc-rubrics__overview">
         <div className="pc-rubrics__hero">
           <span>Average</span>
@@ -199,15 +218,28 @@ export default function RubricsPanel({
           ))}
         </div>
       </div>
-      <Table
-        caption={`${rows.length} rubric${rows.length === 1 ? "" : "s"}`}
-        columns={columns}
-        rows={rows}
-        getRowKey={(row) => row.rubricId}
-        onRowClick={onSelect ? (row) => onSelect(row.rubricId) : undefined}
-      />
+      )}
+      <div className="pc-rubrics__tablewrap">
+        <Table
+          caption={`${rows.length} rubric${rows.length === 1 ? "" : "s"}`}
+          columns={visibleColumns}
+          rows={rows}
+          getRowKey={(row) => row.rubricId}
+          onRowClick={onSelect ? (row) => onSelect(row.rubricId) : undefined}
+          isRowSelected={selectedId ? (row) => row.rubricId === selectedId : undefined}
+        />
+      </div>
       <style>{`
         .pc-rubrics { height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+        .pc-rubrics__tablewrap { min-height: 0; overflow: auto; }
+        .pc-rubrics.is-compact { gap: 7px; }
+        .pc-rubrics__compact-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+        .pc-rubrics__compact-summary span { display: inline-flex; align-items: baseline; gap: 4px; padding: 4px 7px; border: 1px solid var(--border); border-radius: 999px; color: var(--fg-mute); font-size: 9.5px; }
+        .pc-rubrics__compact-summary strong { color: var(--fg); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+        .pc-rubrics.is-compact table { table-layout: fixed; }
+        .pc-rubrics.is-compact th, .pc-rubrics.is-compact td { padding: 5px 6px !important; }
+        .pc-rubrics.is-compact th:first-child { width: 54%; }
+        .pc-rubrics.is-compact .pc-rubrics__score { grid-template-columns: minmax(32px, 1fr) 24px; gap: 4px; }
         .pc-rubrics__overview { display: grid; grid-template-columns: minmax(150px, .55fr) 116px minmax(220px, 1.8fr); gap: 10px; align-items: stretch; }
         .pc-rubrics__hero, .pc-rubrics__ring, .pc-rubrics__pulse { border: 1px solid var(--border); border-radius: 10px; background: var(--bg-2); }
         .pc-rubrics__hero { display: grid; grid-template-columns: auto 1fr auto; align-items: end; gap: 5px; padding: 13px 15px; }

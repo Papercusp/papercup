@@ -9,6 +9,7 @@ import {
   resolveRecipients,
   resolveBestEffortAgainstRoster,
   resetKnownOwnerIdsCache,
+  knownOwnerIdSet,
 } from './recipient-resolve';
 import { listPresence } from './presence';
 import { listRecordedLiveSessions } from '../../adv-sessions';
@@ -223,6 +224,43 @@ describe('resolveBestEffortAgainstRoster (host wrapper — broadcast short-circu
     expect(await resolveBestEffortAgainstRoster(['s-1782352639138'])).toEqual([
       's-1782352639138-43ed80c0',
     ]);
+  });
+});
+
+// EI-9971: the roster-membership set a caller uses to gate a PERSISTENT side
+// effect (staging a pending_wakes row) on "is this a real agent", distinct
+// from resolveBestEffortAgainstRoster's deliberate passthrough-on-no-match.
+describe('knownOwnerIdSet (EI-9971 — membership check for gating persistent side effects)', () => {
+  beforeEach(() => {
+    resetKnownOwnerIdsCache();
+    mockedList.mockReset();
+    mockedRecorded.mockReset();
+    mockedRecorded.mockResolvedValue([]);
+  });
+
+  it('returns a Set containing every known local agent', async () => {
+    mockedList.mockResolvedValue(roster(KNOWN));
+    const set = await knownOwnerIdSet();
+    expect(set).not.toBeNull();
+    expect(set!.has('su-df00939e-1f16-410d-ac0d-ef1aebd41d96')).toBe(true);
+    expect(set!.has('su-garbage-id-nobody-owns')).toBe(false);
+  });
+
+  it('returns null (fail OPEN, not "nothing known") when the roster is empty', async () => {
+    mockedList.mockResolvedValue(roster([]));
+    expect(await knownOwnerIdSet()).toBeNull();
+  });
+
+  it('returns null (fail OPEN) when the roster read throws', async () => {
+    mockedList.mockRejectedValue(new Error('transient PG error'));
+    expect(await knownOwnerIdSet()).toBeNull();
+  });
+
+  it('shares the same memoized roster fetch resolveBestEffortAgainstRoster reads (no extra DB cost)', async () => {
+    mockedList.mockResolvedValue(roster(KNOWN));
+    await resolveBestEffortAgainstRoster(['su-df00939e']);
+    await knownOwnerIdSet();
+    expect(mockedList).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -29,7 +29,7 @@ import { listActiveAwaitsForKey } from '../../events/await/store';
 import { resolveWakeMode } from './wake-mode';
 import { stagePendingWake } from './pending-wakes';
 import { listPresence } from './presence';
-import { resolveBestEffortAgainstRoster, isSelectorOrWildcard } from './recipient-resolve';
+import { resolveBestEffortAgainstRoster, isSelectorOrWildcard, knownOwnerIdSet } from './recipient-resolve';
 
 /** Prefix for the per-agent inbox-wake key. A bee watches `inboxWakeKey(self)`;
  *  a `{wake:true}` send to that bee fires exactly this key. */
@@ -151,6 +151,11 @@ export async function wakeRecipients(
   // isLoopWakeSource). The source is per-CALL, so compute once. Everything else still honors
   // the per-agent manual pause/edit gate exactly as before (default-preserving).
   const bypassManualGate = isLoopWakeSource(opts.source);
+  // EI-9971: known-roster check for the STAGING branch only (see knownOwnerIdSet's
+  // doc) — reuses the same short-TTL roster cache resolveBestEffortAgainstRoster
+  // just read above, so this costs nothing extra. `null` = roster unavailable/empty
+  // → fail OPEN (never suppress staging just because we couldn't check).
+  const roster = await knownOwnerIdSet(opts.workspaceId);
   type TargetOutcome =
     | { kind: 'staged'; ownerId: string }
     | { kind: 'fired'; key: string; woken: number }
@@ -167,6 +172,19 @@ export async function wakeRecipients(
           manual = false; // mode store unreadable → default auto (fire)
         }
         if (manual) {
+          // EI-9971: a target that matches NO known agent (local, recorded-session, or
+          // federated) would stage a `pending_wakes` row nobody can ever review/release —
+          // pure debris until the hourly dead-owner sweep's grace window lapses. Skip
+          // staging (never fire it either — firing a key nobody watches is a harmless
+          // no-op, but the manual gate means we'd stage, not fire). `roster === null`
+          // (unavailable/empty) fails OPEN — stage as before rather than guess.
+          if (roster !== null && !roster.has(ownerId)) {
+            console.warn(
+              `[inbox-wake] skipping wake-stage for unresolvable recipient "${ownerId}" ` +
+                '(matches no known local/recorded/federated agent — would be undeletable debris).',
+            );
+            return { kind: 'skipped' };
+          }
           try {
             await stagePendingWake({
               ownerId,

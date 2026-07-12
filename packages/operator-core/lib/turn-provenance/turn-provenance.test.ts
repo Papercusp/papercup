@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   appendLedgerRow,
   classify,
+  detectMachineSurface,
   formatEnvelope,
   gcLedgerDir,
   isTurnOrigin,

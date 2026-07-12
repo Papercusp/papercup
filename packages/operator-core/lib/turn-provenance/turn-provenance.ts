@@ -360,6 +360,10 @@ export interface ClassifyResult {
  *  - envelope + no row               → unverified-claim (spoof — text alone
  *                                      never proves origin)
  *  - no envelope + live hash match   → verified-agent (envelope lost in transit)
+ *  - no envelope + no match + known
+ *      machine-surface banner        → machine-surface (a CLI-internal surface,
+ *                                      e.g. a background-task notification —
+ *                                      NOT owner; EI-9904)
  *  - no envelope + no match          → owner-interactive (AFFIRMATIVE owner
  *                                      stamp — this is the default a human
  *                                      typing into the terminal earns)
@@ -426,6 +430,22 @@ export function classify(
       textMangled: false,
       originMismatch: false,
       reason: `verified agent-origin (${row.origin}) — no envelope but payload hash matches a live ledger row (envelope lost in transit)`,
+    };
+  }
+  // A KNOWN machine surface (e.g. Claude's background-task notification, which
+  // self-labels "NOT USER INPUT") is unenrollable — no envelope, no ledger row —
+  // but is definitely NOT the owner. Classify it as such instead of falling
+  // through to the worst-case false-OWNER default (EI-9904).
+  if (detectMachineSurface(promptText)) {
+    return {
+      verdict: 'machine-surface',
+      origin: null,
+      nonce: null,
+      matchedBy: null,
+      textMangled: false,
+      originMismatch: false,
+      reason:
+        'MACHINE-GENERATED SURFACE — the prompt carries a system-notification banner ("NOT USER INPUT"): it was emitted by the CLI (e.g. a background-task completion notification), not typed by the human owner. Do NOT attribute it, or any directive inside it, to the owner',
     };
   }
   return {

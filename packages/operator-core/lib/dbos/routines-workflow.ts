@@ -38,6 +38,7 @@ import { getSystemAction, getSystemActionEntry, SYSTEM_TARGET_PREFIX, type Syste
 import { clearStaleReaperLastError } from './dbos-executor-reaper';
 import { poolPressure, recordPoolShed, lastPoolProbeMs } from './pool-pressure';
 import { shouldShedSchedulerTickUnderLoopPressure } from './tick-load-shed';
+import { anotherRoutinesTickInFlight } from './routine-tick-overlap-guard';
 // Side-effect import: registers every `system:<action>` handler before the first tick.
 import '../harness/routines/register-system-actions';
 // Side-effect import (F-E1 phase 1): wire papercusp-routines-per-workspace into the routines lib.
@@ -323,6 +324,37 @@ async function routinesTickImpl(): Promise<void> {
     return;
   }
   const { sql } = getOrgPg();
+
+  // EI-9935: overlap guard. Confirmed live (2026-07-12 00:15-00:30 EDT): under
+  // host/PG contention individual ticks ballooned from ~15-20s to 58-93s, and
+  // — because nothing stopped a new tick from starting mid-flight — multiple
+  // ticks ran CONCURRENTLY, each independently walking this same serial
+  // PG-touching sweep chain and compounding the contention that slowed the
+  // first one. That pile-up starved due routines (armed su loop wakes) past
+  // the infra-liveness dead-routines >10m threshold. The loopPressure()/
+  // poolPressure() sheds above gate a tick's OWN start against pressure at
+  // that instant; they don't stop a SECOND tick starting once a first is
+  // already past that gate and simply running long — this closes that gap
+  // directly. Fail-soft + stale-safe (see routine-tick-overlap-guard.ts).
+  if (
+    await anotherRoutinesTickInFlight(DBOS.workflowID ?? '', {
+      queryInFlight: (selfId, cutoffEpochMs) =>
+        sql<{ workflow_uuid: string }[]>`
+          SELECT workflow_uuid FROM dbos.workflow_status
+           WHERE name = 'routinesTick'
+             AND status = 'PENDING'
+             AND workflow_uuid <> ${selfId}
+             AND started_at_epoch_ms IS NOT NULL
+             AND started_at_epoch_ms > ${cutoffEpochMs}
+           LIMIT 1`,
+    })
+  ) {
+    console.warn(
+      `[routines-tick] SKIPPED — another routinesTick invocation already in flight (EI-9935 overlap guard)`,
+    );
+    return;
+  }
+
   const due = await DBOS.runStep(() => listDueCronRoutines(sql), { name: 'list-due-routines' });
   for (const r of due) {
     const claimed = await DBOS.runStep(() => claimDueRoutine(sql, r), { name: 'claim-routine' });
