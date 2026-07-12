@@ -149,6 +149,17 @@ const ALLOWLIST: Record<string, Classification> = {
     status: 'exempt',
     reason: 'a delivery-history LOG row (what was sent to whom) — not a live subscription or claim.',
   },
+  'event_await_nodes.subscriber_id': {
+    status: 'exempt',
+    reason:
+      'composable-event-awaits (migration 572): the interior/root threshold-tree nodes. The WAKE routes ' +
+      "through the tree's ANCHOR event_awaits row (fireComposedRoot → insertComposedRootDelivery uses " +
+      "anchor.subscriberId), and event_awaits.subscriber_id IS re-keyed (the 'awaits' surface) — so a rebind " +
+      'still delivers the composed wake to the live sid. No presence-tied reaper keys on this table (the ' +
+      'timeout sweep keys on expires_ts, a TTL); the node subscriber_id is read only by listActiveComposedRoots ' +
+      'for the events:status tree render, so a stale sid means the tree does not render under the new sid — a ' +
+      'display nit, not a stranded claim. Same class as event_wake_deliveries/coord_entity_subscriptions.',
+  },
   'voice_lease.owner_id': {
     status: 'exempt',
     reason: 'a TTL-expiring lease (its own expires_ts governs reclaim) — not reaped by presence liveness of the owner id.',

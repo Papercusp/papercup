@@ -34,9 +34,17 @@ vi.mock('../../auth', () => ({
 vi.mock('@papercusp/agent-mcp', () => ({
   defineTool: (def: unknown) => def,
 }));
-vi.mock('../../harness-registry', () => ({
-  loadHarnessRegistry: vi.fn(async () => ({ projects: [{ slug: 'papercup' }] })),
-}));
+// Spread the REAL module and override only loadHarnessRegistry: a hand-listed
+// factory silently drops every other export and breaks the instant a transitive
+// re-export (revocation-reaper.ts → deregisterEphemeralForeignHarness) references
+// a dropped name — which is exactly how this suite reds. importOriginal can't drift.
+vi.mock('../../harness-registry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../harness-registry')>();
+  return {
+    ...actual,
+    loadHarnessRegistry: vi.fn(async () => ({ projects: [{ slug: 'papercup' }] })),
+  };
+});
 // db-org is left REAL: the timeout path returns before any getOrgPg() call
 // (anchor-persist / feedback-rerank are post-success), and mocking the module
 // wholesale drops its `generated` export that transitive imports rely on.
