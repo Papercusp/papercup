@@ -36,15 +36,26 @@ describe('Scout outcome-feedback (P-013 / D-009)', () => {
     const feed = new Map<string, ChangeFeedEntry>([
       ['plan:foo', entry({ ref: 'plan:foo', kind: 'plan-run', title: 'Plan completed: foo' })],
       ['wi:EI-1', entry({ ref: 'wi:EI-1', kind: 'completion', detail: 'Status: resolved' })],
-      ['gym:a', entry({ ref: 'gym:a', kind: 'proposal', title: 'Accepted prompt for worker', detail: 'Status: accepted' })],
-      ['gym:b', entry({ ref: 'gym:b', kind: 'proposal', title: 'Rejected prompt for worker', detail: 'Status: rejected' })],
-      ['gym:c', entry({ ref: 'gym:c', kind: 'proposal', title: 'Superseded prompt for worker', detail: 'Status: superseded' })],
+      [
+        'gym:a',
+        entry({ ref: 'gym:a', kind: 'proposal', title: 'Accepted prompt for worker', detail: 'Status: accepted' }),
+      ],
+      [
+        'gym:b',
+        entry({ ref: 'gym:b', kind: 'proposal', title: 'Rejected prompt for worker', detail: 'Status: rejected' }),
+      ],
+      [
+        'gym:c',
+        entry({ ref: 'gym:c', kind: 'proposal', title: 'Superseded prompt for worker', detail: 'Status: superseded' }),
+      ],
       // status only in the title (detail absent) — fallback path
       ['gym:d', entry({ ref: 'gym:d', kind: 'proposal', title: 'Accepted prompt for scoper' })],
     ]);
 
     it('pending when the routed artifact is not yet in the feed', () => {
-      expect(classifyIdeaOutcome(prov({ lens: 'analogical', routedRef: 'plan:missing', rail: 'plan' }), feed)).toBe('pending');
+      expect(classifyIdeaOutcome(prov({ lens: 'analogical', routedRef: 'plan:missing', rail: 'plan' }), feed)).toBe(
+        'pending',
+      );
     });
 
     it('plan-run present = won', () => {
@@ -52,17 +63,27 @@ describe('Scout outcome-feedback (P-013 / D-009)', () => {
     });
 
     it('work-item completion present = won', () => {
-      expect(classifyIdeaOutcome(prov({ lens: 'reframing', routedRef: 'wi:EI-1', rail: 'improvement' }), feed)).toBe('won');
+      expect(classifyIdeaOutcome(prov({ lens: 'reframing', routedRef: 'wi:EI-1', rail: 'improvement' }), feed)).toBe(
+        'won',
+      );
     });
 
     it('gym accepted = won, rejected/superseded = lost', () => {
-      expect(classifyIdeaOutcome(prov({ lens: 'first-principles', routedRef: 'gym:a', rail: 'gym' }), feed)).toBe('won');
-      expect(classifyIdeaOutcome(prov({ lens: 'first-principles', routedRef: 'gym:b', rail: 'gym' }), feed)).toBe('lost');
-      expect(classifyIdeaOutcome(prov({ lens: 'first-principles', routedRef: 'gym:c', rail: 'gym' }), feed)).toBe('lost');
+      expect(classifyIdeaOutcome(prov({ lens: 'first-principles', routedRef: 'gym:a', rail: 'gym' }), feed)).toBe(
+        'won',
+      );
+      expect(classifyIdeaOutcome(prov({ lens: 'first-principles', routedRef: 'gym:b', rail: 'gym' }), feed)).toBe(
+        'lost',
+      );
+      expect(classifyIdeaOutcome(prov({ lens: 'first-principles', routedRef: 'gym:c', rail: 'gym' }), feed)).toBe(
+        'lost',
+      );
     });
 
     it('reads gym status from the title when detail is absent', () => {
-      expect(classifyIdeaOutcome(prov({ lens: 'constraint-removal', routedRef: 'gym:d', rail: 'gym' }), feed)).toBe('won');
+      expect(classifyIdeaOutcome(prov({ lens: 'constraint-removal', routedRef: 'gym:d', rail: 'gym' }), feed)).toBe(
+        'won',
+      );
     });
   });
 
@@ -122,7 +143,9 @@ describe('Scout outcome-feedback (P-013 / D-009)', () => {
       ];
       const provenance: RoutedIdeaProvenance[] = [
         ...['gym:win1', 'gym:win2', 'gym:win3'].map((ref) => prov({ lens: 'analogical', routedRef: ref, rail: 'gym' })),
-        ...['gym:lose1', 'gym:lose2', 'gym:lose3'].map((ref) => prov({ lens: 'reframing', routedRef: ref, rail: 'gym' })),
+        ...['gym:lose1', 'gym:lose2', 'gym:lose3'].map((ref) =>
+          prov({ lens: 'reframing', routedRef: ref, rail: 'gym' }),
+        ),
       ];
       const r = computeLensOutcomes(provenance, completions, { minShare: 0.05 });
       expect(r.byLens.analogical.weight).toBeGreaterThan(r.byLens.reframing.weight);
@@ -415,10 +438,7 @@ describe('Scout outcome-feedback (P-013 / D-009)', () => {
     });
 
     it('honors a custom floorFraction (0 → pure normalization)', () => {
-      const w = samplingWeightsWithFloor<CreativeLens>(
-        { analogical: 3, reframing: 1 },
-        { floorFraction: 0 },
-      );
+      const w = samplingWeightsWithFloor<CreativeLens>({ analogical: 3, reframing: 1 }, { floorFraction: 0 });
       expect(w.analogical).toBeCloseTo(0.75, 10);
       expect(w.reframing).toBeCloseTo(0.25, 10);
       expect(w['first-principles']).toBe(0);

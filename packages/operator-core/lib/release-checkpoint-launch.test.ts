@@ -93,7 +93,10 @@ describe('launchDetachedCheckpoint', () => {
     const r = await p;
     expect(r.launched).toBe(true);
     expect(r.unit).toBe(checkpointUnitForRoot('/tree'));
-    expect(spawnFn).toHaveBeenCalledWith('systemd-run', expect.arrayContaining([`--unit=${checkpointUnitForRoot('/tree')}`]));
+    expect(spawnFn).toHaveBeenCalledWith(
+      'systemd-run',
+      expect.arrayContaining([`--unit=${checkpointUnitForRoot('/tree')}`]),
+    );
   });
 
   it('resolves launched:false with a reason when the unit already exists (non-zero exit)', async () => {
@@ -138,9 +141,11 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
   it('reports active:true with started_at, a bounded eta_sec, and the parsed candidate when the unit is active', () => {
     const startedAt = new Date(Date.now() - 5 * 60_000).toISOString(); // started 5 min ago
     const execFn = vi.fn((cmd: string, args: string[]) => {
-      if (cmd === 'systemctl') return fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: startedAt })(cmd, args);
-      if (cmd === 'git' && args.slice(-2).join(' ') === 'rev-parse HEAD') return { status: 0, stdout: '98817077fd79af9dfee00076a1c6e90445d268af\n', stderr: '' };
-      if (cmd === 'git' && args.includes('--format=%ct')) return { status: 0, stdout: String(Math.floor(Date.now() / 1000) - 500), stderr: '' };
+      if (cmd === 'systemctl') return fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: startedAt })();
+      if (cmd === 'git' && args.slice(-2).join(' ') === 'rev-parse HEAD')
+        return { status: 0, stdout: '98817077fd79af9dfee00076a1c6e90445d268af\n', stderr: '' };
+      if (cmd === 'git' && args.includes('--format=%ct'))
+        return { status: 0, stdout: String(Math.floor(Date.now() / 1000) - 500), stderr: '' };
       return { status: 1, stdout: '', stderr: '' };
     });
     const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate 98817077 (base 94b17b25)\n...');
@@ -164,14 +169,20 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
     const currentHead = '3333333333333333333333333333333333333333';
     const quietCandidate = '2222222222222222222222222222222222222222';
     const execFn = vi.fn((cmd: string, args: string[]) => {
-      if (cmd === 'systemctl') return fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: startedAt })(cmd, args);
-      if (cmd === 'git' && args.slice(-2).join(' ') === 'rev-parse HEAD') return { status: 0, stdout: `${currentHead}\n`, stderr: '' };
-      if (cmd === 'git' && args.includes('--format=%ct')) return { status: 0, stdout: String(Math.floor(Date.now() / 1000) - 30), stderr: '' };
+      if (cmd === 'systemctl') return fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: startedAt })();
+      if (cmd === 'git' && args.slice(-2).join(' ') === 'rev-parse HEAD')
+        return { status: 0, stdout: `${currentHead}\n`, stderr: '' };
+      if (cmd === 'git' && args.includes('--format=%ct'))
+        return { status: 0, stdout: String(Math.floor(Date.now() / 1000) - 30), stderr: '' };
       if (cmd === 'git' && args.includes('rev-list')) return { status: 0, stdout: `${quietCandidate}\n`, stderr: '' };
       if (cmd === 'git' && args.includes('ready')) return { status: 1, stdout: '', stderr: '' };
       return { status: 1, stdout: '', stderr: '' };
     });
-    const r = checkActiveCheckpointRun('/tree', execFn, () => `[green-checkpoint] checkpointing candidate ${oldCandidate.slice(0, 8)} (base def)\n`);
+    const r = checkActiveCheckpointRun(
+      '/tree',
+      execFn,
+      () => `[green-checkpoint] checkpointing candidate ${oldCandidate.slice(0, 8)} (base def)\n`,
+    );
 
     expect(r).toMatchObject({
       active: true,
@@ -208,7 +219,11 @@ describe('checkActiveCheckpointRun MainPID liveness cross-check (EI-9180 self-he
   }
 
   it('self-heals: ActiveState says active but the reported MainPID is provably dead → active:false', () => {
-    const execFn = fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: '2026-07-10T12:20:44Z', MainPID: '99999' });
+    const execFn = fakeSystemctlShow({
+      ActiveState: 'active',
+      ExecMainStartTimestamp: '2026-07-10T12:20:44Z',
+      MainPID: '99999',
+    });
     const pidAlive = vi.fn(() => false); // the PID systemd names no longer exists
     const r = checkActiveCheckpointRun('/tree', execFn, () => null, pidAlive);
     expect(pidAlive).toHaveBeenCalledWith(99999);
@@ -244,14 +259,22 @@ describe('checkActiveCheckpointRun MainPID liveness cross-check (EI-9180 self-he
 
   it('default pidAlive probe uses kill(pid, 0): the current process (self) reads as alive', () => {
     // No injected pidAlive — exercise the real default against our OWN pid, guaranteed alive.
-    const execFn = fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: new Date().toISOString(), MainPID: String(process.pid) });
+    const execFn = fakeSystemctlShow({
+      ActiveState: 'active',
+      ExecMainStartTimestamp: new Date().toISOString(),
+      MainPID: String(process.pid),
+    });
     const r = checkActiveCheckpointRun('/tree', execFn, () => null);
     expect(r.active).toBe(true);
   });
 
   it('default pidAlive probe: an implausible/reserved PID (1 is always alive as init; use a huge unused one) reads as dead', () => {
     // PID space wraps well below 2**22 on Linux; a value past any real max is guaranteed absent.
-    const execFn = fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: new Date().toISOString(), MainPID: '4194304' });
+    const execFn = fakeSystemctlShow({
+      ActiveState: 'active',
+      ExecMainStartTimestamp: new Date().toISOString(),
+      MainPID: '4194304',
+    });
     const r = checkActiveCheckpointRun('/tree', execFn, () => null);
     expect(r).toEqual({ active: false, unit: checkpointUnitForRoot('/tree') });
   });
