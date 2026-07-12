@@ -159,6 +159,18 @@ export default defineTool({
             "the generative stance that produced this idea — Scout's four creative lenses (analogical / first-principles / reframing / constraint-removal) + the su stances (risk-first = de-risk the riskiest assumption; user-value = backward from felt owner/user value; cost-leverage = small change, big recurring cost). Declaring it earns per-lens outcome feedback on YOUR ideas (P-004); omitted = recorded under the 'su-ideate' sentinel (no per-lens learning)",
           ),
         bet: z.string().max(2000).optional().describe('the bet — the concrete upside if the idea pans out (persisted to the created item payload, payload.ideation)'),
+        // EI-10607: the GROUNDING leg. Without it the su-ideate rail could not write
+        // addresses_pattern_refs at all (no su-reachable verb accepted them — only Scout's
+        // internal router did), so observationsImpact.ideasGrounded/shipped were pinned at 0
+        // by construction: 122 su ideas, 0 grounded, against Scout's 24/24. The reader and the
+        // ledger column had been waiting for a writer since P-021 shipped.
+        addressesPatternRefs: z
+          .array(z.string().min(1).max(200))
+          .max(10)
+          .optional()
+          .describe(
+            "the digest meta-pattern refs this idea GROUNDS ON — the observation→pattern→idea→shipped arc is joined on this field, so an idea filed without it can never show up as grounded in anyone's observationsImpact. You already have the refs: they come back from blender:ideation-feedback as observationsImpact.patterns[].ref (e.g. 'wi:EI-10587'). Pass the pattern(s) your pass actually built on",
+          ),
         cheapExperiment: z
           .object({
             hypothesis: z.string().min(1).max(2000).describe('what we believe will be true if the idea has merit'),
@@ -277,6 +289,12 @@ export default defineTool({
             routedRef: `wi:${featureId}`,
             harnessSlug: ledgerHarness,
             title: captured.issue.title ?? args.title,
+            // EI-10607: the pattern refs this idea grounds on — the ONE field that lets an
+            // su idea appear as `grounded` in observationsImpact. Omitted when the caller
+            // declared none, so the row shape is unchanged for an ungrounded filing.
+            ...(args.ideation?.addressesPatternRefs?.length
+              ? { addressesPatternRefs: [...args.ideation.addressesPatternRefs] }
+              : {}),
           });
         } catch {
           // best-effort provenance — never affects the capture the user requested

@@ -5,6 +5,8 @@ import { coerceCaptureKind, coerceIdeateProvenance } from './capture-coerce';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { noveltyPriorArt } from '../../scout/novelty-precheck';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { recordRoutedIdea } from '../../scout/routed-ledger';
+import { computeObservationsImpact } from '../../scout/observation-impact-leg';
 
 // PG-free unit: capture-core has its own 31-test suite; this pins the tool
 // wrapper's two jobs — (1) deriving the `source` label from the caller's
@@ -17,10 +19,16 @@ vi.mock('../coordination/identity');
 // handler renders as an ABSENT priorArt field, leaving every pre-P-008 assertion
 // byte-identical; the P-008 describe below sets explicit values.
 vi.mock('../../scout/novelty-precheck', () => ({ noveltyPriorArt: vi.fn(async () => undefined) }));
+// EI-10607: the su-ideate ledger write was PG-backed and entirely UNMOCKED here, so what
+// capture passes to recordRoutedIdea was never asserted by any test — which is exactly where
+// the bug lived (it never passed addressesPatternRefs, so no su idea could ever be counted as
+// grounded). Mock it so the ledger row's CONTENTS are pinned, PG-free.
+vi.mock('../../scout/routed-ledger', () => ({ recordRoutedIdea: vi.fn(async () => undefined) }));
 
 const mockCapture = vi.mocked(captureImprovement);
 const mockIdentity = vi.mocked(resolveAgentIdentity);
 const mockPriorArt = vi.mocked(noveltyPriorArt);
+const mockRecordRoutedIdea = vi.mocked(recordRoutedIdea);
 
 function identity(source: ReturnType<typeof resolveAgentIdentity>['source'], ownerId = 'su-test') {
   return {
@@ -395,6 +403,84 @@ describe('improvements:capture — IDEATE-pass ideation persistence (su-ideate-l
   it('an empty ideation object persists nothing (absence changes nothing, D-005)', async () => {
     await callTool({ title: 'su idea', kind: 'feature', ideation: {} });
     expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ payloadExtra: undefined }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// EI-10607 — THE GROUNDING LEG. Before this, no su-reachable verb could write
+// `addresses_pattern_refs`: capture never passed it and blender:route-idea never took it
+// (only Scout's internal router did). So observationsImpact.ideasGrounded/shipped were pinned
+// at 0 BY CONSTRUCTION — 122 su ideas, 0 grounded, against Scout's 24/24 — and the zero read
+// to every agent as an honest "no impact yet".
+//
+// The load-bearing guard is the LAST one: it proves the metric CAN MOVE. Asserting only that
+// recordRoutedIdea was called with the field would pin the plumbing and still tell us nothing
+// about whether the funnel it feeds can ever report a nonzero.
+// ---------------------------------------------------------------------------
+describe('improvements:capture — the su-ideate GROUNDING leg (EI-10607)', () => {
+  const patternRef = 'wi:EI-10587';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // capture.ts maps the identity tier to its `source` label: only omp-hook-session /
+    // static-client resolve to 'su', and ONLY an 'su' source writes the ideate ledger row.
+    mockIdentity.mockReturnValue(identity('omp-hook-session'));
+    mockCapture.mockResolvedValue({ ok: true, created: true, issue: { id: 'EI-900', title: 'su idea' } } as unknown as Awaited<
+      ReturnType<typeof captureImprovement>
+    >);
+  });
+
+  it('records the declared pattern refs on the su-ideate ledger row', async () => {
+    await callTool({
+      title: 'su idea',
+      kind: 'feature',
+      ideation: { lens: 'risk-first', addressesPatternRefs: [patternRef] },
+    });
+    expect(mockRecordRoutedIdea).toHaveBeenCalledWith(
+      expect.objectContaining({ origin: 'su-ideate', addressesPatternRefs: [patternRef] }),
+    );
+  });
+
+  it('omits the key entirely when the caller grounds on nothing (row shape unchanged for an ungrounded filing)', async () => {
+    await callTool({ title: 'su idea', kind: 'feature', ideation: { lens: 'risk-first' } });
+    const arg = mockRecordRoutedIdea.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(arg).toBeDefined();
+    expect('addressesPatternRefs' in arg).toBe(false);
+  });
+
+  it('THE METRIC CAN NOW MOVE: an idea filed with a citing pattern ref lands as `grounded` in observationsImpact — and without it, cannot', async () => {
+    await callTool({
+      title: 'su idea',
+      kind: 'feature',
+      ideation: { lens: 'risk-first', addressesPatternRefs: [patternRef] },
+    });
+    const written = mockRecordRoutedIdea.mock.calls[0][0] as {
+      ideaId: string;
+      routedRef: string;
+      origin?: string;
+      addressesPatternRefs?: string[];
+    };
+
+    // My observation, and the digest pattern whose exemplar ref cites it.
+    const filings = [{ id: 'EI-10587', title: 'a recurring friction', filedAtMs: Date.now() }];
+    const patterns = [{ ref: patternRef, summary: 'the pattern', category: 'capability-gap', weight: 0.67 }];
+    const asLedgerRow = (refs: string[]) => ({
+      ideaId: written.ideaId,
+      routedRef: written.routedRef,
+      origin: written.origin,
+      outcome: 'won' as const,
+      addressesPatternRefs: refs,
+    });
+
+    // Fed the row capture ACTUALLY writes, the funnel now reports the full arc.
+    const after = computeObservationsImpact(filings, patterns, [asLedgerRow(written.addressesPatternRefs ?? [])]);
+    expect(after.summary).toMatchObject({ filings: 1, surfacedAsPattern: 1, ideasGrounded: 1, shipped: 1 });
+    expect(after.ideas[0]?.viaPatternRefs).toEqual([patternRef]);
+
+    // The PRE-FIX row (capture wrote no refs) can never be counted, however good the idea —
+    // this is the exact zero every su agent has been reading as "no impact yet".
+    const before = computeObservationsImpact(filings, patterns, [asLedgerRow([])]);
+    expect(before.summary).toMatchObject({ surfacedAsPattern: 1, ideasGrounded: 0, shipped: 0 });
   });
 });
 

@@ -27,7 +27,13 @@ const H = vi.hoisted(() => {
 });
 
 vi.mock('node:fs', async (orig) => ({ ...(await orig<typeof import('node:fs')>()), existsSync: H.existsSync }));
-vi.mock('../../../../harness-registry', () => ({ loadHarnessRegistry: H.loadHarnessRegistry }));
+vi.mock('../../../../harness-registry', () => ({
+  loadHarnessRegistry: H.loadHarnessRegistry,
+  // Pulled in via discord route → p2p-peer-grants → revocation-reaper (which imports it
+  // from harness-registry). This test full-mocks the registry (no real FS/PG graph), so
+  // every export the transitive import graph touches needs a stub here.
+  deregisterEphemeralForeignHarness: vi.fn(async () => {}),
+}));
 vi.mock('../../../../harness-project-files', () => ({ loadProjectFiles: H.loadProjectFiles, saveProjectFiles: H.saveProjectFiles }));
 
 import routes from '../discord';
