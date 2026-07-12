@@ -1419,7 +1419,7 @@ export function scoutHealthVerdict(
   ticks: ReadonlyArray<{ status: string; ideasGenerated?: number; tickAt: string }>,
   nowMs: number,
   windowMs: number = 24 * 60 * 60 * 1000,
-): ScoutHealth {
+): Omit<ScoutHealth, 'suIdeate' | 'grading'> {
   const ms = (t: { tickAt: string }) => Date.parse(t.tickAt);
   const inWin = ticks.filter((t) => Number.isFinite(ms(t)) && nowMs - ms(t) <= windowMs);
   const ran = inWin.filter((t) => t.status === 'ran');
@@ -1436,11 +1436,49 @@ export function scoutHealthVerdict(
   };
 }
 
+/**
+ * PURE: fold the su-ideate partition (origin='su-ideate' ticks, WI-4465) into
+ * the ScoutHealth.suIdeate leg. Every ideate-pass row is written status='ran'
+ * with ideasRouted ← ideasFiled (see blender:ideate-pass-record), but filter on
+ * status anyway so a future non-ran row can't inflate the pass count.
+ */
+export function suIdeateVerdict(
+  ticks: ReadonlyArray<{ status: string; ideasRouted?: number; tickAt: string }>,
+  nowMs: number,
+  windowMs: number = 24 * 60 * 60 * 1000,
+): NonNullable<ScoutHealth['suIdeate']> {
+  const ms = (t: { tickAt: string }) => Date.parse(t.tickAt);
+  const ran = ticks.filter((t) => t.status === 'ran' && Number.isFinite(ms(t)));
+  const inWin = ran.filter((t) => nowMs - ms(t) <= windowMs);
+  return {
+    passesInWindow: inWin.length,
+    ideasFiled: inWin.reduce((s, t) => s + (t.ideasRouted ?? 0), 0),
+    lastPassAt: ran.length > 0 ? ms(ran[0]) : null, // newest-first order
+  };
+}
+
 async function collectScout(ctx: HealthCtx): Promise<HealthPanel<ScoutHealth>> {
   return panelSafe<ScoutHealth>('scout', async () => {
     const { readScoutTicks } = await import('../scout/tick-ledger');
     const ticks = await readScoutTicks({ workspaceId: ctx.ws, limit: 200 });
-    const data = scoutHealthVerdict(ticks, ctx.now);
+    // WI-4465: the su-ideate partition + the routed-idea grading loop — each
+    // fail-soft (null = leg unavailable; the Scout-cycle verdict still renders).
+    let suIdeate: ScoutHealth['suIdeate'] = null;
+    try {
+      const suTicks = await readScoutTicks({ workspaceId: ctx.ws, limit: 200, origin: 'su-ideate' });
+      suIdeate = suIdeateVerdict(suTicks, ctx.now);
+    } catch { /* su-partition read unavailable */ }
+    let grading: ScoutHealth['grading'] = null;
+    try {
+      const { sql } = getOrgPg();
+      const rows = await sql<Array<{ graded: number; ungraded: number }>>`
+        SELECT (count(*) FILTER (WHERE graded_at IS NOT NULL AND graded_at > now() - interval '24 hours'))::int AS graded,
+               (count(*) FILTER (WHERE human_grade IS NULL))::int AS ungraded
+          FROM harness_shared.scout_routed_ideas
+         WHERE workspace_id = ${ctx.ws}`;
+      grading = { gradedInWindow: rows[0]?.graded ?? 0, ungraded: rows[0]?.ungraded ?? 0 };
+    } catch { /* grading read unavailable */ }
+    const data: ScoutHealth = { ...scoutHealthVerdict(ticks, ctx.now), suIdeate, grading };
     // 'warn' (not 'crit') on transport-death: this panel exists to make Scout
     // OBSERVABLE so the Overwatch can rate ideation-quality + escalate per judgment —
     // not to auto-fire an infra BLOCKER via the liveness catch-all (Scout being dead
@@ -1464,6 +1502,14 @@ async function collectScout(ctx: HealthCtx): Promise<HealthPanel<ScoutHealth>> {
         m('cycles 24h', data.ranInWindow),
         m('last run', agoMin(data.lastRanAt, ctx.now)),
         m('last tick', agoMin(data.lastTickAt, ctx.now)),
+        // WI-4465: informational partitions — omitted (not zeroed) when a leg's
+        // read was unavailable, so absence is honest rather than a fake 0.
+        ...(data.suIdeate
+          ? [m('su passes 24h', data.suIdeate.passesInWindow), m('su filed 24h', data.suIdeate.ideasFiled)]
+          : []),
+        ...(data.grading
+          ? [m('graded 24h', data.grading.gradedInWindow), m('ungraded', data.grading.ungraded)]
+          : []),
       ],
     };
   });

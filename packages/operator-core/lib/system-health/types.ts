@@ -659,6 +659,25 @@ export interface ScoutHealth {
    *  failure / dead ideator path, NOT low quality). False when no cycle ran (idle,
    *  not dead) or ideas > 0. The plan's "Scout 0 ideas/24h" signal. */
   transportDeath: boolean;
+  /** su-ideate partition (WI-4465): origin='su-ideate' passes ride the same
+   *  scout_ticks ledger (migration 571) but are deliberately excluded from the
+   *  Scout cadence/health verdict above — surfaced here as their own leg.
+   *  Informational only (never affects status); null = read unavailable. */
+  suIdeate: {
+    /** su-ideate passes recorded in the 24h window. */
+    passesInWindow: number;
+    /** Ideas filed/routed by those passes (ideas_routed ← ideasFiled mapping). */
+    ideasFiled: number;
+    /** ms epoch of the newest su-ideate pass (any window), or null. */
+    lastPassAt: number | null;
+  } | null;
+  /** Routed-idea grading loop (scout_routed_ideas, migration 234): is anyone
+   *  closing the feedback loop on routed ideas? Informational only; null = read
+   *  unavailable. `ungraded` is the all-time open grading backlog, not windowed. */
+  grading: {
+    gradedInWindow: number;
+    ungraded: number;
+  } | null;
 }
 
 /** A rating shared by the three tool-efficiency metrics (mirrors each metric

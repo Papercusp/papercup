@@ -48,6 +48,7 @@ export const SU_AGENT_BEHAVIOR_CRITERIA = [
   'blocker-and-gate-ownership',
   'peer-responsiveness',
   'knowledge-capture-and-memory-routing',
+  'recall-utilization',
   'continuity-discipline',
   'platform-mechanism-execution',
   'system-enablement',

@@ -1,8 +1,58 @@
 /**
  * Browser boundary for the server-owned coordination event-log package.
  *
- * Client-reachable operator-core modules use only the shared default workspace
- * constant. Loading the real barrel also loads its Postgres and filesystem
- * backends, which cannot be parsed into a browser bundle.
+ * Client-reachable operator-core modules import `@papercusp/coordination/event-log`
+ * (vite.config aliases the specifier HERE). Loading the real barrel would drag its
+ * Postgres and filesystem backends into the SPA graph, which cannot be parsed into
+ * a browser bundle — so this shim stands in for it and must export every VALUE
+ * those modules import.
+ *
+ * ⚠ Keep this in lockstep with the importers, or the SPA build DIES — and dies in
+ * the worst possible way. A missing export here is a rolldown MISSING_EXPORT, which
+ * is a LINK-time error: it fires AFTER vite's renderStart hook has already emptied
+ * dist/, so it does not merely fail the build, it DESTROYS the bundle that was
+ * serving and leaves a dead desktop behind a 503 (EI-10539 — this exact shim did it
+ * on 2026-07-12: `agent-tools/coordination/log.ts` began importing `PgCoordLog` and
+ * the shim did not export it). bin/vite-build-singleflight now stages builds so a
+ * red build can no longer eat dist/, and coordination-event-log-browser.test.ts
+ * fails the moment an importer reaches for a binding this shim lacks — but the
+ * cheapest place to get this right is still here.
  */
-export const DEFAULT_COORD_WORKSPACE = "default";
+export const DEFAULT_COORD_WORKSPACE = 'default';
+
+/**
+ * Browser stand-in for the Postgres CoordEventLog backend.
+ *
+ * `agent-tools/coordination/log.ts` constructs one at MODULE SCOPE
+ * (`let impl: CoordEventLog = makeDefaultLog()`), so merely importing that module
+ * in the SPA constructs this — construction must therefore be harmless and silent.
+ * Actually CALLING it is a different matter: the coord event log is a server-owned
+ * surface reached over the API, never spoken to directly from the browser. Any call
+ * here is a bug, so every method throws instead of silently no-op'ing (a silent
+ * no-op would swallow coord writes and look like flaky coordination).
+ *
+ * Methods are proxied rather than listed so this cannot drift out of date as the
+ * CoordEventLog interface grows — a new method throws too, instead of arriving as
+ * `undefined is not a function`.
+ */
+export class PgCoordLog {
+  constructor(_opts?: unknown) {
+    return new Proxy(this, {
+      get(target, prop, receiver) {
+        // Symbols (Symbol.toStringTag, Symbol.iterator, …) and `then` must answer
+        // normally — a throwing `then` makes the instance look like a broken
+        // thenable and would blow up any `await`/console.log that touches it.
+        if (typeof prop === 'symbol' || prop === 'then') {
+          return Reflect.get(target, prop, receiver);
+        }
+        return (..._args: unknown[]) => {
+          throw new Error(
+            `[browser] PgCoordLog.${String(prop)}() is server-only. The SPA must reach the ` +
+              `coordination event log through the operator API, not by constructing a PG ` +
+              `backend in the browser. (apps/operator-vite/src/shims/coordination-event-log-browser.ts)`,
+          );
+        };
+      },
+    });
+  }
+}

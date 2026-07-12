@@ -1055,7 +1055,7 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
     setClaimSpecMock.mockResolvedValue({ ok: true, revision: 1 });
   });
 
-  it('combines plan + kind filters when claimKinds is passed, BEFORE any member terminal opens', async () => {
+  it('applies a kind-only claim spec when claimKinds is passed (EI-10409), BEFORE any member terminal opens', async () => {
     const callOrder: string[] = [];
     setClaimSpecMock.mockImplementation(async () => {
       callOrder.push('setClaimSpec');
@@ -1077,13 +1077,11 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
       spec: { view: { filter: unknown } };
     };
     expect(call.cupId).toBe('fleet:drain-fleet');
-    // Plan-scoped AND kind-filtered: an `all` node combining the plan leaf with the kind leaf.
-    expect(call.spec.view.filter).toEqual({
-      all: [
-        { field: 'plan', op: '=', value: 'my-plan' },
-        { field: 'kind', op: 'in', value: ['bug', 'change'] },
-      ],
-    });
+    // EI-10409: claimKinds prefers a KIND-ONLY filter (buildFleetKindClaimSpec) over the old
+    // plan+kind `all` combo — ordinary backlog work-items don't carry `plan=` (only items
+    // PROMOTED from the plan do), so plan-ANDed-with-kind starved the exact backlog-drain
+    // flow claimKinds advertises. get_next's harness floor still scopes members to this pot.
+    expect(call.spec.view.filter).toEqual({ field: 'kind', op: 'in', value: ['bug', 'change'] });
     expect(payload.claimSpecApplied).toEqual({ ok: true, revision: 1 });
     // Order matters: the spec must land before members can race a get_next pull.
     expect(callOrder.indexOf('setClaimSpec')).toBeLessThan(callOrder.indexOf('spawnConsole'));

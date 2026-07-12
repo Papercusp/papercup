@@ -29,6 +29,7 @@ const nuqsState: Record<string, unknown> = {
   fplan: '',
   fq: '',
   fmsg: null,
+  fsys: 'system', // feed sender scope: system-origin only (default) | all (WI-4462)
   // the new communication views' selection/filter params
   conversation: null,
   cstate: 'open',
@@ -157,9 +158,15 @@ const ready = (data: unknown[] = []): Record<string, unknown> => ({
 });
 const syncKey = (queryName: string, args: Record<string, unknown> = {}) => `${queryName}:${JSON.stringify(args)}`;
 let syncResults: Record<string, Record<string, unknown>> = {};
+// The ARGS the feed last asked the server for — the sender-scope contract
+// (system_only) is invisible in the DOM, so it's asserted here (WI-4462).
+let lastFeedArgs: Record<string, unknown> | null = null;
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: ({ queryName, args = {}, enabled = true }: { queryName: string; args?: Record<string, unknown>; enabled?: boolean }) => {
-    if (queryName === 'dev.coordFeed') return mockResult;
+    if (queryName === 'dev.coordFeed') {
+      lastFeedArgs = args;
+      return mockResult;
+    }
     if (!enabled) return ready();
     return syncResults[syncKey(queryName, args)] ?? syncResults[queryName] ?? ready();
   },
@@ -206,6 +213,7 @@ import AdvConversationsTab, { composeUnifiedConversationRows, isSystemConversati
 
 beforeEach(() => {
   setQueryStates.mockReset();
+  lastFeedArgs = null;
   nuqsState.conv = 'inbox';
   nuqsState.fkind = [];
   nuqsState.fadvanced = 'closed';
@@ -213,6 +221,7 @@ beforeEach(() => {
   nuqsState.fplan = '';
   nuqsState.fq = '';
   nuqsState.fmsg = null;
+  nuqsState.fsys = 'system';
   nuqsState.cq = '';
   nuqsState.cvf = {};
   nuqsState.conversation = null;
@@ -500,6 +509,30 @@ describe('AdvConversationsTab — Create-style shell', () => {
     expect(within(detail!).getByText('please pick up the auth refactor')).toBeTruthy();
     // …and the clicked reply is now revealed inside the expanded conversation.
     expect(within(detail!).getByText('got it')).toBeTruthy();
+  });
+
+  // Regression (WI-4462, owner 2026-07-12: "clicking some of the messages brings up
+  // the conversations tab opened to the clicked message but some of them don't").
+  // The feed's sender scope was HARDCODED to system_only — so it could only ever
+  // contain envelopes from system-* actors (isSystemCoordActor). A Fleet-sidebar
+  // click on an AGENT-authored message deep-linked (?fmsg=<id>) to a row the server
+  // had filtered out: nothing to scroll to, nothing to expand, while the
+  // system-watchdog row directly above it in the same list worked fine. The scope is
+  // now URL-backed, and the sidebar deep-links with fsys=all.
+  it('defaults the feed to system-origin envelopes only', () => {
+    nuqsState.conv = 'feed';
+    render(<AdvConversationsTab />);
+    expect(lastFeedArgs?.system_only).toBe(true);
+  });
+
+  it('?fsys=all widens the feed to agent traffic, so a deep-linked agent message can resolve', () => {
+    nuqsState.conv = 'feed';
+    nuqsState.fsys = 'all'; // what a Fleet-sidebar message click sets
+    render(<AdvConversationsTab />);
+    expect(lastFeedArgs?.system_only).toBe(false);
+    // …and the widened scope is visible + reversible, never a silent mode.
+    expect(screen.getByTestId('feed-system-only-chip').getAttribute('aria-pressed')).toBe('false');
+    expect(screen.getByText(/incl\. agent traffic/i)).toBeTruthy();
   });
 
   it('shows the empty state when no traffic matches', () => {
