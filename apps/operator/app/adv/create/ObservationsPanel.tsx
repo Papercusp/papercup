@@ -183,17 +183,20 @@ export default function ObservationsPanel(
       {
         key: "createdAt",
         header: "Observed",
-        width: 1.5,
+        width: 1.9,
         toCopyText: (row) => row.createdAt,
         render: ({ row }) => (
           <span
             style={{ ...CELL_TRUNCATE, color: "var(--fg-mute)", fontSize: 11 }}
             title={new Date(row.createdAt).toLocaleString()}
           >
-            {new Date(row.createdAt).toLocaleDateString(undefined, {
+            {new Date(row.createdAt).toLocaleString(undefined, {
               month: "short",
               day: "numeric",
               year: "numeric",
+              hour: "numeric",
+              minute: "2-digit",
+              second: "2-digit",
             })}
           </span>
         ),

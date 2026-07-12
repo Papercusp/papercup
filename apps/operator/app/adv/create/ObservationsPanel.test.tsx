@@ -134,6 +134,24 @@ describe("<ObservationsPanel />", () => {
     expect(screen.getByText("Second")).toBeTruthy();
   });
 
+  it("shows the full observed timestamp, including seconds", () => {
+    const createdAt = "2026-06-14T12:34:56.000Z";
+    sync.data = [mkRow({ createdAt })];
+    render(<ObservationsPanel />);
+    expect(
+      screen.getByText(
+        new Date(createdAt).toLocaleString(undefined, {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+          second: "2-digit",
+        }),
+      ),
+    ).toBeTruthy();
+  });
+
   it("filters observations by the selected plan refs", () => {
     filters.itemPlans = ["plan-alpha"];
     sync.data = [
