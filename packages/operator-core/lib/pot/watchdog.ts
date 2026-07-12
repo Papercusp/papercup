@@ -206,7 +206,11 @@ export type WatchdogSource =
   // su-ideate-learning-substrate-2026-07-10 P-006: the ungraded su-filings grading
   // backstop — a debounced Mug-triage nudge when su-originated filings sit ungraded
   // past SU_IDEATE_UNGRADED_STALE_SEC (D-013: epoch-floored + batch-capped).
-  | 'su-ideate-ungraded';
+  | 'su-ideate-ungraded'
+  // scorecard-blender-pipeline-fixes-2026-07-11 P-001 (WI-4274): the Scout cycle
+  // error-streak pager — N consecutive ERROR ticks fire one debounced @role:mug
+  // escalation (the circuit gate backs off but pages nobody).
+  | 'scout-error-streak';
 
 export interface FallbackArmResult {
   /** 'armed' = time wake declared; 'staged' = routed to the manual-mode review

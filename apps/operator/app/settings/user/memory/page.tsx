@@ -12,6 +12,7 @@ import { Select } from '@/app/harness/Select';
 import { MEMORY_KIND_COLOR, MEMORY_KIND_FALLBACK } from '@/app/harness/theme';
 import { useLexicon } from '@/lib/useLexicon';
 import { originOf, type MemoryOrigin } from './origin';
+import { possibleSecretClasses, possibleSecretTitle } from './possible-secret';
 import { recallHealthLine, type RecallCanaryLatest } from './recall-health';
 
 interface BrokenAnchor {
@@ -420,6 +421,11 @@ export default function MemoryPage() {
     for (const r of rows) c[originOf(r)] += 1;
     return c;
   }, [rows]);
+  // EI-10371: rows the write paths flagged as credential-shaped.
+  const secretCount = useMemo(
+    () => rows.filter((r) => possibleSecretClasses(r) !== null).length,
+    [rows],
+  );
 
   const onAddSave = useCallback(async () => {
     const text = draftText.trim();
@@ -461,6 +467,7 @@ export default function MemoryPage() {
   const renderRow = useCallback((row: MemoryRow): ReactElement => {
     const meta = (row.metadata ?? {}) as Record<string, unknown>;
     const origin = originOf(row);
+    const secretClasses = possibleSecretClasses(row);
     const kind = row.kind ?? 'untagged';
     const color = MEMORY_KIND_COLOR[kind] ?? MEMORY_KIND_FALLBACK;
     const state = row.audit?.state ?? 'active';
@@ -540,6 +547,20 @@ export default function MemoryPage() {
                 }}
               >
                 agent
+              </span>
+            )}
+            {/* EI-10371 stage-1 chip: write-time credential flag (detection only —
+                the text is stored unchanged; the chip's job is to get a look). */}
+            {secretClasses && (
+              <span
+                title={possibleSecretTitle(secretClasses)}
+                style={{
+                  padding: '2px 8px', borderRadius: 4,
+                  background: 'color-mix(in srgb, var(--warn), transparent 85%)',
+                  color: 'var(--warn)', fontSize: 11, fontWeight: 600, cursor: 'help',
+                }}
+              >
+                ⚠ may contain a credential
               </span>
             )}
             {rowDate && (
@@ -1003,6 +1024,15 @@ export default function MemoryPage() {
           Origins: <strong>{originCounts.you}</strong> added by you
           {' · '}<strong>{originCounts.recovered}</strong> recovered
           {' · '}<strong>{originCounts.agent}</strong> from agent sessions
+        </div>
+      )}
+
+      {/* EI-10371: write-time credential flags — the persistent surface that
+          gets flagged rows LOOKED AT (the chip alone is easy to scroll past). */}
+      {secretCount > 0 && (
+        <div style={{ fontSize: 12, color: 'var(--warn)' }}>
+          ⚠ <strong>{secretCount}</strong> {secretCount === 1 ? 'memory looks like it contains' : 'memories look like they contain'} a
+          credential — stored unchanged, flagged at write time. If real, rotate the secret, then edit or delete the row.
         </div>
       )}
 

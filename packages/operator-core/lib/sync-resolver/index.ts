@@ -2266,6 +2266,28 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // userMemory.feedbackStats — the settings Memory page's "Lifetime
+  // feedback: N edits, M deletes" tile (all-active-surfaces-data-sync-
+  // migration-2026-07-11 P-013). Reads harness_shared.memory_feedback for
+  // the acting user. Backend/filesystem envelope info (memory-store choice,
+  // ~/.claude hygiene, recall-canary) and the learning-instruction text stay
+  // a one-shot REST fetch (GET /api/user/memory/backend, GET
+  // /api/user/memory/feedback) — neither is a live, multi-writer table read
+  // the way this count is, so only the feedback statistics moved to sync.
+  // `recordFeedback` (memory/feedback.ts) fires
+  // notifySyncInvalidate('userMemory.feedbackStats') after every insert, so
+  // the tile updates live on both user edits/deletes and agent-tool writes
+  // (memory:update / memory:forget).
+  'userMemory.feedbackStats': {
+    argsSchema: z.object({ userId: z.string().min(1) }),
+    resolve: async (args) => {
+      const { userId } = args as { userId: string };
+      const { loadFeedbackStats } = await import('../memory/feedback');
+      const stats = await loadFeedbackStats(userId);
+      return [stats ?? { total_edits: 0, total_deletes: 0, recent: [] }] as unknown[];
+    },
+  },
+
   // notes.list — the minimal notes app's row set (owner-ask-batch-2026-07-06
   // P-004, WI-3265), newest-updated-first, optionally filtered by a search
   // term (ILIKE over title+body — see notes.ts). Writes fire

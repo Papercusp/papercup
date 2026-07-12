@@ -41,6 +41,10 @@ const body = async (args: unknown): Promise<Record<string, never> & { ok: boolea
 const VID = '550e8400-e29b-41d4-a716-446655440000';
 const VID2 = '550e8400-e29b-41d4-a716-446655440001';
 
+// EI-10371: every content edit re-stamps the credential flag both ways —
+// clean text carries the explicit clear (editing a secret out must drop the chip).
+const CLEAN_STAMP = { possible_secret: false, possible_secret_classes: [] };
+
 describe('memory:update handler (bulk keyed-array)', () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -50,7 +54,7 @@ describe('memory:update handler (bulk keyed-array)', () => {
     const r = await body({ id: VID, content: 'updated memory content' });
     expect(r).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(r.results[0]).toMatchObject({ ok: true, id: VID });
-    expect(b.update).toHaveBeenCalledWith(VID, { text: 'updated memory content' });
+    expect(b.update).toHaveBeenCalledWith(VID, { text: 'updated memory content', metadata: CLEAN_STAMP });
   });
 
   it('ids:[…] applies the SAME metadata patch to many; per-item results keyed by id', async () => {
@@ -67,7 +71,7 @@ describe('memory:update handler (bulk keyed-array)', () => {
     const b = fakeBackend();
     useBackend(b);
     await body({ items: [{ id: VID, content: 'fix' }, { id: VID2, scope: 'harness:papercup' }] });
-    expect(b.update).toHaveBeenCalledWith(VID, { text: 'fix' });
+    expect(b.update).toHaveBeenCalledWith(VID, { text: 'fix', metadata: CLEAN_STAMP });
     expect(b.update).toHaveBeenCalledWith(VID2, { metadata: { user_id: 'harness:papercup' } });
   });
 
@@ -92,7 +96,7 @@ describe('memory:update handler (bulk keyed-array)', () => {
     expect(r.counts).toEqual({ ok: 1, failed: 1 });
     expect(r.results[1]).toMatchObject({ ok: false, id: 'not-a-uuid', error: 'Memory ID must be a valid UUID' });
     expect(b.update).toHaveBeenCalledTimes(1); // only the valid one
-    expect(b.update).toHaveBeenCalledWith(VID, { text: 'ok' });
+    expect(b.update).toHaveBeenCalledWith(VID, { text: 'ok', metadata: CLEAN_STAMP });
   });
 
   it('a metadata-only patch (kind + workspaceId) maps to backend.update metadata', async () => {
@@ -109,7 +113,7 @@ describe('memory:update handler (bulk keyed-array)', () => {
     const b = fakeBackend();
     useBackend(b);
     await body({ id: VID, content: 'fixed text', kind: 'project' });
-    expect(b.update).toHaveBeenCalledWith(VID, { text: 'fixed text', metadata: { kind: 'project' } });
+    expect(b.update).toHaveBeenCalledWith(VID, { text: 'fixed text', metadata: { kind: 'project', ...CLEAN_STAMP } });
   });
 
   it('handles backend unavailability gracefully (top-level gate, no per-item run)', async () => {

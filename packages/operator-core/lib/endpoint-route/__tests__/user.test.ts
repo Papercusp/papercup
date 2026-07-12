@@ -142,10 +142,10 @@ describe('user family ports — default-user fallback when no session', () => {
     expect(res.status).toBe(200);
     expect((await res.json()).userId).toBe('default-user');
   });
-  it('GET /user/memory/feedback serves stats without a session', async () => {
+  it('GET /user/memory/feedback serves learning instructions without a session', async () => {
     const res = await appWith(userMemoryFeedback as AnyRoute).request('/user/memory/feedback');
     expect(res.status).toBe(200);
-    expect((await res.json()).total_edits).toBe(0);
+    expect((await res.json()).learning_instructions).toBeNull();
   });
   it('POST /user/memory/reembed reaches validation without a session', async () => {
     const res = await appWith(userMemoryReembed as AnyRoute).request('/user/memory/reembed', post({}));

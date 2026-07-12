@@ -54,8 +54,9 @@ Every answer you return has two parts:
 Return the answer over the coord channel to the agent that asked (reply
 to the delegation message — `coord:send` back to the asker with
 `wake: 'required'` so a parked front-end is re-invoked), then park. The
-exact channel/message shape lives in the delegation protocol section of
-`papercup.tools.md`.
+exact channel/message shape lives in YOUR tool playbook,
+`papercup-deep.tools.md` (kept in lockstep with the fast side's copy in
+`papercup.tools.md`).
 
 ## Session boot — every launch
 

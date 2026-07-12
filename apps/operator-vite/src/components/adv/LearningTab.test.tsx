@@ -493,7 +493,7 @@ afterEach(() => cleanup());
 describe("LearningTab — Improvements view (default)", () => {
   it("renders the scoreboard from the digest rollups", () => {
     render(<LearningTab />);
-    expect(screen.getByText("Learning")).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /Improvements/ })).toBeTruthy();
     expect(screen.getByText("135")).toBeTruthy(); // captured total
     expect(screen.getByText("117")).toBeTruthy(); // open
     expect(screen.getByText("15")).toBeTruthy(); // resolved (byState)
@@ -1005,6 +1005,14 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
 describe("ScoutView (Learning › Improve › Ideas) — idea grading (B-07, scout-idea-grading-2026-06-12)", () => {
   beforeEach(() => {
     nuqsState.lview = "ideas";
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
   });
   afterEach(() => vi.unstubAllGlobals());
 
@@ -1155,7 +1163,7 @@ describe("LearningTab — per-Hive lens (per-hive-learning-loops-2026-06-14 P-04
 
   it("shows the picker on the Gym and Learnings views too", () => {
     nuqsState.lview = "gym";
-    render(<LearningTab />);
+    const { rerender } = render(<LearningTab />);
     expect(screen.getByLabelText("pot lens")).toBeTruthy();
     cleanup();
     nuqsState.lview = "learnings";
@@ -1232,7 +1240,7 @@ describe("LearningTab — per-Hive lens (per-hive-learning-loops-2026-06-14 P-04
       error: null,
       invalidate: vi.fn(),
     };
-    render(<LearningTab />);
+    const { rerender } = render(<LearningTab />);
     const summary = document.querySelector(".pc-learning__retainedsummary")!;
     expect(summary.querySelector("strong")?.textContent).toBe(
       "Migration 557 completed the canonical federation table rename.",
@@ -1246,6 +1254,9 @@ describe("LearningTab — per-Hive lens (per-hive-learning-loops-2026-06-14 P-04
         name: /Open learning Migration 557 completed/,
       }),
     );
+    expect(nuqsSetters.lretain).toHaveBeenCalledWith("learning-1");
+    nuqsState.lretain = "learning-1";
+    rerender(<LearningTab />);
     expect(screen.getByLabelText("Selected learning")).toBeTruthy();
     expect(
       screen.getByRole("button", { name: "Close selected learning" }),

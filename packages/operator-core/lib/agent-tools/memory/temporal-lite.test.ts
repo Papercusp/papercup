@@ -200,7 +200,11 @@ describe('memory:update supersedes (P-004 write path)', () => {
       ),
     );
     expect(out.results[0]).toMatchObject({ ok: true, id: NEW_ID, superseded: OLD_ID });
-    expect(b.update).toHaveBeenCalledWith(NEW_ID, { text: 'memory embed default is harrier' });
+    // EI-10371: content edits carry the credential-flag re-stamp (clean here).
+    expect(b.update).toHaveBeenCalledWith(NEW_ID, {
+      text: 'memory embed default is harrier',
+      metadata: { possible_secret: false, possible_secret_classes: [] },
+    });
     expect(b.invalidateEntry).toHaveBeenCalledWith(OLD_ID, { supersededBy: NEW_ID });
     // Order: the replacing fact lands in corrected form BEFORE the old closes.
     expect(b.update.mock.invocationCallOrder[0]).toBeLessThan(

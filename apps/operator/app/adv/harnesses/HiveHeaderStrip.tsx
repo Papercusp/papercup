@@ -164,7 +164,7 @@ export default function HiveHeaderStrip({
   // mount (null while loading), updated locally after a dialog save.
   const [dirState, setDirState] = useState<HiveDirectoryState | null>(null);
   useEffect(() => {
-    if (!potSlug || !isHiveHome || !beaconReadInjected) return;
+    if (!potSlug || !isHiveHome) return;
     let alive = true;
     void fetchShareMeta(potSlug)
       .then((meta) => {
@@ -186,7 +186,7 @@ export default function HiveHeaderStrip({
     busy: false,
   });
   useEffect(() => {
-    if (!potSlug || !isHiveHome) return;
+    if (!potSlug || !isHiveHome || !beaconReadInjected) return;
     let alive = true;
     void getBeaconConsent(potSlug)
       .then((consent) => {

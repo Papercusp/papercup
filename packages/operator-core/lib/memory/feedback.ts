@@ -12,6 +12,25 @@
 
 import { activeWorkspaceId } from '../workspace-registry';
 
+/**
+ * Push a live refresh to the Settings → Memory page's feedback-stats tile
+ * (all-active-surfaces-data-sync-migration-2026-07-11 P-013): every write
+ * here changes `total_edits`/`total_deletes` for the acting user, so the
+ * `userMemory.feedbackStats` sync query needs a bump. `memory_feedback` is
+ * written via a raw `pg` Client (not drizzle) and carries no PG-trigger
+ * notify, so this manual invalidate — same dynamic-import, best-effort
+ * pattern as `notifyJournalRecovery` in `journal-surfacing.ts` — is the only
+ * signal; a missed one just means the tile is stale until the next write.
+ */
+async function invalidateFeedbackStats(): Promise<void> {
+  try {
+    const { notifySyncInvalidate } = await import('../sync-sse');
+    await notifySyncInvalidate('userMemory.feedbackStats');
+  } catch {
+    // best-effort — surfacing must never fail the caller's write.
+  }
+}
+
 export interface FeedbackInput {
   memId: string;
   userId: string;
@@ -47,6 +66,7 @@ export async function recordFeedback(input: FeedbackInput): Promise<void> {
     } finally {
       await c.end();
     }
+    void invalidateFeedbackStats();
   } catch (err) {
     console.warn('[memory-feedback] capture failed:', (err as Error).message);
   }
