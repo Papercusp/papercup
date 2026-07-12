@@ -560,6 +560,7 @@ describe("LearningTab — Improvements view (default)", () => {
 
   it("renders the P-041 flow strip above the scoreboard — in/out, net, median age, recurrence, watchdog health", () => {
     render(<LearningTab />);
+    fireEvent.click(screen.getByRole("button", { name: "Loop diagnostics" }));
     const strip = screen.getByLabelText("Improvement flow (trailing window)");
     expect(strip).toBeTruthy();
     expect(strip.textContent).toContain("12"); // captured 7d
@@ -587,6 +588,7 @@ describe("LearningTab — Improvements view (default)", () => {
       invalidate: vi.fn(),
     };
     render(<LearningTab />);
+    fireEvent.click(screen.getByRole("button", { name: "Loop diagnostics" }));
     expect(
       screen.queryByLabelText("Improvement flow (trailing window)"),
     ).toBeNull();
@@ -618,6 +620,7 @@ describe("LearningTab — Improvements view (default)", () => {
       invalidate: vi.fn(),
     };
     render(<LearningTab />);
+    fireEvent.click(screen.getByRole("button", { name: "Loop diagnostics" }));
     const strip = screen.getByLabelText("Improvement flow (trailing window)");
     expect(strip.textContent).toMatch(/dispatch\s*6\s*fired \/\s*3\s*fixed/);
     expect(strip.textContent).toContain("3 dead"); // overdue + fire-failed + orphaned
@@ -909,15 +912,23 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
       error: null,
       invalidate: vi.fn(),
     };
-    render(<ScoutView />);
+    const { rerender } = render(<ScoutView />);
     expect(screen.getAllByText(/Queue idea/)).toHaveLength(8);
     fireEvent.click(
       screen.getByRole("button", { name: /Earlier routed ideas/ }),
     );
     expect(screen.getAllByText(/Queue idea/)).toHaveLength(10);
-    const planFilter = screen.getByRole("button", { name: /plan draft/i });
+    const planFilter = screen
+      .getByLabelText("Idea routing")
+      .querySelector("button") as HTMLButtonElement;
     fireEvent.click(planFilter);
-    expect(planFilter.getAttribute("aria-pressed")).toBe("true");
+    rerender(<ScoutView />);
+    expect(
+      screen
+        .getByLabelText("Idea routing")
+        .querySelector("button")
+        ?.getAttribute("aria-pressed"),
+    ).toBe("true");
   });
 });
 
@@ -928,7 +939,7 @@ describe("ScoutView (Learning › Improve › Ideas) — idea grading (B-07, sco
   afterEach(() => vi.unstubAllGlobals());
 
   it("keeps grading controls behind the selected row and shows attribution at rest", () => {
-    render(<ScoutView />);
+    const { rerender } = render(<ScoutView />);
     expect(screen.queryByRole("radio", { name: "Grade 3 of 5" })).toBeNull();
     // idea-2 is Queen-graded ★4 in the fixture (gradedBy:'Queen' is the raw server
     // value) → the attribution chip routes it through the lexicon; under the echo
@@ -941,6 +952,7 @@ describe("ScoutView (Learning › Improve › Ideas) — idea grading (B-07, sco
       screen.getByRole("button", { name: "Review idea grade" }),
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Grade this idea" }));
+    rerender(<ScoutView />);
     expect(screen.getByRole("radio", { name: "Grade 3 of 5" })).toBeTruthy();
   });
 
@@ -950,11 +962,13 @@ describe("ScoutView (Learning › Improve › Ideas) — idea grading (B-07, sco
       json: async () => ({ applied: true }),
     }));
     vi.stubGlobal("fetch", fetchMock);
-    render(<ScoutView />);
+    const { rerender } = render(<ScoutView />);
     fireEvent.click(screen.getByRole("button", { name: "Grade this idea" }));
+    rerender(<ScoutView />);
     fireEvent.click(screen.getByRole("radio", { name: "Grade 5 of 5" }));
+    fireEvent.click(screen.getByRole("button", { name: "save grade" }));
     // Optimistic: the owner chip appears before any refetch.
-    expect(screen.getByText("★5 · Owner")).toBeTruthy();
+    await waitFor(() => expect(screen.getByText("★5 · Owner")).toBeTruthy());
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     const [url, init] = fetchMock.mock.calls[0] as unknown as [
       string,
@@ -975,9 +989,11 @@ describe("ScoutView (Learning › Improve › Ideas) — idea grading (B-07, sco
       json: async () => ({}),
     }));
     vi.stubGlobal("fetch", fetchMock);
-    render(<ScoutView />);
+    const { rerender } = render(<ScoutView />);
     fireEvent.click(screen.getByRole("button", { name: "Grade this idea" }));
+    rerender(<ScoutView />);
     fireEvent.click(screen.getByRole("radio", { name: "Grade 5 of 5" }));
+    fireEvent.click(screen.getByRole("button", { name: "save grade" }));
     await waitFor(() =>
       expect(screen.getByRole("alert").textContent).toContain("HTTP 404"),
     );

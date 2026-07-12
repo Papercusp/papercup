@@ -14,9 +14,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const listen = vi.fn();
 const end = vi.fn().mockResolvedValue(undefined);
-const postgresFactory = vi.fn(() => ({ listen, end }));
+const postgresFactory = vi.fn((_url?: string, _opts?: unknown) => ({ listen, end }));
 
-vi.mock('postgres', () => ({ default: (...args: unknown[]) => postgresFactory(...args) }));
+vi.mock('postgres', () => ({
+  default: (url?: string, opts?: unknown) => postgresFactory(url, opts),
+}));
 vi.mock('./embedded-pg-discovery', () => ({ getHarnessAdminUrl: () => 'postgres://test' }));
 vi.mock('./pg-listen-hub', () => ({
   listenHubEnabled: () => false,

@@ -2682,7 +2682,7 @@ function LearningsView({ hive }: { hive: string }) {
         <span
           className="pc-learning__sev"
           style={{
-            background: r.packId ? "var(--accent)" : "var(--good)",
+            background: "var(--good)",
             marginTop: 5,
           }}
           aria-hidden
@@ -2715,30 +2715,7 @@ function LearningsView({ hive }: { hive: string }) {
               color: "var(--fg-mute)",
             }}
           >
-            {r.packId ? (
-              <span
-                title={`Seeded from the ${r.packId} learning pack${r.packState === "modified" ? " — edited since seeding" : ""}`}
-              >
-                <span
-                  style={{
-                    border: "1px solid var(--border)",
-                    borderRadius: 3,
-                    padding: "0 4px",
-                  }}
-                >
-                  pack: {r.packId}
-                  {r.packVersion ? ` v${r.packVersion}` : ""}
-                </span>
-                {r.packState === "modified" ? " · edited" : ""}
-              </span>
-            ) : (
-              <span
-                title={`Recorded by ${r.createdBy ?? "an agent"} — this ${t("pot", { lower: true })}'s own learning`}
-              >
-                {t("pot", { lower: true })}-learned
-                {r.createdBy ? ` · ${r.createdBy}` : ""}
-              </span>
-            )}
+            {r.createdBy ? <span>{r.createdBy}</span> : null}
             {r.kind ? <span>{r.kind}</span> : null}
           </span>
         </span>
