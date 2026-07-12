@@ -343,3 +343,201 @@ describe('maybeBatchNudge — codeRunInSurface teaches the activate path (P-004)
     expect(hit!.text).not.toContain('not in your loaded tool list');
   });
 });
+
+// ── code-run-batch-adoption-2026-07-12: tools:invoke unwrap (P-001), pipeline kind (P-002),
+//    arg-prefilled skeletons (P-003). Distilled from the 2026-07-11 release-fleet burst: 8 serial
+//    round-trips (3× release via tools:invoke + claim + comment on ONE work-item) that three
+//    escalating hints failed to convert — each test below pins the blind spot that hid it. ──────
+
+describe('maybeBatchNudge — tools:invoke unwrap (P-001)', () => {
+  it('counts a tools:invoke-routed call as its INNER tool — a wrapped burst trips same-tool', () => {
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    let t = 0;
+    for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) {
+      t += 1000;
+      hit = maybeBatchNudge({
+        sessionKey: 'inv1',
+        toolName: 'tools:invoke',
+        args: { name: 'work_items:release', args: { id: `WI-${1000 + i}` } },
+        canCodeRun: true,
+        now: t,
+      });
+    }
+    expect(hit?.kind).toBe('same-tool');
+    expect(hit?.tool).toBe('work_items:release');
+    expect(hit?.text).toContain('work_items:release');
+    expect(hit?.text).toContain('tools.workItems.release(a)');
+  });
+
+  it('matches the MCP underscore wrapper form (tools_invoke) too', () => {
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    let t = 0;
+    for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) {
+      t += 1000;
+      hit = maybeBatchNudge({
+        sessionKey: 'inv2',
+        toolName: 'tools_invoke',
+        args: { name: 'plans:get', args: { slug: `plan-${i}` } },
+        canCodeRun: true,
+        now: t,
+      });
+    }
+    expect(hit?.kind).toBe('same-tool');
+    expect(hit?.tool).toBe('plans:get');
+  });
+
+  it('keeps the EXCLUSION on the inner tool — tools:invoke{name:"code:run"} never nudges or counts', () => {
+    let t = 0;
+    for (let i = 0; i < BATCH_NUDGE_THRESHOLD + 1; i++) {
+      t += 1000;
+      expect(
+        maybeBatchNudge({
+          sessionKey: 'inv3',
+          toolName: 'tools:invoke',
+          args: { name: 'code:run', args: { script: 'return 1' } },
+          canCodeRun: true,
+          now: t,
+        }),
+      ).toBeNull();
+    }
+  });
+
+  it('falls back to the wrapper name on malformed wrapper args', () => {
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    let t = 0;
+    for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) {
+      t += 1000;
+      hit = maybeBatchNudge({
+        sessionKey: 'inv4',
+        toolName: 'tools:invoke',
+        args: { nope: 'no-name-key' },
+        canCodeRun: true,
+        now: t,
+      });
+    }
+    expect(hit?.tool).toBe('tools:invoke');
+  });
+});
+
+describe('maybeBatchNudge — pipeline kind (P-002): a chained burst is not "independent"', () => {
+  const chainedCalls = [
+    { toolName: 'work_items:release', args: { id: 'WI-4222', force: true } },
+    { toolName: 'work_items:claim', args: { id: 'WI-4222', assignee: 'su-86bf' } },
+    { toolName: 'work_items:comment', args: { id: 'WI-4222', body: 'reassigned' } },
+  ];
+
+  function fireChained(sessionKey: string): ReturnType<typeof maybeBatchNudge> {
+    let firstFire: ReturnType<typeof maybeBatchNudge> = null;
+    let t = 0;
+    for (const c of chainedCalls) {
+      t += 1000;
+      const r = maybeBatchNudge({ sessionKey, ...c, canCodeRun: true, now: t });
+      if (r && !firstFire) firstFire = r;
+    }
+    return firstFire;
+  }
+
+  it('fires kind=pipeline when the same id threads through different tools', () => {
+    const hit = fireChained('pl1');
+    expect(hit?.kind).toBe('pipeline');
+    expect(hit?.text).toContain('CHAINED');
+    // The old text's false exemption is gone: a chain must never be called independent.
+    expect(hit?.text).not.toContain('independent fan-out');
+  });
+
+  it('renders a SEQUENTIAL skeleton (awaits in order, no Promise.all), args prefilled', () => {
+    const hit = fireChained('pl2');
+    expect(hit?.text).not.toContain('Promise.all');
+    expect(hit?.text).toMatch(/const r0 = await tools\.workItems\.release\(\{"id":"WI-4222"/);
+    expect(hit?.text).toMatch(/const r1 = await tools\.workItems\.claim\(/);
+    expect(hit?.text).toContain('return { r0, r1, r2 }');
+  });
+
+  it('stays kind=fanout when the only shared values sit under ambient-context keys (harness etc.)', () => {
+    let firstFire: ReturnType<typeof maybeBatchNudge> = null;
+    let t = 0;
+    for (const toolName of ['plans:get', 'docs:search', 'coord:inbox']) {
+      t += 1000;
+      const r = maybeBatchNudge({
+        sessionKey: 'pl3',
+        toolName,
+        args: { harness: 'papercusp' },
+        canCodeRun: true,
+        now: t,
+      });
+      if (r && !firstFire) firstFire = r;
+    }
+    expect(firstFire?.kind).toBe('fanout');
+  });
+});
+
+describe('maybeBatchNudge — arg-prefilled skeletons (P-003)', () => {
+  it('prefills the same-tool `inputs` list with the burst\'s actual args', () => {
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    let t = 0;
+    for (const id of ['WI-1111', 'WI-2222']) {
+      t += 1000;
+      hit = maybeBatchNudge({ sessionKey: 'pf1', toolName: 'work_items:get', args: { id }, canCodeRun: true, now: t });
+    }
+    expect(hit?.text).toContain('{"id":"WI-1111"},');
+    expect(hit?.text).toContain('{"id":"WI-2222"},');
+    expect(hit?.text).toContain('extend this list');
+  });
+
+  it('prefills the fan-out skeleton with each tool\'s last args; empty args keep the placeholder', () => {
+    let firstFire: ReturnType<typeof maybeBatchNudge> = null;
+    let t = 0;
+    const calls = [
+      { toolName: 'plans:get', args: { slug: 'alpha-plan' } },
+      { toolName: 'docs:search', args: { q: 'beta-topic' } },
+      { toolName: 'coord:glance', args: {} },
+    ];
+    for (const c of calls) {
+      t += 1000;
+      const r = maybeBatchNudge({ sessionKey: 'pf2', ...c, canCodeRun: true, now: t });
+      if (r && !firstFire) firstFire = r;
+    }
+    expect(firstFire?.kind).toBe('fanout');
+    expect(firstFire?.text).toContain('tools.plans.get({"slug":"alpha-plan"})');
+    expect(firstFire?.text).toContain('tools.docs.search({"q":"beta-topic"})');
+    expect(firstFire?.text).toContain('tools.coord.glance(/* args */)');
+  });
+
+  it('escapes backticks and ${ in prefilled args so the skeleton stays pasteable', () => {
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    let t = 0;
+    for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) {
+      t += 1000;
+      hit = maybeBatchNudge({
+        sessionKey: 'pf3',
+        toolName: 'docs:add',
+        args: { text: 'a `tick` and ${x}' },
+        canCodeRun: true,
+        now: t,
+      });
+    }
+    expect(hit?.text).toContain("\\`tick\\`");
+    expect(hit?.text).toContain("\\${x}");
+  });
+
+  it('truncates an oversize args literal with a fill-in marker', () => {
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    let t = 0;
+    const big = 'x'.repeat(500);
+    for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) {
+      t += 1000;
+      hit = maybeBatchNudge({ sessionKey: 'pf4', toolName: 'docs:add', args: { text: big }, canCodeRun: true, now: t });
+    }
+    expect(hit?.text).toContain('…truncated — fill in the rest');
+  });
+
+  it('reports the effective tool on every result (plain calls too)', () => {
+    let hit: ReturnType<typeof maybeBatchNudge> = null;
+    let t = 0;
+    for (let i = 0; i < BATCH_NUDGE_THRESHOLD; i++) {
+      t += 1000;
+      hit = maybeBatchNudge({ sessionKey: 'pf5', toolName: 'plans:get', canCodeRun: true, now: t });
+    }
+    expect(hit?.tool).toBe('plans:get');
+  });
+});

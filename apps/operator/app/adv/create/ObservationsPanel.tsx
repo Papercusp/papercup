@@ -203,21 +203,20 @@ export default function ObservationsPanel(
         gap: 8,
       }}
     >
-      <div
-        className="pc-observations__toolbar"
-      >
+      <div className="pc-observations__toolbar">
         {signalCounts.length > 0 ? (
-          <div className="pc-observations__distribution" aria-label="Loaded signal distribution">
+          <div
+            className="pc-observations__distribution"
+            aria-label="Loaded signal distribution"
+          >
             {signalCounts.map(([kind, count]) => (
               <span
                 key={kind}
                 title={`${KIND_LABEL[kind] ?? kind}: ${count}`}
-                style={
-                  {
-                    background: KIND_COLOR[kind] ?? "var(--accent)",
-                    flexGrow: count,
-                  }
-                }
+                style={{
+                  background: KIND_COLOR[kind] ?? "var(--accent)",
+                  flexGrow: count,
+                }}
               />
             ))}
           </div>

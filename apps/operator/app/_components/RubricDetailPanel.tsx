@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * RubricDetailPanel — a single rubric's grading history + per-criterion trend
@@ -8,11 +8,14 @@
  * opens the full ScorecardDetail (P-003) — no extra fetch, the list rows
  * already carry the complete ratings map.
  */
-import { useState } from 'react';
-import { useSyncQuery } from '@papercusp/sync';
-import { X } from 'lucide-react';
-import { Table, type TableColumn } from '../harness/Table';
-import ScorecardDetail, { RatingChip, type ScorecardRow } from './ScorecardDetail';
+import { useState } from "react";
+import { useSyncQuery } from "@papercusp/sync";
+import { X } from "lucide-react";
+import { Table, type TableColumn } from "../harness/Table";
+import ScorecardDetail, {
+  RatingChip,
+  type ScorecardRow,
+} from "./ScorecardDetail";
 
 interface CriterionTrend {
   criterion: string;
@@ -34,16 +37,22 @@ interface RubricTrend {
 
 function directionGlyph(direction: string): string {
   const d = direction.toLowerCase();
-  if (d.includes('improv') || d.includes('up')) return '↑';
-  if (d.includes('worsen') || d.includes('declin') || d.includes('regress') || d.includes('down')) return '↓';
-  return '→';
+  if (d.includes("improv") || d.includes("up")) return "↑";
+  if (
+    d.includes("worsen") ||
+    d.includes("declin") ||
+    d.includes("regress") ||
+    d.includes("down")
+  )
+    return "↓";
+  return "→";
 }
 
 function formatDistribution(distribution: Record<string, number>): string {
   return Object.entries(distribution)
     .sort((a, b) => b[1] - a[1])
     .map(([rating, n]) => `${n}× ${rating}`)
-    .join(', ');
+    .join(", ");
 }
 
 export default function RubricDetailPanel({
@@ -56,84 +65,113 @@ export default function RubricDetailPanel({
   const [selected, setSelected] = useState<ScorecardRow | null>(null);
 
   const scorecards = useSyncQuery<ScorecardRow>({
-    queryName: 'scorecards.list',
+    queryName: "scorecards.list",
     args: { rubricRef: rubricId },
   });
   const trend = useSyncQuery<RubricTrend>({
-    queryName: 'rubrics.trend',
+    queryName: "rubrics.trend",
     args: { rubricRef: rubricId },
   });
 
   if (selected) {
-    return <ScorecardDetail scorecard={selected} onBack={() => setSelected(null)} />;
+    return (
+      <ScorecardDetail scorecard={selected} onBack={() => setSelected(null)} />
+    );
   }
 
   const rows = scorecards.data ?? [];
   const trendRow = trend.data?.[0];
-  const scoredCriteria = trendRow?.criteria.filter((criterion) => criterion.mean10 != null) ?? [];
+  const scoredCriteria =
+    trendRow?.criteria.filter((criterion) => criterion.mean10 != null) ?? [];
   const mean =
     scoredCriteria.length > 0
-      ? scoredCriteria.reduce((sum, criterion) => sum + (criterion.mean10 ?? 0), 0) / scoredCriteria.length
+      ? scoredCriteria.reduce(
+          (sum, criterion) => sum + (criterion.mean10 ?? 0),
+          0,
+        ) / scoredCriteria.length
       : null;
-  const improving = trendRow?.criteria.filter((criterion) => directionGlyph(criterion.direction) === '↑').length ?? 0;
-  const regressing = trendRow?.criteria.filter((criterion) => directionGlyph(criterion.direction) === '↓').length ?? 0;
+  const improving =
+    trendRow?.criteria.filter(
+      (criterion) => directionGlyph(criterion.direction) === "↑",
+    ).length ?? 0;
+  const regressing =
+    trendRow?.criteria.filter(
+      (criterion) => directionGlyph(criterion.direction) === "↓",
+    ).length ?? 0;
 
   const trendColumns: TableColumn<CriterionTrend>[] = trendRow
     ? [
-        { key: 'criterion', header: 'Criterion', render: (c) => c.criterion, cellStyle: { whiteSpace: 'nowrap' } },
-        { key: 'latest', header: 'Latest', render: (c) => <RatingChip rating={c.latest.rating} /> },
         {
-          key: 'trend',
-          header: 'Trend',
+          key: "criterion",
+          header: "Criterion",
+          render: (c) => c.criterion,
+          cellStyle: { whiteSpace: "nowrap" },
+        },
+        {
+          key: "latest",
+          header: "Latest",
+          render: (c) => <RatingChip rating={c.latest.rating} />,
+        },
+        {
+          key: "trend",
+          header: "Trend",
           render: (c) => `${directionGlyph(c.direction)} ${c.direction}`,
           cellTitle: (c) => c.direction,
         },
         {
-          key: 'mean',
-          header: 'Mean /10',
-          render: (c) => c.mean10 ?? '—',
-          cellStyle: { fontVariantNumeric: 'tabular-nums' },
+          key: "mean",
+          header: "Mean /10",
+          render: (c) => c.mean10 ?? "—",
+          cellStyle: { fontVariantNumeric: "tabular-nums" },
         },
-        { key: 'distribution', header: 'Distribution', render: (c) => formatDistribution(c.distribution) },
         {
-          key: 'rated',
-          header: 'Rated',
+          key: "distribution",
+          header: "Distribution",
+          render: (c) => formatDistribution(c.distribution),
+        },
+        {
+          key: "rated",
+          header: "Rated",
           render: (c) => c.count,
-          cellStyle: { fontVariantNumeric: 'tabular-nums' },
+          cellStyle: { fontVariantNumeric: "tabular-nums" },
         },
       ]
     : [];
 
   const historyColumns: TableColumn<ScorecardRow>[] = [
-    { key: 'scorecard', header: 'Scorecard', render: (row) => row.issueId },
+    { key: "scorecard", header: "Scorecard", render: (row) => row.issueId },
     {
-      key: 'gradedAt',
-      header: 'Graded at',
+      key: "gradedAt",
+      header: "Graded at",
       render: (row) => new Date(row.createdAt).toLocaleString(),
-      cellStyle: { whiteSpace: 'nowrap' },
-    },
-    { key: 'gradedBy', header: 'Graded by', render: (row) => row.createdBy ?? 'unknown' },
-    {
-      key: 'score',
-      header: 'Score /10',
-      render: (row) => row.score10 ?? '—',
-      cellStyle: { fontVariantNumeric: 'tabular-nums' },
+      cellStyle: { whiteSpace: "nowrap" },
     },
     {
-      key: 'criteriaRated',
-      header: 'Criteria rated',
+      key: "gradedBy",
+      header: "Graded by",
+      render: (row) => row.createdBy ?? "unknown",
+    },
+    {
+      key: "score",
+      header: "Score /10",
+      render: (row) => row.score10 ?? "—",
+      cellStyle: { fontVariantNumeric: "tabular-nums" },
+    },
+    {
+      key: "criteriaRated",
+      header: "Criteria rated",
       render: (row) => row.nKeys,
-      cellStyle: { fontVariantNumeric: 'tabular-nums' },
+      cellStyle: { fontVariantNumeric: "tabular-nums" },
     },
     {
-      key: 'completeness',
-      header: 'Completeness',
+      key: "completeness",
+      header: "Completeness",
       render: (row) =>
         row.rubricResolved
           ? row.missingKeys.length === 0
-            ? 'complete'
+            ? "complete"
             : `${row.missingKeys.length} missing`
-          : 'rubric unresolved',
+          : "rubric unresolved",
     },
   ];
 
@@ -143,7 +181,11 @@ export default function RubricDetailPanel({
         <span>Evidence</span>
         <strong>{rubricId}</strong>
         {onBack ? (
-          <button type="button" onClick={onBack} aria-label="Close rubric evidence">
+          <button
+            type="button"
+            onClick={onBack}
+            aria-label="Close rubric evidence"
+          >
             <X size={14} aria-hidden />
           </button>
         ) : null}
@@ -152,12 +194,21 @@ export default function RubricDetailPanel({
       <div className="pc-rubric-detail__overview">
         <div className="pc-rubric-detail__hero">
           <span>Mean</span>
-          <strong>{mean == null ? '—' : mean.toFixed(1)}</strong>
+          <strong>{mean == null ? "—" : mean.toFixed(1)}</strong>
           <small>/10</small>
         </div>
-        <div><span>Scorecards</span><strong>{trendRow?.scorecardCount ?? rows.length}</strong></div>
-        <div className="is-good"><span>Improving</span><strong>{improving}</strong></div>
-        <div className={regressing > 0 ? 'is-bad' : undefined}><span>Regressing</span><strong>{regressing}</strong></div>
+        <div>
+          <span>Scorecards</span>
+          <strong>{trendRow?.scorecardCount ?? rows.length}</strong>
+        </div>
+        <div className="is-good">
+          <span>Improving</span>
+          <strong>{improving}</strong>
+        </div>
+        <div className={regressing > 0 ? "is-bad" : undefined}>
+          <span>Regressing</span>
+          <strong>{regressing}</strong>
+        </div>
       </div>
 
       <h3>Criterion trend</h3>
@@ -168,14 +219,19 @@ export default function RubricDetailPanel({
       ) : !trendRow || trendRow.criteria.length === 0 ? (
         <div role="status">No graded criteria yet.</div>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
+        <div style={{ overflowX: "auto" }}>
           <Table
             className="pc-rubric-trend"
             caption={
               <>
-                {trendRow.scorecardCount} scorecard{trendRow.scorecardCount === 1 ? '' : 's'} in window{' '}
-                {trendRow.window.from ? `${new Date(trendRow.window.from).toLocaleDateString()} – ` : ''}
-                {trendRow.window.to ? new Date(trendRow.window.to).toLocaleDateString() : ''}
+                {trendRow.scorecardCount} scorecard
+                {trendRow.scorecardCount === 1 ? "" : "s"} in window{" "}
+                {trendRow.window.from
+                  ? `${new Date(trendRow.window.from).toLocaleDateString()} – `
+                  : ""}
+                {trendRow.window.to
+                  ? new Date(trendRow.window.to).toLocaleDateString()
+                  : ""}
               </>
             }
             columns={trendColumns}
@@ -189,17 +245,19 @@ export default function RubricDetailPanel({
       {scorecards.loading ? (
         <div role="status">Loading scorecards…</div>
       ) : scorecards.error ? (
-        <div role="status">Scorecards unavailable — {String(scorecards.error)}</div>
+        <div role="status">
+          Scorecards unavailable — {String(scorecards.error)}
+        </div>
       ) : rows.length === 0 ? (
         <div role="status">No scorecards filed against this rubric yet.</div>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
+        <div style={{ overflowX: "auto" }}>
           <Table
             className="pc-rubric-history"
             caption={
               <>
-                {rows.length} scorecard{rows.length === 1 ? '' : 's'} (newest first) — click a row for
-                full ratings + evidence
+                {rows.length} scorecard{rows.length === 1 ? "" : "s"} (newest
+                first) — click a row for full ratings + evidence
               </>
             }
             columns={historyColumns}

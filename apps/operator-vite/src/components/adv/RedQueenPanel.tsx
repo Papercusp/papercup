@@ -16,49 +16,64 @@
  * about the snapshot shape — anything but the expected {classes: []} renders
  * the empty state, never a crash.
  */
-import { useSyncQuery } from '@papercusp/sync';
-import { HeartPulse, RefreshCw } from 'lucide-react';
-import type { MttshVitals } from '@papercusp/operator-core/lib/red-queen/mttsh';
+import { useSyncQuery } from "@papercusp/sync";
+import { HeartPulse, RefreshCw } from "lucide-react";
+import type { MttshVitals } from "@papercusp/operator-core/lib/red-queen/mttsh";
 import {
   LearningEvidenceRail,
   LearningHeroMetric,
   LearningPageHeader,
   LearningVisualEmpty,
-} from './LearningVisuals';
+} from "./LearningVisuals";
 
 function ms(v: number | null): string {
-  if (v == null) return '—';
+  if (v == null) return "—";
   if (v < 1000) return `${Math.round(v)}ms`;
   if (v < 60_000) return `${(v / 1000).toFixed(1)}s`;
   return `${Math.round(v / 60_000)}m`;
 }
 
 function dateShort(iso: string | null): string {
-  if (!iso) return '';
+  if (!iso) return "";
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return Number.isNaN(d.getTime())
+    ? ""
+    : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 export function RedQueenPanel() {
-  const sync = useSyncQuery<MttshVitals>({ queryName: 'learning.redQueen', args: {}, staleTime: 30_000 });
+  const sync = useSyncQuery<MttshVitals>({
+    queryName: "learning.redQueen",
+    args: {},
+    staleTime: 30_000,
+  });
   const snap = sync.data?.[0];
   const classes = Array.isArray(snap?.classes) ? snap.classes : [];
-  const phaseAverage = (key: 'detectMs' | 'triageMs' | 'fixMs'): number => {
-    const values = classes.map((row) => row[key]).filter((value): value is number => value != null);
-    return values.length > 0 ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+  const phaseAverage = (key: "detectMs" | "triageMs" | "fixMs"): number => {
+    const values = classes
+      .map((row) => row[key])
+      .filter((value): value is number => value != null);
+    return values.length > 0
+      ? values.reduce((sum, value) => sum + value, 0) / values.length
+      : 0;
   };
-  const detect = phaseAverage('detectMs');
-  const triage = phaseAverage('triageMs');
-  const fix = phaseAverage('fixMs');
+  const detect = phaseAverage("detectMs");
+  const triage = phaseAverage("triageMs");
+  const fix = phaseAverage("fixMs");
   const phaseTotal = Math.max(1, detect + triage + fix);
 
   return (
-    <section className="pc-learning__section pc-rq" aria-label="Red Queen MTTSH vitals">
+    <section
+      className="pc-learning__section pc-rq"
+      aria-label="Red Queen MTTSH vitals"
+    >
       <LearningPageHeader
         icon={HeartPulse}
         title="Red Queen"
-        signal={snap ? `${snap.totalResolved}/${snap.totalRuns} healed` : undefined}
-        tone={snap && snap.leakFailures > 0 ? 'bad' : 'good'}
+        signal={
+          snap ? `${snap.totalResolved}/${snap.totalRuns} healed` : undefined
+        }
+        tone={snap && snap.leakFailures > 0 ? "bad" : "good"}
         action={
           <button
             type="button"
@@ -80,18 +95,26 @@ export function RedQueenPanel() {
             <LearningHeroMetric
               eyebrow="Median self-heal"
               value={ms(snap!.medianTotalMs)}
-              status={snap!.leakFailures > 0 ? 'leak detected' : 'zero leaks'}
-              tone={snap!.leakFailures > 0 ? 'bad' : 'good'}
+              status={snap!.leakFailures > 0 ? "leak detected" : "zero leaks"}
+              tone={snap!.leakFailures > 0 ? "bad" : "good"}
             >
               {snap!.totalResolved}/{snap!.totalRuns} healed
             </LearningHeroMetric>
-            <div className="pc-rq__waterfall" aria-label="Self-heal phase timing">
+            <div
+              className="pc-rq__waterfall"
+              aria-label="Self-heal phase timing"
+            >
               {[
-                ['Detect', detect, '#38bdf8'],
-                ['Triage', triage, '#fbbf24'],
-                ['Fix', fix, '#34d399'],
+                ["Detect", detect, "#38bdf8"],
+                ["Triage", triage, "#fbbf24"],
+                ["Fix", fix, "#34d399"],
               ].map(([label, value, color]) => (
-                <span key={String(label)} style={{ width: `${Math.max(12, (Number(value) / phaseTotal) * 100)}%` }}>
+                <span
+                  key={String(label)}
+                  style={{
+                    width: `${Math.max(12, (Number(value) / phaseTotal) * 100)}%`,
+                  }}
+                >
                   <i style={{ background: String(color) }} />
                   <small>{label}</small>
                   <strong>{ms(Number(value))}</strong>
@@ -100,20 +123,36 @@ export function RedQueenPanel() {
             </div>
             <LearningEvidenceRail>
               <div className="pc-learning-visual__evidence-grid">
-                <div className="pc-learning-visual__evidence-metric"><span>Healed</span><strong>{snap!.totalResolved}</strong></div>
-                <div className="pc-learning-visual__evidence-metric"><span>Runs</span><strong>{snap!.totalRuns}</strong></div>
-                <div className="pc-learning-visual__evidence-metric"><span>Leaks</span><strong>{snap!.leakFailures}</strong></div>
-                <div className="pc-learning-visual__evidence-metric"><span>Classes</span><strong>{classes.length}</strong></div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Healed</span>
+                  <strong>{snap!.totalResolved}</strong>
+                </div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Runs</span>
+                  <strong>{snap!.totalRuns}</strong>
+                </div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Leaks</span>
+                  <strong>{snap!.leakFailures}</strong>
+                </div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Classes</span>
+                  <strong>{classes.length}</strong>
+                </div>
               </div>
             </LearningEvidenceRail>
           </div>
-          <div className="pc-learning__sectionhead"><h2>Drill classes</h2></div>
+          <div className="pc-learning__sectionhead">
+            <h2>Drill classes</h2>
+          </div>
           <ul className="pc-rq__list">
             {classes.map((c) => (
               <li key={c.drillClass} className="pc-rq__row">
                 <span className="pc-rq__class">{c.drillClass}</span>
                 <span className="pc-rq__meta">
-                  <span title="Healed / total runs">{c.resolved}/{c.runs}</span>
+                  <span title="Healed / total runs">
+                    {c.resolved}/{c.runs}
+                  </span>
                   <span title="Median detect → triage → fix (resolved runs)">
                     {ms(c.detectMs)} → {ms(c.triageMs)} → {ms(c.fixMs)}
                   </span>
@@ -123,8 +162,12 @@ export function RedQueenPanel() {
                       triage {c.triageMatches}/{c.triageJudged}
                     </span>
                   ) : null}
-                  {c.leakFailures > 0 ? <span className="pc-rq__leak">LEAK ×{c.leakFailures}</span> : null}
-                  <span className="pc-rq__age" title="Last run">{dateShort(c.lastRunAt)}</span>
+                  {c.leakFailures > 0 ? (
+                    <span className="pc-rq__leak">LEAK ×{c.leakFailures}</span>
+                  ) : null}
+                  <span className="pc-rq__age" title="Last run">
+                    {dateShort(c.lastRunAt)}
+                  </span>
                 </span>
               </li>
             ))}

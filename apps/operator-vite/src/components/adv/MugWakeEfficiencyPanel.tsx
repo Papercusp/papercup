@@ -15,24 +15,26 @@
  * about the snapshot shape — anything but the expected aggregate renders the
  * no-wakes state, never a crash.
  */
-import { useSyncQuery } from '@papercusp/sync';
-import { Crown, RefreshCw } from 'lucide-react';
-import { useLexicon } from '@/lib/useLexicon';
-import type { MugWakeEfficiency } from '@papercusp/operator-core/lib/pot/mug-wake-efficiency';
+import { useSyncQuery } from "@papercusp/sync";
+import { Crown, RefreshCw } from "lucide-react";
+import { useLexicon } from "@/lib/useLexicon";
+import type { MugWakeEfficiency } from "@papercusp/operator-core/lib/pot/mug-wake-efficiency";
 import {
   LearningComparisonBars,
   LearningEvidenceRail,
   LearningHeroMetric,
   LearningPageHeader,
   LearningVisualEmpty,
-} from './LearningVisuals';
+} from "./LearningVisuals";
 
 /** A [0,1] ratio → integer percent. */
-const pct = (r: number): string => `${Math.round((Number.isFinite(r) ? r : 0) * 100)}%`;
+const pct = (r: number): string =>
+  `${Math.round((Number.isFinite(r) ? r : 0) * 100)}%`;
 /** Compact token count (e.g. 8000 → 8k, 1_250_000 → 1.2M). */
 function compact(n: number): string {
-  if (!Number.isFinite(n)) return '0';
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
+  if (!Number.isFinite(n)) return "0";
+  if (n >= 1_000_000)
+    return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}k`;
   return String(Math.round(n));
 }
@@ -40,7 +42,7 @@ function compact(n: number): string {
 export function MugWakeEfficiencyPanel() {
   const t = useLexicon();
   const sync = useSyncQuery<MugWakeEfficiency>({
-    queryName: 'learning.mugWakeEfficiency',
+    queryName: "learning.mugWakeEfficiency",
     args: {},
     staleTime: 30_000,
   });
@@ -50,17 +52,20 @@ export function MugWakeEfficiencyPanel() {
   const recent = samples.slice(0, 8);
 
   return (
-    <section className="pc-learning__section pc-qeff" aria-label={`${t('brain')} per-wake efficiency`}>
+    <section
+      className="pc-learning__section pc-qeff"
+      aria-label={`${t("brain")} per-wake efficiency`}
+    >
       <LearningPageHeader
         icon={Crown}
-        title={`${t('brain')} efficiency`}
+        title={`${t("brain")} efficiency`}
         signal={wakes > 0 ? `${wakes} wakes` : undefined}
-        tone={snap && snap.cacheHitRatio >= 0.7 ? 'good' : 'warn'}
+        tone={snap && snap.cacheHitRatio >= 0.7 ? "good" : "warn"}
         action={
           <button
             type="button"
             className="pc-learning__refresh"
-            aria-label={`Reload ${t('brain')} efficiency`}
+            aria-label={`Reload ${t("brain")} efficiency`}
             disabled={sync.fetching}
             onClick={() => sync.invalidate()}
           >
@@ -70,15 +75,15 @@ export function MugWakeEfficiencyPanel() {
       />
 
       {wakes === 0 ? (
-        <LearningVisualEmpty icon={Crown} title={`No ${t('brain')} wakes`} />
+        <LearningVisualEmpty icon={Crown} title={`No ${t("brain")} wakes`} />
       ) : (
         <>
           <div className="pc-learning-visual__layout">
             <LearningHeroMetric
               eyebrow="Cache hit"
               value={pct(snap!.cacheHitRatio)}
-              status={snap!.cacheHitRatio >= 0.7 ? 'efficient' : 'warming'}
-              tone={snap!.cacheHitRatio >= 0.7 ? 'good' : 'warn'}
+              status={snap!.cacheHitRatio >= 0.7 ? "efficient" : "warming"}
+              tone={snap!.cacheHitRatio >= 0.7 ? "good" : "warn"}
             >
               {snap!.cachedWakes}/{wakes} cached wakes
             </LearningHeroMetric>
@@ -88,50 +93,86 @@ export function MugWakeEfficiencyPanel() {
               treatmentName="Cache read"
               rows={[
                 {
-                  label: 'Tokens',
-                  baseline: snap!.totalCacheCreationTokens + snap!.totalInputTokens,
+                  label: "Tokens",
+                  baseline:
+                    snap!.totalCacheCreationTokens + snap!.totalInputTokens,
                   treatment: snap!.totalCacheReadTokens,
-                  baselineLabel: compact(snap!.totalCacheCreationTokens + snap!.totalInputTokens),
+                  baselineLabel: compact(
+                    snap!.totalCacheCreationTokens + snap!.totalInputTokens,
+                  ),
                   treatmentLabel: compact(snap!.totalCacheReadTokens),
                   treatmentWins:
-                    snap!.totalCacheReadTokens >= snap!.totalCacheCreationTokens + snap!.totalInputTokens,
+                    snap!.totalCacheReadTokens >=
+                    snap!.totalCacheCreationTokens + snap!.totalInputTokens,
                 },
               ]}
             />
             <LearningEvidenceRail>
               <div className="pc-learning-visual__evidence-grid">
-                <div className="pc-learning-visual__evidence-metric"><span>Turns / wake</span><strong>{snap!.avgTurns == null ? '—' : snap!.avgTurns.toFixed(1)}</strong></div>
-                <div className="pc-learning-visual__evidence-metric"><span>Cost</span><strong>${snap!.totalCostUsd.toFixed(2)}</strong></div>
-                <div className="pc-learning-visual__evidence-metric"><span>Cached</span><strong>{snap!.cachedWakes}</strong></div>
-                <div className="pc-learning-visual__evidence-metric"><span>Reported</span><strong>{snap!.turnsReportedWakes}</strong></div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Turns / wake</span>
+                  <strong>
+                    {snap!.avgTurns == null ? "—" : snap!.avgTurns.toFixed(1)}
+                  </strong>
+                </div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Cost</span>
+                  <strong>${snap!.totalCostUsd.toFixed(2)}</strong>
+                </div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Cached</span>
+                  <strong>{snap!.cachedWakes}</strong>
+                </div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Reported</span>
+                  <strong>{snap!.turnsReportedWakes}</strong>
+                </div>
               </div>
             </LearningEvidenceRail>
           </div>
           {recent.length > 0 ? (
             <>
-            <div className="pc-learning__sectionhead"><h2>Recent wakes</h2></div>
-            <ul className="pc-qeff__list" aria-label={`recent ${t('brain')} wakes (newest first)`}>
-              {recent.map((s, i) => {
-                const prompt = s.cacheReadTokens + s.cacheCreationTokens + s.inputTokens;
-                const hit = prompt > 0 ? s.cacheReadTokens / prompt : 0;
-                return (
-                  <li key={s.runId ?? `wake-${i}`} className="pc-qeff__row">
-                    <span className="pc-qeff__cache" title="cache-hit ratio this wake">
-                      {pct(hit)}
-                    </span>
-                    <span className="pc-qeff__bar" aria-hidden>
-                      <span className="pc-qeff__barfill" style={{ width: `${Math.round(hit * 100)}%` }} />
-                    </span>
-                    <span className="pc-qeff__turns" title="assistant turns this wake">
-                      {s.turns == null ? '—' : `${s.turns}t`}
-                    </span>
-                    <span className="pc-qeff__tok" title="prompt tokens this wake">
-                      {compact(prompt)}
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
+              <div className="pc-learning__sectionhead">
+                <h2>Recent wakes</h2>
+              </div>
+              <ul
+                className="pc-qeff__list"
+                aria-label={`recent ${t("brain")} wakes (newest first)`}
+              >
+                {recent.map((s, i) => {
+                  const prompt =
+                    s.cacheReadTokens + s.cacheCreationTokens + s.inputTokens;
+                  const hit = prompt > 0 ? s.cacheReadTokens / prompt : 0;
+                  return (
+                    <li key={s.runId ?? `wake-${i}`} className="pc-qeff__row">
+                      <span
+                        className="pc-qeff__cache"
+                        title="cache-hit ratio this wake"
+                      >
+                        {pct(hit)}
+                      </span>
+                      <span className="pc-qeff__bar" aria-hidden>
+                        <span
+                          className="pc-qeff__barfill"
+                          style={{ width: `${Math.round(hit * 100)}%` }}
+                        />
+                      </span>
+                      <span
+                        className="pc-qeff__turns"
+                        title="assistant turns this wake"
+                      >
+                        {s.turns == null ? "—" : `${s.turns}t`}
+                      </span>
+                      <span
+                        className="pc-qeff__tok"
+                        title="prompt tokens this wake"
+                      >
+                        {compact(prompt)}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
             </>
           ) : null}
         </>

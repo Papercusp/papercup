@@ -15,37 +15,53 @@
  * lines. Defensive about the snapshot shape — anything but the expected
  * {shifts: []} renders the empty state, never a crash.
  */
-import { useSyncQuery } from '@papercusp/sync';
-import { Activity, RefreshCw } from 'lucide-react';
-import type { EkgSnapshot } from '@papercusp/operator-core/lib/fleet-ekg/ekg-read';
+import { useSyncQuery } from "@papercusp/sync";
+import { Activity, RefreshCw } from "lucide-react";
+import type { EkgSnapshot } from "@papercusp/operator-core/lib/fleet-ekg/ekg-read";
 import {
   LearningEvidenceRail,
   LearningHeroMetric,
   LearningPageHeader,
   LearningVisualEmpty,
-} from './LearningVisuals';
+} from "./LearningVisuals";
 
-const num = (v: number | null): string => (v == null ? '' : Math.abs(v) >= 100 ? v.toFixed(0) : v.toPrecision(3));
+const num = (v: number | null): string =>
+  v == null ? "" : Math.abs(v) >= 100 ? v.toFixed(0) : v.toPrecision(3);
 
 function dateShort(iso: string | null): string {
-  if (!iso) return '';
+  if (!iso) return "";
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return Number.isNaN(d.getTime())
+    ? ""
+    : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 export function EkgPanel() {
-  const sync = useSyncQuery<EkgSnapshot>({ queryName: 'learning.ekg', args: {}, staleTime: 30_000 });
+  const sync = useSyncQuery<EkgSnapshot>({
+    queryName: "learning.ekg",
+    args: {},
+    staleTime: 30_000,
+  });
   const snap = sync.data?.[0];
   const shifts = Array.isArray(snap?.shifts) ? snap.shifts : [];
-  const major = shifts.filter((shift) => shift.severity === 'major').length;
+  const major = shifts.filter((shift) => shift.severity === "major").length;
 
   return (
-    <section className="pc-learning__section pc-ekg" aria-label="Fleet EKG behavioral shifts">
+    <section
+      className="pc-learning__section pc-ekg"
+      aria-label="Fleet EKG behavioral shifts"
+    >
       <LearningPageHeader
         icon={Activity}
         title="Fleet EKG"
-        signal={major > 0 ? `${major} major` : shifts.length > 0 ? `${shifts.length} shifts` : undefined}
-        tone={major > 0 ? 'bad' : shifts.length > 0 ? 'warn' : 'good'}
+        signal={
+          major > 0
+            ? `${major} major`
+            : shifts.length > 0
+              ? `${shifts.length} shifts`
+              : undefined
+        }
+        tone={major > 0 ? "bad" : shifts.length > 0 ? "warn" : "good"}
         action={
           <button
             type="button"
@@ -67,41 +83,68 @@ export function EkgPanel() {
             <LearningHeroMetric
               eyebrow="Detected shifts"
               value={String(snap!.totalShifts)}
-              status={major > 0 ? 'major drift' : 'monitor'}
-              tone={major > 0 ? 'bad' : 'warn'}
+              status={major > 0 ? "major drift" : "monitor"}
+              tone={major > 0 ? "bad" : "warn"}
             >
               {snap!.unattributedShifts} unattributed
             </LearningHeroMetric>
-            <div className="pc-ekg__wave" aria-label="Behavioral shift magnitude">
+            <div
+              className="pc-ekg__wave"
+              aria-label="Behavioral shift magnitude"
+            >
               {shifts.slice(0, 28).map((shift) => (
                 <i
                   key={shift.id}
                   className={`is-${shift.severity}`}
-                  style={{ height: `${Math.max(12, Math.min(100, shift.score * 100))}%` }}
+                  style={{
+                    height: `${Math.max(12, Math.min(100, shift.score * 100))}%`,
+                  }}
                   title={`${shift.feature}: ${shift.score.toFixed(3)}`}
                 />
               ))}
             </div>
             <LearningEvidenceRail>
               <div className="pc-learning-visual__evidence-grid">
-                <div className="pc-learning-visual__evidence-metric"><span>Sessions 7d</span><strong>{snap!.sessions7d}</strong></div>
-                <div className="pc-learning-visual__evidence-metric"><span>Unattributed</span><strong>{snap!.unattributedShifts}</strong></div>
-                <div className="pc-learning-visual__evidence-metric"><span>Embedded</span><strong>{snap!.sessionsEmbedded}</strong></div>
-                <div className="pc-learning-visual__evidence-metric"><span>Major</span><strong>{major}</strong></div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Sessions 7d</span>
+                  <strong>{snap!.sessions7d}</strong>
+                </div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Unattributed</span>
+                  <strong>{snap!.unattributedShifts}</strong>
+                </div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Embedded</span>
+                  <strong>{snap!.sessionsEmbedded}</strong>
+                </div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Major</span>
+                  <strong>{major}</strong>
+                </div>
               </div>
             </LearningEvidenceRail>
           </div>
-          <div className="pc-learning__sectionhead"><h2>Detected shifts</h2></div>
+          <div className="pc-learning__sectionhead">
+            <h2>Detected shifts</h2>
+          </div>
           <ul className="pc-ekg__list">
             {shifts.map((s) => (
               <li key={s.id} className="pc-ekg__row">
-                <span className={`pc-ekg__severity is-${s.severity}`}>{s.severity}</span>
+                <span className={`pc-ekg__severity is-${s.severity}`}>
+                  {s.severity}
+                </span>
                 <span className="pc-ekg__feature">
                   {s.feature}
-                  {s.direction ? <em className="pc-ekg__dir">{s.direction === 'up' ? '↑' : '↓'}</em> : null}
+                  {s.direction ? (
+                    <em className="pc-ekg__dir">
+                      {s.direction === "up" ? "↑" : "↓"}
+                    </em>
+                  ) : null}
                 </span>
                 <span className="pc-ekg__meta">
-                  <span title="Drift score (PSI for numeric, JSD for distributions)">{s.score.toFixed(3)}</span>
+                  <span title="Drift score (PSI for numeric, JSD for distributions)">
+                    {s.score.toFixed(3)}
+                  </span>
                   {s.baselineSummary != null && s.windowSummary != null ? (
                     <span title="Baseline median → window median">
                       {num(s.baselineSummary)}→{num(s.windowSummary)}
@@ -110,18 +153,27 @@ export function EkgPanel() {
                   <span title="Window vs baseline cohort sizes">
                     {s.windowSessions}w/{s.baselineSessions}b
                   </span>
-                  <span className="pc-ekg__age" title="Shift window day">{dateShort(s.windowDate)}</span>
+                  <span className="pc-ekg__age" title="Shift window day">
+                    {dateShort(s.windowDate)}
+                  </span>
                   {s.attributed ? (
                     <span
                       className="pc-ekg__attributed"
                       title={s.ledgerCandidates
-                        .map((c) => `${c.source} ${c.target}${c.summary ? ` — ${c.summary}` : ''}`)
-                        .join('\n')}
+                        .map(
+                          (c) =>
+                            `${c.source} ${c.target}${c.summary ? ` — ${c.summary}` : ""}`,
+                        )
+                        .join("\n")}
                     >
-                      {s.ledgerCandidates.length} cause{s.ledgerCandidates.length === 1 ? '' : 's'}
+                      {s.ledgerCandidates.length} cause
+                      {s.ledgerCandidates.length === 1 ? "" : "s"}
                     </span>
                   ) : (
-                    <span className="pc-ekg__alarm" title="No behavior-change-ledger entry in the lookback window">
+                    <span
+                      className="pc-ekg__alarm"
+                      title="No behavior-change-ledger entry in the lookback window"
+                    >
                       unattributable
                     </span>
                   )}

@@ -119,10 +119,7 @@ export function LearningComparisonBars({
                     className={`pc-learning-visual__bar is-treatment${row.treatmentWins ? " is-winner" : ""}`}
                     style={
                       {
-                        "--pc-learning-bar-width": barWidth(
-                          row.treatment,
-                          max,
-                        ),
+                        "--pc-learning-bar-width": barWidth(row.treatment, max),
                       } as CSSProperties
                     }
                   />

@@ -202,7 +202,9 @@ export default function LearningTab() {
   const activeStage = stageForView(view);
   const activeStageMeta =
     STAGES.find((stage) => stage.id === activeStage) ?? null;
-  const activeStageIndex = STAGES.findIndex((stage) => stage.id === activeStage);
+  const activeStageIndex = STAGES.findIndex(
+    (stage) => stage.id === activeStage,
+  );
   // Work Queue parity: once a view has been opened, keep its sync subscription
   // and rendered state alive while the user moves around the loop. The old
   // conditional unmounted every panel, forcing heavy aggregate reads to cold-
@@ -287,7 +289,9 @@ export default function LearningTab() {
                 {index < STAGES.length - 1 ? (
                   <span
                     className="pc-learning__stage-line"
-                    data-complete={index < activeStageIndex ? "true" : undefined}
+                    data-complete={
+                      index < activeStageIndex ? "true" : undefined
+                    }
                     aria-hidden
                   />
                 ) : null}
@@ -406,7 +410,10 @@ function LearningViewContent({
       <div className="pc-learning__rubricsplit">
         <RubricsPanel onSelect={onRubricSelect} />
         {rubricId ? (
-          <aside className="pc-learning__rubricdrawer" aria-label="Rubric evidence">
+          <aside
+            className="pc-learning__rubricdrawer"
+            aria-label="Rubric evidence"
+          >
             <RubricDetailPanel
               rubricId={rubricId}
               onBack={() => onRubricSelect(null)}
@@ -490,9 +497,7 @@ function ImprovementsView({ hive }: { hive: string }) {
   );
   const humanRows = useMemo(
     () =>
-      (digest?.humanQueue ?? []).filter(
-        (item) => !src || item.source === src,
-      ),
+      (digest?.humanQueue ?? []).filter((item) => !src || item.source === src),
     [digest, src],
   );
 
@@ -519,13 +524,28 @@ function ImprovementsView({ hive }: { hive: string }) {
           >
             {resolved} resolved
           </LearningHeroMetric>
-          <div className="pc-learning__improvementflow" aria-label="Improvement routing">
-            <span><small>Captured</small><strong>{digest.total}</strong></span>
+          <div
+            className="pc-learning__improvementflow"
+            aria-label="Improvement routing"
+          >
+            <span>
+              <small>Captured</small>
+              <strong>{digest.total}</strong>
+            </span>
             <i aria-hidden />
-            <span className="is-auto"><small>Automatic</small><strong>{digest.autoEligible.length}</strong></span>
-            <span className="is-human"><small>Review</small><strong>{digest.humanQueue.length}</strong></span>
+            <span className="is-auto">
+              <small>Automatic</small>
+              <strong>{digest.autoEligible.length}</strong>
+            </span>
+            <span className="is-human">
+              <small>Review</small>
+              <strong>{digest.humanQueue.length}</strong>
+            </span>
             <i aria-hidden />
-            <span className="is-good"><small>Resolved</small><strong>{resolved}</strong></span>
+            <span className="is-good">
+              <small>Resolved</small>
+              <strong>{resolved}</strong>
+            </span>
           </div>
           <LearningEvidenceRail>
             <div className="pc-learning-visual__evidence-grid">
@@ -620,7 +640,10 @@ function ImprovementsView({ hive }: { hive: string }) {
       ) : lane === "all" ? (
         <div className="pc-learning__lanegrid">
           <section className="pc-learning__lanecol is-auto">
-            <header><span>Automatic</span><strong>{autoRows.length}</strong></header>
+            <header>
+              <span>Automatic</span>
+              <strong>{autoRows.length}</strong>
+            </header>
             <ul className="pc-learning__list">
               {autoRows.map((it) => (
                 <ImprovementRow
@@ -633,7 +656,10 @@ function ImprovementsView({ hive }: { hive: string }) {
             </ul>
           </section>
           <section className="pc-learning__lanecol is-human">
-            <header><span>Review</span><strong>{humanRows.length}</strong></header>
+            <header>
+              <span>Review</span>
+              <strong>{humanRows.length}</strong>
+            </header>
             <ul className="pc-learning__list">
               {humanRows.map((it) => (
                 <ImprovementRow
@@ -964,7 +990,10 @@ function GymView({ hive }: { hive: string }) {
           >
             {proposals.length} experiments
           </LearningHeroMetric>
-          <div className="pc-learning__gymflow" aria-label="Gym experiment flow">
+          <div
+            className="pc-learning__gymflow"
+            aria-label="Gym experiment flow"
+          >
             {[
               ["Tested", proposals.length, "accent"],
               ["Pending", pending, "warn"],
@@ -1023,12 +1052,14 @@ function GymView({ hive }: { hive: string }) {
         <LearningVisualEmpty icon={Dumbbell} title="No gym experiments" />
       ) : (
         <>
-        <div className="pc-learning__sectionhead"><h2>Recent challengers</h2></div>
-        <ul className="pc-learning__list">
-          {proposals.map((p) => (
-            <GymProposalRow key={p.id} p={p} />
-          ))}
-        </ul>
+          <div className="pc-learning__sectionhead">
+            <h2>Recent challengers</h2>
+          </div>
+          <ul className="pc-learning__list">
+            {proposals.map((p) => (
+              <GymProposalRow key={p.id} p={p} />
+            ))}
+          </ul>
         </>
       )}
     </section>
@@ -1148,18 +1179,22 @@ function ApiaryView() {
       <LearningPageHeader
         icon={Gauge}
         title="Benchmark"
-        signal={latest ? `${latest.successfulRuns}/${latest.totalRuns} solved` : undefined}
+        signal={
+          latest
+            ? `${latest.successfulRuns}/${latest.totalRuns} solved`
+            : undefined
+        }
         tone={latest && latest.successRate >= 0.8 ? "good" : "neutral"}
         action={
-        <button
-          type="button"
-          className="pc-learning__refresh"
-          aria-label="Reload the benchmark"
-          disabled={sync.fetching}
-          onClick={() => sync.invalidate()}
-        >
-          <RefreshCw size={13} aria-hidden />
-        </button>
+          <button
+            type="button"
+            className="pc-learning__refresh"
+            aria-label="Reload the benchmark"
+            disabled={sync.fetching}
+            onClick={() => sync.invalidate()}
+          >
+            <RefreshCw size={13} aria-hidden />
+          </button>
         }
       />
 
@@ -1194,7 +1229,9 @@ function ApiaryView() {
                     : "bad"
               }
             >
-              {currentDelta != null ? `Δ ${currentDeltaMeta.text}` : "first generation"}
+              {currentDelta != null
+                ? `Δ ${currentDeltaMeta.text}`
+                : "first generation"}
             </LearningHeroMetric>
             <LearningComparisonBars
               title="Previous vs current"
@@ -1205,12 +1242,15 @@ function ApiaryView() {
                   label: "Composite",
                   baseline: previous?.meanComposite ?? null,
                   treatment: latest.meanComposite,
-                  baselineLabel: compositeLabel(previous?.meanComposite ?? null),
+                  baselineLabel: compositeLabel(
+                    previous?.meanComposite ?? null,
+                  ),
                   treatmentLabel: compositeLabel(latest.meanComposite),
                   max: 10,
                   treatmentWins:
                     latest.meanComposite != null &&
-                    latest.meanComposite >= (previous?.meanComposite ?? -Infinity),
+                    latest.meanComposite >=
+                      (previous?.meanComposite ?? -Infinity),
                 },
                 {
                   label: "Success",
@@ -1226,7 +1266,9 @@ function ApiaryView() {
                   label: "Time to green",
                   baseline: previous?.meanTimeToGreenSecs ?? null,
                   treatment: latest.meanTimeToGreenSecs,
-                  baselineLabel: secsLabel(previous?.meanTimeToGreenSecs ?? null),
+                  baselineLabel: secsLabel(
+                    previous?.meanTimeToGreenSecs ?? null,
+                  ),
                   treatmentLabel: secsLabel(latest.meanTimeToGreenSecs),
                   treatmentWins:
                     latest.meanTimeToGreenSecs != null &&
@@ -1278,7 +1320,9 @@ function ApiaryView() {
                 >
                   <span
                     className="pc-learning__sev"
-                    style={{ background: delta.tone === "bad" ? "#fb7185" : "#34d399" }}
+                    style={{
+                      background: delta.tone === "bad" ? "#fb7185" : "#34d399",
+                    }}
                     aria-hidden
                   />
                   <span className="pc-learning__id" title={inst.codeSha}>
@@ -1289,7 +1333,9 @@ function ApiaryView() {
                       {compositeLabel(inst.meanComposite)}
                     </span>
                     {i < instances.length - 1 ? (
-                      <span className={`pc-learning__delta pc-learning__delta--${delta.tone}`}>
+                      <span
+                        className={`pc-learning__delta pc-learning__delta--${delta.tone}`}
+                      >
                         Δ {delta.text}
                       </span>
                     ) : null}
@@ -1372,7 +1418,9 @@ function HiveEvalTrendView() {
       <LearningPageHeader
         icon={Activity}
         title={`${t("pot")} orchestration`}
-        signal={latest ? `${latest.scoredRuns}/${latest.totalRuns} scored` : undefined}
+        signal={
+          latest ? `${latest.scoredRuns}/${latest.totalRuns} scored` : undefined
+        }
         tone={latest && (latest.fabricationRate ?? 0) === 0 ? "good" : "warn"}
         action={
           <button
@@ -1388,7 +1436,10 @@ function HiveEvalTrendView() {
       />
 
       {!latest ? (
-        <LearningVisualEmpty icon={Activity} title={`No ${t("pot")}-eval runs`} />
+        <LearningVisualEmpty
+          icon={Activity}
+          title={`No ${t("pot")}-eval runs`}
+        />
       ) : (
         <>
           <div className="pc-learning-visual__layout">
@@ -1402,9 +1453,17 @@ function HiveEvalTrendView() {
                     ? "improved"
                     : "regressed"
               }
-              tone={compositeDelta == null ? "accent" : compositeDelta >= 0 ? "good" : "bad"}
+              tone={
+                compositeDelta == null
+                  ? "accent"
+                  : compositeDelta >= 0
+                    ? "good"
+                    : "bad"
+              }
             >
-              {compositeDelta == null ? "first generation" : `Δ ${compositeDeltaMeta.text}`}
+              {compositeDelta == null
+                ? "first generation"
+                : `Δ ${compositeDeltaMeta.text}`}
             </LearningHeroMetric>
             <LearningComparisonBars
               title="Previous vs current"
@@ -1415,7 +1474,9 @@ function HiveEvalTrendView() {
                   label: "Outcome gate",
                   baseline: previous?.outcomeGatePassRate ?? null,
                   treatment: latest.outcomeGatePassRate,
-                  baselineLabel: pctLabel(previous?.outcomeGatePassRate ?? null),
+                  baselineLabel: pctLabel(
+                    previous?.outcomeGatePassRate ?? null,
+                  ),
                   treatmentLabel: pctLabel(latest.outcomeGatePassRate),
                   max: 1,
                   treatmentWins:
@@ -1427,7 +1488,9 @@ function HiveEvalTrendView() {
                   label: "Critical path",
                   baseline: previous?.meanCriticalPathRatio ?? null,
                   treatment: latest.meanCriticalPathRatio,
-                  baselineLabel: ratioLabel(previous?.meanCriticalPathRatio ?? null),
+                  baselineLabel: ratioLabel(
+                    previous?.meanCriticalPathRatio ?? null,
+                  ),
                   treatmentLabel: ratioLabel(latest.meanCriticalPathRatio),
                   treatmentWins:
                     latest.meanCriticalPathRatio != null &&
@@ -1622,13 +1685,17 @@ function BakeoffTrendView() {
 
           <div className="pc-learning__sectionhead">
             <h2>Recent bake-offs</h2>
-            <div className="pc-learning__standings" aria-label="Current flag standings">
+            <div
+              className="pc-learning__standings"
+              aria-label="Current flag standings"
+            >
               {standings.slice(0, 4).map(({ flag, verdict }) => (
                 <span
                   key={flag}
                   className={`pc-learning__delta pc-learning__delta--${BAKEOFF_VERDICT_META[verdict].tone}`}
                 >
-                  {flag.replace(/^papercusp-/, "")} · {BAKEOFF_VERDICT_META[verdict].label}
+                  {flag.replace(/^papercusp-/, "")} ·{" "}
+                  {BAKEOFF_VERDICT_META[verdict].label}
                 </span>
               ))}
             </div>
@@ -1652,10 +1719,14 @@ function BakeoffTrendView() {
                     {r.flagKey.replace(/^papercusp-/, "")}
                   </span>
                   <span className="pc-learning__benchcell">
-                    <span className={`pc-learning__delta pc-learning__delta--${meta.tone}`}>
+                    <span
+                      className={`pc-learning__delta pc-learning__delta--${meta.tone}`}
+                    >
                       {meta.label}
                     </span>
-                    <span className={`pc-learning__delta pc-learning__delta--${dc.tone}`}>
+                    <span
+                      className={`pc-learning__delta pc-learning__delta--${dc.tone}`}
+                    >
                       Δcomp {dc.text}
                     </span>
                     <span className="pc-learning__benchmeta">
@@ -2269,11 +2340,19 @@ export function ScoutView() {
           <div>
             {rails.map((rail) => {
               const meta = RAIL_META[rail.rail];
-              const share = snap.totalRouted > 0 ? rail.count / snap.totalRouted : 0;
+              const share =
+                snap.totalRouted > 0 ? rail.count / snap.totalRouted : 0;
               return (
                 <span key={rail.rail} title={meta?.desc}>
                   <em>{meta?.label ?? rail.rail}</em>
-                  <b><i style={{ width: `${Math.max(4, share * 100)}%`, background: meta?.color }} /></b>
+                  <b>
+                    <i
+                      style={{
+                        width: `${Math.max(4, share * 100)}%`,
+                        background: meta?.color,
+                      }}
+                    />
+                  </b>
                   <strong>{rail.count}</strong>
                 </span>
               );
@@ -2681,7 +2760,10 @@ function LearningsView({ hive }: { hive: string }) {
             >
               {snap.organicCount} {t("pot", { lower: true })}-learned
             </LearningHeroMetric>
-            <div className="pc-learning__memorymap" aria-label="Learning origin map">
+            <div
+              className="pc-learning__memorymap"
+              aria-label="Learning origin map"
+            >
               {rows.slice(0, 96).map((row) => (
                 <i
                   key={row.id}
@@ -2998,7 +3080,10 @@ function LearningsView({ hive }: { hive: string }) {
         </div>
 
         {hive === "" ? (
-          <LearningVisualEmpty icon={Brain} title={`No ${t("pot", { plural: true, lower: true })}`} />
+          <LearningVisualEmpty
+            icon={Brain}
+            title={`No ${t("pot", { plural: true, lower: true })}`}
+          />
         ) : sync.loading && !snap ? (
           <p className="pc-learning__empty">
             Loading the {t("pot", { lower: true })}&rsquo;s shared memory…
@@ -3008,7 +3093,10 @@ function LearningsView({ hive }: { hive: string }) {
             Memory store unavailable — try reloading.
           </p>
         ) : filtered.length === 0 ? (
-          <LearningVisualEmpty icon={Brain} title="No learnings in this filter" />
+          <LearningVisualEmpty
+            icon={Brain}
+            title="No learnings in this filter"
+          />
         ) : (
           <ul className="pc-learning__list">
             {filtered.map((r) => (
@@ -3174,18 +3262,21 @@ export function LearningStyles() {
         color: var(--stage-accent); border-color: var(--stage-accent);
         background: color-mix(in oklab, var(--stage-accent), transparent 88%);
       }
+      .pc-learning__stage[data-complete="true"] { color: var(--fg); }
+      .pc-learning__stage[data-complete="true"] .pc-learning__stage-icon { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--bg-1)); }
+      .pc-learning__stage-line[data-complete="true"] { height: 2px; background: var(--accent); }
 
       .pc-learning__controls { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
       .pc-learning__view-tabs { min-width: 0; max-width: 100%; }
-      .pc-learning__view-list { display: inline-flex; align-items: center; gap: 3px; max-width: 100%; padding: 3px; overflow-x: auto; scrollbar-width: thin; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-1); }
+      .pc-learning__view-list { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; padding: 0; overflow-x: auto; scrollbar-width: thin; border-bottom: 1px solid var(--border); background: transparent; }
       .pc-learning__view-tab {
-        display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; padding: 6px 10px;
-        border: 1px solid transparent; border-radius: 6px; background: transparent;
+        display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; padding: 7px 11px 8px;
+        border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent;
         color: var(--fg-mute); cursor: pointer; font: inherit; font-size: 11.5px; font-weight: 620;
         transition: color var(--dur-fast), border-color var(--dur-fast), background var(--dur-fast);
       }
-      .pc-learning__view-tab:hover { color: var(--fg); background: var(--bg-2); }
-      .pc-learning__view-tab[aria-selected="true"] { color: var(--fg); border-color: var(--border-strong); background: var(--bg-3); }
+      .pc-learning__view-tab:hover { color: var(--fg); background: color-mix(in srgb, var(--accent) 5%, transparent); }
+      .pc-learning__view-tab[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
 
       .pc-learning__hivepick {
         display: inline-flex; align-items: center; gap: 6px;
@@ -3196,6 +3287,9 @@ export function LearningStyles() {
       .pc-learning__body { flex: 1; min-height: 240px; overflow: hidden; }
       .pc-learning__viewpane { height: 100%; min-height: 0; overflow: auto; }
       .pc-learning__viewpane[data-view="observations"] { overflow: hidden; }
+      .pc-learning__rubricsplit { position: relative; height: 100%; min-height: 0; overflow: hidden; }
+      .pc-learning__rubricdrawer { position: absolute; z-index: 3; inset: 0 0 0 auto; width: min(720px, 56%); overflow: auto; border-left: 1px solid var(--border-strong); background: var(--bg-1); box-shadow: -24px 0 50px color-mix(in srgb, #000 34%, transparent); animation: pc-learning-drawer-in 160ms ease-out; }
+      @keyframes pc-learning-drawer-in { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: translateX(0); } }
 
       @media (max-width: 720px) {
         .pc-learning__header { align-items: flex-start; }
@@ -3204,6 +3298,7 @@ export function LearningStyles() {
         .pc-learning__stage-list { padding-inline: 4px; }
         .pc-learning__stage { padding-inline: 2px; }
         .pc-learning__stage-line { left: calc(50% + 15px); width: calc(100% - 30px); }
+        .pc-learning__rubricdrawer { width: 100%; }
       }
 
       /* Flow strip (P-041) — compact in/out chips above the stock scoreboard. */
@@ -3356,6 +3451,46 @@ export function LearningStyles() {
       .pc-learning__cta:hover { background: rgba(52, 211, 153, 0.24); color: #e7f7ff; }
 
       .pc-learning__footnote { margin: 2px 0 0; font-size: 11px; font-style: italic; color: var(--fg-mute, #7f9bb4); }
+
+      .pc-learning__gymflow, .pc-learning__improvementflow, .pc-learning__memorymap {
+        min-height: 176px; border: 1px solid var(--border); border-radius: 11px; background: var(--bg-2);
+      }
+      .pc-learning__gymflow { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; align-items: center; gap: 8px; padding: 18px; }
+      .pc-learning__gymflow > span { position: relative; display: grid; place-content: center; justify-items: center; min-height: 84px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-1); }
+      .pc-learning__gymflow small, .pc-learning__improvementflow small { color: var(--fg-mute); font-size: 9px; font-weight: 700; text-transform: uppercase; }
+      .pc-learning__gymflow strong, .pc-learning__improvementflow strong { margin-top: 4px; color: var(--fg); font-size: 23px; font-variant-numeric: tabular-nums; }
+      .pc-learning__gymflow > span.is-good strong, .pc-learning__improvementflow > span.is-good strong { color: #34d399; }
+      .pc-learning__gymflow > span.is-warn strong, .pc-learning__improvementflow > span.is-human strong { color: #fbbf24; }
+      .pc-learning__gymflow > span.is-accent strong, .pc-learning__improvementflow > span.is-auto strong { color: var(--accent); }
+      .pc-learning__gymflow > span > i { position: absolute; top: 50%; left: calc(100% + 1px); width: 9px; height: 1px; background: var(--border-strong); }
+      .pc-learning__improvementflow { display: grid; grid-template-columns: 1fr auto 1fr 1fr auto 1fr; align-items: center; gap: 7px; padding: 18px; }
+      .pc-learning__improvementflow > span { display: grid; place-content: center; justify-items: center; min-height: 72px; border-radius: 8px; background: color-mix(in srgb, var(--fg) 4%, transparent); }
+      .pc-learning__improvementflow > i { width: 18px; height: 1px; background: var(--border-strong); }
+      .pc-learning__lanegrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: start; }
+      .pc-learning__lanecol { min-width: 0; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in srgb, var(--bg-2) 88%, transparent); overflow: hidden; }
+      .pc-learning__lanecol > header { display: flex; align-items: center; justify-content: space-between; padding: 9px 11px; border-bottom: 1px solid var(--border); color: var(--fg-mute); font-size: 10px; font-weight: 750; text-transform: uppercase; }
+      .pc-learning__lanecol.is-auto > header strong { color: var(--accent); }
+      .pc-learning__lanecol.is-human > header strong { color: #fbbf24; }
+      .pc-learning__lanecol > .pc-learning__list { padding: 6px; }
+      .pc-learning__lanecol .pc-learning__row { grid-template-columns: 4px auto minmax(0, 1fr); }
+      .pc-learning__lanecol .pc-learning__meta { grid-column: 2 / -1; justify-content: flex-end; }
+      .pc-learning__idea-route { display: grid; grid-template-columns: 116px 32px minmax(0, 1fr); align-items: center; gap: 12px; padding: 13px; border: 1px solid var(--border); border-radius: 11px; background: var(--bg-2); }
+      .pc-learning__idea-source { min-height: 92px; display: grid; place-content: center; justify-items: center; border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border)); border-radius: 9px; color: var(--accent); }
+      .pc-learning__idea-source strong { margin-top: 5px; font-size: 25px; font-variant-numeric: tabular-nums; }
+      .pc-learning__idea-route > i { width: 100%; height: 1px; background: var(--accent); }
+      .pc-learning__idea-route > div { display: grid; gap: 7px; }
+      .pc-learning__idea-route > div > span { display: grid; grid-template-columns: 112px minmax(70px, 1fr) 28px; align-items: center; gap: 8px; }
+      .pc-learning__idea-route em { overflow: hidden; color: var(--fg-mute); font-size: 10px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+      .pc-learning__idea-route b { height: 7px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--fg) 6%, transparent); }
+      .pc-learning__idea-route b i { display: block; height: 100%; border-radius: inherit; }
+      .pc-learning__idea-route > div strong { color: var(--fg); font-size: 10px; font-variant-numeric: tabular-nums; text-align: right; }
+      .pc-learning__memorymap { display: grid; grid-template-columns: repeat(16, minmax(5px, 1fr)); grid-auto-rows: 1fr; gap: 4px; padding: 18px; }
+      .pc-learning__memorymap i { min-height: 10px; border-radius: 2px; background: color-mix(in srgb, var(--accent) 58%, transparent); opacity: .78; }
+      .pc-learning__memorymap i.is-organic { background: #34d399; }
+      .pc-learning__memorymap i:hover { opacity: 1; transform: scale(1.08); }
+      .pc-learning__standings { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; font-size: 9px; }
+      @media (max-width: 920px) { .pc-learning__lanegrid { grid-template-columns: 1fr; } }
+      @media (max-width: 720px) { .pc-learning__gymflow, .pc-learning__improvementflow { grid-template-columns: 1fr; } .pc-learning__gymflow > span > i, .pc-learning__improvementflow > i { display: none; } .pc-learning__idea-route { grid-template-columns: 82px 18px minmax(0, 1fr); } .pc-learning__idea-route > div > span { grid-template-columns: 82px minmax(50px, 1fr) 24px; } }
     `}</style>
   );
 }

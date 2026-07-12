@@ -12,54 +12,72 @@
  * DemandPanel) so the LearningTab wiring stays one line. Defensive about the row
  * shape — anything unexpected renders the empty state, never a crash.
  */
-import { useSyncQuery } from '@papercusp/sync';
-import { FlaskConical, RefreshCw } from 'lucide-react';
-import type { ExperimentRunSummary } from '@papercusp/operator-core/lib/experiment/ledger';
+import { useSyncQuery } from "@papercusp/sync";
+import { FlaskConical, RefreshCw } from "lucide-react";
+import type { ExperimentRunSummary } from "@papercusp/operator-core/lib/experiment/ledger";
 import {
   LearningComparisonBars,
   LearningEvidenceRail,
   LearningHeroMetric,
   LearningPageHeader,
   LearningVisualEmpty,
-} from './LearningVisuals';
+} from "./LearningVisuals";
 
 const TIER_TONE: Record<string, string> = {
-  offline: 'var(--accent-strong, var(--accent))',
-  shadow: '#c4b5fd',
-  live: '#fbbf24',
+  offline: "var(--accent-strong, var(--accent))",
+  shadow: "#c4b5fd",
+  live: "#fbbf24",
 };
 
 const DECISION_TONE: Record<string, string> = {
-  proposed: '#fbbf24',
-  applied: '#34d399',
-  rejected: '#f87171',
+  proposed: "#fbbf24",
+  applied: "#34d399",
+  rejected: "#f87171",
 };
 
 function dateShort(iso: string | null): string {
-  if (!iso) return '';
+  if (!iso) return "";
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return Number.isNaN(d.getTime())
+    ? ""
+    : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 function scoreLabel(n: number | null): string {
-  return n === null || Number.isNaN(n) ? '—' : n.toFixed(1);
+  return n === null || Number.isNaN(n) ? "—" : n.toFixed(1);
 }
 
 export function ExperimentsPanel() {
-  const sync = useSyncQuery<ExperimentRunSummary>({ queryName: 'learning.experiments', args: {}, staleTime: 30_000 });
-  const runs = Array.isArray(sync.data) ? sync.data.filter((r) => r && typeof r.batteryId === 'string') : [];
+  const sync = useSyncQuery<ExperimentRunSummary>({
+    queryName: "learning.experiments",
+    args: {},
+    staleTime: 30_000,
+  });
+  const runs = Array.isArray(sync.data)
+    ? sync.data.filter((r) => r && typeof r.batteryId === "string")
+    : [];
   const latest = runs[0];
   const latestArms = latest && Array.isArray(latest.arms) ? latest.arms : [];
   const winnerArm = latestArms.find((arm) => arm.id === latest?.winner) ?? null;
-  const baselineArm = latestArms.find((arm) => arm.id !== latest?.winner) ?? null;
+  const baselineArm =
+    latestArms.find((arm) => arm.id !== latest?.winner) ?? null;
 
   return (
-    <section className="pc-learning__section pc-experiments" aria-label="Experiment scoreboard">
+    <section
+      className="pc-learning__section pc-experiments"
+      aria-label="Experiment scoreboard"
+    >
       <LearningPageHeader
         icon={FlaskConical}
         title="Experiments"
         signal={latest?.decision}
-        tone={latest?.decision === 'applied' ? 'good' : latest?.decision === 'rejected' ? 'bad' : 'warn'}
+        tone={
+          latest?.decision === "applied"
+            ? "good"
+            : latest?.decision === "rejected"
+              ? "bad"
+              : "warn"
+        }
         action={
           <button
             type="button"
@@ -77,81 +95,114 @@ export function ExperimentsPanel() {
         <LearningVisualEmpty icon={FlaskConical} title="No experiment runs" />
       ) : (
         <>
-        <div className="pc-learning-visual__layout">
-          <LearningHeroMetric
-            eyebrow={latest.testId}
-            value={scoreLabel(winnerArm?.meanScore ?? null)}
-            status={latest.winner ? `winner · ${latest.winner}` : 'no winner'}
-            tone={latest.winner ? 'good' : 'warn'}
-          >
-            {latest.tier} tier
-          </LearningHeroMetric>
-          <LearningComparisonBars
-            title="Baseline vs winner"
-            baselineName={baselineArm?.id ?? 'Baseline'}
-            treatmentName={winnerArm?.id ?? 'Winner'}
-            rows={[
-              {
-                label: 'Mean score',
-                baseline: baselineArm?.meanScore ?? null,
-                treatment: winnerArm?.meanScore ?? null,
-                baselineLabel: scoreLabel(baselineArm?.meanScore ?? null),
-                treatmentLabel: scoreLabel(winnerArm?.meanScore ?? null),
-                max: 10,
-                treatmentWins:
-                  winnerArm?.meanScore != null &&
-                  winnerArm.meanScore >= (baselineArm?.meanScore ?? -Infinity),
-              },
-            ]}
-          />
-          <LearningEvidenceRail>
-            <div className="pc-learning-visual__evidence-grid">
-              <div className="pc-learning-visual__evidence-metric"><span>Tier</span><strong>{latest.tier}</strong></div>
-              <div className="pc-learning-visual__evidence-metric"><span>Spend</span><strong>${latest.totalCostUsd.toFixed(3)}</strong></div>
-              <div className="pc-learning-visual__evidence-metric"><span>Arms</span><strong>{latestArms.length}</strong></div>
-              <div className="pc-learning-visual__evidence-metric"><span>Decision</span><strong>{latest.decision}</strong></div>
-            </div>
-          </LearningEvidenceRail>
-        </div>
-        <div className="pc-learning__sectionhead"><h2>Recent experiments</h2></div>
-        <ul className="pc-experiments__list">
-          {runs.map((r) => {
-            const arms = Array.isArray(r.arms) ? r.arms : [];
-            return (
-              <li key={`${r.batteryId}`} className="pc-experiments__row" title={r.batteryId}>
-                <span className="pc-experiments__test">{r.testId}</span>
-                <span className="pc-experiments__tier" style={{ color: TIER_TONE[r.tier] ?? '#7f9bb4' }}>
-                  {r.tier}
-                </span>
-                <span className="pc-experiments__arms">
-                  {arms.map((a) => (
-                    <span
-                      key={a.id}
-                      className={a.id === r.winner ? 'pc-experiments__arm pc-experiments__arm--win' : 'pc-experiments__arm'}
-                      title={a.label}
-                    >
-                      {a.id} {scoreLabel(a.meanScore)}
-                    </span>
-                  ))}
-                </span>
-                <span className="pc-experiments__meta">
-                  <span className="pc-experiments__winner" title="Winning arm">
-                    {r.winner ? `▲ ${r.winner}` : 'no winner'}
-                  </span>
-                  <span title="Total spend">${r.totalCostUsd.toFixed(3)}</span>
+          <div className="pc-learning-visual__layout">
+            <LearningHeroMetric
+              eyebrow={latest.testId}
+              value={scoreLabel(winnerArm?.meanScore ?? null)}
+              status={latest.winner ? `winner · ${latest.winner}` : "no winner"}
+              tone={latest.winner ? "good" : "warn"}
+            >
+              {latest.tier} tier
+            </LearningHeroMetric>
+            <LearningComparisonBars
+              title="Baseline vs winner"
+              baselineName={baselineArm?.id ?? "Baseline"}
+              treatmentName={winnerArm?.id ?? "Winner"}
+              rows={[
+                {
+                  label: "Mean score",
+                  baseline: baselineArm?.meanScore ?? null,
+                  treatment: winnerArm?.meanScore ?? null,
+                  baselineLabel: scoreLabel(baselineArm?.meanScore ?? null),
+                  treatmentLabel: scoreLabel(winnerArm?.meanScore ?? null),
+                  max: 10,
+                  treatmentWins:
+                    winnerArm?.meanScore != null &&
+                    winnerArm.meanScore >=
+                      (baselineArm?.meanScore ?? -Infinity),
+                },
+              ]}
+            />
+            <LearningEvidenceRail>
+              <div className="pc-learning-visual__evidence-grid">
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Tier</span>
+                  <strong>{latest.tier}</strong>
+                </div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Spend</span>
+                  <strong>${latest.totalCostUsd.toFixed(3)}</strong>
+                </div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Arms</span>
+                  <strong>{latestArms.length}</strong>
+                </div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Decision</span>
+                  <strong>{latest.decision}</strong>
+                </div>
+              </div>
+            </LearningEvidenceRail>
+          </div>
+          <div className="pc-learning__sectionhead">
+            <h2>Recent experiments</h2>
+          </div>
+          <ul className="pc-experiments__list">
+            {runs.map((r) => {
+              const arms = Array.isArray(r.arms) ? r.arms : [];
+              return (
+                <li
+                  key={`${r.batteryId}`}
+                  className="pc-experiments__row"
+                  title={r.batteryId}
+                >
+                  <span className="pc-experiments__test">{r.testId}</span>
                   <span
-                    className="pc-experiments__decision"
-                    style={{ color: DECISION_TONE[r.decision] ?? '#7f9bb4' }}
-                    title="A winner is a proposal until the apply path graduates it"
+                    className="pc-experiments__tier"
+                    style={{ color: TIER_TONE[r.tier] ?? "#7f9bb4" }}
                   >
-                    {r.decision}
+                    {r.tier}
                   </span>
-                  <span className="pc-experiments__age">{dateShort(r.createdAt)}</span>
-                </span>
-              </li>
-            );
-          })}
-        </ul>
+                  <span className="pc-experiments__arms">
+                    {arms.map((a) => (
+                      <span
+                        key={a.id}
+                        className={
+                          a.id === r.winner
+                            ? "pc-experiments__arm pc-experiments__arm--win"
+                            : "pc-experiments__arm"
+                        }
+                        title={a.label}
+                      >
+                        {a.id} {scoreLabel(a.meanScore)}
+                      </span>
+                    ))}
+                  </span>
+                  <span className="pc-experiments__meta">
+                    <span
+                      className="pc-experiments__winner"
+                      title="Winning arm"
+                    >
+                      {r.winner ? `▲ ${r.winner}` : "no winner"}
+                    </span>
+                    <span title="Total spend">
+                      ${r.totalCostUsd.toFixed(3)}
+                    </span>
+                    <span
+                      className="pc-experiments__decision"
+                      style={{ color: DECISION_TONE[r.decision] ?? "#7f9bb4" }}
+                      title="A winner is a proposal until the apply path graduates it"
+                    >
+                      {r.decision}
+                    </span>
+                    <span className="pc-experiments__age">
+                      {dateShort(r.createdAt)}
+                    </span>
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
         </>
       )}
       <style>{`

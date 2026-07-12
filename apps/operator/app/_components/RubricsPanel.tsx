@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * RubricsPanel — every rubric in the store with its grading rollup
@@ -9,9 +9,9 @@
  * (P-002/P-003 — the scorecards.list / rubrics.trend queries are already
  * live server-side).
  */
-import { useSyncQuery } from '@papercusp/sync';
-import type { CSSProperties } from 'react';
-import { Table, type TableColumn } from '../harness/Table';
+import { useSyncQuery } from "@papercusp/sync";
+import type { CSSProperties } from "react";
+import { Table, type TableColumn } from "../harness/Table";
 
 interface RubricRow {
   rubricId: string;
@@ -29,7 +29,7 @@ interface RubricRow {
 }
 
 function formatWhen(iso: string | null): string {
-  if (!iso) return 'never';
+  if (!iso) return "never";
   const ms = Date.now() - new Date(iso).getTime();
   if (!Number.isFinite(ms) || ms < 0) return new Date(iso).toLocaleString();
   const min = ms / 60_000;
@@ -38,9 +38,13 @@ function formatWhen(iso: string | null): string {
   return `${Math.round(min / (60 * 24))}d ago`;
 }
 
-export default function RubricsPanel({ onSelect }: { onSelect?: (rubricId: string) => void }) {
+export default function RubricsPanel({
+  onSelect,
+}: {
+  onSelect?: (rubricId: string) => void;
+}) {
   const { data, error, loading } = useSyncQuery<RubricRow>({
-    queryName: 'rubrics.list',
+    queryName: "rubrics.list",
     args: {},
   });
 
@@ -70,7 +74,8 @@ export default function RubricsPanel({ onSelect }: { onSelect?: (rubricId: strin
   const graded = rows.filter((row) => row.avgScore10 != null);
   const avgScore =
     graded.length > 0
-      ? graded.reduce((sum, row) => sum + (row.avgScore10 ?? 0), 0) / graded.length
+      ? graded.reduce((sum, row) => sum + (row.avgScore10 ?? 0), 0) /
+        graded.length
       : null;
   const coverage = rows.length > 0 ? graded.length / rows.length : 0;
   const fresh = rows.filter((row) => {
@@ -81,8 +86,8 @@ export default function RubricsPanel({ onSelect }: { onSelect?: (rubricId: strin
 
   const columns: TableColumn<RubricRow>[] = [
     {
-      key: 'rubric',
-      header: 'Rubric',
+      key: "rubric",
+      header: "Rubric",
       render: (row) => (
         <span className="pc-rubrics__identity">
           <i className={`is-${row.status}`} aria-hidden />
@@ -94,46 +99,63 @@ export default function RubricsPanel({ onSelect }: { onSelect?: (rubricId: strin
       ),
     },
     {
-      key: 'domain',
-      header: 'Domain',
-      render: (row) => <span className="pc-rubrics__domain">{row.characteristic}</span>,
+      key: "domain",
+      header: "Domain",
+      render: (row) => (
+        <span className="pc-rubrics__domain">{row.characteristic}</span>
+      ),
     },
     {
-      key: 'criteria',
-      header: 'Coverage',
+      key: "criteria",
+      header: "Coverage",
       render: (row) => (
-        <span className="pc-rubrics__criteria" title={`${row.criteriaCount} criteria`}>
-          {Array.from({ length: Math.min(8, Math.max(1, row.criteriaCount)) }, (_, index) => (
-            <i key={index} />
-          ))}
+        <span
+          className="pc-rubrics__criteria"
+          title={`${row.criteriaCount} criteria`}
+        >
+          {Array.from(
+            { length: Math.min(8, Math.max(1, row.criteriaCount)) },
+            (_, index) => (
+              <i key={index} />
+            ),
+          )}
           <small>{row.criteriaCount}</small>
         </span>
       ),
     },
     {
-      key: 'avgScore',
-      header: 'Score',
+      key: "avgScore",
+      header: "Score",
       render: (row) => (
         <span className="pc-rubrics__score">
           <i>
-            <span style={{ width: `${Math.max(0, Math.min(100, (row.avgScore10 ?? 0) * 10))}%` }} />
+            <span
+              style={{
+                width: `${Math.max(0, Math.min(100, (row.avgScore10 ?? 0) * 10))}%`,
+              }}
+            />
           </i>
-          <strong>{row.avgScore10?.toFixed(1) ?? '—'}</strong>
+          <strong>{row.avgScore10?.toFixed(1) ?? "—"}</strong>
         </span>
       ),
-      cellStyle: { fontVariantNumeric: 'tabular-nums' },
-      cellTitle: () => 'Read-time 0–10 projection (scale-aware: 3-level pass=10/partial=5/fail=0; extended exemplary=10/pass=8/partial=5/fail=2/severe=0; unknown excluded)',
+      cellStyle: { fontVariantNumeric: "tabular-nums" },
+      cellTitle: () =>
+        "Read-time 0–10 projection (scale-aware: 3-level pass=10/partial=5/fail=0; extended exemplary=10/pass=8/partial=5/fail=2/severe=0; unknown excluded)",
     },
     {
-      key: 'scorecards',
-      header: 'Evidence',
-      render: (row) => <span className="pc-rubrics__evidence">{row.scorecardCount}</span>,
-    },
-    {
-      key: 'lastGraded',
-      header: 'Freshness',
+      key: "scorecards",
+      header: "Evidence",
       render: (row) => (
-        <span className={`pc-rubrics__freshness${row.latestScorecardAt ? '' : ' is-stale'}`}>
+        <span className="pc-rubrics__evidence">{row.scorecardCount}</span>
+      ),
+    },
+    {
+      key: "lastGraded",
+      header: "Freshness",
+      render: (row) => (
+        <span
+          className={`pc-rubrics__freshness${row.latestScorecardAt ? "" : " is-stale"}`}
+        >
           <i aria-hidden />
           {formatWhen(row.latestScorecardAt)}
         </span>
@@ -146,21 +168,30 @@ export default function RubricsPanel({ onSelect }: { onSelect?: (rubricId: strin
       <div className="pc-rubrics__overview">
         <div className="pc-rubrics__hero">
           <span>Average</span>
-          <strong>{avgScore == null ? '—' : avgScore.toFixed(1)}</strong>
+          <strong>{avgScore == null ? "—" : avgScore.toFixed(1)}</strong>
           <i>/10</i>
         </div>
-        <div className="pc-rubrics__ring" style={{ '--pc-rubric-coverage': `${coverage * 360}deg` } as CSSProperties}>
+        <div
+          className="pc-rubrics__ring"
+          style={
+            { "--pc-rubric-coverage": `${coverage * 360}deg` } as CSSProperties
+          }
+        >
           <strong>{Math.round(coverage * 100)}%</strong>
           <span>covered</span>
         </div>
-        <div className="pc-rubrics__pulse" aria-label={`${fresh} recently graded rubrics`}>
+        <div
+          className="pc-rubrics__pulse"
+          aria-label={`${fresh} recently graded rubrics`}
+        >
           {rows.map((row) => (
             <i
               key={row.rubricId}
               className={
                 row.latestScorecardAt &&
-                Date.now() - new Date(row.latestScorecardAt).getTime() <= 30 * 24 * 60 * 60 * 1000
-                  ? 'is-fresh'
+                Date.now() - new Date(row.latestScorecardAt).getTime() <=
+                  30 * 24 * 60 * 60 * 1000
+                  ? "is-fresh"
                   : undefined
               }
               title={row.title}
@@ -169,7 +200,7 @@ export default function RubricsPanel({ onSelect }: { onSelect?: (rubricId: strin
         </div>
       </div>
       <Table
-        caption={`${rows.length} rubric${rows.length === 1 ? '' : 's'}`}
+        caption={`${rows.length} rubric${rows.length === 1 ? "" : "s"}`}
         columns={columns}
         rows={rows}
         getRowKey={(row) => row.rubricId}
