@@ -491,10 +491,15 @@ describe('AdvConversationsTab — Create-style shell', () => {
     nuqsState.conv = 'feed';
     nuqsState.fmsg = 'm-ack'; // m-ack is a CHILD of m-direct (folded under it)
     render(<AdvConversationsTab />);
-    // The parent root row is open…
-    expect(screen.getByText('please pick up the auth refactor')).toBeTruthy();
+    // The parent conversation opens in the master/detail pane (WI-4216 redesign —
+    // NOT an inline expand), so the parent summary legitimately appears twice
+    // (list row + detail pane). Scope to the detail pane to assert the PARENT
+    // opened there…
+    const detail = document.querySelector('.pc-advfeed__detailpane') as HTMLElement | null;
+    expect(detail).toBeTruthy();
+    expect(within(detail!).getByText('please pick up the auth refactor')).toBeTruthy();
     // …and the clicked reply is now revealed inside the expanded conversation.
-    expect(screen.getByText('got it')).toBeTruthy();
+    expect(within(detail!).getByText('got it')).toBeTruthy();
   });
 
   it('shows the empty state when no traffic matches', () => {

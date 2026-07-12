@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "dev:nohmr": "bin/vite-watch-singleton",
-    "build": "vite build",
+    "build": "bin/vite-build-singleflight",
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"

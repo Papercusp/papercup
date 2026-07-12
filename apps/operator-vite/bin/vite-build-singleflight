@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# vite-build-singleflight — EI-9836 guard: concurrent ONE-SHOT `vite build`
+# invocations must not race the same shared dist/.
+#
+# vite/rollup CLEARS outDir before writing on every build. Two one-shot
+# builds running concurrently (e.g. the systemd papercup-vite-rebuild.timer
+# racing a manual/agent `npm run build`, or a build kicked off from a
+# sibling worktree) interleave their writes/removes into the SAME dist/ —
+# during the ~1min build window dist/assets goes empty, and any webview
+# load that lands in that window either 404s (empty dist, the SPA 503 "not
+# built") or imports a stale/removed chunk ("Importing a module script
+# failed"). This is EI-9836, hit repeatedly 2026-07-12 verifying WI-4216 in
+# the Tauri app: `ls dist/assets | wc -l` observed going 1513 -> 0 -> 1513
+# across a build, with two concurrent `vite build` procs confirmed live via
+# pgrep (one in papercup, one in the papercup-staging sibling tree).
+#
+# Sibling guards that do NOT cover this:
+#   - dist-wipe-guard.ts (a Vite plugin) refuses a one-shot build ONLY when
+#     a live `vite build --watch` singleton (below) holds the SAME dist —
+#     it has no opinion on two one-shot builds racing each other.
+#   - bin/vite-watch-singleton (EI-306) enforces "only one WATCHER at a
+#     time" — it does not gate plain `vite build` (no --watch) at all.
+#
+# Unlike the watch singleton (which REFUSES a second watcher outright — a
+# live watcher already serves your edits, so refusing is correct), two
+# one-shot builds should QUEUE: whichever build's source changes just
+# landed still deserves to actually run, so a second invocation BLOCKS
+# (bounded) until the first finishes, then proceeds — never a hard refuse.
+#
+# A lock file SEPARATE from vite-watch-singleton's — a long-lived watcher
+# must never block on (or be blocked by) a one-shot build's lock; the
+# same-dist-wipe-vs-watcher concern is dist-wipe-guard.ts's job, not this
+# lock's.
+#
+# Test seam: VITE_BUILD_CMD overrides the real vite invocation so the lock
+# mechanics can be exercised with a harmless command
+# (src/__tests__/vite-build-singleflight.test.ts).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+LOCK="${VITE_BUILD_LOCK:-/tmp/papercup-operator-vite-build.lock}"
+CMD="${VITE_BUILD_CMD:-npx vite build}"
+WAIT_SECS="${VITE_BUILD_WAIT_SECS:-300}"
+
+# Append-open: never truncate a live holder's pid record while we're still
+# waiting for the lock.
+exec 9>>"$LOCK"
+if ! flock -w "$WAIT_SECS" 9; then
+  HOLDER="$(head -n 1 "$LOCK" 2>/dev/null || true)"
+  echo "[vite-build-singleflight] TIMED OUT after ${WAIT_SECS}s waiting for a concurrent 'vite build' (pid ${HOLDER:-unknown}) to finish writing dist/." >&2
+  echo "[vite-build-singleflight] Two one-shot builds interleaving into one dist/ is EI-9836 — this lock exists to queue them instead of racing." >&2
+  echo "[vite-build-singleflight] If pid ${HOLDER:-unknown} is actually dead/wedged, remove $LOCK and retry." >&2
+  exit 1
+fi
+
+# Record the holder pid — diagnostic only (the flock wait above is what
+# actually serializes builds; this is just so a timed-out waiter can name
+# who it was waiting on). A fresh fd, not fd 9 — writing through fd 9 would
+# fight the append-mode open above.
+echo "$$" > "$LOCK"
+
+# Run the real build without letting `set -e` short-circuit past our
+# cleanup — we still want to release/blank the lock and propagate the
+# build's own exit status either way.
+set +e
+bash -c "$CMD"
+status=$?
+set -e
+
+# Best-effort: blank the pid record now that we're done. Cosmetic, not
+# load-bearing — flock releases automatically when this process's fds close
+# on exit, which is what actually unblocks the next waiter.
+: > "$LOCK" 2>/dev/null || true
+
+exit "$status"
