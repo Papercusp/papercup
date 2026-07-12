@@ -18,14 +18,14 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { ratifyRubric } from '../../rubrics';
+import { ratifyRubric, rubricCompleteness } from '../../rubrics';
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
 
 export default defineTool({
   name: 'rubrics:ratify',
   profile: 'engineer',
   description:
-    'Ratify one OR many proposed rubrics → status "active" (D-001: the Mug/owner gate — an active rubric becomes the shared definition every agent grades against). Single: { rubricId }. Many: { rubricIds:[…] }. Returns { ok, results:[{ ok, rubricId, rubric? | error }], counts } — correlate by rubricId, not by position; a not-found id never fails the rest.',
+    'Ratify one OR many proposed rubrics → status "active" (D-001: the Mug/owner gate — an active rubric becomes the shared definition every agent grades against). Single: { rubricId }. Many: { rubricIds:[…] }. Returns { ok, results:[{ ok, rubricId, rubric?, completeness? | error }], counts } — correlate by rubricId, not by position; a not-found id never fails the rest. Each result reports testing-procedure `completeness` (criteria lacking their own replication drill + whether the rubric-level methodRef is set) — the owner shape is one procedure per aspect PLUS one main methodRef; review the gaps before ratifying.',
   guidance: {
     when: 'You are the Mug/owner reviewing proposed rubric(s) and judge them sound shared standards. Activating one makes every agent grade structured observations against it. Ratify several at once via rubricIds:[…].',
     notWhen: 'Authoring or revising content — rubrics:propose. You are not the ratifying authority — leave it proposed and flag the Mug.',
@@ -53,8 +53,11 @@ export default defineTool({
       ids,
       async (rubricId) => {
         const rubric = await ratifyRubric(rubricId, id.ownerId);
+        // WI-4287: report testing-procedure completeness at the ratification gate —
+        // criteria lacking their own replication drill + a missing rubric methodRef
+        // stay visible on every activation instead of being tribal knowledge.
         return rubric
-          ? { ok: true as const, rubricId, rubric }
+          ? { ok: true as const, rubricId, rubric, completeness: rubricCompleteness(rubric) }
           : { ok: false as const, rubricId, error: 'rubric not found' };
       },
       { keyOf: (rubricId) => ({ rubricId }) },

@@ -47,10 +47,10 @@ describe('anotherRoutinesTickInFlight', () => {
 
   it('defaults `now` to Date.now when not provided', async () => {
     const before = Date.now();
-    const queryInFlight = vi.fn(async () => []);
+    const queryInFlight = vi.fn(async (_selfId: string, _cutoffEpochMs: number) => [] as InFlightRow[]);
     await anotherRoutinesTickInFlight('self-id', { queryInFlight });
     const after = Date.now();
-    const cutoffArg = queryInFlight.mock.calls[0][1] as number;
+    const cutoffArg = queryInFlight.mock.calls[0][1];
     // cutoff = now() - 5min, so it must fall within [before-5min, after-5min]
     expect(cutoffArg).toBeGreaterThanOrEqual(before - 5 * 60_000 - 1);
     expect(cutoffArg).toBeLessThanOrEqual(after - 5 * 60_000 + 1);

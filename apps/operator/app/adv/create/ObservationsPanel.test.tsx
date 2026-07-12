@@ -155,7 +155,7 @@ describe("<ObservationsPanel />", () => {
     sync.data = [mkRow({ id: "b", title: "Beta", refs: ["plan-beta"] })];
     render(<ObservationsPanel />);
     expect(
-      screen.getByText(/no observations match the selected plan/i),
+      screen.getByText(/no observations match the selected filters/i),
     ).toBeTruthy();
   });
 
@@ -167,6 +167,23 @@ describe("<ObservationsPanel />", () => {
     render(<ObservationsPanel />);
     expect(screen.getByText("Friction")).toBeTruthy(); // KIND_LABEL.friction
     expect(screen.getByText("mystery-kind")).toBeTruthy(); // unknown → raw
+  });
+
+  it("uses the distribution segments as direct, reversible signal filters", () => {
+    sync.data = [
+      mkRow({ id: "f1", title: "Friction row", kind: "friction" }),
+      mkRow({ id: "g1", title: "Gap row", kind: "gap" }),
+    ];
+    render(<ObservationsPanel />);
+    const friction = screen.getByRole("button", {
+      name: "Filter by Friction, 1",
+    });
+    fireEvent.click(friction);
+    expect(friction.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByText("Friction row")).toBeTruthy();
+    expect(screen.queryByText("Gap row")).toBeNull();
+    fireEvent.click(friction);
+    expect(screen.getByText("Gap row")).toBeTruthy();
   });
 
   it("renders the optional body, sourceRole, scope, confidence, and refs metadata", () => {

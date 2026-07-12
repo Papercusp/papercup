@@ -26,6 +26,9 @@ const nuqsState: Record<string, unknown> = {
   lane: "all",
   tab: null,
   grade: null,
+  irail: null,
+  rrubric: null,
+  lretain: null,
   lhive: "",
 };
 // Capture the setter per key so tests can assert the hive picker writes ?lhive.
@@ -419,6 +422,9 @@ beforeEach(() => {
   nuqsState.lane = "all";
   nuqsState.tab = null;
   nuqsState.grade = null;
+  nuqsState.irail = null;
+  nuqsState.rrubric = null;
+  nuqsState.lretain = null;
   nuqsState.lhive = "";
   for (const k of Object.keys(nuqsSetters)) delete nuqsSetters[k];
   for (const k of Object.keys(seenArgs)) delete seenArgs[k];
@@ -681,7 +687,7 @@ describe("LearningTab — unified Signals views", () => {
 
   it("renders Rubrics inside Observe and drills into a rubric", () => {
     nuqsState.lview = "rubrics";
-    render(<LearningTab />);
+    const { rerender } = render(<LearningTab />);
     expect(screen.getByTestId("rubrics-panel")).toBeTruthy();
     expect(
       screen
@@ -689,8 +695,9 @@ describe("LearningTab — unified Signals views", () => {
         .getAttribute("aria-selected"),
     ).toBe("true");
     fireEvent.click(screen.getByTestId("rubrics-panel"));
+    rerender(<LearningTab />);
     expect(screen.getByTestId("rubrics-panel")).toBeTruthy();
-    expect(document.querySelector(".pc-learning__rubricdrawer")).not.toBeNull();
+    expect(document.querySelector(".pc-learning__rubricdetail")).not.toBeNull();
     expect(screen.getByTestId("rubric-detail").textContent).toContain(
       "rubric-1",
     );
@@ -881,6 +888,37 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
       "none yet",
     );
   });
+
+  it("turns route bars into filters and defaults to an eight-item decision queue", () => {
+    const recent = Array.from({ length: 10 }, (_, index) => ({
+      ...scoutSnapshot.recent[0],
+      ideaId: `queue-${index}`,
+      title: `Queue idea ${index + 1}`,
+    }));
+    scoutResult = {
+      data: [
+        {
+          ...scoutSnapshot,
+          totalRouted: 10,
+          railCounts: [{ rail: "plan", count: 10 }],
+          recent,
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<ScoutView />);
+    expect(screen.getAllByText(/Queue idea/)).toHaveLength(8);
+    fireEvent.click(
+      screen.getByRole("button", { name: /Earlier routed ideas/ }),
+    );
+    expect(screen.getAllByText(/Queue idea/)).toHaveLength(10);
+    const planFilter = screen.getByRole("button", { name: /plan draft/i });
+    fireEvent.click(planFilter);
+    expect(planFilter.getAttribute("aria-pressed")).toBe("true");
+  });
 });
 
 describe("ScoutView (Learning › Improve › Ideas) — idea grading (B-07, scout-idea-grading-2026-06-12)", () => {
@@ -889,23 +927,21 @@ describe("ScoutView (Learning › Improve › Ideas) — idea grading (B-07, sco
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  it("renders the star control on every routed row and the attribution chip on graded rows", () => {
+  it("keeps grading controls behind the selected row and shows attribution at rest", () => {
     render(<ScoutView />);
-    // 5 stars per row × 2 rows — each star is a radio named "Grade N of 5".
-    expect(screen.getAllByRole("radio", { name: "Grade 3 of 5" }).length).toBe(
-      2,
-    );
+    expect(screen.queryByRole("radio", { name: "Grade 3 of 5" })).toBeNull();
     // idea-2 is Queen-graded ★4 in the fixture (gradedBy:'Queen' is the raw server
     // value) → the attribution chip routes it through the lexicon; under the echo
     // mock t('brain') → 'brain' (restore-pot-lexicon P-006).
     expect(screen.getByText("★4 · brain")).toBeTruthy();
-    // idea-1 is ungraded → no chip; its note button reads "grade with a note".
     expect(
-      screen.getByRole("button", { name: "Grade with a note" }),
+      screen.getByRole("button", { name: "Grade this idea" }),
     ).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "Edit the grading note" }),
+      screen.getByRole("button", { name: "Review idea grade" }),
     ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Grade this idea" }));
+    expect(screen.getByRole("radio", { name: "Grade 3 of 5" })).toBeTruthy();
   });
 
   it("writes a star click through the blender:grade-idea proxy optimistically and invalidates", async () => {
@@ -915,7 +951,8 @@ describe("ScoutView (Learning › Improve › Ideas) — idea grading (B-07, sco
     }));
     vi.stubGlobal("fetch", fetchMock);
     render(<ScoutView />);
-    fireEvent.click(screen.getAllByRole("radio", { name: "Grade 5 of 5" })[0]); // idea-1's row
+    fireEvent.click(screen.getByRole("button", { name: "Grade this idea" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Grade 5 of 5" }));
     // Optimistic: the owner chip appears before any refetch.
     expect(screen.getByText("★5 · Owner")).toBeTruthy();
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
@@ -939,7 +976,8 @@ describe("ScoutView (Learning › Improve › Ideas) — idea grading (B-07, sco
     }));
     vi.stubGlobal("fetch", fetchMock);
     render(<ScoutView />);
-    fireEvent.click(screen.getAllByRole("radio", { name: "Grade 5 of 5" })[0]);
+    fireEvent.click(screen.getByRole("button", { name: "Grade this idea" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Grade 5 of 5" }));
     await waitFor(() =>
       expect(screen.getByRole("alert").textContent).toContain("HTTP 404"),
     );
@@ -995,6 +1033,7 @@ describe("ScoutView (Learning › Improve › Ideas) — idea grading (B-07, sco
       invalidate: vi.fn(),
     };
     render(<ScoutView />);
+    fireEvent.click(screen.getByRole("button", { name: /Lens weights/ }));
     const strip = screen.getByLabelText("Lens sampling weights");
     expect(strip.textContent).toContain("lens weights");
     expect(strip.textContent).toContain("75%");

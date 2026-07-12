@@ -29,7 +29,6 @@ import {
   Brain,
   Star,
   MessageSquarePlus,
-  MessageSquareText,
   Send,
   Eye,
   Lightbulb,
@@ -654,38 +653,42 @@ function ImprovementsView({ hive }: { hive: string }) {
         <div
           className={`pc-learning__lanegrid${autoRows.length === 0 || humanRows.length === 0 ? " is-single" : ""}`}
         >
-          {autoRows.length > 0 ? <section className="pc-learning__lanecol is-auto">
-            <header>
-              <span>Automatic</span>
-              <strong>{autoRows.length}</strong>
-            </header>
-            <ul className="pc-learning__list">
-              {autoRows.map((it) => (
-                <ImprovementRow
-                  key={it.id}
-                  item={it}
-                  selected={it.id === lsel}
-                  onDismissSelect={() => void setLsel(null)}
-                />
-              ))}
-            </ul>
-          </section> : null}
-          {humanRows.length > 0 ? <section className="pc-learning__lanecol is-human">
-            <header>
-              <span>Review</span>
-              <strong>{humanRows.length}</strong>
-            </header>
-            <ul className="pc-learning__list">
-              {humanRows.map((it) => (
-                <ImprovementRow
-                  key={it.id}
-                  item={it}
-                  selected={it.id === lsel}
-                  onDismissSelect={() => void setLsel(null)}
-                />
-              ))}
-            </ul>
-          </section> : null}
+          {autoRows.length > 0 ? (
+            <section className="pc-learning__lanecol is-auto">
+              <header>
+                <span>Automatic</span>
+                <strong>{autoRows.length}</strong>
+              </header>
+              <ul className="pc-learning__list">
+                {autoRows.map((it) => (
+                  <ImprovementRow
+                    key={it.id}
+                    item={it}
+                    selected={it.id === lsel}
+                    onDismissSelect={() => void setLsel(null)}
+                  />
+                ))}
+              </ul>
+            </section>
+          ) : null}
+          {humanRows.length > 0 ? (
+            <section className="pc-learning__lanecol is-human">
+              <header>
+                <span>Review</span>
+                <strong>{humanRows.length}</strong>
+              </header>
+              <ul className="pc-learning__list">
+                {humanRows.map((it) => (
+                  <ImprovementRow
+                    key={it.id}
+                    item={it}
+                    selected={it.id === lsel}
+                    onDismissSelect={() => void setLsel(null)}
+                  />
+                ))}
+              </ul>
+            </section>
+          ) : null}
         </div>
       ) : (
         <ul className="pc-learning__list">
@@ -1287,9 +1290,11 @@ function ApiaryView() {
               tone={
                 currentDelta == null
                   ? "accent"
-                  : currentDelta >= 0
+                  : currentDelta > 0
                     ? "good"
-                    : "bad"
+                    : currentDelta < 0
+                      ? "bad"
+                      : "neutral"
               }
             >
               {currentDelta != null
@@ -1473,16 +1478,20 @@ function HiveEvalTrendView() {
               status={
                 compositeDelta == null
                   ? "baseline"
-                  : compositeDelta >= 0
+                  : compositeDelta > 0
                     ? "improved"
-                    : "regressed"
+                    : compositeDelta < 0
+                      ? "regressed"
+                      : "unchanged"
               }
               tone={
                 compositeDelta == null
                   ? "accent"
-                  : compositeDelta >= 0
+                  : compositeDelta > 0
                     ? "good"
-                    : "bad"
+                    : compositeDelta < 0
+                      ? "bad"
+                      : "neutral"
               }
             >
               {compositeDelta == null
@@ -2220,9 +2229,7 @@ export function ScoutView() {
   const [gradeError, setGradeError] = useState("");
   const filteredRecent = useMemo(
     () =>
-      railFilter
-        ? recent.filter((item) => item.rail === railFilter)
-        : recent,
+      railFilter ? recent.filter((item) => item.rail === railFilter) : recent,
     [railFilter, recent],
   );
   const queueItems = showEarlier ? filteredRecent : filteredRecent.slice(0, 8);
@@ -2417,28 +2424,28 @@ export function ScoutView() {
 
       {lensEntries.length > 0 ? (
         <LearningDisclosure label="Lens weights" count={lensEntries.length}>
-        <div className="pc-learning__flow" aria-label="Lens sampling weights">
-          <span
-            className="pc-learning__flowchip"
-            title={`${t("scout")} picks its creative lenses with these sampling weights — learned from routed-idea outcomes and grades (a ★5 counts as a win, a ★1 as a loss; a grade beats the system's own outcome guess).`}
-          >
-            <Sparkles size={11} aria-hidden />
-            lens weights
-          </span>
-          {lensEntries.map(([lens, share]) => (
+          <div className="pc-learning__flow" aria-label="Lens sampling weights">
             <span
-              key={lens}
-              className="pc-learning__lens"
-              title={`${lens}: ${share}% of next cycle's lens sampling — raised by wins and good grades, lowered by losses and poor grades.`}
+              className="pc-learning__flowchip"
+              title={`${t("scout")} picks its creative lenses with these sampling weights — learned from routed-idea outcomes and grades (a ★5 counts as a win, a ★1 as a loss; a grade beats the system's own outcome guess).`}
             >
-              <em>{lens}</em>
-              <span className="pc-learning__lensbar" aria-hidden>
-                <span style={{ width: `${share}%` }} />
-              </span>
-              <strong>{share}%</strong>
+              <Sparkles size={11} aria-hidden />
+              lens weights
             </span>
-          ))}
-        </div>
+            {lensEntries.map(([lens, share]) => (
+              <span
+                key={lens}
+                className="pc-learning__lens"
+                title={`${lens}: ${share}% of next cycle's lens sampling — raised by wins and good grades, lowered by losses and poor grades.`}
+              >
+                <em>{lens}</em>
+                <span className="pc-learning__lensbar" aria-hidden>
+                  <span style={{ width: `${share}%` }} />
+                </span>
+                <strong>{share}%</strong>
+              </span>
+            ))}
+          </div>
         </LearningDisclosure>
       ) : null}
 
@@ -2542,11 +2549,15 @@ export function ScoutView() {
                           ★{eff.grade} · {graderLabel(eff.gradedBy, t("brain"))}
                         </span>
                       ) : null}
-                      <Tooltip label={eff ? "Review this grade" : "Grade this idea"}>
+                      <Tooltip
+                        label={eff ? "Review this grade" : "Grade this idea"}
+                      >
                         <button
                           type="button"
                           className="pc-learning__notebtn"
-                          aria-label={eff ? "Review idea grade" : "Grade this idea"}
+                          aria-label={
+                            eff ? "Review idea grade" : "Grade this idea"
+                          }
                           aria-expanded={isOpen}
                           onClick={() =>
                             void setGradeOpen(isOpen ? null : item.ideaId)
@@ -2760,93 +2771,99 @@ function LearningsView({ hive }: { hive: string }) {
   const renderLearning = (r: HiveLearningRowT) => {
     const selected = selectedLearning === r.id;
     return (
-    <li
-      key={r.id}
-      className={`pc-learning__row pc-learning__row--retained${selected ? " is-selected" : ""}`}
-      style={{ alignItems: "flex-start" }}
-    >
-      <span
-        className="pc-learning__sev"
-        style={{
-          background: r.packId ? "var(--accent)" : "var(--good)",
-          marginTop: 5,
-        }}
-        aria-hidden
-      />
-      <span
-        className="pc-learning__retainedmain"
-        role="button"
-        tabIndex={0}
-        aria-expanded={selected}
-        onClick={() => void setSelectedLearning(selected ? null : r.id)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            void setSelectedLearning(selected ? null : r.id);
-          }
-        }}
+      <li
+        key={r.id}
+        className={`pc-learning__row pc-learning__row--retained${selected ? " is-selected" : ""}`}
+        style={{ alignItems: "flex-start" }}
       >
         <span
-          className={`pc-learning__retainedtext${selected ? " is-expanded" : ""}`}
-        >
-          {r.text}
-        </span>
-        <span
+          className="pc-learning__sev"
           style={{
-            display: "flex",
-            flexWrap: "wrap",
-            gap: 6,
-            marginTop: 3,
-            fontSize: 10.5,
-            color: "var(--fg-mute)",
+            background: r.packId ? "var(--accent)" : "var(--good)",
+            marginTop: 5,
+          }}
+          aria-hidden
+        />
+        <span
+          className="pc-learning__retainedmain"
+          role="button"
+          tabIndex={0}
+          aria-expanded={selected}
+          onClick={() => void setSelectedLearning(selected ? null : r.id)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              void setSelectedLearning(selected ? null : r.id);
+            }
           }}
         >
-          {r.packId ? (
-            <span
-              title={`Seeded from the ${r.packId} learning pack${r.packState === "modified" ? " — edited since seeding" : ""}`}
-            >
-              <span
-                style={{
-                  border: "1px solid var(--border)",
-                  borderRadius: 3,
-                  padding: "0 4px",
-                }}
-              >
-                pack: {r.packId}
-                {r.packVersion ? ` v${r.packVersion}` : ""}
-              </span>
-              {r.packState === "modified" ? " · edited" : ""}
-            </span>
-          ) : (
-            <span
-              title={`Recorded by ${r.createdBy ?? "an agent"} — this ${t("pot", { lower: true })}'s own learning`}
-            >
-              {t("pot", { lower: true })}-learned
-              {r.createdBy ? ` · ${r.createdBy}` : ""}
-            </span>
-          )}
-          {r.kind ? <span>{r.kind}</span> : null}
-        </span>
-      </span>
-      {selected ? <span className="pc-learning__retainedactions">
-        <Tooltip label="Edit the learning text">
-          <button type="button" style={actionBtn} onClick={() => void edit(r)}>
-            edit
-          </button>
-        </Tooltip>
-        <Tooltip
-          label={`Remove this learning from the ${t("pot", { lower: true })}'s memory`}
-        >
-          <button
-            type="button"
-            style={actionBtn}
-            onClick={() => void forget(r)}
+          <span
+            className={`pc-learning__retainedtext${selected ? " is-expanded" : ""}`}
           >
-            remove
-          </button>
-        </Tooltip>
-      </span> : null}
-    </li>
+            {r.text}
+          </span>
+          <span
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 6,
+              marginTop: 3,
+              fontSize: 10.5,
+              color: "var(--fg-mute)",
+            }}
+          >
+            {r.packId ? (
+              <span
+                title={`Seeded from the ${r.packId} learning pack${r.packState === "modified" ? " — edited since seeding" : ""}`}
+              >
+                <span
+                  style={{
+                    border: "1px solid var(--border)",
+                    borderRadius: 3,
+                    padding: "0 4px",
+                  }}
+                >
+                  pack: {r.packId}
+                  {r.packVersion ? ` v${r.packVersion}` : ""}
+                </span>
+                {r.packState === "modified" ? " · edited" : ""}
+              </span>
+            ) : (
+              <span
+                title={`Recorded by ${r.createdBy ?? "an agent"} — this ${t("pot", { lower: true })}'s own learning`}
+              >
+                {t("pot", { lower: true })}-learned
+                {r.createdBy ? ` · ${r.createdBy}` : ""}
+              </span>
+            )}
+            {r.kind ? <span>{r.kind}</span> : null}
+          </span>
+        </span>
+        {selected ? (
+          <span className="pc-learning__retainedactions">
+            <Tooltip label="Edit the learning text">
+              <button
+                type="button"
+                style={actionBtn}
+                onClick={() => void edit(r)}
+              >
+                edit
+              </button>
+            </Tooltip>
+            <Tooltip
+              label={`Remove this learning from the ${t("pot", { lower: true })}'s memory`}
+            >
+              <button
+                type="button"
+                style={actionBtn}
+                onClick={() => void forget(r)}
+              >
+                remove
+              </button>
+            </Tooltip>
+          </span>
+        ) : null}
+      </li>
     );
   };
 
@@ -3373,9 +3390,9 @@ export function LearningStyles() {
       .pc-learning__body { flex: 1; min-height: 240px; overflow: hidden; }
       .pc-learning__viewpane { height: 100%; min-height: 0; overflow: auto; }
       .pc-learning__viewpane[data-view="observations"] { overflow: hidden; }
-      .pc-learning__rubricsplit { position: relative; height: 100%; min-height: 0; overflow: hidden; }
-      .pc-learning__rubricdrawer { position: absolute; z-index: 3; inset: 0 0 0 auto; width: min(720px, 56%); overflow: auto; border-left: 1px solid var(--border-strong); background: var(--bg-1); box-shadow: -24px 0 50px color-mix(in srgb, #000 34%, transparent); animation: pc-learning-drawer-in 160ms ease-out; }
-      @keyframes pc-learning-drawer-in { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: translateX(0); } }
+      .pc-learning__rubricsplit { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; height: 100%; min-height: 0; overflow: hidden; }
+      .pc-learning__rubricsplit:has(.pc-learning__rubricdetail) { grid-template-columns: minmax(310px, .78fr) minmax(0, 1.22fr); }
+      .pc-learning__rubricdetail { min-width: 0; overflow: auto; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--bg-1); }
 
       @media (max-width: 720px) {
         .pc-learning__header { align-items: flex-start; }
@@ -3384,7 +3401,8 @@ export function LearningStyles() {
         .pc-learning__stage-list { padding-inline: 4px; }
         .pc-learning__stage { padding-inline: 2px; }
         .pc-learning__stage-line { left: calc(50% + 15px); width: calc(100% - 30px); }
-        .pc-learning__rubricdrawer { width: 100%; }
+        .pc-learning__rubricsplit:has(.pc-learning__rubricdetail) { grid-template-columns: 1fr; overflow: auto; }
+        .pc-learning__rubricdetail { min-height: 420px; }
       }
 
       /* Flow strip (P-041) — compact in/out chips above the stock scoreboard. */
@@ -3510,6 +3528,16 @@ export function LearningStyles() {
       .pc-learning__panelbtn { padding: 4px 11px; font-size: 11.5px; font-weight: 650; border-radius: 7px; cursor: pointer; border: 1px solid var(--border, rgba(125, 211, 252, 0.2)); background: transparent; color: var(--fg-mute, #7f9bb4); }
       .pc-learning__panelbtn--primary { border-color: rgba(251, 191, 36, 0.5); background: rgba(251, 191, 36, 0.12); color: #fcd34d; }
       .pc-learning__panelbtn:disabled { opacity: 0.5; cursor: default; }
+      .pc-learning__earlierbtn { align-self: center; padding: 5px 10px; border: 0; background: transparent; color: var(--fg-mute); font: inherit; font-size: 10.5px; cursor: pointer; }
+      .pc-learning__earlierbtn:hover { color: var(--accent); }
+
+      .pc-learning__row--retained { grid-template-columns: 4px minmax(0, 1fr) auto; }
+      .pc-learning__row--retained.is-selected { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+      .pc-learning__retainedmain { min-width: 0; cursor: pointer; border-radius: 5px; }
+      .pc-learning__retainedmain:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+      .pc-learning__retainedtext { display: -webkit-box; overflow: hidden; font-size: 12px; line-height: 1.4; white-space: pre-wrap; word-break: break-word; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+      .pc-learning__retainedtext.is-expanded { display: block; overflow: visible; -webkit-line-clamp: unset; }
+      .pc-learning__retainedactions { display: inline-flex; gap: 5px; margin-top: 1px; }
 
       /* Lens sampling weights (P-007 steering visibility). */
       .pc-learning__lens { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; border-radius: 999px; border: 1px solid var(--border, rgba(125, 211, 252, 0.18)); background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-mute, #7f9bb4); }
@@ -3555,6 +3583,7 @@ export function LearningStyles() {
       .pc-learning__improvementflow > span { display: grid; place-content: center; justify-items: center; min-height: 56px; border-radius: 8px; background: color-mix(in srgb, var(--fg) 4%, transparent); }
       .pc-learning__improvementflow > i { width: 18px; height: 1px; background: var(--border-strong); }
       .pc-learning__lanegrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: start; }
+      .pc-learning__lanegrid.is-single { grid-template-columns: minmax(0, 1fr); }
       .pc-learning__lanecol { min-width: 0; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in srgb, var(--bg-2) 88%, transparent); overflow: hidden; }
       .pc-learning__lanecol > header { display: flex; align-items: center; justify-content: space-between; padding: 9px 11px; border-bottom: 1px solid var(--border); color: var(--fg-mute); font-size: 10px; font-weight: 750; text-transform: uppercase; }
       .pc-learning__lanecol.is-auto > header strong { color: var(--accent); }
@@ -3567,7 +3596,9 @@ export function LearningStyles() {
       .pc-learning__idea-source strong { margin-top: 5px; font-size: 25px; font-variant-numeric: tabular-nums; }
       .pc-learning__idea-route > i { width: 100%; height: 1px; background: var(--accent); }
       .pc-learning__idea-route > div { display: grid; gap: 7px; }
-      .pc-learning__idea-route > div > span { display: grid; grid-template-columns: 112px minmax(70px, 1fr) 28px; align-items: center; gap: 8px; }
+      .pc-learning__idea-route > div > button { display: grid; grid-template-columns: 112px minmax(70px, 1fr) 28px; align-items: center; gap: 8px; width: 100%; padding: 2px 4px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+      .pc-learning__idea-route > div > button:hover, .pc-learning__idea-route > div > button[aria-pressed="true"] { border-color: var(--border-strong); background: color-mix(in srgb, var(--accent) 7%, transparent); }
+      .pc-learning__idea-route > div > button[aria-pressed="true"] em { color: var(--fg); }
       .pc-learning__idea-route em { overflow: hidden; color: var(--fg-mute); font-size: 10px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
       .pc-learning__idea-route b { height: 7px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--fg) 6%, transparent); }
       .pc-learning__idea-route b i { display: block; height: 100%; border-radius: inherit; }
@@ -3578,7 +3609,7 @@ export function LearningStyles() {
       .pc-learning__memorymap i:hover { opacity: 1; transform: scale(1.08); }
       .pc-learning__standings { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; font-size: 9px; }
       @media (max-width: 920px) { .pc-learning__lanegrid { grid-template-columns: 1fr; } }
-      @media (max-width: 720px) { .pc-learning__gymflow, .pc-learning__improvementflow { grid-template-columns: 1fr; } .pc-learning__gymflow > span > i, .pc-learning__improvementflow > i { display: none; } .pc-learning__idea-route { grid-template-columns: 82px 18px minmax(0, 1fr); } .pc-learning__idea-route > div > span { grid-template-columns: 82px minmax(50px, 1fr) 24px; } }
+      @media (max-width: 720px) { .pc-learning__gymflow, .pc-learning__improvementflow { grid-template-columns: 1fr; } .pc-learning__gymflow > span > i, .pc-learning__improvementflow > i { display: none; } .pc-learning__idea-route { grid-template-columns: 82px 18px minmax(0, 1fr); } .pc-learning__idea-route > div > button { grid-template-columns: 82px minmax(50px, 1fr) 24px; } }
     `}</style>
   );
 }

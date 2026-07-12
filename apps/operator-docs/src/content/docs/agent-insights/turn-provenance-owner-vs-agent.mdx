@@ -53,6 +53,11 @@ in `apps/operator/scripts/psu-launcher.mjs`.
      — quoted text carrying an envelope mid-prompt does NOT classify: the
      envelope must open the turn);
    - no envelope + live **hash** match → verified (envelope lost in transit);
+   - no envelope + no match + a known **machine-surface banner** (a
+     CLI-internal notification that self-labels `[SYSTEM NOTIFICATION - NOT
+     USER INPUT]`, e.g. a background-task completion) → `MACHINE-GENERATED
+     SURFACE` — unenrollable (no envelope, no ledger row) but definitely NOT
+     the owner (EI-9904);
    - no envelope + no match → **affirmative `OWNER (interactive)`**.
 
 **D-002 — the ledger decides, never the text.** Corollary: injector

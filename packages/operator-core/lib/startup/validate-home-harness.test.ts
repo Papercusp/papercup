@@ -3,7 +3,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { validateHomeHarnessResolution, homeHarnessValidationFatal } from './validate-home-harness';
+import {
+  validateHomeHarnessResolution,
+  homeHarnessValidationFatal,
+  isLikelyFreshInstallGap,
+} from './validate-home-harness';
 
 // Mock the dependencies
 vi.mock('../harness/operator-home-harness', () => ({
@@ -18,9 +22,14 @@ vi.mock('../workspace-registry', () => ({
   activeWorkspaceId: vi.fn(),
 }));
 
+vi.mock('../harness-registry', () => ({
+  loadHarnessRegistry: vi.fn(),
+}));
+
 import * as homeHarness from '../harness/operator-home-harness';
 import * as harnessCore from '../harness-core';
 import * as workspaceRegistry from '../workspace-registry';
+import * as harnessRegistry from '../harness-registry';
 
 describe('validateHomeHarnessResolution', () => {
   beforeEach(() => {
@@ -100,5 +109,41 @@ describe('homeHarnessValidationFatal (EI-2633 — boot non-fatal by default)', (
     expect(homeHarnessValidationFatal({ PAPERCUSP_HOME_HARNESS_VALIDATION_FATAL: '0' })).toBe(false);
     expect(homeHarnessValidationFatal({ PAPERCUSP_HOME_HARNESS_VALIDATION_FATAL: 'true' })).toBe(false);
     expect(homeHarnessValidationFatal({ PAPERCUSP_HOME_HARNESS_VALIDATION_FATAL: '' })).toBe(false);
+  });
+});
+
+describe('isLikelyFreshInstallGap (EI-9919 — soften the fresh-install false alarm)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(workspaceRegistry.activeWorkspaceId).mockReturnValue('default');
+  });
+
+  it('is true when the workspace has ZERO registered projects (the fresh-install signature)', async () => {
+    vi.mocked(harnessRegistry.loadHarnessRegistry).mockResolvedValue({ projects: [] } as any);
+
+    await expect(isLikelyFreshInstallGap()).resolves.toBe(true);
+    expect(harnessRegistry.loadHarnessRegistry).toHaveBeenCalledWith('default');
+  });
+
+  it('is false when other projects ARE registered — that is real drift, not a fresh install', async () => {
+    vi.mocked(harnessRegistry.loadHarnessRegistry).mockResolvedValue({
+      projects: [{ slug: 'some-other-project' }],
+    } as any);
+
+    await expect(isLikelyFreshInstallGap()).resolves.toBe(false);
+  });
+
+  it('uses an explicit workspaceId over the active one when given', async () => {
+    vi.mocked(harnessRegistry.loadHarnessRegistry).mockResolvedValue({ projects: [] } as any);
+
+    await isLikelyFreshInstallGap('some-workspace');
+
+    expect(harnessRegistry.loadHarnessRegistry).toHaveBeenCalledWith('some-workspace');
+  });
+
+  it('conservatively reports false (NOT a fresh install) when the registry read throws', async () => {
+    vi.mocked(harnessRegistry.loadHarnessRegistry).mockRejectedValue(new Error('registry unreadable'));
+
+    await expect(isLikelyFreshInstallGap()).resolves.toBe(false);
   });
 });

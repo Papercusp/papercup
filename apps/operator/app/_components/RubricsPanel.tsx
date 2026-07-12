@@ -179,45 +179,54 @@ export default function RubricsPanel({
     >
       {compact ? (
         <div className="pc-rubrics__compact-summary">
-          <span><strong>{rows.length}</strong> rubrics</span>
-          <span><strong>{avgScore == null ? "—" : avgScore.toFixed(1)}</strong> average</span>
-          <span><strong>{fresh}</strong> fresh</span>
+          <span>
+            <strong>{rows.length}</strong> rubrics
+          </span>
+          <span>
+            <strong>{avgScore == null ? "—" : avgScore.toFixed(1)}</strong>{" "}
+            average
+          </span>
+          <span>
+            <strong>{fresh}</strong> fresh
+          </span>
         </div>
       ) : (
-      <div className="pc-rubrics__overview">
-        <div className="pc-rubrics__hero">
-          <span>Average</span>
-          <strong>{avgScore == null ? "—" : avgScore.toFixed(1)}</strong>
-          <i>/10</i>
+        <div className="pc-rubrics__overview">
+          <div className="pc-rubrics__hero">
+            <span>Average</span>
+            <strong>{avgScore == null ? "—" : avgScore.toFixed(1)}</strong>
+            <i>/10</i>
+          </div>
+          <div
+            className="pc-rubrics__ring"
+            style={
+              {
+                "--pc-rubric-coverage": `${coverage * 360}deg`,
+              } as CSSProperties
+            }
+          >
+            <strong>{Math.round(coverage * 100)}%</strong>
+            <span>covered</span>
+          </div>
+          <div
+            className="pc-rubrics__pulse"
+            aria-label={`${fresh} recently graded rubrics`}
+          >
+            {rows.map((row) => (
+              <i
+                key={row.rubricId}
+                className={
+                  row.latestScorecardAt &&
+                  Date.now() - new Date(row.latestScorecardAt).getTime() <=
+                    30 * 24 * 60 * 60 * 1000
+                    ? "is-fresh"
+                    : undefined
+                }
+                title={row.title}
+              />
+            ))}
+          </div>
         </div>
-        <div
-          className="pc-rubrics__ring"
-          style={
-            { "--pc-rubric-coverage": `${coverage * 360}deg` } as CSSProperties
-          }
-        >
-          <strong>{Math.round(coverage * 100)}%</strong>
-          <span>covered</span>
-        </div>
-        <div
-          className="pc-rubrics__pulse"
-          aria-label={`${fresh} recently graded rubrics`}
-        >
-          {rows.map((row) => (
-            <i
-              key={row.rubricId}
-              className={
-                row.latestScorecardAt &&
-                Date.now() - new Date(row.latestScorecardAt).getTime() <=
-                  30 * 24 * 60 * 60 * 1000
-                  ? "is-fresh"
-                  : undefined
-              }
-              title={row.title}
-            />
-          ))}
-        </div>
-      </div>
       )}
       <div className="pc-rubrics__tablewrap">
         <Table
@@ -226,7 +235,9 @@ export default function RubricsPanel({
           rows={rows}
           getRowKey={(row) => row.rubricId}
           onRowClick={onSelect ? (row) => onSelect(row.rubricId) : undefined}
-          isRowSelected={selectedId ? (row) => row.rubricId === selectedId : undefined}
+          isRowSelected={
+            selectedId ? (row) => row.rubricId === selectedId : undefined
+          }
         />
       </div>
       <style>{`

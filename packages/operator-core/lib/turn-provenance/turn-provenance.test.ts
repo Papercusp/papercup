@@ -196,6 +196,58 @@ describe('classifier boundaries', () => {
   });
 });
 
+describe('machine-surface banner (EI-9904 — never false-OWNER a CLI notification)', () => {
+  // The verbatim banner from the reported failure: a Claude Code background-task
+  // completion notification. No envelope, no ledger row (Claude injects it
+  // internally) — before the fix this stamped OWNER (interactive), the exact
+  // worst-case false-owner misclassification.
+  const TASK_NOTIFICATION =
+    '[SYSTEM NOTIFICATION - NOT USER INPUT]\nBackground task b1mtb01il completed: 42 tests passed.';
+
+  it('no envelope + machine-notification banner + no ledger match → machine-surface, NOT owner', () => {
+    const res = classify(TASK_NOTIFICATION, [row()], { nowMs: NOW + 1000, ttlMs: TTL });
+    expect(res.verdict).toBe('machine-surface');
+    expect(res.verdict).not.toBe('owner-interactive');
+    expect(res.reason).toMatch(/MACHINE-GENERATED SURFACE/);
+    expect(res.origin).toBeNull();
+  });
+
+  it('machine banner classifies against an EMPTY ledger too (no row to hash-match)', () => {
+    expect(classify(TASK_NOTIFICATION, [], { nowMs: NOW, ttlMs: TTL }).verdict).toBe('machine-surface');
+  });
+
+  it('a genuine LEDGER-verified injected turn wins over the banner guard (guard is last-resort)', () => {
+    // A verified agent turn that happens to quote the banner still verifies —
+    // the machine-surface guard only fires as the no-match fallback.
+    const text = `${TASK_NOTIFICATION}`;
+    const r = row({ sha256: payloadSha256(text) });
+    const res = classify(`${formatEnvelope('wake-pump', r.nonce)}\n${text}`, [r], {
+      nowMs: NOW + 1000,
+      ttlMs: TTL,
+    });
+    expect(res.verdict).toBe('verified-agent');
+  });
+
+  it('a plain owner prompt is untouched by the guard → still owner-interactive (no false positive)', () => {
+    expect(classify('please fix the login page', [], { nowMs: NOW, ttlMs: TTL }).verdict).toBe(
+      'owner-interactive',
+    );
+    // Even a prompt that mentions "system" or "notification" casually stays owner.
+    expect(
+      classify('the system notification popup is broken, fix it', [], { nowMs: NOW, ttlMs: TTL }).verdict,
+    ).toBe('owner-interactive');
+  });
+
+  it('detectMachineSurface: matches the banner (case/spacing-tolerant), rejects ordinary text', () => {
+    expect(detectMachineSurface('[SYSTEM NOTIFICATION - NOT USER INPUT]')).toBe(true);
+    expect(detectMachineSurface('[system notification — not user input] blah')).toBe(true);
+    expect(detectMachineSurface('  [SYSTEM NOTIFICATION: NOT USER INPUT — task done]')).toBe(true);
+    expect(detectMachineSurface('please fix the login page')).toBe(false);
+    expect(detectMachineSurface('a system notification about not caring about user input')).toBe(false);
+    expect(detectMachineSurface('')).toBe(false);
+  });
+});
+
 describe('ledger write/read/GC', () => {
   it('appendLedgerRow → readLedgerRows round-trip; jq-simple one-object-per-line JSONL', () => {
     const r = row();

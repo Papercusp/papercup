@@ -151,6 +151,18 @@ describe('userpromptsubmit-provenance.sh', () => {
     expect(ctx).toContain('envelope lost in transit');
   });
 
+  it('machine-notification banner (no envelope, no match) → MACHINE-GENERATED SURFACE, never OWNER (EI-9904)', () => {
+    writeRow(); // a live row exists but nothing matches this prompt
+    const ctx = contextOf(
+      runHook({
+        prompt: '[SYSTEM NOTIFICATION - NOT USER INPUT]\nBackground task b1mtb01il completed: 42 tests passed.',
+      }),
+    );
+    expect(ctx).toContain('MACHINE-GENERATED SURFACE');
+    expect(ctx).toContain('NOT typed by the human owner');
+    expect(ctx).not.toContain('OWNER (interactive)');
+  });
+
   it('an envelope MID-TEXT is quoted content — classifies OWNER, not unverified', () => {
     writeRow();
     const ctx = contextOf(

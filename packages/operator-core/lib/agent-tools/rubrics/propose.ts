@@ -9,7 +9,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { hardText, LIMITS } from '../limits';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { proposeRubric } from '../../rubrics';
+import { proposeRubric, rubricCompleteness } from '../../rubrics';
 
 const criterion = z.object({
   key: z.string().min(1).describe('stable kebab id; an observation rating references this'),
@@ -18,19 +18,27 @@ const criterion = z.object({
   method: z.string().min(1).describe('how to investigate it (signals / queries — the METHOD)'),
   ratingScale: z.array(z.string()).optional().describe('per-criterion override of the rubric default scale'),
   driftMarkers: z.string().describe('what degraded / broken looks like'),
+  replication: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "this criterion's own REPLICATION DRILL: the full copy-runnable testing procedure (fixtures → verbatim subject prompt → spawn/measurement → grading queries → cleanup). Every criterion SHOULD carry one — rubrics:ratify reports the ones that don't",
+    ),
 });
 
 export default defineTool({
   name: 'rubrics:propose',
   profile: 'engineer',
   description:
-    'Propose a rubric (the shared standard for a system characteristic) → status "proposed". Any agent may propose — typically on noticing a cluster of free-text observations about one characteristic with no rubric. The Queen/owner ratifies it active (rubrics:ratify). Idempotent on rubric_id (re-propose updates the content).',
+    'Propose a rubric (the shared standard for a system characteristic) → status "proposed". ⚠ WHOLE-DOCUMENT REPLACE: re-proposing an existing rubricId replaces ALL of its content — rubrics:get it first, edit, and resubmit EVERY criterion with its full method/replication text (a partial criteria list deletes the rest). Loss-guards enforce this: dropping a stored criterion key requires an explicit dropKeys ack; shrinking a criterion\'s method+replication procedure >40% (or losing its REPLICATION DRILL marker) requires allowMethodShrink + shrinkReason. Each criterion should carry its own `replication` testing drill; the rubric carries ONE main methodRef runbook. The Queen/owner ratifies it active (rubrics:ratify).',
   guidance: {
-    when: 'You see a recurring characteristic worth grading consistently and no rubric covers it. Author the criteria (each: model + how-to-investigate + drift markers); reference an agent-insights runbook via methodRef for the long-form method.',
+    when: 'You see a recurring characteristic worth grading consistently and no rubric covers it — or you are REVISING an existing rubric (rubrics:get first; resubmit ALL criteria). Author each criterion: model + method (how to investigate) + driftMarkers + its own replication drill (the copy-runnable testing procedure); reference an agent-insights runbook via methodRef for the rubric-level long-form method.',
     notWhen: 'A one-off finding — file a free-text observation instead. Activating an existing proposed rubric — rubrics:ratify. Check rubrics:search first to avoid a duplicate.',
-    chaining: 'rubrics:search (dedup) → rubrics:propose → rubrics:ratify (Mug/owner).',
+    chaining: 'rubrics:search (dedup) → rubrics:get (when revising — edit from the stored document, never from memory) → rubrics:propose → rubrics:ratify (Mug/owner). The result reports `completeness` (criteria lacking a replication drill; missing methodRef) — fill the gaps, don\'t ignore them.',
     seeAlso: [
       'rubrics:search (dedup before proposing)',
+      'rubrics:get (fetch the stored document before revising — propose REPLACES it)',
       'rubrics:ratify (Queen/owner activates the proposed rubric)',
     ],
   },
@@ -48,6 +56,25 @@ export default defineTool({
       .optional()
       .describe('default scale shared by criteria (omit → ["healthy","degraded","broken","unknown"])'),
     methodRef: z.string().max(200).optional().describe('agent-insights runbook slug for the long-form method'),
+    dropKeys: z
+      .array(z.string().min(1))
+      .max(100)
+      .optional()
+      .describe(
+        'loss-guard ack: stored criterion keys this proposal INTENTIONALLY drops. Propose is a whole-document replace — omitting a stored key without acking it here is rejected (it would silently delete the criterion)',
+      ),
+    allowMethodShrink: z
+      .boolean()
+      .optional()
+      .describe(
+        "loss-guard ack: allow a criterion's method+replication procedure text to shrink >40% or lose its REPLICATION DRILL marker. Requires shrinkReason",
+      ),
+    shrinkReason: z
+      .string()
+      .min(1)
+      .max(2000)
+      .optional()
+      .describe('why the procedure shrink is intentional (required with allowMethodShrink)'),
   }),
   async handler(args, ctx) {
     const id = resolveAgentIdentity(ctx);
@@ -59,9 +86,16 @@ export default defineTool({
       criteria: args.criteria,
       ratingScale: args.ratingScale,
       methodRef: args.methodRef,
+      dropKeys: args.dropKeys,
+      allowMethodShrink: args.allowMethodShrink,
+      shrinkReason: args.shrinkReason,
       by: id.ownerId,
       status: 'proposed',
     });
-    return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, rubric }) }] };
+    // WI-4287: surface testing-procedure completeness on every revision (non-blocking).
+    const completeness = rubricCompleteness(rubric);
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, rubric, completeness }) }],
+    };
   },
 });

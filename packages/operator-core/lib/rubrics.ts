@@ -56,6 +56,12 @@ export interface RubricCriterion {
   ratingScale?: string[];
   /** What a 'big drift' / degraded / broken looks like. */
   driftMarkers: string;
+  /** The criterion's own REPLICATION DRILL — the full end-to-end testing procedure a future
+   *  agent can copy-run to re-grade this criterion (fixtures → verbatim subject prompt →
+   *  spawn/measurement → grading queries → cleanup). Optional; WI-4287's loss-guards keep it
+   *  from being silently dropped on re-propose, and rubricCompleteness reports criteria
+   *  still lacking one. */
+  replication?: string;
 }
 
 export interface Rubric {
@@ -199,6 +205,7 @@ export function planRowToRubric(row: RubricPlanRow): Rubric | null {
       method: c.method,
       driftMarkers: c.driftMarkers,
       ...(c.ratingScale ? { ratingScale: c.ratingScale } : {}),
+      ...(c.replication ? { replication: c.replication } : {}),
     })),
     ratingScale: d.ratingScale,
     methodRef: d.methodRef ?? null,
@@ -409,6 +416,166 @@ export interface ProposeRubricInput {
    * plan content + template_data and sets the status.
    */
   status?: RubricStatus;
+  /**
+   * WI-4287 loss-guard ack: keys of STORED criteria this proposal INTENTIONALLY drops.
+   * proposeRubric is a whole-document replace — a stored criterion key absent from
+   * `criteria` is rejected unless listed here (a partial criteria list otherwise
+   * silently deletes the rest).
+   */
+  dropKeys?: string[];
+  /**
+   * WI-4287 loss-guard ack: allow a criterion's method+replication procedure text to
+   * shrink sharply (>40%) or lose its REPLICATION DRILL marker. Requires a non-empty
+   * `shrinkReason` — the intent is a conscious, explained edit, never a silent one.
+   */
+  allowMethodShrink?: boolean;
+  /** Why the procedure shrink is intentional (required with allowMethodShrink). */
+  shrinkReason?: string;
+}
+
+// ─── WI-4287: loss-guards + completeness — never silently drop a testing procedure ────
+// [owner:Avi 2026-07-12] "how can we improve our system so that the next agent who
+// updates the rubric also knows to add the full detailed testing procedure and doesn't
+// drop it? … i think each aspect should come with its own testing procedure in addition
+// to one main one for the whole rubric." proposeRubric REPLACES the whole document, so
+// a revision rebuilt from a stale copy silently deletes criteria or their embedded
+// procedures (the 4.6k-char batched-tool-calls REPLICATION DRILL was the live example).
+// These guards make that loss LOUD: enforced here in the LIB write path so every caller
+// (MCP tool, code:run facade, future surfaces) inherits them. The first-party seeder is
+// unaffected — it only writes MISSING rubrics (stored=null ⇒ no guard).
+
+/** The marker string that tags an embedded replication drill in method/replication
+ *  prose. Losing it from a criterion's combined procedure text is a guard violation. */
+export const REPLICATION_DRILL_MARKER = 'REPLICATION DRILL';
+
+/** A criterion's combined procedure text must not shrink below this fraction of the
+ *  stored text (0.6 ⇒ a >40% shrink violates) without an explicit allowMethodShrink. */
+export const METHOD_SHRINK_GUARD_RATIO = 0.6;
+
+/** The shrink-ratio guard only applies when the STORED procedure text is at least this
+ *  long — a 50-char method being reworded shouldn't trip a loss guard; a 4,600-char
+ *  drill being gutted must. The MARKER guard applies regardless of length. */
+export const METHOD_SHRINK_GUARD_MIN_CHARS = 200;
+
+/** A criterion's full procedure text: method + replication drill combined. Comparing
+ *  the COMBINED text (D-002) means moving a drill between the two fields is never a
+ *  violation — only genuine text loss is. */
+function criterionProcedureText(c: Pick<RubricCriterion, 'method'> & { replication?: string }): string {
+  return `${c.method}${c.replication ? `\n${c.replication}` : ''}`;
+}
+
+/**
+ * PURE: the WI-4287 loss-guard. Compares a propose input against the STORED rubric and
+ * THROWS a teaching error naming exactly what would be silently lost:
+ *   • a stored criterion key absent from the proposal → requires a `dropKeys` ack;
+ *   • a surviving criterion whose method+replication text shrinks >40% (stored ≥200
+ *     chars) or loses its REPLICATION DRILL marker → requires `allowMethodShrink:true`
+ *     + a non-empty `shrinkReason`.
+ * `stored === null` (a brand-new rubric) and an identical re-propose both pass.
+ */
+export function assertNoSilentRubricLoss(stored: Rubric | null, input: ProposeRubricInput): void {
+  if (!stored) return;
+
+  const proposedByKey = new Map(input.criteria.map((c) => [c.key, c]));
+  const acked = new Set(input.dropKeys ?? []);
+  const violations: string[] = [];
+
+  // 1) dropped criteria — every stored key must survive or be explicitly acknowledged.
+  const dropped = stored.criteria.filter((c) => !proposedByKey.has(c.key) && !acked.has(c.key));
+  if (dropped.length > 0) {
+    violations.push(
+      `DROPS ${dropped.length} stored criteri${dropped.length === 1 ? 'on' : 'a'}: ${dropped
+        .map((c) => `'${c.key}'`)
+        .join(', ')} — acknowledge intentional removal with dropKeys:[${dropped
+        .map((c) => `"${c.key}"`)
+        .join(', ')}], or rubrics:get the stored rubric and resubmit ALL criteria (a partial list silently deletes the rest)`,
+    );
+  }
+
+  // 2) procedure loss on surviving criteria — marker loss or a sharp combined shrink.
+  const shrinkViolations: string[] = [];
+  for (const storedCrit of stored.criteria) {
+    const proposed = proposedByKey.get(storedCrit.key);
+    if (!proposed) continue; // handled by the drop guard above
+    const before = criterionProcedureText(storedCrit);
+    const after = criterionProcedureText(proposed);
+    if (before.includes(REPLICATION_DRILL_MARKER) && !after.includes(REPLICATION_DRILL_MARKER)) {
+      shrinkViolations.push(
+        `criterion '${storedCrit.key}' LOSES its '${REPLICATION_DRILL_MARKER}' testing procedure (stored method+replication carries the marker; the proposal's doesn't)`,
+      );
+    } else if (
+      before.length >= METHOD_SHRINK_GUARD_MIN_CHARS &&
+      after.length < before.length * METHOD_SHRINK_GUARD_RATIO
+    ) {
+      const pct = Math.round((1 - after.length / before.length) * 100);
+      shrinkViolations.push(
+        `criterion '${storedCrit.key}' procedure text (method+replication) shrinks ${before.length} → ${after.length} chars (−${pct}%)`,
+      );
+    }
+  }
+  if (shrinkViolations.length > 0) {
+    if (input.allowMethodShrink && (input.shrinkReason ?? '').trim() !== '') {
+      // conscious, explained shrink — allowed.
+    } else if (input.allowMethodShrink) {
+      violations.push(
+        `${shrinkViolations.join('; ')} — allowMethodShrink is set but shrinkReason is empty: explain WHY the procedure is intentionally shrinking`,
+      );
+    } else {
+      violations.push(
+        `${shrinkViolations.join('; ')} — if intentional, pass allowMethodShrink:true + shrinkReason; otherwise restore the full procedure text (rubrics:get the stored rubric and edit from it)`,
+      );
+    }
+  }
+
+  if (violations.length > 0) {
+    throw new Error(
+      `proposeRubric: rubrics:propose REPLACES the whole rubric document, and this proposal would SILENTLY LOSE content from stored rubric '${stored.rubricId}':\n` +
+        violations.map((v) => `  • ${v}`).join('\n'),
+    );
+  }
+}
+
+/** WI-4287 completeness report: which aspects still lack their own testing procedure,
+ *  and whether the rubric-level main procedure (methodRef) is set. */
+export interface RubricCompleteness {
+  /** Criterion keys with neither a `replication` drill nor a REPLICATION DRILL marker
+   *  embedded in `method`. */
+  criteriaWithoutReplication: string[];
+  /** True when the rubric has no methodRef (the ONE main long-form procedure). */
+  methodRefMissing: boolean;
+  /** True when every criterion carries a procedure AND methodRef is set. */
+  complete: boolean;
+  /** Human-readable gap summary; absent when complete. */
+  note?: string;
+}
+
+/**
+ * PURE: report a rubric's testing-procedure completeness — the owner's target shape is
+ * "each aspect comes with its own testing procedure in addition to one main one for the
+ * whole rubric". Non-blocking: rubrics:propose/ratify SURFACE this so gaps stay visible
+ * on every revision; they never reject on it.
+ */
+export function rubricCompleteness(rubric: Rubric): RubricCompleteness {
+  const criteriaWithoutReplication = rubric.criteria
+    .filter((c) => !(c.replication ?? '').trim() && !c.method.includes(REPLICATION_DRILL_MARKER))
+    .map((c) => c.key);
+  const methodRefMissing = !rubric.methodRef;
+  const complete = criteriaWithoutReplication.length === 0 && !methodRefMissing;
+  const parts: string[] = [];
+  if (criteriaWithoutReplication.length > 0) {
+    parts.push(
+      `${criteriaWithoutReplication.length}/${rubric.criteria.length} criteria lack their own replication drill (each aspect should carry a copy-runnable testing procedure in criterion.replication): ${criteriaWithoutReplication.join(', ')}`,
+    );
+  }
+  if (methodRefMissing) {
+    parts.push('rubric methodRef is unset (the ONE main long-form procedure runbook for the whole rubric)');
+  }
+  return {
+    criteriaWithoutReplication,
+    methodRefMissing,
+    complete,
+    ...(parts.length > 0 ? { note: parts.join('; ') } : {}),
+  };
 }
 
 /** Build the validated `template_data` for a rubric-template plan from a propose input.
@@ -521,6 +688,9 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
   // Validate FIRST (fail-loud) before any write, so a malformed rubric never persists a
   // half-state (a body with no/invalid template_data).
   const templateData = buildRubricTemplateData(input);
+  // WI-4287 loss-guard: propose is a whole-document replace — refuse to silently drop
+  // stored criteria or gut their testing procedures (see assertNoSilentRubricLoss).
+  assertNoSilentRubricLoss(await getRubric(input.rubricId), input);
   const scope = await resolveRubricWriteScope(input.rubricId);
   const date = new Date().toISOString().slice(0, 10);
   const body = buildRubricPlanBody({

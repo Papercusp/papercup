@@ -103,6 +103,72 @@ describe('wakeRecipients wake-mode gate (hive-agent-tabs D-005, graduated by sta
   });
 });
 
+// EI-9971 (coord-invariant wake-queue depth/age growth): a manual-mode target
+// that matches NO known agent would stage undeletable `pending_wakes` debris
+// (observed live: owner_id='B', staged 5x, source='me' — a garbage/typo'd
+// coord:send recipient). Root-cause fix: skip STAGING (never firing either —
+// there's nothing to protect there) for a target the roster confirms unknown,
+// while a roster-unavailable/empty read (null) fails OPEN exactly as before.
+describe('wakeRecipients skips staging debris for an UNKNOWN recipient (EI-9971)', () => {
+  beforeEach(() => {
+    vi.mocked(resolveWakeMode).mockResolvedValue('manual' as never);
+  });
+
+  it('a manual-mode target NOT in the known roster is skipped — no stage, no fire, no debris', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(knownOwnerIdSet).mockResolvedValue(new Set(['su-real-agent']));
+    const r = await wakeRecipients(['B'], { summary: 'phase 1 done', source: 'me' });
+    expect(stagePendingWake).not.toHaveBeenCalled();
+    expect(emitAwaitedEvent).not.toHaveBeenCalled();
+    expect(r.staged).toBe(0);
+    expect(r.woken).toBe(0);
+    expect(r.stagedTargets).toEqual([]);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('skipping wake-stage'));
+    warnSpy.mockRestore();
+  });
+
+  it('a manual-mode target that IS in the known roster still stages normally', async () => {
+    vi.mocked(knownOwnerIdSet).mockResolvedValue(new Set(['su-real-agent']));
+    const r = await wakeRecipients(['su-real-agent'], { summary: 'hi' });
+    expect(stagePendingWake).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: 'su-real-agent' }),
+    );
+    expect(r.staged).toBe(1);
+    expect(r.stagedTargets).toEqual(['su-real-agent']);
+  });
+
+  it('roster UNAVAILABLE (null) fails OPEN — stages as before rather than guessing', async () => {
+    vi.mocked(knownOwnerIdSet).mockResolvedValue(null);
+    const r = await wakeRecipients(['whoever-1'], { summary: 'hi' });
+    expect(stagePendingWake).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: 'whoever-1' }),
+    );
+    expect(r.staged).toBe(1);
+  });
+
+  it('mixed known + unknown targets: only the known one stages', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(knownOwnerIdSet).mockResolvedValue(new Set(['su-known']));
+    const r = await wakeRecipients(['su-known', 'garbage-id'], { summary: 'hi' });
+    expect(stagePendingWake).toHaveBeenCalledTimes(1);
+    expect(stagePendingWake).toHaveBeenCalledWith(expect.objectContaining({ ownerId: 'su-known' }));
+    expect(r.staged).toBe(1);
+    expect(r.stagedTargets).toEqual(['su-known']);
+    warnSpy.mockRestore();
+  });
+
+  it('auto mode is unaffected by the roster check (the skip only guards the STAGING branch)', async () => {
+    vi.mocked(resolveWakeMode).mockResolvedValue('auto' as never);
+    vi.mocked(knownOwnerIdSet).mockResolvedValue(new Set(['su-known']));
+    const r = await wakeRecipients(['garbage-id'], { summary: 'hi' });
+    // auto mode fires regardless of roster membership — firing a key nobody
+    // watches is a harmless no-op (unlike staging, it leaves no debris).
+    expect(emitAwaitedEvent).toHaveBeenCalledTimes(1);
+    expect(stagePendingWake).not.toHaveBeenCalled();
+    expect(r.woken).toBe(1);
+  });
+});
+
 describe('buildStagedWakeNote (EI-5957 — loud staged-directive signal)', () => {
   it('names the staged target(s) and both remedies (release / flip to auto)', () => {
     const note = buildStagedWakeNote(['su-member-1']);

@@ -65,4 +65,17 @@ describe("RubricsPanel visual coverage matrix", () => {
     fireEvent.click(screen.getByText("Outcome quality"));
     expect(onSelect).toHaveBeenCalledWith("rubric-quality");
   });
+
+  it("becomes a focused selected rail beside the evidence detail", () => {
+    render(<RubricsPanel compact selectedId="rubric-quality" />);
+    expect(document.querySelector(".pc-rubrics.is-compact")).not.toBeNull();
+    expect(screen.queryByRole("columnheader", { name: "Domain" })).toBeNull();
+    expect(screen.queryByRole("columnheader", { name: "Coverage" })).toBeNull();
+    expect(
+      screen
+        .getByText("Outcome quality")
+        .closest("tr")
+        ?.getAttribute("aria-selected"),
+    ).toBe("true");
+  });
 });

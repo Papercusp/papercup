@@ -46,6 +46,8 @@ export interface LocalRubricCriterion {
   method: string;
   driftMarkers: string;
   ratingScale?: string[];
+  /** The criterion's own REPLICATION DRILL (optional; see rubric-template.ts / WI-4287). */
+  replication?: string;
 }
 
 /** A rubric resolved from the local store (a single self-describing subdir). */
@@ -121,7 +123,16 @@ function readCriteria(v: unknown): LocalRubricCriterion[] | null {
       Array.isArray(o.ratingScale) && o.ratingScale.every((s) => typeof s === 'string')
         ? (o.ratingScale as string[])
         : undefined;
-    out.push({ key, title, model, method, driftMarkers, ...(ratingScale ? { ratingScale } : {}) });
+    const replication = str(o.replication);
+    out.push({
+      key,
+      title,
+      model,
+      method,
+      driftMarkers,
+      ...(ratingScale ? { ratingScale } : {}),
+      ...(replication ? { replication } : {}),
+    });
   }
   return out;
 }

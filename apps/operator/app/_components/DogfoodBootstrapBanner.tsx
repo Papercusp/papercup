@@ -64,7 +64,13 @@ export function DogfoodBootstrapBanner() {
       aria-live="polite"
       style={{
         position: 'fixed',
-        top: 0,
+        // EI-9921: stack BELOW the persistent env-switcher bar instead of
+        // eclipsing it. EnvSwitcherBar publishes its measured height as
+        // `--pc-env-bar-h` on <html> while shown (see its own top offset +
+        // globals.css's .pc-header rule for the same pattern); the var is
+        // unset when the env bar isn't mounted (off-desktop / no envs), so
+        // the 0px fallback keeps this banner flush to the viewport top there.
+        top: 'var(--pc-env-bar-h, 0px)',
         left: 0,
         right: 0,
         zIndex: 2147483645, // just under the sonner Toaster (…646)

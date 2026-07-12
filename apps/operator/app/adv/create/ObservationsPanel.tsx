@@ -101,10 +101,7 @@ export default function ObservationsPanel(
     return [...counts.entries()].sort((a, b) => b[1] - a[1]);
   }, [scopedRows]);
   useEffect(() => {
-    if (
-      signalFilter &&
-      !signalCounts.some(([kind]) => kind === signalFilter)
-    ) {
+    if (signalFilter && !signalCounts.some(([kind]) => kind === signalFilter)) {
       setSignalFilter(null);
     }
   }, [signalCounts, signalFilter]);

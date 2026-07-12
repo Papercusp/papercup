@@ -37,7 +37,7 @@ import { startPushCredentialRefresher } from '@papercusp/operator-core/lib/devic
 import { registerHostPlatform } from '@papercusp/host-platform';
 import { desktopHostPlatform } from '@papercusp/host-platform/desktop';
 import { runBootAddonPreflight } from '@papercusp/operator-core/lib/native-addon-preflight';
-import { validateHomeHarnessResolution, homeHarnessValidationFatal } from '@papercusp/operator-core/lib/startup/validate-home-harness';
+import { validateHomeHarnessResolution, homeHarnessValidationFatal, isLikelyFreshInstallGap } from '@papercusp/operator-core/lib/startup/validate-home-harness';
 import { applyToProcessEnv, readAgentConfig } from '@papercusp/operator-core/lib/agent-config';
 import { reportRuntimeVintageOnBoot } from '@papercusp/operator-core/lib/runtime-vintage';
 import { isSidecarEnabledFromEnv } from '@papercusp/operator-core/lib/process-supervision/sidecar-spawn-shared';
@@ -196,7 +196,23 @@ export function runBootstrap(): void {
       await validateHomeHarnessResolution();
       console.log('[home-harness] startup validation passed — home harness slug resolves');
     } catch (e) {
-      console.error('[home-harness] STARTUP VALIDATION FAILED:', (e as Error)?.message ?? e);
+      // EI-9919: a packaged desktop's FIRST boot always fails this check before its
+      // first-boot hive auto-provisioning (BUG-1 below) has necessarily completed —
+      // that is an expected, self-resolving gap, not a real misconfiguration. Only
+      // soften the wording when NO project is registered at all (the fresh-install
+      // signature); a registered-but-wrong slug is genuine drift and stays loud.
+      const freshInstallGap =
+        process.env.PAPERCUSP_DESKTOP === '1' && (await isLikelyFreshInstallGap());
+      if (freshInstallGap) {
+        console.log(
+          '[home-harness] startup validation: no project registered yet — expected on a ' +
+          'fresh packaged install before first-boot hive provisioning completes (see BUG-1 ' +
+          "below); this self-resolves once the papercusp hive is cloned + registered, on a " +
+          'later boot. (Underlying check: ' + ((e as Error)?.message ?? e) + ')'
+        );
+      } else {
+        console.error('[home-harness] STARTUP VALIDATION FAILED:', (e as Error)?.message ?? e);
+      }
       // [shared-hive-public-release-2026-06-22 BUG-1] Do NOT crash the operator by
       // default. A fresh PACKAGED desktop install legitimately has no registered
       // home-harness project yet (the baked default slug 'papercusp' doesn't resolve

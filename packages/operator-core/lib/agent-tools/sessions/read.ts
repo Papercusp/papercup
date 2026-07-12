@@ -18,7 +18,8 @@ export default defineTool({
   crossWorkspace: true,
   capability: 'search:read',
   description:
-    "Read a bounded window of turns from one indexed session transcript — around a turn (a sessions:search hit's readMore), a from/to range, or the tail. session:'self' reads YOUR OWN current session (pre-compaction turns included).",
+    "Read a bounded window of turns from one indexed session transcript — around a turn (a sessions:search hit's readMore), a from/to range, or the tail. session:'self' reads YOUR OWN current session (pre-compaction turns included). " +
+    "NOTE ON `turn_count` (EI-9970): this is the number of rows in THIS response's window (bounded by `limit`, default 40) — NOT the session's total turn count. It is a DIFFERENT quantity from sessions:list's `turns` field (that session's full indexed-text-turn total) despite the similar name; do not compare them. For the session total, use sessions:list.",
   guidance: {
     when:
       "Following a sessions:search hit for more context, or reading where a session left off. Pass around=<turn_idx> (from the hit's provenance) or nothing for the tail.",
@@ -129,6 +130,9 @@ export default defineTool({
           session_id: sessionId,
           ...(selfNote ? { note: selfNote } : {}),
           ...(archiveNote ? { note: archiveNote } : {}),
+          // EI-9970: this is the WINDOW size (rows returned here, capped by
+          // `limit`), NOT the session's total turn count — see the tool
+          // description. sessions:list's `turns` is the total; do not conflate.
           turn_count: rows.length,
           turns: rows.map((r: { source_kind: string; turn_idx: number; speaker: string; owner: string | null; ts: string | null; text: string }) => ({
             turn_idx: r.turn_idx, speaker: r.speaker,

@@ -94,6 +94,25 @@ export function BenchmarkTrend({
   const last = points[points.length - 1];
   const showAllShas = points.length <= 6;
   const labelled = showAllShas ? points : [first, last];
+  const flat = Math.abs(hi - lo) < 1e-9;
+
+  if (flat) {
+    return (
+      <figure
+        className="pc-benchtrend pc-benchtrend--flat"
+        aria-label={`Benchmark composite unchanged at ${last.composite.toFixed(3)} across ${points.length} generations`}
+      >
+        <figcaption className="pc-benchtrend__caption">
+          Composite unchanged <em>{points.length} generations</em>
+        </figcaption>
+        <span className="pc-benchtrend__baseline" aria-hidden>
+          <i />
+          <strong>{last.composite.toFixed(3)}</strong>
+        </span>
+        <style>{trendStyles}</style>
+      </figure>
+    );
+  }
 
   return (
     <figure
@@ -163,7 +182,12 @@ export function BenchmarkTrend({
           </text>
         ))}
       </svg>
-      <style>{`
+      <style>{trendStyles}</style>
+    </figure>
+  );
+}
+
+const trendStyles = `
         .pc-benchtrend { margin: 0 0 4px; padding: 10px 12px 6px; border: 1px solid var(--border, rgba(125, 211, 252, 0.18)); border-radius: 12px; background: var(--bg-2, rgba(255, 255, 255, 0.03)); }
         .pc-benchtrend__caption { margin: 0 0 4px; font-size: 11px; font-weight: 650; color: var(--fg-mute, #7f9bb4); }
         .pc-benchtrend__caption em { font-style: normal; font-weight: 500; opacity: 0.8; }
@@ -172,7 +196,9 @@ export function BenchmarkTrend({
         .pc-benchtrend__axis { fill: var(--fg-mute, #7f9bb4); font-size: 9.5px; font-variant-numeric: tabular-nums; }
         .pc-benchtrend__line { stroke: #34d399; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
         .pc-benchtrend__dot { fill: #34d399; stroke: rgba(6, 18, 26, 0.9); stroke-width: 1.5; }
-      `}</style>
-    </figure>
-  );
-}
+        .pc-benchtrend--flat { display: grid; grid-template-columns: auto minmax(160px, 1fr); align-items: center; gap: 14px; padding-block: 8px; }
+        .pc-benchtrend--flat .pc-benchtrend__caption { margin: 0; white-space: nowrap; }
+        .pc-benchtrend__baseline { display: grid; grid-template-columns: minmax(80px, 1fr) auto; align-items: center; gap: 9px; color: var(--fg-mute, #7f9bb4); font-size: 10px; }
+        .pc-benchtrend__baseline i { height: 1px; background: color-mix(in srgb, var(--fg-mute, #7f9bb4) 45%, transparent); }
+        .pc-benchtrend__baseline strong { color: var(--fg); font-variant-numeric: tabular-nums; }
+      `;

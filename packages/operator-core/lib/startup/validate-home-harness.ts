@@ -12,6 +12,7 @@
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { resolveProject } from '../harness-core';
 import { activeWorkspaceId } from '../workspace-registry';
+import { loadHarnessRegistry } from '../harness-registry';
 
 /**
  * Validate that the configured home harness slug resolves to a registered project.
@@ -56,4 +57,32 @@ export async function validateHomeHarnessResolution(): Promise<void> {
  */
 export function homeHarnessValidationFatal(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.PAPERCUSP_HOME_HARNESS_VALIDATION_FATAL === '1';
+}
+
+/**
+ * Best-effort signal (EI-9919) for whether a failed home-harness validation is the
+ * well-known, harmless FRESH-INSTALL gap rather than a genuine slug-drift
+ * misconfiguration — so the boot log can say so instead of alarming every new user.
+ *
+ * A packaged desktop install validates the home-harness slug BEFORE its first-boot
+ * hive auto-provisioning (ship-papercusp-as-single-hive, host-bootstrap.ts BUG-1 —
+ * an async git clone that can take real time) has necessarily completed, so a fresh
+ * install's FIRST boot always fails this check even though nothing is actually
+ * broken: it self-resolves once the hive is cloned + registered, on a later boot.
+ *
+ * True when the active workspace has ZERO registered projects at all (nothing has
+ * ever been set up — the fresh-install state). False when at least one project IS
+ * registered but it just isn't the configured home-harness slug — THAT is real
+ * drift (e.g. a stale PAPERCUSP_POT_HOME_SLUG after a rename) and must stay loud.
+ * Never throws: a registry read failure conservatively reports "not a fresh
+ * install" so a genuine problem is never silently softened.
+ */
+export async function isLikelyFreshInstallGap(workspaceId?: string): Promise<boolean> {
+  try {
+    const ws = workspaceId ?? activeWorkspaceId();
+    const reg = await loadHarnessRegistry(ws);
+    return reg.projects.length === 0;
+  } catch {
+    return false;
+  }
 }
