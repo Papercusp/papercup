@@ -1,5 +1,5 @@
 /**
- * `memory-recall:canary` — the live memory recall canary as a DETERMINISTIC
+ * `memory-live-recall:canary` — the live memory recall canary as a DETERMINISTIC
  * blueprint step (EI-10047).
  *
  * Mirrors memory-precision-bench.ts: a registered typed function the
@@ -9,7 +9,7 @@
  *
  * Flag-only (NO governor): ~25 live searches/tick, no LLM, no store writes.
  * Always-on monitoring (`singletonActive: true`); the gate is the
- * `papercusp-memory-recall-canary` flag (default ON).
+ * `papercusp-memory-live-recall-canary` flag (default ON).
  */
 import { z } from 'zod';
 import type { CoordOp } from '../../coord-ops/types.js';
@@ -36,24 +36,24 @@ const result = z.object({
 
 /** Test seam — inject flag/sql/backend/alert deps (mirrors memory-precision-bench). */
 let _deps: RecallCanaryDeps | null = null;
-export function setMemoryRecallCanaryDeps(deps: RecallCanaryDeps | null): void {
+export function setMemoryLiveRecallCanaryDeps(deps: RecallCanaryDeps | null): void {
   _deps = deps;
 }
 
-export const memoryRecallCanaryOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>> = {
-  name: 'memory-recall:canary',
+export const memoryLiveRecallCanaryOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>> = {
+  name: 'memory-live-recall:canary',
   description:
     'Deterministic step: replay the frozen known-item canary set against the LIVE memory stack (read-only), record recall@10 vs baseline, and alert on degradation (the memory recall canary).',
   argsSchema: args,
   resultSchema: result,
   async run(_a, ctx) {
     const workspaceId = ctx.workspaceId;
-    if (!workspaceId) throw new Error('memory-recall:canary requires ctx.workspaceId');
+    if (!workspaceId) throw new Error('memory-live-recall:canary requires ctx.workspaceId');
     const installSlug = ctx.harnessSlug ?? 'op';
 
     const outcome = await runRecallCanary({ workspaceId, installSlug }, _deps ?? {});
     ctx.log?.(
-      `memory-recall:canary ran=${outcome.ran}` +
+      `memory-live-recall:canary ran=${outcome.ran}` +
         (outcome.ran === false
           ? ` skip=${outcome.skipReason}`
           : ` row=${outcome.rowId} status=${outcome.status} r@10=${outcome.metrics.rAt10 ?? '—'}`),
@@ -76,4 +76,4 @@ export const memoryRecallCanaryOp: CoordOp<z.infer<typeof args>, z.infer<typeof 
   },
 };
 
-registerCoordOp(memoryRecallCanaryOp);
+registerCoordOp(memoryLiveRecallCanaryOp);

@@ -549,13 +549,13 @@ export const FLAGS = {
   // EI-10047: the memory RECALL CANARY — a daily known-item replay against the
   // LIVE memory stack (read-only; frozen query→memory-id pairs sampled from real
   // stable memories) recording recall@10 vs a frozen baseline to
-  // harness_shared.memory_recall_canary_run, alerting (attention + severe-event)
+  // harness_shared.memory_live_recall_canary_run, alerting (attention + severe-event)
   // on a >5pt drop or a zero-hit blackout. Complements MEMORY_PRECISION_BENCH
   // (fixture corpus in an isolated bench schema = code-path monitor): the canary
   // watches the DEPLOYMENT — live schema drift / embedder misconfig, the
   // 2026-07-12 PG-42703 silent-blackout class. Cheap (~25 live searches/day, no
   // LLM, no writes to the store); ON by default. OFF cuts the canary tick.
-  MEMORY_RECALL_CANARY: "papercusp-memory-recall-canary",
+  MEMORY_LIVE_RECALL_CANARY: "papercusp-memory-live-recall-canary",
   // data-scoping-audit-2026-06-22 P-006 / D-004 / D-012: workspace-scope the memory RECALL
   // user-pool (drop cross-workspace `project` hits; keep owner-tier user/feedback/reference
   // + legacy NULL-workspace rows). Dark CUTOVER — the flip is the attended live recall-

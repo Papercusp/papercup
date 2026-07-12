@@ -56,7 +56,7 @@ const MAX_PAIRS_PER_SCOPE = 10;
 const SEARCH_LIMIT = 10;
 const SEARCH_CONCURRENCY = 4;
 
-const CONDITION_KEY = 'memory-recall-canary:degraded';
+const CONDITION_KEY = 'memory-live-recall-canary:degraded';
 
 /**
  * Derive the deterministic probe query for one memory body, or null when the
@@ -211,7 +211,7 @@ async function defaultVerifyTargets(sql: Sql, ids: string[]): Promise<Set<string
 async function defaultPrevStatus(sql: Sql, workspaceId: string): Promise<RecallCanaryStatus | null> {
   try {
     const rows = (await sql`
-      SELECT status FROM harness_shared.memory_recall_canary_run
+      SELECT status FROM harness_shared.memory_live_recall_canary_run
        WHERE workspace_id = ${workspaceId}
        ORDER BY ran_at DESC LIMIT 1
     `) as Array<{ status: string }>;
@@ -298,8 +298,8 @@ export async function runRecallCanary(
   input: { workspaceId: string; installSlug: string },
   deps: RecallCanaryDeps = {},
 ): Promise<RecallCanaryOutcome> {
-  const log = deps.log ?? ((m: string) => console.log(`[memory-recall-canary] ${m}`));
-  const flag = deps.flag ?? ((slug: string) => getFlag(FLAGS.MEMORY_RECALL_CANARY, `routine:${slug}`));
+  const log = deps.log ?? ((m: string) => console.log(`[memory-live-recall-canary] ${m}`));
+  const flag = deps.flag ?? ((slug: string) => getFlag(FLAGS.MEMORY_LIVE_RECALL_CANARY, `routine:${slug}`));
   if (!(await flag(input.installSlug))) return { ran: false, skipReason: 'flag-off' };
 
   try {

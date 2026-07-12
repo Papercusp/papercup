@@ -81,7 +81,7 @@ export const LEARNING_SINGLETONS: LearningSingleton[] = [
   { blueprintId: 'memory-precision', legacyRoutine: 'memory-precision-bench' },
   // EI-10047: memory recall canary (always-on, flag-gated). Like memory-precision, no
   // legacy bespoke routine ever existed — the retire-legacy pass is a clean no-op.
-  { blueprintId: 'memory-recall-canary', legacyRoutine: 'memory-recall-canary' },
+  { blueprintId: 'memory-live-recall-canary', legacyRoutine: 'memory-live-recall-canary' },
 ];
 
 export interface LegacyRowState {

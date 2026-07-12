@@ -5,7 +5,7 @@
  * Split from `recall-canary.ts` (the runner that pulls the live backend +
  * org PG) the same way precision-read.ts is split from precision-monitor.ts:
  * a future panel read needs only the small SQL below. Storage is
- * harness_shared.memory_recall_canary_set / _run (migration 580), SQL
+ * harness_shared.memory_live_recall_canary_set / _run (migration 580), SQL
  * injected (postgres-js `Sql`) so this stays seam-testable.
  *
  * What the canary is (vs the precision bench): precision-monitor replays a
@@ -107,7 +107,7 @@ export async function loadLatestRecallCanarySet(
   try {
     const rows = (await sql`
       SELECT id, version, backend, pairs, baseline_r_at_10, created_at
-        FROM harness_shared.memory_recall_canary_set
+        FROM harness_shared.memory_live_recall_canary_set
        WHERE workspace_id = ${workspaceId}
        ORDER BY version DESC
        LIMIT 1
@@ -135,11 +135,11 @@ export async function saveRecallCanarySet(
   input: { backend: string; pairs: RecallCanaryPair[]; baselineRAt10: number },
 ): Promise<{ id: number; version: number }> {
   const rows = (await sql`
-    INSERT INTO harness_shared.memory_recall_canary_set
+    INSERT INTO harness_shared.memory_live_recall_canary_set
       (workspace_id, version, backend, pairs, pairs_n, baseline_r_at_10)
     VALUES
       (${workspaceId},
-       COALESCE((SELECT max(version) FROM harness_shared.memory_recall_canary_set
+       COALESCE((SELECT max(version) FROM harness_shared.memory_live_recall_canary_set
                   WHERE workspace_id = ${workspaceId}), 0) + 1,
        ${input.backend},
        ${JSON.stringify(input.pairs)}::jsonb,
@@ -157,7 +157,7 @@ export async function recordRecallCanaryRun(
   m: RecallCanaryRunMetrics,
 ): Promise<number> {
   const rows = (await sql`
-    INSERT INTO harness_shared.memory_recall_canary_run
+    INSERT INTO harness_shared.memory_live_recall_canary_run
       (workspace_id, set_version, backend, pairs_total, pairs_scored, pairs_missing,
        hits, r_at_10, baseline_r_at_10, delta, zero_hit_rate, latency_p50_ms, status, notes)
     VALUES
@@ -183,7 +183,7 @@ export async function readRecallCanary(
       SELECT ran_at, set_version, backend, pairs_total, pairs_scored, pairs_missing,
              hits, r_at_10, baseline_r_at_10, delta, zero_hit_rate, latency_p50_ms,
              status, notes
-        FROM harness_shared.memory_recall_canary_run
+        FROM harness_shared.memory_live_recall_canary_run
        WHERE workspace_id = ${workspaceId}
        ORDER BY ran_at DESC
        LIMIT ${Math.max(1, trendLimit)}
@@ -192,7 +192,7 @@ export async function readRecallCanary(
     let runCount = trend.length;
     try {
       const c = (await sql`
-        SELECT count(*)::int AS n FROM harness_shared.memory_recall_canary_run
+        SELECT count(*)::int AS n FROM harness_shared.memory_live_recall_canary_run
          WHERE workspace_id = ${workspaceId}
       `) as Array<{ n: number }>;
       runCount = Number(c[0]?.n ?? trend.length);
