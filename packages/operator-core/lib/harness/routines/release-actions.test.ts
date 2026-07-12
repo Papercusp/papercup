@@ -25,6 +25,23 @@ vi.mock('../git-sync/pipeline-events', () => ({
   appendPipelineEvent: (...a: unknown[]) => appendPipelineEvent(...a),
 }));
 
+// EI-10158: the green-checkpoint action's fail-safe stall-tracking + flake-history
+// (trackGateStall / trackFlakeHistory) and release-trigger's back-off read reach
+// @papercusp/db-org DIRECTLY (getOrgPg().sql.unsafe) — not through appendPipelineEvent.
+// Left unmocked, this UNIT test reaches out to real Postgres: it happens to pass when the
+// dev box's native :5432 is up, but in CI / embedded-PG / during an operator restart the
+// connection is REFUSED, the fail-safe `.catch` logs `console.warn(...ECONNREFUSED...)`, and
+// vitest-fail-on-console reds the test (the "failed 4× in 6h" env-dependent flake). Stub the
+// SQL boundary so the suite is deterministic regardless of PG reachability. The fake returns
+// an empty result with a numeric `.count` (postgres.js Result shape) so every caller —
+// rows[0]?.gh (→ {}), cleared.count (→ 0, no stall-clear warn), shouldBackOff(null) (→ false,
+// same as the fail-open path) — behaves as the no-prior-state happy path.
+const fakeSql = { unsafe: vi.fn(async (..._a: unknown[]) => Object.assign([] as unknown[], { count: 0 })) };
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: fakeSql }),
+}));
+
 // per-hive-git-and-release-gate P-010: the handlers now resolve the operator-home slug to
 // route per-hive (green-checkpoint) / guard leg-3 (release-trigger). Make the fixture's
 // `my-harness` BE the operator-home so these tests exercise the home (default) path; other
@@ -229,6 +246,7 @@ afterAll(() => {
 beforeEach(() => {
   spawnMock.mockReset();
   appendPipelineEvent.mockClear();
+  fakeSql.unsafe.mockClear();
 });
 
 describe('register-system-actions — registry population', () => {
@@ -657,6 +675,24 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
   afterEach(() => {
     if (savedScopeEnv === undefined) delete process.env.PAPERCUSP_CHECKPOINT_SCOPE;
     else process.env.PAPERCUSP_CHECKPOINT_SCOPE = savedScopeEnv;
+  });
+
+  it('EI-10158: a green tick tracks the stall streak through the MOCKED sql — no real PG, no ECONNREFUSED console.warn', async () => {
+    // Regression guard for the env-dependent flake: trackGateStall reaches
+    // @papercusp/db-org directly. With the db-org mock in place the green-checkpoint
+    // action must query gate_health via the fake sql (never a real :5432 connect) and
+    // its fail-safe .catch must NOT fire a stall-tracking warn. Before the mock this
+    // console.warn'd ECONNREFUSED whenever PG was unreachable (CI / operator restart),
+    // which vitest-fail-on-console turns red.
+    delete process.env.PAPERCUSP_CHECKPOINT_SCOPE;
+    spawnMock.mockImplementationOnce(() => fakeSpawn(okStdout, 0));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await getSystemAction('green-checkpoint')!(ctx);
+    // The stall-tracking SELECT ran against the fake sql, scoped to the install slug.
+    expect(fakeSql.unsafe).toHaveBeenCalledWith(expect.stringContaining('gate_health'), ['my-harness']);
+    // …so the fail-safe catch never logged a stall-tracking failure (the flake's warn).
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('stall tracking failed'));
+    warn.mockRestore();
   });
 
   it('buildIsolatedScopeArgv wraps the payload in a memory-capped transient user SCOPE', () => {
