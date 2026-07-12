@@ -97,7 +97,7 @@ const putSpec = defineTool({
 
     // Invalidate sync queries when config.json is saved (data-sync migration P-009)
     if (body.config !== undefined) {
-      const { notifySyncInvalidate } = await import('@papercusp/sync');
+      const { notifySyncInvalidate } = await import('../../../sync-sse');
       // Invalidate both harnessProjectFiles (config) and discordConfig (which extracts discord from config)
       await Promise.all([
         notifySyncInvalidate('harnessProjectFiles.byHarness', [{ harnessSlug: slug }]),
