@@ -305,6 +305,31 @@ export interface BuildIdeatorPromptInput {
    * lands as a dedicated section beside the lens framing.
    */
   nicheMapPriming?: string;
+  /**
+   * DETERMINISTIC rubric seeding (blender-self-learning-2026-07-12 P-004): a
+   * formatted block of the worst measured rubric criteria this cycle. When set,
+   * the ideator is REQUIRED to ground at least one idea in one of these refs —
+   * the audit (WI-4250) found 0/116 routed ideas EVER cited a rubric pattern
+   * because the lane just rode the flat digest and hoped for salience. The
+   * roster gives this to a designated slot each cycle (ideators.ts), so rubric
+   * measurements reliably generate ideas instead of hopefully.
+   */
+  rubricFocus?: string;
+}
+
+/**
+ * PURE: the deterministic rubric-focus block for this cycle — the first
+ * `limit` patterns of the digest's rubricRatings lane (the digest builder
+ * orders them worst-first), rendered with their citable refs. Undefined when
+ * the lane is empty (no rubric measurements ⇒ no forced focus).
+ */
+export function buildRubricFocus(digest: CorpusDigest, limit = 3): string | undefined {
+  const pats = digest.rubricRatings ?? [];
+  if (pats.length === 0) return undefined;
+  return pats
+    .slice(0, Math.max(1, limit))
+    .map((p) => `- (ref: ${p.ref}) ${p.summary}${p.detail ? ` — ${p.detail}` : ''}`)
+    .join('\n');
 }
 
 /**
@@ -340,6 +365,15 @@ export function buildIdeatorPrompt(input: BuildIdeatorPromptInput): { system: st
 
   if (input.nicheMapPriming && input.nicheMapPriming.trim()) {
     system.push('', '## Federated niche guidance', input.nicheMapPriming.trim());
+  }
+
+  if (input.rubricFocus && input.rubricFocus.trim()) {
+    system.push(
+      '',
+      '## Rubric focus — MEASURED regressions from the fleet scorecards',
+      'These are the worst-measured rubric criteria right now. At least ONE of your ideas MUST address one of them — cite its exact ref in `addressesPatternRefs`:',
+      input.rubricFocus.trim(),
+    );
   }
 
   system.push(

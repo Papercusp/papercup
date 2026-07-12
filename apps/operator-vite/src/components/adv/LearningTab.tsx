@@ -3220,6 +3220,7 @@ export function LearningStyles() {
 
       .pc-learning__hivepick {
         display: inline-flex; align-items: center; gap: 6px;
+        margin-left: auto;
         padding: 5px 10px; font-size: 11.5px; font-weight: 600; border-radius: 999px;
         border: 1px solid var(--border); background: var(--bg-2); color: var(--fg-mute);
       }

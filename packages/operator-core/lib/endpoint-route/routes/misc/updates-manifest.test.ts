@@ -338,3 +338,123 @@ describe('GET /api/updates/manifest — graceful degradation when GitHub is unre
     expect(res.headers.get('X-Update-Reason')).toBe('fetch_failed');
   });
 });
+
+/**
+ * WI-4365: LOCAL-only release discovery. Releases are no longer published to
+ * GitHub [owner:Avi 2026-07-08], so the GitHub path finds no candidate and
+ * returns a 204 the updater reads as "up to date" — auto-update dies silently.
+ * When PAPERCUSP_RELEASE_HOST is set it is now the AUTHORITATIVE source and
+ * GitHub must not be consulted at all.
+ */
+describe('GET /api/updates/manifest — static release host is authoritative (LOCAL-only rail)', () => {
+  const HOST = 'https://dl.papercusp.test/desktop';
+
+  const latestJson = (over: Record<string, unknown> = {}) => ({
+    version: '0.0.9',
+    channel: 'alpha',
+    notes: 'notes here',
+    pub_date: '2026-07-12T01:43:20Z',
+    platforms: {
+      'linux-x86_64': {
+        signature: 'MINISIGN_INLINE',
+        url: `${HOST}/desktop-v0.0.9-alpha/Papercusp_GUI_0.0.9_amd64.AppImage`,
+      },
+    },
+    ...over,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockFetch.mockReset();
+    vi.mocked(releaseHostBase).mockReturnValue(HOST);
+    vi.mocked(resolveGithubToken).mockResolvedValue('test-token');
+    mockFetch.mockResolvedValue(new Response(JSON.stringify(latestJson()), { status: 200 }));
+  });
+  afterEach(() => vi.mocked(releaseHostBase).mockReturnValue(null));
+
+  it('serves the manifest from <host>/latest.json and NEVER touches GitHub', async () => {
+    const res = await manifestResponse(
+      '?target=linux&arch=x86_64&current_version=0.0.8&product=gui&channel=alpha',
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      version: string;
+      platforms: Record<string, { signature: string; url: string }>;
+    };
+    expect(body.version).toBe('0.0.9');
+    // Inline minisign content + the absolute host URL, served as-is (the static
+    // host is public — no token-gated /api/updates/download proxy rewrite).
+    expect(body.platforms['linux-x86_64'].signature).toBe('MINISIGN_INLINE');
+    expect(body.platforms['linux-x86_64'].url).toBe(
+      `${HOST}/desktop-v0.0.9-alpha/Papercusp_GUI_0.0.9_amd64.AppImage`,
+    );
+
+    // The whole point: no GitHub API call, no token resolution.
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(String(mockFetch.mock.calls[0]![0])).toBe(`${HOST}/latest.json`);
+    expect(String(mockFetch.mock.calls[0]![0])).not.toContain('api.github.com');
+    expect(resolveGithubToken).not.toHaveBeenCalled();
+  });
+
+  it('204 up_to_date when the host version equals the running version', async () => {
+    const res = await manifestResponse(
+      '?target=linux&arch=x86_64&current_version=0.0.9&product=gui&channel=alpha',
+    );
+    expect(res.status).toBe(204);
+    expect(res.headers.get('X-Update-Check')).toBe('up_to_date');
+  });
+
+  it('REFUSES a placeholder url — never offer an update that cannot be downloaded (WI-4364)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify(
+          latestJson({
+            platforms: {
+              'linux-x86_64': {
+                signature: 'MINISIGN_INLINE',
+                url: 'papercusp-update-base-unset://SET-PAPERCUSP_UPDATE_BASE_URL/desktop-v0.0.9-alpha/x.AppImage',
+              },
+            },
+          }),
+        ),
+        { status: 200 },
+      ),
+    );
+    const res = await manifestResponse(
+      '?target=linux&arch=x86_64&current_version=0.0.8&product=gui&channel=alpha',
+    );
+    expect(res.status).toBe(204);
+    expect(res.headers.get('X-Update-Check')).toBe('cannot_check');
+    expect(res.headers.get('X-Update-Reason')).toBe('manifest_unconfigured');
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it('honours the channel gate — a stable client is not offered an alpha build', async () => {
+    const res = await manifestResponse(
+      '?target=linux&arch=x86_64&current_version=0.0.8&product=gui&channel=stable',
+    );
+    expect(res.status).toBe(204);
+    expect(res.headers.get('X-Update-Reason')).toBe('no_candidate');
+  });
+
+  it('never offers the GUI artifact to a Server poll (latest.json is GUI-only)', async () => {
+    const res = await manifestResponse(
+      '?target=linux&arch=x86_64&current_version=0.0.8&product=server&channel=alpha',
+    );
+    expect(res.status).toBe(204);
+    expect(res.headers.get('X-Update-Reason')).toBe('no_candidate');
+  });
+
+  it('degrades to 204 (not 5xx) when the release host is unreachable', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockFetch.mockRejectedValue(new Error('ECONNREFUSED'));
+    const res = await manifestResponse(
+      '?target=linux&arch=x86_64&current_version=0.0.8&product=gui&channel=alpha',
+    );
+    expect(res.status).toBe(204);
+    expect(res.headers.get('X-Update-Reason')).toBe('fetch_failed');
+    warnSpy.mockRestore();
+  });
+});

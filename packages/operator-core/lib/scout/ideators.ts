@@ -18,6 +18,7 @@ import { CREATIVE_LENSES } from './types';
 import {
   assignDistantDomain,
   buildIdeatorPrompt,
+  buildRubricFocus,
   digestRefSet,
   DISTANT_DOMAINS,
   type DistantDomain,
@@ -291,9 +292,16 @@ export async function runIdeators(digest: CorpusDigest, opts: RunIdeatorsOptions
     opts.maxIdeasPerIdeator ?? (Number.isFinite(envMax) && envMax > 0 ? envMax : 4);
   const validRefs = digestRefSet(digest);
   const thinking = opts.thinkingBudgetTokens;
+  // DETERMINISTIC rubric seeding (blender-self-learning-2026-07-12 P-004): when
+  // the digest carries measured rubric criteria, the FIRST roster slot is
+  // required to ground an idea in one of the worst-measured refs. One slot, not
+  // all — the rest of the roster keeps its unforced diversity, but rubric
+  // measurements now generate ideas every cycle by construction, not by hoping
+  // the lane wins salience in the flat render (0/116 ever, per the WI-4250 audit).
+  const rubricFocus = buildRubricFocus(digest);
 
   const runs = await Promise.all(
-    roster.map(async (slot): Promise<{ info: IdeatorRunInfo; ideas: Idea[]; cost: number }> => {
+    roster.map(async (slot, slotIdx): Promise<{ info: IdeatorRunInfo; ideas: Idea[]; cost: number }> => {
       const { system, user } = buildIdeatorPrompt({
         lens: slot.lens,
         digest,
@@ -302,6 +310,7 @@ export async function runIdeators(digest: CorpusDigest, opts: RunIdeatorsOptions
         ...(opts.mission ? { mission: opts.mission } : {}),
         ...(opts.priming ? { priming: opts.priming } : {}),
         ...(opts.nicheMapPriming ? { nicheMapPriming: opts.nicheMapPriming } : {}),
+        ...(slotIdx === 0 && rubricFocus ? { rubricFocus } : {}),
       });
       try {
         const res = await callIdeatorLlm(

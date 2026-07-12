@@ -2,11 +2,26 @@
  * GET /api/updates/manifest — channel-aware release manifest for the
  * Tauri updater (alpha/beta/stable; 204 = no update).
  *
- * `auth: 'public'` — the Tauri updater polls this unauthenticated on
- * loopback. The release repo is PRIVATE, so this route resolves a GitHub
- * token server-side (gh CLI → credentials store → env; see
- * updates-github.ts) and rewrites every artifact URL to the local
- * `/api/updates/download` proxy, which streams the token-gated asset.
+ * `auth: 'public'` — the Tauri updater polls this unauthenticated on loopback.
+ *
+ * TWO discovery sources, in priority order:
+ *
+ *  1. STATIC RELEASE HOST (PAPERCUSP_RELEASE_HOST) — AUTHORITATIVE when the host
+ *     publishes a `<host>/latest.json`, and the supported path since releases
+ *     went LOCAL-only (owner directive 2026-07-08: artifacts are built locally
+ *     and uploaded by hand, never published to GitHub). Serves that manifest's
+ *     inline signature + absolute artifact URL directly; GitHub is not consulted.
+ *     ⚠ The uploaded manifest MUST be reachable at `<host>/latest.json`, and must
+ *     be cut WITH PAPERCUSP_UPDATE_BASE_URL set — otherwise its urls are
+ *     placeholders and this route refuses them (WI-4364).
+ *
+ *  2. GITHUB RELEASES (legacy) — when no release host is set, or the host
+ *     publishes no latest.json (the HYBRID deployment: GitHub discovers the
+ *     release, the host only serves bytes for assets over GitHub's 2 GiB cap).
+ *     The release repo is PRIVATE, so this resolves a GitHub token server-side
+ *     (gh CLI → credentials store → env; see updates-github.ts) and rewrites
+ *     every artifact URL to the local `/api/updates/download` proxy, which
+ *     streams the token-gated asset. Finds nothing under the local-only rail.
  *
  * Contract with tauri-plugin-updater (verified against 2.10.1 source,
  * desktop-auto-update-operational-2026-07-09 P-001/P-002):
@@ -59,9 +74,31 @@ interface TauriManifest {
 /** Shape of the pipeline-generated `papercusp-latest-<tag>.json` asset. */
 interface LatestJson {
   version?: string;
+  channel?: string;
   notes?: string;
   pub_date?: string;
   platforms?: Record<string, { signature: string; url: string }>;
+}
+
+/**
+ * The placeholder release-local.sh writes into latest.json when
+ * PAPERCUSP_UPDATE_BASE_URL is unset (WI-4364). It must NEVER reach the
+ * updater: handing a client a bogus URL turns a clean "no update" into a
+ * failed download. Detect and refuse.
+ */
+const UPDATE_URL_PLACEHOLDER = 'papercusp-update-base-unset://';
+
+/**
+ * LOCAL-only release discovery (WI-4365). Fetches `<host>/latest.json` from the
+ * static release host — no GitHub API, no token. This is the whole point: since
+ * 2026-07-08 releases are NOT published to GitHub, so there is no release for
+ * the GitHub path below to discover.
+ */
+export async function fetchStaticLatest(host: string): Promise<LatestJson | null> {
+  const res = await fetch(`${host}/latest.json`, { next: { revalidate: 60 } } as RequestInit);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`release host latest.json: ${res.status}`);
+  return (await res.json()) as LatestJson;
 }
 
 /**
@@ -228,10 +265,77 @@ export function resolveChannel(params: URLSearchParams, override?: string): Chan
  *   - `X-Update-Reason: no_token|fetch_failed|no_candidate` on the
  *     cannot_check paths only (omitted on a genuine up_to_date 204).
  */
-type UpdateCannotCheckReason = 'no_token' | 'fetch_failed' | 'no_candidate';
+type UpdateCannotCheckReason =
+  | 'no_token'
+  | 'fetch_failed'
+  | 'no_candidate'
+  // WI-4364: the release host served a latest.json whose urls are still the
+  // release-local.sh placeholder (PAPERCUSP_UPDATE_BASE_URL was never set at
+  // cut time). Refusing is the honest answer — the manifest names a download
+  // location that does not exist.
+  | 'manifest_unconfigured';
 
 function upToDateResponse(): Response {
   return new Response(null, { status: 204, headers: { 'X-Update-Check': 'up_to_date' } });
+}
+
+/**
+ * Decide the response from an AUTHORITATIVE static-host latest.json (WI-4365).
+ * Once the release host publishes a usable manifest it settles the question —
+ * GitHub is never consulted, so every outcome (offer / up-to-date / refuse) is
+ * returned from here.
+ */
+function staticManifestResponse(
+  latest: LatestJson & { version: string; platforms: NonNullable<LatestJson['platforms']> },
+  ctx: {
+    host: string;
+    channel: Channel;
+    target: string;
+    arch: string;
+    product: Product;
+    currentVersion: string;
+  },
+): Response {
+  const { host, channel, target, arch, product, currentVersion } = ctx;
+
+  // Honour the channel gate exactly as the GitHub path does.
+  const latestChannel = CHANNELS.has(latest.channel as Channel)
+    ? (latest.channel as Channel)
+    : 'stable';
+  if (!visibleChannels(channel).has(latestChannel)) return cannotCheckResponse('no_candidate');
+
+  if (currentVersion && latest.version === currentVersion) return upToDateResponse();
+
+  const platformKey = platformKeyFor(target, arch);
+  if (!platformKey) {
+    return Response.json({ error: `unknown platform ${target}/${arch}` }, { status: 404 });
+  }
+
+  // latest.json carries the GUI product only (the same limitation the GitHub
+  // fallback documents) — never offer a GUI artifact to a Server poll (WI-3696).
+  if (product !== 'gui') return cannotCheckResponse('no_candidate');
+
+  const entry = latest.platforms[platformKey];
+  if (!entry?.url || !entry.signature) return cannotCheckResponse('no_candidate');
+
+  if (entry.url.startsWith(UPDATE_URL_PLACEHOLDER)) {
+    console.error(
+      `[updates/manifest] release host ${host} is serving a latest.json with PLACEHOLDER urls ` +
+        `(${entry.url}) — the cut ran without PAPERCUSP_UPDATE_BASE_URL. Refusing to offer an ` +
+        `update that cannot be downloaded (WI-4364). Regenerate latest.json with the real base URL.`,
+    );
+    return cannotCheckResponse('manifest_unconfigured');
+  }
+
+  // The static host is public, so the artifact URL is served as-is — no
+  // token-gated /api/updates/download proxy rewrite (that exists only for the
+  // PRIVATE GitHub repo).
+  return Response.json({
+    version: latest.version,
+    notes: latest.notes ?? '',
+    pub_date: latest.pub_date ?? new Date().toISOString(),
+    platforms: { [platformKey]: { signature: entry.signature, url: entry.url } },
+  } satisfies TauriManifest);
 }
 
 function cannotCheckResponse(reason: UpdateCannotCheckReason): Response {
@@ -255,6 +359,50 @@ export default defineTool({
 
     const stored = await readOperatorState<{ update_channel?: string }>('setup_wizard_state');
     const channel = resolveChannel(params, stored?.update_channel);
+
+    // ── LOCAL-only releases: the static release host is AUTHORITATIVE (WI-4365).
+    //
+    // [owner:Avi 2026-07-08, restated 07-12] "We are no longer using github for
+    // our releases so just build the installer locally and I will upload it to
+    // the right spot." Releases are therefore never published to GitHub — which
+    // silently KILLED auto-update: the GitHub path below discovers candidates
+    // from the releases API, finds nothing, and returns a 204 that the updater
+    // reads as "you are up to date". Forever. An app installed from a
+    // hand-uploaded 0.0.8 would never see 0.0.9.
+    //
+    // PAPERCUSP_RELEASE_HOST already existed, but ONLY as a DOWNLOAD fallback
+    // reached AFTER a GitHub release was found (for assets over GitHub's 2 GiB
+    // cap — which every Linux artifact now is). It was never a DISCOVERY path.
+    // Now: if the host publishes a latest.json, it is the source of truth and
+    // GitHub is not consulted (no token, no API call, no dependency on a repo we
+    // don't publish to). If it doesn't, we fall through to the legacy GitHub
+    // path — that's the HYBRID deployment, where the host only serves bytes.
+    const host = releaseHostBase();
+    if (host) {
+      let latest: LatestJson | null = null;
+      try {
+        latest = await fetchStaticLatest(host);
+      } catch (e: unknown) {
+        // A configured host that is unreachable is a TRANSIENT failure, not a
+        // reason to silently consult GitHub — falling through there could offer
+        // a stale GitHub release as a DOWNGRADE. Stay quiet; warn server-side.
+        console.warn(
+          `[updates/manifest] release host ${host} latest.json fetch failed — serving 204: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+        return cannotCheckResponse('fetch_failed');
+      }
+
+      // A host that publishes no usable manifest is NOT an error: that is the
+      // HYBRID deployment (GitHub discovers the release; the host only serves
+      // the bytes of artifacts over GitHub's 2 GiB cap). Fall through to the
+      // GitHub path below. Only a host that DOES publish latest.json is
+      // authoritative — and then every outcome is decided here.
+      if (latest?.version && latest.platforms) {
+        return staticManifestResponse(latest, { host, channel, target, arch, product, currentVersion });
+      }
+    }
 
     const token = await resolveGithubToken();
     if (!token) {

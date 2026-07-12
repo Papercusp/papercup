@@ -258,7 +258,7 @@ export default function RubricsPanel({
       )}
       <div className="pc-rubrics__tablewrap">
         <Table
-          caption={`${primaryRows.length} scored rubric${primaryRows.length === 1 ? "" : "s"}`}
+          caption={`${primaryRows.length} ${collapseUnscored ? "scored " : ""}rubric${primaryRows.length === 1 ? "" : "s"}`}
           columns={visibleColumns}
           rows={primaryRows}
           getRowKey={(row) => row.rubricId}
