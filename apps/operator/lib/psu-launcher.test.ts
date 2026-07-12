@@ -1606,6 +1606,27 @@ describe('roleLaunchArgs (interactive role session)', () => {
     expect(roleLaunchArgs('claude', { ...files, allowSubagents: true }).args).not.toContain(NO_SUBAGENTS_DENY_FLAG);
   });
 
+  // P-019/D-007 (voice-public-release-readiness-2026-07-12): role sessions silently
+  // DROPPED --model (env-only PAPERCUSP_MODEL) — the "fast" sonnet pane launched on
+  // the box's saved default (Opus). Pin the claude branch to emit real model argv.
+  it('claude: --model spec becomes real argv with effort split (was silently dropped — voice pane ran Opus)', () => {
+    const { args } = roleLaunchArgs('claude', { ...files, model: 'sonnet:medium' });
+    const modelAt = args.indexOf('--model');
+    expect(modelAt).toBeGreaterThan(-1);
+    expect(args.slice(modelAt, modelAt + 4)).toEqual(['--model', 'sonnet', '--effort', 'medium']);
+  });
+
+  it('claude: bare model spec passes through verbatim; no model ⇒ no --model/--effort argv', () => {
+    const bare = roleLaunchArgs('claude', { ...files, model: 'claude-sonnet-5' });
+    const at = bare.args.indexOf('--model');
+    expect(bare.args.slice(at, at + 2)).toEqual(['--model', 'claude-sonnet-5']);
+    expect(bare.args).not.toContain('--effort');
+
+    const none = roleLaunchArgs('claude', files);
+    expect(none.args).not.toContain('--model');
+    expect(none.args).not.toContain('--effort');
+  });
+
   it('omp: raw omp, role prompt file, yolo approvals (path-discovers .mcp.json)', () => {
     const { bin, args } = roleLaunchArgs('omp', files);
     expect(bin).toBe('omp');

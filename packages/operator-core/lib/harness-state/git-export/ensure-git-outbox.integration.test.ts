@@ -52,8 +52,27 @@ beforeAll(async () => {
       origin text NOT NULL DEFAULT 'local',
       PRIMARY KEY (workspace_id, harness_slug, phase, test_id)
     )`);
+  // EI-10521: an UNROUTABLE target — no harness_slug column at all (the real shape of
+  // `goals`, which is install-scoped, and `project_spec_revisions`, which is
+  // project-scoped). Both were git-registered by mistake; the capture trigger read a
+  // column they don't have and its NOT NULL insert aborted every write to them.
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.git_test_noslug (
+      workspace_id text NOT NULL, install_slug text, id text NOT NULL,
+      origin text NOT NULL DEFAULT 'local', data text,
+      PRIMARY KEY (workspace_id, id)
+    )`);
+  // …and one whose harness_slug EXISTS but is nullable (the NULL-valued case).
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.git_test_nullslug (
+      workspace_id text NOT NULL, harness_slug text, id text NOT NULL,
+      origin text NOT NULL DEFAULT 'local', data text,
+      PRIMARY KEY (workspace_id, id)
+    )`);
   await attachGitCaptureTrigger(rootSql, 'git_test_tbl', ['id']);
   await attachGitCaptureTrigger(rootSql, 'git_test_composite', ['phase', 'test_id']);
+  await attachGitCaptureTrigger(rootSql, 'git_test_noslug', ['id']);
+  await attachGitCaptureTrigger(rootSql, 'git_test_nullslug', ['id']);
 }, 90_000);
 
 afterAll(async () => {
@@ -62,7 +81,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await rootSql`TRUNCATE harness_shared.git_export_outbox RESTART IDENTITY`;
-  await rootSql`TRUNCATE harness_shared.git_test_tbl, harness_shared.git_test_composite`;
+  await rootSql`TRUNCATE harness_shared.git_test_tbl, harness_shared.git_test_composite,
+                         harness_shared.git_test_noslug, harness_shared.git_test_nullslug`;
 });
 
 describe('git-export capture trigger (PG)', () => {

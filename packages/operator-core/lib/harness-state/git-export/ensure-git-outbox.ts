@@ -35,10 +35,11 @@ export const GIT_KEY_COLS: Record<string, string[]> = {
   harness_checkpoints: ['name'],
   harness_snapshots: ['snapshot_id'],
   harness_skills: ['name'],
-  goals: ['id'],
+  // `goals` + `project_spec_revisions` removed with their GIT_DOCS entries (EI-10521):
+  // neither is harness-scoped, so neither can git-export. Key cols here for a table the
+  // registry doesn't git-sync are dead weight that reads as intent.
   harness_proposals_shared: ['phase', 'proposal_id'],
   snapshot_features: ['snapshot_id', 'feature_id'],
-  project_spec_revisions: ['id'],
 };
 
 export function gitKeyCols(table: string): string[] {
@@ -89,6 +90,17 @@ export async function ensureGitExportOutbox(sql: postgres.Sql): Promise<void> {
       END LOOP;
       v_ws   := COALESCE(v_row ->> 'workspace_id', '');
       v_slug := v_row ->> 'harness_slug';
+      -- Unroutable → export NOTHING, but never break the caller's write (EI-10521).
+      -- git_export_outbox.harness_slug is NOT NULL, so a table with no harness_slug
+      -- column (or a NULL one) used to raise here and ABORT the INSERT/UPDATE that
+      -- fired the trigger: goals + project_spec_revisions were git-registered without
+      -- a harness scope and every write to them failed ("null value in column
+      -- harness_slug"), exactly as the llm_test_* tables did before them. A missed
+      -- export is a bug; a core write path that always throws is an outage. Mirrors
+      -- capture_work_items_outbox, which already refuses to enqueue an unroutable op.
+      -- The registry is still the fix (an unroutable git table is a misclassification
+      -- — see GIT_DOCS / git-export-slug-coverage); this is the seatbelt.
+      IF v_slug IS NULL OR v_slug = '' THEN RETURN v_rec; END IF;
       INSERT INTO harness_shared.git_export_outbox
         (workspace_id, harness_slug, table_name, op, key, row, ts)
       VALUES (v_ws, v_slug, TG_TABLE_NAME, v_op, v_key, v_row,

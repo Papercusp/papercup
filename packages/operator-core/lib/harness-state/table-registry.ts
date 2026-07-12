@@ -76,8 +76,20 @@ const GIT_DOCS = [
   // local fs-watcher mirror with hardcoded alive=false; not a git document.
   'harness_promotions', 'harness_checkpoints',
   'harness_snapshots',
-  'harness_skills', 'goals', 'harness_proposals_shared', 'snapshot_features',
-  'project_spec_revisions',
+  'harness_skills', 'harness_proposals_shared', 'snapshot_features',
+  // NB: `goals` and `project_spec_revisions` were here — REMOVED (EI-10521), the
+  // SAME defect as the llm_test_* tables above and for the same reason. Neither
+  // carries `harness_slug`: a goal is INSTALL-scoped (`install_slug`) and a spec
+  // revision is PROJECT-scoped (`project_id`). The harness-keyed git_export_outbox
+  // capture reads `row->>'harness_slug'` into a NOT NULL column, so every INSERT
+  // into either table raised "null value in column harness_slug" and the trigger
+  // ABORTED the caller's write — goal creation (goal-lineage.ts) and the project
+  // spec-revision route both failed 100% of the time, which is why both tables held
+  // ZERO rows. They are not harness documents (there is no per-harness
+  // `.papercusp/state/` dir to export them into) → they fall to DEFAULT (sync:'none',
+  // PG store-of-record). detachStaleGitCaptureTriggers drops their live triggers on
+  // the next boot. Re-add ONLY behind a workspace/install-scoped git-export path that
+  // does not require harness_slug.
 ];
 
 /**

@@ -55,6 +55,20 @@ describe('buildAgentLaunchCommand', () => {
     );
   });
 
+  // Caught by the P-016 live-verify, NOT by the unit tests above — every one of them
+  // passed `agent` explicitly, so the omitted-agent path never ran. psu rejects it at
+  // boot (`--agent must be one of claude|omp|codex (got null)`) and the agent dies on a
+  // dead prompt. A fresh launch must ALWAYS carry an agent.
+  it('defaults the agent on a fresh launch — psu hard-fails without --agent', () => {
+    expect(buildAgentLaunchCommand({ mode: 'fresh' })).toContain('--agent=claude');
+    expect(buildAgentLaunchCommand({ mode: 'fresh', plan: 'p' })).toContain('--agent=claude');
+  });
+
+  it('does NOT pass --agent on a resume/fork (the recorded session already carries the kind)', () => {
+    expect(buildAgentLaunchCommand({ mode: 'resume', sessionId: 'sid-1' })).not.toContain('--agent');
+    expect(buildAgentLaunchCommand({ mode: 'fork', sessionId: 'sid-1' })).not.toContain('--agent');
+  });
+
   it('composes a plan launch', () => {
     expect(buildAgentLaunchCommand({ mode: 'fresh', agent: 'claude', plan: 'my-plan' })).toBe(
       'psu --no-picker --account=default --agent=claude --plan=my-plan',

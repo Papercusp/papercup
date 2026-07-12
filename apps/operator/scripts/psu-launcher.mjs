@@ -574,7 +574,7 @@ export const BRAIN_TOMBSTONE_MESSAGE =
  * until the MCP-under-sandbox path has a fresh live smoke on the current CLI
  * (mirrors the codex-su wrapper).
  */
-export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath, nativeSessionId, replaceClaudeBase, allowSubagents } = {}) {
+export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath, nativeSessionId, replaceClaudeBase, allowSubagents, model } = {}) {
   if (backend === 'claude') {
     // domain-generic-agent-personas-2026-06-17 P-014 (REPLACE_CLAUDE_BASE, default-off):
     // mirror suLaunchArgs — when armed, the role prompt REPLACES the Claude coding base
@@ -604,6 +604,14 @@ export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath,
         // unless the launch explicitly opts in (`--allow-subagents`). See
         // NO_SUBAGENTS_DENY_FLAG's doc comment.
         ...(allowSubagents ? [] : [NO_SUBAGENTS_DENY_FLAG]),
+        // P-019/D-007 (voice-public-release-readiness-2026-07-12): role sessions
+        // previously NEVER emitted model argv — `psu --role=papercup --model=sonnet:medium`
+        // silently dropped the spec (only PAPERCUSP_MODEL env was exported, which the
+        // CLI ignores), so the "fast" voice pane came up on the box's saved default
+        // (Opus) — the root cause behind the heavy-pane "Agent did not respond" class.
+        // Same effort-splitting rules as the su flow (modelArgsFor). NOTE: the omp/codex
+        // role branches below still lack model argv (claude-minimal for P-019).
+        ...modelArgsFor('claude', model),
       ],
     };
   }
@@ -4586,6 +4594,10 @@ async function roleFlow(args, role, rolesMeta) {
     replaceClaudeBase: res.envelopeEnv?.PAPERCUSP_REPLACE_CLAUDE_BASE === '1',
     // Subagent-launch deny is DEFAULT-ON; `--allow-subagents` (or the picker) opts in.
     allowSubagents: args.allowSubagents,
+    // P-019/D-007: thread --model into the role launch argv (claude branch splits
+    // effort via modelArgsFor). Without this the spec was env-only (PAPERCUSP_MODEL,
+    // title hooks) and the session ran the saved default model.
+    model: args.model,
   });
   if (args.addDir?.length && res.agent === 'omp') {
     console.error('psu: omp has no --add-dir; ignoring it. Pass a backend flag verbatim with `-- <flag>` if omp supports one.');

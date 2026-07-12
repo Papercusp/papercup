@@ -33,6 +33,8 @@ import {
   Eye,
   Lightbulb,
   FlaskConical,
+  GitBranch,
+  Beaker,
 } from "lucide-react";
 import type {
   ImprovementDigest,
@@ -97,21 +99,21 @@ type LView = (typeof LVIEWS)[number];
 
 type LearningStage = "observe" | "improve" | "verify" | "retain";
 type LearningViewStatus = "neutral" | "good" | "warn" | "bad";
-type LearningStatusSemantic = "dormant" | "active" | "attention" | "failure";
+type LearningStatusSemantic = "attention" | "failure";
 
-function statusSemantic(status: LearningViewStatus): LearningStatusSemantic {
+function statusSemantic(
+  status: LearningViewStatus,
+): LearningStatusSemantic | null {
   if (status === "bad") return "failure";
   if (status === "warn") return "attention";
-  if (status === "good") return "active";
-  return "dormant";
+  return null;
 }
 
 function statusDescription(status: LearningViewStatus): string {
   const semantic = statusSemantic(status);
-  if (semantic === "active") return "live data";
   if (semantic === "attention") return "needs attention";
   if (semantic === "failure") return "data unavailable";
-  return "dormant";
+  return "";
 }
 
 const STAGES: ReadonlyArray<{
@@ -145,12 +147,12 @@ const STAGES: ReadonlyArray<{
     icon: Gauge,
     views: [
       { id: "benchmark", label: "Benchmark", icon: FlaskConical },
-      { id: "orchestration", label: "Pot orchestration", icon: Activity },
+      { id: "orchestration", label: "Pot orchestration", icon: GitBranch },
       { id: "bakeoff", label: "Framework bake-off", icon: Repeat2 },
       { id: "wake-efficiency", label: "Wake efficiency", icon: Hourglass },
       { id: "ekg", label: "EKG", icon: Activity },
       { id: "red-queen", label: "Red Queen", icon: Radar },
-      { id: "experiments", label: "Experiments", icon: FlaskConical },
+      { id: "experiments", label: "Experiments", icon: Beaker },
     ],
   },
   {
@@ -199,6 +201,8 @@ export default function LearningTab() {
     parseAsStringEnum<LView>([...LVIEWS]).withDefault("improvements"),
   );
   const [rubricId, setRubricId] = useQueryState("rrubric", parseAsString);
+  const [, setGradeDetail] = useQueryState("grade", parseAsString);
+  const [, setRetainDetail] = useQueryState("lretain", parseAsString);
   // Tab-level per-Hive lens (per-hive-learning-loops P-042): ONE `?lhive=` param,
   // promoted up from the Learnings sub-view so it applies across every hive-aware
   // view. Agents drive it via ui:dispatch; the hive-creation success card
@@ -240,24 +244,31 @@ export default function LearningTab() {
     },
     [],
   );
-  // Work Queue parity: once a view has been opened, keep its sync subscription
-  // and rendered state alive while the user moves around the loop. The old
-  // conditional unmounted every panel, forcing heavy aggregate reads to cold-
-  // start again on return. This is lazy (only visited views mount), so opening
-  // Learning does not fan out every query at once.
-  const [visitedViews, setVisitedViews] = useState<ReadonlySet<LView>>(
-    () => new Set([view]),
-  );
+  const previousView = useRef<LView>(view);
   useEffect(() => {
-    setVisitedViews((current) =>
-      current.has(view) ? current : new Set([...current, view]),
+    const previous = previousView.current;
+    if (previous === view) return;
+    if (previous === "ideas") void setGradeDetail(null);
+    if (previous === "rubrics") void setRubricId(null);
+    if (previous === "learnings") void setRetainDetail(null);
+    previousView.current = view;
+  }, [setGradeDetail, setRetainDetail, setRubricId, view]);
+
+  // Work Queue parity without an unbounded hidden tree: keep the current pane
+  // and the two most recent panes mounted. Normal back-and-forth stays warm,
+  // while old chart trees and their live subscriptions are evicted.
+  const [warmViews, setWarmViews] = useState<readonly LView[]>([view]);
+  useEffect(() => {
+    setWarmViews((current) =>
+      [view, ...current.filter((candidate) => candidate !== view)].slice(0, 3),
     );
   }, [view]);
   // Include the newly selected view in this render; the effect persists it for
   // later renders without introducing a one-frame empty panel.
-  const mountedViews = visitedViews.has(view)
-    ? visitedViews
-    : new Set([...visitedViews, view]);
+  const mountedViews = [
+    view,
+    ...warmViews.filter((candidate) => candidate !== view),
+  ].slice(0, 3);
 
   return (
     <div className="pc-learning">
@@ -409,7 +420,7 @@ export default function LearningTab() {
       </div>
 
       <div className="pc-learning__body">
-        {LVIEWS.filter((candidate) => mountedViews.has(candidate)).map(
+        {LVIEWS.filter((candidate) => mountedViews.includes(candidate)).map(
           (mountedView) => (
             <section
               key={mountedView}
@@ -3197,7 +3208,6 @@ export function LearningStyles() {
       .pc-learning__stage-icon[class*="has-"], .pc-learning__view-icon[class*="has-"] { border-color: color-mix(in srgb, var(--learning-status) 64%, var(--border)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--learning-status) 8%, transparent); }
       .pc-learning__stage-icon.has-dormant, .pc-learning__view-icon.has-dormant { border-style: dashed; box-shadow: none; opacity: .78; }
       .pc-learning__stage-icon .pc-learning__statusmark, .pc-learning__view-icon .pc-learning__statusmark { background: var(--learning-status); }
-      .pc-learning__stage-icon.has-active .pc-learning__statusmark { box-shadow: 0 0 5px color-mix(in srgb, var(--learning-status) 70%, transparent); }
       .pc-learning__stage:hover .pc-learning__stage-icon { color: var(--fg); border-color: var(--stage-accent); background: var(--bg-2); }
       .pc-learning__stage[aria-selected="true"] { color: var(--fg); }
       .pc-learning__stage[aria-selected="true"] .pc-learning__stage-icon {
@@ -3245,6 +3255,7 @@ export function LearningStyles() {
       }
       @container learning (max-width: 1100px) {
         .pc-learning__view-tabs[data-stage="verify"] .pc-learning__view-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+        .pc-learning__view-tabs[data-stage="verify"] .pc-learning__view-tab[aria-selected="true"] .pc-learning__view-label { position: static; width: auto; height: auto; overflow: visible; clip-path: none; white-space: nowrap; }
         .pc-learning__view-tabs[data-stage="verify"] .pc-learning__view-tab { padding-inline: 7px; }
         .pc-learning__view-tabs[data-stage="verify"] .pc-learning__view-icon { width: 22px; height: 22px; }
       }

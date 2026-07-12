@@ -753,6 +753,28 @@ describe("LearningTab — unified Signals views", () => {
     ).toBe(false);
   });
 
+  it("bounds warm panes to the current view and two recent views", () => {
+    nuqsState.lview = "ideas";
+    const { rerender } = render(<LearningTab />);
+    for (const next of ["observations", "rubrics", "benchmark"]) {
+      nuqsState.lview = next;
+      rerender(<LearningTab />);
+    }
+    expect(document.querySelector('[data-view="ideas"]')).toBeNull();
+    expect(document.querySelector('[data-view="observations"]')).toBeNull();
+    expect(document.querySelector('[data-view="rubrics"]')).not.toBeNull();
+    expect(document.querySelector('[data-view="benchmark"]')).not.toBeNull();
+  });
+
+  it("clears transient idea detail when leaving Ideas", () => {
+    nuqsState.lview = "ideas";
+    nuqsState.grade = "idea-1";
+    const { rerender } = render(<LearningTab />);
+    nuqsState.lview = "observations";
+    rerender(<LearningTab />);
+    expect(nuqsSetters.grade).toHaveBeenCalledWith(null);
+  });
+
   it("keeps operational destinations out of the learning header", () => {
     render(<LearningTab />);
     expect(screen.queryByRole("heading", { name: "Learning" })).toBeNull();
