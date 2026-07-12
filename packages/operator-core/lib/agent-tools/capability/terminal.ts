@@ -164,7 +164,7 @@ export default defineTool({
       .string()
       .optional()
       .describe(
-        "Optional fleet name or slug — every terminal in this call uses that fleet's permanently-bound color scheme. When omitted, the tool automatically resolves your presence-fleet color (if you are a fleet member). Use this to OVERRIDE the presence fleet or when you are not a fleet member.",
+        "Optional fleet name or slug — every terminal in this call uses that fleet's permanently-bound color scheme, and any `psu` command in it auto-joins that fleet (--fleet=<slug> injected). When omitted, the tool automatically resolves your OWN presence-fleet (if you are a fleet member) for both color AND `psu` membership (WI-4234) — so a bare `psu ...` spawned by a fleet leader/member joins the caller's fleet by default. Pass an explicit `fleet` to OVERRIDE which fleet a spawned `psu` joins, or to color/join a fleet you are not currently a member of. Prefer `fleet:launch-on-plan` over hand-rolling a fleet spawn here when you can — it also seeds plan/launch-context.",
       ),
   }),
   async handler(args, ctx) {
@@ -208,12 +208,20 @@ export default defineTool({
       callerOwnerId = null;
     }
 
-    // Resolve the fleet's permanently-bound color scheme.
-    // Precedence: explicit `fleet` arg → caller's shared_presence fleet_slug → null (plan-hash fallback).
-    // Color is cosmetic — a lookup failure must never block the launch.
-    // Canonical slug for the explicit `fleet` arg — drives BOTH the colour lookup
-    // and the `--fleet` membership injection below, so they can never diverge.
-    const fleetSlug = args.fleet ? fleetSlugFromName(args.fleet) : null;
+    // Resolve the fleet's permanently-bound color scheme AND the fleet a spawned
+    // `psu` command should JOIN. Precedence: explicit `fleet` arg → caller's
+    // shared_presence fleet_slug → null. Color is cosmetic — a lookup failure
+    // must never block the launch. `fleetSlug` drives BOTH the colour lookup
+    // AND the `--fleet` membership injection below, so they can never diverge —
+    // this now ALSO covers the inferred (no explicit `fleet` arg) case (WI-4234):
+    // previously only an explicit `fleet` arg reached injectFleetArg, so a fleet
+    // leader/member hand-rolling a bare `psu` spawn via this tool (instead of
+    // fleet:launch-on-plan) got fleet-colored windows whose agents never actually
+    // JOINED the fleet — no plan/launch-context, and no WI-2185 auto wake-mode
+    // pin (which only fires once bootstrap-su sees a real fleetSlug), so the
+    // spawned member inherited whatever the GLOBAL wake-mode default was and its
+    // leader's steering wakes silently STAGED instead of landing.
+    let fleetSlug: string | null = args.fleet ? fleetSlugFromName(args.fleet) : null;
     let scheme: ColorScheme | null = null;
     if (fleetSlug) {
       // Explicit fleet name wins.
@@ -224,12 +232,14 @@ export default defineTool({
       }
     } else if (callerOwnerId) {
       // Fallback: resolve from the caller's shared_presence fleet_slug so every
-      // terminal a fleet member opens inherits their fleet's color without an
-      // explicit arg (capability-terminal fleet-color-schemes-2026-06-30 P-003).
+      // terminal a fleet member opens inherits their fleet's color (capability-
+      // terminal fleet-color-schemes-2026-06-30 P-003) AND membership (WI-4234)
+      // without an explicit `fleet` arg.
       try {
         const fleetMap = await fetchPresenceFleet([callerOwnerId]);
         const membership = fleetMap.get(callerOwnerId);
         if (membership?.fleetSlug) {
+          fleetSlug = membership.fleetSlug;
           scheme = await getFleetScheme(workspaceId, membership.fleetSlug);
         }
       } catch {

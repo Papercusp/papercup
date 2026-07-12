@@ -37,6 +37,49 @@ export const CHANNELS: readonly Channel[] = ['stable', 'beta', 'alpha'] as const
 // Semver-ish: X.Y.Z with an optional -prerelease suffix (e.g. 0.0.8, 1.2.3-rc.1).
 const VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/;
 
+// ─── Per-leg (fleet-split) support (WI-4233) ───────────────────────────────────
+//
+// The 0.0.8 cut ran as a fleet-split: 3 agents, 3 platform legs (linux+core /
+// mac / windows), each sequenced on a shared BUILD_SHA. Because op:run only
+// ever modeled ONE whole-cut detached unit, every leg had to be fired via raw
+// bash around this orchestrator — losing op:status polling, the detached
+// systemd unit, and the audit trail (see the cut.ts module doc). The
+// functions below let each leg run through its OWN unit/log/done triple
+// (`cutUnitFor`/`cutLogFor`/`cutDoneFor`) so N agents can each op:run-leg /
+// op:status / op:abort-leg their own platform independently, while a single
+// whole-cut (`platform` omitted) keeps behaving exactly as before.
+
+export type Platform = 'linux' | 'mac' | 'windows' | 'arm64';
+export const PLATFORMS: readonly Platform[] = ['linux', 'mac', 'windows', 'arm64'] as const;
+
+/** Per-leg unit name; `platform` omitted ⇒ the legacy whole-cut unit (CUT_UNIT), so every
+ *  existing whole-cut call site (op:run/status with no platform) is unaffected. */
+export function cutUnitFor(platform?: Platform): string {
+  return platform ? `${CUT_UNIT}-${platform}` : CUT_UNIT;
+}
+export function cutLogFor(platform?: Platform): string {
+  return platform ? `/tmp/${CUT_UNIT}-${platform}.log` : CUT_LOG;
+}
+export function cutDoneFor(platform?: Platform): string {
+  return platform ? `/tmp/${CUT_UNIT}-${platform}.done` : CUT_DONE;
+}
+
+/** Map a single platform leg to the `CutLegs` flags release-local.sh reads (WITH_MAC=1 /
+ *  WITH_WINDOWS=1 / WITH_ARM64=1). 'linux' needs no flag — release-local.sh always builds
+ *  the linux leg unconditionally; a linux-only leg is just the no-extra-flags base run. */
+export function legsForPlatform(platform: Platform): CutLegs {
+  switch (platform) {
+    case 'mac':
+      return { mac: true };
+    case 'windows':
+      return { windows: true };
+    case 'arm64':
+      return { arm64: true };
+    case 'linux':
+      return {};
+  }
+}
+
 export function isValidVersion(v: string): boolean {
   return VERSION_RE.test(v);
 }
@@ -82,19 +125,20 @@ export function buildCutArgv(
   channel: Channel,
   legs: CutLegs,
   pathEnv: string,
+  platform?: Platform,
 ): string[] {
   const env = buildCutEnv(legs);
   const envPrefix = Object.entries(env)
     .map(([k, v]) => `${k}='${v}'`)
     .join(' ');
-  const inner =
-    `rm -f ${CUT_DONE}; ` +
-    `${envPrefix} bin/release-local.sh '${version}' '${channel}' > ${CUT_LOG} 2>&1; ` +
-    `echo "DONE:$?" > ${CUT_DONE}`;
+  const unit = cutUnitFor(platform);
+  const log = cutLogFor(platform);
+  const done = cutDoneFor(platform);
+  const inner = `rm -f ${done}; ` + `${envPrefix} bin/release-local.sh '${version}' '${channel}' > ${log} 2>&1; ` + `echo "DONE:$?" > ${done}`;
   return [
     '--user',
     '--collect',
-    `--unit=${CUT_UNIT}`,
+    `--unit=${unit}`,
     `--working-directory=${root}`,
     `--setenv=PATH=${pathEnv}`,
     'bash',
@@ -111,6 +155,9 @@ export interface LaunchCutOpts {
   legs?: CutLegs;
   /** papercusp-desktop root (default desktopRoot()). */
   root?: string;
+  /** Fire ONE platform leg on its own unit/log/done (WI-4233 fleet-split support) instead
+   *  of the legacy whole-cut unit. Omitted ⇒ unchanged whole-cut behavior. */
+  platform?: Platform;
 }
 
 export interface LaunchCutResult {
@@ -138,17 +185,17 @@ export interface LaunchCutResult {
 export function launchDetachedCut(opts: LaunchCutOpts, spawnFn: SpawnLike = spawn): Promise<LaunchCutResult> {
   const root = opts.root ?? desktopRoot();
   const legs = opts.legs ?? {};
-  const argv = buildCutArgv(root, opts.version, opts.channel, legs, process.env.PATH ?? '');
+  const argv = buildCutArgv(root, opts.version, opts.channel, legs, process.env.PATH ?? '', opts.platform);
   return new Promise<LaunchCutResult>((resolve) => {
     const base: LaunchCutResult = {
       launched: false,
-      unit: CUT_UNIT,
+      unit: cutUnitFor(opts.platform),
       version: opts.version,
       channel: opts.channel,
       legs,
       argv,
-      logPath: CUT_LOG,
-      donePath: CUT_DONE,
+      logPath: cutLogFor(opts.platform),
+      donePath: cutDoneFor(opts.platform),
     };
     let stderr = '';
     const child = spawnFn('systemd-run', argv);
@@ -190,6 +237,8 @@ export interface ReadCutStatusDeps {
   readFileSync?: (p: string) => string;
   /** Whether the transient unit is currently active (systemctl --user is-active). */
   isUnitActive?: (unit: string) => boolean;
+  /** Read ONE platform leg's status (WI-4233) instead of the legacy whole-cut unit. */
+  platform?: Platform;
 }
 
 /** Default: `systemctl --user is-active <unit>` → true only on exit 0 ("active"). */
@@ -218,25 +267,28 @@ export function readCutStatus(deps: ReadCutStatusDeps = {}): CutStatus {
   const exists = deps.existsSync ?? ((p: string) => fs.existsSync(p));
   const read = deps.readFileSync ?? ((p: string) => fs.readFileSync(p, 'utf8'));
   const active = deps.isUnitActive ?? defaultIsUnitActive;
+  const unit = cutUnitFor(deps.platform);
+  const logPath = cutLogFor(deps.platform);
+  const donePath = cutDoneFor(deps.platform);
 
-  const running = active(CUT_UNIT);
+  const running = active(unit);
   let exitCode: number | null = null;
   let doneSeen = false;
-  if (exists(CUT_DONE)) {
-    const m = read(CUT_DONE).trim().match(/^DONE:(-?\d+)/);
+  if (exists(donePath)) {
+    const m = read(donePath).trim().match(/^DONE:(-?\d+)/);
     if (m) {
       exitCode = Number(m[1]);
       doneSeen = true;
     }
   }
-  const logTail = exists(CUT_LOG) ? tailLines(read(CUT_LOG), 40) : null;
+  const logTail = exists(logPath) ? tailLines(read(logPath), 40) : null;
 
   let state: CutStateKind;
   if (running) state = 'running';
   else if (doneSeen) state = exitCode === 0 ? 'done' : 'failed';
   else state = 'idle';
 
-  return { state, running, exitCode, logTail, logPath: CUT_LOG, donePath: CUT_DONE };
+  return { state, running, exitCode, logTail, logPath, donePath };
 }
 
 // ─── Hand-off (collect the LOCAL deliverable) ──────────────────────────────────
@@ -413,11 +465,16 @@ export interface PreflightDeps {
  * legs (mac/windows) add an informational reminder that their build VM must be up. No
  * heavy work, no GitHub, no mutation.
  */
-export function preflightCut(legs: CutLegs = {}, opts: { root?: string } = {}, deps: PreflightDeps = {}): PreflightResult {
+export function preflightCut(
+  legs: CutLegs = {},
+  opts: { root?: string; platform?: Platform } = {},
+  deps: PreflightDeps = {},
+): PreflightResult {
   const root = opts.root ?? desktopRoot();
   const exists = deps.exists ?? ((p: string) => fs.existsSync(p));
   const active = deps.isUnitActive ?? defaultIsUnitActive;
   const home = deps.home ?? process.env.HOME ?? '';
+  const unit = cutUnitFor(opts.platform);
 
   const checks: PreflightCheck[] = [];
 
@@ -447,12 +504,12 @@ export function preflightCut(legs: CutLegs = {}, opts: { root?: string } = {}, d
     });
   }
 
-  const inFlight = active(CUT_UNIT);
+  const inFlight = active(unit);
   checks.push({
     name: 'no-cut-in-flight',
     ok: !inFlight,
     detail: inFlight
-      ? `a cut is already running (unit ${CUT_UNIT}) — poll release:cut{op:status} instead of starting a second`
+      ? `a cut is already running (unit ${unit}) — poll release:cut{op:status${opts.platform ? `,platform:'${opts.platform}'` : ''}} instead of starting a second`
       : 'no cut in flight',
   });
 

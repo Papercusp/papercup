@@ -172,6 +172,85 @@ describe('capability:terminal scheme resolution', () => {
   });
 });
 
+// ── WI-4234: a bare `psu` spawn (no explicit `fleet` arg) by a fleet caller ────
+// auto-joins the CALLER's own fleet, not just its color — previously only an
+// explicit `fleet` arg reached injectFleetArg, so a fleet leader/member
+// hand-rolling a bare `psu ...` via this tool got a fleet-colored window whose
+// agent never actually joined the fleet (no membership ⇒ no WI-2185 auto
+// wake-mode pin ⇒ the leader's steering wakes silently STAGED under a manual
+// global wake-mode default instead of landing).
+describe('capability:terminal WI-4234: inferred fleet auto-joins a bare psu spawn', () => {
+  it('no explicit `fleet` arg, caller has a presence fleet → --fleet is injected into a psu command', async () => {
+    fetchPresenceFleetMock.mockResolvedValue(
+      new Map([['owner-bee-1', { fleetSlug: 'alpha-fleet', fleetRole: 'leader' }]]),
+    );
+
+    await terminalTool.handler({ command: 'psu --no-picker --agent=claude --harness=papercusp' }, baseCtx);
+
+    expect(spawnMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        envelope: expect.objectContaining({
+          greetingCmd:
+            'psu --launched-by=owner-bee-1 --fleet=alpha-fleet --no-picker --agent=claude --harness=papercusp',
+        }),
+      }),
+    );
+  });
+
+  it('no explicit `fleet` arg, no presence fleet → psu command is left untouched (no membership to infer)', async () => {
+    fetchPresenceFleetMock.mockResolvedValue(new Map());
+
+    await terminalTool.handler({ command: 'psu --no-picker --agent=claude' }, baseCtx);
+
+    expect(spawnMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        envelope: expect.objectContaining({
+          greetingCmd: 'psu --launched-by=owner-bee-1 --no-picker --agent=claude',
+        }),
+      }),
+    );
+  });
+
+  it('an explicit `fleet` arg still wins over the caller\'s own presence fleet for injection', async () => {
+    fetchPresenceFleetMock.mockResolvedValue(
+      new Map([['owner-bee-1', { fleetSlug: 'my-own-fleet', fleetRole: 'member' }]]),
+    );
+
+    await terminalTool.handler({ command: 'psu --no-picker', fleet: 'Alpha Fleet' }, baseCtx);
+
+    expect(fetchPresenceFleetMock).not.toHaveBeenCalled();
+    expect(spawnMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        envelope: expect.objectContaining({
+          greetingCmd: 'psu --launched-by=owner-bee-1 --fleet=alpha-fleet --no-picker',
+        }),
+      }),
+    );
+  });
+
+  it('a non-psu command is left untouched even when the caller has a presence fleet', async () => {
+    fetchPresenceFleetMock.mockResolvedValue(
+      new Map([['owner-bee-1', { fleetSlug: 'alpha-fleet', fleetRole: 'member' }]]),
+    );
+
+    await terminalTool.handler({ command: 'npm run dev' }, baseCtx);
+
+    expect(spawnMock).toHaveBeenCalledWith(
+      expect.objectContaining({ envelope: expect.objectContaining({ greetingCmd: 'npm run dev' }) }),
+    );
+  });
+
+  it('output text discloses the auto-injected --fleet for an inferred (non-explicit) fleet too', async () => {
+    fetchPresenceFleetMock.mockResolvedValue(
+      new Map([['owner-bee-1', { fleetSlug: 'alpha-fleet', fleetRole: 'leader' }]]),
+    );
+
+    const result: any = await terminalTool.handler({ command: 'psu --no-picker' }, baseCtx);
+    const text = result.content[0].text as string;
+    expect(text).toContain('auto-added `--fleet=alpha-fleet`');
+  });
+});
+
 // ── EI-5835: explicit `fleet` arg auto-injects psu --fleet (membership) ─────────
 describe('injectFleetArg (EI-5835: --fleet auto-join for psu launches)', () => {
   it('injects --fleet into a psu launch when an explicit fleet slug is given', async () => {
