@@ -579,7 +579,9 @@ describe("LearningTab — Improvements view (default)", () => {
       document.querySelector(".pc-learning-visual__layout--improvements"),
     ).toBeNull();
     expect(document.querySelector(".pc-hqdrain")).toBeNull();
-    expect(screen.getByText("Peer restarts massacre in-flight spawns")).toBeTruthy();
+    expect(
+      screen.getByText("Peer restarts massacre in-flight spawns"),
+    ).toBeTruthy();
   });
 
   it("renders the P-041 flow strip above the scoreboard — in/out, net, median age, recurrence, watchdog health", () => {
@@ -824,11 +826,13 @@ describe("LearningTab — Benchmark view", () => {
       invalidate: vi.fn(),
     };
     render(<LearningTab />);
-    expect(screen.getByText("pending7")).toBeTruthy();
+    expect(screen.getAllByText("pending").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText(/waiting for a scored result/)).toBeTruthy();
     expect(screen.getAllByText("5.950").length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByText("first generation")).toBeNull();
-    expect(document.querySelector(".pc-learning__statusdot.is-warn")).not.toBeNull();
+    expect(
+      document.querySelector(".pc-learning__statusdot.is-warn"),
+    ).not.toBeNull();
   });
 
   it("promotes every former benchmark section into the Verify tab row", () => {

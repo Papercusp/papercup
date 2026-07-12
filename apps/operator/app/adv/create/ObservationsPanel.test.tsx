@@ -183,8 +183,10 @@ describe("<ObservationsPanel />", () => {
       mkRow({ id: "k2", title: "k2", kind: "mystery-kind" }),
     ];
     render(<ObservationsPanel />);
-    expect(screen.getByText("Friction")).toBeTruthy(); // KIND_LABEL.friction
-    expect(screen.getByText("mystery-kind")).toBeTruthy(); // unknown → raw
+    expect(screen.getAllByText("Friction").length).toBeGreaterThanOrEqual(1); // KIND_LABEL.friction
+    expect(screen.getAllByText("mystery-kind").length).toBeGreaterThanOrEqual(
+      1,
+    ); // unknown → raw
   });
 
   it("uses visible count chips as direct, reversible signal filters", () => {

@@ -63,10 +63,12 @@ describe('debug capture trigger', () => {
     console.log('COLS', JSON.stringify(cols, null, 2));
 
     const id = '33333333-3333-3333-3333-333333333333';
-    await db.sql`INSERT INTO harness_shared.memory_canonical (id, payload, harness_slug) VALUES (${id}::uuid, ${JSON.stringify({user_id:'u1', workspace_id: 'ws_mem_fed', shareable: true, text: 'ok'})}::jsonb, ${'mem-fed-home'})`;
+    await db.sql`INSERT INTO harness_shared.memory_canonical (id, payload, harness_slug) VALUES (${id}::uuid, ${JSON.stringify({user_id:'u1', workspace_id: 'ws_mem_fed', shareable: true, text: 'ok'})}, ${'mem-fed-home'})`;
 
     const row = await db.sql`SELECT id, payload, shareable, origin, harness_slug FROM harness_shared.memory_canonical WHERE id = ${id}::uuid`;
     console.log('ROW', JSON.stringify(row));
+    const typof = await db.sql`SELECT jsonb_typeof(payload) AS t, payload::text AS raw FROM harness_shared.memory_canonical WHERE id = ${id}::uuid`;
+    console.log('TYPEOF', JSON.stringify(typof));
     expect(true).toBe(true);
   });
 });
