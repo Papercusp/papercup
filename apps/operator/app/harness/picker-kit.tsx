@@ -282,6 +282,27 @@ export function EmptyState({
 }
 
 /**
+ * The inline style for a {@link Pill} in a given state. Extracted as a pure
+ * function so the token mapping (active = accent bg + dark ink + bold; inactive =
+ * var(--bg-2) + dim fg) can be unit-tested directly — jsdom's CSSOM drops `var()`
+ * values, so reading them back off a rendered node's `.style` is unreliable in
+ * the test environment (jsdom 20's cssstyle stores `var(...)` as `''`).
+ */
+export function pillStyle(active: boolean, accent: string = 'var(--accent)'): CSSProperties {
+  return {
+    padding: '4px 10px',
+    fontSize: 12.5,
+    fontWeight: active ? 600 : 500,
+    background: active ? accent : 'var(--bg-2)',
+    color: active ? 'var(--accent-ink, #051827)' : 'var(--fg-dim)',
+    border: `1px solid ${active ? accent : 'var(--border)'}`,
+    borderRadius: 999,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  };
+}
+
+/**
  * A pill/chip toggle button. Active = accent bg + dark ink text; inactive =
  * var(--bg-2) bg + var(--fg-dim). `accent` overrides the accent colour. Spreads
  * `...rest` onto the <button> (aria-pressed, role, title, etc.). Mirrors the
@@ -309,18 +330,7 @@ export function Pill({
       type="button"
       onClick={onClick}
       className={className}
-      style={{
-        padding: '4px 10px',
-        fontSize: 12.5,
-        fontWeight: active ? 600 : 500,
-        background: active ? accent : 'var(--bg-2)',
-        color: active ? 'var(--accent-ink, #051827)' : 'var(--fg-dim)',
-        border: `1px solid ${active ? accent : 'var(--border)'}`,
-        borderRadius: 999,
-        cursor: 'pointer',
-        whiteSpace: 'nowrap',
-        ...style,
-      }}
+      style={{ ...pillStyle(active, accent), ...style }}
       {...rest}
     >
       {children}

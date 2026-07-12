@@ -9,7 +9,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, renderHook, screen, act } from '@testing-library/react';
-import { EmptyState, Pill, ErrorBanner, friendlyApiError, useDebouncedValue, DEBOUNCE_MS } from './picker-kit';
+import { EmptyState, Pill, pillStyle, ErrorBanner, friendlyApiError, useDebouncedValue, DEBOUNCE_MS } from './picker-kit';
 
 afterEach(() => cleanup());
 
