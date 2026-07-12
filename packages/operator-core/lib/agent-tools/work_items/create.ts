@@ -235,6 +235,29 @@ export default defineTool({
       },
       { keyOf: (spec) => ({ title: spec.title }) },
     );
-    return bulkContent(env);
+    // Create-time dedup port (memory-delivery-unification-2026-07-12 P-009 /
+    // D-006): the work-items-corpus leg already ships as `similarOpen` (the
+    // semantic-dupe guard); this is the MEMORY-POOLS leg — surface fuzzy prior
+    // knowledge about what's being filed, at exactly the moment a duplicate
+    // could be created. Deadline-bounded, epoch-deduped (port 'create'),
+    // never-throws. Queries the item titles + summaries (top 3 per D-005).
+    const memory = await import('../../memory/claim-port')
+      .then((m) =>
+        m.buildClaimRecallBlock({
+          sessionId: ident.ownerId,
+          workspaceId: ctx.workspaceId ?? null,
+          items: list.map((s) => ({
+            id: s.title,
+            title: s.title,
+            summary: s.summary,
+            harness: s.harness ?? ctx.harnessSlug ?? null,
+          })),
+          port: 'create',
+          heading:
+            'Related prior knowledge (fuzzy memory — check before filing: we may already know about this)',
+        }),
+      )
+      .catch(() => null);
+    return bulkContent(memory ? { ...env, memory } : env);
   },
 });

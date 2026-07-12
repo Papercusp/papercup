@@ -63,7 +63,8 @@ describe('buildClaimRecallBlock', () => {
       session: { sessionId: 'sid-1', port: 'claim' },
       profile: expect.objectContaining({
         rung: 'plan',
-        queries: ['Wire prelude — prime', 'Epoch ledger — dedup'],
+        // 2 item queries + the plan ## Now filling the spare 3rd slot (D-005).
+        queries: ['Wire prelude — prime', 'Epoch ledger — dedup', 'ship it'],
         harnessSlugs: ['papercusp'],
       }),
     });

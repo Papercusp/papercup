@@ -117,6 +117,10 @@ type SetStatusValue =
       /** WI-1830: computed inside the lock (race-safe) — this →done flip left the plan with
        *  zero open items, so the fleet's lane drained. False for every non-→done flip. */
       drainedPlan: boolean;
+      /** memory-delivery-unification-2026-07-12 P-008: the item's text, captured
+       *  inside the lock ONLY on a real →wip edge, so the claim-time recall port
+       *  can query it without a second read. Undefined on every other flip. */
+      wipItemText?: string;
     }
   | { ok: false; code: 'not_found' | 'item_not_found' };
 
@@ -508,9 +512,24 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       // parse runs only on a →done edge, so routine flips skip it.
       const drainedPlan =
         it.status === 'done' && oldStatus !== 'done' ? isPlanDrained(parsePlan(finalBody).items) : false;
+      // P-008: capture the item text ONLY on a real →wip edge (the "picking up
+      // work" signal) so the claim-time recall port can query it — no second
+      // read, and no parse cost on routine flips.
+      const wipItemText =
+        it.status === 'wip' && oldStatus !== 'wip'
+          ? parsePlan(finalBody).items.find((pi) => pi.id === it.itemId)?.text
+          : undefined;
       return {
         newBody: finalBody,
-        value: { ok: true, oldStatus, newStatus: it.status, itemId: it.itemId, importance, drainedPlan },
+        value: {
+          ok: true,
+          oldStatus,
+          newStatus: it.status,
+          itemId: it.itemId,
+          importance,
+          drainedPlan,
+          ...(wipItemText ? { wipItemText } : {}),
+        },
       };
     },
   );
@@ -630,6 +649,24 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     }));
   }
 
+  // Claim-time recall port (memory-delivery-unification-2026-07-12 P-008 /
+  // D-006): a →wip flip auto-claims the item — the "picking up work" signal —
+  // so piggyback a targeted memory recall for that item on the response.
+  // Deadline-bounded, epoch-deduped (port 'claim'), never-throws. Only when the
+  // flip actually auto-claimed (agentId + wip) and captured the item text.
+  let memory: string | null = null;
+  if (agentId && claim && result.value.ok && result.value.wipItemText) {
+    memory = await import('../../memory/claim-port')
+      .then((m) =>
+        m.buildClaimRecallBlock({
+          sessionId: agentId.ownerId,
+          workspaceId: agentId.workspaceId,
+          items: [{ id: it.itemId, title: result.value.ok ? result.value.wipItemText : undefined, harness: harnessSlug ?? null }],
+        }),
+      )
+      .catch(() => null);
+  }
+
   return {
     slug: it.slug,
     ...result.value,
@@ -638,6 +675,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     ...(claim ? { claim } : {}),
     ...(claimReleased ? { claimReleased } : {}),
     ...(assignmentReleased ? { assignmentReleased } : {}),
+    ...(memory ? { memory } : {}),
     ...(noteTruncated
       ? {
           noteTruncated: true,
