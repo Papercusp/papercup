@@ -2865,7 +2865,18 @@ function AdvConvStyles() {
         background: var(--bg-2);
         color: var(--fg-dim);
       }
-      .pc-advconv__main--wide { padding: 0; }
+      /* Full-width stream views (Raw events / Messages) render their list INSIDE
+         the detail slot, so ConvFrame omits the .pc-advconv__inbox section. The
+         shell is a 3-track grid (rail | list | main); with the list section gone,
+         grid auto-placement dropped main into track 2 -- the 300-360px LIST track
+         -- and left the 1fr track empty. That squeezed the whole system-log feed
+         into a ~300px column beside a huge blank pane, which reads as "clicking a
+         row in the left pane doesn't show it in the main pane" (owner-hit
+         2026-07-11). Note "flex: 1 1 auto" on .pc-advconv__main is inert here
+         because main is a GRID item, not a flex item -- so the placement must be
+         stated explicitly. (No backticks in this comment: the whole stylesheet is
+         a JS template literal.) */
+      .pc-advconv__main--wide { padding: 0; grid-column: 2 / -1; }
       .pc-advconv {
         --advconv-button-accent: var(--advconv-accent);
       }

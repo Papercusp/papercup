@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 import { createFreshTestDb } from '@papercusp/test-config';
 
-const SQL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../libs/papercusp/libs/db/sql');
+const SQL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../../libs/papercusp/libs/db/sql');
 
 export interface FreshPgDb {
   sql: postgres.Sql;
