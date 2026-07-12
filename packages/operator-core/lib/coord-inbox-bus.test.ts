@@ -1,6 +1,7 @@
 /**
  * coord-inbox-bus — the human-relevance predicate that decides whether a
- * coord_event_log insert should wake the human-facing inbox push (P-002).
+ * coord_event_log insert should wake the human-facing inbox push (P-002), plus
+ * (EI-9991) the failed-LISTEN retry-with-backoff behavior.
  *
  * Regression guard: the originally-shipped producer filtered the NOTIFY
  * payload's `writer_key === 'human'`, but a direct `coord:send {to:['human']}`
