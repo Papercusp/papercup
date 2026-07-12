@@ -234,4 +234,198 @@ describe('preflightCut', () => {
     expect(r.checks.some((c) => c.name === 'leg:mac')).toBe(true);
     expect(r.checks.some((c) => c.name === 'leg:windows')).toBe(true);
   });
+  it('a per-leg in-flight check looks at that platform\'s OWN unit, not the whole-cut one', () => {
+    // The whole-cut unit is active, but we're preflighting the 'mac' LEG — a distinct unit —
+    // so this must NOT be blocked by an unrelated whole-cut run.
+    const r = preflightCut({}, { root, platform: 'mac' }, { home, exists: (p) => allPresent.has(p), isUnitActive: (u) => u === CUT_UNIT });
+    expect(r.go).toBe(true);
+    expect(r.checks.find((c) => c.name === 'no-cut-in-flight')!.detail).toContain('no cut in flight');
+
+    // Conversely, the mac leg's OWN unit being active DOES block it.
+    const blocked = preflightCut({}, { root, platform: 'mac' }, { home, exists: (p) => allPresent.has(p), isUnitActive: (u) => u === cutUnitFor('mac') });
+    expect(blocked.go).toBe(false);
+    expect(blocked.blockers.join()).toMatch(/no-cut-in-flight/);
+  });
+});
+
+// ─── Per-leg (fleet-split) support — WI-4233 ───────────────────────────────────
+
+describe('cutUnitFor / cutLogFor / cutDoneFor', () => {
+  it('platform omitted ⇒ the legacy whole-cut triple, unchanged', () => {
+    expect(cutUnitFor()).toBe(CUT_UNIT);
+    expect(cutLogFor()).toBe(CUT_LOG);
+    expect(cutDoneFor()).toBe(CUT_DONE);
+  });
+  it('each platform gets its own distinct unit/log/done', () => {
+    const seen = new Set<string>();
+    for (const p of PLATFORMS) {
+      const unit = cutUnitFor(p);
+      expect(unit).toBe(`${CUT_UNIT}-${p}`);
+      expect(cutLogFor(p)).toBe(`/tmp/${unit}.log`);
+      expect(cutDoneFor(p)).toBe(`/tmp/${unit}.done`);
+      expect(seen.has(unit)).toBe(false);
+      seen.add(unit);
+    }
+  });
+});
+
+describe('legsForPlatform', () => {
+  it('maps each platform to exactly its own WITH_* flag (linux needs none)', () => {
+    expect(legsForPlatform('linux')).toEqual({});
+    expect(legsForPlatform('mac')).toEqual({ mac: true });
+    expect(legsForPlatform('windows')).toEqual({ windows: true });
+    expect(legsForPlatform('arm64')).toEqual({ arm64: true });
+  });
+});
+
+describe('buildCutArgv with a platform', () => {
+  it('targets the per-leg unit + log + done, not the whole-cut ones', () => {
+    const argv = buildCutArgv('/root/papercusp-desktop', '0.0.8', 'alpha', { mac: true }, '/usr/bin:/bin', 'mac');
+    const inner = argv[argv.length - 1]!;
+    const unit = cutUnitFor('mac');
+    expect(argv).toContain(`--unit=${unit}`);
+    expect(inner).toContain(`rm -f ${cutDoneFor('mac')}`);
+    expect(inner).toContain(`> ${cutLogFor('mac')} 2>&1`);
+    expect(inner).toContain(`echo "DONE:$?" > ${cutDoneFor('mac')}`);
+    expect(inner).not.toContain(CUT_DONE); // sanity: not the bare whole-cut done-file path
+  });
+});
+
+describe('readCutStatus with a platform', () => {
+  it('reads that leg\'s own unit/log/done, independent of the whole-cut ones', () => {
+    const macDone = cutDoneFor('mac');
+    const macLog = cutLogFor('mac');
+    const s = readCutStatus({
+      platform: 'mac',
+      isUnitActive: (u) => u === cutUnitFor('mac'),
+      existsSync: (p) => p === macDone || p === macLog,
+      readFileSync: (p) => (p === macDone ? 'DONE:0' : 'mac build log'),
+    });
+    // running:true because isUnitActive matches the mac unit — precedence over the DONE sentinel.
+    expect(s.state).toBe('running');
+    expect(s.logPath).toBe(macLog);
+    expect(s.donePath).toBe(macDone);
+  });
+  it('two legs are fully independent — one done, the other still running', () => {
+    const done = new Set([cutDoneFor('mac')]);
+    const active = new Set([cutUnitFor('windows')]);
+    const mac = readCutStatus({
+      platform: 'mac',
+      isUnitActive: (u) => active.has(u),
+      existsSync: (p) => done.has(p),
+      readFileSync: () => 'DONE:0',
+    });
+    const windows = readCutStatus({
+      platform: 'windows',
+      isUnitActive: (u) => active.has(u),
+      existsSync: (p) => done.has(p),
+      readFileSync: () => 'DONE:0',
+    });
+    expect(mac.state).toBe('done');
+    expect(windows.state).toBe('running');
+  });
+});
+
+describe('abortLeg', () => {
+  it('stops the platform\'s own unit and reports success', () => {
+    const stopped: string[] = [];
+    const r = abortLeg('windows', { stopUnit: (u) => stopped.push(u) });
+    expect(r.stopped).toBe(true);
+    expect(r.unit).toBe(cutUnitFor('windows'));
+    expect(stopped).toEqual([cutUnitFor('windows')]);
+  });
+  it('a failing stop (e.g. unit already inactive) reports stopped:false with the reason, not a throw', () => {
+    const r = abortLeg('mac', {
+      stopUnit: () => {
+        throw new Error('Unit papercup-release-cut-mac.service not loaded.');
+      },
+    });
+    expect(r.stopped).toBe(false);
+    expect(r.reason).toMatch(/not loaded/);
+  });
+});
+
+describe('deriveBuildSha', () => {
+  it('a clean tree reports the bare short sha, not dirty', () => {
+    const info = deriveBuildSha('/root/papercusp-desktop', { gitShortHead: () => 'abc1234', gitDirty: () => false });
+    expect(info).toEqual({ sha: 'abc1234', dirty: false });
+  });
+  it('dirty in EITHER the desktop root or its parent (the superproject) marks the whole thing dirty', () => {
+    const dirtyChild = deriveBuildSha('/root/papercusp-desktop', {
+      gitShortHead: () => 'abc1234',
+      gitDirty: (r) => r === '/root/papercusp-desktop',
+    });
+    expect(dirtyChild.dirty).toBe(true);
+    const dirtyParent = deriveBuildSha('/root/papercusp-desktop', {
+      gitShortHead: () => 'abc1234',
+      gitDirty: (r) => r === '/root',
+    });
+    expect(dirtyParent.dirty).toBe(true);
+  });
+});
+
+describe('gatePath', () => {
+  it('is scoped per (version, channel) so different releases never collide', () => {
+    expect(gatePath('0.0.8', 'alpha')).toBe('/tmp/papercup-release-gate-0.0.8-alpha.json');
+    expect(gatePath('0.0.8', 'alpha')).not.toBe(gatePath('0.0.9', 'alpha'));
+    expect(gatePath('0.0.8', 'alpha')).not.toBe(gatePath('0.0.8', 'beta'));
+  });
+});
+
+describe('readOrCreateGate', () => {
+  it('the first caller derives + writes the gate and gets created:true', () => {
+    const written: Record<string, string> = {};
+    const { gate, created } = readOrCreateGate('0.0.8', 'alpha', 'su-first', {
+      exists: (p) => Object.prototype.hasOwnProperty.call(written, p),
+      readFileSync: (p) => written[p]!,
+      writeFileSyncExclusive: (p, data) => {
+        written[p] = data;
+      },
+      derive: () => ({ sha: 'abc1234', dirty: false }),
+    });
+    expect(created).toBe(true);
+    expect(gate).toMatchObject({ version: '0.0.8', channel: 'alpha', buildSha: 'abc1234', dirty: false, derivedBy: 'su-first' });
+    expect(gate.derivedAt).toBeTruthy();
+  });
+  it('a later caller reads back the SAME gate instead of re-deriving — created:false', () => {
+    const existing = {
+      version: '0.0.8',
+      channel: 'alpha' as const,
+      buildSha: 'abc1234',
+      dirty: false,
+      derivedAt: '2026-07-11T00:00:00.000Z',
+      derivedBy: 'su-first',
+    };
+    const { gate, created } = readOrCreateGate('0.0.8', 'alpha', 'su-second', {
+      exists: () => true,
+      readFileSync: () => JSON.stringify(existing),
+      // If this were called, the test should fail — a later caller must NOT re-derive.
+      derive: () => ({ sha: 'DIFFERENT-SHA-would-be-a-bug', dirty: false }),
+    });
+    expect(created).toBe(false);
+    expect(gate).toEqual(existing);
+  });
+  it('a create race (two first-callers) converges on ONE writer — the loser reads back the winner\'s gate', () => {
+    let writeCount = 0;
+    const winnerGate = {
+      version: '0.0.8',
+      channel: 'alpha' as const,
+      buildSha: 'winner-sha',
+      dirty: false,
+      derivedAt: '2026-07-11T00:00:01.000Z',
+      derivedBy: 'su-winner',
+    };
+    const { gate, created } = readOrCreateGate('0.0.8', 'alpha', 'su-loser', {
+      exists: () => false, // the loser's own check sees "absent" (race window)...
+      readFileSync: () => JSON.stringify(winnerGate),
+      writeFileSyncExclusive: () => {
+        writeCount++;
+        throw new Error('EEXIST: file already exists'); // ...but the exclusive create loses the race
+      },
+      derive: () => ({ sha: 'loser-sha-would-be-wrong', dirty: false }),
+    });
+    expect(writeCount).toBe(1);
+    expect(created).toBe(false);
+    expect(gate.buildSha).toBe('winner-sha'); // reads back the WINNER's sha, not its own derivation
+  });
 });

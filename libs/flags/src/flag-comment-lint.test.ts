@@ -187,27 +187,28 @@ describe('flag-comment-lint: the real tree (libs/flags/src/types.ts)', () => {
     // comment says DEFAULT OFF, none are in DARK_FLAGS, and WI-3855 deliberately left
     // their runtime behavior untouched pending owner ratification rather than
     // guessing on an auth-enforcement/data-partition surface.
-    { key: 'SCOPED_SUPERUSER_CLAMP', reason: 'WI-3855 SPECIAL CARE — changes auth enforcement for every superuser session; owner-ratification pending.' },
-    { key: 'UI_WORKSPACE_GUARD', reason: 'WI-3855 SPECIAL CARE — workspace-partition guard rail; owner-ratification pending.' },
-    { key: 'AUTHORITY_RPC_PROTOMUX', reason: 'WI-3855 SPECIAL CARE — cross-machine lock-authority RPC transport; real-hardware-unverified (P-003), owner-ratification pending.' },
-    { key: 'AUTHORITY_EVICTION_PROBE', reason: 'WI-3855 SPECIAL CARE — cross-machine failure-detector eviction; rides the same unverified cross-machine proof as AUTHORITY_RPC_PROTOMUX.' },
-    { key: 'COORD_PER_WORKSPACE', reason: 'WI-3855 SPECIAL CARE — already tracked on EI-9769 (unratified coordination-bus partition cutover).' },
-    { key: 'ISSUES_PER_WORKSPACE', reason: 'WI-3855 SPECIAL CARE — already tracked on EI-9769 (unratified issues-bus partition cutover).' },
-    { key: 'ROUTINES_PER_WORKSPACE', reason: 'WI-3855 SPECIAL CARE — workspace-partition guard rail on the routines table; owner-ratification pending.' },
-    { key: 'WORKSPACE_COORDINATION', reason: 'WI-3855 SPECIAL CARE — the shared master gate for workspace-scoped Queen/Scout/Overwatch; currently forced OFF in production via a live harness_shared.operator_flag_overrides row (workspace papercusp-workspace), so the code-level default is safe-but-fragile pending an owner decision to either graduate the comment or add this to DARK_FLAGS outright.' },
-    // Found DURING this lint's own build (EI-9826, 2026-07-11/12) — escalated to the
-    // fleet leader + owner via coord:send (wake:required) rather than unilaterally
-    // resolved, given its severity (removes the last human check on the system
+    { key: 'SCOPED_SUPERUSER_CLAMP', reason: 'WI-3855 SPECIAL CARE — changes auth enforcement for every superuser session. Durably escalated + owner-decision-framed on WI-4239 (2026-07-12, leader-directed follow-on to WI-4237); owner-ratification pending.' },
+    { key: 'UI_WORKSPACE_GUARD', reason: 'WI-3855 SPECIAL CARE — workspace-partition guard rail; bundled into the consolidated lower-priority filing WI-4240; owner-ratification pending.' },
+    { key: 'AUTHORITY_RPC_PROTOMUX', reason: 'WI-3855 SPECIAL CARE — cross-machine lock-authority RPC transport; real-hardware-unverified (P-003); bundled into WI-4240; owner-ratification pending.' },
+    { key: 'AUTHORITY_EVICTION_PROBE', reason: 'WI-3855 SPECIAL CARE — cross-machine failure-detector eviction; rides the same unverified cross-machine proof as AUTHORITY_RPC_PROTOMUX; bundled into WI-4240.' },
+    { key: 'COORD_PER_WORKSPACE', reason: 'WI-3855 SPECIAL CARE — already tracked on EI-9769 (open, needs-human — unratified coordination-bus partition cutover).' },
+    { key: 'ISSUES_PER_WORKSPACE', reason: 'WI-3855 SPECIAL CARE — already tracked on EI-9769 (open, needs-human — unratified issues-bus partition cutover).' },
+    { key: 'ROUTINES_PER_WORKSPACE', reason: 'WI-3855 SPECIAL CARE — workspace-partition guard rail on the routines table (0 live collisions today, lower urgency); bundled into WI-4240; owner-ratification pending.' },
+    { key: 'WORKSPACE_COORDINATION', reason: 'WI-3855 SPECIAL CARE — the shared master gate for workspace-scoped Queen/Scout/Overwatch; currently forced OFF in production via a live harness_shared.operator_flag_overrides row (workspace papercusp-workspace), so the code-level default is safe-but-fragile; bundled into WI-4240 pending an owner decision to either graduate the comment or add this to DARK_FLAGS outright.' },
+    // Found DURING this lint's own build (EI-9826, 2026-07-11/12), independently
+    // verified real by leader su-28637 (2026-07-12) — filed as its OWN durable,
+    // needs-human issue on WI-4238 (previously only a coord:send, which scrolls
+    // away) given its severity (removes the last human check on the system
     // widening its own safety ceiling) and that DARK_FLAGS is already AT its
     // watermark (25/25), so fixing it needs either a graduation elsewhere or an
     // explicit watermark raise — an owner-authority call, not this lint's to make.
-    { key: 'MUG_FULL_AUTONOMY', reason: 'NEW finding (EI-9826): "OFF by default — DELIBERATE... removes the last human check on the system widening its own ceilings" but absent from DARK_FLAGS, confirmed live-ON via psql (no override in workspace papercusp-workspace). Escalated urgently to su-28637 + owner 2026-07-12; awaiting ruling.' },
+    { key: 'MUG_FULL_AUTONOMY', reason: 'NEW finding (EI-9826): "OFF by default — DELIBERATE... removes the last human check on the system widening its own ceilings" but absent from DARK_FLAGS, confirmed live-ON via psql (no override in workspace papercusp-workspace). Durably tracked on WI-4238 (open, needs-human, 2026-07-12); leader-verified real but not yet exercised (0 full-autonomy grants in 48h). Awaiting owner ruling.' },
     // Lower-severity, not auth/partition/autonomy-scoped, but also not yet confirmed
     // safe-to-graduate the way the 5 comment-only fixes in this same EI-9826 pass
     // were (TEST_COMPLETION_GATE / PER_POT_RELEASE_GATE / MUG_WARM_SESSION /
     // INFERENCE_GATEWAY / OVERWATCH all had an in-file or first-hand-verified
     // graduation condition; this one has neither).
-    { key: 'INBOX_DURABLE_ESCALATIONS', reason: 'No in-file graduation evidence found (unlike the 5 flags this same pass fixed) — additive/low-risk (writes an extra durable escalation record alongside an unchanged existing path) but left for owner confirmation rather than assumed safe.' },
+    { key: 'INBOX_DURABLE_ESCALATIONS', reason: 'No in-file graduation evidence found (unlike the 5 flags this same pass fixed) — additive/low-risk (writes an extra durable escalation record alongside an unchanged existing path); bundled into WI-4240 rather than assumed safe.' },
   ];
 
   it('the pending-allowlist itself stays honest: every listed key is a REAL current mismatch (never a stale/unnecessary entry)', () => {
