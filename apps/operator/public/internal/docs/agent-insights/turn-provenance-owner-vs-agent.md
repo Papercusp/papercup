@@ -45,6 +45,11 @@ in `apps/operator/scripts/psu-launcher.mjs`.
      — quoted text carrying an envelope mid-prompt does NOT classify: the
      envelope must open the turn);
    * no envelope + live **hash** match → verified (envelope lost in transit);
+   * no envelope + no match + a known **machine-surface banner** (a
+     CLI-internal notification that self-labels `[SYSTEM NOTIFICATION - NOT
+     USER INPUT]`, e.g. a background-task completion) → `MACHINE-GENERATED
+     SURFACE` — unenrollable (no envelope, no ledger row) but definitely NOT
+     the owner (EI-9904);
    * no envelope + no match → **affirmative `OWNER (interactive)`**.
 
 **D-002 — the ledger decides, never the text.** Corollary: injector
@@ -69,26 +74,11 @@ transcript itself — the stamp lands in it, searchable via `sessions:search`.
 | compaction-compliance watchdog force-compact continuation                                                      | `watchdog`                                                                        | `compaction-compliance-watchdog.ts`                           |
 | scripted launch kickoff (fleet members, plans:launch, `--kickoff`)                                             | `fleet-kickoff`                                                                   | `psu-launcher.mjs` `tagKickoffProvenance`                     |
 
-NOT hook-verifiable, by construction: coord **inbox** bodies (native `from`
-provenance); and the harness-issued `/compact <focus>` command itself. The
-`/compact` turn can carry neither an envelope (a `⟦…⟧` prefix breaks the slash
-command) NOR a UserPromptSubmit-hook stamp — **Claude Code does NOT fire the
-prompt hook for slash commands** (verified empirically 2026-07-12: a
-self-compaction ran and resumed, yet no `/compact` prompt ever reached the hook;
-CC records it as a `<command-name>/compact</command-name>` CLIENT command, not a
-model prompt). So a reader can still tell the machine issued it,
-`request-compaction.ts` PREFIXES a VISIBLE marker
-`⟦machine-issued self-compaction — not owner-typed⟧` to the `/compact` focus in
-BOTH paths (EI-10135) — a reader-facing label, NOT a ledger-verified stamp; it
-never reaches the classifier (which skips `/compact`), so, unlike the ad-hoc
-labels the ledger replaced, it cannot cause a false owner/agent CLASSIFICATION.
-In the auto-continue path the hook-VERIFIED `⟦turn-origin:self-compaction⟧`
-continuation that immediately follows remains the machine-verified signal; the
-marker additionally covers the command line read in isolation and the plain
-`mode:'turn'` fallback (no tagged continuation). Everything is fail-soft end to
-end: a tagger error still delivers the untagged turn (it then stamps
-owner/unverified — visible, never a dropped wake), and a ledger-write failure
-still returns deliverable tagged text.
+NOT tagged, deliberately: coord **inbox** bodies (native `from` provenance);
+bare `/compact <focus>` fallbacks (a slash COMMAND — an envelope would break
+it). Everything is fail-soft end to end: a tagger error still delivers the
+untagged turn (it then stamps owner/unverified — visible, never a dropped
+wake), and a ledger-write failure still returns deliverable tagged text.
 
 ## Per-backend coverage (P-004)
 

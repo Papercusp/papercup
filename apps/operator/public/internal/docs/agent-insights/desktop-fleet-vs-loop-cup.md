@@ -22,13 +22,16 @@ The rule of thumb — now encoded in the tool namespace itself (WI-1764 #3 renam
 
 ## Decision table
 
-| Your goal                                                                  | Tool                       | Visibility                   | Substrate                                  | Capability                                        | Who drives                                                      |
-| -------------------------------------------------------------------------- | -------------------------- | ---------------------------- | ------------------------------------------ | ------------------------------------------------- | --------------------------------------------------------------- |
-| Open N visible terminals on the owner's desktop to work a plan, now        | **`fleet:launch-on-plan`** | VISIBLE desktop windows      | psu su sessions (`capability:terminal`)    | full su collaborator (edit/tools/coord)           | you become the fleet **leader**; members auto-start on the plan |
-| Register a named fleet (no windows yet) so you can hand a plan to it later | **`fleet:create`**         | none (registry row only)     | durable `agent_fleets` row                 | —                                                 | leader = creator                                                |
-| Place ONE background worker on ranked work / a claim-spec, no window       | **`cup:spawn`**            | INVISIBLE (headless nursery) | mug↔cup autonomous loop (`spawned_agents`) | a cup: coord/issues/improvements, self-pulls work | the **Mug** places + supervises the loop                        |
-| Place MANY background cups in one shot                                     | **`fleet:place_batch`**    | INVISIBLE (headless nursery) | mug↔cup autonomous loop                    | cups                                              | the Mug                                                         |
-| Just a plain worker window (no fleet, no plan)                             | **`capability:terminal`**  | VISIBLE desktop window       | psu session                                | su collaborator                                   | you                                                             |
+| Your goal                                                                  | Tool                                                                     | Visibility                   | Substrate                                  | Capability                                        | Who drives                                                      |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------ | ---------------------------- | ------------------------------------------ | ------------------------------------------------- | --------------------------------------------------------------- |
+| Open N visible terminals on the owner's desktop to work a plan, now        | **`fleet:launch-on-plan`**                                               | VISIBLE desktop windows      | psu su sessions (`capability:terminal`)    | full su collaborator (edit/tools/coord)           | you become the fleet **leader**; members auto-start on the plan |
+| Register a named fleet (no windows yet) so you can hand a plan to it later | **`fleet:create`**                                                       | none (registry row only)     | durable `agent_fleets` row                 | —                                                 | leader = creator                                                |
+| Place ONE background worker on ranked work / a claim-spec, no window       | **`cup:spawn`**                                                          | INVISIBLE (headless nursery) | mug↔cup autonomous loop (`spawned_agents`) | a cup: coord/issues/improvements, self-pulls work | the **Mug** places + supervises the loop                        |
+| Place MANY background cups in one shot                                     | **`fleet:place_batch`**                                                  | INVISIBLE (headless nursery) | mug↔cup autonomous loop                    | cups                                              | the Mug                                                         |
+| Put an agent on an **ad-hoc brief** (work that is not a plan)              | **`capability:launch-agent { brief }`**                                  | VISIBLE (or `headless`)      | psu su session                             | full su collaborator                              | you; it starts on the brief                                     |
+| Bring a **DEAD** agent back mid-thread, context intact                     | **`capability:launch-agent { resume: { agentId }, brief }`**             | VISIBLE (or `headless`)      | psu resume of its native session           | same agent, same coord identity                   | you                                                             |
+| **Branch** a LIVE agent's thread without disturbing it                     | **`capability:launch-agent { resume: { agentId }, fork: true, brief }`** | VISIBLE (or `headless`)      | psu fork                                   | a NEW identity (unaddressable until it boots)     | you                                                             |
+| Just a plain worker window (no fleet, no plan, no brief)                   | **`capability:terminal`**                                                | VISIBLE desktop window       | psu session                                | su collaborator                                   | you                                                             |
 
 > **Naming note:** the tool used to be called `cup:spawn` (originally `fleet:spawn`);
 > it is now **`cup:spawn`**, but the underlying substrate (a background worker in the
@@ -54,10 +57,17 @@ The rule of thumb — now encoded in the tool namespace itself (WI-1764 #3 renam
   session. The workspace-wide `runningBees` remains the belt-and-suspenders total that also
   catches ungrouped and pre-mig-475 cups carrying no `fleet_slug`.
 
-## The two-line heuristic
+## The three-line heuristic
 
 > Want a human to SEE terminals working a plan? → **`fleet:launch-on-plan`**.
 > Want the autonomous mug↔cup loop to grind ranked work headlessly? → **`cup:spawn`**.
+> Work is a BRIEF, or the agent ALREADY EXISTS (dead → resume, live → fork)? →
+> **`capability:launch-agent`**.
 
 If you catch yourself about to `cup:spawn` because you want "a fleet on a plan",
 stop — you almost certainly want `fleet:launch-on-plan`.
+
+The launch/resume/fork half of the table has its own traps — the account-pin login
+prompt, why a live source must be forked, and how a resumed agent's first turn is
+actually delivered. They are written up in
+[launching, resuming and forking agents](/agent-insights/launching-resuming-and-forking-agents).

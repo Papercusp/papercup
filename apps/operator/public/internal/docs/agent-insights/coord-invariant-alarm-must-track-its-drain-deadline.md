@@ -61,8 +61,31 @@ Concretely for EI-8664: the wake-queue AGE alarm now fires on
 `oldest > pendingWakeStaleHours + WAKE_QUEUE_STALE_GRACE_MS` (24h + 1h), and the
 drift-prone separate `wakeQueueAgeHours` knob was removed outright (mirroring
 EI-6910's removal of `staleEscalationHours`) so the alarm and the sweep deadline can
-never drift apart and reopen the gap. The DEPTH check (`> wakeQueueDepthMax`) is
-unchanged — that's a genuine bloat backstop, independent of age.
+never drift apart and reopen the gap. The DEPTH check (`> wakeQueueDepthMax`) stays a
+genuine bloat backstop, independent of age — but EI-10177 recalibrated its threshold
+(see below); the flat 50 it shipped with was itself a "warn early on count" value
+measuring normal backlog.
+
+## Follow-on: the DEPTH leg's flat count threshold was the same anti-pattern (EI-10177)
+
+The DEPTH backstop is legitimate (a wake-creation storm / owners drowning is real bloat
+the AGE alarm can't see), but its threshold, like an age "warn early" threshold, must sit
+above the fleet's normal steady-state — not below it. `wakeQueueDepthMax=50` fired on
+**expected live-owner review backlog**: observed live, 57 young staged wakes across 8
+LIVE owners (one owner alone at 32), **0 stale**. None were reap-eligible (the in-pass
+sweeps reap only dead-owner + `>pendingWakeStaleHours` wakes), so the alarm re-filed a
+non-actionable EI every hour (recurred 5×) — the identical EI-6910/EI-8664 shape, one leg
+over. Note the system's own `BOARD_READ_LIMIT` (500, pending-wakes.ts) already treats up
+to 500 as a *realistic review queue* to render whole, directly contradicting a 50-count
+"bloat" line. Fix: raised `wakeQueueDepthMax` to 250 — well above realistic busy-fleet
+backlog (a genuine runaway still trips it) yet below `BOARD_READ_LIMIT` so the wake board
+still renders the full queue when the backstop fires. A raw-count runaway is caught by
+the AGE alarm anyway once the storm's wakes age past the sweep deadline, so 250 masks no
+real leak.
+
+Rule-of-thumb corollary: a COUNT backstop is not exempt from the "don't measure the
+human's normal backlog" rule — calibrate it above steady-state, using a principled anchor
+(here, below `BOARD_READ_LIMIT`), not a round number that undershoots a busy fleet.
 
 ## Scope note: not every check in this file is an age/backlog alarm
 
