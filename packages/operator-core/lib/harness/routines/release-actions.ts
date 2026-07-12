@@ -838,6 +838,83 @@ export function annotateFailingTestsWithFlakeStats(
   );
 }
 
+/** Result of a `git` invocation used only for the stale-candidate re-verify guard below —
+ *  `ok` mirrors a zero exit code; `stdout` is trimmed. Never throws. */
+export interface GitCheckResult {
+  ok: boolean;
+  stdout: string;
+}
+
+/** Injectable git runner (test seam) for {@link checkReleaseFixerCandidateStale}. Reuses
+ *  the ALREADY-imported/mocked `spawn` (this file's tests mock `node:child_process` with
+ *  only `spawn`) rather than pulling in `execFile`, so the default path stays exercisable
+ *  under the existing test mock without widening it. */
+export type GitCheckRunner = (root: string, args: string[]) => Promise<GitCheckResult>;
+
+const defaultGitCheckRunner: GitCheckRunner = (root, args) =>
+  new Promise((resolve) => {
+    let out = '';
+    try {
+      const child = spawn('git', ['-C', root, ...args]);
+      child.stdout?.on('data', (d) => (out += d.toString()));
+      child.on('error', () => resolve({ ok: false, stdout: '' }));
+      child.on('close', (code) => resolve({ ok: code === 0, stdout: out.trim() }));
+    } catch {
+      resolve({ ok: false, stdout: '' });
+    }
+  });
+
+/** Live re-verify inputs for {@link isStaleReleaseFixerCandidate} — see that function for
+ *  the semantics of each flag. */
+export interface ReleaseFixerCandidateStaleCheck {
+  candidateExists: boolean;
+  candidatePromoted: boolean;
+}
+
+/**
+ * EI-8718: is `candidate` still worth dispatching a release-fixer for, RIGHT NOW — or has
+ * it gone stale since the checkpoint run that reported it red? A long suite run (up to
+ * 120min, per GREEN_CHECKPOINT_SUITE_TIMEOUT_MS) can finish red for a candidate the gate
+ * has since moved past by other means (a later run, a manual force, GC) — dispatching a
+ * fixer for it is then a guaranteed wasted spawn with nothing left to fix (observed:
+ * candidate 2e7f9d7 present in no tree, gate green + promoted, 2 fixers dispatched for it).
+ *
+ * Checks BOTH:
+ *  - `candidateExists` — `git cat-file -e <sha>^{commit}` in the integration checkout.
+ *    False means the object was superseded and GC'd — definitely nothing to fix.
+ *  - `candidatePromoted` — `candidate` is already reachable from `origin/main` HEAD (i.e.
+ *    `origin/main` fast-forwarded PAST it). Only a green-verified commit ever reaches
+ *    `origin/main`, so if `candidate` is an ancestor-or-equal of it, the gate already
+ *    resolved this candidate to green by other means — nothing left to fix.
+ *
+ * Read-only (no `git fetch`) — reads the already-fetched `origin/main` ref, same
+ * invariant as git-pipeline-position.ts's refContains.
+ *
+ * Deliberately does NOT suppress a genuinely still-red, not-yet-promoted candidate: a
+ * valid object that `origin/main` does not yet contain is exactly the legitimate-dispatch
+ * case (the CRITICAL danger the prior needs-human STOP flagged — never freeze the fixer
+ * path on an actually-red gate).
+ */
+export function isStaleReleaseFixerCandidate(check: ReleaseFixerCandidateStaleCheck): boolean {
+  return !check.candidateExists || check.candidatePromoted;
+}
+
+/** Live-compute {@link ReleaseFixerCandidateStaleCheck} for `candidate` in `root`. */
+export async function checkReleaseFixerCandidateStale(
+  root: string,
+  candidate: string,
+  runner: GitCheckRunner = defaultGitCheckRunner,
+): Promise<ReleaseFixerCandidateStaleCheck> {
+  const exists = await runner(root, ['cat-file', '-e', `${candidate}^{commit}`]);
+  const candidateExists = exists.ok;
+  if (!candidateExists) return { candidateExists, candidatePromoted: false };
+  // `origin/main..<candidate>` lists commits reachable from candidate but not from
+  // origin/main; a count of 0 means origin/main's history already contains candidate.
+  const ahead = await runner(root, ['rev-list', '--count', `origin/main..${candidate}`]);
+  const candidatePromoted = ahead.ok && ahead.stdout === '0';
+  return { candidateExists, candidatePromoted };
+}
+
 /**
  * P-006 + P-014: dispatch a release-fixer agent for a held (not-green) gate,
  * mirroring git-sync's merge-resolver. Fires the `release-fix` launch blueprint
@@ -847,9 +924,38 @@ export function annotateFailingTestsWithFlakeStats(
  * spawn + lost the fixer on a crash). Deduped per red-candidate via the
  * green-checkpoint routine metadata (`last_fixer`) — now LIVENESS-AWARE (D-009): a
  * dead fixer no longer blocks re-dispatch for 2h (the 2026-06-21 incident class).
+ * EI-8718: re-verifies the candidate isn't STALE (superseded+GC'd, or already
+ * promoted past by other means) before paying for a dedup-slot write + fixer spawn.
  * Fail-safe: every step is best-effort and never throws into the routine tick.
  */
 async function dispatchReleaseFixer(ctx: SystemActionCtx, candidate: string, failingTests?: string[]): Promise<void> {
+  // EI-8718: cheap re-verify BEFORE touching dedup state — a candidate that's gone stale
+  // between the checkpoint run reporting it and this dispatch call gets a no-op skip
+  // instead of a wasted fixer spawn. Best-effort: a check failure (e.g. no repo at
+  // integrationRoot(), transient git error) treats the candidate as NOT stale (fails open
+  // to the pre-existing dispatch behavior) rather than silently swallowing a real red gate.
+  const staleCheck = await checkReleaseFixerCandidateStale(integrationRoot(), candidate).catch(
+    () => ({ candidateExists: true, candidatePromoted: false }) satisfies ReleaseFixerCandidateStaleCheck,
+  );
+  if (isStaleReleaseFixerCandidate(staleCheck)) {
+    console.log(
+      `[green-checkpoint] release-fixer dispatch skipped for ${candidate.slice(0, 8)}: stale candidate ` +
+        `(exists=${staleCheck.candidateExists}, promoted=${staleCheck.candidatePromoted}) — gate already resolved`,
+    );
+    await appendPipelineEvent({
+      workspaceId: ctx.workspaceId,
+      installSlug: ctx.installSlug,
+      kind: 'green_checkpoint',
+      status: 'release-fixer-skipped-stale',
+      detail: {
+        candidate: candidate.slice(0, 12),
+        candidateExists: staleCheck.candidateExists,
+        candidatePromoted: staleCheck.candidatePromoted,
+      },
+    }).catch(() => {});
+    return;
+  }
+
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
   // P-012: dedup by the FAILURE SIGNATURE (the failing test files / workspaces), not the

@@ -46,6 +46,8 @@ import {
   gateStallEscalationBody,
   decideReleaseFixerDispatch,
   shouldDispatchReleaseFixer,
+  isStaleReleaseFixerCandidate,
+  checkReleaseFixerCandidateStale,
   classifyGateStallStatus,
   shouldWarnOnStallClearMiss,
   annotateFailingTestsWithFlakeStats,
@@ -54,6 +56,7 @@ import {
   type AutoServePlan,
   type DeployEventRow,
   type ReleaseFixerRecord,
+  type GitCheckRunner,
 } from './release-actions';
 import { getSystemAction, listSystemActions, type SystemActionCtx } from './system-actions';
 import type { FlakeSuspect } from '../../dev-data';
@@ -575,6 +578,61 @@ describe('decideReleaseFixerDispatch — liveness-aware dedup (P-014 / D-009)', 
 
   it('the 2h dedup window is the documented default', () => {
     expect(RELEASE_FIXER_DEDUP_MS).toBe(2 * 60 * 60_000);
+  });
+});
+
+describe('isStaleReleaseFixerCandidate (EI-8718: no fixer for a superseded/self-healed candidate)', () => {
+  it('a valid, not-yet-promoted candidate is NOT stale — the legitimate-dispatch case', () => {
+    expect(isStaleReleaseFixerCandidate({ candidateExists: true, candidatePromoted: false })).toBe(false);
+  });
+
+  it('a candidate whose object no longer exists (superseded + GC\'d) IS stale', () => {
+    expect(isStaleReleaseFixerCandidate({ candidateExists: false, candidatePromoted: false })).toBe(true);
+  });
+
+  it('a candidate already reachable from origin/main (self-healed to green) IS stale', () => {
+    expect(isStaleReleaseFixerCandidate({ candidateExists: true, candidatePromoted: true })).toBe(true);
+  });
+});
+
+describe('checkReleaseFixerCandidateStale — live re-verify (EI-8718)', () => {
+  const fakeRunner = (impl: (args: string[]) => { ok: boolean; stdout: string }): GitCheckRunner => {
+    return async (_root: string, args: string[]) => impl(args);
+  };
+
+  it('object missing → candidateExists:false, candidatePromoted:false, and skips the ancestor check', async () => {
+    const calls: string[][] = [];
+    const runner = fakeRunner((args) => {
+      calls.push(args);
+      return { ok: false, stdout: '' }; // cat-file -e fails
+    });
+    const r = await checkReleaseFixerCandidateStale('/repo', 'deadbeef', runner);
+    expect(r).toEqual({ candidateExists: false, candidatePromoted: false });
+    expect(calls).toHaveLength(1); // never ran the rev-list check
+  });
+
+  it('object exists, origin/main does NOT yet contain it → not promoted (genuinely red)', async () => {
+    const runner = fakeRunner((args) =>
+      args[0] === 'cat-file' ? { ok: true, stdout: '' } : { ok: true, stdout: '3' },
+    );
+    const r = await checkReleaseFixerCandidateStale('/repo', 'cafe1234', runner);
+    expect(r).toEqual({ candidateExists: true, candidatePromoted: false });
+  });
+
+  it('object exists, origin/main ALREADY contains it (count 0) → promoted (self-healed to green)', async () => {
+    const runner = fakeRunner((args) =>
+      args[0] === 'cat-file' ? { ok: true, stdout: '' } : { ok: true, stdout: '0' },
+    );
+    const r = await checkReleaseFixerCandidateStale('/repo', 'cafe1234', runner);
+    expect(r).toEqual({ candidateExists: true, candidatePromoted: true });
+  });
+
+  it('a transient git error on the ancestor check fails CLOSED to not-promoted, not stale', async () => {
+    const runner = fakeRunner((args) =>
+      args[0] === 'cat-file' ? { ok: true, stdout: '' } : { ok: false, stdout: '' },
+    );
+    const r = await checkReleaseFixerCandidateStale('/repo', 'cafe1234', runner);
+    expect(r).toEqual({ candidateExists: true, candidatePromoted: false });
   });
 });
 

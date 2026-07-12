@@ -30,6 +30,20 @@ vi.mock('../agent-tools/coordination/messages', () => ({ readInbox: (...a: unkno
 vi.mock('../agent-tools/coordination/slot-parked-store', () => ({ drainSlotMessages: (...a: unknown[]) => drainSlotMessages(...a) }));
 vi.mock('../workspace-als', () => ({ runWithWorkspace: (_ws: string, fn: () => unknown) => fn() }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+// L1d recall fold (memory-delivery-unification-2026-07-12 P-004): mocked so the
+// brief tests stay hermetic; resolveLaunchProfile's REAL behavior is pinned in
+// memory/launch-profile.test.ts — here we pin the WIRING (frontier → resolver).
+const resolveLaunchProfile = vi.fn((..._a: unknown[]) => ({
+  rung: 'plan',
+  queries: ['q'],
+  harnessSlugs: ['papercup'],
+  deterministicSections: [],
+}));
+const buildLaunchMemoryBlock = vi.fn(async (..._a: unknown[]) => null as string | null);
+vi.mock('../memory/launch-profile', () => ({
+  resolveLaunchProfile: (...a: unknown[]) => resolveLaunchProfile(...a),
+  buildLaunchMemoryBlock: (...a: unknown[]) => buildLaunchMemoryBlock(...a),
+}));
 // The capacity gather (P-002) hits the live gateway /stats — mock it so the brief tests are HERMETIC
 // (no dependency on a running :8788). Default: unreachable ⇒ the Capacity panel is omitted (fail-soft).
 const fetchGatewayHeadroom = vi.fn(async (..._a: unknown[]) => ({ reachable: false }) as Record<string, unknown>);
@@ -282,6 +296,48 @@ test('computeMugWakeBrief — drains stable @role:mug parked nudges into the inb
   assert.equal((drainSlotMessages.mock.calls[0]?.[1] as DrainSlotInput | undefined)?.anyHarnessSlug, true);
   assert.equal((drainSlotMessages.mock.calls[0]?.[1] as DrainSlotInput | undefined)?.toOwner, 's-mug-1');
   assert.equal((drainSlotMessages.mock.calls[0]?.[1] as DrainSlotInput | undefined)?.workspaceId, 'ws-1');
+});
+
+// memory-delivery-unification-2026-07-12 P-004 (D-005): the L1d recall fold is
+// resolver-driven — one targeted query per top frontier candidate (the most
+// specific work statement the Mug has this wake), never the old blended
+// "mug <pot> operations priorities" mega-query.
+test('computeMugWakeBrief — L1d recall is resolver-driven off the top frontier titles (P-004/D-005)', async () => {
+  const rank = { score: 0.9, features: [] as unknown[] };
+  surveyPot.mockResolvedValue({
+    frontier: [
+      { id: 'plan-a', view: 'plan', harness: 'h1', title: 'Ship the epoch ledger', rank },
+      { id: 'WI-9', view: 'work-item', harness: 'h1', title: 'Fix the cup dossier', rank },
+      { id: 'WI-10', view: 'work-item', harness: 'h1', title: '', rank }, // blank title → id fallback
+      { id: 'WI-11', view: 'work-item', harness: 'h1', title: 'Beyond the top-3 cap', rank },
+    ],
+    plans: [],
+    frontierBlocked: 0,
+  });
+  getPotCarryJournal.mockResolvedValue([]);
+  buildLaunchMemoryBlock.mockResolvedValueOnce(
+    '## Background recall (fuzzy memory — may be stale; the standing facts above are authoritative)\n\n- [h] recalled convention (id=00000000-0000-4000-8000-000000000001)',
+  );
+  const out = await computeMugWakeBrief('ws-1', 'papercup');
+  assert.ok(out);
+  assert.match(out!, /recalled convention/);
+  // WHAT: top-3 frontier titles (id fallback for a blank title). WHERE: the pot harness dim.
+  assert.deepEqual(resolveLaunchProfile.mock.calls[0], [
+    {
+      harnessSlug: 'papercup',
+      claimedItemTitles: ['Ship the epoch ledger', 'Fix the cup dossier', 'WI-10'],
+    },
+  ]);
+  const blockArgs = buildLaunchMemoryBlock.mock.calls[0]?.[0] as Record<string, unknown>;
+  assert.equal(blockArgs.workspaceId, 'ws-1');
+  assert.equal(blockArgs.limit, 3);
+  assert.equal(blockArgs.profile, resolveLaunchProfile.mock.results[0]?.value);
+
+  // Fail-soft: a throwing recall degrades the fold, never the brief.
+  buildLaunchMemoryBlock.mockRejectedValueOnce(new Error('embed down'));
+  const out2 = await computeMugWakeBrief('ws-1', 'papercup');
+  assert.ok(out2, 'the brief survives a failed recall');
+  assert.doesNotMatch(out2!, /recalled convention/);
 });
 
 test('computeMugWakeBrief — empty floor + no carry-note still renders (skip-the-survey signal)', async () => {

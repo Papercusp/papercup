@@ -471,6 +471,14 @@ export const FLAGS = {
   // (one stable slug/gap) + best-effort (never disturbs the cycle); drafts are
   // Queen-gated (invisible to rubrics:list until promoted active+templateData).
   SCOUT_RUBRIC_RAIL: "papercusp-scout-rubric-rail",
+  // blender-self-learning-2026-07-12 P-002 (WI-4318): VOLUME-BASED Scout firing —
+  // the cadence gate consumes the signal-accumulator's weighted new-signal score
+  // (scout/signal-accumulator.ts, migration 582): score ≥ threshold fires, score 0
+  // NEVER fires (stale-corpus heartbeat cycles eliminated), friction/queen-feedback
+  // paths unchanged. Default ON (derived FLAG_DEFAULTS). KILL SWITCH: flip OFF →
+  // the scheduler stops supplying signalScore and the gate reverts byte-identical
+  // to the legacy time-based cadence (reversible cutover, no restart needed).
+  SCOUT_VOLUME_CADENCE: "papercusp-scout-volume-cadence",
   // self-learning-frontier-2026-06-12 (P-021 / FB-07): regret mining —
   // `system:regret-mine` selects bad historical sessions (token-burn
   // percentile, validator bounces, rescue markers), locates the divergence

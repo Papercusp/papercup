@@ -35,10 +35,18 @@ export type ScoutCadenceReason =
   | 'ideas-drained'
   /** The fleet has spare capacity to explore. */
   | 'idle-capacity'
+  /** VOLUME MODE (WI-4318): the accumulated new-signal score crossed the firing
+   *  threshold — enough fresh corpus exists to be worth a cycle. */
+  | 'signal-volume'
   /** Nothing triggered, but the max-interval ceiling elapsed — don't stall. */
   | 'heartbeat'
   /** Withheld: the min-interval floor since the last cycle hasn't elapsed. */
   | 'min-interval'
+  /** Withheld (VOLUME MODE): ZERO new signal since the last cycle — a fresh
+   *  cycle would re-digest a byte-identical corpus into dedup declines (the
+   *  stale-repetition churn volume firing exists to kill). Only a Queen
+   *  revision request bypasses this (explicit external signal). */
+  | 'no-signal'
   /** Withheld: no trigger met and the heartbeat ceiling hasn't elapsed. */
   | 'no-trigger';
 
@@ -99,6 +107,20 @@ export interface ScoutCadenceState {
    * to the pre-decouple behaviour.
    */
   lastFireClaimAtMs?: number | null;
+  /**
+   * VOLUME MODE (blender-self-learning-2026-07-12 P-002 / WI-4318): the
+   * weighted new-signal score since the last successful cycle, computed by
+   * {@link weightedSignalScore} over the signal-accumulator's per-lane counts
+   * (scout/signal-accumulator.ts). Supplying a finite number switches the gate
+   * to volume-based firing: score ≥ {@link ScoutCadenceOptions.signalScoreThreshold}
+   * fires `signal-volume`; score ≤ 0 withholds EVERYTHING except a Queen
+   * revision request (`no-signal` — a stale corpus never fires); the normal
+   * floor drops to {@link ScoutCadenceOptions.minVolumeIntervalSec} (burst
+   * coalescing). Omit (the pure-gate default, the SCOUT_VOLUME_CADENCE kill
+   * switch, and the not-yet-populated accumulator fallback) ⇒ the legacy
+   * time-based behavior, byte-identical.
+   */
+  signalScore?: number;
 }
 
 export interface ScoutCadenceOptions {
@@ -116,6 +138,15 @@ export interface ScoutCadenceOptions {
   idleThreshold?: number;
   /** frictionSignals at/above which friction fires (within the friction floor). Default 3. */
   frictionThreshold?: number;
+  /** VOLUME MODE: weighted new-signal score at/above which `signal-volume`
+   *  fires. Default 25 (≈ a dozen observations, or a few reverts + captures —
+   *  see DEFAULT_LANE_WEIGHTS in signal-accumulator.ts). Tunable per routine
+   *  via the cadence payload. */
+  signalScoreThreshold?: number;
+  /** VOLUME MODE: the normal floor between cycles (replaces minIntervalSec for
+   *  non-friction triggers) — bursts coalesce instead of firing per-signal.
+   *  Default 900s (15min). */
+  minVolumeIntervalSec?: number;
 }
 
 export interface ScoutCadenceVerdict {
@@ -134,6 +165,10 @@ const DEFAULTS = {
   maxIntervalSec: 3600,
   idleThreshold: 0.5,
   frictionThreshold: 3,
+  // VOLUME MODE (WI-4318, owner-approved 2026-07-12): fire when the weighted
+  // new-signal score crosses this; coalesce bursts at a 15-min floor.
+  signalScoreThreshold: 25,
+  minVolumeIntervalSec: 900,
 } as const;
 
 /**
@@ -148,6 +183,13 @@ export function shouldRunScoutCycle(
   const maxInterval = nonNeg(opts.maxIntervalSec, DEFAULTS.maxIntervalSec);
   const idleThreshold = opts.idleThreshold ?? DEFAULTS.idleThreshold;
   const frictionThreshold = opts.frictionThreshold ?? DEFAULTS.frictionThreshold;
+  // VOLUME MODE (WI-4318): active only when the scheduler supplies a finite
+  // score (flag ON + accumulator populated); otherwise every volume branch
+  // below is skipped and the gate is byte-identical to the legacy behavior.
+  const volumeMode = typeof state.signalScore === 'number' && Number.isFinite(state.signalScore);
+  const signalScore = volumeMode ? (state.signalScore as number) : 0;
+  const scoreThreshold = nonNeg(opts.signalScoreThreshold, DEFAULTS.signalScoreThreshold);
+  const minVolumeInterval = nonNeg(opts.minVolumeIntervalSec, DEFAULTS.minVolumeIntervalSec);
 
   const elapsedSec =
     state.lastRunAtMs == null ? Number.POSITIVE_INFINITY : (state.nowMs - state.lastRunAtMs) / 1000;
@@ -165,15 +207,33 @@ export function shouldRunScoutCycle(
     return { fire: true, reason: 'queen-feedback' };
   }
 
+  // 0.5. VOLUME MODE zero-signal veto (WI-4318): the corpus is byte-identical
+  //      to the last cycle — friction, drain, idle and heartbeat are ALL
+  //      withheld (a cycle over an unchanged corpus only regenerates dedup
+  //      declines). Only the Queen's explicit revision request (above) fires.
+  if (volumeMode && signalScore <= 0) {
+    return { fire: false, reason: 'no-signal' };
+  }
+
   // 1. Friction fires fast (own short floor) — the colony is stuck, leap now.
   if (frictionTriggered) {
     if (elapsedSec >= minFrictionInterval) return { fire: true, reason: 'friction-triggered' };
     return { fire: false, reason: 'min-interval', retryAfterSec: Math.ceil(minFrictionInterval - elapsedSec) };
   }
 
-  // 2. The normal floor guards idle/heartbeat/drain fires.
-  if (elapsedSec < minInterval) {
-    return { fire: false, reason: 'min-interval', retryAfterSec: Math.ceil(minInterval - elapsedSec) };
+  // 2. The normal floor guards volume/idle/heartbeat/drain fires. In volume
+  //    mode the floor is the shorter burst-coalescing window: with a real
+  //    volume trigger, the hourly clock is no longer what stops runaway firing
+  //    — the score threshold is — so the floor only needs to coalesce bursts.
+  const normalFloor = volumeMode ? minVolumeInterval : minInterval;
+  if (elapsedSec < normalFloor) {
+    return { fire: false, reason: 'min-interval', retryAfterSec: Math.ceil(normalFloor - elapsedSec) };
+  }
+
+  // 2.5. VOLUME MODE: enough new signal accumulated — fire now (the primary
+  //      trigger of the data-volume design; owner-set 2026-07-12).
+  if (volumeMode && signalScore >= scoreThreshold) {
+    return { fire: true, reason: 'signal-volume' };
   }
 
   // 3. Idea pipeline drained — every prior routed idea is resolved (none pending),

@@ -451,6 +451,25 @@ export function buildScoutTickDeps(opts: BuildScoutTickDepsOptions): ScoutTickDe
           ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
         }).catch(() => null),
       ]);
+      // VOLUME MODE (blender-self-learning-2026-07-12 P-002 / WI-4318): supply
+      // the weighted new-signal score from the accumulator cache when the flag
+      // is ON. FAIL-SOFT BY SHAPE: flag OFF (the kill switch), no workspaceId,
+      // an empty accumulator (the 30s sweep not yet live on this host), or any
+      // read error all leave signalScore UNDEFINED — and an undefined score is
+      // the pure gate's legacy time-based mode, byte-identical. The cutover
+      // therefore ships flag-ON with zero risk of wedging the Scout dark.
+      let signalScore: number | undefined;
+      try {
+        const { getFlag } = await import('@papercusp/flags/server');
+        const { FLAGS } = await import('@papercusp/flags');
+        if (opts.workspaceId && (await getFlag(FLAGS.SCOUT_VOLUME_CADENCE, 'scout-volume-cadence'))) {
+          const { readAccumulatorCounts, weightedSignalScore } = await import('./signal-accumulator');
+          const acc = await readAccumulatorCounts({ workspaceId: opts.workspaceId });
+          if (Object.keys(acc.counts).length > 0) signalScore = weightedSignalScore(acc.counts);
+        }
+      } catch {
+        /* fail-soft: no accumulator ⇒ legacy cadence */
+      }
       return {
         idleRatio,
         frictionSignals,
@@ -461,6 +480,7 @@ export function buildScoutTickDeps(opts: BuildScoutTickDepsOptions): ScoutTickDe
         nowMs: now(),
         routedIdeaTotal: ideaQueue.total,
         pendingIdeaCount: ideaQueue.pending,
+        ...(signalScore !== undefined ? { signalScore } : {}),
       };
     },
     runCycle: opts.runCycle,
