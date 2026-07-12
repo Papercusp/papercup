@@ -213,6 +213,7 @@ const META_PATTERN_CATEGORIES = [
   'rubric-rating',
   'standing-fact',
   'niche-map',
+  'watchdog-health',
 ] as const;
 
 /**

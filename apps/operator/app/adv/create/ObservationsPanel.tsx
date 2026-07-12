@@ -146,14 +146,14 @@ export default function ObservationsPanel({
             ? (KIND_LABEL[row.kind] ?? row.kind)
             : "Other";
           return (
-            <button
-              type="button"
-              className={`pc-observations__entry${selected ? " is-selected" : ""}`}
-              aria-label={`${selected ? "Collapse" : "Expand"} observation ${row.title}`}
-              aria-expanded={selected}
-              onClick={() => setSelectedId(selected ? null : row.id)}
-              title={row.body ?? row.title}
-            >
+            <Tooltip label={row.body ?? row.title}>
+              <button
+                type="button"
+                className={`pc-observations__entry${selected ? " is-selected" : ""}`}
+                aria-label={`${selected ? "Collapse" : "Expand"} observation ${row.title}`}
+                aria-expanded={selected}
+                onClick={() => setSelectedId(selected ? null : row.id)}
+              >
               <span
                 className="pc-observations__signalmark"
                 aria-label={`${signal} signal`}
@@ -176,7 +176,8 @@ export default function ObservationsPanel({
                   <em className="pc-observations__context">{context}</em>
                 ) : null}
               </span>
-            </button>
+              </button>
+            </Tooltip>
           );
         },
       },

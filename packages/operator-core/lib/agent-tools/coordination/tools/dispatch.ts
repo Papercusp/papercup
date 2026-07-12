@@ -29,6 +29,9 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../roles';
 import { inProcessCall, type InnerCall } from '../../_compound-dispatch';
 import { hardText } from '../../limits';
+import type { HydratableRef } from '../ref-hydrate';
+import { renderHydratedRefs } from '../ref-hydrate';
+import { hydrateRefs, makePlanItemResolver } from '../ref-hydrate-resolve';
 
 export interface DispatchArgs {
   to: string;
@@ -65,6 +68,11 @@ export interface DispatchResult {
   assigned: DispatchAssigned | null;
   /** The directed note's inbox msg_id (the "delivered" half). */
   delivered: string | null;
+  /** WI-4165: count of assigned plan-items whose body was successfully
+   *  inlined into the delivered note (deref-at-delivery, ref-hydrate.ts) —
+   *  so the receiver reads what to do without re-fetching the plan. 0/absent
+   *  when no items were assigned or none resolved. */
+  itemsHydrated?: number;
   /** How many of the target's wake awaits actually fired (0 = nobody was listening). */
   woken: number;
   /** EI-5957: >0 when the wake STAGED (target in MANUAL wake-mode — the hive
@@ -107,7 +115,17 @@ function findPresenceRow(
  * presence + assign legs are BEST-EFFORT (a failure degrades a field, never the
  * dispatch); the coord:send leg is the one that must run.
  */
-export async function composeDispatch(args: DispatchArgs, call: InnerCall): Promise<DispatchResult> {
+export interface ComposeDispatchDeps {
+  /** Injectable for tests (default: the real hydrateRefs — DB-backed, fail-soft). */
+  hydrateRefs?: typeof hydrateRefs;
+}
+
+export async function composeDispatch(
+  args: DispatchArgs,
+  call: InnerCall,
+  deps: ComposeDispatchDeps = {},
+): Promise<DispatchResult> {
+  const hydrate = deps.hydrateRefs ?? hydrateRefs;
   // 1. Pre-state: the target's wakeability (P-001). Best-effort — a presence read
   //    hiccup degrades sessionState/wakeable to null but never blocks the dispatch.
   let sessionState: string | null = null;
@@ -156,6 +174,33 @@ export async function composeDispatch(args: DispatchArgs, call: InnerCall): Prom
     }
   }
 
+  // 2b. WI-4165: deref-at-delivery for the assigned lane itself — inline each
+  //     assigned plan-item's own body into the delivered note (ref-hydrate.ts,
+  //     coord-authority-hardening-2026-07-11 P-001) so the receiver reads WHAT
+  //     to do without re-fetching the plan. Budget-bounded (DEFAULT_REF_BUDGET:
+  //     ~200 chars/item, ≤3 items) and fail-soft BY CONTRACT — a resolve hiccup
+  //     degrades to the plain note, never blocks delivery (the critical leg is
+  //     coord:send below, unaffected either way).
+  let hydratedBody = args.body;
+  let itemsHydrated = 0;
+  if (args.planSlug && args.items && args.items.length > 0) {
+    try {
+      const refs: HydratableRef[] = args.items.map((item) => ({
+        kind: 'plan-item' as const,
+        slug: args.planSlug as string,
+        item,
+      }));
+      const hydrated = await hydrate(refs, {
+        resolvers: { 'plan-item': makePlanItemResolver(args.harness) },
+      });
+      itemsHydrated = hydrated.filter((h) => h.ok).length;
+      const block = renderHydratedRefs(hydrated);
+      if (block) hydratedBody = [args.body, block].filter(Boolean).join('\n\n');
+    } catch {
+      /* fail-soft: dispatch still delivers the plain note */
+    }
+  }
+
   // 3. Deliver the directed note AND wake the target NOW (coord:send wake:'required').
   //    This is the critical leg: it persists the inbox row (durable) AND fires the
   //    target's own coord:inbox-wake key, returning the authoritative pickup signal
@@ -163,7 +208,7 @@ export async function composeDispatch(args: DispatchArgs, call: InnerCall): Prom
   const sendEnv = (await call('coord:send', {
     to: [args.to],
     summary: args.note,
-    ...(args.body ? { body: args.body } : {}),
+    ...(hydratedBody ? { body: hydratedBody } : {}),
     ...(args.planSlug ? { plan_slug: args.planSlug } : {}),
     wake: 'required',
   })) as { results?: Array<Record<string, unknown>> } | undefined;
@@ -201,6 +246,7 @@ export async function composeDispatch(args: DispatchArgs, call: InnerCall): Prom
     assigned,
     delivered: typeof r0.msg_id === 'string' ? r0.msg_id : null,
     woken,
+    ...(itemsHydrated > 0 ? { itemsHydrated } : {}),
     ...(staged > 0 ? { staged } : {}),
     ...(wake.recipient_absent ? { recipient_absent: true } : {}),
     ...(Array.isArray(wake.recipient_dead) && wake.recipient_dead.length > 0
@@ -244,7 +290,7 @@ export async function composeDispatch(args: DispatchArgs, call: InnerCall): Prom
 export default defineTool({
   name: 'coord:dispatch',
   description:
-    'Hand a lane to a peer in ONE call: assign the plan items to `to` (durable lane) + deliver the `note` to its inbox + WAKE it now, then report pickup ({ woken, delivered, sessionState }). Replaces hand-composing plan_items:assign + coord:send + events:emit + the coord:inbox-wake:<id> key. FLAGS a non-wakeable target: an `ended` sessionState (or recipient_dead) means the lane was assigned but no live process will pick it up until a relaunch — a loud miss, never a silent woken:0. `planSlug`+`items` are optional (omit for a pure directed wake — "resume what I sent you").',
+    'Hand a lane to a peer in ONE call: assign the plan items to `to` (durable lane) + deliver the `note` to its inbox (with each assigned item\'s own body inlined, bounded — WI-4165, the receiver reads WHAT to do without re-fetching the plan) + WAKE it now, then report pickup ({ woken, delivered, sessionState, itemsHydrated }). Replaces hand-composing plan_items:assign + coord:send + events:emit + the coord:inbox-wake:<id> key. FLAGS a non-wakeable target: an `ended` sessionState (or recipient_dead) means the lane was assigned but no live process will pick it up until a relaunch — a loud miss, never a silent woken:0. `planSlug`+`items` are optional (omit for a pure directed wake — "resume what I sent you").',
   guidance: {
     when: 'You are a coordinator/Mug handing a specific lane to ANOTHER agent and want it picked up NOW — "su-7a2a, take fleet-dispatch P-001..P-004". One call assigns + wakes + confirms. Target a `parked` agent (coord:presence → sessionState:parked is the ideal); a `live` agent already running sees the note mid-turn.',
     notWhen: 'Just sharing context / asking a question (coord:send). Claiming work for YOURSELF (plan_items:claim / coord:declare-intent items). A broadcast — dispatch is single-target + wake, never "*". The target is `ended` (coord:presence) — it needs a relaunch/resume, not a dispatch (the wake cannot land).',

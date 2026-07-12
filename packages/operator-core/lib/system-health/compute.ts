@@ -115,6 +115,7 @@ export function computeEscalationsHealth(
   const bySeverity: Record<string, number> = {};
   let oldest: number | null = null;
   let aging = 0;
+  let agingNew = 0;
   let humanOpen = 0;
   for (const e of open) {
     // Skip the operational flood — it is surfaced by the placements.cursed metric
@@ -125,7 +126,13 @@ export function computeEscalationsHealth(
     const t = new Date(e.ts).getTime();
     if (Number.isFinite(t)) {
       if (oldest === null || t < oldest) oldest = t;
-      if (now - t > agingMs) aging += 1;
+      if (now - t > agingMs) {
+        aging += 1;
+        // P-003 (health-tab-v2): NEW aging = crossed the threshold within the
+        // last 24h. The panel status keys on THIS subset — standing aging is a
+        // muted metric, not a fresh alarm every tick.
+        if (now - t <= agingMs + 24 * 60 * 60_000) agingNew += 1;
+      }
     }
   }
   return {
@@ -133,6 +140,7 @@ export function computeEscalationsHealth(
     oldestAgeMs: oldest === null ? null : now - oldest,
     bySeverity,
     aging,
+    agingNew,
   };
 }
 const GATEWAY_DEFAULT_PORT = 8788;
@@ -823,20 +831,22 @@ async function collectEscalations(ctx: HealthCtx): Promise<HealthPanel<Escalatio
     // panel/`aging` count reflects real open decisions, not the ~13k auto-GC'd
     // duplicates of the placements.cursed metric.
     const data = computeEscalationsHealth(open, ctx.now);
-    const { open: openCount, oldestAgeMs, bySeverity, aging } = data;
+    const { open: openCount, oldestAgeMs, bySeverity, aging, agingNew } = data;
     const oldest = oldestAgeMs === null ? null : ctx.now - oldestAgeMs;
+    const standing = aging - agingNew;
     const status = escalationsStatus(data);
     return {
       status,
       summary: openCount === 0
         ? 'no open escalations'
-        : `${openCount} open${aging > 0 ? `, ${aging} aging` : ''}, oldest ${agoMin(oldest, ctx.now)}`,
+        : `${openCount} open${agingNew > 0 ? `, ${agingNew} newly aging` : ''}${standing > 0 ? `, ${standing} standing` : ''}, oldest ${agoMin(oldest, ctx.now)}`,
       data,
       link: { label: 'Needs you', href: '/adv?tab=plans' },
       metrics: [
         m('open', openCount, openCount > 0 ? 'warn' : undefined),
         m('blockers', bySeverity.blocker ?? 0, (bySeverity.blocker ?? 0) > 0 ? 'warn' : undefined),
-        m('aging', aging, aging > 0 ? 'warn' : undefined),
+        m('new aging', agingNew, agingNew > 0 ? 'warn' : undefined),
+        m('standing', standing, standing > 0 ? 'mute' : undefined),
         m('oldest', agoMin(oldest, ctx.now)),
       ],
     };
@@ -909,11 +919,17 @@ export function observationRole(it: {
 
 async function collectObservations(ctx: HealthCtx): Promise<HealthPanel<ObservationsHealth>> {
   return panelSafe<ObservationsHealth>('observations', async () => {
-    const { listIssues } = await import('../issues-engineer');
+    const { listIssues, countIssues } = await import('../issues-engineer');
     const { OBSERVATION_TOPIC } = await import('../harness/improvements/read-items');
-    const items = (await listIssues({ topic: OBSERVATION_TOPIC, state: 'open', limit: 500 })) as Array<{
-      createdAt?: string; payload?: unknown; sourceRole?: string | null; signalOrigin?: string | null;
-    }>;
+    const filter = { topic: OBSERVATION_TOPIC, state: 'open' as const };
+    // P-002 (health-tab-v2): the TRUE open count — the old read reported the
+    // sampled list length, which silently PINNED at the 500 cap.
+    const [items, total] = await Promise.all([
+      listIssues({ ...filter, limit: 500 }) as Promise<Array<{
+        createdAt?: string; payload?: unknown; sourceRole?: string | null; signalOrigin?: string | null;
+      }>>,
+      countIssues(filter),
+    ]);
     const recentByRole: Record<string, number> = {};
     let newestAt: number | null = null;
     for (const it of items) {
@@ -922,16 +938,18 @@ async function collectObservations(ctx: HealthCtx): Promise<HealthPanel<Observat
       const t = it.createdAt ? new Date(it.createdAt).getTime() : NaN;
       if (Number.isFinite(t) && (newestAt === null || t > newestAt)) newestAt = t;
     }
-    const data: ObservationsHealth = { laneCount: items.length, recentByRole, newestAt };
+    const laneCount = Math.max(total, items.length);
+    const sampled = laneCount > items.length;
+    const data: ObservationsHealth = { laneCount, sampled, recentByRole, newestAt };
     const roles = Object.entries(recentByRole).sort((a, b) => b[1] - a[1]).slice(0, 3)
-      .map(([r, n]) => `${r}:${n}`).join(', ');
+      .map(([r, n]) => `${r}:${n}${sampled ? '*' : ''}`).join(', ');
     return {
       status: 'ok',
-      summary: items.length === 0 ? 'no open observations' : `${items.length} open${roles ? ` (${roles})` : ''}, newest ${agoMin(newestAt, ctx.now)}`,
+      summary: laneCount === 0 ? 'no open observations' : `${laneCount} open${roles ? ` (${roles})` : ''}, newest ${agoMin(newestAt, ctx.now)}`,
       data,
       link: { label: 'Learning', href: '/adv?tab=learning' },
       metrics: [
-        m('open', items.length),
+        m('open', laneCount),
         m('newest', agoMin(newestAt, ctx.now)),
         m('roles', Object.keys(recentByRole).length),
       ],

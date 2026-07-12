@@ -5,6 +5,18 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { composeDispatch, type DispatchArgs } from './dispatch';
+import type { HydratedRef } from '../ref-hydrate';
+
+// WI-4165 item-body hydration touches the real PG-backed plan store
+// (getPlanRow) when no `deps.hydrateRefs` override is injected. Mock it at
+// the module boundary so the pre-existing tests below (which pass no deps,
+// exercising the REAL default hydrateRefs) stay DB-free and deterministic —
+// a plan-item ref simply resolves to "not found", degrading to the plain
+// note exactly like a resolve_error would (fail-soft, same as prod).
+vi.mock('../../plans/source', () => ({
+  getPlanRow: vi.fn(async () => null),
+  planItemsForRow: vi.fn(() => []),
+}));
 
 /** A mock InnerCall: records every (name,args) and returns a per-tool canned reply. */
 function mockCall(replies: Record<string, unknown | ((args: any) => unknown)>) {
@@ -176,5 +188,85 @@ describe('composeDispatch', () => {
     expect(res.recipient_absent).toBe(true);
     expect(res.recipient_dead).toBeUndefined();
     expect(res.warning).toMatch(/confirm pickup/i);
+  });
+
+  describe('WI-4165: assigned plan-item body hydration', () => {
+    const hydratedRef = (item: string, snippet: string): HydratedRef => ({
+      ref: { kind: 'plan-item', slug: baseArgs.planSlug as string, item },
+      ok: true,
+      label: `plan:${baseArgs.planSlug}#${item} [todo]`,
+      snippet,
+    });
+
+    it('inlines each assigned item\'s hydrated body into the delivered note', async () => {
+      const { call, calls } = mockCall({
+        'coord:presence': presence([{ ownerId: 'su-7a2aFULL', sessionState: 'parked', wakeable: true }]),
+        'plan_items:assign': { ok: true, results: [{ ok: true }, { ok: true }] },
+        'coord:send': sendEnv('su-7a2aFULL', { mode: 'required', targets: ['su-7a2aFULL'], woken: 1 }),
+      });
+      const hydrateRefs = vi.fn(async () => [
+        hydratedRef('P-001', 'Wire the DHT bootstrap fixture.'),
+        hydratedRef('P-002', 'Verify the cold-join path.'),
+      ]);
+      const res = await composeDispatch(baseArgs, call, { hydrateRefs });
+
+      // the resolver was scoped by the module's own budget/consumer contract —
+      // one ref per assigned item, in order, no harness override (baseArgs has none)
+      expect(hydrateRefs).toHaveBeenCalledTimes(1);
+      const [refsArg] = hydrateRefs.mock.calls[0] as [unknown];
+      expect(refsArg).toEqual([
+        { kind: 'plan-item', slug: baseArgs.planSlug, item: 'P-001' },
+        { kind: 'plan-item', slug: baseArgs.planSlug, item: 'P-002' },
+      ]);
+
+      const sendArgs = calls[calls.length - 1].args as { body?: string };
+      expect(sendArgs.body).toContain('Wire the DHT bootstrap fixture.');
+      expect(sendArgs.body).toContain('Verify the cold-join path.');
+      expect(sendArgs.body).toContain('P-001');
+      expect(sendArgs.body).toContain('P-002');
+      expect(res.itemsHydrated).toBe(2);
+    });
+
+    it('prepends an explicit args.body before the hydrated item bodies', async () => {
+      const { call, calls } = mockCall({
+        'coord:presence': presence([{ ownerId: 'su-7a2aFULL', sessionState: 'parked', wakeable: true }]),
+        'plan_items:assign': { ok: true, results: [{ ok: true }, { ok: true }] },
+        'coord:send': sendEnv('su-7a2aFULL', { mode: 'required', targets: ['su-7a2aFULL'], woken: 1 }),
+      });
+      const hydrateRefs = vi.fn(async () => [hydratedRef('P-001', 'Wire the DHT bootstrap fixture.')]);
+      await composeDispatch({ ...baseArgs, body: 'extra context up top' }, call, { hydrateRefs });
+
+      const sendArgs = calls[calls.length - 1].args as { body?: string };
+      expect(sendArgs.body?.indexOf('extra context up top')).toBeLessThan(
+        sendArgs.body?.indexOf('Wire the DHT bootstrap fixture.') ?? -1,
+      );
+    });
+
+    it('fail-soft: a hydrate error still delivers the plain note (no body added, wake unaffected)', async () => {
+      const { call, calls } = mockCall({
+        'coord:presence': presence([{ ownerId: 'su-7a2aFULL', sessionState: 'parked', wakeable: true }]),
+        'plan_items:assign': { ok: true, results: [{ ok: true }, { ok: true }] },
+        'coord:send': sendEnv('su-7a2aFULL', { mode: 'required', targets: ['su-7a2aFULL'], woken: 1 }),
+      });
+      const hydrateRefs = vi.fn(async () => {
+        throw new Error('plan store down');
+      });
+      const res = await composeDispatch(baseArgs, call, { hydrateRefs });
+
+      const sendArgs = calls[calls.length - 1].args as { body?: string };
+      expect(sendArgs.body).toBeUndefined();
+      expect(res.itemsHydrated).toBeUndefined();
+      expect(res.woken).toBe(1); // the critical leg is unaffected by the hydration failure
+    });
+
+    it('skips hydration entirely for a pure directed wake (no planSlug/items)', async () => {
+      const { call } = mockCall({
+        'coord:presence': presence([{ ownerId: 'su-7a2aFULL', sessionState: 'parked', wakeable: true }]),
+        'coord:send': sendEnv('su-7a2aFULL', { mode: 'required', targets: ['su-7a2aFULL'], woken: 1 }),
+      });
+      const hydrateRefs = vi.fn(async () => []);
+      await composeDispatch({ to: 'su-7a2a', note: 'resume what I sent you' }, call, { hydrateRefs });
+      expect(hydrateRefs).not.toHaveBeenCalled();
+    });
   });
 });
