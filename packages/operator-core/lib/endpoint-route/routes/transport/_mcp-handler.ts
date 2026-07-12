@@ -2141,6 +2141,13 @@ const handler = createMcpHandler(
     // broken memory backend can never stall or break session establishment.
     const sdkInitialize = takeStoredInitializeHandler(server.server);
     if (sdkInitialize) {
+      // The wrapper is (req: unknown, extra: unknown) => Promise<unknown> —
+      // deliberately SDK-shape-agnostic (it delegates to and returns the SDK's
+      // OWN stored handler result, so the runtime shape is exactly what the
+      // SDK produced; pinned against the real SDK in
+      // __tests__/mcp-initialize-enrich.test.ts). The cast below only
+      // re-admits the result type the wrapper's `unknown` erased.
+      type StoredInitializeHandler = Parameters<typeof server.server.setRequestHandler>[1];
       server.server.setRequestHandler(
         sdk.InitializeRequestSchema,
         wrapInitializeWithInstructions(sdkInitialize, async (base, extra) =>
@@ -2167,7 +2174,7 @@ const handler = createMcpHandler(
             },
             () => null,
           ),
-        ),
+        ) as StoredInitializeHandler,
       );
     }
 

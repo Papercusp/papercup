@@ -184,6 +184,12 @@ export interface LaunchMemoryBlockInput {
   heading?: string;
   /** Per-query hit limit (defaults to injection.ts's default). */
   limit?: number;
+  /**
+   * Per-query char budget override (defaults to injection.ts's global inject
+   * budget). A port piggybacking on a tool response (claim/create — P-008/9)
+   * passes a small budget so recall never dominates the response.
+   */
+  budgetChars?: number;
 }
 
 /** Matches the `(id=<uuid>)` suffix injection.ts renders per line. */
@@ -217,6 +223,7 @@ export async function buildLaunchMemoryBlock(
         harnessSlugs: input.profile.harnessSlugs,
         queryContext: query,
         ...(input.limit ? { limit: input.limit } : {}),
+        ...(input.budgetChars ? { budgetChars: input.budgetChars } : {}),
         ...(input.session ? { session: input.session } : {}),
         heading,
       });

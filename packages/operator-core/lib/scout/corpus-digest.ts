@@ -276,6 +276,14 @@ export const DigestSchema = z.object({
    *  ideators target unexplored behavior-space. OPTIONAL: populated by the
    *  cycle seam (cycle-deps readCorpus), like standingFacts. */
   nicheMap: z.array(MetaPatternSchema).optional(),
+  /** DELTA-FIRST rendering substrate (blender-self-learning-2026-07-12 P-003 /
+   *  WI-4319): the refs the PREVIOUS cycle's persisted digest snapshot carried
+   *  (scout_digest_snapshots, migration 582). renderDigest leads with the
+   *  patterns NOT in this set ("NEW since your last cycle") before the
+   *  standing ones — killing the stale-repetition → dedup-decline churn.
+   *  OPTIONAL: stamped by the cycle seam (cycle-deps readCorpus), like
+   *  standingFacts; absent ⇒ the legacy whole-digest rendering. */
+  previousCycleRefs: z.array(z.string()).optional(),
   /** One-line summary for a coord broadcast / the Scout trigger. */
   headline: z.string(),
 });

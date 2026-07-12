@@ -197,7 +197,6 @@ export default function LearningTab() {
     "lview",
     parseAsStringEnum<LView>([...LVIEWS]).withDefault("improvements"),
   );
-  const [, setAdvTab] = useQueryState("tab", parseAsString);
   const [rubricId, setRubricId] = useQueryState("rrubric", parseAsString);
   // Tab-level per-Hive lens (per-hive-learning-loops P-042): ONE `?lhive=` param,
   // promoted up from the Learnings sub-view so it applies across every hive-aware
@@ -267,28 +266,6 @@ export default function LearningTab() {
         </h1>
         <div className="pc-learning__utilities">
           <LearningInfraHealthChip />
-          <Tooltip label="Learning-loop throughput and placement health">
-            <button
-              type="button"
-              className={`pc-learning__utility${view === "throughput" ? " is-active" : ""}`}
-              aria-label="Loop health"
-              onClick={() => void setLview("throughput")}
-            >
-              <Activity size={14} aria-hidden />
-              <span>Loop health</span>
-            </button>
-          </Tooltip>
-          <Tooltip label="Open the agent runbook library">
-            <button
-              type="button"
-              className="pc-learning__utility"
-              aria-label="Insights"
-              onClick={() => void setAdvTab("insights")}
-            >
-              <BookOpen size={14} aria-hidden />
-              <span>Insights</span>
-            </button>
-          </Tooltip>
         </div>
       </header>
 

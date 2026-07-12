@@ -753,12 +753,10 @@ describe("LearningTab — unified Signals views", () => {
     ).toBe(false);
   });
 
-  it("keeps operational destinations visually separate from the learning stages", () => {
+  it("keeps operational destinations out of the learning header", () => {
     render(<LearningTab />);
-    fireEvent.click(screen.getByRole("button", { name: "Loop health" }));
-    expect(nuqsSetters.lview).toHaveBeenCalledWith("throughput");
-    fireEvent.click(screen.getByRole("button", { name: "Insights" }));
-    expect(nuqsSetters.tab).toHaveBeenCalledWith("insights");
+    expect(screen.queryByRole("button", { name: "Loop health" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Insights" })).toBeNull();
   });
 });
 
