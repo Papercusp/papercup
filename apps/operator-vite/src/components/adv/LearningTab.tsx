@@ -3,7 +3,7 @@
  * Each stage composes the existing sync-backed panels; `?lview=` remains the
  * canonical deep-link state and `?lhive=` scopes the hive-aware views.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryState, parseAsStringEnum, parseAsString } from "nuqs";
 import { useSyncQuery } from "@papercusp/sync";
 import * as Tabs from "@radix-ui/react-tabs";
@@ -95,6 +95,7 @@ const LVIEWS = [
 type LView = (typeof LVIEWS)[number];
 
 type LearningStage = "observe" | "improve" | "verify" | "retain";
+type LearningViewStatus = "neutral" | "good" | "warn" | "bad";
 
 const STAGES: ReadonlyArray<{
   id: LearningStage;
@@ -151,6 +152,19 @@ function stageForView(view: LView): LearningStage | null {
   );
 }
 
+function stageStatus(
+  stage: (typeof STAGES)[number],
+  statuses: Partial<Record<LView, LearningViewStatus>>,
+): LearningViewStatus | null {
+  const visible = stage.views
+    .map((candidate) => statuses[candidate.id])
+    .filter((status): status is LearningViewStatus => Boolean(status));
+  if (visible.includes("bad")) return "bad";
+  if (visible.includes("warn")) return "warn";
+  if (visible.includes("good")) return "good";
+  return visible.length > 0 ? "neutral" : null;
+}
+
 /** Sub-views whose data is scoped to ONE Hive (the tenancy unit, D-008) — they
  *  read the tab-level `?lhive=`. The rest are workspace-global (Benchmark,
  *  Scout, Knowledge — plus the EKG/RedQueen/scout-ledger panels inside them) and
@@ -197,8 +211,18 @@ export default function LearningTab() {
   const activeStage = stageForView(view);
   const activeStageMeta =
     STAGES.find((stage) => stage.id === activeStage) ?? null;
-  const activeStageIndex = STAGES.findIndex(
-    (stage) => stage.id === activeStage,
+  const [viewStatuses, setViewStatuses] = useState<
+    Partial<Record<LView, LearningViewStatus>>
+  >({});
+  const reportStatus = useCallback(
+    (reportedView: LView, status: LearningViewStatus) => {
+      setViewStatuses((current) =>
+        current[reportedView] === status
+          ? current
+          : { ...current, [reportedView]: status },
+      );
+    },
+    [],
   );
   // Work Queue parity: once a view has been opened, keep its sync subscription
   // and rendered state alive while the user moves around the loop. The old
@@ -266,27 +290,27 @@ export default function LearningTab() {
         >
           {STAGES.map((stage, index) => {
             const Icon = stage.icon;
+            const status = stageStatus(stage, viewStatuses);
             return (
               <Tabs.Trigger
                 key={stage.id}
                 value={stage.id}
                 className="pc-learning__stage"
-                data-complete={index < activeStageIndex ? "true" : undefined}
               >
                 <span className="pc-learning__stage-icon">
-                  {index < activeStageIndex ? (
-                    <CheckCircle2 size={16} aria-hidden />
-                  ) : (
-                    <Icon size={16} aria-hidden />
-                  )}
+                  <Icon size={16} aria-hidden />
                 </span>
                 <span className="pc-learning__stage-label">{stage.label}</span>
+                {status ? (
+                  <span
+                    className={`pc-learning__statusdot is-${status}`}
+                    title={`${stage.label} has ${status} live signals`}
+                    aria-label={`${stage.label} status: ${status}`}
+                  />
+                ) : null}
                 {index < STAGES.length - 1 ? (
                   <span
                     className="pc-learning__stage-line"
-                    data-complete={
-                      index < activeStageIndex ? "true" : undefined
-                    }
                     aria-hidden
                   />
                 ) : null}
@@ -309,6 +333,7 @@ export default function LearningTab() {
             >
               {activeStageMeta.views.map((candidate) => {
                 const Icon = candidate.icon;
+                const status = viewStatuses[candidate.id];
                 return (
                   <Tabs.Trigger
                     key={candidate.id}
@@ -317,6 +342,13 @@ export default function LearningTab() {
                   >
                     <Icon size={13} aria-hidden />
                     {candidate.label}
+                    {status ? (
+                      <span
+                        className={`pc-learning__statusdot is-${status}`}
+                        title={`${candidate.label} status: ${status}`}
+                        aria-label={`${candidate.label} status: ${status}`}
+                      />
+                    ) : null}
                   </Tabs.Trigger>
                 );
               })}
@@ -375,6 +407,7 @@ export default function LearningTab() {
                 hive={hive}
                 rubricId={rubricId}
                 onRubricSelect={setRubricId}
+                onStatus={reportStatus}
               />
             </section>
           ),
@@ -392,14 +425,20 @@ function LearningViewContent({
   hive,
   rubricId,
   onRubricSelect,
+  onStatus,
 }: {
   view: LView;
   hive: string;
   rubricId: string | null;
   onRubricSelect: (id: string | null) => void;
+  onStatus: (view: LView, status: LearningViewStatus) => void;
 }) {
-  if (view === "observations") return <ObservationsPanel />;
-  if (view === "ideas") return <ScoutView />;
+  if (view === "observations") {
+    return <ObservationsPanel onStatus={(status) => onStatus(view, status)} />;
+  }
+  if (view === "ideas") {
+    return <ScoutView onStatus={(status) => onStatus(view, status)} />;
+  }
   if (view === "rubrics") {
     return (
       <div className="pc-learning__rubricsplit">
@@ -407,6 +446,7 @@ function LearningViewContent({
           onSelect={onRubricSelect}
           selectedId={rubricId}
           compact={Boolean(rubricId)}
+          onStatus={(status) => onStatus(view, status)}
         />
         {rubricId ? (
           <aside
@@ -422,17 +462,36 @@ function LearningViewContent({
       </div>
     );
   }
-  if (view === "gym") return <GymView hive={hive} />;
-  if (view === "improvements") return <ImprovementsView hive={hive} />;
-  if (view === "benchmark") return <ApiaryView />;
-  if (view === "orchestration") return <HiveEvalTrendView />;
-  if (view === "bakeoff") return <BakeoffTrendView />;
+  if (view === "gym") {
+    return <GymView hive={hive} onStatus={(status) => onStatus(view, status)} />;
+  }
+  if (view === "improvements") {
+    return (
+      <ImprovementsView
+        hive={hive}
+        onStatus={(status) => onStatus(view, status)}
+      />
+    );
+  }
+  if (view === "benchmark") {
+    return <ApiaryView onStatus={(status) => onStatus(view, status)} />;
+  }
+  if (view === "orchestration") {
+    return <HiveEvalTrendView onStatus={(status) => onStatus(view, status)} />;
+  }
+  if (view === "bakeoff") {
+    return <BakeoffTrendView onStatus={(status) => onStatus(view, status)} />;
+  }
   if (view === "wake-efficiency") return <MugWakeEfficiencyPanel />;
   if (view === "ekg") return <EkgPanel />;
   if (view === "red-queen") return <RedQueenPanel />;
   if (view === "experiments") return <ExperimentsPanel />;
-  if (view === "throughput") return <ThroughputView />;
-  return <LearningsView hive={hive} />;
+  if (view === "throughput") {
+    return <ThroughputView onStatus={(status) => onStatus(view, status)} />;
+  }
+  return (
+    <LearningsView hive={hive} onStatus={(status) => onStatus(view, status)} />
+  );
 }
 
 // ─── Improvements view ───────────────────────────────────────────────────────
