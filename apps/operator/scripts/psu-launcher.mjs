@@ -1390,35 +1390,36 @@ export function planValue(picked) {
 
 /**
  * An interactive SU omp session path-discovers `<cwd>/.mcp.json` (omp's
- * `mcp.discoveryMode`). A ROLE session (console-launch `doSpawn` / a fleet role)
- * writes a SIGNED role-scoped `.mcp.json` there and never removes it — it spawns a
- * DETACHED, unref'd terminal with no exit hook — so a later SU omp launch in the
- * same cwd inherits the stale role server (a per-role MCP host URL, e.g. :9071) and
- * hangs ~30s on "papercusp timed out". An SU session needs only the USER-LEVEL
- * papercusp-su, never a role `.mcp.json`, so PARK a role-scoped one before launch.
+ * `mcp.discoveryMode`; claude auto-loads it too). A ROLE session (console-launch
+ * `doSpawn` / a fleet role) writes a SIGNED role-scoped `.mcp.json` there and never
+ * removes it — it spawns a DETACHED, unref'd terminal with no exit hook — so a later
+ * SU launch in the same cwd inherits the stale role server (a per-role MCP host URL,
+ * e.g. :9071) and hangs ~30s on "papercusp timed out". An SU session needs only the
+ * USER-LEVEL papercusp-su (or, for omp, the per-session RELOCATED copy of it — see
+ * writeOmpSessionConfigDir), never a co-located `.mcp.json`, so PARK ANY existing one
+ * before launch — unconditionally, not just role-scoped ones.
+ *
+ * EI-10388 (2026-07-12): the prior version only parked a URL matching `role=` AND
+ * NOT `superuser=1` — on the (false) assumption that any superuser-scoped project
+ * file must already BE the current papercusp-su server, so it's harmless to leave.
+ * That let a STALE superuser-scoped file with a DIFFERENT server name ("papercusp",
+ * not "papercusp-su") and NO `tools=` seed slip through unparked. OMP then discovered
+ * it ALONGSIDE the correctly-seeded per-session "papercusp-su" server and merged
+ * BOTH tool catalogs — the seeded ~39-tool spine plus the stale server's full
+ * ~700+-tool catalog (~778 total, hard 400 on a small-context local model:
+ * `mcp_tools:papercusp` (unfiltered) + `mcp_tools:papercusp-su` (39, correct) both
+ * present in OMP's own tool cache; confirmed server-side filtering itself works
+ * correctly via a direct probe of the exact seeded URL). A co-located `.mcp.json`
+ * is NEVER wanted for an SU launch regardless of its shape — park it, full stop.
+ *
  * No restore: role launchers recreate `.mcp.json` fresh on their next launch (they
- * back up any existing one first), so parking is safe. Role-scoped is detected by a
- * signed-role URL (`role=` query param); the SU's own papercusp-su carries
- * `superuser=1`, never `role=`. Returns the parked path, or null when nothing was
- * parked. Side-effects fs only; exported for tests.
+ * back up any existing one first), so parking is safe. Returns the parked path, or
+ * null when nothing was parked. Side-effects fs only; exported for tests.
  */
 export function parkRoleScopedMcpJson(cwd) {
   if (!cwd) return null;
   const p = join(cwd, '.mcp.json');
   if (!existsSync(p)) return null;
-  let roleScoped = false;
-  try {
-    const data = JSON.parse(readFileSync(p, 'utf8'));
-    const servers =
-      data && data.mcpServers && typeof data.mcpServers === 'object' ? Object.values(data.mcpServers) : [];
-    roleScoped = servers.some(
-      (s) => s && typeof s.url === 'string' && /[?&]role=/.test(s.url) && !/[?&]superuser=1(?:&|$)/.test(s.url),
-    );
-  } catch {
-    // Unparseable .mcp.json — leave it untouched (don't park what we can't classify).
-    return null;
-  }
-  if (!roleScoped) return null;
   const parked = join(cwd, '.mcp.json.su-parked');
   try {
     if (existsSync(parked)) rmSync(parked, { force: true }); // overwrite a stale prior park

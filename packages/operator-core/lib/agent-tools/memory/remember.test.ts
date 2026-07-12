@@ -248,7 +248,76 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
     else process.env.PAPERCUSP_MEMORY_DEDUP = origEnv;
   });
 
-  it('refuses when a similar memory exists (score above threshold)', async () => {
+  it('refuses an unmistakable duplicate (near-verbatim text)', async () => {
+    const b = fakeBackend([
+      { id: 'mem-old', text: 'Avi prefers terse responses', score: 0.95 },
+    ]);
+    useBackend(b);
+
+    const res = await remember.handler(
+      { content: 'Avi prefers terse responses.', kind: 'feedback' },
+      fakeCtx,
+    );
+    const parsed = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+
+    expect(parsed.ok).toBe(false);
+    expect(parsed.reason).toBe('similar_exists');
+    expect(parsed.similar_memory_id).toBe('mem-old');
+    expect(parsed.similar_score).toBeGreaterThanOrEqual(0.9);
+    expect(parsed.similar_text).toBe('Avi prefers terse responses');
+    expect(b.remember).not.toHaveBeenCalled();
+  });
+
+  // ── EI-10544: the dedup verdict must be SCALE-INDEPENDENT ──────────────────
+  // The backend's `score` is the RANKING value and its scale is backend-defined:
+  // the live hybrid config returns RRF rank-fusion (ordinal — top hit ≈ 1/61,
+  // ceiling 2/61 ≈ 0.033), a plain cosine store returns a metric on 0..1. The
+  // duplicate JUDGEMENT reads the TEXT, never the score — so these two cases pin
+  // the verdict from both directions. BOTH failed before the fix: the first was
+  // silently unreachable (0.033 < 0.9 → dedup never fired on the live backend),
+  // the second was a false positive (0.99 ≥ 0.9 → refused an unrelated write).
+
+  it('refuses a duplicate even when the backend scores it on the RRF band (live hybrid)', async () => {
+    const b = fakeBackend([
+      // 2/61 — a rank-1-on-both-legs hit, i.e. the STRONGEST score the live
+      // hybrid backend can emit. The old score-threshold guard could never fire.
+      { id: 'mem-old', text: 'the release gate is owned by git-sync', score: 0.0328 },
+    ]);
+    useBackend(b);
+
+    const res = await remember.handler(
+      { content: 'the release gate is owned by git-sync', kind: 'feedback' },
+      fakeCtx,
+    );
+    const parsed = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+
+    expect(parsed.ok).toBe(false);
+    expect(parsed.reason).toBe('similar_exists');
+    expect(parsed.similar_memory_id).toBe('mem-old');
+    expect(b.remember).not.toHaveBeenCalled();
+  });
+
+  it('does NOT refuse unrelated content, however high the backend scores it', async () => {
+    const b = fakeBackend([
+      { id: 'mem-old', text: 'unrelated', score: 0.99 },
+    ]);
+    useBackend(b);
+
+    const res = await remember.handler(
+      { content: 'A brand new fact about the deploy pipeline', kind: 'feedback' },
+      fakeCtx,
+    );
+    expect(JSON.parse((res as { content: { text: string }[] }).content[0].text).ok).toBe(true);
+    expect(b.remember).toHaveBeenCalled();
+  });
+
+  it('a PARAPHRASE is admitted — the 0.9 band is a hard "unmistakable duplicate" bar, not semantic dedup', async () => {
+    // Documents a deliberate narrowing (EI-10544): the fused pipeline exposes no
+    // true cosine, so the guard judges on text. "short" vs "terse" is a semantic
+    // near-dup (trigram-Jaccard ≈ 0.58) and is now ADMITTED. That is a capability
+    // regression against dedup-on-write's original intent — but the original
+    // intent never once worked on the live backend, and erring toward keeping a
+    // fact is the safe side of this trade. Follow-up: expose a real metric leg.
     const b = fakeBackend([
       { id: 'mem-old', text: 'Avi prefers terse responses', score: 0.95 },
     ]);
@@ -258,14 +327,8 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
       { content: 'Avi prefers short responses', kind: 'feedback' },
       fakeCtx,
     );
-    const parsed = JSON.parse((res as { content: { text: string }[] }).content[0].text);
-
-    expect(parsed.ok).toBe(false);
-    expect(parsed.reason).toBe('similar_exists');
-    expect(parsed.similar_memory_id).toBe('mem-old');
-    expect(parsed.similar_score).toBe(0.95);
-    expect(parsed.similar_text).toBe('Avi prefers terse responses');
-    expect(b.remember).not.toHaveBeenCalled();
+    expect(JSON.parse((res as { content: { text: string }[] }).content[0].text).ok).toBe(true);
+    expect(b.remember).toHaveBeenCalled();
   });
 
   it('allows when no similar memory found (low score)', async () => {

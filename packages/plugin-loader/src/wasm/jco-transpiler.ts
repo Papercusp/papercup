@@ -42,10 +42,15 @@ import type { Transpiler } from './transpile';
  */
 export const realJcoTranspiler: Transpiler = async (wasmBytes, outputDir) => {
   // Dynamic import so the loader package doesn't crash if jco isn't
-  // installed (happens in JS-only-plugin deployments).
+  // installed (happens in JS-only-plugin deployments). Keep the specifier in
+  // a variable: Vite resolves literal dynamic imports during the browser
+  // bundle even with @vite-ignore, defeating this optional-dependency seam.
+  const jcoSpecifier: string = '@bytecodealliance/jco';
   let jco: typeof import('@bytecodealliance/jco');
   try {
-    jco = await import(/* @vite-ignore */ /* turbopackIgnore: true */ /* webpackIgnore: true */ '@bytecodealliance/jco');
+    jco = await import(
+      /* @vite-ignore */ /* turbopackIgnore: true */ /* webpackIgnore: true */ jcoSpecifier
+    );
   } catch (e) {
     throw new Error(
       `@bytecodealliance/jco is not installed. WASM plugin support requires it; install via \`pnpm add @bytecodealliance/jco\`. Underlying: ${(e as Error).message}`,

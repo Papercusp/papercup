@@ -37,7 +37,7 @@ const backend = {
   available: vi.fn(async (): Promise<{ ok: boolean; reason?: string }> => ({ ok: true })),
   remember: vi.fn(async () => ({ ids: ['new-mem-1'], storedEvents: 1 })),
   update: vi.fn(async () => {}),
-  search: vi.fn(async () => [] as Array<{ id: string; score?: number }>),
+  search: vi.fn(async () => [] as Array<{ id: string; text?: string; score?: number }>),
 };
 vi.mock('./backend', () => ({ getMemoryBackend: () => backend }));
 
@@ -136,9 +136,19 @@ describe('drainMemoryWriteJournal', () => {
     expect(r.recoveredWindow).toEqual({ from: baseRow.requested_at, to: baseRow.requested_at });
   });
 
+  // EI-10544: the near-dup verdict is made on the TEXT, never on the backend's
+  // `score` — whose scale is backend-defined (the live hybrid backend returns
+  // RRF rank-fusion, an ORDINAL value whose ceiling is 2/61 ≈ 0.033, so the 0.9
+  // threshold was unreachable and this guard NEVER fired in production: 0 of 42
+  // live journal rows were ever deduped). Each case therefore pairs the text it
+  // expects with an ADVERSARIAL score — one that would have driven the old
+  // score-threshold guard to the OPPOSITE verdict.
+
   it('P-004 near-dup guard: an unmistakable duplicate closes the row without re-writing', async () => {
     pendingRows = [{ ...baseRow }];
-    backend.search.mockResolvedValue([{ id: 'existing-1', score: 0.95 }]);
+    // Exact duplicate, scored on the RRF band (2/61 — the strongest score the
+    // live hybrid backend can emit). The old `score >= 0.9` guard could not fire.
+    backend.search.mockResolvedValue([{ id: 'existing-1', text: 'the fact', score: 0.0328 }]);
     const r = await drainMemoryWriteJournal();
     expect(r.deduped).toBe(1);
     expect(r.recovered).toBe(0);
@@ -147,12 +157,25 @@ describe('drainMemoryWriteJournal', () => {
     expect(commit?.values).toContain('existing-1');
   });
 
-  it('a borderline match (below 0.9) errs toward recovering the fact', async () => {
+  it('a borderline match errs toward recovering the fact, however high the backend scored it', async () => {
     pendingRows = [{ ...baseRow }];
-    backend.search.mockResolvedValue([{ id: 'existing-1', score: 0.85 }]);
+    // Different fact, scored 0.95 — the old guard would have SUPPRESSED this
+    // recovery on a cosine-scaled backend. Losing a fact is the failure the
+    // journal exists to prevent, so only the text may decide.
+    backend.search.mockResolvedValue([
+      { id: 'existing-1', text: 'an entirely different fact about the gate', score: 0.95 },
+    ]);
     const r = await drainMemoryWriteJournal();
     expect(r.recovered).toBe(1);
     expect(backend.remember).toHaveBeenCalledTimes(1);
+  });
+
+  it('a neighbour with no text is never judged a duplicate (unjudgeable → recover)', async () => {
+    pendingRows = [{ ...baseRow }];
+    backend.search.mockResolvedValue([{ id: 'existing-1', score: 0.99 }]);
+    const r = await drainMemoryWriteJournal();
+    expect(r.recovered).toBe(1);
+    expect(r.deduped).toBe(0);
   });
 
   it('replays a journaled text UPDATE via backend.update (never as a new add)', async () => {

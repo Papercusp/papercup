@@ -748,21 +748,40 @@ describe('planClaimIntegrityAlarms (fleet-reliability-verification-2026-07-10 P-
     expect(alarm.targets).toEqual(['su-holder-1']);
   });
 
-  it('plans one alarm per violation, independently, for a mixed batch', () => {
+  it('plans one alarm per violation, independently, for a multi-violation batch', () => {
     const leaderByOwner = new Map([
       ['su-holder-1', 'su-leader-9'],
       ['su-holder-2', null],
     ]);
-    const planned = planClaimIntegrityAlarms([orphaned, unbacked], leaderByOwner);
+    const planned = planClaimIntegrityAlarms([orphaned, orphaned2], leaderByOwner);
     expect(planned).toHaveLength(2);
     expect(planned[0].targets).toEqual(['su-holder-1', 'su-leader-9']);
-    expect(planned[0].summary).toContain('orphaned-wip');
+    expect(planned[0].summary).toContain('some-plan#P-001');
     expect(planned[1].targets).toEqual(['su-holder-2']);
-    expect(planned[1].summary).toContain('unbacked-assignment');
+    expect(planned[1].summary).toContain('some-plan#P-002');
+    expect(planned.every((p) => p.summary.includes('orphaned-wip'))).toBe(true);
   });
 
   it('returns an empty plan for an empty violation list', () => {
     expect(planClaimIntegrityAlarms([], new Map())).toEqual([]);
+  });
+
+  it('EI-10506: unbacked-assignment is removed — the finder is gone and orphaned-wip is the only violation kind', async () => {
+    // An assigned-but-unclaimed item is `assigned-idle` — a first-class,
+    // EXPECTED disposition: claimPlanItem (liveness.ts, D-004) REFUSES any
+    // non-assignee claim, so the assignment IS the anti-double-claim anchor,
+    // not a gap a peer can exploit. The old `unbacked-assignment` sweep alarmed
+    // on exactly this normal state (a solo agent's lane, one item at a time) —
+    // pure false positives. It must stay removed.
+    const mod = await import('./coord-invariant-actions');
+    expect(typeof mod.findOrphanedWipClaims).toBe('function');
+    expect('findUnbackedActiveAssignments' in mod).toBe(false);
+    // The sole surviving claim-integrity violation kind.
+    const kind: ClaimIntegrityViolation['kind'] = 'orphaned-wip';
+    expect(kind).toBe('orphaned-wip');
+    // @ts-expect-error — 'unbacked-assignment' must no longer be assignable to the kind union.
+    const removed: ClaimIntegrityViolation['kind'] = 'unbacked-assignment';
+    expect(removed).toBe('unbacked-assignment');
   });
 });
 

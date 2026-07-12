@@ -225,7 +225,13 @@ export async function drainMemoryWriteJournal(): Promise<DrainResult> {
       // The backend RETRIEVES the candidates (its score orders them); the
       // duplicate JUDGEMENT is made on the text itself — see
       // DRAIN_DEDUP_THRESHOLD on why a fused score cannot make it (EI-10544).
-      const dup = neighbors.find((n) => lexicalSimilarity(row.content, n.text) >= DRAIN_DEDUP_THRESHOLD);
+      // A neighbour with no text cannot be JUDGED a duplicate, so it isn't one:
+      // this whole guard is a suppression, and an unjudgeable case must err
+      // toward RECOVERING the fact (the drain's entire purpose), never toward
+      // silently dropping it.
+      const dup = neighbors.find(
+        (n) => typeof n.text === 'string' && lexicalSimilarity(row.content, n.text) >= DRAIN_DEDUP_THRESHOLD,
+      );
       if (dup) {
         await sql`
           UPDATE harness_shared.memory_write_journal
