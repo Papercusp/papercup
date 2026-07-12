@@ -467,6 +467,24 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // hive.beaconConsent — the Hive header's owner-consent read (WI-4137 / P-010).
+  // The query is deliberately keyed by the Hive home slug: a pot_settings write
+  // on one Hive must not refetch every open HiveHeaderStrip. The accessor keeps
+  // the default-deny behavior (missing or failed settings read => false).
+  'hive.beaconConsent': {
+    argsSchema: z.object({ potId: z.string().trim().min(1).max(120) }),
+    resolve: async (rawArgs) => {
+      const args = rawArgs as { potId: string };
+      const [{ activeWorkspaceId }, { getBeaconPublishConsent }] = await Promise.all([
+        import('../workspace-registry'),
+        import('../beacon-consent'),
+      ]);
+      const potId = args.potId.trim();
+      const consent = await getBeaconPublishConsent(activeWorkspaceId(), potId).catch(() => false);
+      return [{ potId, consent }];
+    },
+  },
+
   // weather.current — local weather for the operator dashboard
   // (platform-ops-batch-2026-07-09 P-003). Live third-party fetch (not a DB
   // read), keyed by WEATHER_API_KEY (apps/operator/.env.local, gitignored —

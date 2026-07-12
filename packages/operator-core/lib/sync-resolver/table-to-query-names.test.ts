@@ -44,7 +44,19 @@ describe('queryNamesForTriggerEvent', () => {
     // trigger fires this event so a FEDERATED write from a peer Swarm refreshes the
     // 👑 Queen tab's hive.steering query — the half pot:set-steering's explicit
     // notifySyncInvalidate does NOT cover (a remote write never runs that handler).
-    expect(queryNamesForTriggerEvent('harness_shared.pot_settings.changed')).toEqual(['hive.steering']);
+    expect(queryNamesForTriggerEvent('harness_shared.pot_settings.changed')).toEqual([
+      'hive.steering',
+      'hive.beaconConsent',
+    ]);
+    expect(
+      queryNamesForTriggerEvent('harness_shared.pot_settings.changed', {
+        workspace_id: 'w1',
+        harness_slug: 'acme-hive',
+      }),
+    ).toEqual([
+      'hive.steering',
+      { name: 'hive.beaconConsent', args: { potId: 'acme-hive' } },
+    ]);
   });
 
   it('maps harness_plans → the schedule queries (data-sync-push-completion P-002)', () => {
@@ -162,6 +174,7 @@ describe('per-row scoped invalidation (caching-layer-tag-eca P-006)', () => {
       'conversations.agentChatDetail',
       'conversations.messageDetail',
       'agentChats.detail',
+      'hive.beaconConsent',
     ]);
     for (const [table, targets] of Object.entries(TABLE_TO_QUERY_NAMES)) {
       for (const t of targets) {
@@ -232,6 +245,38 @@ describe('plan_slug natural-key scoping (mig 507, EI-7433)', () => {
       plan_slug: 'unrelated-plan',
     });
     expect(names).toEqual(['harnessTextArtifact.byHarness']);
+  });
+});
+
+describe('pot_settings harness_slug natural-key scoping (WI-4137)', () => {
+  it('scopes beacon consent to the changed Pot home', () => {
+    expect(
+      queryNamesForTriggerEvent('harness_shared.pot_settings.changed', {
+        workspace_id: 'w1',
+        op: 'UPDATE',
+        id: null,
+        harness_slug: 'acme-hive',
+      }),
+    ).toContainEqual({ name: 'hive.beaconConsent', args: { potId: 'acme-hive' } });
+  });
+
+  it('falls back to a full invalidation when harness_slug is absent', () => {
+    expect(
+      queryNamesForTriggerEvent('harness_shared.pot_settings.changed', {
+        workspace_id: 'w1',
+        op: 'DELETE',
+        id: null,
+        harness_slug: null,
+      }),
+    ).toContain('hive.beaconConsent');
+    expect(
+      queryNamesForTriggerEvent('harness_shared.pot_settings.changed', {
+        workspace_id: 'w1',
+        op: 'DELETE',
+        id: null,
+        harness_slug: null,
+      }),
+    ).not.toContainEqual(expect.objectContaining({ name: 'hive.beaconConsent', args: expect.anything() }));
   });
 });
 

@@ -59,13 +59,12 @@ describe('COORD_ROLES', () => {
     // access (a tsc-invisible privilege escalation). Predicate-level so it stays a
     // fast unit test (the tool files carry the literal verbatim; grep keeps them in sync).
     const readMostlyExcluded = (r: string) =>
-      r !== 'cup' && r !== 'papercup' && r !== 'overwatch' && r !== 'cup' && r !== 'papercup' && r !== 'papercup-deep' && r !== 'kettle';
+      r !== 'cup' && r !== 'papercup' && r !== 'papercup-deep' && r !== 'kettle';
     const admitted = COORD_ROLES.filter(readMostlyExcluded);
-    for (const excluded of ['cup', 'papercup', 'overwatch', 'cup', 'papercup', 'kettle']) {
+    for (const excluded of ['cup', 'papercup', 'papercup-deep', 'kettle']) {
       expect(admitted, `${excluded} must be excluded from Queen-only tools`).not.toContain(excluded);
     }
-    // placement/judgement is the Queen's — she and her twin keep access.
-    expect(admitted).toContain('mug');
+    // placement/judgement is the Queen's — she keeps access.
     expect(admitted).toContain('mug');
   });
 

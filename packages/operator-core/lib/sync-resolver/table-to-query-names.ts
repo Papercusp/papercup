@@ -360,11 +360,14 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // hive_members (admission) is the offline half of the @-assign picker — a new
   // admitted member becomes assignable the moment they're admitted (P-016).
   'harness_shared.pot_members': ['dev.assignableMembers'],
-  // hive_settings backs the owner-steering:* keys (queen-steering-panel B-01/C-1) —
-  // a steering write refreshes the 👑 Queen tab's hive.steering query. The set tool
-  // also fires notifySyncInvalidate explicitly; this covers a FEDERATED steering
-  // write arriving from a peer Swarm (the keys federate via the capture trigger).
-  'harness_shared.pot_settings': ['hive.steering'],
+  // pot_settings backs the owner-steering:* keys (queen-steering-panel B-01/C-1)
+  // and per-Pot beacon consent. Steering remains a workspace-wide fold; beacon
+  // consent is keyed by the changed row's natural harness_slug so only that
+  // HiveHeaderStrip refreshes after a federated write.
+  'harness_shared.pot_settings': [
+    'hive.steering',
+    { name: 'hive.beaconConsent', scope: potHomeSlugScope },
+  ],
   'harness_shared.feature_claims': ['fleetAssignments.byHarness', 'sidebar.fleetCups', 'network.board', 'hiveRoster.byHive', 'hiveRoster.byHarness', 'scheduler.running'],
   'harness_shared.claim_audit': ['fleetAssignments.byHarness', 'sidebar.fleetCups', 'hiveRoster.byHive', 'hiveRoster.byHarness', 'scheduler.running'],
   // cup_claim_specs (né bee_claim_specs, cup-lexicon-full-rename-2026-07-09 P-009
@@ -400,6 +403,8 @@ export interface TriggerEventArgs {
    *  only `harness_plans` carries this column; JSON null for every other
    *  triggered table. */
   plan_slug?: unknown;
+  /** Natural-key fallback for per-Pot settings (mig 507 follow-up). */
+  harness_slug?: unknown;
 }
 
 /** A bridged invalidation target: a bare name (full-bust) or name + scoped
@@ -429,6 +434,20 @@ function workspaceIdOf(args: TriggerEventArgs | undefined): string | undefined {
  *  else undefined. Absent (JSON null) for every table but `harness_plans`. */
 function planSlugOf(args: TriggerEventArgs | undefined): string | undefined {
   const raw = args?.plan_slug;
+  return typeof raw === 'string' && raw.length > 0 ? raw : undefined;
+}
+
+/** Natural-key scope for Pot-home keyed queries. The resolver consumer calls its
+ * argument `potId`, while the shared table calls the same identity `harness_slug`.
+ * Hoisted because TABLE_TO_QUERY_NAMES references it during module initialization. */
+function potHomeSlugScope(potHomeSlug: string): Record<string, unknown> | null {
+  return potHomeSlug ? { potId: potHomeSlug } : null;
+}
+
+/** Natural-key fallback (mig 507 follow-up): pot_settings has no surrogate id,
+ * so its harness_slug identifies the Hive-home row for scoped invalidation. */
+function potHomeSlugOf(args: TriggerEventArgs | undefined): string | undefined {
+  const raw = args?.harness_slug;
   return typeof raw === 'string' && raw.length > 0 ? raw : undefined;
 }
 
@@ -530,12 +549,13 @@ export function queryNamesForTriggerEvent(
   const targets = TABLE_TO_QUERY_NAMES[tableKey];
   if (targets === undefined) return [];
 
-  // EI-7433: prefer the true row PK; fall back to the natural-key (mig 507)
-  // for id-less tables (today: harness_plans's plan_slug). Whichever is
+  // EI-7433: prefer the true row PK; fall back to a natural-key (mig 507)
+  // for id-less tables (harness_plans.plan_slug or pot_settings.harness_slug).
+  // Whichever is
   // present becomes the "key" resolveBridgeTarget hands to a target's
   // `scope` builder — a target's own scope function decides what it means
   // (an id-keyed scope treats it as a PK; planSlugScope treats it as a slug).
-  const rowId = rowIdOf(triggerArgs) ?? planSlugOf(triggerArgs);
+  const rowId = rowIdOf(triggerArgs) ?? planSlugOf(triggerArgs) ?? potHomeSlugOf(triggerArgs);
   const workspaceId = workspaceIdOf(triggerArgs);
   return targets.map((t) => resolveBridgeTarget(t, rowId, workspaceId));
 }

@@ -1241,6 +1241,15 @@ describe("LearningTab — per-Hive lens (per-hive-learning-loops-2026-06-14 P-04
     expect(
       document.querySelector(".pc-learning__provenance.is-system"),
     ).not.toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /Open learning Migration 557 completed/,
+      }),
+    );
+    expect(screen.getByLabelText("Selected learning")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Close selected learning" }),
+    ).toBeTruthy();
   });
 
   it("writes ?lhive when the picker changes", () => {

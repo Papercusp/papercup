@@ -38,6 +38,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
 import { useEffect, useState } from 'react';
 import { parseAsBoolean, useQueryState } from 'nuqs';
 import { Share2, Users, Cloud, Radio } from 'lucide-react';
+import { useSyncQuery } from '@papercusp/sync';
 import {
   ShareHiveDialog,
   defaultFetchShareMeta,
@@ -147,6 +148,14 @@ export default function HiveHeaderStrip({
 }: HiveHeaderStripProps) {
   const t = useLexicon();
   const isHiveHome = hiveKind === 'hive';
+  // Injected readers are a test seam. Production reads come from the canonical
+  // ID-scoped sync query so the header has one authoritative cache + push path.
+  const beaconReadInjected = getBeaconConsent !== defaultGetBeaconConsent;
+  const beaconQuery = useSyncQuery<{ potId: string; consent: boolean }>({
+    queryName: 'hive.beaconConsent',
+    args: { potId: potSlug },
+    enabled: Boolean(potSlug && isHiveHome && !beaconReadInjected),
+  });
 
   // The Share-Hive dialog open-state — user-meaningful → nuqs (`?share=`).
   const [shareOpen, setShareOpen] = useQueryState('share', parseAsBoolean.withDefault(false));
@@ -155,7 +164,7 @@ export default function HiveHeaderStrip({
   // mount (null while loading), updated locally after a dialog save.
   const [dirState, setDirState] = useState<HiveDirectoryState | null>(null);
   useEffect(() => {
-    if (!potSlug || !isHiveHome) return;
+    if (!potSlug || !isHiveHome || !beaconReadInjected) return;
     let alive = true;
     void fetchShareMeta(potSlug)
       .then((meta) => {
@@ -187,7 +196,12 @@ export default function HiveHeaderStrip({
     return () => {
       alive = false;
     };
-  }, [potSlug, isHiveHome, getBeaconConsent]);
+  }, [potSlug, isHiveHome, beaconReadInjected, getBeaconConsent]);
+
+  useEffect(() => {
+    if (beaconReadInjected || !beaconQuery.data?.[0]) return;
+    setBeacon((b) => ({ ...b, consent: beaconQuery.data![0].consent === true }));
+  }, [beaconReadInjected, beaconQuery.data]);
 
   if (!potSlug) return null;
 
@@ -200,6 +214,7 @@ export default function HiveHeaderStrip({
         ? { consent: res.consent ?? next, busy: false }
         : { consent: beacon.consent, busy: false, error: res.error ?? 'error' },
     );
+    if (res.ok && !beaconReadInjected) beaconQuery.invalidate();
   }
 
   const hiveLabel = t('pot');

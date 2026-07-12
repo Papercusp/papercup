@@ -29,6 +29,7 @@ import { createAnthropicJudge } from '../../memory/anthropic-judge';
 import { persistAnchorsSql } from '../../memory/persist-anchors';
 import { journalPendingWrite, markJournalCommitted } from '../../memory/write-journal';
 import { isMemoryPaused, MEMORY_PAUSED_REFUSAL } from '../../memory/memory-pause';
+import { detectPossibleSecrets, possibleSecretWarning } from '../../memory/secret-detect';
 import { getSessionUserOrDefault } from '../../auth';
 import { hardText, LIMITS } from '../limits';
 import { coerceMemoryKind } from './remember-coerce';
@@ -210,6 +211,16 @@ export default defineTool({
     if (anchors) {
       metadata.anchors = anchors.anchors;
       metadata.anchor_count = anchors.anchor_count;
+    }
+
+    // EI-10371 stage 1: flag credential-shaped content at write time. Detection
+    // only — the text is stored UNCHANGED (masking/refusing is a product-policy
+    // fork; the flag makes the liability visible first). Stamped BEFORE
+    // journaling so an outage-parked row replays with the flag intact.
+    const secrets = detectPossibleSecrets(args.content);
+    if (secrets.matched) {
+      metadata.possible_secret = true;
+      metadata.possible_secret_classes = secrets.classes;
     }
 
     // Write-ahead journal (memory-write-journal-auto-recovery P-002/D-001):

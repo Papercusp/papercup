@@ -55,6 +55,7 @@ import { MugWakeEfficiencyPanel } from "./MugWakeEfficiencyPanel";
 import { ExperimentsPanel } from "./ExperimentsPanel";
 import { Select } from "@/app/harness/Select";
 import { Tooltip } from "@/app/harness/Tooltip";
+import { Popover } from "@/app/harness/Popover";
 import { statusToneColor } from "@/app/harness/theme";
 import { useConfirmDialog } from "@/app/harness/useConfirmDialog";
 import { usePromptDialog } from "@/app/harness/usePromptDialog";
@@ -2708,7 +2709,7 @@ export function ScoutView({
               return (
                 <li
                   key={item.ideaId}
-                  className={`pc-learning__row pc-learning__row--scout${isOpen ? " is-grading" : ""}`}
+                  className="pc-learning__row pc-learning__row--scout"
                 >
                   <span
                     className="pc-learning__rowmain"
@@ -2773,41 +2774,46 @@ export function ScoutView({
                           ★{eff.grade} · {graderLabel(eff.gradedBy, t("brain"))}
                         </span>
                       ) : null}
-                      <Tooltip
-                        label={eff ? "Review this grade" : "Grade this idea"}
+                      <Popover
+                        open={isOpen}
+                        onOpenChange={(open) =>
+                          void setGradeOpen(open ? item.ideaId : null)
+                        }
+                        trigger={
+                          <button
+                            type="button"
+                            className="pc-learning__notebtn"
+                            aria-label={
+                              eff ? "Review idea grade" : "Grade this idea"
+                            }
+                            aria-expanded={isOpen}
+                          >
+                            {eff ? (
+                              <Star size={12} fill="currentColor" aria-hidden />
+                            ) : (
+                              <MessageSquarePlus size={12} aria-hidden />
+                            )}
+                          </button>
+                        }
+                        tooltipLabel={
+                          eff ? "Review this grade" : "Grade this idea"
+                        }
+                        ariaLabel={`Grade ${item.title ?? item.routedRef}`}
+                        contentClassName="pc-learning__gradepopover"
                       >
-                        <button
-                          type="button"
-                          className="pc-learning__notebtn"
-                          aria-label={
-                            eff ? "Review idea grade" : "Grade this idea"
+                        <GradePanel
+                          current={eff}
+                          busy={saving}
+                          onSave={(grade, feedback) => {
+                            void submitGrade(item, grade, feedback).then(
+                              () => void setGradeOpen(null),
+                            );
                           }
-                          aria-expanded={isOpen}
-                          onClick={() =>
-                            void setGradeOpen(isOpen ? null : item.ideaId)
-                          }
-                        >
-                          {eff ? (
-                            <Star size={12} fill="currentColor" aria-hidden />
-                          ) : (
-                            <MessageSquarePlus size={12} aria-hidden />
-                          )}
-                        </button>
-                      </Tooltip>
+                          onClose={() => void setGradeOpen(null)}
+                        />
+                      </Popover>
                     </span>
                   </span>
-                  {isOpen ? (
-                    <GradePanel
-                      current={eff}
-                      busy={saving}
-                      onSave={(grade, feedback) => {
-                        void submitGrade(item, grade, feedback).then(
-                          () => void setGradeOpen(null),
-                        );
-                      }}
-                      onClose={() => void setGradeOpen(null)}
-                    />
-                  ) : null}
                 </li>
               );
             })}
@@ -2893,6 +2899,13 @@ function LearningsView({
   const snap = sync.data?.[0];
   const rows = snap?.rows ?? [];
   const filtered = rows;
+  const selectedRow = selectedLearning
+    ? (filtered.find((row) => row.id === selectedLearning) ?? null)
+    : null;
+  const selectedProvenance = selectedRow
+    ? learningProvenance(selectedRow.createdBy, selectedRow.kind)
+    : null;
+  const SelectedProvenanceIcon = selectedProvenance?.Icon;
   useEffect(() => {
     onStatus?.(sync.error ? "bad" : rows.length > 0 ? "good" : "neutral");
   }, [onStatus, rows.length, sync.error]);
@@ -2970,6 +2983,7 @@ function LearningsView({
           role="button"
           tabIndex={0}
           aria-expanded={selected}
+          aria-label={`${selected ? "Close" : "Open"} learning ${preview.headline}`}
           onClick={() => void setSelectedLearning(selected ? null : r.id)}
           onKeyDown={(event) => {
             if (event.key === "Enter" || event.key === " ") {
@@ -2978,16 +2992,10 @@ function LearningsView({
             }
           }}
         >
-          {selected ? (
-            <span className="pc-learning__retainedtext is-expanded">
-              {r.text}
-            </span>
-          ) : (
-            <span className="pc-learning__retainedsummary">
-              <strong>{preview.headline}</strong>
-              {preview.preview ? <span>{preview.preview}</span> : null}
-            </span>
-          )}
+          <span className="pc-learning__retainedsummary">
+            <strong>{preview.headline}</strong>
+            {preview.preview ? <span>{preview.preview}</span> : null}
+          </span>
           <span
             style={{
               display: "flex",
@@ -3012,30 +3020,6 @@ function LearningsView({
             ) : null}
           </span>
         </span>
-        {selected ? (
-          <span className="pc-learning__retainedactions">
-            <Tooltip label="Edit the learning text">
-              <button
-                type="button"
-                style={actionBtn}
-                onClick={() => void edit(r)}
-              >
-                edit
-              </button>
-            </Tooltip>
-            <Tooltip
-              label={`Remove this learning from the ${t("pot", { lower: true })}'s memory`}
-            >
-              <button
-                type="button"
-                style={actionBtn}
-                onClick={() => void forget(r)}
-              >
-                remove
-              </button>
-            </Tooltip>
-          </span>
-        ) : null}
       </li>
     );
   };
@@ -3088,21 +3072,64 @@ function LearningsView({
             <span>No retained learnings</span>
           </div>
         ) : (
-          <>
-            <ul className="pc-learning__list">
-              {filtered.slice(0, 6).map(renderLearning)}
-            </ul>
-            {filtered.length > 6 ? (
-              <LearningDisclosure
-                label="Earlier retained learnings"
-                count={filtered.length - 6}
+          <div
+            className={`pc-learning__retainlayout${selectedRow ? " has-detail" : ""}`}
+          >
+            <div className="pc-learning__retainindex">
+              <ul className="pc-learning__list">
+                {filtered.slice(0, 6).map(renderLearning)}
+              </ul>
+              {filtered.length > 6 ? (
+                <LearningDisclosure
+                  label="Earlier retained learnings"
+                  count={filtered.length - 6}
+                >
+                  <ul className="pc-learning__list">
+                    {filtered.slice(6).map(renderLearning)}
+                  </ul>
+                </LearningDisclosure>
+              ) : null}
+            </div>
+            {selectedRow && selectedProvenance && SelectedProvenanceIcon ? (
+              <aside
+                className="pc-learning__retaindetail"
+                aria-label="Selected learning"
               >
-                <ul className="pc-learning__list">
-                  {filtered.slice(6).map(renderLearning)}
-                </ul>
-              </LearningDisclosure>
+                <header>
+                  <span
+                    className={`pc-learning__provenance is-${selectedProvenance.tone}`}
+                    title={selectedProvenance.label}
+                  >
+                    <SelectedProvenanceIcon size={11} aria-hidden />
+                  </span>
+                  <button
+                    type="button"
+                    aria-label="Close selected learning"
+                    onClick={() => void setSelectedLearning(null)}
+                  >
+                    <XCircle size={14} aria-hidden />
+                  </button>
+                </header>
+                <p>{selectedRow.text}</p>
+                <footer>
+                  <button
+                    type="button"
+                    style={actionBtn}
+                    onClick={() => void edit(selectedRow)}
+                  >
+                    edit
+                  </button>
+                  <button
+                    type="button"
+                    style={actionBtn}
+                    onClick={() => void forget(selectedRow)}
+                  >
+                    remove
+                  </button>
+                </footer>
+              </aside>
             ) : null}
-          </>
+          </div>
         )}
       </section>
     </>
@@ -3332,7 +3359,6 @@ export function LearningStyles() {
          splits into a clickable main area + a grade cluster, so stars/note/chip
          never fight the open-the-artifact click. */
       .pc-learning__row--scout { grid-template-columns: minmax(0, 1fr) auto; }
-      .pc-learning__row--scout.is-grading { border-color: rgba(251, 191, 36, 0.45); }
       .pc-learning__row--scout .pc-learning__meta { flex-wrap: wrap; justify-content: flex-end; }
       .pc-learning__rowmain { display: grid; grid-template-columns: 4px auto minmax(0, 1fr); align-items: center; gap: 9px; min-width: 0; cursor: pointer; border-radius: 6px; }
       .pc-learning__rowmain:hover .pc-learning__title, .pc-learning__rowmain:focus-visible .pc-learning__title { color: var(--accent, #7dd3fc); }
@@ -3351,6 +3377,8 @@ export function LearningStyles() {
       .pc-learning__gradepanelhint { font-size: 11px; color: var(--fg-mute, #7f9bb4); }
       .pc-learning__gradepanel textarea { background: var(--bg-2, rgba(255, 255, 255, 0.03)); border: 1px solid var(--border, rgba(125, 211, 252, 0.2)); border-radius: 7px; color: var(--fg, #e7f7ff); font-size: 12px; font-family: inherit; line-height: 1.45; padding: 6px 9px; resize: vertical; }
       .pc-learning__gradepanelactions { display: flex; justify-content: flex-end; gap: 8px; }
+      .pc-learning__gradepopover { width: min(430px, calc(100vw - 28px)); padding: 10px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--bg-popover); box-shadow: 0 14px 40px rgba(0,0,0,.42); }
+      .pc-learning__gradepopover .pc-learning__gradepanel { margin: 0; padding: 0; border: 0; }
       .pc-learning__panelbtn { padding: 4px 11px; font-size: 11.5px; font-weight: 650; border-radius: 7px; cursor: pointer; border: 1px solid var(--border, rgba(125, 211, 252, 0.2)); background: transparent; color: var(--fg-mute, #7f9bb4); }
       .pc-learning__panelbtn--primary { border-color: rgba(251, 191, 36, 0.5); background: rgba(251, 191, 36, 0.12); color: #fcd34d; }
       .pc-learning__panelbtn:disabled { opacity: 0.5; cursor: default; }
@@ -3368,6 +3396,15 @@ export function LearningStyles() {
       .pc-learning__retainedsummary > strong { color: var(--fg); font-size: 11.5px; font-weight: 680; }
       .pc-learning__retainedsummary > span { color: var(--fg-mute); font-size: 10.5px; }
       .pc-learning__retainedactions { display: inline-flex; gap: 5px; margin-top: 1px; }
+      .pc-learning__retainlayout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; align-items: start; }
+      .pc-learning__retainlayout.has-detail { grid-template-columns: minmax(320px, .9fr) minmax(360px, 1.1fr); }
+      .pc-learning__retainindex { min-width: 0; }
+      .pc-learning__retaindetail { min-width: 0; padding: 10px; border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border)); border-radius: 9px; background: var(--bg-2); }
+      .pc-learning__retaindetail > header { display: flex; align-items: center; justify-content: space-between; min-height: 24px; }
+      .pc-learning__retaindetail > header button { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; background: transparent; color: var(--fg-mute); cursor: pointer; }
+      .pc-learning__retaindetail > p { margin: 7px 0 10px; color: var(--fg); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+      .pc-learning__retaindetail > footer { display: flex; justify-content: flex-end; gap: 5px; }
+      @container learning (max-width: 820px) { .pc-learning__retainlayout.has-detail { grid-template-columns: 1fr; } .pc-learning__retaindetail { grid-row: 1; } }
 
       /* Lens sampling weights (P-007 steering visibility). */
       .pc-learning__lens { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; border-radius: 999px; border: 1px solid var(--border, rgba(125, 211, 252, 0.18)); background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-mute, #7f9bb4); }
