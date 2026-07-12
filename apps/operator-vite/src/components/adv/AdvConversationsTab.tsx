@@ -1265,7 +1265,8 @@ function FeedView() {
             <FeedItem
               row={entry.row}
               children={entry.replies}
-              open={isSelected}
+              open={false}
+              active={isSelected}
               onToggle={() => void setOpenMsg((p) => (p === entry.row.msg_id ? null : entry.row.msg_id))}
               onPlanClick={(slug) => void setPlan(slug)}
               onAgentClick={(a) => void setAgent(a)}
@@ -1276,12 +1277,19 @@ function FeedView() {
     [setOpenMsg, setPlan, setAgent],
   );
 
+  // The clicked row's ROOT (a reply/ack folds into its parent) is what the
+  // detail pane renders — mirroring the curated Conversations master/detail:
+  // left LIST rail of rows, click → open in the main detail pane (WI-4216,
+  // [owner:Avi 2026-07-12] "make it work just like the curated Conversations
+  // pane"). NOT a full-width inline-expand stream.
+  const selectedRoot = rootForOpen ? allRows.find((r) => r.msg_id === rootForOpen) : null;
+
   return (
     <ConvFrame
-      detail={
-        <div className="pc-advfeed">
-      {/* Filters — all nuqs */}
-      <div className="pc-advfeed__filters">
+      detailOpen={openMsg != null}
+      onBack={openMsg ? () => void setOpenMsg(null) : undefined}
+      filters={
+        <div className="pc-advfeed__filters">
         <div className="pc-advfeed__filterhead">
           <div>
             <span>
@@ -1416,10 +1424,10 @@ function FeedView() {
             {debouncedQ.trim() && <strong>search: {debouncedQ.trim()}</strong>}
           </div>
         )}
-      </div>
-
-      {/* The stream */}
-      <div className="pc-advfeed__stream" ref={streamRef}>
+        </div>
+      }
+      list={
+        <div className="pc-advfeed__stream" ref={streamRef}>
         {head.loading && allRows.length === 0 ? (
           <LoadingRows rows={6} label="Loading the coordination feed" />
         ) : head.error ? (
@@ -1454,7 +1462,31 @@ function FeedView() {
           </button>
         )}
       </div>
-        </div>
+      }
+      detail={
+        selectedRoot ? (
+          <section className="pc-coord__detail pc-advfeed__detailpane">
+            <FeedItem
+              row={selectedRoot}
+              children={childrenOf.get(selectedRoot.msg_id) ?? []}
+              open
+              active
+              detail
+              onToggle={() => {}}
+              onPlanClick={(slug) => void setPlan(slug)}
+              onAgentClick={(a) => void setAgent(a)}
+            />
+          </section>
+        ) : (
+          <section className="pc-coord__detail">
+            <EmptyState
+              style={{ minHeight: '100%' }}
+              icon={<Radio size={22} aria-hidden />}
+              title="Select a message"
+              desc="Open a system-log message to view its full body and replies."
+            />
+          </section>
+        )
       }
     />
   );
@@ -1464,6 +1496,8 @@ function FeedItem({
   row,
   children,
   open,
+  active = false,
+  detail = false,
   onToggle,
   onPlanClick,
   onAgentClick,
@@ -1471,6 +1505,10 @@ function FeedItem({
   row: FeedRow;
   children: FeedRow[];
   open: boolean;
+  /** Selected/highlighted in the list rail. */
+  active?: boolean;
+  /** Rendered as the detail-pane instance (full-width, non-interactive header). */
+  detail?: boolean;
   onToggle: () => void;
   onPlanClick: (slug: string) => void;
   onAgentClick: (a: string) => void;

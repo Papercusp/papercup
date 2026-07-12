@@ -11,7 +11,7 @@
  * Mirrors bootstrap-su-launch-argv.test.ts's minimal mock set so importing
  * the route module doesn't reach for @papercusp/db-org.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // bootstrap-su.ts is a large module with many real (unmocked) sibling imports —
 // only the couple this route actually touches (auth, adv-sessions, presence)
@@ -21,24 +21,32 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // weight here for a 5-test route file).
 vi.setConfig({ testTimeout: 15_000 });
 
-// EI-9784: `touchHeartbeatMock` MUST be created via `vi.hoisted()`, not a bare
-// top-level `const`. A bare const is only SAFE because this file's own
-// evaluation order happens to place it before any test body runs — but
-// bootstrap-su-launch-argv.test.ts mocks this SAME specifier
-// ('../../../agent-tools/coordination/presence') with its own separate
-// `vi.fn()`. Observed failure (2/5 red only in a large 784-suite/2436-test
-// combined run, never alone, never reproducibly): under heavy parallel load
-// with many files sharing forked workers, a `vi.mock` factory for a given
-// specifier can be re-resolved against a STALE closure if the mock's backing
-// value isn't part of vitest's own hoisted-mock bookkeeping — `vi.hoisted()`
-// registers the value in the SAME hoist pass as the `vi.mock` calls below, so
-// there is exactly one canonical mock-fn instance per file, resolved the
-// identical way every `vi.mock` factory in this codebase already relies on
-// (see e.g. dbos/durable-spawn.test.ts's `const h = vi.hoisted(...)`).
-// Paired with clearAllMocks() in beforeEach/afterEach (belt-and-suspenders —
-// each `it` already calls touchHeartbeatMock.mockClear() itself, but a
-// file-level reset closes the gap if a PRIOR file in the same worker left the
-// module's mock state dirty).
+// EI-9784 ROOT CAUSE (reproduced locally, not guessed): `postHeartbeat` used to
+// re-run `await import('./bootstrap-su')` on EVERY call. ESM import is cached
+// so this is normally cheap after the first call — but under heavy parallel
+// vitest load (many files transforming concurrently) that FIRST import can
+// occasionally exceed this file's own 15s testTimeout, timing OUT test 1
+// ("forwards a valid pid + host..."). Vitest's timeout does not cancel the
+// in-flight promise (JS has no real cancellation) — test 1's orphaned
+// `postHeartbeat(...)` call keeps running in the background and its delayed
+// `touchHeartbeat(...)` call lands DURING test 2, right after test 2's own
+// `mockClear()`, so test 2 observes test 1's stale args instead of its own
+// (confirmed: the captured failure's "Received" value was EXACTLY test 1's
+// { pid: 4242, host: 'box-a' } payload). Fix: pay the import cost exactly
+// ONCE, in `beforeAll` (own generous timeout), so no individual `it()` can
+// time out on it and there is nothing left to race.
+let routes: { method: string; path: string; handler: (req: Request) => Promise<Response> }[];
+beforeAll(async () => {
+  const mod = await import('./bootstrap-su');
+  routes = mod.default as typeof routes;
+}, 30_000);
+
+// `vi.hoisted()` (not a bare top-level `const`) keeps touchHeartbeatMock in
+// the same hoist pass as the `vi.mock` calls below — matching this codebase's
+// established pattern (e.g. dbos/durable-spawn.test.ts's `vi.hoisted(...)`)
+// and removing any theoretical doubt about mock-factory resolution order.
+// Not itself the EI-9784 fix (that's the beforeAll above) but cheap and
+// correct to keep.
 const touchHeartbeatMock = vi.hoisted(() => vi.fn(async () => {}));
 
 vi.mock('../../../auth/require-principal', () => ({
@@ -62,8 +70,6 @@ beforeEach(() => { vi.clearAllMocks(); });
 afterEach(() => { vi.clearAllMocks(); });
 
 async function postHeartbeat(body: unknown): Promise<Response> {
-  const mod = await import('./bootstrap-su');
-  const routes = mod.default as { method: string; path: string; handler: (req: Request) => Promise<Response> }[];
   const route = routes.find((r) => r.method === 'POST' && r.path.endsWith('/heartbeat'))!;
   const req = new Request('http://localhost:3070/api/agent-mcp/console/bootstrap-su/heartbeat', {
     method: 'POST',
