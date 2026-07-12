@@ -197,3 +197,36 @@ describe('AudienceModeSelector — cross-tab storage sync', () => {
     await waitFor(() => expect(btn('Novice').getAttribute('aria-pressed')).toBe('true'));
   });
 });
+
+describe('AudienceModeSelector — a failing prefs PUT must fail SOFT (WI-4343)', () => {
+  // Regression: select() fires `void saveAudienceMode(next)`, so an un-caught
+  // fetch rejection surfaced as an UNHANDLED PROMISE REJECTION on every click
+  // ("TypeError: Load failed") whenever the operator sidecar was unreachable.
+  // Caught by the owner-requested E2E button sweep, 2026-07-12.
+  it('does not reject (no unhandled rejection) when the PUT fails, and still flips the mode', async () => {
+    const rejecting = vi.fn().mockRejectedValue(new TypeError('Load failed'));
+    vi.stubGlobal('fetch', rejecting);
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: PromiseRejectionEvent) => {
+      e.preventDefault();
+      unhandled.push(e.reason);
+    };
+    window.addEventListener('unhandledrejection', onUnhandled);
+
+    try {
+      render(<AudienceModeSelector />);
+      fireEvent.click(btn('Novice'));
+
+      // The optimistic local flip still happens (localStorage already broadcast it).
+      await waitFor(() => expect(btn('Novice').getAttribute('aria-pressed')).toBe('true'));
+      expect(rejecting).toHaveBeenCalled();
+
+      // Let any pending microtask rejection settle, then assert none escaped.
+      await new Promise((r) => setTimeout(r, 0));
+      expect(unhandled).toEqual([]);
+    } finally {
+      window.removeEventListener('unhandledrejection', onUnhandled);
+    }
+  });
+});

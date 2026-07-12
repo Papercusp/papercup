@@ -92,6 +92,35 @@ describe('SESSION_FACETS via computeFacets', () => {
     expect(groups.find((g) => g.key === 'machine')).toBeUndefined();
   });
 
+  it('counts are DRILL-DOWN aware — a selection never leaves a dead-end pill behind', () => {
+    // Regression (live pixel-drive, 2026-07-12): the popover called computeFacets
+    // WITHOUT `selection`, so counts described the unfiltered result set. With
+    // status:active selected (1 result, role=su) the role facet still advertised
+    // "mug 1" — and clicking it landed on "No results match the selected filters".
+    const selection = new Map([['status', new Set(['active'])]]);
+    const groups = computeFacets(sessions, SESSION_FACETS, { maxValuesPerFacet: 8, selection });
+    const byKey = Object.fromEntries(groups.map((g) => [g.key, g]));
+
+    // role is tallied over the items matching the OTHER facets' selection (status:active)
+    // ⇒ only the roles actually reachable from here. 'worker' belongs to the ENDED
+    // session (s3), so it is GONE — before this fix it was still offered, at count 1,
+    // and clicking it produced zero results.
+    expect(byKey.role.values.map((v) => [v.value, v.count])).toEqual([
+      ['su', 1],
+      ['bee', 1],
+    ]);
+    expect(byKey.role.values.some((v) => v.value === 'worker')).toBe(false);
+    // plan likewise narrows to the active pool: plan-b (the ended session's) drops out.
+    expect(byKey.plan.values.map((v) => [v.value, v.count])).toEqual([['plan-a', 2]]);
+
+    // ...but a facet's OWN values still count as if it weren't filtered, so you can
+    // always switch your selection within it (standard faceted-search behavior).
+    expect(byKey.status.values.map((v) => [v.value, v.count])).toEqual([
+      ['active', 2],
+      ['ended', 1],
+    ]);
+  });
+
   it('carries fleet color through as opaque meta when the fleet facet DOES show', () => {
     // add a second fleet so the facet clears the ≥2 hide-rule
     const withRed = [

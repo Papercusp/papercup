@@ -501,13 +501,20 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
     return () => { clearTimeout(t); ctl.abort(); };
   }, [query, attempt, windowToken]);
 
-  // Facets are computed over the FULL result set (stable counts that don't jump
-  // as you select); the RENDERED results are the selected subset. This is the
-  // "context-dependent" contract: computeFacets hides any facet with <2 distinct
-  // values, so only facets that actually narrow THESE results appear.
+  // The "context-dependent" contract, in two halves:
+  //  · VISIBILITY is decided over the FULL result set — a facet with <2 distinct
+  //    values can't narrow anything, so it never renders; and the facets that DO
+  //    render stay put instead of popping in and out as you select.
+  //  · COUNTS are drill-down aware — passing `selection` tallies each facet's
+  //    values over the items matching the OTHER facets' selections, so a count is
+  //    a promise of what you'd actually get. Without it the counts described the
+  //    unfiltered set and every cross-facet click was a potential dead end:
+  //    picking status:active still advertised "role: mug 1", and clicking it
+  //    landed on "No results match the selected filters" (caught in the live
+  //    pixel-drive, 2026-07-12).
   const facetGroups = useMemo(
-    () => computeFacets(sessions, SESSION_FACETS, { maxValuesPerFacet: 8 }),
-    [sessions],
+    () => computeFacets(sessions, SESSION_FACETS, { maxValuesPerFacet: 8, selection }),
+    [sessions, selection],
   );
   const filteredSessions = useMemo(
     () => sessions.filter(facetPredicate(SESSION_FACETS, selection)),

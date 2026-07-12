@@ -19,15 +19,22 @@ const LS_KEY = 'pc:audienceMode';
 async function saveAudienceMode(mode: AudienceMode): Promise<void> {
   // Broadcast to other tabs before the fetch so the storage event fires promptly.
   try { localStorage.setItem(wsLocalKey(LS_KEY), mode); } catch { /* private browsing */ }
-  const r = await fetch('/api/agent-mcp/operator-voice-prefs', {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ audienceMode: mode }),
-  });
-  if (r.ok) {
-    const next = await r.json() as VoicePrefs;
-    setVoicePrefsClient(next);
-  }
+  // FAIL-SOFT (WI-4342): the caller fires this with `void`, so ANY rejection here
+  // became an *unhandled promise rejection* — a real one, caught by clicking the
+  // toggle while the operator sidecar was unreachable ("TypeError: Load failed").
+  // The localStorage write above has already persisted + cross-tab-broadcast the
+  // choice, so a failed server persist must degrade quietly, not blow up the page.
+  try {
+    const r = await fetch('/api/agent-mcp/operator-voice-prefs', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ audienceMode: mode }),
+    });
+    if (r.ok) {
+      const next = await r.json() as VoicePrefs;
+      setVoicePrefsClient(next);
+    }
+  } catch { /* sidecar down / offline — local choice above still stands */ }
 }
 
 export function AudienceModeSelector() {
