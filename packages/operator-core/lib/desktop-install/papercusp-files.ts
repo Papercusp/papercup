@@ -667,11 +667,17 @@ async function writeSentinelShim(shimPath: string, psuShimPath: string): Promise
     'if [ -n "$ZELLIJ_PANE_ID" ] && [ -n "$ZELLIJ_SESSION_NAME" ]; then\n' +
     '  printf \'%s %s\' "$ZELLIJ_SESSION_NAME" "$ZELLIJ_PANE_ID" > "$HOME/.papercusp/sentinel-pane" 2>/dev/null || true\n' +
     'fi\n' +
-    'model_args=()\n' +
+    // Absent override ⇒ default to a FAST spec: the pane is the papercup-fast
+    // voice front-end and must answer inside the voice response window; the old
+    // absent⇒workspace-default fallback is how it became a too-slow heavy
+    // session (voice-public-release-readiness D-007). Keep in lockstep with the
+    // dev shim (apps/operator/scripts/psu-sentinel.sh).
+    "spec='sonnet:medium'\n" +
     'if [ -s "$HOME/.papercusp/sentinel-model" ]; then\n' +
-    '  spec="$(tr -d \' \\t\\r\\n\' < "$HOME/.papercusp/sentinel-model" 2>/dev/null)"\n' +
-    '  [ -n "$spec" ] && model_args+=("--model=$spec")\n' +
+    '  file_spec="$(tr -d \' \\t\\r\\n\' < "$HOME/.papercusp/sentinel-model" 2>/dev/null)"\n' +
+    '  [ -n "$file_spec" ] && spec="$file_spec"\n' +
     'fi\n' +
+    'model_args=("--model=$spec")\n' +
     `exec ${JSON.stringify(psuShimPath)} --no-picker --agent=claude --role=papercup "\${model_args[@]}"\n`;
   await fs.writeFile(shimPath, body, { mode: 0o755 });
   await fs.chmod(shimPath, 0o755);

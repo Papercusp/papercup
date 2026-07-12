@@ -151,3 +151,51 @@ export async function readRecallHealth(sql: Sql): Promise<RecallHealth> {
     fragmentHits7d: Number(r.fragment_hits ?? 0),
   };
 }
+
+/** Per-surface slice of the same trailing-window aggregate. */
+export interface RecallSurfaceHealth extends RecallHealth {
+  surface: string;
+}
+
+/**
+ * The SAME 7-day aggregate as readRecallHealth, segmented per surface
+ * (orient-recall-quality-2026-07-12 P-006). With every entry point stamping its
+ * own surface (search / orient / initialize / turn-start / claim / create / …,
+ * P-001 + memory-delivery P-005), the blended aggregate can hide a
+ * single-surface regression — e.g. orient's zero-hit-rate spiking (intent
+ * queries too narrow, index degraded for short statements) while chat search
+ * stays healthy. One GROUP BY roundtrip, busiest surfaces first. Consumed by
+ * the memory-health read (knowledge-read.ts); the drift ALERTING for live
+ * retrieval stays with the recall canary (recall-canary.ts) — this is the
+ * observability slice, not a third alert system.
+ */
+export async function readRecallHealthBySurface(sql: Sql): Promise<RecallSurfaceHealth[]> {
+  const rows = (await sql`
+    SELECT
+      surface,
+      count(*)::int                                   AS recalls,
+      count(*) FILTER (WHERE hit_count = 0)::int      AS zero_hits,
+      percentile_cont(0.5) WITHIN GROUP (ORDER BY top_score)
+        FILTER (WHERE top_score IS NOT NULL)          AS p50,
+      percentile_cont(0.9) WITHIN GROUP (ORDER BY top_score)
+        FILTER (WHERE top_score IS NOT NULL)          AS p90,
+      coalesce(sum(fragment_count), 0)::int           AS fragment_hits
+    FROM harness_shared.memory_recall_stats
+    WHERE created_at >= now() - interval '7 days'
+    GROUP BY surface
+    ORDER BY count(*) DESC
+  `) as Array<Record<string, unknown>>;
+  return rows.map((r) => {
+    const recalls = Number(r.recalls ?? 0);
+    const zeroHit = Number(r.zero_hits ?? 0);
+    return {
+      surface: String(r.surface ?? 'unknown'),
+      recalls7d: recalls,
+      zeroHit7d: zeroHit,
+      zeroHitRate7d: recalls > 0 ? zeroHit / recalls : 0,
+      topScoreP50: r.p50 == null ? null : Number(r.p50),
+      topScoreP90: r.p90 == null ? null : Number(r.p90),
+      fragmentHits7d: Number(r.fragment_hits ?? 0),
+    };
+  });
+}

@@ -86,6 +86,28 @@ describe('recordRecallStats', () => {
   });
 });
 
+describe('readRecallHealthBySurface (orient-recall-quality P-006)', () => {
+  const sqlReturning = (rows: Array<Record<string, unknown>>): Sql =>
+    ((_s: TemplateStringsArray, ..._v: unknown[]) => Promise.resolve(rows)) as unknown as Sql;
+
+  it('maps each surface row independently (a single-surface regression stays visible)', async () => {
+    const { readRecallHealthBySurface } = await import('./recall-stats');
+    const rows = await readRecallHealthBySurface(sqlReturning([
+      { surface: 'search', recalls: 100, zero_hits: 10, p50: '0.6', p90: '0.8', fragment_hits: 0 },
+      // orient regressing alone: zero-hit rate 0.9 while search sits at 0.1.
+      { surface: 'orient', recalls: 20, zero_hits: 18, p50: null, p90: null, fragment_hits: 0 },
+    ]));
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ surface: 'search', recalls7d: 100, zeroHitRate7d: 0.1, topScoreP50: 0.6 });
+    expect(rows[1]).toMatchObject({ surface: 'orient', recalls7d: 20, zeroHit7d: 18, zeroHitRate7d: 0.9, topScoreP50: null });
+  });
+
+  it('an empty window yields an empty list (degrade-to-empty, never a throw)', async () => {
+    const { readRecallHealthBySurface } = await import('./recall-stats');
+    expect(await readRecallHealthBySurface(sqlReturning([]))).toEqual([]);
+  });
+});
+
 describe('readRecallHealth', () => {
   const sqlReturning = (rows: Array<Record<string, unknown>>): Sql =>
     ((_s: TemplateStringsArray, ..._v: unknown[]) => Promise.resolve(rows)) as unknown as Sql;

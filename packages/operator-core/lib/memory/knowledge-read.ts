@@ -22,7 +22,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { Sql } from 'postgres';
 import { readInsightsDir, type InsightEntry } from './insights-index';
-import { readRecallHealth, type RecallHealth } from './recall-stats';
+import { readRecallHealth, readRecallHealthBySurface, type RecallHealth, type RecallSurfaceHealth } from './recall-stats';
 import type { MemoryPrecisionSnapshot } from './bench/precision-read';
 import { DOCS_CONTENT_ROOT } from '../agent-tools/docs/_repo-paths';
 
@@ -83,6 +83,14 @@ export interface MemoryHealth extends RecallHealth {
    * when the bench has never run or migration 312 isn't applied yet.
    */
   precision?: MemoryPrecisionSnapshot | null;
+  /**
+   * Per-surface slice of the recall aggregate (orient-recall-quality P-006):
+   * each entry point (search / orient / initialize / turn-start / claim / …)
+   * stamps its own surface, so a single-surface regression — orient's zero-hit
+   * rate spiking while chat search stays healthy — is visible instead of
+   * blended away. Empty when telemetry is unavailable.
+   */
+  recallBySurface: RecallSurfaceHealth[];
 }
 
 /**
@@ -114,8 +122,17 @@ export async function readMemoryHealth(sql: Sql): Promise<MemoryHealth> {
   } catch (err) {
     console.warn('[memory-health] recall-stats read failed (migration 240 applied?):', (err as Error).message);
   }
+  // P-006: the per-surface slice — same degrade-to-empty independence as the
+  // blended aggregate above (the store counts never vanish with telemetry).
+  let recallBySurface: RecallSurfaceHealth[] = [];
+  try {
+    recallBySurface = await readRecallHealthBySurface(sql);
+  } catch {
+    /* telemetry-only — never blocks the health read */
+  }
   return {
     ...recall,
+    recallBySurface,
     totalMemories: Number(r.total_memories ?? 0),
     entityRows: Number(r.entity_rows ?? 0),
     feedback30d: Number(r.feedback_30d ?? 0),
