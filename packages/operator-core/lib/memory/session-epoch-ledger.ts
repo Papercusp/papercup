@@ -36,6 +36,12 @@ function noteMissingRelation(err: unknown): void {
   }
 }
 
+/** memory_session_surfaced.memory_id is `uuid NOT NULL`, so non-conforming ids
+ *  are filtered BEFORE insert (they'd re-inject every port, never error).
+ *  VERIFIED structurally safe (orient-recall-quality-2026-07-12 P-005): every
+ *  memory-bearing table — memory_canonical.id, all memory_vec_*.memory_id —
+ *  is uuid-typed, so a real memory id can never fail this shape. If a NON-uuid
+ *  memory source is ever added, widen the column + this filter together. */
 const UUID_SHAPE = /^[0-9a-f-]{20,}$/i;
 
 /** Opportunistic GC horizon for ledger rows (days). */
