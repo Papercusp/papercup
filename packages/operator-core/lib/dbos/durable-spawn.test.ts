@@ -102,6 +102,8 @@ vi.mock('../pot/started', () => ({ setPotStarted: h.setPotStarted }));
 vi.mock('../overwatch/control-state', () => ({ setOverwatchStarted: h.setOverwatchStarted }));
 vi.mock('../harness/routines/wake-brain-action', () => ({ resolveBrainOwner: h.resolveBrainOwner }));
 vi.mock('../agent-tools/coordination/inbox-wake', () => ({ wakeRecipients: h.wakeRecipients }));
+vi.mock('../harness/improvements/dispatch-ledger', () => ({ markDispatchOrphaned: h.markDispatchOrphaned }));
+vi.mock('../issues-engineer', () => ({ mergeIssuePayload: h.mergeIssuePayload }));
 
 import {
   durableSpawnFire,
@@ -148,6 +150,10 @@ beforeEach(() => {
   h.resolveBrainOwner.mockReset();
   h.resolveBrainOwner.mockResolvedValue('owner-1');
   h.wakeRecipients.mockClear();
+  h.markDispatchOrphaned.mockReset();
+  h.markDispatchOrphaned.mockResolvedValue(true);
+  h.mergeIssuePayload.mockReset();
+  h.mergeIssuePayload.mockResolvedValue(undefined);
   h.sql.mockReset();
   h.sql.mockImplementation(async (...args: unknown[]): Promise<unknown[]> => {
     const strings = args[0] as TemplateStringsArray | string | undefined;
@@ -353,6 +359,34 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     expect(h.loopbackFetch).not.toHaveBeenCalled();
     expect(h.finishSpawn).not.toHaveBeenCalled();
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('gateway wholesale-throttled'));
+    expect(h.markDispatchOrphaned).not.toHaveBeenCalled(); // no improvementDispatch on this body
+  });
+
+  it('EI-9759: closes the dispatch-ledger row (and rolls back the attempt) when a gateway-throttle skip carries an improvementDispatch correlation', async () => {
+    h.gatewayThrottled.value = true;
+    await durableSpawnFireImpl({
+      ...IMPL,
+      body: { kickoff: 'go', improvementDispatch: { dispatchId: 'd-1', itemId: 'EI-9739', attempt: 1 } },
+      spawnRecord: { workspaceId: 'ws', harnessSlug: 'h', childRole: 'worker', itemId: 'EI-9739' },
+    });
+    expect(h.markDispatchOrphaned).toHaveBeenCalledWith(
+      'd-1',
+      'pre-invoke-skip:gateway-wholesale-throttled',
+      expect.stringContaining('attempt 1 not charged'),
+    );
+    expect(h.mergeIssuePayload).toHaveBeenCalledWith('EI-9739', { implementAttempts: 0 });
+  });
+
+  it('EI-9759: a markDispatchOrphaned no-op (already-terminal row) skips the attempt rollback', async () => {
+    h.gatewayThrottled.value = true;
+    h.markDispatchOrphaned.mockResolvedValue(false); // the worker actually resolved first — nothing to undo
+    await durableSpawnFireImpl({
+      ...IMPL,
+      body: { kickoff: 'go', improvementDispatch: { dispatchId: 'd-1', itemId: 'EI-9739', attempt: 1 } },
+      spawnRecord: { workspaceId: 'ws', harnessSlug: 'h', childRole: 'worker', itemId: 'EI-9739' },
+    });
+    expect(h.markDispatchOrphaned).toHaveBeenCalledTimes(1);
+    expect(h.mergeIssuePayload).not.toHaveBeenCalled();
   });
 
   it('lets the gateway dispatch gate flag disable the pre-invoke skip', async () => {
@@ -377,6 +411,21 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     expect(h.loopbackFetch).not.toHaveBeenCalled();
     expect(h.finishSpawn).not.toHaveBeenCalled();
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('no longer exists'));
+  });
+
+  it('EI-9759: a gone-target skip also closes an improvementDispatch-correlated dispatch row', async () => {
+    h.resolveProject.mockResolvedValue(null);
+    await durableSpawnFireImpl({
+      ...IMPL,
+      body: { kickoff: 'go', improvementDispatch: { dispatchId: 'd-2', itemId: 'EI-1', attempt: 2 } },
+      spawnRecord: { workspaceId: 'ws', harnessSlug: 'h', childRole: 'worker', itemId: 'EI-1' },
+    });
+    expect(h.markDispatchOrphaned).toHaveBeenCalledWith(
+      'd-2',
+      'pre-invoke-skip:gone-target',
+      expect.stringContaining('attempt 2 not charged'),
+    );
+    expect(h.mergeIssuePayload).toHaveBeenCalledWith('EI-1', { implementAttempts: 1 });
   });
 
   it('EI-8177: fires normally (fail-open) when the gone-target probe itself errors', async () => {

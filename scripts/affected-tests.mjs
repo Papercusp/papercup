@@ -13,7 +13,7 @@
 //   --all           ignore git diff; run every workspace's tests
 //   --dry           print what would run, don't run
 
-import { execSync, spawnSync } from 'node:child_process';
+import { execSync, execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -157,7 +157,16 @@ function submoduleDirtyPaths() {
   const dirty = [];
   for (const p of paths) {
     try {
-      if (sh(`git -C ${JSON.stringify(p)} status --porcelain`)) dirty.push(p);
+      // stdio pipe: a retired submodule's `fatal: cannot change to '<path>'` is an
+      // EXPECTED, handled condition here. execSync forwards stderr to the parent by
+      // default, so without this a swallowed error still prints a scary `fatal:` line
+      // and reads like a broken run (the EI-1989 failure mode, in reverse).
+      const out = execFileSync('git', ['-C', p, 'status', '--porcelain'], {
+        cwd: ROOT,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim();
+      if (out) dirty.push(p);
     } catch {
       // Retired/broken submodule — skip it, exactly as `=all` used to.
     }
@@ -257,7 +266,7 @@ function affectedWorkspaces() {
       }
     }
     if (!healed) {
-      // `--ignore-submodules=all` (see changedFiles) means a broken retired
+      // `--ignore-submodules=dirty` (see changedFiles) means a broken retired
       // submodule no longer trips this — so a failure HERE is now a GENUINE git
       // problem, not the routine retired-submodule breakage. Make the
       // degrade-to-everything LOUD: the old fallback printed two quiet lines and

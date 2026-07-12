@@ -226,6 +226,80 @@ describe('evaluateLivenessAlarm (pure)', () => {
   });
 });
 
+// EI-9794: signal 5c — autoloop FIRE-RECENCY staleness. Independent of
+// `last_status`/`consecutive_errors` (frozen the instant a loop stops firing)
+// and of the `armed` wake-routine bit (a self-deactivating one-shot's normal
+// resting state is indistinguishable from a failed re-arm).
+describe('evaluateLivenessAlarm — EI-9794 autoloop fire-staleness (5c)', () => {
+  const NOW = 1_000_000_000; // arbitrary fixed "now" for evaluatedAt
+
+  it('(a) expected + stale beyond N x cadence → autoloop-fire-stale blocker', () => {
+    const cadenceSec = 600;
+    const staleForMs = cadenceSec * 1000 * 3 + 60_000; // just past the default 3x threshold
+    const h = mkHealth({ evaluatedAt: NOW });
+    const sigs = evaluateLivenessAlarm(h, null, {
+      autoloopFireRows: [
+        { role: 'kettle', harnessSlug: 'papercusp', lastFiredAtMs: NOW - staleForMs, cadenceSec, expected: true },
+      ],
+    });
+    const sig = sigs.find((s) => s.key === 'autoloop-fire-stale:kettle');
+    expect(sig).toBeDefined();
+    expect(sig?.severity).toBe('blocker');
+    expect(sig?.summary).toContain('kettle@papercusp');
+    expect(sig?.summary).toContain('has not fired in');
+  });
+
+  it('(b) NOT expected → never fires even when lastFiredAtMs is ancient', () => {
+    const h = mkHealth({ evaluatedAt: NOW });
+    const sigs = evaluateLivenessAlarm(h, null, {
+      autoloopFireRows: [
+        { role: 'kettle', harnessSlug: 'papercusp', lastFiredAtMs: NOW - 100 * 3_600_000, cadenceSec: 600, expected: false },
+      ],
+    });
+    expect(sigs.map((s) => s.key)).not.toContain('autoloop-fire-stale:kettle');
+  });
+
+  it('(c) lastFiredAtMs null (never fired yet) → no signal (starting, not dead)', () => {
+    const h = mkHealth({ evaluatedAt: NOW });
+    const sigs = evaluateLivenessAlarm(h, null, {
+      autoloopFireRows: [
+        { role: 'kettle', harnessSlug: 'papercusp', lastFiredAtMs: null, cadenceSec: 600, expected: true },
+      ],
+    });
+    expect(sigs.map((s) => s.key)).not.toContain('autoloop-fire-stale:kettle');
+  });
+
+  it('(d) within the threshold (recent fire) → no signal', () => {
+    const cadenceSec = 600;
+    const h = mkHealth({ evaluatedAt: NOW });
+    const sigs = evaluateLivenessAlarm(h, null, {
+      autoloopFireRows: [
+        { role: 'kettle', harnessSlug: 'papercusp', lastFiredAtMs: NOW - 60_000, cadenceSec, expected: true },
+      ],
+    });
+    expect(sigs.map((s) => s.key)).not.toContain('autoloop-fire-stale:kettle');
+  });
+
+  it('multiple rows are evaluated independently (only the stale one fires)', () => {
+    const cadenceSec = 600;
+    const h = mkHealth({ evaluatedAt: NOW });
+    const sigs = evaluateLivenessAlarm(h, null, {
+      autoloopFireRows: [
+        { role: 'kettle', harnessSlug: 'papercusp', lastFiredAtMs: NOW - cadenceSec * 1000 * 5, cadenceSec, expected: true },
+        { role: 'other-role', harnessSlug: 'papercusp', lastFiredAtMs: NOW - 60_000, cadenceSec, expected: true },
+      ],
+    });
+    const keys = sigs.map((s) => s.key);
+    expect(keys).toContain('autoloop-fire-stale:kettle');
+    expect(keys).not.toContain('autoloop-fire-stale:other-role');
+  });
+
+  it('no autoloopFireRows passed (omitted opt) → no signal (fail-open, not a false negative from an unwired caller)', () => {
+    const h = mkHealth({ evaluatedAt: NOW });
+    expect(evaluateLivenessAlarm(h, null).map((s) => s.key)).not.toContain('autoloop-fire-stale:kettle');
+  });
+});
+
 describe('runLivenessAlarmTick (debounced, transition-only)', () => {
   beforeEach(() => _resetLivenessAlarmDebounce());
 

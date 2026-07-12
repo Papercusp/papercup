@@ -35,6 +35,7 @@
     "@papercusp/failure-detector": "*",
     "@papercusp/flags": "*",
     "@papercusp/locks-core": "*",
+    "@papercusp/memory": "*",
     "@papercusp/model-pricing": "*",
     "@papercusp/orchestrator": "*",
     "@papercusp/p2p-voice": "*",
