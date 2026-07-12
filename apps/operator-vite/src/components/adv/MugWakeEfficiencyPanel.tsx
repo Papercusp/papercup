@@ -27,6 +27,7 @@ import {
   LearningHeroMetric,
   LearningPageHeader,
   LearningVisualEmpty,
+  LearningVisualError,
 } from "./LearningVisuals";
 
 /** A [0,1] ratio → integer percent. */
@@ -117,7 +118,12 @@ export function MugWakeEfficiencyPanel({
         }
       />
 
-      {wakes === 0 ? (
+      {sync.error ? (
+        <LearningVisualError
+          title={`${t("brain")} efficiency unavailable`}
+          onRetry={() => sync.invalidate()}
+        />
+      ) : wakes === 0 ? (
         <LearningVisualEmpty icon={Coffee} title={`No ${t("brain")} wakes`} />
       ) : (
         <>

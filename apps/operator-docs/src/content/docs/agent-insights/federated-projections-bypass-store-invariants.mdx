@@ -1,14 +1,16 @@
 ---
 title: "Auditing a federated table: migrations that MIRROR a working federation don't mirror its code — the writer, the invariants, and the op semantics all stay unimplemented"
-description: "Three release-blocking p2p memory bugs in three days shared one root cause: memory_canonical's federation was built by copying agent_facts' MIGRATIONS, and everything agent_facts' CODE does — stamp the routing key, refuse an unroutable share, maintain the store's side tables, apply a retraction — was silently left out. How to find this class in any federated table."
+description: "Four bugs, one root cause: a capture trigger was copied onto a table whose ROUTING KEY nothing writes — or that doesn't even have the column. Three were release-blocking p2p memory bugs (memory_canonical mirrored agent_facts' MIGRATIONS, none of its CODE); the fourth made two tables unwritable in the git-export lane. Depending on the destination column's nullability the same defect either strands silently or aborts the caller's write. How to find it."
 discovered: 2026-07-12
-tags: ["federation", "p2p", "memory", "projections", "auditing", "invariants"]
+tags: ["federation", "p2p", "memory", "projections", "auditing", "invariants", "triggers", "git-export"]
 status: active
 documents:
   - "packages/operator-core/lib/sync/hyperbee/projections/p2p-memories.ts"
   - "packages/operator-core/lib/memory/federated-vec-backfill.ts"
   - "packages/operator-core/lib/agent-tools/memory/remember.ts"
   - "packages/operator-core/lib/agent-facts/store.ts"
+  - "packages/operator-core/lib/harness-state/git-export/ensure-git-outbox.ts"
+  - "packages/operator-core/lib/harness-state/table-registry.ts"
   - "libs/generic/memory/src/canonical-store.ts"
 plans:
   - "mem0-cross-machine-federation-2026-07-10"

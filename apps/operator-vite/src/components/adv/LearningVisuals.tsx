@@ -1,6 +1,11 @@
 import type { CSSProperties, ReactNode } from "react";
 import * as Collapsible from "@radix-ui/react-collapsible";
-import { ChevronDown, type LucideIcon } from "lucide-react";
+import {
+  AlertTriangle,
+  ChevronDown,
+  RefreshCw,
+  type LucideIcon,
+} from "lucide-react";
 
 export type LearningTone = "good" | "warn" | "bad" | "neutral" | "accent";
 
@@ -167,6 +172,27 @@ export function LearningVisualEmpty({
   );
 }
 
+export function LearningVisualError({
+  title = "Data unavailable",
+  onRetry,
+}: {
+  title?: string;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="pc-learning-visual__error" role="alert">
+      <span className="pc-learning-visual__emptyicon" aria-hidden>
+        <AlertTriangle size={14} />
+      </span>
+      <strong>{title}</strong>
+      <button type="button" onClick={onRetry} aria-label={`Retry ${title}`}>
+        <RefreshCw size={12} aria-hidden />
+        Retry
+      </button>
+    </div>
+  );
+}
+
 export function LearningDisclosure({
   label,
   count,
@@ -244,6 +270,10 @@ export function LearningVisualStyles() {
       .pc-learning-visual__empty { min-height: 38px; display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px dashed color-mix(in srgb, var(--border) 72%, transparent); border-radius: 8px; color: var(--fg-mute); }
       .pc-learning-visual__emptyicon { display: grid; place-items: center; width: 24px; height: 24px; flex: none; border: 1px solid var(--border); border-radius: 50%; color: var(--fg-mute); background: var(--bg-2); }
       .pc-learning-visual__empty strong { color: var(--fg-dim); font-size: 11px; font-weight: 650; }
+      .pc-learning-visual__error { min-height: 38px; display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid color-mix(in srgb, #fb7185 30%, var(--border)); border-radius: 8px; color: #fb7185; background: color-mix(in srgb, #fb7185 4%, transparent); }
+      .pc-learning-visual__error strong { color: var(--fg-dim); font-size: 11px; font-weight: 650; }
+      .pc-learning-visual__error button { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; min-height: 25px; padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-2); color: var(--fg); cursor: pointer; font: inherit; font-size: 10px; font-weight: 650; }
+      .pc-learning-visual__error button:hover { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); color: var(--accent); }
       .pc-learning-visual__disclosure { border-top: 1px solid color-mix(in srgb, var(--border) 68%, transparent); }
       .pc-learning-visual__disclosure-trigger { width: 100%; min-height: 30px; display: flex; align-items: center; gap: 6px; padding: 5px 3px; border: 0; background: transparent; color: var(--fg-mute); cursor: pointer; font: inherit; font-size: 10.5px; font-weight: 650; text-align: left; }
       .pc-learning-visual__disclosure-trigger:hover { color: var(--fg); }

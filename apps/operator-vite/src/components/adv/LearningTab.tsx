@@ -76,6 +76,7 @@ import {
   LearningHeroMetric,
   LearningPageHeader,
   LearningVisualEmpty,
+  LearningVisualError,
   LearningVisualStyles,
 } from "./LearningVisuals";
 
@@ -744,9 +745,10 @@ function ImprovementsView({
       {sync.loading && !digest ? (
         <p className="pc-learning__empty">Loading the improvements backlog…</p>
       ) : sync.error ? (
-        <p className="pc-learning__empty">
-          Improvements feed unavailable: {sync.error.message}
-        </p>
+        <LearningVisualError
+          title="Improvements unavailable"
+          onRetry={() => sync.invalidate()}
+        />
       ) : (showDashboard ? rows : sparseRows).length === 0 ? (
         <LearningVisualEmpty icon={CheckCircle2} title="Nothing in this lane" />
       ) : !showDashboard ? (
@@ -1153,9 +1155,10 @@ function GymView({
       {sync.loading && !snap ? (
         <p className="pc-learning__empty">Loading gym experiments…</p>
       ) : sync.error ? (
-        <p className="pc-learning__empty">
-          Gym feed unavailable: {sync.error.message}
-        </p>
+        <LearningVisualError
+          title="Gym unavailable"
+          onRetry={() => sync.invalidate()}
+        />
       ) : proposals.length === 0 ? (
         <LearningVisualEmpty icon={Dumbbell} title="No gym experiments" />
       ) : (
@@ -1377,9 +1380,10 @@ function ApiaryView({
       {sync.loading && !sync.data ? (
         <p className="pc-learning__empty">Loading the benchmark…</p>
       ) : sync.error ? (
-        <p className="pc-learning__empty">
-          Benchmark unavailable: {sync.error.message}
-        </p>
+        <LearningVisualError
+          title="Benchmark unavailable"
+          onRetry={() => sync.invalidate()}
+        />
       ) : !latest && !pending ? (
         <LearningVisualEmpty icon={Gauge} title="No benchmark runs" />
       ) : (
@@ -2755,9 +2759,10 @@ export function ScoutView({
           Loading the {t("scout", { lower: true })} ledger…
         </p>
       ) : sync.error ? (
-        <p className="pc-learning__empty">
-          {t("scout")} feed unavailable: {sync.error.message}
-        </p>
+        <LearningVisualError
+          title={`${t("scout")} unavailable`}
+          onRetry={() => sync.invalidate()}
+        />
       ) : filteredRecent.length === 0 ? (
         <LearningVisualEmpty icon={Radar} title={`No routed ideas`} />
       ) : (
@@ -3068,9 +3073,10 @@ function LearningsView({
             Loading the {t("pot", { lower: true })}&rsquo;s shared memory…
           </p>
         ) : snap?.unavailable ? (
-          <p className="pc-learning__quietempty">
-            Memory store unavailable — try reloading.
-          </p>
+          <LearningVisualError
+            title="Shared memory unavailable"
+            onRetry={() => sync.invalidate()}
+          />
         ) : filtered.length === 0 ? (
           <div className="pc-learning__quietempty" role="status">
             <Brain size={14} aria-hidden />

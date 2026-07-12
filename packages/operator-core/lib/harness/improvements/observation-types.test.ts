@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest';
 import {
   validateObservationRatings,
   validateScorecardCompleteness,
+  validateScorecardRatingValues,
   asStructuredObservation,
   ObservationEvidenceError,
   OBSERVATION_RATING_SCALE,
@@ -194,5 +195,69 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
     expect(asStructuredObservation('x')).toBeUndefined();
     expect(asStructuredObservation({})).toBeUndefined();
     expect(asStructuredObservation({ unknownOnly: 1 })).toBeUndefined();
+  });
+});
+
+describe('validateScorecardRatingValues — the P-002 rating-VALUE gate (rubric-system-improvements-2026-07-12)', () => {
+  const rubric = {
+    ratingScale: ['healthy', 'degraded', 'broken', 'unknown'],
+    criteria: [
+      { key: 'placement' },
+      { key: 'wake', ratingScale: ['exemplary', 'pass', 'partial', 'fail', 'severe', 'unknown'] },
+    ],
+  };
+  const sc = (ratings: Record<string, { rating: string; evidence: string }>): StructuredObservation => ({
+    rubricRef: 'r',
+    ratings,
+  });
+
+  it('passes on-scale ratings (rubric default + per-criterion override, case-insensitive)', () => {
+    expect(() =>
+      validateScorecardRatingValues(
+        sc({
+          placement: { rating: 'Healthy', evidence: 'e' },
+          wake: { rating: 'exemplary', evidence: 'e' },
+        }),
+        rubric,
+      ),
+    ).not.toThrow();
+  });
+
+  it("rejects an off-scale rating, naming the key, the value, and the allowed values (the silent-exclusion class of the missing-pass-vocabulary bug)", () => {
+    let err: unknown;
+    try {
+      validateScorecardRatingValues(sc({ placement: { rating: 'pas', evidence: 'e' } }), rubric);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ObservationEvidenceError);
+    const msg = String((err as Error).message);
+    expect(msg).toContain("'placement'");
+    expect(msg).toContain("'pas'");
+    expect(msg).toContain('healthy | degraded | broken | unknown');
+  });
+
+  it('a per-criterion scale override governs that criterion (rubric default does not leak in)', () => {
+    // 'healthy' is on the RUBRIC scale but not on wake's override.
+    expect(() => validateScorecardRatingValues(sc({ wake: { rating: 'healthy', evidence: 'e' } }), rubric)).toThrow(
+      ObservationEvidenceError,
+    );
+  });
+
+  it("'unknown' is always accepted, even off a scale that omits it", () => {
+    const noUnknown = { ratingScale: ['healthy', 'degraded'], criteria: [{ key: 'c' }] };
+    expect(() => validateScorecardRatingValues(sc({ c: { rating: 'unknown', evidence: 'e' } }), noUnknown)).not.toThrow();
+  });
+
+  it('skips when the rubric is null/unloaded or scale-less (unenforceable, like completeness)', () => {
+    expect(() => validateScorecardRatingValues(sc({ c: { rating: 'whatever', evidence: 'e' } }), null)).not.toThrow();
+    expect(() =>
+      validateScorecardRatingValues(sc({ c: { rating: 'whatever', evidence: 'e' } }), { criteria: [{ key: 'c' }] }),
+    ).not.toThrow();
+  });
+
+  it('passes free-text / no-ratings observations unconditionally', () => {
+    expect(() => validateScorecardRatingValues({ kind: 'friction' }, rubric)).not.toThrow();
+    expect(() => validateScorecardRatingValues(undefined, rubric)).not.toThrow();
   });
 });

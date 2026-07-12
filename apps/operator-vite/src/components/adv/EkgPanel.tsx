@@ -25,6 +25,7 @@ import {
   LearningHeroMetric,
   LearningPageHeader,
   LearningVisualEmpty,
+  LearningVisualError,
 } from "./LearningVisuals";
 
 function metricValue(feature: string, value: number | null): string {
@@ -157,7 +158,9 @@ export function EkgPanel({
         }
       />
 
-      {shifts.length === 0 ? (
+      {sync.error ? (
+        <LearningVisualError title="EKG unavailable" onRetry={() => sync.invalidate()} />
+      ) : shifts.length === 0 ? (
         <LearningVisualEmpty icon={Activity} title="No behavioral shifts" />
       ) : (
         <>

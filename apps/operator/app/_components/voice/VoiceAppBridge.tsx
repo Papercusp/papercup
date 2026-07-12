@@ -29,6 +29,7 @@ import {
   onFinalUtterance,
   subscribeVoiceState,
   cancelAllSpeech,
+  getVoiceState,
   type VoiceState,
 } from './voice-mode';
 import { routeVoiceToSentinelPane, drainSentinelOutput } from './voice-sentinel-bridge';
@@ -104,13 +105,11 @@ function hasHigherPriorityConsumer(): boolean {
 }
 
 export function VoiceAppBridge(): null {
-  const voiceStateRef = useRef<VoiceState>({
-    mode: 'off',
-    status: 'off',
-    supported: false,
-    lastTranscript: '',
-    speakingRole: null,
-  });
+  // Seed from the live module state instead of a hand-enumerated literal —
+  // the old partial literal silently went stale every time VoiceState grew
+  // a field (and eventually stopped typechecking). subscribeVoiceState
+  // overwrites it on the first change either way.
+  const voiceStateRef = useRef<VoiceState>(getVoiceState());
 
   useEffect(() => {
     const unsubState = subscribeVoiceState((s) => {

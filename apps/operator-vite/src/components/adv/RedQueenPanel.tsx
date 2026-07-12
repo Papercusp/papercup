@@ -25,6 +25,7 @@ import {
   LearningHeroMetric,
   LearningPageHeader,
   LearningVisualEmpty,
+  LearningVisualError,
 } from "./LearningVisuals";
 
 function ms(v: number | null): string {
@@ -116,7 +117,9 @@ export function RedQueenPanel({
         }
       />
 
-      {classes.length === 0 ? (
+      {sync.error ? (
+        <LearningVisualError title="Red Queen unavailable" onRetry={() => sync.invalidate()} />
+      ) : classes.length === 0 ? (
         <LearningVisualEmpty icon={HeartPulse} title="No self-heal drills" />
       ) : (
         <>

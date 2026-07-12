@@ -101,7 +101,7 @@ describe("RedQueenPanel", () => {
     expect(document.querySelector(".pc-rq__waterfall")).toBeTruthy();
   });
 
-  it('shows "zero leaks" when no leak check failed', () => {
+  it("foregrounds unresolved drills even when no leak check failed", () => {
     rqResult = {
       data: [
         {
@@ -118,7 +118,8 @@ describe("RedQueenPanel", () => {
       invalidate: vi.fn(),
     };
     render(<RedQueenPanel />);
-    expect(screen.getByText("zero leaks")).toBeTruthy();
+    expect(screen.getAllByText("1 unresolved").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Unresolved")).toBeTruthy();
   });
 
   it("renders the dark / no-drills empty state on an empty store", () => {

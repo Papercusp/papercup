@@ -44,6 +44,16 @@ vi.mock('./voice-mode', () => ({
     h.stateCb = cb;
     return () => {};
   },
+  // The bridge seeds its state ref from the live module state (no more
+  // hand-enumerated partial literal). Off-state default; tests push their
+  // own state through h.stateCb.
+  getVoiceState: () => ({
+    mode: 'off', status: 'off', supported: false,
+    hasWebSpeechSTT: false, hasWebSpeechTTS: false,
+    lastTranscript: '', speakingRole: null, wakeDetected: false, userSpoke: false,
+    micOwnedByFullAgent: false, audioReceiving: false,
+    processingTranscript: false, awaitingResponse: false, wakeListening: false,
+  }),
   speak: h.speak,
   cancelAllSpeech: h.cancelAllSpeech,
 }));

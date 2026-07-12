@@ -23,6 +23,7 @@ import {
   LearningHeroMetric,
   LearningPageHeader,
   LearningVisualEmpty,
+  LearningVisualError,
 } from "./LearningVisuals";
 
 const TIER_TONE: Record<string, string> = {
@@ -160,7 +161,12 @@ export function ExperimentsPanel({
         }
       />
 
-      {!latest ? (
+      {sync.error ? (
+        <LearningVisualError
+          title="Experiments unavailable"
+          onRetry={() => sync.invalidate()}
+        />
+      ) : !latest ? (
         <LearningVisualEmpty icon={FlaskConical} title="No experiment runs" />
       ) : (
         <>

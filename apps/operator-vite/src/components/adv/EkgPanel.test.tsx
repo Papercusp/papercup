@@ -106,8 +106,9 @@ describe("EkgPanel", () => {
     expect(
       screen.getAllByText("Detected shifts").length,
     ).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText("Sessions 7d")).toBeTruthy();
-    expect(screen.getByText("Embedded")).toBeTruthy();
+    expect(screen.getByText("Window")).toBeTruthy();
+    expect(screen.getByText("All shifts")).toBeTruthy();
+    expect(screen.getByText("5.0%")).toBeTruthy();
     expect(document.querySelector(".pc-ekg__wave")).toBeTruthy();
   });
 
@@ -175,5 +176,21 @@ describe("EkgPanel", () => {
     };
     render(<EkgPanel />);
     expect(screen.getByText("No behavioral shifts")).toBeTruthy();
+  });
+
+  it("renders a quiet retry state without exposing transport details", () => {
+    const invalidate = vi.fn();
+    ekgResult = {
+      data: undefined,
+      loading: false,
+      fetching: false,
+      error: new Error("socket secret"),
+      invalidate,
+    };
+    render(<EkgPanel />);
+    expect(screen.getByText("EKG unavailable")).toBeTruthy();
+    expect(screen.queryByText("socket secret")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Retry EKG unavailable" }));
+    expect(invalidate).toHaveBeenCalledTimes(1);
   });
 });

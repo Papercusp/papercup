@@ -851,7 +851,7 @@ describe("LearningTab — Benchmark view", () => {
     };
     render(<LearningTab />);
     expect(screen.getAllByText("pending").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText(/waiting for a scored result/)).toBeTruthy();
+    expect(screen.getByText(/pending7 · 0\/4/)).toBeTruthy();
     expect(screen.getAllByText("5.950").length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByText("first generation")).toBeNull();
     expect(
