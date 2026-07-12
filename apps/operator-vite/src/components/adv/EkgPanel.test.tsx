@@ -103,9 +103,9 @@ describe("EkgPanel", () => {
     // The unattributable shift carries the alarm chip; the attributed one its cause count.
     expect(screen.getByText("unattributable")).toBeTruthy();
     expect(screen.getByText("1 cause")).toBeTruthy();
-    expect(screen.getAllByText("Detected shifts").length).toBeGreaterThanOrEqual(
-      1,
-    );
+    expect(
+      screen.getAllByText("Detected shifts").length,
+    ).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("Sessions 7d")).toBeTruthy();
     expect(screen.getByText("Embedded")).toBeTruthy();
     expect(document.querySelector(".pc-ekg__wave")).toBeTruthy();

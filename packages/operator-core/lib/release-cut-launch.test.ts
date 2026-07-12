@@ -16,6 +16,7 @@ import {
   collectHandoff,
   preflightCut,
   isReleaseArtifact,
+  isUpdaterArtifact,
   CUT_UNIT,
   CUT_DONE,
   CUT_LOG,
@@ -135,11 +136,26 @@ describe('isReleaseArtifact', () => {
       'papercusp-gui_0.0.8_amd64.deb',
       'Papercusp GUI_0.0.8_universal.app.tar.gz',
       'Papercusp GUI_0.0.8_x64-setup.exe',
+      'Papercusp Server_0.0.8_x64-setup-1.bin', // Inno disk-spanning payload slice (WI-4243)
+      'Papercusp Server_0.0.8_x64-setup-12.bin',
     ]) {
       expect(isReleaseArtifact(n)).toBe(true);
     }
     expect(isReleaseArtifact('serve.mjs')).toBe(false);
     expect(isReleaseArtifact('build-provenance.json')).toBe(false);
+    expect(isReleaseArtifact('random.bin')).toBe(false); // only -setup-N.bin slices, not any .bin
+  });
+});
+
+describe('isUpdaterArtifact', () => {
+  it('only the updater-feed types require a .sig; native installers do not', () => {
+    expect(isUpdaterArtifact('Papercusp GUI.app.tar.gz')).toBe(true);
+    expect(isUpdaterArtifact('papercusp-gui_0.0.8_amd64.AppImage')).toBe(true);
+    expect(isUpdaterArtifact('app_0.0.8_x64.nsis.zip')).toBe(true);
+    expect(isUpdaterArtifact('Papercusp GUI_0.0.8_universal-apple-darwin.dmg')).toBe(false);
+    expect(isUpdaterArtifact('Papercusp Server_0.0.8_x64-setup.exe')).toBe(false);
+    expect(isUpdaterArtifact('Papercusp Server_0.0.8_x64-setup-1.bin')).toBe(false);
+    expect(isUpdaterArtifact('papercusp-gui_0.0.8_amd64.deb')).toBe(false);
   });
 });
 
@@ -152,23 +168,28 @@ describe('collectHandoff', () => {
   const tree = [
     appimage,
     `${appimage}.sig`,
-    deb, // deb has NO .sig → unsigned
+    deb, // deb has NO .sig → unsigned (informational — deb is not an updater artifact)
     `${bundle}/appimage/papercusp-gui_0.0.7_amd64.AppImage`, // OLD version → excluded
     `${targetRoot}/release/latest.json`,
     `${bundle}/appimage/build-provenance.json`,
     `${targetRoot}/release/deps/papercusp-gui_0.0.8_amd64.AppImage`, // not in a bundle/ dir → excluded
     `${targetRoot}/release/serve.mjs`, // not an artifact
   ];
+  // Single-root deps: no relocated cargo target dir, provenance unreadable (walk-only).
   const deps = {
-    exists: (p: string) => p === targetRoot,
+    exists: (p: string) => p === targetRoot || tree.includes(p),
     listFiles: () => tree,
     fileSize: () => 1024,
     sha256: (p: string) => `sha(${p})`,
+    readFile: () => '{}',
+    cargoTargetRoot: () => null,
+    realpath: (p: string) => p,
   };
 
   it('collects only version-scoped, in-bundle artifacts + their sig/manifest/provenance', () => {
     const h = collectHandoff('0.0.8', { root }, deps);
     expect(h.found).toBe(true);
+    expect(h.scannedRoots).toEqual([targetRoot]);
     const names = h.artifacts.map((a) => a.name).sort();
     expect(names).toEqual(['papercusp-gui_0.0.8_amd64.AppImage', 'papercusp-gui_0.0.8_amd64.deb']);
     // old version + non-bundle + serve.mjs are all excluded
@@ -176,19 +197,141 @@ describe('collectHandoff', () => {
     expect(h.manifests).toEqual([`${targetRoot}/release/latest.json`]);
     expect(h.provenance).toEqual([`${bundle}/appimage/build-provenance.json`]);
   });
-  it('flags the unsigned artifact (a ship blocker) and marks the signed one', () => {
+  it('an unsigned NON-updater artifact (deb) is informational, not a blocker (WI-4243)', () => {
     const h = collectHandoff('0.0.8', { root }, deps);
     const appEntry = h.artifacts.find((a) => a.name.endsWith('.AppImage'))!;
     const debEntry = h.artifacts.find((a) => a.name.endsWith('.deb'))!;
     expect(appEntry.signed).toBe(true);
     expect(debEntry.signed).toBe(false);
-    expect(h.unsignedNames).toEqual(['papercusp-gui_0.0.8_amd64.deb']);
+    expect(h.unsignedNames).toEqual([]); // deb is not an updater artifact → no blocker
+    expect(h.unsignedInfoNames).toEqual(['papercusp-gui_0.0.8_amd64.deb']);
     expect(appEntry.sha256).toBe(`sha(${appimage})`);
   });
-  it('found:false when the target tree does not exist', () => {
+  it('an unsigned UPDATER artifact (AppImage) IS a blocker', () => {
+    const noSig = tree.filter((f) => f !== `${appimage}.sig`);
+    const h = collectHandoff('0.0.8', { root }, { ...deps, exists: (p) => p === targetRoot || noSig.includes(p), listFiles: () => noSig });
+    expect(h.unsignedNames).toEqual(['papercusp-gui_0.0.8_amd64.AppImage']);
+    expect(h.unsignedInfoNames).toEqual(['papercusp-gui_0.0.8_amd64.deb']);
+  });
+  it('found:false when no scannable root exists', () => {
     const h = collectHandoff('0.0.8', { root }, { ...deps, exists: () => false });
     expect(h.found).toBe(false);
+    expect(h.scannedRoots).toEqual([]);
     expect(h.artifacts).toEqual([]);
+  });
+
+  it('collects the windows Inno setup.exe AND its -setup-N.bin payload slices; their missing sigs are informational (WI-4243)', () => {
+    const inno = `${targetRoot}/windows-vm/bundle/inno`;
+    const winTree = [
+      `${inno}/Papercusp GUI_0.0.8_x64-setup.exe`,
+      `${inno}/Papercusp Server_0.0.8_x64-setup.exe`,
+      `${inno}/Papercusp Server_0.0.8_x64-setup-1.bin`,
+      `${inno}/Papercusp Server_0.0.8_x64-setup-2.bin`,
+    ];
+    const h = collectHandoff('0.0.8', { root }, { ...deps, exists: (p) => p === targetRoot || winTree.includes(p), listFiles: () => winTree });
+    expect(h.artifacts.map((a) => a.name).sort()).toEqual([
+      'Papercusp GUI_0.0.8_x64-setup.exe',
+      'Papercusp Server_0.0.8_x64-setup-1.bin',
+      'Papercusp Server_0.0.8_x64-setup-2.bin',
+      'Papercusp Server_0.0.8_x64-setup.exe',
+    ]);
+    expect(h.unsignedNames).toEqual([]); // none of these are updater artifacts
+    expect(h.unsignedInfoNames).toHaveLength(4);
+  });
+
+  it('provenance pass catches the VERSIONLESS mac .app.tar.gz updater tarballs (subpath names, WI-4243)', () => {
+    const macBundle = `${targetRoot}/universal-apple-darwin/release/bundle`;
+    const dmg = `${macBundle}/dmg/Papercusp GUI_0.0.8_universal-apple-darwin.dmg`;
+    const tgz = `${macBundle}/macos/Papercusp GUI.app.tar.gz`;
+    const prov = `${macBundle}/build-provenance.json`;
+    const macTree = [dmg, tgz, `${tgz}.sig`, prov];
+    const provJson = JSON.stringify({
+      version: '0.0.8',
+      artifacts: [
+        { name: 'dmg/Papercusp GUI_0.0.8_universal-apple-darwin.dmg', sig: false },
+        { name: 'macos/Papercusp GUI.app.tar.gz', sig: true },
+      ],
+    });
+    const h = collectHandoff('0.0.8', { root }, {
+      ...deps,
+      exists: (p) => p === targetRoot || macTree.includes(p),
+      listFiles: () => macTree,
+      readFile: (p) => (p === prov ? provJson : '{}'),
+    });
+    const names = h.artifacts.map((a) => a.name).sort();
+    // dmg via the walk (version in name); the versionless tarball ONLY via provenance.
+    expect(names).toEqual(['Papercusp GUI_0.0.8_universal-apple-darwin.dmg', 'macos/Papercusp GUI.app.tar.gz']);
+    const tgzEntry = h.artifacts.find((a) => a.name.endsWith('.app.tar.gz'))!;
+    expect(tgzEntry.path).toBe(tgz);
+    expect(tgzEntry.signed).toBe(true);
+    expect(h.unsignedNames).toEqual([]); // dmg unsigned is informational
+    expect(h.unsignedInfoNames).toEqual(['Papercusp GUI_0.0.8_universal-apple-darwin.dmg']);
+  });
+
+  it('provenance pass resolves PRE-fix basename-only names via a unique basename match under the provenance dir', () => {
+    const macBundle = `${targetRoot}/universal-apple-darwin/release/bundle`;
+    const tgz = `${macBundle}/macos/Papercusp GUI.app.tar.gz`;
+    const prov = `${macBundle}/build-provenance.json`;
+    const macTree = [tgz, `${tgz}.sig`, prov];
+    const provJson = JSON.stringify({ version: '0.0.8', artifacts: [{ name: 'Papercusp GUI.app.tar.gz' }] });
+    const h = collectHandoff('0.0.8', { root }, {
+      ...deps,
+      exists: (p) => p === targetRoot || macTree.includes(p),
+      listFiles: () => macTree,
+      readFile: (p) => (p === prov ? provJson : '{}'),
+    });
+    expect(h.artifacts).toHaveLength(1);
+    expect(h.artifacts[0]!.path).toBe(tgz);
+    expect(h.artifacts[0]!.signed).toBe(true);
+  });
+
+  it('a provenance for a DIFFERENT version contributes nothing', () => {
+    const macBundle = `${targetRoot}/universal-apple-darwin/release/bundle`;
+    const tgz = `${macBundle}/macos/Papercusp GUI.app.tar.gz`;
+    const prov = `${macBundle}/build-provenance.json`;
+    const macTree = [tgz, prov];
+    const provJson = JSON.stringify({ version: '0.0.7', artifacts: [{ name: 'macos/Papercusp GUI.app.tar.gz' }] });
+    const h = collectHandoff('0.0.8', { root }, {
+      ...deps,
+      exists: (p) => p === targetRoot || macTree.includes(p),
+      listFiles: () => macTree,
+      readFile: (p) => (p === prov ? provJson : '{}'),
+    });
+    expect(h.found).toBe(false);
+    expect(h.artifacts).toEqual([]);
+  });
+
+  it('scans the relocated cargo target_directory as a SECOND root (the linux leg, WI-4243)', () => {
+    const cargoRoot = '/fake/cargo-target';
+    const linuxDeb = `${cargoRoot}/release/bundle/deb/papercusp-gui_0.0.8_amd64.deb`;
+    const linuxTree = [linuxDeb, `${linuxDeb}.sig`];
+    const h = collectHandoff('0.0.8', { root }, {
+      ...deps,
+      cargoTargetRoot: () => cargoRoot,
+      exists: (p) => p === targetRoot || p === cargoRoot || tree.includes(p) || linuxTree.includes(p),
+      listFiles: (d) => (d === cargoRoot ? linuxTree : tree),
+    });
+    expect(h.scannedRoots).toEqual([targetRoot, cargoRoot]);
+    expect(h.artifacts.some((a) => a.path === linuxDeb)).toBe(true);
+    const linuxEntry = h.artifacts.find((a) => a.path === linuxDeb)!;
+    expect(linuxEntry.signed).toBe(true);
+  });
+
+  it('de-dupes the cargo root when it is the SAME tree as src-tauri/target (realpath)', () => {
+    let listCalls = 0;
+    const h = collectHandoff('0.0.8', { root }, {
+      ...deps,
+      cargoTargetRoot: () => '/fake/cargo-target',
+      exists: (p) => p === targetRoot || p === '/fake/cargo-target' || tree.includes(p),
+      realpath: () => '/real/shared-target', // both roots resolve to one tree
+      listFiles: () => {
+        listCalls++;
+        return tree;
+      },
+    });
+    expect(h.scannedRoots).toHaveLength(1);
+    expect(listCalls).toBe(1);
+    expect(h.artifacts).toHaveLength(2); // no duplicated artifacts
   });
 });
 

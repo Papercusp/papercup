@@ -110,7 +110,10 @@ export default function ObservationsPanel(
             <span className="pc-observations__signal">
               <i
                 aria-hidden
-                style={{ background: OBSERVATION_KIND_COLOR[row.kind] ?? "var(--accent)" }}
+                style={{
+                  background:
+                    OBSERVATION_KIND_COLOR[row.kind] ?? "var(--accent)",
+                }}
               />
               {KIND_LABEL[row.kind] ?? row.kind}
             </span>

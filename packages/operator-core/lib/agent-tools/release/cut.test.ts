@@ -112,6 +112,7 @@ describe('release:cut — handoff (LOCAL deliverable)', () => {
   const found: HandoffResult = {
     version: '0.0.8',
     targetRoot: '/root/papercusp-desktop/src-tauri/target',
+    scannedRoots: ['/root/papercusp-desktop/src-tauri/target'],
     found: true,
     artifacts: [
       { path: '/a/x.AppImage', name: 'x.AppImage', bytes: 1, sha256: 'deadbeef', signed: true },
@@ -119,6 +120,7 @@ describe('release:cut — handoff (LOCAL deliverable)', () => {
     manifests: ['/a/latest.json'],
     provenance: ['/a/build-provenance.json'],
     unsignedNames: [],
+    unsignedInfoNames: [],
   };
 
   it('rejects a malformed version before touching the fs', async () => {
@@ -135,17 +137,33 @@ describe('release:cut — handoff (LOCAL deliverable)', () => {
     expect(b.shipGate).toMatch(/release-verify-provenance/);
     expect(b.note).toMatch(/Never publish to GitHub/i);
   });
-  it('loudly blocks hand-off when an artifact is unsigned', async () => {
-    handoffM.mockReturnValue({ ...found, unsignedNames: ['x.deb'], artifacts: [{ ...found.artifacts[0]!, signed: false, name: 'x.deb' }] });
+  it('loudly blocks hand-off when an UPDATER artifact is unsigned', async () => {
+    handoffM.mockReturnValue({ ...found, unsignedNames: ['x.AppImage'], artifacts: [{ ...found.artifacts[0]!, signed: false }] });
     const b = body(await tool.handler({ op: 'handoff', version: '0.0.8' } as never, { role: 'operator' } as never));
     expect(b.shipGate).toMatch(/UNSIGNED/);
-    expect(b.shipGate).toMatch(/x\.deb/);
+    expect(b.shipGate).toMatch(/x\.AppImage/);
+  });
+  it('an unsigned NON-updater artifact (dmg) is informational, NOT a blocker (WI-4243)', async () => {
+    handoffM.mockReturnValue({
+      ...found,
+      unsignedInfoNames: ['y_0.0.8.dmg'],
+      artifacts: [
+        ...found.artifacts,
+        { path: '/a/y_0.0.8.dmg', name: 'y_0.0.8.dmg', bytes: 1, sha256: 'cafef00d', signed: false },
+      ],
+    });
+    const b = body(await tool.handler({ op: 'handoff', version: '0.0.8' } as never, { role: 'operator' } as never));
+    expect(b.shipGate).toMatch(/All updater artifacts are signed/);
+    expect(b.shipGate).not.toMatch(/Do NOT hand these over/);
+    expect(b.shipGate).toMatch(/y_0\.0\.8\.dmg/); // still disclosed, as info
+    expect(b.shipGate).toMatch(/not a blocker/);
   });
   it('found:false when nothing was cut for that version', async () => {
-    handoffM.mockReturnValue({ version: '0.0.9', targetRoot: '/t', found: false, artifacts: [], manifests: [], provenance: [], unsignedNames: [] });
+    handoffM.mockReturnValue({ version: '0.0.9', targetRoot: '/t', scannedRoots: ['/t', '/cargo-t'], found: false, artifacts: [], manifests: [], provenance: [], unsignedNames: [], unsignedInfoNames: [] });
     const b = body(await tool.handler({ op: 'handoff', version: '0.0.9' } as never, { role: 'cup' } as never));
     expect(b.ok).toBe(false);
     expect(b.reason).toMatch(/no 0\.0\.9 artifacts/);
+    expect(b.reason).toMatch(/\/cargo-t/); // every scanned root is named, not just src-tauri/target
   });
 });
 
