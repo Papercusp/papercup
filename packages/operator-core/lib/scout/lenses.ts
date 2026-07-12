@@ -205,10 +205,26 @@ function categoryLabel(c: MetaPatternCategory): string {
   }
 }
 
+/** One rendered pattern line — the format the ideators cite refs from. */
+function patternLine(p: MetaPattern): string {
+  const cat = p.category ? categoryLabel(p.category) : 'Pattern';
+  const detail = p.detail ? ` — ${p.detail}` : '';
+  return `- [${cat}] (ref: ${p.ref}) ${p.summary}${detail}`;
+}
+
 /**
  * Render the digest as the grounded substrate for an ideator's user prompt:
  * each meta-pattern as a line tagged with its category and its `ref` (which the
  * ideator must cite in `addressesPatternRefs`). Deterministic ordering.
+ *
+ * DELTA-FIRST (blender-self-learning-2026-07-12 P-003 / WI-4319): when the
+ * cycle seam stamped {@link CorpusDigest.previousCycleRefs} (the refs the
+ * previous fired cycle's persisted snapshot carried — scout_digest_snapshots,
+ * migration 582), the render SPLITS — "NEW since your last cycle" first,
+ * standing patterns after — so the ideators weight fresh signal instead of
+ * re-pitching the standing corpus into dedup declines. No stamp (first-ever
+ * cycle, empty snapshot store, or the legacy path) ⇒ the flat whole-digest
+ * render, byte-identical to the pre-delta output.
  */
 export function renderDigest(digest: CorpusDigest): string {
   const lines: string[] = [];
@@ -218,10 +234,28 @@ export function renderDigest(digest: CorpusDigest): string {
     lines.push('(no meta-patterns surfaced this cycle)');
     return lines.join('\n');
   }
+  const prev = digest.previousCycleRefs;
+  if (prev && prev.length > 0) {
+    const prevSet = new Set(prev);
+    const fresh = flat.filter((p) => !prevSet.has(p.ref));
+    const standing = flat.filter((p) => prevSet.has(p.ref));
+    lines.push('## NEW since your last cycle — weight these MOST');
+    lines.push(
+      fresh.length > 0
+        ? fresh.map(patternLine).join('\n')
+        : '(no new patterns since your last cycle — lean on the standing ones only where you see a genuinely untried angle)',
+    );
+    if (standing.length > 0) {
+      lines.push(
+        '',
+        '## Standing patterns (already seen last cycle — the obvious ideas were likely already pitched; leap from these only with a NEW angle)',
+        standing.map(patternLine).join('\n'),
+      );
+    }
+    return lines.join('\n');
+  }
   for (const p of flat) {
-    const cat = p.category ? categoryLabel(p.category) : 'Pattern';
-    const detail = p.detail ? ` — ${p.detail}` : '';
-    lines.push(`- [${cat}] (ref: ${p.ref}) ${p.summary}${detail}`);
+    lines.push(patternLine(p));
   }
   return lines.join('\n');
 }

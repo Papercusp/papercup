@@ -466,6 +466,30 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
           err instanceof Error ? err.message : err,
         );
       }
+      // DELTA-FIRST substrate (blender-self-learning-2026-07-12 P-003 /
+      // WI-4319): diff this digest against the previous fired cycle's persisted
+      // snapshot — read the previous refs, persist the CLEAN fresh digest as
+      // the new snapshot, then stamp `previousCycleRefs` so renderDigest leads
+      // the ideator prompt with "NEW since your last cycle". Best-effort by
+      // contract: a snapshot outage never disturbs the digest or the cycle,
+      // and no stamp = the legacy whole-digest rendering.
+      try {
+        const { readPreviousSnapshotRefs, persistDigestSnapshot } = await import(
+          './digest-snapshots'
+        );
+        const prevRefs = await readPreviousSnapshotRefs();
+        await persistDigestSnapshot({
+          digest,
+          installSlug: opts.harnessSlug,
+          cycleId: opts.cycleId ?? null,
+        });
+        if (prevRefs.size > 0) digest.previousCycleRefs = [...prevRefs];
+      } catch (err) {
+        console.warn(
+          '[scout/cycle-deps] digest-snapshot leg failed (cycle unaffected):',
+          err instanceof Error ? err.message : err,
+        );
+      }
       return digest;
     },
     readNoveltyCorpus: noveltyCorpus,

@@ -110,6 +110,54 @@ describe('flattenDigest / digestRefSet / renderDigest', () => {
   });
 });
 
+describe('renderDigest DELTA-FIRST split (blender-self-learning-2026-07-12 P-003 / WI-4319)', () => {
+  const d = digest({
+    headline: 'busy week',
+    recurringFriction: [pat('wi:1', 'A')],
+    capabilityGaps: [pat('gap:2', 'B')],
+    rubricRatings: [pat('rub:3', 'C')],
+  } as Partial<CorpusDigest>);
+
+  it('splits NEW-first / standing-after when previousCycleRefs is stamped', () => {
+    const out = renderDigest({ ...d, previousCycleRefs: ['wi:1', 'rub:3'] });
+    const newIdx = out.indexOf('## NEW since your last cycle');
+    const standingIdx = out.indexOf('## Standing patterns');
+    expect(newIdx).toBeGreaterThanOrEqual(0);
+    expect(standingIdx).toBeGreaterThan(newIdx);
+    // gap:2 is the only fresh pattern — it renders in the NEW section (before
+    // the standing header); wi:1 + rub:3 render after it.
+    expect(out.indexOf('(ref: gap:2)')).toBeLessThan(standingIdx);
+    expect(out.indexOf('(ref: wi:1)')).toBeGreaterThan(standingIdx);
+    expect(out.indexOf('(ref: rub:3)')).toBeGreaterThan(standingIdx);
+  });
+
+  it('every ref still renders exactly once (grounding contract unchanged by the split)', () => {
+    const out = renderDigest({ ...d, previousCycleRefs: ['wi:1'] });
+    for (const ref of ['wi:1', 'gap:2', 'rub:3']) {
+      expect(out.split(`(ref: ${ref})`).length - 1).toBe(1);
+    }
+  });
+
+  it('all-standing (nothing new) says so explicitly instead of an empty section', () => {
+    const out = renderDigest({ ...d, previousCycleRefs: ['wi:1', 'gap:2', 'rub:3'] });
+    expect(out).toContain('(no new patterns since your last cycle');
+    expect(out).toContain('## Standing patterns');
+  });
+
+  it('all-new (no overlap) renders the NEW section with no standing section', () => {
+    const out = renderDigest({ ...d, previousCycleRefs: ['stale:gone'] });
+    expect(out).toContain('## NEW since your last cycle');
+    expect(out).not.toContain('## Standing patterns');
+  });
+
+  it('LEGACY UNCHANGED: absent/empty previousCycleRefs renders the flat whole digest byte-identically', () => {
+    const legacy = renderDigest(d);
+    expect(legacy).not.toContain('## NEW since your last cycle');
+    expect(legacy).not.toContain('## Standing patterns');
+    expect(renderDigest({ ...d, previousCycleRefs: [] })).toBe(legacy);
+  });
+});
+
 describe('assignDistantDomain + defaultLensRoster', () => {
   it('rotates the distant-domain pool by index % length (intra-lens diversity)', () => {
     const order = [
