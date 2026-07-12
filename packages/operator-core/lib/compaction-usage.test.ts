@@ -4,7 +4,7 @@
  * transcript-size path is exercised by integration; here we pin the pure guards:
  * unresolvable / non-Claude sessions must degrade to null, never throw.
  */
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -61,6 +61,33 @@ describe('tokensFromFileSize (EI-6410 compaction-boundary discount)', () => {
 
   it('missing file → null', () => {
     expect(tokensFromFileSize(join(dir, 'nope.jsonl'))).toBeNull();
+  });
+
+  it('EI-10434: a marker OUTSIDE the scan window stays BOUNDED at the scan cap — never the raw (unboundedly-growing) whole-file size', () => {
+    const p = join(dir, 'huge-no-marker-in-window.jsonl');
+    // A real compaction marker sits near the START of a file that has since
+    // grown well past BOUNDARY_SCAN_CAP (8MB) — the LAST-8MB scan window no
+    // longer contains ANY marker, even though one genuinely exists earlier in
+    // the file. This is the shape a long-running, many-times-compacted
+    // session transcript takes over a full day (EI-10434: readings like
+    // 20.9M/21.17M/24.3M tokens, monotonically growing across the day).
+    const marker = '{"type":"user","isCompactSummary":true,"summary":"..."}\n';
+    writeFileSync(p, marker + 'a'.repeat(12 * MB));
+    const tokens = tokensFromFileSize(p)!;
+    // Bounded by the scan window (BOUNDARY_SCAN_CAP=8MB / 4 = 2,097,152 tokens)
+    // — NOT the raw ~12MB file's ≈3M-token whole-file reading, and must NEVER
+    // be allowed to grow without bound as the file keeps growing (the
+    // garbage-reading signature).
+    expect(tokens).toBeLessThanOrEqual(8 * MB / 4);
+
+    // Append 5MB more with still no marker in the new scan window — a
+    // regression here means the estimate keeps climbing forever even though
+    // nothing about "how much is unaccounted-for within the scan window" has
+    // changed. That unbounded climb IS the EI-10434 bug signature.
+    const before = tokens;
+    appendFileSync(p, 'b'.repeat(5 * MB));
+    const after = tokensFromFileSize(p)!;
+    expect(after).toBeLessThanOrEqual(before + 10_000);
   });
 });
 

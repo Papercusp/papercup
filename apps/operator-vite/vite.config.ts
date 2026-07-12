@@ -137,6 +137,7 @@ export default defineConfig({
       // Shim node:module so createRequire EXISTS (no-op) in the browser; the require it
       // returns throws only if called, which never happens in the SPA.
       { find: /^node:module$/, replacement: resolve(import.meta.dirname, 'src/shims/node-module-browser.ts') },
+      { find: /^node:async_hooks$/, replacement: resolve(import.meta.dirname, 'src/shims/async-hooks-browser.ts') },
       // Server-only test-infra native addons: testcontainers → dockerode /
       // ssh-remote-port-forward → ssh2 → cpu-features. ssh2 + cpu-features each
       // require() a native `.node` binary at module scope, which Rolldown

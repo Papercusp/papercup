@@ -77,7 +77,21 @@ export function tokensFromFileSize(pathStr: string): number | null {
       const buf = Buffer.alloc(size - start);
       fs.readSync(fd, buf, 0, buf.length, start);
       const idx = buf.lastIndexOf(COMPACT_BOUNDARY_MARKER);
-      const sinceBytes = idx === -1 ? size : buf.length - idx;
+      // EI-10434: idx===-1 means "no marker in the SCANNED window [start, size)",
+      // not "no marker in the whole file" — for a file bigger than
+      // BOUNDARY_SCAN_CAP, a marker further back than the cap is invisible to
+      // this scan and was NEVER refuted. Bounding at buf.length (== size − start,
+      // itself capped at BOUNDARY_SCAN_CAP) preserves the intended "≥cap bytes
+      // since any compaction ⇒ over every real limit anyway" conservative-but-
+      // BOUNDED reading. Using the raw `size` instead (the pre-fix behavior) is
+      // UNBOUNDED and grows with every byte appended to the transcript for the
+      // rest of the session's life, even while genuine periodic compactions keep
+      // real usage near zero — the exact "cumulative total misread as current
+      // usage" signature (20.9M/21.17M/24.3M-token garbage readings, monotonically
+      // growing across a whole day). For a file ≤ BOUNDARY_SCAN_CAP (start===0,
+      // the whole file was scanned), buf.length === size, so this is byte-
+      // identical to the old behavior in that case — only the >cap case changes.
+      const sinceBytes = idx === -1 ? buf.length : buf.length - idx;
       // Discount image payloads visible in the since-compaction region. latin1
       // keeps string length == byte length (base64 is ASCII; surrounding
       // multibyte content must not skew the byte math). When the marker fell
@@ -235,10 +249,14 @@ function seedAnchorFromFile(pathStr: string): TranscriptAnchor | null {
       const settledLen = lastNl === -1 ? 0 : lastNl + 1;
       const view = buf.subarray(0, settledLen);
       const idx = view.lastIndexOf(COMPACT_BOUNDARY_MARKER);
-      // Marker not in the scanned window ⇒ count from 0 (whole file), exactly
-      // like tokensFromFileSize: past the 8MB cap the estimate is over every
-      // real limit anyway; discounting only the visible region stays conservative.
-      const countStart = idx === -1 ? 0 : start + idx;
+      // EI-10434: marker not in the scanned window ⇒ count from `start` (the
+      // BOUNDED edge of the scan window), NOT 0 (the whole file) — matching the
+      // tokensFromFileSize fix above. Counting from 0 makes anchorTokens ≈
+      // sizeSeen/4, unbounded and growing forever as the transcript grows, even
+      // though a real (unseen, further-back) compaction may already bound real
+      // usage near zero. Counting from `start` keeps the same "≥cap bytes ⇒ over
+      // every real limit" conservative signal without the unbounded growth.
+      const countStart = idx === -1 ? start : start + idx;
       const imageExcess = imageExcessIn(view.toString('latin1', idx === -1 ? 0 : idx));
       return {
         path: pathStr,

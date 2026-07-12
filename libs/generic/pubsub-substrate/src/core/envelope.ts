@@ -10,8 +10,6 @@
  * — agent-coordination-architecture-v2 §6.2/§6.3.)
  */
 
-import { randomUUID } from 'node:crypto';
-
 export type CoordKind =
   | 'message'
   | 'ack'
@@ -104,7 +102,7 @@ export function newMsgId(): string {
   }
   const ms = now.toString(36).padStart(8, '0');
   const seq = _seq.toString(36).padStart(4, '0');
-  const rnd = randomUUID().replace(/-/g, '');
+  const rnd = globalThis.crypto.randomUUID().replace(/-/g, '');
   return `${ms}-${seq}-${rnd}`;
 }
 
