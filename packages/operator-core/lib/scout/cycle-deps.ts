@@ -466,6 +466,16 @@ export function buildScoutCycleDeps(opts: BuildScoutCycleDepsOptions): ScoutCycl
           err instanceof Error ? err.message : err,
         );
       }
+      // WATCHDOG-HEALTH lane (blender-self-learning-2026-07-12 P-007): chronic
+      // collector signals + standing open conditions from watchdog_ticks, fed
+      // to ideation directly. Fail-soft (the lane module returns [] on outage).
+      try {
+        const { buildWatchdogHealthLane } = await import('./watchdog-health-lane');
+        const lane = await buildWatchdogHealthLane();
+        if (lane.length > 0) digest.watchdogHealth = lane;
+      } catch {
+        /* best-effort */
+      }
       // DELTA-FIRST substrate (blender-self-learning-2026-07-12 P-003 /
       // WI-4319): diff this digest against the previous fired cycle's persisted
       // snapshot — read the previous refs, persist the CLEAN fresh digest as

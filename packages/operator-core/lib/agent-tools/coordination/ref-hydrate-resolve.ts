@@ -20,6 +20,8 @@ import type { CoordEnvelope } from './envelope';
 import { getMessageById } from './messages';
 import { getWorkItem } from '../../work-items';
 import { findAnnouncementsForKey } from '../../events/await/store';
+import { getPlanRow, planItemsForRow } from '../plans/source';
+import { resolveEffectiveStatusForItems } from '../plans/effective-status';
 import {
   applyRefBudget,
   BODY_REF_CHECKPOINT_TAIL_CHARS,
@@ -122,6 +124,36 @@ export const bodyRefWorkItemResolver: RefResolver = async (ref, budget) => {
   );
   return { label: `${wi.id} [${wi.kind}/${wi.state}${assignee}]`, snippet: `${head}${tail}` };
 };
+
+/**
+ * Plan-item body resolver factory (coordination/ref-hydrate.ts consumer:
+ * coord:dispatch / coord:handoff, WI-4165 — "hydrate assigned plan-item
+ * bodies into coord:dispatch / handoff deliveries"): resolves a
+ * `{kind:'plan-item', slug, item}` ref into that item's own text +
+ * effectiveStatus off the PG-canonical plan row (the SAME resolution
+ * plans:get-item / plans:items / plans:set-status agree on — EI-356).
+ *
+ * NOT part of DEFAULT_RESOLVERS: unlike msg/work-item (global stores), a plan
+ * item's harness scope varies per call site (a dispatch/handoff's own
+ * `harness` arg, defaulting to the plan's own harness when omitted) — each
+ * consumer binds its own resolver via this factory and installs it through
+ * `resolvers`, the same injection contract P-006 (gate) and P-004
+ * (owner-turn) already use for consumer-owned stores.
+ */
+export function makePlanItemResolver(harness?: string): RefResolver {
+  return async (ref, budget) => {
+    if (ref.kind !== 'plan-item') return null;
+    const row = await getPlanRow(ref.slug, harness ? { harnessSlug: harness } : {});
+    if (!row) return null;
+    const { items } = resolveEffectiveStatusForItems(planItemsForRow(row));
+    const item = items.find((i) => i.id === ref.item);
+    if (!item) return null;
+    return {
+      label: `plan:${ref.slug}#${ref.item} [${item.effectiveStatus}]`,
+      snippet: clampSnippet(item.text, budget.snippetChars),
+    };
+  };
+}
 
 /**
  * Resolve `refs` (budget-deduped, first-N) into render-ready hydrations, in

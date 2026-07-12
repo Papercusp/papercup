@@ -257,6 +257,34 @@ scripts/verify-tauri-headless.sh -- bash -c '
 (`VERIFY_TAURI_PID`/`PORT`/`DISPLAY`) plus a stop script for a multi-step
 interactive session — see the script's own header for the full interface.
 
+:::danger[The instance shares the LIVE database — writes are REAL (EI-10387)]
+"Isolated" here means the **X display, the devUrl port, the pty port, and the
+sidecar process**. It does **not** mean isolated state: the sidecar inherits the
+ambient env, so `DATABASE_URL` / `PAPERCUSP_HOME` / `PAPERCUSP_WORKSPACE` all
+point at the **live** system. (The script's header used to claim an "own
+embedded-PG, own workspace state" — that claim was false and has been corrected.)
+
+* **READ paths are safe.** Drive the UI, assert the DOM, read anything.
+* **WRITE paths are NOT.** A Mug steering click mutates the owner's real
+  steering *and* calls `requestUrgentHiveWake()` — waking the real Mug and
+  burning real tokens. A routine toggle really toggles it (git-sync included).
+
+To exercise a write path safely, **intercept it in the webview instead of
+letting it reach the backend** — the method used for the 2026-07-12
+Mug/Kettle/Papercup button sweep:
+
+1. Stub `window.fetch` for `POST /api/agent-mcp/run-tool`; let reads through,
+   and for writes push the parsed body onto a capture array and return a
+   synthetic `{ ok:true, result:{ content:[{ text:'{"ok":true}' }] } }`.
+2. Click every control; assert zero `error` / `unhandledrejection` events.
+3. Dump the captured payloads and `safeParse` each one **against the tool's own
+   zod schema** in a vitest.
+
+Step 3 is the part that matters: it checks what the tool *accepts*, not merely
+what the UI *sent* — the exact gap that let the `hive`→`pot` rename regression
+(WI-4339) sit green in the unit tests while every steering write was broken.
+:::
+
 The manual recipe below is kept for reference / when the script doesn't
 fit (e.g. driving a **release build** with no dev bridge — §15.4 still
 applies directly for that case):

@@ -254,7 +254,7 @@ describe('capability:terminal WI-4234: inferred fleet auto-joins a bare psu spaw
 // ── EI-5835: explicit `fleet` arg auto-injects psu --fleet (membership) ─────────
 describe('injectFleetArg (EI-5835: --fleet auto-join for psu launches)', () => {
   it('injects --fleet into a psu launch when an explicit fleet slug is given', async () => {
-    const { injectFleetArg } = await import('./terminal');
+    const { injectFleetArg } = await import('../../agent-launch-core');
     const r = injectFleetArg(
       'psu --no-picker --agent=claude --harness=oddsmith --plan=p --launch-context=/b.md',
       'bet-pattern',
@@ -266,14 +266,14 @@ describe('injectFleetArg (EI-5835: --fleet auto-join for psu launches)', () => {
   });
 
   it('is a no-op when no fleet slug is given', async () => {
-    const { injectFleetArg } = await import('./terminal');
+    const { injectFleetArg } = await import('../../agent-launch-core');
     const r = injectFleetArg('psu --no-picker --plan=p', null);
     expect(r.injected).toBe(false);
     expect(r.command).toBe('psu --no-picker --plan=p');
   });
 
   it('does not double-inject when --fleet is already present', async () => {
-    const { injectFleetArg } = await import('./terminal');
+    const { injectFleetArg } = await import('../../agent-launch-core');
     const cmd = 'psu --fleet=already --no-picker --plan=p';
     const r = injectFleetArg(cmd, 'other');
     expect(r.injected).toBe(false);
@@ -281,21 +281,21 @@ describe('injectFleetArg (EI-5835: --fleet auto-join for psu launches)', () => {
   });
 
   it('leaves a non-psu command untouched', async () => {
-    const { injectFleetArg } = await import('./terminal');
+    const { injectFleetArg } = await import('../../agent-launch-core');
     const r = injectFleetArg('npm run dev', 'bet-pattern');
     expect(r.injected).toBe(false);
     expect(r.command).toBe('npm run dev');
   });
 
   it('injects after psu even with a leading `cd … &&` (shell-separator boundary)', async () => {
-    const { injectFleetArg } = await import('./terminal');
+    const { injectFleetArg } = await import('../../agent-launch-core');
     const r = injectFleetArg('cd /repo && psu --no-picker --plan=p', 'f1');
     expect(r.injected).toBe(true);
     expect(r.command).toBe('cd /repo && psu --fleet=f1 --no-picker --plan=p');
   });
 
   it('does not match psu as a substring of another token (mypsu)', async () => {
-    const { injectFleetArg } = await import('./terminal');
+    const { injectFleetArg } = await import('../../agent-launch-core');
     const r = injectFleetArg('mypsu --plan=p', 'f1');
     expect(r.injected).toBe(false);
     expect(r.command).toBe('mypsu --plan=p');
@@ -306,21 +306,21 @@ describe('injectLaunchedByArg (solo-launch-provenance: --launched-by auto-inject
   const OWNER = 'su-94b69875-7d7f-4fcc-9441-0015677b93ed';
 
   it('injects --launched-by into a psu launch', async () => {
-    const { injectLaunchedByArg } = await import('./terminal');
+    const { injectLaunchedByArg } = await import('../../agent-launch-core');
     const r = injectLaunchedByArg('psu --no-picker --agent=claude --launch-context=/b.md', OWNER);
     expect(r.injected).toBe(true);
     expect(r.command).toBe(`psu --launched-by=${OWNER} --no-picker --agent=claude --launch-context=/b.md`);
   });
 
   it('is a no-op when the caller identity is unresolved', async () => {
-    const { injectLaunchedByArg } = await import('./terminal');
+    const { injectLaunchedByArg } = await import('../../agent-launch-core');
     const r = injectLaunchedByArg('psu --no-picker --plan=p', null);
     expect(r.injected).toBe(false);
     expect(r.command).toBe('psu --no-picker --plan=p');
   });
 
   it('does not double-inject when --launched-by is already present', async () => {
-    const { injectLaunchedByArg } = await import('./terminal');
+    const { injectLaunchedByArg } = await import('../../agent-launch-core');
     const cmd = 'psu --launched-by=su-other --no-picker';
     const r = injectLaunchedByArg(cmd, OWNER);
     expect(r.injected).toBe(false);
@@ -328,20 +328,20 @@ describe('injectLaunchedByArg (solo-launch-provenance: --launched-by auto-inject
   });
 
   it('leaves a non-psu command untouched', async () => {
-    const { injectLaunchedByArg } = await import('./terminal');
+    const { injectLaunchedByArg } = await import('../../agent-launch-core');
     const r = injectLaunchedByArg('npm run dev', OWNER);
     expect(r.injected).toBe(false);
   });
 
   it('refuses a non-identity-shaped value (shell-injection guard)', async () => {
-    const { injectLaunchedByArg } = await import('./terminal');
+    const { injectLaunchedByArg } = await import('../../agent-launch-core');
     const r = injectLaunchedByArg('psu --no-picker', 'su-x; rm -rf /');
     expect(r.injected).toBe(false);
     expect(r.command).toBe('psu --no-picker');
   });
 
   it('composes with injectFleetArg (both flags land, fleet first)', async () => {
-    const { injectFleetArg, injectLaunchedByArg } = await import('./terminal');
+    const { injectFleetArg, injectLaunchedByArg } = await import('../../agent-launch-core');
     const fleet = injectFleetArg('cd /repo && psu --no-picker --plan=p', 'f1');
     const prov = injectLaunchedByArg(fleet.command, OWNER);
     expect(prov.injected).toBe(true);

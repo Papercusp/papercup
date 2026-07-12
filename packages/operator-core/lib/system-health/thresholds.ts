@@ -24,6 +24,10 @@ import type {
   ImprovementsHealth,
   InfraHealth,
   OverwatchPanelHealth,
+  LoopsHealth,
+  CoordinationHealth,
+  MemoryPanelHealth,
+  PanelAck,
 } from './types';
 
 // ── tunable thresholds (the status boundaries) ───────────────────────────────
@@ -39,6 +43,14 @@ export const SYNC_LAG_WARN_MS = 45 * 60_000;
 export const DEPLOY_BEHIND_WARN = 80;
 /** Open escalation older than this = warn (aging). */
 export const ESCALATION_AGING_MS = 6 * 60 * 60_000;
+/** Disk used% thresholds (health-tab-v2 P-011 — mirrors the fedplane disk script). */
+export const DISK_USED_WARN_PCT = 90;
+export const DISK_USED_CRIT_PCT = 95;
+/** No successful backup snapshot in this long = warn (P-011). */
+export const BACKUP_STALE_MS = 48 * 60 * 60_000;
+/** An unanswered DIRECTED message older than this warns the Coordination panel
+ *  (P-009 — "your minutes are a blocked peer's hours"). */
+export const UNANSWERED_DIRECTED_WARN_MS = 30 * 60_000;
 
 /** WI-3565: idle healthy accounts strictly above this count, ALONGSIDE a confirmed
  *  `admissionStarved`, is what makes the starvation a crit (real spare capacity sitting unused
@@ -266,7 +278,11 @@ export function plansStatus(d: PlansHealth): PanelStatus {
 /** Escalations. warn = an open blocker, or any open escalation aging past the
  *  threshold (needs a human — but the system itself isn't broken, so not crit). */
 export function escalationsStatus(d: EscalationsHealth): PanelStatus {
-  if (d.aging > 0 || (d.bySeverity.blocker ?? 0) > 0) return 'warn';
+  // health-tab-v2 P-003: status keys on NEW aging (crossed the threshold in the
+  // last 24h) + open blockers. STANDING aging (a weeks-old acknowledged backlog)
+  // renders as a muted metric instead of re-warning every tick — a panel that is
+  // yellow for a month is wallpaper, not signal.
+  if (d.agingNew > 0 || (d.bySeverity.blocker ?? 0) > 0) return 'warn';
   return 'ok';
 }
 
@@ -305,10 +321,19 @@ export function infraStatus(d: InfraHealth): PanelStatus {
   // A real, agent-facing tool-call failure stream OUTRANKS a greyed PG leg: a crit
   // MCP-proxy SLO breach reds Infra even if PG is momentarily unreadable this tick.
   if ((d.mcpProxy?.hardFailures ?? 0) >= MCP_PROXY_HARD_FAIL_CRIT) return 'crit';
+  // Disk pressure (health-tab-v2 P-011, thresholds mirror the fedplane script):
+  // >=95% used on any watched volume is a crit (writes are about to fail).
+  const worstDiskPct = d.disk && d.disk.length > 0 ? Math.max(...d.disk.map((v) => v.usedPct)) : null;
+  if (worstDiskPct !== null && worstDiskPct >= DISK_USED_CRIT_PCT) return 'crit';
   if (d.pg === null) return 'unknown';
   if (d.gatewayReachable === false) return 'crit';
   if (d.perf?.status === 'warn') return 'warn';
   if ((d.mcpProxy?.hardFailures ?? 0) > 0) return 'warn';
+  if (worstDiskPct !== null && worstDiskPct >= DISK_USED_WARN_PCT) return 'warn';
+  // Unapplied migrations = every deploy is one restart away from surprise DDL (P-011).
+  if ((d.migrationDrift?.unapplied ?? 0) > 0) return 'warn';
+  // Backup staleness: no successful snapshot in 48h (cadence is ~hours) (P-011).
+  if (d.backup && d.backup.ageMs !== null && d.backup.ageMs > BACKUP_STALE_MS) return 'warn';
   // P-006/W4: PG-pool starvation is the routinesTick freeze mode — warn (not crit: the
   // pgHealth-latency proxy is coarse, matching P-005 slotLeak → warn, so one slow tick
   // doesn't red the panel; a sustained freeze still crits via the dead-routine detector).
@@ -346,4 +371,89 @@ export function worstStatus(statuses: readonly PanelStatus[]): PanelStatus {
   if (statuses.some((s) => s === 'warn')) return 'warn';
   if (statuses.some((s) => s === 'ok')) return 'ok';
   return 'unknown';
+}
+
+// ── health-tab-v2 (2026-07-12) additions ─────────────────────────────────────
+
+/** Numeric severity for ack-coverage comparison (P-004). ok/unknown = 0. */
+export function statusSeverity(s: PanelStatus): number {
+  return s === 'crit' ? 2 : s === 'warn' ? 1 : 0;
+}
+
+/**
+ * Does an ack COVER a panel's current status? (P-004 / D-A). An ack mutes
+ * severities up to the acked one — an ack taken at 'warn' does NOT mute a later
+ * 'crit' (escalation re-alarms); an expired snooze covers nothing. ok/unknown
+ * need no coverage (the ack is cleared by the sweep instead).
+ */
+export function ackCovers(ack: Pick<PanelAck, 'status' | 'snoozeUntil'>, current: PanelStatus, now: number): boolean {
+  if (statusSeverity(current) === 0) return false;
+  if (ack.snoozeUntil !== null && now > ack.snoozeUntil) return false;
+  return statusSeverity(current) <= statusSeverity(ack.status);
+}
+
+/**
+ * P-001 — the paused-Mug cry-wolf fix. queenStatus() crits a paused colony with
+ * ANY queued todo, but a paused pot whose queue is entirely UNPLACEABLE (the
+ * work-feed frontier is empty or long-stuck/gated) is idle BY CHOICE — reddening
+ * the whole tab for weeks over unplaceable residue is how the dashboard became
+ * wallpaper. Reconciles the queen panel against the work-feed's PLACEABLE
+ * frontier: paused + placeable demand stays crit (a genuine silent outage);
+ * paused + only unplaceable residue downgrades to warn with a summary that
+ * AGREES with the status. Returns null when no adjustment applies (not paused,
+ * not crit, or the work-feed was unreadable this tick — fail-soft keeps the
+ * conservative crit).
+ */
+export function reconcilePausedQueen(
+  queen: { status: PanelStatus; data: QueenHealth | null },
+  workFeed: { data: WorkFeedHealth | null },
+): { status: PanelStatus; summary: string } | null {
+  const q = queen.data;
+  if (!q || q.started || queen.status !== 'crit') return null;
+  const wf = workFeed.data;
+  if (!wf) return null; // frontier unreadable — keep the conservative crit
+  const placeable = Math.max(0, wf.frontier - (wf.frontierStuck ?? 0));
+  if (placeable > 0 || wf.startedPlans > 0) {
+    return {
+      status: 'crit',
+      summary: `paused — ${placeable > 0 ? `${placeable} placeable item(s)` : `${wf.startedPlans} started plan(s)`} queued (silent outage)`,
+    };
+  }
+  const residue = q.demand.todoItems;
+  return {
+    status: 'warn',
+    summary: residue > 0
+      ? `paused — idle by choice (${residue} queued item(s), none placeable)`
+      : 'paused — colony idle by choice',
+  };
+}
+
+/** Engine loops (P-008). Overdue armed loops / recent failure streaks = warn —
+ *  a dead loop stalls ITS lane, not the running system (the workFeed dead-routine
+ *  crit already covers an engine-wide freeze). */
+export function loopsStatus(d: LoopsHealth): PanelStatus {
+  if (d.overdue > 0 || d.failureStreaks > 0) return 'warn';
+  return 'ok';
+}
+
+/**
+ * Coordination (P-009). Deliberately WARN-max for its burn-in period (D-D:
+ * a brand-new panel must not red the overall tab until its thresholds have
+ * survived contact with reality — the exact cry-wolf failure P-001 fixes).
+ */
+export function coordinationStatus(d: CoordinationHealth, now?: number): PanelStatus {
+  void now;
+  if (d.leaderlessFleets > 0) return 'warn';
+  if (d.staleAwaits > 0) return 'warn';
+  if (d.criticalContext > 0) return 'warn';
+  if (d.unansweredOldestMs !== null && d.unansweredOldestMs > UNANSWERED_DIRECTED_WARN_MS) return 'warn';
+  return 'ok';
+}
+
+/** Memory (P-010). Warn only on a degraded recall signal over a real store —
+ *  an empty/new store is not a failure, and the store size itself is
+ *  informational. */
+export function memoryStatus(d: MemoryPanelHealth): PanelStatus {
+  if (d.totalMemories > 100 && d.zeroHitRate !== null && d.zeroHitRate >= 0.9) return 'warn';
+  return 'ok';
 }

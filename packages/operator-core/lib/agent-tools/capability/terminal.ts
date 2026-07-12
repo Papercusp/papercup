@@ -36,6 +36,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole } from '../../console-spawn';
+import { injectAccountArg, injectFleetArg, injectLaunchedByArg } from '../../agent-launch-core';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { fleetSlugFromName, getFleetScheme } from '../../agent-fleets-store';
 import { fetchPresenceFleet } from '../coordination/presence-fleet';
@@ -46,56 +47,6 @@ import type { ColorScheme } from '../../console-color-schemes';
  *  mistake (and is heavy); cap it. A fleet larger than this should be spawned in
  *  batches. */
 const MAX_TERMINALS = 12;
-
-/**
- * named-su-agent-fleets / EI-5835: when the caller passes an explicit `fleet`, a
- * `psu …` launch inside a terminal command should JOIN that fleet — not merely
- * inherit its colour. The `fleet` arg alone is COLOUR-ONLY (it tints the window);
- * fleet MEMBERSHIP comes from psu's own `--fleet=<slug>` flag. Agents repeatedly
- * set `fleet` and forget `--fleet`, so members spawn with `fleetSlug:null` AND miss
- * the launcher's fleet auto-kickoff (they park). Auto-inject `--fleet=<slug>` into a
- * psu command that lacks it so colour and membership can't diverge. Non-psu commands,
- * and commands already carrying `--fleet`, are left untouched.
- */
-export function injectFleetArg(
-  command: string,
-  fleetSlug: string | null,
-): { command: string; injected: boolean } {
-  if (!fleetSlug) return { command, injected: false };
-  if (/(^|\s)--fleet(=|\s|$)/.test(command)) return { command, injected: false };
-  // Only a `psu` invocation joins a fleet — match psu as a command token (start of
-  // line, or after whitespace / a shell separator), followed by whitespace.
-  const psuToken = /(^|[\s&;|(])psu(\s)/;
-  if (!psuToken.test(command)) return { command, injected: false };
-  return { command: command.replace(psuToken, `$1psu --fleet=${fleetSlug}$2`), injected: true };
-}
-
-/**
- * solo-launch-provenance (the EI-5835 pattern, applied to WHO-launched-you): a `psu …`
- * launch spawned from this tool should carry `--launched-by=<caller ownerId>` so
- * bootstrap-su can bake the provenance into the launched session (system prompt +
- * PAPERCUSP_LAUNCHED_BY + an owner-scoped standing fact). Without it a solo-launched
- * agent has NO way to answer "who launched / supervises you" — su-8ab32510
- * (2026-07-03) described its launcher as "an observer who doesn't assign or
- * supervise my work". Auto-inject like `--fleet`; commands already carrying the
- * flag, and non-psu commands, are left untouched. The ownerId is injected into a
- * shell string, so only identity-shaped values are accepted.
- */
-export function injectLaunchedByArg(
-  command: string,
-  launcherOwnerId: string | null,
-): { command: string; injected: boolean } {
-  if (!launcherOwnerId || !/^[A-Za-z0-9._:-]{1,120}$/.test(launcherOwnerId)) {
-    return { command, injected: false };
-  }
-  if (/(^|\s)--launched-by(=|\s|$)/.test(command)) return { command, injected: false };
-  const psuToken = /(^|[\s&;|(])psu(\s)/;
-  if (!psuToken.test(command)) return { command, injected: false };
-  return {
-    command: command.replace(psuToken, `$1psu --launched-by=${launcherOwnerId}$2`),
-    injected: true,
-  };
-}
 
 /**
  * The operator's own base URL, used for the terminal's PAPERCUSP_OPERATOR_URL /
@@ -279,7 +230,17 @@ export default defineTool({
         const fleetInj = injectFleetArg(item.command, fleetSlug);
         // solo-launch-provenance: every psu launch carries WHO launched it.
         const provInj = injectLaunchedByArg(fleetInj.command, callerOwnerId);
-        const command = provInj.command;
+        // A psu RESUME spawned from a tool must pin its account (P-012, owner-hit
+        // 2026-07-12): `resumeAccountPlan` prompts an interactive account picker
+        // whenever a resume carries neither `--account` nor `--no-picker`, so a
+        // tool-spawned `psu --resume=<id>` sat on a picker (and then a login
+        // screen) waiting for a human who had no idea it was asking. Fresh
+        // launches are left alone — their account routing (pool/auto) is chosen
+        // server-side and must not be overridden here.
+        const acctInj = /(^|\s)--resume(=|\s)/.test(provInj.command)
+          ? injectAccountArg(provInj.command, 'default')
+          : { command: provInj.command, injected: false };
+        const command = acctInj.command;
         // Override the greeting per terminal (runs the command, then drops to a shell).
         const result = await spawnConsole({
           envelope: { ...base, greetingCmd: command, cwd },

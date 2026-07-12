@@ -111,7 +111,7 @@ export function toIsoTimestamp(value: string | Date | null | undefined): string 
   throw new Error(`invalid timestamp: ${String(value)}`);
 }
 
-function mapAdvSessionRow(r: {
+export function mapAdvSessionRow(r: {
   id: number;
   workspace_id: string;
   plan_slug: string | null;

@@ -15,7 +15,7 @@
  *     its presence rows are reaped, so roster-gated coord:wake cannot reach it —
  *     the first turn is delivered through the psu pty-host discovery socket.
  */
-import { getOrgPg } from './org-pg';
+import { getOrgPg } from '@papercusp/db-org';
 import { mapAdvSessionRow, type AdvSessionRow } from './adv-sessions';
 import { findLiveHost, injectIntoHost, type PsuPtyHost } from './events/await/psu-pty-discovery';
 
@@ -128,8 +128,12 @@ export async function resolveResumeTarget(ref: {
   }
   const { sql } = getOrgPg();
   // Exact-pin by native session id wins; else newest row for the agent id.
-  // An agentId may be a prefix (short handle) — match prefix, newest first.
-  const rows = await sql<Array<Record<string, unknown>>>`
+  // An agentId may be a PREFIX (the short `su-b0fbf` handle agents actually say
+  // out loud) — match by prefix, newest first. adv_sessions is deliberately NOT
+  // workspace-scoped here: coord_owner_id and session_id are globally unique
+  // (see advSessionsByCoordOwner's note), so a workspace predicate could only
+  // drop valid rows.
+  const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
     SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
            window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
       FROM harness_shared.adv_sessions
@@ -150,7 +154,7 @@ export async function resolveResumeTarget(ref: {
         : `no adv_sessions row for agent ${agentId} — check the id (coord:presence / sessions:list)`,
     };
   }
-  const row: AdvSessionRow = mapAdvSessionRow(rows[0] as never);
+  const row: AdvSessionRow = mapAdvSessionRow(rows[0]);
   if (!row.sessionId) {
     return {
       ok: false,

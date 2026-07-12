@@ -232,6 +232,28 @@ export VERIFY_TAURI_DISPLAY=":$DISPLAY_NUM"
 export VERIFY_TAURI_LOG="$LOG"
 
 log "isolated instance ready: pid=$VERIFY_TAURI_PID port=$VERIFY_TAURI_PORT display=$VERIFY_TAURI_DISPLAY"
+
+# ⚠️ EI-10387: display/ports/process are isolated — the DATABASE AND WORKSPACE ARE NOT.
+# Say so LOUDLY at boot: an agent that skipped the header must not learn this by
+# mutating the owner's live steering (and waking the real Mug) mid-"test".
+cat >&2 <<'WARN'
+
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │  ⚠️  THIS INSTANCE SHARES THE **LIVE DATABASE AND WORKSPACE**          │
+  │                                                                        │
+  │  Isolated: X display · devUrl port · pty port · sidecar process        │
+  │  NOT isolated: DATABASE_URL · PAPERCUSP_HOME · PAPERCUSP_WORKSPACE     │
+  │                                                                        │
+  │  READS are safe. **WRITES ARE REAL** — a Mug steering click here       │
+  │  mutates real steering and wakes the real Mug (burning real tokens);   │
+  │  a routine toggle here really toggles it (git-sync included).          │
+  │                                                                        │
+  │  To exercise write paths safely, intercept POST /api/agent-mcp/run-tool│
+  │  in the webview, capture the body, and validate it offline against the │
+  │  tool's zod schema. See the header block + EI-10387.                   │
+  └────────────────────────────────────────────────────────────────────────┘
+
+WARN
 tauri-agent-tools probe --pid "$VERIFY_TAURI_PID" 2>&1 | sed 's/^/[probe] /' >&2 || true
 
 if [ "${1:-}" = "--boot-only" ]; then

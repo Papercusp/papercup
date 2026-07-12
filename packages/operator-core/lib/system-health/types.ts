@@ -37,15 +37,18 @@ export interface HealthLink {
   href: string;
 }
 
-/** The 17 panels, in render order. `overwatch` (#15) is the autonomous
+/** The 20 panels, in render order. `overwatch` is the autonomous
  *  supervisor's own loop health (overwatch-role-2026-06-15 #15, the
- *  who-watches-the-watcher card). `toolEfficiency` (#17, WI-839) folds the 3
- *  measuring-code-run-adoption.mdx tool-usage metrics into one recurring card. */
+ *  who-watches-the-watcher card). `toolEfficiency` (WI-839) folds the 3
+ *  measuring-code-run-adoption.mdx tool-usage metrics into one recurring card.
+ *  `loops` / `coordination` / `memory` are the health-tab-v2-2026-07-12 legs
+ *  (P-008/P-009/P-010) for the post-June platform machinery. */
 export type PanelKey =
   | 'queen'
   | 'bees'
   | 'workItems'
   | 'workFeed'
+  | 'loops'
   | 'tokens'
   | 'watchdog'
   | 'deploy'
@@ -56,8 +59,10 @@ export type PanelKey =
   | 'improvements'
   | 'infra'
   | 'suFleet'
+  | 'coordination'
   | 'overwatch'
   | 'scout'
+  | 'memory'
   | 'toolEfficiency';
 
 /** Canonical render order for the tab's status-card grid. */
@@ -66,6 +71,7 @@ export const PANEL_ORDER: readonly PanelKey[] = [
   'bees',
   'workItems',
   'workFeed',
+  'loops',
   'tokens',
   'watchdog',
   'deploy',
@@ -76,8 +82,10 @@ export const PANEL_ORDER: readonly PanelKey[] = [
   'improvements',
   'infra',
   'suFleet',
+  'coordination',
   'overwatch',
   'scout',
+  'memory',
   'toolEfficiency',
 ] as const;
 
@@ -86,6 +94,7 @@ export const PANEL_LABELS: Record<PanelKey, string> = {
   bees: 'Cups / fleet',
   workItems: 'Work items',
   workFeed: 'Work-feed',
+  loops: 'Engine loops',
   tokens: 'Tokens / gateway',
   watchdog: 'Watchdog',
   deploy: 'Git-sync / deploy',
@@ -96,15 +105,37 @@ export const PANEL_LABELS: Record<PanelKey, string> = {
   improvements: 'Improvements',
   infra: 'Infra',
   suFleet: 'SU fleet',
+  coordination: 'Coordination',
   overwatch: 'Kettle',
   scout: 'Blender / ideation',
+  memory: 'Memory',
   toolEfficiency: 'Tool efficiency',
 };
+
+/**
+ * An owner acknowledgement on a panel (health-tab-v2 P-004 / D-A). An acked
+ * panel renders muted-with-badge and is EXCLUDED from `overall`. The ack covers
+ * severities UP TO `status` (an ack at 'warn' does NOT mute a later 'crit' —
+ * escalation re-alarms) and auto-clears when the panel recovers to ok or the
+ * snooze expires.
+ */
+export interface PanelAck {
+  /** The severity acked ('warn' | 'crit'). */
+  status: Extract<PanelStatus, 'warn' | 'crit'>;
+  reason: string;
+  ackedBy: string;
+  /** ms epoch. */
+  ackedAt: number;
+  /** ms epoch hard expiry, or null (= until recovery). */
+  snoozeUntil: number | null;
+}
 
 /**
  * One status card. `data` carries the raw structured reading (what the overwatch
  * brief maps over + the card drills into); `metrics` is the glanceable subset the
  * card shows. `error` is set (and `status` = 'unknown') when the collector threw.
+ * `ack` (P-004) marks an owner-acknowledged panel — muted in the UI, excluded
+ * from the overall roll-up while the ack covers the current severity.
  */
 export interface HealthPanel<T = unknown> {
   key: PanelKey;
@@ -116,6 +147,7 @@ export interface HealthPanel<T = unknown> {
   link?: HealthLink;
   data: T | null;
   error?: string;
+  ack?: PanelAck;
 }
 
 // ── per-panel data shapes ────────────────────────────────────────────────────
@@ -354,6 +386,11 @@ export interface EscalationsHealth {
   bySeverity: Record<string, number>;
   /** Open escalations older than the aging threshold. */
   aging: number;
+  /** Of `aging`, those that CROSSED the threshold within the last 24h — the
+   *  "new incident" subset the panel status keys on (health-tab-v2 P-003).
+   *  Standing aging (aging - agingNew) is a muted metric, not an alarm: a
+   *  month-old backlog re-warning every tick is banner blindness, not signal. */
+  agingNew: number;
 }
 
 /** Autonomy gate ceilings + tripwires. */
@@ -369,8 +406,12 @@ export interface AutonomyHealth {
 
 /** Observation lane (the pre-idea sensor readings). */
 export interface ObservationsHealth {
-  /** Open observations. */
+  /** Open observations — the TRUE count (countIssues), not the sampled list
+   *  length (health-tab-v2 P-002: the old read pinned at the 500 list cap). */
   laneCount: number;
+  /** recentByRole/newestAt derive from a bounded sample (newest 500); true when
+   *  laneCount exceeds the sample, so per-role counts are partial. */
+  sampled?: boolean;
   recentByRole: Record<string, number>;
   newestAt: number | null;
 }
@@ -454,6 +495,16 @@ export interface InfraHealth {
    * NOT read the bg-host tick's in-process shed counter). OPTIONAL (deploy-skew-safe):
    * absent on an older projection ⇒ treated as no signal. null when PG is unreadable. */
   pool?: { probeMs: number; band: 'ok' | 'elevated' | 'critical' } | null;
+  /** Disk pressure (health-tab-v2 P-011, mirrors the fedplane script's 90% warn):
+   *  used% per watched mount (~/.papercusp + the repo volume, deduped by device).
+   *  OPTIONAL + null when statfs is unavailable — never fabricated. */
+  disk?: Array<{ path: string; usedPct: number }> | null;
+  /** Backup freshness (P-011): newest SUCCESSFUL kopia snapshot. null = tables
+   *  unreadable/absent this tick (greyed leg). */
+  backup?: { lastOkAtMs: number | null; ageMs: number | null; lastStatus: string | null } | null;
+  /** Migration drift (P-011, the db:check_drift source): migrations on disk not
+   *  yet recorded in schema_migrations. null = drift unreadable this tick. */
+  migrationDrift?: { unapplied: number } | null;
 }
 
 /** SU fleet (interactive collaborators) presence. */
@@ -462,6 +513,71 @@ export interface SuFleetHealth {
   live: number;
   stale: number;
   byRole: Record<string, number>;
+}
+
+/**
+ * Engine loops (health-tab-v2 P-008) — the `loop:arm` self-wake mechanism's
+ * health: active `loop-*` routines (armed), how many are overdue past the
+ * dead-routine window, and recent failure streaks from `autoloop_state`.
+ * Only RECENTLY-FIRED autoloop rows count (the table accretes one row per
+ * historical loop owner — ~370 stale rows at v2 time — so raw counts lie).
+ */
+export interface LoopsHealth {
+  /** Active loop-* routines (armed self-wakes). */
+  armed: number;
+  /** Of `armed`, next_fire_at overdue past the dead-routine window. */
+  overdue: number;
+  overdueNames: string[];
+  /** autoloop_state loop-* rows fired in the last 24h with consecutive_errors >= 3. */
+  failureStreaks: number;
+  /** ms epoch of the newest loop-* fire in the last 24h, or null. */
+  lastFireAt: number | null;
+}
+
+/**
+ * Coordination health (health-tab-v2 P-009) — the fleet-coordination failure
+ * modes the playbook treats as highest-priority, previously visible only via
+ * coord:glance: unanswered DIRECTED messages (a blocked peer waiting on a
+ * reply), sessions at critical context (about to force-compact), event-await
+ * waiters with no expiry going stale (the "sleeps-forever" class), and fleets
+ * with live members but NO live leader (the silent-mass-failure mode).
+ */
+export interface CoordinationHealth {
+  /** Live sessions with >=1 unanswered directed message addressed to them. */
+  unansweredAgents: number;
+  /** Total unanswered directed messages across live sessions. */
+  unansweredTotal: number;
+  /** Age of the oldest unanswered directed message (ms), or null. */
+  unansweredOldestMs: number | null;
+  /** Live sessions past ~90% of their compaction limit. */
+  criticalContext: number;
+  /** Live sessions past ~75% of their compaction limit. */
+  highContext: number;
+  /** Active event_awaits (fired_at/cancelled_at null). */
+  activeAwaits: number;
+  /** Active awaits with NO expiry older than 24h — likely stranded waiters. */
+  staleAwaits: number;
+  /** Fleets with >=1 live member and no live leader. */
+  leaderlessFleets: number;
+  /** Distinct fleets with >=1 live member. */
+  liveFleets: number;
+}
+
+/**
+ * Memory-system health (health-tab-v2 P-010) — folds the SAME readMemoryHealth
+ * the Learning tab's MemoryHealthCard renders (D-C: reuse the computer, never a
+ * second derivation). `entityRows` is the EI-366 fragment-leak canary's input;
+ * the card links to the Learning tab for the full view.
+ */
+export interface MemoryPanelHealth {
+  /** REAL memories (entity rows excluded — the honest count). */
+  totalMemories: number;
+  /** Segregated mem0 entity-linking rows sharing the canonical table. */
+  entityRows: number;
+  /** memory_feedback events in the trailing 30 days — the loop's pulse. */
+  feedback30d: number;
+  /** Recall zero-hit rate (0..1) when the telemetry exposes one, else null. */
+  zeroHitRate: number | null;
 }
 
 /**
@@ -572,6 +688,7 @@ export interface SystemHealthPanels {
   bees: HealthPanel<BeesHealth>;
   workItems: HealthPanel<WorkItemsHealth>;
   workFeed: HealthPanel<WorkFeedHealth>;
+  loops: HealthPanel<LoopsHealth>;
   tokens: HealthPanel<TokensHealth>;
   watchdog: HealthPanel<WatchdogHealth>;
   deploy: HealthPanel<DeployHealth>;
@@ -582,8 +699,10 @@ export interface SystemHealthPanels {
   improvements: HealthPanel<ImprovementsHealth>;
   infra: HealthPanel<InfraHealth>;
   suFleet: HealthPanel<SuFleetHealth>;
+  coordination: HealthPanel<CoordinationHealth>;
   overwatch: HealthPanel<OverwatchPanelHealth>;
   scout: HealthPanel<ScoutHealth>;
+  memory: HealthPanel<MemoryPanelHealth>;
   toolEfficiency: HealthPanel<ToolEfficiencyHealth>;
 }
 
@@ -600,4 +719,6 @@ export interface SystemHealth {
   overall: PanelStatus;
   crossMonitor: CrossMonitor;
   panels: SystemHealthPanels;
+  /** Panels excluded from `overall` by an active owner ack (P-004). */
+  ackedCount?: number;
 }

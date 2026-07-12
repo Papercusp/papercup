@@ -74,22 +74,37 @@ export interface DevDeployState {
 }
 
 /** Resolve the release paths/refs the same way release-config.ts does (env seams). */
+/**
+ * Memoized `git rev-parse --show-toplevel`. Resolved AT MOST ONCE per process:
+ * the repo root cannot change under a running operator, and this probe sits
+ * behind a UI-POLLED sync query (dev-glances), so re-forking git on every poll
+ * bought nothing. In a PACKAGED install there is no repo at all, so each poll
+ * forked a doomed git AND let its `fatal: not a git repository` reach the
+ * operator's stderr — 3,247 of them in one 0.0.8 mac install's serve.log,
+ * burying real errors (WI-4368). `stderr: 'ignore'` keeps a repo-less install
+ * silent; the memo keeps it from re-asking.
+ */
+let cachedToplevel: string | null = null;
+function gitToplevel(): string {
+  if (cachedToplevel != null) return cachedToplevel;
+  try {
+    cachedToplevel = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    cachedToplevel = process.cwd();
+  }
+  return cachedToplevel;
+}
+
 function resolveConfig(): Pick<
   DevDeployState,
   'integrationRoot' | 'releaseRoot' | 'releaseRef' | 'integrationBranch'
 > {
   // PAPERCUSP_INTEGRATION_ROOT is exported into the :3070 operator's unit env
   // (the release-gate cutover). Off that env, derive from cwd's git toplevel.
-  let integrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? '';
-  if (!integrationRoot) {
-    try {
-      integrationRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
-        encoding: 'utf8',
-      }).trim();
-    } catch {
-      integrationRoot = process.cwd();
-    }
-  }
+  const integrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT || gitToplevel();
   const parent = path.dirname(integrationRoot);
   const releaseRoot = process.env.PAPERCUSP_RELEASE_ROOT ?? path.join(parent, 'papercup-release');
   // staging→main model (staging-branch-pipeline-2026-06-06): the integration

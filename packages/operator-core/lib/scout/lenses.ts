@@ -170,6 +170,9 @@ export function flattenDigest(digest: CorpusDigest): MetaPattern[] {
     // NOV-1 (gym-unwedge): the QD niche map — occupied behavior-space niches
     // steer generation toward unexplored territory.
     ['niche-map', digest.nicheMap ?? []],
+    // P-007 (blender-self-learning): chronic watchdog signals ride the flatten
+    // so ideation targets measured infrastructure pain directly.
+    ['watchdog-health', digest.watchdogHealth ?? []],
   ];
   const out: MetaPattern[] = [];
   for (const [category, patterns] of lanes) {
@@ -202,6 +205,8 @@ function categoryLabel(c: MetaPatternCategory): string {
       return 'Standing fact (deterministic conclusion — ground truth unless retracted)';
     case 'niche-map':
       return 'QD niche map (novelty guidance — occupied niches; propose in UNEXPLORED behavior-space)';
+    case 'watchdog-health':
+      return 'Watchdog health (chronic measured infrastructure signal — 15min collectors)';
   }
 }
 

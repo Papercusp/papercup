@@ -9,7 +9,10 @@
  *  - the default observation-count dep filters by the caller + the since-boundary.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ImprovementCandidate } from '../../../harness/improvements/read-items';
+// The type lives in ./policy (read-items only imports it without re-exporting —
+// importing it from read-items was TS2459 under tsc, invisible to vitest's
+// transpile-only run).
+import type { ImprovementCandidate } from '../../../harness/improvements/policy';
 
 vi.mock('../../../harness/improvements/read-items', () => ({
   readObservationItems: vi.fn(async () => []),

@@ -280,6 +280,10 @@ export const DigestSchema = z.object({
    *  ideators target unexplored behavior-space. OPTIONAL: populated by the
    *  cycle seam (cycle-deps readCorpus), like standingFacts. */
   nicheMap: z.array(MetaPatternSchema).optional(),
+  /** WATCHDOG HEALTH (blender-self-learning-2026-07-12 P-007) — chronic
+   *  collector signals + standing open conditions (watchdog_ticks). OPTIONAL:
+   *  populated by the cycle seam (cycle-deps readCorpus), like nicheMap. */
+  watchdogHealth: z.array(MetaPatternSchema).optional(),
   /** DELTA-FIRST rendering substrate (blender-self-learning-2026-07-12 P-003 /
    *  WI-4319): the refs the PREVIOUS cycle's persisted digest snapshot carried
    *  (scout_digest_snapshots, migration 582). renderDigest leads with the
