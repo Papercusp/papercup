@@ -190,7 +190,14 @@ export function realDeps(cfg: ReleaseConfig, opts: RealDepsOpts = {}): DeployDep
     async health() {
       // WI-109: Harden the run-check to detect broken MCP before traffic cutover.
       // Probe both /api/health and POST /api/mcp initialize → 200 event-stream.
-      return probeHealth(cfg.operatorHealthUrl, { log: (s) => log(s), probeMcp: true });
+      // EI-10361: also probe the live memory recall canary (unless policy='off')
+      // — 'report' (default) never fails the deploy on it; 'block' does.
+      return probeHealth(cfg.operatorHealthUrl, {
+        log: (s) => log(s),
+        probeMcp: true,
+        probeMemoryCanary: cfg.memoryCanaryPolicy !== 'off',
+        memoryCanaryPolicy: cfg.memoryCanaryPolicy === 'block' ? 'block' : 'report',
+      });
     },
 
     async verifyPaths() {

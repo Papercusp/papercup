@@ -13,9 +13,11 @@
  *     which short-circuits before any conversation routing.
  *   - Yields to a higher-priority registered voice consumer (e.g. a
  *     background-toast "say cancel" handler) when one is active.
- *   - Otherwise submits the transcript to the in-process Papercup converse
- *     brain (the desktop chat's shared thread) via submitVoiceTurn, falling back
- *     to the legacy dock-pane bridge only if no conversation provider is mounted.
+ *   - Otherwise routes the transcript to the dock's Papercup pane (the
+ *     persistent fast front-end — voice-public-release-readiness P-019/D-007)
+ *     with a spoken instant ack, falling back to the in-process Papercup
+ *     converse brain (the desktop chat's shared thread, submitVoiceTurn) when
+ *     the pane route is unavailable.
  *
  * The previous Oracle fallback (POST /api/oracle/chat) was removed
  * 2026-06-22: Oracle is a separate concierge brain (not the conversation)
@@ -244,23 +246,43 @@ export function VoiceAppBridge(): null {
       }
       if (hasHigherPriorityConsumer()) return;
 
-      // Voice-IN → the in-process Papercup converse brain (plan
-      // voice-public-release-readiness D-001, owner-ratified 2026-07-12). Route
-      // the final transcript into the SAME conversation + shared thread the
-      // desktop chat uses, via the provider-registered sendUserMessage
-      // (spoken:true → the reply is spoken back via the active TTS engine, e.g.
-      // kokoro). This replaces the retired writeToSentinelPane dock path, which
-      // required a dev zellij pui-dock and dropped every turn on a normal desktop
-      // ("Agent did not respond" — the root cause of the PTT + wake failures).
+      // Voice-IN → the dock's Papercup pane FIRST (plan
+      // voice-public-release-readiness P-019/D-004/D-007, owner-ratified
+      // 2026-07-12). The pane is the persistent fast Papercup front-end (a psu
+      // `--role=papercup` session on a fast model, auto wake-mode) and the dock
+      // ships on ALL platforms (D-004) — so the pane is the PRIMARY voice brain:
+      // it holds the full tool surface, the P-016 orient folds, and the coord
+      // channel to the deep brain. Its reply comes back through the existing
+      // voice-OUT FIFO poll below (the pane calls voice:say). On a successful
+      // pane write we speak a short local ack immediately — a real pane turn
+      // takes seconds, and the ack keeps the user out of dead air (and holds the
+      // awaitingResponse window honest).
+      //
+      // FALLBACK: when the pane route is unavailable (no dock session, pane
+      // exited, write failed — e.g. the dock hasn't booted yet, or a stripped-
+      // down install), degrade to the in-process Papercup converse brain (the
+      // P-001 interim path): the SAME conversation + shared thread the desktop
+      // chat uses, via the provider-registered sendUserMessage (spoken:true →
+      // reply spoken via the active TTS engine). Same user identity either way
+      // (D-001) — the swap is invisible.
       //
       // Guard: when a full-agent engine (EL Conv-AI / OpenAI Realtime) owns the
       // session it is its own brain, so don't double-dispatch.
       if (fullAgentActive) return;
+      const paneOk = await routeVoiceToSentinelPane(text);
+      if (paneOk) {
+        // Instant ack (P-019): the pane turn is composing — tell the user we
+        // heard them. Speaking also flips status → 'speaking', which clears the
+        // awaitingResponse timeout window; the real reply lands via the
+        // drainSentinelOutput poll below.
+        const { speak } = await import('./voice-mode');
+        speak('On it.', 'system:operator', 'polite');
+        return;
+      }
       if (!submitVoiceTurn(text)) {
-        // No conversation provider mounted (should not happen in the desktop
-        // app). Fall back to the legacy dock path so a dev pui-dock, if present,
-        // still receives the turn.
-        void routeVoiceToSentinelPane(text);
+        // Neither the pane nor a conversation provider is available (should not
+        // happen in the desktop app — the provider mounts with the shell). The
+        // turn is dropped; the awaitingResponse window will surface the miss.
       }
     });
 

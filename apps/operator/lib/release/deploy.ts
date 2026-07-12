@@ -322,11 +322,21 @@ export async function executeDeploy(
       const verify = await step('verify-paths', () => deps.verifyPaths());
       if (!verify.ok) throw new Error(`release-path verify failed: ${verify.failures.join('; ')}`);
 
+      // EI-10361: report-mode memory-canary verdict never throws (health.healthy
+      // stayed true above) but a `degraded` reading is worth a loud note in the
+      // deploy broadcast — this IS the value of catching it here instead of
+      // waiting for the next scheduled 05:45 canary tick.
+      const canary = health.memoryCanary;
+      const canaryNote =
+        canary?.reachable && canary.ran && canary.status === 'degraded'
+          ? ` ⚠️ memory recall canary DEGRADED post-deploy (r@10=${canary.rAt10 ?? '—'}, zeroHitRate=${canary.zeroHitRate ?? '—'}) — report-only, deploy not blocked; investigate before the next scheduled tick.`
+          : '';
+
       await step('broadcast', () =>
         deps.broadcast(
-          `✅ deployed ${short(plan.targetSha)} (${plan.commits.length} commit(s), ${migrations!.appliedCount} migration(s))`,
+          `✅ deployed ${short(plan.targetSha)} (${plan.commits.length} commit(s), ${migrations!.appliedCount} migration(s))${canaryNote ? ' ⚠️ memory canary degraded' : ''}`,
           `Release gate: advanced release checkout ${short(prevReleaseSha)} → ${short(plan.targetSha)}. ` +
-            `Staged migrations: ${plan.migrations.join(', ') || 'none'}.`,
+            `Staged migrations: ${plan.migrations.join(', ') || 'none'}.${canaryNote}`,
         ),
       );
       // await-event-primitive-2026-06-05 P-015: deploy-landed is awaitable —

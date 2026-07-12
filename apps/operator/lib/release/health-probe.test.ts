@@ -7,7 +7,7 @@
  * the only real time is the short interval sleep).
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { probeHealth } from './health-probe';
+import { probeHealth, probeMemoryCanaryCheck } from './health-probe';
 
 function jsonRes(status: number, body: unknown): Response {
   return new Response(typeof body === 'string' ? body : JSON.stringify(body), {
@@ -182,5 +182,124 @@ describe('probeHealth', () => {
     const accept = String(mcpHeaders?.accept ?? mcpHeaders?.Accept ?? '');
     expect(accept).toContain('application/json');
     expect(accept).toContain('text/event-stream');
+  });
+});
+
+// EI-10361: deploy-triggered memory recall canary probe.
+describe('probeMemoryCanaryCheck', () => {
+  it('reports reachable + the verdict on a normal 200 response', async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonRes(200, { ok: true, ran: true, status: 'ok', rAt10: 0.92, delta: -0.01, zeroHitRate: 0 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const r = await probeMemoryCanaryCheck('http://x/api/internal/memory-canary');
+
+    expect(r.reachable).toBe(true);
+    expect(r.ran).toBe(true);
+    expect(r.status).toBe('ok');
+  });
+
+  it('reports reachable:false (never throws) on a transport failure — PASS-WITH-NOTE', async () => {
+    const fetchMock = vi.fn(async () => {
+      throw new TypeError('fetch failed');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const r = await probeMemoryCanaryCheck('http://x/api/internal/memory-canary');
+
+    expect(r.reachable).toBe(false);
+    expect(r.error).toMatch(/fetch failed/);
+  });
+});
+
+describe('probeHealth + probeMemoryCanary (EI-10361)', () => {
+  function stubHealthAndCanary(canaryBody: unknown, canaryStatus = 200): ReturnType<typeof vi.fn> {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/health')) return jsonRes(200, { ok: true });
+      if (url.includes('/memory-canary')) return jsonRes(canaryStatus, canaryBody);
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  it("'report' policy (default): a DEGRADED canary is attached to the result but never fails the probe", async () => {
+    stubHealthAndCanary({ ok: true, ran: true, status: 'degraded', rAt10: 0.2, delta: -0.3, zeroHitRate: 0.6 });
+
+    const r = await probeHealth('http://x/api/health', {
+      timeoutMs: 5_000,
+      intervalMs: 1,
+      requestTimeoutMs: 50,
+      probeMemoryCanary: true,
+      memoryCanaryPolicy: 'report',
+    });
+
+    expect(r.healthy).toBe(true);
+    expect(r.memoryCanary?.status).toBe('degraded');
+  });
+
+  it("'block' policy: a DEGRADED canary FAILS the probe (→ deploy rollback)", async () => {
+    stubHealthAndCanary({ ok: true, ran: true, status: 'degraded', rAt10: 0.2, delta: -0.3, zeroHitRate: 0.6 });
+
+    const r = await probeHealth('http://x/api/health', {
+      timeoutMs: 5_000,
+      intervalMs: 1,
+      requestTimeoutMs: 50,
+      probeMemoryCanary: true,
+      memoryCanaryPolicy: 'block',
+    });
+
+    expect(r.healthy).toBe(false);
+    expect(r.error).toMatch(/memory recall canary degraded/);
+  });
+
+  it("'block' policy: a SEEDED/OK canary never fails the probe (only a reached+ran 'degraded' verdict blocks)", async () => {
+    stubHealthAndCanary({ ok: true, ran: true, status: 'seeded', rAt10: null, delta: 0, zeroHitRate: null });
+
+    const r = await probeHealth('http://x/api/health', {
+      timeoutMs: 5_000,
+      intervalMs: 1,
+      requestTimeoutMs: 50,
+      probeMemoryCanary: true,
+      memoryCanaryPolicy: 'block',
+    });
+
+    expect(r.healthy).toBe(true);
+    expect(r.memoryCanary?.status).toBe('seeded');
+  });
+
+  it("'block' policy: an UNREACHABLE canary (route down/erroring) never fails the probe — PASS-WITH-NOTE", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/health')) return jsonRes(200, { ok: true });
+      if (url.includes('/memory-canary')) throw new TypeError('fetch failed');
+      throw new Error(`unexpected URL: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const r = await probeHealth('http://x/api/health', {
+      timeoutMs: 5_000,
+      intervalMs: 1,
+      requestTimeoutMs: 50,
+      probeMemoryCanary: true,
+      memoryCanaryPolicy: 'block',
+    });
+
+    expect(r.healthy).toBe(true);
+    expect(r.memoryCanary?.reachable).toBe(false);
+  });
+
+  it('probeMemoryCanary defaults OFF — no canary call, no memoryCanary field', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/health')) return jsonRes(200, { ok: true });
+      throw new Error(`unexpected URL (canary should not be called): ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const r = await probeHealth('http://x/api/health', { timeoutMs: 5_000, intervalMs: 1, requestTimeoutMs: 50 });
+
+    expect(r.healthy).toBe(true);
+    expect(r.memoryCanary).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

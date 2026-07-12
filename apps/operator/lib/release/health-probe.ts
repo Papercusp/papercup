@@ -46,6 +46,76 @@ export interface ProbeOpts {
   probeMcp?: boolean;
   /** Base URL for MCP probe (defaults to url with /api/mcp appended). */
   mcpUrl?: string;
+  /**
+   * After health (+MCP, if enabled) go green, POST the live memory recall
+   * canary (EI-10361) on the freshly-restarted operator — catches a
+   * deploy-induced silent recall outage while the automated rollback window
+   * is still open, instead of waiting for the next scheduled 05:45 tick.
+   * Read-only, ~25 live searches; never retried (a single probe per deploy).
+   */
+  probeMemoryCanary?: boolean;
+  /** Base URL for the canary probe (defaults to url with /api/health
+   *  replaced by /api/internal/memory-canary). */
+  memoryCanaryUrl?: string;
+  /**
+   * 'report' (default): a `degraded` canary verdict is attached to the
+   * result and logged, but NEVER fails the probe — this is the safe,
+   * near-zero-risk default (report-only monitoring, immediate alert via the
+   * canary's own notify path, no deploy-pipeline behavior change).
+   * 'block': a `degraded` verdict fails the probe (→ deploy rollback, while
+   * the DB snapshot is still clean). This changes release-pipeline
+   * declare-good semantics — a deliberate owner/release-owner policy flip
+   * (PAPERCUSP_MEMORY_CANARY_POLICY=block), never the shipped default.
+   */
+  memoryCanaryPolicy?: 'report' | 'block';
+}
+
+/**
+ * POST the deploy-triggered memory-canary probe route (memory-canary-probe.ts)
+ * and normalize its response. Never throws — a transport failure or
+ * malformed response is reported as `reachable: false`, which the 'report'
+ * policy treats as a note, never a probe failure (PASS-WITH-NOTE, mirrored
+ * from the route's own contract: an unarmed/broken canary must never look
+ * like the deploy itself is unhealthy).
+ */
+export async function probeMemoryCanaryCheck(
+  url: string,
+  opts: { requestTimeoutMs?: number; log?: (s: string) => void } = {},
+): Promise<MemoryCanaryProbeResult> {
+  const requestTimeoutMs = opts.requestTimeoutMs ?? 30_000; // ~25 live searches — generous vs the 5s health/MCP probes
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+      signal: AbortSignal.timeout(requestTimeoutMs),
+    });
+    const body = (await res.json()) as {
+      ok?: boolean;
+      ran?: boolean;
+      status?: 'ok' | 'degraded' | 'decayed' | 'seeded';
+      rAt10?: number | null;
+      delta?: number | null;
+      zeroHitRate?: number | null;
+      skipReason?: string;
+      error?: string;
+    };
+    if (!res.ok) {
+      return { reachable: false, error: `status ${res.status}` };
+    }
+    return {
+      reachable: true,
+      ran: body.ran,
+      status: body.status,
+      rAt10: body.rAt10,
+      delta: body.delta,
+      zeroHitRate: body.zeroHitRate,
+      skipReason: body.skipReason,
+      error: body.error,
+    };
+  } catch (e) {
+    return { reachable: false, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 export async function probeHealth(url: string, opts: ProbeOpts = {}): Promise<HealthResult> {
@@ -94,6 +164,39 @@ export async function probeHealth(url: string, opts: ProbeOpts = {}): Promise<He
           await sleep(intervalMs);
           continue;
         }
+      }
+
+      // Memory recall canary (EI-10361) — a ONE-SHOT check after health+MCP go
+      // green, never part of the retry loop above (a canary failure is not a
+      // "not ready yet" condition to poll through).
+      if (opts.probeMemoryCanary) {
+        const canaryUrl = opts.memoryCanaryUrl || url.replace('/api/health', '/api/internal/memory-canary');
+        const memoryCanary = await probeMemoryCanaryCheck(canaryUrl, { log: opts.log });
+        opts.log?.(
+          `memory canary: reachable=${memoryCanary.reachable} ran=${memoryCanary.ran} status=${memoryCanary.status ?? '—'} ` +
+            `r@10=${memoryCanary.rAt10 ?? '—'} zeroHit=${memoryCanary.zeroHitRate ?? '—'}`,
+        );
+        // PASS-WITH-NOTE (mirrors the probe route's own contract): only a
+        // REACHED, RAN, DEGRADED verdict — under the explicit 'block' policy
+        // — fails the deploy. seeded/decayed/flag-off/unreachable/erroring
+        // never block, however the policy is set.
+        if (
+          opts.memoryCanaryPolicy === 'block' &&
+          memoryCanary.reachable &&
+          memoryCanary.ran &&
+          memoryCanary.status === 'degraded'
+        ) {
+          return {
+            healthy: false,
+            status: res.status,
+            body,
+            attempts,
+            elapsedMs: Date.now() - started,
+            error: `memory recall canary degraded (r@10=${memoryCanary.rAt10 ?? '—'}, zeroHitRate=${memoryCanary.zeroHitRate ?? '—'}) — memoryCanaryPolicy=block`,
+            memoryCanary,
+          };
+        }
+        return { healthy: true, status: res.status, body, attempts, elapsedMs: Date.now() - started, memoryCanary };
       }
 
       return { healthy: true, status: res.status, body, attempts, elapsedMs: Date.now() - started };

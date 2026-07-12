@@ -185,7 +185,7 @@ pub fn glyph_prefixed_title(base: &str, kind: Option<AgentPaneKind>) -> String {
     }
 }
 
-/// All kinds in display order — the order the legend and docs read (🍵 🫖 ☕ 🥤 📋 🛠).
+/// All kinds in display order — the order the legend and docs read (☕ 🫖 🍵 🥤 📋 🛠).
 pub const ALL_KINDS: [AgentPaneKind; 6] = [
     AgentPaneKind::Queen,
     AgentPaneKind::Overwatch,
@@ -196,7 +196,7 @@ pub const ALL_KINDS: [AgentPaneKind; 6] = [
 ];
 
 /// One compact legend line for the colony roster header (owner ask 2026-06-11):
-/// `🍵 mug · 🫖 kettle · ☕ cup · 🥤 papercup · 📋 planner · 🛠 su`, each entry
+/// `☕ mug · 🫖 kettle · 🍵 cup · 🥤 papercup · 📋 planner · 🛠 su`, each entry
 /// tinted in its kind color (the same color the rows use), separators dim. The
 /// LABEL routes through the active Hive lexicon (`display_label`) — never the old
 /// wire word — so it reads the same vocabulary as the pane titles + brain view.
@@ -293,11 +293,11 @@ mod tests {
         // known kind → glyph prefixed (P-010)
         assert_eq!(
             glyph_prefixed_title("worker · ab12", Some(AgentPaneKind::Bee)),
-            "☕ worker · ab12"
+            "🍵 worker · ab12"
         );
         assert_eq!(
             glyph_prefixed_title("Q", Some(AgentPaneKind::Queen)),
-            "🍵 Q"
+            "☕ Q"
         );
         // unknown/missing kind → unchanged
         assert_eq!(glyph_prefixed_title("x", None), "x");
@@ -339,11 +339,11 @@ mod tests {
     fn from_glyph_prefix_recovers_the_kind_from_a_pane_name() {
         // P-011 regrouper input: the P-010 glyph-prefixed zellij pane names.
         assert_eq!(
-            AgentPaneKind::from_glyph_prefix("☕ claude · F-12"),
+            AgentPaneKind::from_glyph_prefix("🍵 claude · F-12"),
             Some(AgentPaneKind::Bee)
         );
         assert_eq!(
-            AgentPaneKind::from_glyph_prefix("🍵 mug"),
+            AgentPaneKind::from_glyph_prefix("☕ mug"),
             Some(AgentPaneKind::Queen)
         );
         assert_eq!(
@@ -403,9 +403,9 @@ mod tests {
             );
         }
         // The cast labels resolve to the classic vessel words.
-        assert!(text.contains("🍵 Mug"), "{text}");
+        assert!(text.contains("☕ Mug"), "{text}");
         assert!(text.contains("🫖 Kettle"), "{text}");
-        assert!(text.contains("☕ Cup"), "{text}");
+        assert!(text.contains("🍵 Cup"), "{text}");
         assert!(text.contains("🥤 Papercup"), "{text}");
         // Dim separators between entries (5 gaps for 6 kinds).
         assert_eq!(line.spans.iter().filter(|s| s.content == " · ").count(), 5);

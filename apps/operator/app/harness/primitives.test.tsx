@@ -205,7 +205,7 @@ describe('AgentKindPill', () => {
     render(<AgentKindPill kind="mug" />);
     // classic/Pot pack: queen → brain → "Mug" (NOT the theme fallback "Queen")
     expect(screen.getByText('Mug')).toBeTruthy();
-    expect(screen.getByText(AGENT_KIND_GLYPH.queen)).toBeTruthy(); // 🍵
+    expect(screen.getByText(AGENT_KIND_GLYPH.queen)).toBeTruthy(); // ☕ (the Mug)
   });
 
   it('covers every glyph kind in the AGENT_KIND table (and vice versa)', () => {

@@ -47,6 +47,18 @@ export interface ReleaseConfig {
    * freeze diagnosis (found 2026-06-20, su-707ed/su-ee7e9).
    */
   checkpointLogDir: string;
+  /**
+   * Deploy-triggered memory recall canary policy (EI-10361): 'report'
+   * (default) attaches the post-restart canary verdict to the health result
+   * and logs it, never failing the deploy — a `degraded` outcome still fires
+   * its own alert (recall-canary.ts's existing notify path) immediately,
+   * rather than waiting for the next scheduled 05:45 tick. 'block' fails the
+   * deploy on a `degraded` verdict (→ rollback, while the DB snapshot is
+   * still clean) — a deliberate policy escalation that changes release-
+   * pipeline declare-good semantics; flip via PAPERCUSP_MEMORY_CANARY_POLICY,
+   * never the shipped default. 'off' skips the probe entirely.
+   */
+  memoryCanaryPolicy: 'off' | 'report' | 'block';
 }
 
 const FALLBACK_INTEGRATION = '/home/marsh-office/papercupai-workspace/papercusp';
@@ -130,6 +142,10 @@ export function releaseConfig(overrides: Partial<ReleaseConfig> = {}): ReleaseCo
       overrides.checkpointLogDir ??
       process.env.PAPERCUSP_CHECKPOINT_LOG_DIR ??
       path.join(homedir(), '.papercusp', 'checkpoint-logs'),
+    memoryCanaryPolicy:
+      overrides.memoryCanaryPolicy ??
+      (process.env.PAPERCUSP_MEMORY_CANARY_POLICY as 'off' | 'report' | 'block' | undefined) ??
+      'report',
   };
 }
 

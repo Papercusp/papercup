@@ -217,12 +217,26 @@ describe('computeEscalationsHealth — operational flood excluded (EI-1490)', ()
     const h = computeEscalationsHealth(open, NOW);
     expect(h.open).toBe(3);
     expect(h.aging).toBe(2); // the two OLD ones; the FRESH one is under threshold
+    expect(h.agingNew).toBe(0); // both crossed the threshold DAYS ago — standing, not new
     expect(h.bySeverity).toEqual({ blocker: 1, question: 1, advisory: 1 });
+  });
+
+  it('agingNew counts only escalations that crossed the threshold in the last 24h (health-tab-v2 P-003)', () => {
+    const open: EscalationAgingInput[] = [
+      // aged 7h → crossed the 6h threshold ~1h ago → NEW aging
+      { from: 's-agent-1', severity: 'question', ts: new Date(NOW - 7 * 60 * 60_000).toISOString() },
+      // aged ~3.5d → crossed days ago → standing aging only
+      { from: 's-agent-2', severity: 'warning', ts: OLD },
+      { from: 's-agent-3', severity: 'info', ts: FRESH }, // not aged at all
+    ];
+    const h = computeEscalationsHealth(open, NOW);
+    expect(h.aging).toBe(2);
+    expect(h.agingNew).toBe(1);
   });
 
   it('no escalations → clean zeroed panel', () => {
     const h = computeEscalationsHealth([], NOW);
-    expect(h).toEqual({ open: 0, oldestAgeMs: null, bySeverity: {}, aging: 0 });
+    expect(h).toEqual({ open: 0, oldestAgeMs: null, bySeverity: {}, aging: 0, agingNew: 0 });
   });
 });
 

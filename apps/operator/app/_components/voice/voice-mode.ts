@@ -277,9 +277,21 @@ function endProcessingTranscript(): void {
 }
 
 /**
+ * How long to wait for the agent's reply before firing the "Agent did not
+ * respond" toast. Sized to a REAL fast-pane turn, not an HTTP round-trip
+ * (voice-public-release-readiness-2026-07-12 P-019/D-007): the primary voice
+ * brain is the dock's Papercup pane (a psu Claude session on a fast model) whose
+ * honest turn latency is ~5–30s — the old 15s window fired the timeout on turns
+ * that were still legitimately composing. The pane route also speaks an instant
+ * local ack (VoiceAppBridge), so the user is never staring at silence while
+ * this window runs.
+ */
+export const RESPONSE_WINDOW_MS = 45_000;
+
+/**
  * Mark "transcript captured — the agent is composing a response."
- * Cleared when status becomes 'speaking' (TTS started) OR after 15s
- * with a toast warning.
+ * Cleared when status becomes 'speaking' (TTS started) OR after
+ * RESPONSE_WINDOW_MS with a toast warning.
  */
 function beginAwaitingResponse(): void {
   if (awaitingResponseTimer) clearTimeout(awaitingResponseTimer);
@@ -297,7 +309,7 @@ function beginAwaitingResponse(): void {
         );
       } catch { /* ignore */ }
     }
-  }, 15000);
+  }, RESPONSE_WINDOW_MS);
 }
 
 function endAwaitingResponse(): void {

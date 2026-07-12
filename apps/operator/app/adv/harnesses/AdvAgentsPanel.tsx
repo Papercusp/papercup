@@ -7,7 +7,7 @@
 //   - working (default): the fleet:assignments projection scoped to this
 //     harness via `fleetAssignments.byHarness` — every agent with claims or
 //     spawns here (psu sessions included), tagged with the colony tab's kind
-//     glyph (🍵/🫖/☕/🥤/📋/🛠), its head-of-line work item, and its load. Same
+//     glyph (☕/🫖/🍵/🥤/📋/🛠), its head-of-line work item, and its load. Same
 //     vocabulary as zellij, narrower lens (plan D-001).
 //   - runs: the original run-history grid (`agentRunsConsolidated.bySlug` via
 //     useHarnessAgents) — "what executed here", kept as history, not deleted.

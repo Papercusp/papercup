@@ -282,9 +282,9 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
     let driver_name = kdl_pane_name(&lex.lex("fleet"), "fleet");
     // The worker-stack CONTAINER (was "🐝 colony", old bee-brand). It is
     // infrastructure, not an agent type, so it MUST stay UNGLYPHED — every cup
-    // glyph (☕🍵🫖🥤) is a kind-glyph, and a ☕ prefix here makes
+    // glyph (☕🍵🫖🥤) is a kind-glyph, and a 🍵 prefix here makes
     // AgentPaneKind::from_glyph_prefix mis-read the driver as a worker Bee/Cup and
-    // pull it into the P-011 regroup (the icon-pass 🐝→☕ sed, 7beaba771c, did
+    // pull it into the P-011 regroup (the icon-pass 🐝→cup-glyph sed, 7beaba771c, did
     // exactly that). Lexicon-routed so it reads "cups"/"bees" per active pack.
     let cups_name = kdl_pane_name(&lex.lex_plural("contributor"), "cups");
     // 12-space indent: the driver is a member of the `chat` stack, which is
@@ -327,9 +327,15 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
     // Queen's sibling system-health supervisor. Pane order (owner ask 2026-06-22;
     // deep pane added voice-public-release-readiness P-014): top-to-bottom:
     // 🥤 sentinel (the front-door agent leads the dock), 🥤 deep (same label —
-    // hidden split, D-001), 🫖 overwatch, 🍵 queen, cups (dock-driver + its
+    // hidden split, D-001), 🫖 overwatch, ☕ mug, cups (dock-driver + its
     // worker TUIs), ⏸ wakes. The front pane gave up 12% to the deep pane
     // (40% → 28%) so the rest of the dock is untouched.
+    // The Mug's stacked sub-panes (prompt/wakes/mail/work) are glyph-PREFIXED with the
+    // Mug's own kind-glyph so AgentPaneKind::from_glyph_prefix regroups them with the
+    // Mug (P-011), not as loose panes. DERIVE it — these four used to hardcode the
+    // literal, so when the owner swapped the Mug/Cup glyphs (2026-07-12) they silently
+    // kept the CUP's glyph and would have regrouped as workers. One source of truth.
+    let q = AgentPaneKind::Queen.glyph();
     let dock_body = {
         format!(
             r#"    pane split_direction="horizontal" {{
@@ -349,19 +355,19 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
                 args "brain-view" "--queen"
             }}
             pane stacked=true size="38%" {{
-                pane name="🍵✉ prompt" expanded=true {{
+                pane name="{q}✉ prompt" expanded=true {{
                     command "pui"
                     args "prompt-pane" "--queen"
                 }}
-                pane name="🍵⏸ wakes" {{
+                pane name="{q}⏸ wakes" {{
                     command "pui"
                     args "wake-pane" "--queen"
                 }}
-                pane name="🍵✉ mail" {{
+                pane name="{q}✉ mail" {{
                     command "pui"
                     args "mail-pane" "--queen"
                 }}
-                pane name="🍵☑ work" {{
+                pane name="{q}☑ work" {{
                     command "pui"
                     args "work-pane" "--queen"
                 }}
@@ -873,7 +879,7 @@ mod tests {
         let kdl = chat_dock_kdl(&["psu".to_string(), "--resume".to_string()], &lex);
         assert!(kdl.contains("name=\"cups\"")); // worker-stack container, UNGLYPHED (infra, not an agent kind)
         assert!(kdl.contains("name=\"🥤 papercup\"")); // lex("operator")=Papercup, P-010 glyph
-        assert!(kdl.contains("name=\"🍵 mug\""));
+        assert!(kdl.contains("name=\"☕ mug\""));
         assert!(kdl.contains("stacked=true"));
         assert!(kdl.contains("expanded=true"));
         // sentinel-as-claude-tui-2026-06-22: the sentinel pane (operator chat) now
@@ -902,7 +908,7 @@ mod tests {
         // sentinel-as-claude-tui-2026-06-22: 🛡 sentinel · 👁 overwatch · ♛ queen).
         let (s, q) = (
             kdl.find("name=\"🥤 papercup\"").unwrap(),
-            kdl.find("name=\"🍵 mug\"").unwrap(),
+            kdl.find("name=\"☕ mug\"").unwrap(),
         );
         assert!(s < q, "the sentinel leads the dock, above the queen split");
         // And NOTHING of the workbench: no HUD, no work area, no swap presets.
@@ -1016,11 +1022,11 @@ mod tests {
         // is gone (sentinel-as-claude-tui-2026-06-22 reorder).
         let kdl = chat_dock_kdl(&["psu".to_string()], &hive_lex());
         assert!(kdl.contains("name=\"🥤 sentinel\""));
-        assert!(kdl.contains("name=\"🍵 queen\""));
+        assert!(kdl.contains("name=\"☕ queen\""));
         assert!(!kdl.contains("name=\"chat\""));
         // The classic (Papercup-cast) labels must NOT leak when the-hive is on.
         assert!(!kdl.contains("name=\"🥤 papercup\""));
-        assert!(!kdl.contains("name=\"🍵 mug\""));
+        assert!(!kdl.contains("name=\"☕ mug\""));
     }
 
     #[test]
@@ -1061,7 +1067,7 @@ mod tests {
             "the reverted one-pane variant must not return: {on}"
         );
         assert!(
-            on.contains("name=\"🍵 mug\" split_direction=\"vertical\""),
+            on.contains("name=\"☕ mug\" split_direction=\"vertical\""),
             "queen split container: {on}"
         );
         // The queen's side column is the FOUR stacked data boards (dock 4-pane
@@ -1070,14 +1076,14 @@ mod tests {
         assert!(on.contains("args \"wake-pane\" \"--queen\""));
         assert!(on.contains("args \"mail-pane\" \"--queen\""));
         assert!(on.contains("args \"work-pane\" \"--queen\""));
-        assert!(on.contains("name=\"🍵✉ prompt\""));
-        assert!(on.contains("name=\"🍵⏸ wakes\""));
-        assert!(on.contains("name=\"🍵✉ mail\""));
-        assert!(on.contains("name=\"🍵☑ work\""));
-        let brief_at = on.find("🍵✉ prompt").expect("prompt pane");
-        let queen_wakes_at = on.find("🍵⏸ wakes").expect("queen wake pane");
-        let mail_at = on.find("🍵✉ mail").expect("mail pane");
-        let work_at = on.find("🍵☑ work").expect("work pane");
+        assert!(on.contains("name=\"☕✉ prompt\""));
+        assert!(on.contains("name=\"☕⏸ wakes\""));
+        assert!(on.contains("name=\"☕✉ mail\""));
+        assert!(on.contains("name=\"☕☑ work\""));
+        let brief_at = on.find("☕✉ prompt").expect("prompt pane");
+        let queen_wakes_at = on.find("☕⏸ wakes").expect("queen wake pane");
+        let mail_at = on.find("☕✉ mail").expect("mail pane");
+        let work_at = on.find("☕☑ work").expect("work pane");
         assert!(
             brief_at < queen_wakes_at && queen_wakes_at < mail_at && mail_at < work_at,
             "side column order is prompt → wakes → mail → work"
@@ -1095,7 +1101,7 @@ mod tests {
         assert!(on.contains("args \"plans-pane\""));
         // Order: brain precedes her side column; the queen split precedes the
         // cups stack; the dock-driver is inside that cups stack.
-        let queen_at = on.find("name=\"🍵 mug\"").expect("queen container");
+        let queen_at = on.find("name=\"☕ mug\"").expect("queen container");
         let stack_at = on.find("name=\"cups\" stacked=true").expect("cups stack");
         let driver_at = on.find("args \"dock-driver\"").expect("driver pane");
         assert!(queen_at < brief_at, "brain precedes her side column");
@@ -1176,7 +1182,7 @@ mod tests {
         );
         // It is ABOVE the queen: the overwatch pane precedes the ♛ queen split.
         let ow = kdl.find("name=\"🫖 kettle\"").expect("overwatch pane");
-        let queen = kdl.find("name=\"🍵 mug\"").expect("queen split");
+        let queen = kdl.find("name=\"☕ mug\"").expect("queen split");
         assert!(ow < queen, "the overwatch pane sits above the queen split");
     }
 
@@ -1238,7 +1244,7 @@ mod tests {
             "sentinel glyph missing: {kdl}"
         );
         assert!(
-            kdl.contains("name=\"🍵 mug\""),
+            kdl.contains("name=\"☕ mug\""),
             "queen/brain glyph missing: {kdl}"
         );
     }
@@ -1318,7 +1324,7 @@ mod tests {
         .unwrap();
         assert!(p.ends_with("pui-chat-dock.kdl"));
         let written = std::fs::read_to_string(&p).unwrap();
-        assert!(written.contains("name=\"🍵 mug\""));
+        assert!(written.contains("name=\"☕ mug\""));
         assert!(written.contains("args \"dock-driver\""));
         assert!(written.contains("stacked=true"));
     }
