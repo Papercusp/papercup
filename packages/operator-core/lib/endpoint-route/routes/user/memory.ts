@@ -375,4 +375,46 @@ const patch = defineTool({
   },
 });
 
-export default [list, create, del, patch, setBackend, backendInfo];
+/**
+ * GET /api/user/memory/export — download the session user's OWN memories as a
+ * structured JSON file (EI-10350: data portability / GDPR Art. 20). We already
+ * honor access (list), rectification (patch), and erasure (delete / ?all=1);
+ * this closes the portability gap for public release.
+ *
+ * Returns exactly the same user-scoped set the `list` route serves
+ * (`listUserMemories(user.id)`, workspace-shared excluded — same scope as
+ * forget_all), so it exposes nothing `list` doesn't already; `auth:'public'`
+ * matches list for the same desktop-webview / single-user-fallback reason. The
+ * only difference is a `Content-Disposition: attachment` header so a browser
+ * downloads it rather than rendering it.
+ */
+const exportAll = defineTool({
+  method: 'GET',
+  path: '/user/memory/export',
+  auth: 'public',
+  async handler(req) {
+    const user = await getSessionUserOrDefault(req.headers);
+    const backend = getMemoryBackend();
+    const avail = await backend.available();
+    if (!avail.ok) return Response.json({ error: avail.reason }, { status: 503 });
+    const memories = await listUserMemories(user.id);
+    const payload = {
+      schema: 'papercusp.memory.export/v1',
+      exportedAt: new Date().toISOString(),
+      userId: user.id,
+      count: memories.length,
+      note: 'Your personal memories. Workspace-shared entries are not included.',
+      memories,
+    };
+    const stamp = new Date().toISOString().slice(0, 10);
+    return new Response(JSON.stringify(payload, null, 2), {
+      status: 200,
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        'content-disposition': `attachment; filename="papercusp-memories-${stamp}.json"`,
+      },
+    });
+  },
+});
+
+export default [list, create, del, patch, setBackend, backendInfo, exportAll];

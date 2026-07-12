@@ -850,6 +850,14 @@ export default function MemoryPage() {
           >
             {reembedBusy === 'gemma-to-harrier' ? 'Re-embedding…' : 'gemma → harrier'}
           </button></Tooltip>
+          <Tooltip label="Download all of your personal memories as a JSON file (data portability). Workspace-shared entries are not included."><button
+            type="button"
+            onClick={() => { window.location.href = '/api/user/memory/export'; }}
+            disabled={rows.length === 0}
+            style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', fontSize: 13, opacity: rows.length === 0 ? 0.5 : 1 }}
+          >
+            Download my memories
+          </button></Tooltip>
           <button
             type="button"
             onClick={onForgetAll}
