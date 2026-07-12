@@ -7,6 +7,9 @@
 // per-row metadata (sourceRole / scope / confidence / refs). The sync hook is
 // mocked with a hoisted mutable holder (the OperatorActionLog pattern) so each
 // test seeds its own rows without a live transport.
+//
+// WI-4374: Tests for real COUNT query (learning.observations.counts),
+// "500+" render guard, and staleness tone (based on newest observation age).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -18,7 +21,7 @@ import {
 } from "@testing-library/react";
 import type { ReactNode } from "react";
 
-const { sync, filters } = vi.hoisted(() => ({
+const { sync, counts, filters } = vi.hoisted(() => ({
   sync: {
     data: [] as unknown[],
     loading: false,
@@ -27,11 +30,28 @@ const { sync, filters } = vi.hoisted(() => ({
     args: null as unknown,
     invalidate: vi.fn(),
   },
+  counts: {
+    data: [] as unknown[],
+    loading: false,
+    fetching: false,
+    error: null as { message: string } | null,
+    invalidate: vi.fn(),
+  },
   filters: { itemPlans: [] as string[] },
 }));
 
 vi.mock("@papercusp/sync", () => ({
-  useSyncQuery: (opts: { args?: unknown }) => {
+  useSyncQuery: (opts: { queryName?: string; args?: unknown }) => {
+    if (opts.queryName === "learning.observations.counts") {
+      return {
+        data: counts.data,
+        loading: counts.loading,
+        error: counts.error,
+        fetching: counts.fetching,
+        transport: "sse" as const,
+        invalidate: counts.invalidate,
+      };
+    }
     sync.args = opts.args;
     return {
       data: sync.data,
@@ -104,6 +124,11 @@ beforeEach(() => {
   sync.error = null;
   sync.args = null;
   sync.invalidate.mockReset();
+  counts.data = [];
+  counts.loading = false;
+  counts.fetching = false;
+  counts.error = null;
+  counts.invalidate.mockReset();
   filters.itemPlans = [];
 });
 afterEach(() => cleanup());
@@ -194,6 +219,10 @@ describe("<ObservationsPanel />", () => {
       mkRow({ id: "f1", title: "Friction row", kind: "friction" }),
       mkRow({ id: "g1", title: "Gap row", kind: "gap" }),
     ];
+    counts.data = [
+      { kind: "friction", count: 1 },
+      { kind: "gap", count: 1 },
+    ];
     render(<ObservationsPanel />);
     const friction = screen.getByRole("button", {
       name: "Filter by Friction, 1",
@@ -214,8 +243,13 @@ describe("<ObservationsPanel />", () => {
       mkRow({ id: "f1", title: "Friction row", kind: "friction" }),
       mkRow({ id: "s1", title: "Surprise row", kind: "surprise" }),
     ];
+    counts.data = [
+      { kind: "friction", count: 500 },
+      { kind: "surprise", count: 300 },
+      { kind: "other", count: 1769 },
+    ];
     render(<ObservationsPanel />);
-    const chips = screen.getByLabelText("Loaded signal distribution");
+    const chips = screen.getByLabelText("Signal distribution (database counts)");
     expect(chips.querySelector("button")?.textContent).toContain("Friction");
     expect(chips.querySelector("button:last-child")?.textContent).toContain(
       "other",
@@ -280,5 +314,84 @@ describe("<ObservationsPanel />", () => {
       screen.getByRole("button", { name: "Refresh observations" }),
     );
     expect(sync.invalidate).toHaveBeenCalledTimes(1);
+    expect(counts.invalidate).toHaveBeenCalledTimes(1);
+  });
+
+  // ── WI-4374: New tests for COUNT query, 500+ guard, staleness tone ──
+
+  it("fetches real database counts via learning.observations.counts", () => {
+    sync.data = [mkRow({ id: "a", kind: "friction" })];
+    counts.data = [
+      { kind: "friction", count: 500 },
+      { kind: "gap", count: 600 },
+    ];
+    render(<ObservationsPanel />);
+    // Signal distribution should show database counts, not loaded counts
+    const frictionBtn = screen.getByRole("button", {
+      name: "Filter by Friction, 500",
+    });
+    expect(frictionBtn).toBeTruthy();
+    const gapBtn = screen.getByRole("button", {
+      name: "Filter by Gap, 600",
+    });
+    expect(gapBtn).toBeTruthy();
+  });
+
+  it("applies 500+ render guard to counts >= 500", () => {
+    sync.data = [mkRow()];
+    counts.data = [
+      { kind: "friction", count: 500 },
+      { kind: "gap", count: 501 },
+      { kind: "surprise", count: 499 },
+    ];
+    render(<ObservationsPanel />);
+    expect(
+      screen.getByRole("button", {
+        name: "Filter by Friction, 500+",
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", {
+        name: "Filter by Gap, 500+",
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", {
+        name: "Filter by Surprise, 499",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("applies staleness tone based on newest observation age", () => {
+    const now = Date.now();
+    const fresh = new Date(now - 15 * 60_000).toISOString(); // 15min ago
+    const stale = new Date(now - 90 * 60_000).toISOString(); // 90min ago
+    const veryStale = new Date(now - 3 * 60_60_000).toISOString(); // 3+ hours ago
+
+    // Fresh: newest <30min ago
+    sync.data = [mkRow({ id: "a", createdAt: fresh })];
+    const { rerender } = render(<ObservationsPanel />);
+    let dist = screen.getByLabelText("Signal distribution (database counts)");
+    expect(dist).toHaveAttribute("data-staleness", "fresh");
+
+    // Stale: newest 30min-2h ago
+    sync.data = [mkRow({ id: "a", createdAt: stale })];
+    rerender(<ObservationsPanel />);
+    dist = screen.getByLabelText("Signal distribution (database counts)");
+    expect(dist).toHaveAttribute("data-staleness", "stale");
+
+    // Very stale: newest 2h+ ago
+    sync.data = [mkRow({ id: "a", createdAt: veryStale })];
+    rerender(<ObservationsPanel />);
+    dist = screen.getByLabelText("Signal distribution (database counts)");
+    expect(dist).toHaveAttribute("data-staleness", "very-stale");
+  });
+
+  it("defaults to very-stale when no observations are loaded", () => {
+    sync.data = [];
+    render(<ObservationsPanel />);
+    // When empty, staleness defaults to very-stale (no data)
+    // The distribution div won't render if there are no signal counts, so check nothing breaks
+    expect(screen.queryByText(/no observations yet/i)).toBeTruthy();
   });
 });

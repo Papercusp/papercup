@@ -219,6 +219,12 @@ export default defineTool({
       .describe(
         "P-005 completion-integrity audit: 'no-evidence' lists TERMINAL-state items closed WITHOUT a structured completion record (terminal_completion_ref IS NULL — a bare set_state close; work_items:complete always stamps one). The DRAIN leader's stale-done spot-audit as one filter. Composes with `state`.",
       ),
+    includeObservations: z
+      .boolean()
+      .optional()
+      .describe(
+        "EI-10422: by default a payload.lane:'observation' row (a turn-end reflection / rubric scorecard filed via improvements:capture { lane:'observation' }) is EXCLUDED — by design (D-005) it never enters the work queue/triage. Pass true to include raw observations in this read (a curation surface); the default keeps the backlog/triage view free of the ~2,700 open notes that otherwise masquerade as claimable `change` work.",
+      ),
     limit: z.number().int().positive().max(500).optional(),
   }),
   result: z.array(WORK_ITEM_ROW),
@@ -268,6 +274,7 @@ export default defineTool({
           includeChildren: args.includeChildren === true,
           admissibleOnly: args.admissibleOnly === true,
           audit: args.audit ?? null,
+          includeObservations: args.includeObservations === true,
           limit: args.limit ?? null,
         },
         tags: ["harness_features_consolidated"],
@@ -283,6 +290,7 @@ export default defineTool({
           includeChildren: args.includeChildren,
           admissibleOnly: args.admissibleOnly,
           audit: args.audit,
+          includeObservations: args.includeObservations,
           limit: args.limit,
         });
         // EI-1597: excerpt per-row summaries so a large backlog can't overflow the agent

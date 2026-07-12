@@ -39,6 +39,12 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('default true: merge embedding-cosine hits after the lexical ones (fail-open). false = lexical-only.'),
+    includeObservations: z
+      .boolean()
+      .optional()
+      .describe(
+        "EI-10422: by default a payload.lane:'observation' row (a turn-end reflection / rubric scorecard filed via improvements:capture { lane:'observation' }) is EXCLUDED from matches — by design (D-005) it never enters the work queue/triage. Pass true to include raw observations in search results.",
+      ),
   }),
   async handler(args) {
     const items = await searchWorkItems(args.query, {
@@ -46,6 +52,7 @@ export default defineTool({
       kind: args.kind as WorkItemKind | undefined,
       limit: args.limit,
       semantic: args.semantic,
+      includeObservations: args.includeObservations,
     });
     return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, count: items.length, items }) }] };
   },
