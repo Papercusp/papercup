@@ -75,6 +75,40 @@ const DEFAULT_INTERVAL_MS = 2 * 60_000;
 const RUBRIC_EMISSION_DARK_GRACE_MS = 6 * 60 * 60_000;
 
 /**
+ * EI-9794 — Kettle silently stopped firing for ~11h while `last_status` stayed
+ * 'ok' and `consecutive_errors` stayed 0 (both are only WRITTEN on a fire, so a
+ * loop that stops firing entirely freezes them at their last-good values
+ * forever — green status is not proof of life). The existing signals #4/#4b/#4c
+ * above all gate on `overwatchAlive` / `panels.overwatch.data.started`, which
+ * derive from the `overwatch-wake` ROUTINE row's `armed` bit (cross-monitor.ts
+ * `isDark`) — but that routine is a self-deactivating ONE-SHOT whose NORMAL
+ * resting state between fires is `active=false, next_fire_at=NULL`, identical
+ * to a fire that failed to re-arm. `harness_shared.autoloop_state.last_fired_at`
+ * (stamped by `recordFire` on every ACTUAL fire, independent of the routine's
+ * own re-arm bookkeeping) is the one signal that can't be spoofed by a
+ * mid-re-arm crash — this alarm keys on ITS recency instead.
+ */
+export interface AutoloopFireRow {
+  role: string;
+  harnessSlug: string;
+  /** epoch ms of `autoloop_state.last_fired_at`, or null if it has never fired. */
+  lastFiredAtMs: number | null;
+  cadenceSec: number;
+  /** Is this role SUPPOSED to be actively firing right now (flag on + started)?
+   *  false ⇒ vacuously fine, never alarm (mirrors cross-monitor.ts's `isDark`
+   *  philosophy — a role that isn't running has nothing to be stale about). */
+  expected: boolean;
+}
+
+/** How many cadences of silence before a fire-staleness alarm fires (env-tunable,
+ *  matches the item's own suggested "N=3" — generous vs one missed/backed-off
+ *  tick, sharp enough to catch an hours-long stall fast). */
+function autoloopFireStaleMultiplier(): number {
+  const n = Number(process.env.PAPERCUSP_AUTOLOOP_FIRE_STALE_MULTIPLIER ?? 3);
+  return Number.isFinite(n) && n > 0 ? n : 3;
+}
+
+/**
  * PURE: derive the critical supervision signals from a SystemHealth snapshot.
  * `snapshotAgeMs` is the age of `lastSystemHealth` at evaluation (null = the
  * snapshot was computed fresh this tick, so staleness is not a signal).
@@ -82,7 +116,14 @@ const RUBRIC_EMISSION_DARK_GRACE_MS = 6 * 60 * 60_000;
 export function evaluateLivenessAlarm(
   health: SystemHealth,
   snapshotAgeMs: number | null,
-  opts: { snapshotStaleMs?: number; prevPostmasterStartMs?: number | null } = {},
+  opts: {
+    snapshotStaleMs?: number;
+    prevPostmasterStartMs?: number | null;
+    /** EI-9794: fresh `autoloop_state` fire-recency rows (see the type doc above).
+     *  Optional — omitted/empty means "not evaluated this tick" (fail-open, never
+     *  a false negative from a caller that hasn't wired the fetch). */
+    autoloopFireRows?: AutoloopFireRow[];
+  } = {},
 ): AlarmSignal[] {
   const staleMs = opts.snapshotStaleMs ?? DEFAULT_SNAPSHOT_STALE_MS;
   // EI-1695: a stale snapshot means the bg routine engine is frozen — the SAME
@@ -222,6 +263,30 @@ export function evaluateLivenessAlarm(
     });
   }
 
+  // 5c. EI-9794: autoloop FIRE-RECENCY staleness — independent of `last_status` /
+  //     `consecutive_errors` (frozen the instant a loop stops firing) and of the
+  //     `armed` wake-routine bit (a self-deactivating one-shot's normal resting
+  //     state is indistinguishable from a failed re-arm — see the type doc
+  //     above). A role EXPECTED to be running whose `autoloop_state.last_fired_at`
+  //     is stale by more than N cadences is silently dead — page it like any
+  //     other dead routine.
+  const staleMultiplier = autoloopFireStaleMultiplier();
+  for (const row of opts.autoloopFireRows ?? []) {
+    if (!row.expected || row.lastFiredAtMs === null) continue;
+    const thresholdMs = row.cadenceSec * 1000 * staleMultiplier;
+    const staleForMs = health.evaluatedAt - row.lastFiredAtMs;
+    if (staleForMs > thresholdMs) {
+      signals.push({
+        key: `autoloop-fire-stale:${row.role}`,
+        severity: 'blocker',
+        summary:
+          `${row.role}@${row.harnessSlug} has not fired in ${Math.round(staleForMs / 60_000)}m ` +
+          `(expected every ${row.cadenceSec}s, alarm threshold ${staleMultiplier}x) — last_status may still ` +
+          `read 'ok' since that field only updates on a fire. The supervisor is likely dead; kettle:start to resume.`,
+      });
+    }
+  }
+
   // 6. Catch-all: any OTHER panel self-reporting `crit` (so a new critical signal
   //    is never silently missed). Sharper-keyed panels above are skipped.
   //    NOTE: the panel KEY for the Queen/Mug card is the STABLE identifier
@@ -287,6 +352,9 @@ export function deriveSignatureFromSummary(summary: string): string | null {
   if (s.startsWith('Overwatch supervisor loop dark')) return 'overwatch-dark';
   if (/LLM pool account\(s\) paused/.test(s)) return 'accounts-starved';
   if (s.startsWith('Postgres RESTARTED')) return 'pg-restarted';
+  // EI-9794 fire-staleness form: "<role>@<harness> has not fired in ...".
+  const fireStaleMatch = /^([^@\s]+)@\S+ has not fired in/.exec(s);
+  if (fireStaleMatch) return `autoloop-fire-stale:${fireStaleMatch[1]}`;
   // Catch-all panel form: "<panel label>: <panel summary>".
   const idx = s.indexOf(': ');
   if (idx > 0) {
@@ -354,6 +422,58 @@ export interface AlarmDeps {
    *  hermetically. */
   readPostmasterBaseline?: (ws: string) => number | null;
   writePostmasterBaseline?: (ws: string, ms: number) => void;
+  /** EI-9794: fresh `autoloop_state` fire-recency rows for the fire-staleness
+   *  signal (5c above). Default = `defaultReadAutoloopFireRows` (kettle/overwatch
+   *  today — the proven incident; other supervisor roles with a known cadence +
+   *  expected-predicate can extend the same reader). Fail-soft → []: a read
+   *  failure must never crash the request worker nor synthesize a false alarm. */
+  readAutoloopFireRows?: (ws: string) => Promise<AutoloopFireRow[]>;
+}
+
+/**
+ * EI-9794 default `readAutoloopFireRows` — kettle/overwatch, the diagnosed
+ * incident. Resolves the pot's home harness the same way `kettle:start` /
+ * `isOverwatchAlive` do, reads its `autoloop_state` row (role = OVERWATCH_ROLE),
+ * and reuses the EXACT `overwatchExpected` + `getOverwatchCadenceSec` predicates
+ * the wake-liveness leg already trusts — so this alarm can never disagree with
+ * "is kettle expected to be running" from a second, drifted implementation.
+ */
+async function defaultReadAutoloopFireRows(ws: string): Promise<AutoloopFireRow[]> {
+  try {
+    const [{ resolvePotHomeSlug }, { getOrgPg }, { overwatchExpected }, { getOverwatchCadenceSec }, { OVERWATCH_ROLE }] =
+      await Promise.all([
+        import('../pot/wake'),
+        import('@papercusp/db-org'),
+        import('../overwatch/cross-monitor'),
+        import('../overwatch/control-state'),
+        import('../overwatch/liveness'),
+      ]);
+    const installSlug = resolvePotHomeSlug(undefined, undefined);
+    if (!installSlug) return [];
+    const [expected, cadenceSec] = await Promise.all([
+      overwatchExpected(ws, installSlug),
+      getOverwatchCadenceSec(ws, installSlug),
+    ]);
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<{ last_fired_at: Date | string | null }>>`
+      SELECT last_fired_at FROM harness_shared.autoloop_state
+       WHERE workspace_id = ${ws} AND harness_slug = ${installSlug} AND role = ${OVERWATCH_ROLE}
+       LIMIT 1
+    `;
+    const raw = rows[0]?.last_fired_at ?? null;
+    const lastFiredAtMs = raw == null ? null : new Date(raw).getTime();
+    return [
+      {
+        role: OVERWATCH_ROLE,
+        harnessSlug: installSlug,
+        lastFiredAtMs: Number.isFinite(lastFiredAtMs) ? lastFiredAtMs : null,
+        cadenceSec,
+        expected,
+      },
+    ];
+  } catch {
+    return []; // fail-soft: never synthesize a false alarm from a broken read
+  }
 }
 
 async function defaultPage(s: AlarmSignal, ws: string): Promise<void> {
@@ -453,7 +573,19 @@ export async function runLivenessAlarmTick(
   const writeBaseline = deps.writePostmasterBaseline ?? ((w: string, ms: number) => void lastPostmasterStartMs.set(w, ms));
   const prevPostmasterStartMs = readBaseline(ws);
 
-  const signals = evaluateLivenessAlarm(health, snapshotAgeMs, { snapshotStaleMs: staleMs, prevPostmasterStartMs });
+  // EI-9794: fetch fresh fire-recency rows every tick (cheap — one indexed PK
+  // read + two already-cached control-state reads) rather than folding into the
+  // cached SystemHealth snapshot, so this signal is NEVER blinded by a stale
+  // cache the way tickStale-suppressed signals can be — it is the one check that
+  // must keep evaluating even when everything else is frozen.
+  const readAutoloopFireRows = deps.readAutoloopFireRows ?? defaultReadAutoloopFireRows;
+  const autoloopFireRows = await readAutoloopFireRows(ws).catch(() => [] as AutoloopFireRow[]);
+
+  const signals = evaluateLivenessAlarm(health, snapshotAgeMs, {
+    snapshotStaleMs: staleMs,
+    prevPostmasterStartMs,
+    autoloopFireRows,
+  });
   const currentSigs = new Set(signals.map((s) => s.key));
 
   const curPostmasterStartMs = health.panels.infra?.data?.pg?.postmasterStartMs ?? null;
