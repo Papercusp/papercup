@@ -20,12 +20,15 @@
 import { getSessionUserOrDefault } from '../../../auth';
 import {
   getMemoryBackend,
+  MemoryUnavailableError,
   registeredMemoryBackends,
 } from '../../../memory/backend';
 import {
   currentMemoryBackendChoice,
   writeMemoryBackendChoice,
 } from '../../../memory/backend-selection';
+import { MemoryTimeoutError, withMemoryToolTimeout, embedFailureReason } from '../../../memory/op-deadline';
+import { journalPendingWrite, markJournalCommitted } from '../../../memory/write-journal';
 import { listUserMemories } from '../../../memory/list-user-memories';
 import { recordFeedback } from '../../../memory/feedback';
 import { readClaudeHygiene } from '../../../memory/claude-hygiene';
@@ -111,6 +114,17 @@ const backendInfo = defineTool({
  * verb, but trusts the page's free-form kind (the taxonomy is backend-
  * defined — D-001); records `create` feedback symmetrically with
  * edit/delete so the extractor learns from hand-curated entries too.
+ *
+ * WRITE-AHEAD JOURNALED (WI-4208 — memory-write-journal-auto-recovery P-002
+ * parity). This route used to probe `available()`, 503 on a down store, and
+ * call `remember` unguarded: an embedder outage (or the saturated-sidecar
+ * shape) meant the text a HUMAN just typed was lost outright — worse than
+ * the agent case that motivated the journal, because a person watching a
+ * failure toast has no transcript to recover from. Now the fact is parked in
+ * the journal BEFORE any embedder-dependent step (a plain PG INSERT), the
+ * store write is deadline-bounded, and every failure branch returns
+ * `{ journaled, will_retry, journal_id }` so the UI can say "saved, pending
+ * embedding" instead of "failed". The 5-min drain replays it.
  */
 const create = defineTool({
   method: 'POST',
@@ -119,8 +133,8 @@ const create = defineTool({
   async handler(req) {
     const user = await getSessionUserOrDefault(req.headers);
     const backend = getMemoryBackend();
-    const avail = await backend.available();
-    if (!avail.ok) return Response.json({ error: avail.reason }, { status: 503 });
+    // Validate BEFORE journaling — a malformed request is a 400, not a fact
+    // to park and replay.
     const body = (await req.json().catch(() => null)) as
       | { text?: string; kind?: string; harness_slug?: string }
       | null;
@@ -141,10 +155,51 @@ const create = defineTool({
     };
     if (harnessSlug) metadata.harness_slug = harnessSlug;
 
+    // Park the fact durably first. `journalId === null` ⇒ journaling itself is
+    // degraded (pre-migration DB, PG hiccup) — the write proceeds on the old
+    // lossy path rather than failing, exactly as memory:remember does.
+    const journalId = await journalPendingWrite({
+      scope: scopeKey,
+      kind,
+      content: text,
+      metadata,
+      verbatim: true,
+    });
+    const journaledFields = journalId
+      ? {
+          journaled: true,
+          will_retry: true,
+          journal_id: journalId,
+          hint: 'Saved — this memory is stored durably and will finish indexing automatically once the embedder recovers. Do not re-submit it.',
+        }
+      : {};
+
+    const avail = await backend.available().catch(() => ({ ok: false as const, reason: 'probe_failed' }));
+    if (!avail.ok) return Response.json({ error: avail.reason, ...journaledFields }, { status: 503 });
+
     // verbatim: the user typed exactly what they want stored — bypass the
     // mem0 leg's LLM fact-extraction (which can extract NOTHING from short
     // prose and silently store zero entries; observed live 2026-06-09).
-    const { ids } = await backend.remember(text, { scope: scopeKey, kind, metadata, verbatim: true });
+    let ids: string[];
+    try {
+      ({ ids } = await withMemoryToolTimeout(
+        backend.remember(text, { scope: scopeKey, kind, metadata, verbatim: true }),
+        'POST /user/memory remember',
+      ));
+    } catch (err) {
+      // A wedged/saturated embedder is exactly what the journal exists for:
+      // report the parked fact instead of a 500 that loses the user's text.
+      const reason =
+        err instanceof MemoryTimeoutError
+          ? 'memory_timeout'
+          : err instanceof MemoryUnavailableError
+            ? err.reason
+            : embedFailureReason(err);
+      if (!reason) throw err;
+      return Response.json({ error: reason, ...journaledFields }, { status: 503 });
+    }
+
+    if (journalId) void markJournalCommitted(journalId, ids[0] ?? null);
     for (const id of ids) {
       await recordFeedback({
         memId: id, userId: user.id, action: 'create', kind: kind ?? null, newText: text,
@@ -241,6 +296,14 @@ const del = defineTool({
   },
 });
 
+/**
+ * PATCH /api/user/memory — edit a memory's text from the settings page.
+ * WRITE-AHEAD JOURNALED for the same reason as POST above (WI-4208): a text
+ * edit RE-EMBEDS, so an embedder outage lost the user's correction. The
+ * journal row carries `__journal_update_of` — the drain replays it as an
+ * UPDATE of that id (never as a new memory), the same contract memory:update
+ * uses.
+ */
 const patch = defineTool({
   method: 'PATCH',
   path: '/user/memory',
@@ -248,8 +311,6 @@ const patch = defineTool({
   async handler(req) {
     const user = await getSessionUserOrDefault(req.headers);
     const backend = getMemoryBackend();
-    const avail = await backend.available();
-    if (!avail.ok) return Response.json({ error: avail.reason }, { status: 503 });
     const body = (await req.json().catch(() => null)) as { id?: string; text?: string; memory?: string } | null;
     // `text` is the neutral field; `memory` accepted from older clients.
     const nextText = (body?.text ?? body?.memory)?.trim();
@@ -263,7 +324,48 @@ const patch = defineTool({
       priorText = got?.text ?? null;
       priorKind = got?.kind ?? null;
     } catch { /* best-effort */ }
-    await backend.update(body.id, { text: nextText });
+
+    const journalId = await journalPendingWrite({
+      scope: `__update__:${body.id}`,
+      content: nextText,
+      metadata: { __journal_update_of: body.id, source: 'settings-page' },
+      verbatim: true,
+    });
+    const journaledFields = journalId
+      ? {
+          journaled: true,
+          will_retry: true,
+          journal_id: journalId,
+          hint: 'Saved — this edit is stored durably and will finish indexing automatically once the embedder recovers. Do not re-submit it.',
+        }
+      : {};
+
+    const avail = await backend.available().catch(() => ({ ok: false as const, reason: 'probe_failed' }));
+    if (!avail.ok) return Response.json({ error: avail.reason, ...journaledFields }, { status: 503 });
+
+    try {
+      await withMemoryToolTimeout(backend.update(body.id, { text: nextText }), 'PATCH /user/memory update');
+    } catch (err) {
+      const reason =
+        err instanceof MemoryTimeoutError
+          ? 'memory_timeout'
+          : err instanceof MemoryUnavailableError
+            ? err.reason
+            : embedFailureReason(err);
+      // A not-found id is a clean 404, NOT a parked write — the drain must
+      // never resurrect an edit to a memory that doesn't exist.
+      const message = err instanceof Error ? err.message : String(err);
+      if (!reason || /not\s*found/i.test(message)) {
+        if (journalId) void markJournalCommitted(journalId, null);
+        if (/not\s*found/i.test(message)) {
+          return Response.json({ error: 'not_found', id: body.id }, { status: 404 });
+        }
+        throw err;
+      }
+      return Response.json({ error: reason, ...journaledFields }, { status: 503 });
+    }
+
+    if (journalId) void markJournalCommitted(journalId, body.id);
     await recordFeedback({
       memId: body.id, userId: user.id, action: 'edit',
       kind: priorKind, priorText, newText: nextText,

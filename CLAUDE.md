@@ -233,8 +233,17 @@ restart does **NOT** pick up your edits:
   `PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --execute`
   — the env flag is required for the restart; see the force-deploy note above).
 - **`:3170`** = staging operator, runs from the integration tree. To test a
-  server-side edit live: `systemctl --user restart papercup-staging-api.service`,
-  then probe `:3170`.
+  server-side edit live: **`dev:restart { target: 'staging', confirm: true }`**,
+  then probe `:3170`. **Never** shell out to a raw
+  `systemctl --user restart papercup-staging-api.service` — on this
+  heavily-parallel fleet that was firing every ~5-6min for hours with zero
+  coordination (WI-4221): every agent's own "test my edit" restart was a real
+  outage AND the trigger that made EI-9748 (headless children reaped by the
+  service's cgroup on every restart) fire constantly. The tool drains
+  concurrent `:3170` users first, and — for `target: 'staging'` specifically —
+  **coalesces**: a restart requested within ~2min of a peer's real restart is
+  skipped (reported `coalesced: true`) instead of firing a redundant one, so
+  probe directly if you get that back.
 - The Tauri dev shell spawns its own operator from the integration tree.
 
 (`:3055` Vite *does* hot-reload.) Probe where the write actually lands; if it's

@@ -204,10 +204,17 @@ export default function MemoryPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, text: editingDraft }),
     });
+    const j = await r.json().catch(() => ({} as { journaled?: boolean }));
     if (r.ok) {
       toast.success('Updated');
       setEditingId(null);
       // Rows refresh via the server's userMemory.list invalidate.
+    } else if (j.journaled) {
+      // WI-4208: the store is down/saturated but the edit is parked durably and
+      // replays automatically — telling the user it "failed" would invite a
+      // pointless retype (or make them think the correction was lost).
+      toast.success('Saved — finishing indexing once the memory store recovers');
+      setEditingId(null);
     } else {
       toast.error('Update failed');
     }
