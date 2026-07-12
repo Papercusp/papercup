@@ -376,7 +376,15 @@ export function evaluateMainBehindStaging(
 
 function gitOut(root: string, args: string[]): string | null {
   try {
-    return execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
+    // EI-9922 (EI-8794 class): a failing git call — e.g. this watchdog's boot pass
+    // running in a PACKAGED install's non-repo dir — must NOT leak "fatal: not a git
+    // repository" onto the parent's own stderr/serve.log. `execFileSync`'s default
+    // stdio inherits the child's stderr; pin it to ['ignore','pipe','ignore'] so we
+    // capture stdout but discard stderr (mirrors build-info.ts / workspace-map.ts).
+    return execFileSync('git', ['-C', root, ...args], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
   } catch {
     return null;
   }

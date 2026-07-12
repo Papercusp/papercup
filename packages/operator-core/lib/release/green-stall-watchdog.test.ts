@@ -3,8 +3,22 @@
  * is integration-covered by the live self-test; here we pin the pure decision +
  * escalation body that decide WHEN the silent-stall alarm fires.
  */
-import { describe, it, expect } from 'vitest';
-import { evaluateGreenStall, greenStallEscalationBody, evaluateMainBehindStaging } from './green-stall-watchdog';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  evaluateGreenStall,
+  greenStallEscalationBody,
+  evaluateMainBehindStaging,
+  computeMainBehindStaging,
+} from './green-stall-watchdog';
+
+// EI-9922: stub `execFileSync` itself so the stderr-suppression assertion below is
+// deterministic regardless of what git checkout (or non-repo) the test runs inside —
+// mirrors workspace-map.test.ts's EI-8794 approach.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
+});
+import { execFileSync } from 'node:child_process';
 
 const H = 60 * 60 * 1000;
 const NOW = 1_750_000_000_000; // fixed epoch ms
@@ -249,5 +263,33 @@ describe('evaluateMainBehindStaging (EI-9762)', () => {
   it('fails open (never alarms) when the git read could not resolve a value', () => {
     expect(evaluateMainBehindStaging({ commitsBehind: null, behindMs: null }).stalled).toBe(false);
     expect(evaluateMainBehindStaging({ commitsBehind: 56, behindMs: null }).stalled).toBe(false);
+  });
+});
+
+describe('computeMainBehindStaging git shell-out (EI-9922 no-stderr-leak)', () => {
+  // On a PACKAGED install this watchdog's boot pass shells git in a NON-repo dir.
+  // `execFileSync`'s default stdio inherits the child's stderr, so it spammed
+  // 'fatal: not a git repository' onto serve.log every boot + interval. gitOut must
+  // pin stdio to ['ignore','pipe','ignore'] so stderr is discarded.
+  it('EI-9922: shells git with stderr suppressed (stdio ["ignore","pipe","ignore"])', () => {
+    vi.mocked(execFileSync).mockReturnValue('0\n' as unknown as Buffer);
+    computeMainBehindStaging('/some/packaged/install');
+    expect(vi.mocked(execFileSync)).toHaveBeenCalledWith(
+      'git',
+      expect.arrayContaining(['rev-list']),
+      expect.objectContaining({ stdio: ['ignore', 'pipe', 'ignore'] }),
+    );
+    vi.mocked(execFileSync).mockReset();
+  });
+
+  it('EI-9922: fails open (all-null) without throwing when git rejects (non-repo)', () => {
+    vi.mocked(execFileSync).mockImplementation(() => {
+      throw new Error('fatal: not a git repository (or any parent up to mount point /)');
+    });
+    expect(computeMainBehindStaging('/some/packaged/install')).toEqual({
+      commitsBehind: null,
+      behindMs: null,
+    });
+    vi.mocked(execFileSync).mockReset();
   });
 });

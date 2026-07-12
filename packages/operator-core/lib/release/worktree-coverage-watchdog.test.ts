@@ -7,6 +7,7 @@ import {
   parseWorktreeListPorcelain,
   listWorktreesWithDirtyState,
   checkWorktreeCoverage,
+  isNotARepoError,
   KNOWN_UNCOVERED_WORKTREE_PATTERNS,
   type WorktreeInfo,
 } from './worktree-coverage-watchdog';
@@ -148,5 +149,42 @@ describe('checkWorktreeCoverage (end-to-end pass)', () => {
     const result = await checkWorktreeCoverage('/a', { runGit, log });
     expect(result.uncovered).toEqual([]);
     expect(log).not.toHaveBeenCalled();
+  });
+
+  // EI-9922: on a PACKAGED install there is no git checkout, so `git worktree list`
+  // fatals with "not a git repository" every boot + hourly sweep. That is the expected
+  // no-op state, not a fault — the watchdog must go QUIET on it (it was one of the ~15+
+  // 'fatal: not a git repository' boot-log lines that buried real boot errors).
+  it('EI-9922: goes QUIET (logs nothing) when git reports "not a git repository" (packaged install)', async () => {
+    const runGit = vi.fn(async () => {
+      throw new Error(
+        'fatal: not a git repository (or any of the parent directories): .git',
+      );
+    });
+    const log = vi.fn();
+    const result = await checkWorktreeCoverage('/some/packaged/install', { runGit, log });
+    expect(result).toEqual({ uncovered: [] });
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it('EI-9922: still logs a tagged "pass failed" for a NON-not-a-repo git error (a real fault)', async () => {
+    const runGit = vi.fn(async () => { throw new Error('git: could not read Username'); });
+    const log = vi.fn();
+    await checkWorktreeCoverage('/a', { runGit, log });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('pass failed'));
+  });
+});
+
+describe('isNotARepoError (EI-9922 not-a-repo classifier)', () => {
+  it('is true for the git "not a git repository" fatal (any phrasing)', () => {
+    expect(isNotARepoError(new Error('fatal: not a git repository (or any of the parent directories): .git'))).toBe(true);
+    expect(isNotARepoError(new Error('fatal: not a git repository (or any parent up to mount point /)'))).toBe(true);
+    expect(isNotARepoError('fatal: NOT A GIT REPOSITORY')).toBe(true);
+  });
+
+  it('is false for any other git error', () => {
+    expect(isNotARepoError(new Error('git not found'))).toBe(false);
+    expect(isNotARepoError(new Error('could not read Username for https://github.com'))).toBe(false);
+    expect(isNotARepoError(undefined)).toBe(false);
   });
 });

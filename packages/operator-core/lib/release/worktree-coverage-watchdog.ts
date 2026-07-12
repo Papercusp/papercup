@@ -139,6 +139,20 @@ export interface WorktreeCoverageCheckResult {
 }
 
 /**
+ * EI-9922: true when a git error is "this dir is not a git repository" — the EXPECTED
+ * state on a PACKAGED install (there is no checkout, hence no worktrees to cover). On
+ * that error this watchdog has nothing to do and should stay silent rather than log a
+ * scary "pass failed" line on every boot + hourly sweep (it was one of the ~15+
+ * 'fatal: not a git repository' boot-log lines). A genuine git fault (a real repo whose
+ * `git worktree list` failed for another reason) is NOT this and still logs. Exported
+ * for direct unit testing.
+ */
+export function isNotARepoError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return /not a git repository/i.test(msg);
+}
+
+/**
  * One watchdog pass: list worktrees, classify, log + best-effort notify on any genuine
  * finding. Never throws (mirrors the git-sync-stall-watchdog / green-stall-watchdog
  * process-level siblings — a detector must not be able to crash the host it watches).
@@ -167,7 +181,13 @@ export async function checkWorktreeCoverage(
     }
     return { uncovered };
   } catch (e) {
-    log(`[worktree-coverage-watchdog] pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+    // EI-9922: a PACKAGED install has no git checkout — `git worktree list` fatals with
+    // "not a git repository". That is the EXPECTED no-op state (nothing to cover), not a
+    // fault worth a boot-log line every boot + hour, so go quiet on it. Any OTHER git
+    // failure (a real repo that errored for another reason) still logs, tagged.
+    if (!isNotARepoError(e)) {
+      log(`[worktree-coverage-watchdog] pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+    }
     return { uncovered: [] };
   }
 }

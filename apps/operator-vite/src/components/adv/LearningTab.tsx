@@ -72,6 +72,14 @@ import LearningPackCandidates from "./LearningPackCandidates";
 import RubricsPanel from "@/app/_components/RubricsPanel";
 import RubricDetailPanel from "@/app/_components/RubricDetailPanel";
 import ObservationsPanel from "@/app/adv/create/ObservationsPanel";
+import {
+  LearningComparisonBars,
+  LearningEvidenceRail,
+  LearningHeroMetric,
+  LearningPageHeader,
+  LearningVisualEmpty,
+  LearningVisualStyles,
+} from "./LearningVisuals";
 
 const LVIEWS = [
   "observations",
@@ -364,6 +372,7 @@ export default function LearningTab() {
         )}
       </div>
 
+      <LearningVisualStyles />
       <LearningStyles />
     </div>
   );
@@ -1061,43 +1070,21 @@ function ApiaryView() {
   });
   const instances = sync.data?.[0]?.instances ?? [];
   const latest = instances[0];
+  const previous = instances[1];
+  const currentDelta =
+    latest?.meanComposite != null && previous?.meanComposite != null
+      ? latest.meanComposite - previous.meanComposite
+      : null;
+  const currentDeltaMeta = deltaLabel(currentDelta);
 
   return (
     <section className="pc-learning__section">
-      <div className="pc-learning__scoreboard" aria-label="Benchmark summary">
-        <Stat
-          label="composite"
-          value={latest ? compositeLabel(latest.meanComposite) : "—"}
-          tone="good"
-          hint="Latest generation’s mean judge composite — higher is better. This is the headline benchmark; watch the trend, not the absolute number."
-        />
-        <Stat
-          label="success"
-          value={latest ? pctLabel(latest.successRate) : "—"}
-          hint="Share of battery tasks the fleet solved without escalating."
-        />
-        <Stat
-          label="time to green"
-          value={latest ? secsLabel(latest.meanTimeToGreenSecs) : "—"}
-          hint="Mean wall-clock to a solved task. Lower is better."
-        />
-        <Stat
-          label="tokens / task"
-          value={latest ? tokensLabel(latest.meanTokens) : "—"}
-          hint="Mean tokens per solved task. Lower is cheaper."
-        />
-        <Stat
-          label="escalations"
-          value={latest ? pctLabel(latest.escalationRate) : "—"}
-          tone="human"
-          hint="Share of tasks that needed a human. Lower is better."
-        />
-      </div>
-
-      <BenchmarkTrend instances={instances} />
-
-      <div className="pc-learning__sectionhead">
-        <h2>Benchmark generations</h2>
+      <LearningPageHeader
+        icon={Gauge}
+        title="Benchmark"
+        signal={latest ? `${latest.successfulRuns}/${latest.totalRuns} solved` : undefined}
+        tone={latest && latest.successRate >= 0.8 ? "good" : "neutral"}
+        action={
         <button
           type="button"
           className="pc-learning__refresh"
@@ -1107,7 +1094,8 @@ function ApiaryView() {
         >
           <RefreshCw size={13} aria-hidden />
         </button>
-      </div>
+        }
+      />
 
       {sync.loading && !sync.data ? (
         <p className="pc-learning__empty">Loading the benchmark…</p>
@@ -1115,86 +1103,150 @@ function ApiaryView() {
         <p className="pc-learning__empty">
           Benchmark unavailable: {sync.error.message}
         </p>
-      ) : instances.length === 0 ? (
-        <div className="pc-learning__empty pc-learning__empty--card">
-          <Gauge size={20} aria-hidden />
-          <strong>No baseline runs yet</strong>
-          <span>
-            The IQ-battery is owner-gated — runs spend real budget, so they
-            happen when the owner kicks one off, or via the monthly cadence
-            routine once the owner sets its budget (it then benchmarks each new
-            code generation automatically). It runs a fixed task corpus against
-            the fleet and judges every run, so each generation is comparable;
-            once generations land, the trend appears here — newest first, with
-            the composite change vs the prior generation.
-          </span>
-        </div>
+      ) : !latest ? (
+        <LearningVisualEmpty icon={Gauge} title="No benchmark runs" />
       ) : (
-        <ul className="pc-learning__list">
-          {instances.map((inst, i) => {
-            const prev = instances[i + 1];
-            const dComposite =
-              inst.meanComposite != null && prev?.meanComposite != null
-                ? inst.meanComposite - prev.meanComposite
-                : null;
-            const delta = deltaLabel(dComposite);
-            return (
-              <li
-                key={inst.instanceId}
-                className="pc-learning__row pc-learning__row--bench"
-                title={inst.instanceId}
-              >
-                <span
-                  className="pc-learning__sev"
-                  style={{ background: "#34d399" }}
-                  aria-hidden
-                />
-                <span className="pc-learning__id" title={inst.codeSha}>
-                  {shortSha(inst.codeSha)}
-                </span>
-                <span className="pc-learning__benchcell">
+        <>
+          <div className="pc-learning-visual__layout">
+            <LearningHeroMetric
+              eyebrow={shortSha(latest.codeSha)}
+              value={compositeLabel(latest.meanComposite)}
+              status={
+                currentDelta == null
+                  ? "baseline"
+                  : currentDelta > 0
+                    ? "improved"
+                    : currentDelta < 0
+                      ? "regressed"
+                      : "unchanged"
+              }
+              tone={
+                currentDelta == null
+                  ? "accent"
+                  : currentDelta >= 0
+                    ? "good"
+                    : "bad"
+              }
+            >
+              {currentDelta != null ? `Δ ${currentDeltaMeta.text}` : "first generation"}
+            </LearningHeroMetric>
+            <LearningComparisonBars
+              title="Previous vs current"
+              baselineName="Previous"
+              treatmentName="Current"
+              rows={[
+                {
+                  label: "Composite",
+                  baseline: previous?.meanComposite ?? null,
+                  treatment: latest.meanComposite,
+                  baselineLabel: compositeLabel(previous?.meanComposite ?? null),
+                  treatmentLabel: compositeLabel(latest.meanComposite),
+                  max: 10,
+                  treatmentWins:
+                    latest.meanComposite != null &&
+                    latest.meanComposite >= (previous?.meanComposite ?? -Infinity),
+                },
+                {
+                  label: "Success",
+                  baseline: previous?.successRate ?? null,
+                  treatment: latest.successRate,
+                  baselineLabel: pctLabel(previous?.successRate ?? null),
+                  treatmentLabel: pctLabel(latest.successRate),
+                  max: 1,
+                  treatmentWins:
+                    latest.successRate >= (previous?.successRate ?? -Infinity),
+                },
+                {
+                  label: "Time to green",
+                  baseline: previous?.meanTimeToGreenSecs ?? null,
+                  treatment: latest.meanTimeToGreenSecs,
+                  baselineLabel: secsLabel(previous?.meanTimeToGreenSecs ?? null),
+                  treatmentLabel: secsLabel(latest.meanTimeToGreenSecs),
+                  treatmentWins:
+                    latest.meanTimeToGreenSecs != null &&
+                    latest.meanTimeToGreenSecs <=
+                      (previous?.meanTimeToGreenSecs ?? Infinity),
+                },
+              ]}
+            />
+            <LearningEvidenceRail>
+              <div className="pc-learning-visual__evidence-grid">
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Success</span>
+                  <strong>{pctLabel(latest.successRate)}</strong>
+                </div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Time</span>
+                  <strong>{secsLabel(latest.meanTimeToGreenSecs)}</strong>
+                </div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Tokens</span>
+                  <strong>{tokensLabel(latest.meanTokens)}</strong>
+                </div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Escalations</span>
+                  <strong>{pctLabel(latest.escalationRate)}</strong>
+                </div>
+              </div>
+            </LearningEvidenceRail>
+          </div>
+
+          <BenchmarkTrend instances={instances} />
+
+          <div className="pc-learning__sectionhead">
+            <h2>Recent generations</h2>
+          </div>
+          <ul className="pc-learning__list">
+            {instances.map((inst, i) => {
+              const prev = instances[i + 1];
+              const dComposite =
+                inst.meanComposite != null && prev?.meanComposite != null
+                  ? inst.meanComposite - prev.meanComposite
+                  : null;
+              const delta = deltaLabel(dComposite);
+              return (
+                <li
+                  key={inst.instanceId}
+                  className="pc-learning__row pc-learning__row--bench"
+                  title={inst.instanceId}
+                >
                   <span
-                    className="pc-learning__benchnum"
-                    title="Mean judge composite for this generation"
-                  >
-                    {compositeLabel(inst.meanComposite)}
+                    className="pc-learning__sev"
+                    style={{ background: delta.tone === "bad" ? "#fb7185" : "#34d399" }}
+                    aria-hidden
+                  />
+                  <span className="pc-learning__id" title={inst.codeSha}>
+                    {shortSha(inst.codeSha)}
                   </span>
-                  {i < instances.length - 1 && (
-                    <span
-                      className={`pc-learning__delta pc-learning__delta--${delta.tone}`}
-                      title="Composite change vs the previous generation"
-                    >
-                      Δ {delta.text}
+                  <span className="pc-learning__benchcell">
+                    <span className="pc-learning__benchnum">
+                      {compositeLabel(inst.meanComposite)}
                     </span>
-                  )}
-                  <span className="pc-learning__benchmeta">
-                    {inst.successfulRuns}/{inst.totalRuns} solved
+                    {i < instances.length - 1 ? (
+                      <span className={`pc-learning__delta pc-learning__delta--${delta.tone}`}>
+                        Δ {delta.text}
+                      </span>
+                    ) : null}
+                    <span className="pc-learning__benchmeta">
+                      {inst.successfulRuns}/{inst.totalRuns} solved
+                    </span>
                   </span>
-                </span>
-                <span className="pc-learning__meta">
-                  <span className="pc-learning__age" title="Mean time to green">
-                    {secsLabel(inst.meanTimeToGreenSecs)}
+                  <span className="pc-learning__meta">
+                    <span className="pc-learning__age">
+                      {secsLabel(inst.meanTimeToGreenSecs)}
+                    </span>
+                    <span className="pc-learning__age">
+                      {tokensLabel(inst.meanTokens)}
+                    </span>
+                    <span className="pc-learning__age">
+                      {dateLabel(inst.createdAt)}
+                    </span>
                   </span>
-                  <span
-                    className="pc-learning__age"
-                    title="Mean tokens per task"
-                  >
-                    {tokensLabel(inst.meanTokens)}
-                  </span>
-                  <span
-                    className="pc-learning__age"
-                    title="Escalation rate (lower is better)"
-                  >
-                    {pctLabel(inst.escalationRate)} esc
-                  </span>
-                  <span className="pc-learning__age">
-                    {dateLabel(inst.createdAt)}
-                  </span>
-                </span>
-              </li>
-            );
-          })}
-        </ul>
+                </li>
+              );
+            })}
+          </ul>
+        </>
       )}
     </section>
   );

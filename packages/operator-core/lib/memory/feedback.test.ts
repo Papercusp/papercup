@@ -17,7 +17,7 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/memory/feedback.test.ts
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   pgClientFields: vi.fn(),
@@ -48,14 +48,24 @@ vi.mock('pg', () => ({
 
 import { recordFeedback, loadFeedbackStats } from './feedback';
 
+// recordFeedback's best-effort catch logs via console.warn (the suite runs
+// vitest-fail-on-console, so a real warn would fail the test). Spy it to a
+// noop AND assert it fired where we exercise the log-and-swallow contract.
+let warnSpy: ReturnType<typeof vi.spyOn>;
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.calls = [];
+  warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
   mocks.pgClientFields.mockResolvedValue({ host: 'localhost', database: 'mem0' });
   mocks.connect.mockResolvedValue(undefined);
   mocks.end.mockResolvedValue(undefined);
   mocks.activeWorkspaceId.mockReturnValue('ws-1');
   mocks.query.mockResolvedValue({ rows: [] });
+});
+
+afterEach(() => {
+  warnSpy.mockRestore();
 });
 
 describe('recordFeedback — best-effort (a memory op must never fail because capture failed)', () => {
@@ -88,16 +98,19 @@ describe('recordFeedback — best-effort (a memory op must never fail because ca
     mocks.query.mockRejectedValue(new Error('relation "harness_shared.memory_feedback" does not exist'));
     await expect(recordFeedback({ memId: 'm1', userId: 'u1', action: 'delete' })).resolves.toBeUndefined();
     expect(mocks.end).toHaveBeenCalledTimes(1); // connection not leaked on query failure
+    expect(warnSpy).toHaveBeenCalled(); // failure is LOGGED, not silent
   });
 
   it('swallows a connect failure (resolves, never rejects)', async () => {
     mocks.connect.mockRejectedValue(new Error('ECONNREFUSED'));
     await expect(recordFeedback({ memId: 'm1', userId: 'u1', action: 'create' })).resolves.toBeUndefined();
+    expect(warnSpy).toHaveBeenCalled();
   });
 
   it('swallows even a pgClientFields failure', async () => {
     mocks.pgClientFields.mockRejectedValue(new Error('discovery failed'));
     await expect(recordFeedback({ memId: 'm1', userId: 'u1', action: 'edit' })).resolves.toBeUndefined();
+    expect(warnSpy).toHaveBeenCalled();
   });
 });
 
