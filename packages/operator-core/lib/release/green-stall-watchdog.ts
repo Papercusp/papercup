@@ -563,6 +563,39 @@ export interface ReleaseTriggerFreezeVerdict {
 }
 
 /**
+ * WI-4329: WHO paused release-trigger, so an alarm/responder can coordinate with the actual
+ * owner instead of blind-toggling it back on (which just fights a still-in-progress protective
+ * pause and produces the exact re-disable ping-pong that made WI-4322's recurrence look like an
+ * unexplained "auto-disable" for weeks). `routines:set`'s gateway-control audit trail only
+ * records `actor: role:${ctx.role}` (e.g. `role:operator`) — never WHICH session — so this reads
+ * the richer `harness_shared.tool_invocations` telemetry instead, which carries `coord_owner_id`
+ * for every MCP call. Best-effort / fail-soft: a lookup failure or empty history must never block
+ * the alarm itself.
+ */
+export async function lastReleaseTriggerPauseOwner(
+  sql: Sql,
+): Promise<{ ownerId: string; invokedAtMs: number } | null> {
+  try {
+    const rows = await sql<{ coord_owner_id: string | null; invoked_at_ms: number | string | null }[]>`
+      SELECT coord_owner_id, extract(epoch from invoked_at) * 1000 AS invoked_at_ms
+        FROM harness_shared.tool_invocations
+       WHERE tool_name = 'routines:set'
+         AND status = 'ok'
+         AND (args_json->>'name') = 'release-trigger'
+         AND (args_json->>'active') = 'false'
+       ORDER BY invoked_at DESC
+       LIMIT 1`;
+    const row = rows[0];
+    if (!row?.coord_owner_id) return null;
+    const invokedAtMs = row.invoked_at_ms != null ? Number(row.invoked_at_ms) : null;
+    if (invokedAtMs == null || Number.isNaN(invokedAtMs)) return null;
+    return { ownerId: row.coord_owner_id, invokedAtMs };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Pure: is release-trigger PAUSED while green code is stranded, long enough to
  * call it a silent freeze rather than a normal short pause? Exported for unit
  * testing.
@@ -647,22 +680,31 @@ export async function checkReleaseTriggerFreeze(
 
     if (verdict.frozen) {
       if (alreadyAlarmed) return out; // one-shot until recovery
+      // WI-4329: attribute the pause so the alarm reads "coordinate with su-X", not just "someone
+      // paused this" — cuts the ping-pong of a responder blind-re-enabling a still-needed pause.
+      const pausedBy = await lastReleaseTriggerPauseOwner(sql);
+      const pausedByLine = pausedBy
+        ? `\n\nLast paused by ${pausedBy.ownerId} (routines:set active:false) at ${new Date(pausedBy.invokedAtMs).toISOString()}. ` +
+          `Coordinate with them before re-enabling — a repeated pause is often a deliberate protective hold (e.g. a long-running ` +
+          `demo/capture session that a deploy restart would kill), not a stuck bug; blind-toggling it back on just fights their hold.`
+        : '';
+      const reasonWithOwner = (verdict.reason ?? '') + pausedByLine;
       try {
         const { notifyAttention } = await import('../attention-notify');
         await notifyAttention({
           kind: 'intervention',
           title: 'Release pipeline FROZEN — release-trigger is paused with green code stranded',
-          body: verdict.reason ?? '',
+          body: reasonWithOwner,
           importance: 'urgent',
           workspaceId,
-          data: { deployedBehindReady: status.deploy.deployedBehindReady },
+          data: { deployedBehindReady: status.deploy.deployedBehindReady, pausedBy: pausedBy?.ownerId ?? null },
         });
       } catch (e) {
         console.warn(`[release-trigger-freeze-watchdog] notify failed: ${e instanceof Error ? e.message : e}`);
       }
       await broadcastSevereEvent({
         summary: `release-trigger is PAUSED on ${installSlug} with ${status.deploy.deployedBehindReady} green commit(s) stranded — silent fleet-wide deploy freeze.`,
-        body: verdict.reason ?? '',
+        body: reasonWithOwner,
         category: 'severe-event',
         conditionKey: `release-trigger-freeze:${installSlug}`,
       });
@@ -673,7 +715,9 @@ export async function checkReleaseTriggerFreeze(
             kind: RELEASE_TRIGGER_FREEZE_PHASE,
             harness_slug: installSlug,
             deployedBehindReady: status.deploy.deployedBehindReady,
-            detail: verdict.reason,
+            detail: reasonWithOwner,
+            pausedBy: pausedBy?.ownerId ?? null,
+            pausedAtMs: pausedBy?.invokedAtMs ?? null,
             emitted_at: now,
           })}, ${now}, ${workspaceId})
           ON CONFLICT (harness_slug, phase)
@@ -682,7 +726,7 @@ export async function checkReleaseTriggerFreeze(
         console.warn(`[release-trigger-freeze-watchdog] escalation write failed: ${e instanceof Error ? e.message : e}`);
       }
       out.alarmed = true;
-      console.warn(`[release-trigger-freeze-watchdog] ALARM ${installSlug}: ${verdict.reason}`);
+      console.warn(`[release-trigger-freeze-watchdog] ALARM ${installSlug}: ${reasonWithOwner}`);
     } else if (alreadyAlarmed) {
       await sql`
         UPDATE harness_shared.harness_escalations

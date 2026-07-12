@@ -232,3 +232,108 @@ describe('queen-feedback bypass (P-002 — queen-scout-feedback-loop)', () => {
     ).toBe('min-interval');
   });
 });
+
+describe('VOLUME MODE — signalScore supplied (blender-self-learning-2026-07-12 P-002 / WI-4318)', () => {
+  // In every case below the accumulator score is a finite number, which is the
+  // scheduler's "flag ON + accumulator populated" shape.
+
+  it('score 0 withholds EVERYTHING except queen-feedback (a stale corpus never fires)', () => {
+    // Idle + past every floor + drained + past heartbeat — all vetoed at score 0.
+    const v = shouldRunScoutCycle(
+      state({
+        signalScore: 0,
+        idleRatio: 1,
+        frictionSignals: 99,
+        lastRunAtMs: minutesAgo(600),
+        routedIdeaTotal: 5,
+        pendingIdeaCount: 0,
+      }),
+    );
+    expect(v).toEqual({ fire: false, reason: 'no-signal' });
+  });
+
+  it('queen-feedback BYPASSES the zero-signal veto (explicit external signal)', () => {
+    const v = shouldRunScoutCycle(
+      state({ signalScore: 0, queenWakePending: true, lastRunAtMs: minutesAgo(1) }),
+    );
+    expect(v).toEqual({ fire: true, reason: 'queen-feedback' });
+  });
+
+  it('score ≥ threshold fires signal-volume once the volume floor elapses', () => {
+    const v = shouldRunScoutCycle(state({ signalScore: 25, lastRunAtMs: minutesAgo(16) }));
+    expect(v).toEqual({ fire: true, reason: 'signal-volume' });
+  });
+
+  it('the volume floor (default 15min) coalesces bursts — withheld inside it, retryAfter points at it', () => {
+    const v = shouldRunScoutCycle(state({ signalScore: 100, lastRunAtMs: minutesAgo(10) }));
+    expect(v.fire).toBe(false);
+    expect(v.reason).toBe('min-interval');
+    expect(v.retryAfterSec).toBe(5 * 60);
+  });
+
+  it('sub-threshold score does NOT volume-fire; heartbeat still bounds the wait (score > 0)', () => {
+    // 0 < score < threshold, past the volume floor but inside the heartbeat → no-trigger.
+    const early = shouldRunScoutCycle(
+      state({ signalScore: 5, idleRatio: 0.2, lastRunAtMs: minutesAgo(30) }),
+      { maxIntervalSec: 3600 },
+    );
+    expect(early.fire).toBe(false);
+    expect(early.reason).toBe('no-trigger');
+    // …and past the heartbeat ceiling it fires (some signal exists — never fully stalls).
+    const late = shouldRunScoutCycle(
+      state({ signalScore: 5, idleRatio: 0.2, lastRunAtMs: minutesAgo(61) }),
+      { maxIntervalSec: 3600 },
+    );
+    expect(late).toEqual({ fire: true, reason: 'heartbeat' });
+  });
+
+  it('friction keeps its own fast floor in volume mode (score > 0)', () => {
+    const v = shouldRunScoutCycle(
+      state({ signalScore: 5, frictionSignals: 5, lastRunAtMs: minutesAgo(16) }),
+    );
+    expect(v).toEqual({ fire: true, reason: 'friction-triggered' });
+  });
+
+  it('ideas-drained still fires in volume mode (score > 0, past the volume floor)', () => {
+    const v = shouldRunScoutCycle(
+      state({ signalScore: 5, routedIdeaTotal: 5, pendingIdeaCount: 0, lastRunAtMs: minutesAgo(16) }),
+    );
+    expect(v).toEqual({ fire: true, reason: 'ideas-drained' });
+  });
+
+  it('threshold + volume floor are tunable via the cadence payload', () => {
+    const opts = { signalScoreThreshold: 50, minVolumeIntervalSec: 300 };
+    expect(
+      shouldRunScoutCycle(state({ signalScore: 49, idleRatio: 0, lastRunAtMs: minutesAgo(6) }), {
+        ...opts,
+        maxIntervalSec: 86400,
+      }).reason,
+    ).toBe('no-trigger');
+    expect(
+      shouldRunScoutCycle(state({ signalScore: 50, lastRunAtMs: minutesAgo(6) }), opts),
+    ).toEqual({ fire: true, reason: 'signal-volume' });
+    expect(
+      shouldRunScoutCycle(state({ signalScore: 50, lastRunAtMs: minutesAgo(4) }), opts).reason,
+    ).toBe('min-interval');
+  });
+
+  it('LEGACY UNCHANGED: an undefined signalScore keeps the time-based behavior byte-identical', () => {
+    // Same states as the legacy tests above — signalScore absent.
+    expect(shouldRunScoutCycle(state({ idleRatio: 0.8, lastRunAtMs: null }))).toEqual({
+      fire: true,
+      reason: 'idle-capacity',
+    });
+    expect(
+      shouldRunScoutCycle(state({ idleRatio: 0.1, frictionSignals: 0, lastRunAtMs: minutesAgo(61) })),
+    ).toEqual({ fire: true, reason: 'heartbeat' });
+    // A 16-min elapsed idle hive is inside the LEGACY 1h floor (not the 15-min volume floor).
+    expect(shouldRunScoutCycle(state({ idleRatio: 1, lastRunAtMs: minutesAgo(16) })).reason).toBe(
+      'min-interval',
+    );
+  });
+
+  it('a NaN score is treated as no-volume-mode (legacy), not as zero (never wedge the loop dark)', () => {
+    const v = shouldRunScoutCycle(state({ signalScore: Number.NaN, idleRatio: 0.8, lastRunAtMs: minutesAgo(61) }));
+    expect(v).toEqual({ fire: true, reason: 'idle-capacity' });
+  });
+});

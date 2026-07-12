@@ -53,6 +53,7 @@ import {
   checkMainBehindStaging,
   evaluateReleaseTriggerFreeze,
   checkReleaseTriggerFreeze,
+  lastReleaseTriggerPauseOwner,
 } from './green-stall-watchdog';
 
 const H = 60 * 60 * 1000;
@@ -495,6 +496,34 @@ describe('evaluateReleaseTriggerFreeze (WI-4322)', () => {
   });
 });
 
+describe('lastReleaseTriggerPauseOwner (WI-4329)', () => {
+  function makeFakeSql(row: { coord_owner_id: string | null; invoked_at_ms: number | null } | null) {
+    return ((_strings: TemplateStringsArray, ..._values: unknown[]) =>
+      Promise.resolve(row ? [row] : [])) as unknown as import('postgres').Sql;
+  }
+
+  it('returns the owner + timestamp when a matching row exists', async () => {
+    const sql = makeFakeSql({ coord_owner_id: 'su-d1425c47-dbac-4640-93c1-d708e3dcff03', invoked_at_ms: NOW });
+    const result = await lastReleaseTriggerPauseOwner(sql);
+    expect(result).toEqual({ ownerId: 'su-d1425c47-dbac-4640-93c1-d708e3dcff03', invokedAtMs: NOW });
+  });
+
+  it('returns null when no matching row exists', async () => {
+    const sql = makeFakeSql(null);
+    expect(await lastReleaseTriggerPauseOwner(sql)).toBeNull();
+  });
+
+  it('returns null when the row has no coord_owner_id (a non-agent/system caller)', async () => {
+    const sql = makeFakeSql({ coord_owner_id: null, invoked_at_ms: NOW });
+    expect(await lastReleaseTriggerPauseOwner(sql)).toBeNull();
+  });
+
+  it('fails soft (returns null, never throws) when the query rejects', async () => {
+    const sql = (() => Promise.reject(new Error('db blew up'))) as unknown as import('postgres').Sql;
+    await expect(lastReleaseTriggerPauseOwner(sql)).resolves.toBeNull();
+  });
+});
+
 describe('checkReleaseTriggerFreeze DB wiring (WI-4322)', () => {
   let warnSpy: ReturnType<typeof vi.spyOn>;
 
@@ -518,15 +547,18 @@ describe('checkReleaseTriggerFreeze DB wiring (WI-4322)', () => {
   function makeRTFakeSql(opts: {
     routineRow?: { active: boolean; updated_at_ms: number | null; workspace_id: string } | null;
     existingEscalation?: { escalation: unknown }[];
+    pauseOwnerRow?: { coord_owner_id: string | null; invoked_at_ms: number | null } | null;
   }) {
     const calls: unknown[][] = [];
     const routineRows = opts.routineRow ? [opts.routineRow] : [];
     const existing = opts.existingEscalation ?? [];
+    const pauseOwnerRows = opts.pauseOwnerRow ? [opts.pauseOwnerRow] : [];
     const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
       const text = strings.join('?');
       calls.push([text, ...values]);
       if (text.includes('FROM harness_shared.routines')) return Promise.resolve(routineRows);
       if (text.includes('SELECT escalation')) return Promise.resolve(existing);
+      if (text.includes('FROM harness_shared.tool_invocations')) return Promise.resolve(pauseOwnerRows);
       return Promise.resolve(Object.assign([], { count: 1 }));
     }) as unknown as import('postgres').Sql;
     return { sql, calls };
@@ -560,6 +592,35 @@ describe('checkReleaseTriggerFreeze DB wiring (WI-4322)', () => {
     // template values are [installSlug, phase, escalationJson, mtimeMs, workspaceId]
     expect(insertCall![1]).toBe('papercusp');
     expect(insertCall![5]).toBe('papercusp-workspace');
+  });
+
+  it('WI-4329: attributes the pause to its actual owner when tool_invocations has a matching row', async () => {
+    computeDeployStatusMock.mockReturnValue({ deploy: { deployedBehindReady: 44 } });
+    const { sql } = makeRTFakeSql({
+      routineRow: { active: false, updated_at_ms: NOW - 45 * 60_000, workspace_id: 'papercusp-workspace' },
+      pauseOwnerRow: { coord_owner_id: 'su-d1425c47-dbac-4640-93c1-d708e3dcff03', invoked_at_ms: NOW - 45 * 60_000 },
+    });
+    const result = await checkReleaseTriggerFreeze(sql, { installSlug: 'papercusp' });
+    expect(result.alarmed).toBe(true);
+    const notifyBody = notifyAttentionMock.mock.calls[0]![0].body as string;
+    expect(notifyBody).toContain('su-d1425c47-dbac-4640-93c1-d708e3dcff03');
+    expect(notifyBody).toContain('Coordinate with them');
+    expect(notifyAttentionMock.mock.calls[0]![0].data.pausedBy).toBe('su-d1425c47-dbac-4640-93c1-d708e3dcff03');
+    const broadcastBody = broadcastSevereEventMock.mock.calls[0]![0].body as string;
+    expect(broadcastBody).toContain('su-d1425c47-dbac-4640-93c1-d708e3dcff03');
+  });
+
+  it('WI-4329: no matching tool_invocations row (attribution unavailable) still alarms, just without a "last paused by" line', async () => {
+    computeDeployStatusMock.mockReturnValue({ deploy: { deployedBehindReady: 44 } });
+    const { sql } = makeRTFakeSql({
+      routineRow: { active: false, updated_at_ms: NOW - 45 * 60_000, workspace_id: 'papercusp-workspace' },
+      pauseOwnerRow: null,
+    });
+    const result = await checkReleaseTriggerFreeze(sql, { installSlug: 'papercusp' });
+    expect(result.alarmed).toBe(true);
+    const notifyBody = notifyAttentionMock.mock.calls[0]![0].body as string;
+    expect(notifyBody).not.toContain('Coordinate with them');
+    expect(notifyAttentionMock.mock.calls[0]![0].data.pausedBy).toBeNull();
   });
 
   it('does NOT re-alarm when already alarmed (one-shot until recovery)', async () => {
