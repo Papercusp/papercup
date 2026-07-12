@@ -53,6 +53,13 @@ export interface InstallPaths {
   /** ~/.papercusp/bin/papercusp — `papercusp <setup|tutorial>` dispatcher (onboard = alias of setup) →
    *  the bundled onboard.mjs concierge (agent-first-onboarding P-014). */
   papercuspCliPath: string;
+  /** ~/.papercusp/bin/psu-sentinel — the 🛡 Sentinel dock pane launcher (EI-9935-adjacent
+   *  WI-4244 fix): registers the pane for voice-transcript routing, applies a per-session
+   *  model override, then execs the just-written `psu` shim with `--role=papercup`. Mirrors
+   *  apps/operator/scripts/psu-sentinel.sh (the dev-repo source of truth for this logic),
+   *  which was NEVER added to the on-boot shim set — the packaged app's dock layout invokes
+   *  `psu-sentinel` by name (apps/tui/src/layout.rs) but nothing ever put it on PATH. */
+  psuSentinelPath: string;
   /** ~/Applications/Papercusp Tutorial & Setup.app — macOS-only clickable launcher that opens a
    *  Terminal window running `papercusp tutorial` (windows-macos-tutorial-shortcut-parity
    *  2026-07-04, WI-2197 — macOS/Dock-Applications parity with the Linux .desktop icon). */
@@ -84,6 +91,9 @@ export interface InstallResult extends InstallPaths {
   ptoolShimWritten: boolean;
   /** True when the `papercusp` dispatcher shim was written (P-014). */
   papercuspCliWritten: boolean;
+  /** True when the `psu-sentinel` dock-pane launcher shim was written (WI-4244). Only
+   *  attempted when the `psu` shim itself was written this call — sentinel execs psu. */
+  psuSentinelShimWritten: boolean;
   /** True when the macOS "Papercusp Tutorial & Setup.app" wrapper was written (darwin only, WI-2197). */
   macTutorialAppWritten: boolean;
   /** True when the Linux per-user tutorial `.desktop` launcher was written (linux only). */
