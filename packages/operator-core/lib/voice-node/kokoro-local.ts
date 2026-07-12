@@ -34,8 +34,9 @@ interface ProvisionMarker {
   provisionedAt: string;
 }
 
-/** Minimal structural type for the kokoro-js engine (the real one is loaded dynamically —
- *  keeping this file import-light means no onnxruntime native load at operator boot). */
+/** Minimal structural type for the kokoro engine (the vendored ./kokoro/kokoro-tts, loaded
+ *  dynamically — keeping this file import-light means no onnxruntime native load at operator
+ *  boot). */
 export interface KokoroEngineLike {
   generate(text: string, opts: { voice: string }): Promise<{ audio: Float32Array; sampling_rate: number }>;
 }
@@ -72,14 +73,19 @@ export async function isKokoroLocalProvisioned(home?: string): Promise<boolean> 
 }
 
 async function defaultLoadEngine(cacheDir: string): Promise<KokoroEngineLike> {
-  const { KokoroTTS } = await import('kokoro-js');
-  return (await KokoroTTS.from_pretrained(KOKORO_LOCAL_MODEL_ID, {
+  // Dynamic import keeps onnxruntime-node's native load OFF the operator boot path — the
+  // engine only materializes on first provision/synth. The vendored port (./kokoro/kokoro-tts)
+  // binds to the repo's own @huggingface/transformers 4.2.0 (see its header for why not the
+  // kokoro-js npm package).
+  const { KokoroTts } = await import('./kokoro/kokoro-tts');
+  return KokoroTts.from_pretrained(KOKORO_LOCAL_MODEL_ID, {
     dtype: KOKORO_LOCAL_DTYPE,
     device: 'cpu',
-    // Forwarded to transformers.js from_pretrained — keeps the voice model in OUR cache dir
-    // instead of mutating the global env.cacheDir (which other in-repo transformers users own).
-    cache_dir: cacheDir,
-  } as never)) as unknown as KokoroEngineLike;
+    // Keeps model + voice files in OUR cache dir instead of mutating the global env.cacheDir
+    // (which other in-repo transformers users own).
+    cacheDir,
+    voicesDir: `${cacheDir}/voices`,
+  });
 }
 
 // One engine per process (the model is ~300MB resident once loaded — lazily, never at boot).
