@@ -11,6 +11,9 @@ import {
   parseClaudeLine,
   parseOmpLine,
   parseCodexLine,
+  classifyClaudeLine,
+  classifyOmpLine,
+  classifyCodexLine,
   textFromContent,
 } from './session-ingest';
 
@@ -112,6 +115,176 @@ describe('parseOmpLine', () => {
     expect(parseOmpLine(JSON.stringify({ type: 'title', title: '' }))).toBeNull();
     expect(parseOmpLine(JSON.stringify({ type: 'session', id: 'x', cwd: '/' }))).toBeNull();
     expect(parseOmpLine(JSON.stringify({ type: 'thinking', text: 'private' }))).toBeNull();
+  });
+});
+
+/**
+ * EI-9970 recurrence guard — classifyXLine + the readNewLines dedup contract
+ * documented on LineSignal. Real transcripts show a single logical Claude
+ * response can be split across MULTIPLE 'assistant' JSONL lines sharing one
+ * message.id (thinking-only stub → tool_use → text) — a naive per-line
+ * count double/triple-counts that as separate responses, reproducing the
+ * exact bug sessions:list's undocumented `turns` field caused (2026-07-12
+ * fleet retrospective). These pin the classifier contract directly; the
+ * dedup-across-lines behavior itself is exercised via readNewLines in
+ * session-ingest-fixture.test.ts (needs the shared dedup cursor, so it
+ * belongs with the PG-touching ingest tests, not this pure-parser file).
+ */
+describe('classifyClaudeLine (EI-9970)', () => {
+  it('classifies a real user prompt as isPrompt, not a response', () => {
+    const sig = classifyClaudeLine(
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'fix the login bug please' } }),
+    );
+    expect(sig).toMatchObject({ isPrompt: true, isResponsePayload: false, toolCallCount: 0 });
+  });
+
+  it('does NOT count a tool_result-carrying synthetic user line as a prompt', () => {
+    const sig = classifyClaudeLine(
+      JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'x', content: 'ok' }] },
+      }),
+    );
+    expect(sig).toMatchObject({ isPrompt: false, isResponsePayload: false });
+  });
+
+  it('a pure-thinking-only assistant line is NOT a response payload (the split-response class)', () => {
+    const sig = classifyClaudeLine(
+      JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', id: 'msg_1', content: [{ type: 'thinking', thinking: 'reasoning...' }] },
+      }),
+    );
+    expect(sig).toMatchObject({ isResponsePayload: false, inferenceId: null, toolCallCount: 0 });
+  });
+
+  it('a tool_use-only assistant line IS a response payload, carries the tool call, and its id is captured for dedup', () => {
+    const sig = classifyClaudeLine(
+      JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', id: 'msg_1', content: [{ type: 'tool_use', name: 'Bash', input: {} }] },
+      }),
+    );
+    expect(sig).toMatchObject({ isResponsePayload: true, inferenceId: 'msg_1', toolCallCount: 1 });
+  });
+
+  it('a text-bearing assistant line sharing the SAME message.id as a prior tool_use line is a response payload with the SAME id (dedup keys them together)', () => {
+    const sig = classifyClaudeLine(
+      JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', id: 'msg_1', content: [{ type: 'text', text: 'done — deployed' }] },
+      }),
+    );
+    expect(sig).toMatchObject({ isResponsePayload: true, inferenceId: 'msg_1', toolCallCount: 0 });
+  });
+
+  it('falls back to requestId when message.id is absent', () => {
+    const sig = classifyClaudeLine(
+      JSON.stringify({
+        type: 'assistant',
+        requestId: 'req_1',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'hi there friend' }] },
+      }),
+    );
+    expect(sig?.inferenceId).toBe('req_1');
+  });
+
+  it('multiple tool_use blocks on one line count each', () => {
+    const sig = classifyClaudeLine(
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          id: 'msg_2',
+          content: [
+            { type: 'tool_use', name: 'Read', input: {} },
+            { type: 'tool_use', name: 'Bash', input: {} },
+          ],
+        },
+      }),
+    );
+    expect(sig?.toolCallCount).toBe(2);
+  });
+
+  it('returns null for non-turn lines', () => {
+    expect(classifyClaudeLine(JSON.stringify({ type: 'summary', summary: 'x' }))).toBeNull();
+    expect(classifyClaudeLine('not json')).toBeNull();
+  });
+});
+
+describe('classifyOmpLine (EI-9970)', () => {
+  it('a toolResult-role line is neither a prompt nor a response', () => {
+    const sig = classifyOmpLine(
+      JSON.stringify({
+        type: 'message',
+        id: 'tr_1',
+        message: { role: 'toolResult', toolCallId: 'tc_1', content: 'ok' },
+      }),
+    );
+    expect(sig).toMatchObject({ isPrompt: false, isResponsePayload: false });
+  });
+
+  it('an assistant toolCall content item counts as a tool call + response payload', () => {
+    const sig = classifyOmpLine(
+      JSON.stringify({
+        type: 'message',
+        id: 'a_1',
+        message: { role: 'assistant', content: [{ type: 'toolCall', name: 'bash', input: {} }] },
+      }),
+    );
+    expect(sig).toMatchObject({ isResponsePayload: true, inferenceId: 'a_1', toolCallCount: 1 });
+  });
+
+  it('a real user text line is a prompt', () => {
+    const sig = classifyOmpLine(
+      JSON.stringify({
+        type: 'message',
+        id: 'u_1',
+        message: { role: 'user', content: [{ type: 'text', text: 'tools list please' }] },
+      }),
+    );
+    expect(sig).toMatchObject({ isPrompt: true, isResponsePayload: false });
+  });
+
+  it('non-message lines classify as null', () => {
+    expect(classifyOmpLine(JSON.stringify({ type: 'session', id: 'x' }))).toBeNull();
+  });
+});
+
+describe('classifyCodexLine (EI-9970)', () => {
+  it('a function_call / custom_tool_call payload is a tool call, not a prompt or response', () => {
+    for (const kind of ['function_call', 'custom_tool_call']) {
+      const sig = classifyCodexLine(
+        JSON.stringify({ type: 'response_item', payload: { type: kind, id: 'c_1', call_id: 'cc_1', name: 'shell' } }),
+      );
+      expect(sig).toMatchObject({ isPrompt: false, isResponsePayload: false, toolCallCount: 1 });
+    }
+  });
+
+  it('an assistant message payload is a response payload keyed by its own id (already atomic — no split-line dedup needed)', () => {
+    const sig = classifyCodexLine(
+      JSON.stringify({
+        type: 'response_item',
+        payload: { type: 'message', id: 'msg_5', role: 'assistant', content: [{ type: 'output_text', text: 'done' }] },
+      }),
+    );
+    expect(sig).toMatchObject({ isResponsePayload: true, inferenceId: 'msg_5', toolCallCount: 0 });
+  });
+
+  it('a user message payload is a prompt', () => {
+    const sig = classifyCodexLine(
+      JSON.stringify({
+        type: 'response_item',
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'run the tests' }] },
+      }),
+    );
+    expect(sig).toMatchObject({ isPrompt: true, isResponsePayload: false });
+  });
+
+  it('a reasoning payload classifies as null (not a message, not a tool call)', () => {
+    expect(
+      classifyCodexLine(JSON.stringify({ type: 'response_item', payload: { type: 'reasoning', id: 'r_1' } })),
+    ).toBeNull();
   });
 });
 

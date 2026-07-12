@@ -770,12 +770,21 @@ async function syncAgentChats(sql: Sql, budget: { turns: number }): Promise<numb
       continue;
     }
     const rows: TurnRow[] = [];
+    let promptDelta = 0;
+    let responseDelta = 0;
     for (let i = st.turn_count; i < transcript.length; i += 1) {
       const t = transcript[i];
       const speaker = t.role === 'user' ? 'user' : t.role === 'assistant' ? 'assistant' : null;
       if (!speaker) continue;
       const text = cleanTurnText(typeof t.content === 'string' ? t.content : textFromContent(t.content));
       if (!text) continue;
+      // EI-9970: agent_chats_consolidated is already one JSONB entry per real
+      // turn (no thinking-only/tool-only sub-line splitting like the file
+      // adapters), so a plain per-speaker count is exact here — no dedup
+      // cursor needed. tool_call_count stays 0: this transcript shape carries
+      // no tool-call signal (documented limitation, sessions:list note).
+      if (speaker === 'user') promptDelta += 1;
+      else responseDelta += 1;
       rows.push({
         workspace_id: chat.workspace_id,
         source_kind: 'agent_chat',
@@ -793,6 +802,9 @@ async function syncAgentChats(sql: Sql, budget: { turns: number }): Promise<numb
     await writeState(sql, 'agent_chat', key, {
       byte_offset: 0,
       turn_count: transcript.length,
+      prompt_count: st.prompt_count + promptDelta,
+      response_count: st.response_count + responseDelta,
+      tool_call_count: st.tool_call_count,
       sessionId: chat.id,
     });
     budget.turns -= rows.length;
@@ -890,23 +902,34 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
       // Bulk-load this adapter's ingest state ONCE — a per-file SELECT at ~23k
       // candidate files was minutes of serial round-trips (perf anti-pattern
       // A1: per-item queries in a loop; observed live 2026-07-05).
-      const stateRows = await sql<Array<{ file_path: string; byte_offset: string | number; turn_count: number }>>`
-        SELECT file_path, byte_offset, turn_count
+      const stateRows = await sql<Array<{
+        file_path: string; byte_offset: string | number; turn_count: number;
+        prompt_count: number; response_count: number; tool_call_count: number; last_inference_id: string | null;
+      }>>`
+        SELECT file_path, byte_offset, turn_count, prompt_count, response_count, tool_call_count, last_inference_id
           FROM harness_shared.session_ingest_state
          WHERE source_kind = ${adapter.sourceKind}
       `;
       const stateMap = new Map<string, IngestState>(
-        stateRows.map((r) => [r.file_path, { byte_offset: Number(r.byte_offset), turn_count: r.turn_count }]),
+        stateRows.map((r) => [r.file_path, {
+          byte_offset: Number(r.byte_offset),
+          turn_count: r.turn_count,
+          prompt_count: r.prompt_count ?? 0,
+          response_count: r.response_count ?? 0,
+          tool_call_count: r.tool_call_count ?? 0,
+          last_inference_id: r.last_inference_id ?? null,
+        }]),
       );
       let filesThisAdapter = 0;
       for (const cand of candidates) {
         if (budget.turns <= 0 || filesThisAdapter >= MAX_FILES_PER_TICK) break;
         stats.filesScanned += 1;
         try {
-          const st = stateMap.get(cand.path) ?? { byte_offset: 0, turn_count: 0 };
+          const st = stateMap.get(cand.path) ?? { ...EMPTY_STATE };
           if (cand.size <= st.byte_offset) continue; // nothing new
           filesThisAdapter += 1;
-          const { turns, newOffset } = await readNewLines(cand.path, st.byte_offset, adapter.parseLine);
+          const { turns, newOffset, promptCount, responseCount, toolCallCount, lastInferenceId } =
+            await readNewLines(cand.path, st.byte_offset, adapter.parseLine, adapter.classifyLine, st.last_inference_id);
           if (newOffset === st.byte_offset) continue;
           const meta = adapter.meta(cand.path);
           const rows: TurnRow[] = turns.map((t, i) => ({
@@ -925,6 +948,10 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
           await writeState(sql, adapter.sourceKind, cand.path, {
             byte_offset: newOffset,
             turn_count: st.turn_count + turns.length,
+            prompt_count: st.prompt_count + promptCount,
+            response_count: st.response_count + responseCount,
+            tool_call_count: st.tool_call_count + toolCallCount,
+            last_inference_id: lastInferenceId,
             sessionId: meta.sessionId,
             mtimeMs: cand.mtimeMs,
           });
