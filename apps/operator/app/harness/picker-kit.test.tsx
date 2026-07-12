@@ -38,8 +38,36 @@ describe('EmptyState', () => {
   });
 });
 
+// NOTE on style assertions: the token values are `var(...)` custom-property
+// references, which the test environment's CSSOM (jsdom 20's cssstyle) stores as
+// '' — reading them back off a rendered node's `.style` is unreliable here (it
+// works in a real browser + newer jsdom). So the token mapping is asserted
+// against the pure `pillStyle()` source of truth, while behaviour jsdom DOES
+// support (onClick, spread attrs) is still asserted on the rendered <button>.
+describe('pillStyle', () => {
+  it('active = accent bg + dark ink + bold; accent override flows to bg + border', () => {
+    const s = pillStyle(true);
+    expect(s.background).toBe('var(--accent)');
+    expect(s.color).toBe('var(--accent-ink, #051827)');
+    expect(s.fontWeight).toBe(600);
+    expect(s.border).toBe('1px solid var(--accent)');
+
+    const overridden = pillStyle(true, 'var(--good)');
+    expect(overridden.background).toBe('var(--good)');
+    expect(String(overridden.border)).toContain('var(--good)');
+  });
+
+  it('inactive = var(--bg-2) bg + dim fg + var(--border)', () => {
+    const s = pillStyle(false);
+    expect(s.background).toBe('var(--bg-2)');
+    expect(s.color).toBe('var(--fg-dim)');
+    expect(s.fontWeight).toBe(500);
+    expect(s.border).toBe('1px solid var(--border)');
+  });
+});
+
 describe('Pill', () => {
-  it('reflects active state in style + spread attrs and fires onClick', () => {
+  it('spreads attrs onto the button and fires onClick', () => {
     const onClick = vi.fn();
     render(
       <Pill active onClick={onClick} aria-pressed title="filter">
@@ -47,9 +75,7 @@ describe('Pill', () => {
       </Pill>,
     );
     const btn = screen.getByRole('button', { name: 'Active pill' });
-    // Active = accent bg + dark ink + bold.
-    expect(btn.style.background).toBe('var(--accent)');
-    expect(btn.style.color).toBe('var(--accent-ink, #051827)');
+    // font-weight is a plain (non-var) value jsdom's CSSOM preserves.
     expect(btn.style.fontWeight).toBe('600');
     // Spread passthrough.
     expect(btn.getAttribute('title')).toBe('filter');
@@ -58,23 +84,10 @@ describe('Pill', () => {
     expect(onClick).toHaveBeenCalledTimes(1);
   });
 
-  it('inactive uses var(--bg-2) bg + dim fg', () => {
+  it('inactive renders a non-bold button', () => {
     render(<Pill active={false}>Inactive</Pill>);
     const btn = screen.getByRole('button', { name: 'Inactive' });
-    expect(btn.style.background).toBe('var(--bg-2)');
-    expect(btn.style.color).toBe('var(--fg-dim)');
     expect(btn.style.fontWeight).toBe('500');
-  });
-
-  it('honors the accent override when active', () => {
-    render(
-      <Pill active accent="var(--good)">
-        Custom accent
-      </Pill>,
-    );
-    const btn = screen.getByRole('button', { name: 'Custom accent' });
-    expect(btn.style.background).toBe('var(--good)');
-    expect(btn.style.border).toContain('var(--good)');
   });
 });
 

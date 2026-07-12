@@ -148,6 +148,10 @@ const putDiscord = defineTool({
     // Bust the widget cache for this guild so the next GET reflects any change.
     getWidgetCache().delete(guildId);
 
+    // Invalidate the sync cache for this harness' discord config (data-sync migration P-009)
+    const { notifySyncInvalidate } = await import('@papercusp/sync');
+    await notifySyncInvalidate('discordConfig.byHarness', [{ harnessSlug: slug }]);
+
     return Response.json({ ok: true, discord: { guildId, inviteUrl } });
   },
 });

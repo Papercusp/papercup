@@ -94,6 +94,17 @@ const putSpec = defineTool({
         written.push(t.label);
       } catch { /* mirror is best-effort; PG already has it */ }
     }
+
+    // Invalidate sync queries when config.json is saved (data-sync migration P-009)
+    if (body.config !== undefined) {
+      const { notifySyncInvalidate } = await import('@papercusp/sync');
+      // Invalidate both harnessProjectFiles (config) and discordConfig (which extracts discord from config)
+      await Promise.all([
+        notifySyncInvalidate('harnessProjectFiles.byHarness', [{ harnessSlug: slug }]),
+        notifySyncInvalidate('discordConfig.byHarness', [{ harnessSlug: slug }]),
+      ]);
+    }
+
     return Response.json({ ok: true, written, version: saved.version });
   },
 });

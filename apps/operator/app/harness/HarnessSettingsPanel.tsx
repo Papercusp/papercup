@@ -219,6 +219,15 @@ export default function HarnessSettingsPanel({
   });
   const telemetry = telemetryQuery.data ?? [];
   const telemetryLoading = telemetryQuery.loading;
+  const discordConfigQuery = useSyncQuery<{
+    guildId: string;
+    inviteUrl: string;
+  }>({
+    queryName: 'discordConfig.byHarness',
+    args: { harnessSlug: slug, workspaceId },
+    enabled: !!slug,
+  });
+  const { data: discordConfigRows, loading: discordConfigLoading } = discordConfigQuery;
   const applyLoadedConfig = useCallback((cfg: Record<string, unknown>) => {
     setOriginalConfig(cfg);
     const pwRaw = (cfg.parallelWorkers ?? {}) as Record<string, unknown>;
@@ -305,12 +314,26 @@ export default function HarnessSettingsPanel({
     catch { applyLoadedConfig({}); }
   }, [settingsConfigRows, settingsLoading, applyLoadedConfig]);
 
-  // Load discord config from the dedicated endpoint (also gives us isShared).
+  // Load discord config from the sync query and isShared status from the dedicated endpoint.
+  // The sync query provides guildId/inviteUrl; isShared is fetched separately.
+  useEffect(() => {
+    if (discordConfigLoading || !Array.isArray(discordConfigRows)) return;
+    const cfgRow = discordConfigRows[0];
+    if (cfgRow) {
+      setDiscord((prev) => ({
+        ...prev,
+        guildId: cfgRow.guildId ?? '',
+        inviteUrl: cfgRow.inviteUrl ?? '',
+      }));
+    }
+  }, [discordConfigRows, discordConfigLoading]);
+
+  // Fetch isShared status from the REST endpoint (shared.json existence check).
   useEffect(() => {
     let cancelled = false;
     fetch(`/api/harness/${slug}/discord`)
       .then((r) => r.json())
-      .then((d: { isShared?: boolean; discord?: { guildId?: string; inviteUrl?: string } | null }) => {
+      .then((d: { isShared?: boolean }) => {
         if (cancelled) return;
         setDiscord((prev) => ({ ...prev, isShared: d.isShared === true }));
       })
@@ -331,13 +354,13 @@ export default function HarnessSettingsPanel({
         throw new Error(body.error ?? `HTTP ${res.status}`);
       }
       setDiscord((prev) => ({ ...prev, saving: false, saved: true }));
-      settingsQuery.invalidate();
+      discordConfigQuery.invalidate();
       toast.success('Discord settings saved');
     } catch (e) {
       setDiscord((prev) => ({ ...prev, saving: false, error: (e as Error).message }));
       toast.error('Failed to save Discord settings', { description: (e as Error).message });
     }
-  }, [slug, discord.guildId, discord.inviteUrl, settingsQuery]);
+  }, [slug, discord.guildId, discord.inviteUrl, discordConfigQuery]);
 
   // Validation for tier shape — only fires in tiers mode.
   const validation = useMemo(() => {
