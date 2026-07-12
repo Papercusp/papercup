@@ -2010,6 +2010,103 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
     expect(sessions[2]!.close).not.toHaveBeenCalled(); // the live session was never closed
     expect(repairEvents()).toHaveLength(3); // no 4th entry
   });
+
+  // WI-4241: the repair-on-detect handler above was originally scoped to ONLY
+  // `connected_never_replicated`, on the assumption that a session re-attach
+  // "does not address" a `frozen` episode (replicator attached, writer ahead,
+  // zero ingest progress). Code-tracing the WI-4070/WI-183 stall (mergedPosition
+  // stuck at 0 despite a genuine peersCount>0 replicator peer and tens of
+  // thousands of known ops) found the opposite: the hang is a STALE in-memory
+  // replicator-peer object whose block-request channel silently died — exactly
+  // the zombie-session state a re-attach fixes. This mirrors the
+  // `connected_never_replicated` coverage above but drives the INGEST-PROGRESS
+  // axis (`sampleReplicationLiveness`'s `mergedPosition`/`knownLength` params)
+  // instead of the swarm-connection axis.
+  it('drainRepairQueue also engages for a `frozen` episode (replicator attached, ingest stuck) — not just `connected_never_replicated` — capped at 3 attempts per log (WI-4241)', async () => {
+    const workspaceId = 'ws-repair-4241';
+    const harnessSlug = 's-repair-4241';
+    const keyHex = 'ff'.repeat(32);
+
+    const sessions: Array<RemoteLog & { close: ReturnType<typeof vi.fn> }> = [];
+    const openRemoteLogOverride = vi.fn(async (_store: unknown, k: string) => {
+      const fresh = fakeCloseableRemoteLog(k);
+      sessions.push(fresh);
+      return fresh;
+    });
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId,
+      harnessSlug,
+      mergePollMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      openRemoteLogOverride,
+    });
+    cleanups.push(() => handle.close());
+
+    const stale = fakeCloseableRemoteLog(keyHex);
+    handle.admitted.set(keyHex, stale);
+
+    /**
+     * Fires one fresh `frozen` episode for `keyHex` — a replicator IS attached
+     * (peersCount > 0) but ingest is stuck (knownLength > mergedPosition, zero
+     * progress) — via the SAME `sampleReplicationLiveness` the merge pass
+     * itself rides, then drains it through a real merge pass. `graceMs: 0`
+     * makes the alarm fire on the first sample after a (re)seed (same pattern
+     * as `fireEpisodeAndDrain` above).
+     */
+    async function fireFrozenEpisodeAndDrain(): Promise<void> {
+      sampleReplicationLiveness(
+        workspaceId,
+        harnessSlug,
+        { keyHex, knownLength: 1000, mergedPosition: 0, peersCount: 1 },
+        { graceMs: 0 },
+      );
+      await handle.mergeNow();
+    }
+
+    function repairEvents() {
+      return listBootHistory({
+        workspaceId,
+        harnessSlug,
+        kinds: ['replication_repair' as BootHistoryKind],
+      });
+    }
+
+    // ── Attempt 1: closes `stale`, opens session #1, swaps `admitted`, records
+    // the repair event — proving `frozen` now reaches the SAME repair path. ──
+    await fireFrozenEpisodeAndDrain();
+    expect(stale.close).toHaveBeenCalledTimes(1);
+    expect(openRemoteLogOverride).toHaveBeenCalledWith(expect.anything(), keyHex);
+    expect(sessions).toHaveLength(1);
+    expect(handle.admitted.get(keyHex)).toBe(sessions[0]);
+    expect(repairEvents()).toHaveLength(1);
+    expect(repairEvents()[0]!.message).toContain('attempt 1/3');
+
+    // ── Attempts 2 and 3: re-arm the edge-triggered axis via
+    // `dropReplicationLogState`, same as the `connected_never_replicated`
+    // coverage above. ──
+    for (const attempt of [2, 3] as const) {
+      dropReplicationLogState(workspaceId, harnessSlug, keyHex);
+      await fireFrozenEpisodeAndDrain();
+      expect(sessions).toHaveLength(attempt);
+      expect(handle.admitted.get(keyHex)).toBe(sessions[attempt - 1]);
+      expect(sessions[attempt - 2]!.close).toHaveBeenCalledTimes(1);
+      const events = repairEvents();
+      expect(events).toHaveLength(attempt);
+      expect(events[0]!.message).toContain(`attempt ${attempt}/3`); // newest-first
+    }
+
+    // ── Attempt 4 — THE CAP (REPAIR_MAX_ATTEMPTS_PER_LOG is shared across
+    // episode kinds, per log): no close, no re-open, no boot event. ──
+    dropReplicationLogState(workspaceId, harnessSlug, keyHex);
+    await fireFrozenEpisodeAndDrain();
+    expect(sessions).toHaveLength(3); // unchanged
+    expect(openRemoteLogOverride).toHaveBeenCalledTimes(3);
+    expect(handle.admitted.get(keyHex)).toBe(sessions[2]); // unchanged
+    expect(sessions[2]!.close).not.toHaveBeenCalled();
+    expect(repairEvents()).toHaveLength(3); // no 4th entry
+  });
 });
 
 describe('bootHarnessSubstrate — P-006 scoped-log wiring (P-108)', () => {

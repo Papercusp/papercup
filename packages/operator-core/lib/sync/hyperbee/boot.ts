@@ -1630,17 +1630,31 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // stream. Episodes fire INSIDE a merge pass (the sampler rides it), and a
   // re-attach mutates `admitted` — so the handler only ENQUEUES, and
   // `drainRepairQueue()` applies the swap UNDER the merge gate at the top of
-  // the next pass (the admissionQueue / reverifyDropQueue pattern). Scope: only
-  // 'connected_never_replicated' — no_replicator already has the WI-752/WI-1534
-  // swarm self-heal re-peer loop, and 'frozen' is attached-with-blocks-stuck,
-  // which a re-attach does not address. The attempt cap is per process lifetime
-  // (episodes are edge-latched, so a failed repair cannot storm; the cap guards
-  // the recover→re-stall flap case).
+  // the next pass (the admissionQueue / reverifyDropQueue pattern).
+  //
+  // WI-4241: widened to also cover 'frozen' (replicator attached, writer ahead,
+  // zero ingest progress past grace). Originally scoped to ONLY
+  // 'connected_never_replicated' on the assumption that a re-attach "does not
+  // address" the frozen/blocks-stuck case — but code-tracing the WI-4070/WI-183
+  // stall (mergedPosition stuck at 0 despite a genuine peersCount>0 replicator
+  // peer, tens of thousands of known ops, 21h+) found the opposite: the actual
+  // hang is `read-merge.ts`'s per-op `log.get(pos)` never resolving (timing out
+  // every ~1Hz pass, retry-next-pass forever) — a STALE in-memory Hypercore
+  // replicator-peer object whose block-request channel silently died, which is
+  // exactly the zombie-session state a re-attach exists to fix. 'no_replicator'
+  // (peersCount back to 0) still stays OUT of scope — that already has the
+  // WI-752/WI-1534 swarm self-heal re-peer loop, which operates a level below
+  // (re-establishing the swarm connection itself) and a session re-attach can't
+  // help a peer that isn't connected at all. The attempt cap is per process
+  // lifetime (episodes are edge-latched, so a failed repair cannot storm; the
+  // cap guards the recover→re-stall flap case), shared across both kinds per
+  // log so a log flapping between the two classes can't double the budget.
   const repairQueue: string[] = [];
   const repairAttempts = new Map<string, number>();
   const REPAIR_MAX_ATTEMPTS_PER_LOG = 3;
+  const REPAIRABLE_EPISODE_KINDS = new Set(['connected_never_replicated', 'frozen']);
   setReplicationRepairHandler(opts.workspaceId, opts.harnessSlug, (episode) => {
-    if (episode.kind !== 'connected_never_replicated') return;
+    if (!REPAIRABLE_EPISODE_KINDS.has(episode.kind)) return;
     const attempts = repairAttempts.get(episode.logKeyHex) ?? 0;
     if (attempts >= REPAIR_MAX_ATTEMPTS_PER_LOG) return;
     repairAttempts.set(episode.logKeyHex, attempts + 1);
