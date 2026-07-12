@@ -29,6 +29,15 @@ vi.mock('@papercusp/agent-mcp', () => ({
 vi.mock('@papercusp/db-org', () => ({
   getOrgPg: vi.fn(),
 }));
+// EI-10355: the user memory-PAUSE gate. Stubbed to "not paused" here so these
+// tests exercise the write path itself; the gate's own behavior (refuse before
+// journaling, never touch the store) is covered in remember-paused.test.ts.
+// Without this the pause lookup would issue its own getOrgPg().sql read and
+// pollute the anchor-writer tests' exact `sql` call counts.
+vi.mock('../../memory/memory-pause', () => ({
+  isMemoryPaused: vi.fn(async () => false),
+  MEMORY_PAUSED_REFUSAL: { ok: false, reason: 'memory_paused' },
+}));
 
 import remember, { runbookShapeHint } from './remember';
 import { coerceMemoryKind, normalizeMemoryKind } from './remember-coerce';

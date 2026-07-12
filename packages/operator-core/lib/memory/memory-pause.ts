@@ -43,9 +43,20 @@ export function memoryPauseKey(userId: string): string {
 }
 
 /**
- * Is this user's memory paused? Reads the persisted setting live, so a
- * flip on the settings page takes effect on the very next write with no
- * restart (same live-read contract as the backend selection).
+ * Cache the resolved state per user, so the gate does NOT put a PG round-trip
+ * on every single memory write (the write path is hot; a settings lookup per
+ * fact is a silly cost). The TTL bounds how long a flip can go unseen by a
+ * process that already warmed its cache — a pause set in the settings route is
+ * applied to THIS process's cache immediately by setMemoryPaused(), so the TTL
+ * only matters for a *different* operator process, where 10s of staleness is
+ * an acceptable ceiling for a consent flag.
+ */
+const PAUSE_TTL_MS = 10_000;
+const cache = new Map<string, { value: boolean; at: number }>();
+
+/**
+ * Is this user's memory paused? Cached (see above) with a live re-read once the
+ * TTL lapses, so a flip on the settings page takes effect without a restart.
  *
  * Deliberately uses the raw `sql` tag rather than the drizzle `generated`
  * table handle: this module is imported by the memory WRITE path, whose unit
@@ -57,6 +68,8 @@ export function memoryPauseKey(userId: string): string {
  * Fail-open (see module header): any read error ⇒ false (not paused).
  */
 export async function isMemoryPaused(userId: string): Promise<boolean> {
+  const hit = cache.get(userId);
+  if (hit && Date.now() - hit.at < PAUSE_TTL_MS) return hit.value;
   try {
     const { sql } = getOrgPg();
     const rows = await sql`
@@ -64,9 +77,14 @@ export async function isMemoryPaused(userId: string): Promise<boolean> {
       WHERE key = ${memoryPauseKey(userId)}
       LIMIT 1
     `;
-    return rows.length > 0 && rows[0].value === 'true';
+    const value = rows.length > 0 && rows[0].value === 'true';
+    cache.set(userId, { value, at: Date.now() });
+    return value;
   } catch {
-    return false; // PG not up / table absent → memory works by default
+    // PG not up / table absent → memory works by default. Do NOT cache a
+    // failure: the next write should retry rather than latch "unpaused" for
+    // the whole TTL on one transient blip.
+    return false;
   }
 }
 
@@ -77,6 +95,10 @@ export async function isMemoryPaused(userId: string): Promise<boolean> {
 export async function setMemoryPaused(userId: string, paused: boolean): Promise<boolean> {
   const { sql } = getOrgPg();
   const key = memoryPauseKey(userId);
+  // Apply to this process's cache immediately: the settings route and the MCP
+  // write path share a process, so a flip is effective on the very next write
+  // with no TTL wait.
+  cache.set(userId, { value: paused, at: Date.now() });
   await sql`
     INSERT INTO harness_shared.operator_settings (key, value, description, updated_at, workspace_id)
     VALUES (
@@ -97,6 +119,11 @@ export async function setMemoryPaused(userId: string, paused: boolean): Promise<
  * the agent cannot SEE is a privacy control that gets silently worked
  * around, so the reason is legible and tells the agent what to say.
  */
+/** Test hook — drop the in-process cache (does not touch PG). */
+export function __resetMemoryPauseCacheForTest(): void {
+  cache.clear();
+}
+
 export const MEMORY_PAUSED_REFUSAL = {
   ok: false as const,
   stored: false as const,
