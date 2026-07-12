@@ -98,6 +98,21 @@ test('canonicalDatatypeKey — KNOWN MISS, documented: irregular plurals do NOT 
   assert.notEqual(canonicalDatatypeKey('bet-thesis'), canonicalDatatypeKey('bet-theses'));
 });
 
+test('canonicalDatatypeKey — IDEMPOTENT: canonical(canonical(x)) === canonical(x)', () => {
+  // The invariant the gate rests on. Without it, a singular that merely ENDS in 's'
+  // ('status') takes the bare-s rule while its plural takes the '-es' rule, they land on
+  // different keys, and the duplicate walks through. Caught by the test above before it
+  // shipped — which is the whole argument for writing the guard instead of the comment.
+  for (const name of [
+    'order', 'orders', 'status', 'statuses', 'bias', 'biases', 'loss', 'losses',
+    'bet', 'wager', 'forecast', 'cash-balance', 'cash-balances', 'calibration-record',
+    'gas', 'box', 'boxes', 'entry', 'entries', 'Bet Thesis', 'Order #1 // fill',
+  ]) {
+    const once = canonicalDatatypeKey(name);
+    assert.equal(canonicalDatatypeKey(once), once, `not idempotent for "${name}"`);
+  }
+});
+
 test('canonicalDatatypeKey — total: empty / punctuation-only / mixed input never throws', () => {
   assert.equal(canonicalDatatypeKey(''), '');
   assert.equal(canonicalDatatypeKey('---'), '');
