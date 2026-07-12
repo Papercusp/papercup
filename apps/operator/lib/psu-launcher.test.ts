@@ -328,7 +328,7 @@ describe('resumeKickoffText (P-011: the first turn of a scripted resume/fork)', 
   });
 });
 
-describe('parkRoleScopedMcpJson (P-002 SU-omp role-MCP leak guard)', () => {
+describe('parkRoleScopedMcpJson (P-002 / EI-10388 SU co-located-.mcp.json leak guard)', () => {
   let dir: string;
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'psu-park-')); });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -342,10 +342,19 @@ describe('parkRoleScopedMcpJson (P-002 SU-omp role-MCP leak guard)', () => {
     expect(existsSync(parked())).toBe(true);
   });
 
-  it('leaves a superuser (non-role) .mcp.json untouched', () => {
+  // EI-10388 (2026-07-12): a superuser-scoped co-located .mcp.json is now ALSO parked, not
+  // exempted. The prior exemption assumed a superuser=1 project file always IS the current
+  // papercusp-su server — false for a stale one under a DIFFERENT server name ("papercusp",
+  // not "papercusp-su") with no `tools=` seed: OMP discovered it ALONGSIDE the correctly
+  // seeded per-session "papercusp-su" server and merged both catalogs (~39 seeded + ~740
+  // unfiltered = ~778 tools, hard 400 on a small-context local model). An SU launch never
+  // needs a co-located .mcp.json at all (user-level / per-session config covers it), so any
+  // shape is parked unconditionally.
+  it('parks a superuser-scoped .mcp.json too (EI-10388 — a stale "papercusp" server merges its full catalog onto the seeded "papercusp-su" one)', () => {
     writeFileSync(mcp(), JSON.stringify({ mcpServers: { 'papercusp-su': { type: 'http', url: 'http://localhost:3070/api/mcp?superuser=1&client=x' } } }));
-    expect(parkRoleScopedMcpJson(dir)).toBe(null);
-    expect(existsSync(mcp())).toBe(true);
+    expect(parkRoleScopedMcpJson(dir)).toBe(parked());
+    expect(existsSync(mcp())).toBe(false);
+    expect(existsSync(parked())).toBe(true);
   });
 
   it('no-op when there is no .mcp.json', () => {
@@ -359,10 +368,13 @@ describe('parkRoleScopedMcpJson (P-002 SU-omp role-MCP leak guard)', () => {
     expect(existsSync(mcp())).toBe(false);
   });
 
-  it('leaves an unparseable .mcp.json untouched (never throws)', () => {
+  // EI-10388: classification by content is gone — ANY existing .mcp.json is parked
+  // unconditionally, including one we can't even parse (it was never safely usable anyway).
+  it('parks an unparseable .mcp.json too (never throws)', () => {
     writeFileSync(mcp(), 'not json{');
-    expect(parkRoleScopedMcpJson(dir)).toBe(null);
-    expect(existsSync(mcp())).toBe(true);
+    expect(parkRoleScopedMcpJson(dir)).toBe(parked());
+    expect(existsSync(mcp())).toBe(false);
+    expect(existsSync(parked())).toBe(true);
   });
 });
 

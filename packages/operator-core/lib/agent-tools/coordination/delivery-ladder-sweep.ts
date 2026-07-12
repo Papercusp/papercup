@@ -112,13 +112,26 @@ export interface LadderCandidateRow {
   newest_ts_ms: string | number;
   newest_from: string | null;
   newest_summary: string | null;
+  /** EI-10551: the per-message timestamps behind `cnt`/`oldest_ts_ms` (newest-first,
+   *  capped). The aggregates above are computed BEFORE the read-watermark is known, so
+   *  they describe the whole window — read mail included. The classifier needs the
+   *  individual stamps to report what is ACTUALLY unread. Optional: a row without it
+   *  (an older shape, or a test's stub fetchCandidates) degrades to the pre-EI-10551
+   *  newest-vs-lastRead gate rather than failing. */
+  recent_ts_ms?: readonly (string | number)[] | null;
 }
 
 export interface LadderEscalation {
   workspaceId: string;
   recipient: string;
-  /** Directed candidate messages in the window (>=1 of them unread). */
+  /** EI-10551: messages that landed AFTER the recipient's last inbox read — i.e. the
+   *  mail they genuinely have not seen. This used to be the raw window count (read mail
+   *  included), while the escalation text rendered it as "N message(s) ... you have not
+   *  read" — so a leader who had read 17 of 19 was told all 19 were unread, oldest 88m,
+   *  when the truth was 2, oldest 9m. The alarm was right to fire and wrong about why,
+   *  which is the fastest way to teach a fleet to ignore it. */
   candidateCount: number;
+  /** Age of the oldest UNREAD message (not the oldest message in the window). */
   oldestAgeMs: number;
   newestFrom?: string;
   newestSummary?: string;
@@ -155,12 +168,31 @@ export function classifyLadderEscalations(input: {
     // everything is unread ⇒ escalate (the wake is exactly what makes a live
     // non-reading session finally read).
     if (Number.isFinite(lastReadMs) && lastReadMs >= newestMs) continue;
+
+    // EI-10551: we now KNOW there is unread mail — but not yet how much. `cnt` and
+    // `oldest_ts_ms` are window-wide (computed before lastRead was known), so reporting
+    // them verbatim tells a recipient who read 17 of 19 that all 19 are unread. Narrow to
+    // the stamps that actually post-date their last read; the escalation text ("N messages
+    // you have not read, oldest ~Xm") is only true of THIS set.
+    const stamps = (r.recent_ts_ms ?? [])
+      .map((t) => Number(t))
+      .filter((t) => Number.isFinite(t));
+    const unread = Number.isFinite(lastReadMs) ? stamps.filter((t) => t > lastReadMs) : stamps;
+
+    // Degrade, don't lie: with no per-message stamps (older row shape / stubbed IO) fall
+    // back to the window aggregates — the same numbers as before this fix, never worse.
     const cnt = Number(r.cnt);
+    const fallbackCount = Number.isFinite(cnt) && cnt > 0 ? cnt : 1;
+    const unreadCount = unread.length > 0 ? unread.length : fallbackCount;
+    const oldestUnreadMs = unread.length > 0 ? Math.min(...unread) : oldestMs;
+
     out.push({
       workspaceId: r.workspace_id,
       recipient: r.recipient,
-      candidateCount: Number.isFinite(cnt) && cnt > 0 ? cnt : 1,
-      oldestAgeMs: Number.isFinite(oldestMs) ? Math.max(0, input.nowMs - oldestMs) : 0,
+      candidateCount: unreadCount,
+      oldestAgeMs: Number.isFinite(oldestUnreadMs)
+        ? Math.max(0, input.nowMs - oldestUnreadMs)
+        : 0,
       ...(r.newest_from ? { newestFrom: r.newest_from } : {}),
       ...(r.newest_summary ? { newestSummary: r.newest_summary } : {}),
     });
@@ -209,7 +241,13 @@ async function findLadderCandidates(
            min(ts_ms) AS oldest_ts_ms,
            max(ts_ms) AS newest_ts_ms,
            (array_agg(from_id ORDER BY ts_ms DESC))[1] AS newest_from,
-           (array_agg(summary ORDER BY ts_ms DESC))[1] AS newest_summary
+           (array_agg(summary ORDER BY ts_ms DESC))[1] AS newest_summary,
+           -- EI-10551: the individual stamps, newest-first, so the classifier can report
+           -- what is ACTUALLY unread instead of the whole window. Capped at 500: the
+           -- recipient's UNREAD tail is what we filter to, and 500 unread directed
+           -- messages is already far past "deaf" — truncating the ancient (already-read)
+           -- head costs nothing. Newest-first ordering is what makes that cap safe.
+           (array_agg(ts_ms ORDER BY ts_ms DESC))[1:500] AS recent_ts_ms
       FROM directed
      GROUP BY workspace_id, recipient
   `;
