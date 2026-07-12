@@ -19,8 +19,9 @@
  * accent left stripe + bottom divider so it reads as its own region above the
  * tabs. It does NOT position itself — LeftSidebar places it (and already handles
  * collapse + chromeless routes). Persona label comes from the lexicon —
- * "Sentinel" in the-hive pack, "Operator" in classic — never a hardcoded
- * "Papercup".
+ * "Papercup" in classic (owner final cast 2026-07-04; voice-release D-001: ONE
+ * user-facing identity), "Sentinel" in the internal the-hive skin — always
+ * lexicon-resolved, never hardcoded.
  */
 import { PanelLeftClose, Volume2, VolumeX } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -50,7 +51,7 @@ const EMPTY_SESSION: OperatorVoiceSessionUiState = {
 
 export default function PapercupVoiceBar({ onCollapse }: { onCollapse?: () => void }) {
   const t = useLexicon();
-  const persona = t('operator'); // "Sentinel" (the-hive) | "Operator" (classic)
+  const persona = t('operator'); // "Papercup" (classic) | "Sentinel" (the-hive)
   // Voice-OUTPUT (TTS) mute — the speaker toggle beside the mic (owner ask
   // 2026-06-23). Hydrate from the persisted flag; re-sync on changes from
   // other tabs / the settings page (the broadcast event).

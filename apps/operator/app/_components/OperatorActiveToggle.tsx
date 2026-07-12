@@ -163,9 +163,10 @@ export function OperatorActiveToggle() {
   const [silenced, setSilenced] = useOperatorSilenced();
   const sleepUntil = useOperatorSleepUntil();
   const sub = useOperatorSub();
-  // Persona name from the active brand pack — "Sentinel" in the-hive, "Operator"
-  // in classic. Never the hardcoded "Papercup" (owner rebrand 2026-06-22, scoped
-  // to the lexicon pack). Reactive via useLexicon → flag-hooks useFlag.
+  // Persona name from the active brand pack — "Papercup" in classic (owner final
+  // cast 2026-07-04, restore-pot-lexicon D-006; voice-release D-001: ONE
+  // user-facing identity), "Sentinel" in the internal the-hive skin. Always
+  // resolved via the lexicon, never hardcoded. Reactive via useLexicon → useFlag.
   const t = useLexicon();
   const persona = t('operator');
   // OFF is the 3rd toggle state (owner 2026-06-22): replaces the separate

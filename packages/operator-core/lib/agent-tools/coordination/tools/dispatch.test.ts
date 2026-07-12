@@ -5,7 +5,8 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { composeDispatch, type DispatchArgs } from './dispatch';
-import type { HydratedRef } from '../ref-hydrate';
+import type { HydratableRef, HydratedRef } from '../ref-hydrate';
+import type { RefResolvers } from '../ref-hydrate-resolve';
 
 // WI-4165 item-body hydration touches the real PG-backed plan store
 // (getPlanRow) when no `deps.hydrateRefs` override is injected. Mock it at
@@ -204,16 +205,18 @@ describe('composeDispatch', () => {
         'plan_items:assign': { ok: true, results: [{ ok: true }, { ok: true }] },
         'coord:send': sendEnv('su-7a2aFULL', { mode: 'required', targets: ['su-7a2aFULL'], woken: 1 }),
       });
-      const hydrateRefs = vi.fn(async () => [
-        hydratedRef('P-001', 'Wire the DHT bootstrap fixture.'),
-        hydratedRef('P-002', 'Verify the cold-join path.'),
-      ]);
+      const hydrateRefs = vi.fn(
+        async (_refs: HydratableRef[], _opts?: { resolvers?: RefResolvers }): Promise<HydratedRef[]> => [
+          hydratedRef('P-001', 'Wire the DHT bootstrap fixture.'),
+          hydratedRef('P-002', 'Verify the cold-join path.'),
+        ],
+      );
       const res = await composeDispatch(baseArgs, call, { hydrateRefs });
 
       // the resolver was scoped by the module's own budget/consumer contract —
       // one ref per assigned item, in order, no harness override (baseArgs has none)
       expect(hydrateRefs).toHaveBeenCalledTimes(1);
-      const [refsArg] = hydrateRefs.mock.calls[0] as [unknown];
+      const [refsArg] = hydrateRefs.mock.calls[0];
       expect(refsArg).toEqual([
         { kind: 'plan-item', slug: baseArgs.planSlug, item: 'P-001' },
         { kind: 'plan-item', slug: baseArgs.planSlug, item: 'P-002' },

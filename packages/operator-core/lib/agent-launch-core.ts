@@ -189,27 +189,146 @@ export function buildAgentLaunchCommand(opts: {
   sessionId?: string | null;
   agent?: string | null;
   plan?: string | null;
+  harness?: string | null;
   account?: string | null;
+  model?: string | null;
+  workspace?: string | null;
+  headless?: boolean;
   extraArgs?: string[] | null;
+  platform?: NodeJS.Platform;
 }): string {
-  const parts = ['psu', '--no-picker', `--account=${opts.account?.trim() || 'default'}`];
+  // Every value below lands inside a terminal greeting one-liner, so it is
+  // VALIDATED rather than quoted: an identity-shaped value needs no quoting, and
+  // anything else is a bug (or an injection) we want to hear about loudly.
+  const safe = (label: string, v: string): string => {
+    if (!/^[A-Za-z0-9._:=@/,+-]+$/.test(v)) {
+      throw new Error(`buildAgentLaunchCommand: refusing ${label} with shell metacharacters: ${JSON.stringify(v)}`);
+    }
+    return v;
+  };
+  const parts = [
+    'psu',
+    '--no-picker',
+    // P-012: never leave the account to an interactive picker in a scripted launch.
+    // On darwin an un-pinned member cannot reach the default login (Keychain is keyed
+    // per config-dir), so it routes through the gateway — same rule fleet members use.
+    `--account=${safe('account', opts.account?.trim() || defaultLaunchAccount(opts.platform))}`,
+  ];
   if (opts.mode === 'resume' || opts.mode === 'fork') {
     if (!opts.sessionId) throw new Error(`buildAgentLaunchCommand: mode ${opts.mode} requires sessionId`);
-    parts.push(`--resume=${opts.sessionId}`);
+    parts.push(`--resume=${safe('sessionId', opts.sessionId)}`);
     if (opts.mode === 'fork') parts.push('--fork');
   } else {
-    if (opts.agent) parts.push(`--agent=${opts.agent}`);
-    if (opts.plan) parts.push(`--plan=${opts.plan}`);
+    if (opts.agent) parts.push(`--agent=${safe('agent', opts.agent)}`);
+    if (opts.harness) parts.push(`--harness=${safe('harness', opts.harness)}`);
+    if (opts.plan) parts.push(`--plan=${safe('plan', opts.plan)}`);
   }
-  for (const a of opts.extraArgs ?? []) {
-    // Verbatim passthrough, but never allow shell metacharacters into the
-    // command string — these args land inside a terminal greeting one-liner.
-    if (!/^[A-Za-z0-9._:=@/,+-]+$/.test(a)) {
-      throw new Error(`buildAgentLaunchCommand: refusing extraArg with shell metacharacters: ${JSON.stringify(a)}`);
-    }
-    parts.push(a);
-  }
+  // --headless keeps the managed-pty host ON despite non-TTY stdio, so the session
+  // stays injectable (wakes AND the resume kickoff both ride that pty). Without it a
+  // windowless member parks forever after one turn.
+  if (opts.headless) parts.push('--headless');
+  if (opts.model) parts.push(`--model=${safe('model', opts.model)}`);
+  if (opts.workspace) parts.push(`--workspace=${safe('workspace', opts.workspace)}`);
+  for (const a of opts.extraArgs ?? []) parts.push(safe('extraArg', a));
   return parts.join(' ');
+}
+
+/**
+ * The account a scripted launch pins when the caller names none. darwin defaults to
+ * `auto` (the gateway owns the Keychain bundle; a fresh per-session config dir can
+ * never find the default `~/.claude` login there, so an un-pinned agent boots LOGGED
+ * OUT) — the same rule fleet members already use (defaultMemberAccountRouting).
+ */
+export function defaultLaunchAccount(platform: NodeJS.Platform = process.platform): string {
+  return platform === 'darwin' ? 'auto' : 'default';
+}
+
+/** The window a launch claim stays authoritative for. Old claims are pruned on
+ *  each call — the ledger answers "did THIS call already land", not "has anyone
+ *  ever used this key", so a week is generous for a retry. */
+const LAUNCH_CLAIM_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+export interface AgentLaunchClaim {
+  /** false ⇒ a prior call already launched under this key; do NOT launch again. */
+  won: boolean;
+  /** What that prior call reported (empty for a fresh claim). */
+  priorSummary: Record<string, unknown> | null;
+  priorLaunchedAt: number | null;
+  priorLaunchedBy: string | null;
+}
+
+/**
+ * Idempotency guard for agent launches (P-014, migration 586). A launch opens
+ * REAL windows/processes, so a re-fired tool call (a client retry after a
+ * timeout, a loop that fires twice) must not open a SECOND set — the 2026-07-03
+ * "12 windows" incident class. The first caller for a key wins the row; a replay
+ * loses the INSERT race and gets the original's summary back.
+ *
+ * No key ⇒ no guard (won: true) — the caller opted out, exactly like cup:spawn.
+ */
+export async function claimAgentLaunch(opts: {
+  workspaceId: string;
+  idempotencyKey: string | null | undefined;
+  launchedBy?: string | null;
+  now?: number;
+}): Promise<AgentLaunchClaim> {
+  const key = opts.idempotencyKey?.trim();
+  if (!key) return { won: true, priorSummary: null, priorLaunchedAt: null, priorLaunchedBy: null };
+  const now = opts.now ?? Date.now();
+  const { sql } = getOrgPg();
+  try {
+    await sql`
+      DELETE FROM harness_shared.agent_launch_idempotency
+       WHERE launched_at < ${now - LAUNCH_CLAIM_TTL_MS}
+    `;
+    const won = await sql<Array<{ idempotency_key: string }>>`
+      INSERT INTO harness_shared.agent_launch_idempotency
+        (workspace_id, idempotency_key, launched_at, launched_by, summary)
+      VALUES (${opts.workspaceId}, ${key}, ${now}, ${opts.launchedBy ?? null}, '{}'::jsonb)
+      ON CONFLICT (workspace_id, idempotency_key) DO NOTHING
+      RETURNING idempotency_key
+    `;
+    if (won.length) return { won: true, priorSummary: null, priorLaunchedAt: null, priorLaunchedBy: null };
+    const [prior] = await sql<
+      Array<{ summary: Record<string, unknown>; launched_at: number; launched_by: string | null }>
+    >`
+      SELECT summary, launched_at, launched_by
+        FROM harness_shared.agent_launch_idempotency
+       WHERE workspace_id = ${opts.workspaceId} AND idempotency_key = ${key}
+    `;
+    return {
+      won: false,
+      priorSummary: prior?.summary ?? null,
+      priorLaunchedAt: prior?.launched_at != null ? Number(prior.launched_at) : null,
+      priorLaunchedBy: prior?.launched_by ?? null,
+    };
+  } catch (e) {
+    // The guard is a safety net, not a gate: a ledger outage must not block a
+    // launch the caller actually wants. Warn loudly and proceed unguarded.
+    console.warn(`[agent-launch] idempotency claim failed (launching unguarded): ${(e as Error)?.message ?? e}`);
+    return { won: true, priorSummary: null, priorLaunchedAt: null, priorLaunchedBy: null };
+  }
+}
+
+/** Record what the winning launch actually did, so a later replay of the same key
+ *  can report it instead of a bare "already launched". Best-effort. */
+export async function recordAgentLaunchResult(opts: {
+  workspaceId: string;
+  idempotencyKey: string | null | undefined;
+  summary: Record<string, unknown>;
+}): Promise<void> {
+  const key = opts.idempotencyKey?.trim();
+  if (!key) return;
+  try {
+    const { sql } = getOrgPg();
+    await sql`
+      UPDATE harness_shared.agent_launch_idempotency
+         SET summary = ${JSON.stringify(opts.summary)}::jsonb
+       WHERE workspace_id = ${opts.workspaceId} AND idempotency_key = ${key}
+    `;
+  } catch (e) {
+    console.warn(`[agent-launch] idempotency result write failed: ${(e as Error)?.message ?? e}`);
+  }
 }
 
 /**

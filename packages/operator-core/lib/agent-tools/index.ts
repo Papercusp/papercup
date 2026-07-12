@@ -460,6 +460,11 @@ import './capability/bash_kill';
 // envelope + console-spawn primitive; runs OUTSIDE bwrap (the visible terminal
 // is the point) — same tier/role gating as bash, recorded as a plan decision.
 import './capability/terminal';
+// THE agent-launch primitive (agent-launch-resume-primitives-2026-07-12): launch
+// agents ad-hoc on a brief, RESUME a dead one mid-thread, or FORK a live one —
+// visible or headless, fleeted or not. Shares one core with capability:terminal
+// and fleet:launch-on-plan (agent-launch-core.ts), so there is no forked spawn path.
+import './capability/launch-agent';
 import './capability/read';
 import './capability/write';
 import './capability/edit';

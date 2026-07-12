@@ -56,7 +56,7 @@ function flagBlurbs(t: BoundLexicon): Partial<Record<FlagKey, string>> {
     [FLAGS.VOICE_CHANNELS]:
       `Desktop P2P voice channel (holepunch) for shared ${t('pot', { plural: true, lower: true })}. Off until the live Tauri+mic pass.`,
     [FLAGS.THE_HIVE]:
-      'Bee-themed user-facing lexicon (Pot→Hive, Fleet→Colony, Operator→Sentinel Bee, Queen=brain, Humans=Keepers; Swarm = a deployment). Presentation only — code/DB/tools unchanged. Off = classic Papercusp.',
+      'Bee-themed user-facing lexicon, internal/testing skin (Pot→Hive, Fleet→Colony, Papercup→Sentinel, Mug→Queen, Cup→Bee, Humans→Keepers; Swarm = a deployment). Presentation only — code/DB/tools unchanged. Off = classic Papercusp (the public one-identity lexicon, voice-release D-001).',
     [FLAGS.OPEN_SIGNUP]:
       'Allow new account signup after the first user exists. Off (default): the internet-facing /auth/signup only bootstraps the first account — security gate, deliberate default-OFF.',
     [FLAGS.ENDPOINT_AUTH_TIERS]:
