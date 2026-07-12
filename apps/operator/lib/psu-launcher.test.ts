@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, existsSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, existsSync, symlinkSync, lstatSync, realpathSync, readlinkSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -26,6 +26,8 @@ import {
   resumeEnvFor,
   resumeAccountPlan,
   buildResumeEnv,
+  rehealResumeCredentials,
+  claudeCredExpiresAt,
   gatewayPinEnv,
   gatewayAutoEnv,
   accountRoutingMode,
@@ -3564,5 +3566,88 @@ describe('setupReminderLines — pre-TUI "setup unfinished" nudge (owner batch #
       // States the WHY (locked functionality) so the nudge is actionable, not noise.
       expect(text.toLowerCase(), stage).toContain('locked');
     }
+  });
+});
+
+// psu-resume-relogin (owner-reported 2026-07-12): a default-account `psu --resume`
+// re-heals the isolated CLAUDE_CONFIG_DIR's .credentials.json to the global CLI
+// login before spawn — the fresh-launch mirror invariant that a raw resume skipped,
+// which made a resumed session "launch logged out" once its in-session OAuth refresh
+// forked the symlink into a stale real file.
+describe('rehealResumeCredentials (psu-resume-relogin)', () => {
+  let home: string;
+  const CREDS = (exp: number) => JSON.stringify({ claudeAiOauth: { accessToken: 'a', refreshToken: 'r', expiresAt: exp } });
+  const globalOf = () => join(home, '.claude', '.credentials.json');
+  const sessCredOf = (dir: string) => join(dir, '.credentials.json');
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'reheal-home-'));
+    mkdirSync(join(home, '.claude'), { recursive: true });
+  });
+  afterEach(() => rmSync(home, { recursive: true, force: true }));
+
+  /** A fresh isolated session dir under `home` (so afterEach cleans it). */
+  function makeSessionDir(): string {
+    return mkdtempSync(join(home, 'sess-'));
+  }
+
+  it('re-points a stale real-file fork at the newer global via symlink', () => {
+    writeFileSync(globalOf(), CREDS(2000)); // reconciler keeps the global newest
+    const dir = makeSessionDir();
+    writeFileSync(sessCredOf(dir), CREDS(1000)); // stale in-session fork
+    rehealResumeCredentials(dir, { home });
+    expect(lstatSync(sessCredOf(dir)).isSymbolicLink()).toBe(true);
+    expect(realpathSync(sessCredOf(dir))).toBe(realpathSync(globalOf()));
+    expect(claudeCredExpiresAt(sessCredOf(dir))).toBe(2000); // resolves to the live token
+  });
+
+  it('leaves a healthy symlink-to-global untouched (idempotent)', () => {
+    writeFileSync(globalOf(), CREDS(2000));
+    const dir = makeSessionDir();
+    symlinkSync(globalOf(), sessCredOf(dir));
+    const before = readlinkSync(sessCredOf(dir));
+    rehealResumeCredentials(dir, { home });
+    expect(lstatSync(sessCredOf(dir)).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(sessCredOf(dir))).toBe(before);
+  });
+
+  it('re-points a dangling symlink at the global', () => {
+    writeFileSync(globalOf(), CREDS(2000));
+    const dir = makeSessionDir();
+    symlinkSync(join(home, '.claude', 'gone.json'), sessCredOf(dir)); // dangling
+    rehealResumeCredentials(dir, { home });
+    expect(realpathSync(sessCredOf(dir))).toBe(realpathSync(globalOf()));
+  });
+
+  it('creates the symlink when the session dir has no credential file', () => {
+    writeFileSync(globalOf(), CREDS(2000));
+    const dir = makeSessionDir();
+    rehealResumeCredentials(dir, { home });
+    expect(realpathSync(sessCredOf(dir))).toBe(realpathSync(globalOf()));
+  });
+
+  it('promotes a strictly-newer session fork to the global, then symlinks (newest-wins)', () => {
+    writeFileSync(globalOf(), CREDS(1000)); // global stale (reconciler lagged)
+    const dir = makeSessionDir();
+    writeFileSync(sessCredOf(dir), CREDS(3000)); // session refreshed most recently
+    rehealResumeCredentials(dir, { home });
+    expect(claudeCredExpiresAt(globalOf())).toBe(3000); // promoted so global stays canonical
+    expect(realpathSync(sessCredOf(dir))).toBe(realpathSync(globalOf()));
+    expect(claudeCredExpiresAt(sessCredOf(dir))).toBe(3000);
+  });
+
+  it('is a no-op (no throw) when there is no global credential file (API-key box)', () => {
+    const dir = makeSessionDir();
+    writeFileSync(sessCredOf(dir), CREDS(1000)); // no global written
+    expect(() => rehealResumeCredentials(dir, { home })).not.toThrow();
+    expect(lstatSync(sessCredOf(dir)).isSymbolicLink()).toBe(false); // left as-is, nothing to mirror
+  });
+
+  it('claudeCredExpiresAt reads expiresAt and returns -1 on unreadable/missing', () => {
+    const dir = makeSessionDir();
+    const p = sessCredOf(dir);
+    writeFileSync(p, CREDS(4242));
+    expect(claudeCredExpiresAt(p)).toBe(4242);
+    expect(claudeCredExpiresAt(join(dir, 'nope.json'))).toBe(-1);
   });
 });

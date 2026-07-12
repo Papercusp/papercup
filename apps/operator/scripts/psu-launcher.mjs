@@ -20,7 +20,7 @@
  * Scripting:     psu --no-picker --agent=<claude|omp|codex> --harness=<slug> [--plan=<slug>|--no-plan]
  */
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, writeFileSync, chmodSync, rmSync, renameSync, realpathSync, statSync, readlinkSync, openSync, readSync, closeSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, writeFileSync, chmodSync, rmSync, renameSync, realpathSync, statSync, lstatSync, readlinkSync, symlinkSync, copyFileSync, openSync, readSync, closeSync } from 'node:fs';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { homedir, hostname } from 'node:os';
 import { join, dirname, delimiter } from 'node:path';
@@ -2011,6 +2011,85 @@ export function applyDefaultClaudeOAuthToken(wrapperBin, env, { home = homedir()
 }
 
 /**
+ * The OAuth-bundle expiry (epoch ms) recorded in a claude `.credentials.json`,
+ * or -1 when absent/unreadable. Mirrors reconcileClaudeCredentials's
+ * newest-expiresAt-wins key. Pure; exported for tests.
+ */
+export function claudeCredExpiresAt(path) {
+  try {
+    const j = JSON.parse(readFileSync(path, 'utf8'));
+    const o = j.claudeAiOauth ?? j;
+    return Number(o.expiresAt ?? o.expires_at) || 0;
+  } catch {
+    return -1;
+  }
+}
+
+/**
+ * Re-heal a resumed session's isolated `.credentials.json` (psu-resume-relogin,
+ * owner-reported 2026-07-12).
+ *
+ * A FRESH launch runs bootstrap-su → `writeInteractiveClaudeConfig`, which
+ * reconciles credentials to the newest bundle (`reconcileClaudeCredentials`) and
+ * then symlinks `<configDir>/.credentials.json` → the global
+ * `~/.claude/.credentials.json`. A RAW `psu --resume` (`launchResume`) never did
+ * that leg — it only re-points `CLAUDE_CONFIG_DIR` at the existing isolated dir.
+ * But claude REPLACES `.credentials.json` on every OAuth refresh (temp+rename),
+ * so an in-session refresh swaps the symlink for a divergent real-file fork;
+ * with Anthropic's single-use rotating refresh tokens that fork goes stale, and
+ * the background reconciler (`claude-credential-sync`) may not have converged it
+ * by resume time — so a default-account resume "launches logged out" and
+ * prompts a re-login even though the system account IS logged in. (A fresh
+ * launch re-heals every time, which is why only `--resume` regressed.)
+ *
+ * Re-establish the fresh-mirror invariant right before spawn: keep the global on
+ * the newest bundle (promote a strictly-newer session fork — newest-expiresAt
+ * wins, matching reconcileClaudeCredentials) and re-point the session credential
+ * at it via symlink. Best-effort — a launch must NEVER fail on credential
+ * reconciliation, and a healthy symlink is left byte-identical. Linux/Windows
+ * file path; a gateway-pinned resume skips this (it authenticates via
+ * `ANTHROPIC_BASE_URL`) and macOS inherits via the OAuth-token path
+ * (`applyDefaultClaudeOAuthToken`). `home` injectable for tests.
+ */
+export function rehealResumeCredentials(configDir, { home = homedir() } = {}) {
+  try {
+    if (!configDir) return;
+    const globalPath = join(home, '.claude', '.credentials.json');
+    if (!existsSync(globalPath)) return; // API-key-only / fresh box: nothing to mirror
+    const sessPath = join(configDir, '.credentials.json');
+    // Healthy: already a symlink resolving to the (reconciler-kept-newest)
+    // global — claude will follow it to a live token. Leave byte-identical.
+    try {
+      if (lstatSync(sessPath).isSymbolicLink() && realpathSync(sessPath) === realpathSync(globalPath)) return;
+    } catch {
+      /* missing, or a dangling symlink — fall through and (re)heal */
+    }
+    // A real-file fork strictly NEWER than the global (an in-session refresh the
+    // background reconciler hasn't converged yet): promote it so the canonical
+    // global holds the newest bundle before we mirror.
+    let sessIsSymlink = false;
+    try {
+      sessIsSymlink = lstatSync(sessPath).isSymbolicLink();
+    } catch {
+      /* missing */
+    }
+    if (!sessIsSymlink && existsSync(sessPath) && claudeCredExpiresAt(sessPath) > claudeCredExpiresAt(globalPath)) {
+      try {
+        copyFileSync(sessPath, globalPath);
+      } catch {
+        /* keep the global as-is on failure */
+      }
+    }
+    // Re-point the session credential at the global CLI login, exactly as
+    // writeInteractiveClaudeConfig's fresh mirror does.
+    rmSync(sessPath, { force: true });
+    symlinkSync(globalPath, sessPath);
+  } catch {
+    /* a launch must NEVER fail on credential reconciliation */
+  }
+}
+
+/**
  * Make the GitHub Copilot MCP plugin AUTHENTICATE instead of failing. That plugin (a Claude
  * plugin OMP also discovers via claude-plugin discovery) sends
  * `Authorization: Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}`; when the env var is unset the header is
@@ -3704,7 +3783,16 @@ function launchResume(session, { brain = false, fork = false, passthrough = [], 
   if (session.agent === 'claude') {
     const dir = session.configDir
       || (session.coordOwnerId ? sessionClaudeConfigDir(session.coordOwnerId) : null);
-    if (dir && existsSync(dir)) env.CLAUDE_CONFIG_DIR = dir;
+    if (dir && existsSync(dir)) {
+      env.CLAUDE_CONFIG_DIR = dir;
+      // psu-resume-relogin fix: a fresh launch re-heals this dir's
+      // .credentials.json (writeInteractiveClaudeConfig's reconcile-before-
+      // mirror); a raw resume did not, so an in-session OAuth refresh that
+      // forked the symlink into a now-stale real file made a default-account
+      // resume "launch logged out". Re-point it at the global CLI login before
+      // spawn. Skipped for a gateway-pinned account (auths via ANTHROPIC_BASE_URL).
+      if (!env.ANTHROPIC_BASE_URL) rehealResumeCredentials(dir);
+    }
   }
   // codex resumes from its per-session CODEX_HOME — derived from the session id
   // (that home still holds the session's history; only re-launching the SAME
