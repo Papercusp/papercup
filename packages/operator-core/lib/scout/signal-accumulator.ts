@@ -183,6 +183,7 @@ export async function readLaneCounts(
 ): Promise<LaneCount[]> {
   const harnessScope = `harness:${installSlug}`;
   const wmMs = watermark.getTime();
+  const wmIso = watermark.toISOString();
 
   const [observations, captures, ratingChanges, completions, reverts, deferrals] = await Promise.all([
     sql<CountRow[]>`
@@ -190,46 +191,47 @@ export async function readLaneCounts(
         FROM harness_shared.engineer_issues
        WHERE workspace_id = ${workspaceId}
          AND scope IN ('operator', ${harnessScope})
-         AND created_at > ${watermark}
+         AND created_at > ${wmIso}
          AND payload ? 'observation'`,
     sql<CountRow[]>`
       SELECT count(*)::int AS c, max(created_at) AS hw
         FROM harness_shared.engineer_issues
        WHERE workspace_id = ${workspaceId}
          AND scope IN ('operator', ${harnessScope})
-         AND created_at > ${watermark}
+         AND created_at > ${wmIso}
          AND NOT payload ? 'observation'`,
     // A criterion counts when its rating DIFFERS from that criterion's most
     // recent PRIOR grade for the same rubric (IS DISTINCT FROM: a first-ever
-    // grade has no prior row → NULL → distinct → counts as new signal).
+    // grade has no prior row → NULL → distinct → counts as new signal). ONE
+    // pass with lag() over a bounded prior-context window — a correlated
+    // per-criterion probe re-scanned the table per row and ran minutes on the
+    // live corpus (perf anti-pattern A-family: no N+1 probes in a sweep). A
+    // prior grade OLDER than the context window is unseen, so the first
+    // in-window grade counts as a change — acceptable for a firing signal.
     sql<CountRow[]>`
-      WITH new_obs AS (
+      WITH graded AS (
         SELECT created_at,
                payload->'observation'->>'rubricRef' AS rubric_ref,
                payload->'observation'->'ratings'    AS ratings
           FROM harness_shared.engineer_issues
          WHERE workspace_id = ${workspaceId}
            AND scope IN ('operator', ${harnessScope})
-           AND created_at > ${watermark}
+           AND created_at > ${new Date(wmMs - RATING_PRIOR_CONTEXT_MS).toISOString()}
            AND payload->'observation' ? 'ratings'
          ORDER BY created_at DESC
          LIMIT ${RATING_CHANGE_SCAN_CAP}
       ), expanded AS (
-        SELECT n.created_at, n.rubric_ref, e.key AS criterion, e.value->>'rating' AS rating
-          FROM new_obs n, jsonb_each(n.ratings) e
+        SELECT g.created_at, g.rubric_ref, e.key AS criterion, e.value->>'rating' AS rating
+          FROM graded g, jsonb_each(g.ratings) e
+      ), with_prior AS (
+        SELECT created_at, rating,
+               lag(rating) OVER (PARTITION BY rubric_ref, criterion ORDER BY created_at) AS prior
+          FROM expanded
       )
-      SELECT count(*)::int AS c, max(x.created_at) AS hw
-        FROM expanded x
-       WHERE x.rating IS DISTINCT FROM (
-         SELECT p.payload->'observation'->'ratings'->x.criterion->>'rating'
-           FROM harness_shared.engineer_issues p
-          WHERE p.workspace_id = ${workspaceId}
-            AND p.scope IN ('operator', ${harnessScope})
-            AND p.created_at < x.created_at
-            AND p.payload->'observation'->>'rubricRef' = x.rubric_ref
-            AND p.payload->'observation'->'ratings' ? x.criterion
-          ORDER BY p.created_at DESC
-          LIMIT 1)`,
+      SELECT count(*)::int AS c, max(created_at) AS hw
+        FROM with_prior
+       WHERE created_at > ${wmIso}
+         AND rating IS DISTINCT FROM prior`,
     sql<CountRow[]>`
       SELECT count(*)::int AS c, max(to_timestamp(updated_ts / 1000.0)) AS hw
         FROM harness_shared.work_items
@@ -242,7 +244,7 @@ export async function readLaneCounts(
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND harness_slug = ${installSlug}
-         AND last_released_at > ${watermark}`,
+         AND last_released_at > ${wmIso}`,
     sql<CountRow[]>`
       SELECT count(*)::int AS c, max(to_timestamp(updated_ts / 1000.0)) AS hw
         FROM harness_shared.work_items
@@ -274,7 +276,8 @@ export async function upsertAccumulatorRows(
     await sql`
       INSERT INTO harness_shared.scout_signal_accumulator
         (workspace_id, install_slug, lane, new_count, high_water_at, watermark_at, updated_at)
-      VALUES (${workspaceId}, ${installSlug}, ${c.lane}, ${c.newCount}, ${c.highWaterAt}, ${watermarkAt}, now())
+      VALUES (${workspaceId}, ${installSlug}, ${c.lane}, ${c.newCount},
+              ${c.highWaterAt ? c.highWaterAt.toISOString() : null}, ${watermarkAt.toISOString()}, now())
       ON CONFLICT (workspace_id, install_slug, lane) DO UPDATE
         SET new_count     = EXCLUDED.new_count,
             high_water_at = EXCLUDED.high_water_at,

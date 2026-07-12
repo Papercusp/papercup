@@ -362,6 +362,18 @@ export default defineTool({
     // deeper fix lives in the BACKEND and is an owner design decision (see
     // the GAP-1 FLAG in the agent report); this handler catch does not
     // attempt it.
+    // EI-10048: resolve work-item-class refs in the body to their titles and
+    // fold them into the EMBEDDED text (stored text stays exactly args.content).
+    // Best-effort + bounded (≤MAX_REFS PK lookups, each guarded) — never
+    // load-bearing, mirroring the anchor/dedup posture already on this path; a
+    // failure or a null resolve just leaves the baseline clean-text embedding.
+    const embedText = refExpansionEnabled()
+      ? await expandRefsForEmbed(args.content, async (id) => {
+          const w = await getWorkItem(id);
+          return w?.title ? { id, title: w.title } : null;
+        }).catch(() => undefined)
+      : undefined;
+
     let ids: string[];
     try {
       // B1: bounded so a wedged embedder/store returns `memory_timeout` instead
@@ -376,6 +388,9 @@ export default defineTool({
         kind: args.kind,
         metadata,
         shareable: args.shareable,
+        // EI-10048: enriched embed-text (clean body + resolved ref titles);
+        // omitted when no refs resolved so the backend keeps baseline embedding.
+        ...(embedText ? { embedText } : {}),
         // Store the agent's text VERBATIM (infer:false) — do NOT run mem0's
         // LLM fact-extraction/condense step on the explicit single-fact write
         // path. That step is an unbounded Anthropic (Haiku) call with no
