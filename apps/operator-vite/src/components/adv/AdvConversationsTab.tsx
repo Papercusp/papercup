@@ -1524,7 +1524,7 @@ function FeedItem({
   // nested from/plan filter buttons). The summary cell is the expand trigger;
   // from + plan are independent filter buttons; the rest are spans.
   return (
-    <div className={`pc-advfeed__item${open ? ' is-open' : ''}`}>
+    <div className={`pc-advfeed__item${open ? ' is-open' : ''}${active ? ' is-active' : ''}${detail ? ' pc-advfeed__item--detail' : ''}`}>
       <div className="pc-advfeed__row">
         <span className="pc-advfeed__time" title={row.ts}>
           {clock(row.ts)}
@@ -3857,6 +3857,42 @@ function AdvConvStyles() {
         border-color: color-mix(in oklab, var(--advconv-accent), transparent 58%);
         background: var(--advconv-accent-soft);
       }
+      /* ── Master/detail (WI-4216, owner:Avi 2026-07-12 "make it work just like
+         the curated Conversations pane"). The feed renders inside ConvFrame's
+         list rail (compact clickable rows) + main detail pane (the opened
+         message), instead of a full-width inline-expand stream. ── */
+      .pc-advfeed__item.is-active .pc-advfeed__row {
+        border-color: color-mix(in oklab, var(--advconv-accent), transparent 25%);
+        background: var(--advconv-accent-soft);
+        box-shadow: inset 2px 0 0 0 var(--advconv-accent);
+      }
+      /* In the ~320px list rail, wrap the horizontal 7-col row into a compact
+         stacked card so the summary is readable, not squeezed into a sliver. */
+      .pc-advconv__navlist .pc-advfeed__row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 3px 6px;
+      }
+      .pc-advconv__navlist .pc-advfeed__rel { order: 3; margin-left: auto; }
+      .pc-advconv__navlist .pc-advfeed__route { order: 4; min-width: 0; flex-wrap: wrap; }
+      .pc-advconv__navlist .pc-advfeed__summary {
+        order: 5;
+        flex: 1 1 100%;
+        white-space: normal;
+        text-overflow: clip;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .pc-advconv__navlist .pc-advfeed__planchip { order: 6; }
+      .pc-advconv__navlist .pc-advfeed__replyn { order: 7; }
+      /* Detail-pane instance: full width, always-expanded, non-interactive header. */
+      .pc-advfeed__detailpane { overflow-y: auto; padding: 10px 12px; min-height: 0; }
+      .pc-advfeed__item--detail { background: transparent; }
+      .pc-advfeed__item--detail .pc-advfeed__row { cursor: default; }
+      .pc-advfeed__item--detail .pc-advfeed__summary { white-space: normal; cursor: default; }
       .pc-advfeed__time { font-variant-numeric: tabular-nums; font-size: 10px; color: var(--fg-mute, #7890a8); }
       .pc-advfeed__badge {
         display: inline-flex;

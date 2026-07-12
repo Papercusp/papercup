@@ -38,7 +38,7 @@ vi.setConfig({ testTimeout: 15_000 });
 let routes: { method: string; path: string; handler: (req: Request) => Promise<Response> }[];
 beforeAll(async () => {
   const mod = await import('./bootstrap-su');
-  routes = mod.default as typeof routes;
+  routes = mod.default as unknown as typeof routes;
 }, 30_000);
 
 // `vi.hoisted()` (not a bare top-level `const`) keeps touchHeartbeatMock in
