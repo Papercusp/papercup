@@ -18,8 +18,8 @@ import type { ObservationRatings } from '../../harness/improvements/observation-
 export const SU_AGENT_BEHAVIOR_RUBRIC_ID = 'su-agent-behavior';
 
 /**
- * EI-8814: the rubric's criterion keys DRIFT (v0.2.1 has 21; this list is a snapshot from
- * an earlier version) — the rubric store (rubrics/su-agent-behavior/rubric.json, mirrored
+ * EI-8814: the rubric's criterion keys DRIFT (snapshot refreshed 2026-07-12 to the 22-key
+ * ratified set incl. batched-tool-calls) — the rubric store (rubrics/su-agent-behavior/rubric.json, mirrored
  * into harness_plans) is the SOURCE OF TRUTH. Do NOT add criteria here to "fix" a mismatch;
  * the completeness gate reads the LIVE rubric (capture-core's `deps.loadRubric`), and this
  * const is now ONLY: (a) the FALLBACK used by {@link resolveSuAgentBehaviorCriteriaKeys}
@@ -30,6 +30,7 @@ export const SU_AGENT_BEHAVIOR_RUBRIC_ID = 'su-agent-behavior';
  */
 export const SU_AGENT_BEHAVIOR_CRITERIA = [
   'tool-discipline',
+  'batched-tool-calls',
   'orientation-and-task-reach',
   'papercusp-way-routing',
   'coordination-discipline',

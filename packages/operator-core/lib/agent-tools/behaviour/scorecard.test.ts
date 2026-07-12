@@ -9,7 +9,7 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/behaviour/scorecard.test.ts
  */
-import { test } from 'vitest';
+import { test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import type { BehaviourCheck } from '../../behaviour-suite/assertions';
 import { buildReport } from '../../behaviour-suite/report';
@@ -155,7 +155,20 @@ test('buildBehaviourScorecard threads criteriaKeys through to the emitted rating
   assert.deepEqual(Object.keys(f.ratings).sort(), ['only-this-one', 'tool-discipline']);
 });
 
-test('resolveSuAgentBehaviorCriteriaKeys falls back to the static snapshot when the live rubric read fails (no DB in this unit test)', async () => {
+// The fallback test must FORCE the live-read failure, not assume it. Before 2026-07-12
+// it relied on "(no DB in this unit test)" — but on any DB-reachable box (a dev machine,
+// the green-checkpoint runner) the live read SUCCEEDS, silently turning the assert into
+// "live rubric == static snapshot", which broke the release gate the moment the rubric
+// gained a criterion (batched-tool-calls, rubric v0.3). The mock intercepts the
+// resolver's dynamic `import('../../rubrics')` and throws, so the fallback branch is
+// exercised deterministically in every environment.
+vi.mock('../../rubrics', () => ({
+  getRubric: () => {
+    throw new Error('forced live-read failure (unit test)');
+  },
+}));
+
+test('resolveSuAgentBehaviorCriteriaKeys falls back to the static snapshot when the live rubric read fails (failure FORCED via mock)', async () => {
   const keys = await resolveSuAgentBehaviorCriteriaKeys();
   assert.deepEqual([...keys].sort(), [...SU_AGENT_BEHAVIOR_CRITERIA].sort());
 });
