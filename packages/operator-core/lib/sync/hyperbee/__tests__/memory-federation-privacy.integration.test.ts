@@ -1,0 +1,314 @@
+/**
+ * memory-federation-privacy.integration.test.ts — mem0-cross-machine-federation-2026-07-10
+ * P-007: privacy + federation REAL-PG tests for shareable-flagged memory federation.
+ *
+ * Mirrors two existing patterns:
+ *   - substrate-outbox-trigger.integration.test.ts (real capture-trigger proof against a
+ *     hand-rolled, column-faithful table + the REAL migration DDL applied verbatim).
+ *   - agent-facts/store.integration.test.ts (the SQL paths a pure fakeSql unit test
+ *     deliberately can't exercise — the actual identity index, ON CONFLICT arbiter, and
+ *     the fed_order_key LWW guard).
+ *
+ * `projections/p2p-memories.test.ts` already covers the wire-validator + fakeSql-level H6
+ * source-partitioning/demux properties. This file proves what only a REAL Postgres can:
+ *   1. a default (non-shareable) memory INSERT never reaches the outbox (dark by default),
+ *   2. only shareable=true memories egress (the capture trigger's WHEN clause),
+ *   3. (malformed/invalid rows dropped — see p2p-memories.test.ts's decodeValue coverage),
+ *   4. a foreign/non-admitted pot's memory never lands locally (projection demux, against a
+ *      REAL table — the private-pot leak guard),
+ *   5. the fed_order_key LWW guard actually resolves conflicting writes last-writer-wins
+ *      (a stale, out-of-order replay can never clobber a newer projected row).
+ *
+ * `createFreshPgDb` provisions only `harness_shared` + the fed_order_key fns (EI-9387) — the
+ * capture infra (function + substrate_outbox) and memory_canonical's base shape live in
+ * 000-baseline.sql, which is NOT replayed here. So (mirroring substrate-outbox-trigger's own
+ * approach) this file hand-rolls a column-faithful copy of both, then applies the REAL
+ * federation migrations (562/563/564) verbatim on top.
+ */
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
+import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../../../test/_pg-helpers';
+import { buildMemoriesProjection } from '../projections/p2p-memories';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+// __tests__/ → hyperbee/ → sync/ → lib/ → operator-core/ → packages/ → papercup/
+const SQL_DIR = resolve(HERE, '../../../../../../libs/papercusp/libs/db/sql');
+
+const WS = 'ws_mem_fed';
+const SLUG = 'mem-fed-home';
+
+interface OutboxRow {
+  id: string | number;
+  workspace_id: string;
+  harness_slug: string;
+  table_name: string;
+  op: string;
+  key: string;
+  row: Record<string, unknown> | null;
+  ts: number;
+}
+
+describe('mem0 federation privacy + LWW (real PG, mem0-cross-machine-federation-2026-07-10 P-007)', () => {
+  let db: FreshPgDb;
+
+  beforeAll(async () => {
+    db = await createFreshPgDb('mem-fed-privacy');
+
+    // The capture-trigger infra (baseline-foundational; 000-baseline.sql L10-53 / L2521,
+    // reproduced verbatim — createFreshPgDb only provisions harness_shared + fed_order_key).
+    await db.sql.unsafe(`
+      CREATE TABLE IF NOT EXISTS harness_shared.substrate_outbox (
+        id           BIGSERIAL PRIMARY KEY,
+        workspace_id TEXT   NOT NULL,
+        harness_slug TEXT   NOT NULL,
+        table_name   TEXT   NOT NULL,
+        op           TEXT   NOT NULL CHECK (op IN ('put', 'del')),
+        key          TEXT   NOT NULL,
+        row          JSONB,
+        ts           BIGINT NOT NULL,
+        drained_at   BIGINT
+      );
+
+      CREATE OR REPLACE FUNCTION harness_shared.capture_substrate_outbox() RETURNS trigger
+          LANGUAGE plpgsql
+          AS $$
+          DECLARE
+            v_op      TEXT;
+            v_rec     RECORD;
+            v_origin  TEXT;
+            v_key     TEXT;
+            v_row     JSONB;
+            v_ws      TEXT;
+            v_slug    TEXT;
+            v_keycol  TEXT := TG_ARGV[0];
+          BEGIN
+            IF (TG_OP = 'DELETE') THEN
+              v_op := 'del';
+              v_rec := OLD;
+            ELSE
+              v_op := 'put';
+              v_rec := NEW;
+            END IF;
+
+            v_row := to_jsonb(v_rec);
+            v_origin := v_row ->> 'origin';
+
+            -- Echo-loop guard: skip remote-origin writes (the projection's own writes).
+            IF COALESCE(v_origin, 'local') <> 'local' THEN
+              RETURN v_rec;
+            END IF;
+
+            v_key  := v_row ->> v_keycol;
+            v_ws   := COALESCE(v_row ->> 'workspace_id', '');
+            v_slug := v_row ->> 'harness_slug';
+
+            INSERT INTO harness_shared.substrate_outbox
+              (workspace_id, harness_slug, table_name, op, key, row, ts)
+            VALUES
+              (v_ws, v_slug, TG_TABLE_NAME, v_op, v_key, v_row,
+               (extract(epoch from now()) * 1000)::bigint);
+
+            PERFORM pg_notify('substrate_outbox', v_ws || '::' || v_slug);
+
+            RETURN v_rec;
+          END;
+          $$;
+    `);
+
+    // Column-faithful memory_canonical: 000-baseline.sql L1603 base shape PLUS
+    // mig-398's real GENERATED-STORED workspace_id/user_id (production carries
+    // these as generated columns since 398 — reproduced verbatim here, not
+    // simplified to plain columns, specifically so a projection write path that
+    // tries to INSERT an explicit value into a GENERATED column fails here
+    // exactly as it would against the real schema).
+    await db.sql.unsafe(`
+      CREATE TABLE IF NOT EXISTS harness_shared.memory_canonical (
+        id uuid DEFAULT gen_random_uuid() NOT NULL PRIMARY KEY,
+        payload jsonb DEFAULT '{}'::jsonb NOT NULL,
+        created_at timestamptz DEFAULT now() NOT NULL,
+        updated_at timestamptz DEFAULT now() NOT NULL,
+        state text DEFAULT 'active' NOT NULL,
+        user_id text GENERATED ALWAYS AS (payload->>'user_id') STORED,
+        workspace_id text GENERATED ALWAYS AS (payload->>'workspace_id') STORED
+      );
+    `);
+
+    // Apply the REAL federation migrations verbatim.
+    for (const m of [
+      '562-memory-shareable-federation.sql',
+      '563-memory-federation-capture-triggers.sql',
+      '564-memory-federation-columns.sql',
+    ]) {
+      await applyMigrationForTest(db.sql, resolve(SQL_DIR, m));
+    }
+  }, 60_000);
+
+  afterAll(async () => {
+    await db?.cleanup();
+  });
+
+  afterEach(async () => {
+    await db.sql.unsafe('TRUNCATE harness_shared.memory_canonical, harness_shared.substrate_outbox');
+  });
+
+  const outboxFor = (id: string) =>
+    db.sql<
+      OutboxRow[]
+    >`SELECT * FROM harness_shared.substrate_outbox WHERE key = ${id} ORDER BY id ASC`;
+
+  // `harnessSlug` is a PHYSICAL column (mig 564 ADDs it plain, unlike workspace_id/
+  // user_id which mig 398 made GENERATED from payload) — a real local write (e.g.
+  // memory:remember) sets both the payload key AND this column, so the capture
+  // trigger's `to_jsonb(NEW)` sees it.
+  const insertMemory = (id: string, payload: Record<string, unknown>, harnessSlug: string | null = null) =>
+    db.sql`INSERT INTO harness_shared.memory_canonical (id, payload, harness_slug)
+      VALUES (${id}::uuid, ${JSON.stringify(payload)}::jsonb, ${harnessSlug})`;
+
+  // ── (1) + (2): capture-trigger privacy gate — dark by default ─────────────
+  describe('capture trigger: only shareable=true memories reach the outbox', () => {
+    it('a DEFAULT (no shareable key) memory INSERT enqueues NOTHING — dark by default', async () => {
+      const id = '11111111-1111-1111-1111-111111111111';
+      await insertMemory(id, { user_id: 'u1', workspace_id: WS, text: 'a private note' });
+      const rows = await outboxFor(id);
+      expect(rows).toHaveLength(0);
+    });
+
+    it('an EXPLICIT shareable:false memory INSERT also enqueues NOTHING', async () => {
+      const id = '22222222-2222-2222-2222-222222222222';
+      await insertMemory(id, { user_id: 'u1', workspace_id: WS, shareable: false, text: 'still private' });
+      const rows = await outboxFor(id);
+      expect(rows).toHaveLength(0);
+    });
+
+    it('a shareable:true memory INSERT enqueues exactly one put row carrying the full row', async () => {
+      const id = '33333333-3333-3333-3333-333333333333';
+      await insertMemory(id, { user_id: 'u1', workspace_id: WS, shareable: true, text: 'ok to share' }, SLUG);
+      const rows = await outboxFor(id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].op).toBe('put');
+      expect(rows[0].table_name).toBe('memory_canonical');
+      expect(rows[0].row).toMatchObject({ id, harness_slug: SLUG });
+    });
+
+    it('a private edit never egresses; flipping shareable false→true captures the sharing event', async () => {
+      const id = '44444444-4444-4444-4444-444444444444';
+      await insertMemory(id, { user_id: 'u1', workspace_id: WS, shareable: false });
+
+      await db.sql`UPDATE harness_shared.memory_canonical
+        SET payload = payload || ${JSON.stringify({ note: 'edited while private' })}::jsonb
+        WHERE id = ${id}::uuid`;
+      expect(await outboxFor(id)).toHaveLength(0); // private edits never egress
+
+      await db.sql`UPDATE harness_shared.memory_canonical
+        SET payload = payload || ${JSON.stringify({ shareable: true })}::jsonb, harness_slug = ${SLUG}
+        WHERE id = ${id}::uuid`;
+      const rows = await outboxFor(id);
+      expect(rows).toHaveLength(1); // the flip-to-shareable itself captures
+      expect(rows[0].row).toMatchObject({ shareable: true });
+    });
+
+    it('DELETE of a shareable memory enqueues a del row; DELETE of a private memory enqueues nothing', async () => {
+      const shared = '55555555-5555-5555-5555-555555555555';
+      const priv = '66666666-6666-6666-6666-666666666666';
+      await insertMemory(shared, { shareable: true }, SLUG);
+      await insertMemory(priv, { shareable: false });
+
+      await db.sql`DELETE FROM harness_shared.memory_canonical WHERE id = ${shared}::uuid`;
+      await db.sql`DELETE FROM harness_shared.memory_canonical WHERE id = ${priv}::uuid`;
+
+      const sharedRows = await outboxFor(shared);
+      expect(sharedRows.some((r) => r.op === 'del')).toBe(true);
+      expect(await outboxFor(priv)).toHaveLength(0);
+    });
+  });
+
+  // ── (4): projection-layer private-pot leak guard, against the REAL table ──
+  describe('projection demux: a foreign/non-admitted pot memory never lands (no leak)', () => {
+    it('a wire row scoped to a DIFFERENT (non-admitted) pot never inserts', async () => {
+      const proj = buildMemoriesProjection({ workspaceId: WS, harnessSlug: SLUG, sql: db.sql });
+      const id = '77777777-7777-7777-7777-777777777777';
+      await proj.writeToPg(
+        {
+          harness_slug: 'other-pot-not-admitted',
+          id,
+          payload: { shareable: true },
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        { authorPubkey: 'peer-1', origin: 'remote' } as never,
+      );
+      const rows = await db.sql`SELECT 1 FROM harness_shared.memory_canonical WHERE id = ${id}::uuid`;
+      expect(rows).toHaveLength(0);
+    });
+
+    it('a wire row scoped to THIS pot from an admitted peer lands under its receiver-stamped source partition', async () => {
+      const proj = buildMemoriesProjection({ workspaceId: WS, harnessSlug: SLUG, sql: db.sql });
+      const id = '88888888-8888-8888-8888-888888888888';
+      await proj.writeToPg(
+        {
+          harness_slug: SLUG,
+          id,
+          payload: { shareable: true, text: 'peer memory' },
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        { authorPubkey: 'admitted-peer', origin: 'remote' } as never,
+      );
+      const rows = await db.sql`SELECT source_hive, origin FROM harness_shared.memory_canonical WHERE id = ${id}::uuid`;
+      expect(rows).toHaveLength(1);
+      expect(rows[0].source_hive).toBe('admitted-peer');
+      expect(rows[0].origin).toBe('remote');
+    });
+  });
+
+  // ── (5): fed_order_key LWW guard resolves conflicting writes last-writer-wins ──
+  describe('fed_order_key LWW guard resolves last-writer-wins', () => {
+    it('a newer fed_ts write wins; a STALE out-of-order write arriving after is refused', async () => {
+      const proj = buildMemoriesProjection({ workspaceId: WS, harnessSlug: SLUG, sql: db.sql });
+      const id = '99999999-9999-9999-9999-999999999999';
+      const wire = (text: string) => ({
+        harness_slug: SLUG,
+        id,
+        payload: { shareable: true, text },
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+
+      await proj.writeToPg(wire('v1-old'), { authorPubkey: 'peer-1', origin: 'remote', ts: 100 } as never);
+      await proj.writeToPg(wire('v2-newer'), { authorPubkey: 'peer-1', origin: 'remote', ts: 200 } as never);
+
+      let [row] = await db.sql<{ payload: { text: string } }[]>`
+        SELECT payload FROM harness_shared.memory_canonical WHERE id = ${id}::uuid AND source_hive = 'peer-1'`;
+      expect(row.payload.text).toBe('v2-newer');
+
+      // A stale (older-ts) replay arriving LATE must NOT clobber the newer state.
+      await proj.writeToPg(wire('v0-stale-replay'), { authorPubkey: 'peer-1', origin: 'remote', ts: 150 } as never);
+      [row] = await db.sql<{ payload: { text: string } }[]>`
+        SELECT payload FROM harness_shared.memory_canonical WHERE id = ${id}::uuid AND source_hive = 'peer-1'`;
+      expect(row.payload.text).toBe('v2-newer'); // still the newer write — LWW held
+    });
+
+    it('two DIFFERENT source partitions of the same identity never clobber each other (LWW is per-partition)', async () => {
+      const proj = buildMemoriesProjection({ workspaceId: WS, harnessSlug: SLUG, sql: db.sql });
+      const id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+      const wireFor = (peer: string, text: string) => ({
+        harness_slug: SLUG,
+        id,
+        payload: { shareable: true, text },
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+
+      await proj.writeToPg(wireFor('peer-a', 'from A'), { authorPubkey: 'peer-a', origin: 'remote', ts: 500 } as never);
+      await proj.writeToPg(wireFor('peer-b', 'from B'), { authorPubkey: 'peer-b', origin: 'remote', ts: 100 } as never);
+
+      const rows = await db.sql<{ source_hive: string; payload: { text: string } }[]>`
+        SELECT source_hive, payload FROM harness_shared.memory_canonical
+         WHERE id = ${id}::uuid ORDER BY source_hive`;
+      expect(rows).toHaveLength(2);
+      expect(rows.find((r) => r.source_hive === 'peer-a')?.payload.text).toBe('from A');
+      expect(rows.find((r) => r.source_hive === 'peer-b')?.payload.text).toBe('from B');
+    });
+  });
+});

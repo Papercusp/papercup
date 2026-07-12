@@ -505,7 +505,13 @@ function ageLabel(days: number): string {
   return `${Math.round(days)}d`;
 }
 
-function ImprovementsView({ hive }: { hive: string }) {
+function ImprovementsView({
+  hive,
+  onStatus,
+}: {
+  hive: string;
+  onStatus?: (status: LearningViewStatus) => void;
+}) {
   // P-042: the tab-level hive lens scopes the feed to one hive's member-harness
   // improvements; '' ⇒ the workspace-wide feed (no hive arg).
   const sync = useSyncQuery<ImprovementDigest & { flow?: ImprovementFlow }>({
@@ -560,6 +566,20 @@ function ImprovementsView({ hive }: { hive: string }) {
   );
 
   const resolved = digest?.byState?.resolved ?? 0;
+  const showDashboard = (digest?.open ?? 0) >= 4;
+  useEffect(() => {
+    onStatus?.(
+      sync.error
+        ? "bad"
+        : !digest
+          ? "neutral"
+          : digest.humanQueue.length > 0
+            ? "warn"
+            : digest.open === 0
+              ? "good"
+              : "neutral",
+    );
+  }, [digest, onStatus, sync.error]);
 
   return (
     <section className="pc-learning__section">
@@ -574,7 +594,7 @@ function ImprovementsView({ hive }: { hive: string }) {
         <LearningEfficacyPanel />
       </LearningDisclosure>
 
-      {digest ? (
+      {digest && showDashboard ? (
         <div className="pc-learning-visual__layout pc-learning-visual__layout--improvements">
           <LearningHeroMetric
             eyebrow="Open"
@@ -624,7 +644,7 @@ function ImprovementsView({ hive }: { hive: string }) {
 
       {/* The owner's drain ritual (consume-edges P-022): top of the human queue
           in the resolver's blocking-impact order; click highlights the row. */}
-      {digest && lane !== "auto" ? (
+      {digest && showDashboard && lane !== "auto" ? (
         <HumanQueueDrain
           items={digest.humanQueue}
           onSelect={(id) => void setLsel(id)}
@@ -1013,7 +1033,13 @@ function deltaLabel(d: number | null): {
   };
 }
 
-function GymView({ hive }: { hive: string }) {
+function GymView({
+  hive,
+  onStatus,
+}: {
+  hive: string;
+  onStatus?: (status: LearningViewStatus) => void;
+}) {
   // P-042: scope the gym rollup to one hive's gym harness; '' ⇒ the whole
   // workspace (every gym harness).
   const sync = useSyncQuery<GymSnapshot>({
@@ -1031,6 +1057,19 @@ function GymView({ hive }: { hive: string }) {
   const running = autoloops.filter(
     (a) => a.enabled || a.status === "running",
   ).length;
+  useEffect(() => {
+    onStatus?.(
+      sync.error
+        ? "bad"
+        : !snap
+          ? "neutral"
+          : pending > 0
+            ? "warn"
+            : running > 0 || champions > 0
+              ? "good"
+              : "neutral",
+    );
+  }, [champions, onStatus, pending, running, snap, sync.error]);
 
   return (
     <section className="pc-learning__section">
@@ -1052,7 +1091,7 @@ function GymView({ hive }: { hive: string }) {
         }
       />
 
-      {snap && (proposals.length > 0 || autoloops.length > 0) ? (
+      {snap && proposals.length >= 4 ? (
         <div className="pc-learning-visual__layout pc-learning-visual__layout--gym">
           <LearningHeroMetric
             eyebrow="Champions"
@@ -1231,20 +1270,38 @@ function dateLabel(iso: string): string {
     : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function ApiaryView() {
+function ApiaryView({
+  onStatus,
+}: {
+  onStatus?: (status: LearningViewStatus) => void;
+}) {
   const sync = useSyncQuery<{ instances: ApiaryInstance[] }>({
     queryName: "learning.apiary",
     args: {},
     staleTime: 30_000,
   });
   const instances = sync.data?.[0]?.instances ?? [];
-  const latest = instances[0];
-  const previous = instances[1];
+  const newest = instances[0];
+  const scored = instances.filter((instance) => instance.meanComposite != null);
+  const latest = scored[0];
+  const previous = scored[1];
+  const pending = newest && newest.meanComposite == null ? newest : null;
   const currentDelta =
     latest?.meanComposite != null && previous?.meanComposite != null
       ? latest.meanComposite - previous.meanComposite
       : null;
   const currentDeltaMeta = deltaLabel(currentDelta);
+  useEffect(() => {
+    onStatus?.(
+      sync.error
+        ? "bad"
+        : pending
+          ? "warn"
+          : latest && latest.successRate >= 0.8
+            ? "good"
+            : "neutral",
+    );
+  }, [latest, onStatus, pending, sync.error]);
   const renderInstance = (inst: ApiaryInstance, i: number) => {
     const prev = instances[i + 1];
     const dComposite =
@@ -1300,11 +1357,13 @@ function ApiaryView() {
         icon={Gauge}
         title="Benchmark"
         signal={
-          latest
-            ? `${latest.successfulRuns}/${latest.totalRuns} solved`
+          pending
+            ? `${pending.successfulRuns}/${pending.totalRuns} pending`
+            : latest
+              ? `${latest.successfulRuns}/${latest.totalRuns} solved`
             : undefined
         }
-        tone={latest && latest.successRate >= 0.8 ? "good" : "neutral"}
+        tone={pending ? "warn" : latest && latest.successRate >= 0.8 ? "good" : "neutral"}
         action={
           <button
             type="button"
@@ -1324,10 +1383,24 @@ function ApiaryView() {
         <p className="pc-learning__empty">
           Benchmark unavailable: {sync.error.message}
         </p>
-      ) : !latest ? (
+      ) : !latest && !pending ? (
         <LearningVisualEmpty icon={Gauge} title="No benchmark runs" />
       ) : (
         <>
+          {pending ? (
+            <div className="pc-learning__pendingrun" role="status">
+              <Clock size={12} aria-hidden />
+              <span>
+                <strong>{shortSha(pending.codeSha)}</strong> is waiting for a
+                scored result
+              </span>
+              <em>
+                {pending.successfulRuns}/{pending.totalRuns} runs complete
+              </em>
+            </div>
+          ) : null}
+          {latest ? (
+            <>
           <div className="pc-learning-visual__layout">
             <LearningHeroMetric
               eyebrow={shortSha(latest.codeSha)}
@@ -1421,6 +1494,9 @@ function ApiaryView() {
             </LearningEvidenceRail>
           </div>
 
+            </>
+          ) : null}
+
           <BenchmarkTrend instances={instances} />
 
           <div className="pc-learning__sectionhead">
@@ -1471,7 +1547,11 @@ interface HiveEvalGeneration {
 const ratioLabel = (v: number | null): string =>
   v == null ? "—" : `${v.toFixed(2)}×`;
 
-function HiveEvalTrendView() {
+function HiveEvalTrendView({
+  onStatus,
+}: {
+  onStatus?: (status: LearningViewStatus) => void;
+}) {
   const t = useLexicon();
   const sync = useSyncQuery<{ instances: HiveEvalGeneration[] }>({
     queryName: "learning.hiveEvalTrend",
@@ -1495,6 +1575,17 @@ function HiveEvalTrendView() {
     successfulRuns: i.scoredRuns,
     meanComposite: i.meanComposite,
   }));
+  useEffect(() => {
+    onStatus?.(
+      sync.error
+        ? "bad"
+        : latest && (latest.fabricationRate ?? 0) === 0
+          ? "good"
+          : latest
+            ? "warn"
+            : "neutral",
+    );
+  }, [latest, onStatus, sync.error]);
 
   return (
     <section className="pc-learning__section">
@@ -1652,7 +1743,11 @@ const BAKEOFF_VERDICT_META: Record<
   },
 };
 
-function BakeoffTrendView() {
+function BakeoffTrendView({
+  onStatus,
+}: {
+  onStatus?: (status: LearningViewStatus) => void;
+}) {
   const sync = useSyncQuery<{ rows: BakeoffTrendRow[] }>({
     queryName: "learning.bakeoff",
     args: {},
@@ -1679,6 +1774,19 @@ function BakeoffTrendView() {
   const gateDeltaLabel = latest
     ? `${latest.deltaGatePassRate >= 0 ? "+" : "−"}${Math.abs(latest.deltaGatePassRate * 100).toFixed(1)}pp`
     : "—";
+  useEffect(() => {
+    onStatus?.(
+      sync.error
+        ? "bad"
+        : latest?.verdict === "improved"
+          ? "good"
+          : latest?.verdict === "regressed"
+            ? "bad"
+            : latest
+              ? "neutral"
+              : "neutral",
+    );
+  }, [latest, onStatus, sync.error]);
   const renderBakeoff = (r: BakeoffTrendRow, i: number) => {
     const dc = deltaLabel(r.deltaMeanComposite);
     const meta = BAKEOFF_VERDICT_META[r.verdict];
@@ -2044,7 +2152,11 @@ function formatDurationMs(ms: number | null | undefined): string {
  * bees-busy-vs-cap, stuck count, mean-time-to-complete, and the question-rung
  * split, read from hive_throughput_ticks (mig 261) via learning.hiveThroughput.
  */
-function ThroughputView() {
+function ThroughputView({
+  onStatus,
+}: {
+  onStatus?: (status: LearningViewStatus) => void;
+}) {
   const t = useLexicon();
   const sync = useSyncQuery<HiveThroughputSnapshot>({
     queryName: "learning.hiveThroughput",
@@ -2060,6 +2172,17 @@ function ThroughputView() {
   const soakByHive = new Map(
     (soak.data?.[0]?.hives ?? []).map((report) => [report.potSlug, report]),
   );
+  useEffect(() => {
+    onStatus?.(
+      sync.error || soak.error
+        ? "bad"
+        : hives.some((hive) => !hive.operatingWell)
+          ? "warn"
+          : hives.length > 0
+            ? "good"
+            : "neutral",
+    );
+  }, [hives, onStatus, soak.error, sync.error]);
 
   return (
     <section className="pc-learning__section">
@@ -2254,7 +2377,11 @@ function ThroughputView() {
 }
 
 // The ideation surface is mounted directly inside Improve → Ideas.
-export function ScoutView() {
+export function ScoutView({
+  onStatus,
+}: {
+  onStatus?: (status: LearningViewStatus) => void;
+} = {}) {
   const t = useLexicon();
   const RAIL_META = railMeta(t);
   const sync = useSyncQuery<ScoutSnapshot>({
@@ -2288,6 +2415,15 @@ export function ScoutView() {
   );
   const queueItems = showEarlier ? filteredRecent : filteredRecent.slice(0, 8);
   useEffect(() => setShowEarlier(false), [railFilter]);
+  useEffect(() => {
+    onStatus?.(
+      sync.error
+        ? "bad"
+        : snap && snap.totalRouted > 0
+          ? "good"
+          : "neutral",
+    );
+  }, [onStatus, snap, sync.error]);
 
   const effectiveGrade = (item: ScoutRoutedItem): EffectiveGrade | null => {
     const opt = optimistic[item.ideaId];
@@ -2436,43 +2572,34 @@ export function ScoutView() {
       </div>
 
       {snap ? (
-        <div className="pc-learning__idea-route" aria-label="Idea routing">
-          <span className="pc-learning__idea-source">
-            <Radar size={15} aria-hidden />
-            <strong>{snap.totalRouted}</strong>
-          </span>
-          <i aria-hidden />
-          <div>
-            {rails.map((rail) => {
-              const meta = RAIL_META[rail.rail];
-              const share =
-                snap.totalRouted > 0 ? rail.count / snap.totalRouted : 0;
-              return (
-                <Tooltip key={rail.rail} label={meta?.desc}>
-                  <button
-                    type="button"
-                    aria-pressed={railFilter === rail.rail}
-                    onClick={() =>
-                      void setRailFilter(
-                        railFilter === rail.rail ? null : rail.rail,
-                      )
-                    }
-                  >
-                    <em>{meta?.label ?? rail.rail}</em>
-                    <b>
-                      <i
-                        style={{
-                          width: `${Math.max(4, share * 100)}%`,
-                          background: meta?.color,
-                        }}
-                      />
-                    </b>
-                    <strong>{rail.count}</strong>
-                  </button>
-                </Tooltip>
-              );
-            })}
-          </div>
+        <div className="pc-learning__idea-filters" aria-label="Idea routing">
+          <button
+            type="button"
+            aria-pressed={!railFilter}
+            onClick={() => void setRailFilter(null)}
+          >
+            <Radar size={11} aria-hidden />
+            All <strong>{snap.totalRouted}</strong>
+          </button>
+          {rails.map((rail) => {
+            const meta = RAIL_META[rail.rail];
+            return (
+              <Tooltip key={rail.rail} label={meta?.desc}>
+                <button
+                  type="button"
+                  aria-pressed={railFilter === rail.rail}
+                  onClick={() =>
+                    void setRailFilter(
+                      railFilter === rail.rail ? null : rail.rail,
+                    )
+                  }
+                >
+                  <i style={{ background: meta?.color }} aria-hidden />
+                  {meta?.label ?? rail.rail} <strong>{rail.count}</strong>
+                </button>
+              </Tooltip>
+            );
+          })}
         </div>
       ) : null}
 
@@ -2664,7 +2791,13 @@ export function ScoutView() {
 
 type HiveLearningRowT = HiveLearningsSnapshot["rows"][number];
 
-function LearningsView({ hive }: { hive: string }) {
+function LearningsView({
+  hive,
+  onStatus,
+}: {
+  hive: string;
+  onStatus?: (status: LearningViewStatus) => void;
+}) {
   const t = useLexicon();
   const [selectedLearning, setSelectedLearning] = useQueryState(
     "lretain",
@@ -2680,6 +2813,11 @@ function LearningsView({ hive }: { hive: string }) {
   const snap = sync.data?.[0];
   const rows = snap?.rows ?? [];
   const filtered = rows;
+  useEffect(() => {
+    onStatus?.(
+      sync.error ? "bad" : rows.length > 0 ? "good" : "neutral",
+    );
+  }, [onStatus, rows.length, sync.error]);
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const { prompt: askPrompt, element: promptEl } = usePromptDialog();
 
@@ -2774,7 +2912,16 @@ function LearningsView({ hive }: { hive: string }) {
               color: "var(--fg-mute)",
             }}
           >
-            {r.createdBy ? <span>{r.createdBy}</span> : null}
+            {r.createdBy ? (
+              <Tooltip label={r.createdBy}>
+                <span
+                  className="pc-learning__provenance"
+                  aria-label={`Retained by ${r.createdBy}`}
+                >
+                  <UserRound size={10} aria-hidden />
+                </span>
+              </Tooltip>
+            ) : null}
             {r.kind ? <span>{r.kind}</span> : null}
           </span>
         </span>
@@ -2938,16 +3085,16 @@ export function LearningStyles() {
         background: var(--border-strong); pointer-events: none;
       }
       .pc-learning__stage-label { font-size: 11px; font-weight: 650; }
+      .pc-learning__statusdot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--fg-mute); box-shadow: 0 0 0 2px color-mix(in srgb, var(--fg-mute) 10%, transparent); }
+      .pc-learning__statusdot.is-good { background: #34d399; box-shadow: 0 0 0 2px color-mix(in srgb, #34d399 13%, transparent); }
+      .pc-learning__statusdot.is-warn { background: #fbbf24; box-shadow: 0 0 0 2px color-mix(in srgb, #fbbf24 13%, transparent); }
+      .pc-learning__statusdot.is-bad { background: #fb7185; box-shadow: 0 0 0 2px color-mix(in srgb, #fb7185 13%, transparent); }
       .pc-learning__stage:hover .pc-learning__stage-icon { color: var(--fg); border-color: var(--stage-accent); background: var(--bg-2); }
       .pc-learning__stage[aria-selected="true"] { color: var(--fg); }
       .pc-learning__stage[aria-selected="true"] .pc-learning__stage-icon {
         color: var(--stage-accent); border-color: var(--stage-accent);
         background: color-mix(in oklab, var(--stage-accent), transparent 88%);
       }
-      .pc-learning__stage[data-complete="true"] { color: var(--fg); }
-      .pc-learning__stage[data-complete="true"] .pc-learning__stage-icon { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--bg-1)); }
-      .pc-learning__stage-line[data-complete="true"] { height: 2px; background: var(--accent); }
-
       .pc-learning__controls { min-height: 30px; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
       .pc-learning__view-tabs { min-width: 0; max-width: 100%; }
       .pc-learning__view-list { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; padding: 0; overflow-x: auto; scrollbar-width: thin; border-bottom: 1px solid var(--border); background: transparent; }
@@ -3170,25 +3317,23 @@ export function LearningStyles() {
       .pc-learning__lanecol > .pc-learning__list { padding: 6px; }
       .pc-learning__lanecol .pc-learning__row { grid-template-columns: 4px auto minmax(0, 1fr); }
       .pc-learning__lanecol .pc-learning__meta { grid-column: 2 / -1; justify-content: flex-end; }
-      .pc-learning__idea-route { display: grid; grid-template-columns: 116px 32px minmax(0, 1fr); align-items: center; gap: 12px; padding: 13px; border: 1px solid var(--border); border-radius: 11px; background: var(--bg-2); }
-      .pc-learning__idea-source { min-height: 92px; display: grid; place-content: center; justify-items: center; border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border)); border-radius: 9px; color: var(--accent); }
-      .pc-learning__idea-source strong { margin-top: 5px; font-size: 25px; font-variant-numeric: tabular-nums; }
-      .pc-learning__idea-route > i { width: 100%; height: 1px; background: var(--accent); }
-      .pc-learning__idea-route > div { display: grid; gap: 7px; }
-      .pc-learning__idea-route > div > button { display: grid; grid-template-columns: 112px minmax(70px, 1fr) 28px; align-items: center; gap: 8px; width: 100%; padding: 2px 4px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
-      .pc-learning__idea-route > div > button:hover, .pc-learning__idea-route > div > button[aria-pressed="true"] { border-color: var(--border-strong); background: color-mix(in srgb, var(--accent) 7%, transparent); }
-      .pc-learning__idea-route > div > button[aria-pressed="true"] em { color: var(--fg); }
-      .pc-learning__idea-route em { overflow: hidden; color: var(--fg-mute); font-size: 10px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
-      .pc-learning__idea-route b { height: 7px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--fg) 6%, transparent); }
-      .pc-learning__idea-route b i { display: block; height: 100%; border-radius: inherit; }
-      .pc-learning__idea-route > div strong { color: var(--fg); font-size: 10px; font-variant-numeric: tabular-nums; text-align: right; }
+      .pc-learning__idea-filters { display: flex; align-items: center; gap: 5px; overflow-x: auto; padding: 2px 0; }
+      .pc-learning__idea-filters button { display: inline-flex; align-items: center; gap: 5px; flex: none; min-height: 27px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-2); color: var(--fg-mute); font: inherit; font-size: 10px; cursor: pointer; }
+      .pc-learning__idea-filters button:hover, .pc-learning__idea-filters button[aria-pressed="true"] { border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); background: color-mix(in srgb, var(--accent) 8%, var(--bg-2)); color: var(--fg); }
+      .pc-learning__idea-filters button > i { width: 6px; height: 6px; border-radius: 50%; }
+      .pc-learning__idea-filters strong { color: var(--fg); font-size: 10px; font-variant-numeric: tabular-nums; }
+      .pc-learning__pendingrun { display: flex; align-items: center; gap: 7px; min-height: 30px; padding: 5px 9px; border: 1px solid color-mix(in srgb, #fbbf24 34%, var(--border)); border-radius: 8px; background: color-mix(in srgb, #fbbf24 6%, transparent); color: var(--fg-mute); font-size: 10.5px; }
+      .pc-learning__pendingrun svg { color: #fbbf24; }
+      .pc-learning__pendingrun strong { color: var(--fg); font-family: var(--font-mono, ui-monospace, monospace); }
+      .pc-learning__pendingrun em { margin-left: auto; color: var(--fg-mute); font-style: normal; font-variant-numeric: tabular-nums; }
+      .pc-learning__provenance { display: inline-grid; place-items: center; width: 18px; height: 18px; border: 1px solid var(--border); border-radius: 50%; color: var(--fg-mute); }
       .pc-learning__memorymap { display: grid; grid-template-columns: repeat(16, minmax(5px, 1fr)); grid-auto-rows: 1fr; gap: 3px; padding: 12px; }
       .pc-learning__memorymap i { min-height: 10px; border-radius: 2px; background: color-mix(in srgb, var(--accent) 58%, transparent); opacity: .78; }
       .pc-learning__memorymap i.is-organic { background: #34d399; }
       .pc-learning__memorymap i:hover { opacity: 1; transform: scale(1.08); }
       .pc-learning__standings { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; font-size: 9px; }
       @media (max-width: 920px) { .pc-learning__lanegrid { grid-template-columns: 1fr; } }
-      @media (max-width: 720px) { .pc-learning__gymflow, .pc-learning__improvementflow { grid-template-columns: 1fr; } .pc-learning__gymflow > span > i, .pc-learning__improvementflow > i { display: none; } .pc-learning__idea-route { grid-template-columns: 82px 18px minmax(0, 1fr); } .pc-learning__idea-route > div > button { grid-template-columns: 82px minmax(50px, 1fr) 24px; } }
+      @media (max-width: 720px) { .pc-learning__gymflow, .pc-learning__improvementflow { grid-template-columns: 1fr; } .pc-learning__gymflow > span > i, .pc-learning__improvementflow > i { display: none; } }
     `}</style>
   );
 }
