@@ -38,6 +38,7 @@ import {
   useHarnessAgents,
   useHarnessFeatures,
   useHarnessIssues,
+  useHarnessHookLogs,
 } from './useHarnessData';
 
 // ── fetch stub ──────────────────────────────────────────────────────────────
@@ -260,5 +261,84 @@ describe('useHarnessAgents', () => {
       costUsd: 0.5,
       featureId: undefined,
     });
+  });
+});
+
+// ── useHarnessHookLogs ──────────────────────────────────────────────────────
+
+describe('useHarnessHookLogs', () => {
+  it('returns null logs until sync data loads', () => {
+    syncState.set('harnessHookLogs.byHarness', { data: undefined, loading: true });
+    const { result } = renderHook(() => useHarnessHookLogs('test-harness'));
+    expect(result.current.logs).toBeNull();
+    expect(result.current.loading).toBe(true);
+  });
+
+  it('maps sync rows to HarnessHookLogEvent[], normalizing field names', async () => {
+    const invalidate = vi.fn();
+    invalidates.set('harnessHookLogs.byHarness', invalidate);
+    syncState.set('harnessHookLogs.byHarness', {
+      loading: false,
+      data: [
+        {
+          log_id: 'log-1',
+          harness_slug: 'test',
+          ts: '2026-07-12T10:00:00.000Z',
+          event_kind: 'feature_created',
+          target_id: 'f-123',
+          target_type: 'feature',
+          status: 'success',
+          metadata: { version: 1 },
+        },
+      ],
+    });
+    const { result } = renderHook(() => useHarnessHookLogs('test'));
+    await waitFor(() => expect(result.current.logs).not.toBeNull());
+    expect(result.current.logs).toEqual([
+      {
+        logId: 'log-1',
+        harnessSlug: 'test',
+        ts: '2026-07-12T10:00:00.000Z',
+        eventKind: 'feature_created',
+        targetId: 'f-123',
+        targetType: 'feature',
+        status: 'success',
+        metadata: { version: 1 },
+      },
+    ]);
+  });
+
+  it('returns authoritative empty array (no REST fallback)', async () => {
+    invalidates.set('harnessHookLogs.byHarness', vi.fn());
+    syncState.set('harnessHookLogs.byHarness', { loading: false, data: [] });
+    const { result } = renderHook(() => useHarnessHookLogs('test'));
+    await waitFor(() => expect(result.current.logs).not.toBeNull());
+    expect(result.current.logs).toEqual([]);
+    expect(mockFetch).not.toHaveBeenCalled(); // no REST fallback
+  });
+
+  it('invalidate() calls the sync query invalidator', async () => {
+    const invalidate = vi.fn();
+    invalidates.set('harnessHookLogs.byHarness', invalidate);
+    syncState.set('harnessHookLogs.byHarness', { loading: false, data: [] });
+    const { result } = renderHook(() => useHarnessHookLogs('test'));
+    await waitFor(() => expect(result.current.logs).not.toBeNull());
+    act(() => {
+      result.current.refresh();
+    });
+    expect(invalidate).toHaveBeenCalled();
+  });
+
+  it('handles sync error gracefully', async () => {
+    invalidates.set('harnessHookLogs.byHarness', vi.fn());
+    syncState.set('harnessHookLogs.byHarness', {
+      loading: false,
+      data: undefined,
+      error: new Error('sync failed'),
+    });
+    const { result } = renderHook(() => useHarnessHookLogs('test'));
+    await waitFor(() => expect(result.current.error).not.toBeNull());
+    expect(result.current.error).toBe('sync failed');
+    expect(result.current.logs).toBeNull();
   });
 });

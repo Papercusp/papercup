@@ -383,3 +383,94 @@ export function useHarnessLogs(
 
   return { events, loading: events === null && !error, error, refresh };
 }
+
+// ───────── Hook Logs (harness_hook_logs via @papercusp/sync) ─────────
+
+/**
+ * Hook log event from harness_hook_logs table. Structured log of
+ * feature/issue/agent hook events (webhooks, state transitions, etc.).
+ */
+export interface HarnessHookLogEvent {
+  logId: string;
+  harnessSlug: string;
+  ts: string;
+  eventKind: string;
+  targetId?: string;
+  targetType?: string;
+  status?: string;
+  metadata?: unknown;
+}
+
+type SyncHookLogRow = {
+  logId?: string;
+  log_id?: string;
+  harnessSlug?: string;
+  harness_slug?: string;
+  ts?: string | number;
+  eventKind?: string;
+  event_kind?: string;
+  targetId?: string;
+  target_id?: string;
+  targetType?: string;
+  target_type?: string;
+  status?: string;
+  metadata?: unknown;
+};
+
+/**
+ * Recent hook events for a harness, read from harness_hook_logs via
+ * the authoritative `harnessHookLogs.byHarness` sync query. Replaces
+ * the REST bootstrap pattern (data-sync-push-completion P-009).
+ * Empty array is authoritative; a late REST response cannot resurrect
+ * deleted rows.
+ */
+export function useHarnessHookLogs(slug: string): {
+  logs: HarnessHookLogEvent[] | null;
+  loading: boolean;
+  error: string | null;
+  refresh: () => void;
+} {
+  const workspaceId = useWorkspaceId(); // EI-1763: tenant-scope sync reads
+  const [logs, setLogs] = useState<HarnessHookLogEvent[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const query = useSyncQuery<SyncHookLogRow>({
+    queryName: 'harnessHookLogs.byHarness',
+    args: slug ? { harnessSlug: slug, workspaceId } : undefined,
+    enabled: !!slug,
+  });
+  const { data: syncRows, loading, error: syncError, invalidate } = query;
+  const refresh = useCallback(() => invalidate(), [invalidate]);
+
+  useEffect(() => {
+    if (!slug) {
+      setLogs(null);
+      setError(null);
+      return;
+    }
+    if (loading || !Array.isArray(syncRows)) return;
+    setLogs(
+      syncRows.map(
+        (r): HarnessHookLogEvent => {
+          const ts = toMs(r.ts);
+          return {
+            logId: String(r.logId ?? r.log_id ?? ''),
+            harnessSlug: String(r.harnessSlug ?? r.harness_slug ?? ''),
+            ts: ts != null ? new Date(ts).toISOString() : '',
+            eventKind: String(r.eventKind ?? r.event_kind ?? ''),
+            targetId: r.targetId ?? r.target_id ?? undefined,
+            targetType: r.targetType ?? r.target_type ?? undefined,
+            status: r.status ?? undefined,
+            metadata: r.metadata ?? undefined,
+          };
+        },
+      ),
+    );
+  }, [slug, syncRows, loading]);
+
+  useEffect(() => {
+    setError(syncError ? (syncError instanceof Error ? syncError.message : String(syncError)) : null);
+  }, [syncError]);
+
+  return { logs, loading: logs === null && !error, error, refresh };
+}
