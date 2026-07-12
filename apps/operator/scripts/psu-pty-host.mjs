@@ -239,8 +239,8 @@ export function sanitizeKey(ownerId) {
  *  reconstructed from transcript archaeology. Lifecycle verbs (compact/reset/
  *  recycle) now ALSO append one JSONL row per outcome here, so "did the carry
  *  ever get typed, and if not why" is a one-file read. */
-export function eventLogPathForOwner(ownerId) {
-  return join(PSU_PTY_DIR, `${sanitizeKey(ownerId)}.events.jsonl`);
+export function eventLogPathForOwner(ownerId, dir = PSU_PTY_DIR) {
+  return join(dir, `${sanitizeKey(ownerId)}.events.jsonl`);
 }
 
 /** Size cap for the per-owner event log — front-truncated (oldest rows dropped)
@@ -250,9 +250,9 @@ const EVENT_LOG_MAX_BYTES = 256 * 1024;
 /** Append one durable host-event row ({ ts, kind, ...extra }) for `ownerId`.
  *  FAIL-SOFT by contract: an event-log write must never break the session —
  *  any fs error is swallowed (the stderr diagnostic still fires next to it). */
-export function appendHostEvent(ownerId, kind, extra = {}) {
+export function appendHostEvent(ownerId, kind, extra = {}, dir = PSU_PTY_DIR) {
   try {
-    const p = eventLogPathForOwner(ownerId);
+    const p = eventLogPathForOwner(ownerId, dir);
     const row = JSON.stringify({ ts: new Date().toISOString(), kind, ...extra });
     try {
       if (statSync(p).size > EVENT_LOG_MAX_BYTES) {
@@ -1510,6 +1510,10 @@ export function hostThroughPty(o) {
             // codex) has one, so this only guards a future backend. Surface the drop
             // rather than silently returning (the pre-2026-07-05 codex behavior:
             // request-compaction reported "queued" while nothing ever ran).
+            appendHostEvent(ownerId, 'compact-carry-dropped', {
+              reason: 'no-backend-compact-command',
+              backend: String(env.PAPERCUSP_AGENT || ''),
+            });
             try {
               process.stderr.write(
                 `psu-pty-host: mode:compact DROPPED for ${ownerId} — backend '${env.PAPERCUSP_AGENT}' has no compaction command\n`,
@@ -1562,6 +1566,10 @@ export function hostThroughPty(o) {
           const inputAtBeforeCompactWait = activity.snapshot().lastInputAt ?? 0;
           const done = await agentBusyGate.waitAtPrompt(compactCapMs);
           if (done.deferred) {
+            appendHostEvent(ownerId, 'compact-carry-dropped', {
+              reason: 'compaction-still-running',
+              capMs: compactCapMs,
+            });
             try {
               process.stderr.write(
                 `psu-pty-host: compact carry-note DROPPED for ${ownerId} ` +
@@ -1573,39 +1581,44 @@ export function hostThroughPty(o) {
             }
             return;
           }
-          // EI-10067: the owner typed into the bridged terminal WHILE we were
-          // waiting for the compaction to finish — their fresh turn is either
-          // in-flight or about to be. Drop the synthetic carry-note the same way
-          // the busy-cap path above does: it's redundant (the owner's own message
-          // is the real next instruction) and, worse, would otherwise land queued
-          // behind it and mislabel itself as "a fresh turn right after your
-          // compaction" a turn or two late. A TOCTOU gap remains between this
-          // check and the submit below (an owner keystroke landing in that exact
-          // window still races) — same residual as every other gate in this file;
-          // this closes the much larger window that was the reported symptom.
-          if (bridgeTty && (activity.snapshot().lastInputAt ?? 0) > inputAtBeforeCompactWait) {
-            try {
-              process.stderr.write(
-                `psu-pty-host: compact carry-note DROPPED for ${ownerId} ` +
-                  `(the owner typed into the bridged terminal during the compaction wait, ` +
-                  `EI-10067); the agent's loop / next turn resumes it\n`,
-              );
-            } catch {
-              /* never let a diagnostic write break the session */
-            }
-            return;
-          }
-          // (3.5) The compaction has REALLY completed (not the done.deferred drop above),
-          // and — crucially — the carry-note is durably in place. Fire session:compacted so
-          // any peer awaiting this member's compaction wakes now (event-await P-103). Emitted
-          // ONLY here: the host observes completion only on the continuation path, and only a
-          // settled, non-deferred compaction is a true "member compacted" signal.
+          // EI-10067 → EI-10412: the owner typed into the bridged terminal WHILE
+          // we were waiting for the compaction to finish. The FIRST cut of this
+          // check DROPPED the carry-note outright — but `lastInputAt` moves on ANY
+          // raw keystroke (ctrl+o to view the summary, scrollback, a /model
+          // command), not just a submitted owner turn, so the drop routinely fired
+          // with no owner turn in flight and the session sat DARK until the owner
+          // prodded it (the exact bug it was meant to smooth over). Now the carry
+          // is REWORDED instead of dropped: an appended caveat cedes precedence to
+          // any owner turn that did land, and delivery is retried at the prompt —
+          // injectTurnAtPrompt's own busy-gate wait naturally queues it behind a
+          // genuinely in-flight owner turn.
+          const ownerTypedDuringWait =
+            bridgeTty && (activity.snapshot().lastInputAt ?? 0) > inputAtBeforeCompactWait;
+          if (ownerTypedDuringWait) appendHostEvent(ownerId, 'owner-input-during-compact-wait', {});
+          // (3.5) The compaction has REALLY completed (not the done.deferred drop above).
+          // Fire session:compacted so any peer awaiting this member's compaction wakes now
+          // (event-await P-103). Emitted ONLY here: the host observes completion only on the
+          // continuation path, and only a settled, non-deferred compaction is a true
+          // "member compacted" signal.
           fireSessionCompactedEvent(ownerId, msg.focus);
-          // (4) open the compacted context on the continuation turn — VERIFIED
-          // (WI-2930): this is the exact write that stranded a builder for ~6h
-          // when its CR landed in a briefly-locked post-compaction TUI.
-          await submit(msg.data);
-          await verifySubmitted('compact carry-note');
+          // (4) open the compacted context on the continuation turn — GUARANTEED-or-
+          // LOUDLY-DROPPED (EI-10412). The old single-shot submit had four silent
+          // exit paths and lost 10 continuations across 7 agents on 2026-07-12
+          // alone; injectTurnAtPrompt retries across a budget, re-checks the busy
+          // gate right before each write (closing most of the EI-10067 TOCTOU
+          // window), verifies the submit took (WI-2930), and leaves a durable
+          // event-log row either way.
+          const carryText = ownerTypedDuringWait
+            ? `${msg.data}\n\n(Host note, EI-10412: owner keystrokes were observed during the compaction wait — if an owner turn arrived before this continuation, that instruction takes precedence and the "fresh turn right after your compaction" framing above is stale.)`
+            : msg.data;
+          const carry = await injectTurnAtPrompt({ text: carryText, label: 'compact carry-note' });
+          appendHostEvent(
+            ownerId,
+            carry.delivered ? 'compact-carry-delivered' : 'compact-carry-dropped',
+            carry.delivered
+              ? { attempts: carry.attempts, rewordedForOwnerInput: ownerTypedDuringWait }
+              : { reason: carry.reason, attempts: carry.attempts },
+          );
           return;
         }
         // mode:'osc' targets the terminal DISPLAY — the host's stdout IS the
@@ -1634,11 +1647,19 @@ export function hostThroughPty(o) {
         if (msg.mode === 'turn' || msg.mode === 'reset') {
           await verifySubmitted(`${msg.mode} inject`);
         }
-      } catch {
+      } catch (err) {
         // P-001a: an error path must clear the coalesce slot too (claim is
         // idempotent — a no-op when the delivery already claimed it above).
         if (coalesceKey != null) turnCoalescer.claim(coalesceKey);
-        /* child may have exited mid-inject */
+        // EI-10412: a lifecycle verb (compact/reset/recycle) dying here used to
+        // vanish without a trace — for compact that silently killed the whole
+        // auto-continuation. The swallow stays (child may have exited mid-inject;
+        // the host must survive), but the outcome is now durably recorded.
+        if (msg.mode === 'compact' || msg.mode === 'reset' || msg.mode === 'recycle') {
+          appendHostEvent(ownerId, `${msg.mode}-inject-error`, {
+            error: String((err && err.message) || err).slice(0, 300),
+          });
+        }
       } finally {
         // EI-8822: always free the inject mutex — on success, an early return
         // (defer/recycle/compact), OR a throw — so one inject never wedges the

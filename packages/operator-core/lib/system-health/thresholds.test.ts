@@ -463,4 +463,165 @@ describe('threshold constants are sane', () => {
     expect(MCP_PROXY_HARD_FAIL_CRIT).toBeGreaterThan(0);
     expect(Number.isInteger(MCP_PROXY_HARD_FAIL_CRIT)).toBe(true);
   });
+  it('disk warn is below disk crit (health-tab-v2 P-011)', () => {
+    expect(DISK_USED_WARN_PCT).toBeLessThan(DISK_USED_CRIT_PCT);
+  });
+  it('backup staleness threshold is 48h (cadence is ~hours)', () => {
+    expect(BACKUP_STALE_MS).toBe(48 * 60 * 60_000);
+  });
+});
+
+// ── health-tab-v2 (2026-07-12) additions ─────────────────────────────────────
+
+describe('infraStatus — disk / migration-drift / backup legs (health-tab-v2 P-011)', () => {
+  it('crit at >=95% used on any watched volume — writes are about to fail', () => {
+    expect(infraStatus(infra({ disk: [{ path: '/', usedPct: 96 }, { path: '/data', usedPct: 40 }] }))).toBe('crit');
+  });
+  it('disk crit outranks a greyed PG leg (like the MCP-proxy SLO)', () => {
+    expect(infraStatus(infra({ pg: null, disk: [{ path: '/', usedPct: DISK_USED_CRIT_PCT }] }))).toBe('crit');
+  });
+  it('warn at >=90% used', () => {
+    expect(infraStatus(infra({ disk: [{ path: '/', usedPct: 91 }] }))).toBe('warn');
+  });
+  it('ok below the warn line; null/empty disk contributes nothing (fail-soft)', () => {
+    expect(infraStatus(infra({ disk: [{ path: '/', usedPct: 72 }] }))).toBe('ok');
+    expect(infraStatus(infra({ disk: null }))).toBe('ok');
+    expect(infraStatus(infra({ disk: [] }))).toBe('ok');
+  });
+  it('warn on unapplied migrations (one restart away from surprise DDL)', () => {
+    expect(infraStatus(infra({ migrationDrift: { unapplied: 2 } }))).toBe('warn');
+    expect(infraStatus(infra({ migrationDrift: { unapplied: 0 } }))).toBe('ok');
+  });
+  it('warn when the newest OK backup is older than the staleness window', () => {
+    expect(infraStatus(infra({ backup: { lastOkAtMs: 1, ageMs: BACKUP_STALE_MS + 1, lastStatus: 'ok' } }))).toBe('warn');
+    expect(infraStatus(infra({ backup: { lastOkAtMs: 1, ageMs: 60_000, lastStatus: 'ok' } }))).toBe('ok');
+    expect(infraStatus(infra({ backup: null }))).toBe('ok'); // leg unreadable — fail-soft
+  });
+});
+
+describe('statusSeverity + ackCovers — ack coverage semantics (P-004 / D-A)', () => {
+  it('severity ladder: crit 2, warn 1, ok/unknown 0', () => {
+    expect(statusSeverity('crit')).toBe(2);
+    expect(statusSeverity('warn')).toBe(1);
+    expect(statusSeverity('ok')).toBe(0);
+    expect(statusSeverity('unknown')).toBe(0);
+  });
+  const now = 1_000_000;
+  it('an ack at crit covers warn AND crit', () => {
+    expect(ackCovers({ status: 'crit', snoozeUntil: null }, 'crit', now)).toBe(true);
+    expect(ackCovers({ status: 'crit', snoozeUntil: null }, 'warn', now)).toBe(true);
+  });
+  it('an ack at warn does NOT cover a later crit — escalation re-alarms', () => {
+    expect(ackCovers({ status: 'warn', snoozeUntil: null }, 'crit', now)).toBe(false);
+    expect(ackCovers({ status: 'warn', snoozeUntil: null }, 'warn', now)).toBe(true);
+  });
+  it('ok/unknown are never "covered" (the sweep clears the ack instead)', () => {
+    expect(ackCovers({ status: 'crit', snoozeUntil: null }, 'ok', now)).toBe(false);
+    expect(ackCovers({ status: 'crit', snoozeUntil: null }, 'unknown', now)).toBe(false);
+  });
+  it('an expired snooze covers nothing; a live snooze still covers', () => {
+    expect(ackCovers({ status: 'warn', snoozeUntil: now - 1 }, 'warn', now)).toBe(false);
+    expect(ackCovers({ status: 'warn', snoozeUntil: now + 60_000 }, 'warn', now)).toBe(true);
+  });
+});
+
+describe('reconcilePausedQueen — the paused-Mug cry-wolf fix (P-001)', () => {
+  const pausedQueen = (todo: number) =>
+    ({ status: 'crit' as const, data: queen({ started: false, armed: false, demand: { todoItems: todo, startedPlans: 0 } }) });
+  const wf = (o: Partial<WorkFeedHealth> = {}): WorkFeedHealth => ({
+    frontier: 0, frontierBlocked: 0, startedPlans: 0, autoEligibleStuck: 0, deadRoutines: 0, deadRoutineNames: [], ...o,
+  });
+  it('paused + PLACEABLE frontier stays crit (a genuine silent outage)', () => {
+    const r = reconcilePausedQueen(pausedQueen(3), { data: wf({ frontier: 2 }) });
+    expect(r?.status).toBe('crit');
+    expect(r?.summary).toContain('2 placeable item(s)');
+  });
+  it('paused + started plans (no frontier) stays crit', () => {
+    const r = reconcilePausedQueen(pausedQueen(0), { data: wf({ startedPlans: 1 }) });
+    expect(r?.status).toBe('crit');
+    expect(r?.summary).toContain('started plan(s)');
+  });
+  it('paused + only STUCK frontier downgrades to warn — idle by choice, summary agrees', () => {
+    const r = reconcilePausedQueen(pausedQueen(2), { data: wf({ frontier: 2, frontierStuck: 2 }) });
+    expect(r?.status).toBe('warn');
+    expect(r?.summary).toContain('none placeable');
+  });
+  it('paused + empty queue downgrades to warn (colony idle by choice)', () => {
+    const r = reconcilePausedQueen(pausedQueen(0), { data: wf() });
+    expect(r?.status).toBe('warn');
+    expect(r?.summary).toContain('idle by choice');
+  });
+  it('unreadable work-feed keeps the conservative crit (returns null — no adjustment)', () => {
+    expect(reconcilePausedQueen(pausedQueen(2), { data: null })).toBeNull();
+  });
+  it('no adjustment when not paused or not crit', () => {
+    expect(reconcilePausedQueen({ status: 'crit', data: queen({ started: true, stalled: true }) }, { data: wf() })).toBeNull();
+    expect(reconcilePausedQueen({ status: 'warn', data: queen({ started: false }) }, { data: wf() })).toBeNull();
+    expect(reconcilePausedQueen({ status: 'crit', data: null }, { data: wf() })).toBeNull();
+  });
+});
+
+describe('loopsStatus — engine self-wake loops (P-008)', () => {
+  const lo = (o: Partial<LoopsHealth> = {}): LoopsHealth => ({
+    armed: 2, overdue: 0, overdueNames: [], failureStreaks: 0, lastFireAt: null, ...o,
+  });
+  it('warn on an overdue armed loop', () => {
+    expect(loopsStatus(lo({ overdue: 1, overdueNames: ['loop-su-x'] }))).toBe('warn');
+  });
+  it('warn on a failure streak', () => {
+    expect(loopsStatus(lo({ failureStreaks: 1 }))).toBe('warn');
+  });
+  it('ok with healthy loops — and ok with zero armed loops (none is not a failure)', () => {
+    expect(loopsStatus(lo())).toBe('ok');
+    expect(loopsStatus(lo({ armed: 0 }))).toBe('ok');
+  });
+});
+
+describe('coordinationStatus — WARN-max during burn-in (P-009 / D-D)', () => {
+  const co = (o: Partial<CoordinationHealth> = {}): CoordinationHealth => ({
+    unansweredAgents: 0, unansweredTotal: 0, unansweredOldestMs: null,
+    criticalContext: 0, highContext: 0, activeAwaits: 0, staleAwaits: 0,
+    leaderlessFleets: 0, liveFleets: 0, ...o,
+  });
+  it('warn on a leaderless fleet', () => {
+    expect(coordinationStatus(co({ leaderlessFleets: 1, liveFleets: 2 }))).toBe('warn');
+  });
+  it('warn on stale (likely stranded) awaits', () => {
+    expect(coordinationStatus(co({ activeAwaits: 5, staleAwaits: 1 }))).toBe('warn');
+  });
+  it('warn on critical context pressure', () => {
+    expect(coordinationStatus(co({ criticalContext: 1, highContext: 3 }))).toBe('warn');
+  });
+  it('warn on an unanswered directed message past the threshold — never crit (burn-in)', () => {
+    expect(coordinationStatus(co({ unansweredOldestMs: UNANSWERED_DIRECTED_WARN_MS + 1 }))).toBe('warn');
+  });
+  it('a fresh unanswered directed message does not warn yet', () => {
+    expect(coordinationStatus(co({ unansweredTotal: 1, unansweredOldestMs: 60_000 }))).toBe('ok');
+  });
+  it('high (not critical) context alone is ok; ok when quiet', () => {
+    expect(coordinationStatus(co({ highContext: 4 }))).toBe('ok');
+    expect(coordinationStatus(co())).toBe('ok');
+  });
+  it('is warn-max by construction: every alarming input together still warns', () => {
+    expect(coordinationStatus(co({
+      leaderlessFleets: 2, staleAwaits: 3, criticalContext: 2,
+      unansweredOldestMs: 4 * UNANSWERED_DIRECTED_WARN_MS,
+    }))).toBe('warn');
+  });
+});
+
+describe('memoryStatus — degraded recall over a real store (P-010)', () => {
+  const me = (o: Partial<MemoryPanelHealth> = {}): MemoryPanelHealth => ({
+    totalMemories: 500, entityRows: 0, feedback30d: 10, zeroHitRate: 0.2, ...o,
+  });
+  it('warn only when a REAL store has a ~dead recall signal', () => {
+    expect(memoryStatus(me({ zeroHitRate: 0.95 }))).toBe('warn');
+  });
+  it('a small/new store never warns, whatever its hit rate', () => {
+    expect(memoryStatus(me({ totalMemories: 50, zeroHitRate: 1 }))).toBe('ok');
+  });
+  it('no telemetry (null rate) is ok — fail-soft, and a healthy rate is ok', () => {
+    expect(memoryStatus(me({ zeroHitRate: null }))).toBe('ok');
+    expect(memoryStatus(me())).toBe('ok');
+  });
 });

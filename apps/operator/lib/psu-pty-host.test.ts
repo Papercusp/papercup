@@ -37,8 +37,12 @@ import {
   PSU_PTY_DIR,
   pidLooksLikePsuHost,
   findLiveHostFor,
+  eventLogPathForOwner,
+  appendHostEvent,
 } from '../scripts/psu-pty-host.mjs';
 import * as nodeFs from 'node:fs';
+import * as nodeOs from 'node:os';
+import { join as pathJoin } from 'node:path';
 import { oscRecolorSequence, COLOR_SCHEMES } from '@papercusp/operator-core/lib/console-color-schemes';
 import { buildConsoleOneliner } from '@papercusp/operator-core/lib/console-spawn';
 
@@ -1008,5 +1012,60 @@ describe('WI-3455 — findLiveHostFor (the launcher resume-of-live guard read)',
       fs.unlinkSync(socketPathFor(ownerId));
       expect(findLiveHostFor(ownerId, { verifyIdentity: () => true })).toBeNull(); // sock gone
     } finally { cleanup(ownerId); }
+  });
+});
+
+describe('appendHostEvent / eventLogPathForOwner (EI-10412 — durable lifecycle-verb outcome log)', () => {
+  const fs = nodeFs;
+  const os = nodeOs;
+  const join = pathJoin;
+  // The host's stderr is the owner's terminal, so a dropped compact carry-note
+  // used to leave ZERO durable trace (the 2026-07-12 epidemic: 10 lost
+  // auto-continuations across 7 agents, reconstructed via transcript
+  // archaeology). These rows are the one-file answer to "did the carry get
+  // typed, and if not why".
+  it('appends one JSONL row per event and returns true', () => {
+    const dir = fs.mkdtempSync(join(os.tmpdir(), 'psu-events-'));
+    try {
+      expect(appendHostEvent('su-test-owner', 'compact-submitted', { carry: true }, dir)).toBe(true);
+      expect(
+        appendHostEvent('su-test-owner', 'compact-carry-dropped', { reason: 'compaction-still-running' }, dir),
+      ).toBe(true);
+      const rows = fs
+        .readFileSync(eventLogPathForOwner('su-test-owner', dir), 'utf8')
+        .trim()
+        .split('\n')
+        .map((l) => JSON.parse(l));
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toMatchObject({ kind: 'compact-submitted', carry: true });
+      expect(rows[1]).toMatchObject({ kind: 'compact-carry-dropped', reason: 'compaction-still-running' });
+      expect(typeof rows[0].ts).toBe('string');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it('front-truncates (oldest rows dropped, newest kept) once the log exceeds the size cap', () => {
+    const dir = fs.mkdtempSync(join(os.tmpdir(), 'psu-events-'));
+    try {
+      const p = eventLogPathForOwner('su-cap', dir);
+      // Pre-seed a log just over the 256KB cap with identifiable rows.
+      const filler = Array.from({ length: 3000 }, (_, i) =>
+        JSON.stringify({ ts: 'old', kind: 'filler', i, pad: 'x'.repeat(64) }),
+      ).join('\n');
+      fs.writeFileSync(p, filler + '\n');
+      expect(fs.statSync(p).size).toBeGreaterThan(256 * 1024);
+      expect(appendHostEvent('su-cap', 'compact-carry-delivered', { attempts: 1 }, dir)).toBe(true);
+      const after = fs.readFileSync(p, 'utf8');
+      expect(fs.statSync(p).size).toBeLessThan(256 * 1024);
+      const rows = after.trim().split('\n').map((l) => JSON.parse(l)); // every surviving line still parses (no half row at the cut)
+      expect(rows.at(-1)).toMatchObject({ kind: 'compact-carry-delivered', attempts: 1 });
+      expect(rows[0].kind).toBe('filler');
+      expect(rows[0].i).toBeGreaterThan(1000); // oldest rows were the ones dropped
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it('is fail-soft: an unwritable dir returns false, never throws', () => {
+    expect(appendHostEvent('su-x', 'compact-submitted', {}, '/nonexistent-root-dir/nope')).toBe(false);
   });
 });

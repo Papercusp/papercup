@@ -143,6 +143,31 @@ export default defineTool({
     // wants full visibility, including who died, for the leader/owner reading this).
     const liveRoster = roster.filter((m) => m.sessionState !== 'ended');
     const { members: memberCount } = splitFleetRosterCounts(liveRoster);
+
+    // agent-launch-resume-primitives P-006 / D-006: there is deliberately NO
+    // "resume the fleet" verb — any single verb has to GUESS which dead members to
+    // revive (all of them? only the ones that died this hour? not the one killed two
+    // days ago you never want back), and every guess is wrong for someone. So give
+    // the leader the FACTS instead: for each ENDED member, when it died and whether a
+    // session is actually resumable — and let it compose the revival per member
+    // (capability:launch-agent { resume: { agentId } }, or fresh, or a fork).
+    const endedIds = roster.filter((m) => m.sessionState === 'ended').map((m) => m.agentId);
+    let resumableByOwner = new Map<string, { sessionId: string | null; endedAt: string | null }>();
+    if (endedIds.length) {
+      try {
+        const { advSessionsByCoordOwner } = await import('../../adv-sessions');
+        const advByOwner = await advSessionsByCoordOwner();
+        resumableByOwner = new Map(
+          endedIds
+            .map((id) => [id, advByOwner.get(id)] as const)
+            .filter((e): e is [string, NonNullable<(typeof e)[1]>] => !!e[1])
+            .map(([id, row]) => [id, { sessionId: row.sessionId, endedAt: row.endedAt }]),
+        );
+      } catch {
+        // Best-effort enrichment — a lookup failure must never fail the status read.
+        resumableByOwner = new Map();
+      }
+    }
     return json({
       ok: true,
       slug: fleet.fleetSlug,
@@ -172,6 +197,25 @@ export default defineTool({
         lastActiveSecAgo: m.lastActiveSecAgo,
         doing: m.doing,
         load: m.load,
+        // P-006: only on the dead — what a leader needs to decide whether (and how) to
+        // bring this one back. `resumable:true` ⇒ `capability:launch-agent { resume:
+        // { agentId }, fleet, brief }` restores it mid-thread with its context intact.
+        ...(m.sessionState === 'ended'
+          ? (() => {
+              const r = resumableByOwner.get(m.agentId);
+              return {
+                endedAt: r?.endedAt ?? null,
+                resumable: !!r?.sessionId,
+                resumableSessionId: r?.sessionId ?? null,
+                ...(r?.sessionId
+                  ? {}
+                  : {
+                      resumeHint:
+                        'no native session id recorded (an omp thread, or a row predating native-id tracking) — launch this lane fresh instead',
+                    }),
+              };
+            })()
+          : {}),
       })),
       ...(completionStats ? { completionStats } : {}),
       // WI-3818: present ONLY when something degraded — a healthy call's shape

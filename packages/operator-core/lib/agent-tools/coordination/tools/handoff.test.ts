@@ -56,11 +56,16 @@ vi.mock('../pending-wakes', () => ({
 // console.warn fails the test under vitest-fail-on-console. Mock both fail-soft
 // seams to empty, matching this file's existing roster-mock discipline (the
 // listPresence leg above already covers the LOCAL-presence path).
-vi.mock('../../adv-sessions', () => ({
+vi.mock('../../../adv-sessions', () => ({
   listRecordedLiveSessions: vi.fn(async () => []),
 }));
-vi.mock('../../sync/hyperbee/session-presence-store', () => ({
+vi.mock('../../../sync/hyperbee/session-presence-store', () => ({
   listLiveSessionPresence: vi.fn(async () => []),
+}));
+// reportIdleRecipients's per-recipient watcher probe (inbox-wake.ts) hits the
+// SAME real await-store — same pre-existing gap, same fix.
+vi.mock('../../../events/await/store', () => ({
+  listActiveAwaitsForKey: vi.fn(async () => []),
 }));
 // WI-4165 item-body hydration seam: mock the WHOLE ref-hydrate-resolve module
 // (the documented trap in that file's own header comment — "a unit test that

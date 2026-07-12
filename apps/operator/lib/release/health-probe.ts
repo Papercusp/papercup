@@ -15,6 +15,23 @@ export interface HealthResult {
   attempts: number;
   elapsedMs: number;
   error?: string;
+  /** Set when `probeMemoryCanary` ran (EI-10361) — the verdict is attached
+   *  for the caller to log/broadcast regardless of `memoryCanaryPolicy`. */
+  memoryCanary?: MemoryCanaryProbeResult;
+}
+
+export interface MemoryCanaryProbeResult {
+  /** false only on a transport/parse failure talking to the probe route
+   *  itself — the route's own PASS-WITH-NOTE contract means a degraded/
+   *  seeded/flag-off canary outcome still reports `reachable: true`. */
+  reachable: boolean;
+  ran?: boolean;
+  status?: 'ok' | 'degraded' | 'decayed' | 'seeded';
+  rAt10?: number | null;
+  delta?: number | null;
+  zeroHitRate?: number | null;
+  skipReason?: string;
+  error?: string;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

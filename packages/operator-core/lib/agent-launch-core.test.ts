@@ -81,6 +81,34 @@ describe('buildAgentLaunchCommand', () => {
     expect(() => buildAgentLaunchCommand({ mode: 'fork' })).toThrow(/requires sessionId/);
   });
 
+  it('adds --headless (which is what keeps a windowless agent injectable at all)', () => {
+    expect(buildAgentLaunchCommand({ mode: 'fresh', agent: 'claude', headless: true })).toContain('--headless');
+  });
+
+  it('binds a plan to its harness', () => {
+    expect(buildAgentLaunchCommand({ mode: 'fresh', plan: 'my-plan', harness: 'papercusp' })).toContain(
+      '--harness=papercusp --plan=my-plan',
+    );
+  });
+
+  it('defaults macOS to the gateway account (a per-session config dir cannot reach the Keychain login)', () => {
+    expect(buildAgentLaunchCommand({ mode: 'fresh', agent: 'claude', platform: 'darwin' })).toContain(
+      '--account=auto',
+    );
+    expect(buildAgentLaunchCommand({ mode: 'fresh', agent: 'claude', platform: 'linux' })).toContain(
+      '--account=default',
+    );
+  });
+
+  it('refuses shell metacharacters in ANY value, not just extraArgs', () => {
+    expect(() => buildAgentLaunchCommand({ mode: 'resume', sessionId: 'x; rm -rf /' })).toThrow(
+      /sessionId with shell metacharacters/,
+    );
+    expect(() => buildAgentLaunchCommand({ mode: 'fresh', plan: '$(whoami)' })).toThrow(
+      /plan with shell metacharacters/,
+    );
+  });
+
   it('passes extraArgs through verbatim but refuses shell metacharacters', () => {
     expect(
       buildAgentLaunchCommand({ mode: 'fresh', agent: 'claude', extraArgs: ['--model=opus', '--brain'] }),

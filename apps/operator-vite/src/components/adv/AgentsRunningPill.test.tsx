@@ -160,11 +160,26 @@ describe('canForkSession (pure — Fork-button backend guard, WI-4009; active+in
 });
 
 describe('agentGlyph (pure)', () => {
-  it('maps kind/role to the colony glyph, · for unknown', () => {
-    expect(agentGlyph({ agentPaneKind: 'queen', role: null })).toBe('🍵');
-    expect(agentGlyph({ agentPaneKind: null, role: 'bee' })).toBe('☕');
+  // Owner 2026-07-12: the Mug takes the coffee-mug ☕ and the worker Cup the
+  // teacup 🍵 — D-006 had these two swapped. Must match apps/tui
+  // agent_pane_kind.rs `glyph()` and primitives.tsx AGENT_KIND_GLYPH.
+  it('maps kind/role to the cup-cast glyph, · for unknown', () => {
+    expect(agentGlyph({ agentPaneKind: 'queen', role: null })).toBe('☕');
+    expect(agentGlyph({ agentPaneKind: null, role: 'bee' })).toBe('🍵');
     expect(agentGlyph({ agentPaneKind: null, role: 'sentinel' })).toBe('🥤');
+    expect(agentGlyph({ agentPaneKind: null, role: 'overwatch' })).toBe('🫖');
     expect(agentGlyph({ agentPaneKind: null, role: 'mystery' })).toBe('·');
+  });
+
+  // The roster is MIXED-GENERATION (WI-2932): agentPaneKind may arrive as either
+  // the pre-rename wire word or the renamed one. Both must render identically —
+  // an alias that drifts shows two different glyphs for the same role in one list.
+  it('renders the renamed kind ids identically to their pre-rename twins', () => {
+    const glyph = (kind: string) => agentGlyph({ agentPaneKind: kind, role: null });
+    expect(glyph('mug')).toBe(glyph('queen'));
+    expect(glyph('kettle')).toBe(glyph('overwatch'));
+    expect(glyph('cup')).toBe(glyph('bee'));
+    expect(glyph('papercup')).toBe(glyph('sentinel'));
   });
 });
 
@@ -241,6 +256,30 @@ describe('<AgentsRunningPill>', () => {
     // Rows for the running agents.
     expect(screen.getByTestId('agent-row-b1')).toBeTruthy();
     expect(screen.getByTestId('agent-row-q1')).toBeTruthy();
+  });
+
+  // OWNER-REPORTED REGRESSION 2026-07-12: the kind legend was rendered straight from
+  // `Object.entries(KIND_GLYPH)`, so it printed the INTERNAL pane-kind ids at the owner
+  // — "🍵 queen · 🫖 overwatch · ☕ bee · 🥤 sentinel". The cast words must come from the
+  // lexicon (mug/kettle/cup/papercup), exactly as AdvAgentsPanel's kindLegend already did.
+  it('the kind legend speaks the LEXICON cast words, never the raw wire kinds', () => {
+    nuqs.open = true;
+    render(<Pill />);
+    const legend = document.querySelector('.pc-agents-roster__legend');
+    expect(legend).toBeTruthy();
+    const text = legend!.textContent ?? '';
+
+    // The cast, in the owner-facing vocabulary.
+    for (const word of ['mug', 'kettle', 'cup', 'papercup', 'planner', 'su']) {
+      expect(text.toLowerCase()).toContain(word);
+    }
+    // ...and NONE of the retired internal vocabulary leaks through.
+    for (const dead of ['queen', 'overwatch', 'bee', 'sentinel']) {
+      expect(text.toLowerCase()).not.toContain(dead);
+    }
+    // The Mug carries the coffee-mug; the worker Cup carries the teacup.
+    expect(text).toContain('☕');
+    expect(text).toContain('🍵');
   });
 
   it('hovering an agent row previews its plan/work-item in the detail strip', () => {
