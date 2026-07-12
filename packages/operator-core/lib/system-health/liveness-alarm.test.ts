@@ -359,6 +359,42 @@ describe('runLivenessAlarmTick (debounced, transition-only)', () => {
     expect(computed).toBe(0); // warm cache used, no recompute
     expect(r.fired).toEqual([]);
   });
+
+  it('(f) EI-9794: an unwired/failing readAutoloopFireRows never crashes the tick nor synthesizes a false alarm (fail-soft)', async () => {
+    // No `readAutoloopFireRows` dep injected → the module's real
+    // `defaultReadAutoloopFireRows` runs. Whether it fails-soft via its own
+    // try/catch (a broken DB/import) or via the "no installSlug resolvable"
+    // early-return, either path must degrade to [] — never throw, never fire
+    // a false autoloop-fire-stale signal.
+    const fresh = mkHealth({ evaluatedAt: 100 * 60_000 });
+    const deps = {
+      readLast: () => fresh,
+      computeHealth: async () => fresh,
+      escalate: async () => {},
+      listOpen: async () => [],
+      now: () => 100 * 60_000 + 60_000,
+      snapshotStaleMs: 6 * 60_000,
+    };
+    const r = await runLivenessAlarmTick('ws', deps); // must not throw
+    expect(r.fired.map((s) => s.key)).not.toContain('autoloop-fire-stale:kettle');
+  });
+
+  it('(f2) an explicitly-injected readAutoloopFireRows that throws still degrades to no fire-stale signal (never crashes the tick)', async () => {
+    const fresh = mkHealth({ evaluatedAt: 100 * 60_000 });
+    const deps = {
+      readLast: () => fresh,
+      computeHealth: async () => fresh,
+      escalate: async () => {},
+      listOpen: async () => [],
+      now: () => 100 * 60_000 + 60_000,
+      snapshotStaleMs: 6 * 60_000,
+      readAutoloopFireRows: async () => {
+        throw new Error('simulated DB read failure');
+      },
+    };
+    const r = await runLivenessAlarmTick('ws', deps); // must not throw
+    expect(r.fired.map((s) => s.key)).not.toContain('autoloop-fire-stale:kettle');
+  });
 });
 
 describe('deriveSignatureFromSummary (legacy classifier)', () => {
@@ -370,6 +406,18 @@ describe('deriveSignatureFromSummary (legacy classifier)', () => {
     expect(deriveSignatureFromSummary('[infra-liveness] all 8 LLM pool account(s) paused — the fleet is rate-starved.')).toBe('accounts-starved');
     expect(deriveSignatureFromSummary('[infra-liveness] Bees / fleet: no bees running')).toBe('panel:bees');
     expect(deriveSignatureFromSummary('[infra-liveness] Work items: 500 items — 0 todo/0 in-flight — REAPER WEDGED')).toBe('panel:workItems');
+  });
+
+  it('(e) EI-9794: recovers the autoloop-fire-stale:<role> signature from a rendered summary', () => {
+    expect(
+      deriveSignatureFromSummary(
+        "[infra-liveness] kettle@papercusp has not fired in 660m (expected every 600s, alarm threshold 3x) — last_status may still read 'ok' since that field only updates on a fire. The supervisor is likely dead; kettle:start to resume.",
+      ),
+    ).toBe('autoloop-fire-stale:kettle');
+    // a different role name is captured, not hardcoded
+    expect(deriveSignatureFromSummary('some-other-role@papercusp has not fired in 5m ...')).toBe(
+      'autoloop-fire-stale:some-other-role',
+    );
   });
 
   it('returns null for an unrecognizable summary (left untouched, never mis-resolved)', () => {
