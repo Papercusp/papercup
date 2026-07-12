@@ -67,12 +67,14 @@ impl AgentPaneKind {
     /// pane name. Cosmetic; tunable during live verify.
     pub fn glyph(self) -> &'static str {
         match self {
-            // restore-pot-lexicon D-006 (owner 2026-07-04): the Papercup cup
-            // characters. Queen=Mug 🍵, Overwatch=Kettle 🫖, Sentinel=Papercup 🥤;
-            // the worker (Bee/Cup) keeps ☕. (Display only — wire strings unchanged.)
-            Self::Queen => "🍵",
+            // restore-pot-lexicon D-006 (owner 2026-07-04) set the cup characters;
+            // owner 2026-07-12 corrected the Mug/Cup assignment: D-006 gave the MUG a
+            // teacup (🍵) while the worker CUP got the actual coffee-mug (☕) — backwards.
+            // Mug=☕, Kettle=🫖, Cup=🍵, Papercup=🥤. (Display only — wire strings
+            // unchanged; from_glyph_prefix derives from here, so the parser follows.)
+            Self::Queen => "☕",
             Self::Overwatch => "🫖",
-            Self::Bee => "☕",
+            Self::Bee => "🍵",
             Self::Sentinel => "🥤",
             Self::Planner => "📋",
             Self::Su => "🛠",

@@ -293,9 +293,9 @@ export default defineTool({
     'Hand a lane to a peer in ONE call: assign the plan items to `to` (durable lane) + deliver the `note` to its inbox (with each assigned item\'s own body inlined, bounded — WI-4165, the receiver reads WHAT to do without re-fetching the plan) + WAKE it now, then report pickup ({ woken, delivered, sessionState, itemsHydrated }). Replaces hand-composing plan_items:assign + coord:send + events:emit + the coord:inbox-wake:<id> key. FLAGS a non-wakeable target: an `ended` sessionState (or recipient_dead) means the lane was assigned but no live process will pick it up until a relaunch — a loud miss, never a silent woken:0. `planSlug`+`items` are optional (omit for a pure directed wake — "resume what I sent you").',
   guidance: {
     when: 'You are a coordinator/Mug handing a specific lane to ANOTHER agent and want it picked up NOW — "su-7a2a, take fleet-dispatch P-001..P-004". One call assigns + wakes + confirms. Target a `parked` agent (coord:presence → sessionState:parked is the ideal); a `live` agent already running sees the note mid-turn.',
-    notWhen: 'Just sharing context / asking a question (coord:send). Claiming work for YOURSELF (plan_items:claim / coord:declare-intent items). A broadcast — dispatch is single-target + wake, never "*". The target is `ended` (coord:presence) — it needs a relaunch/resume, not a dispatch (the wake cannot land).',
+    notWhen: 'Just sharing context / asking a question (coord:send). Claiming work for YOURSELF (plan_items:claim). A broadcast — dispatch is single-target, never "*". The target is `ended` — a wake cannot land on it; bring it back with capability:launch-agent { resume: { agentId } }, then dispatch.',
     chaining:
-      'coord:presence (find a `parked`/wakeable target) → coord:dispatch { to, planSlug, items, note } → check `woken`/`warning`. A woken target then: coord:orient → plan_items:my_items → claim + work the dispatched lane.',
+      'coord:presence (find a `parked`/wakeable target) → coord:dispatch { to, planSlug, items, note } → check `woken`/`warning`. The woken target then orients, claims the lane, and works it.',
   },
   capability: 'coord:write',
   requirePrincipal: false,

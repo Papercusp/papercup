@@ -71,15 +71,15 @@ export default defineTool({
   description:
     'Launch agents: start one ad-hoc on a free-form `brief`, RESUME a dead agent mid-thread (`resume: { agentId }`), or FORK a live one — visible on the desktop or headless, in a fleet or not, one or many. The flexible superset of fleet:launch-on-plan (which stays the ergonomic one-call door for N members on a plan). The brief becomes the agent\'s FIRST TURN, so it starts working immediately instead of parking idle.',
   guidance: {
-    when: 'You want another agent working: an ad-hoc task (`brief`), a plan (`plan`), a dead agent brought back mid-thread with its context intact (`resume: { agentId: "su-…" }`), or a branch off a live agent\'s context (`fork: true`). No fleet and no plan is fine — `fleet` is optional, so a non-leader can launch a plain agent.',
+    when: 'You want another agent working: an ad-hoc task (`brief`), a plan (`plan`), a dead agent brought back mid-thread with its context intact (`resume: { agentId: "su-…" }`), or a branch off a live one (`fork: true`). `fleet` is optional — a non-leader can launch a plain unfleeted agent.',
     notWhen:
-      'To run a COMMAND (a dev server, a build, a REPL) rather than an agent, use capability:terminal / capability:bash. To spin up N members on a plan with fleet seats + capacity advice in one call, fleet:launch-on-plan is still the ergonomic door.',
+      'To run a COMMAND (dev server, build, REPL) rather than an agent: capability:terminal / capability:bash. For N members on a plan with fleet seats + capacity advice in one call, fleet:launch-on-plan is still the ergonomic door.',
     chaining:
-      'Returns as soon as the agents are spawned — it does NOT wait for them to finish. `resume: { agentId }` auto-resolves that agent\'s most-recent session (no uuid hunting); a LIVE source is auto-FORKED (a second CLI on one transcript would collide), which mints a NEW identity — check coord:presence for it. Pass `idempotencyKey` when a retry might re-fire this call: a replay reports deduped:true instead of opening a second set of windows. Headless sessions are reaped by a `:3170` restart (EI-9748) — prefer visible for long-lived work on the dev box.',
+      'Returns once spawned; does NOT wait. `resume: { agentId }` resolves that agent\'s latest session (no uuid hunting); a LIVE source is auto-FORKED (two CLIs on one transcript collide), minting a NEW identity — find it in coord:presence. Pass `idempotencyKey` if a retry might re-fire the call (a replay reports deduped:true instead of opening a second set of windows). EI-9748: a `:3170` restart reaps HEADLESS children.',
     seeAlso: [
-      'fleet:launch-on-plan (N members on a plan, with fleet seats + capacity advice)',
+      'fleet:launch-on-plan (N members on a plan, with seats + capacity advice)',
       'capability:terminal (run a COMMAND in a visible terminal, not an agent)',
-      'coord:presence (find a launched/forked agent\'s identity + liveness)',
+      'coord:presence (a launched/forked agent\'s identity + liveness)',
     ],
   },
   capability: 'capability:terminal',

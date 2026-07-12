@@ -37,14 +37,7 @@ const listPresence = vi.fn(async () => [
   { ownerId: 'su-bee-1' },
   { ownerId: 'su-bee-2' },
 ]);
-// WI-4165 added an import chain (handoff.ts -> ref-hydrate-resolve.ts ->
-// work-items -> ... -> fleet-roster.ts) that reads PRESENCE_STALE_MS off the
-// REAL '../presence' module at import time — spread the original (like
-// declare-intent.test.ts) instead of a bare replacement, or that named export
-// goes missing and every test in this file fails at import (not just the new
-// item-hydration ones).
-vi.mock('../presence', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../presence')>()),
+vi.mock('../presence', () => ({
   listPresence: () => listPresence(),
 }));
 // Pin wake-mode to `auto` + stub staging so the unit test never touches live PG /
@@ -55,12 +48,18 @@ vi.mock('../wake-mode', () => ({
 vi.mock('../pending-wakes', () => ({
   stagePendingWake: vi.fn(async () => ({ id: 1 })),
 }));
-// WI-4165 item-body hydration seam: getPlanRow is the only PG-touching call it
-// makes; planItemsForRow + resolveEffectiveStatusForItems stay REAL (pure) so a
-// mocked row still resolves item text through the actual code path.
-vi.mock('../../plans/source', async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  getPlanRow: vi.fn(async () => null),
+// WI-4165 item-body hydration seam: mock the WHOLE ref-hydrate-resolve module
+// (the documented trap in that file's own header comment — "a unit test that
+// partially mocks @papercusp/flags/server explodes if a new import pulls
+// ref-hydrate-resolve's IO chain (work-items -> await-store -> coord log ->
+// onFlagChange)"). Mocking the module boundary directly, rather than spreading
+// its real import (which transitively reaches fleet-roster/presence-wakeability
+// and hangs this suite at collection), keeps this file's existing wake-pump
+// mocks untouched and the item-hydration path fully injectable per test.
+const hydrateRefsMock = vi.fn(async (): Promise<Array<{ ok: boolean; label: string; snippet: string; ref: unknown }>> => []);
+vi.mock('../ref-hydrate-resolve', () => ({
+  hydrateRefs: (...a: unknown[]) => hydrateRefsMock(...(a as [])),
+  makePlanItemResolver: vi.fn(() => vi.fn()),
 }));
 
 import handoff, { hydrateHandoffItemBodies } from './handoff';
@@ -202,7 +201,7 @@ describe('WI-4165: hydrateHandoffItemBodies (deref-at-delivery for coord:handoff
   });
 
   it('inlines each item\'s hydrated body, appended after any explicit body', async () => {
-    const hydrateRefs = vi.fn(async () => [
+    const hydrateRefs = vi.fn(async (_refs: unknown[], _opts?: unknown) => [
       hydratedRef('P-001', 'Wire the DHT bootstrap fixture.'),
       hydratedRef('P-002', 'Verify the cold-join path.'),
     ]);
@@ -211,7 +210,7 @@ describe('WI-4165: hydrateHandoffItemBodies (deref-at-delivery for coord:handoff
       { hydrateRefs },
     );
     expect(hydrateRefs).toHaveBeenCalledTimes(1);
-    const [refsArg] = hydrateRefs.mock.calls[0] as [unknown];
+    const [refsArg] = hydrateRefs.mock.calls[0];
     expect(refsArg).toEqual([
       { kind: 'plan-item', slug: 'plan-x', item: 'P-001' },
       { kind: 'plan-item', slug: 'plan-x', item: 'P-002' },
@@ -244,15 +243,20 @@ describe('WI-4165: coord:handoff end-to-end with `items`', () => {
     emitAwaitedEvent.mockResolvedValue({ ok: true, key: 'k', woken: 1, notified: [], msgId: null });
     listPresence.mockReset();
     listPresence.mockResolvedValue([{ ownerId: 'su-bee-1' }]);
+    hydrateRefsMock.mockReset();
+    hydrateRefsMock.mockResolvedValue([]);
   });
   afterEach(() => resetCoordLog());
 
   it('recorded handoff body carries the hydrated item snippet + itemsHydrated in the result', async () => {
-    const { getPlanRow } = await import('../../plans/source');
-    vi.mocked(getPlanRow).mockResolvedValueOnce({
-      planSlug: 'plan-x',
-      items: [{ id: 'P-001', text: 'Wire the DHT bootstrap fixture.', status: 'todo', blockedBy: [] }],
-    } as never);
+    hydrateRefsMock.mockResolvedValueOnce([
+      {
+        ok: true,
+        label: 'plan:plan-x#P-001 [todo]',
+        snippet: 'Wire the DHT bootstrap fixture.',
+        ref: { kind: 'plan-item', slug: 'plan-x', item: 'P-001' },
+      },
+    ]);
     const res = await handoff.handler(
       parse(handoff, openArgs({ items: ['P-001'] })),
       ctx,

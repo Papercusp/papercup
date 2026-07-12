@@ -230,20 +230,21 @@ export function KindPill({
 // glance.
 // Cup-cast glyphs (restore-pot-lexicon D-006) — must match apps/tui
 // agent_pane_kind.rs, which uses fixed cup glyphs regardless of pack so the
-// desktop and zellij read identically. queen=Mug 🍵 · overwatch=Kettle 🫖 ·
-// sentinel=Papercup 🥤 · bee(worker)=☕.
+// desktop and zellij read identically. queen=Mug ☕ · overwatch=Kettle 🫖 ·
+// sentinel=Papercup 🥤 · bee(worker)=Cup 🍵. (Owner 2026-07-12: D-006 had the
+// Mug on a teacup and the worker Cup on the coffee-mug — swapped to match.)
 export const AGENT_KIND_GLYPH: Record<string, string> = {
-  queen: '🍵',
+  queen: '☕',
   overwatch: '🫖',
-  bee: '☕',
+  bee: '🍵',
   sentinel: '🥤',
   planner: '📋',
   su: '🛠',
   // Renamed agent kinds (WI-2932) — same glyphs as their pre-rename twins so
   // mixed-generation rows read identically during the expand phase.
-  mug: '🍵',
+  mug: '☕',
   kettle: '🫖',
-  cup: '☕',
+  cup: '🍵',
   papercup: '🥤',
 };
 
