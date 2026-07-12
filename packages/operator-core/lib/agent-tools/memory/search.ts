@@ -134,6 +134,12 @@ export default defineTool({
       .describe('Scope to ONLY the named harness pool — EXCLUDE the user/personal pool. For ISOLATED per-run pools (e.g. a benchmark capability-injection arm) where the user\'s personal memories would be noise. Requires harness_slug; ignored without it.'),
     workspace: z.string().optional()
       .describe('Superuser-only: from an UNSCOPED session, resolve harness fan-out within THIS workspace (the resolved workspace scopes the fan-out). Scoped/power-user sessions ignore it. Omit for personal (user-scoped) recall.'),
+    as_of: z.string().max(64)
+      .refine((v) => Number.isFinite(new Date(v).getTime()), 'as_of must be a parseable ISO 8601 timestamp')
+      .optional()
+      .describe('TEMPORAL (temporal-lite): point-in-time recall — only memories whose validity window covers this ISO timestamp ("what did we believe then?"). Hits carry metadata.validity.'),
+    include_superseded: z.boolean().optional()
+      .describe('TEMPORAL (temporal-lite): include superseded/soft-forgotten memories (validity window closed) — excluded from recall by default. Superseded hits carry metadata.validity { status:"superseded", superseded_by }.'),
   }),
   async handler(args, ctx) {
     const user = await getSessionUserOrDefault();
@@ -189,6 +195,14 @@ export default defineTool({
     const harnessScopes = harnessSlugs.map((slug) => `harness:${slug}`);
     const scope = args.harnessOnly && args.harness_slug ? harnessScopes : [user.id, ...harnessScopes];
 
+    // Temporal-lite read controls (P-006) — ride SearchOptions into the backend
+    // (and the lexical fallback below, so a degraded point-in-time read keeps
+    // its time semantics).
+    const temporal = {
+      ...(args.as_of !== undefined ? { asOf: args.as_of } : {}),
+      ...(args.include_superseded ? { includeSuperseded: true } : {}),
+    };
+
     // B1 (infra-fail-fast-build-integrity-2026-06-19): bound EVERY backend call
     // with a deadline. `available()` itself can hang when the store is wedged
     // (the 2026-06-19 outage), so it is inside the guarded region too. A timeout
@@ -211,7 +225,10 @@ export default defineTool({
       }
       // The backend fans out per scope (limit applies per pool), merges,
       // de-dupes by id and sorts by score; we apply the global cap here.
-      hits = await withMemoryToolTimeout(backend.search(args.query, { scope, limit }), 'memory:search search');
+      hits = await withMemoryToolTimeout(
+        backend.search(args.query, { scope, limit, ...temporal }),
+        'memory:search search',
+      );
     } catch (err) {
       // Classify the failure to a CLEAN reason (mem0-timeout-fix-2026-06-24 /
       // EI-9031 / WI-4183): a hang → memory_timeout; a clean store-down probe
