@@ -61,18 +61,20 @@ describe('currentSessionEpoch', () => {
 });
 
 describe('bumpSessionEpoch', () => {
-  it('returns the new epoch and garbage-collects superseded rows', async () => {
+  it('returns the new epoch; the only GC is the age sweep (superseded-epoch rows KEPT for forensics)', async () => {
     const { sql, calls } = makeSql({
       impl: async (text) => (text.includes('RETURNING') ? [{ epoch: 2 }] : []),
     });
     expect(await bumpSessionEpoch(sql, 'sid-1')).toBe(2);
-    // upsert + per-session GC + age GC
-    expect(calls.length).toBe(3);
+    // upsert + age GC only — rubric-system-improvements-2026-07-12 P-005: an
+    // immediate superseded-epoch DELETE erased drill forensics mid-grade; old
+    // rows are dedup-inert (reads filter on the current epoch), so they stay
+    // until the age sweep.
+    expect(calls.length).toBe(2);
     expect(calls[0].text).toContain('memory_session_epochs');
     expect(calls[0].text).toContain('ON CONFLICT');
-    expect(calls[1].text).toContain('DELETE FROM harness_shared.memory_session_surfaced');
-    expect(calls[1].text).toContain('epoch <');
-    expect(calls[2].text).toContain('surfaced_at <');
+    expect(calls[1].text).toContain('surfaced_at <');
+    expect(calls.some((c) => c.text.includes('epoch <'))).toBe(false);
   });
 
   it('returns null on failure', async () => {

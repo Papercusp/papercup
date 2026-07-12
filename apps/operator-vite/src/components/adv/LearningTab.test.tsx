@@ -30,6 +30,7 @@ const nuqsState: Record<string, unknown> = {
   rrubric: null,
   lretain: null,
   lhive: "",
+  slug: null,
 };
 // Capture the setter per key so tests can assert the hive picker writes ?lhive.
 const nuqsSetters: Record<string, ReturnType<typeof vi.fn>> = {};
@@ -426,6 +427,7 @@ beforeEach(() => {
   nuqsState.rrubric = null;
   nuqsState.lretain = null;
   nuqsState.lhive = "";
+  nuqsState.slug = null;
   for (const k of Object.keys(nuqsSetters)) delete nuqsSetters[k];
   for (const k of Object.keys(seenArgs)) delete seenArgs[k];
   improvementsResult = {
@@ -954,6 +956,8 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
     // title, producing lens, and the classified outcome (pending suppressed).
     expect(screen.getByText("Routed ideas")).toBeTruthy();
     expect(screen.getByText("Cache-warmup plan draft")).toBeTruthy();
+    expect(screen.queryByText("Tighter scoper prompt")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Reviewed ideas/ }));
     expect(screen.getByText("Tighter scoper prompt")).toBeTruthy();
     expect(screen.getByText("reframing")).toBeTruthy(); // lens chip
     expect(screen.getByText("won")).toBeTruthy(); // classified outcome shown
@@ -1006,7 +1010,7 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
     const { rerender } = render(<ScoutView />);
     expect(screen.getAllByText(/Queue idea/)).toHaveLength(8);
     fireEvent.click(
-      screen.getByRole("button", { name: /Earlier routed ideas/ }),
+      screen.getByRole("button", { name: /Earlier ungraded ideas/ }),
     );
     expect(screen.getAllByText(/Queue idea/)).toHaveLength(10);
     const planFilter = screen
@@ -1043,6 +1047,7 @@ describe("ScoutView (Learning › Improve › Ideas) — idea grading (B-07, sco
     // idea-2 is Queen-graded ★4 in the fixture (gradedBy:'Queen' is the raw server
     // value) → the attribution chip routes it through the lexicon; under the echo
     // mock t('brain') → 'brain' (restore-pot-lexicon P-006).
+    fireEvent.click(screen.getByRole("button", { name: /Reviewed ideas/ }));
     expect(screen.getByText("★4 · brain")).toBeTruthy();
     expect(
       screen.getByRole("button", { name: "Grade this idea" }),
@@ -1066,8 +1071,12 @@ describe("ScoutView (Learning › Improve › Ideas) — idea grading (B-07, sco
     rerender(<ScoutView />);
     fireEvent.click(screen.getByRole("radio", { name: "Grade 5 of 5" }));
     fireEvent.click(screen.getByRole("button", { name: "save grade" }));
-    // Optimistic: the owner chip appears before any refetch.
-    await waitFor(() => expect(screen.getByText("★5 · Owner")).toBeTruthy());
+    // Optimistic: the row leaves the ungraded queue and joins reviewed history.
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /Reviewed ideas/ }).textContent,
+      ).toContain("2"),
+    );
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     const [url, init] = fetchMock.mock.calls[0] as unknown as [
       string,
@@ -1218,6 +1227,15 @@ describe("LearningTab — per-Hive lens (per-hive-learning-loops-2026-06-14 P-04
     expect(seenArgs["learning.improvements"]).toEqual({ hive: "alpha-hive" });
   });
 
+  it("defaults to the current harness when it is a selectable pot", () => {
+    nuqsState.slug = "beta-hive";
+    render(<LearningTab />);
+    expect((screen.getByLabelText("pot lens") as HTMLSelectElement).value).toBe(
+      "beta-hive",
+    );
+    expect(seenArgs["learning.improvements"]).toEqual({ hive: "beta-hive" });
+  });
+
   it("threads the chosen hive into the Improvements query args", () => {
     nuqsState.lhive = "beta-hive";
     render(<LearningTab />);
@@ -1282,6 +1300,63 @@ describe("LearningTab — per-Hive lens (per-hive-learning-loops-2026-06-14 P-04
     expect(
       screen.getByRole("button", { name: "Close selected learning" }),
     ).toBeTruthy();
+  });
+
+  it("pins a deep-linked earlier learning into the visible Retain index", () => {
+    nuqsState.lview = "learnings";
+    nuqsState.lretain = "learning-8";
+    hiveResult = {
+      data: [
+        {
+          hive: "alpha-hive",
+          rows: Array.from({ length: 8 }, (_, index) => ({
+            id: `learning-${index + 1}`,
+            text: `Learning ${index + 1}. Supporting detail.`,
+            kind: "fact",
+            createdBy: "owner",
+          })),
+          packs: [],
+          organicCount: 8,
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<LearningTab />);
+    expect(
+      screen.getByRole("button", { name: /Close learning Learning 8/ }),
+    ).toBeTruthy();
+    expect(screen.getByLabelText("Selected learning")).toBeTruthy();
+  });
+
+  it("filters retained learnings through the compact search affordance", () => {
+    nuqsState.lview = "learnings";
+    hiveResult = {
+      data: [
+        {
+          hive: "alpha-hive",
+          rows: [
+            { id: "a", text: "Alpha memory.", kind: "fact", createdBy: "owner" },
+            { id: "b", text: "Beta memory.", kind: "fact", createdBy: "owner" },
+          ],
+          packs: [],
+          organicCount: 2,
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<LearningTab />);
+    fireEvent.click(screen.getByRole("button", { name: "Search learnings" }));
+    fireEvent.change(screen.getByLabelText("Search retained learnings"), {
+      target: { value: "beta" },
+    });
+    expect(screen.getByText("Beta memory.")).toBeTruthy();
+    expect(screen.queryByText("Alpha memory.")).toBeNull();
   });
 
   it("writes ?lhive when the picker changes", () => {

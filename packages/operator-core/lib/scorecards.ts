@@ -321,6 +321,24 @@ function trendSeverity(rating: string): number | null {
 }
 
 /**
+ * An IDLE unknown: the grader saying "this stage did not RUN" (no signal),
+ * vs a bare unknown = "I cannot assess it" (the drift signal staleness needs).
+ * Canonical form is the `idle:` evidence prefix (EI-7624), but the convention
+ * only surfaces in rubrics:trend's description — graders naturally write
+ * "not exercised…" instead and silently poison staleness (rubric-system-
+ * improvements-2026-07-12 P-001: three real scorecards did exactly that on
+ * day one). Normalized READ-time so already-filed scorecards are fixed
+ * retroactively: common not-run phrasings at the START of the evidence count
+ * as idle. Exported for unit tests.
+ */
+export function isIdleUnknown(rating: string, evidence: string | undefined): boolean {
+  if (rating.toLowerCase() !== 'unknown') return false;
+  return /^\s*(idle\s*:|not\s+(exercised|applicable|assessable|observed)\b|n\/a\b|not\s+apply)/i.test(
+    evidence ?? '',
+  );
+}
+
+/**
  * The net first→latest trend direction of a chronological rating series (default
  * ordinal healthy<degraded<broken; `unknown`/custom ratings are excluded as
  * unassessable). Exported so the (pure, DB-free) direction logic is unit-tested
@@ -566,10 +584,7 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
   for (const sc of chrono) {
     for (const [criterion, entry] of Object.entries(sc.ratings)) {
       const arr = byCriterion.get(criterion) ?? [];
-      // `idle:` evidence prefix on an unknown = "stage did not run" (EI-7624) —
-      // counted separately so staleness can tell no-signal from can't-assess.
-      const idle = entry.rating.toLowerCase() === 'unknown' && /^\s*idle\s*:/i.test(entry.evidence ?? '');
-      arr.push({ at: sc.createdAt, rating: entry.rating, idle });
+      arr.push({ at: sc.createdAt, rating: entry.rating, idle: isIdleUnknown(entry.rating, entry.evidence) });
       byCriterion.set(criterion, arr);
     }
   }

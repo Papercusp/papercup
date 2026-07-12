@@ -35,6 +35,7 @@ import {
   FlaskConical,
   GitBranch,
   Beaker,
+  Search,
 } from "lucide-react";
 import type {
   ImprovementDigest,
@@ -202,6 +203,7 @@ export default function LearningTab() {
   const [rubricId, setRubricId] = useQueryState("rrubric", parseAsString);
   const [, setGradeDetail] = useQueryState("grade", parseAsString);
   const [, setRetainDetail] = useQueryState("lretain", parseAsString);
+  const [harnessSlug] = useQueryState("slug", parseAsString);
   // Tab-level per-Hive lens (per-hive-learning-loops P-042): ONE `?lhive=` param,
   // promoted up from the Learnings sub-view so it applies across every hive-aware
   // view. Agents drive it via ui:dispatch; the hive-creation success card
@@ -226,7 +228,11 @@ export default function LearningTab() {
   });
   const hives = hiveList.data ?? [];
   const hiveAware = HIVE_AWARE_VIEWS.has(view);
-  const hive = lhive || hives[0]?.slug || "";
+  const hive =
+    lhive ||
+    hives.find((candidate) => candidate.slug === harnessSlug)?.slug ||
+    hives[0]?.slug ||
+    "";
   const activeStage = stageForView(view);
   const activeStageMeta =
     STAGES.find((stage) => stage.id === activeStage) ?? null;
@@ -1348,18 +1354,12 @@ function ApiaryView({
         icon={Gauge}
         title="Benchmark"
         signal={
-          pending
-            ? `${pending.successfulRuns}/${pending.totalRuns} pending`
-            : latest
-              ? `${latest.successfulRuns}/${latest.totalRuns} solved`
-              : undefined
+          latest
+            ? `${latest.successfulRuns}/${latest.totalRuns} solved`
+            : undefined
         }
         tone={
-          pending
-            ? "accent"
-            : latest && latest.successRate >= 0.8
-              ? "good"
-              : "neutral"
+          latest && latest.successRate >= 0.8 ? "good" : "neutral"
         }
         action={
           <button
@@ -1384,16 +1384,16 @@ function ApiaryView({
         <LearningVisualEmpty icon={Gauge} title="No benchmark runs" />
       ) : (
         <>
-          {pending ? (
-            <div className="pc-learning__pendingrun" role="status">
-              <Clock size={12} aria-hidden />
-              <span>
-                <strong>{shortSha(pending.codeSha)}</strong> is waiting for a
-                scored result
-              </span>
-              <em>
-                {pending.successfulRuns}/{pending.totalRuns} runs complete
-              </em>
+          {!latest && pending ? (
+            <div className="pc-learning-visual__layout">
+              <LearningHeroMetric
+                eyebrow={shortSha(pending.codeSha)}
+                value={`${pending.successfulRuns}/${pending.totalRuns}`}
+                status="pending"
+                tone="accent"
+              >
+                runs complete
+              </LearningHeroMetric>
             </div>
           ) : null}
           {latest ? (
@@ -1421,9 +1421,22 @@ function ApiaryView({
                           : "neutral"
                   }
                 >
-                  {currentDelta != null
-                    ? `Δ ${currentDeltaMeta.text}`
-                    : "first generation"}
+                  <span>
+                    {currentDelta != null
+                      ? `Δ ${currentDeltaMeta.text}`
+                      : "first generation"}
+                  </span>
+                  {pending ? (
+                    <span
+                      className="pc-learning__pendinginline"
+                      role="status"
+                      title={`${shortSha(pending.codeSha)} is awaiting a scored result`}
+                    >
+                      <Clock size={10} aria-hidden />
+                      {shortSha(pending.codeSha)} · {pending.successfulRuns}/
+                      {pending.totalRuns}
+                    </span>
+                  ) : null}
                 </LearningHeroMetric>
                 <LearningComparisonBars
                   title="Previous vs current"
@@ -2842,6 +2855,8 @@ function LearningsView({
     "lretain",
     parseAsString,
   );
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
   const sync = useSyncQuery<HiveLearningsSnapshot>({
     queryName: "learning.hive",
@@ -2851,10 +2866,26 @@ function LearningsView({
   });
   const snap = sync.data?.[0];
   const rows = snap?.rows ?? [];
-  const filtered = rows;
+  const filtered = searchQuery.trim()
+    ? rows.filter((row) =>
+        row.text.toLowerCase().includes(searchQuery.trim().toLowerCase()),
+      )
+    : rows;
   const selectedRow = selectedLearning
-    ? (filtered.find((row) => row.id === selectedLearning) ?? null)
+    ? (rows.find((row) => row.id === selectedLearning) ?? null)
     : null;
+  const primaryRows = [
+    ...(selectedRow && !filtered.slice(0, 6).includes(selectedRow)
+      ? [selectedRow]
+      : []),
+    ...filtered,
+  ]
+    .filter(
+      (row, index, all) => all.findIndex((item) => item.id === row.id) === index,
+    )
+    .slice(0, 6);
+  const primaryIds = new Set(primaryRows.map((row) => row.id));
+  const earlierRows = filtered.filter((row) => !primaryIds.has(row.id));
   const selectedProvenance = selectedRow
     ? learningProvenance(selectedRow.createdBy, selectedRow.kind)
     : null;
@@ -2931,19 +2962,12 @@ function LearningsView({
           }}
           aria-hidden
         />
-        <span
+        <button
+          type="button"
           className="pc-learning__retainedmain"
-          role="button"
-          tabIndex={0}
           aria-expanded={selected}
           aria-label={`${selected ? "Close" : "Open"} learning ${preview.headline}`}
           onClick={() => void setSelectedLearning(selected ? null : r.id)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" || event.key === " ") {
-              event.preventDefault();
-              void setSelectedLearning(selected ? null : r.id);
-            }
-          }}
         >
           <span className="pc-learning__retainedsummary">
             <strong>{preview.headline}</strong>
@@ -2972,7 +2996,7 @@ function LearningsView({
               </Tooltip>
             ) : null}
           </span>
-        </span>
+        </button>
       </li>
     );
   };
@@ -2988,15 +3012,43 @@ function LearningsView({
           signal={snap ? `${rows.length} retained` : undefined}
           tone={rows.length > 0 ? "good" : "neutral"}
           action={
-            <button
-              type="button"
-              className="pc-learning__refresh"
-              aria-label="Reload the learnings"
-              disabled={sync.fetching}
-              onClick={() => sync.invalidate()}
-            >
-              <RefreshCw size={13} aria-hidden />
-            </button>
+            <div className="pc-learning__retaincontrols">
+              {searchOpen ? (
+                <input
+                  autoFocus
+                  type="search"
+                  aria-label="Search retained learnings"
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                />
+              ) : null}
+              <button
+                type="button"
+                className="pc-learning__refresh"
+                aria-label={
+                  searchOpen ? "Close retained search" : "Search learnings"
+                }
+                onClick={() => {
+                  setSearchOpen((current) => !current);
+                  if (searchOpen) setSearchQuery("");
+                }}
+              >
+                {searchOpen ? (
+                  <XCircle size={13} aria-hidden />
+                ) : (
+                  <Search size={13} aria-hidden />
+                )}
+              </button>
+              <button
+                type="button"
+                className="pc-learning__refresh"
+                aria-label="Reload the learnings"
+                disabled={sync.fetching}
+                onClick={() => sync.invalidate()}
+              >
+                <RefreshCw size={13} aria-hidden />
+              </button>
+            </div>
           }
         />
 
@@ -3030,15 +3082,15 @@ function LearningsView({
           >
             <div className="pc-learning__retainindex">
               <ul className="pc-learning__list">
-                {filtered.slice(0, 6).map(renderLearning)}
+                {primaryRows.map(renderLearning)}
               </ul>
-              {filtered.length > 6 ? (
+              {earlierRows.length > 0 ? (
                 <LearningDisclosure
                   label="Earlier retained learnings"
-                  count={filtered.length - 6}
+                  count={earlierRows.length}
                 >
                   <ul className="pc-learning__list">
-                    {filtered.slice(6).map(renderLearning)}
+                    {earlierRows.map(renderLearning)}
                   </ul>
                 </LearningDisclosure>
               ) : null}
@@ -3341,7 +3393,7 @@ export function LearningStyles() {
 
       .pc-learning__row--retained { grid-template-columns: 4px minmax(0, 1fr) auto; }
       .pc-learning__row--retained.is-selected { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
-      .pc-learning__retainedmain { min-width: 0; cursor: pointer; border-radius: 5px; }
+      .pc-learning__retainedmain { width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 5px; background: transparent; color: inherit; cursor: pointer; font: inherit; text-align: left; }
       .pc-learning__retainedmain:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
       .pc-learning__retainedtext { display: -webkit-box; overflow: hidden; font-size: 12px; line-height: 1.4; white-space: pre-wrap; word-break: break-word; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
       .pc-learning__retainedtext.is-expanded { display: block; overflow: visible; -webkit-line-clamp: unset; }
@@ -3358,6 +3410,8 @@ export function LearningStyles() {
       .pc-learning__retaindetail > header button { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; background: transparent; color: var(--fg-mute); cursor: pointer; }
       .pc-learning__retaindetail > p { margin: 7px 0 10px; color: var(--fg); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
       .pc-learning__retaindetail > footer { display: flex; justify-content: flex-end; gap: 5px; }
+      .pc-learning__retaincontrols { display: flex; align-items: center; gap: 4px; }
+      .pc-learning__retaincontrols input { width: min(220px, 28vw); height: 26px; padding: 3px 8px; font-size: 10.5px; }
       @container learning (max-width: 820px) { .pc-learning__retainlayout.has-detail { grid-template-columns: 1fr; } .pc-learning__retaindetail { grid-row: 1; } }
 
       /* Lens sampling weights (P-007 steering visibility). */
@@ -3421,6 +3475,7 @@ export function LearningStyles() {
       .pc-learning__pendingrun svg { color: var(--accent); }
       .pc-learning__pendingrun strong { color: var(--fg); font-family: var(--font-mono, ui-monospace, monospace); }
       .pc-learning__pendingrun em { margin-left: auto; color: var(--fg-mute); font-style: normal; font-variant-numeric: tabular-nums; }
+      .pc-learning__pendinginline { display: inline-flex; align-items: center; gap: 4px; margin-left: 7px; padding-left: 7px; border-left: 1px solid var(--border); color: var(--accent); font-size: 9px; font-variant-numeric: tabular-nums; }
       .pc-learning__provenance { display: inline-grid; place-items: center; width: 18px; height: 18px; border: 1px solid var(--border); border-radius: 50%; color: var(--fg-mute); }
       .pc-learning__provenance.is-owner { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 42%, var(--border)); }
       .pc-learning__provenance.is-brain { color: #34d399; border-color: color-mix(in srgb, #34d399 42%, var(--border)); }

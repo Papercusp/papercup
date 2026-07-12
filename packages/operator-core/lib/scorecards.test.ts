@@ -7,7 +7,7 @@
  * excluded as unassessable.
  */
 import { describe, it, expect } from 'vitest';
-import { computeTrendDirection, computeRubricStaleness, compressSeries, ratingScore10, scorecardScore10, scoreOverridesForScale } from './scorecards';
+import { computeTrendDirection, computeRubricStaleness, compressSeries, isIdleUnknown, ratingScore10, scorecardScore10, scoreOverridesForScale } from './scorecards';
 import type { CriterionTrend } from './scorecards';
 
 const s = (...ratings: string[]) => ratings.map((rating, i) => ({ at: `2026-06-20T0${i}:00:00.000Z`, rating }));
@@ -294,5 +294,35 @@ describe('extended 5-level scale (exemplary / pass / partial / fail / severe)', 
     expect(computeTrendDirection(s('exemplary', 'pass'))).toBe('worsening');
     expect(computeTrendDirection(s('fail', 'severe'))).toBe('worsening');
     expect(computeTrendDirection(s('severe', 'partial', 'pass'))).toBe('improving');
+  });
+});
+
+describe('isIdleUnknown — read-time idle normalization (rubric-system-improvements P-001)', () => {
+  it("canonical 'idle:' prefix on an unknown is idle", () => {
+    expect(isIdleUnknown('unknown', 'idle: no loop wake this window')).toBe(true);
+    expect(isIdleUnknown('unknown', '  IDLE : frozen hive')).toBe(true);
+  });
+
+  it('common not-run phrasings normalize to idle (fixes already-filed scorecards retroactively)', () => {
+    expect(isIdleUnknown('unknown', 'Not exercised — no routing decision points in a single-fixture drill.')).toBe(true);
+    expect(isIdleUnknown('unknown', 'not applicable — member, not leader')).toBe(true);
+    expect(isIdleUnknown('unknown', 'Not assessable from tool_invocations timestamps alone.')).toBe(true);
+    expect(isIdleUnknown('unknown', 'n/a — this drill has no code edits')).toBe(true);
+    expect(isIdleUnknown('unknown', 'Not observed during the window.')).toBe(true);
+  });
+
+  it("a bare can't-assess unknown stays NON-idle — it is the drift signal staleness needs", () => {
+    expect(isIdleUnknown('unknown', 'the criterion model no longer matches how dispatch works')).toBe(false);
+    expect(isIdleUnknown('unknown', '')).toBe(false);
+    expect(isIdleUnknown('unknown', undefined)).toBe(false);
+  });
+
+  it('never idle for a non-unknown rating, whatever the evidence says', () => {
+    expect(isIdleUnknown('pass', 'idle: whatever')).toBe(false);
+    expect(isIdleUnknown('degraded', 'not exercised')).toBe(false);
+  });
+
+  it('phrasing must LEAD the evidence — a mid-sentence mention is not idle', () => {
+    expect(isIdleUnknown('unknown', 'the drill ran but evidence was not applicable to this criterion')).toBe(false);
   });
 });

@@ -132,6 +132,16 @@ export interface VoiceState {
   /** True between onUtteranceFinal and status='speaking' (or timeout)
    *  — i.e. "transcript was captured, the agent is preparing a reply." */
   awaitingResponse: boolean;
+  /** P-003 (voice-public-release-readiness): true while a wake-capable
+   *  capture loop is ACTUALLY running — Silero/energy-VAD whisper always-on,
+   *  a porcupine/openWakeWord gate, or the Web Speech wake recognizer.
+   *  Set/cleared at the exact capture start/stop sites (derived-correct,
+   *  never inferred after the fact). The UI must not advertise
+   *  "say <wake word>" unless this — or a mic-owning full agent — is true:
+   *  on runtimes where no detector can fire (e.g. WebKitGTK without local
+   *  whisper AND without Web Speech), always-on otherwise LOOKS armed while
+   *  nothing is listening. */
+  wakeListening: boolean;
 }
 
 interface VoiceConfig {
@@ -205,6 +215,7 @@ let state: VoiceState = {
   audioReceiving: false,
   processingTranscript: false,
   awaitingResponse: false,
+  wakeListening: false,
 };
 
 /**
@@ -467,7 +478,10 @@ export function initVoiceMode(): void {
     // queue so it lands cleanly even mid-TTS.
     try {
       const prefs = loadVoicePrefsClient();
-      if (prefs.speakSessionHandoff !== false && wakeword) {
+      // P-003 honest wake copy: only advertise "say <wake word>" when a wake
+      // gate is actually re-arming here (wakeGated). Otherwise nothing will
+      // be listening for the phrase and the spoken promise would be a lie.
+      if (prefs.speakSessionHandoff !== false && wakeword && wakeGated) {
         const msg = `Going to wake-word listening. Say ${wakeword} when you're ready.`;
         speak(msg, 'system:operator', 'polite');
       }
@@ -1628,6 +1642,7 @@ async function maybeStartWakeWordGate(prefs: any): Promise<boolean> {
         },
         onError: (err) => console.warn('[porcupine]', err),
       });
+      setWakeListening(true);
       return true;
     } catch (err) {
       console.warn('[voice] porcupine start failed; falling back:', err);
@@ -1648,6 +1663,7 @@ async function maybeStartWakeWordGate(prefs: any): Promise<boolean> {
         },
         onError: (err) => console.warn('[openwakeword]', err),
       });
+      setWakeListening(true);
       return true;
     } catch (err) {
       console.warn('[voice] openwakeword start failed; falling back:', err);
@@ -1747,6 +1763,7 @@ async function maybeStartWhisperCapture(mode: VoiceMode): Promise<void> {
       // conversation window) dispatches to the brain.
       onFinal: (text) => dispatchAlwaysOnUtterance(text),
     });
+    setWakeListening(true);
   } catch {
     startWakeWordListening();
   }
@@ -1822,12 +1839,22 @@ async function startEnergyVadAlwaysOn(): Promise<void> {
       } catch { /* network blip / whisper down — drop this utterance */ }
     },
   });
+  setWakeListening(true);
   // Capture is live; clear the optimistic 'connecting' to the listening-ready
   // state (mode label shows "Always-on"; audioReceiving drives the hearing UI).
   if (state.status === 'connecting') {
     clearConnectingWatchdog();
     setState({ status: 'idle', micOwnedByFullAgent: false });
   }
+}
+
+/**
+ * Flip the "a wake-capable capture loop is live" flag (idempotent). Called
+ * ONLY at the exact points a capture loop actually starts or stops, so the
+ * value is derived-correct at the source — never a verify-after guess (P-003).
+ */
+function setWakeListening(listening: boolean): void {
+  if (state.wakeListening !== listening) setState({ wakeListening: listening });
 }
 
 function stopWhisperCaptureIfRunning(): void {
@@ -1839,10 +1866,20 @@ function stopWhisperCaptureIfRunning(): void {
     void porcupineHandle.stop();
     porcupineHandle = null;
   }
+  // Whatever was listening for the wake phrase is now gone (the Web Speech
+  // recognizer path is torn down by its own call sites, which also route
+  // through here on mode changes). Honest default: nothing is listening.
+  setWakeListening(false);
 }
 
 function startWakeWordListening(): void {
-  if (typeof window === 'undefined' || !state.hasWebSpeechSTT) return;
+  if (typeof window === 'undefined' || !state.hasWebSpeechSTT) {
+    // No Web Speech on this runtime — NOTHING can hear the wake phrase.
+    // Flag it so the UI stops advertising "say <wake word>" and shows the
+    // PTT affordance instead (P-003 honest wake copy).
+    setWakeListening(false);
+    return;
+  }
   const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
   recognition = new SR();
   recognition.continuous = true;
@@ -1892,6 +1929,8 @@ function startWakeWordListening(): void {
   } catch {
     /* already started */
   }
+  // The Web Speech wake recognizer is live (or already was — idempotent).
+  setWakeListening(true);
 }
 
 function activateListening(seedTranscript: string): void {
