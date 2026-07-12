@@ -42,17 +42,35 @@ export function slugifyDatatype(name: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
-/**
- * Singularize ONE slug token. Deliberately crude and TOTAL — it is a canonicalization,
- * not linguistics: the only property that matters is that a word and its plural land on
- * the SAME key ('order'/'orders' → 'order', 'box'/'boxes' → 'box', 'policy'/'policies'
- * → 'policy'). Being wrong about English is harmless as long as it is wrong CONSISTENTLY.
- */
-function singularizeToken(t: string): string {
+/** One crude de-pluralization step. Not linguistics — see {@link singularizeToken}. */
+function singularizeOnce(t: string): string {
   if (/ies$/.test(t) && t.length > 4) return `${t.slice(0, -3)}y`;
   if (/(s|x|z|ch|sh)es$/.test(t)) return t.slice(0, -2);
   if (/s$/.test(t) && !/ss$/.test(t) && t.length > 3) return t.slice(0, -1);
   return t;
+}
+
+/**
+ * Singularize ONE slug token, to a FIXED POINT. Deliberately crude and TOTAL — it is a
+ * canonicalization, not linguistics: the only property that matters is that a word and
+ * its plural land on the SAME key. Being wrong about English is harmless as long as it
+ * is wrong CONSISTENTLY on both sides.
+ *
+ * The fixed point is what makes it consistent, and it is not cosmetic. A singular that
+ * merely ENDS in 's' ('status', 'bias') gets its 's' stripped by the bare-s rule, while
+ * its plural takes the '-es' rule: one pass sends 'status' → 'statu' but 'statuses' →
+ * 'status', and the pair does NOT collide — the gate misses the duplicate. Iterating to
+ * stability sends both to 'statu'. Equivalently: canonical(canonical(x)) === canonical(x),
+ * the property any canonicalization owes its callers.
+ */
+function singularizeToken(t: string): string {
+  let out = t;
+  for (let i = 0; i < 4; i++) {
+    const next = singularizeOnce(out);
+    if (next === out) return out;
+    out = next;
+  }
+  return out;
 }
 
 /**

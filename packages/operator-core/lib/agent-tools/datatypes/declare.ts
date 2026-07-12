@@ -9,9 +9,15 @@
  * job is preventing DUPLICATE datatypes. Declaration runs a two-level check —
  *   1. HARD: the id (kebab slug) is unique within the workspace (the PK). Re-declaring
  *      the same id UPDATES it in place.
- *   2. SOFT: a semantic-similarity surface — if an existing datatype looks like this
- *      one, return `similar_exists` with the candidates so the caller reuses it or
- *      confirms distinct (`force: true` for the ambiguous middle).
+ *   2. CERTAIN-ONLY: a canonical-key collision (`orders` vs `order` — singular/plural and
+ *      punctuation normalized away) returns `similar_exists`; `force: true` overrides.
+ *      Everything else DECLARES and gets the nearest datatypes back as advisory `related`.
+ *
+ * Level 2 used to be a SOFT semantic gate that refused on a similarity threshold. It
+ * refused 100% of legitimate declarations and caught no duplicates (EI-10562): the score
+ * cannot separate a duplicate from a same-domain neighbour at any constant. A gate that
+ * cannot be certain must ADVISE, not refuse — otherwise callers learn to pass force:true
+ * unconditionally and the gate is dead forever. Certainty refuses; uncertainty advises.
  *
  * TIER (D-002 / D-008): `generic-kind` (default — a work_item kind + validated payload,
  * registerable at runtime, zero migration), `first-class` (a native SQL-backed concept —
@@ -30,8 +36,10 @@ import {
   upsertDatatype,
   getDatatype,
   findSimilarDatatypes,
+  findCanonicalDuplicate,
   slugifyDatatype,
   DATATYPE_TIERS,
+  type SimilarDatatype,
 } from '../../datatype-registry-store';
 import { checkSelfImprovementForDeclare } from '../../datatype-self-improvement';
 import { isCompilableSchema } from '../../datatype-payload-validation';
@@ -43,9 +51,11 @@ export default defineTool({
   description:
     'Declare a reusable entity TYPE (a "datatype" — bet, wager, forecast, position, …) into the workspace ' +
     'datatype registry, so blueprints can reference it via dependencies.datatypes and (generic-kind tier) ' +
-    'work_items can be created with its kind. DEDUP-ONLY authority: a hard unique id + a soft semantic gate — ' +
-    'if a similar datatype exists you get { ok:false, reason:"similar_exists", candidates } so you reuse it or ' +
-    'pass force:true. Re-declaring the same name UPDATES it in place.',
+    'work_items can be created with its kind. DEDUP-ONLY authority: the id is unique, and an unmistakable ' +
+    'duplicate (`orders` when `order` exists — singular/plural normalized) returns { ok:false, ' +
+    'reason:"similar_exists" } so you reuse it (force:true overrides). A merely SIMILAR datatype never blocks ' +
+    'you: it declares, and the nearest existing datatypes come back as `related` so you can reuse one if you ' +
+    'meant it. Re-declaring the same name UPDATES it in place.',
   guidance: {
     when:
       'When a domain needs a shared, named entity TYPE that should be searchable / plannable / improvable like ' +
@@ -171,28 +181,44 @@ export default defineTool({
       ? await embedder(`${args.title ?? args.name}\n${args.description}`).catch(() => null)
       : null;
 
-    // Soft semantic gate (D-010) — only for a genuinely NEW id (re-declaring the same
-    // id is an in-place update, not a duplicate). `force` skips the gate.
-    if (!exists && !args.force) {
-      const similar = await findSimilarDatatypes(sql, workspaceId, {
-        title: args.title ?? args.name,
-        description: args.description,
-        embedding,
-        excludeId: id,
-        limit: 5,
-      });
-      const strong = similar.filter((s) => s.score >= 0.05);
-      if (strong.length > 0) {
+    // The dedup gate (D-010), for a genuinely NEW id only — re-declaring the same id is an
+    // in-place update, not a duplicate.
+    //
+    // EI-10562 — WHY THIS IS TWO MECHANISMS AND NOT ONE THRESHOLD. This used to refuse on
+    // `similarityScore >= 0.05`, which is `cosine >= 0.083` — the noise floor. It refused
+    // 7 of 7 legitimate declarations (every datatype in the registry but the very first had
+    // to be re-sent with force:true) and caught zero real duplicates. The instinct is to
+    // raise the constant; the live data says no constant exists. Cosine between the one true
+    // near-duplicate (bet/wager, 0.752) and DISTINCT same-domain pairs (bet/forecast, 0.710)
+    // differs by 0.04. Similarity cannot separate a duplicate from a neighbour here.
+    //
+    // So the DECISION PROCEDURE changed, not the number:
+    //   REFUSE only what is certain — an exact canonical-key collision (`orders` vs `order`).
+    //   ADVISE on everything else — the neighbours ride along on the success payload.
+    // A gate that cannot be certain must advise, not refuse: a refusal it cannot justify
+    // just teaches every caller to pass force:true, which destroys the gate permanently.
+    let related: SimilarDatatype[] = [];
+    if (!exists) {
+      const dup = await findCanonicalDuplicate(sql, workspaceId, args.name, id);
+      if (dup && !args.force) {
         return reply({
           ok: false,
           reason: 'similar_exists',
           message:
-            `a datatype like "${args.name}" may already exist: ` +
-            strong.map((s) => `${s.id} ("${s.title}")`).join(', ') +
-            ' — reuse one of these, or re-call with force:true to confirm it is distinct.',
-          candidates: strong,
+            `"${args.name}" is the same datatype as "${dup.id}" ("${dup.title}") once singular/plural and ` +
+            `punctuation are normalized — reuse ${dup.id}, or re-call with force:true if it is genuinely distinct.`,
+          candidates: [dup],
         });
       }
+      // Advisory only — ranks the nearest existing datatypes, never blocks. A neighbour is
+      // information the caller wants ("you may have meant this"), not grounds for refusal.
+      related = await findSimilarDatatypes(sql, workspaceId, {
+        title: args.title ?? args.name,
+        description: args.description,
+        embedding,
+        excludeId: id,
+        limit: 3,
+      }).catch(() => []);
     }
 
     const row = await upsertDatatype(sql, {
@@ -229,12 +255,22 @@ export default defineTool({
       ...(firstClassScaffold && firstClassScaffold.ok
         ? { scaffold: { files: firstClassScaffold.files, reviewNotes: firstClassScaffold.reviewNotes, nextSteps: firstClassScaffold.nextSteps } }
         : {}),
+      // EI-10562: the nearest existing datatypes, as ADVICE on a successful declaration —
+      // the caller sees what it may have meant instead of being refused for looking like it.
+      ...(related.length > 0 ? { related } : {}),
       note:
         tier === 'first-class'
           ? 'first-class declared; the SQL backing migration is scaffolded in `scaffold.files` — ship it via the reviewed PR rail (NOT runtime).'
           : tier === 'projection'
             ? `projection declared; ${row.authoritativeWriter} is the single writer — Papercusp holds a read-only view.`
             : `generic-kind declared; work_items:create { kind:"${row.workItemKind}" } is now accepted in this workspace.`,
+      ...(related.length > 0
+        ? {
+            relatedNote:
+              `related datatypes already exist: ${related.map((s) => `${s.id} ("${s.title}")`).join(', ')} — ` +
+              'if you meant one of those, reuse it and retire this one (datatypes:list to review).',
+          }
+        : {}),
     });
   },
 });

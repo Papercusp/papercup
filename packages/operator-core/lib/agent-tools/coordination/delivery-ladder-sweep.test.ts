@@ -8,6 +8,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   classifyLadderEscalations,
+  renderLadderBody,
+  type LadderMsg,
   runDeliveryLadderSweepOnce,
   ladderTtlMs,
   ladderStormMs,
@@ -172,6 +174,11 @@ describe('classifyLadderEscalations (pure verdict)', () => {
  * for the one case it exists to catch, a peer genuinely blocked on an answer. Crying wolf
  * against correct behavior gets it tuned out exactly when it is right.
  */
+/** A directed message in the ladder window. `replyTo` set ⇒ it is a reply. */
+function msg(agoMin: number, over: Partial<LadderMsg> = {}): LadderMsg {
+  return { ts: NOW - agoMin * MIN, from: 'su-peer', summary: `msg ${agoMin}m`, replyTo: null, ...over };
+}
+
 describe('classifyLadderEscalations — reports UNREAD mail, not the whole window (EI-10551)', () => {
   it('counts only messages that landed after the last read, and ages from the oldest UNREAD', () => {
     // The incident, in miniature: 5 in the window, last read 10m ago ⇒ only the 2 newest
@@ -183,7 +190,7 @@ describe('classifyLadderEscalations — reports UNREAD mail, not the whole windo
           cnt: 5,
           oldest_ts_ms: NOW - 88 * MIN,
           newest_ts_ms: NOW - 1 * MIN,
-          recent_ts_ms: [NOW - 1 * MIN, NOW - 9 * MIN, NOW - 30 * MIN, NOW - 60 * MIN, NOW - 88 * MIN],
+          recent_msgs: [msg(1), msg(9), msg(30), msg(60), msg(88)],
         }),
       ],
       lastReadByOwner: new Map([['su-leader', new Date(NOW - 10 * MIN).toISOString()]]),
@@ -195,16 +202,18 @@ describe('classifyLadderEscalations — reports UNREAD mail, not the whole windo
     expect(out).toHaveLength(1);
     expect(out[0].candidateCount).toBe(2); // NOT 5 — the other three predate the read
     expect(out[0].oldestAgeMs).toBe(9 * MIN); // NOT 88m — that message was read long ago
+    expect(out[0].unread).toHaveLength(2); // and it CARRIES them, so triage needs no inbox call
+    expect(out[0].neverRead).toBe(false);
   });
 
-  it('a never-read recipient still reports the FULL window (nothing has been read)', () => {
+  it('a never-read recipient reports the FULL window and is flagged neverRead (a real hook fault)', () => {
     const out = classifyLadderEscalations({
       rows: [
         row('su-never', {
           cnt: 3,
           oldest_ts_ms: NOW - 40 * MIN,
           newest_ts_ms: NOW - 6 * MIN,
-          recent_ts_ms: [NOW - 6 * MIN, NOW - 20 * MIN, NOW - 40 * MIN],
+          recent_msgs: [msg(6), msg(20), msg(40)],
         }),
       ],
       lastReadByOwner: new Map(), // no coord:inbox/orient on record — genuinely deaf
@@ -214,10 +223,11 @@ describe('classifyLadderEscalations — reports UNREAD mail, not the whole windo
     });
     expect(out[0].candidateCount).toBe(3);
     expect(out[0].oldestAgeMs).toBe(40 * MIN);
+    expect(out[0].neverRead).toBe(true);
   });
 
-  it('degrades to the window aggregates when per-message stamps are absent (never worse than before)', () => {
-    // A row without recent_ts_ms (older shape / stubbed IO) must behave EXACTLY as it did
+  it('degrades to the window aggregates when per-message rows are absent (never worse than before)', () => {
+    // A row without recent_msgs (older shape / stubbed IO) must behave EXACTLY as it did
     // pre-fix. A correctness fix that throws or drops an escalation on an unexpected row
     // shape would trade a false alarm for a MISSED one — strictly the worse failure.
     const out = classifyLadderEscalations({
@@ -230,15 +240,16 @@ describe('classifyLadderEscalations — reports UNREAD mail, not the whole windo
     expect(out).toHaveLength(1);
     expect(out[0].candidateCount).toBe(4);
     expect(out[0].oldestAgeMs).toBe(25 * MIN);
+    expect(out[0].unread).toEqual([]);
   });
 
-  it('still does not escalate when EVERY stamp predates the last read (the gate is unchanged)', () => {
+  it('still does not escalate when EVERY message predates the last read (the gate is unchanged)', () => {
     const out = classifyLadderEscalations({
       rows: [
         row('su-caughtup', {
           cnt: 3,
           newest_ts_ms: NOW - 20 * MIN,
-          recent_ts_ms: [NOW - 20 * MIN, NOW - 40 * MIN, NOW - 60 * MIN],
+          recent_msgs: [msg(20), msg(40), msg(60)],
         }),
       ],
       lastReadByOwner: new Map([['su-caughtup', new Date(NOW - 5 * MIN).toISOString()]]),
@@ -247,6 +258,94 @@ describe('classifyLadderEscalations — reports UNREAD mail, not the whole windo
       nowMs: NOW,
     });
     expect(out).toHaveLength(0);
+  });
+});
+
+/**
+ * The BODY is the product. Everything above computes a correct verdict; this is the only
+ * part an agent ever reads, so its wording is under test too — a truthful alarm that still
+ * forces a manual investigation has not actually been fixed.
+ */
+describe('renderLadderBody — the escalation an agent actually reads (EI-10551)', () => {
+  const opts = { ttlMin: 5, stormMin: 10 };
+
+  it('NAMES the unread mail (sender + summary) so triage needs no coord:inbox round-trip', () => {
+    const body = renderLadderBody(
+      {
+        candidateCount: 2,
+        oldestAgeMs: 9 * MIN,
+        neverRead: false,
+        unread: [
+          msg(1, { from: 'su-peer-a', summary: 'can you unblock the deploy?' }),
+          msg(9, { from: 'su-peer-b', summary: 'WI-1 done' }),
+        ],
+      },
+      opts,
+    );
+    expect(body).toContain('su-peer-a');
+    expect(body).toContain('can you unblock the deploy?');
+    expect(body).toContain('su-peer-b');
+    // The old body's whole payload was a count + "read your inbox now" — the instruction to
+    // go fetch is precisely the round-trip we removed.
+    expect(body).not.toContain('read your inbox now');
+  });
+
+  it('marks a REPLY distinctly from a fresh message (an answer arriving ≠ an ask waiting)', () => {
+    const body = renderLadderBody(
+      {
+        candidateCount: 2,
+        oldestAgeMs: 5 * MIN,
+        neverRead: false,
+        unread: [
+          msg(2, { from: 'su-ack', summary: 'ack, standing down', replyTo: 'mri-abc' }),
+          msg(5, { from: 'su-asker', summary: 'which account should I use?' }),
+        ],
+      },
+      opts,
+    );
+    expect(body).toContain('↩ su-ack');
+    expect(body).toContain('• su-asker');
+    expect(body).toContain('related_msg_id'); // the legend explains WHY ↩ matters
+  });
+
+  it('does NOT cry "broken hooks" at a recipient whose read is merely STALE', () => {
+    // The red herring that cost me a real detour: the old body asserted a hook fault
+    // unconditionally, so an agent whose delivery is perfectly healthy went and debugged it.
+    const body = renderLadderBody(
+      { candidateCount: 1, oldestAgeMs: 6 * MIN, neverRead: false, unread: [msg(6)] },
+      opts,
+    );
+    expect(body).not.toMatch(/hook/i);
+  });
+
+  it('DOES call out a hook fault when there is no inbox read on record at all', () => {
+    const body = renderLadderBody(
+      { candidateCount: 1, oldestAgeMs: 6 * MIN, neverRead: true, unread: [msg(6)] },
+      opts,
+    );
+    expect(body).toMatch(/hook/i);
+    expect(body).toContain('coord-mid-turn-delivery');
+  });
+
+  it('says plainly that the alarm can be DISCHARGED when nothing in the mail needs you', () => {
+    // The alarm fires on "unread", not on "someone is blocked" — a stand-down ack and an
+    // urgent question look identical to the sweep. Saying so stops the next agent treating a
+    // correct-but-uninteresting fire as evidence they did something wrong.
+    const body = renderLadderBody(
+      { candidateCount: 1, oldestAgeMs: 6 * MIN, neverRead: false, unread: [msg(6)] },
+      opts,
+    );
+    expect(body).toContain('does NOT mean a peer is necessarily blocked on you');
+    expect(body).toContain('DISCHARGED');
+  });
+
+  it('tells the reader that coord:orient counts as a read (it does — and I assumed it did not)', () => {
+    const body = renderLadderBody(
+      { candidateCount: 1, oldestAgeMs: 6 * MIN, neverRead: false, unread: [msg(6)] },
+      opts,
+    );
+    expect(body).toContain('coord:orient');
+    expect(body).toMatch(/both count/i);
   });
 });
 

@@ -2555,7 +2555,6 @@ export function ScoutView({
           type="button"
           className="pc-learning__rowmain"
           onClick={() => openRouted(item)}
-          title={`${meta.desc}\n${item.routedRef}`}
         >
           <span
             className="pc-learning__sev"

@@ -112,13 +112,24 @@ export interface LadderCandidateRow {
   newest_ts_ms: string | number;
   newest_from: string | null;
   newest_summary: string | null;
-  /** EI-10551: the per-message timestamps behind `cnt`/`oldest_ts_ms` (newest-first,
-   *  capped). The aggregates above are computed BEFORE the read-watermark is known, so
-   *  they describe the whole window — read mail included. The classifier needs the
-   *  individual stamps to report what is ACTUALLY unread. Optional: a row without it
-   *  (an older shape, or a test's stub fetchCandidates) degrades to the pre-EI-10551
-   *  newest-vs-lastRead gate rather than failing. */
-  recent_ts_ms?: readonly (string | number)[] | null;
+  /** EI-10551: the individual messages behind `cnt`/`oldest_ts_ms` (newest-first, capped).
+   *  The aggregates above are computed BEFORE the read-watermark is known, so they describe
+   *  the whole window — read mail included. The classifier needs the individual rows both to
+   *  report what is ACTUALLY unread and to NAME it. Optional: a row without it (an older
+   *  shape, or a test's stub fetchCandidates) degrades to the pre-EI-10551 newest-vs-lastRead
+   *  gate rather than failing. */
+  recent_msgs?: readonly LadderMsg[] | null;
+}
+
+/** One directed message in the ladder's window. */
+export interface LadderMsg {
+  ts: string | number;
+  from: string | null;
+  summary: string | null;
+  /** Set when this message is a REPLY (coord `related_msg_id`). Directed + a reply ⇒ it is
+   *  almost always ANSWERING something the recipient sent — i.e. an answer arriving, not a
+   *  new ask waiting on them. Surfaced, never acted on: we mark it and let the agent judge. */
+  replyTo: string | null;
 }
 
 export interface LadderEscalation {
@@ -135,6 +146,97 @@ export interface LadderEscalation {
   oldestAgeMs: number;
   newestFrom?: string;
   newestSummary?: string;
+  /** The unread mail ITSELF (newest-first, capped for the message body). A count + an age
+   *  is not a signal a recipient can act on — it forces a coord:inbox round-trip and a
+   *  manual cross-reference just to answer "is anyone actually blocked on me?". Carrying
+   *  the senders + summaries makes the wake self-describing: the agent can triage from the
+   *  wake alone and only open the inbox if something in it needs them. */
+  unread: LadderMsg[];
+  /** TRUE only when the recipient has NO coord:inbox/coord:orient invocation on record at
+   *  all. This — and ONLY this — is evidence of a broken delivery hook. A recipient whose
+   *  read is merely STALE has a working hook and is simply behind, so telling them "your
+   *  hooks may be broken" sends them to debug a healthy subsystem (it sent me). */
+  neverRead: boolean;
+}
+
+/** How many unread messages the escalation body names. Enough to triage from the wake
+ *  alone; past this, opening the inbox is the right move anyway. */
+export const LADDER_PREVIEW_LIMIT = 8;
+
+/**
+ * PURE: render the escalation an agent actually reads.
+ *
+ * EI-10551 / owner ask 2026-07-12 ("make the alarm clearer so the next agent doesn't get so
+ * confused"). The old body gave a COUNT and an AGE and then said "read your inbox now" — so
+ * every recipient had to spend a round-trip fetching the mail and cross-referencing it by
+ * hand just to answer the only question that matters: *is anyone actually blocked on me?*
+ * It also asserted "your coord delivery hooks may be broken" unconditionally, which sent at
+ * least one agent (me) off debugging a perfectly healthy subsystem.
+ *
+ * So: NAME the mail, and diagnose only what we can actually see.
+ *  - Carry sender + summary, so triage happens from the wake itself.
+ *  - Mark replies (↩): a directed message that is a reply is almost always an ANSWER
+ *    arriving, not a new ask waiting on you. Marked, never filtered — the agent judges.
+ *  - Only mention broken hooks when `neverRead` — a stale read means the hook WORKS.
+ */
+export function renderLadderBody(
+  e: Pick<LadderEscalation, 'candidateCount' | 'oldestAgeMs' | 'unread' | 'neverRead'>,
+  opts: { ttlMin: number; stormMin: number },
+): string {
+  const oldestMin = Math.round(e.oldestAgeMs / 60_000);
+  const lines: string[] = [
+    `${e.candidateCount} directed coord message(s) landed after your last inbox read ` +
+      `(oldest ~${oldestMin}m ago). They are listed below — you should not need to open your ` +
+      `inbox to triage them.`,
+    '',
+  ];
+
+  if (e.unread.length > 0) {
+    for (const m of e.unread) {
+      const agoMin = Math.max(0, Math.round((Date.now() - Number(m.ts)) / 60_000));
+      const mark = m.replyTo ? '↩' : '•';
+      lines.push(
+        `  ${mark} ${m.from ?? 'unknown'} (~${agoMin}m ago): ${m.summary ?? '(no summary)'}`,
+      );
+    }
+    if (e.candidateCount > e.unread.length) {
+      lines.push(`  … and ${e.candidateCount - e.unread.length} more — coord:inbox for the rest.`);
+    }
+    lines.push('');
+    lines.push(
+      `↩ = a REPLY (it carries related_msg_id), so it is most likely ANSWERING something you ` +
+        `sent rather than asking you for something. • = a message that is not a reply — those ` +
+        `are the ones most likely to be waiting on you.`,
+    );
+    lines.push('');
+  }
+
+  lines.push(
+    `WHAT THIS ALARM DOES AND DOES NOT MEAN. It means: mail arrived that you have not read, ` +
+      `and your session is live enough to read it. It does NOT mean a peer is necessarily ` +
+      `blocked on you — a stand-down ack and an urgent question look identical to the sweep. ` +
+      `Read the list, answer anything awaiting you (coord:send), and carry on; if nothing in it ` +
+      `needs you, nothing is required of you and this alarm is DISCHARGED — you do not have to ` +
+      `justify it or hunt for a fault.`,
+  );
+
+  if (e.neverRead) {
+    lines.push('');
+    lines.push(
+      `⚠ You have NO coord:inbox / coord:orient call on record at all — not merely a stale one. ` +
+        `That is the signature of a broken delivery hook (a dropped ~/.claude/settings.json ` +
+        `entry, a runtime with no injection leg). See the coord-mid-turn-delivery insight.`,
+    );
+  }
+
+  lines.push('');
+  lines.push(
+    `(delivery-ladder: auto-fired when directed mail sits unread past ${opts.ttlMin}m; ` +
+      `at most once per ${opts.stormMin}m per recipient. Reading your inbox — via coord:inbox ` +
+      `OR coord:orient, both count — is what clears it.)`,
+  );
+
+  return lines.join('\n');
 }
 
 /**
@@ -169,22 +271,25 @@ export function classifyLadderEscalations(input: {
     // non-reading session finally read).
     if (Number.isFinite(lastReadMs) && lastReadMs >= newestMs) continue;
 
-    // EI-10551: we now KNOW there is unread mail — but not yet how much. `cnt` and
+    // EI-10551: we now KNOW there is unread mail — but not yet how much, or WHAT. `cnt` and
     // `oldest_ts_ms` are window-wide (computed before lastRead was known), so reporting
     // them verbatim tells a recipient who read 17 of 19 that all 19 are unread. Narrow to
-    // the stamps that actually post-date their last read; the escalation text ("N messages
+    // the messages that actually post-date their last read; the escalation text ("N messages
     // you have not read, oldest ~Xm") is only true of THIS set.
-    const stamps = (r.recent_ts_ms ?? [])
-      .map((t) => Number(t))
-      .filter((t) => Number.isFinite(t));
-    const unread = Number.isFinite(lastReadMs) ? stamps.filter((t) => t > lastReadMs) : stamps;
+    const msgs = (r.recent_msgs ?? []).filter((m) => Number.isFinite(Number(m?.ts)));
+    const unread = Number.isFinite(lastReadMs)
+      ? msgs.filter((m) => Number(m.ts) > lastReadMs)
+      : msgs;
 
-    // Degrade, don't lie: with no per-message stamps (older row shape / stubbed IO) fall
-    // back to the window aggregates — the same numbers as before this fix, never worse.
+    // Degrade, don't lie: with no per-message rows (older row shape / stubbed IO) fall back
+    // to the window aggregates — the same numbers as before this fix, never worse. A
+    // correctness fix that dropped an escalation on an unexpected shape would trade a false
+    // alarm for a MISSED one, which is strictly the worse failure.
     const cnt = Number(r.cnt);
     const fallbackCount = Number.isFinite(cnt) && cnt > 0 ? cnt : 1;
     const unreadCount = unread.length > 0 ? unread.length : fallbackCount;
-    const oldestUnreadMs = unread.length > 0 ? Math.min(...unread) : oldestMs;
+    const oldestUnreadMs =
+      unread.length > 0 ? Math.min(...unread.map((m) => Number(m.ts))) : oldestMs;
 
     out.push({
       workspaceId: r.workspace_id,
@@ -195,6 +300,10 @@ export function classifyLadderEscalations(input: {
         : 0,
       ...(r.newest_from ? { newestFrom: r.newest_from } : {}),
       ...(r.newest_summary ? { newestSummary: r.newest_summary } : {}),
+      unread: unread.slice(0, LADDER_PREVIEW_LIMIT),
+      // Never-read = no coord:inbox/orient invocation AT ALL. Only this is evidence of a
+      // broken hook; a merely-stale read means the hook works and the agent is behind.
+      neverRead: !Number.isFinite(lastReadMs),
     });
   }
   return out.sort((a, b) => b.oldestAgeMs - a.oldestAgeMs);
@@ -221,6 +330,7 @@ async function findLadderCandidates(
         r AS recipient,
         e.body->>'from' AS from_id,
         e.body->>'summary' AS summary,
+        e.body->>'related_msg_id' AS reply_to,
         (extract(epoch FROM (e.body->>'ts')::timestamptz) * 1000)::bigint AS ts_ms
         FROM harness_shared.coord_event_log e
         CROSS JOIN LATERAL jsonb_array_elements_text(e.body->'to') AS r
@@ -242,12 +352,16 @@ async function findLadderCandidates(
            max(ts_ms) AS newest_ts_ms,
            (array_agg(from_id ORDER BY ts_ms DESC))[1] AS newest_from,
            (array_agg(summary ORDER BY ts_ms DESC))[1] AS newest_summary,
-           -- EI-10551: the individual stamps, newest-first, so the classifier can report
-           -- what is ACTUALLY unread instead of the whole window. Capped at 500: the
-           -- recipient's UNREAD tail is what we filter to, and 500 unread directed
-           -- messages is already far past "deaf" — truncating the ancient (already-read)
-           -- head costs nothing. Newest-first ordering is what makes that cap safe.
-           (array_agg(ts_ms ORDER BY ts_ms DESC))[1:500] AS recent_ts_ms
+           -- EI-10551: the individual messages, newest-first, so the classifier can report
+           -- what is ACTUALLY unread instead of the whole window — and NAME it, so the
+           -- recipient can triage from the wake without a coord:inbox round-trip. Capped at
+           -- 500: we only ever consume the UNREAD tail, and 500 unread directed messages is
+           -- already far past "deaf" — truncating the ancient (already-read) head costs
+           -- nothing. The newest-first ordering is what makes that cap safe.
+           (array_agg(
+              jsonb_build_object('ts', ts_ms, 'from', from_id, 'summary', summary, 'replyTo', reply_to)
+              ORDER BY ts_ms DESC
+            ))[1:500] AS recent_msgs
       FROM directed
      GROUP BY workspace_id, recipient
   `;
@@ -335,15 +449,9 @@ export async function runDeliveryLadderSweepOnce(
       await send(LADDER_IDENTITY, {
         to: [e.recipient],
         summary:
-          `📬 delivery-ladder: directed mail unread past ${ttlMin}m — waking you to read your inbox ` +
-          `(${e.candidateCount} message(s), oldest ~${oldestMin}m${e.newestFrom ? `, newest from ${e.newestFrom}` : ''})`,
-        body:
-          `You have ${e.candidateCount} DIRECTED coord message(s) in the last ` +
-          `${Math.round(LADDER_LOOKBACK_MS / 3600_000)}h that you have not read (oldest ~${oldestMin}m old` +
-          `${e.newestSummary ? `; newest: "${e.newestSummary}"` : ''}). Your session is live but has not ` +
-          `called coord:inbox/coord:orient since they landed — read your inbox now. This is the delivery ` +
-          `escalation ladder (auto-fired, at most once per ${Math.round(storm / 60_000)}m); if you keep ` +
-          `getting these, your coord delivery hooks may be broken — see the coord-mid-turn-delivery insight.`,
+          `📬 delivery-ladder: ${e.candidateCount} directed message(s) you have not read ` +
+          `(oldest ~${oldestMin}m${e.newestFrom ? `, newest from ${e.newestFrom}` : ''})`,
+        body: renderLadderBody(e, { ttlMin, stormMin: Math.round(storm / 60_000) }),
       });
       try {
         await wake([e.recipient], {
