@@ -58,7 +58,16 @@ export function countFragmentHits(entries: readonly MemoryEntry[]): number {
   return n;
 }
 
-let _warned = false;
+// Warn THROTTLE, not a one-shot latch. A single warn-then-permanent-silence
+// (the old `_warned` boolean) is how a persistent write failure hides: when a
+// stale surface CHECK silently rejected every per-port write for hours
+// (memory-delivery-unification P-005), the ONE log line scrolled away and the
+// black-hole was invisible until a live probe forced it out. Re-warn at most
+// once per window, and carry the count swallowed since the last warn, so an
+// ongoing breakage keeps surfacing instead of going quiet after line one.
+const RECALL_STATS_WARN_WINDOW_MS = 5 * 60_000;
+let _lastWarnedAt = 0;
+let _suppressedSinceWarn = 0;
 
 /** Insert one stats row. Never throws; never load-bearing. Call WITHOUT awaiting. */
 export async function recordRecallStats(sql: Sql, input: RecallStatsInput): Promise<void> {
@@ -79,11 +88,26 @@ export async function recordRecallStats(sql: Sql, input: RecallStatsInput): Prom
       )
     `;
   } catch (err) {
-    if (!_warned) {
-      _warned = true;
-      console.warn('[memory-recall-stats] capture failed (suppressing further warns):', (err as Error).message);
+    _suppressedSinceWarn += 1;
+    const now = Date.now();
+    if (now - _lastWarnedAt >= RECALL_STATS_WARN_WINDOW_MS) {
+      const alsoSuppressed = _suppressedSinceWarn - 1;
+      console.warn(
+        `[memory-recall-stats] capture failed (surface='${input.surface}')` +
+          (alsoSuppressed > 0 ? ` — +${alsoSuppressed} more since last warn` : '') +
+          `; re-warns at most once/${RECALL_STATS_WARN_WINDOW_MS / 60_000}min:`,
+        (err as Error).message,
+      );
+      _lastWarnedAt = now;
+      _suppressedSinceWarn = 0;
     }
   }
+}
+
+/** Test hook: reset the warn throttle so a suite can assert re-warn behavior. */
+export function _resetRecallStatsWarnThrottleForTests(): void {
+  _lastWarnedAt = 0;
+  _suppressedSinceWarn = 0;
 }
 
 export interface RecallHealth {
