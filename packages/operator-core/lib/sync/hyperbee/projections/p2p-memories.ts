@@ -125,18 +125,20 @@ async function writeToPg(
   // (workspace_id, id, coalesce(source_hive,'')) federation identity partitions
   // on — so no explicit value is needed OR possible here.
   //
-  // Also note: `row.payload` is passed as the RAW object, NOT
-  // `JSON.stringify(row.payload)` — this driver (prepare:false) re-serializes
-  // ANY parameter bound to a jsonb column via its own JSON encoder, so handing
-  // it an already-stringified string double-encodes (`payload` lands as a JSON
-  // *string* scalar, not an object — silently breaking every payload->>'…'
-  // GENERATED column AND every consumer that expects payload to be an object).
+  // Also note: `payload` is bound as `${JSON.stringify(row.payload)}::text::jsonb`
+  // — the CANONICAL jsonb-write form for this codebase (see the
+  // postgres-js-jsonb-binding agent-insight), correct under BOTH the operator
+  // runtime client (getOrgPg, where a bare object or `sql.json()` THROWS) and the
+  // testcontainer client this projection's own tests run against (where a bare
+  // `${x}::jsonb` cast — no `::text` — double-encodes into a jsonb *string*
+  // scalar instead of an object, silently breaking every payload->>'…' GENERATED
+  // column). Do not "simplify" this to a bare object or drop the `::text`.
   await sql`
     INSERT INTO harness_shared.memory_canonical
       (id, payload, created_at, updated_at, harness_slug,
        author_pubkey, origin, fed_ts, source_hive)
     VALUES
-      (${row.id}, ${row.payload}, ${row.created_at}::timestamptz,
+      (${row.id}, ${JSON.stringify(row.payload)}::text::jsonb, ${row.created_at}::timestamptz,
        ${row.updated_at}::timestamptz, ${row.harness_slug}, ${authorPubkey}, ${origin},
        ${fedTs}, ${sourceHive})
     ON CONFLICT (workspace_id, id, coalesce(source_hive, ''))
