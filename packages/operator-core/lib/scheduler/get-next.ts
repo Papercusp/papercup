@@ -435,6 +435,40 @@ function filterHasIdConstraint(filter: FilterNode | undefined): boolean {
 }
 
 /**
+ * WI-4309: extract the LITERAL id set from a POSITIVE `id = ...` / `id in [...]` leaf, when
+ * the filter is a bare leaf or that leaf sits inside a top-level `all` — the same
+ * conservative shapes {@link issueKindsForFallback} walks (leaf/all only; an id constraint
+ * nested in an `any`/`not` doesn't name a simple closed-world set, so this deliberately does
+ * NOT attempt to extract one there, same rationale as widenPastKind's conservative shapes).
+ *
+ * `filterHasIdConstraint` is still the sole authority on WHETHER an id constraint exists at
+ * all (it recurses through any/not too, since that answer is binary). This function answers
+ * the narrower "can we safely name the exact set to narrow tier 3 to?" — undefined means "no
+ * — either there's no id leaf, or it's nested in a shape we can't safely simplify", and the
+ * caller falls back to the fully-conservative EI-10062 behavior (skip tier 3) rather than
+ * guess wrong.
+ */
+function idValuesForFallback(filter: FilterNode | undefined): readonly string[] | undefined {
+  function fromLeaf(leaf: FilterLeaf): string[] | undefined {
+    if (leaf.field !== 'id' || (leaf.op !== '=' && leaf.op !== 'in')) return undefined;
+    return (Array.isArray(leaf.value) ? leaf.value : [leaf.value]).map(String);
+  }
+  if (!filter) return undefined;
+  if (isLeaf(filter)) return fromLeaf(filter);
+  if ('all' in filter) {
+    for (const node of filter.all) {
+      if (isLeaf(node)) {
+        const v = fromLeaf(node);
+        if (v) return v;
+      }
+    }
+    return undefined;
+  }
+  // `any` / `not` — leave unextracted (see doc comment above).
+  return undefined;
+}
+
+/**
  * Recursively compile the filter combinator tree to ONE parameterized `sql` fragment.
  * `all` ⇒ AND, `any` ⇒ OR, `not` ⇒ NOT; a leaf ⇒ {@link compileLeaf}. An undefined
  * filter ⇒ `TRUE` (the empty view — every floor-eligible item).
@@ -647,22 +681,37 @@ export async function getNextWorkItem(
   // EI-10062: an explicit `id`-allowlist spec has NO `kind` leaf for issueKindsForFallback to
   // find, so it read as "no lane constraint" and this tier claimed ANY open issue-family row —
   // not just the named ids. An id-allowlist is a closed-world set with no wider family to
-  // widen into, so skip tier 3 entirely when one is present (filterHasIdConstraint) rather
-  // than let it fall through to the unrestricted-issue-family default.
-  if (!claimed && (await schedulerIssuesClaimableEnabled()) && !filterHasIdConstraint(spec.view.filter)) {
-    const issueKinds = issueKindsForFallback(spec.view.filter);
-    claimed = await claimNextIssueWorkItem(
-      {
-        harness: opts.harness,
-        assignee: bee.assignee,
-        states: opts.states,
-        swarmId: opts.swarmId,
-        excludeRedundant: opts.excludeRedundant,
-        rigAvailable: opts.rigAvailable,
-      },
-      ws,
-      { issueKinds },
-    );
+  // widen into.
+  //
+  // WI-4309: EI-10062's original fix skipped tier 3 ENTIRELY whenever an id constraint was
+  // present — which meant an issue-only id-allowlist spec (e.g. a leader's hand-curated
+  // bug-drain wave of EI-/WI- ids, no `kind` leaf) could NEVER be served by get_next, even
+  // while its named items sat open+unclaimed: tier 1 only queries the feature-family table
+  // and structurally can't match an issue-family id, and tier 2 is a no-op with no `kind`
+  // leaf to widen — so with tier 3 also skipped, the ladder had NO path left for such a spec
+  // and always reported a false drain. Fix: extract the literal id set (when the shape allows
+  // it — idValuesForFallback) and THREAD it through tier 3 so it narrows to exactly those ids,
+  // instead of either ignoring the constraint (the original leak) or refusing to run at all.
+  // Only fall back to skipping tier 3 (the fully-conservative EI-10062 behavior) when an id
+  // constraint exists but its exact set can't be safely extracted (nested in an any/not).
+  if (!claimed && (await schedulerIssuesClaimableEnabled())) {
+    const hasIdConstraint = filterHasIdConstraint(spec.view.filter);
+    const idValues = hasIdConstraint ? idValuesForFallback(spec.view.filter) : undefined;
+    if (!hasIdConstraint || idValues) {
+      const issueKinds = issueKindsForFallback(spec.view.filter);
+      claimed = await claimNextIssueWorkItem(
+        {
+          harness: opts.harness,
+          assignee: bee.assignee,
+          states: opts.states,
+          swarmId: opts.swarmId,
+          excludeRedundant: opts.excludeRedundant,
+          rigAvailable: opts.rigAvailable,
+        },
+        ws,
+        { issueKinds, ids: idValues },
+      );
+    }
   }
 
   if (!claimed) return null;

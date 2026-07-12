@@ -85,6 +85,7 @@ import {
   resetContextDeathEscalationsForTests,
   resetForceCompactedForTests,
   resetBootConfigAssertForTests,
+  resetNoHostWarnedForTests,
 } from './compaction-compliance-watchdog';
 import {
   getContextUsage,

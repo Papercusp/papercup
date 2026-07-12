@@ -90,6 +90,16 @@ const contextDeathEscalated = new Set<string>();
  *  limit. A failed inject is NOT recorded, so it retries next pass. */
 const forceCompactedAt = new Map<string, number>();
 
+/** EI-9982 diagnostic dedup: warn ONCE per owner when findLiveHost() returns null on the
+ *  force-compact path. Before this, a no-live-host miss was completely silent — indistinguishable
+ *  from (a) the flag being off, (b) the FORCE_RETRY_GRACE_MS suppression window, or (c)
+ *  injectIntoHost() itself failing — so a session that was continuously taking turns yet never
+ *  force-compacted (the reported symptom) left no signal to diagnose from. findLiveHost() reading
+ *  a stale/missing ~/.papercusp/psu-pty/<ownerId>.json discovery file is the same fragility class
+ *  as EI-9748 (headless-fleet-boot-death) / WI-3455 (discovery-key-stranding). Cleared on recovery
+ *  alongside overLimitOwners/forceCompactedAt so a later crossing re-warns. */
+const noHostWarned = new Set<string>();
+
 /** P-018 boot self-assert: one advisory escalation per owner per defect-class per
  *  process (key `${ownerId}:${kind}`). The 2026-07-04 incident's dark-telemetry defect
  *  (a live member whose context estimate never resolved) was latent FROM BOOT and survived
@@ -115,6 +125,11 @@ export function resetContextDeathEscalationsForTests(): void {
 /** Test seam (P-012 / EI-9982). */
 export function resetForceCompactedForTests(): void {
   forceCompactedAt.clear();
+}
+
+/** Test seam (EI-9982 diagnostic). */
+export function resetNoHostWarnedForTests(): void {
+  noHostWarned.clear();
 }
 
 /** Test seam (P-018). */
@@ -313,7 +328,22 @@ async function maybeForceCompact(
       '../events/await/psu-pty-discovery'
     );
     const host = findLiveHost(ownerId);
-    if (!host) return false;
+    if (!host) {
+      // EI-9982: distinguish "no live psu-pty host" from the flag-off / grace-suppressed /
+      // inject-failed silent-no-op paths — this is the dominant cause of a continuously-active
+      // session that crosses the FORCE threshold yet is never force-compacted.
+      if (!noHostWarned.has(ownerId)) {
+        noHostWarned.add(ownerId);
+        console.warn(
+          `[compaction-watchdog] ${ownerLabel} (${ownerId}) crossed the FORCE threshold (~${est}/${limit} ` +
+            `tokens) but findLiveHost() found no live psu-pty host — force-compact silently no-ops here ` +
+            `(EI-9982). Likely a stale/missing discovery file at ~/.papercusp/psu-pty/<ownerId>.json, a ` +
+            `dead pid, or a pidIsPsuHost() identity mismatch (the EI-9748 / WI-3455 discovery-file ` +
+            `fragility class) — check that file + the recorded pid/socket for this owner.`,
+        );
+      }
+      return false;
+    }
     const focus = await resolveForceCompactFocus(ownerId);
     // turn-provenance P-002: the forced continuation note is typed into the
     // target's PTY as a prompt — tag it `watchdog` so the target's hook labels
@@ -708,6 +738,7 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
       } else {
         overLimitOwners.delete(r.owner_id); // recovered (compacted / back under limit)
         forceCompactedAt.delete(r.owner_id); // re-arm the force for a future crossing
+        noHostWarned.delete(r.owner_id); // re-arm the EI-9982 diagnostic for a future crossing
       }
     }
   } catch (e) {

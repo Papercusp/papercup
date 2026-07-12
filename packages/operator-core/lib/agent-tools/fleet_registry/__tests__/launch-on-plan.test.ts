@@ -943,7 +943,7 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
     const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
     // resolveFleetCaller's mocked ownerId below must be excluded from the live count.
     const { resolveFleetCaller } = await import('../_shared');
-    const ownerId = (resolveFleetCaller as ReturnType<typeof vi.fn>)({}).ownerId as string;
+    const ownerId = vi.mocked(resolveFleetCaller)({} as never).ownerId as string;
     (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue([ownerId]);
     spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
     const res = await tool.handler(

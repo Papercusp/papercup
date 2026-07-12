@@ -2730,11 +2730,14 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
  * blocked_ref being its BARE id (issues:link), and a blocker SATISFIED iff TERMINAL/ABSENT
  * (feature terminal = passed|deprecated; issue terminal = resolved|closed). Priority honors
  * feature_order (the Queen can now steer issues too, P-007), then oldest-first.
+ *
+ * `opts.ids` (WI-4309): when the caller extracted a closed-world `id in [...]` set from the
+ * spec, narrows the claim to exactly those ids — see the inline comment at its use site.
  */
 export async function claimNextIssueWorkItem(
   filter: ClaimNextFilter,
   _ws: string,
-  opts: { issueKinds?: readonly IssueStoreKind[] } = {},
+  opts: { issueKinds?: readonly IssueStoreKind[]; ids?: readonly string[] } = {},
 ): Promise<WorkItem | null> {
   const { sql } = getOrgPg();
   // Scope the issue-claim to the canonical ISSUE workspace (issuesScopeWorkspace — honors the
@@ -2756,6 +2759,16 @@ export async function claimNextIssueWorkItem(
   // ones by readiness (below).
   const states = ISSUE_FAMILY_CLAIMABLE_STATES;
   const issueKinds = opts.issueKinds?.length ? [...opts.issueKinds] : [...ISSUE_FAMILY_KINDS];
+  // WI-4309: when the caller (get-next.ts tier 3) extracted a closed-world `id in [...]`
+  // set from the spec, narrow the claim to EXACTLY those ids instead of either ignoring
+  // the constraint (the original EI-10062 leak — served ANY open issue once the named ids
+  // were exhausted) or refusing to run at all (an earlier fix that made tier 3 skip
+  // entirely whenever an id constraint was present — which meant an issue-only id-allowlist
+  // spec, e.g. a leader's hand-curated bug-drain wave of EI-/WI- ids, could NEVER be served
+  // by get_next even while its named items sat open+unclaimed, since tier 1 only queries the
+  // feature-family table and can't match an issue-family id). Undefined ⇒ no id constraint
+  // (or one the caller couldn't safely extract) ⇒ unrestricted, as before.
+  const idFilter = opts.ids?.length ? [...opts.ids] : undefined;
   // Mig 499: the SAME release-cooldown floor claimFloorsWhereSql applies for the
   // feature family (mig 485/EI-6956) — without it, an agent that releases an
   // issue-family item immediately re-claims that EXACT row on its very next
@@ -2770,6 +2783,8 @@ export async function claimNextIssueWorkItem(
          FROM harness_shared.work_items wi
         WHERE wi.item_kind = ANY(${issueKinds}::text[])
           AND wi.workspace_id = ${issueWs}
+          -- WI-4309: narrow to the spec's closed-world id set, when one was extracted.
+          AND ${idFilter ? sql`wi.feature_id = ANY(${idFilter}::text[])` : sql`TRUE`}
           AND (wi.harness_slug = ${filter.harness} OR wi.harness_slug = ${operatorScopeSlug})
           AND (wi.taken_by IS NULL OR wi.taken_by = '')
           AND wi.status = ANY(${[...states]}::text[])

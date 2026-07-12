@@ -638,4 +638,76 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
     const r = await getNextWorkItem(s, BEE, { harness: H });
     expect(r?.workItem.id).toBe('EI-target');
   });
+
+  // WI-4309: EI-10062's original fix skipped tier 3 ENTIRELY whenever the spec carried an id
+  // constraint — correct for the exhausted-allowlist case above, but it also meant an
+  // ISSUE-ONLY id-allowlist (no `kind` leaf, e.g. a leader's hand-curated bug-drain wave of
+  // EI-/WI- ids) could NEVER be served: tier 1 only queries the feature-family table (can't
+  // match an issue-family id), tier 2 has no `kind` leaf to widen, and tier 3 was skipped too —
+  // a false, PERMANENT drain even while the named item sat open+unclaimed. The fix threads the
+  // extracted id set through tier 3 instead of disabling it.
+  it('tier 3 (WI-4309): an issue-only id-allowlist spec serves a named OPEN issue, not a false drain', async () => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
+    // Named + open — must be served. seedIssue (not seedFeature): an issue-family row, so tier 1
+    // structurally cannot see it (harness_features_consolidated excludes issue-family kinds).
+    await seedIssue('EI-named-open', { state: 'open', createdTs: 100, kind: 'bug' });
+    // Unrelated open issue NOT in the allowlist — must never be claimed (still EI-10062-safe).
+    await seedIssue('EI-unrelated-open', { state: 'open', createdTs: 1, kind: 'bug' });
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'id-allowlist-drain-open',
+      revision: 21,
+      view: { filter: { all: [{ field: 'id', op: 'in', value: ['EI-named-open', 'WI-also-named-but-absent'] }] } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    const r = await getNextWorkItem(s, BEE, { harness: H });
+    expect(r?.workItem.id).toBe('EI-named-open');
+    expect(r?.claimedUnder).toEqual({ specId: 'id-allowlist-drain-open', revision: 21 });
+  });
+
+  // WI-4309 companion: a bare (non-`all`-wrapped) `id in [...]` leaf — the OTHER shape
+  // idValuesForFallback must extract from — also serves the named issue.
+  it('tier 3 (WI-4309): a bare `id in [...]` leaf (not wrapped in `all`) also serves the named open issue', async () => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
+    await seedIssue('EI-bare-leaf-target', { state: 'open', createdTs: 100, kind: 'change' });
+    await seedIssue('EI-bare-leaf-unrelated', { state: 'open', createdTs: 1, kind: 'change' });
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'id-allowlist-bare-leaf',
+      revision: 1,
+      view: { filter: { field: 'id', op: 'in', value: ['EI-bare-leaf-target'] } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    const r = await getNextWorkItem(s, BEE, { harness: H });
+    expect(r?.workItem.id).toBe('EI-bare-leaf-target');
+  });
+
+  // WI-4309 conservatism check: when the id leaf is nested in an `any`/`not` shape,
+  // idValuesForFallback deliberately does NOT attempt extraction (same conservative-shapes
+  // rationale as issueKindsForFallback/widenPastKind) — tier 3 stays fully skipped, same as
+  // EI-10062's original fix, rather than guess a possibly-wrong narrowed set. This is a
+  // known, accepted limitation (documented on idValuesForFallback), not a regression target.
+  it('tier 3 (WI-4309 conservatism): an id constraint nested in `any` still skips tier 3 entirely (no unsafe guess)', async () => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
+    await seedIssue('EI-any-named', { state: 'open', createdTs: 100, kind: 'bug' });
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'id-allowlist-any-shape',
+      revision: 1,
+      view: {
+        filter: {
+          any: [
+            { field: 'id', op: 'in', value: ['EI-any-named'] },
+            { field: 'kind', op: '=', value: 'bug' },
+          ],
+        },
+      },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    // filterHasIdConstraint sees the id leaf (it recurses into `any`) so tier 3's "is there an
+    // id constraint at all" check is true; idValuesForFallback refuses to extract from `any`
+    // (extracting only the id branch would silently drop the `kind` branch's OR semantics), so
+    // tier 3 is skipped entirely — a conservative miss, not a wrong-item claim.
+    expect(await getNextWorkItem(s, BEE, { harness: H })).toBeNull();
+  });
 });
