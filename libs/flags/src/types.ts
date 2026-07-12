@@ -99,10 +99,15 @@ export const FLAGS = {
   // inference gateway routes each request to one of N registered Claude Max subscriptions by the
   // `x-papercusp-account` header (multi-credential — aggregate 5h-budget pooling / per-account IP
   // routing / cache-affinity / failover), and the spawn chokepoint assigns a cache-affinity +
-  // budget-draining credential per bee. DEFAULT OFF — DELIBERATE (not the alpha default-on policy):
-  // it changes credential routing/egress and needs ≥2 Max OAuth subscriptions registered + a real
-  // multi-account run before the flip (D-003). OFF = the single bound-credential gateway,
-  // byte-identical to today. Listed in KNOWN_DARK_FLAGS.
+  // budget-draining credential per bee. DEFAULT ON (WI-3855, 2026-07-11: this comment's own
+  // "DEFAULT OFF ... Listed in KNOWN_DARK_FLAGS" was never actually added to the DARK_FLAGS map,
+  // so the 2026-06-29 P-011 inversion silently made it live default-ON — the same EI-7230-class
+  // comment/reality mismatch as WATCHDOG_AUTO_CLOSE et al. Confirmed SAFE-as-is, not a drive-by
+  // flip: the D-003 gate this comment names — "needs ≥2 Max OAuth subscriptions registered + a
+  // real multi-account run" — is met and then some: operator_account_pool carries 8 live
+  // registered Claude accounts with real utilization/penalty telemetry in the production
+  // workspace, i.e. the multi-account run has been live for a while). OFF = the single
+  // bound-credential gateway (the reversible fallback).
   INFERENCE_GATEWAY_MULTI_ACCOUNT: "papercusp-inference-gateway-multi-account",
   // agent-liveness-heartbeat-hardening-2026-06-12 P-010 (owner decision D-006):
   // auto-reap WEDGED bees — alive + supervisor-heartbeating but stream-silent
@@ -939,9 +944,11 @@ export const FLAGS = {
   // bee-context-efficiency Phase 1 (D-001/D-018/D-019): fresh-context warm-inject.
   // When a DRAINED bee is warm-injected a NEW task, re-invoke with a FRESH session
   // (full bee-prompt re-assembly + the hydration tail) instead of `--resume`-ing the
-  // grown transcript (the ~138K/turn dead-transcript carry, D-011). DEFAULT OFF — an
-  // unverified HOT-PATH change to live bee re-invocation; flip ON after P-006 live
-  // verification (kill-switch: OFF ⇒ legacy `--resume`, behavior-neutral).
+  // grown transcript (the ~138K/turn dead-transcript carry, D-011). DEFAULT ON (flipped
+  // 2026-06-23, WI-593, after P-006 live verification — see the graduation note + its own
+  // dedicated assertion in warm-inject-carry-seam.test.ts). WI-3855 (2026-07-11): this FLAGS
+  // comment was simply never updated after the flip — corrected here, no behavior change.
+  // OFF ⇒ legacy `--resume` (the reversible kill-switch, behavior-neutral).
   CUP_FRESH_CONTEXT_WARM_INJECT: "papercusp-bee-fresh-context-warm-inject",
   // bee-context-efficiency Phase 2 (P-008/P-009, D-004): inject the precomputed
   // work-item DOSSIER (computeBeeWakeDossier — item text + linked plan item + outgoing
@@ -1149,10 +1156,13 @@ export const FLAGS = {
   WORKSPACE_COORDINATION: "papercusp-workspace-coordination",
   // unified-work-item-ledger-2026-06-21 P-003 (D-002): auto-promote a started plan's OPEN
   // items into placeable, UNCLAIMED work-items inside plans:start (the single promotion path;
-  // the Queen just calls plans:start). DEFAULT OFF (dark): it mints work-items on the live
-  // start path + the Queen frontier, so it ships reversible and flips ON only after an
-  // attended integration-verify. OFF ⇒ no promotion (today's behavior, byte-identical).
-  // KNOWN_DARK_FLAGS.
+  // the Queen just calls plans:start). DEFAULT ON (WI-3855, 2026-07-11: this comment's "DEFAULT
+  // OFF (dark) ... KNOWN_DARK_FLAGS" was never actually added to the DARK_FLAGS map, so the
+  // 2026-06-29 P-011 inversion silently made it live default-ON — the same EI-7230-class mismatch
+  // as WATCHDOG_AUTO_CLOSE et al. Confirmed live + working, not a drive-by flip: plan items
+  // across multiple live plans resolve with linked, auto-minted work-items today — e.g. this
+  // very fleet's claimable backlog carries WI-4137..WI-4141 each stamped with a `plan_item` ref
+  // back to their source plan item). OFF ⇒ no promotion (the reversible fallback).
   PLAN_WORKITEM_PROMOTION: "papercusp-plan-workitem-promotion",
   // queen-memory-hybrid-2026-07-02 L2 (owner-approved hybrid): queen wakes prefer the
   // wake-executor liveness ladder (inject-if-live / claude --resume-if-exited — the
@@ -1167,18 +1177,27 @@ export const FLAGS = {
   // bypass paths (plan_items:claim, coord:declare-intent { items }, plans:set-status → wip
   // auto-claim) route the claim through convertPlanItem (policy-checked lease → resume-or-mint
   // a work_item → claim it → link it back), so WORKING a plan item never leaves untracked work.
-  // DEFAULT OFF (dark, reversible): it mints work-items on every live plan-item claim path; the
-  // owner flips it ON after verifying. OFF ⇒ today's bare claimPlanItem (byte-identical). The
-  // auto-convert legs in declare-intent / set-status are best-effort (wrapped so a convert
-  // failure never breaks the underlying claim). KNOWN_DARK_FLAGS.
+  // DEFAULT ON (WI-3855, 2026-07-11: this comment's "DEFAULT OFF (dark, reversible) ...
+  // KNOWN_DARK_FLAGS" was never actually added to the DARK_FLAGS map, so the 2026-06-29 P-011
+  // inversion silently made it live default-ON — the same EI-7230-class mismatch as
+  // WATCHDOG_AUTO_CLOSE et al. Confirmed live + working, not a drive-by flip: coord:orient's own
+  // `planItems` claim lever and plans:set-status → wip auto-claim are exercised continuously by
+  // this very fleet, producing exactly the linked work-items PLAN_WORKITEM_PROMOTION's note
+  // above cites as evidence). OFF ⇒ bare claimPlanItem (the reversible fallback). The
+  // auto-convert legs in declare-intent / set-status stay best-effort (wrapped so a convert
+  // failure never breaks the underlying claim).
   PLAN_ITEM_CLAIM_AUTO_CONVERT: "papercusp-claim-auto-convert",
   // infra-perf-reliability-audit-round4 P-005 (D-005): switch listEscalations({status:'open'})
   // to read the materialized harness_shared.coord_open_escalations projection (mig 355) instead
   // of the unbounded ~35k-event full-surface replay that pg_stat_statements pinned as ~88% of
-  // DB exec time. DEFAULT OFF (dark): the projection table+trigger ship via mig 355 (additive,
-  // harmless while OFF — the trigger just maintains the table); this flag gates only the READ
-  // cutover, flipped ON after the migration+backfill is confirmed applied in prod. OFF ⇒ the
-  // authoritative event-fold (today's behavior, byte-identical). KNOWN_DARK_FLAGS.
+  // DB exec time. DEFAULT ON (WI-3855, 2026-07-11: this comment's "DEFAULT OFF (dark) ...
+  // KNOWN_DARK_FLAGS" was never actually added to the DARK_FLAGS map, so the 2026-06-29 P-011
+  // inversion silently made it live default-ON — the same EI-7230-class mismatch as
+  // WATCHDOG_AUTO_CLOSE et al. Confirmed live + safe, not a drive-by flip: mig 355 has been
+  // applied in prod since 2026-06-21 and harness_shared.coord_open_escalations is populated
+  // with real rows (364 as of this check) — the "migration+backfill confirmed applied" condition
+  // this comment names as the flip gate is met). OFF ⇒ the unbounded event-fold (the reversible
+  // fallback, byte-identical to pre-P-005).
   COORD_OPEN_ESCALATIONS_PROJECTION: "papercusp-coord-open-escalations-projection",
   // coord-wake-on-reply: by default, when an agent coord:sends a DIRECTED message and
   // a peer REPLIES to it (their coord:send sets related_msg_id to the original msg_id),
@@ -1231,8 +1250,17 @@ export const FLAGS = {
   // requires mig 379). OFF is the reversible kill-switch back to the inline predicate.
   SCHEDULER_MAINTAINED_READY: "papercusp-scheduler-maintained-ready",
   // gateway-priority-tiers-2026-06-22: gates the inference-gateway priority-tier
-  // queueing/admission path. DEFAULT OFF — the implementation is in-flight; flips
-  // ON at rollout after the :3170 verify. KNOWN_DARK_FLAGS.
+  // queueing/admission path (a reserved tier-1 capacity floor + per-tier in-flight caps
+  // over the flat priority+aging queue). DEFAULT ON (WI-3855, 2026-07-11: this comment's
+  // "DEFAULT OFF ... KNOWN_DARK_FLAGS" was never actually added to the DARK_FLAGS map, so
+  // the 2026-06-29 P-011 inversion silently made it live default-ON — the same EI-7230-class
+  // mismatch as WATCHDOG_AUTO_CLOSE et al. resolvePriorityTiers (launch.ts) is fully
+  // implemented + tested and wired live at gateway launch, not a stub; the effect is
+  // additive/directionally-conservative (reserves floor capacity for higher-priority
+  // interactive callers, sheds background tiers first under pressure) rather than a
+  // destructive behavior change — flagged here for the record, not independently proven via
+  // an attended :3170 verify, so leader/owner should give this one a further look). OFF ⇒ the
+  // flat priority+aging queue (the reversible fallback).
   GATEWAY_PRIORITY_TIERS: "papercusp-gateway-priority-tiers",
   // codex-gateway-oauth-proxy-2026-07-04 (WI-2198, owner-chosen Option B): gates the
   // codex ChatGPT-subscription OAuth STREAMING reverse-proxy — the gateway forwards a
@@ -1253,9 +1281,16 @@ export const FLAGS = {
   // if the health predicate ever false-positives.
   AUTONOMOUS_SPAWN_GATEWAY_DISPATCH_GATE: "papercusp-autonomous-spawn-gateway-dispatch-gate",
   // queen-capacity-aware-dispatch-2026-06-22: gates the Queen's capacity-aware
-  // dispatch (placement keyed on live fleet capacity). DEFAULT OFF — the
-  // implementation is in-flight; flips ON at rollout after the :3170 verify.
-  // KNOWN_DARK_FLAGS.
+  // dispatch (placement keyed on live fleet capacity) — clamps fresh-spawn headroom
+  // under fleet:place_batch. DEFAULT ON (WI-3855, 2026-07-11: this comment's "DEFAULT
+  // OFF ... KNOWN_DARK_FLAGS" was never actually added to the DARK_FLAGS map, so the
+  // 2026-06-29 P-011 inversion silently made it live default-ON — the same EI-7230-class
+  // mismatch as WATCHDOG_AUTO_CLOSE et al. capacity-dispatch.ts is fully implemented +
+  // tested, not a stub; the effect is directionally conservative (ON ADDS a capacity
+  // clamp that prevents over-spawning under load; OFF = no clamp = unrestricted spawn),
+  // so the live-ON state is not destructive — flagged here for the record, not
+  // independently proven via an attended :3170 verify, so leader/owner should give this
+  // one a further look). OFF ⇒ no clamp (the reversible fallback).
   MUG_CAPACITY_DISPATCH: "papercusp-queen-capacity-dispatch",
   // agent-tool-delta-protocol-2026-06-22 P-016 (D-007/D-008): gates the LLM-facing
   // SEMANTIC-delta opt-in (mode:delta merge responses) — the silent-wrong-merge
@@ -1345,9 +1380,16 @@ export const FLAGS = {
   // query over the work_items base for issue-family kinds, run only when no feature
   // is claimable) lets an UNBLOCKED issue be self-picked (readiness honored by the
   // SAME work_item_deps NOT EXISTS predicate; terminal = resolved/closed), and the
-  // steer levers become applicable to issues. DEFAULT OFF — owner-authority: it
-  // changes WHAT the autonomous fleet picks up (a brand-new dispatch source), so the
-  // owner ratifies the flip. OFF ⇒ byte-identical to today (feature-only). KNOWN_DARK_FLAGS.
+  // steer levers become applicable to issues. DEFAULT ON (WI-3855, 2026-07-11: this
+  // comment's "DEFAULT OFF ... KNOWN_DARK_FLAGS" was never actually added to the
+  // DARK_FLAGS map, so the 2026-06-29 P-011 inversion silently made it live default-ON —
+  // the same EI-7230-class mismatch as WATCHDOG_AUTO_CLOSE et al. Confirmed live and not
+  // merely safe but LOAD-BEARING: this exact mechanism is what every member of the
+  // bug-drain-nonp2p fleet — including the agent that found this bug — uses to self-pick
+  // bug/change/task work_items via scheduler:get_next/work_items:claim_next; if this flag
+  // actually resolved OFF as the comment claims, the whole drain fleet's core dispatch loop
+  // would not function). OFF ⇒ feature-family-only claiming (the reversible fallback, but
+  // note it would break this and any other issue-family-claiming autonomous fleet today).
   SCHEDULER_ISSUES_CLAIMABLE: "papercusp-scheduler-issues-claimable",
   // psu-in-desktop-builds-2026-06-23 C1: exposes the `psu` superuser CLI as an
   // END-USER feature in the shipped desktop builds (the discoverable launch
