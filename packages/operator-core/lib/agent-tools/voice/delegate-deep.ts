@@ -2,18 +2,26 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 
 /**
- * voice:delegate_deep — the Sentinel's deep-thinking delegation lane
- * (voice-unified-sentinel-pipeline-2026-07-01, P-005/P-006, D-003).
+ * voice:delegate_deep — the deep-thinking delegation lane
+ * (voice-unified-sentinel-pipeline-2026-07-01 P-005/P-006; re-pointed by
+ * voice-public-release-readiness-2026-07-12 P-019 per its D-003).
  *
  * HARD THINKING (analysis / research / comparison where the user expects an
  * ANSWER back in the conversation) must not block the conversational pane, and
  * must not go to the Queen (she orchestrates; her wake loop is placement-shaped,
  * not an answer channel). This tool mints a durable `deep-delegation` work_item
- * and spawns an EPHEMERAL background su agent (capped at 2 in flight) whose
- * completion.summary is injected back into the pane as `[deep-answer WI-NNN] …`
- * — spoken + written through the one pipeline.
+ * and routes the question to the LIVE persistent papercup-deep session (the
+ * parked heavy-reasoner pane, D-006) over coord/wake — falling back to an
+ * EPHEMERAL background agent when no deep session is running (capped at 2 in
+ * flight). Either way the completion.summary is injected back into the pane as
+ * `[deep-answer WI-NNN] …` — spoken + written through the one pipeline.
  *
- * THE TOOL SPAWNS, NOT THE SENTINEL: the sentinel role still holds no
+ * NOTE for the PANE papercup (psu --role=papercup): you hold the coord tools —
+ * prefer asking the deep brain DIRECTLY (coord:send { wake: 'required' } per
+ * your playbook, replies threaded back to YOU); this tool is the lane for the
+ * converse/EL surfaces, where no coord session exists to receive a reply.
+ *
+ * THE TOOL DELIVERS/SPAWNS, NOT THE SENTINEL: the sentinel role still holds no
  * cup:spawn capability (the SN-H04 no-spawn contract); this is the
  * accountable, capped indirection. Split of lanes: buildable WORK still goes to
  * the Queen via handoff; THINKING comes here.
@@ -22,7 +30,7 @@ export default defineTool({
   name: 'voice:delegate_deep',
   profile: 'engineer',
   description:
-    'Delegate a HARD-THINKING question (analysis/research/deep comparison) to an ephemeral background agent. The answer comes back into your pane as `[deep-answer WI-NNN] …` — present + speak it then. Capped at 2 in flight.',
+    'Delegate a HARD-THINKING question (analysis/research/deep comparison) to the deep brain (the live papercup-deep session; ephemeral agent fallback). The answer comes back into your pane as `[deep-answer WI-NNN] …` — present + speak it then. Capped at 2 in flight.',
   capability: 'operator:read',
   guidance: {
     when: `The user asked something that needs REAL investigation (minutes of reading code/state/docs) and expects an ANSWER back in conversation. Delegate it, voice:say a short ack ("digging into that — I'll come back to you"), and stay responsive. When the [deep-answer WI-NNN] message arrives in your pane, present it: voice:say the speakable core + show the detail.`,

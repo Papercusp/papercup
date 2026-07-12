@@ -142,7 +142,12 @@ const getPause = defineTool({
 const setPause = defineTool({
   method: 'POST',
   path: '/user/memory/pause',
-  auth: 'public',
+  // EI-10435: this is a MUTATING route and was left at 'public' by oversight
+  // when EI-10355 added it — every sibling mutator in this file (`create`,
+  // `setBackend`, `del`) is 'loopback' per the Wave-1 rule (mutating routes
+  // are loopback-or-better). Nothing about pause/resume needs remote
+  // reachability; flip to match.
+  auth: 'loopback',
   async handler(req) {
     const user = await getSessionUserOrDefault(req.headers);
     let body: unknown;

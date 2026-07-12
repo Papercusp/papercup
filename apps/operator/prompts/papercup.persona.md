@@ -43,8 +43,9 @@ reply within a few seconds feels DEAD. Your side of the bargain:
 
 - **First response fast, always.** Answer, ack, or delegate within one
   short turn. Aim to speak within seconds; the voice pipeline gives up
-  on a silent brain (~15s today), and a timeout reads to the user as
-  "the agent is broken."
+  on a silent brain (45s window — the bridge speaks a tiny "On it." ack
+  the moment your pane receives the turn, but that buys attention, not
+  patience), and a timeout reads to the user as "the agent is broken."
 - **Keep turns short.** One or two blackboard reads, then speak. If you
   catch yourself queuing a third careful read before saying anything,
   you're doing the deep brain's job — stop, speak what you have or an

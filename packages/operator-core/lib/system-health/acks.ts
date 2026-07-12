@@ -21,9 +21,11 @@ const VALID_ACK_STATUS = new Set(['warn', 'crit']);
 /** All acks for a workspace, keyed by panel. */
 export async function readHealthAcks(workspaceId: string): Promise<Map<string, PanelAck>> {
   const { sql } = getOrgPg();
+  // NB: timestamptz round-trips as ISO STRINGS on this client (a Date param
+  // throws "Received an instance of Date") — string in, new Date(row) out.
   const rows = await sql<Array<{
     panel: string; status: string; reason: string; acked_by: string;
-    acked_at: Date; snooze_until: Date | null;
+    acked_at: string; snooze_until: string | null;
   }>>`
     SELECT panel, status, reason, acked_by, acked_at, snooze_until
       FROM harness_shared.system_health_acks
@@ -35,8 +37,8 @@ export async function readHealthAcks(workspaceId: string): Promise<Map<string, P
       status: r.status as PanelAck['status'],
       reason: r.reason,
       ackedBy: r.acked_by,
-      ackedAt: r.acked_at.getTime(),
-      snoozeUntil: r.snooze_until ? r.snooze_until.getTime() : null,
+      ackedAt: new Date(r.acked_at).getTime(),
+      snoozeUntil: r.snooze_until ? new Date(r.snooze_until).getTime() : null,
     });
   }
   return out;
@@ -56,7 +58,7 @@ export async function upsertHealthAck(args: {
     INSERT INTO harness_shared.system_health_acks
       (workspace_id, panel, status, reason, acked_by, snooze_until)
     VALUES (${args.workspaceId}, ${args.panel}, ${args.status}, ${args.reason},
-            ${args.ackedBy}, ${args.snoozeUntil ? new Date(args.snoozeUntil) : null})
+            ${args.ackedBy}, ${args.snoozeUntil ? new Date(args.snoozeUntil).toISOString() : null})
     ON CONFLICT (workspace_id, panel) DO UPDATE SET
       status = EXCLUDED.status, reason = EXCLUDED.reason,
       acked_by = EXCLUDED.acked_by, acked_at = now(),

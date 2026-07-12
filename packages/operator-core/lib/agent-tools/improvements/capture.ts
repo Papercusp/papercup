@@ -25,7 +25,7 @@ import { recordRoutedIdea } from '../../scout/routed-ledger';
 import { SU_IDEATION_LENSES, type SuIdeationLens } from '../../scout/types';
 import { resolveWorkItemRef } from '../../work-items';
 import { hardText, LIMITS } from '../limits';
-import { coerceCaptureKind } from './capture-coerce';
+import { coerceCaptureArgs } from './capture-coerce';
 
 export default defineTool({
   name: 'improvements:capture',
@@ -55,8 +55,12 @@ export default defineTool({
   // sub-kind / a free-form label) to intent BEFORE validation, so a captured insight is
   // never rejected+lost on the enum. Only `kind` is touched; the .strict() observation
   // sub-object keeps failing loud on unknown keys (deliberate, anti-silent-data-loss).
+  // EI-10424: also forces an IDEATE-pass proposal (structured `ideation` payload, or a
+  // `foundDuring` naming an ideate pass) that left `kind` at its ambiguous 'change'
+  // default into the reviewed 'feature' lane instead of landing as ordinary claimable
+  // change-work — see capture-coerce.ts for the full contract.
   args: z.preprocess(
-    coerceCaptureKind,
+    coerceCaptureArgs,
     z.object({
     title: hardText(LIMITS.SHORT_TITLE).describe('one-line summary (do NOT include a [kind] prefix — pass kind separately)'),
     kind: z.enum(['bug', 'change', 'feature']).optional().describe('bug = something broken (auto-eligible); change = a desired improvement; feature = net-new (both human-gated). Required for an improvement; ignored for lane:observation (always stored as a non-bug nit). Default change.'),

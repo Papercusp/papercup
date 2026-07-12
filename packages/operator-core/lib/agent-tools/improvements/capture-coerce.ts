@@ -18,6 +18,19 @@
  * This normalises ONLY the top-level `kind`. It deliberately does NOT touch the
  * `.strict()` observation sub-object (its unknown-key rejection is intentional —
  * added to stop silent data loss — and must keep failing loud).
+ *
+ * EI-10424: an IDEATE-pass PROPOSAL (an su session's "here's a feature idea" filing)
+ * has no dedicated `kind` and defaults to 'change' — ordinary claimable change-work,
+ * indistinguishable from a human-triaged request, bypassing the reviewed-proposal
+ * pipeline the su IDEATE contract promises ("File each as … improvements:capture
+ * { kind:'feature' }"). Live evidence: 29 open EI-10xxx rows with kind='change', no
+ * payload.lane, found_during matching /su-ideate/i — several of them carrying a fully
+ * populated `ideation` (lens/bet/cheapExperiment) block that the handler then silently
+ * DISCARDS because it only persists `ideation` for kind:'feature' (capture.ts).
+ * `coerceIdeateProvenance` catches both signals — a structured `ideation` payload, or
+ * `foundDuring` naming an ideate pass — and forces kind→'feature' UNLESS the caller
+ * explicitly chose 'bug' (a genuine defect found while ideating stays a bug) or the
+ * capture is lane:'observation' (never enters the work queue regardless of kind).
  */
 
 const VALID_KIND = new Set(['bug', 'change', 'feature']);
@@ -65,4 +78,46 @@ export function coerceCaptureKind(raw: unknown): unknown {
   // 'tool-friction', …) → the documented default kind for a desired improvement.
   out.kind = 'change';
   return out;
+}
+
+const IDEATE_PROVENANCE_RE = /su-ideate/i;
+
+function hasIdeationContent(v: unknown): boolean {
+  if (!isPlainObject(v)) return false;
+  return v.lens !== undefined || v.bet !== undefined || v.cheapExperiment !== undefined;
+}
+
+/**
+ * EI-10424: force an IDEATE-pass proposal into the reviewed lane (kind:'feature')
+ * instead of letting it silently default to ordinary claimable change-work. Runs
+ * AFTER `coerceCaptureKind` (composed in `coerceCaptureArgs` below), so by this
+ * point `raw.kind` is either a valid enum member or absent.
+ *
+ * Trigger (either signal, both free-text-tolerant / structural — no ctx needed):
+ *   - `raw.ideation` carries lens/bet/cheapExperiment (the IDEATE-provenance schema), or
+ *   - `raw.foundDuring` names an ideate pass (matches /su-ideate/i, the convention every
+ *     observed filer already uses).
+ * Never overrides an EXPLICIT 'bug' (a genuine defect found while ideating stays a
+ * bug) or a lane:'observation' capture (never enters the work queue regardless of kind).
+ * Only re-targets the ambiguous default ('change' or omitted-→-'change').
+ */
+export function coerceIdeateProvenance(raw: unknown): unknown {
+  if (!isPlainObject(raw)) return raw;
+  if (raw.lane === 'observation') return raw;
+  if (raw.kind !== undefined && raw.kind !== 'change') return raw; // explicit bug/feature — leave it
+
+  const signaled =
+    hasIdeationContent(raw.ideation) ||
+    (typeof raw.foundDuring === 'string' && IDEATE_PROVENANCE_RE.test(raw.foundDuring));
+  if (!signaled) return raw;
+
+  return { ...raw, kind: 'feature' };
+}
+
+/** The full args-preprocess pipeline: general `kind` liberality, then IDEATE-provenance
+ *  coercion. Exported as one step so callers (the tool's `z.preprocess`) never need to
+ *  remember the order — `coerceIdeateProvenance` depends on `coerceCaptureKind` having
+ *  already normalised `kind` to a valid enum member or removed it. */
+export function coerceCaptureArgs(raw: unknown): unknown {
+  return coerceIdeateProvenance(coerceCaptureKind(raw));
 }

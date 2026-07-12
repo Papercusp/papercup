@@ -1166,28 +1166,30 @@ async function collectSuFleet(ctx: HealthCtx): Promise<HealthPanel<SuFleetHealth
 async function collectLoops(ctx: HealthCtx): Promise<HealthPanel<LoopsHealth>> {
   return panelSafe<LoopsHealth>('loops', async () => {
     const { sql } = getOrgPg();
+    // NB: timestamptz round-trips as ISO STRINGS on this client (a Date param
+    // throws "Received an instance of Date") — string in, new Date(row) out.
     const [routines, streakRows, lastFireRows] = await Promise.all([
-      sql<Array<{ name: string; next_fire_at: Date | null }>>`
+      sql<Array<{ name: string; next_fire_at: string | null }>>`
         SELECT name, next_fire_at FROM harness_shared.routines
          WHERE active = true AND name LIKE 'loop-%'`,
       sql<Array<{ n: number }>>`
         SELECT count(*)::int AS n FROM harness_shared.autoloop_state
          WHERE role LIKE 'loop-%'
-           AND last_fired_at >= ${new Date(ctx.now - 24 * 60 * 60_000)}
+           AND last_fired_at >= ${new Date(ctx.now - 24 * 60 * 60_000).toISOString()}
            AND consecutive_errors >= 3`,
-      sql<Array<{ last: Date | null }>>`
+      sql<Array<{ last: string | null }>>`
         SELECT max(last_fired_at) AS last FROM harness_shared.autoloop_state
          WHERE role LIKE 'loop-%'`,
     ]);
     const overdueRows = routines.filter(
-      (r) => r.next_fire_at !== null && ctx.now - r.next_fire_at.getTime() > DEAD_ROUTINE_OVERDUE_MS,
+      (r) => r.next_fire_at !== null && ctx.now - new Date(r.next_fire_at).getTime() > DEAD_ROUTINE_OVERDUE_MS,
     );
     const data: LoopsHealth = {
       armed: routines.length,
       overdue: overdueRows.length,
       overdueNames: overdueRows.slice(0, 5).map((r) => r.name),
       failureStreaks: streakRows[0]?.n ?? 0,
-      lastFireAt: lastFireRows[0]?.last ? lastFireRows[0].last.getTime() : null,
+      lastFireAt: lastFireRows[0]?.last ? new Date(lastFireRows[0].last).getTime() : null,
     };
     const status = loopsStatus(data);
     return {

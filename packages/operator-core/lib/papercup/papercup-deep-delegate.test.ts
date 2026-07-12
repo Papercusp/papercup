@@ -153,10 +153,18 @@ describe('buildDeepPaneBrief (D-003 live-deep lane)', () => {
   });
 });
 
+type DeliverInput = {
+  ownerId: string;
+  workItemId: string;
+  harness: string;
+  question: string;
+  brief: string;
+};
+
 describe('delegateDeep — D-003 live papercup-deep lane', () => {
   it('delivers to the live deep session (claimed by its ownerId) and does NOT spawn', async () => {
-    const findLiveDeepSession = vi.fn(async () => ({ ownerId: 'role-deep-1' }));
-    const deliverToDeep = vi.fn(async () => true);
+    const findLiveDeepSession = vi.fn(async (_ws: string) => ({ ownerId: 'role-deep-1' }));
+    const deliverToDeep = vi.fn(async (_input: DeliverInput) => true);
     const { deps, spies } = makeDeps({ findLiveDeepSession, deliverToDeep });
     const out = await delegateDeep(
       {
@@ -188,9 +196,7 @@ describe('delegateDeep — D-003 live papercup-deep lane', () => {
       harness: 'papercup',
       question: 'Which migration path is safer?',
     });
-    expect((deliverToDeep.mock.calls[0][0] as { brief: string }).brief).toContain(
-      "work_items:complete { id: 'WI-301'",
-    );
+    expect(deliverToDeep.mock.calls[0][0].brief).toContain("work_items:complete { id: 'WI-301'");
     expect(spies.spawn).not.toHaveBeenCalled();
   });
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { z } from 'zod';
 import captureTool from './capture';
-import { coerceCaptureKind } from './capture-coerce';
+import { coerceCaptureKind, coerceIdeateProvenance } from './capture-coerce';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { noveltyPriorArt } from '../../scout/novelty-precheck';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -247,6 +247,107 @@ describe('improvements:capture kind coercion (WI-1974)', () => {
       properties?: { kind?: { enum?: string[]; type?: string } };
     };
     expect(json.properties?.kind?.enum).toEqual(['bug', 'change', 'feature']);
+  });
+});
+
+// EI-10424: an IDEATE-pass proposal left at kind:'change' (the ambiguous default)
+// must be coerced into the reviewed kind:'feature' lane — never land as ordinary
+// claimable change-work with no lane. Guard for the exact defect the bug reported.
+describe('improvements:capture IDEATE-provenance coercion (EI-10424)', () => {
+  const ideation = { lens: 'risk-first', bet: 'upside' };
+
+  describe('coerceIdeateProvenance (unit)', () => {
+    it("an ideation payload with kind omitted → kind:'feature'", () => {
+      expect(coerceIdeateProvenance({ title: 't', ideation })).toEqual({ title: 't', ideation, kind: 'feature' });
+    });
+
+    it("an ideation payload with kind:'change' → kind:'feature'", () => {
+      expect(coerceIdeateProvenance({ title: 't', kind: 'change', ideation })).toEqual({
+        title: 't',
+        kind: 'feature',
+        ideation,
+      });
+    });
+
+    it("foundDuring naming an ideate pass, no ideation payload → kind:'feature'", () => {
+      expect(coerceIdeateProvenance({ title: 't', foundDuring: 'su-ideate pass 2026-07-12: memory frontier' })).toEqual({
+        title: 't',
+        foundDuring: 'su-ideate pass 2026-07-12: memory frontier',
+        kind: 'feature',
+      });
+    });
+
+    it('an unrelated foundDuring / no ideation signal is left untouched (stays change-default)', () => {
+      expect(coerceIdeateProvenance({ title: 't', foundDuring: 'triaging the drain queue' })).toEqual({
+        title: 't',
+        foundDuring: 'triaging the drain queue',
+      });
+    });
+
+    it("an EXPLICIT kind:'bug' found while ideating is never overridden (a real defect stays a bug)", () => {
+      expect(coerceIdeateProvenance({ title: 't', kind: 'bug', foundDuring: 'su-ideate pass: audit' })).toEqual({
+        title: 't',
+        kind: 'bug',
+        foundDuring: 'su-ideate pass: audit',
+      });
+    });
+
+    it("lane:'observation' is never coerced (never enters the work queue regardless of kind)", () => {
+      expect(coerceIdeateProvenance({ title: 't', lane: 'observation', ideation })).toEqual({
+        title: 't',
+        lane: 'observation',
+        ideation,
+      });
+    });
+
+    it('an empty ideation object (no lens/bet/cheapExperiment) is not a signal', () => {
+      expect(coerceIdeateProvenance({ title: 't', ideation: {} })).toEqual({ title: 't', ideation: {} });
+    });
+
+    it('passes a non-object through untouched', () => {
+      expect(coerceIdeateProvenance('x')).toBe('x');
+    });
+  });
+
+  describe('through the real args schema — the exact EI-10424 defect shape', () => {
+    const parse = (x: unknown) => (captureTool.args as { parse: (v: unknown) => Record<string, unknown> }).parse(x);
+
+    it('an su-ideate capture with kind omitted parses to kind:feature, not the change default', () => {
+      const p = parse({ title: 'idea', foundDuring: 'su-ideate: memory frontier', ideation });
+      expect(p.kind).toBe('feature');
+    });
+
+    it('an su-ideate capture explicitly (mis)sent as kind:change is corrected to kind:feature', () => {
+      const p = parse({ title: 'idea', kind: 'change', foundDuring: 'su-ideate: memory frontier', ideation });
+      expect(p.kind).toBe('feature');
+    });
+
+    it('a genuine bug found during an ideate pass stays kind:bug (not coerced)', () => {
+      const p = parse({ title: 'found a real bug', kind: 'bug', foundDuring: 'su-ideate pass: audit' });
+      expect(p.kind).toBe('bug');
+    });
+
+    it('an ordinary change-work capture (no ideate provenance) is unaffected', () => {
+      const p = parse({ title: 'bump a timeout', kind: 'change' });
+      expect(p.kind).toBe('change');
+    });
+  });
+
+  it('end-to-end: the coerced kind:feature makes the handler actually persist the ideation payload', async () => {
+    mockIdentity.mockReturnValue(identity('omp-hook-session'));
+    mockCapture.mockResolvedValue({ ok: true, id: 'EI-1', created: true } as unknown as Awaited<
+      ReturnType<typeof captureImprovement>
+    >);
+    // Simulate the real wire path: parse through the schema (where coercion runs) THEN
+    // hand the parsed args to the handler — callTool()/`.handler()` alone skips
+    // z.preprocess, per the direct-handler tests above.
+    const parsed = (captureTool.args as { parse: (v: unknown) => Record<string, unknown> }).parse({
+      title: 'idea',
+      foundDuring: 'su-ideate: memory frontier',
+      ideation,
+    });
+    await callTool(parsed);
+    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ kind: 'feature', payloadExtra: { ideation } }));
   });
 });
 

@@ -38,7 +38,11 @@ import {
   startMemoryWatchdog,
   resolveMemoryWatchdogLimitMb,
 } from '@papercusp/operator-core/lib/memory-watchdog';
-import { gracefulHostRecycle, installGracefulShutdown } from '@papercusp/operator-core/lib/host-recycle';
+import {
+  gracefulHostRecycle,
+  installGracefulShutdown,
+  installFatalDiagnostics,
+} from '@papercusp/operator-core/lib/host-recycle';
 import { markShuttingDown } from '@papercusp/operator-core/lib/shutdown-state';
 // infra-fail-fast P-015 / D2 — canonical loopback-default bind host (locks P-027).
 import { resolveBindHost } from '@papercusp/operator-core/lib/resolve-bind-host';
@@ -72,6 +76,13 @@ import { runSubstrateSidecarServer } from '@papercusp/operator-core/lib/sync/hyp
 import { runSpawnerSidecarServer } from '@papercusp/operator-core/lib/fleet/spawner-sidecar-server';
 import { runGatewaySidecarMain } from '@papercusp/operator-core/lib/inference-gateway/sidecar-main';
 import { runEmbedSidecarServer } from '@papercusp/operator-core/lib/memory/embed-sidecar-server';
+
+// WI-3849: arm Node's diagnostic-report-on-SIGABRT as early as possible (before
+// the sidecar divert, so every process type this entry can become — main host,
+// cluster worker, or any sidecar — gets it) so the next native Napi::Error/
+// SIGABRT crash captures a symbolized native+JS stack automatically instead of
+// only a bare coredump. See host-recycle.ts's installFatalDiagnostics doc.
+installFatalDiagnostics();
 
 // ── EI-8810: sidecar re-exec divert ─────────────────────────────────────────
 // The sidecar spawners (substrate / spawner / inference-gateway / embed) re-exec

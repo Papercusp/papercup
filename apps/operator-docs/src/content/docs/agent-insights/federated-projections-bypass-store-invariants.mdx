@@ -1,12 +1,14 @@
 ---
-title: "Auditing a federated table: a projection's raw SQL inherits none of the store's invariants (and mig comments promise semantics nobody implements)"
-description: "Two release-blocking p2p memory bugs in two days shared one root cause: the receive-side projection writes the table with raw SQL, bypassing both the store class that maintains the table's invariants and the apply-side semantics the design/migration comments promised. How to find this class in any federated table."
+title: "Auditing a federated table: migrations that MIRROR a working federation don't mirror its code — the writer, the invariants, and the op semantics all stay unimplemented"
+description: "Three release-blocking p2p memory bugs in three days shared one root cause: memory_canonical's federation was built by copying agent_facts' MIGRATIONS, and everything agent_facts' CODE does — stamp the routing key, refuse an unroutable share, maintain the store's side tables, apply a retraction — was silently left out. How to find this class in any federated table."
 discovered: 2026-07-12
 tags: ["federation", "p2p", "memory", "projections", "auditing", "invariants"]
 status: active
 documents:
   - "packages/operator-core/lib/sync/hyperbee/projections/p2p-memories.ts"
   - "packages/operator-core/lib/memory/federated-vec-backfill.ts"
+  - "packages/operator-core/lib/agent-tools/memory/remember.ts"
+  - "packages/operator-core/lib/agent-facts/store.ts"
   - "libs/generic/memory/src/canonical-store.ts"
 plans:
   - "mem0-cross-machine-federation-2026-07-10"
@@ -14,29 +16,56 @@ plans:
 
 ## The pattern
 
-A Hyperbee→PG **projection** applies remote ops by writing the target table with **raw SQL**. That table, locally, is normally written by a **store class** (an ORM-ish owner) that maintains invariants the raw SQL knows nothing about. And the **migration comments / plan decisions** describing the feature promise apply-side *semantics* that the projection may simply never implement.
+`memory_canonical`'s federation was built by **mirroring `agent_facts`** — migrations 562/563/564 each say so in their header ("mirrors mig 461", "mirrors the agent_facts capture triggers"). The *schema* was faithfully copied. **None of the code was.** `agent_facts` federates because `assertFact` stamps the routing key, refuses an unroutable share, and its store maintains the table's side state. Memory got the columns and the triggers, and nothing that fills or honours them.
 
-Both halves bit the same table (`harness_shared.memory_canonical`) within two days, and both were release-blocking for p2p:
+Three bugs, one table (`harness_shared.memory_canonical`), three days, all release-blocking for p2p — send side, receive side, and op semantics:
 
-| | Promised | What the projection actually did |
+| | Promised | What the code actually did |
 |---|---|---|
+| **EI-10432** (the writer) | mig 564: `harness_slug` = *"the Hive home slug (**federation identity carrier**)"* | **Nothing ever wrote it.** The table's only local writer is mem0's `CanonicalVectorStore.insert`, which inserts `(id, payload, created_at, updated_at)` — the federation columns are invisible to it. So a `shareable: true` memory was captured into the outbox under a **NULL** slug; the drain selects `WHERE harness_slug = $slug`, which NULL never matches; the op was stranded and later reaped by the backstop GC. It federated to **nobody** and errored **nowhere**. |
 | **EI-10393** (op semantics) | mig 563's comment: *"flipping shareable off captures once (peers apply **the retraction of sharing**)"* | Upserted every well-formed put. Un-sharing a memory kept its **full content** on every peer; a hostile peer could push never-shareable rows and we stored them. |
 | **EI-10405** (store invariant) | EI-9308's design: *"federate the memory TEXT … and **let each peer re-embed locally**"* | Wrote `memory_canonical` only. `memory_vec_*` rows are written **exclusively** by `CanonicalVectorStore.insert` — which the projection bypasses. A federated memory therefore had **no vector in any mode**, and recall's primary path JOINs the vec table, so it could never be returned. |
 
-EI-10405's failure mode is the nastier shape: the row *looks* fine everywhere a human checks. It is listed on the settings page, it is exported, `get(id)` returns it — and the plan's own live-witness item (P-009: "verify it federates + projects as `origin=remote`") would have **passed green** while recall stayed broken. It surfaced only through the embed-free *lexical fallback*, which runs when the embedder is **down** — so the feature "worked" precisely when the system was degraded, and was invisible otherwise.
+Note the symmetry that makes this class so durable: **each bug alone is sufficient to make the feature do nothing, so fixing any one of them changes no observable behaviour.** Nothing gets better until all three are fixed — which is exactly why none of them produced a bug report, and why "it worked in a test" kept being true.
+
+Two of the three are *silent-success* shapes, the nastiest kind:
+
+- **EI-10405**: the row *looks* fine everywhere a human checks — listed on the settings page, exported, `get(id)`-able — and the plan's own live-witness item (P-009: "verify it federates + projects as `origin=remote`") would have **passed green** while recall stayed broken. It surfaced only through the embed-free *lexical fallback*, which runs when the embedder is **down**: the feature "worked" precisely when the system was degraded.
+- **EI-10432**: `memory:remember { shareable: true }` returned **ok**. The memory was stored, the `shareable` column was `true`, the capture trigger fired. Every local signal said success. The op simply never left the machine.
+
+`agent_facts` avoids EI-10432 explicitly, and its own comment names the hazard — which is the tell that the pattern was *known* and just never carried across:
+
+> "the capture triggers fire but route nowhere, so the fact is captured then stranded (dropped on every peer). **Refuse LOUDLY rather than silently strand**"
 
 ## Why the existing guards don't catch it
 
-There is a `federated-column-completeness` guard (EI-9430 lineage): every column must be carried, PROVENANCE-stamped, or reasoned NOT_FEDERATED. It is a **column** guard. Neither of these bugs is about a column:
+There is a `federated-column-completeness` guard (EI-9430 lineage): every column must be carried, PROVENANCE-stamped, or reasoned NOT_FEDERATED. It is a guard on whether a column is **carried on the wire**. None of these three bugs is about that:
 
+- **nobody-writes-it** has no guard — the column is dutifully carried; it is simply always NULL, because adding a column in a migration does not make any code populate it.
 - **op-semantics completeness** has no guard — nothing checks that the apply side handles every op *meaning* the capture side can emit (a `put` that means "retract").
 - **invariant completeness** has no guard — nothing checks that a raw-SQL writer upholds what the table's real writer guarantees (here: *every memory row has a vector row in the active mode, or it is invisible to recall*).
 
 ## The audit, when you touch any federated table
 
-1. **Diff the promises against the code.** Read the migration comments, the plan decisions, and the originating proposal — then grep the projection for each promised behavior. `shareable` appeared in `p2p-memories.ts` **only in comments**. A word that lives exclusively in prose is a promise nobody implemented.
-2. **Ask who else writes this table locally, and what does that writer guarantee?** Find the store/DAO class. Enumerate its invariants (side tables it maintains, derived rows, triggers it depends on). The projection's raw SQL inherits **none** of them. `memory_vec_*`, entity rows, `state`, generated columns — every one is an invariant the projection must either uphold or consciously decline.
-3. **Ask how the row is READ, not just whether it landed.** "It projected" is not "it works." Trace the row into the *primary* read path. A row that only surfaces via a fallback/degraded path is a bug wearing a passing test — and it is exactly what a projection-level witness test will bless.
+1. **For every federation column, name the line of code that writes it — then prove it against live data.** This is the cheapest and highest-yield check, and it is one query:
+
+   ```sql
+   SELECT count(*) FILTER (WHERE harness_slug IS NOT NULL) FROM harness_shared.memory_canonical;  -- 0 of 10323
+   ```
+
+   A federation column that is NULL on **100%** of rows is not a "not used yet" column — it is a routing key nobody writes, and every op that depends on it is being dropped. Contrast it against a table that *does* federate (`agent_facts`: 2 shareable rows, both carrying a slug). `grep` the writer, too: `harness_slug` had **zero** hits across all of `libs/generic/memory/src`.
+
+2. **Diff the promises against the code.** Read the migration comments, the plan decisions, and the originating proposal — then grep for each promised behavior. `shareable` appeared in `p2p-memories.ts` **only in comments**. A word that lives exclusively in prose is a promise nobody implemented. Treat *"mirrors mig NNN"* in a migration header as a **claim to verify, not a citation**: it means the schema was copied, and says nothing about the code.
+
+3. **Ask who else writes this table locally, and what does that writer guarantee?** Find the store/DAO class. Enumerate its invariants (side tables it maintains, derived rows, columns it fills). A raw-SQL projection inherits **none** of them — and, symmetrically, a *generic* store (mem0's, here) knows nothing about the federation columns a migration bolted onto its table. Both directions leak.
+
+4. **Ask how the row is READ, not just whether it landed** — and whether it ever LEAVES, not just whether it was written. "It projected" is not "it works"; "it stored" is not "it sent." Trace the row into the *primary* read path, and trace the outbox op to the drain's actual `WHERE` clause. A row that only surfaces via a fallback path, or an op the drain can never select, is a bug wearing a passing test.
+
+## The trap when fixing it: don't reach for the GENERATED column
+
+On a table whose every other derived scalar is `GENERATED ALWAYS AS (payload->>'…')`, "just make `harness_slug` generated too" looks obviously right. It would have **broken the receive side**: the projection inserts `harness_slug` explicitly, and Postgres rejects an explicit value for a generated column. That is not hypothetical — the identical mistake on `workspace_id` threw on **every** federated write until P-007 caught it, and the scar tissue is a 13-line comment in `p2p-memories.ts`.
+
+The constraint that resolves it: the **row** must carry the key (the wire row *is* `to_jsonb(row)`, and the receiver validates the slug is a non-empty string), so the stamp must be atomic with the INSERT — but it must also yield to an explicitly-supplied value. That is exactly a `BEFORE INSERT/UPDATE` trigger that fills the column **only when NULL**: mem0's local insert gets stamped from the payload; the projection's remote apply keeps the peer's authoritative slug. Read the existing writers' *shapes* before choosing where a value gets filled in.
 
 ## Fixing an invariant a projection can't uphold inline
 

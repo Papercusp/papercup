@@ -397,6 +397,34 @@ describe('caller backend/model stamping', () => {
   });
 });
 
+/* ─── harness resolution (WI-4393) ──────────────────────────────────────── */
+
+describe('harness resolution — x-papercusp-harness header vs ?harness= param', () => {
+  it('prefers the x-papercusp-harness header over ?harness= (the OMP carrier — OMP cannot env-interpolate ?harness= into its static MCP url)', async () => {
+    await callTool(
+      'gatingtest:crossworkspace',
+      {},
+      superuserExtra('&workspace=ws-test&harness=stale-url-value', {
+        'x-papercusp-harness': 'papercup',
+      }),
+    );
+    const call = seen.at(-1)!;
+    expect(call.ctx.harnessSlug).toBe('papercup');
+  });
+
+  it('falls back to ?harness= when no header is present (claude/codex env-interpolated url carrier)', async () => {
+    await callTool('gatingtest:crossworkspace', {}, superuserExtra('&workspace=ws-test&harness=papercup'));
+    const call = seen.at(-1)!;
+    expect(call.ctx.harnessSlug).toBe('papercup');
+  });
+
+  it('falls back to \'*\' when neither header nor param is present', async () => {
+    await callTool('gatingtest:crossworkspace', {}, superuserExtra('&workspace=ws-test'));
+    const call = seen.at(-1)!;
+    expect(call.ctx.harnessSlug).toBe('*');
+  });
+});
+
 describe('request-origin telemetry context', () => {
   it('folds sanitized MCP request provenance onto ctx without auth or signature fields', async () => {
     await callTool(

@@ -75,9 +75,14 @@ export async function recordHealthHistory(prev: SystemHealth | null, next: Syste
     const p = next.panels[key];
     if (p) statuses[key] = p.status;
   }
+  // NB: the org pool rejects Date params ("Received an instance of Date") and
+  // sql.json() (same throw for Object) — timestamps go in as .toISOString(),
+  // jsonb as ${JSON.stringify(x)}::jsonb, and timestamptz reads come back as ISO
+  // strings (loops-panel incident, 2026-07-12; same convention as gym/store.ts).
+  const atIso = new Date(next.evaluatedAt).toISOString();
   await sql`
     INSERT INTO harness_shared.system_health_ticks (workspace_id, at, overall, statuses)
-    VALUES (${next.workspaceId}, ${new Date(next.evaluatedAt)}, ${next.overall}, ${sql.json(statuses)})
+    VALUES (${next.workspaceId}, ${atIso}, ${next.overall}, ${JSON.stringify(statuses)}::jsonb)
     ON CONFLICT (workspace_id, at) DO NOTHING`;
   const transitions = diffHealthTransitions(prev, next);
   for (const t of transitions) {
@@ -85,7 +90,7 @@ export async function recordHealthHistory(prev: SystemHealth | null, next: Syste
       INSERT INTO harness_shared.system_health_transitions
         (workspace_id, panel, from_status, to_status, summary, at)
       VALUES (${next.workspaceId}, ${t.panel}, ${t.from}, ${t.to},
-              ${t.summary ? t.summary.slice(0, 500) : null}, ${new Date(next.evaluatedAt)})`;
+              ${t.summary ? t.summary.slice(0, 500) : null}, ${atIso})`;
   }
   if (Math.random() < 1 / RETENTION_SAMPLE) {
     await sql`DELETE FROM harness_shared.system_health_ticks
@@ -142,17 +147,17 @@ export async function readSystemHealthHistory(
 ): Promise<HealthHistory> {
   const { sql } = getOrgPg();
   const now = Date.now();
-  const from = new Date(now - windowMs);
+  const fromIso = new Date(now - windowMs).toISOString();
   const [tickRows, transitionRows] = await Promise.all([
-    sql<Array<{ at: Date; overall: string; statuses: Record<string, PanelStatus> }>>`
+    sql<Array<{ at: string; overall: string; statuses: Record<string, PanelStatus> }>>`
       SELECT at, overall, statuses
         FROM harness_shared.system_health_ticks
-       WHERE workspace_id = ${workspaceId} AND at >= ${from}
+       WHERE workspace_id = ${workspaceId} AND at >= ${fromIso}
        ORDER BY at ASC`,
-    sql<Array<{ panel: string; from_status: string; to_status: string; summary: string | null; at: Date }>>`
+    sql<Array<{ panel: string; from_status: string; to_status: string; summary: string | null; at: string }>>`
       SELECT panel, from_status, to_status, summary, at
         FROM harness_shared.system_health_transitions
-       WHERE workspace_id = ${workspaceId} AND at >= ${from}
+       WHERE workspace_id = ${workspaceId} AND at >= ${fromIso}
        ORDER BY at DESC
        LIMIT 300`,
   ]);
@@ -162,7 +167,7 @@ export async function readSystemHealthHistory(
     windowMs,
     bucketMs,
     ticks: tickRows.map((r) => ({
-      at: r.at.getTime(),
+      at: new Date(r.at).getTime(),
       overall: r.overall as PanelStatus,
       statuses: r.statuses ?? {},
     })),
@@ -171,7 +176,7 @@ export async function readSystemHealthHistory(
       from: r.from_status as PanelStatus,
       to: r.to_status as PanelStatus,
       summary: r.summary,
-      at: r.at.getTime(),
+      at: new Date(r.at).getTime(),
     })),
   });
 }

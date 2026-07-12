@@ -50,7 +50,8 @@ import {
   releaseFleetLaunchSlot,
 } from '../../agent-fleets-store';
 import { DEFAULT_CLAIM_SPEC } from '../../scheduler/claim-spec';
-import { fleetSpecBeeKey, resolveClaimSpecWorkspace, setClaimSpec } from '../../scheduler/claim-spec-store';
+import { fleetSpecBeeKey, resolveClaimSpecWorkspace, setClaimSpec, getClaimSpec } from '../../scheduler/claim-spec-store';
+import { DEFAULT_CLAIM_SPEC as CLAIM_SPEC_DEFAULT, type ClaimSpec } from '../../scheduler/claim-spec';
 import { heartbeatPresence, setPresenceFleet } from '../coordination/presence';
 import { resolveHarnessPlansDir, readPlanBySlug } from '../plans/source';
 import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller } from './_shared';

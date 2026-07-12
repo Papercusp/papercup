@@ -6,7 +6,13 @@
  * teardown failure, and hard-exits when either side hangs.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { gracefulHostRecycle, installGracefulShutdown, type RecycleServerLike } from './host-recycle';
+import {
+  gracefulHostRecycle,
+  installGracefulShutdown,
+  installFatalDiagnostics,
+  _resetFatalDiagnosticsForTests,
+  type RecycleServerLike,
+} from './host-recycle';
 
 describe('gracefulHostRecycle', () => {
   beforeEach(() => {
@@ -302,5 +308,61 @@ describe('installGracefulShutdown (D4/P-017 — SIGTERM connection-drain)', () =
     await vi.advanceTimersByTimeAsync(0);
     expect(exit).toHaveBeenCalledExactlyOnceWith(0);
     warnSpy.mockRestore();
+  });
+});
+
+// WI-3849: arms Node's diagnostic-report-on-SIGABRT so the next native
+// Napi::Error/SIGABRT crash captures a symbolized stack automatically.
+describe('installFatalDiagnostics (WI-3849 — diagnostic report on native SIGABRT)', () => {
+  beforeEach(() => _resetFatalDiagnosticsForTests());
+  afterEach(() => _resetFatalDiagnosticsForTests());
+
+  function fakeReport() {
+    return {} as { directory?: string; signal?: string; reportOnSignal?: boolean; reportOnFatalError?: boolean };
+  }
+
+  it('arms reportOnSignal for SIGABRT with reportOnFatalError, and writes a directory', () => {
+    const report = fakeReport();
+    const mkdir = vi.fn();
+    const log = vi.fn();
+    installFatalDiagnostics({ report, directory: '/tmp/fake-crash-reports', mkdir, log });
+
+    expect(report.reportOnSignal).toBe(true);
+    expect(report.signal).toBe('SIGABRT');
+    expect(report.reportOnFatalError).toBe(true);
+    expect(report.directory).toBe('/tmp/fake-crash-reports');
+    expect(log).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT call mkdir when a report object is injected (test seam skips real fs)', () => {
+    const report = fakeReport();
+    const mkdir = vi.fn();
+    installFatalDiagnostics({ report, directory: '/tmp/fake-crash-reports', mkdir });
+    expect(mkdir).not.toHaveBeenCalled();
+  });
+
+  it('is idempotent — a second call is a no-op (does not re-touch the report or re-log)', () => {
+    const report = fakeReport();
+    const log = vi.fn();
+    installFatalDiagnostics({ report, directory: '/tmp/a', mkdir: vi.fn(), log });
+    report.signal = 'SIGUSR2'; // simulate something else mutating it after install
+    installFatalDiagnostics({ report, directory: '/tmp/b', mkdir: vi.fn(), log });
+
+    expect(log).toHaveBeenCalledTimes(1); // only the first call logged
+    expect(report.directory).toBe('/tmp/a'); // second call's directory was never applied
+    expect(report.signal).toBe('SIGUSR2'); // second call didn't overwrite it either
+  });
+
+  it('never throws when process.report is unavailable (best-effort on non-standard Node builds)', () => {
+    expect(() => installFatalDiagnostics({ report: undefined })).not.toThrow();
+  });
+
+  it('never throws even if the report object itself throws on assignment', () => {
+    const throwing = {
+      set directory(_v: string) {
+        throw new Error('boom');
+      },
+    } as unknown as { directory?: string; signal?: string; reportOnSignal?: boolean; reportOnFatalError?: boolean };
+    expect(() => installFatalDiagnostics({ report: throwing, directory: '/tmp/x', mkdir: vi.fn() })).not.toThrow();
   });
 });
