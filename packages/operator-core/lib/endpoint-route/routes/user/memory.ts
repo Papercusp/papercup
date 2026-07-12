@@ -32,6 +32,7 @@ import { journalPendingWrite, markJournalCommitted } from '../../../memory/write
 import { listUserMemories } from '../../../memory/list-user-memories';
 import { isMemoryPaused, setMemoryPaused } from '../../../memory/memory-pause';
 import { recallCanaryForEnvelope } from '../../../memory/recall-canary-envelope';
+import { detectPossibleSecrets, possibleSecretWarning } from '../../../memory/secret-detect';
 import { recordFeedback } from '../../../memory/feedback';
 import { readClaudeHygiene } from '../../../memory/claude-hygiene';
 import { notifySyncInvalidate } from '../../../sync-sse';
@@ -210,6 +211,13 @@ const create = defineTool({
       source: 'settings-page',
     };
     if (harnessSlug) metadata.harness_slug = harnessSlug;
+    // EI-10371 stage 1: flag credential-shaped content (detection only — the
+    // text is stored unchanged). Stamped before journaling so a replay carries it.
+    const secrets = detectPossibleSecrets(text);
+    if (secrets.matched) {
+      metadata.possible_secret = true;
+      metadata.possible_secret_classes = secrets.classes;
+    }
 
     // Park the fact durably first. `journalId === null` ⇒ journaling itself is
     // degraded (pre-migration DB, PG hiccup) — the write proceeds on the old
@@ -262,7 +270,14 @@ const create = defineTool({
       });
     }
     invalidateMemoryList();
-    return Response.json({ ok: true, ids });
+    return Response.json({
+      ok: true,
+      ids,
+      // EI-10371: the UI shows this as a toast/warning next to the saved row.
+      ...(secrets.matched
+        ? { possible_secret: true, warning: possibleSecretWarning(secrets.classes) }
+        : {}),
+    });
   },
 });
 
@@ -381,6 +396,10 @@ const patch = defineTool({
       priorKind = got?.kind ?? null;
     } catch { /* best-effort */ }
 
+    // EI-10371 stage 1: re-check the edited text and re-stamp the flag both
+    // ways — editing a secret out must clear the chip (vec-safe metadata merge).
+    const secrets = detectPossibleSecrets(nextText);
+
     const journalId = await journalPendingWrite({
       scope: `__update__:${body.id}`,
       content: nextText,
@@ -400,7 +419,13 @@ const patch = defineTool({
     if (!avail.ok) return Response.json({ error: avail.reason, ...journaledFields }, { status: 503 });
 
     try {
-      await withMemoryToolTimeout(backend.update(body.id, { text: nextText }), 'PATCH /user/memory update');
+      await withMemoryToolTimeout(
+        backend.update(body.id, {
+          text: nextText,
+          metadata: { possible_secret: secrets.matched, possible_secret_classes: secrets.classes },
+        }),
+        'PATCH /user/memory update',
+      );
     } catch (err) {
       const reason =
         err instanceof MemoryTimeoutError
@@ -427,7 +452,12 @@ const patch = defineTool({
       kind: priorKind, priorText, newText: nextText,
     });
     invalidateMemoryList();
-    return Response.json({ ok: true });
+    return Response.json({
+      ok: true,
+      ...(secrets.matched
+        ? { possible_secret: true, warning: possibleSecretWarning(secrets.classes) }
+        : {}),
+    });
   },
 });
 

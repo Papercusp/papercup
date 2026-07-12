@@ -14,42 +14,54 @@
  * never add noise of its own. Styles are scoped here
  * (pc-lihealth__*) so the LearningTab hotspot wiring stays at two lines.
  */
-import { useSyncQuery } from '@papercusp/sync';
-import { HeartPulse } from 'lucide-react';
-import type { LearningInfraHealth } from '@papercusp/operator-core/lib/harness/improvements/learning-infra-health';
+import { useSyncQuery } from "@papercusp/sync";
+import { HeartPulse } from "lucide-react";
+import type { LearningInfraHealth } from "@papercusp/operator-core/lib/harness/improvements/learning-infra-health";
 
-const TONES = { ok: 'good', degraded: 'warn', offline: 'bad' } as const;
+const TONES = { ok: "good", degraded: "warn", offline: "bad" } as const;
 
 const LABELS: Record<keyof typeof TONES, string> = {
-  ok: 'learning infra up',
-  degraded: 'learning infra degraded',
-  offline: 'learning system OFFLINE',
+  ok: "learning infra up",
+  degraded: "learning infra degraded",
+  offline: "learning system OFFLINE",
 };
 
 function evaluatedAgo(evaluatedAt: number, nowMs: number): string {
   const min = Math.max(0, (nowMs - evaluatedAt) / 60_000);
-  if (min < 1) return 'just now';
+  if (min < 1) return "just now";
   if (min < 90) return `${Math.round(min)}m ago`;
   return `${Math.round(min / 60)}h ago`;
 }
 
 export default function LearningInfraHealthChip() {
-  const sync = useSyncQuery<LearningInfraHealth>({ queryName: 'learning.health', args: {}, staleTime: 30_000 });
+  const sync = useSyncQuery<LearningInfraHealth>({
+    queryName: "learning.health",
+    args: {},
+    staleTime: 30_000,
+  });
   const health = sync.data?.[0];
-  if (!health || !(health.status in TONES) || health.status === 'ok') return null;
+  if (!health || !(health.status in TONES) || health.status === "ok")
+    return null;
   const tone = TONES[health.status];
   const hint =
     `The learning system's own infrastructure — the LLM spine (gym judge, llm-testing — the stateless anthropic-direct transport), ` +
     `the runner spawn path (auto-implement workers), and the gym fire circuit. ` +
     `When this goes offline you are notified directly: these failures can't be auto-fixed by the improvement queue.\n\n` +
-    health.legs.map((l) => `${l.name}: ${l.status} — ${l.detail}`).join('\n') +
+    health.legs.map((l) => `${l.name}: ${l.status} — ${l.detail}`).join("\n") +
     `\n\nchecked ${evaluatedAgo(health.evaluatedAt, Date.now())}`;
   return (
-    <span className={`pc-lihealth pc-lihealth--${tone}`} title={hint} aria-label={LABELS[health.status]}>
-      <span className={`pc-lihealth__dot pc-lihealth__dot--${tone}`} aria-hidden />
+    <span
+      className={`pc-lihealth pc-lihealth--${tone}`}
+      title={hint}
+      aria-label={LABELS[health.status]}
+    >
+      <span
+        className={`pc-lihealth__dot pc-lihealth__dot--${tone}`}
+        aria-hidden
+      />
       <HeartPulse size={11} aria-hidden />
       {LABELS[health.status]}
-      {health.status !== 'ok' ? <em>{health.reason}</em> : null}
+      {health.status !== "ok" ? <em>{health.reason}</em> : null}
       <style>{`
         .pc-lihealth {
           display: inline-flex; align-items: center; gap: 5px; margin-left: auto;

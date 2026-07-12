@@ -483,7 +483,20 @@ export default defineTool({
     return {
       content: [{
         type: 'text',
-        text: JSON.stringify({ ok: true, ids, ...(runbookHint ? { hint: runbookHint } : {}) }),
+        text: JSON.stringify({
+          ok: true,
+          ids,
+          // EI-10371: tell the agent out loud so it can tell the user — the
+          // metadata stamp alone is invisible until someone opens settings.
+          ...(secrets.matched
+            ? {
+                possible_secret: true,
+                possible_secret_classes: secrets.classes,
+                warning: possibleSecretWarning(secrets.classes),
+              }
+            : {}),
+          ...(runbookHint ? { hint: runbookHint } : {}),
+        }),
       }],
     };
   },

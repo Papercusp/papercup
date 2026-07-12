@@ -23,6 +23,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { journalPendingWrite } from '../../memory/write-journal';
 import { isMemoryPaused, MEMORY_PAUSED_REFUSAL } from '../../memory/memory-pause';
+import { detectPossibleSecrets } from '../../memory/secret-detect';
 
 /** Failure signatures a lost write's tool_result carries (the live classes
  *  observed in the 2026-07-10 forensic pass + the remember.ts envelope set). */
@@ -240,12 +241,19 @@ export default defineTool({
     let journaled = 0;
     const failedToJournal: string[] = [];
     for (const c of candidates) {
+      // EI-10371 stage 1: transcripts are exactly where leaked credentials
+      // live (env dumps, pasted connection strings) — flag at journal time so
+      // the drained row lands already stamped.
+      const secrets = detectPossibleSecrets(c.content);
       const id = await journalPendingWrite({
         scope: c.updateOf ? `__update__:${c.updateOf}` : c.scope || user.id,
         ...(c.kind ? { kind: c.kind } : {}),
         content: c.content,
         metadata: {
           ...(c.updateOf ? { __journal_update_of: c.updateOf } : {}),
+          ...(secrets.matched
+            ? { possible_secret: true, possible_secret_classes: secrets.classes }
+            : {}),
           recovered_from: 'transcript-miner',
           recovered_session: c.session,
           recovered_original_ts: c.ts,

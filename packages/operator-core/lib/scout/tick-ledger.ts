@@ -79,6 +79,19 @@ export async function recordScoutTick(input: RecordScoutTickInput): Promise<void
     void import('../sync-sse')
       .then((m) => m.notifySyncInvalidate('learning.scout'))
       .catch(() => {});
+    // WI-4274: an ERROR tick may complete a pageable streak — check-and-fire is
+    // debounced + fail-soft inside the module, and fire-and-forget here so the
+    // ledger write path never blocks on (or fails because of) paging.
+    if (input.status === 'error') {
+      void import('./error-streak-alarm')
+        .then((m) =>
+          m.checkAndFireErrorStreakAlarm({
+            ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+            installSlug: input.installSlug ?? null,
+          }),
+        )
+        .catch(() => {});
+    }
   }
 }
 

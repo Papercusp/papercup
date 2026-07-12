@@ -68,16 +68,24 @@ describe('COORD_ROLES', () => {
     expect(admitted).toContain('mug');
   });
 
-  test('the COORD_ROLES-gated idea/work-item tools actually admit bee (the consumer half)', async () => {
-    // Capability alone is not enough; the tool's agentRoles allowlist must include
-    // the caller's role (mirrors the scanner output-contract test in
-    // role-principal-caps.test.ts). These three are the P-001 "bees can already
-    // create + read ideas/work-items" contract — verify, don't assume.
-    const { default: capture } = await import('../improvements/capture.js');
-    const { default: createWorkItem } = await import('../work_items/create.js');
-    const { default: listWorkItems } = await import('../work_items/list.js');
-    expect(capture.agentRoles).toContain('cup');
-    expect(createWorkItem.agentRoles).toContain('cup');
-    expect(listWorkItems.agentRoles).toContain('cup');
-  });
+  test(
+    'the COORD_ROLES-gated idea/work-item tools actually admit bee (the consumer half)',
+    // The dynamic imports below pull the tool modules' FULL transitive graph
+    // (dispatch stack, drizzle schema, …) through vitest's on-demand transform
+    // — measured ~5.6s cold on the dev box (2026-07-12), which outgrew the 5s
+    // default and made this timeout-flake. Import weight, not test logic.
+    { timeout: 30_000 },
+    async () => {
+      // Capability alone is not enough; the tool's agentRoles allowlist must include
+      // the caller's role (mirrors the scanner output-contract test in
+      // role-principal-caps.test.ts). These three are the P-001 "bees can already
+      // create + read ideas/work-items" contract — verify, don't assume.
+      const { default: capture } = await import('../improvements/capture.js');
+      const { default: createWorkItem } = await import('../work_items/create.js');
+      const { default: listWorkItems } = await import('../work_items/list.js');
+      expect(capture.agentRoles).toContain('cup');
+      expect(createWorkItem.agentRoles).toContain('cup');
+      expect(listWorkItems.agentRoles).toContain('cup');
+    },
+  );
 });

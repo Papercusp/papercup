@@ -24,6 +24,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { getMemoryBackend } from '../../memory/backend';
 import { MemoryTimeoutError, withMemoryToolTimeout } from '../../memory/op-deadline';
 import { journalPendingWrite } from '../../memory/write-journal';
+import { detectPossibleSecrets, possibleSecretWarning } from '../../memory/secret-detect';
 import { runBulk, bulkContent } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
 
@@ -218,10 +219,29 @@ export default defineTool({
             };
           }
         }
+        // EI-10371 stage 1: a content EDIT re-checks the new text and re-stamps
+        // the flag BOTH ways — editing a secret out must clear the chip, so a
+        // clean edit stamps possible_secret:false (vec-safe metadata merge).
+        // Metadata-only patches never touch the flag.
+        const secrets = it.content !== undefined ? detectPossibleSecrets(it.content) : null;
+        const secretFields = secrets?.matched
+          ? {
+              possible_secret: true as const,
+              possible_secret_classes: secrets.classes,
+              warning: possibleSecretWarning(secrets.classes),
+            }
+          : {};
         try {
           // A supersedes-only item carries no patch — skip the store update
           // and go straight to closing the old memory's window.
           const patch = toPatch(it);
+          if (secrets) {
+            patch.metadata = {
+              ...(patch.metadata ?? {}),
+              possible_secret: secrets.matched,
+              possible_secret_classes: secrets.classes,
+            };
+          }
           if (patch.text !== undefined || patch.metadata !== undefined) {
             await withMemoryToolTimeout(backend.update(it.id, patch), 'memory:update update');
           }
@@ -292,12 +312,13 @@ export default defineTool({
               'memory:update supersede',
             );
             return closed
-              ? { ok: true as const, id: it.id, superseded: it.supersedes }
+              ? { ok: true as const, id: it.id, superseded: it.supersedes, ...secretFields }
               : {
                   ok: true as const,
                   id: it.id,
                   superseded: false as const,
                   supersede_note: 'no open memory matched — already superseded or unknown id',
+                  ...secretFields,
                 };
           } catch (err) {
             const msg =
@@ -311,10 +332,11 @@ export default defineTool({
               id: it.id,
               superseded: false as const,
               supersede_note: `patch applied but supersession failed: ${msg}`,
+              ...secretFields,
             };
           }
         }
-        return { ok: true as const, id: it.id };
+        return { ok: true as const, id: it.id, ...secretFields };
       },
       { keyOf: (it) => ({ id: it.id }) },
     );

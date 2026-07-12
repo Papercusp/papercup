@@ -8,74 +8,117 @@
 // off), and a foreign payload (LearningTab.test.tsx's mock falls through to
 // the improvements digest for unknown queryNames — the chip must not render
 // a digest as a health status).
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
 
-let healthResult: Record<string, unknown> = { data: undefined, loading: true, fetching: true, error: null, invalidate: vi.fn() };
-vi.mock('@papercusp/sync', () => ({
+let healthResult: Record<string, unknown> = {
+  data: undefined,
+  loading: true,
+  fetching: true,
+  error: null,
+  invalidate: vi.fn(),
+};
+vi.mock("@papercusp/sync", () => ({
   useSyncQuery: () => healthResult,
 }));
 
-import LearningInfraHealthChip from './LearningInfraHealthChip';
+import LearningInfraHealthChip from "./LearningInfraHealthChip";
 
-const snapshot = (status: 'ok' | 'degraded' | 'offline', reason: string) => ({
+const snapshot = (status: "ok" | "degraded" | "offline", reason: string) => ({
   status,
   reason,
   legs: [
-    { name: 'llm-spine', status: status === 'offline' ? 'down' : 'ok', detail: 'stateless transport: anthropic-direct' },
-    { name: 'spawn-path', status: 'ok', detail: 'no open spawn-structural watchdog item' },
-    { name: 'gym-circuit', status: status === 'degraded' ? 'down' : 'ok', detail: 'circuit state' },
+    {
+      name: "llm-spine",
+      status: status === "offline" ? "down" : "ok",
+      detail: "stateless transport: anthropic-direct",
+    },
+    {
+      name: "spawn-path",
+      status: "ok",
+      detail: "no open spawn-structural watchdog item",
+    },
+    {
+      name: "gym-circuit",
+      status: status === "degraded" ? "down" : "ok",
+      detail: "circuit state",
+    },
   ],
   evaluatedAt: Date.now() - 30_000,
 });
 
-const setResult = (data: unknown[] | undefined, extra: Record<string, unknown> = {}) => {
-  healthResult = { data, loading: false, fetching: false, error: null, invalidate: vi.fn(), ...extra };
+const setResult = (
+  data: unknown[] | undefined,
+  extra: Record<string, unknown> = {},
+) => {
+  healthResult = {
+    data,
+    loading: false,
+    fetching: false,
+    error: null,
+    invalidate: vi.fn(),
+    ...extra,
+  };
 };
 
 afterEach(() => cleanup());
 
-describe('LearningInfraHealthChip', () => {
-  it('keeps the healthy state quiet', () => {
-    setResult([snapshot('ok', 'all legs up')]);
+describe("LearningInfraHealthChip", () => {
+  it("keeps the healthy state quiet", () => {
+    setResult([snapshot("ok", "all legs up")]);
     const { container } = render(<LearningInfraHealthChip />);
-    expect(container.innerHTML).toBe('');
+    expect(container.innerHTML).toBe("");
   });
 
-  it('renders the amber chip + reason on degraded', () => {
-    setResult([snapshot('degraded', 'gym-circuit: circuit OPEN: gymloopharness (8 consecutive errors)')]);
+  it("renders the amber chip + reason on degraded", () => {
+    setResult([
+      snapshot(
+        "degraded",
+        "gym-circuit: circuit OPEN: gymloopharness (8 consecutive errors)",
+      ),
+    ]);
     render(<LearningInfraHealthChip />);
-    const chip = screen.getByLabelText('learning infra degraded');
-    expect(chip.className).toContain('pc-lihealth--warn');
-    expect(chip.textContent).toContain('circuit OPEN');
+    const chip = screen.getByLabelText("learning infra degraded");
+    expect(chip.className).toContain("pc-lihealth--warn");
+    expect(chip.textContent).toContain("circuit OPEN");
   });
 
-  it('renders the red chip on offline', () => {
-    setResult([snapshot('offline', 'llm-spine: no live Claude session or omp token')]);
+  it("renders the red chip on offline", () => {
+    setResult([
+      snapshot("offline", "llm-spine: no live Claude session or omp token"),
+    ]);
     render(<LearningInfraHealthChip />);
-    const chip = screen.getByLabelText('learning system OFFLINE');
-    expect(chip.className).toContain('pc-lihealth--bad');
-    expect(chip.title).toContain('llm-spine: down');
+    const chip = screen.getByLabelText("learning system OFFLINE");
+    expect(chip.className).toContain("pc-lihealth--bad");
+    expect(chip.title).toContain("llm-spine: down");
   });
 
-  it('renders nothing while loading, on error, on an empty result (flag off), or for a foreign payload', () => {
-    healthResult = { data: undefined, loading: true, fetching: true, error: null, invalidate: vi.fn() };
+  it("renders nothing while loading, on error, on an empty result (flag off), or for a foreign payload", () => {
+    healthResult = {
+      data: undefined,
+      loading: true,
+      fetching: true,
+      error: null,
+      invalidate: vi.fn(),
+    };
     const { container: loading } = render(<LearningInfraHealthChip />);
-    expect(loading.innerHTML).toBe('');
+    expect(loading.innerHTML).toBe("");
     cleanup();
 
-    setResult(undefined, { error: new Error('boom') });
+    setResult(undefined, { error: new Error("boom") });
     const { container: errored } = render(<LearningInfraHealthChip />);
-    expect(errored.innerHTML).toBe('');
+    expect(errored.innerHTML).toBe("");
     cleanup();
 
     setResult([]); // flag off → resolver returns []
     const { container: empty } = render(<LearningInfraHealthChip />);
-    expect(empty.innerHTML).toBe('');
+    expect(empty.innerHTML).toBe("");
     cleanup();
 
-    setResult([{ total: 135, open: 117, headline: 'a digest, not a health snapshot' }]);
+    setResult([
+      { total: 135, open: 117, headline: "a digest, not a health snapshot" },
+    ]);
     const { container: foreign } = render(<LearningInfraHealthChip />);
-    expect(foreign.innerHTML).toBe('');
+    expect(foreign.innerHTML).toBe("");
   });
 });

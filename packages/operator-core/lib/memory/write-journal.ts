@@ -29,6 +29,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { getMemoryBackend } from './backend';
+import { detectPossibleSecrets } from './secret-detect';
 
 const T = 'harness_shared.memory_write_journal';
 
@@ -182,9 +183,19 @@ export async function drainMemoryWriteJournal(): Promise<DrainResult> {
         ? (row.metadata.__journal_update_of as string)
         : null;
 
+      // EI-10371 stage 1: re-detect at replay time — update-replays don't carry
+      // journal metadata into the store, and rows journaled before stamping
+      // existed would otherwise land unflagged.
+      const secrets = detectPossibleSecrets(row.content);
+
       if (updateOf) {
         // A journaled memory:update text edit — replay as an update, not an add.
-        await backend.update(updateOf, { text: row.content });
+        // The flag re-stamps BOTH ways, matching a live edit's semantics
+        // (editing a secret out must clear it).
+        await backend.update(updateOf, {
+          text: row.content,
+          metadata: { possible_secret: secrets.matched, possible_secret_classes: secrets.classes },
+        });
         await sql`
           UPDATE harness_shared.memory_write_journal
              SET status = 'committed', committed_at = now(), committed_memory_id = ${updateOf},
@@ -217,6 +228,9 @@ export async function drainMemoryWriteJournal(): Promise<DrainResult> {
         ...(row.kind ? { kind: row.kind } : {}),
         metadata: {
           ...(row.metadata ?? {}),
+          ...(secrets.matched
+            ? { possible_secret: true, possible_secret_classes: secrets.classes }
+            : {}),
           // P-007 provenance: the fact arrived late via the journal drain, not
           // a live write — memory:list/search surface this to agents/UI.
           recovered_from: 'journal',

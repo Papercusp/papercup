@@ -2808,7 +2808,7 @@ export function ScoutView({
                             void submitGrade(item, grade, feedback).then(
                               () => void setGradeOpen(null),
                             );
-                          }
+                          }}
                           onClose={() => void setGradeOpen(null)}
                         />
                       </Popover>
@@ -3478,8 +3478,8 @@ export function LearningStyles() {
       .pc-learning__memorymap i.is-organic { background: #34d399; }
       .pc-learning__memorymap i:hover { opacity: 1; transform: scale(1.08); }
       .pc-learning__standings { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; font-size: 9px; }
-      @media (max-width: 920px) { .pc-learning__lanegrid { grid-template-columns: 1fr; } }
-      @media (max-width: 720px) { .pc-learning__gymflow, .pc-learning__improvementflow { grid-template-columns: 1fr; } .pc-learning__gymflow > span > i, .pc-learning__improvementflow > i { display: none; } }
+      @container learning (max-width: 920px) { .pc-learning__lanegrid { grid-template-columns: 1fr; } }
+      @container learning (max-width: 720px) { .pc-learning__gymflow, .pc-learning__improvementflow { grid-template-columns: 1fr; } .pc-learning__gymflow > span > i, .pc-learning__improvementflow > i { display: none; } }
     `}</style>
   );
 }

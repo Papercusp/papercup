@@ -162,8 +162,38 @@ describe('drainMemoryWriteJournal', () => {
     }];
     const r = await drainMemoryWriteJournal();
     expect(r.recovered).toBe(1);
-    expect(backend.update).toHaveBeenCalledWith('mem-7', { text: 'edited text' });
+    // EI-10371: an update-replay re-stamps the credential flag both ways,
+    // matching a live edit's semantics — clean text clears it.
+    expect(backend.update).toHaveBeenCalledWith('mem-7', {
+      text: 'edited text',
+      metadata: { possible_secret: false, possible_secret_classes: [] },
+    });
     expect(backend.remember).not.toHaveBeenCalled();
+  });
+
+  it('EI-10371: re-detects credentials at replay time and stamps the flag', async () => {
+    // A row journaled BEFORE stamping existed (no flag in its metadata) whose
+    // content is credential-shaped — the drain must land it flagged.
+    const connString = ['postgres://', 'app_user', ':', 's3cret', '@db.internal/prod'].join('');
+    pendingRows = [{ ...baseRow, content: `DB dsn is ${connString}` }];
+    const r = await drainMemoryWriteJournal();
+    expect(r.recovered).toBe(1);
+    const [, opts] = backend.remember.mock.calls[0] as unknown as [string, Record<string, unknown>];
+    const meta = opts.metadata as Record<string, unknown>;
+    expect(meta.possible_secret).toBe(true);
+    expect(meta.possible_secret_classes).toEqual(['url-with-password']);
+
+    // …and an UPDATE replay of credential-shaped text stamps true.
+    backend.update.mockClear();
+    pendingRows = [{
+      ...baseRow, id: 'row-u2', scope: '__update__:mem-8',
+      metadata: { __journal_update_of: 'mem-8' }, content: `now at ${connString}`,
+    }];
+    await drainMemoryWriteJournal();
+    expect(backend.update).toHaveBeenCalledWith('mem-8', {
+      text: `now at ${connString}`,
+      metadata: { possible_secret: true, possible_secret_classes: ['url-with-password'] },
+    });
   });
 
   it('a replay failure bumps attempts and keeps the row pending; the cap parks it failed_permanent', async () => {

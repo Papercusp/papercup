@@ -13,12 +13,7 @@
  * promoting it to a real idea — never from this surface.
  */
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { useSyncQuery } from "@papercusp/sync";
 import { VirtualGrid, type ColumnDef } from "@papercusp/grid-core";
