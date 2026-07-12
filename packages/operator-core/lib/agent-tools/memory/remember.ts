@@ -19,6 +19,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
+import { lexicalSimilarity } from '@papercusp/memory';
 import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
 import { MemoryTimeoutError, withMemoryToolTimeout, withMemoryWriteRetry, embedFailureReason } from '../../memory/op-deadline';
 import { anchorMetadata } from '../../memory/anchors';
@@ -76,6 +77,19 @@ function dedupEnabled(): boolean {
 function refExpansionEnabled(): boolean {
   return process.env.PAPERCUSP_MEMORY_REF_EXPANSION !== 'off';
 }
+/**
+ * The similarity bar for a "similar_exists" refusal, on 0..1.
+ *
+ * EI-10544: this is compared against `lexicalSimilarity` (trigram-Jaccard, a
+ * METRIC), NOT against the backend's `score`. The live hybrid backend scores by
+ * RRF rank-fusion — an ORDINAL quantity, where the top hit is 1/(60+1) ≈ 0.0164
+ * whether it is a byte-identical duplicate or merely the best of a bad lot. This
+ * threshold's own 0..1 clamp encodes a cosine assumption the backend stopped
+ * honouring, so the guard was unreachable: flipping PAPERCUSP_MEMORY_DEDUP=on
+ * would have silently deduplicated NOTHING. No constant fixes that — re-tuning
+ * into the RRF band would refuse EVERY write instead, since the top neighbour
+ * always scores ~1/61. The quantity had to change, not the number.
+ */
 function dedupThreshold(): number {
   const raw = Number(process.env.PAPERCUSP_MEMORY_DEDUP_THRESHOLD);
   return Number.isFinite(raw) && raw > 0 && raw <= 1 ? raw : 0.9;
@@ -353,17 +367,20 @@ export default defineTool({
           'memory:remember dedup-search',
         );
         // P-016 dedup-on-write (opt-in via PAPERCUSP_MEMORY_DEDUP): refuse a
-        // near-duplicate above the similarity threshold. Compare against the
-        // MAX raw score, not neighbors[0] — memory decay (recency ranking
-        // bias, mem0-backend.ts) re-orders search results by freshness while
-        // leaving scores raw, so the first row is no longer guaranteed the
-        // highest-similarity one.
+        // near-duplicate above the similarity threshold. The backend RETRIEVES
+        // the candidates; the duplicate JUDGEMENT is made on the text itself
+        // (EI-10544 — a fused RRF score is ordinal and cannot make it). Scan
+        // ALL neighbors for the MOST SIMILAR one rather than trusting
+        // neighbors[0]: memory decay (recency ranking bias, mem0-backend.ts)
+        // re-orders search results by freshness, so the first row is not
+        // necessarily the closest one.
         if (dedupEnabled()) {
           let top: (typeof neighbors)[number] | undefined;
           let best = -Infinity;
           for (const n of neighbors) {
-            if (typeof n.score === 'number' && n.score > best) {
-              best = n.score;
+            const sim = lexicalSimilarity(args.content, n.text);
+            if (sim > best) {
+              best = sim;
               top = n;
             }
           }

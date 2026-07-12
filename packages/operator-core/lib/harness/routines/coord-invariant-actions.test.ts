@@ -709,14 +709,17 @@ describe('planClaimIntegrityAlarms (fleet-reliability-verification-2026-07-10 P-
     holderOwnerLabel: 'su · holder-1',
     detail: 'orphaned wip detail',
   };
-  const unbacked: ClaimIntegrityViolation = {
-    kind: 'unbacked-assignment',
+  // EI-10506: 'unbacked-assignment' was removed as a violation kind — a second
+  // orphaned-wip (distinct holder/item) exercises the same independent-per-
+  // violation batch behavior the old mixed batch tested.
+  const orphaned2: ClaimIntegrityViolation = {
+    kind: 'orphaned-wip',
     harnessSlug: 'papercusp',
     planSlug: 'some-plan',
     itemId: 'P-002',
     holderOwnerId: 'su-holder-2',
     holderOwnerLabel: 'su-holder-2',
-    detail: 'unbacked assignment detail',
+    detail: 'orphaned wip detail 2',
   };
 
   it('alarms holder + fleet leader (deduped) when a leader is known and distinct', () => {

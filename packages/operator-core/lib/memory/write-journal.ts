@@ -222,7 +222,10 @@ export async function drainMemoryWriteJournal(): Promise<DrainResult> {
       // is already in the store, so close the row pointing at it.
       const neighbors = await backend.search(row.content, { scope: row.scope, limit: 3 })
         .catch(() => []);
-      const dup = neighbors.find((n) => typeof n.score === 'number' && n.score >= DRAIN_DEDUP_THRESHOLD);
+      // The backend RETRIEVES the candidates (its score orders them); the
+      // duplicate JUDGEMENT is made on the text itself — see
+      // DRAIN_DEDUP_THRESHOLD on why a fused score cannot make it (EI-10544).
+      const dup = neighbors.find((n) => lexicalSimilarity(row.content, n.text) >= DRAIN_DEDUP_THRESHOLD);
       if (dup) {
         await sql`
           UPDATE harness_shared.memory_write_journal

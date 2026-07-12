@@ -1,4 +1,3 @@
-#!/usr/bin/env tsx
 /**
  * Nightly Layer 1 memory-anchor audit CLI.
  *

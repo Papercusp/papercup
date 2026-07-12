@@ -95,6 +95,57 @@ turn, and the seam differs by mode:
 **Always pass a `brief`.** Without one the agent boots and sits there; the tool
 warns you, but a warning is not a turn.
 
+## Trap 3: a launched agent that "never wakes up" is usually not rate-limited
+
+Two failures on this box make a perfectly-launched agent sit at a dead prompt
+forever, with **no error anywhere**. Both were found by live-verify on
+2026-07-12, and both were misread as "the model hung" / "we got rate limited"
+before the real cause turned up. Check these before you blame the API:
+
+**(a) claude's first-run wizard.** Every psu session gets a per-session
+`CLAUDE_CONFIG_DIR` that **symlinks the global `~/.claude.json` in** — and that
+file carries `hasCompletedOnboarding`. If it is ever `false`, claude boots the
+first-run **theme picker** instead of a session: the agent never reaches a
+prompt, so the kickoff can never land. It also *self-propagates* — the symlink
+is write-through, so a session wedged in the wizard writes its
+not-yet-onboarded state straight back to the global file and re-arms the trap
+for the next launch. `writeInteractiveClaudeConfig` now **asserts** the flag on
+every materialize (`ensureOnboardingComplete`), so this self-heals; if you ever
+see a launched agent parked on a theme menu, that guard is what failed.
+
+**(b) `--harness` is what makes it a papercusp agent at all.** A fresh launch
+without `--harness` boots a *plain* claude: psu skips the su bootstrap, the
+per-session config dir is never seeded, and you get (a) as a side effect. The
+tool now always harness-scopes a fresh launch. Symptom to recognise: the
+session's config dir holds a small *real* `.claude.json` that claude wrote
+itself, instead of the ~87-key symlink farm every healthy session has.
+
+## Trap 4: `psu` may not be running the launcher you just edited
+
+`~/.papercusp/bin/psu` is a shim that hardcodes an **absolute path** to one
+`psu-launcher.mjs`, and **every operator boot rewrites it to point at that
+operator's own tree** — the green operator (`:3070`) stamps in
+`papercup-release/…`, the staging operator (`:3170`) stamps in the shared
+integration tree. On the dev box both run, so the last boot silently wins.
+
+The consequence is nasty and near-invisible: you edit
+`apps/operator/scripts/psu-launcher.mjs` in the shared tree, launch through
+`psu`, and may silently exercise the **release** copy of your file — then
+conclude your code does not work. (That is precisely what happened while
+verifying the resume/fork kickoff seam: the same command dropped its kickoff at
+20:08 and delivered it at 20:19, with no code change in between.) Note this also
+punches a hole in the "guaranteed or loudly dropped" promise above — a launcher
+that *predates* the seam cannot warn about a kickoff it has never heard of.
+
+To test a launcher change, **bypass the shim** and run the tree's launcher
+directly:
+
+```bash
+node apps/operator/scripts/psu-launcher.mjs --no-picker --account=default …
+```
+
+(with the `PAPERCUSP_*` env the console wrapper exports). Tracked as WI-4440.
+
 ## No "resume the fleet" verb — and why
 
 There is deliberately no one-shot fleet revival. Any single verb has to *guess*
