@@ -389,6 +389,9 @@ const sessionTurn: SearchSource = {
         excerpt: `[${r.speaker}${r.owner ? ` ${r.owner}` : ''}${r.ts ? ` ${r.ts}` : ''}] ${trunc(r.text)}`,
         highlight: r.highlight,
         score: r.rank,
+        // Expose the turn timestamp so the engine's optional recency re-rank
+        // (RecencyRank.getTime defaults to hit.ts) can bias by freshness.
+        ts: r.ts,
         rankers: ['bm25'],
       },
     }));
@@ -424,6 +427,8 @@ const sessionTurn: SearchSource = {
         excerpt: `[${r.speaker}${r.owner ? ` ${r.owner}` : ''}${r.ts ? ` ${r.ts}` : ''}] ${trunc(r.text)}`,
         highlight: r.highlight,
         score: r.sim,
+        // Expose the turn timestamp for the engine's optional recency re-rank.
+        ts: r.ts,
         rankers: ['embeddings'],
       },
     }));
