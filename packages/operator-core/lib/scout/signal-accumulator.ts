@@ -163,10 +163,14 @@ function toLaneCount(lane: SignalLane, rows: readonly CountRow[]): LaneCount {
   };
 }
 
-/** Bound on how many new graded-observation rows one rating-changes recount
- *  expands (the correlated prior-grade probe is per-criterion; volumes are
- *  ~100s/week — this is a runaway guard, not a working limit). */
+/** Bound on how many graded-observation rows one rating-changes recount
+ *  expands (volumes are ~100s/week — a runaway guard, not a working limit). */
 const RATING_CHANGE_SCAN_CAP = 500;
+
+/** How far BEFORE the watermark the rating-changes pass reads for prior-grade
+ *  context (the lag() baseline). A prior older than this is unseen, so the
+ *  first in-window grade counts as a change — fine for a firing signal. */
+const RATING_PRIOR_CONTEXT_MS = 30 * 86_400_000;
 
 /**
  * Recount every lane for one scope. engineer_issues lanes scope on
