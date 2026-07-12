@@ -91,7 +91,9 @@ export default function LearningPackCandidates() {
     <div key={c.id} className="pc-pack-candidates__row">
       <div className="pc-pack-candidates__main">
         <strong>{c.title}</strong>
-        <span>
+        <span
+          title={`Recurred ${c.recurrenceCount}× across ${c.scopes.join(", ")}${c.sourceItemIds.length > 0 ? ` · from ${c.sourceItemIds.join(", ")}` : ""}`}
+        >
           {c.recurrenceCount}× · {c.scopes.length} scope
           {c.scopes.length === 1 ? "" : "s"}
         </span>

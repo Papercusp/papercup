@@ -141,6 +141,20 @@ const EXCLUDED_NORMALIZED: ReadonlySet<string> = new Set<string>([
   'recipescandidates',
 ]);
 
+/** AMBIENT tools — fired by client hooks / status lines / wake plumbing on their own cadence, not
+ *  authored by the agent's reasoning, so they are NOT a batchable flow: counting them made the
+ *  nudge spray banners at every session (live fires 2026-07-12 were dominated by activity:report /
+ *  coord:glance / coord:inbox "bursts" that were pure hook traffic, teaching agents to ignore the
+ *  hint). Same denominator discipline as the adoption metric's poller exclusion
+ *  (code-run-adoption.ts): a hook firing the same read twice is not an agent hand-loop. Excluded
+ *  from recording entirely — they neither trigger a nudge nor count toward any tally. */
+const AMBIENT_NORMALIZED: ReadonlySet<string> = new Set<string>([
+  'activityreport',
+  'activityrecent',
+  'coordglance',
+  'coordinbox',
+]);
+
 /** One recorded call in the sliding window. */
 interface RecentCall {
   tool: string;
@@ -440,7 +454,8 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
   // wrapper-routed burst trips the same triggers a direct burst would (and tools:invoke{name:
   // 'code:run'} stays excluded exactly like a direct code:run call).
   const { tool: toolName, args } = effectiveCall(input.toolName, input.args);
-  if (EXCLUDED_NORMALIZED.has(normalize(toolName))) return null;
+  const normalized = normalize(toolName);
+  if (EXCLUDED_NORMALIZED.has(normalized) || AMBIENT_NORMALIZED.has(normalized)) return null;
   const now = input.now ?? Date.now();
 
   const st = getOrCreateSession(sessionKey);

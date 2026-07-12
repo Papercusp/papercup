@@ -209,6 +209,25 @@ describe('maybeBatchNudge — scoping guards (teeth)', () => {
     expect(maybeBatchNudge({ sessionKey: 'ex', toolName: 'plans:get', canCodeRun: true, now: t })).toBeNull();
   });
 
+  it('does NOT nudge AMBIENT hook/status tools, and never counts them toward any tally', () => {
+    // activity:report / coord:glance / coord:inbox fire on the client hooks' cadence, not the
+    // agent's reasoning — live fires 2026-07-12 were dominated by these phantom "bursts".
+    let t = 0;
+    for (const toolName of ['activity:report', 'activity_report', 'coord:glance', 'coord:inbox', 'activity:recent']) {
+      for (let i = 0; i < BATCH_NUDGE_THRESHOLD + 1; i++) {
+        t += 500;
+        expect(maybeBatchNudge({ sessionKey: 'amb', toolName, canCodeRun: true, now: t })).toBeNull();
+      }
+    }
+    // The ambient storm above must NOT have populated the window: 2 real distinct reads right
+    // after it stay below both thresholds (proves ambient calls short-circuit before recording —
+    // they can neither trigger a nudge themselves nor inflate a fan-out/same-tool tally).
+    t += 500;
+    expect(maybeBatchNudge({ sessionKey: 'amb', toolName: 'plans:get', canCodeRun: true, now: t })).toBeNull();
+    t += 500;
+    expect(maybeBatchNudge({ sessionKey: 'amb', toolName: 'work_items:get', canCodeRun: true, now: t })).toBeNull();
+  });
+
   it('does NOT fire on an empty session key or empty tool name', () => {
     let t = 0;
     for (let i = 0; i < BATCH_NUDGE_THRESHOLD + 1; i++) {
@@ -456,7 +475,7 @@ describe('maybeBatchNudge — pipeline kind (P-002): a chained burst is not "ind
   it('stays kind=fanout when the only shared values sit under ambient-context keys (harness etc.)', () => {
     let firstFire: ReturnType<typeof maybeBatchNudge> = null;
     let t = 0;
-    for (const toolName of ['plans:get', 'docs:search', 'coord:inbox']) {
+    for (const toolName of ['plans:get', 'docs:search', 'work_items:list']) {
       t += 1000;
       const r = maybeBatchNudge({
         sessionKey: 'pl3',
@@ -490,7 +509,7 @@ describe('maybeBatchNudge — arg-prefilled skeletons (P-003)', () => {
     const calls = [
       { toolName: 'plans:get', args: { slug: 'alpha-plan' } },
       { toolName: 'docs:search', args: { q: 'beta-topic' } },
-      { toolName: 'coord:glance', args: {} },
+      { toolName: 'coord:presence', args: {} },
     ];
     for (const c of calls) {
       t += 1000;
@@ -500,7 +519,7 @@ describe('maybeBatchNudge — arg-prefilled skeletons (P-003)', () => {
     expect(firstFire?.kind).toBe('fanout');
     expect(firstFire?.text).toContain('tools.plans.get({"slug":"alpha-plan"})');
     expect(firstFire?.text).toContain('tools.docs.search({"q":"beta-topic"})');
-    expect(firstFire?.text).toContain('tools.coord.glance(/* args */)');
+    expect(firstFire?.text).toContain('tools.coord.presence(/* args */)');
   });
 
   it('escapes backticks and ${ in prefilled args so the skeleton stays pasteable', () => {

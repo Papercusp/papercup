@@ -7,14 +7,20 @@
 // empty queue renders nothing). useSyncQuery + nuqs mocked, the pinned
 // sibling pattern (LearningTab.test.tsx).
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { LearningPackCandidate } from '@papercusp/operator-core/lib/learning-packs/candidates';
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import type { LearningPackCandidate } from "@papercusp/operator-core/lib/learning-packs/candidates";
 
-const nuqsState: Record<string, unknown> = { lcand: '' };
+const nuqsState: Record<string, unknown> = { lcand: "" };
 const setLcand = vi.fn();
-import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
-vi.mock('nuqs', () => ({
+import { nuqsParsers } from "@papercusp/test-config/nuqs-mock";
+vi.mock("nuqs", () => ({
   ...nuqsParsers,
   useQueryState: (key: string) => [nuqsState[key], setLcand],
   parseAsString: { withDefault: () => ({}) },
@@ -22,35 +28,44 @@ vi.mock('nuqs', () => ({
 
 const invalidate = vi.fn();
 let candidates: LearningPackCandidate[] = [];
-vi.mock('@papercusp/sync', () => ({
+vi.mock("@papercusp/sync", () => ({
   useSyncQuery: () => ({ data: candidates, invalidate }),
 }));
 // Lexicon resolver mocked to ECHO its key (t('pot') → 'pot') — isolates the
 // hives→pot routed tooltip from the THE_HIVE flag hook (restore-pot-lexicon P-006).
-vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+vi.mock("@/lib/useLexicon", () => ({ useLexicon: () => (k: string) => k }));
 
-const { default: LearningPackCandidates } = await import('./LearningPackCandidates');
+const { default: LearningPackCandidates } =
+  await import("./LearningPackCandidates");
 
-const cand = (over: Partial<LearningPackCandidate> = {}): LearningPackCandidate => ({
-  id: 'cand-1',
-  signature: 'lock edit serialize',
-  title: 'Coordinate shared-tree edits',
-  draftText: 'Find how this project serializes concurrent edits before writing.',
-  kind: 'feedback',
-  appliesTo: ['any'],
-  scopes: ['operator', 'harness:sheets'],
+const cand = (
+  over: Partial<LearningPackCandidate> = {},
+): LearningPackCandidate => ({
+  id: "cand-1",
+  signature: "lock edit serialize",
+  title: "Coordinate shared-tree edits",
+  draftText:
+    "Find how this project serializes concurrent edits before writing.",
+  kind: "feedback",
+  appliesTo: ["any"],
+  scopes: ["operator", "harness:sheets"],
   recurrenceCount: 4,
-  sourceItemIds: ['EI-1', 'EI-2'],
-  status: 'pending',
-  createdBy: 'recurrence-escalation',
+  sourceItemIds: ["EI-1", "EI-2"],
+  status: "pending",
+  createdBy: "recurrence-escalation",
   createdAt: new Date(0).toISOString(),
   ...over,
 });
 
 beforeEach(() => {
-  nuqsState.lcand = '';
+  nuqsState.lcand = "";
   candidates = [cand()];
-  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 })));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      async () => new Response(JSON.stringify({ ok: true }), { status: 200 }),
+    ),
+  );
 });
 
 afterEach(() => {
@@ -59,59 +74,93 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('<LearningPackCandidates />', () => {
-  it('renders nothing when the queue is empty', () => {
+describe("<LearningPackCandidates />", () => {
+  it("renders nothing when the queue is empty", () => {
     candidates = [];
     const { container } = render(<LearningPackCandidates />);
     expect(container.firstChild).toBeNull();
   });
 
-  it('renders pending candidates with provenance; ?lcand expands the draft', () => {
+  it("renders pending candidates with provenance; ?lcand expands the draft", () => {
     render(<LearningPackCandidates />);
-    expect(screen.getByText('Coordinate shared-tree edits')).toBeTruthy();
-    expect(screen.getByText(/recurred 4× across operator, harness:sheets/)).toBeTruthy();
-    expect(screen.getByText(/from EI-1, EI-2/)).toBeTruthy();
+    expect(screen.getByText("Coordinate shared-tree edits")).toBeTruthy();
+    expect(screen.getByText("4× · 2 scopes").getAttribute("title")).toBe(
+      "Recurred 4× across operator, harness:sheets · from EI-1, EI-2",
+    );
     // Draft hidden until the row is selected via the URL param.
     expect(screen.queryByText(/serializes concurrent edits/)).toBeNull();
 
     cleanup();
-    nuqsState.lcand = 'cand-1';
+    nuqsState.lcand = "cand-1";
     render(<LearningPackCandidates />);
     expect(screen.getByText(/serializes concurrent edits/)).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'hide draft' })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "hide draft" })).toBeTruthy();
   });
 
-  it('adopt POSTs the decide route and surfaces the pack-updated hint', async () => {
-    const fetchMock = vi.mocked(globalThis.fetch);
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ ok: true, action: 'adopt', packId: 'fleet-lessons', packVersion: '0.0.3' }), {
-        status: 200,
-      }),
+  it("shows the highest-priority candidates first and progressively discloses the rest", () => {
+    candidates = Array.from({ length: 5 }, (_, i) =>
+      cand({ id: `cand-${i + 1}`, title: `Candidate ${i + 1}` }),
     );
     render(<LearningPackCandidates />);
-    fireEvent.click(screen.getByRole('button', { name: 'adopt' }));
-    await waitFor(() => expect(screen.getByText(/Adopted into fleet-lessons v0\.0\.3/)).toBeTruthy());
+    expect(screen.getByText("Candidate 3")).toBeTruthy();
+    expect(screen.queryByText("Candidate 4")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /More candidates/ }));
+    expect(screen.getByText("Candidate 4")).toBeTruthy();
+    expect(screen.getByText("Candidate 5")).toBeTruthy();
+  });
+
+  it("adopt POSTs the decide route and surfaces the pack-updated hint", async () => {
+    const fetchMock = vi.mocked(globalThis.fetch);
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          action: "adopt",
+          packId: "fleet-lessons",
+          packVersion: "0.0.3",
+        }),
+        {
+          status: 200,
+        },
+      ),
+    );
+    render(<LearningPackCandidates />);
+    fireEvent.click(screen.getByRole("button", { name: "adopt" }));
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Adopted into fleet-lessons v0\.0\.3/),
+      ).toBeTruthy(),
+    );
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api/learning-packs/candidate-decide',
-      expect.objectContaining({ method: 'POST', body: JSON.stringify({ id: 'cand-1', action: 'adopt' }) }),
+      "/api/learning-packs/candidate-decide",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ id: "cand-1", action: "adopt" }),
+      }),
     );
     expect(invalidate).toHaveBeenCalled();
   });
 
-  it('dismiss POSTs the decide route; a failed decide surfaces role=alert', async () => {
+  it("dismiss POSTs the decide route; a failed decide surfaces role=alert", async () => {
     const fetchMock = vi.mocked(globalThis.fetch);
     render(<LearningPackCandidates />);
-    fireEvent.click(screen.getByRole('button', { name: 'dismiss' }));
+    fireEvent.click(screen.getByRole("button", { name: "dismiss" }));
     await waitFor(() => expect(invalidate).toHaveBeenCalled());
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api/learning-packs/candidate-decide',
-      expect.objectContaining({ body: JSON.stringify({ id: 'cand-1', action: 'dismiss' }) }),
+      "/api/learning-packs/candidate-decide",
+      expect.objectContaining({
+        body: JSON.stringify({ id: "cand-1", action: "dismiss" }),
+      }),
     );
 
     fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ ok: false, reason: 'not_pending' }), { status: 409 }),
+      new Response(JSON.stringify({ ok: false, reason: "not_pending" }), {
+        status: 409,
+      }),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'adopt' }));
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('not_pending'));
+    fireEvent.click(screen.getByRole("button", { name: "adopt" }));
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("not_pending"),
+    );
   });
 });

@@ -8,7 +8,7 @@
 // the empty state, and the defensive fallback on a malformed snapshot.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 let ekgResult: Record<string, unknown> = {
   data: [],
@@ -130,6 +130,27 @@ describe("EkgPanel", () => {
     };
     render(<EkgPanel />);
     expect(screen.getByText("No behavioral shifts")).toBeTruthy();
+  });
+
+  it("keeps older shifts collapsed until requested", () => {
+    const shifts = Array.from({ length: 10 }, (_, i) => ({
+      ...snapshot.shifts[0],
+      id: i + 1,
+      feature: `signal-${i + 1}`,
+    }));
+    ekgResult = {
+      data: [{ ...snapshot, shifts, totalShifts: shifts.length }],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<EkgPanel />);
+    expect(screen.getByText("signal-8")).toBeTruthy();
+    expect(screen.queryByText("signal-9")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Earlier shifts/ }));
+    expect(screen.getByText("signal-9")).toBeTruthy();
+    expect(screen.getByText("signal-10")).toBeTruthy();
   });
 
   it("degrades to the empty state on a malformed snapshot (defensive shape guard)", () => {
