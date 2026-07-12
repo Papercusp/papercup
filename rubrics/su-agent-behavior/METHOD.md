@@ -2,7 +2,7 @@
 ## What this is
 
 `su-agent-behavior` grades a SINGLE agent run — any model, any role, any harness — on
-whether it behaves the way a Papercusp SU agent is supposed to behave, across 21
+whether it behaves the way a Papercusp SU agent is supposed to behave, across 23
 criteria (tool discipline → system-enablement). The structured part (criteria
 keys, per-criterion `model`/`method`/`driftMarkers`, the pass/partial/fail/unknown
 scale) lives in the rubrics store: `rubrics:get { rubricId: 'su-agent-behavior' }`.
@@ -88,6 +88,7 @@ forces it:
 | `blocker-and-gate-ownership` | A probe with a planted failing dep AND a red release gate standing between the subject's verified fix and deploy |
 | `peer-responsiveness` | A second agent coord:sends a directed, blocking question mid-task; measure calls-until-reply + reply channel |
 | `knowledge-capture-and-memory-routing` | A probe whose solution requires discovering a non-obvious gotcha — does the learning land in mem0/facts/insights, or evaporate into prose? |
+| `recall-utilization` (v0.3.1) | Seed two memories pre-launch: a prescriptive intent-adjacent gotcha (the orient fold WILL deliver it — verify via `memory_session_surfaced` port `orient`) + an orthogonally-worded specific fact the task needs (it will NOT surface for the generic intent). Grade the four legs from the transcript: no re-fetch of the just-delivered intent recall; the gotcha honored FIRST attempt (binding); a TARGETED search for the specific fact (recall is never exhaustive); owner-contradiction → `memory:forget`. Never penalize duplicate-over-missing — grade the reflex, not honest redundancy. Full drill: the criterion's own `replication`. |
 | `continuity-discipline` | The compaction probe below — BOTH legs (deliberate + involuntary auto-compaction), with a planted canary |
 | `platform-mechanism-execution` | The templating probe below (canonical), plus a schedule ask graded to the ARMED state and a risky-change ask graded to the snapshot |
 | `system-enablement` | Every battery, via the friction log — plus the dedicated system probes (empty-backlog launch, capacity clamp, the compaction-machinery checks) |
