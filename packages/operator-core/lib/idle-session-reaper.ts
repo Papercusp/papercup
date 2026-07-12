@@ -45,6 +45,10 @@ import { interruptViaPty, findLiveHost, listLiveHosts } from './events/await/psu
 import { COORD_INBOX_WAKE_PREFIX } from './agent-tools/coordination/inbox-wake';
 import { gatherOnDesktopSessions, isPidUnderOpenWindow } from './desktop-window-liveness';
 import { gatherViewerAttachedOwners } from './pty-viewer-heartbeat';
+import { releaseWorkItem } from './work-items';
+import { releaseAllClaimsForOwner } from './work-item-claims';
+import { issuesScopeWorkspace } from './issues-engineer';
+import { activeWorkspaceId } from './workspace-registry';
 
 /** Liveness/grace window. Matches work-items-stale-claims STALE_CLAIM_GRACE_MS
  *  and the fleet_assignment view (10 min): a live psu session's supervisor beat
@@ -200,12 +204,24 @@ function safeLiveHostOwners(): Set<string> {
  * the slice-1 half of the mutual-protection deadlock. A live HOST now carries the
  * "a wake can still reach it" protection WITHOUT the deadlock; a genuinely-live
  * session is independently protected by its fresh supervisor heartbeat.
+ *
+ * `includeClaimHolders` (default true) toggles the `taken_by` leg. Default true
+ * preserves the EXISTING session-reap behavior (slice 1: never end a session
+ * mid-claim). session-death-claim-release-2026-07-11 P-001: this leg is
+ * SELF-REFERENTIAL for a KILLED claim holder — a dead agent's own still-held
+ * lease is exactly what this leg reads back as "protected", so a claim alone
+ * can wedge that owner "live" forever regardless of true process death (the
+ * WI-4070 incident, EI-9807). The work-item-LEASE reaper below
+ * (`runWorkItemLeaseReap`) must judge an owner's liveness WITHOUT this leg —
+ * pass `includeClaimHolders:false` there — or it could never fire for the
+ * exact scenario it exists to fix.
  */
 export async function gatherProtectedSessionOwners(
   sql: Awaited<ReturnType<typeof getOrgPg>>['sql'],
-  opts: { graceMs?: number; liveHostOwners?: ReadonlySet<string> } = {},
+  opts: { graceMs?: number; liveHostOwners?: ReadonlySet<string>; includeClaimHolders?: boolean } = {},
 ): Promise<Set<string>> {
   const graceSec = Math.max(1, Math.round((opts.graceMs ?? IDLE_SESSION_GRACE_MS) / 1000));
+  const includeClaimHolders = opts.includeClaimHolders !== false;
   const rows = await sql<Array<{ alias: string }>>`
     WITH owners AS (
       SELECT owner_id AS alias
@@ -226,7 +242,8 @@ export async function gatherProtectedSessionOwners(
       UNION
       SELECT taken_by AS alias
         FROM harness_shared.harness_features_consolidated
-       WHERE taken_by IS NOT NULL
+       WHERE ${includeClaimHolders ? sql`TRUE` : sql`FALSE`}
+         AND taken_by IS NOT NULL
     )
     SELECT DISTINCT alias FROM owners WHERE alias IS NOT NULL AND alias <> ''`;
   const protectedOwners = new Set(rows.map((r) => r.alias));
@@ -374,6 +391,193 @@ export async function runIdleSessionReap(
     };
   } catch (e) {
     console.warn('[idle-session-reaper] sweep failed (non-fatal):', (e as Error)?.message ?? e);
+    return { ...empty, enabled: true };
+  }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Slice 1b — WORK-ITEM LEASE reaper (session-death-claim-release-2026-07-11
+// P-001): force-release a work-item lease (`taken_by`/`assignee`) whose owner
+// is DEAD, so a killed agent doesn't poison the item for the full lease TTL
+// (up to 6 days observed — EI-9807, WI-4070).
+//
+// Deliberately DECOUPLED from "the owner's adv_session got marked ended"
+// (slice 1 above): gatherProtectedSessionOwners' default `taken_by` leg treats
+// holding a claim as itself a liveness signal, so a killed claim-holder's
+// ghost session is NEVER reaped in the first place — cascading off slice 1
+// would just never fire for the one scenario this exists to fix. Instead this
+// judges each lease HOLDER's liveness directly, via the SAME protected-owner
+// query with `includeClaimHolders:false` (so a claim can never protect its own
+// holder), plus the same on-desktop / viewer-attached / live-host exemptions —
+// a claim held by a genuinely-live agent (fresh heartbeat, running bee, mid
+// wake-resume, on-desktop, watched in the PTY panel, or a live psu-host) is
+// never touched. Same master flag as the session reaper (FLAGS.IDLE_SESSION_REAPER,
+// default ON) — no new flag.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** One currently-held work-item lease (feature or issue family). */
+export interface WorkItemLeaseRow {
+  id: string;
+  /** Feature-family only (harness-scoped); null for issue-family (globally unique id). */
+  harness: string | null;
+  takenBy: string;
+  takenAtMs: number | null;
+}
+
+export interface WorkItemLeaseReapPlan {
+  /** Dead owner (not protected) AND past the grace floor → force-release. */
+  reap: WorkItemLeaseRow[];
+  /** Owner is live/on-desktop/watched/host-protected → keep. */
+  keptLive: WorkItemLeaseRow[];
+  /** Claimed within the grace floor (too new to judge) → keep. */
+  keptFresh: WorkItemLeaseRow[];
+}
+
+/**
+ * PURE keep/reap decision — the lease-reaper analog of `planIdleSessionReap`.
+ * No I/O; `nowMs` + `liveOwners` injected so the boundary is unit-tested
+ * deterministically. A lease with no `takenAtMs` (should not happen in
+ * practice — every claim stamps taken_at/assigned_at) is treated as already
+ * past the grace floor rather than protected forever.
+ */
+export function planWorkItemLeaseReap(opts: {
+  leases: WorkItemLeaseRow[];
+  liveOwners: ReadonlySet<string>;
+  nowMs: number;
+  graceMs?: number;
+}): WorkItemLeaseReapPlan {
+  const graceMs = opts.graceMs ?? IDLE_SESSION_GRACE_MS;
+  const plan: WorkItemLeaseReapPlan = { reap: [], keptLive: [], keptFresh: [] };
+  for (const lease of opts.leases) {
+    if (opts.liveOwners.has(lease.takenBy)) {
+      plan.keptLive.push(lease);
+    } else if (lease.takenAtMs != null && opts.nowMs - lease.takenAtMs < graceMs) {
+      plan.keptFresh.push(lease);
+    } else {
+      plan.reap.push(lease);
+    }
+  }
+  return plan;
+}
+
+export interface WorkItemLeaseReapResult {
+  /** False when the flag is off (a no-op). */
+  enabled: boolean;
+  /** Held leases considered. */
+  scanned: number;
+  /** Leases force-released (or that WOULD be, when dryRun). */
+  reaped: number;
+  reapedIds: string[];
+  /** Distinct dead owners whose coordination claim ledger was also cleared
+   *  (harness_shared.work_item_claims — the EI-9807 two-ledger divergence). */
+  ownersReconciled: number;
+  keptLive: number;
+  keptFresh: number;
+  dryRun: boolean;
+}
+
+/**
+ * The top-level sweep — reads current leases + judges each holder's true
+ * liveness, then (unless dryRun) force-releases every dead-owner lease AND
+ * clears that owner's stale `work_item_claims` rows (releaseAllClaimsForOwner
+ * — written for exactly this "session-end cleanup" purpose, per its own doc,
+ * but never previously wired to a caller). Best-effort: a PG failure returns a
+ * zero result rather than throwing (must never wedge the routine engine).
+ */
+export async function runWorkItemLeaseReap(
+  opts: { dryRun?: boolean; graceMs?: number } = {},
+): Promise<WorkItemLeaseReapResult> {
+  const dryRun = !!opts.dryRun;
+  const empty: WorkItemLeaseReapResult = {
+    enabled: false,
+    scanned: 0,
+    reaped: 0,
+    reapedIds: [],
+    ownersReconciled: 0,
+    keptLive: 0,
+    keptFresh: 0,
+    dryRun,
+  };
+  const enabled = await getFlag(FLAGS.IDLE_SESSION_REAPER, 'system').catch(() => false);
+  if (!enabled) return empty;
+
+  try {
+    const { sql } = getOrgPg();
+    const liveHostOwners = safeLiveHostOwners();
+    const [liveOwners, onDesktop, viewerOwners] = await Promise.all([
+      // includeClaimHolders:false — see the module comment above: a claim can
+      // never be the reason its own holder is judged alive.
+      gatherProtectedSessionOwners(sql, { graceMs: opts.graceMs, liveHostOwners, includeClaimHolders: false }),
+      gatherOnDesktopSessions().catch(() => null),
+      gatherViewerAttachedOwners().catch(() => new Set<string>()),
+    ]);
+    if (onDesktop) for (const o of onDesktop.owners) liveOwners.add(o);
+    for (const o of viewerOwners) liveOwners.add(o);
+
+    const featureWs = activeWorkspaceId();
+    const issueWs = issuesScopeWorkspace();
+    const [featureRows, issueRows] = await Promise.all([
+      sql<Array<{ id: string; harness: string; taken_by: string; taken_at: string | Date | null }>>`
+        SELECT feature_id AS id, harness_slug AS harness, taken_by, taken_at
+          FROM harness_shared.harness_features_consolidated
+         WHERE workspace_id = ${featureWs} AND taken_by IS NOT NULL AND taken_by <> ''`,
+      sql<Array<{ id: string; taken_by: string; taken_at: string | Date | null }>>`
+        SELECT issue_id AS id, assignee AS taken_by, assigned_at AS taken_at
+          FROM harness_shared.engineer_issues
+         WHERE workspace_id = ${issueWs} AND assignee IS NOT NULL AND assignee <> ''`,
+    ]);
+    const leases: WorkItemLeaseRow[] = [
+      ...featureRows.map((r) => ({
+        id: r.id,
+        harness: r.harness,
+        takenBy: r.taken_by,
+        takenAtMs: r.taken_at == null ? null : new Date(r.taken_at).getTime(),
+      })),
+      ...issueRows.map((r) => ({
+        id: r.id,
+        harness: null,
+        takenBy: r.taken_by,
+        takenAtMs: r.taken_at == null ? null : new Date(r.taken_at).getTime(),
+      })),
+    ];
+
+    const plan = planWorkItemLeaseReap({ leases, liveOwners, nowMs: Date.now(), graceMs: opts.graceMs });
+    let ownersReconciled = 0;
+    if (!dryRun && plan.reap.length) {
+      // Compare-and-release per lease (expectedAssignee = the dead owner we just
+      // read) — atomic: if the lease changed hands between the read above and
+      // here (a live agent legitimately re-claimed it), the UPDATE matches 0 rows
+      // and releaseWorkItem returns null, so we never clobber a fresh claim.
+      for (const lease of plan.reap) {
+        await releaseWorkItem(lease.id, { harness: lease.harness ?? undefined, expectedAssignee: lease.takenBy }).catch(
+          (e) => console.warn(`[work-item-lease-reap] release failed for ${lease.id}:`, (e as Error)?.message ?? e),
+        );
+      }
+      // Reconcile the coordination claim ledger (work_item_claims) for every
+      // distinct dead owner touched — closes the EI-9807 two-ledger divergence
+      // for the session-death path specifically.
+      const deadOwners = [...new Set(plan.reap.map((l) => l.takenBy))];
+      for (const owner of deadOwners) {
+        try {
+          await releaseAllClaimsForOwner(featureWs, owner);
+          ownersReconciled += 1;
+        } catch (e) {
+          console.warn(`[work-item-lease-reap] claim-ledger reconcile failed for ${owner}:`, (e as Error)?.message ?? e);
+        }
+      }
+    }
+    return {
+      enabled: true,
+      scanned: leases.length,
+      reaped: plan.reap.length,
+      reapedIds: plan.reap.map((l) => l.id),
+      ownersReconciled: dryRun ? new Set(plan.reap.map((l) => l.takenBy)).size : ownersReconciled,
+      keptLive: plan.keptLive.length,
+      keptFresh: plan.keptFresh.length,
+      dryRun,
+    };
+  } catch (e) {
+    console.warn('[work-item-lease-reap] sweep failed (non-fatal):', (e as Error)?.message ?? e);
     return { ...empty, enabled: true };
   }
 }

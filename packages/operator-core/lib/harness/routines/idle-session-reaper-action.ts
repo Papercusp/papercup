@@ -19,6 +19,7 @@ import { gatherOnDesktopSessions, listOpenWindows } from '../../desktop-window-l
 import { listLiveHosts } from '../../events/await/psu-pty-discovery';
 import {
   runIdleSessionReap,
+  runWorkItemLeaseReap,
   findIdleLiveSessions,
   terminateIdleLiveSessions,
   reapZombieResumeProcs,
@@ -120,6 +121,24 @@ registerSystemAction('idle-session-reaper', async (ctx: SystemActionCtx) => {
         ? ` [ids: ${r.reapedIds.slice(0, 20).join(',')}${r.reapedIds.length > 20 ? ',…' : ''}]`
         : ''),
   );
+
+  // Slice 1b (session-death-claim-release-2026-07-11 P-001) — force-release
+  // any work-item lease (taken_by/assignee) whose owner is DEAD, independent
+  // of whether that owner's adv_session was itself reapable above (a claim
+  // holder is self-protected in slice 1's liveness set — see the module
+  // comment on gatherProtectedSessionOwners — so this judges the lease
+  // holder's liveness directly rather than piggybacking off slice 1's plan).
+  const lr = await runWorkItemLeaseReap({ dryRun, graceMs: livenessCfg.sessionReaperGraceMs });
+  if (lr.enabled) {
+    console.log(
+      `[idle-session-reaper] work-item lease reap: scanned ${lr.scanned} held lease(s) → ` +
+        `${lr.dryRun ? 'WOULD release' : 'released'} ${lr.reaped} dead-owner lease(s) ` +
+        `(${lr.ownersReconciled} owner(s) claim-ledger-reconciled), kept ${lr.keptLive} live, ${lr.keptFresh} fresh` +
+        (lr.reapedIds.length
+          ? ` [ids: ${lr.reapedIds.slice(0, 20).join(',')}${lr.reapedIds.length > 20 ? ',…' : ''}]`
+          : ''),
+    );
+  }
 
   // Slice 4 — RECLAIM-LANE (fleet-dispatch-wake-clarity P-004): GC the dangling
   // inbox-wake awaits of DEAD sessions so a coordinator's coord:presence /

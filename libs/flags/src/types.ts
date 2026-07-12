@@ -89,11 +89,14 @@ export const FLAGS = {
   // ANTHROPIC_BASE_URL pointed at the localhost pacing gateway (127.0.0.1:8788), so
   // the whole fleet egresses through ONE bound account paced against the unified
   // 5h/7d utilization budget (D-009) instead of each `claude -p` bursting blind.
-  // DEFAULT OFF — genuinely unsafe to enable by default: it reroutes how EVERY bee
-  // authenticates and HARD-DEPENDS on the gateway service (papercup-inference-gateway)
-  // running. Flip ON only AFTER the service is deployed + the 20-bee load test (P-015)
-  // passes during a budget-available window. Off = unchanged (bees use their symlinked
-  // ~/.claude credential directly).
+  // DEFAULT ON (graduated — not in DARK_FLAGS; comment-staleness fix, EI-9826: this
+  // block's ORIGINAL "DEFAULT OFF... flip ON only AFTER the service is deployed + the
+  // 20-bee load test (P-015) passes" gate condition is confirmed met — the gateway
+  // service (papercup-inference-gateway.service) is live-running (verified via
+  // systemctl + a healthy :8788/healthz), and the sibling INFERENCE_GATEWAY_MULTI_ACCOUNT
+  // flag's own comment independently confirms 8 live registered accounts with real
+  // utilization telemetry, which requires this base gateway to already be functioning).
+  // OFF = the reversible fallback (bees use their symlinked ~/.claude credential directly).
   INFERENCE_GATEWAY: "papercusp-inference-gateway",
   // inference-gateway-multi-credential-routing-2026-06-14 (P-009): when ON, the
   // inference gateway routes each request to one of N registered Claude Max subscriptions by the
@@ -340,10 +343,11 @@ export const FLAGS = {
   PER_POT_LEARNING_LOOPS: "papercusp-per-hive-learning-loops",
   // per-hive-git-and-release-gate-2026-06-29 (P-009, D-008): gates seeding the per-hive
   // staging→main green-checkpoint (+ release-trigger when a deploy target is declared) for
-  // repo-backed CODING hives at create/retrofit. DEFAULT-OFF (dark): with it off, only the
-  // operator-home (papercusp) release routines run — the live :3070 pipeline is untouched.
-  // Flip ON after verifying the gate on one canary hive (oddsmith-hive). Effective only for
-  // a hive whose releaseGate.enabled AND that actually has a repo.
+  // repo-backed CODING hives at create/retrofit. DEFAULT ON (graduated 2026-07-03: the D-008
+  // canary condition was met — oddsmith-hive's green-checkpoint went green and fast-forwarded
+  // oddsmith's main, live-verified via pipeline_events "advanced" 2026-07-03T15:16Z — not in
+  // DARK_FLAGS). Effective only for a hive whose releaseGate.enabled AND that actually has a
+  // repo; a hive without per-hive git stays byte-identical.
   PER_POT_RELEASE_GATE: "papercusp-per-hive-release-gate",
   // slash-exposure-tool-catalog-2026-06-12 (P-007): gates the DYNAMIC slash
   // projection — every MCP-exposed tool a session can see surfaces as a
@@ -865,16 +869,15 @@ export const FLAGS = {
   // flags-default-on; finished work ships on): each source is fail-soft + bounded,
   // so the block degrades to empty rather than breaking a spawn.
   SPAWN_HANDOFF_HYDRATION: "papercusp-spawn-handoff-hydration",
-  // overwatch-role-2026-06-15 (B-10): gates the OVERWATCH role — a new always-on
-  // autonomous system-health supervisor (sibling to the Queen). The flag gates
-  // (a) the `overwatch` role registration (B-01), (b) the autonomous wake-loop +
-  // its routine/rule (B-04), and (c) the Overwatch UI pane (B-08). DEFAULT OFF —
-  // DELIBERATE (NOT the alpha flags-default-on policy): a brand-new, not-yet-proven
-  // AUTONOMOUS role that nudges the running fleet. A confused overwatch must not be
-  // able to thrash the system it protects (D-002/D-004), so it ships dark until
-  // B-12's first live run on staging proves it (coherent brief, nudges-not-replaces,
-  // observes-not-ideas, no thrash, cross-monitors the Queen). The owner flips it ON
-  // after that proof — surfaced loudly in the plan's ## Now + every lane report.
+  // overwatch-role-2026-06-15 (B-10): gates the OVERWATCH role — the always-on
+  // autonomous system-health supervisor (sibling to the Queen; product-facing name
+  // "Kettle"). The flag gates (a) the `overwatch` role registration (B-01), (b) the
+  // autonomous wake-loop + its routine/rule (B-04), and (c) the Overwatch UI pane
+  // (B-08). DEFAULT ON (graduated — not in DARK_FLAGS; comment-staleness fix, EI-9826:
+  // B-12's live-run proof condition this block originally gated on is long since met —
+  // Kettle is confirmed live and running in production, e.g. EI-9794's fire-recency
+  // liveness alarm work verified harness_shared.autoloop_state firing on its 600s
+  // cadence). OFF = the reversible fallback (no overwatch role, no wake-loop, no pane).
   OVERWATCH: "papercusp-overwatch",
   // sentinel-as-herald-2026-06-21: gates the PAPERCUP role (formerly `sentinel`) — a
   // new always-on autonomous system-health supervisor (sibling to the Mug, mirrors
@@ -1169,8 +1172,9 @@ export const FLAGS = {
   // proven B-LOOP-3 machinery) over a cold invoke-once spawn, giving the Queen a WARM
   // session with managed compaction; deterministic REBIRTH (boot-id change / age>24h /
   // anomaly) falls through to the cold spawn (today's behavior, byte-identical).
-  // DEFAULT OFF (dark, cutover): flips after an attended A/B verify (tokens/wake,
-  // latency, time-to-place, re-derivation count). KNOWN_DARK_FLAGS.
+  // DEFAULT ON (graduated 2026-07-02, owner flip directive after the attended A/B
+  // verify — not in DARK_FLAGS): queen wakes prefer the warm resume with deterministic
+  // rebirth.
   MUG_WARM_SESSION: "papercusp-queen-warm-session",
   // work-queue-completeness-2026-06-21 Phase A (unified-work-item-ledger): ENFORCEMENT —
   // every plan-item claim auto-mints a tracked work-item. When ON, the three bare-claim
@@ -1442,11 +1446,12 @@ export const FLAGS = {
   // default-on — additive + reversible; OFF ⇒ a byte-identical passthrough (ungoverned, the
   // pre-P-002 behaviour). The kill-switch if admission ever mis-paces a hot path.
   EMBED_ADMISSION: "papercusp-embed-admission",
-  // DEFAULT OFF (enforce-system-on-generic-work-2026-06-29 P-006): the TEST-COMPLETION GATE on
+  // enforce-system-on-generic-work-2026-06-29 P-006: the TEST-COMPLETION GATE on
   // work_items:complete — a feature work-item moved to a terminal state must have its plan-derived
-  // test-requiring VALs passing (reuses the harness-test-rollup). SHIPPED DARK until the
-  // done-without-test watchdog (P-009) confirms no false refusals on the fleet. OFF ⇒ completion is
-  // byte-identical to today (the gate is never consulted). FAIL-OPEN even when ON. KNOWN_DARK_FLAGS.
+  // test-requiring VALs passing (reuses the harness-test-rollup). DEFAULT ON (graduated 2026-07-04,
+  // dark-flag-age review EI-7280: the done-without-test watchdog P-009 confirmed zero false-refusal
+  // signals across every tick since activation — not in DARK_FLAGS). OFF ⇒ completion is
+  // byte-identical to today (the gate is never consulted). FAIL-OPEN even when ON.
   TEST_COMPLETION_GATE: "papercusp-test-completion-gate",
   // DEFAULT ON (enforce-system-on-generic-work-2026-06-29 P-019): the per-turn VERIFY-not-CREATE
   // work-item BACKSTOP behind the prompt directive (P-015). When a psu session ENDS A TURN having
