@@ -41,6 +41,9 @@ vi.mock('../../../memory/memory-pause', () => ({
   isMemoryPaused: vi.fn(async () => false),
   setMemoryPaused: vi.fn(async (_u: string, p: boolean) => p),
 }));
+vi.mock('../../../memory/recall-canary-envelope', () => ({
+  recallCanaryForEnvelope: vi.fn(async () => null),
+}));
 
 import routes from './memory';
 import { getMemoryBackend } from '../../../memory/backend';

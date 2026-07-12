@@ -55,8 +55,9 @@ describe('readInsightsSnapshot', () => {
 });
 
 describe('readMemoryHealth', () => {
-  // readMemoryHealth issues two queries: the counts row, then the
-  // recall-stats aggregate (via readRecallHealth). Respond per call.
+  // readMemoryHealth issues three queries: the counts row, the recall-stats
+  // aggregate (readRecallHealth), then the per-surface slice (P-006,
+  // readRecallHealthBySurface). Respond per call.
   const sqlSequence = (responses: Array<Array<Record<string, unknown>> | Error>): Sql => {
     let call = 0;
     return ((_s: TemplateStringsArray, ..._v: unknown[]) => {
@@ -69,6 +70,7 @@ describe('readMemoryHealth', () => {
     const health = await readMemoryHealth(sqlSequence([
       [{ total_memories: 341, entity_rows: 1829, feedback_30d: 2 }],
       [{ recalls: 40, zero_hits: 10, p50: 0.52, p90: 0.74, fragment_hits: 0 }],
+      [],
     ]));
     expect(health).toEqual({
       totalMemories: 341,
@@ -80,7 +82,23 @@ describe('readMemoryHealth', () => {
       topScoreP50: 0.52,
       topScoreP90: 0.74,
       fragmentHits7d: 0,
+      recallBySurface: [],
     });
+  });
+
+  // orient-recall-quality P-006: the per-surface slice rides the same read —
+  // a single-surface regression (orient zero-hitting) stays visible.
+  it('folds the per-surface recall slice into the health payload', async () => {
+    const health = await readMemoryHealth(sqlSequence([
+      [{ total_memories: 10, entity_rows: 0, feedback_30d: 0 }],
+      [{ recalls: 30, zero_hits: 3, p50: 0.5, p90: 0.7, fragment_hits: 0 }],
+      [
+        { surface: 'search', recalls: 20, zero_hits: 1, p50: 0.6, p90: 0.8, fragment_hits: 0 },
+        { surface: 'orient', recalls: 10, zero_hits: 9, p50: null, p90: null, fragment_hits: 0 },
+      ],
+    ]));
+    expect(health.recallBySurface).toHaveLength(2);
+    expect(health.recallBySurface[1]).toMatchObject({ surface: 'orient', zeroHitRate7d: 0.9 });
   });
 
   it('zero-fills an empty result rather than crashing', async () => {

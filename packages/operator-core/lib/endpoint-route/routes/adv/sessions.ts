@@ -771,6 +771,28 @@ const rematerialize = defineTool({
       const stamp = await store.readStamp(sourceKind, sessionId);
       if (!stamp) continue;
       const r = await rematerializeSession({ sourceKind, sessionId }, store);
+      // psu-resume-relogin leg 2 (owner-reported 2026-07-12): the archive holds
+      // ONLY the transcript, so a claude rematerialize yielded a config dir with
+      // no `.claude.json`/settings/credentials — an INTERACTIVE `psu --resume`
+      // then boots claude into first-run onboarding (a login screen) despite a
+      // healthy system login. Re-ensure the full interactive dir (idempotent —
+      // keeps the restored transcript and any parked playbook) so a
+      // rematerialized dir is launch-ready, not just transcript-bearing.
+      // Guarded to the conventional per-owner dir so a foreign session_root is
+      // never shadowed; best-effort — the restore itself already succeeded.
+      if (r.ok && sourceKind === 'claude' && stamp.owner) {
+        try {
+          const [{ writeInteractiveClaudeConfig }, { sessionClaudeConfigDir }] = await Promise.all([
+            import('../../../interactive-claude-config'),
+            import('@papercusp/orchestrator/session-launch-dirs'),
+          ]);
+          if (sessionClaudeConfigDir(stamp.owner) === stamp.session_root) {
+            writeInteractiveClaudeConfig({ sid: stamp.owner });
+          }
+        } catch (e) {
+          console.warn(`[rematerialize] interactive-config seed failed for ${sessionId}: ${(e as Error)?.message ?? e}`);
+        }
+      }
       return new Response(
         JSON.stringify({ ...r, sourceKind, owner: stamp.owner, cwd: stamp.cwd, sessionRoot: stamp.session_root }),
         { status: r.ok ? 200 : 409, headers: JSON_HEADERS },

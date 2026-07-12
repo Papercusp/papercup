@@ -31,6 +31,7 @@ import { MemoryTimeoutError, withMemoryToolTimeout, embedFailureReason } from '.
 import { journalPendingWrite, markJournalCommitted } from '../../../memory/write-journal';
 import { listUserMemories } from '../../../memory/list-user-memories';
 import { isMemoryPaused, setMemoryPaused } from '../../../memory/memory-pause';
+import { recallCanaryForEnvelope } from '../../../memory/recall-canary-envelope';
 import { recordFeedback } from '../../../memory/feedback';
 import { readClaudeHygiene } from '../../../memory/claude-hygiene';
 import { notifySyncInvalidate } from '../../../sync-sse';
@@ -108,6 +109,10 @@ const backendInfo = defineTool({
       // EI-10355: the user's memory-pause state rides the envelope the page
       // already fetches — no extra round-trip for the toggle to render truthfully.
       paused: await isMemoryPaused(user.id),
+      // EI-10368: latest live recall-canary verdict, same ride. Fail-open —
+      // null (no runs / canary storage absent / PG down) must render as
+      // "hasn't run yet", never break the envelope.
+      recallCanary: await recallCanaryForEnvelope().catch(() => null),
     });
   },
 });
