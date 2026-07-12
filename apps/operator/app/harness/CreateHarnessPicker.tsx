@@ -315,7 +315,7 @@ function NewLocalForm({ onBack, onSuccess, hive, hiveLabel, domain = 'coding', b
             color: 'var(--fg-dim)',
           }}
         >
-          <span style={{ marginRight: 6 }}>{isWork ? '📋' : '👑'}</span>
+          <span style={{ marginRight: 6 }}>{isWork ? '📋' : '☕'}</span>
           {isWork ? (
             <>
               Stands up a fresh folder as a new <strong style={{ color: 'var(--fg)' }}>work</strong> {hiveLower} home — a{' '}
@@ -492,7 +492,7 @@ function ExistingLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () 
             color: 'var(--fg-dim)',
           }}
         >
-          <span style={{ marginRight: 6 }}>👑</span>
+          <span style={{ marginRight: 6 }}>☕</span>
           <strong style={{ color: 'var(--fg)' }}>Links the folder in place</strong> as a new {hiveLower} home
           running the <strong style={{ color: 'var(--fg)' }}>{hiveLower}</strong> blueprint — a {t('brain')} that
           surveys the work frontier and places it onto a fleet of {t('contributor', { plural: true, lower: true })}. Your repo stays where it is; nothing

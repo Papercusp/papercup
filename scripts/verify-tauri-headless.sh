@@ -76,7 +76,18 @@ if [ -z "$DISPLAY_NUM" ]; then
 fi
 [ "$DISPLAY_NUM" -ge 2 ] || { echo "FATAL: refusing display :$DISPLAY_NUM — too close to a real seat" >&2; exit 1; }
 
-DEV_PORT="$(fed_pick_free_port 33700)"
+# Ports are DERIVED FROM THE DISPLAY, not picked independently (WI-4342).
+# fed_pick_free_port only proves a port is free RIGHT NOW, but our sidecar binds
+# it minutes later (cargo/tauri boot) — so two concurrent runs both saw 33700
+# free, both picked it, and the loser's hono-host died with EADDRINUSE and its
+# webview silently loaded the PEER's operator on 33700. The DISPLAY, by
+# contrast, is a real OS-level reservation taken within ~1s of the pick (Xvfb
+# binds :N immediately below), so keying the port range off DISPLAY_NUM makes
+# concurrent runs disjoint BY CONSTRUCTION. fed_pick_free_port still runs from
+# that base as a second line of defence (e.g. a stale process squatting).
+PORT_BASE=$(( 33700 + (DISPLAY_NUM - 90) * 10 ))
+[ "$PORT_BASE" -ge 33700 ] || PORT_BASE=33700   # a caller-forced low DISPLAY_NUM must not underflow into real ports
+DEV_PORT="$(fed_pick_free_port "$PORT_BASE")"
 PTY_PORT="$(fed_pick_free_port $((DEV_PORT + 4)))"
 
 log "display=:$DISPLAY_NUM devPort=$DEV_PORT ptyPort=$PTY_PORT work=$WORK"
@@ -152,19 +163,41 @@ until grep -q "dev bridge listening" "$LOG" 2>/dev/null; do
 done
 log "bridge is up after ${ELAPSED}s"
 
-# Resolve the ACTUAL webview process's pid (the setsid/tauri-dev wrapper pid
-# is not always the bridge owner) by matching our unique OPERATOR_DEV_PORT
-# against each candidate's real environ — agent-e2e.mdx §1.3's own "pass
-# --pid to disambiguate when multiple bridges are running" made concrete.
+# Our OWN sidecar must own DEV_PORT. If it lost a race for it, the webview is
+# pointed at SOMEONE ELSE's operator on that port and every assertion below is
+# meaningless (WI-4342) — fail loudly instead of "verifying" a peer's tree.
+if grep -qE "EADDRINUSE.*:$DEV_PORT\b" "$LOG" 2>/dev/null; then
+  echo "FATAL: our operator sidecar could not bind :$DEV_PORT (EADDRINUSE) — another instance owns it," >&2
+  echo "       so this webview is loading a PEER's operator, not our tree. Refusing to verify. Tail:" >&2
+  grep -aE "EADDRINUSE|pty-ws" "$LOG" | head -5 >&2
+  exit 1
+fi
+
+# Resolve the ACTUAL webview process's pid (the setsid/tauri-dev wrapper pid is
+# not always the bridge owner) by matching BOTH our unique DISPLAY and our
+# OPERATOR_DEV_PORT against each candidate's real environ — agent-e2e.mdx §1.3's
+# own "pass --pid to disambiguate when multiple bridges are running" made
+# concrete. The DISPLAY is the load-bearing half: matching on the port ALONE
+# resolved onto a PEER's older instance that happened to share it (WI-4342), so
+# the script handed the caller another agent's shell to drive.
 BRIDGE_PID=""
 for _ in $(seq 1 10); do
   BRIDGE_PID="$(pgrep -f "debug/papercusp-desktop" 2>/dev/null | while read -r p; do
-    tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null | grep -q "^OPERATOR_DEV_PORT=$DEV_PORT\$" && echo "$p"
+    env_p="$(tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null)" || continue
+    grep -q "^DISPLAY=:$DISPLAY_NUM\$" <<<"$env_p" || continue
+    grep -q "^OPERATOR_DEV_PORT=$DEV_PORT\$" <<<"$env_p" && echo "$p"
   done | head -1)"
   [ -n "$BRIDGE_PID" ] && break
   sleep 1
 done
-[ -n "$BRIDGE_PID" ] || BRIDGE_PID="$TAURI_PID"   # fall back to the wrapper pid; --pid still narrows tauri-agent-tools
+# NEVER fall back to a pid we have not proven is ours: a wrong --pid drives a
+# peer's shell. If our own webview can't be identified, that IS the failure.
+[ -n "$BRIDGE_PID" ] || {
+  echo "FATAL: no papercusp-desktop process carries our DISPLAY=:$DISPLAY_NUM + OPERATOR_DEV_PORT=$DEV_PORT." >&2
+  echo "       Refusing to hand back an unverified pid (it could be a peer's instance — WI-4342). Tail:" >&2
+  tail -20 "$LOG" >&2
+  exit 1
+}
 
 export VERIFY_TAURI_PID="$BRIDGE_PID"
 export VERIFY_TAURI_PORT="$DEV_PORT"

@@ -181,7 +181,7 @@ describe('MugTab (Colony sidebar, round 2)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reset Now controls' }));
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     expect(setSteeringBody().args).toEqual({
-      hive: 'papercup-hive',
+      pot: 'papercup-hive',
       directive: null,
       pauseNewWork: false,
       pausedUntil: null,
@@ -201,7 +201,7 @@ describe('MugTab (Colony sidebar, round 2)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reset Work controls' }));
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     expect(setSteeringBody().args).toEqual({
-      hive: 'papercup-hive',
+      pot: 'papercup-hive',
       eligiblePlans: [],
       eligibleHives: [],
       includeUnplannedWork: true,
@@ -233,7 +233,7 @@ describe('MugTab (Colony sidebar, round 2)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reset Capacity controls' }));
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     expect(setSteeringBody().args).toEqual({
-      hive: 'papercup-hive',
+      pot: 'papercup-hive',
       modelTiers: null,
       tierCeilings: null,
       cadenceFloorSec: null,
@@ -262,7 +262,7 @@ describe('MugTab (Colony sidebar, round 2)', () => {
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     const { name, args } = setSteeringBody();
     expect(name).toBe('pot:set-steering');
-    expect(args.hive).toBe('papercup-hive');
+    expect(args.pot).toBe('papercup-hive');
     expect(args.eligibleHives).toEqual(['pot-a']);
   });
 
@@ -272,7 +272,7 @@ describe('MugTab (Colony sidebar, round 2)', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'Plan A' }));
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     const { args } = setSteeringBody();
-    expect(args.hive).toBe('papercup-hive');
+    expect(args.pot).toBe('papercup-hive');
     expect(args.eligiblePlans).toEqual(['plan-a']);
   });
 
@@ -284,7 +284,7 @@ describe('MugTab (Colony sidebar, round 2)', () => {
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     const { name, args } = setSteeringBody();
     expect(name).toBe('pot:set-steering');
-    expect(args.hive).toBe('papercup-hive');
+    expect(args.pot).toBe('papercup-hive');
     expect(args.includeUnplannedWork).toBe(false);
   });
 

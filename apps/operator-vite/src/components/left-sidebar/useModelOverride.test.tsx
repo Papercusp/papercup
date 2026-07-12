@@ -67,7 +67,7 @@ describe('useModelOverride', () => {
     expect(getByTestId('override').textContent).toBe('opus:high');
   });
 
-  it('writes pot:set-steering WITH hive: <home> (regression: must not default to *)', () => {
+  it('writes pot:set-steering WITH pot: <home> (regression: the arg is `pot`, not `hive` — zod strips unknown keys, so a stale `hive` key silently resolves no home pot)', () => {
     syncData['hive.steering'] = [{ slug: 'home', modelOverrides: null }];
     syncData['harnessProjects.lite'] = [{ slug: 'home', harness_kind: 'hive' }];
     const { getByText } = render(<Harness role="overwatch" write="sonnet" />);
@@ -75,7 +75,7 @@ describe('useModelOverride', () => {
     const body = lastBody();
     expect(body.name).toBe('pot:set-steering');
     expect(body.confirmed).toBe(true);
-    expect(body.args.hive).toBe('home');
+    expect(body.args.pot).toBe('home');
     expect(body.args.modelOverrides).toEqual({ overwatch: 'sonnet' });
   });
 
