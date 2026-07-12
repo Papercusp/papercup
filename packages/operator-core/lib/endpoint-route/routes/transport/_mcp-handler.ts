@@ -103,6 +103,13 @@ import {
   storeMcpResult,
   type StoredMcpResult,
 } from './_mcp-result-replay';
+import {
+  takeStoredInitializeHandler,
+  wrapInitializeWithInstructions,
+} from './_mcp-initialize-enrich';
+import { buildMcpPrelude } from '../../../memory/mcp-prelude';
+import { INSIGHTS_DIR } from '../../../memory/knowledge-read';
+import { getSessionUserOrDefault } from '../../../auth';
 import { advertisedArgsSchema, decode, type ResultFormat } from '@papercusp/result-encoding';
 // Side-effect: register every operator-side first-party tool into the
 // projected-tool registry. Required on dev (next dev compiles routes
@@ -1196,12 +1203,13 @@ export const MCP_SERVER_CAPABILITIES = {
  *
  * Plan: papercusp-su-memory-2026-05-25 (Phase 1, P-003).
  *
- * Nudges agents toward the three-layer memory pattern. Per-session
- * dynamic injection (mem0 fan-out + coord backlog + insights index)
- * is deferred — the SDK Server doesn't expose a clean hook for
- * per-session instructions without overwriting the protocol-version
- * negotiation in _oninitialize. Static text lands the user-visible
- * behavior now; the dynamic enrichment ships later as a follow-up.
+ * Nudges agents toward the three-layer memory pattern. This is the STATIC
+ * base; per-session dynamic enrichment (mem0 fan-out + insights index via
+ * `buildMcpPrelude`) is wired in the setup callback below by DELEGATING to
+ * the SDK's own initialize handler and appending to its `instructions` —
+ * see `_mcp-initialize-enrich.ts`
+ * (memory-delivery-unification-2026-07-12 P-001; the old "SDK doesn't
+ * expose a clean hook" deferral is closed).
  *
  * Disabled via PAPERCUSP_SU_MEMORY_INJECTION=off when needed.
  */
@@ -1267,6 +1275,19 @@ Right layer for READS and WRITES — the memory↔docs boundary:
     → the plan / work-item, never memory.
 See the plans \`papercusp-su-memory-2026-05-25\` and
 \`tool-call-batching-wrappers-2026-06-21\`.`;
+
+/**
+ * Wall-clock cap on the per-session initialize enrichment (P-001). Session
+ * establishment must stay snappy: past this, the enrichment resolves null
+ * and the client gets the static instructions. buildMemoryContextBlock has
+ * its own op-deadline posture; this bounds the WHOLE enrich path (including
+ * the PG user lookup). Env-tunable; 0 = unbounded (raceDeadline semantics —
+ * the kill switch for the whole prelude stays PAPERCUSP_SU_MEMORY_INJECTION=off).
+ */
+const INITIALIZE_ENRICH_DEADLINE_MS = (() => {
+  const raw = Number(process.env.PAPERCUSP_MCP_INIT_ENRICH_DEADLINE_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 2_500;
+})();
 
 function mcpInstructionsForServer(): string | undefined {
   // dynamic-tool-surface D-011: append the compact CAPABILITY MAP so a trimmed session (the
@@ -2108,6 +2129,43 @@ const handler = createMcpHandler(
         return { description: r.result!.description, messages: r.result!.messages };
       },
     );
+
+    // ── Initialize enrichment (memory-delivery-unification-2026-07-12 P-001) ──
+    // Per-session `initialize.instructions`: delegate to the SDK's own stored
+    // initialize handler (negotiation + client-info side effects stay
+    // SDK-owned), then append the session-start memory prelude — user +
+    // harness mem0 recall (harness-identity query per D-005) + the
+    // agent-insights index. Auth-gated: a failed OR bare (`kind:'none'`)
+    // spawn context gets the static text only — memories must never leak to
+    // an unauthenticated probe. Deadline-bounded + never-throws: a slow or
+    // broken memory backend can never stall or break session establishment.
+    const sdkInitialize = takeStoredInitializeHandler(server.server);
+    if (sdkInitialize) {
+      server.server.setRequestHandler(
+        sdk.InitializeRequestSchema,
+        wrapInitializeWithInstructions(sdkInitialize, async (base, extra) =>
+          raceDeadline(
+            INITIALIZE_ENRICH_DEADLINE_MS,
+            async () => {
+              const spawnRes = await tryBuildSpawnContext(extra);
+              if (spawnRes.kind !== 'ok') return null;
+              const user = await getSessionUserOrDefault();
+              const ctxWorkspace = spawnRes.ctx.workspaceId;
+              const prelude = await buildMcpPrelude({
+                userId: user.id,
+                workspaceId:
+                  ctxWorkspace && ctxWorkspace !== '*' ? ctxWorkspace : activeWorkspaceId(),
+                url: urlFromExtra(extra),
+                insightsDir: INSIGHTS_DIR,
+              });
+              if (!prelude?.text) return null;
+              return base ? `${base}\n\n${prelude.text}` : prelude.text;
+            },
+            () => null,
+          ),
+        ),
+      );
+    }
 
     void getResourceCatalog;
   },

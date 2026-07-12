@@ -816,28 +816,36 @@ export interface SpawnSelection {
  * Pure — the soft-pin WRITE-BACK is the caller's (keeps this exhaustively unit-testable).
  */
 export function selectAccountForSpawn(pool: AccountPool, now: number, opts: SpawnSelectOpts = {}): SpawnSelection {
-  // EI-8070: every eligibility gate below uses `isSpawnEligible`, NOT the raw `!accountFull` this
-  // function used before — `accountFull` only checks the CURRENT pause + usage-cap, so an account
-  // that raced up a sustained penalty streak (isSustainedlyLimited via penaltyCount, not util) but
-  // whose most recent individual pause had already lapsed by selection time read as fine and kept
-  // getting freshly-spawned bees routed onto it, which then died on their first inference call.
+  // EI-8070: every eligibility gate below excludes on `hardPinUnsafe`, NOT the original bare
+  // `!accountFull`. This function HARD-PINS its pick (the gateway honors a pin with no failover —
+  // see the note on step 4), so it deliberately keeps `accountFull`'s STRICT "any active pause
+  // excludes" behavior (a stale-but-short pause could still be live at the exact moment the pinned
+  // spawn makes its first call — unlike `isSpawnEligible`, which is right to tolerate that for
+  // non-pinning callers, this call site is not one of them). What it was MISSING: a sustained
+  // repeated-429 streak (isSustainedlyLimited via penaltyCount, not util) whose most recent
+  // individual pause had already lapsed by selection time read as perfectly fine and kept getting
+  // freshly-spawned bees hard-pinned onto it — they died on their first inference call. Live:
+  // accounts:status showed aviynw7/aviynw8/aviynw8-direct/avistorewolf.com as
+  // sustainedlyLimited:true with available:true; fresh cup:spawn placements kept landing there and
+  // crash-looped (sessionState:ended within ~20-30s, zero progress).
+  const hardPinUnsafe = (a: ClaudeAccount, t: number): boolean => accountFull(a, t) || isSustainedlyLimited(a, t);
   // 1. Sticky to the prior account while it is still usable (cache affinity dominates cost).
   if (opts.priorAccountId) {
     const prior = getAccount(pool, opts.priorAccountId);
-    if (prior && isSpawnEligible(prior, now)) return { accountId: prior.id, pinSource: 'sticky' };
+    if (prior && !hardPinUnsafe(prior, now)) return { accountId: prior.id, pinSource: 'sticky' };
   }
   const harness = opts.harness;
   let affinityId: string | undefined;
   if (harness) {
     // 2. Manually-bound account (owner/deploy intent), best drain among the bound ties — a hard pin.
-    const bound = pool.accounts.filter((a) => a.boundTo.includes(harness) && isSpawnEligible(a, now));
-    const boundBest = selectAccountByDrain({ accounts: bound }, now, { eligible: isSpawnEligible });
+    const bound = pool.accounts.filter((a) => a.boundTo.includes(harness) && !hardPinUnsafe(a, now));
+    const boundBest = selectAccountByDrain({ accounts: bound }, now, { eligible: (a, t) => !hardPinUnsafe(a, t) });
     if (boundBest) return { accountId: boundBest.id, pinSource: 'manual-bind' };
     // 3. Soft cache-affinity pin → an AFFINITY HINT for the spread (weighted preference, not a funnel).
     //    Skipped when full/paused/sustainedly-limited (lazy re-pin, D-002) so the hive re-anchors onto
     //    fresh capacity.
     const softPinned = softPinnedAccount(pool, harness);
-    if (softPinned && isSpawnEligible(softPinned, now)) affinityId = softPinned.id;
+    if (softPinned && !hardPinUnsafe(softPinned, now)) affinityId = softPinned.id;
   }
   // 4. Budget-drain across the whole pool — SPREAD across accounts that are
   //    available RIGHT NOW. Do not pin a paused account into a spawned CLI turn:
@@ -845,7 +853,7 @@ export function selectAccountForSpawn(pool: AccountPool, now: number, opts: Spaw
   //    so autonomous roles can die before emitting their required artifacts. When
   //    no account is safely pinnable, return no header and let the gateway's
   //    unpinned active/failover path handle the request.
-  const drained = selectAccountByDrain(pool, now, { spread: true, rng: opts.rng, affinityId, eligible: isSpawnEligible });
+  const drained = selectAccountByDrain(pool, now, { spread: true, rng: opts.rng, affinityId, eligible: (a, t) => !hardPinUnsafe(a, t) });
   if (!drained) return {};
   return {
     accountId: drained.id,

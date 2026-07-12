@@ -502,6 +502,33 @@ describe('isSpawnEligible (account-spawn-eligibility — D-003 stranding fix)', 
     p = recordAccountPenalty(p, 'a', T0, { pausedUntil: T0 + 20 * MIN });
     expect(isSpawnEligible(getAccount(p, 'a')!, T0 + MIN)).toBe(false);
   });
+
+  // EI-8070: the original version only consulted isSustainedlyLimited when the account was
+  // CURRENTLY paused (`if (isAvailable(a, now)) return true` short-circuited past the check
+  // entirely). A real repeated-429 burst racks up 3+ penalties in the 15-min window with each
+  // individual pause SHORT — so by the time a later selection call runs, the most recent pause
+  // has already lapsed (isAvailable back to true) even though the account is still genuinely
+  // struggling. Live: accounts:status showed aviynw7/aviynw8/aviynw8-direct/avistorewolf.com as
+  // sustainedlyLimited:true with available:true — fresh cup:spawn placements kept landing there
+  // and crash-looped (sessionState:ended within ~20-30s, zero progress).
+  it('EI-8070: an AVAILABLE account with a lapsed-but-recent 429 penalty burst is NOT eligible', () => {
+    let p = poolOf('a');
+    // 3 penalties inside the 15-min window, each with a SHORT pause that has since lapsed.
+    for (let i = 0; i < 3; i++) p = recordAccountPenalty(p, 'a', T0 + i, { pausedUntil: T0 + 2 * MIN });
+    const checkAt = T0 + 5 * MIN; // after the last pause (T0+2min) lapsed, still inside the 15-min window
+    const a = getAccount(p, 'a')!;
+    expect(isAvailable(a, checkAt)).toBe(true); // the narrow pause check alone would wrongly say "fine"
+    expect(isSustainedlyLimited(a, checkAt)).toBe(true); // the penalty-burst signal IS present
+    expect(isSpawnEligible(a, checkAt)).toBe(false); // must exclude it despite being "available"
+  });
+
+  it('EI-8070: selectAccountForSpawn never routes a fresh spawn to a lapsed-but-sustained-limited account', () => {
+    let p = poolOf('bad', 'good');
+    for (let i = 0; i < 3; i++) p = recordAccountPenalty(p, 'bad', T0 + i, { pausedUntil: T0 + 2 * MIN });
+    const checkAt = T0 + 5 * MIN;
+    const sel = selectAccountForSpawn(p, checkAt, {});
+    expect(sel.accountId).toBe('good');
+  });
 });
 
 describe('selectAccountByDrain spread (anti-thundering-herd, 2026-06-23)', () => {

@@ -54,6 +54,26 @@ export interface PreludeInput {
   cwd?: string;
   /** Absolute path to agent-insights dir for the insights index. */
   insightsDir?: string;
+  /**
+   * Recall query override. When omitted, the query is derived from the
+   * launch profile (D-005 memory-delivery-unification-2026-07-12): a
+   * harness-bound session queries with the harness identity; a bare
+   * session gets NO initialize-time vector recall (empty query → the
+   * pipeline returns null) and defers to the first turn-start delta.
+   * The launch-profile resolver (P-007) supersedes this seam.
+   */
+  queryContext?: string;
+}
+
+/**
+ * Initialize-time recall query for a harness-bound session (D-005,
+ * owner-approved rung 2026-07-12: harness-only sessions DO vector-query at
+ * initialize — it is what primes hive-pack + project-convention knowledge
+ * before the first turn). Bare sessions return '' → no recall.
+ */
+export function initializeQueryForHarness(harnessSlug: string | null): string {
+  if (!harnessSlug) return '';
+  return `${harnessSlug} project: conventions, how we work here, active priorities, known gotchas`;
 }
 
 export interface PreludeResult {
@@ -112,12 +132,13 @@ export async function buildMcpPrelude(
       userId: input.userId,
       workspaceId: input.workspaceId,
       harnessSlugs: harnessSlug ? [harnessSlug] : [],
-      // No turn content at prelude time (PreludeInput carries no query),
-      // so the recall query is empty — buildMemoryContextBlock returns
-      // null for an empty queryContext. Passing '' makes that explicit
-      // (and type-correct) instead of relying on the try/catch to swallow
-      // a `undefined.trim()` throw.
-      queryContext: '',
+      // D-005 (memory-delivery-unification-2026-07-12): the launch profile
+      // decides the query. Harness-bound → harness-identity query (primes
+      // hive packs + project conventions before the first turn); bare
+      // session → '' → buildMemoryContextBlock returns null and recall
+      // defers to the first turn-start delta. Callers may override via
+      // input.queryContext (the P-007 resolver does).
+      queryContext: input.queryContext ?? initializeQueryForHarness(harnessSlug),
     });
     // We can't introspect buildMemoryContextBlock's result to tell which
     // scope contributed without reshaping it; treat presence as
