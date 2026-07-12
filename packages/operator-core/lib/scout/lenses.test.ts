@@ -176,3 +176,29 @@ describe('assignDistantDomain + defaultLensRoster', () => {
     expect(new Set(defaultLensRoster()).size).toBe(defaultLensRoster().length);
   });
 });
+
+describe('deterministic rubric seeding (blender-self-learning-2026-07-12 P-004)', () => {
+  const withRubrics = digest({
+    rubricRatings: [pat('rubric:r1#a@h', 'worst'), pat('rubric:r1#b@h', 'second'), pat('rubric:r2#c@h', 'third'), pat('rubric:r2#d@h', 'fourth')],
+  } as Partial<CorpusDigest>);
+
+  it('buildRubricFocus renders the worst-first top-K with citable refs', () => {
+    const focus = buildRubricFocus(withRubrics)!;
+    expect(focus).toContain('(ref: rubric:r1#a@h) worst');
+    expect(focus).toContain('(ref: rubric:r2#c@h) third');
+    expect(focus).not.toContain('fourth'); // default limit 3
+  });
+
+  it('buildRubricFocus is undefined when the lane is empty (no forced focus)', () => {
+    expect(buildRubricFocus(digest())).toBeUndefined();
+  });
+
+  it('the prompt gains a MANDATORY rubric-focus section when supplied — and not otherwise', () => {
+    const seeded = buildIdeatorPrompt({ lens: 'reframing', digest: withRubrics, rubricFocus: buildRubricFocus(withRubrics)! });
+    expect(seeded.system).toContain('## Rubric focus');
+    expect(seeded.system).toContain('MUST address one of them');
+    expect(seeded.system).toContain('rubric:r1#a@h');
+    const unseeded = buildIdeatorPrompt({ lens: 'reframing', digest: withRubrics });
+    expect(unseeded.system).not.toContain('## Rubric focus');
+  });
+});

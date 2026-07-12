@@ -283,6 +283,7 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
     );
     const provenance = cycle.provenance ?? [];
     if (provenance.length > 0) await deps.persistRouted(provenance, cycleId);
+    const groundingLanes = groundingLaneHistogram(provenance);
     await deps.refreshOutcomes?.();
     // P-001: a queen-feedback revision cycle SUCCEEDED — ack the consumed messages
     // so the same feedback is not re-processed next tick (exactly-once). Best-effort:
@@ -307,6 +308,11 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
         reason: verdict.reason,
         ...(cycle.stop ? { stop: cycle.stop } : {}),
         ...(queenFeedback.length > 0 ? { queenFeedbackCount: queenFeedback.length } : {}),
+        // P-006 (blender-self-learning-2026-07-12): per-lane grounding histogram
+        // over this cycle's routed refs — the durable, queryable evidence of
+        // WHICH digest lanes actually generate routed ideas (the rubric lane
+        // was silently at zero for its whole life until the P-004 seeding).
+        ...(Object.keys(groundingLanes).length > 0 ? { groundingLanes } : {}),
       },
     });
     return {
@@ -330,6 +336,32 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
     await note({ status: 'error', detail: { cycleId, error, ...timeoutDetail } });
     return { fired: false, reason: 'cycle-error', cycleId, error };
   }
+}
+
+/**
+ * PURE (blender-self-learning-2026-07-12 P-006): per-lane grounding histogram
+ * over a cycle's routed provenance refs, by the stable ref-prefix each lane
+ * stamps (`rubric:` / `fact:` / `niche:`; everything else is the free-text
+ * corpus lanes). Recorded on the tick detail so "which lanes generate ideas"
+ * is a SQL query over scout_ticks, not an archaeology project.
+ */
+export function groundingLaneHistogram(
+  records: readonly { addressesPatternRefs?: readonly string[] }[],
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const r of records) {
+    for (const ref of r.addressesPatternRefs ?? []) {
+      const lane = ref.startsWith('rubric:')
+        ? 'rubric-rating'
+        : ref.startsWith('fact:')
+          ? 'standing-fact'
+          : ref.startsWith('niche:')
+            ? 'niche-map'
+            : 'corpus';
+      out[lane] = (out[lane] ?? 0) + 1;
+    }
+  }
+  return out;
 }
 
 export const DEFAULT_SCOUT_CYCLE_TIMEOUT_MS = 20 * 60_000;

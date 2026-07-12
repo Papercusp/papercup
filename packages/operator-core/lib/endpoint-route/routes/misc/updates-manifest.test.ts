@@ -258,9 +258,16 @@ describe('GET /api/updates/manifest — manifest contract with tauri-plugin-upda
         'papercusp-latest-desktop-v0.0.4-alpha.json',
       ]),
     };
-    mockFetch.mockResolvedValue(
-      new Response(JSON.stringify([noLinuxAssets]), { status: 200 }),
-    );
+    // HYBRID deployment (WI-4365): the release host serves the oversized BYTES
+    // but publishes no `<host>/latest.json`, so discovery still falls through to
+    // GitHub and the manifest comes from the release's latest.json ASSET. A
+    // URL-aware mock is required — the route now probes the host first, and a
+    // single mockResolvedValue Response can only have its body read once.
+    mockFetch.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/latest.json')) return new Response(null, { status: 404 });
+      return new Response(JSON.stringify([noLinuxAssets]), { status: 200 });
+    });
     vi.mocked(releaseHostBase).mockReturnValue('http://10.0.2.2:8043');
     vi.mocked(fetchAssetText).mockResolvedValue(
       JSON.stringify({

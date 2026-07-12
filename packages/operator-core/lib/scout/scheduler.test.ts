@@ -537,3 +537,21 @@ describe('runScoutTick — Queen→Scout feedback (P-001)', () => {
     expect(ran?.detail?.queenFeedbackCount).toBe(1);
   });
 });
+
+describe('groundingLaneHistogram (blender-self-learning-2026-07-12 P-006)', () => {
+  it('buckets refs by lane prefix and counts them', async () => {
+    const { groundingLaneHistogram } = await import('./scheduler');
+    expect(
+      groundingLaneHistogram([
+        { addressesPatternRefs: ['rubric:r#c@h', 'wi:12'] },
+        { addressesPatternRefs: ['fact:workspace:k', 'niche:n1', 'rubric:r2#c@h'] },
+        {},
+      ]),
+    ).toEqual({ 'rubric-rating': 2, corpus: 1, 'standing-fact': 1, 'niche-map': 1 });
+  });
+
+  it('empty provenance yields an empty histogram (detail key omitted upstream)', async () => {
+    const { groundingLaneHistogram } = await import('./scheduler');
+    expect(groundingLaneHistogram([])).toEqual({});
+  });
+});
