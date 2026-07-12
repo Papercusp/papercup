@@ -1219,6 +1219,12 @@ async function collectLoops(ctx: HealthCtx): Promise<HealthPanel<LoopsHealth>> {
  * (the sleeps-forever class), and fleets with live members but NO live leader
  * (the silent-mass-failure mode). REUSES the assignments decorator for the
  * unanswered read (D-C — never a second derivation).
+ *
+ * WI-4460 (deferred scope, now landed): also surfaces the claim-health smells
+ * coord:glance derives — orphaned claims (dead holder), stalled claims (live
+ * holder, no progress), coverage collisions (EI-6074: two principals on one
+ * deliverable), and benched members (parked on a real events:await key —
+ * idle-by-design, informational only).
  */
 async function collectCoordination(ctx: HealthCtx): Promise<HealthPanel<CoordinationHealth>> {
   return panelSafe<CoordinationHealth>('coordination', async () => {
@@ -1268,6 +1274,35 @@ async function collectCoordination(ctx: HealthCtx): Promise<HealthPanel<Coordina
         }
       }
     } catch { /* decorator unavailable — leave zeros (the other legs still compute) */ }
+    // Claim-health (WI-4460, deferred scope from health-tab-v2): orphaned/stalled
+    // claims + coverage collisions — the SAME derivations coord:glance /
+    // fleet:assignments report (D-C: reuse the computer, never a second one).
+    // Each leg fail-soft: a read hiccup leaves zeros, the panel still renders.
+    let orphaned = 0;
+    let stalledCount = 0;
+    let collisionCount = 0;
+    try {
+      const fa = await import('../fleet/assignments');
+      const claimRows = await fa.listFleetAssignments({ workspaceId: ctx.ws });
+      orphaned = fa.orphanedClaims(claimRows).length;
+      stalledCount = fa.stalledClaims(claimRows).length;
+    } catch { /* claim read unavailable — leave zeros */ }
+    try {
+      const cov = await import('../plan-item-coverage');
+      const covMap = await cov.getAllPlanItemCoverage();
+      collisionCount = cov.coverageCollisions([...covMap.values()]).length;
+    } catch { /* coverage read unavailable — leave zeros */ }
+    // Benched members (idle-by-design): live sessions parked on a real (non-
+    // inbox-wake, non-announce) events:await key — informational, never alarming.
+    let parkedMembers = 0;
+    try {
+      const { listParkedAwaitsForSubscribers } = await import('../events/await/store');
+      const ownerIds = live
+        .map((p) => (p as unknown as { ownerId?: string }).ownerId)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0);
+      const parkedRows = await listParkedAwaitsForSubscribers(ownerIds);
+      parkedMembers = new Set(parkedRows.map((r) => r.subscriberId)).size;
+    } catch { /* awaits read unavailable — leave zero */ }
     const { sql } = getOrgPg();
     const awaitRows = await sql<Array<{ active: number; stale: number }>>`
       SELECT count(*)::int AS active,
@@ -1284,6 +1319,10 @@ async function collectCoordination(ctx: HealthCtx): Promise<HealthPanel<Coordina
       staleAwaits: awaitRows[0]?.stale ?? 0,
       leaderlessFleets: [...fleets.values()].filter((f) => f.leaders === 0).length,
       liveFleets: fleets.size,
+      orphanedClaims: orphaned,
+      stalledClaims: stalledCount,
+      coverageCollisions: collisionCount,
+      parkedMembers,
     };
     const status = coordinationStatus(data, ctx.now);
     const problems: string[] = [];
@@ -1291,9 +1330,12 @@ async function collectCoordination(ctx: HealthCtx): Promise<HealthPanel<Coordina
     if (data.leaderlessFleets > 0) problems.push(`${data.leaderlessFleets} leaderless fleet(s)`);
     if (data.staleAwaits > 0) problems.push(`${data.staleAwaits} stale waiter(s)`);
     if (data.criticalContext > 0) problems.push(`${data.criticalContext} at critical context`);
+    if (data.orphanedClaims > 0) problems.push(`${data.orphanedClaims} orphaned claim(s)`);
+    if (data.stalledClaims > 0) problems.push(`${data.stalledClaims} stalled claim(s)`);
+    if (data.coverageCollisions > 0) problems.push(`${data.coverageCollisions} coverage collision(s)`);
     return {
       status,
-      summary: problems.length > 0 ? problems.join(', ') : `quiet — ${data.activeAwaits} parked waiter(s), ${data.liveFleets} live fleet(s)`,
+      summary: problems.length > 0 ? problems.join(', ') : `quiet — ${data.activeAwaits} parked waiter(s), ${data.parkedMembers} benched, ${data.liveFleets} live fleet(s)`,
       data,
       link: { label: 'Coord', href: '/coord' },
       metrics: [
@@ -1301,6 +1343,10 @@ async function collectCoordination(ctx: HealthCtx): Promise<HealthPanel<Coordina
         m('crit context', data.criticalContext, data.criticalContext > 0 ? 'warn' : undefined),
         m('stale waiters', data.staleAwaits, data.staleAwaits > 0 ? 'warn' : undefined),
         m('leaderless', data.leaderlessFleets, data.leaderlessFleets > 0 ? 'warn' : undefined),
+        m('orphaned', data.orphanedClaims, data.orphanedClaims > 0 ? 'warn' : undefined),
+        m('stalled', data.stalledClaims, data.stalledClaims > 0 ? 'warn' : undefined),
+        m('collisions', data.coverageCollisions, data.coverageCollisions > 0 ? 'warn' : undefined),
+        m('benched', data.parkedMembers),
         m('live fleets', data.liveFleets),
       ],
     };

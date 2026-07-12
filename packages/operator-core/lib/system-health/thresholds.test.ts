@@ -581,7 +581,9 @@ describe('coordinationStatus — WARN-max during burn-in (P-009 / D-D)', () => {
   const co = (o: Partial<CoordinationHealth> = {}): CoordinationHealth => ({
     unansweredAgents: 0, unansweredTotal: 0, unansweredOldestMs: null,
     criticalContext: 0, highContext: 0, activeAwaits: 0, staleAwaits: 0,
-    leaderlessFleets: 0, liveFleets: 0, ...o,
+    leaderlessFleets: 0, liveFleets: 0,
+    orphanedClaims: 0, stalledClaims: 0, coverageCollisions: 0, parkedMembers: 0,
+    ...o,
   });
   it('warn on a leaderless fleet', () => {
     expect(coordinationStatus(co({ leaderlessFleets: 1, liveFleets: 2 }))).toBe('warn');
@@ -602,10 +604,23 @@ describe('coordinationStatus — WARN-max during burn-in (P-009 / D-D)', () => {
     expect(coordinationStatus(co({ highContext: 4 }))).toBe('ok');
     expect(coordinationStatus(co())).toBe('ok');
   });
+  it('warn on an orphaned claim (dead holder — abandoned work, WI-4460)', () => {
+    expect(coordinationStatus(co({ orphanedClaims: 1 }))).toBe('warn');
+  });
+  it('warn on a stalled claim (live holder, no progress)', () => {
+    expect(coordinationStatus(co({ stalledClaims: 2 }))).toBe('warn');
+  });
+  it('warn on a coverage collision (EI-6074: two principals, one deliverable)', () => {
+    expect(coordinationStatus(co({ coverageCollisions: 1 }))).toBe('warn');
+  });
+  it('benched members are idle-by-design — never affect status', () => {
+    expect(coordinationStatus(co({ parkedMembers: 7 }))).toBe('ok');
+  });
   it('is warn-max by construction: every alarming input together still warns', () => {
     expect(coordinationStatus(co({
       leaderlessFleets: 2, staleAwaits: 3, criticalContext: 2,
       unansweredOldestMs: 4 * UNANSWERED_DIRECTED_WARN_MS,
+      orphanedClaims: 4, stalledClaims: 2, coverageCollisions: 1,
     }))).toBe('warn');
   });
 });

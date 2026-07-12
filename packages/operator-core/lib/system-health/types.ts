@@ -561,6 +561,21 @@ export interface CoordinationHealth {
   leaderlessFleets: number;
   /** Distinct fleets with >=1 live member. */
   liveFleets: number;
+  /** Active claims whose holder is DEAD (ended/heartbeat-stale) — abandoned work
+   *  awaiting reclaim (WI-4460; same derivation as coord:glance's orphaned_claims). */
+  orphanedClaims: number;
+  /** Active claims whose holder is ALIVE but not advancing the item — the
+   *  live-but-not-progressing reclaimable set. NB: unlike the claim-integrity
+   *  watchdog (EI-10125), this count does NOT suppress checkpoint-documented
+   *  holds, so it can legitimately sit >0 on a deliberately-parked lane. */
+  stalledClaims: number;
+  /** Plan-item deliverables held by >1 principal via the work-item↔plan-item
+   *  coverage edge (EI-6074) — the cross-claim-table duplicate that reads as
+   *  orphaned:0/stalled:0 while two live agents run the same work. */
+  coverageCollisions: number;
+  /** Live members deliberately parked on a non-inbox events:await key — benched
+   *  by design (idle-but-healthy), NOT stalled/abandoned. Informational only. */
+  parkedMembers: number;
 }
 
 /**

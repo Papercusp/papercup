@@ -447,6 +447,14 @@ export function coordinationStatus(d: CoordinationHealth, now?: number): PanelSt
   if (d.staleAwaits > 0) return 'warn';
   if (d.criticalContext > 0) return 'warn';
   if (d.unansweredOldestMs !== null && d.unansweredOldestMs > UNANSWERED_DIRECTED_WARN_MS) return 'warn';
+  // Claim-health (WI-4460): a dead holder's claim is abandoned work; a coverage
+  // collision is two live principals on one deliverable — both real smells.
+  if (d.orphanedClaims > 0) return 'warn';
+  if (d.coverageCollisions > 0) return 'warn';
+  // Stalled = alive-but-not-progressing. Unlike the watchdog this count doesn't
+  // suppress checkpoint-documented holds (see types.ts), so warn only — and
+  // parkedMembers (benched-by-design) never affects status at all.
+  if (d.stalledClaims > 0) return 'warn';
   return 'ok';
 }
 
