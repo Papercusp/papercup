@@ -305,21 +305,42 @@ export interface HandoffArtifact {
 export interface HandoffResult {
   version: string;
   targetRoot: string;
+  /** Every root actually scanned: targetRoot + the cargo target_directory when relocated
+   *  (the linux leg's bundles land there, not under src-tauri/target — WI-4243). */
+  scannedRoots: string[];
   found: boolean;
   artifacts: HandoffArtifact[];
   /** latest.json manifest path(s). */
   manifests: string[];
   /** build-provenance.json path(s). */
   provenance: string[];
-  /** Artifacts missing their `.sig` — a hand-off blocker (updater can't verify). */
+  /** UPDATER artifacts (isUpdaterArtifact) missing their `.sig` — a hand-off blocker
+   *  (the updater can't verify them). */
   unsignedNames: string[];
+  /** NON-updater artifacts (dmg / exe / msi / .bin slices / deb) without a `.sig` —
+   *  informational only, NOT a blocker: these aren't updater-feed artifacts, so a missing
+   *  minisign sig is expected (WI-4243: the old blanket blocker false-alarmed on dmgs). */
+  unsignedInfoNames: string[];
 }
 
 /** Installer/updater artifact extensions the cut produces across the three platforms. */
 const ARTIFACT_EXTS = ['.AppImage', '.deb', '.dmg', '.app.tar.gz', '.exe', '.msi', '.nsis.zip'] as const;
+/** Inno Setup disk-spanning payload slices (`X-setup-1.bin`): the Windows Server installer
+ *  exceeds Inno's single-file limit, so its setup.exe reads sibling .bin slices — they are
+ *  shippable artifacts the owner MUST upload next to the setup.exe (WI-4243). */
+const INNO_SLICE_RE = /-setup-\d+\.bin$/;
 
 export function isReleaseArtifact(name: string): boolean {
-  return ARTIFACT_EXTS.some((e) => name.endsWith(e));
+  return ARTIFACT_EXTS.some((e) => name.endsWith(e)) || INNO_SLICE_RE.test(name);
+}
+
+/** The tauri-UPDATER feed artifact types — the ones whose minisign `.sig` the updater
+ *  actually verifies. Everything else (dmg, deb, setup.exe, msi, .bin slices) installs
+ *  through OS-native paths, so a missing .sig there is informational, never a blocker. */
+const UPDATER_EXTS = ['.app.tar.gz', '.AppImage', '.nsis.zip'] as const;
+
+export function isUpdaterArtifact(name: string): boolean {
+  return UPDATER_EXTS.some((e) => name.endsWith(e));
 }
 
 // Cargo/target build-intermediate dirs to prune from the walk (target/ is huge; the
@@ -356,20 +377,51 @@ export function defaultSha256(p: string): string {
   return execFileSync('sha256sum', [p], { encoding: 'utf8', maxBuffer: 1 << 20 }).trim().split(/\s+/)[0];
 }
 
+/** The cargo `target_directory` for this checkout — mirrors release-local.sh's own
+ *  CARGO_TARGET_ROOT derivation (its line ~713) exactly: `cargo metadata` at src-tauri,
+ *  null when unresolvable. On a stock checkout this IS src-tauri/target; on a relocated
+ *  one (CARGO_TARGET_DIR, e.g. ~/.cargo-target on the dev box) the linux leg's bundles
+ *  live ONLY here — the root the old single-root walk missed (WI-4243). */
+export function defaultCargoTargetRoot(root: string): string | null {
+  try {
+    const out = execFileSync('cargo', ['metadata', '--no-deps', '--format-version', '1'], {
+      cwd: path.join(root, 'src-tauri'),
+      encoding: 'utf8',
+      maxBuffer: 64 << 20,
+    });
+    const td = (JSON.parse(out) as { target_directory?: string }).target_directory;
+    return td && td.length > 0 ? td : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface CollectHandoffDeps {
   exists?: (p: string) => boolean;
   listFiles?: (dir: string) => string[];
   fileSize?: (p: string) => number;
   sha256?: (p: string) => string;
+  /** Read a build-provenance.json (utf8). */
+  readFile?: (p: string) => string;
+  /** Resolve the cargo target_directory for the desktop root (null ⇒ skip that root). */
+  cargoTargetRoot?: (root: string) => string | null;
+  /** Canonicalize a path for root de-duplication (src-tauri/target is often a symlink
+   *  to the relocated cargo target dir — same tree, two spellings). */
+  realpath?: (p: string) => string;
 }
 
 /**
- * Collect the LOCAL hand-off set for `version` from the cut output under
- * `src-tauri/target` (RELEASE-RUNBOOK §5): every version-scoped installer/updater
- * artifact + whether its `.sig` is present, plus the latest.json manifests and
- * build-provenance.json files, with each artifact's sha256. Version-scoping mirrors the
- * cut's own P-009 `*_<version>_*` collection. Pure over injectable fs deps (unit-testable
- * against a fake tree). Does NOT touch GitHub — the caller hands these paths to the owner.
+ * Collect the LOCAL hand-off set for `version` from the cut output (RELEASE-RUNBOOK §5):
+ * every installer/updater artifact + whether its `.sig` is present, plus the latest.json
+ * manifests and build-provenance.json files, with each artifact's sha256. Scans BOTH
+ * `src-tauri/target` AND the cargo target_directory when relocated (the linux leg).
+ * Artifacts are found two ways (WI-4243):
+ *   1. walk: version-named installers inside a bundle/ dir (P-009 `*_<version>_*` parity);
+ *   2. provenance: every artifact a version-matching build-provenance.json records —
+ *      this is what catches the mac updater tarballs (`Papercusp GUI.app.tar.gz` carries
+ *      NO version in its filename, so the walk's name filter can never see it).
+ * Pure over injectable fs deps (unit-testable against a fake tree). Does NOT touch
+ * GitHub — the caller hands these paths to the owner.
  */
 export function collectHandoff(
   version: string,
@@ -382,23 +434,50 @@ export function collectHandoff(
   const list = deps.listFiles ?? defaultListFiles;
   const size = deps.fileSize ?? ((p: string) => fs.statSync(p).size);
   const sha = deps.sha256 ?? defaultSha256;
+  const readFile = deps.readFile ?? ((p: string) => fs.readFileSync(p, 'utf8'));
+  const cargoRoot = deps.cargoTargetRoot ?? defaultCargoTargetRoot;
+  const real =
+    deps.realpath ??
+    ((p: string) => {
+      try {
+        return fs.realpathSync(p);
+      } catch {
+        return p;
+      }
+    });
+
+  // Roots to scan: src-tauri/target + the cargo target_directory when it's a DIFFERENT
+  // tree (realpath-compared — on the dev box src-tauri/target symlinks elsewhere while
+  // the linux leg writes to ~/.cargo-target; on a stock checkout they're one tree).
+  const scannedRoots: string[] = [];
+  const seenReal = new Set<string>();
+  for (const r of [targetRoot, cargoRoot(root)]) {
+    if (!r || !exists(r)) continue;
+    const rp = real(r);
+    if (seenReal.has(rp)) continue;
+    seenReal.add(rp);
+    scannedRoots.push(r);
+  }
 
   const empty: HandoffResult = {
     version,
     targetRoot,
+    scannedRoots,
     found: false,
     artifacts: [],
     manifests: [],
     provenance: [],
     unsignedNames: [],
+    unsignedInfoNames: [],
   };
-  if (!exists(targetRoot)) return empty;
+  if (scannedRoots.length === 0) return empty;
 
-  const files = list(targetRoot);
+  const files = scannedRoots.flatMap((r) => list(r));
   const sigs = new Set(files.filter((f) => f.endsWith('.sig')));
   const artifacts: HandoffArtifact[] = [];
   const manifests: string[] = [];
   const provenance: string[] = [];
+  const collected = new Set<string>();
 
   for (const f of files) {
     const name = path.basename(f);
@@ -414,22 +493,70 @@ export function collectHandoff(
     if (!f.includes(`${path.sep}bundle${path.sep}`)) continue;
     if (!isReleaseArtifact(name)) continue;
     if (!name.includes(version)) continue;
+    if (collected.has(f)) continue;
+    collected.add(f);
     artifacts.push({ path: f, name, bytes: size(f), sha256: sha(f), signed: sigs.has(`${f}.sig`) });
+  }
+
+  // Pass 2 (WI-4243): trust each version-matching build-provenance.json for artifacts the
+  // name filter can't see (the versionless mac `<App>.app.tar.gz` updater tarballs).
+  // Provenance `name`s are OUT_DIR-relative subpaths (post-WI-4243 emitter) — resolve
+  // against the provenance's own dir; for pre-fix basename-only provenance, fall back to
+  // a unique-basename match among the walked files under that root.
+  const byBase = new Map<string, string[]>();
+  for (const f of files) {
+    const b = path.basename(f);
+    const arr = byBase.get(b);
+    if (arr) arr.push(f);
+    else byBase.set(b, [f]);
+  }
+  for (const provPath of provenance) {
+    let prov: { version?: string; artifacts?: { name?: unknown }[] };
+    try {
+      prov = JSON.parse(readFile(provPath)) as typeof prov;
+    } catch {
+      continue;
+    }
+    if (prov?.version !== version || !Array.isArray(prov.artifacts)) continue;
+    const provDir = path.dirname(provPath);
+    for (const a of prov.artifacts) {
+      if (typeof a?.name !== 'string' || a.name.length === 0) continue;
+      let f: string | null = path.join(provDir, a.name);
+      if (!exists(f)) {
+        const candidates = (byBase.get(path.basename(a.name)) ?? []).filter(
+          (c) => c.startsWith(`${provDir}${path.sep}`) && !c.endsWith('.sig'),
+        );
+        f = candidates.length === 1 ? candidates[0]! : null;
+      }
+      if (!f || collected.has(f)) continue;
+      collected.add(f);
+      artifacts.push({
+        path: f,
+        name: a.name,
+        bytes: size(f),
+        sha256: sha(f),
+        signed: sigs.has(`${f}.sig`) || exists(`${f}.sig`),
+      });
+    }
   }
 
   artifacts.sort((a, b) => a.path.localeCompare(b.path));
   manifests.sort();
   provenance.sort();
-  const unsignedNames = artifacts.filter((a) => !a.signed).map((a) => a.name);
+  const unsigned = artifacts.filter((a) => !a.signed);
+  const unsignedNames = unsigned.filter((a) => isUpdaterArtifact(a.name)).map((a) => a.name);
+  const unsignedInfoNames = unsigned.filter((a) => !isUpdaterArtifact(a.name)).map((a) => a.name);
 
   return {
     version,
     targetRoot,
+    scannedRoots,
     found: artifacts.length > 0,
     artifacts,
     manifests,
     provenance,
     unsignedNames,
+    unsignedInfoNames,
   };
 }
 

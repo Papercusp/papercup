@@ -380,3 +380,50 @@ describe('capability:terminal EI-8289 display disclosure', () => {
     expect(text).toMatch(/⚠ no active login seat was detected.*socket scan.*EI-8289/);
   });
 });
+
+// ── WI-4272: `display` arg — demo-stage override threading + disclosure ────────
+describe('capability:terminal WI-4272 display (demo-stage) override', () => {
+  it('threads `display` to spawnConsole as displayOverride for every terminal in the call', async () => {
+    await terminalTool.handler(
+      { terminals: [{ command: 'echo 1' }, { command: 'echo 2' }], display: ':110' },
+      baseCtx,
+    );
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    for (const call of spawnMock.mock.calls) {
+      expect((call as unknown[])[0]).toMatchObject({ displayOverride: ':110' });
+    }
+  });
+
+  it('omitted `display` ⇒ displayOverride is undefined (default seat path untouched)', async () => {
+    await terminalTool.handler({ command: 'echo hi' }, baseCtx);
+    expect(spawnMock).toHaveBeenCalledWith(expect.objectContaining({ displayOverride: undefined }));
+  });
+
+  it('a caller-override result gets the demo-stage disclosure line, NOT the EI-8289 socket-scan warning', async () => {
+    spawnMock.mockReturnValue({
+      status: 'ok',
+      pid: 1234,
+      terminal: 'xterm',
+      child: {} as any,
+      display: ':110',
+      desktopEnvResolvedVia: 'caller-override',
+    });
+    const res = await terminalTool.handler({ command: 'echo hi', display: ':110' }, baseCtx);
+    const text = (res as any).content[0].text as string;
+    expect(text).toContain('[DISPLAY=:110]');
+    expect(text).toMatch(/demo-stage override.*WI-4272/);
+    expect(text).not.toMatch(/⚠ no active login seat/);
+  });
+
+  it('a dead-display loud-fail from spawnConsole surfaces as the terminal failure, not a silent ok', async () => {
+    spawnMock.mockReturnValue({
+      status: 'error',
+      error: 'displayOverride :777: no X socket at /tmp/.X11-unix/X777 — the display is not alive. (WI-4272)',
+      code: 412,
+    });
+    const res: any = await terminalTool.handler({ command: 'echo hi', display: ':777' }, baseCtx);
+    const text = res.content[0].text as string;
+    expect(text).toMatch(/no X socket/);
+    expect(text).toMatch(/WI-4272/);
+  });
+});

@@ -209,18 +209,26 @@ export default defineTool({
           found: false,
           version: args.version,
           targetRoot: h.targetRoot,
-          reason: `no ${args.version} artifacts under ${h.targetRoot} — cut it first (release:cut{op:run}) or check the version.`,
+          scannedRoots: h.scannedRoots,
+          reason: `no ${args.version} artifacts under ${h.scannedRoots.length > 0 ? h.scannedRoots.join(', ') : h.targetRoot} — cut it first (release:cut{op:run}) or check the version.`,
         });
       }
+      // Missing sigs on NON-updater artifacts (dmg / setup.exe / .bin slices / deb) are
+      // expected — only updater-feed artifacts (.app.tar.gz / .AppImage / .nsis.zip) hard-block
+      // (WI-4243: the old blanket check false-alarmed "unsigned dmg — do NOT hand over").
+      const sigInfo =
+        h.unsignedInfoNames.length > 0
+          ? ` (${h.unsignedInfoNames.length} non-updater artifact(s) have no .sig — expected, not a blocker: ${h.unsignedInfoNames.join(', ')})`
+          : '';
       return json({
         ok: true,
         op: 'handoff',
         ...h,
         shipGate:
           h.unsignedNames.length > 0
-            ? `⚠ ${h.unsignedNames.length} artifact(s) are UNSIGNED (${h.unsignedNames.join(', ')}) — the updater can't verify them. Do NOT hand these over; re-cut with the signing key present.`
-            : 'All artifacts are signed. Run the ship-gate (recipes:run release-verify-provenance) before hand-off.',
-        note: 'LOCAL-only hand-off: give the OWNER these local paths + sha256 to upload. Never publish to GitHub.',
+            ? `⚠ ${h.unsignedNames.length} UPDATER artifact(s) are UNSIGNED (${h.unsignedNames.join(', ')}) — the updater can't verify them. Do NOT hand these over; re-cut with the signing key present.${sigInfo}`
+            : `All updater artifacts are signed.${sigInfo} Run the ship-gate before hand-off: recipes:run release-verify-provenance for a dev-box cut, or bin/verify-provenance.sh <leg-out-dir> --health-sha <leg sha> per leg for a release cut (the recipe feeds the DEV :3070 health sha, which is wrong for release-cut legs).`,
+        note: 'LOCAL-only hand-off: give the OWNER these local paths + sha256 to upload. ⚠ Windows Inno *-setup-N.bin payload slices MUST be uploaded into the same directory as their setup.exe. Never publish to GitHub.',
       });
     }
 
