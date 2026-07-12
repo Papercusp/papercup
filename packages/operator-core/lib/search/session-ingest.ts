@@ -74,6 +74,44 @@ export interface ParsedTurn {
   sessionId?: string | null;
 }
 
+/**
+ * Per-line classification signal (EI-9970) — computed for EVERY raw
+ * transcript line, not just the ones parseXLine turns into a stored
+ * session_turns row. Feeds the real cost/effort-audit counters
+ * (prompt_count / response_count / tool_call_count) that session_turns'
+ * row count structurally cannot: that table is TEXT TURNS ONLY (tool_use /
+ * tool_result / thinking-only content is never stored there by design), so
+ * a bare count(*) over it was being misread as "how many turns did this
+ * session take" when it only ever counted a filtered subset.
+ */
+export interface LineSignal {
+  /** A real user-typed prompt — same filter session_turns applies for a
+   *  stored speaker='user' row (non-boilerplate, >= MIN_TEXT_LEN chars). */
+  isPrompt: boolean;
+  /** This line carries genuine model-response payload (real text and/or a
+   *  tool call) — a candidate RESPONSE boundary, as opposed to a pure
+   *  thinking-only placeholder line some clients (Claude) emit as a
+   *  separate JSONL record ahead of the actual output. */
+  isResponsePayload: boolean;
+  /** The id tying this response-payload line to the one model call it
+   *  belongs to (Claude: message.id/requestId; OMP/Codex: the record's own
+   *  id) — null when the adapter has no such id (that line is always
+   *  counted as its own distinct response, never deduped). ONLY set when
+   *  isResponsePayload is true. A single model turn can legitimately span
+   *  MULTIPLE raw JSONL 'assistant' lines sharing one id (a thinking-only
+   *  stub, one line per tool_use block, then the text line) — counting raw
+   *  lines instead of distinct ids reproduces the exact "matches nothing
+   *  intuitive" bug this signal exists to fix.
+   */
+  inferenceId: string | null;
+  /** Real tool invocations carried on this line (Claude tool_use content
+   *  blocks; OMP toolCall content items; Codex counts as 0|1 since its
+   *  tool calls are their own separate response_item line). */
+  toolCallCount: number;
+}
+
+const NULL_SIGNAL: LineSignal = { isPrompt: false, isResponsePayload: false, inferenceId: null, toolCallCount: 0 };
+
 export interface IngestStats {
   filesScanned: number;
   filesIngested: number;
@@ -199,6 +237,140 @@ export function parseCodexLine(line: string): ParsedTurn | null {
 }
 
 /* ------------------------------------------------------------------ */
+/* Per-client line CLASSIFIERS (EI-9970) — every raw line, not just the  */
+/* ones parseXLine turns into a stored session_turns row.                */
+/* ------------------------------------------------------------------ */
+
+/** Claude Code line → signal. tool_use blocks live in assistant content
+ * arrays; tool_result blocks arrive as synthetic 'user'-role lines (not a
+ * real prompt — excluded from isPrompt exactly like parseClaudeLine
+ * already excludes them via the text-content shape, but tool_result
+ * carriers pass textFromContent as empty since it only joins 'text' /
+ * 'input_text' / 'output_text' parts, so no extra filtering is needed
+ * there; the explicit check below is for clarity + a stable test pin). */
+export function classifyClaudeLine(line: string): LineSignal | null {
+  let obj: Record<string, unknown>;
+  try {
+    obj = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (obj.type !== 'user' && obj.type !== 'assistant') return null;
+  const message = obj.message as { role?: string; content?: unknown; id?: string } | undefined;
+  if (!message) return null;
+
+  if (message.role === 'user') {
+    const content = message.content;
+    const isToolResultCarrier =
+      Array.isArray(content) &&
+      content.some((p) => p && typeof p === 'object' && (p as { type?: string }).type === 'tool_result');
+    if (isToolResultCarrier) return NULL_SIGNAL;
+    const text = cleanTurnText(textFromContent(content));
+    return text ? { ...NULL_SIGNAL, isPrompt: true } : NULL_SIGNAL;
+  }
+
+  if (message.role === 'assistant') {
+    const content = message.content;
+    let hasText = false;
+    let toolCallCount = 0;
+    if (Array.isArray(content)) {
+      for (const p of content) {
+        if (!p || typeof p !== 'object') continue;
+        const part = p as { type?: string; text?: string };
+        if (part.type === 'tool_use') toolCallCount += 1;
+        if (part.type === 'text' && typeof part.text === 'string' && part.text.trim().length >= MIN_TEXT_LEN) {
+          hasText = true;
+        }
+      }
+    } else if (typeof content === 'string' && content.trim().length >= MIN_TEXT_LEN) {
+      hasText = true;
+    }
+    const isResponsePayload = hasText || toolCallCount > 0; // excludes pure-thinking-only stub lines
+    const inferenceId = isResponsePayload
+      ? (typeof message.id === 'string' ? message.id : (typeof obj.requestId === 'string' ? (obj.requestId as string) : null))
+      : null;
+    return { isPrompt: false, isResponsePayload, inferenceId, toolCallCount };
+  }
+
+  return null;
+}
+
+/** OMP line → signal. Tool calls are 'assistant'-role content items of
+ * type 'toolCall'; tool results arrive as their OWN role ('toolResult'),
+ * distinct from Claude's synthetic-user-line convention. */
+export function classifyOmpLine(line: string): LineSignal | null {
+  let obj: Record<string, unknown>;
+  try {
+    obj = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (obj.type !== 'message') return null;
+  const message = obj.message as { role?: string; content?: unknown } | undefined;
+  if (!message) return null;
+
+  if (message.role === 'user') {
+    const text = cleanTurnText(textFromContent(message.content));
+    return text ? { ...NULL_SIGNAL, isPrompt: true } : NULL_SIGNAL;
+  }
+  if (message.role === 'toolResult') return NULL_SIGNAL;
+
+  if (message.role === 'assistant') {
+    const content = message.content;
+    let hasText = false;
+    let toolCallCount = 0;
+    if (Array.isArray(content)) {
+      for (const p of content) {
+        if (!p || typeof p !== 'object') continue;
+        const part = p as { type?: string; text?: string };
+        if (part.type === 'toolCall') toolCallCount += 1;
+        if (part.type === 'text' && typeof part.text === 'string' && part.text.trim().length >= MIN_TEXT_LEN) {
+          hasText = true;
+        }
+      }
+    } else if (typeof content === 'string' && content.trim().length >= MIN_TEXT_LEN) {
+      hasText = true;
+    }
+    const isResponsePayload = hasText || toolCallCount > 0;
+    const inferenceId = isResponsePayload && typeof obj.id === 'string' ? obj.id : null;
+    return { isPrompt: false, isResponsePayload, inferenceId, toolCallCount };
+  }
+
+  return null;
+}
+
+/** Codex rollout line → signal. Tool calls are their OWN response_item
+ * (payload.type 'function_call' | 'custom_tool_call'), never nested inside
+ * a message's content — so unlike Claude/OMP, a codex assistant 'message'
+ * payload is already atomic (one payload.id = one real response). */
+export function classifyCodexLine(line: string): LineSignal | null {
+  let obj: Record<string, unknown>;
+  try {
+    obj = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (obj.type !== 'response_item') return null;
+  const payload = obj.payload as { type?: string; role?: string; content?: unknown; id?: string } | undefined;
+  if (!payload) return null;
+
+  if (payload.type === 'function_call' || payload.type === 'custom_tool_call') {
+    return { ...NULL_SIGNAL, toolCallCount: 1 };
+  }
+  if (payload.type !== 'message') return null;
+
+  if (payload.role === 'user') {
+    const text = cleanTurnText(textFromContent(payload.content));
+    return text ? { ...NULL_SIGNAL, isPrompt: true } : NULL_SIGNAL;
+  }
+  if (payload.role === 'assistant') {
+    const inferenceId = typeof payload.id === 'string' ? payload.id : null;
+    return { isPrompt: false, isResponsePayload: true, inferenceId, toolCallCount: 0 };
+  }
+  return null; // 'developer'/'system' = injected instructions, same as parseCodexLine
+}
+
+/* ------------------------------------------------------------------ */
 /* Adapter registry                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -222,6 +394,9 @@ interface FileAdapter {
   sourceKind: Exclude<SourceKind, 'agent_chat'>;
   roots: () => RootSpec[];
   parseLine: (line: string) => ParsedTurn | null;
+  /** EI-9970: classifies EVERY line for prompt/response/tool-call
+   *  counting — a superset of parseLine's TEXT-TURNS-ONLY scope. */
+  classifyLine: (line: string) => LineSignal | null;
   /** Best-effort provenance derived from the file path. */
   meta: (filePath: string) => { sessionId: string; owner: string | null };
 }
@@ -238,6 +413,7 @@ export const FILE_ADAPTERS: FileAdapter[] = [
       { root: join(HOME, '.papercusp', 'session-claude'), dirDepth: 3 },
     ],
     parseLine: parseClaudeLine,
+    classifyLine: classifyClaudeLine,
     meta: (filePath) => {
       // psu isolation dir carries the launching session's owner dir:
       // ~/.papercusp/session-claude/<ownerDir>/projects/<munged-cwd>/<uuid>.jsonl
@@ -250,6 +426,7 @@ export const FILE_ADAPTERS: FileAdapter[] = [
     // ~/.omp/agent/sessions/<munged-cwd>/<ts>_<uuid>.jsonl
     roots: () => [{ root: join(HOME, '.omp', 'agent', 'sessions'), dirDepth: 1 }],
     parseLine: parseOmpLine,
+    classifyLine: classifyOmpLine,
     meta: (filePath) => {
       // <ts>_<uuid>.jsonl — the uuid is the session id.
       const stem = basename(filePath, '.jsonl');
@@ -274,6 +451,7 @@ export const FILE_ADAPTERS: FileAdapter[] = [
       },
     ],
     parseLine: parseCodexLine,
+    classifyLine: classifyCodexLine,
     meta: (filePath) => {
       // rollout-<ts>-<uuid>.jsonl → uuid tail is the session id.
       const stem = basename(filePath, '.jsonl');
@@ -356,30 +534,69 @@ async function listCandidateFiles(
 }
 
 /** Read complete lines from `filePath` starting at `offset`, bounded. Returns
- * the parsed-turn list + the new offset (end of last complete line). */
+ * the parsed-turn list + the new offset (end of last complete line), plus
+ * (EI-9970) the prompt/response/tool-call deltas classifyLine finds across
+ * the SAME line window — a superset of parseLine's stored-row scope.
+ * `lastInferenceId` carries the previous tick's dedup cursor in, so a model
+ * response split across a tick boundary is never double-counted. */
 async function readNewLines(
   filePath: string,
   offset: number,
   parseLine: (l: string) => ParsedTurn | null,
-): Promise<{ turns: ParsedTurn[]; newOffset: number }> {
+  classifyLine: (l: string) => LineSignal | null,
+  lastInferenceId: string | null,
+): Promise<{
+  turns: ParsedTurn[];
+  newOffset: number;
+  promptCount: number;
+  responseCount: number;
+  toolCallCount: number;
+  lastInferenceId: string | null;
+}> {
   const fh = await open(filePath, 'r');
   try {
     const s = await fh.stat();
-    if (s.size <= offset) return { turns: [], newOffset: offset };
+    if (s.size <= offset) {
+      return { turns: [], newOffset: offset, promptCount: 0, responseCount: 0, toolCallCount: 0, lastInferenceId };
+    }
     const toRead = Math.min(s.size - offset, MAX_BYTES_PER_FILE_PER_TICK);
     const buf = Buffer.alloc(toRead);
     await fh.read(buf, 0, toRead, offset);
     const chunk = buf.toString('utf8');
     const lastNl = chunk.lastIndexOf('\n');
-    if (lastNl < 0) return { turns: [], newOffset: offset }; // partial line — wait
+    if (lastNl < 0) {
+      return { turns: [], newOffset: offset, promptCount: 0, responseCount: 0, toolCallCount: 0, lastInferenceId };
+    }
     const usable = chunk.slice(0, lastNl + 1);
     const turns: ParsedTurn[] = [];
+    let promptCount = 0;
+    let responseCount = 0;
+    let toolCallCount = 0;
+    let cursor = lastInferenceId;
     for (const line of usable.split('\n')) {
       if (!line.trim()) continue;
       const t = parseLine(line);
       if (t) turns.push(t);
+      const sig = classifyLine(line);
+      if (!sig) continue;
+      if (sig.isPrompt) promptCount += 1;
+      toolCallCount += sig.toolCallCount;
+      if (sig.isResponsePayload) {
+        // A null id is never deduped (no basis to compare); a stable id only
+        // counts as a NEW response when it differs from the immediately
+        // preceding response line's id (a multi-line split shares one id).
+        if (sig.inferenceId === null || sig.inferenceId !== cursor) responseCount += 1;
+        cursor = sig.inferenceId;
+      }
     }
-    return { turns, newOffset: offset + Buffer.byteLength(usable, 'utf8') };
+    return {
+      turns,
+      newOffset: offset + Buffer.byteLength(usable, 'utf8'),
+      promptCount,
+      responseCount,
+      toolCallCount,
+      lastInferenceId: cursor,
+    };
   } finally {
     await fh.close();
   }
@@ -403,35 +620,65 @@ async function insertTurns(sql: Sql, rows: TurnRow[]): Promise<number> {
 interface IngestState {
   byte_offset: number;
   turn_count: number;
+  /** EI-9970: cumulative real-prompt / distinct-model-response / tool-call
+   *  counts for this file, and the dedup cursor for the response count. */
+  prompt_count: number;
+  response_count: number;
+  tool_call_count: number;
+  last_inference_id: string | null;
 }
 
+const EMPTY_STATE: IngestState = {
+  byte_offset: 0, turn_count: 0, prompt_count: 0, response_count: 0, tool_call_count: 0, last_inference_id: null,
+};
+
 async function readState(sql: Sql, sourceKind: string, filePath: string): Promise<IngestState> {
-  const rows = await sql<Array<{ byte_offset: string | number; turn_count: number }>>`
-    SELECT byte_offset, turn_count FROM harness_shared.session_ingest_state
+  const rows = await sql<Array<{
+    byte_offset: string | number; turn_count: number;
+    prompt_count: number; response_count: number; tool_call_count: number; last_inference_id: string | null;
+  }>>`
+    SELECT byte_offset, turn_count, prompt_count, response_count, tool_call_count, last_inference_id
+      FROM harness_shared.session_ingest_state
      WHERE source_kind = ${sourceKind} AND file_path = ${filePath}
   `;
-  if (!rows.length) return { byte_offset: 0, turn_count: 0 };
-  return { byte_offset: Number(rows[0].byte_offset), turn_count: rows[0].turn_count };
+  if (!rows.length) return { ...EMPTY_STATE };
+  const r = rows[0];
+  return {
+    byte_offset: Number(r.byte_offset),
+    turn_count: r.turn_count,
+    prompt_count: r.prompt_count ?? 0,
+    response_count: r.response_count ?? 0,
+    tool_call_count: r.tool_call_count ?? 0,
+    last_inference_id: r.last_inference_id ?? null,
+  };
 }
 
 async function writeState(
   sql: Sql,
   sourceKind: string,
   filePath: string,
-  st: IngestState & { sessionId?: string | null; mtimeMs?: number; lastError?: string | null },
+  st: Pick<IngestState, 'byte_offset' | 'turn_count'> &
+    Partial<Pick<IngestState, 'prompt_count' | 'response_count' | 'tool_call_count' | 'last_inference_id'>> &
+    { sessionId?: string | null; mtimeMs?: number; lastError?: string | null },
 ): Promise<void> {
   await sql`
     INSERT INTO harness_shared.session_ingest_state
-      (source_kind, file_path, byte_offset, turn_count, session_id, mtime_ms, last_error, updated_at)
+      (source_kind, file_path, byte_offset, turn_count, prompt_count, response_count,
+       tool_call_count, last_inference_id, session_id, mtime_ms, last_error, updated_at)
     VALUES (${sourceKind}, ${filePath}, ${st.byte_offset}, ${st.turn_count},
+            ${st.prompt_count ?? 0}, ${st.response_count ?? 0}, ${st.tool_call_count ?? 0}, ${st.last_inference_id ?? null},
             ${st.sessionId ?? null}, ${st.mtimeMs != null ? Math.round(st.mtimeMs) : null}, ${st.lastError ?? null}, now())
     ON CONFLICT (source_kind, file_path) DO UPDATE SET
-      byte_offset = EXCLUDED.byte_offset,
-      turn_count  = EXCLUDED.turn_count,
-      session_id  = COALESCE(EXCLUDED.session_id, harness_shared.session_ingest_state.session_id),
-      mtime_ms    = EXCLUDED.mtime_ms,
-      last_error  = EXCLUDED.last_error,
-      updated_at  = now()
+      byte_offset       = EXCLUDED.byte_offset,
+      turn_count        = EXCLUDED.turn_count,
+      prompt_count      = EXCLUDED.prompt_count,
+      response_count    = EXCLUDED.response_count,
+      tool_call_count   = EXCLUDED.tool_call_count,
+      last_inference_id = EXCLUDED.last_inference_id,
+      session_id        = COALESCE(EXCLUDED.session_id, harness_shared.session_ingest_state.session_id),
+      mtime_ms          = EXCLUDED.mtime_ms,
+      last_error        = EXCLUDED.last_error,
+      updated_at        = now()
   `;
 }
 
@@ -448,7 +695,8 @@ export async function ingestFileNow(filePath: string): Promise<{ inserted: numbe
   // by the file size; this is one file, not the fleet).
   for (let guard = 0; guard < 32; guard += 1) {
     const st = await readState(sql, adapter.sourceKind, filePath);
-    const { turns, newOffset } = await readNewLines(filePath, st.byte_offset, adapter.parseLine);
+    const { turns, newOffset, promptCount, responseCount, toolCallCount, lastInferenceId } =
+      await readNewLines(filePath, st.byte_offset, adapter.parseLine, adapter.classifyLine, st.last_inference_id);
     if (newOffset === st.byte_offset) break;
     const meta = adapter.meta(filePath);
     const rows: TurnRow[] = turns.map((t, i) => ({
@@ -467,6 +715,10 @@ export async function ingestFileNow(filePath: string): Promise<{ inserted: numbe
     await writeState(sql, adapter.sourceKind, filePath, {
       byte_offset: newOffset,
       turn_count: st.turn_count + turns.length,
+      prompt_count: st.prompt_count + promptCount,
+      response_count: st.response_count + responseCount,
+      tool_call_count: st.tool_call_count + toolCallCount,
+      last_inference_id: lastInferenceId,
       sessionId: meta.sessionId,
     });
   }
