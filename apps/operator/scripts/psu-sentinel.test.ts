@@ -21,4 +21,15 @@ describe('psu-sentinel.sh (dock Papercup pane launcher)', () => {
     expect(execLine).toMatch(/--role=papercup/);
     expect(execLine).not.toMatch(/--role=sentinel/);
   });
+
+  // voice-public-release-readiness D-007: the pane is the papercup-fast voice
+  // front-end — with no staged override it must default to a FAST model spec,
+  // never fall through to the (heavy) workspace default that made voice turns
+  // time out against a slow pane. Pin the default so a revert can't silently
+  // re-break voice.
+  it('defaults the pane model to a fast spec when no override is staged (D-007)', () => {
+    expect(script).toContain("spec='sonnet:medium'");
+    // model_args always carries a --model flag (default or override).
+    expect(script).toContain('model_args=("--model=$spec")');
+  });
 });

@@ -37,7 +37,7 @@ vi.mock('../../memory/configure', () => ({
 }));
 // The telemetry seam under test — both are dynamic imports inside the handler's
 // fire-and-forget, so the mocks intercept the deferred write.
-const recordRecallStatsMock = vi.hoisted(() => vi.fn(async () => {}));
+const recordRecallStatsMock = vi.hoisted(() => vi.fn(async (_sql: unknown, _input: unknown) => {}));
 vi.mock('../../memory/recall-stats', () => ({ recordRecallStats: recordRecallStatsMock }));
 // Spread-original: search.ts's import chain reaches desktop-health.ts, which reads
 // db-org's `generated` schema at module scope — a bare `{ getOrgPg }` mock breaks

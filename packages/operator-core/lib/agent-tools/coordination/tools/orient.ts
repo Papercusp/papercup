@@ -532,7 +532,8 @@ export async function composeOrient(
       let spentChars = 0;
       const admitted: typeof kept = [];
       for (const h of kept) {
-        const cost = (h.memory?.length ?? 0) + (h.id?.length ?? 0) + 24; // id + score overhead
+        const cost =
+          (h.memory?.length ?? 0) + (typeof h.id === 'string' ? h.id.length : 8) + 24; // id + score overhead
         if (admitted.length > 0 && spentChars + cost > budget) break;
         admitted.push(h);
         spentChars += cost;

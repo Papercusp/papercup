@@ -145,6 +145,11 @@ describe('installPapercuspFiles', () => {
     // Applies a staged per-session model override.
     expect(sentinel).toContain('$HOME/.papercusp/sentinel-model');
     expect(sentinel).toContain('--model=$spec');
+    // …and with NO override staged, defaults to a FAST spec (papercup-fast,
+    // voice-public-release-readiness D-007) instead of the heavy workspace
+    // default that made voice turns time out against a slow pane.
+    expect(sentinel).toContain("spec='sonnet:medium'");
+    expect(sentinel).toContain('model_args=("--model=$spec")');
     // Execs the ALREADY-RESOLVED psu shim's concrete path, not a bare `psu`
     // relying on PATH resolution a second time.
     expect(sentinel).toContain(
