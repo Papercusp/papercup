@@ -99,9 +99,20 @@ export default defineTool({
         content: [{ type: 'text', text: JSON.stringify({ ok: true, results: entries.map(toWireRow) }) }],
       };
     } catch (err) {
+      // Degraded-never-silent: a read path returns the { ok:false, reason, results:[] }
+      // envelope on a store problem — it never throws a raw 500 at the caller (the TUI
+      // Memory tab / settings page render the envelope). memory:search catches BOTH of
+      // these; memory:list only caught the timeout, so a mid-flight MemoryUnavailableError
+      // (the store going down BETWEEN the available() probe and the list() call) escaped
+      // as an unhandled throw. Mirror search's contract.
       if (err instanceof MemoryTimeoutError) {
         return {
           content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'memory_timeout', results: [] }) }],
+        };
+      }
+      if (err instanceof MemoryUnavailableError) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: err.reason, results: [] }) }],
         };
       }
       throw err;
