@@ -447,9 +447,26 @@ export function isPausedNow(s: OwnerSteering, nowMs: number): boolean {
 const RESUME_LANGUAGE =
   /\b(resum(?:e|ing|ed)|(?:hold|pause|gate)\b.{0,20}\b(?:lifted|released|cleared|over)|un-?paus(?:e|ed|ing)|no longer paused|back to (?:normal|autonomous)|go[\s-]?ahead)\b/i;
 
-/** Does this directive's free text read like the owner wants new work resumed? */
+/** Directive text that explicitly asserts the pause is STILL in effect. When any
+ *  of these is present, resume-words elsewhere in the same directive are almost
+ *  certainly NEGATED ("do not resume"), QUOTED/SUPERSEDED ("'resume ...' is
+ *  SUPERSEDED"), or CONDITIONAL ("in force until lifted") — i.e. describing the
+ *  pause's lifecycle, not asking to resume now. A directive that genuinely lifts
+ *  the pause won't also carry these (they'd contradict its own message), so this
+ *  guard suppresses the false-positive drift nudge without hiding real drift.
+ *  EI-9952: an unambiguous token-conservation pause ("in force until lifted;
+ *  pause new work ... do not resume") was flagged inconsistent purely because it
+ *  mentioned "resume" in negated/superseded contexts. */
+const ACTIVE_PAUSE_LANGUAGE =
+  /\b(?:until (?:it (?:is|'s) )?lifted|until further notice|in force until|pause new work|no new (?:work|placements|placement)|do ?n(?:o|')t (?:resume|schedule)|still (?:paused|in force)|remains? (?:paused|in force)|keep(?:ing)? (?:the )?pause)\b/i;
+
+/** Does this directive's free text read like the owner wants new work resumed?
+ *  An explicit active-pause assertion (ACTIVE_PAUSE_LANGUAGE) overrides any
+ *  resume-word match — see that heuristic for why (EI-9952). */
 export function directiveSuggestsResume(directive: string | null): boolean {
-  return !!directive && RESUME_LANGUAGE.test(directive);
+  if (!directive) return false;
+  if (ACTIVE_PAUSE_LANGUAGE.test(directive)) return false;
+  return RESUME_LANGUAGE.test(directive);
 }
 
 /** True when the stored steering looks INTERNALLY inconsistent: the directive

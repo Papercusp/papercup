@@ -470,4 +470,32 @@ describe('directiveSuggestsResume / steeringLooksInconsistent (EI-8277 drift nud
     // Paused with no directive at all — nothing to contradict.
     expect(steeringLooksInconsistent({ ...base, pauseNewWork: true, directive: null })).toBe(false);
   });
+
+  it('EI-9952: an active-pause directive that only MENTIONS resume in negated/superseded contexts is NOT inconsistent', () => {
+    // The exact directive that triggered the false positive: an unambiguous
+    // token-conservation pause that names "resume" only inside "do not resume"
+    // and a quoted-then-superseded prior directive.
+    const activePauseDirective =
+      "OWNER TOKEN-CONSERVATION PAUSE (2026-07-11, in force until lifted): pause new work at next clean stopping point — checkpoint held items, loop:end armed loops, no scheduler:get_next / new placements. Reason: conserve tokens to ship the next public release + harden it. P2P/shared-hive work is separately DEFERRED to the release after next (do not resume/schedule it) — this is independent of and in addition to the token-conservation pause. Prior mission text (pot-auto-loop-working-2026-07-09, 'resume placing from frontier') is SUPERSEDED by this newer owner directive.";
+    expect(directiveSuggestsResume(activePauseDirective)).toBe(false);
+    expect(steeringLooksInconsistent({ ...base, pauseNewWork: true, directive: activePauseDirective })).toBe(false);
+
+    // Smaller variants of the same class stay consistent.
+    expect(directiveSuggestsResume('Pause in force until lifted; do not resume yet.')).toBe(false);
+    expect(directiveSuggestsResume("Still paused — don't resume placing.")).toBe(false);
+    expect(directiveSuggestsResume('Keep the pause; no new placements until further notice.')).toBe(false);
+  });
+
+  it('EI-9952: a genuine lift/resume directive with NO active-pause language still flags drift', () => {
+    // No "in force until" / "pause new work" / "do not resume" — the resume is
+    // asserted, not negated — so drift is still surfaced when the gate is still on.
+    expect(directiveSuggestsResume('Gate hold lifted; resume normal autonomous placement.')).toBe(true);
+    expect(
+      steeringLooksInconsistent({
+        ...base,
+        pauseNewWork: true,
+        directive: 'Gate hold lifted; resume normal autonomous placement.',
+      }),
+    ).toBe(true);
+  });
 });
