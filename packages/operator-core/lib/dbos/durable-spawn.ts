@@ -410,6 +410,55 @@ async function recordControlPlaneCodexUsageLimit(
   }
 }
 
+/**
+ * EI-9759 root cause: a fire SKIPPED before the /invoke POST (gateway-storm gate,
+ * gone-target) never reaches the /invoke route's worker-exit back-edge (EI-404) —
+ * there is no worker, no exit, nothing to await. When the skipped fire carries an
+ * `improvementDispatch` correlation (the auto-implement lane, dispatch-ledger.ts),
+ * improvement-actions.ts already optimistically recorded `fire_result: 'ok'` on
+ * that ledger row BEFORE this workflow-layer fire ran (the fire-and-forget
+ * contract: "durably handed off" is recorded at dispatch time, not at actual
+ * /invoke completion) — so a skip here left the row open with NO diagnostic,
+ * stranded for the 2h orphan collector to catch with an unhelpful blank
+ * `fire_error`, and fed the "auto-implement lane is broken" watchdog signal
+ * (EI-9759) for a death that was never about the item OR the lane: the gateway
+ * was throttled, or the target harness was gone, at DISPATCH time. Close it here
+ * instead — same shape as implement-worker-exit.ts's env-failure rollback
+ * (roll the attempt back so the transient skip can't drain the auto-eligible
+ * pool), tagged distinctly so it's traceable to this exact skip reason.
+ * Best-effort + fail-soft: bookkeeping must never turn a legitimate skip into a
+ * failed workflow.
+ */
+async function closeSkippedImprovementDispatch(fireBody: Record<string, unknown>, reason: string): Promise<void> {
+  const dispatch = fireBody.improvementDispatch as
+    | { dispatchId?: string; itemId?: string; attempt?: number }
+    | undefined;
+  if (!dispatch?.dispatchId || !dispatch.itemId) return;
+  try {
+    const [{ markDispatchOrphaned }, { mergeIssuePayload }] = await Promise.all([
+      import('../harness/improvements/dispatch-ledger'),
+      import('../issues-engineer'),
+    ]);
+    const attempt = Number(dispatch.attempt) || 1;
+    const marked = await markDispatchOrphaned(
+      dispatch.dispatchId,
+      `pre-invoke-skip:${reason}`,
+      `pre-invoke skip: ${reason} — attempt ${attempt} not charged`,
+    );
+    if (marked) {
+      // Not a real attempt (the worker never launched) — roll the counter back,
+      // mirroring the env-failure rollback in implement-worker-exit.ts.
+      await mergeIssuePayload(dispatch.itemId, { implementAttempts: Math.max(0, attempt - 1) });
+    }
+  } catch (e) {
+    console.warn(
+      `[durable-spawn] closeSkippedImprovementDispatch failed for ${dispatch.dispatchId} (${reason}): ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+  }
+}
+
 async function shouldSkipForGatewayDispatchGate(
   input: DurableSpawnFireInput,
   fireBody: Record<string, unknown>,
@@ -584,6 +633,7 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
       `[durable-spawn] skipped ${input.label ?? input.idempotencyKey}: ${goneCheck.detail} ` +
         `(consecutive gone-target skips: ${count})`,
     );
+    await closeSkippedImprovementDispatch(initialFireBody, 'gone-target');
     if (
       target &&
       (target.role === 'mug' || target.role === 'kettle') &&
@@ -611,6 +661,7 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
     console.warn(
       `[durable-spawn] skipped ${input.label ?? input.idempotencyKey} before /invoke: inference gateway wholesale-throttled; will retry on the next autonomous dispatch tick`,
     );
+    await closeSkippedImprovementDispatch(initialFireBody, 'gateway-wholesale-throttled');
     return;
   }
 

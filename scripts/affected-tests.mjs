@@ -99,14 +99,31 @@ function sh(cmd) {
 }
 
 // Collect every file changed vs `base` — committed (base...HEAD), uncommitted
-// (working tree vs HEAD), and untracked. Passes `--ignore-submodules=all` so a
-// broken/retired submodule gitlink cannot make `git diff` fail: the shared
-// staging checkout carries retired submodules (e.g. libs/papercusp-db,
-// libs/zero-harness) whose `.git` ref can point at a missing `.git/modules/...`
-// gitdir, which otherwise aborts the diff with `fatal: not a git repository:
-// libs/papercusp-db/../../.git/modules/libs/papercusp-db`. Before this, that
-// failure was swallowed and the whole run silently degraded to `--all` (every
-// workspace) — slow, noisy, and it masked the real cause (EI-1989).
+// (working tree vs HEAD), and untracked.
+//
+// `--ignore-submodules=dirty` (NOT `=all`) is load-bearing in both directions:
+//
+//  - it still tolerates the broken/retired submodules that forced `=all` here
+//    originally: the shared staging checkout carries retired submodules (e.g.
+//    libs/papercusp-db, libs/zero-harness) whose `.git` ref points at a missing
+//    `.git/modules/...` gitdir, which aborts the diff with `fatal: not a git
+//    repository: libs/papercusp-db/../../.git/modules/libs/papercusp-db`. That
+//    fatal comes from git ENTERING the submodule to check whether its work tree
+//    is dirty — exactly the step `dirty` skips. Before this was handled, the
+//    failure was swallowed and the whole run silently degraded to `--all` (every
+//    workspace) — slow, noisy, and it masked the real cause (EI-1989).
+//
+//  - but unlike `=all` it does NOT suppress GITLINK changes, i.e. "this
+//    submodule now points at a new commit". A submodule's files never appear as
+//    superproject paths (they live in another repo); the gitlink is the ONLY way
+//    its changes can surface here. Under `=all`, a commit touching only
+//    libs/generic/memory produced an EMPTY changed-file set, so the affected set
+//    was empty, so ZERO tests ran and the gate went green having verified
+//    nothing — for ~25 submodules, including the memory lib's 286 tests.
+//
+// Uncommitted work INSIDE a live submodule is what `dirty` drops, so probe for
+// it separately (submoduleDirtyPaths) — that keeps the local pre-commit loop
+// honest without reintroducing the fatal.
 // `git ls-files --others` does not recurse into submodules, so it needs no such
 // flag. Throws on a genuine git error so the caller can decide to warn or bail.
 function changedFiles() {
@@ -114,12 +131,38 @@ function changedFiles() {
     // P-016: two-dot range — files changed BY the commits in (rangeFrom, rangeTo]. No
     // working-tree / untracked component: we're probing a historical commit prefix for
     // the green-checkpoint salvage, not diffing the live tree.
-    return sh(`git diff --name-only --ignore-submodules=all ${rangeFrom}..${rangeTo}`).split('\n').filter(Boolean);
+    return sh(`git diff --name-only --ignore-submodules=dirty ${rangeFrom}..${rangeTo}`).split('\n').filter(Boolean);
   }
-  const committed = sh(`git diff --name-only --ignore-submodules=all ${base}...HEAD`).split('\n').filter(Boolean);
-  const uncommitted = sh('git diff --name-only --ignore-submodules=all HEAD').split('\n').filter(Boolean);
+  const committed = sh(`git diff --name-only --ignore-submodules=dirty ${base}...HEAD`).split('\n').filter(Boolean);
+  const uncommitted = sh('git diff --name-only --ignore-submodules=dirty HEAD').split('\n').filter(Boolean);
   const untracked = sh('git ls-files --others --exclude-standard').split('\n').filter(Boolean);
-  return [...new Set([...committed, ...uncommitted, ...untracked])];
+  return [...new Set([...committed, ...uncommitted, ...untracked, ...submoduleDirtyPaths()])];
+}
+
+// Live submodules with uncommitted work — the blind spot `--ignore-submodules=dirty`
+// leaves. Returns submodule paths (e.g. `libs/generic/memory`), which map to a
+// workspace exactly like a gitlink change does. Best-effort by design: a retired
+// submodule whose gitdir is gone throws, and that is precisely the case we must
+// swallow rather than let abort the run.
+function submoduleDirtyPaths() {
+  let paths;
+  try {
+    paths = sh('git config --file .gitmodules --get-regexp path')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => l.split(/\s+/)[1]);
+  } catch {
+    return []; // no .gitmodules (or unreadable) — nothing to probe
+  }
+  const dirty = [];
+  for (const p of paths) {
+    try {
+      if (sh(`git -C ${JSON.stringify(p)} status --porcelain`)) dirty.push(p);
+    } catch {
+      // Retired/broken submodule — skip it, exactly as `=all` used to.
+    }
+  }
+  return dirty;
 }
 
 const root = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
@@ -234,7 +277,10 @@ function affectedWorkspaces() {
   const directlyChanged = new Set();
   for (const file of changed) {
     for (const ws of wsByDir.values()) {
-      if (file === `${ws.dir}/package.json` || file.startsWith(`${ws.dir}/`)) {
+      // `file === ws.dir` (no trailing slash) is the SUBMODULE case: a gitlink
+      // change is reported as the bare directory, not as a path beneath it. Without
+      // this arm, a submodule workspace can never be marked affected.
+      if (file === ws.dir || file === `${ws.dir}/package.json` || file.startsWith(`${ws.dir}/`)) {
         directlyChanged.add(ws.name);
       }
     }

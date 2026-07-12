@@ -44,6 +44,9 @@ const h = vi.hoisted(() => ({
   setOverwatchStarted: vi.fn(async (_workspaceId: string, _installSlug: string, _started: boolean) => {}),
   resolveBrainOwner: vi.fn(async (_workspaceId: string) => 'owner-1' as string | null),
   wakeRecipients: vi.fn(async (..._args: unknown[]) => ({ woken: 1 })),
+  // EI-9759: the pre-invoke-skip → dispatch-ledger close back-edge.
+  markDispatchOrphaned: vi.fn(async (_id: string, _by: string, _detail?: string) => true),
+  mergeIssuePayload: vi.fn(async (_id: string, _patch: Record<string, unknown>) => undefined),
 }));
 
 vi.mock('@dbos-inc/dbos-sdk', () => {
