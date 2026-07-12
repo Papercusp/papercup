@@ -98,6 +98,22 @@ describe('inProcessCall — registration + gate routing', () => {
     expect(passedCtx.who).toBe('caller'); // caller identity preserved
     expect(passedCtx.principal).toEqual({ id: 'p1' }); // gates still run against the caller
   });
+
+  // orient-recall-quality-2026-07-12 P-001: the opt-in telemetrySurface stamp — a
+  // compound (coord:orient) labels its folded memory:search recall so telemetry
+  // records per-entry-point ('orient') instead of blending into generic 'search'.
+  it('stamps opts.telemetrySurface onto the re-dispatch ctx; absent when not passed', async () => {
+    mocks.dispatchProjectedTool.mockResolvedValue({ ok: true, result: { structuredContent: { ok: true } } });
+    await inProcessCall(ctx, { telemetrySurface: 'orient' })('memory:search', { query: 'q' });
+    const stamped = mocks.dispatchProjectedTool.mock.calls[0]![3] as { telemetrySurface?: string };
+    expect(stamped.telemetrySurface).toBe('orient');
+
+    mocks.dispatchProjectedTool.mockClear();
+    mocks.dispatchProjectedTool.mockResolvedValue({ ok: true, result: { structuredContent: { ok: true } } });
+    await inProcessCall(ctx)('memory:search', { query: 'q' });
+    const unstamped = mocks.dispatchProjectedTool.mock.calls[0]![3] as { telemetrySurface?: string };
+    expect('telemetrySurface' in unstamped).toBe(false); // no opts → field ABSENT, not undefined
+  });
 });
 
 describe('inProcessCall — failure surfacing (throws)', () => {

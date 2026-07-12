@@ -39,7 +39,13 @@ vi.mock('../../memory/configure', () => ({
 // fire-and-forget, so the mocks intercept the deferred write.
 const recordRecallStatsMock = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('../../memory/recall-stats', () => ({ recordRecallStats: recordRecallStatsMock }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+// Spread-original: search.ts's import chain reaches desktop-health.ts, which reads
+// db-org's `generated` schema at module scope — a bare `{ getOrgPg }` mock breaks
+// that load. Only getOrgPg is stubbed.
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: {} }),
+}));
 
 import search from './search';
 import { getMemoryBackend } from '../../memory/backend';

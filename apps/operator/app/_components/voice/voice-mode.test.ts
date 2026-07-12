@@ -143,3 +143,63 @@ describe('voice-mode', () => {
     expect(mod.isVoiceOutputMuted()).toBe(false);
   });
 });
+
+// Always-on wake-phrase gate (voice-public-release-readiness-2026-07-12 P-004).
+// The always-on local loop hears EVERYTHING; the gate forwards only
+// wake-phrase-prefixed utterances or follow-ups inside the conversation
+// window a wake opened. Pure w.r.t. time (nowMs param) so fully deterministic.
+describe('gateAlwaysOnTranscript (P-004 wake gate)', () => {
+  const T0 = 1_000_000;
+
+  it('drops ambient speech outside a wake window', async () => {
+    const mod = await import('./voice-mode');
+    mod.resetWakeConversationWindow();
+    expect(mod.gateAlwaysOnTranscript('the meeting is at three', T0)).toEqual({
+      dispatch: null,
+      bareWake: false,
+    });
+  });
+
+  it('a bare wake opens the window and reports bareWake', async () => {
+    const mod = await import('./voice-mode');
+    mod.resetWakeConversationWindow();
+    expect(mod.gateAlwaysOnTranscript('Hey Papercup!', T0)).toEqual({
+      dispatch: null,
+      bareWake: true,
+    });
+    // Follow-up inside the window now dispatches verbatim.
+    expect(mod.gateAlwaysOnTranscript('what changed today', T0 + 5_000)).toEqual({
+      dispatch: 'what changed today',
+      bareWake: false,
+    });
+  });
+
+  it('wake + command dispatches the trailing command', async () => {
+    const mod = await import('./voice-mode');
+    mod.resetWakeConversationWindow();
+    expect(mod.gateAlwaysOnTranscript('Hey, Papercup. open the dashboard', T0)).toEqual({
+      dispatch: 'open the dashboard',
+      bareWake: false,
+    });
+  });
+
+  it('the conversation window expires (~25s) and each follow-up refreshes it', async () => {
+    const mod = await import('./voice-mode');
+    mod.resetWakeConversationWindow();
+    mod.gateAlwaysOnTranscript('hey papercup', T0); // opens window
+    // Follow-up at +20s → inside, dispatched, refreshes the window.
+    expect(mod.gateAlwaysOnTranscript('and the tests?', T0 + 20_000).dispatch).toBe('and the tests?');
+    // +40s = 20s after the refresh → still inside.
+    expect(mod.gateAlwaysOnTranscript('run them', T0 + 40_000).dispatch).toBe('run them');
+    // +40s + 26s → expired, ambient speech dropped again.
+    expect(mod.gateAlwaysOnTranscript('unrelated chatter', T0 + 66_000).dispatch).toBe(null);
+  });
+
+  it('resetWakeConversationWindow closes an open window', async () => {
+    const mod = await import('./voice-mode');
+    mod.resetWakeConversationWindow();
+    mod.gateAlwaysOnTranscript('hey papercup', T0);
+    mod.resetWakeConversationWindow();
+    expect(mod.gateAlwaysOnTranscript('should be dropped', T0 + 1_000).dispatch).toBe(null);
+  });
+});

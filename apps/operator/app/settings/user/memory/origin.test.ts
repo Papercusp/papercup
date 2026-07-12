@@ -23,7 +23,7 @@ describe('originOf — coarse write-origin from existing stamps (EI-10363)', () 
   it('authorship outranks recovery: a settings write that drained late is still yours', () => {
     expect(
       originOf({ metadata: { source: 'settings-page', recovered_from: 'write-journal' } }),
-    ).toBe('agent' === 'agent' ? 'you' : 'you');
+    ).toBe('you');
   });
 
   it("infers 'agent' when no stamp is present (memory:remember leaves none)", () => {
