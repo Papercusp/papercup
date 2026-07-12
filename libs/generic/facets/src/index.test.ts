@@ -42,6 +42,24 @@ const sel = (entries: Record<string, string[]>): FacetSelection =>
   new Map(Object.entries(entries).map(([k, v]) => [k, new Set(v)]));
 
 describe('computeFacets', () => {
+  it('omits a facet the drill-down pool empties out (never a bare label with no pills)', () => {
+    // status:ended keeps only row c, which has NO fleet. `fleet` clears the
+    // ≥2-distinct hide-rule over the FULL set (blue, red), so the stability rule
+    // alone would keep rendering it — with zero values under it. A facet with
+    // nothing to offer must not render at all.
+    const groups = computeFacets(rows, defs, { selection: sel({ status: ['ended'] }) });
+    expect(groups.find((g) => g.key === 'fleet')).toBeUndefined();
+
+    // the facets that DO still have values in the pool are unaffected
+    const byKey = Object.fromEntries(groups.map((g) => [g.key, g]));
+    expect(byKey.owner.values.map((v) => [v.value, v.count])).toEqual([['z', 1]]);
+    // and the selected facet still counts its OWN values over the unfiltered set
+    expect(byKey.status.values.map((v) => [v.value, v.count])).toEqual([
+      ['active', 3],
+      ['ended', 1],
+    ]);
+  });
+
   it('tallies counts per value, sorted count-desc', () => {
     const groups = computeFacets(rows, defs);
     const kind = groups.find((g) => g.key === 'kind')!;

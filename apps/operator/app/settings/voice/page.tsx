@@ -24,28 +24,6 @@ import type { TtsSpendState } from '@papercusp/operator-core/lib/tts-spend';
 import type { SttSpendState } from '@papercusp/operator-core/lib/stt-spend';
 import { useSyncQuery } from '@papercusp/sync';
 
-const KNOWN_ROLES = [
-  'system:operator',
-  'system:operator-nudge',
-  'system:oracle',
-  'harness',          // generic fallback for receiving-flips
-  'orchestrator',
-  'worker',
-  'validator',
-  'architect',
-  'scoper',
-  'plan-gate',
-  'documenter',
-  'summarizer',
-  'curator',
-  'debugger',
-  'crosscheck',
-  'ui-qa',
-  'director',
-  'coordinator',
-  'auditor',
-];
-
 interface ApiKeyState { configured: boolean; apiKey: string | null }
 interface CloudCredentialsSnapshot {
   elevenlabs: ApiKeyState;
@@ -196,20 +174,6 @@ export default function VoiceSettingsPage() {
   const onTestVoice = useCallback(() => {
     speak('Voice mode is working.', 'system:operator', 'polite', { force: true });
   }, []);
-
-  const onTestAllRoles = useCallback(async () => {
-    if (prefs?.ttsEngine === 'elevenlabs') {
-      const ok = await askConfirm({
-        title: `Test all ${KNOWN_ROLES.length} role voices?`,
-        body: `Will send ~${KNOWN_ROLES.length} requests to ElevenLabs (≈${(KNOWN_ROLES.length * 0.04).toFixed(2)} estimated charges).`,
-        confirmLabel: 'Test',
-      });
-      if (!ok) return;
-    }
-    KNOWN_ROLES.forEach((role, i) => {
-      setTimeout(() => speak(`This is the ${role.replace(':', ' ')} voice.`, role, 'polite', { force: true }), i * 1500);
-    });
-  }, [prefs?.ttsEngine, askConfirm]);
 
   const onRedetect = useCallback(async () => {
     // Actually probe engine reachability (WI-3663) instead of the old no-op that
@@ -544,7 +508,6 @@ export default function VoiceSettingsPage() {
 
         <div style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <Button variant="primary" onClick={onTestVoice}>Test voice</Button>
-          <Button onClick={onTestAllRoles}>Test all roles</Button>
           <Button onClick={onRedetect}>Re-detect engines</Button>
           <p style={{ ...hint, margin: 0, flexBasis: '100%' }}>
             Test buttons play immediately even when voice mode is off — they're how you check the engine works.

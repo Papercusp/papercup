@@ -59,6 +59,25 @@ import { fingerprintIdList, idListUnchanged, rowKey } from './orient-list-delta'
  *  context as bulk input on every later turn. */
 const MEMORY_TEXT_CAP = 200;
 const MEMORY_HITS_CAP = 10;
+/** P-002 (orient-recall-quality-2026-07-12): AGGREGATE char budget over the folded
+ *  hits — the belt over the count(≤10) × per-hit(200) caps, so N unusually-large
+ *  hits can't compound (and the cap survives a future MEMORY_TEXT_CAP raise).
+ *  Admission is in relevance order; the FIRST hit is always admitted (a budget
+ *  smaller than one hit must not blank the fold); dropped hits surface loudly as
+ *  `withheldBudget`, and only ADMITTED ids stamp the epoch ledger — a hit the
+ *  agent never saw must not be dedup-suppressed at the next injection port.
+ *  Env-tunable; `<= 0` disables. */
+function orientMemoryBudgetChars(): number {
+  const raw = Number(process.env.PAPERCUSP_ORIENT_MEMORY_BUDGET_CHARS);
+  if (Number.isFinite(raw)) return raw > 0 ? raw : Number.POSITIVE_INFINITY;
+  return 1_600;
+}
+/** P-003: the non-exhaustive advisory folded alongside a non-empty recall — agents
+ *  must neither re-search the intent they just got recall for, NOR treat this fold
+ *  as complete (absence here ≠ absence in store). Duplicate-over-missing is the
+ *  designed asymmetry (su-agent-behavior `recall-utilization`, D-002). */
+export const ORIENT_MEMORY_NOTE =
+  'auto-recall (non-exhaustive): do not re-search this same intent; DO memory:search for specifics not shown — absence here is not absence in store.';
 /** P-004 (fleet-member-dx, EI-9017): drop near-zero-relevance recall hits before
  *  folding — a degraded embedder (quota outage → lexical fallback) returns hits
  *  scored 0.01–0.03 that are pure noise yet still cost fold tokens on EVERY
@@ -171,6 +190,11 @@ export interface OrientResult {
     hits: OrientMemoryHit[];
     withheld?: number;
     filteredLowScore?: number;
+    /** P-002 (orient-recall-quality): hits dropped by the AGGREGATE char budget
+     *  (orientMemoryBudgetChars) — loud, never silent; pull them via memory:search. */
+    withheldBudget?: number;
+    /** P-003: the non-exhaustive advisory (ORIENT_MEMORY_NOTE) — present iff hits>0. */
+    note?: string;
     degraded?: boolean;
     degradedReason?: string;
   } | null;
@@ -500,11 +524,29 @@ export async function composeOrient(
       // explicit degraded_reason, then the failure reason string.
       const memDegraded = mem?.degraded === true;
       const memDegradedReason = mem?.degraded_reason ?? mem?.reason;
+      // P-002 (orient-recall-quality-2026-07-12): AGGREGATE budget over the kept
+      // hits (relevance order; first hit always admitted) — see
+      // orientMemoryBudgetChars. Dropped hits are LOUD (`withheldBudget`), and
+      // only admitted ids stamp the ledger below.
+      const budget = orientMemoryBudgetChars();
+      let spentChars = 0;
+      const admitted: typeof kept = [];
+      for (const h of kept) {
+        const cost = (h.memory?.length ?? 0) + (h.id?.length ?? 0) + 24; // id + score overhead
+        if (admitted.length > 0 && spentChars + cost > budget) break;
+        admitted.push(h);
+        spentChars += cost;
+      }
+      const withheldBudget = kept.length - admitted.length;
       result.memory = {
         query: memQuery,
-        hits: kept,
+        hits: admitted,
         ...(withheld.length > 0 ? { withheld: withheld.length } : {}),
         ...(filteredLowScore > 0 ? { filteredLowScore } : {}),
+        ...(withheldBudget > 0 ? { withheldBudget } : {}),
+        // P-003: the non-exhaustive advisory rides ONLY a non-empty fold (zero
+        // noise on the empty path).
+        ...(admitted.length > 0 ? { note: ORIENT_MEMORY_NOTE } : {}),
         ...(memDegraded
           ? { degraded: true, ...(memDegradedReason ? { degradedReason: memDegradedReason } : {}) }
           : {}),
@@ -514,9 +556,11 @@ export async function composeOrient(
       // the caller's ownerId (the same per-launch SID the MCP initialize
       // prelude and the injection ports key on) — so orient-then-hook/port
       // never double-injects the same memory within an epoch. Fire-and-forget,
-      // dynamic imports: never load-bearing for orientation.
-      if (ownerId && kept.length > 0) {
-        const stampIds = kept
+      // dynamic imports: never load-bearing for orientation. Only ADMITTED ids
+      // stamp (orient-recall-quality P-002): a budget-dropped hit was never
+      // delivered, so it must stay eligible at the next injection port.
+      if (ownerId && admitted.length > 0) {
+        const stampIds = admitted
           .map((h) => h.id)
           .filter((id): id is string => typeof id === 'string' && id.length > 0);
         if (stampIds.length > 0) {
@@ -956,7 +1000,10 @@ export default defineTool({
     const fleetMembership = deriveFleetMembership();
     const result = await composeOrient(
       args,
-      inProcessCall(ctx),
+      // P-001 (orient-recall-quality-2026-07-12): the folded memory:search records
+      // its recall telemetry under surface 'orient' (not generic 'search') so
+      // orient's recall quality is measurable per-entry-point. Telemetry only.
+      inProcessCall(ctx, { telemetrySurface: 'orient' }),
       ownerId,
       driveMode,
       ownerPresent,

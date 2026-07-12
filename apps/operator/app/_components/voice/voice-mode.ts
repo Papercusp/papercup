@@ -16,7 +16,7 @@
  * via the public methods.
  */
 
-import { stripWakeWordAndPrefix } from '@papercusp/operator-core/lib/wake-word';
+import { stripWakeWordAndPrefix, matchWakePhrase } from '@papercusp/operator-core/lib/wake-word';
 import { getBrowserWorkspaceId, wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { createOperatorVoiceTagObserver } from '@papercusp/operator-core/lib/operator-converse-voice';
 import { persistOperatorVoiceTurn } from '@papercusp/operator-core/lib/operator-conversation-client';
@@ -1738,6 +1738,55 @@ async function maybeStartWhisperCapture(mode: VoiceMode): Promise<void> {
   } catch {
     startWakeWordListening();
   }
+}
+
+// ─── Always-on wake-phrase gate (voice-public-release-readiness P-004) ─────
+//
+// The always-on local loop (Silero / energy-VAD → whisper) hears EVERYTHING,
+// so it must not forward ambient room speech to the brain. The gate forwards
+// an utterance only when it starts with the wake phrase ("hey papercup",
+// fuzzy — see matchWakePhrase) OR lands inside the follow-up conversation
+// window a wake opened (so natural back-and-forth doesn't require re-waking).
+// PTT is NEVER gated — pressing the button IS the user's intent.
+const WAKE_CONVERSATION_WINDOW_MS = 25_000;
+let wakeConversationUntil = 0;
+
+/** Exported for tests. */
+export function gateAlwaysOnTranscript(
+  text: string,
+  nowMs: number = Date.now(),
+): { dispatch: string | null; bareWake: boolean } {
+  const wake = matchWakePhrase(text);
+  if (wake.matched) {
+    wakeConversationUntil = nowMs + WAKE_CONVERSATION_WINDOW_MS;
+    if (!wake.trailing) return { dispatch: null, bareWake: true };
+    return { dispatch: wake.trailing, bareWake: false };
+  }
+  if (nowMs <= wakeConversationUntil) {
+    // Follow-up inside an open conversation window; each one refreshes it.
+    wakeConversationUntil = nowMs + WAKE_CONVERSATION_WINDOW_MS;
+    return { dispatch: text, bareWake: false };
+  }
+  return { dispatch: null, bareWake: false };
+}
+
+/** Test seam: reset the conversation window between tests. */
+export function resetWakeConversationWindow(): void {
+  wakeConversationUntil = 0;
+}
+
+function dispatchAlwaysOnUtterance(text: string): void {
+  const gated = gateAlwaysOnTranscript(text);
+  if (gated.bareWake) {
+    // Bare "hey papercup" — acknowledge audibly; the follow-up window is open.
+    signalWakeDetected();
+    speak('Yes?', 'system:operator', 'polite', { force: true });
+    return;
+  }
+  if (gated.dispatch == null) return; // ambient speech outside a wake window — dropped
+  if (gated.dispatch !== text) signalWakeDetected(); // wake-prefixed → flash the indicator
+  setState({ lastTranscript: gated.dispatch });
+  onUtteranceFinal(gated.dispatch);
 }
 
 /**

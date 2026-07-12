@@ -90,8 +90,20 @@ function unwrap(
  * Build the in-process `InnerCall` for a compound tool's handler, bound to the
  * caller's ctx. Each sub-call re-runs the full dispatch stack against that ctx, so
  * the agent can only compose tools it could call directly.
+ *
+ * `opts.telemetrySurface` (orient-recall-quality-2026-07-12 P-001): stamp the
+ * inner ctx with a recall-telemetry surface label so a compound's folded
+ * memory:search records under the COMPOUND's own surface (e.g. 'orient') in
+ * harness_shared.memory_recall_stats instead of blending into generic 'search' —
+ * per-entry-point recall quality is only measurable if each fold self-identifies.
+ * Ctx-borne on purpose: no public tool arg (no prompt-weight cost, not
+ * agent-spoofable); only memory:search reads it (cast-borne, the contextTier
+ * house pattern). Telemetry only — never affects recall content.
  */
-export function inProcessCall(ctx: UnifiedToolContext): InnerCall {
+export function inProcessCall(
+  ctx: UnifiedToolContext,
+  opts?: { telemetrySurface?: string },
+): InnerCall {
   // The re-dispatch is IN-PROCESS, not the agent-facing MCP transport. Reuse the
   // caller's ctx (its auth/scope/quota/harness) but stamp transport:'in_process'
   // so the sub-tool result stays LOSSLESS JSON. Both the format contract
@@ -104,7 +116,11 @@ export function inProcessCall(ctx: UnifiedToolContext): InnerCall {
   // (templates:new-app returned a bogus 422 on a SUCCESSFUL harness:create, so the
   // template overlay never ran — owner-hit 2026-07-08, reproduced on the dev box).
   // Mirrors the sibling in-process re-dispatcher events/dispatch-reaction.ts.
-  const innerCtx: UnifiedToolContext = { ...ctx, transport: 'in_process' };
+  const innerCtx: UnifiedToolContext & { telemetrySurface?: string } = {
+    ...ctx,
+    transport: 'in_process',
+    ...(opts?.telemetrySurface ? { telemetrySurface: opts.telemetrySurface } : {}),
+  };
   return async (name, args) => {
     const tool = lookupByMcpName(name);
     if (!tool) throw new Error(`compound: tool "${name}" is not registered`);

@@ -61,6 +61,22 @@ function isFlagged(row: MemoryRow): boolean {
   return state !== 'active';
 }
 
+/**
+ * Coarse write-origin from the stamps that already exist (EI-10363):
+ * settings-page writes stamp `source: 'settings-page'` (authorship outranks
+ * the `recovered_from` delivery detail when both are present), the journal
+ * drain / transcript miner stamp `recovered_from`, and the dominant agent
+ * path (memory:remember) stamps neither — so an absent stamp is an INFERRED
+ * agent write, not a proven one (real per-session attribution is EI-10358).
+ */
+type MemoryOrigin = 'you' | 'recovered' | 'agent';
+function originOf(row: MemoryRow): MemoryOrigin {
+  const meta = (row.metadata ?? {}) as Record<string, unknown>;
+  if (meta.source === 'settings-page') return 'you';
+  if (typeof meta.recovered_from === 'string') return 'recovered';
+  return 'agent';
+}
+
 /** Compact relative timestamp — '3d ago', 'just now'. */
 function timeAgo(ts: string): string {
   const ms = Date.parse(ts);
@@ -409,6 +425,11 @@ export default function MemoryPage() {
     return out;
   }, [rows, filter, flaggedOnly, query, semantic, semHits]);
   const flaggedCount = useMemo(() => rows.filter(isFlagged).length, [rows]);
+  const originCounts = useMemo(() => {
+    const c: Record<MemoryOrigin, number> = { you: 0, recovered: 0, agent: 0 };
+    for (const r of rows) c[originOf(r)] += 1;
+    return c;
+  }, [rows]);
 
   const onAddSave = useCallback(async () => {
     const text = draftText.trim();
@@ -449,6 +470,7 @@ export default function MemoryPage() {
 
   const renderRow = useCallback((row: MemoryRow): ReactElement => {
     const meta = (row.metadata ?? {}) as Record<string, unknown>;
+    const origin = originOf(row);
     const kind = row.kind ?? 'untagged';
     const color = MEMORY_KIND_COLOR[kind] ?? MEMORY_KIND_FALLBACK;
     const state = row.audit?.state ?? 'active';
@@ -503,6 +525,31 @@ export default function MemoryPage() {
                 }}
               >
                 ↻ recovered
+              </span>
+            )}
+            {/* EI-10363 origin chip — 'recovered' rows already carry the ↻ badge above. */}
+            {origin === 'you' && (
+              <span
+                title="You added this yourself on this settings page"
+                style={{
+                  padding: '2px 8px', borderRadius: 4,
+                  background: 'color-mix(in srgb, var(--good), transparent 85%)',
+                  color: 'var(--good)', fontSize: 11, fontWeight: 600,
+                }}
+              >
+                ✎ you
+              </span>
+            )}
+            {origin === 'agent' && (
+              <span
+                title="Written by an agent session — or stored before origin stamping (no source stamp on the row)"
+                style={{
+                  padding: '2px 8px', borderRadius: 4,
+                  background: 'var(--bg-3)', color: 'var(--fg-mute)',
+                  fontSize: 11, fontWeight: 600,
+                }}
+              >
+                agent
               </span>
             )}
             {rowDate && (
@@ -938,6 +985,16 @@ export default function MemoryPage() {
           </button>
         </div>
       </div>
+
+      {/* EI-10363: coarse origin breakdown — where these memories came from,
+          derived client-side from the stamps the rows already carry. */}
+      {rows.length > 0 && (
+        <div style={{ fontSize: 12, color: 'var(--fg-mute)' }}>
+          Origins: <strong>{originCounts.you}</strong> added by you
+          {' · '}<strong>{originCounts.recovered}</strong> recovered
+          {' · '}<strong>{originCounts.agent}</strong> from agent sessions
+        </div>
+      )}
 
       {(() => {
         const userRows = filtered.filter((r) => r.scope === 'user');

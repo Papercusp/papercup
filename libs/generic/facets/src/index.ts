@@ -216,6 +216,13 @@ export function computeFacets<T, M = unknown>(
     const distinctCount = selection ? distinctValueCount(items, def) : counts.size;
     if (distinctCount < minDistinct) continue;
 
+    // ...but stability never means rendering an EMPTY facet. If the drill-down
+    // pool has no values for this facet at all (e.g. every surviving item has a
+    // null plan), the facet has nothing to offer and a consumer would paint a
+    // bare label with no pills under it. A selected value is always re-added
+    // above (at count 0), so a facet the user has selected in never lands here.
+    if (counts.size === 0) continue;
+
     const orderIndex = new Map(order.map((v, i) => [v, i] as const));
     let values: FacetValueTally<M>[] = order
       .map((value) => ({ value, count: counts.get(value) ?? 0, meta: metaByValue.get(value) }))

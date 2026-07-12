@@ -430,7 +430,11 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   // another mode needs a re-embed (embedding-space-vs-dimension / reembedMemories).
   memoryEmbedderMode: 'harrier',
   audienceMode: 'engineer',
-  humanFacingRole: 'operator',
+  // voice-public-release-readiness-2026-07-12 P-002 (owner-ratified D-001):
+  // Papercup is THE one user-facing assistant identity — voice and chat both
+  // answer in the Papercup persona by default. 'operator' remains a valid
+  // per-user override for the legacy persona.
+  humanFacingRole: 'papercup',
   webSpeechLeakAcked: false,
   kokoroSlowSuggestionDismissed: false,
   nudgeDedup: {

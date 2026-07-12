@@ -319,11 +319,16 @@ export default defineTool({
 
     // Recall telemetry (migration 240) — zero-hit-rate + score distribution
     // for the Learning tab memory-health card. Fire-and-forget.
+    // P-001 (orient-recall-quality-2026-07-12): a compound fold stamps its own
+    // surface on the inner ctx (inProcessCall's telemetrySurface — e.g. 'orient')
+    // so per-entry-point recall quality is separable from generic search; the
+    // cast-borne read is the contextTier house pattern. Direct calls stay 'search'.
+    const telemetrySurface = (ctx as { telemetrySurface?: string }).telemetrySurface ?? 'search';
     void (async () => {
       try {
         const { getOrgPg } = await import('@papercusp/db-org');
         const { recordRecallStats } = await import('../../memory/recall-stats');
-        await recordRecallStats(getOrgPg().sql, { surface: 'search', entries: hits });
+        await recordRecallStats(getOrgPg().sql, { surface: telemetrySurface, entries: hits });
       } catch { /* swallow — telemetry never fails a recall */ }
     })();
 
