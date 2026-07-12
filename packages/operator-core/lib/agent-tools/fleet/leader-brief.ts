@@ -72,7 +72,40 @@ export interface LeaderBriefMember {
   unanswered?: UnansweredDirectedSummary;
   /** Active non-inbox-wake events:await keys — a deliberately-benched member. */
   parkedOn?: string[];
+  /** EI-9943: this member is alive/speaking (burning real turns) but its work
+   *  is NOT advancing and it is not already benched — the "live-loop-polling
+   *  on a peer's critical path" pattern (fleet p2p-ship, 2026-07-11/12: 3 of 5
+   *  members ran a live monitor loop for 58/37/19 turns each, structurally
+   *  blocked on one member's diagnosis, instead of parking on an event).
+   *  A one-glance nudge toward `fleet:bench { member, wakeEvent }` — never
+   *  auto-applied, since only the leader knows the right gate to park on. */
+  benchSuggestion?: { reason: string; item: string | null; itemTitle: string | null };
   isSelf?: true;
+}
+
+/** PURE: exported for direct unit-testing (no PG/DI ceremony needed).
+ *  EI-9943: flag a member that is (a) actually alive right now — `speaking` or
+ *  `first-turn-done`, i.e. burning real turns, not booted/joined/dead — (b)
+ *  holding a claim that `stalled` already marks as not-advancing, and (c) NOT
+ *  already benched (`parkedOn` empty) — benching an already-benched member is
+ *  a no-op the leader doesn't need surfaced again. Reuses `stalled`/`verdict`/
+ *  `parkedOn` verbatim (the SAME signals `fleet:assignments`' stalled_claims /
+ *  fleet:bench's parkedOn already compute) — no new tracking, no wake-count
+ *  state: `stalled`'s existing progress-window check is the "blocked for a
+ *  while" signal this reuses instead of inventing a separate wake counter. */
+export function computeBenchSuggestion(
+  a: Pick<DecoratedAgent, 'stalled' | 'verdict' | 'parkedOn' | 'doing'>,
+): LeaderBriefMember['benchSuggestion'] {
+  if ((a.parkedOn?.length ?? 0) > 0) return undefined;
+  if (a.verdict !== 'speaking' && a.verdict !== 'first-turn-done') return undefined;
+  if (!a.stalled) return undefined;
+  return {
+    reason:
+      "holds a claim not advancing while alive — likely live-loop-polling a peer's " +
+      'critical path instead of parking on an event (fleet:bench).',
+    item: a.doing?.id ?? null,
+    itemTitle: a.doing?.title ?? null,
+  };
 }
 
 export type DecoratedAgent = AgentAssignment & {
@@ -106,6 +139,10 @@ export function projectMember(a: DecoratedAgent, nowMs: number): LeaderBriefMemb
     ...(a.coordHook ? { coordHook: a.coordHook } : {}),
     ...(a.unanswered ? { unanswered: a.unanswered } : {}),
     ...(a.parkedOn && a.parkedOn.length > 0 ? { parkedOn: a.parkedOn } : {}),
+    ...(() => {
+      const suggestion = computeBenchSuggestion(a);
+      return suggestion ? { benchSuggestion: suggestion } : {};
+    })(),
   };
 }
 

@@ -2723,6 +2723,90 @@ function LearningsView({ hive }: { hive: string }) {
     padding: "1px 7px",
   };
 
+  const renderLearning = (r: HiveLearningRowT) => (
+    <li
+      key={r.id}
+      className="pc-learning__row"
+      style={{ alignItems: "flex-start" }}
+    >
+      <span
+        className="pc-learning__sev"
+        style={{
+          background: r.packId ? "var(--accent)" : "var(--good)",
+          marginTop: 5,
+        }}
+        aria-hidden
+      />
+      <span style={{ flex: 1, minWidth: 0 }}>
+        <span
+          style={{
+            display: "block",
+            fontSize: 12.5,
+            lineHeight: 1.5,
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+          }}
+        >
+          {r.text}
+        </span>
+        <span
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 6,
+            marginTop: 3,
+            fontSize: 10.5,
+            color: "var(--fg-mute)",
+          }}
+        >
+          {r.packId ? (
+            <span
+              title={`Seeded from the ${r.packId} learning pack${r.packState === "modified" ? " — edited since seeding" : ""}`}
+            >
+              <span
+                style={{
+                  border: "1px solid var(--border)",
+                  borderRadius: 3,
+                  padding: "0 4px",
+                }}
+              >
+                pack: {r.packId}
+                {r.packVersion ? ` v${r.packVersion}` : ""}
+              </span>
+              {r.packState === "modified" ? " · edited" : ""}
+            </span>
+          ) : (
+            <span
+              title={`Recorded by ${r.createdBy ?? "an agent"} — this ${t("pot", { lower: true })}'s own learning`}
+            >
+              {t("pot", { lower: true })}-learned
+              {r.createdBy ? ` · ${r.createdBy}` : ""}
+            </span>
+          )}
+          {r.kind ? <span>{r.kind}</span> : null}
+        </span>
+      </span>
+      <span style={{ display: "flex", gap: 6, marginTop: 2 }}>
+        <Tooltip label="Edit the learning text">
+          <button type="button" style={actionBtn} onClick={() => void edit(r)}>
+            edit
+          </button>
+        </Tooltip>
+        <Tooltip
+          label={`Remove this learning from the ${t("pot", { lower: true })}'s memory`}
+        >
+          <button
+            type="button"
+            style={actionBtn}
+            onClick={() => void forget(r)}
+          >
+            remove
+          </button>
+        </Tooltip>
+      </span>
+    </li>
+  );
+
   return (
     <>
       {confirmEl}
@@ -3131,95 +3215,21 @@ function LearningsView({ hive }: { hive: string }) {
             <span>No retained learnings</span>
           </div>
         ) : (
-          <ul className="pc-learning__list">
-            {filtered.map((r) => (
-              <li
-                key={r.id}
-                className="pc-learning__row"
-                style={{ alignItems: "flex-start" }}
+          <>
+            <ul className="pc-learning__list">
+              {filtered.slice(0, 6).map(renderLearning)}
+            </ul>
+            {filtered.length > 6 ? (
+              <LearningDisclosure
+                label="Earlier retained learnings"
+                count={filtered.length - 6}
               >
-                <span
-                  className="pc-learning__sev"
-                  style={{
-                    background: r.packId ? "var(--accent)" : "var(--good)",
-                    marginTop: 5,
-                  }}
-                  aria-hidden
-                />
-                <span style={{ flex: 1, minWidth: 0 }}>
-                  <span
-                    style={{
-                      display: "block",
-                      fontSize: 12.5,
-                      lineHeight: 1.5,
-                      whiteSpace: "pre-wrap",
-                      wordBreak: "break-word",
-                    }}
-                  >
-                    {r.text}
-                  </span>
-                  <span
-                    style={{
-                      display: "flex",
-                      flexWrap: "wrap",
-                      gap: 6,
-                      marginTop: 3,
-                      fontSize: 10.5,
-                      color: "var(--fg-mute)",
-                    }}
-                  >
-                    {r.packId ? (
-                      <span
-                        title={`Seeded from the ${r.packId} learning pack${r.packState === "modified" ? " — edited since seeding" : ""}`}
-                      >
-                        <span
-                          style={{
-                            border: "1px solid var(--border)",
-                            borderRadius: 3,
-                            padding: "0 4px",
-                          }}
-                        >
-                          pack: {r.packId}
-                          {r.packVersion ? ` v${r.packVersion}` : ""}
-                        </span>
-                        {r.packState === "modified" ? " · edited" : ""}
-                      </span>
-                    ) : (
-                      <span
-                        title={`Recorded by ${r.createdBy ?? "an agent"} — this ${t("pot", { lower: true })}'s own learning`}
-                      >
-                        {t("pot", { lower: true })}-learned
-                        {r.createdBy ? ` · ${r.createdBy}` : ""}
-                      </span>
-                    )}
-                    {r.kind ? <span>{r.kind}</span> : null}
-                  </span>
-                </span>
-                <span style={{ display: "flex", gap: 6, marginTop: 2 }}>
-                  <Tooltip label="Edit the learning text">
-                    <button
-                      type="button"
-                      style={actionBtn}
-                      onClick={() => void edit(r)}
-                    >
-                      edit
-                    </button>
-                  </Tooltip>
-                  <Tooltip
-                    label={`Remove this learning from the ${t("pot", { lower: true })}'s memory`}
-                  >
-                    <button
-                      type="button"
-                      style={actionBtn}
-                      onClick={() => void forget(r)}
-                    >
-                      remove
-                    </button>
-                  </Tooltip>
-                </span>
-              </li>
-            ))}
-          </ul>
+                <ul className="pc-learning__list">
+                  {filtered.slice(6).map(renderLearning)}
+                </ul>
+              </LearningDisclosure>
+            ) : null}
+          </>
         )}
       </section>
     </>
