@@ -91,6 +91,15 @@ export interface MemoryHealth extends RecallHealth {
    * blended away. Empty when telemetry is unavailable.
    */
   recallBySurface: RecallSurfaceHealth[];
+  /**
+   * Did the recall-telemetry read SUCCEED? (EI-10625.) The aggregate degrades to
+   * all-zeros on failure — and a zeroed aggregate is `zeroHitRate7d = 0`, i.e.
+   * "no recall ever missed", the healthiest reading there is. Without this flag a
+   * consumer cannot tell a perfect store from an unreadable one, so an alarm built
+   * on the rate alone goes GREEN exactly when the telemetry dies. Callers that
+   * gate on recall quality MUST check it.
+   */
+  recallTelemetryOk: boolean;
 }
 
 /**
@@ -117,9 +126,13 @@ export async function readMemoryHealth(sql: Sql): Promise<MemoryHealth> {
     topScoreP90: null,
     fragmentHits7d: 0,
   };
+  let recallTelemetryOk = true;
   try {
     recall = await readRecallHealth(sql);
   } catch (err) {
+    // The aggregate above stays all-zeros — which READS AS PERFECT (0% zero-hit).
+    // Flag the failure so consumers can tell "nothing missed" from "nothing known".
+    recallTelemetryOk = false;
     console.warn('[memory-health] recall-stats read failed (migration 240 applied?):', (err as Error).message);
   }
   // P-006: the per-surface slice — same degrade-to-empty independence as the
@@ -133,6 +146,7 @@ export async function readMemoryHealth(sql: Sql): Promise<MemoryHealth> {
   return {
     ...recall,
     recallBySurface,
+    recallTelemetryOk,
     totalMemories: Number(r.total_memories ?? 0),
     entityRows: Number(r.entity_rows ?? 0),
     feedback30d: Number(r.feedback_30d ?? 0),

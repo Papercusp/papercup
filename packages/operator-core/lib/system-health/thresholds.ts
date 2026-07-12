@@ -458,10 +458,30 @@ export function coordinationStatus(d: CoordinationHealth, now?: number): PanelSt
   return 'ok';
 }
 
-/** Memory (P-010). Warn only on a degraded recall signal over a real store —
- *  an empty/new store is not a failure, and the store size itself is
- *  informational. */
+/**
+ * Memory (P-010). Warn on a degraded recall signal over a real store — an
+ * empty/new store is not a failure, and the store size itself is informational.
+ *
+ * ABSENCE OF SIGNAL IS NOT HEALTH (EI-10625). `zeroHitRate` is
+ * `zeroHit/recalls` with a `: 0` fallback, so it reports a PERFECT 0% in exactly
+ * two states it cannot distinguish from perfection: the telemetry read FAILED,
+ * or NOTHING WAS RECORDED AT ALL. Both are blind spots, not clean bills of
+ * health — and both are reachable: `recordRecallStats`'s own comment documents a
+ * stale surface CHECK that silently rejected every write for hours. A rate over
+ * zero observations is not a low rate; it is no rate. Check the denominator
+ * BEFORE trusting the ratio (the Learning tab's MemoryHealthCard already does —
+ * this panel, the one that actually drives the alarm, did not).
+ */
 export function memoryStatus(d: MemoryPanelHealth): PanelStatus {
-  if (d.totalMemories > 100 && d.zeroHitRate !== null && d.zeroHitRate >= 0.9) return 'warn';
+  // Only meaningful over a real store: a new/empty workspace records no recalls
+  // for the honest reason, and must not be alarmed at.
+  if (d.totalMemories > 100) {
+    // The telemetry is unreadable — we know nothing, which is not "fine".
+    if (!d.recallTelemetryOk) return 'warn';
+    // A live store with 10k memories and ZERO recorded recalls in 7 days means the
+    // recall-stats pipeline is dark, not that recall is flawless.
+    if (d.recalls7d === 0) return 'warn';
+    if (d.zeroHitRate !== null && d.zeroHitRate >= 0.9) return 'warn';
+  }
   return 'ok';
 }

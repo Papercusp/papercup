@@ -627,7 +627,8 @@ describe('coordinationStatus — WARN-max during burn-in (P-009 / D-D)', () => {
 
 describe('memoryStatus — degraded recall over a real store (P-010)', () => {
   const me = (o: Partial<MemoryPanelHealth> = {}): MemoryPanelHealth => ({
-    totalMemories: 500, entityRows: 0, feedback30d: 10, zeroHitRate: 0.2, ...o,
+    totalMemories: 500, entityRows: 0, feedback30d: 10, zeroHitRate: 0.2,
+    recalls7d: 500, recallTelemetryOk: true, ...o,
   });
   it('warn only when a REAL store has a ~dead recall signal', () => {
     expect(memoryStatus(me({ zeroHitRate: 0.95 }))).toBe('warn');
@@ -635,8 +636,41 @@ describe('memoryStatus — degraded recall over a real store (P-010)', () => {
   it('a small/new store never warns, whatever its hit rate', () => {
     expect(memoryStatus(me({ totalMemories: 50, zeroHitRate: 1 }))).toBe('ok');
   });
-  it('no telemetry (null rate) is ok — fail-soft, and a healthy rate is ok', () => {
-    expect(memoryStatus(me({ zeroHitRate: null }))).toBe('ok');
+  it('a healthy rate over real observations is ok', () => {
     expect(memoryStatus(me())).toBe('ok');
+  });
+
+  // EI-10625 — ABSENCE OF SIGNAL IS NOT HEALTH.
+  //
+  // readRecallHealth computes `recalls > 0 ? zeroHit/recalls : 0`, so a recall
+  // pipeline that has recorded NOTHING — or whose read threw — hands this panel a
+  // 0.0 zero-hit rate: the single healthiest value in the range. The old contract
+  // ("no telemetry is ok — fail-soft") took that at face value and went green,
+  // which is precisely how a monitor that cannot see becomes a monitor that says
+  // everything is fine. These tests exist to PROVE the detector can fire.
+  describe('a blind panel must not read as a healthy one', () => {
+    it('FIRES: a real store with ZERO recorded recalls in 7d — a dark pipeline, not flawless recall', () => {
+      // The exact shape a dead recall-stats writer produces: rate degrades to 0.
+      expect(memoryStatus(me({ recalls7d: 0, zeroHitRate: 0 }))).toBe('warn');
+    });
+    it('FIRES: the telemetry read FAILED — we know nothing, and nothing is not "fine"', () => {
+      // readMemoryHealth swallows the error and returns all-zeros; only the flag survives.
+      expect(memoryStatus(me({ recallTelemetryOk: false, recalls7d: 0, zeroHitRate: 0 }))).toBe('warn');
+    });
+    it('FIRES even when every other reading looks perfect (the regression this bug IS)', () => {
+      // 10k memories, a busy feedback loop, and a flawless 0% zero-hit rate — all of it
+      // downstream of a denominator of zero. Green here is the bug.
+      expect(
+        memoryStatus(me({ totalMemories: 10_491, feedback30d: 250, zeroHitRate: 0, recalls7d: 0 })),
+      ).toBe('warn');
+    });
+    it('does NOT fire on a new/small store with no recalls yet — that zero is honest', () => {
+      expect(memoryStatus(me({ totalMemories: 50, recalls7d: 0, zeroHitRate: 0 }))).toBe('ok');
+    });
+    it('does NOT fire when the rate is unreadable but observations EXIST (defensive field probe)', () => {
+      // compute.ts's zero-hit probe is deliberately loose about field names; a null rate
+      // with a live denominator means we failed to parse a value, not that we are blind.
+      expect(memoryStatus(me({ zeroHitRate: null, recalls7d: 500 }))).toBe('ok');
+    });
   });
 });

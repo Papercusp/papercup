@@ -1372,18 +1372,46 @@ async function collectMemory(ctx: HealthCtx): Promise<HealthPanel<MemoryPanelHea
       entityRows: mem.entityRows,
       feedback30d: mem.feedback30d,
       zeroHitRate,
+      recalls7d: mem.recalls7d,
+      recallTelemetryOk: mem.recallTelemetryOk,
     };
     const status = memoryStatus(data);
+    // EI-10625: a rate computed over ZERO observations is not 0% — it is UNKNOWN,
+    // and it must not render as the healthiest possible value. Say which of the two
+    // blind states we are in, and carry the denominator so the reading is auditable.
+    const blind = !data.recallTelemetryOk
+      ? 'telemetry unreadable'
+      : data.recalls7d === 0
+        ? 'no recalls recorded'
+        : null;
+    const zeroHitDisplay = blind !== null
+      ? 'n/a'
+      : zeroHitRate === null
+        ? 'n/a'
+        : `${Math.round(zeroHitRate * 100)}%`;
     return {
       status,
-      summary: `${data.totalMemories} memories, ${data.feedback30d} feedback/30d${zeroHitRate !== null ? `, ${Math.round(zeroHitRate * 100)}% zero-hit` : ''}`,
+      summary:
+        `${data.totalMemories} memories, ${data.feedback30d} feedback/30d` +
+        (blind !== null
+          ? `, zero-hit UNKNOWN (${blind})`
+          : zeroHitRate !== null
+            ? `, ${Math.round(zeroHitRate * 100)}% zero-hit`
+            : ''),
       data,
       link: { label: 'Learning', href: '/adv?tab=learning' },
       metrics: [
         m('memories', data.totalMemories),
         m('entity rows', data.entityRows),
         m('feedback 30d', data.feedback30d),
-        m('zero-hit', zeroHitRate === null ? 'n/a' : `${Math.round(zeroHitRate * 100)}%`, zeroHitRate !== null && zeroHitRate >= 0.9 ? 'warn' : undefined),
+        m('recalls 7d', data.recalls7d, blind !== null && data.totalMemories > 100 ? 'warn' : undefined),
+        m(
+          'zero-hit',
+          zeroHitDisplay,
+          (blind !== null && data.totalMemories > 100) || (zeroHitRate !== null && zeroHitRate >= 0.9)
+            ? 'warn'
+            : undefined,
+        ),
       ],
     };
   });
