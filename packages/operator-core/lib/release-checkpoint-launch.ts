@@ -72,6 +72,9 @@ export interface LaunchCheckpointResult {
    *  "this refused because one is already in flight, don't retry" from a transient spawn
    *  failure — they'd retry / manually kill what they assumed was stuck). */
   alreadyRunning?: ActiveCheckpointCheck;
+  /** EI-9672: set when `replaceStale:true` found the active run CONFIRMED stale and stopped
+   *  it before this launch — the detail of what was stopped, for the caller's audit trail. */
+  replacedStale?: ActiveCheckpointCheck;
 }
 
 /** Detail of a live (already-active) manual checkpoint run for THIS root, or its absence. */
@@ -323,6 +326,32 @@ export interface LaunchCheckpointOpts {
    *  systemd's own same-unit collision guard is still the final backstop — force does NOT
    *  stop/replace a genuinely active run, it only bypasses OUR proactive refusal. */
   force?: boolean;
+  /** EI-9672: when the active run is CONFIRMED stale (`candidate_stale` — it's judging an
+   *  older candidate than the current quiet-cut-eligible staging state, e.g. it's deep in
+   *  post-verdict work like the longest-green-prefix salvage or an auto-refire chain on a
+   *  candidate a newer commit has since superseded), stop that unit and launch a fresh run
+   *  for the current candidate instead of refusing. Distinct from — and safer than — `force`:
+   *  `force` blindly attempts a launch that systemd still refuses (the WI-1562/EI-9672
+   *  repro — "force still failed because systemd refused the loaded singleton"); this
+   *  actually frees the singleton, but ONLY for the stale case. A run judging the CURRENT
+   *  candidate is never stopped, even with replaceStale:true — that's the CRITICAL danger
+   *  the original investigation flagged (never suppress/kill a legitimately in-flight,
+   *  still-relevant verdict). No supported "cancel" existed before this; the only prior path
+   *  was a human running `systemctl --user stop` by hand, then relaunching. */
+  replaceStale?: boolean;
+}
+
+/** EI-9672: best-effort `systemctl --user stop` on a checkpoint unit — the piece that was
+ *  previously ONLY a manual, undocumented escape hatch ("no checkpoint cancel verb exists").
+ *  Never throws; a failure just means the subsequent launch attempt sees the same collision
+ *  it would have seen anyway (no regression vs today). */
+export function stopActiveCheckpointUnit(
+  unit: string,
+  execFn: ExecSyncLike = defaultExecSync,
+): { stopped: boolean; reason?: string } {
+  const r = execFn('systemctl', ['--user', 'stop', `${unit}.service`]);
+  if (r.status === 0) return { stopped: true };
+  return { stopped: false, reason: r.stderr.trim().slice(0, 300) || `systemctl stop exited ${r.status}` };
 }
 
 /**
@@ -352,18 +381,42 @@ export function launchDetachedCheckpoint(
   // it); the run itself writes to its own timestamped file behind that symlink.
   const logPath = checkpointLatestLogPath(unit);
   const runLogPath = checkpointRunLogPath(unit);
+  let replacedStale: ActiveCheckpointCheck | undefined;
 
   if (!opts.force) {
     const active = checkActiveCheckpointRun(root, execFn, readLogHead);
     if (active.active) {
-      return Promise.resolve({
-        launched: false,
-        unit,
-        argv: [],
-        logPath,
-        reason: 'already_running',
-        alreadyRunning: active,
-      });
+      // EI-9672: a CONFIRMED-stale active run (judging an older candidate than the current
+      // quiet-cut-eligible staging state — e.g. deep in post-verdict salvage/refire on a
+      // superseded candidate) can be replaced instead of refused. Deliberately narrow: a
+      // run judging the CURRENT candidate is never touched, replaceStale or not.
+      if (opts.replaceStale && active.candidate_stale) {
+        const stop = stopActiveCheckpointUnit(unit, execFn);
+        if (stop.stopped) {
+          // Re-check right before launching — a race where the run finished/advanced
+          // between our stop and now is handled by the normal already_running path below
+          // (systemd-run's own collision refusal is still the final backstop either way).
+          replacedStale = active;
+        } else {
+          return Promise.resolve({
+            launched: false,
+            unit,
+            argv: [],
+            logPath,
+            reason: 'already_running',
+            alreadyRunning: active,
+          });
+        }
+      } else {
+        return Promise.resolve({
+          launched: false,
+          unit,
+          argv: [],
+          logPath,
+          reason: 'already_running',
+          alreadyRunning: active,
+        });
+      }
     }
   }
 
@@ -378,7 +431,13 @@ export function launchDetachedCheckpoint(
   return new Promise<LaunchCheckpointResult>((resolve) => {
     // Report the RUN's own path: it is the file that survives the next re-fire, and the
     // one an agent should quote when triaging this verdict.
-    const base: LaunchCheckpointResult = { launched: false, unit, argv, logPath: runLogPath };
+    const base: LaunchCheckpointResult = {
+      launched: false,
+      unit,
+      argv,
+      logPath: runLogPath,
+      ...(replacedStale ? { replacedStale } : {}),
+    };
     let stderr = '';
     const child = spawnFn('systemd-run', argv);
     child.stderr?.on('data', (d: unknown) => (stderr += String(d)));

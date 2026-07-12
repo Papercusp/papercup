@@ -61,14 +61,20 @@ export default defineTool({
       .boolean()
       .optional()
       .describe(
-        'Skip the already-running refusal (WI-1562) and attempt the launch anyway. systemd itself still refuses a truly concurrent same-unit run — force only bypasses OUR proactive check.',
+        'Skip the already-running refusal (WI-1562) and attempt the launch anyway. systemd itself still refuses a truly concurrent same-unit run — force only bypasses OUR proactive check and usually still fails while a run is genuinely active (EI-9672). Prefer replaceStale when the reply says candidate_stale:true.',
+      ),
+    replaceStale: z
+      .boolean()
+      .optional()
+      .describe(
+        'EI-9672: when the active run is CONFIRMED stale (candidate_stale:true in a prior already_running reply — it is judging an older candidate than current staging, e.g. mid post-verdict salvage/refire on a superseded commit), stop that run and launch a fresh one. Unlike force, this actually frees the singleton — but ONLY for the stale case; a run judging the current candidate is never stopped.',
       ),
   }),
   async handler(args, _ctx) {
     // No in-handler role gate: firing the verdict is verification-only + self-locked (see the
     // agentRoles note above). Access control is the invoke allowlist; any invoke-allowed red-fixer
     // may fire a fresh green verdict.
-    const result = await launchDetachedCheckpoint({ force: args.force });
+    const result = await launchDetachedCheckpoint({ force: args.force, replaceStale: args.replaceStale });
     if (!result.launched && result.reason === 'already_running' && result.alreadyRunning) {
       const a = result.alreadyRunning;
       return {
@@ -87,8 +93,8 @@ export default defineTool({
               started_at: a.started_at ?? null,
               eta_sec: a.eta_sec ?? null,
               note: a.candidate_stale
-                ? 'A checkpoint run for this root is already in flight, but it is judging an older candidate than the current quiet-cut-eligible staging state; pass force:true to launch a fresh run if you need the newer commits judged now.'
-                : 'A checkpoint run for this root is already in flight and its candidate matches the current quiet-cut-eligible staging state; a re-fire is usually unnecessary — wait for it, or pass force:true to launch a second one anyway.',
+                ? 'A checkpoint run for this root is already in flight, but it is judging an older candidate than the current quiet-cut-eligible staging state (EI-9672: likely deep in post-verdict salvage/refire on a superseded commit). Pass replaceStale:true to stop that stale run and launch a fresh one for the current candidate — force:true alone will NOT help here (systemd still refuses the collision).'
+                : 'A checkpoint run for this root is already in flight and its candidate matches the current quiet-cut-eligible staging state; a re-fire is unnecessary and replaceStale will NOT touch it (only a confirmed-stale run is ever stopped) — wait for it, or pass force:true to launch a second one anyway.',
             }),
           },
         ],
@@ -102,7 +108,9 @@ export default defineTool({
             ok: result.launched,
             ...result,
             note: result.launched
-              ? 'green-checkpoint suite launched (detached, up to ~55 min). Watch /admin/git or the log for the verdict; if green it advances the pin. Then release:deploy { op:status } → op:trigger.'
+              ? result.replacedStale
+                ? `green-checkpoint suite launched (detached, up to ~55 min) after stopping a STALE prior run (was judging ${result.replacedStale.candidate?.slice(0, 12) ?? 'unknown'}, superseded by ${result.replacedStale.current_candidate?.slice(0, 12) ?? 'current staging'}). Watch /admin/git or the log for the verdict; if green it advances the pin. Then release:deploy { op:status } → op:trigger.`
+                : 'green-checkpoint suite launched (detached, up to ~55 min). Watch /admin/git or the log for the verdict; if green it advances the pin. Then release:deploy { op:status } → op:trigger.'
               : `not launched: ${result.reason ?? 'unknown'} — a manual checkpoint may already be running (see the log), or a cron tick is mid-run (which is fine — it will produce the verdict).`,
           }),
         },

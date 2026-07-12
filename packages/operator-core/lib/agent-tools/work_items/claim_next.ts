@@ -211,16 +211,44 @@ export default defineTool({
       return { ok: false as const, error, drained: diag.drained, pendingUnclaimed: diag.pendingUnclaimed, readyUnclaimed: diag.readyUnclaimed };
     };
 
+    // Claim-time recall port (memory-delivery-unification-2026-07-12 P-008 /
+    // D-006): piggyback a targeted memory recall for the just-claimed item(s)
+    // — deadline-bounded, epoch-deduped (port 'claim'), never-throws. Dynamic
+    // import keeps the memory chain off this module's static graph.
+    const recallFor = async (
+      witems: Array<{ id?: string; title?: string; summary?: string; harness?: string | null } | null | undefined>,
+    ): Promise<string | null> => {
+      const items = witems.filter((w): w is NonNullable<typeof w> => w != null);
+      if (items.length === 0) return null;
+      return import('../../memory/claim-port')
+        .then((m) => m.buildClaimRecallBlock({ sessionId: assignee, workspaceId: ident.workspaceId, items }))
+        .catch(() => null);
+    };
+    const wiOf = (
+      c: { workItem: unknown } | Record<string, unknown> | null,
+    ): { id?: string; title?: string; summary?: string; harness?: string | null } | null =>
+      c && typeof c === 'object'
+        ? (('workItem' in c ? (c as { workItem: unknown }).workItem : c) as {
+            id?: string;
+            title?: string;
+            summary?: string;
+            harness?: string | null;
+          })
+        : null;
+
     const count = args.count ?? 1;
     // Backward-compatible single-item shape when count is omitted/1.
     if (count === 1) {
       const claimed = await claimOne();
-      const result = claimed
-        ? 'workItem' in claimed
+      if (!claimed) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify(await missResult()) }] };
+      }
+      const base =
+        'workItem' in claimed
           ? { ok: true as const, workItem: claimed.workItem, claimedUnder: claimed.claimedUnder }
-          : { ok: true as const, workItem: claimed }
-        : await missResult();
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+          : { ok: true as const, workItem: claimed };
+      const memory = await recallFor([wiOf(claimed)]);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(memory ? { ...base, memory } : base) }] };
     }
 
     // count>1: loop the same atomic claim up to N times, STOPPING at the first miss
@@ -239,6 +267,9 @@ export default defineTool({
       const miss = await missResult();
       return { content: [{ type: 'text' as const, text: JSON.stringify({ ...miss, claimed }) }] };
     }
-    return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, claimed }) }] };
+    const memory = await recallFor(claimed.map((c) => wiOf(c)));
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(memory ? { ok: true, claimed, memory } : { ok: true, claimed }) }],
+    };
   },
 });

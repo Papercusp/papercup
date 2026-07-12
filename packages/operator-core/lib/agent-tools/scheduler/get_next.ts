@@ -130,6 +130,18 @@ export default defineTool({
           : undefined;
       routingHint = existing ?? matchRoutingGateHint(wi.title, wi.summary) ?? undefined;
     }
+    // Claim-time recall port (memory-delivery-unification-2026-07-12 P-008 /
+    // D-006): on a hit, piggyback a targeted memory recall for the claimed
+    // item — deadline-bounded, epoch-deduped (port 'claim'), never-throws.
+    // This is THE live fleet-member self-pull surface, so it's the port that
+    // matters most. Dynamic import keeps the memory chain off the static graph.
+    let memory: string | null = null;
+    if (res?.workItem) {
+      const wi = res.workItem as { id?: string; title?: string; summary?: string; harness?: string | null };
+      memory = await import('../../memory/claim-port')
+        .then((m) => m.buildClaimRecallBlock({ sessionId: ident.ownerId, workspaceId: ident.workspaceId, items: [wi] }))
+        .catch(() => null);
+    }
     return {
       content: [
         {
@@ -142,6 +154,7 @@ export default defineTool({
                   claimedUnder: res.claimedUnder,
                   ...(warning ? { warning } : {}),
                   ...(routingHint ? { routingHint } : {}),
+                  ...(memory ? { memory } : {}),
                 }
               : {
                   ok: false,

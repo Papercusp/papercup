@@ -148,6 +148,25 @@ export default defineTool({
         ? args.ids.map((id) => ({ id, assignee: args.assignee, harness: args.harness }))
         : [{ id: args.id as string, assignee: args.assignee, harness: args.harness }];
     const env = await runBulk(list, (it) => claimOne(it, ident.ownerId), { keyOf: (it) => ({ id: it.id }) });
-    return bulkContent(env);
+    // Claim-time recall port (memory-delivery-unification-2026-07-12 P-008 /
+    // D-006): piggyback a targeted memory recall for the just-claimed item(s)
+    // on the response — deadline-bounded, epoch-deduped (port 'claim'),
+    // never-throws (dynamic import keeps the memory chain off this module's
+    // static graph — see _bulk.ts's ESM-cycle note).
+    const claimedItems = env.results
+      .filter((r) => r.ok && r.workItem != null)
+      .map((r) => r.workItem as { id?: string; title?: string; summary?: string; harness?: string | null });
+    const memory = claimedItems.length
+      ? await import('../../memory/claim-port')
+          .then((m) =>
+            m.buildClaimRecallBlock({
+              sessionId: ident.ownerId,
+              workspaceId: ident.workspaceId,
+              items: claimedItems,
+            }),
+          )
+          .catch(() => null)
+      : null;
+    return bulkContent(memory ? { ...env, memory } : env);
   },
 });

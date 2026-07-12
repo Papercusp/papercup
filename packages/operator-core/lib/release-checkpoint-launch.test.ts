@@ -13,6 +13,7 @@ import {
   checkpointLatestLogPath,
   launchDetachedCheckpoint,
   checkActiveCheckpointRun,
+  stopActiveCheckpointUnit,
   CHECKPOINT_UNIT,
   checkpointUnitForRoot,
   CHECKPOINT_MAX_RUNTIME_SEC,
@@ -328,6 +329,103 @@ describe('launchDetachedCheckpoint refuse-when-active (WI-1562)', () => {
 
     expect(spawnFn).toHaveBeenCalled();
     expect(r.launched).toBe(true);
+  });
+});
+
+describe('stopActiveCheckpointUnit (EI-9672: the supported cancel a stale run had none of)', () => {
+  it('reports stopped:true on a clean systemctl stop', () => {
+    const execFn = vi.fn(() => ({ status: 0, stdout: '', stderr: '' }));
+    const r = stopActiveCheckpointUnit('papercup-green-checkpoint-manual-abc', execFn);
+    expect(r).toEqual({ stopped: true });
+    expect(execFn).toHaveBeenCalledWith('systemctl', ['--user', 'stop', 'papercup-green-checkpoint-manual-abc.service']);
+  });
+
+  it('reports stopped:false with the stderr reason on a failed stop — never throws', () => {
+    const execFn = vi.fn(() => ({ status: 1, stdout: '', stderr: 'Unit not loaded.' }));
+    const r = stopActiveCheckpointUnit('some-unit', execFn);
+    expect(r.stopped).toBe(false);
+    expect(r.reason).toContain('Unit not loaded');
+  });
+});
+
+describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not free a genuinely-stale singleton)', () => {
+  function fakeSystemctlShow(props: Record<string, string>) {
+    const stdout = Object.entries(props)
+      .map(([k, v]) => `${k}=${v}`)
+      .join('\n');
+    return { status: 0, stdout, stderr: '' };
+  }
+
+  /** execFn that reports an ACTIVE run judging `oldCandidate`, while the current quiet-cut
+   *  candidate is `freshCandidate` (i.e. candidate_stale:true) — mirrors the
+   *  "candidate_stale" checkActiveCheckpointRun test above, plus responds to the
+   *  `systemctl --user stop` call this describe block exercises. */
+  function staleActiveExecFn(stopStatus = 0) {
+    const startedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    const oldCandidate = '1111111111111111111111111111111111111111';
+    const currentHead = '3333333333333333333333333333333333333333';
+    const quietCandidate = '2222222222222222222222222222222222222222';
+    return vi.fn((cmd: string, args: string[]) => {
+      if (cmd === 'systemctl' && args[1] === 'show') return fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: startedAt });
+      if (cmd === 'systemctl' && args[1] === 'stop') return { status: stopStatus, stdout: '', stderr: stopStatus === 0 ? '' : 'nope' };
+      if (cmd === 'git' && args.slice(-2).join(' ') === 'rev-parse HEAD') return { status: 0, stdout: `${currentHead}\n`, stderr: '' };
+      if (cmd === 'git' && args.includes('--format=%ct')) return { status: 0, stdout: String(Math.floor(Date.now() / 1000) - 30), stderr: '' };
+      if (cmd === 'git' && args.includes('rev-list')) return { status: 0, stdout: `${quietCandidate}\n`, stderr: '' };
+      if (cmd === 'git' && args.includes('ready')) return { status: 1, stdout: '', stderr: '' };
+      return { status: 1, stdout: '', stderr: '' };
+    });
+  }
+
+  it('a STALE active run is stopped, then a fresh run launches (replaceStale:true)', async () => {
+    const child = fakeChild();
+    const spawnFn = vi.fn(() => child) as never;
+    const execFn = staleActiveExecFn();
+    const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate 11111111 (base def)\n');
+
+    const p = launchDetachedCheckpoint({ root: '/tree', replaceStale: true }, spawnFn, execFn, readLogHead);
+    child.emit('close', 0);
+    const r = await p;
+
+    expect(execFn).toHaveBeenCalledWith('systemctl', ['--user', 'stop', `${checkpointUnitForRoot('/tree')}.service`]);
+    expect(spawnFn).toHaveBeenCalled();
+    expect(r.launched).toBe(true);
+    expect(r.replacedStale).toMatchObject({ active: true, candidate_stale: true, candidate: '11111111' });
+  });
+
+  it('a NOT-stale active run is never stopped, even with replaceStale:true (the critical-danger guard)', async () => {
+    const startedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    const spawnFn = vi.fn();
+    const stopCall = vi.fn();
+    const execFn = vi.fn((cmd: string, args: string[]) => {
+      if (cmd === 'systemctl' && args[1] === 'stop') {
+        stopCall();
+        return { status: 0, stdout: '', stderr: '' };
+      }
+      if (cmd === 'systemctl') return fakeSystemctlShow({ ActiveState: 'active', ExecMainStartTimestamp: startedAt });
+      if (cmd === 'git' && args.slice(-2).join(' ') === 'rev-parse HEAD') return { status: 0, stdout: 'abc\n', stderr: '' };
+      return { status: 1, stdout: '', stderr: '' };
+    });
+    const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate abc12345 (base def)\n');
+
+    const r = await launchDetachedCheckpoint({ root: '/tree', replaceStale: true }, spawnFn as never, execFn, readLogHead);
+
+    expect(stopCall).not.toHaveBeenCalled();
+    expect(spawnFn).not.toHaveBeenCalled();
+    expect(r.launched).toBe(false);
+    expect(r.reason).toBe('already_running');
+  });
+
+  it('a FAILED stop refuses (already_running), same as an unreplaced stale run — no partial state', async () => {
+    const spawnFn = vi.fn();
+    const execFn = staleActiveExecFn(1); // stop fails
+    const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate 11111111 (base def)\n');
+
+    const r = await launchDetachedCheckpoint({ root: '/tree', replaceStale: true }, spawnFn as never, execFn, readLogHead);
+
+    expect(spawnFn).not.toHaveBeenCalled();
+    expect(r.launched).toBe(false);
+    expect(r.reason).toBe('already_running');
+    expect(r.replacedStale).toBeUndefined();
   });
 });
 
