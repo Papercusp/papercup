@@ -3,13 +3,7 @@
  * is integration-covered by the live self-test; here we pin the pure decision +
  * escalation body that decide WHEN the silent-stall alarm fires.
  */
-import { describe, it, expect, vi } from 'vitest';
-import {
-  evaluateGreenStall,
-  greenStallEscalationBody,
-  evaluateMainBehindStaging,
-  computeMainBehindStaging,
-} from './green-stall-watchdog';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 
 // EI-9922: stub `execFileSync` itself so the stderr-suppression assertion below is
 // deterministic regardless of what git checkout (or non-repo) the test runs inside —
@@ -19,6 +13,33 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
 });
 import { execFileSync } from 'node:child_process';
+
+// EI-10103: checkMainBehindStaging's DB writes are exercised with mocked sql/notify/broadcast
+// surfaces (mirrors workspace-for-harness.test.ts's mock-the-dependency unit style) rather than
+// a live PG — the regression is about which VALUE reaches the harness_escalations insert, not
+// schema/constraint enforcement itself.
+const resolveWorkspaceForHarnessMock = vi.fn();
+vi.mock('../harness/workspace-for-harness', () => ({
+  resolveWorkspaceForHarness: (...args: unknown[]) => resolveWorkspaceForHarnessMock(...args),
+}));
+const notifyAttentionMock = vi.fn().mockResolvedValue(undefined);
+vi.mock('../attention-notify', () => ({
+  notifyAttention: (...args: unknown[]) => notifyAttentionMock(...args),
+}));
+const broadcastSevereEventMock = vi.fn().mockResolvedValue(true);
+const broadcastSevereEventResolvedMock = vi.fn().mockResolvedValue(true);
+vi.mock('../severe-event-broadcast', () => ({
+  broadcastSevereEvent: (...args: unknown[]) => broadcastSevereEventMock(...args),
+  broadcastSevereEventResolved: (...args: unknown[]) => broadcastSevereEventResolvedMock(...args),
+}));
+
+import {
+  evaluateGreenStall,
+  greenStallEscalationBody,
+  evaluateMainBehindStaging,
+  computeMainBehindStaging,
+  checkMainBehindStaging,
+} from './green-stall-watchdog';
 
 const H = 60 * 60 * 1000;
 const NOW = 1_750_000_000_000; // fixed epoch ms

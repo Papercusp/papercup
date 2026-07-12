@@ -509,6 +509,33 @@ export async function composeOrient(
           ? { degraded: true, ...(memDegradedReason ? { degradedReason: memDegradedReason } : {}) }
           : {}),
       };
+      // P-002 (memory-delivery-unification-2026-07-12 D-006): stamp the
+      // orient-DELIVERED hits on the session-epoch surfaced-ledger, keyed by
+      // the caller's ownerId (the same per-launch SID the MCP initialize
+      // prelude and the injection ports key on) — so orient-then-hook/port
+      // never double-injects the same memory within an epoch. Fire-and-forget,
+      // dynamic imports: never load-bearing for orientation.
+      if (ownerId && kept.length > 0) {
+        const stampIds = kept
+          .map((h) => h.id)
+          .filter((id): id is string => typeof id === 'string' && id.length > 0);
+        if (stampIds.length > 0) {
+          const sid = ownerId;
+          void (async () => {
+            try {
+              const [{ getOrgPg }, ledger] = await Promise.all([
+                import('@papercusp/db-org'),
+                import('../../../memory/session-epoch-ledger'),
+              ]);
+              const { sql } = getOrgPg();
+              const epoch = await ledger.currentSessionEpoch(sql, sid);
+              await ledger.stampSurfaced(sql, sid, epoch, stampIds, 'orient');
+            } catch {
+              /* never load-bearing */
+            }
+          })();
+        }
+      }
     } catch {
       result.memory = null;
     }

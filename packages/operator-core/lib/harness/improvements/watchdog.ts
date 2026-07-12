@@ -582,6 +582,9 @@ export function redTestSignalsFromRows(rows: RedTestRow[], windowHours: number):
       const a = toIsoOrUndefined(prev.latest_fail_at);
       const b = toIsoOrUndefined(r.latest_fail_at);
       prev.latest_fail_at = a && b ? (a >= b ? a : b) : (a ?? b ?? null);
+      const ea = toIsoOrUndefined(prev.earliest_fail_at);
+      const eb = toIsoOrUndefined(r.earliest_fail_at);
+      prev.earliest_fail_at = ea && eb ? (ea <= eb ? ea : eb) : (ea ?? eb ?? null);
     } else {
       byPath.set(path, { ...r, file_path: path });
     }
@@ -596,7 +599,99 @@ export function redTestSignalsFromRows(rows: RedTestRow[], windowHours: number):
     severity: 'major' as const,
     paths: [r.file_path],
     latestAt: toIsoOrUndefined(r.latest_fail_at),
+    earliestAt: toIsoOrUndefined(r.earliest_fail_at),
   }));
+}
+
+/**
+ * (EI-10102) Callback shape for "did this path have a git commit in [sinceIso,
+ * untilIso]?" — dependency-injected so the debounce DECISION logic below is
+ * unit-testable without a real git checkout. `wasFilePathCommittedInRange` is
+ * the real IO implementation wired in by `collectRedTestSignals`.
+ */
+export type GitEditCheck = (filePath: string, sinceIso: string, untilIso: string) => Promise<boolean>;
+
+/**
+ * Pure-ish (the one IO side-effect is fully behind the injected `checkEdited`):
+ * a file that failed repeatedly WHILE ALSO being actively git-committed across
+ * that same span is far more likely a concurrent-refactor artifact (the test
+ * harness catching the file mid-edit — transform/resolve failures) than a real
+ * regression (EI-10102 / EI-10065). Debounce = drop the signal entirely for
+ * this tick; a genuine regression keeps failing in a LATER tick once the file
+ * has settled (no commits in that tick's window), so this only delays, never
+ * permanently suppresses, a real red test.
+ *
+ * Fails OPEN: any signal missing a path/earliestAt/latestAt (a collector that
+ * doesn't window a span), or a `checkEdited` that throws, is KEPT — a git
+ * hiccup must never silently swallow a real signal.
+ */
+export async function debounceRedTestSignals(
+  signals: WatchdogSignal[],
+  checkEdited: GitEditCheck,
+  bufferMs = 10 * 60 * 1000,
+): Promise<WatchdogSignal[]> {
+  const kept: WatchdogSignal[] = [];
+  for (const s of signals) {
+    const path = s.paths?.[0];
+    if (s.source !== 'red-test' || !path || !s.earliestAt || !s.latestAt) {
+      kept.push(s);
+      continue;
+    }
+    const since = new Date(new Date(s.earliestAt).getTime() - bufferMs).toISOString();
+    const until = new Date(new Date(s.latestAt).getTime() + bufferMs).toISOString();
+    let edited = false;
+    try {
+      edited = await checkEdited(path, since, until);
+    } catch {
+      edited = false; // fail open — never let a git error silently eat a real signal
+    }
+    if (!edited) kept.push(s);
+  }
+  return kept;
+}
+
+let cachedRedTestRepoRoot: string | null = null;
+
+/** `git rev-parse --show-toplevel`, memoized (same pattern as agent-tools/plans/git-history.ts). */
+function resolveRedTestRepoRoot(): string {
+  if (cachedRedTestRepoRoot) return cachedRedTestRepoRoot;
+  try {
+    const top = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      timeout: 5000,
+    }).trim();
+    cachedRedTestRepoRoot = top || process.cwd();
+  } catch {
+    cachedRedTestRepoRoot = process.cwd();
+  }
+  return cachedRedTestRepoRoot;
+}
+
+const execFileP = promisify(execFile);
+
+/**
+ * Real IO `GitEditCheck`: does `filePath` have ≥1 commit whose author date
+ * falls in [sinceIso, untilIso]? Shell-less (execFile); a git failure (not a
+ * repo, path never committed, git missing) resolves to `false` (no debounce)
+ * rather than throwing, so a git hiccup degrades to today's behavior.
+ */
+export async function wasFilePathCommittedInRange(
+  filePath: string,
+  sinceIso: string,
+  untilIso: string,
+): Promise<boolean> {
+  const repoRoot = resolveRedTestRepoRoot();
+  try {
+    const { stdout } = await execFileP(
+      'git',
+      ['log', `--since=${sinceIso}`, `--until=${untilIso}`, '--pretty=format:%H', '--', filePath],
+      { cwd: repoRoot, timeout: 5000, maxBuffer: 64 * 1024 },
+    );
+    return stdout.trim().length > 0;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -628,13 +723,18 @@ export async function collectRedTestSignals(sql: Sql, opts: CollectOptions = {})
            max(framework) AS framework,
            count(*) FILTER (WHERE status IN ('fail', 'error'))::int AS fails,
            max(output_tail) FILTER (WHERE status IN ('fail', 'error')) AS sample,
-           max(started_at) FILTER (WHERE status IN ('fail', 'error')) AS latest_fail_at
+           max(started_at) FILTER (WHERE status IN ('fail', 'error')) AS latest_fail_at,
+           min(started_at) FILTER (WHERE status IN ('fail', 'error')) AS earliest_fail_at
       FROM recent
      GROUP BY file_path
     HAVING count(*) FILTER (WHERE status IN ('fail', 'error')) >= ${minFails}
        AND max(CASE WHEN rn = 1 THEN status END) IN ('fail', 'error')
      LIMIT 20`;
-  return redTestSignalsFromRows(rows, windowHours);
+  const signals = redTestSignalsFromRows(rows, windowHours);
+  // EI-10102: drop signals for files that were being actively git-committed
+  // across their own failure window — a mid-refactor artifact, not a real
+  // regression. A genuine break re-fires next tick once the file settles.
+  return debounceRedTestSignals(signals, wasFilePathCommittedInRange);
 }
 
 interface SmokeFailRow { harness_slug: string; failure_content: string | null; mtime_ms: number | string | null }

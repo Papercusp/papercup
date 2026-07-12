@@ -20,6 +20,7 @@ import {
   isResolvedFirePath,
   normalizeRedTestPath,
   redTestSignalsFromRows,
+  debounceRedTestSignals,
   isServiceHealthStale,
   serviceDownCollectorResult,
   DEFAULT_SERVICE_HEALTH_MAX_STALE_MS,
@@ -823,6 +824,75 @@ describe('red-test path normalization — one identity per broken test', () => {
     expect(signals[0].paths).toEqual(['apps/operator/lib/__tests__/x.test.ts']);
     expect(signals[0].body).toContain('failed 7×'); // counts summed across trees
     expect(signals[0].body).toContain('boom');
+  });
+
+  it('MERGES earliestAt as the min across canonical + checkpoint rows (the debounce span)', () => {
+    const signals = redTestSignalsFromRows(
+      [
+        { file_path: 'a.test.ts', framework: 'vitest', fails: 3, sample: null, earliest_fail_at: '2026-07-11T20:00:00Z', latest_fail_at: '2026-07-11T20:30:00Z' },
+        { file_path: 'a.test.ts', framework: 'vitest', fails: 2, sample: null, earliest_fail_at: '2026-07-11T19:00:00Z', latest_fail_at: '2026-07-11T19:15:00Z' },
+      ],
+      6,
+    );
+    expect(signals).toHaveLength(1);
+    expect(signals[0].earliestAt).toBe('2026-07-11T19:00:00.000Z');
+    expect(signals[0].latestAt).toBe('2026-07-11T20:30:00.000Z');
+  });
+});
+
+describe('debounceRedTestSignals (EI-10102): a file being actively edited across its own failure window is a mid-refactor artifact, not a regression', () => {
+  const redTestSig = (over: Partial<WatchdogSignal> = {}): WatchdogSignal => ({
+    source: 'red-test',
+    key: 'a.test.ts',
+    title: 'Test failing repeatedly: a.test.ts',
+    body: 'detail',
+    severity: 'major',
+    paths: ['a.test.ts'],
+    earliestAt: '2026-07-11T20:00:00.000Z',
+    latestAt: '2026-07-11T20:30:00.000Z',
+    ...over,
+  });
+
+  it('drops the signal when checkEdited reports a commit inside the (buffered) failure window', async () => {
+    const checkEdited = vi.fn(async () => true);
+    const kept = await debounceRedTestSignals([redTestSig()], checkEdited);
+    expect(kept).toEqual([]);
+    expect(checkEdited).toHaveBeenCalledTimes(1);
+    const [path, since, until] = checkEdited.mock.calls[0] as [string, string, string];
+    expect(path).toBe('a.test.ts');
+    // Buffered 10min either side of the earliest/latest fail.
+    expect(since).toBe('2026-07-11T19:50:00.000Z');
+    expect(until).toBe('2026-07-11T20:40:00.000Z');
+  });
+
+  it('keeps the signal when checkEdited reports NO commit in the window (a real, settled regression)', async () => {
+    const kept = await debounceRedTestSignals([redTestSig()], async () => false);
+    expect(kept).toHaveLength(1);
+    expect(kept[0].key).toBe('a.test.ts');
+  });
+
+  it('fails OPEN when checkEdited throws — a git hiccup never silently swallows a real signal', async () => {
+    const kept = await debounceRedTestSignals([redTestSig()], async () => {
+      throw new Error('git not found');
+    });
+    expect(kept).toHaveLength(1);
+  });
+
+  it('leaves non-red-test signals and red-test signals missing a window untouched (no debounce attempted)', async () => {
+    const checkEdited = vi.fn(async () => true);
+    const other = { source: 'smoke-fail' as const, key: 'x', title: 't', body: 'b', severity: 'major' as const, paths: ['a.test.ts'] };
+    const noWindow = redTestSig({ earliestAt: undefined, latestAt: undefined });
+    const kept = await debounceRedTestSignals([other, noWindow], checkEdited);
+    expect(kept).toEqual([other, noWindow]);
+    expect(checkEdited).not.toHaveBeenCalled();
+  });
+
+  it('only debounces the signals actually edited — a mixed batch keeps the untouched file, drops the mid-refactor one', async () => {
+    const editedFile = redTestSig({ key: 'edited.test.ts', paths: ['edited.test.ts'] });
+    const settledFile = redTestSig({ key: 'settled.test.ts', paths: ['settled.test.ts'] });
+    const checkEdited = vi.fn(async (path: string) => path === 'edited.test.ts');
+    const kept = await debounceRedTestSignals([editedFile, settledFile], checkEdited);
+    expect(kept.map((s) => s.key)).toEqual(['settled.test.ts']);
   });
 });
 

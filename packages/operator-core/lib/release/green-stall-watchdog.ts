@@ -449,6 +449,23 @@ export async function checkMainBehindStaging(
       gitOut(process.cwd(), ['rev-parse', '--show-toplevel']) ??
       process.cwd();
     const harnessSlug = opts.harnessSlug ?? 'papercusp';
+    // EI-10103: harness_escalations.workspace_id is NOT NULL (default ''); this check is
+    // single-harness-scoped (unlike checkGreenStall's per-tenant `routines` scan, which
+    // gets a real workspace_id off each row) and had no caller ever pass opts.workspaceId,
+    // so the insert below explicitly wrote NULL — bypassing the column default (a default
+    // only applies when the column is OMITTED, not when it's explicitly set to NULL) and
+    // violating the not-null constraint on every real stall, silently swallowed by this
+    // function's own outer catch. Resolve the real workspace the harness lives in; never
+    // let a resolution failure block the escalation itself (RESOLVED empty-string is
+    // exactly what the column's own default would have been for an unresolvable harness).
+    const workspaceId =
+      opts.workspaceId ??
+      (await resolveWorkspaceForHarness(harnessSlug).catch((e) => {
+        console.warn(
+          `[main-behind-staging-watchdog] workspace resolution failed for '${harnessSlug}': ${e instanceof Error ? e.message : e}`,
+        );
+        return '';
+      }));
     const snapshot = computeMainBehindStaging(root, opts.mainBranch, opts.stagingBranch);
     const verdict = evaluateMainBehindStaging(snapshot, opts);
 
@@ -466,7 +483,7 @@ export async function checkMainBehindStaging(
           title: 'Release pipeline STALLED — main is falling behind staging',
           body: verdict.reason ?? '',
           importance: 'urgent',
-          workspaceId: opts.workspaceId,
+          workspaceId,
           data: { commitsBehind: snapshot.commitsBehind, behindMs: snapshot.behindMs },
         });
       } catch (e) {
@@ -487,7 +504,7 @@ export async function checkMainBehindStaging(
           behindMs: snapshot.behindMs,
           detail: verdict.reason,
           emitted_at: Date.now(),
-        })}, ${Date.now()}, ${opts.workspaceId ?? null})
+        })}, ${Date.now()}, ${workspaceId})
         ON CONFLICT (harness_slug, phase)
         DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`;
       out.alarmed = true;

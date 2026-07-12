@@ -317,10 +317,9 @@ export default function LearningTab() {
                 key={stage.id}
                 value={stage.id}
                 className="pc-learning__stage"
-                aria-label={
-                  status
-                    ? `${stage.label}, ${statusDescription(status)}`
-                    : stage.label
+                aria-label={stage.label}
+                aria-describedby={
+                  status ? `learning-stage-status-${stage.id}` : undefined
                 }
               >
                 <span
@@ -328,7 +327,15 @@ export default function LearningTab() {
                 >
                   <Icon size={16} aria-hidden />
                   {semantic ? (
-                    <span className="pc-learning__statusmark" aria-hidden />
+                    <>
+                      <span className="pc-learning__statusmark" aria-hidden />
+                      <span
+                        id={`learning-stage-status-${stage.id}`}
+                        className="pc-learning__statusdesc"
+                      >
+                        {statusDescription(status!)}
+                      </span>
+                    </>
                   ) : null}
                 </span>
                 <span className="pc-learning__stage-label">{stage.label}</span>
@@ -362,10 +369,11 @@ export default function LearningTab() {
                     key={candidate.id}
                     value={candidate.id}
                     className={`pc-learning__view-tab${semantic ? ` has-${semantic}` : ""}`}
-                    aria-label={
+                    aria-label={candidate.label}
+                    aria-describedby={
                       status
-                        ? `${candidate.label}, ${statusDescription(status)}`
-                        : candidate.label
+                        ? `learning-view-status-${candidate.id}`
+                        : undefined
                     }
                     title={candidate.label}
                   >
@@ -374,10 +382,18 @@ export default function LearningTab() {
                     >
                       <Icon size={12} aria-hidden />
                       {semantic ? (
-                        <span
-                          className="pc-learning__statusmark"
-                          aria-hidden
-                        />
+                        <>
+                          <span
+                            className="pc-learning__statusmark"
+                            aria-hidden
+                          />
+                          <span
+                            id={`learning-view-status-${candidate.id}`}
+                            className="pc-learning__statusdesc"
+                          >
+                            {statusDescription(status!)}
+                          </span>
+                        </>
                       ) : null}
                     </span>
                     <span className="pc-learning__view-label">
@@ -2851,6 +2867,39 @@ export function ScoutView({
 
 type HiveLearningRowT = HiveLearningsSnapshot["rows"][number];
 
+function learningPreview(text: string): { headline: string; preview: string } {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  const boundary = [/\.\s/, /:\s/, / —\s/, /;\s/]
+    .map((pattern) => normalized.search(pattern))
+    .filter((index) => index >= 32 && index <= 120)
+    .sort((a, b) => a - b)[0];
+  const cut =
+    boundary ??
+    (normalized.length > 104
+      ? normalized.lastIndexOf(" ", 104)
+      : normalized.length);
+  const safeCut = cut > 0 ? cut + (boundary == null ? 0 : 1) : normalized.length;
+  return {
+    headline: normalized.slice(0, safeCut).trim(),
+    preview: normalized.slice(safeCut).trim(),
+  };
+}
+
+function learningProvenance(createdBy: string | null, kind: string | null) {
+  const source = `${createdBy ?? ""} ${kind ?? ""}`.toLowerCase();
+  if (/owner|user|human/.test(source))
+    return { Icon: UserRound, tone: "owner", label: "Owner retained" };
+  if (/queen|mug|brain/.test(source))
+    return { Icon: Brain, tone: "brain", label: "Learning loop retained" };
+  if (/scout|idea/.test(source))
+    return { Icon: Radar, tone: "scout", label: "Scout retained" };
+  if (/migration|system/.test(source))
+    return { Icon: ShieldCheck, tone: "system", label: "System retained" };
+  if (/reference|project/.test(source))
+    return { Icon: BookOpen, tone: "reference", label: "Project reference" };
+  return { Icon: Sparkles, tone: "agent", label: "Agent retained" };
+}
+
 function LearningsView({
   hive,
   onStatus,
@@ -2928,6 +2977,9 @@ function LearningsView({
 
   const renderLearning = (r: HiveLearningRowT) => {
     const selected = selectedLearning === r.id;
+    const preview = learningPreview(r.text);
+    const provenance = learningProvenance(r.createdBy, r.kind);
+    const ProvenanceIcon = provenance.Icon;
     return (
       <li
         key={r.id}
@@ -2955,11 +3007,16 @@ function LearningsView({
             }
           }}
         >
-          <span
-            className={`pc-learning__retainedtext${selected ? " is-expanded" : ""}`}
-          >
-            {r.text}
-          </span>
+          {selected ? (
+            <span className="pc-learning__retainedtext is-expanded">
+              {r.text}
+            </span>
+          ) : (
+            <span className="pc-learning__retainedsummary">
+              <strong>{preview.headline}</strong>
+              {preview.preview ? <span>{preview.preview}</span> : null}
+            </span>
+          )}
           <span
             style={{
               display: "flex",
@@ -2970,17 +3027,18 @@ function LearningsView({
               color: "var(--fg-mute)",
             }}
           >
-            {r.createdBy ? (
-              <Tooltip label={r.createdBy}>
+            {r.createdBy || r.kind ? (
+              <Tooltip
+                label={`${provenance.label}${r.createdBy ? ` · ${r.createdBy}` : ""}${r.kind ? ` · ${r.kind}` : ""}`}
+              >
                 <span
-                  className="pc-learning__provenance"
-                  aria-label={`Retained by ${r.createdBy}`}
+                  className={`pc-learning__provenance is-${provenance.tone}`}
+                  aria-label={`${provenance.label}${r.createdBy ? ` by ${r.createdBy}` : ""}`}
                 >
-                  <UserRound size={10} aria-hidden />
+                  <ProvenanceIcon size={10} aria-hidden />
                 </span>
               </Tooltip>
             ) : null}
-            {r.kind ? <span>{r.kind}</span> : null}
           </span>
         </span>
         {selected ? (
@@ -3144,6 +3202,7 @@ export function LearningStyles() {
       }
       .pc-learning__stage-label { font-size: 11px; font-weight: 650; }
       .pc-learning__statusmark { position: absolute; right: -2px; bottom: -2px; width: 7px; height: 7px; border: 2px solid var(--bg-1); border-radius: 50%; background: var(--fg-mute); }
+      .pc-learning__statusdesc { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
       .pc-learning__stage-icon.has-active, .pc-learning__view-icon.has-active { --learning-status: var(--accent); }
       .pc-learning__stage-icon.has-attention, .pc-learning__view-icon.has-attention { --learning-status: #fbbf24; }
       .pc-learning__stage-icon.has-failure, .pc-learning__view-icon.has-failure { --learning-status: #fb7185; }
@@ -3335,6 +3394,10 @@ export function LearningStyles() {
       .pc-learning__retainedmain:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
       .pc-learning__retainedtext { display: -webkit-box; overflow: hidden; font-size: 12px; line-height: 1.4; white-space: pre-wrap; word-break: break-word; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
       .pc-learning__retainedtext.is-expanded { display: block; overflow: visible; -webkit-line-clamp: unset; }
+      .pc-learning__retainedsummary { display: grid; gap: 2px; min-width: 0; }
+      .pc-learning__retainedsummary > strong, .pc-learning__retainedsummary > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .pc-learning__retainedsummary > strong { color: var(--fg); font-size: 11.5px; font-weight: 680; }
+      .pc-learning__retainedsummary > span { color: var(--fg-mute); font-size: 10.5px; }
       .pc-learning__retainedactions { display: inline-flex; gap: 5px; margin-top: 1px; }
 
       /* Lens sampling weights (P-007 steering visibility). */
@@ -3399,6 +3462,11 @@ export function LearningStyles() {
       .pc-learning__pendingrun strong { color: var(--fg); font-family: var(--font-mono, ui-monospace, monospace); }
       .pc-learning__pendingrun em { margin-left: auto; color: var(--fg-mute); font-style: normal; font-variant-numeric: tabular-nums; }
       .pc-learning__provenance { display: inline-grid; place-items: center; width: 18px; height: 18px; border: 1px solid var(--border); border-radius: 50%; color: var(--fg-mute); }
+      .pc-learning__provenance.is-owner { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 42%, var(--border)); }
+      .pc-learning__provenance.is-brain { color: #34d399; border-color: color-mix(in srgb, #34d399 42%, var(--border)); }
+      .pc-learning__provenance.is-scout { color: #a78bfa; border-color: color-mix(in srgb, #a78bfa 42%, var(--border)); }
+      .pc-learning__provenance.is-system { color: #fbbf24; border-color: color-mix(in srgb, #fbbf24 42%, var(--border)); }
+      .pc-learning__provenance.is-reference { color: #38bdf8; border-color: color-mix(in srgb, #38bdf8 42%, var(--border)); }
       .pc-learning__memorymap { display: grid; grid-template-columns: repeat(16, minmax(5px, 1fr)); grid-auto-rows: 1fr; gap: 3px; padding: 12px; }
       .pc-learning__memorymap i { min-height: 10px; border-radius: 2px; background: color-mix(in srgb, var(--accent) 58%, transparent); opacity: .78; }
       .pc-learning__memorymap i.is-organic { background: #34d399; }

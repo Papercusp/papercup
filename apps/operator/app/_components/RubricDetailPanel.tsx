@@ -56,6 +56,49 @@ function formatDistribution(distribution: Record<string, number>): string {
     .join(", ");
 }
 
+function distributionTone(rating: string): string {
+  const normalized = rating.toLowerCase();
+  if (/healthy|good|strong|excellent|pass|complete/.test(normalized))
+    return "good";
+  if (/degraded|warn|partial|inconclusive/.test(normalized)) return "warn";
+  if (/broken|bad|fail|regress/.test(normalized)) return "bad";
+  if (/unknown|unrated|idle/.test(normalized)) return "neutral";
+  return "accent";
+}
+
+function DistributionBar({
+  distribution,
+  count,
+}: {
+  distribution: Record<string, number>;
+  count: number;
+}) {
+  const entries = Object.entries(distribution)
+    .filter(([, value]) => value > 0)
+    .sort((a, b) => b[1] - a[1]);
+  const total = entries.reduce((sum, [, value]) => sum + value, 0);
+  const label = formatDistribution(distribution);
+  return (
+    <span
+      className="pc-rubric-distribution"
+      role="img"
+      aria-label={`${label}; ${count} rated`}
+      title={`${label} · ${count} rated`}
+    >
+      <span className="pc-rubric-distribution__track" aria-hidden>
+        {entries.map(([rating, value]) => (
+          <i
+            key={rating}
+            data-tone={distributionTone(rating)}
+            style={{ width: `${total > 0 ? (value / total) * 100 : 0}%` }}
+          />
+        ))}
+      </span>
+      <strong>{count}</strong>
+    </span>
+  );
+}
+
 export default function RubricDetailPanel({
   rubricId,
   onBack,
@@ -142,13 +185,9 @@ export default function RubricDetailPanel({
         {
           key: "distribution",
           header: "Distribution",
-          render: (c) => formatDistribution(c.distribution),
-        },
-        {
-          key: "rated",
-          header: "Rated",
-          render: (c) => c.count,
-          cellStyle: { fontVariantNumeric: "tabular-nums" },
+          render: (c) => (
+            <DistributionBar distribution={c.distribution} count={c.count} />
+          ),
         },
       ]
     : [];
@@ -317,6 +356,14 @@ export default function RubricDetailPanel({
         .pc-rubric-detail__disclosure svg { transition: transform 140ms ease; }
         .pc-rubric-detail__disclosure[data-state="open"] svg { transform: rotate(180deg); }
         .pc-rubric-detail__disclosure strong { margin-left: auto; color: var(--fg); font-variant-numeric: tabular-nums; }
+        .pc-rubric-distribution { display: grid; grid-template-columns: minmax(72px, 1fr) auto; align-items: center; gap: 7px; min-width: 112px; }
+        .pc-rubric-distribution__track { display: flex; height: 7px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--fg) 6%, transparent); }
+        .pc-rubric-distribution__track i { display: block; min-width: 2px; height: 100%; background: var(--accent); }
+        .pc-rubric-distribution__track i[data-tone="good"] { background: #34d399; }
+        .pc-rubric-distribution__track i[data-tone="warn"] { background: #fbbf24; }
+        .pc-rubric-distribution__track i[data-tone="bad"] { background: #fb7185; }
+        .pc-rubric-distribution__track i[data-tone="neutral"] { background: #64748b; }
+        .pc-rubric-distribution > strong { color: var(--fg-mute); font-size: 9.5px; font-weight: 650; font-variant-numeric: tabular-nums; }
         @media (max-width: 720px) { .pc-rubric-detail__overview { grid-template-columns: repeat(2, 1fr); } }
       `}</style>
     </div>
