@@ -244,6 +244,68 @@ describe('clean-idle exemption (false-alarm fix, 2026-07-02)', () => {
   });
 });
 
+describe('commit-only / bridged hive members (p2p-git-live-activation P-306) — no watchdog change needed, verified', () => {
+  // A bridged/p2p-only hive's members go COMMIT-ONLY: git-sync-action.ts sets cfg.push=false at
+  // the eligibility gate (never routes through the 'skipped' no-op path — that's reserved for a
+  // fire the P-008 eligibility gate itself no-ops, e.g. no_path/hive_home/remote_hive_view).
+  // run-git-sync.ts's reconcileAndPushOneRepo still returns status:'synced' whenever
+  // committedLocal||mergedNew, regardless of `pushed` (push simply stays false) — so a
+  // commit-only member's `last_status` is 'synced'/'nothing' exactly like a legacy member's,
+  // never 'skipped'. These pin that contract at the pure-verdict layer: commitStale must key
+  // off HEAD movement, and stay silent on a genuinely idle commit-only member, exactly as
+  // documented in agent-insights/hive-git-p2p-ops-runbook-2026-07-09.mdx "Watchdog interplay
+  // under commit-only mode".
+  it("a commit-only member with local commits landing (status:'synced', HEAD moving, push disabled) never false-alarms", () => {
+    const v = evaluateGitSyncStall(
+      { lastFiredMs: NOW - 2 * M, headUnchangedMs: 2 * M, lastError: null, lastStatus: 'synced', watchdogAlerted: false, reapedCount: 0 },
+      NOW,
+    );
+    expect(v.stalled).toBe(false);
+    expect(v.commitStale).toBe(false);
+  });
+
+  it("a genuinely idle commit-only member (status:'nothing', HEAD frozen for days) never false-alarms — push being disabled is irrelevant to the clean-idle exemption", () => {
+    const v = evaluateGitSyncStall(
+      { lastFiredMs: NOW - 2 * M, headUnchangedMs: 96 * H, lastError: null, lastStatus: 'nothing', watchdogAlerted: false, reapedCount: 0 },
+      NOW,
+    );
+    expect(v.stalled).toBe(false);
+    expect(v.commitStale).toBe(false);
+  });
+
+  it("a commit-only member whose HEAD genuinely freezes with real pending work (status:'synced' from a stale snapshot, or an 'error') STILL alarms — commit-only never masks a real stall", () => {
+    const stillSynced = evaluateGitSyncStall(
+      { lastFiredMs: NOW - 2 * M, headUnchangedMs: 31 * M, lastError: null, lastStatus: 'synced', watchdogAlerted: false, reapedCount: 0 },
+      NOW,
+    );
+    expect(stillSynced.stalled).toBe(true);
+    expect(stillSynced.commitStale).toBe(true);
+
+    const erroring = evaluateGitSyncStall(
+      { lastFiredMs: NOW - 2 * M, headUnchangedMs: 5 * M, lastError: 'merge failed', errorSweeps: 2, lastStatus: 'error', watchdogAlerted: false, reapedCount: 0 },
+      NOW,
+    );
+    expect(erroring.stalled).toBe(true);
+    expect(erroring.errorStall).toBe(true);
+  });
+
+  it('fire-stale / persistent-reap still alarm on a commit-only member exactly as on a legacy pushing member (status-independent signals, unaffected by cfg.push)', () => {
+    const fireStale = evaluateGitSyncStall(
+      { lastFiredMs: NOW - 4 * H, headUnchangedMs: 0, lastError: null, lastStatus: 'synced', watchdogAlerted: false, reapedCount: 0 },
+      NOW,
+    );
+    expect(fireStale.stalled).toBe(true);
+    expect(fireStale.fireStale).toBe(true);
+
+    const reaped = evaluateGitSyncStall(
+      { lastFiredMs: NOW - 2 * M, headUnchangedMs: 0, lastError: null, lastStatus: 'nothing', watchdogAlerted: false, reapedCount: 3 },
+      NOW,
+    );
+    expect(reaped.stalled).toBe(true);
+    expect(reaped.persistentReap).toBe(true);
+  });
+});
+
 describe('EI-9030b sustain debounce (edge-trigger before broadcast)', () => {
   describe('nextStallSweeps — the consecutive-stalled-sweep streak counter', () => {
     it('increments while stalled', () => {
