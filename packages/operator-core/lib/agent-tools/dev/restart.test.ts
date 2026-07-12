@@ -37,8 +37,20 @@ const spawnM = vi.mocked(spawn);
 const tool = (await import('./restart')).default;
 
 type Out = { content: { text: string }[] };
+type Fence = { assertCurrent: () => Promise<{ current: boolean; reason?: string; live_fence_seq?: number }>; seq?: number };
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
 const call = (args: Record<string, unknown>) => tool.handler(args as never, {} as never) as Promise<Out>;
+/** Drive guardResource's mock as `(spec, run) => run(fence)` — a thin,
+ *  explicitly-typed stand-in for the real drain+fence primitive (which has
+ *  its own coverage elsewhere) so `run` never infers to `never` through the
+ *  generic mock. */
+const runGuard = (fence: Fence) => async (_spec: unknown, run: (f: Fence) => Promise<unknown>) => ({
+  acquired: true,
+  result: await run(fence),
+  lock_id: 'L-test',
+});
+const fenceOk = (seq = 1): Fence => ({ assertCurrent: async () => ({ current: true }), seq });
+const fenceStale = (seq = 1): Fence => ({ assertCurrent: async () => ({ current: false, reason: 'superseded', live_fence_seq: 2 }), seq });
 
 const ORIGINAL_ENV = process.env.PAPERCUSP_ALLOW_DEV_RESTART;
 
@@ -76,7 +88,7 @@ describe('dev:restart dry run', () => {
 
 describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART unset', () => {
   it('target:dev drains but withholds the restart, without touching the cooldown marker', async () => {
-    guardM.mockImplementation(async (_spec, run) => ({ acquired: true, result: await (run as never)({ assertCurrent: async () => ({ current: true }) }), lock_id: 'L1' } as never));
+    guardM.mockImplementation(runGuard(fenceOk()) as never);
     const b = body(await call({ confirm: true }));
     expect(b).toMatchObject({ ok: true, target: 'dev', drained: true, restarted: false });
     // dev has no cooldownResource — the debounce path must never engage for it.
@@ -84,7 +96,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART unset', () => {
   });
 
   it('target:staging withholds the restart too, and never claims the cooldown marker (nothing real happened to debounce)', async () => {
-    guardM.mockImplementation(async (_spec, run) => ({ acquired: true, result: await (run as never)({ assertCurrent: async () => ({ current: true }) }), lock_id: 'L1' } as never));
+    guardM.mockImplementation(runGuard(fenceOk()) as never);
     const b = body(await call({ confirm: true, target: 'staging' }));
     expect(b).toMatchObject({ ok: true, target: 'staging', drained: true, restarted: false });
     expect(acquireM).not.toHaveBeenCalled();
@@ -98,7 +110,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
 
   it('claims the cooldown marker, drains+restarts, and does NOT release the cooldown on success', async () => {
     acquireM.mockResolvedValue({ ok: true, mode: 'exclusive', status: 'held', lock_id: 'COOL1', expires_ts: new Date(), shared_holders: [], fence_seq: 1 } as never);
-    guardM.mockImplementation(async (_spec, run) => ({ acquired: true, result: await (run as never)({ assertCurrent: async () => ({ current: true }), seq: 9 }), lock_id: 'L2' } as never));
+    guardM.mockImplementation(runGuard(fenceOk(9)) as never);
 
     const b = body(await call({ confirm: true, target: 'staging' }));
 
@@ -129,11 +141,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
 
   it('releases the cooldown marker if the drain/restart step aborts after claiming it (stale fence)', async () => {
     acquireM.mockResolvedValue({ ok: true, mode: 'exclusive', status: 'held', lock_id: 'COOL2', expires_ts: new Date(), shared_holders: [], fence_seq: 1 } as never);
-    guardM.mockImplementation(async (_spec, run) => ({
-      acquired: true,
-      result: await (run as never)({ assertCurrent: async () => ({ current: false, reason: 'superseded', live_fence_seq: 2 }), seq: 1 }),
-      lock_id: 'L3',
-    } as never));
+    guardM.mockImplementation(runGuard(fenceStale()) as never);
 
     const b = body(await call({ confirm: true, target: 'staging' }));
 
@@ -158,7 +166,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:dev (un
   });
 
   it('never touches the cooldown machinery for dev', async () => {
-    guardM.mockImplementation(async (_spec, run) => ({ acquired: true, result: await (run as never)({ assertCurrent: async () => ({ current: true }), seq: 3 }), lock_id: 'L4' } as never));
+    guardM.mockImplementation(runGuard(fenceOk(3)) as never);
     const b = body(await call({ confirm: true }));
     expect(b).toMatchObject({ ok: true, target: 'dev', restarted: true });
     expect(acquireM).not.toHaveBeenCalled();
