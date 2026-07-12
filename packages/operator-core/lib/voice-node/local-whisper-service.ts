@@ -98,9 +98,12 @@ export async function stopLocalWhisper(): Promise<void> {
   state.child = null;
   state.url = null;
   if (child && child.exitCode === null && !child.killed) {
+    // Register the exit-wait BEFORE kill — a child that exits synchronously on kill (fakes in
+    // tests; a fast real exit) would otherwise strand the wait until the timeout fallback.
+    const exited = once(child, 'exit');
     child.kill('SIGTERM');
     // Bounded wait — whisper-server exits promptly on SIGTERM; don't hang shutdown on it.
-    await Promise.race([once(child, 'exit'), new Promise((r) => setTimeout(r, 3000))]).catch(() => {});
+    await Promise.race([exited, new Promise((r) => setTimeout(r, 3000))]).catch(() => {});
   }
 }
 
