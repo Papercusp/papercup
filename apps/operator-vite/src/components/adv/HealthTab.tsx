@@ -107,7 +107,16 @@ export default function HealthTab() {
   const [, setTab] = useQueryState('tab', parseAsString);
   const [expandedKey, setExpandedKey] = useQueryState('healthPanel', parseAsString);
   const health = sync.data?.[0];
-  const history = historySync.data?.[0] ?? null;
+  // Shape-guard the history row (fail-soft, D-B): the tab must degrade to
+  // snapshot-only on a malformed/absent history payload, never crash — the
+  // resolver already returns [] on any read error, this guards drift too.
+  const rawHistory = historySync.data?.[0];
+  const history: HealthHistoryRow | null =
+    rawHistory && typeof rawHistory === 'object' &&
+    typeof (rawHistory as HealthHistoryRow).since === 'object' && (rawHistory as HealthHistoryRow).since !== null &&
+    typeof (rawHistory as HealthHistoryRow).strips === 'object' && (rawHistory as HealthHistoryRow).strips !== null
+      ? rawHistory
+      : null;
 
   // P-013: the tab keeps its OWN clock so "checked Xs ago" ticks between SSE
   // pushes — and so a frozen health tick (no pushes at all) turns the tab

@@ -1,0 +1,46 @@
+{
+  "tabs": [
+    {
+      "id": "self-improvement",
+      "label": "Self-improvement",
+      "description": "Autonomous agents continuously improving their own systems",
+      "images": []
+    },
+    {
+      "id": "plan-ship",
+      "label": "Plan & ship",
+      "description": "Collaborative planning and deployment pipeline",
+      "images": []
+    },
+    {
+      "id": "fleet-coordination",
+      "label": "Fleet & coordination",
+      "description": "Multi-agent fleet coordination and task management",
+      "images": []
+    },
+    {
+      "id": "operate",
+      "label": "Operate",
+      "description": "System operation and monitoring",
+      "images": []
+    },
+    {
+      "id": "knowledge",
+      "label": "Knowledge",
+      "description": "Knowledge management and recall systems",
+      "images": []
+    },
+    {
+      "id": "extend",
+      "label": "Extend it",
+      "description": "Extensibility and customization",
+      "images": []
+    },
+    {
+      "id": "federation",
+      "label": "Federation",
+      "description": "Cross-system federation and integration",
+      "images": []
+    }
+  ]
+}

@@ -1,3 +1,5 @@
+import { FeatureShowcase } from './gallery-component';
+
 const tagline =
   'Welcome to the End. Be part of the new beginning. Create or Join a Hive, start a swarm, and mold the future for whatever comes next.';
 
@@ -42,6 +44,7 @@ export default function Home() {
             <a href="#hive">Hive</a>
             <a href="#queen">Queen</a>
             <a href="#lexicon">Lexicon</a>
+            <a href="#showcase">Showcase</a>
           </nav>
         </header>
 
@@ -100,6 +103,8 @@ export default function Home() {
             ))}
           </div>
         </section>
+
+        <FeatureShowcase />
       </div>
     </main>
   );
