@@ -1,12 +1,18 @@
 /**
- * voice-node/kokoro-local — IN-PROCESS local TTS via kokoro-js
+ * voice-node/kokoro-local — IN-PROCESS local TTS via the VENDORED kokoro port (./kokoro/kokoro-tts)
  * (voice-public-release-readiness-2026-07-12 P-009 hop 2/3, plan D-009, WI-4449).
  *
- * Public users get free, keyless, offline TTS with ZERO sidecar: kokoro-js runs Kokoro-82M
- * on the repo's existing @huggingface/transformers 4.2.0 + onnxruntime-node (verified live
- * 2026-07-12: warm rtFactor 0.71–1.03 on CPU q8 — sub-realtime; the cloud engines remain the
- * low-latency option, and an external kokoro server on KOKORO_URL — e.g. the dev box's GPU
- * kokoro-fastapi — always takes precedence in tts-synth.ts).
+ * Public users get free, keyless, offline TTS with ZERO sidecar: Kokoro-82M runs on the repo's
+ * existing @huggingface/transformers 4.2.0 + onnxruntime-node (native EP). The kokoro-js npm
+ * package is deliberately NOT a dependency — it pins transformers 3.x, which npm-workspaces
+ * `overrides` cannot dedupe (a 706MB duplicate onnxruntime stack; see ./kokoro/kokoro-tts.ts's
+ * header and WI-4471) — so its ~200 lines of glue are vendored instead.
+ *
+ * Measured live 2026-07-12 on this box (CPU q8, steady state over 4 synths): rtFactor 0.81–1.07,
+ * i.e. roughly real-time — parity with the kokoro-js spike (0.71–1.03), so vendoring cost no
+ * performance. The FIRST synth in a process is slower (~1.8x) — graph + threadpool warm-up.
+ * The cloud engines remain the low-latency option, and an external kokoro server on KOKORO_URL
+ * (e.g. the dev box's GPU kokoro-fastapi) always takes precedence in tts-synth.ts.
  *
  * Layers:
  *   - `isKokoroLocalProvisioned()` — fs-only marker check (no model load, no network).

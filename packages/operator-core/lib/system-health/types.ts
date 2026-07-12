@@ -593,6 +593,20 @@ export interface MemoryPanelHealth {
   feedback30d: number;
   /** Recall zero-hit rate (0..1) when the telemetry exposes one, else null. */
   zeroHitRate: number | null;
+  /**
+   * Recalls RECORDED in the trailing 7 days — the denominator `zeroHitRate` is
+   * computed over, and the reason it must travel with it (EI-10625). The rate
+   * alone cannot distinguish "no recall ever missed" from "no recall was ever
+   * RECORDED": `readRecallHealth` computes `recalls > 0 ? zeroHit/recalls : 0`,
+   * so a dark telemetry pipeline yields 0.0 — the *best* possible reading.
+   */
+  recalls7d: number;
+  /**
+   * False when the recall-telemetry read itself FAILED (the aggregate degraded
+   * to zeros). Absence of signal is not health: without this the panel cannot
+   * tell a healthy store from an unreadable one, and reports the healthy answer.
+   */
+  recallTelemetryOk: boolean;
 }
 
 /**
