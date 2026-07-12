@@ -342,16 +342,20 @@ describe('evaluateInvariants', () => {
     expect(evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW)).toEqual([]);
   });
 
-  it('EI-10257: the exact stale-re-file snapshot (depth 56, oldest 11h) no longer alarms under the CURRENT thresholds', () => {
-    // EI-10257 (auto-filed 2026-07-12 07:37) is a stale re-file of the EI-10177/EI-8664
-    // class: it fired citing "depth=56 (max 50), oldest=11.0h" — but that `max 50` is the
-    // OLD threshold. EI-10177 raised wakeQueueDepthMax 50 → 250 (committed + green in main
-    // at 06:39, one hour before this EI), and the AGE alarm already fires only past the
-    // 24h+1h auto-expiry deadline (EI-8664). The alarm kept re-filing only because the
-    // deployed :3070 operator predates the raise; the fix is in-tree and this pin proves it.
-    // With the CURRENT thresholds, 56 < 250 and 11h < 25h ⇒ ZERO violations.
+  it('EI-10257 / EI-10248: the exact stale-re-file snapshot (depth 56, oldest ~10-11h) no longer alarms under the CURRENT thresholds', () => {
+    // EI-10257 (auto-filed 2026-07-12 07:37) and its twin EI-10248 (auto-filed 06:37, 2.5min
+    // BEFORE the fix committed) are stale re-files of the EI-10177/EI-8664 class: both fired
+    // citing "depth=56 (max 50), oldest=~10-11h" — but that `max 50` is the OLD threshold.
+    // EI-10177 raised wakeQueueDepthMax 50 → 250 (committed + green in main at 06:39), and the
+    // AGE alarm already fires only past the 24h+1h auto-expiry deadline (EI-8664). The alarm
+    // kept re-filing only because the deployed :3070 operator predated the raise; the fix is
+    // in-tree and this pin proves it. With the CURRENT thresholds, 56 < 250 and 10-11h < 25h
+    // ⇒ ZERO violations.
     const snap = { ...cleanSnap, wakeQueueDepth: 56, wakeQueueOldestMs: NOW - 11 * 3_600_000 };
     expect(evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW)).toEqual([]);
+    // EI-10248's exact snapshot: depth=56, oldest=10.0h — same class, same verdict.
+    const ei10248 = { ...cleanSnap, wakeQueueDepth: 56, wakeQueueOldestMs: NOW - 10 * 3_600_000 };
+    expect(evaluateInvariants(ei10248, DEFAULT_THRESHOLDS, NOW)).toEqual([]);
   });
 
   describe('WI-3959: coord_event_log furnace-class recurrence guard', () => {
