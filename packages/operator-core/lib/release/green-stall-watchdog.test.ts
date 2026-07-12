@@ -362,9 +362,9 @@ describe('checkMainBehindStaging DB wiring (EI-10103: workspace_id NOT NULL)', (
   // computeMainBehindStaging's two git calls (rev-list --count, then log --format=%ct --reverse)
   // are the only ones made.
   function mockStalledGit() {
-    vi.mocked(execFileSync)
-      .mockReturnValueOnce('30\n' as unknown as Buffer)
-      .mockReturnValueOnce(`${Math.floor((Date.now() - 2 * H) / 1000)}\n` as unknown as Buffer);
+    (vi.mocked(execFileSync) as unknown as { mockReturnValueOnce: (v: string) => { mockReturnValueOnce: (v: string) => void } })
+      .mockReturnValueOnce('30\n')
+      .mockReturnValueOnce(`${Math.floor((Date.now() - 2 * H) / 1000)}\n`);
   }
 
   it('threads a resolved, non-null workspace_id into the escalation insert (previously always NULL)', async () => {
@@ -406,7 +406,7 @@ describe('checkMainBehindStaging DB wiring (EI-10103: workspace_id NOT NULL)', (
 
   it('does not insert at all when nothing is stalled (no regression to the happy path)', async () => {
     // in-sync (0 commits behind) — evaluateMainBehindStaging never alarms.
-    vi.mocked(execFileSync).mockReturnValueOnce('0\n' as unknown as Buffer);
+    (vi.mocked(execFileSync) as unknown as { mockReturnValueOnce: (v: string) => void }).mockReturnValueOnce('0\n');
     const { sql, calls } = makeFakeSql([]);
     const result = await checkMainBehindStaging(sql, { root: '/fake/repo', harnessSlug: 'papercusp' });
     expect(result.alarmed).toBe(false);

@@ -854,11 +854,11 @@ describe('debounceRedTestSignals (EI-10102): a file being actively edited across
   });
 
   it('drops the signal when checkEdited reports a commit inside the (buffered) failure window', async () => {
-    const checkEdited = vi.fn(async () => true);
+    const checkEdited = vi.fn(async (_path: string, _since: string, _until: string) => true);
     const kept = await debounceRedTestSignals([redTestSig()], checkEdited);
     expect(kept).toEqual([]);
     expect(checkEdited).toHaveBeenCalledTimes(1);
-    const [path, since, until] = checkEdited.mock.calls[0] as [string, string, string];
+    const [path, since, until] = checkEdited.mock.calls[0];
     expect(path).toBe('a.test.ts');
     // Buffered 10min either side of the earliest/latest fail.
     expect(since).toBe('2026-07-11T19:50:00.000Z');

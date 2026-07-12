@@ -96,11 +96,7 @@ type LView = (typeof LVIEWS)[number];
 
 type LearningStage = "observe" | "improve" | "verify" | "retain";
 type LearningViewStatus = "neutral" | "good" | "warn" | "bad";
-type LearningStatusSemantic =
-  | "dormant"
-  | "active"
-  | "attention"
-  | "failure";
+type LearningStatusSemantic = "dormant" | "active" | "attention" | "failure";
 
 function statusSemantic(status: LearningViewStatus): LearningStatusSemantic {
   if (status === "bad") return "failure";
@@ -720,57 +716,59 @@ function ImprovementsView({
 
       {showDashboard ? (
         <div className="pc-learning__sectionhead pc-learning__sectionhead--tools">
-        <div className="pc-learning__inlinetools">
-          {sources.length > 0 ? (
-            <Select
-              ariaLabel="Filter by who filed it"
-              value={src ?? "__any__"}
-              onChange={(v: string) => void setSrc(v === "__any__" ? null : v)}
-              options={[
-                { value: "__any__", label: "Any source" },
-                ...sources.map((s) => ({ value: s, label: s })),
-              ]}
-            />
-          ) : null}
-          <div
-            className="pc-learning__lanes"
-            role="tablist"
-            aria-label="Triage lane"
-          >
-            {LANES.filter(
-              (l) =>
-                l === "all" ||
-                (l === "auto"
-                  ? (digest?.autoEligible.length ?? 0) > 0
-                  : (digest?.humanQueue.length ?? 0) > 0),
-            ).map((l) => (
-              <Tooltip
-                key={l}
-                label={
-                  l === "auto"
-                    ? "Bugs agents may fix on their own"
-                    : l === "human"
-                      ? "Items waiting on your judgment"
-                      : null
+          <div className="pc-learning__inlinetools">
+            {sources.length > 0 ? (
+              <Select
+                ariaLabel="Filter by who filed it"
+                value={src ?? "__any__"}
+                onChange={(v: string) =>
+                  void setSrc(v === "__any__" ? null : v)
                 }
-              >
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={lane === l}
-                  className={`pc-learning__lane${lane === l ? " is-active" : ""}`}
-                  onClick={() => void setLane(l)}
+                options={[
+                  { value: "__any__", label: "Any source" },
+                  ...sources.map((s) => ({ value: s, label: s })),
+                ]}
+              />
+            ) : null}
+            <div
+              className="pc-learning__lanes"
+              role="tablist"
+              aria-label="Triage lane"
+            >
+              {LANES.filter(
+                (l) =>
+                  l === "all" ||
+                  (l === "auto"
+                    ? (digest?.autoEligible.length ?? 0) > 0
+                    : (digest?.humanQueue.length ?? 0) > 0),
+              ).map((l) => (
+                <Tooltip
+                  key={l}
+                  label={
+                    l === "auto"
+                      ? "Bugs agents may fix on their own"
+                      : l === "human"
+                        ? "Items waiting on your judgment"
+                        : null
+                  }
                 >
-                  {l === "all"
-                    ? "All"
-                    : l === "auto"
-                      ? "Auto-fixable"
-                      : "Needs review"}
-                </button>
-              </Tooltip>
-            ))}
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={lane === l}
+                    className={`pc-learning__lane${lane === l ? " is-active" : ""}`}
+                    onClick={() => void setLane(l)}
+                  >
+                    {l === "all"
+                      ? "All"
+                      : l === "auto"
+                        ? "Auto-fixable"
+                        : "Needs review"}
+                  </button>
+                </Tooltip>
+              ))}
+            </div>
           </div>
-        </div>
         </div>
       ) : null}
 
@@ -2202,9 +2200,7 @@ function GradePanel({
               type="button"
               className="pc-learning__panelbtn pc-learning__panelbtn--primary"
               disabled={busy}
-              onClick={() =>
-                onSave(grade, draft.trim() ? draft.trim() : null)
-              }
+              onClick={() => onSave(grade, draft.trim() ? draft.trim() : null)}
             >
               {busy ? "saving…" : "save grade"}
             </button>
@@ -2878,14 +2874,18 @@ function learningPreview(text: string): { headline: string; preview: string } {
     (normalized.length > 104
       ? normalized.lastIndexOf(" ", 104)
       : normalized.length);
-  const safeCut = cut > 0 ? cut + (boundary == null ? 0 : 1) : normalized.length;
+  const safeCut =
+    cut > 0 ? cut + (boundary == null ? 0 : 1) : normalized.length;
   return {
     headline: normalized.slice(0, safeCut).trim(),
     preview: normalized.slice(safeCut).trim(),
   };
 }
 
-function learningProvenance(createdBy: string | null, kind: string | null) {
+function learningProvenance(
+  createdBy: string | null | undefined,
+  kind: string | null | undefined,
+) {
   const source = `${createdBy ?? ""} ${kind ?? ""}`.toLowerCase();
   if (/owner|user|human/.test(source))
     return { Icon: UserRound, tone: "owner", label: "Owner retained" };

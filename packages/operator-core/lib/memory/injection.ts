@@ -109,6 +109,13 @@ export interface MemoryInjectionInput {
     /** Which injection moment this is (initialize/turn-start/compact/brief/claim/create). */
     port?: string;
   };
+  /**
+   * Per-call assembly budget override (chars). D-004 (memory-delivery-
+   * unification): mid-epoch moments (turn-start, the claim/create ports) are
+   * high-precision/LOW-VOLUME — injected lines compound in a warm session —
+   * so they pass a small budget (~3-4k) instead of the global 16k default.
+   */
+  budgetChars?: number;
 }
 
 /**
@@ -440,7 +447,8 @@ export async function buildMemoryContextBlock(
   const hiveOrganic = hiveHits.filter(({ hit }) => !isPackHit(hit));
   const hivePack = hiveHits.filter(({ hit }) => isPackHit(hit));
 
-  const budget = injectBudgetChars();
+  const budget =
+    input.budgetChars && input.budgetChars > 0 ? input.budgetChars : injectBudgetChars();
   let spent = 0;
   const lines: string[] = [];
   const surfacedIds: string[] = [];

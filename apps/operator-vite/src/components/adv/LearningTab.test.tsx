@@ -1084,7 +1084,9 @@ describe("ScoutView (Learning › Improve › Ideas) — idea grading (B-07, sco
       .closest(".pc-learning__gradepanel") as HTMLElement;
     expect(panel).toBeTruthy();
     expect(within(panel).queryByLabelText("Grading note")).toBeNull();
-    expect(within(panel).queryByRole("button", { name: "save grade" })).toBeNull();
+    expect(
+      within(panel).queryByRole("button", { name: "save grade" }),
+    ).toBeNull();
     fireEvent.click(within(panel).getByRole("radio", { name: "Grade 2 of 5" }));
     fireEvent.change(within(panel).getByLabelText("Grading note"), {
       target: { value: "Too speculative" },

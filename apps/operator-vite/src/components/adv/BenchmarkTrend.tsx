@@ -127,7 +127,9 @@ export function BenchmarkTrend({
         </span>
         <button
           type="button"
-          aria-label={expanded ? "Collapse benchmark trend" : "Expand benchmark trend"}
+          aria-label={
+            expanded ? "Collapse benchmark trend" : "Expand benchmark trend"
+          }
           aria-expanded={expanded}
           title={expanded ? "Collapse trend" : "Expand trend"}
           onClick={() => setExpanded((current) => !current)}

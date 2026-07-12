@@ -26,12 +26,48 @@ const recoveryBrief = defineTool({
     const workspace = (q.get('workspace') ?? '').trim() || undefined;
     try {
       const { buildCarryBrief, renderCarryBriefText } = await import('../../../carry-brief');
-      const text = renderCarryBriefText(await buildCarryBrief(owner, { workspaceId: workspace }));
-      return Response.json({ ok: true, text });
+      const brief = await buildCarryBrief(owner, { workspaceId: workspace });
+      const text = renderCarryBriefText(brief);
+
+      // P-003b (memory-delivery-unification-2026-07-12): this endpoint fires
+      // exactly once per compaction — it IS the session's epoch boundary.
+      // Bump the epoch + run the FULL memory re-prime (resolver rung 0: held
+      // work-item titles), appended to the brief. TIME-BOXED: the recovery
+      // hook aborts its fetch at ~4.5s, and a slow re-prime must cost only
+      // ITSELF, never the carry brief. Best-effort by contract.
+      let memoryBlock: string | null = null;
+      try {
+        const { buildCompactReprimeBlock } = await import('../../../memory/compact-reprime');
+        memoryBlock = await Promise.race<string | null>([
+          buildCompactReprimeBlock({
+            ownerId: owner,
+            workspaceId: workspace,
+            heldItems: brief.heldItems.map((i) => ({ title: i.title, harness: i.harness })),
+            fleetSlug: brief.fleet?.slug ?? null,
+          }),
+          new Promise<null>((resolve) => {
+            const t = setTimeout(() => resolve(null), REPRIME_DEADLINE_MS);
+            (t as { unref?: () => void }).unref?.();
+          }),
+        ]);
+      } catch {
+        memoryBlock = null;
+      }
+
+      return Response.json({
+        ok: true,
+        text: memoryBlock ? `${text}\n\n${memoryBlock}` : text,
+      });
     } catch {
       return Response.json({ ok: true, text: '' });
     }
   },
 });
+
+/** Re-prime slice of the hook's fetch window (hook aborts ~4.5s). */
+const REPRIME_DEADLINE_MS = (() => {
+  const raw = Number(process.env.PAPERCUSP_COMPACT_REPRIME_DEADLINE_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 2_000;
+})();
 
 export default [recoveryBrief];
