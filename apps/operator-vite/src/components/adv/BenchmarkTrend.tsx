@@ -17,6 +17,7 @@
  */
 import { useMemo, useState } from "react";
 import { Maximize2, Minimize2 } from "lucide-react";
+import { Tooltip } from "@/app/harness/Tooltip";
 
 export interface BenchmarkTrendInstance {
   instanceId: string;
@@ -125,21 +126,22 @@ export function BenchmarkTrend({
         <span>
           Composite per generation <em>oldest → newest</em>
         </span>
-        <button
-          type="button"
-          aria-label={
-            expanded ? "Collapse benchmark trend" : "Expand benchmark trend"
-          }
-          aria-expanded={expanded}
-          title={expanded ? "Collapse trend" : "Expand trend"}
-          onClick={() => setExpanded((current) => !current)}
-        >
-          {expanded ? (
-            <Minimize2 size={12} aria-hidden />
-          ) : (
-            <Maximize2 size={12} aria-hidden />
-          )}
-        </button>
+        <Tooltip label={expanded ? "Collapse trend" : "Expand trend"}>
+          <button
+            type="button"
+            aria-label={
+              expanded ? "Collapse benchmark trend" : "Expand benchmark trend"
+            }
+            aria-expanded={expanded}
+            onClick={() => setExpanded((current) => !current)}
+          >
+            {expanded ? (
+              <Minimize2 size={12} aria-hidden />
+            ) : (
+              <Maximize2 size={12} aria-hidden />
+            )}
+          </button>
+        </Tooltip>
       </figcaption>
       <svg
         viewBox={`0 0 ${W} ${H}`}

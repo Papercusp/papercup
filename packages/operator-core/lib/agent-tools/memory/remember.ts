@@ -22,6 +22,8 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
 import { MemoryTimeoutError, withMemoryToolTimeout, withMemoryWriteRetry, embedFailureReason } from '../../memory/op-deadline';
 import { anchorMetadata } from '../../memory/anchors';
+import { expandRefsForEmbed } from '../../memory/ref-expand';
+import { getWorkItem } from '../../work-items';
 import { checkConflicts, conflictCheckEnabled } from '../../memory/conflict-check';
 import { createAnthropicJudge } from '../../memory/anthropic-judge';
 import { persistAnchorsSql } from '../../memory/persist-anchors';
@@ -57,6 +59,19 @@ const KINDS = ['user', 'feedback', 'project', 'reference'] as const;
  */
 function dedupEnabled(): boolean {
   return process.env.PAPERCUSP_MEMORY_DEDUP === 'on';
+}
+
+/**
+ * EI-10048 write-time ref-expansion: resolve WI-/EI-/F-/D- refs in the body to
+ * their titles and fold them into the EMBEDDED text (stored text unchanged) so
+ * a ref-only memory also matches queries about the referenced item's topic.
+ * Default ON; set PAPERCUSP_MEMORY_REF_EXPANSION=off for an instant kill switch
+ * (best-effort + vector-only, so disabling it only reverts to baseline
+ * embedding — it can never corrupt a write). Evaluated at call time so ops/tests
+ * flip it without a module reset.
+ */
+function refExpansionEnabled(): boolean {
+  return process.env.PAPERCUSP_MEMORY_REF_EXPANSION !== 'off';
 }
 function dedupThreshold(): number {
   const raw = Number(process.env.PAPERCUSP_MEMORY_DEDUP_THRESHOLD);
