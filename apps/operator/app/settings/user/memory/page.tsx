@@ -80,10 +80,14 @@ function timeAgo(ts: string): string {
 const COLLAPSE_OVER = 280;
 const COLLAPSED_PREVIEW = 240;
 
+// The `userMemory.feedbackStats` sync resolver's row shape
+// (all-active-surfaces-data-sync-migration-2026-07-11 P-013) — lifetime
+// edit/delete counts for the acting user, live-updated on every
+// recordFeedback() write (user edits/deletes on this page AND agent-tool
+// memory:update/memory:forget calls).
 interface FeedbackStats {
   total_edits: number;
   total_deletes: number;
-  learning_instructions: string | null;
 }
 
 interface ClaudeHygiene {
@@ -100,7 +104,10 @@ export default function MemoryPage() {
   const t = useLexicon();
   const [userId, setUserId] = useState<string | null>(null);
   const [metaLoaded, setMetaLoaded] = useState(false);
-  const [stats, setStats] = useState<FeedbackStats | null>(null);
+  // Learning-instruction text: a derived-text snapshot (buildLearningInstructions),
+  // not a live counter — stays a one-shot REST fetch, same class as the
+  // backend/filesystem envelope below (P-013).
+  const [learningInstructions, setLearningInstructions] = useState<string | null>(null);
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const [reason, setReason] = useState<string | null>(null);
   const [backendName, setBackendName] = useState<string | null>(null);
@@ -155,7 +162,7 @@ export default function MemoryPage() {
         setPaused(j.paused === true);
         setRecallCanary(j.recallCanary?.latest ?? null);
       }
-      if (fs.ok) setStats(await fs.json());
+      if (fs.ok) setLearningInstructions((await fs.json()).learning_instructions ?? null);
     } finally {
       setMetaLoaded(true);
     }
@@ -181,6 +188,17 @@ export default function MemoryPage() {
     args: {},
   });
   const journal = journalRows?.[0] ?? null;
+
+  // Lifetime feedback counts (all-active-surfaces-data-sync-migration-2026-07-11
+  // P-013): the settings page's own edits/deletes AND agent-tool
+  // memory:update/memory:forget writes fire notifySyncInvalidate('userMemory.feedbackStats')
+  // (memory/feedback.ts's recordFeedback), so this updates live like the row set above.
+  const { data: feedbackStatsRows } = useSyncQuery<FeedbackStats>({
+    queryName: 'userMemory.feedbackStats',
+    args: { userId: userId ?? '' },
+    enabled: !!userId,
+  });
+  const feedbackStats = feedbackStatsRows?.[0] ?? null;
 
   const switchBackend = useCallback(async (choice: string) => {
     if (!choice || choice === currentBackend) return;
@@ -269,12 +287,13 @@ export default function MemoryPage() {
     const r = await fetch(`/api/user/memory?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
     if (r.ok) {
       toast.success('Deleted');
-      // Rows refresh via the server's invalidate; stats changed too.
-      void refreshMeta();
+      // Rows AND the feedback-stats tile refresh via the server's sync
+      // invalidate (userMemory.list + userMemory.feedbackStats) — no REST
+      // re-fetch needed here.
     } else {
       toast.error('Delete failed');
     }
-  }, [askConfirm, refreshMeta]);
+  }, [askConfirm]);
 
   const onForgetAll = useCallback(async () => {
     const ok = await askConfirm({
@@ -667,19 +686,19 @@ export default function MemoryPage() {
           clean up. Edits and deletes are recorded as feedback for
           future tuning.
         </p>
-        {stats && (stats.total_edits > 0 || stats.total_deletes > 0) && (
+        {feedbackStats && (feedbackStats.total_edits > 0 || feedbackStats.total_deletes > 0) && (
           <p style={{ fontSize: 12, color: 'var(--fg-mute)', margin: '8px 0 0' }}>
-            Lifetime feedback: <strong>{stats.total_edits}</strong> edits, <strong>{stats.total_deletes}</strong> deletes
+            Lifetime feedback: <strong>{feedbackStats.total_edits}</strong> edits, <strong>{feedbackStats.total_deletes}</strong> deletes
           </p>
         )}
-        {stats?.learning_instructions && (
+        {learningInstructions && (
           <Collapsible.Root style={{ marginTop: 12, padding: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-2)' }}>
             <Collapsible.Trigger style={{ width: '100%', background: 'none', border: 'none', padding: 0, textAlign: 'left', cursor: 'pointer', fontSize: 13, color: 'var(--fg-mute)', fontFamily: 'inherit' }}>
               Active extraction-prompt adaptation (from your feedback)
             </Collapsible.Trigger>
             <Collapsible.Content>
               <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, marginTop: 8, color: 'var(--fg)' }}>
-                {stats.learning_instructions}
+                {learningInstructions}
               </pre>
             </Collapsible.Content>
           </Collapsible.Root>

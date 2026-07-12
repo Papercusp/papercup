@@ -8,16 +8,25 @@
  * P-049b: trust list view + inline remove.
  * P-049c: recent auto-review/auto-merge audit log from LOCAL auto_review_audit.
  *
- * Reads/writes `GET|POST /api/harness/:slug/pr-reviewer-settings`. Settings +
- * trust list are per-viewer (server-resolved gh identity); the response's
+ * Reads the bundled settings/trust-list/audit shape via
+ * `useSyncQuery('prReviewerSettings.byHarness', { harnessSlug })` (WI-4138 / P-011,
+ * all-active-surfaces-data-sync-migration-2026-07-11) — the query is bridged
+ * from its 3 contributing tables (pr_reviewer_settings / trusted_authors /
+ * auto_review_audit, table-to-query-names.ts) so any write live-refreshes the
+ * modal, not just one from this component. Writes go through `useSyncMutate`
+ * with the existing `POST /api/harness/:slug/pr-reviewer-settings[/trust/remove]`
+ * routes as the REST fallback (no Zero custom mutator for this surface yet —
+ * behavior-identical to the old direct-fetch write path). Settings + trust
+ * list are per-viewer (server-resolved gh identity); the response's
  * `editable` flag gates the controls — anonymous (no gh auth) renders
  * read-only. Toggle VALUES are server state (useState here, not URL); the
  * modal-OPEN flag lives in nuqs in the parent (PrsTab) per repo convention.
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { ShieldCheck, Trash2, ScrollText, GitMerge } from 'lucide-react';
+import { useSyncQuery, useSyncMutate } from '@papercusp/sync';
 import { Modal } from './Modal';
 import { Select } from './Select';
 import { useLexicon } from '@/lib/useLexicon';

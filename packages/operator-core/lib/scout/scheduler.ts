@@ -487,7 +487,17 @@ export function buildScoutTickDeps(opts: BuildScoutTickDepsOptions): ScoutTickDe
     async persistRouted(records, cycleId) {
       for (const r of records) {
         await recordRoutedIdea({
-          ideaId: r.ideaId,
+          // LEDGER-GAP FIX (scorecard-blender-pipeline-fixes-2026-07-11 P-003):
+          // the in-cycle idea id is POSITIONAL (`scout-idea-<lens>-<slot>-<n>`,
+          // ideators.ts) — identical across cycles — and the ledger upserts
+          // ON CONFLICT (idea_id), so every cycle's routings OVERWROTE the
+          // previous cycle's rows (441 routing events/7d collapsed into ~4
+          // surviving rows) while the overwritten row KEPT the old idea's
+          // grade/outcome — corrupted learning signal. Prefixing the cycle id
+          // makes each cycle's routings land as their own rows; the su-ideate
+          // paths (capture bridge / route-idea) key by stable artifact ids and
+          // are untouched.
+          ideaId: `${cycleId}:${r.ideaId}`,
           lens: r.lens,
           rail: r.rail,
           routedRef: r.routedRef,

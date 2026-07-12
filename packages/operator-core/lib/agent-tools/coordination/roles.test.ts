@@ -88,4 +88,30 @@ describe('COORD_ROLES', () => {
       expect(listWorkItems.agentRoles).toContain('cup');
     },
   );
+
+  test(
+    'the fast↔deep delegation channel admits both papercup and papercup-deep (voice-release P-006)',
+    // Same import-weight caveat as the test above: these pull the coord tool
+    // modules' full transitive graph through vitest's transform.
+    { timeout: 30_000 },
+    async () => {
+      // voice-public-release-readiness-2026-07-12 P-006 / D-003: the fast
+      // front-end (papercup) delegates questions to the hidden deep brain
+      // (papercup-deep) over the modern coord/wake channel — a directed
+      // coord:send { wake:'required' } each way, discovered via coord:presence,
+      // with coord:wake-mode { auto } at boot so wakes actually deliver.
+      // If either role silently dropped off any of these tools' allowlists,
+      // delegation would fail role_not_allowed with no other signal. Pin it.
+      const { default: send } = await import('./tools/send.js');
+      const { default: presence } = await import('./tools/presence.js');
+      const { default: wakeMode } = await import('./tools/wake-mode.js');
+      const { default: orient } = await import('./tools/orient.js');
+      for (const role of ['papercup', 'papercup-deep']) {
+        expect(send.agentRoles, `coord:send must admit ${role}`).toContain(role);
+        expect(presence.agentRoles, `coord:presence must admit ${role}`).toContain(role);
+        expect(wakeMode.agentRoles, `coord:wake-mode must admit ${role}`).toContain(role);
+        expect(orient.agentRoles, `coord:orient must admit ${role}`).toContain(role);
+      }
+    },
+  );
 });

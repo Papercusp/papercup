@@ -392,6 +392,168 @@ async function viewer(): Promise<{ id: number; login: string } | null> {
   }
 }
 
+// ─── Shared response builder (route GET handler + prReviewerSettings.byHarness
+//     named query, all-active-surfaces-data-sync-migration-2026-07-11 P-011) ──
+
+/**
+ * Build the full `PrReviewerSettingsResponse` for `slug` — the viewer-scoped
+ * settings, trust list, and audit log. Shared by the GET route handler and
+ * the `prReviewerSettings.byHarness` sync-resolver entry so the two paths
+ * never drift. Identity resolution is server-local (`resolveLocalGithubIdentity`)
+ * and takes no client input, so it is equally safe to call from either caller.
+ */
+export async function buildPrReviewerSettingsResponse(slug: string): Promise<PrReviewerSettingsResponse> {
+  const workspaceId = activeWorkspaceId();
+  const v = await viewer();
+  const now = Date.now();
+
+  try {
+    const { sql } = getOrgPg();
+
+    // Settings are per-viewer; with no viewer id, return the safe defaults
+    // (all-off) read-only.
+    const githubUserId = v?.id ?? 0;
+    let settingsRow: PrReviewerSettingsRow = defaultPrReviewerSettings({
+      harness_slug: slug,
+      github_user_id: githubUserId,
+      now,
+    });
+    let inheritedFrom: string | null = null;
+    let grantedByOwnership = false;
+    if (v) {
+      const rows = (await sql`
+        SELECT pr_reviewer_role_enabled, auto_review, auto_merge, merge_method, updated_at
+          FROM harness_shared.pr_reviewer_settings
+         WHERE workspace_id = ${workspaceId}
+           AND harness_slug = ${slug}
+           AND github_user_id = ${v.id}
+         LIMIT 1
+      `) as unknown as SettingsDbRow[];
+      settingsRow = dbRowToSettings(rows[0], slug, v.id, now);
+      // No explicit row → the layered grant (P-007 D-002 + P-008 D-003):
+      // OWNERSHIP of the hive confers the role on the home and every member
+      // (claiming the hive IS the reviewer mandate); else fall back to the
+      // viewer's hive-HOME row (read-time inheritance). An explicit row —
+      // any value — beats both (the kill switch). auto_review/auto_merge
+      // never inherit or auto-grant on any path.
+      if (!rows[0]) {
+        const root = await hiveGroupRootOf(slug);
+        const ownsHome = root ? await isOwnedHiveHome(sql, workspaceId, root) : false;
+        const home = root && root !== slug ? root : null;
+        let homeRoleEnabled = false;
+        if (!ownsHome && home) {
+          const homeRows = (await sql`
+            SELECT pr_reviewer_role_enabled, auto_review, auto_merge, merge_method, updated_at
+              FROM harness_shared.pr_reviewer_settings
+             WHERE workspace_id = ${workspaceId}
+               AND harness_slug = ${home}
+               AND github_user_id = ${v.id}
+             LIMIT 1
+          `) as unknown as SettingsDbRow[];
+          homeRoleEnabled = !!homeRows[0]?.pr_reviewer_role_enabled;
+        }
+        const source = resolveRoleSource({ hasExplicitRow: false, ownsHome, homeRoleEnabled });
+        if (source === 'ownership') {
+          settingsRow = { ...settingsRow, pr_reviewer_role_enabled: true };
+          grantedByOwnership = true;
+          inheritedFrom = home; // null when slug IS the owned home
+        } else if (source === 'inherited') {
+          settingsRow = { ...settingsRow, pr_reviewer_role_enabled: true };
+          inheritedFrom = home;
+        }
+      }
+    }
+
+    // Trust list — the entries THIS viewer trusts on this harness. Join
+    // contributors for display logins (best-effort). With no viewer, empty.
+    const trustList: TrustListEntry[] = [];
+    if (v) {
+      const trustRows = (await sql`
+        SELECT t.trusted_github_user_id, t.trusted_at, c.github_username
+          FROM harness_shared.trusted_authors t
+          LEFT JOIN harness_shared.contributors c
+            ON c.workspace_id = t.workspace_id
+           AND c.github_user_id = t.trusted_github_user_id
+         WHERE t.workspace_id = ${workspaceId}
+           AND t.harness_slug = ${slug}
+           AND t.trusted_by_github_user_id = ${v.id}
+         ORDER BY t.trusted_at DESC
+      `) as unknown as Array<{
+        trusted_github_user_id: number | string;
+        trusted_at: string | Date;
+        github_username: string | null;
+      }>;
+      for (const r of trustRows) {
+        trustList.push({
+          trusted_github_user_id: Number(r.trusted_github_user_id),
+          trusted_login: r.github_username ?? null,
+          trusted_at: new Date(r.trusted_at).toISOString(),
+        });
+      }
+    }
+
+    // Recent audit — auto-review + auto-merge actions for this harness.
+    // Not viewer-scoped: the audit log is per-machine and shows what
+    // auto-actions THIS install took. Cap at 50 most-recent.
+    const auditRows = (await sql`
+      SELECT id, pr_number, pr_url, author_github_id, action, detail, ts
+        FROM harness_shared.auto_review_audit
+       WHERE workspace_id = ${workspaceId}
+         AND harness_slug = ${slug}
+       ORDER BY ts DESC
+       LIMIT 50
+    `) as unknown as Array<{
+      id: number | string;
+      pr_number: number;
+      pr_url: string | null;
+      author_github_id: number | string | null;
+      action: string;
+      detail: string | null;
+      ts: string | Date;
+    }>;
+    const audit: AuditEntry[] = auditRows.map((r) => ({
+      id: Number(r.id),
+      pr_number: Number(r.pr_number),
+      pr_url: r.pr_url,
+      author_github_id: r.author_github_id == null ? null : Number(r.author_github_id),
+      action: r.action,
+      detail: r.detail,
+      ts: new Date(r.ts).toISOString(),
+    }));
+
+    // PR-3 §3: claimed-owner authority — the gate for editing auto-mode.
+    const claimOwner = await isClaimedOwner(sql, workspaceId, slug, v?.id ?? null);
+    return {
+      settings: toToggles(settingsRow),
+      trustList,
+      audit,
+      viewer: v ? { github_user_id: v.id, github_login: v.login } : null,
+      editable: !!v,
+      claimOwner,
+      autoModeEditable: autoModeEditableFrom({ editable: !!v, claimOwner }),
+      inheritedFrom,
+      grantedByOwnership,
+    };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // Missing schema / PG unreachable → safe-default read-only shape, not 500.
+    if (/does not exist|relation .* does not exist/i.test(msg)) {
+      return {
+        settings: toToggles(
+          defaultPrReviewerSettings({ harness_slug: slug, github_user_id: v?.id ?? 0, now }),
+        ),
+        trustList: [],
+        audit: [],
+        viewer: v ? { github_user_id: v.id, github_login: v.login } : null,
+        editable: !!v,
+        claimOwner: false,
+        autoModeEditable: false,
+      };
+    }
+    throw e;
+  }
+}
+
 // ─── GET /harness/:slug/pr-reviewer-settings ──────────────────────
 
 const getSettings = defineTool({
@@ -400,157 +562,8 @@ const getSettings = defineTool({
   auth: 'public',
   async handler(_req, ctx) {
     const slug = ctx.params.slug as string;
-    const workspaceId = activeWorkspaceId();
-    const v = await viewer();
-    const now = Date.now();
-
-    try {
-      const { sql } = getOrgPg();
-
-      // Settings are per-viewer; with no viewer id, return the safe defaults
-      // (all-off) read-only.
-      const githubUserId = v?.id ?? 0;
-      let settingsRow: PrReviewerSettingsRow = defaultPrReviewerSettings({
-        harness_slug: slug,
-        github_user_id: githubUserId,
-        now,
-      });
-      let inheritedFrom: string | null = null;
-      let grantedByOwnership = false;
-      if (v) {
-        const rows = (await sql`
-          SELECT pr_reviewer_role_enabled, auto_review, auto_merge, merge_method, updated_at
-            FROM harness_shared.pr_reviewer_settings
-           WHERE workspace_id = ${workspaceId}
-             AND harness_slug = ${slug}
-             AND github_user_id = ${v.id}
-           LIMIT 1
-        `) as unknown as SettingsDbRow[];
-        settingsRow = dbRowToSettings(rows[0], slug, v.id, now);
-        // No explicit row → the layered grant (P-007 D-002 + P-008 D-003):
-        // OWNERSHIP of the hive confers the role on the home and every member
-        // (claiming the hive IS the reviewer mandate); else fall back to the
-        // viewer's hive-HOME row (read-time inheritance). An explicit row —
-        // any value — beats both (the kill switch). auto_review/auto_merge
-        // never inherit or auto-grant on any path.
-        if (!rows[0]) {
-          const root = await hiveGroupRootOf(slug);
-          const ownsHome = root ? await isOwnedHiveHome(sql, workspaceId, root) : false;
-          const home = root && root !== slug ? root : null;
-          let homeRoleEnabled = false;
-          if (!ownsHome && home) {
-            const homeRows = (await sql`
-              SELECT pr_reviewer_role_enabled, auto_review, auto_merge, merge_method, updated_at
-                FROM harness_shared.pr_reviewer_settings
-               WHERE workspace_id = ${workspaceId}
-                 AND harness_slug = ${home}
-                 AND github_user_id = ${v.id}
-               LIMIT 1
-            `) as unknown as SettingsDbRow[];
-            homeRoleEnabled = !!homeRows[0]?.pr_reviewer_role_enabled;
-          }
-          const source = resolveRoleSource({ hasExplicitRow: false, ownsHome, homeRoleEnabled });
-          if (source === 'ownership') {
-            settingsRow = { ...settingsRow, pr_reviewer_role_enabled: true };
-            grantedByOwnership = true;
-            inheritedFrom = home; // null when slug IS the owned home
-          } else if (source === 'inherited') {
-            settingsRow = { ...settingsRow, pr_reviewer_role_enabled: true };
-            inheritedFrom = home;
-          }
-        }
-      }
-
-      // Trust list — the entries THIS viewer trusts on this harness. Join
-      // contributors for display logins (best-effort). With no viewer, empty.
-      const trustList: TrustListEntry[] = [];
-      if (v) {
-        const trustRows = (await sql`
-          SELECT t.trusted_github_user_id, t.trusted_at, c.github_username
-            FROM harness_shared.trusted_authors t
-            LEFT JOIN harness_shared.contributors c
-              ON c.workspace_id = t.workspace_id
-             AND c.github_user_id = t.trusted_github_user_id
-           WHERE t.workspace_id = ${workspaceId}
-             AND t.harness_slug = ${slug}
-             AND t.trusted_by_github_user_id = ${v.id}
-           ORDER BY t.trusted_at DESC
-        `) as unknown as Array<{
-          trusted_github_user_id: number | string;
-          trusted_at: string | Date;
-          github_username: string | null;
-        }>;
-        for (const r of trustRows) {
-          trustList.push({
-            trusted_github_user_id: Number(r.trusted_github_user_id),
-            trusted_login: r.github_username ?? null,
-            trusted_at: new Date(r.trusted_at).toISOString(),
-          });
-        }
-      }
-
-      // Recent audit — auto-review + auto-merge actions for this harness.
-      // Not viewer-scoped: the audit log is per-machine and shows what
-      // auto-actions THIS install took. Cap at 50 most-recent.
-      const auditRows = (await sql`
-        SELECT id, pr_number, pr_url, author_github_id, action, detail, ts
-          FROM harness_shared.auto_review_audit
-         WHERE workspace_id = ${workspaceId}
-           AND harness_slug = ${slug}
-         ORDER BY ts DESC
-         LIMIT 50
-      `) as unknown as Array<{
-        id: number | string;
-        pr_number: number;
-        pr_url: string | null;
-        author_github_id: number | string | null;
-        action: string;
-        detail: string | null;
-        ts: string | Date;
-      }>;
-      const audit: AuditEntry[] = auditRows.map((r) => ({
-        id: Number(r.id),
-        pr_number: Number(r.pr_number),
-        pr_url: r.pr_url,
-        author_github_id: r.author_github_id == null ? null : Number(r.author_github_id),
-        action: r.action,
-        detail: r.detail,
-        ts: new Date(r.ts).toISOString(),
-      }));
-
-      // PR-3 §3: claimed-owner authority — the gate for editing auto-mode.
-      const claimOwner = await isClaimedOwner(sql, workspaceId, slug, v?.id ?? null);
-      const resp: PrReviewerSettingsResponse = {
-        settings: toToggles(settingsRow),
-        trustList,
-        audit,
-        viewer: v ? { github_user_id: v.id, github_login: v.login } : null,
-        editable: !!v,
-        claimOwner,
-        autoModeEditable: autoModeEditableFrom({ editable: !!v, claimOwner }),
-        inheritedFrom,
-        grantedByOwnership,
-      };
-      return Response.json(resp);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      // Missing schema / PG unreachable → safe-default read-only shape, not 500.
-      if (/does not exist|relation .* does not exist/i.test(msg)) {
-        const resp: PrReviewerSettingsResponse = {
-          settings: toToggles(
-            defaultPrReviewerSettings({ harness_slug: slug, github_user_id: v?.id ?? 0, now }),
-          ),
-          trustList: [],
-          audit: [],
-          viewer: v ? { github_user_id: v.id, github_login: v.login } : null,
-          editable: !!v,
-          claimOwner: false,
-          autoModeEditable: false,
-        };
-        return Response.json(resp);
-      }
-      throw e;
-    }
+    const resp = await buildPrReviewerSettingsResponse(slug);
+    return Response.json(resp);
   },
 });
 

@@ -80,7 +80,16 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // network.board: a hive create/dissolve changes its tier 1–2 rows.
   'harness_shared.harness_registry': ['harnessProjects.lite', 'harnessWorkspaces.byHarness', 'network.board', 'kpis.all'],
   'harness_shared.contributors': ['contributors.byHarness'],
-  'harness_shared.auto_review_audit': ['contributors.byHarness'],
+  // auto_review_audit also feeds the PR-reviewer settings modal's audit log
+  // (WI-4138 / P-011) — a poll-daemon audit row live-refreshes it.
+  'harness_shared.auto_review_audit': ['contributors.byHarness', 'prReviewerSettings.byHarness'],
+  // pr_reviewer_settings / trusted_authors (WI-4138 / P-011): the settings
+  // toggle + trust-list halves of the same modal. Full-bust (no natural key
+  // to scope by harness_slug on these viewer-keyed tables — the id-less
+  // scope fallback only covers harness_plans/pot_settings today), matching
+  // most of this map; low write rate keeps that cheap.
+  'harness_shared.pr_reviewer_settings': ['prReviewerSettings.byHarness'],
+  'harness_shared.trusted_authors': ['prReviewerSettings.byHarness'],
   'harness_shared.adv_sessions': ['advSessions.list', 'advRoster.list'],
   // ── Per-harness HYPERBEE-bucket tables ────────────────────────────
   'harness_shared.harness_text_artifacts': ['harnessTextArtifact.byHarness'],
