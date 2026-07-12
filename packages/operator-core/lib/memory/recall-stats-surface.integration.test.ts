@@ -67,7 +67,7 @@ describe('recordRecallStats persists every documented surface (real PG — P-005
     const rows = (await db.adminSql`
       SELECT surface, count(*)::int AS n
       FROM harness_shared.memory_recall_stats
-      WHERE surface = ANY(${db.adminSql.array(ALL_SURFACES as string[])})
+      WHERE surface = ANY(${ALL_SURFACES as string[]})
       GROUP BY surface
     `) as Array<{ surface: string; n: number }>;
 
