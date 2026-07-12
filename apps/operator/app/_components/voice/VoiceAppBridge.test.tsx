@@ -58,6 +58,7 @@ vi.mock('./voice-sentinel-bridge', () => ({
 }));
 
 import { VoiceAppBridge, registerVoiceConsumer } from './VoiceAppBridge';
+import { setVoiceConverseHandler } from './voice-converse-handler';
 
 function sentinelCalled() {
   return h.routeToSentinel.mock.calls.length > 0;
@@ -86,6 +87,10 @@ beforeEach(() => {
   h.routeToSentinel.mockClear();
   h.routeToSentinel.mockReturnValue(Promise.resolve(true));
   h.fullAgentEngine = 'off';
+  // Reset the module-level converse seam so no provider is "mounted" by default
+  // (the dock-fallback tests below assume this); the primary-path suite registers
+  // its own handler.
+  setVoiceConverseHandler(null);
 });
 afterEach(() => {
   deregs.forEach((d) => d());
@@ -93,8 +98,11 @@ afterEach(() => {
   cleanup();
 });
 
-describe('VoiceAppBridge — Sentinel-pane routing', () => {
-  it('routes the spoken turn into the Sentinel pane when no consumer is registered (panel closed)', async () => {
+// Dock fallback: with NO conversation provider mounted (submitVoiceTurn → false),
+// the bridge falls back to the legacy dock-pane write. This is the dev-machine
+// path; the primary Papercup-converse path is covered in the suite below.
+describe('VoiceAppBridge — dock fallback routing (no provider mounted)', () => {
+  it('falls back to the dock pane when no consumer AND no converse provider is registered', async () => {
     mount();
     setMode(ALWAYS_ON);
     await utter('what is happening');
@@ -154,12 +162,50 @@ describe('VoiceAppBridge — consumer priority', () => {
     expect(sentinelCalled()).toBe(false);
   });
 
-  it('deregistering the panel consumer restores Sentinel routing', async () => {
+  it('deregistering the panel consumer restores dock-fallback routing', async () => {
     const dereg = registerVoiceConsumer('operator-panel', 'panel-open');
     mount();
     setMode(ALWAYS_ON);
     dereg(); // panel closed
     await utter('now route me');
     expect(sentinelCalled()).toBe(true);
+  });
+});
+
+// Primary path (plan voice-public-release-readiness D-001, owner-ratified
+// 2026-07-12): when a conversation provider is mounted it registers its
+// sendUserMessage via setVoiceConverseHandler, and the bridge routes the spoken
+// turn into that in-process Papercup converse brain — NOT the dock pane.
+describe('VoiceAppBridge — Papercup converse routing (primary)', () => {
+  it('submits the spoken turn to the registered converse brain and bypasses the dock', async () => {
+    const converse = vi.fn();
+    setVoiceConverseHandler(converse);
+    mount();
+    setMode(ALWAYS_ON);
+    await utter('what is happening');
+    expect(converse).toHaveBeenCalledWith('what is happening', { spoken: true });
+    expect(sentinelCalled()).toBe(false); // dock is bypassed when a provider is mounted
+  });
+
+  it('a panel-open consumer still suppresses converse routing', async () => {
+    const converse = vi.fn();
+    setVoiceConverseHandler(converse);
+    mount();
+    setMode(ALWAYS_ON);
+    deregs.push(registerVoiceConsumer('operator-panel', 'panel-open'));
+    await utter('open something');
+    expect(converse).not.toHaveBeenCalled();
+    expect(sentinelCalled()).toBe(false);
+  });
+
+  it('a full-agent engine still owns its own brain (no converse dispatch)', async () => {
+    const converse = vi.fn();
+    setVoiceConverseHandler(converse);
+    h.fullAgentEngine = 'elevenlabs-conv';
+    mount();
+    setMode(ALWAYS_ON);
+    await utter('the full agent is in charge');
+    expect(converse).not.toHaveBeenCalled();
+    expect(sentinelCalled()).toBe(false);
   });
 });
