@@ -74,6 +74,7 @@ import RubricDetailPanel from "@/app/_components/RubricDetailPanel";
 import ObservationsPanel from "@/app/adv/create/ObservationsPanel";
 import {
   LearningComparisonBars,
+  LearningDisclosure,
   LearningEvidenceRail,
   LearningHeroMetric,
   LearningPageHeader,
@@ -1173,6 +1174,54 @@ function ApiaryView() {
       ? latest.meanComposite - previous.meanComposite
       : null;
   const currentDeltaMeta = deltaLabel(currentDelta);
+  const renderInstance = (inst: ApiaryInstance, i: number) => {
+    const prev = instances[i + 1];
+    const dComposite =
+      inst.meanComposite != null && prev?.meanComposite != null
+        ? inst.meanComposite - prev.meanComposite
+        : null;
+    const delta = deltaLabel(dComposite);
+    return (
+      <li
+        key={inst.instanceId}
+        className="pc-learning__row pc-learning__row--bench"
+        title={inst.instanceId}
+      >
+        <span
+          className="pc-learning__sev"
+          style={{ background: delta.tone === "bad" ? "#fb7185" : "#34d399" }}
+          aria-hidden
+        />
+        <span className="pc-learning__id" title={inst.codeSha}>
+          {shortSha(inst.codeSha)}
+        </span>
+        <span className="pc-learning__benchcell">
+          <span className="pc-learning__benchnum">
+            {compositeLabel(inst.meanComposite)}
+          </span>
+          {i < instances.length - 1 ? (
+            <span
+              className={`pc-learning__delta pc-learning__delta--${delta.tone}`}
+            >
+              Δ {delta.text}
+            </span>
+          ) : null}
+          <span className="pc-learning__benchmeta">
+            {inst.successfulRuns}/{inst.totalRuns} solved
+          </span>
+        </span>
+        <span className="pc-learning__meta">
+          <span className="pc-learning__age">
+            {secsLabel(inst.meanTimeToGreenSecs)}
+          </span>
+          <span className="pc-learning__age">
+            {tokensLabel(inst.meanTokens)}
+          </span>
+          <span className="pc-learning__age">{dateLabel(inst.createdAt)}</span>
+        </span>
+      </li>
+    );
+  };
 
   return (
     <section className="pc-learning__section">
@@ -1305,59 +1354,20 @@ function ApiaryView() {
             <h2>Recent generations</h2>
           </div>
           <ul className="pc-learning__list">
-            {instances.map((inst, i) => {
-              const prev = instances[i + 1];
-              const dComposite =
-                inst.meanComposite != null && prev?.meanComposite != null
-                  ? inst.meanComposite - prev.meanComposite
-                  : null;
-              const delta = deltaLabel(dComposite);
-              return (
-                <li
-                  key={inst.instanceId}
-                  className="pc-learning__row pc-learning__row--bench"
-                  title={inst.instanceId}
-                >
-                  <span
-                    className="pc-learning__sev"
-                    style={{
-                      background: delta.tone === "bad" ? "#fb7185" : "#34d399",
-                    }}
-                    aria-hidden
-                  />
-                  <span className="pc-learning__id" title={inst.codeSha}>
-                    {shortSha(inst.codeSha)}
-                  </span>
-                  <span className="pc-learning__benchcell">
-                    <span className="pc-learning__benchnum">
-                      {compositeLabel(inst.meanComposite)}
-                    </span>
-                    {i < instances.length - 1 ? (
-                      <span
-                        className={`pc-learning__delta pc-learning__delta--${delta.tone}`}
-                      >
-                        Δ {delta.text}
-                      </span>
-                    ) : null}
-                    <span className="pc-learning__benchmeta">
-                      {inst.successfulRuns}/{inst.totalRuns} solved
-                    </span>
-                  </span>
-                  <span className="pc-learning__meta">
-                    <span className="pc-learning__age">
-                      {secsLabel(inst.meanTimeToGreenSecs)}
-                    </span>
-                    <span className="pc-learning__age">
-                      {tokensLabel(inst.meanTokens)}
-                    </span>
-                    <span className="pc-learning__age">
-                      {dateLabel(inst.createdAt)}
-                    </span>
-                  </span>
-                </li>
-              );
-            })}
+            {instances.slice(0, 5).map(renderInstance)}
           </ul>
+          {instances.length > 5 ? (
+            <LearningDisclosure
+              label="Earlier generations"
+              count={instances.length - 5}
+            >
+              <ul className="pc-learning__list">
+                {instances
+                  .slice(5)
+                  .map((inst, i) => renderInstance(inst, i + 5))}
+              </ul>
+            </LearningDisclosure>
+          ) : null}
         </>
       )}
     </section>
@@ -1592,6 +1602,43 @@ function BakeoffTrendView() {
   const gateDeltaLabel = latest
     ? `${latest.deltaGatePassRate >= 0 ? "+" : "−"}${Math.abs(latest.deltaGatePassRate * 100).toFixed(1)}pp`
     : "—";
+  const renderBakeoff = (r: BakeoffTrendRow, i: number) => {
+    const dc = deltaLabel(r.deltaMeanComposite);
+    const meta = BAKEOFF_VERDICT_META[r.verdict];
+    return (
+      <li
+        key={`${r.flagKey}-${r.at}-${i}`}
+        className="pc-learning__row pc-learning__row--bench"
+        title={r.flagKey}
+      >
+        <span
+          className="pc-learning__sev"
+          style={{ background: meta.color }}
+          aria-hidden
+        />
+        <span className="pc-learning__id" title={r.flagKey}>
+          {r.flagKey.replace(/^papercusp-/, "")}
+        </span>
+        <span className="pc-learning__benchcell">
+          <span
+            className={`pc-learning__delta pc-learning__delta--${meta.tone}`}
+          >
+            {meta.label}
+          </span>
+          <span className={`pc-learning__delta pc-learning__delta--${dc.tone}`}>
+            Δcomp {dc.text}
+          </span>
+          <span className="pc-learning__benchmeta">
+            Δgate {r.deltaGatePassRate >= 0 ? "+" : ""}
+            {r.deltaGatePassRate.toFixed(2)}
+          </span>
+        </span>
+        <span className="pc-learning__meta">
+          <span className="pc-learning__age">{whenLabel(r.at)}</span>
+        </span>
+      </li>
+    );
+  };
 
   return (
     <section className="pc-learning__section">
@@ -1701,46 +1748,18 @@ function BakeoffTrendView() {
             </div>
           </div>
           <ul className="pc-learning__list">
-            {rows.map((r, i) => {
-              const dc = deltaLabel(r.deltaMeanComposite);
-              const meta = BAKEOFF_VERDICT_META[r.verdict];
-              return (
-                <li
-                  key={`${r.flagKey}-${r.at}-${i}`}
-                  className="pc-learning__row pc-learning__row--bench"
-                  title={r.flagKey}
-                >
-                  <span
-                    className="pc-learning__sev"
-                    style={{ background: meta.color }}
-                    aria-hidden
-                  />
-                  <span className="pc-learning__id" title={r.flagKey}>
-                    {r.flagKey.replace(/^papercusp-/, "")}
-                  </span>
-                  <span className="pc-learning__benchcell">
-                    <span
-                      className={`pc-learning__delta pc-learning__delta--${meta.tone}`}
-                    >
-                      {meta.label}
-                    </span>
-                    <span
-                      className={`pc-learning__delta pc-learning__delta--${dc.tone}`}
-                    >
-                      Δcomp {dc.text}
-                    </span>
-                    <span className="pc-learning__benchmeta">
-                      Δgate {r.deltaGatePassRate >= 0 ? "+" : ""}
-                      {r.deltaGatePassRate.toFixed(2)}
-                    </span>
-                  </span>
-                  <span className="pc-learning__meta">
-                    <span className="pc-learning__age">{whenLabel(r.at)}</span>
-                  </span>
-                </li>
-              );
-            })}
+            {rows.slice(0, 4).map(renderBakeoff)}
           </ul>
+          {rows.length > 4 ? (
+            <LearningDisclosure
+              label="Earlier bake-offs"
+              count={rows.length - 4}
+            >
+              <ul className="pc-learning__list">
+                {rows.slice(4).map((row, i) => renderBakeoff(row, i + 4))}
+              </ul>
+            </LearningDisclosure>
+          ) : null}
         </>
       )}
     </section>
@@ -2726,31 +2745,37 @@ function LearningsView({ hive }: { hive: string }) {
             </button>
           }
         />
+
+        {/* Actionable fleet lessons lead Retain; passive memory follows. */}
+        <LearningPackCandidates />
+
         {/* The hive picker now lives in the tab header (P-042) — this strip keeps
           only the origin filter, scoped to the header-selected hive. */}
-        <div className="pc-learning__flow" aria-label="Learnings scope">
-          <label className="pc-learning__flowchip" style={{ gap: 6 }}>
-            show
-            <Select
-              ariaLabel="Filter by origin"
-              value={lpack}
-              onChange={(v: string) => void setLpack(v)}
-              options={[
-                { value: "all", label: "everything" },
-                {
-                  value: "organic",
-                  label: `${t("pot", { lower: true })}-learned only`,
-                },
-                ...(snap?.packs ?? []).map((p) => ({
-                  value: p.packId,
-                  label: `pack: ${p.packId}`,
-                })),
-              ]}
-            />
-          </label>
-        </div>
+        {rows.length > 0 ? (
+          <div className="pc-learning__flow" aria-label="Learnings scope">
+            <label className="pc-learning__flowchip" style={{ gap: 6 }}>
+              show
+              <Select
+                ariaLabel="Filter by origin"
+                value={lpack}
+                onChange={(v: string) => void setLpack(v)}
+                options={[
+                  { value: "all", label: "everything" },
+                  {
+                    value: "organic",
+                    label: `${t("pot", { lower: true })}-learned only`,
+                  },
+                  ...(snap?.packs ?? []).map((p) => ({
+                    value: p.packId,
+                    label: `pack: ${p.packId}`,
+                  })),
+                ]}
+              />
+            </label>
+          </div>
+        ) : null}
 
-        {snap ? (
+        {snap && rows.length > 0 ? (
           <div className="pc-learning-visual__layout pc-learning-visual__layout--memory">
             <LearningHeroMetric
               eyebrow="Retained"
@@ -2788,121 +2813,127 @@ function LearningsView({ hive }: { hive: string }) {
         ) : null}
 
         {/* Pack management (P-009/P-013): mute / uninstall / adopt-new + add-pack. */}
-        {hive !== "" && (
-          <div
-            className="pc-learning__flow"
-            aria-label="Pack management"
-            style={{ flexWrap: "wrap" }}
+        {hive !== "" &&
+        ((snap?.packs ?? []).length > 0 || installable.length > 0) ? (
+          <LearningDisclosure
+            label="Learning packs"
+            count={(snap?.packs ?? []).length + installable.length}
           >
-            {(snap?.packs ?? []).map((p) => (
-              <span
-                key={p.packId}
-                className="pc-learning__flowchip"
-                style={{ gap: 6 }}
-              >
-                <strong>{p.packId}</strong>
-                {p.enabled === false ? (
-                  <Tooltip label="Muted — rows stay stored but are not injected into agent turns">
-                    <em>muted</em>
-                  </Tooltip>
-                ) : null}
-                <Tooltip
-                  label={
-                    p.enabled === false
-                      ? "Resume injecting this pack"
-                      : "Stop injecting this pack (rows stay stored)"
-                  }
+            <div
+              className="pc-learning__flow pc-learning__packtools"
+              aria-label="Pack management"
+            >
+              {(snap?.packs ?? []).map((p) => (
+                <span
+                  key={p.packId}
+                  className="pc-learning__flowchip"
+                  style={{ gap: 6 }}
                 >
-                  <button
-                    type="button"
-                    style={actionBtn}
-                    disabled={busyPack === p.packId}
-                    onClick={() =>
-                      void packPost("set-enabled", {
-                        pack: p.packId,
-                        enabled: p.enabled === false,
-                      })
-                    }
-                  >
-                    {p.enabled === false ? "unmute" : "mute"}
-                  </button>
-                </Tooltip>
-                <Tooltip label="Remove this pack's rows (your edited rows are kept)">
-                  <button
-                    type="button"
-                    style={actionBtn}
-                    disabled={busyPack === p.packId}
-                    onClick={async () => {
-                      const ok = await askConfirm({
-                        title: `Uninstall ${p.packId}?`,
-                        body: "Rows you edited are kept.",
-                        confirmLabel: "Uninstall",
-                        destructive: true,
-                      });
-                      if (ok) {
-                        void packPost("uninstall", { pack: p.packId });
-                      }
-                    }}
-                  >
-                    uninstall
-                  </button>
-                </Tooltip>
-                {p.updateAvailable ? (
+                  <strong>{p.packId}</strong>
+                  {p.enabled === false ? (
+                    <Tooltip label="Muted — rows stay stored but are not injected into agent turns">
+                      <em>muted</em>
+                    </Tooltip>
+                  ) : null}
                   <Tooltip
-                    label={`Adopt the new learnings in v${p.availableVersion} — rows you already have are never auto-changed`}
+                    label={
+                      p.enabled === false
+                        ? "Resume injecting this pack"
+                        : "Stop injecting this pack (rows stay stored)"
+                    }
                   >
                     <button
                       type="button"
-                      style={{
-                        ...actionBtn,
-                        borderColor: "var(--accent)",
-                        color: "var(--accent)",
-                      }}
+                      style={actionBtn}
                       disabled={busyPack === p.packId}
                       onClick={() =>
-                        void packPost("upgrade", { pack: p.packId }, "upgrade")
+                        void packPost("set-enabled", {
+                          pack: p.packId,
+                          enabled: p.enabled === false,
+                        })
                       }
                     >
-                      v{p.availableVersion} available
+                      {p.enabled === false ? "unmute" : "mute"}
                     </button>
                   </Tooltip>
-                ) : null}
-              </span>
-            ))}
-            {installable.length > 0 && (
-              <span className="pc-learning__flowchip" style={{ gap: 6 }}>
-                <Select
-                  ariaLabel="Add a learning pack"
-                  value={addPack}
-                  onChange={(v: string) => setAddPack(v)}
-                  placeholder="add a pack…"
-                  options={installable.map((p) => ({
-                    value: p.id,
-                    label: `${p.title} — ${p.itemCount} learnings`,
-                  }))}
-                />
-                <button
-                  type="button"
-                  style={actionBtn}
-                  disabled={!addPack || busyPack !== ""}
-                  onClick={() =>
-                    void packPost("install", { pack: addPack }, "install")
-                  }
-                >
-                  install
-                </button>
-              </span>
-            )}
-          </div>
-        )}
+                  <Tooltip label="Remove this pack's rows (your edited rows are kept)">
+                    <button
+                      type="button"
+                      style={actionBtn}
+                      disabled={busyPack === p.packId}
+                      onClick={async () => {
+                        const ok = await askConfirm({
+                          title: `Uninstall ${p.packId}?`,
+                          body: "Rows you edited are kept.",
+                          confirmLabel: "Uninstall",
+                          destructive: true,
+                        });
+                        if (ok) {
+                          void packPost("uninstall", { pack: p.packId });
+                        }
+                      }}
+                    >
+                      uninstall
+                    </button>
+                  </Tooltip>
+                  {p.updateAvailable ? (
+                    <Tooltip
+                      label={`Adopt the new learnings in v${p.availableVersion} — rows you already have are never auto-changed`}
+                    >
+                      <button
+                        type="button"
+                        style={{
+                          ...actionBtn,
+                          borderColor: "var(--accent)",
+                          color: "var(--accent)",
+                        }}
+                        disabled={busyPack === p.packId}
+                        onClick={() =>
+                          void packPost(
+                            "upgrade",
+                            { pack: p.packId },
+                            "upgrade",
+                          )
+                        }
+                      >
+                        v{p.availableVersion} available
+                      </button>
+                    </Tooltip>
+                  ) : null}
+                </span>
+              ))}
+              {installable.length > 0 && (
+                <span className="pc-learning__flowchip" style={{ gap: 6 }}>
+                  <Select
+                    ariaLabel="Add a learning pack"
+                    value={addPack}
+                    onChange={(v: string) => setAddPack(v)}
+                    placeholder="add a pack…"
+                    options={installable.map((p) => ({
+                      value: p.id,
+                      label: `${p.title} — ${p.itemCount} learnings`,
+                    }))}
+                  />
+                  <button
+                    type="button"
+                    style={actionBtn}
+                    disabled={!addPack || busyPack !== ""}
+                    onClick={() =>
+                      void packPost("install", { pack: addPack }, "install")
+                    }
+                  >
+                    install
+                  </button>
+                </span>
+              )}
+            </div>
+          </LearningDisclosure>
+        ) : null}
         {packError ? (
           <p className="pc-learning__empty" role="alert">
             Pack action failed: {packError}
           </p>
         ) : null}
-
-        {/* P-032 (B-11): fleet→pack candidates awaiting the owner's adopt/dismiss. */}
-        <LearningPackCandidates />
 
         {/* P-011 prune nudge: a bloated pool crowds the per-turn injection budget. */}
         {rows.length > 80 && (
@@ -3075,28 +3106,30 @@ function LearningsView({ hive }: { hive: string }) {
           </div>
         )}
 
-        <div className="pc-learning__sectionhead">
-          <h2>Shared memory</h2>
-        </div>
+        {rows.length > 0 ? (
+          <div className="pc-learning__sectionhead">
+            <h2>Shared memory</h2>
+          </div>
+        ) : null}
 
         {hive === "" ? (
-          <LearningVisualEmpty
-            icon={Brain}
-            title={`No ${t("pot", { plural: true, lower: true })}`}
-          />
+          <div className="pc-learning__quietempty" role="status">
+            <Brain size={14} aria-hidden />
+            <span>No {t("pot", { plural: true, lower: true })}</span>
+          </div>
         ) : sync.loading && !snap ? (
-          <p className="pc-learning__empty">
+          <p className="pc-learning__quietempty">
             Loading the {t("pot", { lower: true })}&rsquo;s shared memory…
           </p>
         ) : snap?.unavailable ? (
-          <p className="pc-learning__empty">
+          <p className="pc-learning__quietempty">
             Memory store unavailable — try reloading.
           </p>
         ) : filtered.length === 0 ? (
-          <LearningVisualEmpty
-            icon={Brain}
-            title="No learnings in this filter"
-          />
+          <div className="pc-learning__quietempty" role="status">
+            <Brain size={14} aria-hidden />
+            <span>No retained learnings</span>
+          </div>
         ) : (
           <ul className="pc-learning__list">
             {filtered.map((r) => (
@@ -3220,7 +3253,7 @@ function Stat({
 export function LearningStyles() {
   return (
     <style>{`
-      .pc-learning { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 14px 16px 20px; gap: 12px; overflow: hidden; }
+      .pc-learning { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 10px 14px 14px; gap: 8px; overflow: hidden; }
       .pc-learning__header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
       .pc-learning__header h1 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 20px; font-weight: 760; color: var(--fg); }
       .pc-learning__utilities { display: inline-flex; align-items: center; gap: 6px; }
@@ -3235,11 +3268,11 @@ export function LearningStyles() {
 
       .pc-learning__stage-list {
         display: grid; grid-template-columns: repeat(4, minmax(90px, 1fr));
-        align-items: start; max-width: 760px; margin: 2px auto 0; padding: 0 24px;
+        align-items: start; max-width: 720px; margin: 0 auto; padding: 0 22px;
       }
       .pc-learning__stage {
         --stage-accent: var(--accent);
-        position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px;
+        position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px;
         min-width: 0; padding: 0 8px; border: 0; background: transparent;
         color: var(--fg-mute); cursor: pointer; font: inherit;
       }
@@ -3247,15 +3280,15 @@ export function LearningStyles() {
       .pc-learning__stage:nth-child(3) { --stage-accent: var(--good); }
       .pc-learning__stage:nth-child(4) { --stage-accent: var(--accent-strong); }
       .pc-learning__stage-icon {
-        position: relative; z-index: 1; display: grid; place-items: center; width: 34px; height: 34px;
+        position: relative; z-index: 1; display: grid; place-items: center; width: 30px; height: 30px;
         border: 1px solid var(--border-strong); border-radius: 50%; background: var(--bg-1); color: var(--fg-mute);
         transition: color var(--dur-fast), border-color var(--dur-fast), background var(--dur-fast);
       }
       .pc-learning__stage-line {
-        position: absolute; z-index: 0; top: 17px; left: calc(50% + 17px); width: calc(100% - 34px); height: 1px;
+        position: absolute; z-index: 0; top: 15px; left: calc(50% + 15px); width: calc(100% - 30px); height: 1px;
         background: var(--border-strong); pointer-events: none;
       }
-      .pc-learning__stage-label { font-size: 11.5px; font-weight: 650; }
+      .pc-learning__stage-label { font-size: 11px; font-weight: 650; }
       .pc-learning__stage:hover .pc-learning__stage-icon { color: var(--fg); border-color: var(--stage-accent); background: var(--bg-2); }
       .pc-learning__stage[aria-selected="true"] { color: var(--fg); }
       .pc-learning__stage[aria-selected="true"] .pc-learning__stage-icon {
@@ -3266,11 +3299,11 @@ export function LearningStyles() {
       .pc-learning__stage[data-complete="true"] .pc-learning__stage-icon { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--bg-1)); }
       .pc-learning__stage-line[data-complete="true"] { height: 2px; background: var(--accent); }
 
-      .pc-learning__controls { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+      .pc-learning__controls { min-height: 30px; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
       .pc-learning__view-tabs { min-width: 0; max-width: 100%; }
       .pc-learning__view-list { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; padding: 0; overflow-x: auto; scrollbar-width: thin; border-bottom: 1px solid var(--border); background: transparent; }
       .pc-learning__view-tab {
-        display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; padding: 7px 11px 8px;
+        display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; padding: 5px 9px 6px;
         border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent;
         color: var(--fg-mute); cursor: pointer; font: inherit; font-size: 11.5px; font-weight: 620;
         transition: color var(--dur-fast), border-color var(--dur-fast), background var(--dur-fast);
@@ -3338,7 +3371,7 @@ export function LearningStyles() {
       .pc-learning__stat--human strong { color: #fcd34d; }
       .pc-learning__stat--good strong { color: var(--accent-strong, var(--accent)); }
 
-      .pc-learning__section { display: flex; flex-direction: column; gap: 10px; }
+      .pc-learning__section { display: flex; flex-direction: column; gap: 7px; }
       .pc-learning__sectionhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
       .pc-learning__sectionhead h2 { margin: 0; font-size: 13px; font-weight: 720; text-transform: uppercase; letter-spacing: 0; color: var(--fg-dim, #b9d4e8); }
       .pc-learning__inlinetools { display: inline-flex; align-items: center; gap: 8px; }
@@ -3372,7 +3405,7 @@ export function LearningStyles() {
       .pc-learning__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
       .pc-learning__row {
         display: grid; grid-template-columns: 4px auto 1fr auto; align-items: center; gap: 9px;
-        padding: 8px 11px; border-radius: 8px;
+        padding: 6px 9px; border-radius: 8px;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.13));
         background: var(--bg-2, rgba(255, 255, 255, 0.03));
       }
@@ -3432,10 +3465,12 @@ export function LearningStyles() {
       .pc-learning__lensbar { width: 44px; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
       .pc-learning__lensbar span { display: block; height: 100%; border-radius: 2px; background: #a78bfa; }
 
-      .pc-learning__empty { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; padding: 28px 16px; color: var(--fg-mute, #7f9bb4); font-size: 12.5px; }
+      .pc-learning__empty { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; padding: 16px 12px; color: var(--fg-mute, #7f9bb4); font-size: 12px; }
       .pc-learning__empty--card { border: 1px dashed var(--border, rgba(125, 211, 252, 0.2)); border-radius: 12px; }
       .pc-learning__empty strong { color: var(--fg-dim, #b9d4e8); font-size: 13px; }
       .pc-learning__empty span { max-width: 58ch; }
+      .pc-learning__quietempty { min-height: 34px; display: flex; align-items: center; justify-content: center; gap: 7px; margin: 0; border: 1px dashed color-mix(in srgb, var(--border) 70%, transparent); border-radius: 8px; color: var(--fg-mute); font-size: 11px; }
+      .pc-learning__packtools { flex-wrap: wrap; padding: 3px 0 6px; }
 
       /* Benchmark (apiary) trend rows + knowledge cross-link. */
       .pc-learning__benchcell { display: inline-flex; align-items: baseline; gap: 9px; min-width: 0; overflow: hidden; }
@@ -3453,18 +3488,18 @@ export function LearningStyles() {
       .pc-learning__footnote { margin: 2px 0 0; font-size: 11px; font-style: italic; color: var(--fg-mute, #7f9bb4); }
 
       .pc-learning__gymflow, .pc-learning__improvementflow, .pc-learning__memorymap {
-        min-height: 176px; border: 1px solid var(--border); border-radius: 11px; background: var(--bg-2);
+        min-height: 120px; border: 1px solid var(--border); border-radius: 11px; background: var(--bg-2);
       }
-      .pc-learning__gymflow { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; align-items: center; gap: 8px; padding: 18px; }
-      .pc-learning__gymflow > span { position: relative; display: grid; place-content: center; justify-items: center; min-height: 84px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-1); }
+      .pc-learning__gymflow { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; align-items: center; gap: 7px; padding: 12px; }
+      .pc-learning__gymflow > span { position: relative; display: grid; place-content: center; justify-items: center; min-height: 62px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-1); }
       .pc-learning__gymflow small, .pc-learning__improvementflow small { color: var(--fg-mute); font-size: 9px; font-weight: 700; text-transform: uppercase; }
       .pc-learning__gymflow strong, .pc-learning__improvementflow strong { margin-top: 4px; color: var(--fg); font-size: 23px; font-variant-numeric: tabular-nums; }
       .pc-learning__gymflow > span.is-good strong, .pc-learning__improvementflow > span.is-good strong { color: #34d399; }
       .pc-learning__gymflow > span.is-warn strong, .pc-learning__improvementflow > span.is-human strong { color: #fbbf24; }
       .pc-learning__gymflow > span.is-accent strong, .pc-learning__improvementflow > span.is-auto strong { color: var(--accent); }
       .pc-learning__gymflow > span > i { position: absolute; top: 50%; left: calc(100% + 1px); width: 9px; height: 1px; background: var(--border-strong); }
-      .pc-learning__improvementflow { display: grid; grid-template-columns: 1fr auto 1fr 1fr auto 1fr; align-items: center; gap: 7px; padding: 18px; }
-      .pc-learning__improvementflow > span { display: grid; place-content: center; justify-items: center; min-height: 72px; border-radius: 8px; background: color-mix(in srgb, var(--fg) 4%, transparent); }
+      .pc-learning__improvementflow { display: grid; grid-template-columns: 1fr auto 1fr 1fr auto 1fr; align-items: center; gap: 7px; padding: 12px; }
+      .pc-learning__improvementflow > span { display: grid; place-content: center; justify-items: center; min-height: 56px; border-radius: 8px; background: color-mix(in srgb, var(--fg) 4%, transparent); }
       .pc-learning__improvementflow > i { width: 18px; height: 1px; background: var(--border-strong); }
       .pc-learning__lanegrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: start; }
       .pc-learning__lanecol { min-width: 0; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in srgb, var(--bg-2) 88%, transparent); overflow: hidden; }
@@ -3484,7 +3519,7 @@ export function LearningStyles() {
       .pc-learning__idea-route b { height: 7px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--fg) 6%, transparent); }
       .pc-learning__idea-route b i { display: block; height: 100%; border-radius: inherit; }
       .pc-learning__idea-route > div strong { color: var(--fg); font-size: 10px; font-variant-numeric: tabular-nums; text-align: right; }
-      .pc-learning__memorymap { display: grid; grid-template-columns: repeat(16, minmax(5px, 1fr)); grid-auto-rows: 1fr; gap: 4px; padding: 18px; }
+      .pc-learning__memorymap { display: grid; grid-template-columns: repeat(16, minmax(5px, 1fr)); grid-auto-rows: 1fr; gap: 3px; padding: 12px; }
       .pc-learning__memorymap i { min-height: 10px; border-radius: 2px; background: color-mix(in srgb, var(--accent) 58%, transparent); opacity: .78; }
       .pc-learning__memorymap i.is-organic { background: #34d399; }
       .pc-learning__memorymap i:hover { opacity: 1; transform: scale(1.08); }

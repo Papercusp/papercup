@@ -169,7 +169,10 @@ export function MugWakeEfficiencyPanel() {
                 {visible.map(renderWake)}
               </ul>
               {earlier.length > 0 ? (
-                <LearningDisclosure label="Earlier wakes" count={earlier.length}>
+                <LearningDisclosure
+                  label="Earlier wakes"
+                  count={earlier.length}
+                >
                   <ul className="pc-qeff__list">
                     {earlier.map((sample, i) => renderWake(sample, i + 4))}
                   </ul>

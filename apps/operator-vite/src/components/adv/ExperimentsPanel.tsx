@@ -198,11 +198,12 @@ export function ExperimentsPanel() {
           <div className="pc-learning__sectionhead">
             <h2>Recent experiments</h2>
           </div>
-          <ul className="pc-experiments__list">
-            {visible.map(renderRun)}
-          </ul>
+          <ul className="pc-experiments__list">{visible.map(renderRun)}</ul>
           {earlier.length > 0 ? (
-            <LearningDisclosure label="Earlier experiments" count={earlier.length}>
+            <LearningDisclosure
+              label="Earlier experiments"
+              count={earlier.length}
+            >
               <ul className="pc-experiments__list">{earlier.map(renderRun)}</ul>
             </LearningDisclosure>
           ) : null}

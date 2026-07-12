@@ -51,9 +51,7 @@ export function EkgPanel() {
 
   const renderShift = (s: (typeof shifts)[number]) => (
     <li key={s.id} className="pc-ekg__row">
-      <span className={`pc-ekg__severity is-${s.severity}`}>
-        {s.severity}
-      </span>
+      <span className={`pc-ekg__severity is-${s.severity}`}>{s.severity}</span>
       <span className="pc-ekg__feature">
         {s.feature}
         {s.direction ? (
@@ -181,9 +179,7 @@ export function EkgPanel() {
           <div className="pc-learning__sectionhead">
             <h2>Detected shifts</h2>
           </div>
-          <ul className="pc-ekg__list">
-            {visible.map(renderShift)}
-          </ul>
+          <ul className="pc-ekg__list">{visible.map(renderShift)}</ul>
           {earlier.length > 0 ? (
             <LearningDisclosure label="Earlier shifts" count={earlier.length}>
               <ul className="pc-ekg__list">{earlier.map(renderShift)}</ul>
