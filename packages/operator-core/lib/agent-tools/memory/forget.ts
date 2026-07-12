@@ -85,11 +85,31 @@ export default defineTool({
       }
       throw err;
     }
+    // Soft mode needs the temporal-lite capability — feature-tested ONCE up
+    // front so an unsupported backend fails the batch with a clear reason
+    // instead of N identical per-item errors. NEVER falls back to a hard
+    // delete: destroying data on a "keep the history" request is the one
+    // wrong answer.
+    const invalidateEntry = args.soft ? backend.invalidateEntry?.bind(backend) : undefined;
+    if (args.soft && !invalidateEntry) {
+      return bulkContent({ ok: false, reason: 'soft_forget_unsupported' });
+    }
     const env = await runBulk(
       ids,
       async (id) => {
         try {
-          await withMemoryToolTimeout(backend.forget(id), 'memory:forget forget');
+          if (invalidateEntry) {
+            const closed = await withMemoryToolTimeout(invalidateEntry(id), 'memory:forget soft');
+            if (!closed) {
+              return {
+                ok: false as const,
+                id,
+                error: 'no open memory matched — unknown id, or already superseded/soft-forgotten',
+              };
+            }
+          } else {
+            await withMemoryToolTimeout(backend.forget(id), 'memory:forget forget');
+          }
         } catch (err) {
           if (err instanceof MemoryTimeoutError) {
             return { ok: false as const, id, reason: 'memory_timeout' as const };
@@ -104,7 +124,7 @@ export default defineTool({
             recordFeedback({ memId: id, userId: 'agent-tool', action: 'delete' }),
           )
           .catch(() => { /* best-effort */ });
-        return { ok: true as const, id };
+        return { ok: true as const, id, ...(invalidateEntry ? { soft: true as const } : {}) };
       },
       { keyOf: (id) => ({ id }) },
     );
