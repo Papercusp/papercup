@@ -17,14 +17,27 @@
  * creates a GitHub Release.
  *
  * Ops (discriminated on `op`):
- *   - preflight — READ-ONLY go/no-go: signing key, cutter + verify scripts present, no cut
- *                 already in flight, VM reminders for requested mac/windows legs.
- *   - run       — fire the LOCAL cut DETACHED (survives compaction/relaunch). Dry-run
- *                 unless confirm:true. Heavy + owner-walled → operator-config-write role.
- *                 Audited. Refuses if a cut is already in flight.
- *   - status    — READ-ONLY: is a cut in flight? / its exit code + log tail once done.
- *   - handoff   — collect the version's signed artifacts + sha256 + manifests/provenance
- *                 for the owner; flags any unsigned artifact (a ship blocker).
+ *   - preflight  — READ-ONLY go/no-go: signing key, cutter + verify scripts present, no cut
+ *                  already in flight, VM reminders for requested mac/windows legs.
+ *   - run        — fire the LOCAL cut DETACHED (survives compaction/relaunch). Dry-run
+ *                  unless confirm:true. Heavy + owner-walled → operator-config-write role.
+ *                  Audited. Refuses if a cut is already in flight.
+ *   - status     — READ-ONLY: is a cut in flight? / its exit code + log tail once done.
+ *                  Pass `platform` to poll ONE leg's own unit (see run-leg) instead of the
+ *                  legacy whole-cut unit.
+ *   - handoff    — collect the version's signed artifacts + sha256 + manifests/provenance
+ *                  for the owner; flags any unsigned artifact (a ship blocker). Leg-
+ *                  agnostic — collects across every platform's output under one shared
+ *                  target tree regardless of whether it came from op:run or N op:run-legs.
+ *   - run-leg    — WI-4233 fleet-split support: fire ONE platform leg (linux/mac/windows/
+ *                  arm64) on its OWN detached unit/log/done, so N agents can each drive +
+ *                  poll their own leg through this audited orchestrator instead of raw
+ *                  bash. Same dry-run/confirm/role-gate/audit contract as op:run.
+ *   - abort-leg  — stop one platform leg's unit (best-effort). Same role gate as run.
+ *   - gate-status — READ (or, for the first caller, ESTABLISH) the shared BUILD_SHA gate
+ *                  for a (version, channel): the single honest sha every leg/agent on this
+ *                  box should be cutting against, so independent legs can't silently drift
+ *                  onto different shas if the tree moves (git-sync) between their runs.
  */
 
 import { z } from 'zod';
@@ -42,8 +55,16 @@ import {
   isValidVersion,
   CHANNELS,
   CUT_UNIT,
+  PLATFORMS,
+  cutUnitFor,
+  cutLogFor,
+  cutDoneFor,
+  legsForPlatform,
+  abortLeg,
+  readOrCreateGate,
   type Channel,
   type CutLegs,
+  type Platform,
 } from '../../release-cut-launch';
 
 const json = (payload: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(payload) }] });
@@ -75,14 +96,14 @@ export default defineTool({
   name: 'release:cut',
   profile: 'engineer',
   description:
-    "CUT a LOCAL Papercusp desktop release — build + sign the installer(s) on this box for the owner to upload (⛔ LOCAL-only: never pushes a tag / creates a GitHub Release; owner directive 2026-07-08). The orchestrator over bin/release-local.sh + the RELEASE-RUNBOOK verify recipes. op:preflight (READ-ONLY go/no-go — signing key, scripts present, no cut in flight; call FIRST). op:run (fire the cut DETACHED — a 35–60 min tri-platform build survives compaction/relaunch; dry-run unless confirm:true; operator/mug/architect role; audited). op:status (poll an in-flight cut / its exit code + log tail). op:handoff (collect the version's signed artifacts + sha256 + latest.json/build-provenance for the owner; flags unsigned artifacts). Optional legs: mac (VM :2222), windows (VM :2223), arm64.",
+    "CUT a LOCAL Papercusp desktop release — build + sign the installer(s) on this box for the owner to upload (⛔ LOCAL-only: never pushes a tag / creates a GitHub Release; owner directive 2026-07-08). The orchestrator over bin/release-local.sh + the RELEASE-RUNBOOK verify recipes. op:preflight (READ-ONLY go/no-go — signing key, scripts present, no cut in flight; call FIRST). op:run (fire the WHOLE cut DETACHED — a 35–60 min tri-platform build survives compaction/relaunch; dry-run unless confirm:true; operator/mug/architect role; audited). op:run-leg (fire ONE platform leg — linux/mac/windows/arm64 — on its own unit, for a fleet-split cut where N agents each drive+poll their own leg; same dry-run/confirm/role/audit contract). op:abort-leg (stop one leg's unit). op:status (poll an in-flight cut / its exit code + log tail; pass `platform` for a per-leg poll). op:gate-status (read, or as first-caller establish, the shared BUILD_SHA gate for a version+channel so independent legs can't drift onto different shas). op:handoff (collect the version's signed artifacts + sha256 + latest.json/build-provenance for the owner — leg-agnostic, collects across every platform's output; flags unsigned artifacts). Optional legs: mac (VM :2222), windows (VM :2223), arm64.",
   guidance: {
     when:
-      'Cutting a new desktop release for the owner to upload. release:cut{op:preflight} → {op:run,version,channel,confirm:true} → poll {op:status} until done → run the RELEASE-RUNBOOK ship-gate (recipes:run release-verify-provenance) → {op:handoff,version} and give the owner the local paths + sha256.',
+      "Cutting a new desktop release for the owner to upload. Single-agent: release:cut{op:preflight} → {op:run,version,channel,confirm:true} → poll {op:status} until done → run the RELEASE-RUNBOOK ship-gate (recipes:run release-verify-provenance) → {op:handoff,version}. Fleet-split (one agent per platform leg): each agent {op:gate-status,version,channel} first (agree on ONE buildSha) → {op:run-leg,platform,version,channel,confirm:true} → poll {op:status,platform} → once EVERY leg is done, any agent runs the ship-gate + {op:handoff,version} (collects across all legs).",
     notWhen:
       "Not for deploying the WEB operator to :3070 — that's release:deploy. Not for the green-checkpoint verdict — that's release:checkpoint-run. NEVER publish a cut to GitHub (LOCAL-only, owner directive). To verify a cut before hand-off use the recipes, not this tool.",
     chaining:
-      'release:cut{op:preflight} → {op:run,confirm:true} → {op:status} (poll) → recipes:run{id:release-verify-provenance} → release:cut{op:handoff,version}.',
+      'Whole cut: release:cut{op:preflight} → {op:run,confirm:true} → {op:status} (poll) → recipes:run{id:release-verify-provenance} → release:cut{op:handoff,version}. Fleet-split: {op:gate-status} (per agent) → {op:run-leg,confirm:true} (per agent, own platform) → {op:status,platform} (poll, per agent) → {op:handoff,version} (once all legs done).',
     seeAlso: [
       'recipes:run release-verify-provenance / release-vm-preflight / release-install-and-relaunch-verify (the RELEASE-RUNBOOK ship-gate this cut composes)',
       'release:deploy (deploy the WEB operator to :3070 — a different target)',
@@ -115,10 +136,32 @@ export default defineTool({
         .optional()
         .describe('false/absent ⇒ DRY RUN (preview the exact command). true ⇒ fire the detached LOCAL cut.'),
     }),
-    z.object({ op: z.literal('status') }),
+    z.object({
+      op: z.literal('status'),
+      platform: z.enum(PLATFORMS as [Platform, ...Platform[]]).optional().describe('Poll ONE leg (WI-4233) instead of the legacy whole-cut unit.'),
+    }),
     z.object({
       op: z.literal('handoff'),
       version: z.string().min(1).describe('The version whose cut artifacts to collect for the owner.'),
+    }),
+    z.object({
+      op: z.literal('run-leg'),
+      platform: z.enum(PLATFORMS as [Platform, ...Platform[]]).describe('Which platform leg to fire on its own unit.'),
+      version: z.string().min(1).describe('Release version X.Y.Z (optional -prerelease), e.g. 0.0.8 or 1.2.3-rc.1.'),
+      channel: z.enum(['stable', 'beta', 'alpha']).describe('Release channel.'),
+      confirm: z
+        .boolean()
+        .optional()
+        .describe('false/absent ⇒ DRY RUN (preview the exact command). true ⇒ fire the detached LOCAL leg.'),
+    }),
+    z.object({
+      op: z.literal('abort-leg'),
+      platform: z.enum(PLATFORMS as [Platform, ...Platform[]]).describe('Which platform leg to stop.'),
+    }),
+    z.object({
+      op: z.literal('gate-status'),
+      version: z.string().min(1).describe('Release version X.Y.Z (optional -prerelease).'),
+      channel: z.enum(['stable', 'beta', 'alpha']).describe('Release channel.'),
     }),
   ]),
   async handler(args, ctx) {
@@ -135,18 +178,20 @@ export default defineTool({
       });
     }
 
-    // ── status: read-only poll ──
+    // ── status: read-only poll (whole-cut, or one leg with `platform`) ──
     if (args.op === 'status') {
-      const status = readCutStatus();
+      const status = readCutStatus({ platform: args.platform });
+      const unit = cutUnitFor(args.platform);
+      const legNote = args.platform ? `leg '${args.platform}' (unit ${unit})` : `unit ${unit}`;
       const note =
         status.state === 'running'
-          ? `A cut is in flight (unit ${CUT_UNIT}). Poll again; the log tail is above. Do NOT start a second cut.`
+          ? `A cut is in flight (${legNote}). Poll again; the log tail is above. Do NOT start a second cut${args.platform ? ' for this leg' : ''}.`
           : status.state === 'done'
-            ? 'The last cut finished OK. Verify it (recipes:run release-verify-provenance), then release:cut{op:handoff,version} to collect the artifacts for the owner.'
+            ? `The last ${legNote} finished OK. ${args.platform ? "Once every leg is done, verify (recipes:run release-verify-provenance) then release:cut{op:handoff,version}." : 'Verify it (recipes:run release-verify-provenance), then release:cut{op:handoff,version} to collect the artifacts for the owner.'}`
             : status.state === 'failed'
-              ? `The last cut FAILED (exit ${status.exitCode}). Inspect the log tail above / ${status.logPath}; fix and re-run.`
-              : 'No cut in flight and no recent result on this host.';
-      return json({ ok: true, op: 'status', ...status, note });
+              ? `The last ${legNote} FAILED (exit ${status.exitCode}). Inspect the log tail above / ${status.logPath}; fix and re-run.`
+              : `No cut in flight and no recent result for ${legNote} on this host.`;
+      return json({ ok: true, op: 'status', ...(args.platform ? { platform: args.platform } : {}), ...status, note });
     }
 
     // ── handoff: collect the LOCAL deliverable ──
@@ -179,6 +224,138 @@ export default defineTool({
             ? `⚠ ${h.unsignedNames.length} artifact(s) are UNSIGNED (${h.unsignedNames.join(', ')}) — the updater can't verify them. Do NOT hand these over; re-cut with the signing key present.`
             : 'All artifacts are signed. Run the ship-gate (recipes:run release-verify-provenance) before hand-off.',
         note: 'LOCAL-only hand-off: give the OWNER these local paths + sha256 to upload. Never publish to GitHub.',
+      });
+    }
+
+    // ── gate-status: read, or (first caller) establish, the shared BUILD_SHA gate ──
+    if (args.op === 'gate-status') {
+      if (!isValidVersion(args.version)) {
+        return json({
+          ok: false,
+          op: 'gate-status',
+          refused: true,
+          reason: `bad_version '${args.version}' — expected X.Y.Z with an optional -prerelease suffix.`,
+        });
+      }
+      const { ownerLabel } = readIdentity(ctx);
+      const { gate, created } = readOrCreateGate(args.version, args.channel as Channel, ownerLabel);
+      return json({
+        ok: true,
+        op: 'gate-status',
+        created,
+        ...gate,
+        note: created
+          ? `Gate established: buildSha=${gate.buildSha}${gate.dirty ? ' (DIRTY — the -dirty guard will refuse a leg unless PAPERCUSP_ALLOW_DIRTY=1)' : ''}. Every peer's op:gate-status for ${args.version}/${args.channel} now reads back this SAME sha — pass it to your fleet so every leg cuts against it.`
+          : `Existing gate (derived by ${gate.derivedBy} at ${gate.derivedAt}) — buildSha=${gate.buildSha}. If YOUR leg's own release-local.sh run reports a DIFFERENT sha, STOP: the tree moved between legs (git-sync) — do not mix artifacts from different shas into one hand-off.`,
+      });
+    }
+
+    // ── abort-leg: stop one platform leg's unit (operator-gated) ──
+    if (args.op === 'abort-leg') {
+      if (!isOperatorConfigWriteRole(ctx.role)) {
+        return json({
+          ok: false,
+          op: 'abort-leg',
+          refused: true,
+          reason: `role_forbidden — release:cut{op:abort-leg} requires operator, mug, or architect role (you are role:${ctx.role ?? 'unknown'}).`,
+        });
+      }
+      const platform = args.platform as Platform;
+      const result = abortLeg(platform);
+      const { ownerLabel } = readIdentity(ctx);
+      await recordCutAudit('abort-leg', `${ownerLabel} (role:${ctx.role ?? 'unknown'})`, { platform, ...result });
+      return json({
+        ok: result.stopped,
+        op: 'abort-leg',
+        platform,
+        ...result,
+        note: result.stopped
+          ? `Stop requested for the ${platform} leg (unit ${result.unit}). Its log/done files (${cutLogFor(platform)} / ${cutDoneFor(platform)}) are left for post-mortem — the next op:run-leg for this platform clears the done sentinel itself.`
+          : `Stop failed (${result.reason ?? 'unknown'}) — the unit may already be inactive; check release:cut{op:status,platform:'${platform}'}.`,
+      });
+    }
+
+    // ── run-leg: fire ONE platform leg detached (operator-gated write, WI-4233) ──
+    if (args.op === 'run-leg') {
+      if (!isOperatorConfigWriteRole(ctx.role)) {
+        return json({
+          ok: false,
+          op: 'run-leg',
+          refused: true,
+          reason: `role_forbidden — release:cut{op:run-leg} requires operator, mug, or architect role (you are role:${ctx.role ?? 'unknown'}). Cutting a real build is heavy + owner-walled. preflight/status/handoff/gate-status are open.`,
+        });
+      }
+      if (!isValidVersion(args.version)) {
+        return json({
+          ok: false,
+          op: 'run-leg',
+          refused: true,
+          reason: `bad_version '${args.version}' — expected X.Y.Z with an optional -prerelease suffix (e.g. 0.0.8, 1.2.3-rc.1).`,
+        });
+      }
+      const channel = args.channel as Channel;
+      const platform = args.platform as Platform;
+      const legs = legsForPlatform(platform);
+
+      const pre = preflightCut(legs, { platform });
+      const inFlight = pre.checks.find((c) => c.name === 'no-cut-in-flight');
+      if (inFlight && !inFlight.ok) {
+        return json({
+          ok: false,
+          op: 'run-leg',
+          refused: true,
+          reason: `cut_in_flight — ${inFlight.detail}`,
+        });
+      }
+
+      if (!args.confirm) {
+        const argv = buildCutArgv(desktopRoot(), args.version, channel, legs, '<PATH>', platform);
+        return json({
+          ok: true,
+          op: 'run-leg',
+          dry_run: true,
+          platform,
+          version: args.version,
+          channel,
+          legs,
+          localOnly: true,
+          unit: cutUnitFor(platform),
+          preflight: { go: pre.go, blockers: pre.blockers },
+          wouldRun: `systemd-run ${argv.join(' ')}`,
+          note: pre.go
+            ? `Pass confirm:true to fire the detached LOCAL ${platform} leg (unit ${cutUnitFor(platform)}). Then poll release:cut{op:status,platform:'${platform}'}.`
+            : `⚠ preflight is NOT green for this leg — resolve first: ${pre.blockers.join('; ')}. confirm:true would fire anyway.`,
+        });
+      }
+
+      const { ownerLabel } = readIdentity(ctx);
+      const actor = `${ownerLabel} (role:${ctx.role ?? 'unknown'})`;
+      const launch = await launchDetachedCut({ version: args.version, channel, legs, platform });
+      await recordCutAudit('run-leg', actor, {
+        platform,
+        version: args.version,
+        channel,
+        legs,
+        localOnly: true,
+        launched: launch.launched,
+        unit: launch.unit,
+        ...(launch.reason ? { reason: launch.reason } : {}),
+      });
+      return json({
+        ok: launch.launched,
+        op: 'run-leg',
+        platform,
+        launched: launch.launched,
+        version: args.version,
+        channel,
+        legs,
+        localOnly: true,
+        unit: launch.unit,
+        logPath: launch.logPath,
+        ...(launch.reason ? { reason: launch.reason } : {}),
+        note: launch.launched
+          ? `LOCAL ${platform} leg started (detached). Poll release:cut{op:status,platform:'${platform}'}. Once EVERY leg is done: recipes:run release-verify-provenance → release:cut{op:handoff,version} (handoff already collects across every leg's artifacts under the shared target tree).`
+          : `Leg NOT launched — likely already in flight (see reason). Re-check release:cut{op:status,platform:'${platform}'}.`,
       });
     }
 

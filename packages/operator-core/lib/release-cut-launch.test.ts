@@ -19,6 +19,15 @@ import {
   CUT_UNIT,
   CUT_DONE,
   CUT_LOG,
+  PLATFORMS,
+  cutUnitFor,
+  cutLogFor,
+  cutDoneFor,
+  legsForPlatform,
+  abortLeg,
+  deriveBuildSha,
+  gatePath,
+  readOrCreateGate,
 } from './release-cut-launch';
 
 describe('version / channel validation', () => {

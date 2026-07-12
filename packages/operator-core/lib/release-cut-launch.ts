@@ -533,3 +533,152 @@ export function preflightCut(
   const blockers = checks.filter((c) => !c.ok && !c.warnOnly).map((c) => `${c.name}: ${c.detail}`);
   return { go: blockers.length === 0, desktopRoot: root, checks, blockers };
 }
+
+// ─── Abort a leg (WI-4233) ──────────────────────────────────────────────────────
+
+export interface AbortLegResult {
+  stopped: boolean;
+  unit: string;
+  reason?: string;
+}
+
+export interface AbortLegDeps {
+  /** `systemctl --user stop <unit>` by default; throws on failure. Injectable for tests. */
+  stopUnit?: (unit: string) => void;
+}
+
+/** Stop ONE platform leg's detached unit (best-effort — a leg that already finished or
+ *  was never started simply reports stopped:false with the systemctl error, not a throw).
+ *  Its log/done files are left in place for post-mortem; the next op:run-leg for the same
+ *  platform clears the done sentinel itself (buildCutArgv's `rm -f`). */
+export function abortLeg(platform: Platform, deps: AbortLegDeps = {}): AbortLegResult {
+  const unit = cutUnitFor(platform);
+  const stop =
+    deps.stopUnit ??
+    ((u: string) => {
+      execFileSync('systemctl', ['--user', 'stop', u], { stdio: 'ignore' });
+    });
+  try {
+    stop(unit);
+    return { stopped: true, unit };
+  } catch (err) {
+    return { stopped: false, unit, reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ─── BUILD_SHA gate (WI-4233) — one honest sha, readable by every leg ──────────
+//
+// release-local.sh derives BUILD_SHA ONCE, centrally, per P-003/EI-8914 — the single
+// source of truth threaded into every leg of a WHOLE cut. A fleet-split cut breaks that:
+// 3 agents on 3 machines each firing their own `release-local.sh` invocation (or, before
+// op:run-leg existed, raw bash around it) can each land on a DIFFERENT short sha if the
+// shared tree moves between invocations (git-sync commits on a schedule) — precisely the
+// confusion the 0.0.8 drive hit (BUILD_SHA history: c1d5520 → 7302dd9-dirty → b0124…,
+// tracked ad hoc over coord messages because there was no shared, readable gate). The
+// functions below give every leg ONE place to read (or, for the first caller, establish)
+// the sha this release is cutting against, instead of re-deriving it independently and
+// hoping the tree didn't move.
+
+export interface BuildShaInfo {
+  sha: string;
+  dirty: boolean;
+}
+
+export interface DeriveBuildShaDeps {
+  gitShortHead?: (root: string) => string;
+  gitDirty?: (root: string) => boolean;
+}
+
+/** Mirrors release-local.sh's own BUILD_SHA derivation exactly (short head sha of `root`,
+ *  marked dirty if EITHER `root` or its parent — the monorepo superproject, since the
+ *  sidecar is built from apps/operator — has uncommitted changes; over-reporting dirty is
+ *  the safe direction, same comment as release-local.sh). Lets op:gate-status report the
+ *  same honest value release-local.sh would derive, without having to run it. */
+export function deriveBuildSha(root: string = desktopRoot(), deps: DeriveBuildShaDeps = {}): BuildShaInfo {
+  const head =
+    deps.gitShortHead ??
+    ((r: string) => {
+      try {
+        return execFileSync('git', ['-C', r, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).trim();
+      } catch {
+        return '';
+      }
+    });
+  const dirty =
+    deps.gitDirty ??
+    ((r: string) => {
+      try {
+        return execFileSync('git', ['-C', r, 'status', '--porcelain'], { encoding: 'utf8' }).trim().length > 0;
+      } catch {
+        return false;
+      }
+    });
+  const sha = head(root);
+  const isDirty = dirty(root) || dirty(path.join(root, '..'));
+  return { sha, dirty: isDirty };
+}
+
+/** Shared gate file path for (version, channel) — one per release attempt. `/tmp` is
+ *  shared only within a single box; a genuinely cross-MACHINE fleet-split (a VM leg) still
+ *  needs the sha relayed in (mirrors how release-local.sh already passes BUILD_SHA into
+ *  the VM legs, since their rsynced trees have no .git to self-derive from) — this gate is
+ *  the LOCAL-box coordination point for legs/agents sharing this host. */
+export function gatePath(version: string, channel: Channel): string {
+  return `/tmp/papercup-release-gate-${version}-${channel}.json`;
+}
+
+export interface ReleaseGate {
+  version: string;
+  channel: Channel;
+  buildSha: string;
+  dirty: boolean;
+  derivedAt: string;
+  derivedBy: string;
+}
+
+export interface GateStatusDeps {
+  exists?: (p: string) => boolean;
+  readFileSync?: (p: string) => string;
+  /** Exclusive create (like `fs.writeFileSync(p, data, { flag: 'wx' })`) — MUST throw if
+   *  `p` already exists, so a race between two first-callers still converges on one
+   *  writer. */
+  writeFileSyncExclusive?: (p: string, data: string) => void;
+  derive?: (root?: string) => BuildShaInfo;
+}
+
+/**
+ * Read the shared release gate for (version, channel), establishing it (deriving +
+ * writing) if this is the first caller. Every subsequent call — from any leg, any agent,
+ * on this box — reads back the SAME buildSha instead of each independently re-deriving one
+ * that may have drifted if the tree moved (git-sync) between calls. `created:true` tells
+ * the caller they were the one who established it (so a leg script can log "I set the
+ * gate" vs "I'm matching an existing gate").
+ */
+export function readOrCreateGate(
+  version: string,
+  channel: Channel,
+  actor: string,
+  deps: GateStatusDeps = {},
+): { gate: ReleaseGate; created: boolean } {
+  const exists = deps.exists ?? ((p: string) => fs.existsSync(p));
+  const read = deps.readFileSync ?? ((p: string) => fs.readFileSync(p, 'utf8'));
+  const derive = deps.derive ?? ((root?: string) => deriveBuildSha(root));
+  const p = gatePath(version, channel);
+
+  if (exists(p)) {
+    return { gate: JSON.parse(read(p)) as ReleaseGate, created: false };
+  }
+
+  const { sha, dirty } = derive();
+  const gate: ReleaseGate = { version, channel, buildSha: sha, dirty, derivedAt: new Date().toISOString(), derivedBy: actor };
+  const write = deps.writeFileSyncExclusive ?? ((path_: string, data: string) => fs.writeFileSync(path_, data, { flag: 'wx' }));
+  try {
+    write(p, JSON.stringify(gate, null, 2));
+    return { gate, created: true };
+  } catch {
+    // Lost the create race to a peer's near-simultaneous first call — their write is
+    // authoritative; read it back rather than returning our own (potentially different)
+    // derivation.
+    return { gate: JSON.parse(read(p)) as ReleaseGate, created: false };
+  }
+}
