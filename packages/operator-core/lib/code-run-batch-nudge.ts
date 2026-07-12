@@ -155,6 +155,26 @@ const AMBIENT_NORMALIZED: ReadonlySet<string> = new Set<string>([
   'coordinbox',
 ]);
 
+/** LOCK-LIFECYCLE tools — an acquire/release (and heartbeat keepalive) is NOT a batchable flow: the
+ *  agent's real work happens BETWEEN acquire and release via native (non-MCP) edits, so an
+ *  acquire→edit→release→acquire→edit→release cycle reads as a "burst" of repeated acquire/release
+ *  round-trips that is serialized by that intervening work and can never be folded into one code:run
+ *  loop. (Live fires 2026-07-12, EI-10168: the residual nudge fires after the ambient exclusion were
+ *  exactly these lock cycles.) They are also already batch-capable within a SINGLE call —
+ *  acquire takes `paths[]`, release takes `ids[]`/`all_mine`, heartbeat takes `lock_ids[]` — so a
+ *  code:run loop is never the right advice for them anyway. Excluded from recording entirely, exactly
+ *  like the ambient set: they neither trigger a nudge nor count toward any same-tool / fan-out tally. */
+const LOCK_LIFECYCLE_NORMALIZED: ReadonlySet<string> = new Set<string>([
+  'locksacquire',
+  'locksrelease',
+  'locksacquiregranular',
+  'locksreleasegranular',
+  'locksacquireresource',
+  'locksreleaseresource',
+  'locksheartbeat',
+  'locksheartbeatresource',
+]);
+
 /** One recorded call in the sliding window. */
 interface RecentCall {
   tool: string;
@@ -455,7 +475,12 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
   // 'code:run'} stays excluded exactly like a direct code:run call).
   const { tool: toolName, args } = effectiveCall(input.toolName, input.args);
   const normalized = normalize(toolName);
-  if (EXCLUDED_NORMALIZED.has(normalized) || AMBIENT_NORMALIZED.has(normalized)) return null;
+  if (
+    EXCLUDED_NORMALIZED.has(normalized) ||
+    AMBIENT_NORMALIZED.has(normalized) ||
+    LOCK_LIFECYCLE_NORMALIZED.has(normalized)
+  )
+    return null;
   const now = input.now ?? Date.now();
 
   const st = getOrCreateSession(sessionKey);
