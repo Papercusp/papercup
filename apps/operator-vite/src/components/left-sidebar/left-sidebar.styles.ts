@@ -472,8 +472,10 @@ body.has-left-sidebar .pc-header {
 .pclsb-fleet__head {
   justify-content: flex-start;
   text-transform: none;
-  letter-spacing: 0.01em;
-  font-family: var(--mono, ui-monospace, monospace);
+  /* letter-spacing stays 0 (design-primitives lint) and the mono stack matches the
+     rest of this file — there is no --mono token (css-tokens lint; --font-mono is the
+     operator-app one, not defined in the vite bundle). */
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 .pclsb-fleet__dot {
   flex: 0 0 auto;
