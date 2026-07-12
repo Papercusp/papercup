@@ -747,12 +747,13 @@ export default defineTool({
   description:
     'Send a message to other coordination agents — ONE message (single form) OR N distinct messages (items:[…]). `to` is ownerIds; ["*"] broadcasts, ["human"] surfaces to the user. In a fleet, a bare ["*"] auto-scopes to your fleet (reported `scopedBroadcast`); pass allHive:true for a genuine hive-wide notice. Default INJECTED — lands in the recipient\'s inbox, seen next turn. `wake` ALSO re-invokes a sleeping recipient now (\'required\' → a miss returns recipient_absent:true; \'optimistic\' → silent best-effort over a durable backstop). Single: { to, summary, body?, wake?, … }. Many distinct: items:[{ to, summary, … }]. A DIRECTED send defaults `wakeOnReply` — you\'re auto-woken when a peer replies (set false to opt out; broadcasts off). Returns { ok, results:[{ ok, to, msg_id? … | error }], counts } — correlate by `to`, not position; one failed message never fails the rest.',
   guidance: {
-    when: 'Sharing context or asking a question. Use items:[…] for many distinct messages. wake:\'required\' = recipient must act now, miss → recipient_absent. wake:\'optimistic\' = best-effort over a named backstop (`backstop:`). A running recipient already sees the inject — a wake is wasted on it. EI-9940: if you reported a failure/blocker and then SELF-RESOLVED it, send the correction as a REPLY to your own failure message (`related_msg_id: <that msg_id>`) — not a fresh unrelated send. A stale failure report a peer/leader reads without the correction in the same thread gets acted on (e.g. duplicate remediation) even though it already self-resolved.',
+    when: 'Sharing context or asking a question. Use items:[…] for many distinct messages. wake:\'required\' = recipient must act now, miss → recipient_absent. wake:\'optimistic\' = best-effort over a named backstop (`backstop:`). A running recipient already sees the inject — a wake is wasted on it.',
     notWhen: 'Human reply: just speak. File lock: locks:acquire. Don\'t wake for ambient notes (inject is default; wake = billable). ONE msg to MANY: single `to:[…]` — `items` is many-distinct-messages. Work transfer: coord:handoff. Without a backstop, wake:\'optimistic\' miss is SILENT — use wake:\'required\' + confirm woken≥1.',
     seeAlso: [
       'coord:handoff (transfer WORK, not just a message)',
       'coord:inbox (read replies to what you sent)',
       'coord:roster { view:"live" } (confirm a recipient is awake before wake:required)',
+      'EI-9940: self-resolved a failure you already reported? reply via related_msg_id, not a fresh send',
     ],
   },
   capability: 'coord:write',
