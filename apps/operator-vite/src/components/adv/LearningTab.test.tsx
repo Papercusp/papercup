@@ -628,9 +628,11 @@ describe("LearningTab — Gym view", () => {
     nuqsState.lview = "gym";
   });
 
-  it("renders the gym scoreboard and recent proposals", () => {
+  it("renders the gym champion flow and recent challengers", () => {
     render(<LearningTab />);
-    expect(screen.getByText("Prompt experiments")).toBeTruthy();
+    expect(screen.getByText("Prompt gym")).toBeTruthy();
+    expect(screen.getByText("Recent challengers")).toBeTruthy();
+    expect(document.querySelector(".pc-learning__gymflow")).not.toBeNull();
     expect(
       screen.getByText("tighten the worker acceptance check"),
     ).toBeTruthy();
@@ -648,7 +650,7 @@ describe("LearningTab — Gym view", () => {
       invalidate: vi.fn(),
     };
     render(<LearningTab />);
-    expect(screen.getByText("No gym experiments yet")).toBeTruthy();
+    expect(screen.getByText("No gym experiments")).toBeTruthy();
   });
 });
 
@@ -687,6 +689,8 @@ describe("LearningTab — unified Signals views", () => {
         .getAttribute("aria-selected"),
     ).toBe("true");
     fireEvent.click(screen.getByTestId("rubrics-panel"));
+    expect(screen.getByTestId("rubrics-panel")).toBeTruthy();
+    expect(document.querySelector(".pc-learning__rubricdrawer")).not.toBeNull();
     expect(screen.getByTestId("rubric-detail").textContent).toContain(
       "rubric-1",
     );
@@ -725,10 +729,17 @@ describe("LearningTab — Benchmark view", () => {
     nuqsState.lview = "benchmark";
   });
 
-  it("renders the benchmark scoreboard and the generation trend", () => {
+  it("renders the benchmark answer-first comparison and generation trend", () => {
     render(<LearningTab />);
-    expect(screen.getByText("Benchmark generations")).toBeTruthy();
-    expect(screen.getByText("80%")).toBeTruthy(); // latest success rate (scoreboard)
+    expect(screen.getByText("Recent generations")).toBeTruthy();
+    expect(screen.getAllByText("80%").length).toBeGreaterThanOrEqual(1);
+    expect(document.querySelector(".pc-learning-visual__hero")).not.toBeNull();
+    expect(
+      document.querySelector(".pc-learning-visual__comparison"),
+    ).not.toBeNull();
+    expect(
+      document.querySelector(".pc-learning-visual__evidence"),
+    ).not.toBeNull();
     // shas + composites appear in the generation rows AND the BenchmarkTrend line (B-12)
     expect(screen.getAllByText("bbb2222").length).toBeGreaterThanOrEqual(1); // latest generation sha
     expect(screen.getAllByText("4.060").length).toBeGreaterThanOrEqual(1); // older generation composite
@@ -748,9 +759,8 @@ describe("LearningTab — Benchmark view", () => {
       invalidate: vi.fn(),
     };
     render(<LearningTab />);
-    expect(screen.getByText("No baseline runs yet")).toBeTruthy();
-    expect(screen.getByText(/IQ-battery is owner-gated/)).toBeTruthy();
-    expect(screen.queryByText("No pot-eval generations yet")).toBeNull();
+    expect(screen.getByText("No benchmark runs")).toBeTruthy();
+    expect(screen.queryByText("No pot-eval runs")).toBeNull();
   });
 
   it("promotes every former benchmark section into the Verify tab row", () => {
@@ -807,19 +817,22 @@ describe("LearningTab — Benchmark view", () => {
       invalidate: vi.fn(),
     };
     render(<LearningTab />);
-    expect(screen.getByText("outcome gate")).toBeTruthy(); // a Stat label unique to the Hive-eval scoreboard
+    expect(screen.getByText("Outcome gate")).toBeTruthy();
     expect(screen.getByText("1.30×")).toBeTruthy(); // latest critical-path ratio
     expect(screen.getAllByText("7.200").length).toBeGreaterThanOrEqual(1); // latest composite
     expect(document.querySelectorAll("figure.pc-benchtrend")).toHaveLength(1);
     expect(
       screen.getByRole("tab", { name: "Verify" }).getAttribute("aria-selected"),
     ).toBe("true");
+    expect(
+      screen.getByRole("tab", { name: "Observe" }).getAttribute("data-complete"),
+    ).toBe("true");
   });
 
   it("renders the Pot-eval empty state only in the Pot orchestration view", () => {
     nuqsState.lview = "orchestration";
     render(<LearningTab />);
-    expect(screen.getByText("No pot-eval generations yet")).toBeTruthy();
+    expect(screen.getByText("No pot-eval runs")).toBeTruthy();
   });
 });
 
@@ -861,7 +874,7 @@ describe("ScoutView (Learning › Improve › Ideas) — routed ideas + tick", (
       invalidate: vi.fn(),
     };
     render(<ScoutView />);
-    expect(screen.getByText("scout has not routed ideas yet")).toBeTruthy();
+    expect(screen.getByText("No routed ideas")).toBeTruthy();
     expect(screen.getByLabelText("scout tick health").textContent).toContain(
       "none yet",
     );

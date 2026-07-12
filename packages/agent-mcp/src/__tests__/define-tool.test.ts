@@ -144,6 +144,43 @@ describe('defineTool', () => {
     expect(result.error?.code).toBe('role_not_allowed');
   });
 
+  it('appends the FULL args schema to invalid_args failures (P-004, code-run-batch-adoption)', async () => {
+    defineTool({
+      name: 'operator:schema_hint_probe',
+      description: 'schema-on-invalid-args probe',
+      capability: 'operator:scan',
+      requirePrincipal: false,
+      agentRoles: ['operator'],
+      args: z.object({ id: z.string(), body: z.string() }),
+      async handler() {
+        return { content: [{ type: 'text', text: 'should not run' }] };
+      },
+    });
+    const tool = lookupByMcpName('operator:schema_hint_probe')!;
+    const result = await dispatchProjectedTool(
+      tool,
+      'operator:schema_hint_probe',
+      // The 2026-07-11 release-fleet regression shape: right id, wrong sibling field name —
+      // the terse per-issue error taught nothing, so the caller repeated the identical mistake.
+      { id: 'WI-1', comment: 'wrong field name' },
+      {
+        log: () => {},
+        signal: new AbortController().signal,
+        progress: () => {},
+        emit: () => {},
+        workspaceId: 'default',
+        role: 'operator',
+        runId: 'run_T',
+      },
+      {},
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error?.message).toContain('invalid_args:');
+    // One failed call now teaches the whole shape: the full schema rides the error.
+    expect(result.error?.message).toContain('full args schema:');
+    expect(result.error?.message).toContain('"body"');
+  });
+
   it('exposes the catalog', () => {
     defineTool({
       name: 'a:one',
