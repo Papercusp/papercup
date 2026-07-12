@@ -624,8 +624,10 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
   // issue that isn't in the list.
   it('tier 1 (EI-10062 sanity): an id-allowlist spec claims the named item, ignoring an unrelated open issue', async () => {
     setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
-    await seedIssue('EI-target', { state: 'open', createdTs: 5, kind: 'bug' });
-    await seedIssue('EI-unrelated', { state: 'open', createdTs: 1, kind: 'bug' }); // older — would win if the allowlist leaked
+    // Tier 1's attempt() queries harness_features_consolidated (the feature-family table)
+    // directly — seedFeature (not seedIssue) puts the named target where tier 1 can see it.
+    await seedFeature('EI-target', { createdTs: 5 });
+    await seedFeature('EI-unrelated', { createdTs: 1 }); // older — would win if the allowlist leaked
     const s = spec({
       specVersion: '1.0',
       specId: 'id-allowlist-drain',

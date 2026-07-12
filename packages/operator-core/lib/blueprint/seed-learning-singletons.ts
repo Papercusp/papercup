@@ -79,6 +79,9 @@ export const LEARNING_SINGLETONS: LearningSingleton[] = [
   // No legacy bespoke routine ever existed — the legacyRoutine name matches nothing, so the
   // retire-legacy pass is a clean no-op; this loop is born as a @singleton row.
   { blueprintId: 'memory-precision', legacyRoutine: 'memory-precision-bench' },
+  // EI-10047: memory recall canary (always-on, flag-gated). Like memory-precision, no
+  // legacy bespoke routine ever existed — the retire-legacy pass is a clean no-op.
+  { blueprintId: 'memory-recall-canary', legacyRoutine: 'memory-recall-canary' },
 ];
 
 export interface LegacyRowState {

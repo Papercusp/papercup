@@ -49,6 +49,11 @@ import './ops/hive-eval-gen.js';
 // det cadence → floored hybrid gold-set replay (isolated bench schema, embeddings, no LLM) →
 // record FP@5/R@10/precision. Flag-only (no governor, like change-ledger); always-on monitoring.
 import './ops/memory-precision-bench.js';
+// EI-10047: the memory recall CANARY — daily known-item replay against the LIVE memory
+// stack (read-only), recall@10 vs frozen baseline, alert on the ok→degraded edge. The
+// deployment-watching complement to memory-precision (which watches the code path in an
+// isolated bench schema). Flag-only (no governor); always-on monitoring.
+import './ops/memory-recall-canary.js';
 // worker-chunk-loop-operator-hosted-2026-06-14 (P-002/P-003, = deterministic-blueprints
 // P-142): the coding WORKER's chunk loop as an operator-hosted deterministic step — a
 // near-PORT of runWorkerChunkLoop() (the heavy ctx-construction runner is dynamic-imported

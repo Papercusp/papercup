@@ -111,12 +111,32 @@ async function writeToPg(
   const fedTs = provenance?.ts ?? null;
   const fedHlc = provenance?.fedHlc ?? null;
 
+  // NOTE: `workspace_id` is deliberately ABSENT from the column/VALUES list below.
+  // Unlike agent_facts.workspace_id (a plain column), memory_canonical.workspace_id
+  // is a GENERATED ALWAYS AS (payload->>'workspace_id') STORED column (mig 398,
+  // pre-dates federation) — Postgres rejects an explicit value for a generated
+  // column outright ("cannot insert a non-DEFAULT value into column
+  // \"workspace_id\""), so an earlier version of this INSERT that listed it
+  // unconditionally threw on every single write (never caught — no real-PG test
+  // exercised this path until mem0-cross-machine-federation-2026-07-10 P-007).
+  // The column derives correctly from `payload` once inserted, and the wire
+  // row's payload already carries the memory's own `workspace_id` key (the
+  // authoring agent's workspace, per mig 398 / remember.ts), which is what the
+  // (workspace_id, id, coalesce(source_hive,'')) federation identity partitions
+  // on — so no explicit value is needed OR possible here.
+  //
+  // Also note: `row.payload` is passed as the RAW object, NOT
+  // `JSON.stringify(row.payload)` — this driver (prepare:false) re-serializes
+  // ANY parameter bound to a jsonb column via its own JSON encoder, so handing
+  // it an already-stringified string double-encodes (`payload` lands as a JSON
+  // *string* scalar, not an object — silently breaking every payload->>'…'
+  // GENERATED column AND every consumer that expects payload to be an object).
   await sql`
     INSERT INTO harness_shared.memory_canonical
-      (id, workspace_id, payload, created_at, updated_at, harness_slug,
+      (id, payload, created_at, updated_at, harness_slug,
        author_pubkey, origin, fed_ts, source_hive)
     VALUES
-      (${row.id}, ${opts.workspaceId}, ${JSON.stringify(row.payload)}, ${row.created_at}::timestamptz,
+      (${row.id}, ${row.payload}, ${row.created_at}::timestamptz,
        ${row.updated_at}::timestamptz, ${row.harness_slug}, ${authorPubkey}, ${origin},
        ${fedTs}, ${sourceHive})
     ON CONFLICT (workspace_id, id, coalesce(source_hive, ''))

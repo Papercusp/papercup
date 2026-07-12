@@ -161,9 +161,16 @@ describe('mem0 federation privacy + LWW (real PG, mem0-cross-machine-federation-
   // user_id which mig 398 made GENERATED from payload) — a real local write (e.g.
   // memory:remember) sets both the payload key AND this column, so the capture
   // trigger's `to_jsonb(NEW)` sees it.
+  //
+  // NOTE: `payload` is bound as the RAW object (never `JSON.stringify`d) — this
+  // driver (prepare:false) re-serializes any jsonb-bound parameter itself, so a
+  // pre-stringified value double-encodes (lands as a JSON *string* scalar, which
+  // silently breaks every `payload->>'…'` GENERATED column, incl. `shareable` —
+  // this bit the first draft of this very test file: see p2p-memories.ts's
+  // matching writeToPg fix note).
   const insertMemory = (id: string, payload: Record<string, unknown>, harnessSlug: string | null = null) =>
     db.sql`INSERT INTO harness_shared.memory_canonical (id, payload, harness_slug)
-      VALUES (${id}::uuid, ${JSON.stringify(payload)}::jsonb, ${harnessSlug})`;
+      VALUES (${id}::uuid, ${payload}::jsonb, ${harnessSlug})`;
 
   // ── (1) + (2): capture-trigger privacy gate — dark by default ─────────────
   describe('capture trigger: only shareable=true memories reach the outbox', () => {
@@ -196,12 +203,12 @@ describe('mem0 federation privacy + LWW (real PG, mem0-cross-machine-federation-
       await insertMemory(id, { user_id: 'u1', workspace_id: WS, shareable: false });
 
       await db.sql`UPDATE harness_shared.memory_canonical
-        SET payload = payload || ${JSON.stringify({ note: 'edited while private' })}::jsonb
+        SET payload = payload || ${{ note: 'edited while private' }}::jsonb
         WHERE id = ${id}::uuid`;
       expect(await outboxFor(id)).toHaveLength(0); // private edits never egress
 
       await db.sql`UPDATE harness_shared.memory_canonical
-        SET payload = payload || ${JSON.stringify({ shareable: true })}::jsonb, harness_slug = ${SLUG}
+        SET payload = payload || ${{ shareable: true }}::jsonb, harness_slug = ${SLUG}
         WHERE id = ${id}::uuid`;
       const rows = await outboxFor(id);
       expect(rows).toHaveLength(1); // the flip-to-shareable itself captures
@@ -232,7 +239,7 @@ describe('mem0 federation privacy + LWW (real PG, mem0-cross-machine-federation-
         {
           harness_slug: 'other-pot-not-admitted',
           id,
-          payload: { shareable: true },
+          payload: { shareable: true, workspace_id: WS },
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         },
@@ -249,7 +256,7 @@ describe('mem0 federation privacy + LWW (real PG, mem0-cross-machine-federation-
         {
           harness_slug: SLUG,
           id,
-          payload: { shareable: true, text: 'peer memory' },
+          payload: { shareable: true, workspace_id: WS, text: 'peer memory' },
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         },
@@ -270,7 +277,7 @@ describe('mem0 federation privacy + LWW (real PG, mem0-cross-machine-federation-
       const wire = (text: string) => ({
         harness_slug: SLUG,
         id,
-        payload: { shareable: true, text },
+        payload: { shareable: true, workspace_id: WS, text },
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       });
@@ -292,10 +299,10 @@ describe('mem0 federation privacy + LWW (real PG, mem0-cross-machine-federation-
     it('two DIFFERENT source partitions of the same identity never clobber each other (LWW is per-partition)', async () => {
       const proj = buildMemoriesProjection({ workspaceId: WS, harnessSlug: SLUG, sql: db.sql });
       const id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
-      const wireFor = (peer: string, text: string) => ({
+      const wireFor = (text: string) => ({
         harness_slug: SLUG,
         id,
-        payload: { shareable: true, text },
+        payload: { shareable: true, workspace_id: WS, text },
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       });
