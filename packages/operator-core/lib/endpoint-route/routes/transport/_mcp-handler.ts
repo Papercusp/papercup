@@ -2157,6 +2157,10 @@ const handler = createMcpHandler(
                   ctxWorkspace && ctxWorkspace !== '*' ? ctxWorkspace : activeWorkspaceId(),
                 url: urlFromExtra(extra),
                 insightsDir: INSIGHTS_DIR,
+                // P-002 epoch dedup identity: the per-launch SID (uiClientId),
+                // so initialize stamps the same ledger the turn-start/claim
+                // ports will dedup against.
+                ...(spawnRes.ctx.uiClientId ? { sessionId: spawnRes.ctx.uiClientId } : {}),
               });
               if (!prelude?.text) return null;
               return base ? `${base}\n\n${prelude.text}` : prelude.text;

@@ -1409,6 +1409,18 @@ export function hostThroughPty(o) {
           // not the wake-turn's TURN_INJECT_BUSY_CAP_MS — a large-transcript compaction
           // can legitimately run past 180s and used to be dropped silently on that cap.
           const compactCapMs = compactBusyCapMs(env);
+          // EI-10067: snapshot the human-keystroke clock BEFORE the long completion
+          // wait below. `activity.touchInput()` is wired ONLY to the bridged
+          // terminal's raw stdin (see onStdin above) — never to our own
+          // control-socket writes — so `lastInputAt` moving is a clean "the OWNER
+          // typed" signal, distinct from `agentBusyGate`'s OUTPUT-only tracking.
+          // `agentBusyGate` reads "at prompt" the instant the compaction's own
+          // output goes quiet — even when the owner has ALREADY submitted a fresh
+          // turn that just hasn't started generating output yet. Without this
+          // check the carry-note below lands queued behind that fresh owner turn
+          // and is delivered a turn or two late, still claiming "this is a fresh
+          // turn right after your compaction" (owner-observed 2026-07-12).
+          const inputAtBeforeCompactWait = activity.snapshot().lastInputAt ?? 0;
           const done = await agentBusyGate.waitAtPrompt(compactCapMs);
           if (done.deferred) {
             try {
@@ -1416,6 +1428,28 @@ export function hostThroughPty(o) {
                 `psu-pty-host: compact carry-note DROPPED for ${ownerId} ` +
                   `(compaction still running > ${compactCapMs}ms cap); ` +
                   `the agent's loop / next turn resumes it\n`,
+              );
+            } catch {
+              /* never let a diagnostic write break the session */
+            }
+            return;
+          }
+          // EI-10067: the owner typed into the bridged terminal WHILE we were
+          // waiting for the compaction to finish — their fresh turn is either
+          // in-flight or about to be. Drop the synthetic carry-note the same way
+          // the busy-cap path above does: it's redundant (the owner's own message
+          // is the real next instruction) and, worse, would otherwise land queued
+          // behind it and mislabel itself as "a fresh turn right after your
+          // compaction" a turn or two late. A TOCTOU gap remains between this
+          // check and the submit below (an owner keystroke landing in that exact
+          // window still races) — same residual as every other gate in this file;
+          // this closes the much larger window that was the reported symptom.
+          if (bridgeTty && (activity.snapshot().lastInputAt ?? 0) > inputAtBeforeCompactWait) {
+            try {
+              process.stderr.write(
+                `psu-pty-host: compact carry-note DROPPED for ${ownerId} ` +
+                  `(the owner typed into the bridged terminal during the compaction wait, ` +
+                  `EI-10067); the agent's loop / next turn resumes it\n`,
               );
             } catch {
               /* never let a diagnostic write break the session */

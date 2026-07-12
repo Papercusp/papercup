@@ -96,6 +96,26 @@ type LView = (typeof LVIEWS)[number];
 
 type LearningStage = "observe" | "improve" | "verify" | "retain";
 type LearningViewStatus = "neutral" | "good" | "warn" | "bad";
+type LearningStatusSemantic =
+  | "dormant"
+  | "active"
+  | "attention"
+  | "failure";
+
+function statusSemantic(status: LearningViewStatus): LearningStatusSemantic {
+  if (status === "bad") return "failure";
+  if (status === "warn") return "attention";
+  if (status === "good") return "active";
+  return "dormant";
+}
+
+function statusDescription(status: LearningViewStatus): string {
+  const semantic = statusSemantic(status);
+  if (semantic === "active") return "live data";
+  if (semantic === "attention") return "needs attention";
+  if (semantic === "failure") return "data unavailable";
+  return "dormant";
+}
 
 const STAGES: ReadonlyArray<{
   id: LearningStage;
@@ -291,24 +311,27 @@ export default function LearningTab() {
           {STAGES.map((stage, index) => {
             const Icon = stage.icon;
             const status = stageStatus(stage, viewStatuses);
+            const semantic = status ? statusSemantic(status) : null;
             return (
               <Tabs.Trigger
                 key={stage.id}
                 value={stage.id}
                 className="pc-learning__stage"
-                aria-label={stage.label}
+                aria-label={
+                  status
+                    ? `${stage.label}, ${statusDescription(status)}`
+                    : stage.label
+                }
               >
-                <span className="pc-learning__stage-icon">
+                <span
+                  className={`pc-learning__stage-icon${semantic ? ` has-${semantic}` : ""}`}
+                >
                   <Icon size={16} aria-hidden />
+                  {semantic ? (
+                    <span className="pc-learning__statusmark" aria-hidden />
+                  ) : null}
                 </span>
                 <span className="pc-learning__stage-label">{stage.label}</span>
-                {status ? (
-                  <span
-                    className={`pc-learning__statusdot is-${status}`}
-                    title={`${stage.label} has ${status} live signals`}
-                    aria-label={`${stage.label} status: ${status}`}
-                  />
-                ) : null}
                 {index < STAGES.length - 1 ? (
                   <span className="pc-learning__stage-line" aria-hidden />
                 ) : null}
@@ -322,6 +345,7 @@ export default function LearningTab() {
         {activeStageMeta && activeStageMeta.views.length > 1 ? (
           <Tabs.Root
             className="pc-learning__view-tabs"
+            data-stage={activeStageMeta.id}
             value={view}
             onValueChange={(next) => void setLview(next as LView)}
           >
@@ -332,22 +356,33 @@ export default function LearningTab() {
               {activeStageMeta.views.map((candidate) => {
                 const Icon = candidate.icon;
                 const status = viewStatuses[candidate.id];
+                const semantic = status ? statusSemantic(status) : null;
                 return (
                   <Tabs.Trigger
                     key={candidate.id}
                     value={candidate.id}
-                    className="pc-learning__view-tab"
-                    aria-label={candidate.label}
+                    className={`pc-learning__view-tab${semantic ? ` has-${semantic}` : ""}`}
+                    aria-label={
+                      status
+                        ? `${candidate.label}, ${statusDescription(status)}`
+                        : candidate.label
+                    }
+                    title={candidate.label}
                   >
-                    <Icon size={13} aria-hidden />
-                    {candidate.label}
-                    {status ? (
-                      <span
-                        className={`pc-learning__statusdot is-${status}`}
-                        title={`${candidate.label} status: ${status}`}
-                        aria-label={`${candidate.label} status: ${status}`}
-                      />
-                    ) : null}
+                    <span
+                      className={`pc-learning__view-icon${semantic ? ` has-${semantic}` : ""}`}
+                    >
+                      <Icon size={12} aria-hidden />
+                      {semantic ? (
+                        <span
+                          className="pc-learning__statusmark"
+                          aria-hidden
+                        />
+                      ) : null}
+                    </span>
+                    <span className="pc-learning__view-label">
+                      {candidate.label}
+                    </span>
                   </Tabs.Trigger>
                 );
               })}
@@ -480,10 +515,13 @@ function LearningViewContent({
   if (view === "bakeoff") {
     return <BakeoffTrendView onStatus={reportViewStatus} />;
   }
-  if (view === "wake-efficiency") return <MugWakeEfficiencyPanel />;
-  if (view === "ekg") return <EkgPanel />;
-  if (view === "red-queen") return <RedQueenPanel />;
-  if (view === "experiments") return <ExperimentsPanel />;
+  if (view === "wake-efficiency")
+    return <MugWakeEfficiencyPanel onStatus={reportViewStatus} />;
+  if (view === "ekg") return <EkgPanel onStatus={reportViewStatus} />;
+  if (view === "red-queen")
+    return <RedQueenPanel onStatus={reportViewStatus} />;
+  if (view === "experiments")
+    return <ExperimentsPanel onStatus={reportViewStatus} />;
   if (view === "throughput") {
     return <ThroughputView onStatus={reportViewStatus} />;
   }

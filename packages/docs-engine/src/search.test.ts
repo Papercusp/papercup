@@ -57,6 +57,17 @@ describe('tokenize', () => {
     expect(tokenize('')).toEqual([]);
     expect(tokenize('  .,;:  ')).toEqual([]);
   });
+
+  it('splits on hyphens — a kebab-case slug is a compound token, not one giant token (EI-10097)', () => {
+    expect(tokenize('su-persona-render-and-edit-path')).toEqual([
+      'su',
+      'persona',
+      'render',
+      'and',
+      'edit',
+      'path',
+    ]);
+  });
 });
 
 describe('searchDocs', () => {
@@ -112,5 +123,49 @@ describe('searchDocs', () => {
     // ('a-body4' before 'm-title'); body3 (score 3) last.
     expect(res.hits.map((h) => h.slug)).toEqual(['a-body4', 'm-title', 'body3']);
     expect(res.hits.map((h) => h.score)).toEqual([4, 4, 3]);
+  });
+
+  it('an exact-slug query hard-hits that doc first even when generic tokens favor other pages (EI-10097)', async () => {
+    // Reproduces the filed bug shape: the target doc's title/body words
+    // ('persona', 'render', 'edit') are common enough that OTHER pages
+    // (here, pages stuffed with those same generic words many times) could
+    // outscore it on pure token frequency. A query that IS the doc's own
+    // slug must still surface it — the slug match dominates.
+    const source = makeSource([
+      {
+        slug: 'agent-insights/su-persona-render-and-edit-path',
+        title: 'su persona render and edit path',
+        description: 'How the su persona prompt is rendered and where to edit it',
+        body: 'layered projected prompt render edit persona',
+      },
+      {
+        slug: 'plans/persona-render-notes',
+        title: 'persona render notes',
+        body: 'persona render persona render persona render persona render persona render edit edit edit edit edit',
+      },
+    ]);
+    const res = await searchDocs(source, { query: 'su-persona-render-and-edit-path', limit: 8 });
+
+    expect(res.tokenCount).toBe(6); // hyphenated slug now tokenizes, not one dead token
+    expect(res.hits[0]?.slug).toBe('agent-insights/su-persona-render-and-edit-path');
+  });
+
+  it('slug bonus also fires on the exact final segment, ignoring the section prefix', async () => {
+    const source = makeSource([
+      { slug: 'agent-insights/two-tier-scheduler-and-timer-visibility', title: 'the scheduler layer model' },
+      { slug: 'other/unrelated', title: 'nope' },
+    ]);
+    const res = await searchDocs(source, { query: 'two-tier-scheduler-and-timer-visibility' });
+    expect(res.hits[0]?.slug).toBe('agent-insights/two-tier-scheduler-and-timer-visibility');
+  });
+
+  it('a short/generic query gets no slug bonus (guard against over-matching on <3-char normalized queries)', async () => {
+    const source = makeSource([{ slug: 'a/b', title: 'ab' }]);
+    const res = await searchDocs(source, { query: 'ab' });
+    // 'ab' normalizes to a 2-char slug fragment — below the length guard, so it
+    // must be scored purely on token match (2, from title ×... actually 'ab' as
+    // a token is dropped by tokenize()'s <2-char rule only at 1 char; 'ab' is
+    // kept, so this asserts no slug-bonus inflation, not zero-score).
+    expect(res.hits[0]?.score).toBeLessThan(1000);
   });
 });

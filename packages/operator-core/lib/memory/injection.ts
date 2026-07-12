@@ -23,6 +23,11 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getMemoryBackend, type MemoryEntry } from './backend';
 import { isMemoryWorkspaceScopedRecallOn, keepUserPoolHitForWorkspace } from './workspace-scope-recall';
 import { bumpLastSurfacedSql, recentlySurfacedIds } from './bump-last-surfaced';
+import {
+  alreadySurfacedIds,
+  currentSessionEpoch,
+  stampSurfaced,
+} from './session-epoch-ledger';
 import { hiveScopeKey, hiveSlugFromScope, resolveHiveSlugsForHarnesses } from './hive-scope';
 import { memoryTierOf } from './two-tier';
 import {
@@ -86,6 +91,24 @@ export interface MemoryInjectionInput {
   limit?: number;
   /** Defaults to "Operator memory (relevant entries)". */
   heading?: string;
+  /**
+   * WARM-SESSION dedup (memory-delivery-unification-2026-07-12 P-002,
+   * D-002/D-006): when set, re-injection is suppressed per SESSION EPOCH
+   * (session identity + compaction generation) via the port-agnostic
+   * `memory_session_surfaced` ledger, INSTEAD of the chat path's 2-minute
+   * wall-clock watermark — an injected fact stays in a warm session's
+   * context until compaction, so mid-epoch re-injection is pure waste,
+   * while an epoch bump (post-compaction) re-primes everything. Omit on
+   * chat paths (watermark behavior unchanged).
+   */
+  session?: {
+    /** Stable per-launch session identity (the su SID / uiClientId). */
+    sessionId: string;
+    /** Compaction generation; omitted ⇒ resolved from the epoch table. */
+    epoch?: number;
+    /** Which injection moment this is (initialize/turn-start/compact/brief/claim/create). */
+    port?: string;
+  };
 }
 
 /**
@@ -349,14 +372,30 @@ export async function buildMemoryContextBlock(
     ...hiveHits.map(({ hit }) => hit.id),
   ].filter((id): id is string => typeof id === 'string' && id.length > 0);
   // (ids are always present on neutral entries; the filter guards legacy/odd rows)
+  // P-002: a warm session (input.session) dedups against its session-epoch
+  // ledger; the chat path keeps the wall-clock watermark. Same best-effort
+  // posture either way: a failed read = no filtering, never a broken inject.
+  let sessionEpoch: number | null = null;
   if (candidateIds.length > 0) {
     try {
       const { sql } = getOrgPg();
-      const recent = await recentlySurfacedIds(sql, candidateIds, reinjectWindowMs());
-      if (recent.size > 0) {
-        userResults = userResults.filter((h) => !(h.id && recent.has(h.id)));
-        harnessHits = harnessHits.filter(({ hit }) => !(hit.id && recent.has(hit.id)));
-        hiveHits = hiveHits.filter(({ hit }) => !(hit.id && recent.has(hit.id)));
+      let suppressed: Set<string>;
+      if (input.session?.sessionId) {
+        sessionEpoch =
+          input.session.epoch ?? (await currentSessionEpoch(sql, input.session.sessionId));
+        suppressed = await alreadySurfacedIds(
+          sql,
+          input.session.sessionId,
+          sessionEpoch,
+          candidateIds,
+        );
+      } else {
+        suppressed = await recentlySurfacedIds(sql, candidateIds, reinjectWindowMs());
+      }
+      if (suppressed.size > 0) {
+        userResults = userResults.filter((h) => !(h.id && suppressed.has(h.id)));
+        harnessHits = harnessHits.filter(({ hit }) => !(hit.id && suppressed.has(hit.id)));
+        hiveHits = hiveHits.filter(({ hit }) => !(hit.id && suppressed.has(hit.id)));
       }
     } catch {
       /* swallow — dedup is hygiene, never load-bearing */
@@ -439,10 +478,25 @@ export async function buildMemoryContextBlock(
   // (Only ACTUALLY-injected ids are stamped — a budget-dropped memory must not
   // be dedup-suppressed next turn.)
   if (surfacedIds.length > 0) {
+    const session = input.session;
+    const epochForStamp = sessionEpoch;
     void (async () => {
       try {
         const { sql } = getOrgPg();
+        // last_surfaced_at stays stamped for EVERY path — it feeds the
+        // Layer-3 "recently used" pickers, not just the chat dedup.
         await bumpLastSurfacedSql(sql, surfacedIds);
+        // P-002: warm sessions ALSO stamp the port-agnostic epoch ledger so
+        // every later injection moment of this epoch dedups against it.
+        if (session?.sessionId) {
+          await stampSurfaced(
+            sql,
+            session.sessionId,
+            epochForStamp ?? (await currentSessionEpoch(sql, session.sessionId)),
+            surfacedIds,
+            session.port ?? 'injection',
+          );
+        }
       } catch {
         /* swallow — never load-bearing */
       }

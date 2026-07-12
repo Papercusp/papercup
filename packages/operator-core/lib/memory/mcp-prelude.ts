@@ -63,6 +63,13 @@ export interface PreludeInput {
    * The launch-profile resolver (P-007) supersedes this seam.
    */
   queryContext?: string;
+  /**
+   * Warm-session epoch dedup identity (P-002): the per-launch SID. When
+   * present, injected ids are stamped on the session-epoch ledger under
+   * port 'initialize' so later injection moments (turn-start, claim, …)
+   * of the same epoch never re-pay them.
+   */
+  sessionId?: string;
 }
 
 /**
@@ -139,6 +146,9 @@ export async function buildMcpPrelude(
       // defers to the first turn-start delta. Callers may override via
       // input.queryContext (the P-007 resolver does).
       queryContext: input.queryContext ?? initializeQueryForHarness(harnessSlug),
+      ...(input.sessionId
+        ? { session: { sessionId: input.sessionId, port: 'initialize' } }
+        : {}),
     });
     // We can't introspect buildMemoryContextBlock's result to tell which
     // scope contributed without reshaping it; treat presence as

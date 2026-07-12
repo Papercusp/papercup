@@ -159,13 +159,10 @@ export function LearningVisualEmpty({
 }) {
   return (
     <div className="pc-learning-visual__empty" role="status">
-      <Icon size={18} aria-hidden />
-      <strong>{title}</strong>
-      <span className="pc-learning-visual__ghost" aria-hidden>
-        <i />
-        <i />
-        <i />
+      <span className="pc-learning-visual__emptyicon" aria-hidden>
+        <Icon size={14} />
       </span>
+      <strong>{title}</strong>
     </div>
   );
 }
@@ -244,12 +241,9 @@ export function LearningVisualStyles() {
       .pc-learning-visual__evidence-metric { min-width: 0; border: 1px solid color-mix(in srgb, var(--border) 70%, transparent); border-radius: 7px; padding: 6px; }
       .pc-learning-visual__evidence-metric span { display: block; overflow: hidden; color: var(--fg-mute); font-size: 9px; line-height: 1.1; text-overflow: ellipsis; white-space: nowrap; }
       .pc-learning-visual__evidence-metric strong { display: block; margin-top: 2px; color: var(--fg); font-size: 14px; font-variant-numeric: tabular-nums; line-height: 1; }
-      .pc-learning-visual__empty { min-height: 116px; display: grid; place-content: center; justify-items: center; gap: 6px; color: var(--fg-mute); }
-      .pc-learning-visual__empty strong { color: var(--fg); font-size: 12px; }
-      .pc-learning-visual__ghost { width: min(220px, 38vw); display: grid; gap: 5px; margin-top: 4px; opacity: .3; }
-      .pc-learning-visual__ghost i { display: block; height: 6px; border-radius: 3px; background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 40%, transparent) 65%, color-mix(in srgb, var(--fg) 8%, transparent) 65%); }
-      .pc-learning-visual__ghost i:nth-child(2) { width: 82%; }
-      .pc-learning-visual__ghost i:nth-child(3) { width: 56%; }
+      .pc-learning-visual__empty { min-height: 38px; display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px dashed color-mix(in srgb, var(--border) 72%, transparent); border-radius: 8px; color: var(--fg-mute); }
+      .pc-learning-visual__emptyicon { display: grid; place-items: center; width: 24px; height: 24px; flex: none; border: 1px solid var(--border); border-radius: 50%; color: var(--fg-mute); background: var(--bg-2); }
+      .pc-learning-visual__empty strong { color: var(--fg-dim); font-size: 11px; font-weight: 650; }
       .pc-learning-visual__disclosure { border-top: 1px solid color-mix(in srgb, var(--border) 68%, transparent); }
       .pc-learning-visual__disclosure-trigger { width: 100%; min-height: 30px; display: flex; align-items: center; gap: 6px; padding: 5px 3px; border: 0; background: transparent; color: var(--fg-mute); cursor: pointer; font: inherit; font-size: 10.5px; font-weight: 650; text-align: left; }
       .pc-learning-visual__disclosure-trigger:hover { color: var(--fg); }

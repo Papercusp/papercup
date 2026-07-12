@@ -9,7 +9,12 @@
 
 import type { DocSource, EngineCtx, SearchArgs, SearchHit, SearchResult } from './types.js';
 
-const STOP_TOKEN_RE = /[\s,.;:!?(){}[\]<>"'`/\\]+/;
+// EI-10097: hyphen is a WORD separator for tokenization purposes (doc slugs
+// and runbook titles are kebab-case — 'su-persona-render-and-edit-path' must
+// tokenize to ['su','persona','render','and','edit','path'], not survive as
+// one un-matchable compound token). Placed last in the class so it reads as
+// a literal hyphen, not a range.
+const STOP_TOKEN_RE = /[\s,.;:!?(){}[\]<>"'`/\\-]+/;
 
 export function tokenize(query: string): string[] {
   const seen = new Set<string>();
@@ -45,6 +50,34 @@ function firstMatchIndex(haystack: string, tokens: string[]): number {
     if (earliest === -1 || idx < earliest) earliest = idx;
   }
   return earliest;
+}
+
+/** Collapse a free-text query to a kebab-case comparable slug fragment. */
+function normalizeToSlug(s: string): string {
+  return s
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+/**
+ * EI-10097: an exact (or near-exact) slug match is the strongest possible
+ * lexical signal — an agent quoting a doc's own slug back at the search
+ * ('su-persona-render-and-edit-path') should hard-hit that doc even when
+ * its title/description/body wording doesn't share vocabulary with the
+ * query. Scored separately from token-substring scoring so it dominates
+ * regardless of body length or token frequency.
+ */
+function slugMatchBonus(query: string, page: { slug: string; slugs: string[] }): number {
+  const q = normalizeToSlug(query);
+  if (!q || q.length < 3) return 0;
+  const lastSegment = (page.slugs[page.slugs.length - 1] ?? '').toLowerCase();
+  const fullSlugFlat = page.slug.toLowerCase().replace(/\//g, '-');
+  if (q === lastSegment || q === fullSlugFlat) return 1000;
+  if (lastSegment && (lastSegment.includes(q) || q.includes(lastSegment))) return 50;
+  if (fullSlugFlat && (fullSlugFlat.includes(q) || q.includes(fullSlugFlat))) return 30;
+  return 0;
 }
 
 function makeExcerpt(body: string, tokens: string[], window = 120): string {
@@ -101,6 +134,7 @@ export async function searchDocs(source: DocSource, args: SearchArgs, ctx: Engin
       score += countOccurrences(description, t) * 2;
       score += countOccurrences(body, t);
     }
+    score += slugMatchBonus(args.query, page);
     if (score === 0) continue;
 
     scored.push({
