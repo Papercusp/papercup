@@ -64,6 +64,14 @@ const DEFAULT_WATCHDOG_INTERVAL_MS = 15 * 60 * 1000; // 15 min
  *  only that staging has pulled meaningfully ahead for meaningfully long. */
 const DEFAULT_MAIN_BEHIND_COMMITS = 20;
 const DEFAULT_MAIN_BEHIND_MS = 60 * 60 * 1000; // 1h — deliberately far tighter than the 12h verdict-stale backstop
+/** EI-10202: even a deep+old backlog is NOT a stall if the green-checkpoint gate
+ *  has ADVANCED main within this long — that is normal churn (dozens of agents'
+ *  staging commits briefly outrunning the ~15-20-min full-suite cycle), not a
+ *  wedge. green-checkpoint's cron is hourly, so ~2 cycles (2h) is the "advanced
+ *  recently" window the bug asks for; only NO green advance in >2h alongside a
+ *  deep old backlog is the genuinely-stuck signature (persistent red / killed
+ *  runs) EI-9762 was built to catch. */
+const DEFAULT_MAIN_BEHIND_RECENT_GREEN_MS = 2 * 60 * 60 * 1000; // 2h ≈ ~2 hourly green-checkpoint cycles
 const MAIN_BEHIND_PHASE = 'main-behind-staging-watchdog';
 
 /** Phase + kind for the durable escalation — distinct from the in-routine
@@ -344,6 +352,14 @@ export interface MainBehindStagingSnapshot {
    *  (ms) of the OLDEST commit reachable from staging but not main. null if
    *  commitsBehind is 0/null. This is the "~4.8h" half of the EI-9762 signal. */
   behindMs: number | null;
+  /** EI-10202: ms since the green-checkpoint gate last ADVANCED `main` (an age
+   *  derived from `gate_health.lastGreenAt`, like `behindMs` is derived from the
+   *  oldest commit's timestamp). null when unreadable / the gate never greened —
+   *  in which case we cannot prove the gate is advancing, so we fall back to the
+   *  depth+age-only signal (never silently suppress a possible real stall). A
+   *  SMALL value means the gate is demonstrably still advancing main every cycle,
+   *  so a deep backlog is normal churn, NOT a wedge. */
+  lastGreenAgeMs?: number | null;
 }
 
 export interface MainBehindStagingVerdict {
@@ -352,26 +368,45 @@ export interface MainBehindStagingVerdict {
 }
 
 /** Pure: decide whether `main`'s lag behind `staging` has crossed from "normal
- *  promotion latency" into "the gate stopped advancing main" — BOTH thresholds
- *  must trip (a lot of commits queued up in the last few minutes is normal
- *  churn; a small lag sitting there for hours is also normal on a quiet day).
+ *  promotion latency" into "the gate stopped advancing main". THREE conditions —
+ *  depth + age must BOTH trip (a lot of commits queued in the last few minutes is
+ *  normal churn; a small lag sitting for hours is also normal on a quiet day),
+ *  AND (EI-10202) the gate must NOT have advanced `main` recently. That last
+ *  condition is the fix for the false STALLED alarm: a healthy gate greening
+ *  every ~15-20 min still lets `main` fall dozens of commits / >1h behind under a
+ *  busy fleet (staging outruns the full-suite cycle) — but that is backlog depth,
+ *  not a wedge. Only when the gate has produced NO green advance in >recentGreenMs
+ *  alongside the deep old backlog is it the genuinely-stuck signature (persistent
+ *  red / killed runs) EI-9762 targets. A null `lastGreenAgeMs` (gate signal
+ *  unreadable) falls back to depth+age only — we never hide a possible real stall.
  *  Exported for unit testing. */
 export function evaluateMainBehindStaging(
   s: MainBehindStagingSnapshot,
-  opts: { commitsThreshold?: number; msThreshold?: number } = {},
+  opts: { commitsThreshold?: number; msThreshold?: number; recentGreenMs?: number } = {},
 ): MainBehindStagingVerdict {
   const commitsThreshold = opts.commitsThreshold ?? DEFAULT_MAIN_BEHIND_COMMITS;
   const msThreshold = opts.msThreshold ?? DEFAULT_MAIN_BEHIND_MS;
+  const recentGreenMs = opts.recentGreenMs ?? DEFAULT_MAIN_BEHIND_RECENT_GREEN_MS;
   if (s.commitsBehind == null || s.behindMs == null) return { stalled: false, reason: null };
-  const stalled = s.commitsBehind > commitsThreshold && s.behindMs > msThreshold;
+  // EI-10202: the gate is demonstrably advancing main → a deep backlog is churn,
+  // not a stall. Only known-and-recent green suppresses; an unknown/absent signal
+  // does not (fall through to depth+age so a real stall still alarms).
+  const recentlyAdvanced = s.lastGreenAgeMs != null && s.lastGreenAgeMs <= recentGreenMs;
+  const stalled = s.commitsBehind > commitsThreshold && s.behindMs > msThreshold && !recentlyAdvanced;
   if (!stalled) return { stalled: false, reason: null };
   const hoursBehind = (s.behindMs / 3_600_000).toFixed(1);
+  // When we know the gate has ALSO not greened for a while, name it — it turns the
+  // alarm from "main is behind" (ambiguous) into "main is behind AND the gate has
+  // not advanced it in ~Xh" (the actual stall), and proves the depth number wasn't
+  // the sole trigger (EI-10202).
+  const noGreenClause =
+    s.lastGreenAgeMs != null ? ` (no green-checkpoint advance in ~${(s.lastGreenAgeMs / 3_600_000).toFixed(1)}h)` : '';
   return {
     stalled: true,
     reason:
-      `\`main\` is ${s.commitsBehind} commits / ~${hoursBehind}h behind \`staging\` — the gate is not advancing main, ` +
-      `regardless of why (red verdicts, a killed/wedged run, or a wedged routine engine). Fire a fresh gate run ` +
-      `(release:checkpoint-run) and find + fix whatever is actually failing/blocking it.`,
+      `\`main\` is ${s.commitsBehind} commits / ~${hoursBehind}h behind \`staging\`${noGreenClause} — the gate is not ` +
+      `advancing main, regardless of why (red verdicts, a killed/wedged run, or a wedged routine engine). Fire a fresh ` +
+      `gate run (release:checkpoint-run) and find + fix whatever is actually failing/blocking it.`,
   };
 }
 
@@ -420,6 +455,35 @@ export function computeMainBehindStaging(
   return { commitsBehind, behindMs: Math.max(0, Date.now() - oldestTs * 1000) };
 }
 
+/** EI-10202: read ms-since the green-checkpoint gate last ADVANCED `main` for a
+ *  harness (`gate_health.lastGreenAt`, the same field trackGateStall stamps to
+ *  Date.now() on every green tick). Fail-soft: any read error / missing routine /
+ *  never-greened gate returns null, and evaluateMainBehindStaging then falls back
+ *  to the depth+age-only signal — an unreadable gate must never SUPPRESS a real
+ *  stall, only a demonstrably-recent green does. */
+export async function readGateLastGreenAgeMs(
+  sql: Sql,
+  installSlug: string,
+  nowMs: number,
+): Promise<number | null> {
+  try {
+    const rows = await sql<{ last_green_at: string | number | null }[]>`
+      SELECT (metadata->'gate_health'->>'lastGreenAt') AS last_green_at
+        FROM harness_shared.routines
+       WHERE install_slug = ${installSlug}
+         AND target_role = 'system:green-checkpoint'
+         AND active = true
+       LIMIT 1`;
+    const raw = rows[0]?.last_green_at;
+    if (raw == null) return null;
+    const lastGreenAt = Number(raw);
+    if (!Number.isFinite(lastGreenAt)) return null;
+    return Math.max(0, nowMs - lastGreenAt);
+  } catch {
+    return null;
+  }
+}
+
 /** One watchdog pass for the main-behind-staging guard, scoped to a single git
  *  root (the operator's own home harness — this is a local-git-tree signal,
  *  not a per-tenant DB one, so it does not loop over `harness_shared.routines`
@@ -449,7 +513,16 @@ export async function checkMainBehindStaging(
       gitOut(process.cwd(), ['rev-parse', '--show-toplevel']) ??
       process.cwd();
     const harnessSlug = opts.harnessSlug ?? 'papercusp';
-    const snapshot = computeMainBehindStaging(root, opts.mainBranch, opts.stagingBranch);
+    const gitSnapshot = computeMainBehindStaging(root, opts.mainBranch, opts.stagingBranch);
+    // EI-10202: fold in "has the gate advanced main recently?" so a deep-but-
+    // healthy backlog (gate greening every cycle) is not mislabeled STALLED.
+    // Only read the DB signal when the git snapshot could even alarm — a quiet
+    // in-sync tree short-circuits without touching PG.
+    const lastGreenAgeMs =
+      gitSnapshot.commitsBehind && gitSnapshot.behindMs != null
+        ? await readGateLastGreenAgeMs(sql, harnessSlug, Date.now())
+        : null;
+    const snapshot: MainBehindStagingSnapshot = { ...gitSnapshot, lastGreenAgeMs };
     const verdict = evaluateMainBehindStaging(snapshot, opts);
 
     const existing = await sql<{ escalation: unknown }[]>`
