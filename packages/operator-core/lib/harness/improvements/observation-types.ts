@@ -212,9 +212,10 @@ export function validateScorecardRatingValues(
     const allowed = new Set(scale.map((v) => v.toLowerCase()));
     allowed.add('unknown');
     if (!allowed.has(String(entry.rating).trim().toLowerCase())) {
+      const allowedList = allowed.has('unknown') && scale.some((v) => v.toLowerCase() === 'unknown') ? scale : [...scale, 'unknown'];
       throw new ObservationEvidenceError(
         `observation.ratings['${criterion}'].rating '${entry.rating}' is not on the rubric's rating scale — ` +
-          `allowed: ${[...scale, 'unknown'].join(' | ')}. An off-scale rating would be silently excluded ` +
+          `allowed: ${allowedList.join(' | ')}. An off-scale rating would be silently excluded ` +
           'from trends/staleness, so it is rejected at capture instead.',
       );
     }

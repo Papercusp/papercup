@@ -1147,23 +1147,28 @@ async function runSharedHiveLeg(ctx: SystemActionCtx): Promise<void> {
 // improvement (the durable audit trail + the catch-all when nobody is
 // reachable to wake), but the alarm is the primary signal.
 //
-// Two distinct desyncs, both "the durable/authoritative claim disagrees with
-// what a live holder is doing":
+// ORPHANED WIP — a work_item is `wip` with taken_by/assignee NULL, yet its
+// linked plan-item shows a LIVE (non-expired) plan_item_claims lease held by
+// someone with a fresh presence heartbeat. The work-item's own claim tracking
+// (taken_by) has desynced from the plan-item claim (the authoritative live
+// lease) while a real session is still working it — a genuine desync worth an
+// alarm.
 //
-//   (a) ORPHANED WIP — a work_item is `wip` with taken_by/assignee NULL, yet
-//       its linked plan-item shows a LIVE (non-expired) plan_item_claims lease
-//       held by someone with a fresh presence heartbeat. The work-item's own
-//       claim tracking (taken_by) has desynced from the plan-item claim (the
-//       authoritative live lease) while a real session is still working it.
-//
-//   (b) UNBACKED ACTIVE ASSIGNMENT — a durable plan_item_assignments row is
-//       ACTIVE (released_ts IS NULL) and its assignee has a fresh presence
-//       heartbeat (session LIVE, actively "declared" onto this lane), but NO
-//       live plan_item_claims lease backs it. The reapers in stale-claims.ts
-//       already clean this up once the holder goes DEAD (60m) or STALLS (30m)
-//       — this check is their live-holder complement: a genuinely-alive holder
-//       whose assignment has no backing lease is a double-placement risk
-//       *right now*, not after a decay window, and nothing else surfaces it.
+// EI-10506 — a SECOND check ("unbacked active assignment": an active
+// plan_item_assignments row whose live assignee holds no plan_item_claims
+// lease) was REMOVED here. Its premise ("the durable assignment is
+// unprotected: a peer can double-claim this item right now") is FALSE: an
+// assignment is the anti-double-claim anchor, not a gap. `claimPlanItem`
+// (liveness.ts, D-004) REFUSES any non-assignee claim on an assigned item
+// "even when currently unclaimed/lapsed — the assignment anchors it, so a
+// sleeper's work is never stolen." So `assigned-idle` (assigned + no live
+// claim) is a first-class, EXPECTED disposition — a solo agent working a lane
+// one item at a time legitimately leaves the rest assigned-but-unclaimed. The
+// check fired for exactly this normal state (only for presence-LIVE holders;
+// DEAD/STALLED holders are excluded and already handled by the stale-claims.ts
+// reapers), so it produced pure false positives — the same
+// normal-backlog-re-filed-hourly anti-pattern this file has repeatedly closed
+// (EI-6910 / EI-8664 / EI-10177). Removing it loses no coverage.
 
 /** How fresh a presence heartbeat must be to count as "session LIVE" for the
  *  claim-integrity checks. Deliberately generous (vs the 60s liveness ladder
@@ -1171,14 +1176,7 @@ async function runSharedHiveLeg(ctx: SystemActionCtx): Promise<void> {
  *  desync as "holder went away". */
 export const CLAIM_INTEGRITY_PRESENCE_GRACE_SEC = 15 * 60;
 
-/** How long an active assignment must sit before the unbacked-assignment check
- *  considers it a violation — settles the normal assign→claim call sequence
- *  (declare-intent / claimForWork run milliseconds apart, but a slow request
- *  or a retried call could briefly show the assignment before the claim
- *  lands). Short: this is a LIVE alarm, not a decay sweep. */
-export const CLAIM_INTEGRITY_ASSIGNMENT_SETTLE_SEC = 120;
-
-export type ClaimIntegrityViolationKind = 'orphaned-wip' | 'unbacked-assignment';
+export type ClaimIntegrityViolationKind = 'orphaned-wip';
 
 export interface ClaimIntegrityViolation {
   kind: ClaimIntegrityViolationKind;
@@ -1240,56 +1238,6 @@ export async function findOrphanedWipClaims(
       `(taken_by is null/empty), but its linked plan item ${r.plan_slug}#${r.item_id} shows a LIVE claim held ` +
       `by ${r.claim_owner_label ?? r.claim_owner} (fresh presence heartbeat) — the work-item's own claim ` +
       `tracking has desynced from the authoritative plan-item lease while a real session works it.`,
-  }));
-}
-
-interface UnbackedAssignmentRow {
-  harness_slug: string;
-  plan_slug: string;
-  item_id: string;
-  assignee_name: string;
-  assigned_ts: string;
-}
-
-/** (b) UNBACKED ACTIVE ASSIGNMENT: an active plan_item_assignments row whose
- *  assignee is presence-live but has no backing live plan_item_claims lease.
- *  One isolated query — a failure degrades this leg only. */
-export async function findUnbackedActiveAssignments(
-  sql: postgres.Sql,
-  workspaceId: string,
-  opts: { presenceGraceSec?: number; settleSec?: number } = {},
-): Promise<ClaimIntegrityViolation[]> {
-  const graceSec = Math.max(1, Math.round(opts.presenceGraceSec ?? CLAIM_INTEGRITY_PRESENCE_GRACE_SEC));
-  const settleSec = Math.max(0, Math.round(opts.settleSec ?? CLAIM_INTEGRITY_ASSIGNMENT_SETTLE_SEC));
-  const rows = await sql<UnbackedAssignmentRow[]>`
-    SELECT asg.harness_slug, asg.plan_slug, asg.item_id, asg.assignee_name,
-           asg.assigned_ts::text AS assigned_ts
-      FROM harness_shared.plan_item_assignments asg
-      JOIN harness_shared.coord_presence cp
-        ON cp.owner_id = asg.assignee_name
-       AND cp.heartbeat_at > now() - make_interval(secs => ${graceSec})
-     WHERE asg.workspace_id = ${workspaceId}
-       AND asg.released_ts IS NULL
-       AND asg.assignee_name IS NOT NULL AND asg.assignee_name <> ''
-       AND asg.assigned_ts IS NOT NULL
-       AND asg.assigned_ts < now() - make_interval(secs => ${settleSec})
-       AND NOT EXISTS (
-         SELECT 1 FROM harness_shared.plan_item_claims c
-          WHERE c.workspace_id = asg.workspace_id AND c.harness_slug = asg.harness_slug
-            AND c.plan_slug = asg.plan_slug AND c.item_id = asg.item_id
-            AND c.owner = asg.assignee_name AND c.expires_ts > clock_timestamp()
-       )`;
-  return rows.map((r) => ({
-    kind: 'unbacked-assignment' as const,
-    harnessSlug: r.harness_slug,
-    planSlug: r.plan_slug,
-    itemId: r.item_id,
-    holderOwnerId: r.assignee_name,
-    holderOwnerLabel: r.assignee_name,
-    detail:
-      `plan item ${r.plan_slug}#${r.item_id} (harness ${r.harness_slug}) is actively ASSIGNED to ` +
-      `${r.assignee_name} (assigned ${r.assigned_ts}, session LIVE) but has NO live plan_item_claims lease ` +
-      `backing it — the durable assignment is unprotected: a peer can double-claim this item right now.`,
   }));
 }
 
@@ -1367,15 +1315,12 @@ registerSystemAction('claim-integrity-sweep', async (ctx: SystemActionCtx) => {
   const presenceGraceSec = Number(
     (ctx.payloadTemplate?.presenceGraceSec as number | undefined) ?? CLAIM_INTEGRITY_PRESENCE_GRACE_SEC,
   );
-  const settleSec = Number(
-    (ctx.payloadTemplate?.settleSec as number | undefined) ?? CLAIM_INTEGRITY_ASSIGNMENT_SETTLE_SEC,
-  );
   const { sql } = getOrgPg();
-  const [orphaned, unbacked] = await Promise.all([
-    findOrphanedWipClaims(sql, ctx.workspaceId, { presenceGraceSec }).catch(() => []),
-    findUnbackedActiveAssignments(sql, ctx.workspaceId, { presenceGraceSec, settleSec }).catch(() => []),
-  ]);
-  const violations = [...orphaned, ...unbacked];
+  // EI-10506: only the ORPHANED-WIP desync remains a real violation. The
+  // "unbacked active assignment" leg was removed — an assigned-idle item is
+  // anchored (claimPlanItem refuses a non-assignee claim), so it was pure
+  // false positives.
+  const violations = await findOrphanedWipClaims(sql, ctx.workspaceId, { presenceGraceSec }).catch(() => []);
   if (violations.length === 0) return;
 
   const leaderByOwner = await resolveLeadersForHolders(

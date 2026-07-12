@@ -28,6 +28,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { lexicalSimilarity } from '@papercusp/memory';
 import { getMemoryBackend } from './backend';
 import { detectPossibleSecrets } from './secret-detect';
 
@@ -48,7 +49,17 @@ const DRAIN_BATCH = (() => {
 })();
 /** Near-dup guard threshold for the drain replay (P-004). Deliberately high
  *  (dedup-on-write's hard band): only an unmistakable duplicate suppresses a
- *  recovery — a borderline match must err toward recovering the fact. */
+ *  recovery — a borderline match must err toward recovering the fact.
+ *
+ *  EI-10544: this is compared against `lexicalSimilarity` (trigram-Jaccard,
+ *  a METRIC on 0..1), NOT against the backend's `score`. A backend score is
+ *  ORDINAL on the live hybrid config — RRF rank-fusion, where the top hit is
+ *  1/(60+1) ≈ 0.0164 whether it is a byte-identical duplicate or merely the
+ *  best of a bad lot (ceiling 2/61 ≈ 0.033 for rank-1 on both legs). No
+ *  constant threshold on an ordinal score can mean "similar enough": 0.9 was
+ *  unreachable (this guard never once fired — 0 of 42 live journal rows), and
+ *  re-tuning it down to the RRF band would instead fire on EVERY write. The
+ *  quantity had to change, not the number. */
 const DRAIN_DEDUP_THRESHOLD = 0.9;
 
 export interface JournalWriteArgs {

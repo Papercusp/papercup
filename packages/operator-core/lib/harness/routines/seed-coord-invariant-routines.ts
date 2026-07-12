@@ -7,16 +7,18 @@
  *   - `coord-invariant-monitor` → `system:coord-invariant-monitor`, hourly at
  *     :37: handoff/escalation/lock/presence/wake-queue invariants.
  *   - `claim-integrity-sweep` → `system:claim-integrity-sweep`, every 10 min
- *     (fleet-reliability-verification-2026-07-10 P-001 / EI-8999): orphaned-wip
- *     + unbacked-active-assignment claim desyncs — a LIVE double-placement
- *     risk, so it ALARMS (directed + woken message to the holder + its fleet
- *     leader), not just a filed backlog item like the two above.
+ *     (fleet-reliability-verification-2026-07-10 P-001 / EI-8999): the
+ *     orphaned-wip claim desync — a LIVE double-placement risk, so it ALARMS
+ *     (directed + woken message to the holder + its fleet leader), not just a
+ *     filed backlog item like the two above. (The unbacked-active-assignment
+ *     leg was removed — EI-10506: an assigned-idle item is anchored, not a
+ *     gap, so it was pure false positives.)
  *
  * All three seeded ACTIVE by default — read-mostly, and even the alarming one
  * only wakes the specific holder/leader it names (never a broadcast); finished
  * work never ships dark (CLAUDE.md). `--inactive` for an explicit dark launch.
  * payload_template tunables: `totalSloMs` (probe), the threshold fields of
- * `DEFAULT_THRESHOLDS` (monitor), `presenceGraceSec`/`settleSec` (claim-integrity).
+ * `DEFAULT_THRESHOLDS` (monitor), `presenceGraceSec` (claim-integrity).
  *
  *   tsx seed-coord-invariant-routines.ts             # seed ACTIVE
  *   tsx seed-coord-invariant-routines.ts --inactive  # seed off
