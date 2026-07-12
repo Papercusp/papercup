@@ -196,6 +196,31 @@ export function resolveHomeHive(projects: LiteProject[], rows: readonly HiveStee
   );
 }
 
+/**
+ * The WIRE BOUNDARY between the UI's model and `pot:set-steering`'s args (WI-4339).
+ *
+ * The persisted store + the `hive.steering` read row still use the PRE-rename
+ * names (`eligibleHives`, `maxBees`) — the tool maps them back internally — but
+ * the tool's ARGS were renamed by the hive→pot / bee→cup pass to `eligiblePots`
+ * and `maxCups`. Translating here, at the ONE place patches become wire args,
+ * means no individual call site (toggle, reset, throttle knob) can drift again.
+ *
+ * This is the bug the owner hit: the SPA kept sending the old names, zod's
+ * default z.object() SILENTLY STRIPPED them, and every steering write either
+ * no-op'd or failed with a misleading "Pass `pot` …". Both steering tools are
+ * now `.strict()`, so a stale key fails LOUDLY instead of vanishing.
+ */
+const STEERING_ARG_RENAMES: Record<string, string> = {
+  eligibleHives: 'eligiblePots',
+  maxBees: 'maxCups',
+};
+
+export function toSteeringArgs(patch: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(patch)) out[STEERING_ARG_RENAMES[k] ?? k] = v;
+  return out;
+}
+
 async function runSetSteering(args: Record<string, unknown>): Promise<void> {
   const res = await fetch('/api/agent-mcp/run-tool', {
     method: 'POST',
@@ -355,7 +380,7 @@ export default function MugTab({ active }: { active: boolean }) {
     inflightRef.current += 1;
     setErr(null);
     chainRef.current = chainRef.current
-      .then(() => runSetSteering({ pot: home, ...patch }))
+      .then(() => runSetSteering({ pot: home, ...toSteeringArgs(patch) }))
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
       .finally(() => {
         inflightRef.current -= 1;

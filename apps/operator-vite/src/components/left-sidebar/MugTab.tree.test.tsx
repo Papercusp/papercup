@@ -122,7 +122,7 @@ describe('MugTab nested steering tree', () => {
 
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     const { args } = setSteeringBody();
-    expect(args.eligibleHives).toEqual([]);
+    expect(args.eligiblePots).toEqual([]);
     expect(args.eligiblePlans).toEqual([]);
   });
 
@@ -134,7 +134,7 @@ describe('MugTab nested steering tree', () => {
     const { name, args } = setSteeringBody();
     expect(name).toBe('pot:set-steering');
     expect(args.pot).toBe('papercup-hive');
-    expect(args.eligibleHives).toEqual(['pot-a']);
+    expect(args.eligiblePots).toEqual(['pot-a']);
     expect(args.eligiblePlans).toEqual([]); // "all of pot-a" — no narrowing
   });
 
@@ -184,7 +184,7 @@ describe('MugTab nested steering tree', () => {
     fireEvent.click(planA); // uncheck Plan A → narrow to the rest
     await waitFor(() => expect(wroteRunTool()).toBe(true));
     const { args } = setSteeringBody();
-    expect(args.eligibleHives).toEqual(['pot-a']);
+    expect(args.eligiblePots).toEqual(['pot-a']);
     expect(args.eligiblePlans).toEqual(['plan-a2']); // all of pot-a minus plan-a
   });
 

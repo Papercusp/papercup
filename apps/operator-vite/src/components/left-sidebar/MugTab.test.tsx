@@ -203,7 +203,7 @@ describe('MugTab (Colony sidebar, round 2)', () => {
     expect(setSteeringBody().args).toEqual({
       pot: 'papercup-hive',
       eligiblePlans: [],
-      eligibleHives: [],
+      eligiblePots: [],
       includeUnplannedWork: true,
     });
   });
@@ -237,7 +237,7 @@ describe('MugTab (Colony sidebar, round 2)', () => {
       modelTiers: null,
       tierCeilings: null,
       cadenceFloorSec: null,
-      maxBees: null,
+      maxCups: null,
       idleActivities: null,
       autoScaleOut: null,
       decomposition: null,
@@ -263,7 +263,7 @@ describe('MugTab (Colony sidebar, round 2)', () => {
     const { name, args } = setSteeringBody();
     expect(name).toBe('pot:set-steering');
     expect(args.pot).toBe('papercup-hive');
-    expect(args.eligibleHives).toEqual(['pot-a']);
+    expect(args.eligiblePots).toEqual(['pot-a']);
   });
 
   it('toggling a plan writes eligiblePlans + the home hive', async () => {

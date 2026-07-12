@@ -46,17 +46,26 @@ describe('pot:set-steering unknown-key rejection (WI-4339)', () => {
     expect(setArgs.safeParse({ pot: 'papercusp', bogus: true }).success).toBe(false);
   });
 
+  it('REJECTS the other two stale pre-rename arg names the SPA was still sending', () => {
+    // The same hive→pot / bee→cup rename pass also renamed these two. The SPA
+    // kept sending the old names, zod stripped them, and the Mug's placement-scope
+    // picker + max-concurrency knob silently did NOTHING (no error at all — this
+    // pair was even harder to spot than the `hive` one, which at least errored).
+    expect(setArgs.safeParse({ pot: 'papercusp', eligibleHives: ['pot-a'] }).success).toBe(false);
+    expect(setArgs.safeParse({ pot: 'papercusp', maxBees: 4 }).success).toBe(false);
+  });
+
   it('still accepts the documented steering knobs', () => {
     expect(
       setArgs.safeParse({
         pot: 'papercusp',
         eligiblePlans: ['plan-a'],
-        eligibleHives: ['pot-a'],
+        eligiblePots: ['pot-a'],
         includeUnplannedWork: false,
         pauseNewWork: true,
         pausedUntil: null,
         cadenceFloorSec: 120,
-        maxBees: 4,
+        maxCups: 4,
         decomposition: 'balanced',
         clear: false,
       }).success,
