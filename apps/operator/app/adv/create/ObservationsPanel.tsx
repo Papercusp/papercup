@@ -18,7 +18,6 @@ import {
   useEffect,
   useMemo,
   useState,
-  type CSSProperties,
 } from "react";
 import { RefreshCw } from "lucide-react";
 import { useSyncQuery } from "@papercusp/sync";
@@ -54,13 +53,6 @@ const KIND_LABEL: Record<string, string> = {
 // sync-query stream. The resolver carries the true count on row[0]._meta.
 export const OBSERVATIONS_PAGE = 200;
 
-const CELL_TRUNCATE: CSSProperties = {
-  display: "block",
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  whiteSpace: "nowrap",
-};
-
 export default function ObservationsPanel({
   onStatus,
 }: Partial<PanelComponentProps> & {
@@ -69,6 +61,7 @@ export default function ObservationsPanel({
   const [itemPlans] = useItemPlanFilter();
   const [limit, setLimit] = useState(OBSERVATIONS_PAGE);
   const [signalFilter, setSignalFilter] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const itemPlanKey = itemPlans.join("\u0000");
   useEffect(() => setLimit(OBSERVATIONS_PAGE), [itemPlanKey]);
 
@@ -113,6 +106,11 @@ export default function ObservationsPanel({
     }
   }, [signalCounts, signalFilter]);
   useEffect(() => {
+    if (selectedId && !rows.some((row) => row.id === selectedId)) {
+      setSelectedId(null);
+    }
+  }, [rows, selectedId]);
+  useEffect(() => {
     onStatus?.(
       query.error ? "bad" : scopedRows.length > 0 ? "good" : "neutral",
     );
@@ -125,81 +123,76 @@ export default function ObservationsPanel({
   const columns = useMemo<ColumnDef<ObservationRow>[]>(
     () => [
       {
-        key: "kind",
-        header: "Signal",
-        width: 1,
-        toCopyText: (row) =>
-          row.kind ? (KIND_LABEL[row.kind] ?? row.kind) : "",
-        render: ({ row }) =>
-          row.kind ? (
-            <span className="pc-observations__signal">
-              <i
-                aria-hidden
-                style={{
-                  background:
-                    OBSERVATION_KIND_COLOR[row.kind] ?? "var(--accent)",
-                }}
-              />
-              {KIND_LABEL[row.kind] ?? row.kind}
-            </span>
-          ) : null,
-      },
-      {
         key: "observation",
         header: "Observation",
-        width: 5,
-        toCopyText: (row) => [row.title, row.body].filter(Boolean).join("\n"),
-        render: ({ row }) => (
-          <span
-            style={{ display: "grid", gap: 2, minWidth: 0 }}
-            title={row.body ?? row.title}
-          >
-            <strong style={{ ...CELL_TRUNCATE, fontSize: 12, fontWeight: 620 }}>
-              {row.title}
-            </strong>
-            {row.body ? (
-              <span
-                style={{
-                  ...CELL_TRUNCATE,
-                  color: "var(--fg-mute)",
-                  fontSize: 11,
-                }}
-              >
-                {row.body}
-              </span>
-            ) : null}
-          </span>
-        ),
-      },
-      {
-        key: "context",
-        header: "Context",
-        width: 2.6,
+        width: 8,
         toCopyText: (row) =>
-          [row.sourceRole, row.scope, row.confidence, ...row.refs]
+          [
+            row.kind ? (KIND_LABEL[row.kind] ?? row.kind) : null,
+            row.title,
+            row.body,
+            [row.sourceRole, row.scope, row.confidence, ...row.refs]
+              .filter(Boolean)
+              .join(" · "),
+          ]
             .filter(Boolean)
-            .join(" · "),
-        render: ({ row }) => (
-          <span
-            style={{ ...CELL_TRUNCATE, color: "var(--fg-mute)", fontSize: 11 }}
-            title={[row.sourceRole, row.scope, row.confidence, ...row.refs]
-              .filter(Boolean)
-              .join(" · ")}
-          >
-            {[row.sourceRole, row.scope, row.confidence, ...row.refs]
-              .filter(Boolean)
-              .join(" · ")}
-          </span>
-        ),
+            .join("\n"),
+        render: ({ row }) => {
+          const selected = selectedId === row.id;
+          const context = [
+            row.sourceRole,
+            row.scope,
+            row.confidence,
+            ...row.refs,
+          ]
+            .filter(Boolean)
+            .join(" · ");
+          const signal = row.kind
+            ? (KIND_LABEL[row.kind] ?? row.kind)
+            : "Other";
+          return (
+            <button
+              type="button"
+              className={`pc-observations__entry${selected ? " is-selected" : ""}`}
+              aria-label={`${selected ? "Collapse" : "Expand"} observation ${row.title}`}
+              aria-expanded={selected}
+              onClick={() => setSelectedId(selected ? null : row.id)}
+              title={row.body ?? row.title}
+            >
+              <span
+                className="pc-observations__signalmark"
+                aria-label={`${signal} signal`}
+                title={signal}
+              >
+                <i
+                  aria-hidden
+                  style={{
+                    background:
+                      OBSERVATION_KIND_COLOR[row.kind ?? ""] ??
+                      "var(--fg-mute)",
+                  }}
+                />
+                <span className="pc-observations__sr-only">{signal}</span>
+              </span>
+              <span className="pc-observations__copy">
+                <strong>{row.title}</strong>
+                {row.body ? <span>{row.body}</span> : null}
+                {selected && context ? (
+                  <em className="pc-observations__context">{context}</em>
+                ) : null}
+              </span>
+            </button>
+          );
+        },
       },
       {
         key: "createdAt",
         header: "Observed",
-        width: 1.9,
+        width: 2,
         toCopyText: (row) => row.createdAt,
         render: ({ row }) => (
           <span
-            style={{ ...CELL_TRUNCATE, color: "var(--fg-mute)", fontSize: 11 }}
+            className="pc-observations__time"
             title={new Date(row.createdAt).toLocaleString()}
           >
             {new Date(row.createdAt).toLocaleString(undefined, {
@@ -214,7 +207,7 @@ export default function ObservationsPanel({
         ),
       },
     ],
-    [],
+    [selectedId],
   );
 
   return (
@@ -306,7 +299,7 @@ export default function ObservationsPanel({
           columns={columns}
           rows={rows}
           getRowId={(row) => row.id}
-          rowMinHeight={48}
+          rowMinHeight={44}
           headerHeight={30}
           onEndReached={hasMore ? loadMore : undefined}
         />
@@ -319,8 +312,18 @@ export default function ObservationsPanel({
         .pc-observations__distribution button.is-other { margin-left: 4px; border-style: dashed; opacity: .82; }
         .pc-observations__distribution button > i { width: 6px; height: 6px; flex: none; border-radius: 50%; }
         .pc-observations__distribution button > strong { color: var(--fg); font-size: 9.5px; font-variant-numeric: tabular-nums; }
-        .pc-observations__signal { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-dim); font-size: 10.5px; font-weight: 680; }
-        .pc-observations__signal i { width: 7px; height: 7px; flex: none; border-radius: 50%; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 6%, transparent); }
+        .pc-observations__entry { width: 100%; min-width: 0; display: grid; grid-template-columns: 10px minmax(0, 1fr); align-items: start; gap: 7px; padding: 1px 0; border: 0; border-radius: 5px; background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer; }
+        .pc-observations__entry:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+        .pc-observations__entry.is-selected .pc-observations__copy > strong { color: var(--accent); }
+        .pc-observations__signalmark { display: grid; place-items: center; width: 10px; height: 20px; }
+        .pc-observations__signalmark i { width: 7px; height: 7px; border-radius: 50%; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 6%, transparent); }
+        .pc-observations__copy { display: grid; gap: 2px; min-width: 0; }
+        .pc-observations__copy > strong, .pc-observations__copy > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .pc-observations__copy > strong { font-size: 12px; font-weight: 620; }
+        .pc-observations__copy > span, .pc-observations__context { color: var(--fg-mute); font-size: 10.5px; }
+        .pc-observations__context { overflow-wrap: anywhere; font-style: normal; white-space: normal; }
+        .pc-observations__time { display: block; overflow: hidden; color: var(--fg-mute); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+        .pc-observations__sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
       `}</style>
     </div>
   );

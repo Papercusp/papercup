@@ -36,12 +36,10 @@ const setResult = (data: unknown[] | undefined, extra: Record<string, unknown> =
 afterEach(() => cleanup());
 
 describe('LearningInfraHealthChip', () => {
-  it('renders the green chip on ok', () => {
+  it('keeps the healthy state quiet', () => {
     setResult([snapshot('ok', 'all legs up')]);
-    render(<LearningInfraHealthChip />);
-    const chip = screen.getByLabelText('learning infra up');
-    expect(chip.className).toContain('pc-lihealth--good');
-    expect(chip.title).toContain('llm-spine: ok');
+    const { container } = render(<LearningInfraHealthChip />);
+    expect(container.innerHTML).toBe('');
   });
 
   it('renders the amber chip + reason on degraded', () => {

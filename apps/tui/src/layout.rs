@@ -259,6 +259,20 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
     // pane), THEN execs the exact same no-picker launch:
     // `psu --no-picker --agent=claude --role=sentinel`.
     let sentinel_cmd_block = "command \"psu-sentinel\"";
+    // P-014 (voice-public-release-readiness-2026-07-12, D-005/D-006): directly
+    // UNDER the front-door pane sits the papercup-DEEP pane — the hidden heavy
+    // half of the ONE "Papercup" identity. It launches via the
+    // `psu-sentinel-deep` wrapper (repo src apps/operator/scripts/
+    // psu-sentinel-deep.sh; packaged twin writeSentinelDeepShim), which records
+    // THIS pane to ~/.papercusp/sentinel-deep-pane then execs
+    // `psu --no-picker --agent=claude --role=papercup-deep` (default opus:xhigh,
+    // override ~/.papercusp/sentinel-deep-model). D-001: its pane NAME is the
+    // SAME lexed front-door label — the fast/deep split is builder detail the
+    // user never sees; the deep session is parked-until-woken (the front-end
+    // wakes it over coord with delegated questions), never user-facing. Same
+    // Sentinel glyph/kind ⇒ same group_rank, and it sits adjacent to the
+    // front pane, so the P-011 regroup never reorders it.
+    let sentinel_deep_cmd_block = "command \"psu-sentinel-deep\"";
     // P-004 / D-009: the operator pane is psu, so the reactive agent stack has a
     // dedicated driver — the `pui dock-driver` pane runs the reactive loop
     // (dock_agent_panes) and renders the fleet roster as the dock's controller.
@@ -310,14 +324,20 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
     // launch as role=overwatch, mirroring the sentinel pane's --role=operator launch
     // (--role=overwatch MUST use `=`; psu-launcher drops a space-separated --role).
     // 👁 glyph + indigo identity come from AgentPaneKind::Overwatch (B-01). It is the
-    // Queen's sibling system-health supervisor. Pane order (owner ask 2026-06-22):
-    // top-to-bottom (owner ask 2026-06-22): 🥤 sentinel (the front-door agent leads
-    // the dock), 🫖 overwatch, 🍵 queen, cups (dock-driver + its worker TUIs), ⏸ wakes.
+    // Queen's sibling system-health supervisor. Pane order (owner ask 2026-06-22;
+    // deep pane added voice-public-release-readiness P-014): top-to-bottom:
+    // 🥤 sentinel (the front-door agent leads the dock), 🥤 deep (same label —
+    // hidden split, D-001), 🫖 overwatch, 🍵 queen, cups (dock-driver + its
+    // worker TUIs), ⏸ wakes. The front pane gave up 12% to the deep pane
+    // (40% → 28%) so the rest of the dock is untouched.
     let dock_body = {
         format!(
             r#"    pane split_direction="horizontal" {{
-        pane name="{sentinel_name}" focus=true size="40%" {{
+        pane name="{sentinel_name}" focus=true size="28%" {{
             {sentinel_cmd_block}
+        }}
+        pane name="{sentinel_name}" size="12%" {{
+            {sentinel_deep_cmd_block}
         }}
         pane name="{overwatch_name}" size="12%" {{
             command "pui"
@@ -1026,11 +1046,15 @@ mod tests {
         assert!(!on.contains("args \"chat-pane\""));
         // queen-overwatch-live-visibility D-003: the ♛ queen + 👁 overwatch panes
         // now render the READ-ONLY shared transcript view (`pui brain-view`), so the
-        // ONLY psu session in the dock is the sentinel (operator chat). That is what
-        // lets every desktop instance show the SAME live queen/overwatch and survive
-        // a shell exit. The one-pane `pui agent-pane` variant stays reverted.
-        assert_eq!(on.matches("command \"psu-sentinel\"").count(), 1); // sentinel only (queen+overwatch are pui brain-view)
-                                                                       // And no BARE `command "psu"` leaks back (brain/queen/overwatch are all pui).
+        // only psu sessions in the dock are the sentinel (operator chat) and its
+        // hidden deep pane (P-014). That is what lets every desktop instance show
+        // the SAME live queen/overwatch and survive a shell exit. The one-pane
+        // `pui agent-pane` variant stays reverted. NOTE the closing quote in the
+        // needle: it keeps "psu-sentinel" from substring-matching
+        // "psu-sentinel-deep" — exactly one of EACH wrapper.
+        assert_eq!(on.matches("command \"psu-sentinel\"").count(), 1); // the front pane (queen+overwatch are pui brain-view)
+        assert_eq!(on.matches("command \"psu-sentinel-deep\"").count(), 1); // the deep pane (P-014)
+                                                                            // And no BARE `command "psu"` leaks back (brain/queen/overwatch are all pui).
         assert_eq!(on.matches("command \"psu\"\n").count(), 0);
         assert!(
             !on.contains("agent-pane"),
@@ -1080,6 +1104,51 @@ mod tests {
             "the queen split precedes the cups stack"
         );
         assert!(stack_at < driver_at, "the driver is inside the cups stack");
+    }
+
+    #[test]
+    fn chat_dock_deep_pane_sits_under_the_sentinel_with_the_same_label() {
+        // voice-public-release-readiness-2026-07-12 P-014 (D-001/D-005/D-006):
+        // the papercup-DEEP pane — the hidden heavy half of the ONE "Papercup"
+        // identity — sits directly UNDER the front-door pane and launches via
+        // the `psu-sentinel-deep` wrapper (role=papercup-deep, default
+        // opus:xhigh). D-001: its NAME is the SAME lexed front-door label; the
+        // fast/deep split must never be visible in the dock.
+        let kdl = chat_dock_kdl(
+            &["psu".to_string(), "--brain".to_string()],
+            &Lexicon::default(),
+        );
+        // TWO panes carry the one front-door label (front + deep) …
+        assert_eq!(
+            kdl.matches("name=\"🥤 papercup\"").count(),
+            2,
+            "one identity, two panes (front + deep): {kdl}"
+        );
+        // … and NOTHING in the layout reveals the split: no "deep" in any
+        // user-visible pane NAME (the wrapper command is not rendered).
+        assert!(
+            !kdl.contains("name=\"🥤 papercup-deep\"") && !kdl.contains("deep\" {"),
+            "the deep pane must not be labeled as deep: {kdl}"
+        );
+        // Only the FRONT pane takes focus; the deep pane parks unfocused, and
+        // the front pane gave up the deep pane's 12% (40% → 28%).
+        assert!(
+            kdl.contains("name=\"🥤 papercup\" focus=true size=\"28%\""),
+            "front pane focused at 28%: {kdl}"
+        );
+        assert!(
+            kdl.contains("name=\"🥤 papercup\" size=\"12%\""),
+            "deep pane unfocused at 12%: {kdl}"
+        );
+        // Order: front pane → deep pane → overwatch (the deep pane sits inside
+        // the sentinel block, above the rest of the dock).
+        let front = kdl.find("command \"psu-sentinel\"").unwrap();
+        let deep = kdl.find("command \"psu-sentinel-deep\"").unwrap();
+        let ow = kdl.find("name=\"🫖 kettle\"").unwrap();
+        assert!(
+            front < deep && deep < ow,
+            "deep pane sits under the front pane, above overwatch"
+        );
     }
 
     #[test]

@@ -240,6 +240,12 @@ describe("<ObservationsPanel />", () => {
     render(<ObservationsPanel />);
     expect(screen.getByText("a longer note")).toBeTruthy();
     expect(
+      screen.queryByText("engineer · repo · high · F-1 · WI-2"),
+    ).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Expand observation Full row" }),
+    );
+    expect(
       screen.getByText("engineer · repo · high · F-1 · WI-2"),
     ).toBeTruthy();
   });

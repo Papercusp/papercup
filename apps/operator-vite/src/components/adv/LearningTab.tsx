@@ -260,15 +260,6 @@ export default function LearningTab() {
 
   return (
     <div className="pc-learning">
-      <header className="pc-learning__header">
-        <h1>
-          <Brain size={19} aria-hidden /> Learning
-        </h1>
-        <div className="pc-learning__utilities">
-          <LearningInfraHealthChip />
-        </div>
-      </header>
-
       <Tabs.Root
         className="pc-learning__stages"
         value={activeStage ?? ""}
@@ -380,6 +371,8 @@ export default function LearningTab() {
         ) : (
           <span />
         )}
+
+        <LearningInfraHealthChip />
 
         {hiveAware ? (
           <Tooltip
@@ -3142,22 +3135,11 @@ function Stat({
 export function LearningStyles() {
   return (
     <style>{`
-      .pc-learning { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 10px 14px 14px; gap: 8px; overflow: hidden; }
-      .pc-learning__header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-      .pc-learning__header h1 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 20px; font-weight: 760; color: var(--fg); }
-      .pc-learning__utilities { display: inline-flex; align-items: center; gap: 6px; }
-      .pc-learning__utility {
-        display: inline-flex; align-items: center; gap: 6px; min-height: 30px;
-        padding: 5px 9px; border: 1px solid var(--border); border-radius: 8px;
-        background: var(--bg-2); color: var(--fg-mute); cursor: pointer; font: inherit; font-size: 11.5px;
-        transition: color var(--dur-fast), border-color var(--dur-fast), background var(--dur-fast);
-      }
-      .pc-learning__utility:hover { color: var(--fg); border-color: var(--border-strong); background: var(--bg-3); }
-      .pc-learning__utility.is-active { color: var(--accent-strong); border-color: var(--accent); background: color-mix(in oklab, var(--accent), transparent 88%); }
+      .pc-learning { container: learning / inline-size; display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 8px 14px 14px; gap: 7px; overflow: hidden; }
 
       .pc-learning__stage-list {
         display: grid; grid-template-columns: repeat(4, minmax(90px, 1fr));
-        align-items: start; max-width: 720px; margin: 0 auto; padding: 0 22px;
+        align-items: start; width: 100%; max-width: 720px; margin: 0 auto; padding: 0 22px; box-sizing: border-box;
       }
       .pc-learning__stage {
         --stage-accent: var(--accent);
@@ -3194,7 +3176,7 @@ export function LearningStyles() {
         color: var(--stage-accent); border-color: var(--stage-accent);
         background: color-mix(in oklab, var(--stage-accent), transparent 88%);
       }
-      .pc-learning__controls { min-height: 30px; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+      .pc-learning__controls { min-height: 30px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
       .pc-learning__view-tabs { min-width: 0; max-width: 100%; }
       .pc-learning__view-list { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; padding: 0; overflow-x: auto; scrollbar-width: thin; border-bottom: 1px solid var(--border); background: transparent; }
       .pc-learning__view-tab {
@@ -3221,20 +3203,29 @@ export function LearningStyles() {
       .pc-learning__rubricsplit:has(.pc-learning__rubricdetail) { grid-template-columns: minmax(310px, .78fr) minmax(0, 1.22fr); }
       .pc-learning__rubricdetail { min-width: 0; overflow: auto; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--bg-1); }
 
-      @media (max-width: 720px) {
-        .pc-learning__header { align-items: flex-start; }
-        .pc-learning__utilities { flex-wrap: wrap; justify-content: flex-end; }
-        .pc-learning__utility span { display: none; }
+      .pc-learning__viewpane:not([data-view="learnings"]):not([data-view="throughput"]) .pc-learning-visual__head h2 {
+        position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+      }
+
+      @container learning (max-width: 720px) {
         .pc-learning__stage-list { padding-inline: 4px; }
         .pc-learning__stage { padding-inline: 2px; }
         .pc-learning__stage-line { left: calc(50% + 15px); width: calc(100% - 30px); }
         .pc-learning__rubricsplit:has(.pc-learning__rubricdetail) { grid-template-columns: 1fr; overflow: auto; }
         .pc-learning__rubricdetail { min-height: 420px; }
       }
-      @media (max-width: 1100px) {
+      @container learning (max-width: 1100px) {
         .pc-learning__view-tabs[data-stage="verify"] .pc-learning__view-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
         .pc-learning__view-tabs[data-stage="verify"] .pc-learning__view-tab { padding-inline: 7px; }
         .pc-learning__view-tabs[data-stage="verify"] .pc-learning__view-icon { width: 22px; height: 22px; }
+      }
+      @container learning (max-width: 560px) {
+        .pc-learning { padding-inline: 9px; }
+        .pc-learning__stage-list { grid-template-columns: repeat(4, minmax(44px, 1fr)); }
+        .pc-learning__stage-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+        .pc-learning__controls { flex-wrap: nowrap; }
+        .pc-learning__view-tabs { flex: 1 1 auto; overflow: hidden; }
+        .pc-learning__hivepicklabel { display: none; }
       }
 
       /* Flow strip (P-041) — compact in/out chips above the stock scoreboard. */

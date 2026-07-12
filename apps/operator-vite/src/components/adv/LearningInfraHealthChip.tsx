@@ -9,9 +9,9 @@
  * Learning-tab face of the status whose offline transition also notifies the
  * owner (infra failures escalate, they don't queue).
  *
- * Renders NOTHING until a recognizable snapshot arrives: flag off (empty
- * resolver result), loading, error, or a foreign payload all hide the chip —
- * a health chip must never add noise of its own. Styles are scoped here
+ * Renders only actionable degraded/offline snapshots. Healthy, flag-off,
+ * loading, error, and foreign payload states stay quiet — a health chip must
+ * never add noise of its own. Styles are scoped here
  * (pc-lihealth__*) so the LearningTab hotspot wiring stays at two lines.
  */
 import { useSyncQuery } from '@papercusp/sync';
@@ -36,7 +36,7 @@ function evaluatedAgo(evaluatedAt: number, nowMs: number): string {
 export default function LearningInfraHealthChip() {
   const sync = useSyncQuery<LearningInfraHealth>({ queryName: 'learning.health', args: {}, staleTime: 30_000 });
   const health = sync.data?.[0];
-  if (!health || !(health.status in TONES)) return null;
+  if (!health || !(health.status in TONES) || health.status === 'ok') return null;
   const tone = TONES[health.status];
   const hint =
     `The learning system's own infrastructure — the LLM spine (gym judge, llm-testing — the stateless anthropic-direct transport), ` +

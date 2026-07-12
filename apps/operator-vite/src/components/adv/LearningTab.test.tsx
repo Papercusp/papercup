@@ -755,6 +755,7 @@ describe("LearningTab — unified Signals views", () => {
 
   it("keeps operational destinations out of the learning header", () => {
     render(<LearningTab />);
+    expect(screen.queryByRole("heading", { name: "Learning" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Loop health" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Insights" })).toBeNull();
   });
