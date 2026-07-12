@@ -831,7 +831,9 @@ describe("LearningTab — Benchmark view", () => {
     expect(screen.getAllByText("5.950").length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByText("first generation")).toBeNull();
     expect(
-      document.querySelector(".pc-learning__statusdot.is-warn"),
+      screen
+        .getByRole("tab", { name: "Benchmark" })
+        .querySelector(".pc-learning__view-icon.has-active"),
     ).not.toBeNull();
   });
 
@@ -904,7 +906,7 @@ describe("LearningTab — Benchmark view", () => {
     expect(
       screen
         .getByRole("tab", { name: "Verify" })
-        .querySelector(".pc-learning__statusdot.is-good"),
+        .querySelector(".pc-learning__stage-icon.has-active"),
     ).not.toBeNull();
   });
 
@@ -1076,17 +1078,18 @@ describe("ScoutView (Learning › Improve › Ideas) — idea grading (B-07, sco
     nuqsState.grade = "idea-1";
     render(<ScoutView />);
     const panel = screen
-      .getByLabelText("Grading note")
+      .getByRole("radio", { name: "Grade 2 of 5" })
       .closest(".pc-learning__gradepanel") as HTMLElement;
     expect(panel).toBeTruthy();
-    const save = within(panel).getByRole("button", {
-      name: "save grade",
-    }) as HTMLButtonElement;
-    expect(save.disabled).toBe(true); // idea-1 is ungraded — a grade must be picked first
+    expect(within(panel).queryByLabelText("Grading note")).toBeNull();
+    expect(within(panel).queryByRole("button", { name: "save grade" })).toBeNull();
     fireEvent.click(within(panel).getByRole("radio", { name: "Grade 2 of 5" }));
     fireEvent.change(within(panel).getByLabelText("Grading note"), {
       target: { value: "Too speculative" },
     });
+    const save = within(panel).getByRole("button", {
+      name: "save grade",
+    }) as HTMLButtonElement;
     expect(save.disabled).toBe(false);
     fireEvent.click(save);
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));

@@ -316,3 +316,91 @@ describe('computeMainBehindStaging git shell-out (EI-9922 no-stderr-leak)', () =
     vi.mocked(execFileSync).mockReset();
   });
 });
+
+// EI-10103: main-behind-staging-watchdog crashes every pass — the escalation INSERT
+// explicitly wrote `workspace_id: NULL` (opts.workspaceId ?? null), violating the
+// column's NOT NULL constraint on every real stall (the promotion-stall detector
+// could never actually escalate). A tagged-template fake `sql` records every call so
+// we can assert on the exact value threaded into the INSERT.
+function makeFakeSql(existingRows: { escalation: unknown }[] = []) {
+  const calls: unknown[][] = [];
+  const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+    const text = strings.join('?');
+    calls.push([text, ...values]);
+    if (text.includes('SELECT escalation')) return Promise.resolve(existingRows);
+    // INSERT / UPDATE — postgres-js resolves a write to a result-like array with `.count`.
+    return Promise.resolve(Object.assign([], { count: 1 }));
+  }) as unknown as import('postgres').Sql;
+  return { sql, calls };
+}
+
+function findInsertCall(calls: unknown[][]) {
+  return calls.find((c) => typeof c[0] === 'string' && c[0].includes('INSERT INTO harness_shared.harness_escalations'));
+}
+
+describe('checkMainBehindStaging DB wiring (EI-10103: workspace_id NOT NULL)', () => {
+  afterEach(() => {
+    resolveWorkspaceForHarnessMock.mockReset();
+    notifyAttentionMock.mockClear();
+    broadcastSevereEventMock.mockClear();
+    broadcastSevereEventResolvedMock.mockClear();
+    vi.mocked(execFileSync).mockReset();
+  });
+
+  // Force a stalled verdict deterministically: commitsBehind (30) > DEFAULT_MAIN_BEHIND_COMMITS (20)
+  // AND behindMs (2h) > DEFAULT_MAIN_BEHIND_MS (1h). opts.root is passed explicitly so
+  // computeMainBehindStaging's two git calls (rev-list --count, then log --format=%ct --reverse)
+  // are the only ones made.
+  function mockStalledGit() {
+    vi.mocked(execFileSync)
+      .mockReturnValueOnce('30\n' as unknown as Buffer)
+      .mockReturnValueOnce(`${Math.floor((Date.now() - 2 * H) / 1000)}\n` as unknown as Buffer);
+  }
+
+  it('threads a resolved, non-null workspace_id into the escalation insert (previously always NULL)', async () => {
+    resolveWorkspaceForHarnessMock.mockResolvedValueOnce('papercusp-workspace');
+    mockStalledGit();
+    const { sql, calls } = makeFakeSql([]);
+    const result = await checkMainBehindStaging(sql, { root: '/fake/repo', harnessSlug: 'papercusp' });
+    expect(result.alarmed).toBe(true);
+    expect(resolveWorkspaceForHarnessMock).toHaveBeenCalledWith('papercusp');
+    const insertCall = findInsertCall(calls);
+    expect(insertCall).toBeDefined();
+    // template values are [harnessSlug, phase, escalationJson, mtimeMs, workspaceId]
+    expect(insertCall![5]).toBe('papercusp-workspace');
+    expect(insertCall![5]).not.toBeNull();
+  });
+
+  it('falls back to the column default ("") instead of NULL when workspace resolution fails — the escalation write must never be blocked', async () => {
+    resolveWorkspaceForHarnessMock.mockRejectedValueOnce(new Error('harness not registered in any workspace'));
+    mockStalledGit();
+    const { sql, calls } = makeFakeSql([]);
+    const result = await checkMainBehindStaging(sql, { root: '/fake/repo', harnessSlug: 'papercusp' });
+    // The whole point of the fix: a resolution failure must not re-create the original
+    // "the escalation never gets written" bug via a different code path.
+    expect(result.alarmed).toBe(true);
+    const insertCall = findInsertCall(calls);
+    expect(insertCall).toBeDefined();
+    expect(insertCall![5]).toBe('');
+    expect(insertCall![5]).not.toBeNull();
+  });
+
+  it('honors an explicit opts.workspaceId verbatim, skipping resolution entirely', async () => {
+    mockStalledGit();
+    const { sql, calls } = makeFakeSql([]);
+    await checkMainBehindStaging(sql, { root: '/fake/repo', harnessSlug: 'papercusp', workspaceId: 'explicit-ws' });
+    expect(resolveWorkspaceForHarnessMock).not.toHaveBeenCalled();
+    const insertCall = findInsertCall(calls);
+    expect(insertCall![5]).toBe('explicit-ws');
+  });
+
+  it('does not insert at all when nothing is stalled (no regression to the happy path)', async () => {
+    // in-sync (0 commits behind) — evaluateMainBehindStaging never alarms.
+    vi.mocked(execFileSync).mockReturnValueOnce('0\n' as unknown as Buffer);
+    const { sql, calls } = makeFakeSql([]);
+    const result = await checkMainBehindStaging(sql, { root: '/fake/repo', harnessSlug: 'papercusp' });
+    expect(result.alarmed).toBe(false);
+    expect(findInsertCall(calls)).toBeUndefined();
+    expect(resolveWorkspaceForHarnessMock).not.toHaveBeenCalled();
+  });
+});
