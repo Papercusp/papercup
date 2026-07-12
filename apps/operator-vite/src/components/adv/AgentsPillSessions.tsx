@@ -449,6 +449,17 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
   // heavy queries onto the exact condition that caused the failure.
   const [attempt, setAttempt] = useState(0);
   const [inspecting, setInspecting] = useState<InspectTarget | null>(null);
+  // Recency window (server-side re-query) + facet selection — both URL-backed
+  // like the rest of the popover (agentsQ / agentsRoster / agentsMachine). Plain
+  // useQueryState (no parser) to stay compatible with the suite-wide nuqs mocks
+  // (see the note in AgentsRunningPill on agentsQ).
+  const [windowRaw, setWindowToken] = useQueryState('agentsWindow');
+  const windowToken = typeof windowRaw === 'string' ? windowRaw : null;
+  const [facetsRaw, setFacetsRaw] = useQueryState('agentsFacets');
+  const selection = useMemo(
+    () => parseFacetSelection(typeof facetsRaw === 'string' ? facetsRaw : ''),
+    [facetsRaw],
+  );
 
   useEffect(() => {
     const ctl = new AbortController();
@@ -464,7 +475,12 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
       let timedOut = false;
       const deadline = setTimeout(() => { timedOut = true; ctl.abort(); }, 35_000);
       try {
-        const r = await fetch(`/api/adv/sessions/search-transcripts?q=${encodeURIComponent(query)}&limit=30`, { signal: ctl.signal });
+        // Recency window is a SERVER re-query: adding `since` changes WHICH top-30
+        // the engine returns, so a recent match hidden by relevance ranking can
+        // surface. (The soft recency re-rank is default-on in the route already.)
+        const since = windowToSinceIso(windowToken);
+        const sinceQs = since ? `&since=${encodeURIComponent(since)}` : '';
+        const r = await fetch(`/api/adv/sessions/search-transcripts?q=${encodeURIComponent(query)}&limit=30${sinceQs}`, { signal: ctl.signal });
         const j = await r.json() as { ok: boolean; error?: string; sessions?: SearchSessionResult[] };
         clearTimeout(deadline);
         if (!j.ok) { setError(searchFailureMessage(r.status, j.error)); setLoading(false); return; }
@@ -483,10 +499,32 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
       }
     }, 300);
     return () => { clearTimeout(t); ctl.abort(); };
-  }, [query, attempt]);
+  }, [query, attempt, windowToken]);
 
-  const activeResults = sessions.filter((s) => s.active);
-  const inactiveResults = sessions.filter((s) => !s.active);
+  // Facets are computed over the FULL result set (stable counts that don't jump
+  // as you select); the RENDERED results are the selected subset. This is the
+  // "context-dependent" contract: computeFacets hides any facet with <2 distinct
+  // values, so only facets that actually narrow THESE results appear.
+  const facetGroups = useMemo(
+    () => computeFacets(sessions, SESSION_FACETS, { maxValuesPerFacet: 8 }),
+    [sessions],
+  );
+  const filteredSessions = useMemo(
+    () => sessions.filter(facetPredicate(SESSION_FACETS, selection)),
+    [sessions, selection],
+  );
+  const onToggleFacet = useCallback(
+    (key: string, value: string) =>
+      void setFacetsRaw(serializeFacetSelection(toggleFacetValue(selection, key, value)) || null),
+    [selection, setFacetsRaw],
+  );
+  const onClearFacets = useCallback(() => {
+    void setFacetsRaw(null);
+    void setWindowToken(null);
+  }, [setFacetsRaw, setWindowToken]);
+
+  const activeResults = filteredSessions.filter((s) => s.active);
+  const inactiveResults = filteredSessions.filter((s) => !s.active);
   const resultByOwner = new Map(activeResults.map((s) => [s.active!.ownerId, s]));
   const groups = groupByFleet(activeResults.map((s) => s.active!));
 
@@ -506,8 +544,23 @@ export function SessionSearchResults({ query, nowMs }: { query: string; nowMs: n
           </button>
         </div>
       )}
+      {!loading && !error && (
+        <FacetBar
+          groups={facetGroups}
+          selection={selection}
+          onToggle={onToggleFacet}
+          onClearAll={onClearFacets}
+          windowToken={windowToken}
+          onWindow={(t) => void setWindowToken(t)}
+        />
+      )}
       {!loading && !error && sessions.length === 0 && (
         <div className="pc-agents-sessions__status">No matches in any session.</div>
+      )}
+      {!loading && !error && sessions.length > 0 && filteredSessions.length === 0 && (
+        <div className="pc-agents-sessions__status" data-testid="facet-empty">
+          No results match the selected filters.
+        </div>
       )}
       {groups.length > 0 && (
         <div className="pc-agents-sessions__scroll">
@@ -806,6 +859,40 @@ function SessionsStyles() {
       .pc-agents-sessions__toggle:hover { background: color-mix(in oklab, var(--accent, #38bdf8), transparent 86%); }
       .pc-agents-sessions__toggle-hint { margin-left: auto; font-weight: 400; font-size: 10.5px; color: var(--fg-mute); }
       .pc-agents-sessions__inactive-list { max-height: 260px; }
+      /* Context-dependent facet filter bar (facet-pills-and-recency-2026-07-12) */
+      .pc-agents-facets {
+        display: flex; flex-direction: column; gap: 3px;
+        padding: 5px 8px 6px; border-bottom: 1px solid var(--border);
+        background: var(--bg-1, #0b1525);
+      }
+      .pc-agents-facets__row { display: flex; align-items: flex-start; gap: 6px; }
+      .pc-agents-facets__label {
+        flex: 0 0 52px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+        color: var(--fg-mute); padding-top: 3px; line-height: 1.4;
+      }
+      .pc-agents-facets__pills { display: flex; flex-wrap: wrap; gap: 3px; flex: 1 1 auto; min-width: 0; }
+      .pc-agents-facets__pill {
+        display: inline-flex; align-items: center; gap: 4px;
+        font: inherit; font-size: 10.5px; line-height: 1.5; cursor: pointer;
+        padding: 1px 7px; border-radius: 999px;
+        background: var(--bg-2); color: var(--fg); border: 1px solid var(--border);
+      }
+      .pc-agents-facets__pill:hover { border-color: var(--accent, #38bdf8); }
+      .pc-agents-facets__pill.is-on {
+        background: color-mix(in srgb, var(--accent, #38bdf8) 30%, transparent);
+        border-color: var(--accent, #38bdf8); color: var(--fg); font-weight: 600;
+      }
+      .pc-agents-facets__dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
+      .pc-agents-facets__pill-text { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .pc-agents-facets__count { font-variant-numeric: tabular-nums; font-size: 9.5px; color: var(--fg-mute); }
+      .pc-agents-facets__pill.is-on .pc-agents-facets__count { color: inherit; }
+      .pc-agents-facets__more { font-size: 10px; color: var(--fg-mute); align-self: center; }
+      .pc-agents-facets__clear {
+        flex: 0 0 auto; font: inherit; font-size: 10.5px; cursor: pointer;
+        padding: 1px 7px; border-radius: 6px; background: transparent;
+        color: var(--fg-mute); border: 1px solid var(--border);
+      }
+      .pc-agents-facets__clear:hover { border-color: var(--accent, #38bdf8); color: var(--fg); }
     `}</style>
   );
 }
