@@ -356,6 +356,12 @@ describe('evaluateInvariants', () => {
     // EI-10248's exact snapshot: depth=56, oldest=10.0h — same class, same verdict.
     const ei10248 = { ...cleanSnap, wakeQueueDepth: 56, wakeQueueOldestMs: NOW - 10 * 3_600_000 };
     expect(evaluateInvariants(ei10248, DEFAULT_THRESHOLDS, NOW)).toEqual([]);
+    // EI-10301 (auto-filed 2026-07-12 10:37): another re-file of the SAME class from the
+    // still-behind :3070 operator — depth=56, oldest=14.0h. 56 < 250 and 14h < 25h (the 24h
+    // auto-expiry + 1h grace) ⇒ ZERO violations. Closest to the AGE deadline of the three
+    // pinned snapshots, and still safely under it.
+    const ei10301 = { ...cleanSnap, wakeQueueDepth: 56, wakeQueueOldestMs: NOW - 14 * 3_600_000 };
+    expect(evaluateInvariants(ei10301, DEFAULT_THRESHOLDS, NOW)).toEqual([]);
   });
 
   describe('WI-3959: coord_event_log furnace-class recurrence guard', () => {
