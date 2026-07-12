@@ -29,6 +29,9 @@ Files (current boot location):
   — the fn names deliberately keep the legacy `Papercup` spelling)
 * `packages/operator-core/lib/harness/ensure-papercusp-hive.ts` — the **third** helper
   (see the B-merge note above)
+* `packages/operator-core/lib/harness/bootstrap-papercusp-hive.ts` — the **fourth**
+  module (clone-on-first-boot; see the 2026-06-23 update below) — this one DOES have
+  live boot-time callers
 * `apps/operator/scripts/run-dogfood-bootstrap.ts` (one-shot manual driver)
 
 **Update (2026-06):** The original boot wiring was the Next.js instrumentation hook
@@ -53,6 +56,32 @@ pot, `registerPapercupHarness` keeps `LEGACY_STANDALONE_HARNESS_SLUG = 'papercup
 re-creating a separate `papercup` harness** once the merged `papercusp` pot exists — so
 a post-merge boot no longer dumps a duplicate `papercup` into the dropdown. The
 "two helpers" framing below is therefore now **three**.
+
+**Update (2026-06-23 → present): a LIVE boot-time caller now exists — the "run the
+driver manually" advice above is stale for a packaged install.** A fourth module,
+`bootstrap-papercusp-hive.ts`
+(`packages/operator-core/lib/harness/bootstrap-papercusp-hive.ts`), implements
+**clone-on-first-boot**: the owner decision to ship the desktop with `papercusp` as the
+single default hive, Papercusp building itself out of the box. Its
+`startBootstrapPapercuspHive()` (single-flight; `bootstrapPapercuspHive()` underneath)
+is called from **three** trigger paths — `apps/operator/bin/host-bootstrap.ts` (the
+explicit boot call, gated on `getFlag(FLAGS.DOGFOOD_PAPERCUSP_POT)`), the setup-wizard's
+`POST /api/desktop/bootstrap-pot/start` (`bootstrap-pot-start.ts`, same flag gate), and
+`hive-directory-boot.ts`'s `maybeTriggerCanonicalJoinOnIngest` (fired the instant the
+canonical hive's announce is overheard on the global directory topic — this ONE path is
+otherwise ungated, so `PAPERCUSP_DISABLE_DOGFOOD_HIVE=1` is the single, always-checked
+kill-switch every path funnels through, specifically to close that gap). On a **packaged
+install** with no local checkout, it clones `github.com/Papercusp/papercup` (via a baked
+canonical-hive invite when present, else a `gh`-authenticated create) rather than
+requiring a dev tree to already exist, restores an installer-bundled seed when shipped
+(P-007/P-010/P-011, `FLAGS.POT_SEED_BUNDLE` — default on), makes `papercusp-workspace`
+the active workspace so the hive is visible, and best-effort initializes the \~27
+submodules in the background — before finally handing off to the SAME
+`ensurePapercuspHive()` this page already describes. On a **dev checkout** (a local
+`detectPapercupRoot` match), the existing three-helper path below is what actually runs;
+the clone leg is specific to a packaged/no-checkout install. `run-dogfood-bootstrap.ts`
+remains a valid **manual** driver (useful to verify a code change without restarting the
+operator — see below) but is no longer the *only* way dogfooding gets flipped on.
 
 ## Why two helpers, not one
 
@@ -93,7 +122,8 @@ helper.
 ## How the papercup-root auto-detector works
 
 `detectPapercupRoot(start)` in `register-papercusp.ts` walks UP from
-the given directory looking for both markers:
+the given directory looking for both markers (now factored into the exported helper
+`hasPapercupMarkers(dir)`):
 
 ```ts
 existsSync(join(dir, 'apps', 'operator', 'package.json'))
@@ -103,7 +133,10 @@ existsSync(join(dir, 'apps', 'operator', 'package.json'))
 Two markers because either alone could be coincidental in unrelated
 projects. Both together pin the directory to "this is the papercup
 repo." Bounded to 8 levels up so it can't unbounded-walk a weird
-filesystem.
+filesystem. When called with no explicit `start` it first checks
+`process.env.PAPERCUSP_INTEGRATION_ROOT` (an explicit override for a box that runs an
+integration checkout somewhere the walk-up wouldn't find) — only falling back to
+`process.cwd()` + the walk-up when that's unset or doesn't carry the markers.
 
 Returns `null` for packaged desktop installs where neither marker
 exists — the bootstrap silently skips with a `state: 'skipped'`

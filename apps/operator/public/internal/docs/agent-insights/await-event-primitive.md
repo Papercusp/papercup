@@ -119,7 +119,11 @@ is a second subscription system:
   still "catalogued but not wired" (`plan-item:done:<id>`, `claim:released:<id>`,
   `fleet:drained:<slug>`, `service:up|down:<name>`, `session:compacted:<owner>`) all fired their
   emitters since); `awaitable_now` stays the field to check for any *future* addition still
-  being wired, not a currently-true caveat.
+  being wired, not a currently-true caveat. Each row also carries `live_awaiters` — how many
+  agents are registered on that key **right now** (EI-9000, 2026-07-10) — and, by default,
+  `events:catalog` also lists live **announced gates** (EI-9270 — the leader-declared keys from
+  `events:emit { announce: true }` below) visible to your fleet/plan/harness, each with its
+  fired/latched state.
 * **Named sugar verbs** (`packages/operator-core/lib/agent-tools/events/sugar.ts`) —
   `deploy:await`, `checkpoint:await`, `work-item:await`, `service:await-up`, `git-sync:await`,
   `plan-item:await`, `fleet:await-drained`, etc. — are thin, tool-list-discoverable wrappers
@@ -161,6 +165,104 @@ double-fire the same registration), a matching standing pattern fires without co
 pattern await is itself one-shot by default: it wakes on the FIRST matching key, then you
 re-register if you want the next match too.
 
+## Declared gates — announce-first, so a late joiner still catches the fire (EI-9270, 2026-07-10)
+
+For a **hand-minted** key two agents agree on ad hoc (no catalog family), the old advice was
+"agree on a string, one side awaits, the other emits" — but a key re-typed from a chat message
+drifts (a near-miss), and an agent that registers its `events:await` **after** the emit already
+fired waits forever on a key that will never fire again. `events:emit { announce: true }` fixes
+both:
+
+```
+events:emit { event: 'phase3-open', announce: true }
+→ { announced: true, event: 'fleet:<your-fleet>:phase3-open', ... }
+```
+
+This **declares** the gate — writes a discoverable, LATCHED row (`registerAnnouncement` in
+`store.ts`; `AwaitPolicy` gained a third value, `'announce'`, which is never a delivery target —
+every wake/notify path excludes it) instead of firing it. The key is **auto-scoped** from your
+narrowest context (fleet → plan → global, `defaultAnnounceScope`/`buildAnnouncedKey` in
+`announce-key.ts`) so two fleets both declaring `phase3-open` never collide on the flat rendezvous
+namespace (WI-3575). Members discover the declaration via `events:catalog` / `coord:orient` and
+copy the **returned** key into `events:await` — never re-type it. When you actually fire it later
+with a normal `events:emit { event: '<the returned key>' }`, that emit **also stamps the latch**:
+an `events:await` registered on that exact key **after** the fire gets `{ already_fired: true,
+fired_at, advice: "... do not wait, proceed now" }` immediately instead of a wait that can never
+resolve — the await-after-emit race is closed.
+
+**Near-miss guard (`event-key-nearmiss-guard`):** `events:await` on a key with **zero** active
+declarations, and `events:emit` that reaches **zero** waiters (`waiters:0`, no `to[]`), both run a
+best-effort, time-bounded (`findNearMissKeys`, \~1s budget) scan for an active near-identical key —
+another agent's live await, or a declared-but-unfired gate — and surface it as advisory `near_miss`
+/ `near_misses` in the result, with the exact fix ("re-await/re-emit it EXACTLY"). This is
+diagnostic only; it never changes what actually fired or registered.
+
+**Payload filters (EI-8998):** both `events:await` and `watch:create` accept an optional
+`payload_filter` — a `@papercusp/rules` `DataCondition` (the same `MatchMap`/`all`/`any`/`not`
+vocabulary an ECA rule's `when` uses) evaluated against the emitted **payload**, in addition to the
+key/pattern match. It turns "wake me when `queue_depth` crosses a threshold" from a bespoke exact
+key into `events:await { event: 'some-global-key', payload_filter: { queue_depth: { lt: 5 } } }` —
+useful on a `payloadFiltered: true` catalog family (e.g. `release:deployed`, `work-item:created`)
+whose real emit is global and carries the subject in the payload, not the key. A filter that never
+matches the emitter's actual payload shape silently never fires — check the emitter's payload shape
+first (`events:catalog`'s `describe` names it).
+
+## The unified `watch:create` primitive + predicate watches (P-008, 2026-07-10)
+
+`events:await` and `topics:subscribe` are both thin sugar presets over one underlying primitive,
+`watch:create(pattern, { wake, once, min_sleep_sec, urgency, timeout_sec, mode, targetKind,
+predicate, payload_filter })` (`unify-watch-primitive-2026-06-06`, tool at
+`packages/operator-core/lib/agent-tools/events/watch.ts`):
+
+```
+events:await {key}       == watch:create(key,   { wake: true,  once: true  })
+topics:subscribe {topic} == watch:create(topic,  { wake: false, once: false })
+```
+
+`wake: false` (the default) is the **inject** path — a standing subscription delivered to your
+coord inbox, zero token cost, no re-invoke. `wake: true` is the durable liveness-adaptive re-invoke
+ladder described above. Two additions ride this same registration surface:
+
+* **`targetKind: 'event'` inject subscriptions (WI-4014 Part 2):** `wake: false` normally targets a
+  curated **topic** slug; `targetKind: 'event'` instead subscribes to an **exact event key** —
+  every future `events:emit` on that key lands in your inbox as a standing, no-token-cost
+  subscription (no wake, ever). Retract with `events:unsubscribe`.
+* **Predicate watches (P-008):** `watch:create { predicate: { tool, args, path, op, value },
+  interval_sec }, wake: true` polls a **read-only** projected tool every `interval_sec` (15–3600s,
+  default 60) **under the caller's own role envelope** (the role gate is re-enforced on every poll,
+  audited — a predicate poll can only ever observe, never mutate), extracts `path` (a dot-path into
+  the tool result, e.g. `counts.open`), compares it against `value` with `op` (`eq | ne | gt | gte |
+  lt | lte | exists | contains`), and fires your wake on the **false→true edge** via the same
+  `emitAwaitedEvent` path as any other key — so floors, coalescing, `once`, timeout-wake, and
+  delivery are unchanged. This kills the "poll the same watermark every wake" pattern
+  (`packages/operator-core/lib/events/await/predicate-watch.ts`, migration 541; the poller ticks
+  every 10s and self-deactivates after 5 consecutive poll errors, emitting a `predicateError`
+  payload so the waiter wakes instead of dangling).
+  * **Dedup (`fleet-reliability-verification-2026-07-10` P-004):** registering an **identical**
+    predicate (same scope/tool/args/path/op/value/interval\_sec/once) as an already-active one JOINS
+    that poller instead of starting a second — the response carries `deduped.joined_watch_id`. This
+    closed a real incident: two agents each independently polling the same watermark SQL \~12+ times
+    in one night.
+  * Registration runs **one inline eval** immediately — a broken tool/role/args fails loudly at
+    registration time (not on the first poll tick), and an already-true predicate fires the wake on
+    registration instead of waiting one interval.
+
+`payload_filter` is wake-path-only (it filters which await rows fire; an inject subscription has no
+per-emit matching step to hook it into) — passing it with `wake: false` throws loudly, same as
+passing `predicate` with `wake: false`.
+
+## Cross-machine event federation (P-009, `cross-machine-coord-parity`)
+
+`events:emit { event, scope: 'hive' }` additionally federates the fire to **every machine** of the
+workspace's shared Hive: each peer machine re-fires the key into **its own local** await store, so
+a remote machine's `events:await` on the same key wakes too (lock grants, artifact-ready,
+staging-advanced — rendezvous beyond a plain inbox notify). It requires a resolvable Hive scope
+(from `ctx.harnessSlug`, else the workspace's single shared Hive) — the result reports
+`federated: true/false` plus `federation_error` (`no_hive_scope` / `ambiguous_hive_scope` /
+`payload_too_large_dropped`, >8KiB) when it can't. Best-effort: the **local** emit already happened
+before federation is attempted, so a federation miss never loses the local wake. `scope: 'local'`
+(the default) is today's machine-local-only behavior.
+
 ## The patterns
 
 * **Blocked on a file lock:** `locks:acquire { paths, intent, wake_on_grant: true }`
@@ -176,7 +278,12 @@ re-register if you want the next match too.
   `green-checkpoint:red:<pipeline>` — prefer the scoped keys on a box hosting
   several pipelines, EI-7646), `release:deployed` / `release:deploy-failed`,
   `escalation:resolved:<msgId>`, `handoff:accepted:<msgId>`,
-  `rate-limit:paused/reset:gym-judge|gym-ab`, `lock:grant:<ticket>`.
+  `rate-limit:paused/reset:gym-judge|gym-ab`, `lock:grant:<ticket>`,
+  `work-item:created:<severity>` (payload-filtered global key, EI-8296),
+  `git-sync:committed:<sha>`, `service:up|down:<name>`, `claim:released:<id>`,
+  `fleet:drained:<slug>`. Check `events:catalog` for the full, current registry — its
+  rows now also carry `live_awaiters` (EI-9000: how many agents are actually listening
+  RIGHT NOW, not just whether the key is wired).
 * **Directed-wake honesty (`coord:send`):** a `coord:send { wake:'required', to:[agent] }`
   that reaches a wakeable addressee but wakes nobody returns **`recipient_absent: true`** —
   a loud miss to act on (they're not running: spawn fresh or pick another addressee), not
@@ -229,8 +336,12 @@ wait), ambient interest (that's `topics:subscribe`), or recurring schedules
   candidate lookups); the awaitable-key registry is
   `packages/operator-core/lib/events/await/catalog.ts` (the source `events:catalog` +
   every sugar verb read from); pattern matching is
-  `packages/operator-core/lib/events/await/pattern.ts`; the lock bridge at
+  `packages/operator-core/lib/events/await/pattern.ts`; declared-gate scoping/keying is
+  `packages/operator-core/lib/events/await/announce-key.ts` (EI-9270); predicate watches are
+  `packages/operator-core/lib/events/await/predicate-watch.ts` (P-008, migration 541); the unified
+  registration tool is `packages/operator-core/lib/agent-tools/events/watch.ts`; the lock bridge at
   `packages/operator-core/lib/agent-tools/locks/lock-grant-bridge.ts`. **Timeout constants
-  are unified:** `AWAIT_DEFAULT_TIMEOUT_SEC` and `AWAIT_MAX_TIMEOUT_SEC` live in
+  are unified:** `AWAIT_DEFAULT_TIMEOUT_SEC` (30min, was 4h) and `AWAIT_MAX_TIMEOUT_SEC` (7d) live in
   `packages/operator-core/lib/events/await/types.ts` and are imported by all callers
-  (`events:await`, sugar verbs, the pump) to keep them consistent (await-timeout-fallback-defaults-2026-07-03).
+  (`events:await`, `watch:create`, sugar verbs, the pump) to keep them consistent
+  (await-timeout-fallback-defaults-2026-07-03).

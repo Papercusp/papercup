@@ -12,12 +12,17 @@ live inside the `marketplace-public-ui` lib at
 `libs/marketplace-public-ui/src/MarketplaceList.tsx`, but it is not the
 app's browse surface.) The browse/install surface is now the
 **Cupboard** (`/cupboard` → `apps/operator/app/cupboard/CupboardClient.tsx`):
-a single storefront with **kind-filter tabs** (`?kind=` nuqs param). The
-tab set is `all / harness / blueprint / pot-blueprint / plugin /
-tool-pack / learning-pack / tools`, labelled **All / Pots** (or
-**Pots**, via the lexicon project term — not "Harnesses") **/
-Blueprints / Pot Templates / Plugins / Tool packs / Learning Packs /
-Tools**. Note there is no **Snapshots** tab: the `snapshot` kind was
+a single storefront with **kind-filter tabs** (`?kind=` nuqs param, the
+`ViewFilter`/`VIEW_FILTERS` union). As of 2026-07 the tab set is `all /
+harness / blueprint / hive-blueprint / plugin / tool-pack / learning-pack /
+tools` (`hive-blueprint` — P-018 — is a CLIENT-side facet over `blueprint`
+listings split on `blueprint_kind==='hive'`, i.e. the installable Hive/Pot
+templates, distinct from both the running-hive `harness` tab and from
+harness-blueprints; it superseded an earlier `pot-blueprint` naming). Labels
+resolve through the lexicon (`useLexicon()`), not statically: **All /
+`<pot-plural>`** (e.g. "Pots" or "Hives" depending on the active brand pack —
+never "Harnesses") **/ Blueprints / `<pot-singular>` Templates / Plugins /
+Tool packs / Learning Packs / Tools**. Note there is no **Snapshots** tab: the `snapshot` kind was
 retired (`retire-snapshots-instance-spec` D-005 — the Cupboard
 distributes recipes/blueprints, not tarballs). This replaces the old
 4-tab Overview/Templates/Plugins/Snapshots IA. The per-listing detail

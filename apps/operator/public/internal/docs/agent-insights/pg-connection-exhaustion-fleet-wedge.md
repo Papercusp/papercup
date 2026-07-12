@@ -64,8 +64,9 @@ real service.
   `node` chain). It's redundant (the real operator is elsewhere on the standard ports);
   killing it frees the slots immediately and it does NOT respawn (it's not systemd).
 * **Oversized service pool** → restart just that service:
-  `systemctl --user restart papercup-staging-api.service` (playbook-blessed; `:3170` is the
-  non-primary staging operator). Its pool reconnects lazily to baseline (\~18), freeing \~50
+  `dev:restart { target: 'staging', confirm: true }` (playbook-blessed; `:3170` is the
+  non-primary staging operator — never a raw `systemctl restart`, which bypasses the
+  drain + WI-4221 debounce). Its pool reconnects lazily to baseline (\~18), freeing \~50
   slots. Do NOT restart the whole cluster for this.
 * **Terminating idle backends** at the OS level (`kill -TERM <backend-pid>`) is safe (PG
   treats it like `pg_terminate_backend`) but pools just reopen — only a fix if the client

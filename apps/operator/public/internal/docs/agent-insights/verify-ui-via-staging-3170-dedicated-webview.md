@@ -12,7 +12,8 @@ one real process, without booting a second operator stack and without touching
 the owner's live window.
 
 1. **Server side lands on :3170 by restart** (documented in `CLAUDE.md`):
-   `systemctl --user restart papercup-staging-api.service`, probe with curl.
+   `dev:restart { target: 'staging', confirm: true }`, probe with curl. Never a
+   raw `systemctl restart` — it bypasses the drain + WI-4221 debounce.
 2. **UI side: `:3170` serves a BUILT SPA dist, not live Vite.** Your component
    edits are invisible there until you rebuild:
    `cd apps/operator-vite && npm run build` (seconds). Confirm the served hash

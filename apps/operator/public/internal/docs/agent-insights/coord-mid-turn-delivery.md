@@ -44,6 +44,25 @@ otherwise never sees its own context usage and can hit an auto-compaction blind
 server-side; below 80% it's null and the hook no-ops exactly as before, and no
 cursor advance happens (there are no entries to mark shown).
 
+## The mid-long-exec deafness window — per-backend backgrounding matrix
+
+All three delivery legs above fire **between** tool calls. One long *foreground*
+shell execution (a 10-min build, a full test suite) therefore opens a blind
+window: no PostToolUse fires until the command returns, so coord mail, wakes,
+and yield requests queue silently for its whole duration
+(coord-delivery-residual-gaps-2026-07-11 P-003). The durable fix is the
+backend's **native background primitive** — and it is strictly per-backend;
+only nudge the primitive a backend actually has (plan decision D-001: these
+nudges are an *optimization*; the wake + escalation-ladder legs are the
+*correctness* backstop for backends without one):
+
+| Backend                  | Native background primitive                                      | Semantics                                                                                                                                                         | Nudge                                                                                                                                                                                          |
+| ------------------------ | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Claude Code**          | `Bash { run_in_background: true }`                               | **Same session** — the command detaches, the agent keeps taking turns, and the harness re-invokes the SAME session when it exits. No delegation, no context loss. | `pretooluse-bash-resource-gate.sh` emits a **soft advisory** (`permissionDecision:'allow'` + `additionalContext`) when a foreground `Bash` explicitly requests `timeout > 120s`. Never a deny. |
+| **OMP**                  | its `job` primitive                                              | detached job, same session observes completion                                                                                                                    | OMP's own hook surface (`coord-hook.ts`), **not** the shell gate — do not add a CC-shaped nudge for it there.                                                                                  |
+| **Codex**                | **none** in our integration                                      | —                                                                                                                                                                 | **No nudge.** The gate deliberately skips `exec_command`/`local_shell`/`shell`; advising a primitive the backend lacks is worse than silence. Covered by the wake + ladder legs.               |
+| any backend, last resort | `capability:bash { run_in_background } → capability:bash_output` | server-side detach — backend-agnostic but dies on operator restart (`stranded_by_operator_restart`) and adds operator load                                        | fallback only, never the default (plan decision D-002).                                                                                                                                        |
+
 ## The cursor / dedup protocol
 
 * **Per-owner cursor.** Claude/Codex: a local file `coord-cursor-<owner>.json`

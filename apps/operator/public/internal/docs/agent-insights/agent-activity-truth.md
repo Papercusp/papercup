@@ -323,3 +323,36 @@ set is itself as strong a "this is actually settled" signal as a terminal
 `status` — don't conclude an item is unclaimed/pickable from `status` alone if
 those fields are populated, and always flip `state` when you
 `work_items:complete` something so the pool and the status field agree.
+
+## The eighth corollary: a stale declared intent READS as breaking news — presence is never edit-activity (EI-9696, 2026-07-11)
+
+The reader-side twin of the original incident, with a twist: **the data was all
+there and still got misread.** An agent planning a repo-wide rename read
+`coord:presence`, saw \~20 rows tagged `fleet: p2p-*` with confident present-tense
+intents ("UNPAUSE fleet — resume drain"), and concluded the p2p backend was being
+actively swarmed — so it blocked three plan items on a constraint that did not
+exist. Ground truth (checked only after the owner challenged it): zero
+uncommitted p2p edits in the working tree, newest p2p file mtime \~3h old, every
+p2p agent parked 2.5–20h, `claims:0` on every row. The staleness signals were IN
+the same rows — `intentStale:true`, `lastActiveSecAgo:9641` — and were read past,
+because a frozen intent string in the present tense out-shouts an adjacent
+boolean and a raw-seconds integer nobody mentally converts to "2.7 hours."
+
+**The fix (emit-side legibility, not more columns):** `toStableRosterRow`
+(`presence-payload.ts`) now bakes the staleness INTO the string readers actually
+consume — a stale row's intent emits as **`[idle 2h41m] UNPAUSE fleet — resume
+drain`** (`formatIdleAge`, `presence-tier1.ts`; bare `[idle]` when the age is
+unknown), which is impossible to read as current activity. The prefix is applied
+at the emit projection only — the etag and \[coord+N] delta channel diff the raw
+rows, so the minute-churning age never breaks the byte-stable delta contract
+(D-005/D-006) — and the coord:inbox re-bootstrap block inherits it for free.
+`coord:presence`'s guidance now also states the boundary outright.
+
+**What this means for you:** presence answers "who can take a turn," never "who
+is editing what." Fleet membership labels persist while parked; a declared
+intent is a snapshot of the agent's LAST turn, however current it sounds. To
+know whether anyone is actually editing a file or subsystem, read the ground
+truth: **`locks:list` + `git status --porcelain` + file mtimes** — the per-edit
+hook auto-acquires locks, so a clean tree with no locks is definitive. And
+`claims:0` on an "active-looking" row is the tell: nobody working holds zero
+claims.

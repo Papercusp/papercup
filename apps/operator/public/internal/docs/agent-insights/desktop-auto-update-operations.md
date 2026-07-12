@@ -60,8 +60,14 @@ does not appear. The fallback **code is correct**; you must **set the env var** 
 host serving the oversized artifacts. In the test rig that was
 `PAPERCUSP_RELEASE_HOST=http://10.0.2.2:8043` (host `/home/marsh-office/release-host-8043/desktop-v<tag>/`).
 **Real Linux installs need this baked into the shipping operator env** — tracked as a
-follow-up (WI-3875). `latest.json` is generated for the **GUI product only**;
-a Server-role artifact must never land in it (WI-3696).
+follow-up (WI-3875, still open as of 2026-07-11 — blocked on an owner decision for the
+production release-host URL; no hosting infra exists in-repo yet). `latest.json` is
+generated for the **GUI product only**; a Server-role artifact must never land in it.
+(WI-3696, **fixed** 2026-07-10: `release-local.sh`'s generator previously last-one-wins
+overwrote the darwin/windows GUI entries with the Server artifact + its still-VALID
+signature — a silent wrong-product swap. The fix skips any `Server`-named artifact before
+classification and adds a cut-time assertion that every emitted entry's URL contains
+`GUI`, failing loudly instead of shipping a bad manifest.)
 
 ## Two field gotchas that cost time
 
