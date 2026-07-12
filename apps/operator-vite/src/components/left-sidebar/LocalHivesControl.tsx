@@ -97,7 +97,7 @@ export default function LocalHivesControl() {
           style={{ padding: '6px 8px 4px', fontSize: 11, color: 'var(--fg-mute)', lineHeight: 1.45, borderTop: '1px solid var(--border)' }}
         >
           ▸ Start/Stop chooses <em>which {t('pot', { plural: true, lower: true })} run</em>. Pick each {t('pot', { lower: true })}&apos;s{' '}
-          <strong>plan focus &amp; work-item steering</strong> in the 👑 {t('brain')} tab (left sidebar).
+          <strong>plan focus &amp; work-item steering</strong> in the ☕ {t('brain')} tab (left sidebar).
         </div>
       )}
     </div>

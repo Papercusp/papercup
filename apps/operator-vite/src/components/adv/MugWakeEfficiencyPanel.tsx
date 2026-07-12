@@ -17,7 +17,7 @@
  */
 import { useEffect } from "react";
 import { useSyncQuery } from "@papercusp/sync";
-import { Crown, RefreshCw } from "lucide-react";
+import { Coffee, RefreshCw } from "lucide-react";
 import { useLexicon } from "@/lib/useLexicon";
 import type { MugWakeEfficiency } from "@papercusp/operator-core/lib/pot/mug-wake-efficiency";
 import {
@@ -100,7 +100,7 @@ export function MugWakeEfficiencyPanel({
       aria-label={`${t("brain")} per-wake efficiency`}
     >
       <LearningPageHeader
-        icon={Crown}
+        icon={Coffee}
         title={`${t("brain")} efficiency`}
         signal={wakes > 0 ? `${wakes} wakes` : undefined}
         tone={snap && snap.cacheHitRatio >= 0.7 ? "good" : "warn"}
@@ -118,7 +118,7 @@ export function MugWakeEfficiencyPanel({
       />
 
       {wakes === 0 ? (
-        <LearningVisualEmpty icon={Crown} title={`No ${t("brain")} wakes`} />
+        <LearningVisualEmpty icon={Coffee} title={`No ${t("brain")} wakes`} />
       ) : (
         <>
           <div className="pc-learning-visual__layout">

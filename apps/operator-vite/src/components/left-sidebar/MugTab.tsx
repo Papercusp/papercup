@@ -34,7 +34,7 @@ import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { useNavigate } from '@tanstack/react-router';
 import { parseAsStringLiteral, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { Activity, AlertTriangle, CalendarClock, Crown, Gauge, ListChecks, Network, Pause, Play, RotateCcw } from 'lucide-react';
+import { Activity, AlertTriangle, CalendarClock, Coffee, Gauge, ListChecks, Network, Pause, Play, RotateCcw } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { useLexicon } from '@/lib/useLexicon';
@@ -355,7 +355,7 @@ export default function MugTab({ active }: { active: boolean }) {
     inflightRef.current += 1;
     setErr(null);
     chainRef.current = chainRef.current
-      .then(() => runSetSteering({ hive: home, ...patch }))
+      .then(() => runSetSteering({ pot: home, ...patch }))
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
       .finally(() => {
         inflightRef.current -= 1;
@@ -522,7 +522,7 @@ export default function MugTab({ active }: { active: boolean }) {
     <TooltipPrimitive.Provider delayDuration={250}>
       <div className="pc-queen">
       <header className="pc-queen__bar">
-        <Crown size={14} aria-hidden />
+        <Coffee size={14} aria-hidden />
         <span className="pc-queen__identity">
           <span className="pc-queen__title">{t('brain')}</span>
           <span className="pc-queen__subtitle">Plans and places work</span>

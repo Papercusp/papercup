@@ -70,12 +70,12 @@ export function useModelOverride(role: string, enabled = true): ModelOverrideSta
 
   const setOverride = useCallback(
     (spec: string | null) => {
-      // The home hive comes from the (async) harnessProjects.lite query. A click
-      // before it resolves would send hive:'' — which `pot:set-steering` rejects
-      // ("no Hive ''"). Guard like the Queen tab (which bails with an error on
+      // The home pot comes from the (async) harnessProjects.lite query. A click
+      // before it resolves would send pot:'' — which `pot:set-steering` rejects
+      // ("no Pot ''"). Guard like the Mug tab (which bails with an error on
       // empty home) so a too-fast click is a clear retry, not a confusing failure.
       if (!home) {
-        setError('Home hive still loading — try again in a moment.');
+        setError('Home pot still loading — try again in a moment.');
         return;
       }
       setBusy(true);
@@ -85,8 +85,9 @@ export function useModelOverride(role: string, enabled = true): ModelOverrideSta
       if (spec && spec.trim()) merged[role] = spec.trim();
       else delete merged[role];
       const next = Object.keys(merged).length > 0 ? merged : null;
-      // hive: home is REQUIRED — set-steering defaults to hive '*' (not a real Hive).
-      void runSetSteering({ hive: home, modelOverrides: next })
+      // pot: home is REQUIRED — set-steering otherwise resolves no home pot and
+      // refuses with "Pass `pot` (or set PAPERCUSP_POT_HOME_SLUG)".
+      void runSetSteering({ pot: home, modelOverrides: next })
         .catch((e) => setError(e instanceof Error ? e.message : String(e)))
         .finally(() => setBusy(false));
     },

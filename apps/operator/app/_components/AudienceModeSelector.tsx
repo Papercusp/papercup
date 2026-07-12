@@ -2,6 +2,7 @@
 
 
 import { Tooltip } from '@/app/harness/Tooltip';
+import { GraduationCap, Wrench } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import {
@@ -65,18 +66,18 @@ export function AudienceModeSelector() {
           className={`audience-mode-btn${mode === 'engineer' ? ' audience-mode-btn--active' : ''}`}
           onClick={() => select('engineer')}
           aria-pressed={mode === 'engineer'}
-
+          aria-label="Engineer"
         >
-          Engineer
+          <Wrench size={14} aria-hidden="true" />
         </button></Tooltip>
         <Tooltip label="Novice mode — plain language, outcome-first, no implementation questions"><button
           type="button"
           className={`audience-mode-btn${mode === 'novice' ? ' audience-mode-btn--active' : ''}`}
           onClick={() => select('novice')}
           aria-pressed={mode === 'novice'}
-
+          aria-label="Novice"
         >
-          Novice
+          <GraduationCap size={14} aria-hidden="true" />
         </button></Tooltip>
       </div>
     </>
@@ -94,17 +95,16 @@ const CSS = `
 }
 .audience-mode-btn {
   flex: 1;
-  padding: 5px 10px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0;
-  text-transform: uppercase;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 9px;
   background: transparent;
   border: none;
   color: var(--fg-mute, #94a3b8);
   cursor: pointer;
   transition: background 120ms ease, color 120ms ease;
-  white-space: nowrap;
+  line-height: 0;
 }
 .audience-mode-btn + .audience-mode-btn {
   border-left: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 80%));

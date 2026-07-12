@@ -19,7 +19,7 @@
 import { useEffect, useState } from 'react';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { useSyncQuery } from '@papercusp/sync';
-import { Crown } from 'lucide-react';
+import { Coffee } from 'lucide-react';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { useLexicon } from '@/lib/useLexicon';
 
@@ -120,7 +120,7 @@ export default function MugHeartbeat({ homeSlug }: { homeSlug?: string }) {
       <section className={`pc-qh pc-qh--${tone}`} aria-label={`${t('brain')} status`}>
         <div className="pc-qh__top">
           <span className={`pc-qh__dot pc-qh__dot--${tone}${state === 'running' || state === 'parked' ? ' pc-qh__dot--pulse' : ''}`} aria-hidden />
-          <Crown size={13} aria-hidden />
+          <Coffee size={13} aria-hidden />
           <span className="pc-qh__state">{label}</span>
           {row?.slug && (
             <Tooltip label={`The home ${t('brain')}`}>
