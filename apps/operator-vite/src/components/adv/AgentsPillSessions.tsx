@@ -16,7 +16,19 @@
  *     GET /api/adv/sessions/ended with IntersectionObserver infinite scroll
  *     (the ChatConversation.tsx sentinel + reentry-lock pattern).
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useQueryState } from 'nuqs';
+import {
+  computeFacets,
+  facetPredicate,
+  parseFacetSelection,
+  serializeFacetSelection,
+  toggleFacetValue,
+  facetSelectionSize,
+  type FacetDef,
+  type FacetGroup,
+  type FacetSelection,
+} from '@papercusp/facets';
 import AgentInspectorModal from '@/app/harness/AgentInspectorModal';
 import { LivenessDot } from '@/app/coord/presence-ui';
 import {
@@ -289,6 +301,137 @@ function SearchResultRow({
           dangerouslySetInnerHTML={{ __html: headlineToSafeHtml(h.highlight || h.excerpt) }}
         />
       ))}
+    </div>
+  );
+}
+
+// ── Context-dependent facet filtering (facet-pills-and-recency-2026-07-12) ────
+
+type SessionFacetMeta = { color?: string | null };
+
+/**
+ * Facet definitions over a search result — the ONLY session-specific knowledge;
+ * `@papercusp/facets` owns the tally / hide-singletons / sort / filter math.
+ * This list is a SUPERSET: a facet with <2 distinct values in the actual results
+ * is auto-hidden by computeFacets, so only the facets that genuinely help filter
+ * THESE results ever render. Order here = the render order of the facet rows.
+ */
+export const SESSION_FACETS: FacetDef<SearchSessionResult, SessionFacetMeta>[] = [
+  { key: 'status', label: 'Status', extract: (s) => (s.active ? 'active' : 'ended') },
+  { key: 'backend', label: 'Agent', extract: (s) => s.sourceKind || null },
+  {
+    key: 'fleet',
+    label: 'Fleet',
+    extract: (s) =>
+      s.active?.fleetSlug ? { value: s.active.fleetSlug, meta: { color: s.active.fleetColor } } : null,
+  },
+  { key: 'role', label: 'Role', extract: (s) => s.active?.role ?? s.active?.agentPaneKind ?? s.session?.role ?? null },
+  { key: 'plan', label: 'Plan', extract: (s) => s.active?.currentPlanSlug ?? s.session?.planSlug ?? null },
+  { key: 'feature', label: 'Work item', extract: (s) => s.active?.feature ?? s.session?.feature ?? null },
+  { key: 'machine', label: 'Machine', extract: (s) => s.active?.machineLabel ?? null },
+];
+
+/** The `since` ISO for a recency-window token, or null for "all time". This is
+ *  the SERVER-side tier: changing it re-queries so the window can surface recent
+ *  matches that the relevance-ranked top-N would otherwise have hidden. Pure —
+ *  exported for tests. */
+export function windowToSinceIso(token: string | null | undefined, nowMs: number = Date.now()): string | null {
+  if (token === 'day') return new Date(nowMs - 86_400_000).toISOString();
+  if (token === 'week') return new Date(nowMs - 7 * 86_400_000).toISOString();
+  return null;
+}
+
+const RECENCY_WINDOWS: { token: string | null; label: string }[] = [
+  { token: null, label: 'All time' },
+  { token: 'day', label: 'Today' },
+  { token: 'week', label: 'This week' },
+];
+
+/**
+ * The context-dependent filter bar under the search box. A "When" row (the
+ * server-side recency window — re-queries with `since`), then one row per facet
+ * that `@papercusp/facets` decided is worth showing. Selecting pills filters the
+ * rendered results client-side (AND across facets, OR within). Counts + fleet
+ * color ride from the facet meta.
+ */
+function FacetBar({
+  groups,
+  selection,
+  onToggle,
+  onClearAll,
+  windowToken,
+  onWindow,
+}: {
+  groups: FacetGroup<SessionFacetMeta>[];
+  selection: FacetSelection;
+  onToggle: (key: string, value: string) => void;
+  onClearAll: () => void;
+  windowToken: string | null;
+  onWindow: (token: string | null) => void;
+}) {
+  const selCount = facetSelectionSize(selection);
+  const showClear = selCount > 0 || windowToken != null;
+  return (
+    <div className="pc-agents-facets" data-testid="agents-facet-bar">
+      <div className="pc-agents-facets__row">
+        <span className="pc-agents-facets__label">When</span>
+        <div className="pc-agents-facets__pills">
+          {RECENCY_WINDOWS.map((w) => (
+            <button
+              key={w.token ?? 'all'}
+              type="button"
+              className={`pc-agents-facets__pill${(windowToken ?? null) === w.token ? ' is-on' : ''}`}
+              data-testid={`facet-when-${w.token ?? 'all'}`}
+              aria-pressed={(windowToken ?? null) === w.token}
+              onClick={() => onWindow(w.token)}
+            >
+              {w.label}
+            </button>
+          ))}
+        </div>
+        {showClear ? (
+          <button
+            type="button"
+            className="pc-agents-facets__clear"
+            data-testid="facet-clear"
+            onClick={onClearAll}
+          >
+            Clear{selCount > 0 ? ` (${selCount})` : ''}
+          </button>
+        ) : null}
+      </div>
+      {groups.map((g) => {
+        const sel = selection.get(g.key);
+        return (
+          <div key={g.key} className="pc-agents-facets__row" data-testid={`facet-row-${g.key}`}>
+            <span className="pc-agents-facets__label">{g.label ?? g.key}</span>
+            <div className="pc-agents-facets__pills">
+              {g.values.map((v) => {
+                const on = sel?.has(v.value) ?? false;
+                return (
+                  <button
+                    key={v.value}
+                    type="button"
+                    className={`pc-agents-facets__pill${on ? ' is-on' : ''}`}
+                    data-testid={`facet-${g.key}-${v.value}`}
+                    aria-pressed={on}
+                    onClick={() => onToggle(g.key, v.value)}
+                  >
+                    {v.meta?.color ? (
+                      <span className="pc-agents-facets__dot" style={{ background: v.meta.color }} aria-hidden />
+                    ) : null}
+                    <span className="pc-agents-facets__pill-text">{v.value}</span>
+                    <span className="pc-agents-facets__count">{v.count}</span>
+                  </button>
+                );
+              })}
+              {g.hiddenValueCount > 0 ? (
+                <span className="pc-agents-facets__more">+{g.hiddenValueCount}</span>
+              ) : null}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
