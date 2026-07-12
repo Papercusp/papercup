@@ -173,19 +173,20 @@ const RATING_CHANGE_SCAN_CAP = 500;
 const RATING_PRIOR_CONTEXT_MS = 30 * 86_400_000;
 
 /**
- * Recount every lane for one scope. engineer_issues lanes scope on
- * `scope IN ('operator', 'harness:<slug>')` (the search/sources.ts idiom:
- * operator-scoped signals belong to every pot's signal space); work_items
- * lanes scope on the pot's own harness_slug. `updated_ts`/`ts` on work_items
- * are EPOCH-MS bigints; engineer_issues timestamps are timestamptz.
+ * Recount every lane for one workspace. All lanes are WORKSPACE-WIDE on
+ * purpose: the Scout is a singleton brain per workspace (K1), its digest
+ * corpus spans the workspace's hives, and every narrower key in this area has
+ * already drifted (scout_ticks' install_slug moved papercusp-workspace →
+ * @singleton; work items live under per-hive slugs the pot registry does not
+ * name) — a slug-keyed count silently goes stale on the next drift, a
+ * workspace-keyed one cannot. `updated_ts` on work_items is an EPOCH-MS
+ * bigint; engineer_issues timestamps are timestamptz.
  */
 export async function readLaneCounts(
   sql: Sql,
   workspaceId: string,
-  installSlug: string,
   watermark: Date,
 ): Promise<LaneCount[]> {
-  const harnessScope = `harness:${installSlug}`;
   const wmMs = watermark.getTime();
   const wmIso = watermark.toISOString();
 
@@ -194,14 +195,12 @@ export async function readLaneCounts(
       SELECT count(*)::int AS c, max(created_at) AS hw
         FROM harness_shared.engineer_issues
        WHERE workspace_id = ${workspaceId}
-         AND scope IN ('operator', ${harnessScope})
          AND created_at > ${wmIso}
          AND payload ? 'observation'`,
     sql<CountRow[]>`
       SELECT count(*)::int AS c, max(created_at) AS hw
         FROM harness_shared.engineer_issues
        WHERE workspace_id = ${workspaceId}
-         AND scope IN ('operator', ${harnessScope})
          AND created_at > ${wmIso}
          AND NOT payload ? 'observation'`,
     // A criterion counts when its rating DIFFERS from that criterion's most
@@ -219,8 +218,7 @@ export async function readLaneCounts(
                payload->'observation'->'ratings'    AS ratings
           FROM harness_shared.engineer_issues
          WHERE workspace_id = ${workspaceId}
-           AND scope IN ('operator', ${harnessScope})
-           AND created_at > ${new Date(wmMs - RATING_PRIOR_CONTEXT_MS).toISOString()}
+             AND created_at > ${new Date(wmMs - RATING_PRIOR_CONTEXT_MS).toISOString()}
            AND payload->'observation' ? 'ratings'
          ORDER BY created_at DESC
          LIMIT ${RATING_CHANGE_SCAN_CAP}
@@ -240,20 +238,17 @@ export async function readLaneCounts(
       SELECT count(*)::int AS c, max(to_timestamp(updated_ts / 1000.0)) AS hw
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
-         AND harness_slug = ${installSlug}
          AND status IN ('resolved', 'closed', 'passed')
          AND updated_ts > ${wmMs}`,
     sql<CountRow[]>`
       SELECT count(*)::int AS c, max(last_released_at) AS hw
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
-         AND harness_slug = ${installSlug}
          AND last_released_at > ${wmIso}`,
     sql<CountRow[]>`
       SELECT count(*)::int AS c, max(to_timestamp(updated_ts / 1000.0)) AS hw
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
-         AND harness_slug = ${installSlug}
          AND status IN ('blocked', 'deprecated', 'needs-human')
          AND updated_ts > ${wmMs}`,
   ]);
@@ -290,29 +285,28 @@ export async function upsertAccumulatorRows(
   }
 }
 
-/** The cadence-gate read (WI-4318): this scope's cached lane counts. Reads
- *  across the supplied install keys (the caller passes the same
- *  workspaceBrainReadKeys set the scheduler's other reads reconcile with) and
- *  MERGES per lane by summing counts / newest high-water — a sentinel/legacy
- *  slug split must not hide signal. */
+/** The cadence-gate read (WI-4318): the workspace's cached lane counts.
+ *  Counts are WORKSPACE-WIDE (see readLaneCounts), so every pot row for the
+ *  workspace carries the same recount — the freshest row per lane wins
+ *  (summing across pot rows would double-count a multi-pot workspace). */
 export async function readAccumulatorCounts(opts: {
   workspaceId: string;
-  installSlugs: readonly string[];
 }): Promise<{ counts: Partial<Record<SignalLane, number>>; watermarkAt: Date | null }> {
   const { sql } = getOrgPg();
-  const slugs = opts.installSlugs.filter((s) => typeof s === 'string' && s.length > 0);
-  if (slugs.length === 0) return { counts: {}, watermarkAt: null };
-  const rows = await sql<Array<{ lane: string; new_count: number; watermark_at: Date | string | null }>>`
-    SELECT lane, new_count, watermark_at
+  const rows = await sql<
+    Array<{ lane: string; new_count: number; watermark_at: Date | string | null; updated_at: Date | string }>
+  >`
+    SELECT lane, new_count, watermark_at, updated_at
       FROM harness_shared.scout_signal_accumulator
      WHERE workspace_id = ${opts.workspaceId}
-       AND install_slug = ANY(${slugs as string[]}::text[])`;
+     ORDER BY updated_at DESC`;
   const counts: Partial<Record<SignalLane, number>> = {};
   let watermarkAt: Date | null = null;
   for (const r of rows) {
     const lane = r.lane as SignalLane;
     if (!SIGNAL_LANES.includes(lane)) continue;
-    counts[lane] = (counts[lane] ?? 0) + Math.max(0, Number(r.new_count) || 0);
+    if (counts[lane] !== undefined) continue; // freshest row per lane wins
+    counts[lane] = Math.max(0, Number(r.new_count) || 0);
     const wm = r.watermark_at == null ? null : r.watermark_at instanceof Date ? r.watermark_at : new Date(r.watermark_at);
     if (wm && Number.isFinite(wm.getTime()) && (watermarkAt == null || wm > watermarkAt)) watermarkAt = wm;
   }
@@ -356,19 +350,18 @@ export async function scoutSignalAccumulatorSweep(
     const started = await listStartedPots();
     if (started.length === 0) return results;
     const { sql } = getOrgPg();
-    // The same K1 read-key reconciliation the scheduler's cadence clock uses
-    // (workspace-brain sentinel vs legacy install_slug) — lazily imported to
-    // keep the flag/PG edge out of the pure core.
-    const { isWorkspaceCoordinationOn, workspaceBrainReadKeys } = await import('../workspace-brain-scope');
-    const wsCoordOn = await isWorkspaceCoordinationOn().catch(() => false);
     for (const { workspaceId, installSlug } of started) {
       try {
-        const readKeys = workspaceBrainReadKeys(workspaceId, installSlug, wsCoordOn);
-        const lastRanAtMs = await readLastRanTickAtMs({ installSlugs: readKeys, workspaceId }).catch(
+        // WORKSPACE-WIDE last-ran (installSlugs: [] = no slug filter): the tick
+        // WRITE key has already drifted across slugs (papercusp-workspace →
+        // @singleton), and the Scout is one brain per workspace — the newest
+        // successful cycle for the workspace IS the watermark, whatever slug
+        // recorded it. origin defaults to 'scout' (su-ideate rows excluded).
+        const lastRanAtMs = await readLastRanTickAtMs({ installSlugs: [], workspaceId }).catch(
           () => null,
         );
         const watermark = new Date(effectiveWatermarkMs(lastRanAtMs, now, lookbackSec));
-        const counts = await readLaneCounts(sql, workspaceId, installSlug, watermark);
+        const counts = await readLaneCounts(sql, workspaceId, watermark);
         await upsertAccumulatorRows(sql, workspaceId, installSlug, watermark, counts);
         const score = weightedSignalScore(Object.fromEntries(counts.map((c) => [c.lane, c.newCount])));
         results.push({

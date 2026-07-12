@@ -339,19 +339,26 @@ export async function computeMugWakeBrief(
     // structurally EXCLUDED the hive:<slug> pool entirely, so learning-pack
     // seeded rows and pot-organic conventions (both land in hive scope, per
     // lib/memory/hive-scope.ts) never reached the Mug. It also bypassed the
-    // shared injection pipeline: no relevance floor (raw top-3, unfiltered),
-    // no per-turn dedup watermark, no muted-pack filter, no feedback
-    // tombstone check. Now routed through the SAME buildMemoryContextBlock
-    // every other memory-injection surface uses: it resolves the owning hive
-    // pool(s) from harnessSlugs automatically (resolveHiveSlugsForHarnesses),
-    // applies the full filter pipeline, and is itself timeout-bounded +
-    // fail-soft (returns null on any degradation, never throws).
+    // shared injection pipeline (no floors / dedup / muted-pack / tombstones).
+    //
+    // memory-delivery-unification-2026-07-12 P-004 (D-005): the WHAT now comes
+    // from the launch-profile resolver — one targeted query per top frontier
+    // candidate this wake is about to place (the most-specific work statement
+    // the Mug has), never the old blended "mug <pot> operations priorities"
+    // mega-query. An empty frontier degrades to the harness rung (pot
+    // identity/conventions). The WHERE stays the harness dims — hive pool
+    // resolution happens inside injection.ts as before.
     const memoryFold = await (async () => {
-      const { buildMemoryContextBlock } = await import('../memory/injection');
-      const block = await buildMemoryContextBlock({
+      const { resolveLaunchProfile, buildLaunchMemoryBlock } = await import(
+        '../memory/launch-profile'
+      );
+      const profile = resolveLaunchProfile({
+        harnessSlug: installSlug,
+        claimedItemTitles: floor.frontier.slice(0, 3).map((c) => c.title || c.id),
+      });
+      const block = await buildLaunchMemoryBlock({
+        profile,
         workspaceId,
-        harnessSlugs: [installSlug],
-        queryContext: `mug ${installSlug} pot operations priorities`,
         limit: 3,
         heading: 'Background recall (fuzzy memory — may be stale; the standing facts above are authoritative)',
       });
