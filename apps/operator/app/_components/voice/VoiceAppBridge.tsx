@@ -13,7 +13,9 @@
  *     which short-circuits before any conversation routing.
  *   - Yields to a higher-priority registered voice consumer (e.g. a
  *     background-toast "say cancel" handler) when one is active.
- *   - Otherwise hands the transcript to the Sentinel pane bridge.
+ *   - Otherwise submits the transcript to the in-process Papercup converse
+ *     brain (the desktop chat's shared thread) via submitVoiceTurn, falling back
+ *     to the legacy dock-pane bridge only if no conversation provider is mounted.
  *
  * The previous Oracle fallback (POST /api/oracle/chat) was removed
  * 2026-06-22: Oracle is a separate concierge brain (not the conversation)
@@ -28,6 +30,7 @@ import {
   type VoiceState,
 } from './voice-mode';
 import { routeVoiceToSentinelPane, drainSentinelOutput } from './voice-sentinel-bridge';
+import { submitVoiceTurn } from './voice-converse-handler';
 
 /**
  * Voice consumer priority registry (v4 §2b).

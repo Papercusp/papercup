@@ -82,6 +82,7 @@ import {
   subscribeVoicePrefsClient,
 } from './voice/voice-prefs-client';
 import { getConfiguredWakeWordForDisplay } from '@papercusp/operator-core/lib/voice-cards/wakeword-display';
+import { setVoiceConverseHandler } from './voice/voice-converse-handler';
 import { sharedState as sharedOperatorState } from '@papercusp/operator-core/lib/operator-shared-state';
 
 interface OperatorTurnRow {
@@ -1934,6 +1935,18 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     },
     [runGeneration, persistTurn, cancelNudgeGraceTimer, resetContinueChain],
   );
+
+  // Voice-IN seam (plan voice-public-release-readiness D-001, owner-ratified
+  // 2026-07-12): register this conversation's sendUserMessage so VoiceAppBridge
+  // routes final STT transcripts into the SAME fast Papercup converse brain +
+  // shared thread as typed text (spoken:true → the reply is spoken back via the
+  // active TTS engine, e.g. kokoro). Replaces the retired writeToSentinelPane dock
+  // path, which required a dev zellij pui-dock and dropped every turn on a normal
+  // desktop ("Agent did not respond").
+  useEffect(() => {
+    setVoiceConverseHandler(sendUserMessage);
+    return () => setVoiceConverseHandler(null);
+  }, [sendUserMessage]);
 
   const generateIdeas = useCallback(() => {
     // Explicit user request — reset the chain (it's a new ask) and
