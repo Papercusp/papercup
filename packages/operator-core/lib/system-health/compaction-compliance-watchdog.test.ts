@@ -135,6 +135,7 @@ beforeEach(() => {
   hostSupportsMock.mockReturnValue(false);
   injectMock.mockResolvedValue(true);
   resetForceCompactedForTests();
+  resetNoHostWarnedForTests(); // EI-9982 no-live-host diagnostic dedup
   resetBootConfigAssertForTests(); // P-018 boot self-assert dedup + streak
   resetContextUsageCacheForTests(); // P-013 gauge cache + flag mirror
   // The watchdog narrates seeds/over-limit crossings on the console by design;
@@ -327,6 +328,27 @@ describe('force-compact rung (agent-managed-compaction P-012)', () => {
     expect(out.overLimit).toEqual(['hot']);
     expect(out.forceCompacted).toEqual([]);
     expect(injectMock).not.toHaveBeenCalled();
+  });
+
+  it('EI-9982: no live host ⇒ warns ONCE per crossing with a distinct diagnostic (not silent)', async () => {
+    estimateMock.mockResolvedValue(200_000);
+    findLiveHostMock.mockReturnValue(null);
+    const warnSpy = vi.spyOn(console, 'warn');
+    // Pass 1: crossing ⇒ exactly one diagnostic warn naming findLiveHost/EI-9982.
+    await checkCompactionCompliance(fakeSql({ seeded }));
+    const diagCalls = () =>
+      warnSpy.mock.calls.filter((c) => String(c[0]).includes('findLiveHost() found no live psu-pty host'));
+    expect(diagCalls()).toHaveLength(1);
+    expect(diagCalls()[0]?.[0]).toContain('EI-9982');
+    // Pass 2: still over limit, still no host ⇒ deduped, no second diagnostic.
+    await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(diagCalls()).toHaveLength(1);
+    // Recovery ⇒ dedup clears; a later crossing warns again.
+    estimateMock.mockResolvedValue(10);
+    await checkCompactionCompliance(fakeSql({ seeded }));
+    estimateMock.mockResolvedValue(200_000);
+    await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(diagCalls()).toHaveLength(2);
   });
 
   it('injects ONCE per crossing (deduped across passes), and re-arms after recovery', async () => {
