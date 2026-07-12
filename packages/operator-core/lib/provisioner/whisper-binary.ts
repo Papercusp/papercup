@@ -385,7 +385,11 @@ async function defaultCopyDirContents(srcDir: string, destDir: string): Promise<
   await mkdir(destDir, { recursive: true });
   const entries = await readdir(srcDir, { withFileTypes: true });
   for (const e of entries) {
-    await cp(join(srcDir, e.name), join(destDir, e.name), { recursive: true, force: true });
+    // verbatimSymlinks is LOAD-BEARING: the release tarball's lib links are same-dir RELATIVE
+    // (libwhisper.so.1 -> libwhisper.so.1.9.1). fs.cp's default resolves them to ABSOLUTE paths
+    // into the _extract temp dir at copy time — which the caller then deletes, leaving every
+    // .so.N link dangling and the server failing to start (caught by the live smoke 2026-07-12).
+    await cp(join(srcDir, e.name), join(destDir, e.name), { recursive: true, force: true, verbatimSymlinks: true });
   }
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, mkdir, writeFile as fsWriteFile, readFile as fsReadFile } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile as fsWriteFile, readFile as fsReadFile, symlink, readlink, readFile as fsReadThrough } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -251,12 +251,15 @@ describe('resolveWhisperBinary', () => {
   }
 
   /** Fake extract that reproduces the real tarball shape: a top-level dir holding the server
-   *  binary NEXT TO its bundled shared libs (the RUNPATH=$ORIGIN layout). */
+   *  binary NEXT TO its bundled shared libs, including a same-dir RELATIVE symlink
+   *  (libwhisper.so.1 -> libwhisper.so.1.9.1) exactly like the real asset — the shape that
+   *  exposed the fs.cp symlink-absolutization bug in the live smoke. */
   async function fakeExtract(_archivePath: string, destDir: string): Promise<void> {
     const inner = join(destDir, 'whisper-bin-ubuntu-x64');
     await mkdir(inner, { recursive: true });
     await fsWriteFile(join(inner, 'whisper-server'), 'fake-server-binary');
-    await fsWriteFile(join(inner, 'libwhisper.so.1'), 'fake-lib');
+    await fsWriteFile(join(inner, 'libwhisper.so.1.9.1'), 'fake-lib');
+    await symlink('libwhisper.so.1.9.1', join(inner, 'libwhisper.so.1'));
     await fsWriteFile(join(inner, 'libggml.so.0'), 'fake-lib-2');
   }
 
@@ -281,8 +284,13 @@ describe('resolveWhisperBinary', () => {
     const cacheDir = `${home}/.papercusp/backends/whisper-server/v1.9.1/linux-x64-cpu`;
     expect(result.binPath).toBe(`${cacheDir}/whisper-server`);
     // The load-bearing invariant: the .so siblings landed in the cache dir too.
-    expect(existsSync(`${cacheDir}/libwhisper.so.1`)).toBe(true);
+    expect(existsSync(`${cacheDir}/libwhisper.so.1.9.1`)).toBe(true);
     expect(existsSync(`${cacheDir}/libggml.so.0`)).toBe(true);
+    // The tarball's relative lib symlink must be copied VERBATIM (still relative, still
+    // resolving inside the cache dir) — fs.cp's default absolutizes it into the _extract temp
+    // dir, which is deleted below, leaving the server unable to load libwhisper.so.1.
+    expect(await readlink(`${cacheDir}/libwhisper.so.1`)).toBe('libwhisper.so.1.9.1');
+    expect(await fsReadThrough(`${cacheDir}/libwhisper.so.1`, 'utf8')).toBe('fake-lib');
     // And the temp download/extract artifacts were cleaned up.
     expect(existsSync(`${cacheDir}/_extract`)).toBe(false);
   });

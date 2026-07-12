@@ -37,7 +37,9 @@ const H = vi.hoisted(() => ({
   // the rail's own params (lsb/lst/lsa) survive a row click.
   linkBase: {} as Record<string, unknown>,
 }));
-const blank = () => ({ data: [] as unknown[], loading: false, fetching: false, error: null, invalidate: vi.fn() });
+// `error` is widened to unknown so a test can seed a real error value — inferred
+// from `null` it would type the whole field as null and reject one.
+const blank = () => ({ data: [] as unknown[], loading: false, fetching: false, error: null as unknown, invalidate: vi.fn() });
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: ({ queryName }: { queryName: string }) => H.results[queryName] ?? blank(),
 }));

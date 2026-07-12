@@ -1484,14 +1484,18 @@ async function collectScout(ctx: HealthCtx): Promise<HealthPanel<ScoutHealth>> {
     // not to auto-fire an infra BLOCKER via the liveness catch-all (Scout being dead
     // stalls R&D but does not wedge the running system).
     const status: PanelStatus = data.transportDeath ? 'warn' : data.lastRanAt == null ? 'unknown' : 'ok';
+    const suNote =
+      data.suIdeate && data.suIdeate.passesInWindow > 0
+        ? ` · su-ideate: ${data.suIdeate.passesInWindow} pass(es)/24h (${data.suIdeate.ideasFiled} filed)`
+        : '';
     const summary =
-      data.lastRanAt == null
+      (data.lastRanAt == null
         ? data.lastTickAt == null
           ? 'no scout ticks recorded'
           : `no full cycle in 24h — last tick ${agoMin(data.lastTickAt, ctx.now)} (gated/idle)`
         : data.transportDeath
           ? `TRANSPORT-DEATH — ${data.ranInWindow} cycle(s) ran in 24h but 0 ideas generated (a transport failure, not low quality)`
-          : `${data.ideasInWindow} idea(s)/24h over ${data.ranInWindow} cycle(s); last run ${agoMin(data.lastRanAt, ctx.now)} (${data.ideasLastRun} ideas)`;
+          : `${data.ideasInWindow} idea(s)/24h over ${data.ranInWindow} cycle(s); last run ${agoMin(data.lastRanAt, ctx.now)} (${data.ideasLastRun} ideas)`) + suNote;
     return {
       status,
       summary,

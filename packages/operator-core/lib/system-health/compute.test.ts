@@ -6,7 +6,7 @@
  * exercised live by the ~30s tick + the sync-resolver dispatch test.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, tallyPlans, toolEfficiencyStatus, type EscalationAgingInput } from './compute';
+import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, tallyPlans, toolEfficiencyStatus, type EscalationAgingInput } from './compute';
 import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
 import { PANEL_LABELS } from './types';
 
@@ -72,6 +72,33 @@ describe('scoutHealthVerdict — ideation observability (hive-loop-supervision 2
     expect(v.ranInWindow).toBe(0);
     expect(v.transportDeath).toBe(false);
     expect(v.lastTickAt).not.toBeNull();
+  });
+});
+
+describe('suIdeateVerdict — the su-ideate partition (WI-4465)', () => {
+  const now = 1_000_000_000;
+  const dayMs = 24 * 60 * 60 * 1000;
+  const p = (agoMs: number, filed?: number, status = 'ran') => ({ status, ideasRouted: filed, tickAt: new Date(now - agoMs).toISOString() });
+  it('counts in-window passes and sums their filed ideas', () => {
+    const v = suIdeateVerdict([p(60_000, 3), p(120_000, 2)], now);
+    expect(v.passesInWindow).toBe(2);
+    expect(v.ideasFiled).toBe(5);
+    expect(v.lastPassAt).toBe(now - 60_000);
+  });
+  it('window-bounds the tally but lastPassAt is the newest pass overall', () => {
+    const v = suIdeateVerdict([p(dayMs + 60_000, 9)], now);
+    expect(v.passesInWindow).toBe(0);
+    expect(v.ideasFiled).toBe(0);
+    expect(v.lastPassAt).toBe(now - (dayMs + 60_000));
+  });
+  it('empty ledger → zeros with a null lastPassAt', () => {
+    const v = suIdeateVerdict([], now);
+    expect(v).toEqual({ passesInWindow: 0, ideasFiled: 0, lastPassAt: null });
+  });
+  it('a non-ran row never inflates the pass count', () => {
+    const v = suIdeateVerdict([p(60_000, 4, 'gated'), p(120_000, 1)], now);
+    expect(v.passesInWindow).toBe(1);
+    expect(v.ideasFiled).toBe(1);
   });
 });
 
