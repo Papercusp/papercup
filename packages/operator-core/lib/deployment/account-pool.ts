@@ -672,15 +672,26 @@ export function usageWalledUntil(a: ClaudeAccount, now: number): number {
  * then collapses the candidate pool to a couple of accounts, so the fleet funnels onto one — it
  * RPM-storms while budgeted peers sit idle (the owner-reported "accounts have usage but aren't picked").
  *
- * Eligible when available now, OR it still has real budget AND is not GENUINELY rate-exhausted: not
- * sustainedly-limited (≥threshold real penalties in-window, or a fresh at-cap reading) AND its effective
- * (5h∧7d) utilization is below the full mark. The gateway's per-(model,account) governor is the runtime
- * pace authority — it paces/rotates a still-throttled account at request time — so spawn selection
- * should only EXCLUDE accounts that are truly out of budget, not ones merely carrying a stale pause.
+ * Eligible when it has real budget (effective 5h∧7d utilization below the full mark) AND is not
+ * GENUINELY rate-exhausted (not sustainedly-limited: ≥threshold real penalties in-window, or a fresh
+ * at-cap reading). The gateway's per-(model,account) governor is the runtime pace authority — it
+ * paces/rotates a still-throttled account at request time — so spawn selection should only EXCLUDE
+ * accounts that are truly out of budget, not ones merely carrying a stale pause.
+ *
+ * EI-8070: `isSustainedlyLimited` must be checked UNCONDITIONALLY, not only when the account is
+ * currently paused. The original version short-circuited `if (isAvailable(a, now)) return true` —
+ * so an account that raced up 3+ real 429 penalties inside the 15-min window (genuinely can't keep
+ * up) but whose MOST RECENT individual pause had already lapsed by the time of the check (each pause
+ * was short; `isAvailable` back to true) read as unconditionally eligible, the sustained-penalty
+ * signal never consulted at all. Live symptom (accounts:status, 2026-07-06): aviynw7/aviynw8/
+ * aviynw8-direct/avistorewolf.com showed `sustainedlyLimited:true` with `available:true` — fresh
+ * spawns kept getting routed to them (nothing here excluded them) and crash-looped within ~20-30s on
+ * their first inference call, zero progress, across repeated placements. Now: budget below the full
+ * mark AND not sustainedly-limited, in either order — a lapsed pause no longer hides an active
+ * penalty streak.
  */
 export function isSpawnEligible(a: ClaudeAccount, now: number, policy: ScalePolicy = DEFAULT_SCALE_POLICY): boolean {
   if (effectiveDrainUtil(a, now) >= DRAIN_FULL_UTIL) return false;
-  if (isAvailable(a, now)) return true;
   return !isSustainedlyLimited(a, now, policy);
 }
 
@@ -805,22 +816,28 @@ export interface SpawnSelection {
  * Pure — the soft-pin WRITE-BACK is the caller's (keeps this exhaustively unit-testable).
  */
 export function selectAccountForSpawn(pool: AccountPool, now: number, opts: SpawnSelectOpts = {}): SpawnSelection {
+  // EI-8070: every eligibility gate below uses `isSpawnEligible`, NOT the raw `!accountFull` this
+  // function used before — `accountFull` only checks the CURRENT pause + usage-cap, so an account
+  // that raced up a sustained penalty streak (isSustainedlyLimited via penaltyCount, not util) but
+  // whose most recent individual pause had already lapsed by selection time read as fine and kept
+  // getting freshly-spawned bees routed onto it, which then died on their first inference call.
   // 1. Sticky to the prior account while it is still usable (cache affinity dominates cost).
   if (opts.priorAccountId) {
     const prior = getAccount(pool, opts.priorAccountId);
-    if (prior && !accountFull(prior, now)) return { accountId: prior.id, pinSource: 'sticky' };
+    if (prior && isSpawnEligible(prior, now)) return { accountId: prior.id, pinSource: 'sticky' };
   }
   const harness = opts.harness;
   let affinityId: string | undefined;
   if (harness) {
     // 2. Manually-bound account (owner/deploy intent), best drain among the bound ties — a hard pin.
-    const bound = pool.accounts.filter((a) => a.boundTo.includes(harness) && !accountFull(a, now));
-    const boundBest = selectAccountByDrain({ accounts: bound }, now);
+    const bound = pool.accounts.filter((a) => a.boundTo.includes(harness) && isSpawnEligible(a, now));
+    const boundBest = selectAccountByDrain({ accounts: bound }, now, { eligible: isSpawnEligible });
     if (boundBest) return { accountId: boundBest.id, pinSource: 'manual-bind' };
     // 3. Soft cache-affinity pin → an AFFINITY HINT for the spread (weighted preference, not a funnel).
-    //    Skipped when full/paused (lazy re-pin, D-002) so the hive re-anchors onto fresh capacity.
+    //    Skipped when full/paused/sustainedly-limited (lazy re-pin, D-002) so the hive re-anchors onto
+    //    fresh capacity.
     const softPinned = softPinnedAccount(pool, harness);
-    if (softPinned && !accountFull(softPinned, now)) affinityId = softPinned.id;
+    if (softPinned && isSpawnEligible(softPinned, now)) affinityId = softPinned.id;
   }
   // 4. Budget-drain across the whole pool — SPREAD across accounts that are
   //    available RIGHT NOW. Do not pin a paused account into a spawned CLI turn:
@@ -828,7 +845,7 @@ export function selectAccountForSpawn(pool: AccountPool, now: number, opts: Spaw
   //    so autonomous roles can die before emitting their required artifacts. When
   //    no account is safely pinnable, return no header and let the gateway's
   //    unpinned active/failover path handle the request.
-  const drained = selectAccountByDrain(pool, now, { spread: true, rng: opts.rng, affinityId });
+  const drained = selectAccountByDrain(pool, now, { spread: true, rng: opts.rng, affinityId, eligible: isSpawnEligible });
   if (!drained) return {};
   return {
     accountId: drained.id,
