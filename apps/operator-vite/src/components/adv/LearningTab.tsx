@@ -1285,6 +1285,12 @@ function HiveEvalTrendView() {
   });
   const instances = sync.data?.[0]?.instances ?? [];
   const latest = instances[0];
+  const previous = instances[1];
+  const compositeDelta =
+    latest?.meanComposite != null && previous?.meanComposite != null
+      ? latest.meanComposite - previous.meanComposite
+      : null;
+  const compositeDeltaMeta = deltaLabel(compositeDelta);
   // Reuse the BenchmarkTrend surface — the composite per generation, oldest→newest.
   const trendInstances: BenchmarkTrendInstance[] = instances.map((i) => ({
     instanceId: i.instanceId,
@@ -1296,71 +1302,111 @@ function HiveEvalTrendView() {
   }));
 
   return (
-    <div className="pc-learning__hive-eval">
-      <div className="pc-learning__sectionhead">
-        <h2>
-          {t("pot")} orchestration <em>good · efficient · fast?</em>
-        </h2>
-        <button
-          type="button"
-          className="pc-learning__refresh"
-          aria-label={`Reload the ${t("pot")}-orchestration trend`}
-          disabled={sync.fetching}
-          onClick={() => sync.invalidate()}
-        >
-          <RefreshCw size={13} aria-hidden />
-        </button>
-      </div>
+    <section className="pc-learning__section">
+      <LearningPageHeader
+        icon={Activity}
+        title={`${t("pot")} orchestration`}
+        signal={latest ? `${latest.scoredRuns}/${latest.totalRuns} scored` : undefined}
+        tone={latest && (latest.fabricationRate ?? 0) === 0 ? "good" : "warn"}
+        action={
+          <button
+            type="button"
+            className="pc-learning__refresh"
+            aria-label={`Reload the ${t("pot")}-orchestration trend`}
+            disabled={sync.fetching}
+            onClick={() => sync.invalidate()}
+          >
+            <RefreshCw size={13} aria-hidden />
+          </button>
+        }
+      />
 
-      {instances.length === 0 ? (
-        <div className="pc-learning__empty pc-learning__empty--card">
-          <Gauge size={20} aria-hidden />
-          <strong>No {t("pot")}-eval generations yet</strong>
-          <span>
-            This benchmark runs the WHOLE {t("pot")} ({t("brain")} +{" "}
-            {t("contributor", { plural: true, lower: true })}) on seeded
-            scenarios and grades each run on outcome quality, efficiency, and
-            speed — with an un-gameable gate (a fast-but-wrong run scores zero).
-            Every run spends real budget, so it&rsquo;s owner-gated: it runs
-            when the owner sets the monthly cadence&rsquo;s budget (P-051). Once
-            generations land, the composite trend appears here — the yardstick
-            for whether {t("brain", { lower: true })}-execution / wave-dispatch
-            / autonomy actually made the {t("pot")} better.
-          </span>
-        </div>
+      {!latest ? (
+        <LearningVisualEmpty icon={Activity} title={`No ${t("pot")}-eval runs`} />
       ) : (
         <>
-          <div
-            className="pc-learning__scoreboard"
-            aria-label={`${t("pot")} orchestration summary`}
-          >
-            <Stat
-              label="composite"
-              value={latest ? compositeLabel(latest.meanComposite) : "—"}
-              tone="good"
-              hint={`Latest generation's mean ${t("pot")}-run composite (0–10) — gated on outcome quality, then efficiency + speed. Higher is better; watch the trend, not the absolute number.`}
+          <div className="pc-learning-visual__layout">
+            <LearningHeroMetric
+              eyebrow={shortSha(latest.codeSha)}
+              value={compositeLabel(latest.meanComposite)}
+              status={
+                compositeDelta == null
+                  ? "baseline"
+                  : compositeDelta >= 0
+                    ? "improved"
+                    : "regressed"
+              }
+              tone={compositeDelta == null ? "accent" : compositeDelta >= 0 ? "good" : "bad"}
+            >
+              {compositeDelta == null ? "first generation" : `Δ ${compositeDeltaMeta.text}`}
+            </LearningHeroMetric>
+            <LearningComparisonBars
+              title="Previous vs current"
+              baselineName="Previous"
+              treatmentName="Current"
+              rows={[
+                {
+                  label: "Outcome gate",
+                  baseline: previous?.outcomeGatePassRate ?? null,
+                  treatment: latest.outcomeGatePassRate,
+                  baselineLabel: pctLabel(previous?.outcomeGatePassRate ?? null),
+                  treatmentLabel: pctLabel(latest.outcomeGatePassRate),
+                  max: 1,
+                  treatmentWins:
+                    latest.outcomeGatePassRate != null &&
+                    latest.outcomeGatePassRate >=
+                      (previous?.outcomeGatePassRate ?? -Infinity),
+                },
+                {
+                  label: "Critical path",
+                  baseline: previous?.meanCriticalPathRatio ?? null,
+                  treatment: latest.meanCriticalPathRatio,
+                  baselineLabel: ratioLabel(previous?.meanCriticalPathRatio ?? null),
+                  treatmentLabel: ratioLabel(latest.meanCriticalPathRatio),
+                  treatmentWins:
+                    latest.meanCriticalPathRatio != null &&
+                    latest.meanCriticalPathRatio <=
+                      (previous?.meanCriticalPathRatio ?? Infinity),
+                },
+                {
+                  label: "Fabrication",
+                  baseline: previous?.fabricationRate ?? null,
+                  treatment: latest.fabricationRate,
+                  baselineLabel: pctLabel(previous?.fabricationRate ?? null),
+                  treatmentLabel: pctLabel(latest.fabricationRate),
+                  max: 1,
+                  treatmentWins:
+                    latest.fabricationRate != null &&
+                    latest.fabricationRate <=
+                      (previous?.fabricationRate ?? Infinity),
+                },
+              ]}
             />
-            <Stat
-              label="outcome gate"
-              value={latest ? pctLabel(latest.outcomeGatePassRate) : "—"}
-              hint="Share of runs that did a GOOD job (passed acceptance + caught the planted bug + no fabrication). Efficiency/speed earn ZERO below the gate."
-            />
-            <Stat
-              label="critical-path"
-              value={latest ? ratioLabel(latest.meanCriticalPathRatio) : "—"}
-              hint="Measured wall-clock ÷ the computable ideal. ~1× = optimally parallel; higher = serialized/bottlenecked (a computed, un-gameable signal)."
-            />
-            <Stat
-              label="fabrication"
-              value={latest ? pctLabel(latest.fabricationRate) : "—"}
-              tone="human"
-              hint="Share of runs with a fabricated DONE (a claim ground truth contradicts). Lower is better — ideally zero."
-            />
+            <LearningEvidenceRail>
+              <div className="pc-learning-visual__evidence-grid">
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Efficiency</span>
+                  <strong>{compositeLabel(latest.meanEfficiency)}</strong>
+                </div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Speed</span>
+                  <strong>{compositeLabel(latest.meanSpeed)}</strong>
+                </div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Scored</span>
+                  <strong>{latest.scoredRuns}</strong>
+                </div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Runs</span>
+                  <strong>{latest.totalRuns}</strong>
+                </div>
+              </div>
+            </LearningEvidenceRail>
           </div>
           <BenchmarkTrend instances={trendInstances} />
         </>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -1391,7 +1437,6 @@ const BAKEOFF_VERDICT_META: Record<
 };
 
 function BakeoffTrendView() {
-  const t = useLexicon();
   const sync = useSyncQuery<{ rows: BakeoffTrendRow[] }>({
     queryName: "learning.bakeoff",
     args: {},
@@ -1412,57 +1457,115 @@ function BakeoffTrendView() {
       standings.push({ flag: r.flagKey, verdict: r.verdict });
     }
   }
+  const latest = rows[0];
+  const latestMeta = latest ? BAKEOFF_VERDICT_META[latest.verdict] : null;
+  const latestComposite = latest ? deltaLabel(latest.deltaMeanComposite) : null;
+  const gateDeltaLabel = latest
+    ? `${latest.deltaGatePassRate >= 0 ? "+" : "−"}${Math.abs(latest.deltaGatePassRate * 100).toFixed(1)}pp`
+    : "—";
 
   return (
-    <div className="pc-learning__hive-eval">
-      <div className="pc-learning__sectionhead">
-        <h2>
-          Framework bake-off <em>does the bet help?</em>
-        </h2>
-        <button
-          type="button"
-          className="pc-learning__refresh"
-          aria-label="Reload the framework bake-off trend"
-          disabled={sync.fetching}
-          onClick={() => sync.invalidate()}
-        >
-          <RefreshCw size={13} aria-hidden />
-        </button>
-      </div>
+    <section className="pc-learning__section">
+      <LearningPageHeader
+        icon={Repeat2}
+        title="Framework bake-off"
+        signal={latestMeta?.label}
+        tone={
+          latest?.verdict === "improved"
+            ? "good"
+            : latest?.verdict === "regressed"
+              ? "bad"
+              : "neutral"
+        }
+        action={
+          <button
+            type="button"
+            className="pc-learning__refresh"
+            aria-label="Reload the framework bake-off trend"
+            disabled={sync.fetching}
+            onClick={() => sync.invalidate()}
+          >
+            <RefreshCw size={13} aria-hidden />
+          </button>
+        }
+      />
 
-      {rows.length === 0 ? (
-        <div className="pc-learning__empty pc-learning__empty--card">
-          <Gauge size={20} aria-hidden />
-          <strong>No bake-offs yet</strong>
-          <span>
-            A bake-off runs the whole {t("pot")} twice over the seeded scenarios
-            — once with a bet flag OFF, once ON — and diffs the gated composite
-            + outcome-gate pass rate. It’s the un-gameable A/B proof that a
-            change (compiled briefs, conflict-free placement, …) actually beats
-            baseline; a drop in the gate auto-reverts the flag. Every run spends
-            real budget and needs the operator runtime, so it’s owner-gated.
-            Once a bake-off lands, each bet’s standing + the delta history
-            appear here — newest first.
-          </span>
-        </div>
+      {!latest || !latestMeta || !latestComposite ? (
+        <LearningVisualEmpty icon={Repeat2} title="No bake-offs" />
       ) : (
         <>
-          <div className="pc-learning__scoreboard" aria-label="Bet standings">
-            {standings.map(({ flag, verdict }) => (
-              <Stat
-                key={flag}
-                label={flag.replace(/^papercusp-/, "")}
-                value={BAKEOFF_VERDICT_META[verdict].label}
-                tone={
-                  verdict === "improved"
-                    ? "good"
-                    : verdict === "regressed"
-                      ? "human"
-                      : "auto"
-                }
-                hint={`Latest bake-off verdict for ${flag}: 'improved' = the flag-ON arm beat baseline; 'regressed' = it lost the outcome gate or dropped the composite (auto-reverted off); 'neutral' = no real change; 'inconclusive' = too few runs.`}
-              />
-            ))}
+          <div className="pc-learning-visual__layout">
+            <LearningHeroMetric
+              eyebrow={latest.flagKey.replace(/^papercusp-/, "")}
+              value={latestComposite.text}
+              status={latestMeta.label}
+              tone={
+                latest.verdict === "improved"
+                  ? "good"
+                  : latest.verdict === "regressed"
+                    ? "bad"
+                    : "warn"
+              }
+            >
+              {gateDeltaLabel} outcome gate
+            </LearningHeroMetric>
+            <LearningComparisonBars
+              title="Baseline vs treatment"
+              rows={[
+                {
+                  label: "Composite lift",
+                  baseline: 0,
+                  treatment: Math.abs(latest.deltaMeanComposite),
+                  baselineLabel: "0",
+                  treatmentLabel: latestComposite.text,
+                  max: Math.max(1, Math.abs(latest.deltaMeanComposite) * 1.25),
+                  treatmentWins: latest.deltaMeanComposite > 0,
+                },
+                {
+                  label: "Outcome gate",
+                  baseline: 0,
+                  treatment: Math.abs(latest.deltaGatePassRate),
+                  baselineLabel: "0pp",
+                  treatmentLabel: gateDeltaLabel,
+                  max: Math.max(0.1, Math.abs(latest.deltaGatePassRate) * 1.25),
+                  treatmentWins: latest.deltaGatePassRate > 0,
+                },
+              ]}
+            />
+            <LearningEvidenceRail>
+              <div className="pc-learning-visual__evidence-grid">
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Verdict</span>
+                  <strong>{latestMeta.label}</strong>
+                </div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Gate</span>
+                  <strong>{gateDeltaLabel}</strong>
+                </div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Flags</span>
+                  <strong>{standings.length}</strong>
+                </div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>Runs</span>
+                  <strong>{rows.length}</strong>
+                </div>
+              </div>
+            </LearningEvidenceRail>
+          </div>
+
+          <div className="pc-learning__sectionhead">
+            <h2>Recent bake-offs</h2>
+            <div className="pc-learning__standings" aria-label="Current flag standings">
+              {standings.slice(0, 4).map(({ flag, verdict }) => (
+                <span
+                  key={flag}
+                  className={`pc-learning__delta pc-learning__delta--${BAKEOFF_VERDICT_META[verdict].tone}`}
+                >
+                  {flag.replace(/^papercusp-/, "")} · {BAKEOFF_VERDICT_META[verdict].label}
+                </span>
+              ))}
+            </div>
           </div>
           <ul className="pc-learning__list">
             {rows.map((r, i) => {
@@ -1483,22 +1586,13 @@ function BakeoffTrendView() {
                     {r.flagKey.replace(/^papercusp-/, "")}
                   </span>
                   <span className="pc-learning__benchcell">
-                    <span
-                      className={`pc-learning__delta pc-learning__delta--${meta.tone}`}
-                      title="The bake-off verdict for this run"
-                    >
+                    <span className={`pc-learning__delta pc-learning__delta--${meta.tone}`}>
                       {meta.label}
                     </span>
-                    <span
-                      className={`pc-learning__delta pc-learning__delta--${dc.tone}`}
-                      title="Change in mean gated composite (treatment − baseline)"
-                    >
+                    <span className={`pc-learning__delta pc-learning__delta--${dc.tone}`}>
                       Δcomp {dc.text}
                     </span>
-                    <span
-                      className="pc-learning__benchmeta"
-                      title="Change in outcome-gate pass rate (treatment − baseline)"
-                    >
+                    <span className="pc-learning__benchmeta">
                       Δgate {r.deltaGatePassRate >= 0 ? "+" : ""}
                       {r.deltaGatePassRate.toFixed(2)}
                     </span>
@@ -1512,7 +1606,7 @@ function BakeoffTrendView() {
           </ul>
         </>
       )}
-    </div>
+    </section>
   );
 }
 

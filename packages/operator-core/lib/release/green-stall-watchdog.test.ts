@@ -272,7 +272,7 @@ describe('computeMainBehindStaging git shell-out (EI-9922 no-stderr-leak)', () =
   // 'fatal: not a git repository' onto serve.log every boot + interval. gitOut must
   // pin stdio to ['ignore','pipe','ignore'] so stderr is discarded.
   it('EI-9922: shells git with stderr suppressed (stdio ["ignore","pipe","ignore"])', () => {
-    vi.mocked(execFileSync).mockReturnValue('0\n' as unknown as Buffer);
+    (vi.mocked(execFileSync) as unknown as { mockReturnValueOnce: (v: string) => void }).mockReturnValueOnce('0\n');
     computeMainBehindStaging('/some/packaged/install');
     expect(vi.mocked(execFileSync)).toHaveBeenCalledWith(
       'git',
@@ -283,9 +283,11 @@ describe('computeMainBehindStaging git shell-out (EI-9922 no-stderr-leak)', () =
   });
 
   it('EI-9922: fails open (all-null) without throwing when git rejects (non-repo)', () => {
-    vi.mocked(execFileSync).mockImplementation(() => {
-      throw new Error('fatal: not a git repository (or any parent up to mount point /)');
-    });
+    (vi.mocked(execFileSync) as unknown as { mockImplementationOnce: (fn: () => never) => void }).mockImplementationOnce(
+      () => {
+        throw new Error('fatal: not a git repository (or any parent up to mount point /)');
+      },
+    );
     expect(computeMainBehindStaging('/some/packaged/install')).toEqual({
       commitsBehind: null,
       behindMs: null,
