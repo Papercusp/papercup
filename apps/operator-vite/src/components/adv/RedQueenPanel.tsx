@@ -66,6 +66,7 @@ export function RedQueenPanel({
   const triage = phaseAverage("triageMs");
   const fix = phaseAverage("fixMs");
   const phaseTotal = Math.max(1, detect + triage + fix);
+  const unresolved = snap ? Math.max(0, snap.totalRuns - snap.totalResolved) : 0;
   useEffect(() => {
     onStatus?.(
       sync.error
@@ -74,9 +75,11 @@ export function RedQueenPanel({
           ? "neutral"
           : snap.leakFailures > 0
             ? "bad"
-            : "good",
+            : unresolved > 0
+              ? "warn"
+              : "good",
     );
-  }, [classes.length, onStatus, snap, sync.error]);
+  }, [classes.length, onStatus, snap, sync.error, unresolved]);
 
   return (
     <section
@@ -88,10 +91,18 @@ export function RedQueenPanel({
         title="Red Queen"
         signal={
           classes.length > 0 && snap
-            ? `${snap.totalResolved}/${snap.totalRuns} healed`
+            ? unresolved > 0
+              ? `${unresolved} unresolved`
+              : `${snap.totalResolved}/${snap.totalRuns} healed`
             : undefined
         }
-        tone={snap && snap.leakFailures > 0 ? "bad" : "good"}
+        tone={
+          snap && snap.leakFailures > 0
+            ? "bad"
+            : unresolved > 0
+              ? "warn"
+              : "good"
+        }
         action={
           <button
             type="button"
@@ -113,10 +124,22 @@ export function RedQueenPanel({
             <LearningHeroMetric
               eyebrow="Median self-heal"
               value={ms(snap!.medianTotalMs)}
-              status={snap!.leakFailures > 0 ? "leak detected" : "zero leaks"}
-              tone={snap!.leakFailures > 0 ? "bad" : "good"}
+              status={
+                snap!.leakFailures > 0
+                  ? "leak detected"
+                  : unresolved > 0
+                    ? `${unresolved} unresolved`
+                    : "fully healed"
+              }
+              tone={
+                snap!.leakFailures > 0
+                  ? "bad"
+                  : unresolved > 0
+                    ? "warn"
+                    : "good"
+              }
             >
-              {snap!.totalResolved}/{snap!.totalRuns} healed
+              {snap!.totalResolved}/{snap!.totalRuns} healed · {snap!.leakFailures} leaks
             </LearningHeroMetric>
             <div
               className="pc-rq__waterfall"
@@ -142,20 +165,20 @@ export function RedQueenPanel({
             <LearningEvidenceRail>
               <div className="pc-learning-visual__evidence-grid">
                 <div className="pc-learning-visual__evidence-metric">
-                  <span>Healed</span>
+                  <span>Resolved</span>
                   <strong>{snap!.totalResolved}</strong>
                 </div>
                 <div className="pc-learning-visual__evidence-metric">
-                  <span>Runs</span>
-                  <strong>{snap!.totalRuns}</strong>
+                  <span>Unresolved</span>
+                  <strong>{unresolved}</strong>
                 </div>
                 <div className="pc-learning-visual__evidence-metric">
                   <span>Leaks</span>
                   <strong>{snap!.leakFailures}</strong>
                 </div>
                 <div className="pc-learning-visual__evidence-metric">
-                  <span>Classes</span>
-                  <strong>{classes.length}</strong>
+                  <span>Runs</span>
+                  <strong>{snap!.totalRuns}</strong>
                 </div>
               </div>
             </LearningEvidenceRail>

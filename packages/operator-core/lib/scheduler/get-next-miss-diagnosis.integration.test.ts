@@ -68,7 +68,12 @@ beforeAll(async () => {
     .simple();
 }, 90_000);
 afterAll(async () => {
-  await db.cleanup();
+  // EI-10533: guard the teardown. When beforeAll fails (e.g. the SHARED native PG is briefly in
+  // recovery mode — it happened while writing this test), `db` is never assigned, and a bare
+  // `db.cleanup()` throws a TypeError that MASKS the real error: the run then reports a broken
+  // TEST when the truth is broken INFRA. An agent trusting that surfaced error debugs the wrong
+  // layer — I nearly did. Never let teardown outshout the actual failure.
+  await db?.cleanup?.();
 });
 beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps`;

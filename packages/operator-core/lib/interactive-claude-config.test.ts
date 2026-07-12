@@ -31,6 +31,7 @@ import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
 import {
+  ensureOnboardingComplete,
   RECOVER_HOOK,
   RECOVER_INTENT,
   RECOVER_PLAYBOOK,
@@ -88,6 +89,47 @@ afterEach(() => {
 afterAll(() => {
   if (savedRoot === undefined) delete process.env.PAPERCUSP_SESSION_CLAUDE_DIR;
   else process.env.PAPERCUSP_SESSION_CLAUDE_DIR = savedRoot;
+});
+
+/**
+ * The mirror symlinks the global ~/.claude.json in and ASSUMES it says
+ * onboarding-is-done. When it doesn't, claude boots its first-run wizard, the
+ * session never reaches a prompt, and the launch kickoff can never land — the
+ * agent is dead on arrival with no error at all. Live-caught 2026-07-12 by the
+ * launch-agent live-verify (the flag had flipped to false), and self-
+ * propagating: the session's .claude.json is a write-through symlink, so the
+ * wedged session writes its not-yet-onboarded state back to the global file.
+ */
+describe('ensureOnboardingComplete (the first-run wizard blocks every interactive launch)', () => {
+  const read = () => JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
+
+  it('repairs a global config whose onboarding flag flipped to false', () => {
+    seedHome(home);
+    writeFileSync(
+      join(home, '.claude.json'),
+      JSON.stringify({ hasCompletedOnboarding: false, mcpServers: { 'papercusp-su': {} } }),
+    );
+
+    expect(ensureOnboardingComplete(home)).toBe(true);
+    expect(read().hasCompletedOnboarding).toBe(true);
+    // Never a foreign value: the repair touches exactly the one key.
+    expect(read().mcpServers).toEqual({ 'papercusp-su': {} });
+  });
+
+  it('repairs a config that never carried the flag, and leaves a healthy one untouched', () => {
+    seedHome(home); // seeds a .claude.json with no onboarding key at all
+    expect(ensureOnboardingComplete(home)).toBe(true);
+    expect(read().hasCompletedOnboarding).toBe(true);
+
+    // Idempotent — already-true means no rewrite (peers rewrite this file constantly).
+    expect(ensureOnboardingComplete(home)).toBe(false);
+  });
+
+  it('fails open on a missing or unparseable config — a launch never dies here', () => {
+    expect(ensureOnboardingComplete(home)).toBe(false); // no ~/.claude.json at all
+    writeFileSync(join(home, '.claude.json'), '{ not json');
+    expect(ensureOnboardingComplete(home)).toBe(false);
+  });
 });
 
 describe('writeInteractiveClaudeConfig', () => {

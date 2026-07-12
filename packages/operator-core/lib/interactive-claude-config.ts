@@ -84,7 +84,17 @@
  *
  * Server-only.
  */
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
@@ -525,6 +535,51 @@ function writeRecoveryArtifacts(
   }
 }
 
+/**
+ * ASSERT `hasCompletedOnboarding` in the global `~/.claude.json` before the
+ * mirror symlinks it in. The mirror's whole premise (see the header note on the
+ * onboarding/trust state) is that this file says onboarding is DONE — but it
+ * only ever *assumed* that, and the flag is not stable:
+ *
+ * - When it reads `false`, claude boots into its first-run wizard (theme
+ *   picker). A psu session then NEVER reaches a prompt, so the kickoff turn can
+ *   never be delivered and the agent is dead on arrival — with no error, just a
+ *   terminal parked on a menu forever. It breaks EVERY interactive psu launch
+ *   (`capability:launch-agent`, `capability:terminal`, `fleet:launch-on-plan`,
+ *   and every resume), not one caller.
+ * - And it SELF-PROPAGATES: the session's `.claude.json` is a write-through
+ *   SYMLINK, so a session wedged in that wizard writes its own
+ *   not-yet-onboarded state straight back to the global file — one wedged
+ *   session re-arms the trap for every launch that follows.
+ *
+ * Live-caught 2026-07-12 by the launch-agent live-verify: the flag had flipped
+ * to `false` and killed the probe on boot, while every backup of the file going
+ * back months has it `true`. So assert it here instead of assuming it — the
+ * same self-heal shape `selfHealSettings` / `selfHealMcpConfig` already apply to
+ * the other two files claude rewrites out from under us.
+ *
+ * Touches ONLY this key (never a foreign value); atomic (temp + rename — peers
+ * rewrite this file constantly); idempotent (no write once true); fail-open (a
+ * launch must never die on a repair hiccup). Note `theme` is deliberately NOT
+ * seeded: the working backups have no theme key either, so it is not what gates
+ * the wizard.
+ */
+export function ensureOnboardingComplete(home: string): boolean {
+  const path = join(home, '.claude.json');
+  try {
+    if (!existsSync(path)) return false;
+    const cfg = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+    if (!cfg || typeof cfg !== 'object' || cfg.hasCompletedOnboarding === true) return false;
+    cfg.hasCompletedOnboarding = true;
+    const tmp = `${path}.psu-onboarding.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+    renameSync(tmp, path);
+    return true;
+  } catch {
+    return false; // a wizard-blocked session is louder than a failed repair
+  }
+}
+
 /** True if a path already exists as a real file/dir OR as a (possibly dangling)
  *  symlink — `existsSync` returns false for a dangling link, but on resume we
  *  must still treat an existing link as "leave it". */
@@ -614,6 +669,10 @@ export function writeInteractiveClaudeConfig(opts: {
     } catch {
       /* claude surfaces a stale credential the same as before this existed */
     }
+    // Same "claude rewrote a file we depend on" class as the credential fork
+    // above: repair the onboarding flag the mirror is about to symlink in, or
+    // this session boots into the first-run wizard and never reaches a prompt.
+    ensureOnboardingComplete(home);
   }
 
   // Mirror every top-level `~/.claude` entry EXCEPT the transcript store.

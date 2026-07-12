@@ -356,11 +356,22 @@ export function VoiceButton(): ReactElement {
   } else {
     content = <span className="pc-voice-btn-label">{MODE_LABEL[vs.mode]}</span>;
   }
+  // P-003 honest wake copy: only advertise "Say <wakeWord>" when something
+  // can actually HEAR it — a live wake-capable capture loop (wakeListening:
+  // Silero/energy-VAD whisper, a wake-word engine, or the Web Speech wake
+  // recognizer) or a full-agent session that owns the mic and hears
+  // everything. On runtimes where neither holds (e.g. WebKitGTK without
+  // local whisper AND without Web Speech), always-on used to show the wake
+  // hint while NOTHING listened — the user spoke to a dead room. There, PTT
+  // is the primary always-works trigger, so show the PTT hint instead.
+  const wakeCanFire = vs.wakeListening || vs.micOwnedByFullAgent;
   const title = vs.status === 'connecting'
     ? 'Voice mode: connecting to agent (waiting for WebRTC negotiation)…'
     : vs.supported
     ? sessionUi.active
       ? `Voice mode: ${MODE_TITLE[vs.mode]} (shared session live; hold button or ${PTT_SHORTCUT_LABEL} for PTT, use mute/mode/host controls alongside)`
+      : vs.mode === 'always-on' && !wakeCanFire
+      ? `Voice mode: always-on, but wake listening is unavailable here — hold the button or ${PTT_SHORTCUT_LABEL} to talk`
       : `Voice mode: ${MODE_TITLE[vs.mode]} (click to cycle, hold button for PTT, hold ${PTT_SHORTCUT_LABEL} for keyboard PTT)`
     : 'Voice mode unsupported in this browser';
   // The hint bubbles ("Say <wakeWord>" / "Hold ` to talk") are persistent
@@ -370,8 +381,9 @@ export function VoiceButton(): ReactElement {
   // Connecting is shown only as the in-button spinner now — no "Connecting…"
   // text hint bubble (keeps the control compact).
   const isConnecting = vs.status === 'connecting' && vs.supported;
-  const showWakeHint = !isConnecting && vs.mode === 'always-on' && vs.supported;
-  const showPttHint = !isConnecting && vs.mode === 'push-to-talk' && vs.supported;
+  const showWakeHint = !isConnecting && vs.mode === 'always-on' && vs.supported && wakeCanFire;
+  const showPttHint = !isConnecting && vs.supported &&
+    (vs.mode === 'push-to-talk' || (vs.mode === 'always-on' && !wakeCanFire));
 
   return (
     <div className={`pc-voice-control${showWakeHint || showPttHint ? ' has-wake-hint' : ''}${isConnecting ? ' is-connecting' : ''}`}>

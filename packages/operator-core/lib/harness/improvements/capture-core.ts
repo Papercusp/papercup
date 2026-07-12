@@ -38,6 +38,7 @@ import { IMPROVEMENT_TOPIC, OBSERVATION_TOPIC, issueToCandidate } from './read-i
 import {
   validateObservationRatings,
   validateScorecardCompleteness,
+  validateScorecardRatingValues,
   type StructuredObservation,
 } from './observation-types';
 import { getRubric } from '../../rubrics';
@@ -186,10 +187,14 @@ export interface CaptureImprovementResult {
 export interface CaptureDeps {
   searchIssues: (query: string, limit?: number) => Promise<EngineerIssue[]>;
   createIssue: (input: CreateIssueInput) => Promise<EngineerIssue>;
-  /** Load a rubric's criteria for the P-014a scorecard-completeness gate. OPTIONAL — the gate
-   *  falls back to the real getRubric; injectable so tests can stub it (or omit it → PG-free
-   *  tests skip the gate via the load-error catch). Returns null for an unknown rubric. */
-  loadRubric?: (rubricId: string) => Promise<{ criteria: { key: string }[] } | null>;
+  /** Load a rubric's criteria for the P-014a scorecard-completeness gate + the P-002
+   *  rating-value gate (criterion/rubric ratingScale). OPTIONAL — the gate falls back to
+   *  the real getRubric; injectable so tests can stub it (or omit it → PG-free tests skip
+   *  the gate via the load-error catch). Returns null for an unknown rubric. */
+  loadRubric?: (rubricId: string) => Promise<{
+    criteria: { key: string; ratingScale?: readonly string[] }[];
+    ratingScale?: readonly string[];
+  } | null>;
   /** P-011 semantic-widening seams. OPTIONAL — default to the real P-008 work-item
    *  dupe guard (itself vitest-inert + fail-open) and the real getIssue; injectable
    *  so tests drive the widening without PG or an embedder. */
@@ -235,6 +240,10 @@ export async function captureImprovement(
   ) {
     const rubric = await deps.loadRubric(observationForGate.rubricRef).catch(() => null);
     validateScorecardCompleteness(observationForGate, rubric ? rubric.criteria.map((c) => c.key) : null);
+    // P-002 rating-VALUE gate (rubric-system-improvements-2026-07-12): an off-scale
+    // rating ("pas", "helthy") would file fine and be silently excluded from
+    // trends/staleness — reject it here with the allowed values instead.
+    validateScorecardRatingValues(observationForGate, rubric);
   }
   const origin = input.origin ?? DEFAULT_SIGNAL_ORIGIN;
   // Observations skip search-first dedup entirely (D-005): recurrence IS the signal

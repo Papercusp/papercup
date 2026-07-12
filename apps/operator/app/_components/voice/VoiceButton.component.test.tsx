@@ -37,6 +37,7 @@ const h = vi.hoisted(() => ({
     lastTranscript: '', speakingRole: null, wakeDetected: false, userSpoke: false,
     micOwnedByFullAgent: false, audioReceiving: false,
     processingTranscript: false, awaitingResponse: false,
+    wakeListening: false,
   } as Record<string, unknown>,
 }));
 
@@ -75,6 +76,8 @@ beforeEach(() => {
   h.state.audioReceiving = false;
   h.state.processingTranscript = false;
   h.state.awaitingResponse = false;
+  h.state.wakeListening = false;
+  h.state.micOwnedByFullAgent = false;
   h.sessionUi.active = false;
   h.sessionUi.muted = false;
   h.sessionUi.deafened = false;
@@ -243,6 +246,49 @@ describe('VoiceButton — shared-session controls', () => {
     expect(h.toggleOperatorVoiceMute).toHaveBeenCalledTimes(1);
     expect(h.toggleOperatorVoiceBusMode).toHaveBeenCalledTimes(1);
     expect(h.forceOperatorVoiceHost).toHaveBeenCalledTimes(1);
+  });
+});
+
+// P-003 (voice-public-release-readiness): honest wake copy. The "Say <wakeWord>"
+// bubble must only render when something can actually HEAR the phrase — a live
+// wake-capable capture loop (wakeListening) or a mic-owning full agent.
+// Otherwise (always-on on a runtime with no detector) the always-works PTT
+// affordance is advertised instead.
+describe('VoiceButton — honest wake hint (P-003)', () => {
+  it('always-on with NO live wake detector: shows the PTT hint, not "Say …"', () => {
+    h.state.mode = 'always-on';
+    h.state.status = 'idle';
+    h.state.wakeListening = false;
+    h.state.micOwnedByFullAgent = false;
+    renderButton();
+    expect(screen.queryByText(/hey papercup/i)).toBeNull();
+    expect(screen.getByText(/to talk/i)).toBeTruthy(); // "Hold ` to talk"
+  });
+
+  it('always-on with a live wake capture loop: advertises the wake phrase', () => {
+    h.state.mode = 'always-on';
+    h.state.status = 'idle';
+    h.state.wakeListening = true;
+    renderButton();
+    expect(screen.getByText('hey papercup')).toBeTruthy();
+  });
+
+  it('always-on with a mic-owning full agent: the agent hears everything — wake phrase advertised', () => {
+    h.state.mode = 'always-on';
+    h.state.status = 'idle';
+    h.state.wakeListening = false;
+    h.state.micOwnedByFullAgent = true;
+    renderButton();
+    expect(screen.getByText('hey papercup')).toBeTruthy();
+  });
+
+  it('push-to-talk mode keeps the PTT hint regardless of wake state', () => {
+    h.state.mode = 'push-to-talk';
+    h.state.status = 'idle';
+    h.state.wakeListening = false;
+    renderButton();
+    expect(screen.queryByText(/hey papercup/i)).toBeNull();
+    expect(screen.getByText(/to talk/i)).toBeTruthy();
   });
 });
 

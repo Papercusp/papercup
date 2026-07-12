@@ -27,8 +27,21 @@ import {
   LearningVisualEmpty,
 } from "./LearningVisuals";
 
-const num = (v: number | null): string =>
-  v == null ? "" : Math.abs(v) >= 100 ? v.toFixed(0) : v.toPrecision(3);
+function metricValue(feature: string, value: number | null): string {
+  if (value == null) return "";
+  const key = feature.toLowerCase();
+  if (key.endsWith("ms")) {
+    if (value < 1000) return `${Math.round(value)}ms`;
+    if (value < 60_000) return `${(value / 1000).toFixed(1)}s`;
+    if (value < 3_600_000) return `${(value / 60_000).toFixed(1)}m`;
+    return `${(value / 3_600_000).toFixed(1)}h`;
+  }
+  if (key.includes("rate") || key.includes("share")) {
+    return `${(value * 100).toFixed(value < 0.1 ? 1 : 0)}%`;
+  }
+  if (Number.isInteger(value)) return value.toLocaleString();
+  return Math.abs(value) >= 100 ? value.toFixed(0) : value.toPrecision(3);
+}
 
 function dateShort(iso: string | null): string {
   if (!iso) return "";
@@ -80,11 +93,12 @@ export function EkgPanel({
         </span>
         {s.baselineSummary != null && s.windowSummary != null ? (
           <span title="Baseline median → window median">
-            {num(s.baselineSummary)}→{num(s.windowSummary)}
+            {metricValue(s.feature, s.baselineSummary)}→
+            {metricValue(s.feature, s.windowSummary)}
           </span>
         ) : null}
         <span title="Window vs baseline cohort sizes">
-          {s.windowSessions}w/{s.baselineSessions}b
+          {s.windowSessions}/{s.baselineSessions}
         </span>
         <span className="pc-ekg__age" title="Shift window day">
           {dateShort(s.windowDate)}
@@ -149,12 +163,12 @@ export function EkgPanel({
         <>
           <div className="pc-learning-visual__layout pc-learning-visual__layout--ekg">
             <LearningHeroMetric
-              eyebrow="Detected shifts"
-              value={String(snap!.totalShifts)}
+              eyebrow="Current window"
+              value={String(shifts.length)}
               status={major > 0 ? "major drift" : "monitor"}
               tone={major > 0 ? "bad" : "warn"}
             >
-              {snap!.unattributedShifts} unattributed
+              {snap!.totalShifts} total · {snap!.unattributedShifts} unattributed
             </LearningHeroMetric>
             <div
               className="pc-ekg__wave"
@@ -174,16 +188,16 @@ export function EkgPanel({
             <LearningEvidenceRail>
               <div className="pc-learning-visual__evidence-grid">
                 <div className="pc-learning-visual__evidence-metric">
-                  <span>Sessions 7d</span>
-                  <strong>{snap!.sessions7d}</strong>
+                  <span>Window</span>
+                  <strong>{shifts.length}</strong>
+                </div>
+                <div className="pc-learning-visual__evidence-metric">
+                  <span>All shifts</span>
+                  <strong>{snap!.totalShifts}</strong>
                 </div>
                 <div className="pc-learning-visual__evidence-metric">
                   <span>Unattributed</span>
                   <strong>{snap!.unattributedShifts}</strong>
-                </div>
-                <div className="pc-learning-visual__evidence-metric">
-                  <span>Embedded</span>
-                  <strong>{snap!.sessionsEmbedded}</strong>
                 </div>
                 <div className="pc-learning-visual__evidence-metric">
                   <span>Major</span>

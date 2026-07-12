@@ -183,6 +183,45 @@ export function validateScorecardCompleteness(
 }
 
 /**
+ * Enforce rating-VALUE validity (rubric-system-improvements-2026-07-12 P-002):
+ * every rating in a rubric-graded scorecard must be a value from the criterion's
+ * ratingScale (falling back to the rubric's default scale), case-insensitive;
+ * 'unknown' is always accepted (the universal not-assessable rating). Without
+ * this, a typo'd rating ("pas", "helthy") files fine and is then silently
+ * EXCLUDED from trend direction / staleness — the same silent-exclusion class
+ * as the P-004 missing-pass-vocabulary bug, but per-filing. The sibling of
+ * `validateScorecardCompleteness` and shaped the same way: the CALLER loads the
+ * rubric (this leaf stays sync + rubrics-import-free); `null` rubric ⇒ can't
+ * validate ⇒ skip. Throws `ObservationEvidenceError` naming the offending key,
+ * the bad value, and the allowed values.
+ */
+export function validateScorecardRatingValues(
+  obs: StructuredObservation | undefined | null,
+  rubric: {
+    ratingScale?: readonly string[];
+    criteria: readonly { key: string; ratingScale?: readonly string[] }[];
+  } | null,
+): void {
+  if (!obs || typeof obs !== 'object' || !obs.ratings || !rubric) return;
+  const rubricScale = (rubric.ratingScale ?? []).filter((v) => typeof v === 'string' && v.trim());
+  const byKey = new Map(rubric.criteria.map((c) => [c.key, c.ratingScale]));
+  for (const [criterion, entry] of Object.entries(obs.ratings)) {
+    if (!entry || typeof entry !== 'object' || !entry.rating) continue; // evidence gate owns malformed entries
+    const scale = (byKey.get(criterion) ?? rubricScale).filter((v) => typeof v === 'string' && v.trim());
+    if (scale.length === 0) continue; // scale-less rubric/criterion → nothing to validate against
+    const allowed = new Set(scale.map((v) => v.toLowerCase()));
+    allowed.add('unknown');
+    if (!allowed.has(String(entry.rating).trim().toLowerCase())) {
+      throw new ObservationEvidenceError(
+        `observation.ratings['${criterion}'].rating '${entry.rating}' is not on the rubric's rating scale — ` +
+          `allowed: ${[...scale, 'unknown'].join(' | ')}. An off-scale rating would be silently excluded ` +
+          'from trends/staleness, so it is rejected at capture instead.',
+      );
+    }
+  }
+}
+
+/**
  * Narrow an unknown `payload.observation` field to the StructuredObservation
  * shape (a cheap structural check, mirroring read-items' isIdeaLifecycle). Used
  * by the READ side to surface the structured view onto a candidate without a

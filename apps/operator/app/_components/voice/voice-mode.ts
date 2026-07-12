@@ -1007,6 +1007,7 @@ async function startWakeWordGate(prefs: any): Promise<boolean> {
       return false;
     }
     setState({ status: 'idle' });
+    setWakeListening(true);
     void emitVoiceToast('info', `Listening for "${prefs.porcupineKeyword ?? prefs.openwakewordKeyword ?? 'wake word'}". Mic stays on-device until you say it.`);
     return true;
   } catch (err) {
@@ -1019,6 +1020,7 @@ function stopWakeWordGate(): void {
   if (!wakeGateHandle) return;
   void wakeGateHandle.stop().catch(() => {});
   wakeGateHandle = null;
+  setWakeListening(false);
 }
 
 async function onWakeFireGated(prefs: any): Promise<void> {

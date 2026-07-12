@@ -105,6 +105,20 @@ export default defineTool({
           )
           .optional()
           .describe('per-criterion ratings against rubricRef, KEYED by rubric criterion `key` (a scorecard: one rating per criterion). evidence is mandatory on every entry'),
+        // rubric-system-improvements-2026-07-12 P-002: the scoped-drill shorthand.
+        // A targeted run exercises a handful of a rubric's criteria; the completeness
+        // gate still (rightly) demands every key, which day-one produced ~13 hand-written
+        // boilerplate unknowns per scorecard. Each listed key expands server-side to
+        // { rating:'unknown', evidence:'idle: not exercised by this run.' } — the idle:
+        // form the staleness calc excludes. Explicit ratings always win; the key is
+        // stripped before storage so the persisted payload stays pure ratings.
+        notExercised: z
+          .array(z.string().min(1))
+          .max(64)
+          .optional()
+          .describe(
+            "criterion keys this run did NOT exercise — each expands to { rating:'unknown', evidence:'idle: not exercised by this run.' } so a scoped drill passes the completeness gate without hand-written boilerplate (explicit ratings win)",
+          ),
         // WI-3594 (scorecard→improvement flow): a GRADE filing (rubricRef+ratings) often
         // identifies a concrete follow-up — link it AT FILE TIME instead of a separate
         // work_items:link round-trip later (which is easy to forget, silently orphaning the
@@ -180,7 +194,27 @@ export default defineTool({
     const ctxHarness =
       typeof ctxHarnessRaw === 'string' && ctxHarnessRaw && ctxHarnessRaw !== '*' ? ctxHarnessRaw : undefined;
     const observation = args.observation
-      ? { ...args.observation, sourceHive: args.observation.sourceHive ?? ctxHarness }
+      ? (() => {
+          // P-002 notExercised expansion (rubric-system-improvements-2026-07-12):
+          // each listed key becomes an idle:-tagged unknown UNLESS explicitly rated;
+          // the shorthand key itself is stripped so the stored payload is pure ratings.
+          const { notExercised, ...rest } = args.observation!;
+          const expanded =
+            notExercised && notExercised.length > 0
+              ? Object.fromEntries(
+                  notExercised
+                    .filter((k) => !(rest.ratings && k in rest.ratings))
+                    .map((k) => [k, { rating: 'unknown', evidence: 'idle: not exercised by this run.' }]),
+                )
+              : undefined;
+          return {
+            ...rest,
+            ...(expanded && Object.keys(expanded).length > 0
+              ? { ratings: { ...expanded, ...rest.ratings } }
+              : {}),
+            sourceHive: rest.sourceHive ?? ctxHarness,
+          };
+        })()
       : undefined;
     // P-007 (su-ideate-learning-substrate): persist the declared IDEATE-pass provenance
     // onto the created item's payload (payload.ideation) so the triage/learning read can
