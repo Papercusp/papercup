@@ -31,6 +31,7 @@ import { journalPendingWrite, markJournalCommitted } from '../../memory/write-jo
 import { isMemoryPaused, MEMORY_PAUSED_REFUSAL } from '../../memory/memory-pause';
 import { detectPossibleSecrets, possibleSecretWarning } from '../../memory/secret-detect';
 import { getSessionUserOrDefault } from '../../auth';
+import { resolveFactFederationSlug } from '../../agent-facts/store';
 import { hardText, LIMITS } from '../limits';
 import { coerceMemoryKind } from './remember-coerce';
 
@@ -214,6 +215,50 @@ export default defineTool({
     };
     if (args.harness_slug) metadata.harness_slug = args.harness_slug;
     if (args.hive_slug) metadata.hive_slug = args.hive_slug;
+
+    // EI-10432 — federation egress needs a ROUTING KEY, and this path never set
+    // one. `shareable: true` alone lands the row with memory_canonical.harness_slug
+    // NULL (mem0's CanonicalVectorStore.insert writes only id/payload/timestamps),
+    // the capture trigger enqueues the op under a NULL slug, and the drain selects
+    // `WHERE harness_slug = $slug` — which NULL never matches. The op is captured,
+    // stranded, and eventually reaped by the backstop GC: the memory federates to
+    // nobody and NOTHING errors. assertFact (agent-facts/store.ts) already refuses
+    // this exact hazard loudly ("captured then stranded ... Refuse LOUDLY rather
+    // than silently strand"); mirror it here.
+    //
+    // The resolved slug rides `payload.fed_harness_slug`, which mig 587's BEFORE
+    // INSERT trigger copies onto the row's harness_slug column — mem0 owns the
+    // INSERT and writes only `payload`, so the payload is the only seam we have.
+    // (The column canNOT be GENERATED from payload: the receive-side projection
+    // inserts harness_slug explicitly, and Postgres rejects an explicit value for
+    // a generated column — see the workspace_id note in p2p-memories.ts.)
+    //
+    // A hive-scoped memory rides that hive; a harness-scoped one rides its hive
+    // HOME (a member harness resolves to the home its peers' projection is bound
+    // to). A personal/user-scoped memory has no hive to ride, so it is REFUSED
+    // rather than silently routed to "the workspace's only hive" — inferring an
+    // egress target is exactly what the D-006 privacy default exists to prevent.
+    if (args.shareable === true) {
+      const fedSlug = args.hive_slug
+        ? args.hive_slug
+        : await resolveFactFederationSlug(args.harness_slug);
+      if (!fedSlug) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({
+            ok: false,
+            stored: false,
+            reason: 'shareable_memory_needs_federation_scope',
+            message:
+              'A shareable memory must name the pool it federates to: pass hive_slug ' +
+              '(the Pot whose peers should receive it) or harness_slug (a harness whose ' +
+              'hive home it can ride). A personal, user-scoped memory has no hive to ' +
+              'federate to — it would be captured, stranded, and dropped on every peer. ' +
+              'Omit `shareable` to store it privately instead.',
+          }) }],
+        };
+      }
+      metadata.fed_harness_slug = fedSlug;
+    }
 
     // Phase 4 P-015: extract structural anchors from the body so Layer 1
     // (P-019) can later validate them with zero LLM cost. Anchors are

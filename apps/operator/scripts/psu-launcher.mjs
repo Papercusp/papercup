@@ -3485,24 +3485,32 @@ export function sanitizeInheritedEnv(env) {
 }
 
 /**
- * coord-delivery-residual-gaps-2026-07-11 P-002 — launch-time CC coord-hook
- * enrollment guard.
+ * coord-delivery-residual-gaps-2026-07-11 P-002 — launch-time CC hook
+ * enrollment guard, GENERALIZED (WI-4394) to any settings.json-wired CC hook,
+ * not just coord-inbox.
  *
- * A Claude psu session receives mid-turn coord mail via the global
- * `~/.claude/settings.json` PostToolUse[*] → posttooluse-coord-inbox.sh hook
- * (see the coord-mid-turn-delivery insight). That wiring is re-merged at every
- * OPERATOR boot (host-bootstrap → installPapercuspFiles), but it can drift
- * BETWEEN boots (a hand-edited settings.json, a fresh machine, a wiped home) —
- * and the failure is SILENT: the session launches fine and is simply deaf to
- * peers until its next orient. Claude reads hooks at session birth, so the
- * moment that matters is right here, before the spawn.
+ * A Claude psu session receives several capabilities purely through hooks
+ * merged into the global `~/.claude/settings.json` (coord-inbox mid-turn
+ * mail; the turn-start memory delta — see memory-delivery-unification-
+ * 2026-07-12 P-003a). That wiring is re-merged at every OPERATOR boot
+ * (host-bootstrap → installPapercuspFiles), but it can drift BETWEEN boots —
+ * a hand-edited settings.json, a fresh machine, a wiped home, OR (the
+ * concrete failure this generalization fixes, WI-4394) simply a dev box whose
+ * operator hasn't restarted since a NEW hook was added to the repo: on plain
+ * `npm run dev` (no PAPERCUSP_DESKTOP=1) the self-install only runs at
+ * operator boot, so a hook shipped after the last restart is silently absent
+ * from every session's settings.json until the operator restarts or someone
+ * hand-runs install-standalone-mcp.sh. The failure is SILENT either way: the
+ * session launches fine and simply never gets that hook's behavior. Claude
+ * reads hooks at session birth, so the moment that matters is right here,
+ * before the spawn.
  *
  * PURE verdict: given the settings.json text + a hook-script existence probe,
- * report whether the coord-inbox hook is enrolled and executable-on-disk.
- * Unknown/unparseable states report the specific miss — the caller decides
- * loudness. Exported for unit tests.
+ * report whether the named hook is wired under the named event and
+ * executable-on-disk. Unknown/unparseable states report the specific miss —
+ * the caller decides loudness. Exported for unit tests.
  */
-export function ccCoordHookEnrollment(settingsText, { scriptExists } = {}) {
+export function ccHookEnrollment(settingsText, { event, hookName, scriptExists } = {}) {
   const misses = [];
   let cfg = null;
   try {
@@ -3510,18 +3518,37 @@ export function ccCoordHookEnrollment(settingsText, { scriptExists } = {}) {
   } catch {
     return { enrolled: false, misses: ['settings.json missing or unparseable'] };
   }
-  const entries = Array.isArray(cfg?.hooks?.PostToolUse) ? cfg.hooks.PostToolUse : [];
+  const entries = Array.isArray(cfg?.hooks?.[event]) ? cfg.hooks[event] : [];
   const cmds = entries.flatMap((e) => (Array.isArray(e?.hooks) ? e.hooks : []))
     .map((h) => (typeof h?.command === 'string' ? h.command : ''));
-  const hookCmd = cmds.find((c) => c.includes('posttooluse-coord-inbox.sh'));
+  const hookCmd = cmds.find((c) => c.includes(hookName));
   if (!hookCmd) {
-    misses.push('no PostToolUse entry runs posttooluse-coord-inbox.sh');
+    misses.push(`no ${event} entry runs ${hookName}`);
   } else if (typeof scriptExists === 'function') {
     // The command may carry env prefixes/args — extract the script path token.
-    const tok = hookCmd.split(/\s+/).find((t) => t.includes('posttooluse-coord-inbox.sh')) ?? hookCmd;
+    const tok = hookCmd.split(/\s+/).find((t) => t.includes(hookName)) ?? hookCmd;
     if (!scriptExists(tok)) misses.push(`hook script missing on disk: ${tok}`);
   }
   return { enrolled: misses.length === 0, misses };
+}
+
+/** Back-compat thin wrapper — same signature/behavior pre-generalization; the
+ *  pinned unit tests (cc-coord-hook-enrollment.test.ts) import this name. */
+export function ccCoordHookEnrollment(settingsText, { scriptExists } = {}) {
+  return ccHookEnrollment(settingsText, {
+    event: 'PostToolUse',
+    hookName: 'posttooluse-coord-inbox.sh',
+    scriptExists,
+  });
+}
+
+/** Same verdict shape for the turn-start memory delta hook (WI-4394). */
+export function ccTurnStartMemoryHookEnrollment(settingsText, { scriptExists } = {}) {
+  return ccHookEnrollment(settingsText, {
+    event: 'UserPromptSubmit',
+    hookName: 'userpromptsubmit-memory.sh',
+    scriptExists,
+  });
 }
 
 /**
@@ -3530,11 +3557,11 @@ export function ccCoordHookEnrollment(settingsText, { scriptExists } = {}) {
  * (POST /api/desktop/install/papercusp-files — the same merge every operator
  * boot runs), re-verify, and print a LOUD banner if still unenrolled. Never
  * blocks or fails the launch (worst case ~4s on the already-broken path;
- * healthy path is one readFileSync). The session still works deaf-but-launched:
- * the server-side deafness detector (coord:presence `coordHook`) makes it
- * visible fleet-side either way.
+ * healthy path is one readFileSync). The session still works degraded-but-
+ * launched either way — this is best-effort self-heal + loud disclosure, not
+ * a launch gate.
  */
-function ensureCcCoordHookEnrollment(env) {
+function ensureCcHookEnrollment(env, { event, hookName, label, degradedNote }) {
   if ((env.PAPERCUSP_AGENT || '') !== 'claude') return; // codex bakes per-session hooks.json; omp uses its own coord-hook
   const settingsPath = join(homedir(), '.claude', 'settings.json');
   const read = () => {
@@ -3545,7 +3572,7 @@ function ensureCcCoordHookEnrollment(env) {
     }
   };
   const probe = (p) => existsSync(p);
-  let verdict = ccCoordHookEnrollment(read(), { scriptExists: probe });
+  let verdict = ccHookEnrollment(read(), { event, hookName, scriptExists: probe });
   if (verdict.enrolled) return;
   // Self-repair: the operator re-runs the same idempotent hook merge its boot
   // path uses. Loopback-only route; short timeout; failure falls through to the
@@ -3558,23 +3585,44 @@ function ensureCcCoordHookEnrollment(env) {
   } catch {
     /* unreachable operator → banner below */
   }
-  verdict = ccCoordHookEnrollment(read(), { scriptExists: probe });
+  verdict = ccHookEnrollment(read(), { event, hookName, scriptExists: probe });
   if (verdict.enrolled) {
-    console.error('psu: coord-inbox hook was missing from ~/.claude/settings.json — repaired via the operator install route.');
+    console.error(`psu: ${hookName} was missing from ~/.claude/settings.json — repaired via the operator install route.`);
     return;
   }
   console.error(
     [
       '',
-      '⚠⚠ COORD-INBOX HOOK NOT ENROLLED — THIS SESSION WILL BE DEAF TO MID-TURN COORD MAIL ⚠⚠',
+      `⚠⚠ ${label} NOT ENROLLED — ${degradedNote} ⚠⚠`,
       `   ${verdict.misses.join('; ')}`,
-      '   Peer messages will only land at session start / orient / an explicit wake — NOT between tool calls.',
       '   Self-repair via the operator failed or it is unreachable. Fix: restart the operator (it re-installs',
       `   hooks at boot), or: curl -X POST ${OPERATOR_URL}/api/desktop/install/papercusp-files`,
-      '   Launching anyway — the fleet sees this session flagged coordHook:missing in coord:presence.',
+      '   Launching anyway.',
       '',
     ].join('\n'),
   );
+}
+
+function ensureCcCoordHookEnrollment(env) {
+  ensureCcHookEnrollment(env, {
+    event: 'PostToolUse',
+    hookName: 'posttooluse-coord-inbox.sh',
+    label: 'COORD-INBOX HOOK',
+    degradedNote:
+      'THIS SESSION WILL BE DEAF TO MID-TURN COORD MAIL — peer messages will only land at session start / orient / an explicit wake, and the fleet sees it flagged coordHook:missing in coord:presence',
+  });
+}
+
+/** WI-4394: the turn-start memory delta (memory-delivery-unification-2026-07-12
+ *  P-003a) is the same drift class as coord-inbox — verify + self-repair it too. */
+function ensureCcTurnStartMemoryHookEnrollment(env) {
+  ensureCcHookEnrollment(env, {
+    event: 'UserPromptSubmit',
+    hookName: 'userpromptsubmit-memory.sh',
+    label: 'TURN-START MEMORY HOOK',
+    degradedNote:
+      'THIS SESSION WILL NEVER GET THE TURN-START MEMORY DELTA — a bare session with no initialize-time query gets no recall fallback at all',
+  });
 }
 
 /** The original plain launch: inherit the user's stdio straight into the child.
@@ -3660,6 +3708,9 @@ function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv, kickoff = null })
   // enrolled BEFORE the spawn (Claude reads hooks at session birth) — self-repairs
   // via the operator's idempotent install route, loud-warns when it can't.
   ensureCcCoordHookEnrollment(env);
+  // WI-4394: same drift class, same self-repair path, for the turn-start memory
+  // delta hook — this is the concrete fix for the near-silent-live turn-start port.
+  ensureCcTurnStartMemoryHookEnrollment(env);
   // turn-lifecycle-control Phase 3: when enabled + interactive, host the agent
   // through a managed pty + owner-only control socket so the operator can inject
   // a wake (or, Phase 4, an interrupt) into the LIVE session rather than parking

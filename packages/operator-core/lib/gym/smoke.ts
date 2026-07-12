@@ -24,6 +24,7 @@ import postgres from 'postgres';
 // to the long-lived operator the smoke boots. A dedicated container isolates the smoke.
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { provisionGymDatabase, GYM_PROVISION_PG_IMAGE } from './gym-db-init';
+import { sweepOrphanedGymPgContainers } from './gym-pg-orphan-sweep';
 import { buildGymOperatorBootSpec } from './boot-spec';
 import { waitForOperatorReady } from './operator-ready';
 import { collectTrace } from './collector';
@@ -49,6 +50,9 @@ async function main(): Promise<void> {
   // harness_admin is not superuser. A DEDICATED pgvector container (NOT the shared
   // reused getTestPg one) gives a superuser PG isolated from cross-process churn.
   let pgContainer: StartedPostgreSqlContainer | undefined;
+  // Self-heal sweep FIRST (WI-4332): reclaims any orphaned container a crashed prior
+  // gym run left behind before Ryuk could reap it.
+  await sweepOrphanedGymPgContainers({ image: GYM_PROVISION_PG_IMAGE }).catch(() => {});
   pgContainer = await new PostgreSqlContainer(GYM_PROVISION_PG_IMAGE).withDatabase('papercusp_smoke').start();
   const maintenanceUri = pgContainer.getConnectionUri();
 

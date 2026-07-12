@@ -57,19 +57,23 @@ export function isExitedPaneScreen(dump: string): boolean {
   return /EXIT CODE:/i.test(clean) && /re-?run/i.test(clean);
 }
 
-/** Resolve the live `pui-dock-*` zellij session (the agent dock), or null. */
-async function resolveDockSession(): Promise<string | null> {
+/** Every live (non-EXITED) `pui-dock-*` zellij session. Multiple can coexist —
+ *  the dock relaunches on shell restarts and more than one desktop shell may be
+ *  running — so "the" dock session is only knowable via the pane REGISTRATION,
+ *  never by picking the first listed session (P-019 hardening). */
+async function listLiveDockSessions(): Promise<string[]> {
+  const out: string[] = [];
   try {
     const { stdout } = await exec(zellijBin(), ['ls'], { timeout: 4000 });
     for (const raw of stdout.split('\n')) {
       const line = raw.replace(ANSI, '');
       const m = line.match(/^(pui-dock-\S+)/);
-      if (m && !/EXITED/.test(line)) return m[1];
+      if (m && !/EXITED/.test(line)) out.push(m[1]);
     }
   } catch {
     /* zellij unavailable / no sessions */
   }
-  return null;
+  return out;
 }
 
 /**
@@ -95,7 +99,7 @@ export type SentinelPaneWrite =
   | {
       ok: false;
       /** Machine-readable failure class for callers that branch (HTTP status, spoken error). */
-      reason: 'no-dock' | 'pane-exited' | 'write-failed';
+      reason: 'no-dock' | 'no-sentinel-pane' | 'pane-exited' | 'write-failed';
       error: string;
       session?: string;
       paneId?: string;
@@ -104,82 +108,90 @@ export type SentinelPaneWrite =
 /**
  * Write `text` into the Sentinel pane's composer + Enter to submit the turn.
  * Applies the warm-up gate and the exited-pane guard. Never throws.
+ *
+ * TARGETED WRITES ONLY (voice-public-release-readiness P-019): the write goes
+ * to the pane the `psu-sentinel` shim REGISTERED (~/.papercusp/sentinel-pane),
+ * and only when that registration's session is still among the live docks.
+ * The old "fall back to whatever pane is focused" behavior is gone — with
+ * dock relaunch churn and multiple concurrent `pui-dock-*` sessions it typed
+ * the user's words into an arbitrary agent's composer (a misfire far worse
+ * than degrading). Callers treat `no-sentinel-pane` like `no-dock`: the pane
+ * route is unavailable — fall back (voice → the in-process converse brain;
+ * deep-watch → the hindsight channel).
  */
 export async function writeToSentinelPane(text: string): Promise<SentinelPaneWrite> {
   const t = text.trim();
   if (!t) return { ok: false, reason: 'write-failed', error: 'empty text' };
 
-  const session = await resolveDockSession();
-  if (!session) return { ok: false, reason: 'no-dock', error: 'no live pui-dock session' };
+  const liveSessions = await listLiveDockSessions();
+  if (liveSessions.length === 0) {
+    return { ok: false, reason: 'no-dock', error: 'no live pui-dock session' };
+  }
 
-  // Prefer the registered Sentinel pane so we type into the SENTINEL pane, not
-  // whatever pane is focused. The dock is volatile, so only trust the
-  // registration if its session is the live one; otherwise fall back to the
-  // focused pane of the live session.
   const reg = readSentinelPaneReg();
-  const paneId = reg && reg.session === session ? reg.paneId : null;
+  if (!reg || !liveSessions.includes(reg.session)) {
+    return {
+      ok: false,
+      reason: 'no-sentinel-pane',
+      error: reg
+        ? `sentinel pane registration points at '${reg.session}' but live dock session(s) are ${liveSessions.join(', ')} — the registered pane is gone (dock relaunched?)`
+        : 'no sentinel pane registration (~/.papercusp/sentinel-pane) — psu-sentinel has not launched',
+    };
+  }
+  const session = reg.session;
+  const paneId = reg.paneId;
 
   // Boot-window guard (dock-relaunch race): a write that lands in the pane's
   // warm-up window is typed into a not-yet-ready composer and SILENTLY LOST.
   // When the registration is very fresh, wait out the remaining warm-up before
-  // writing — delayed a few seconds, not dropped. Bounded; a stat failure or a
-  // stale (focused-pane) fallback skips the gate.
-  if (paneId) {
-    try {
-      const ageMs = Date.now() - statSync(join(homedir(), '.papercusp', 'sentinel-pane')).mtimeMs;
-      if (ageMs >= 0 && ageMs < SENTINEL_WARMUP_MS) {
-        await new Promise((r) => setTimeout(r, SENTINEL_WARMUP_MS - ageMs));
-      }
-    } catch {
-      /* stat unavailable — proceed without the warm-up gate */
+  // writing — delayed a few seconds, not dropped. Bounded; a stat failure
+  // skips the gate.
+  try {
+    const ageMs = Date.now() - statSync(join(homedir(), '.papercusp', 'sentinel-pane')).mtimeMs;
+    if (ageMs >= 0 && ageMs < SENTINEL_WARMUP_MS) {
+      await new Promise((r) => setTimeout(r, SENTINEL_WARMUP_MS - ageMs));
     }
+  } catch {
+    /* stat unavailable — proceed without the warm-up gate */
   }
 
   const z = zellijBin();
 
   // Exited-pane guard: refuse rather than Enter-trigger a re-run that loses the
-  // turn. Only for the registered pane; best-effort (a dump failure falls
-  // through to the write).
-  if (paneId) {
-    try {
-      const { stdout } = await exec(
-        z,
-        ['-s', session, 'action', 'dump-screen', '--pane-id', paneId],
-        { timeout: 4000 },
-      );
-      if (isExitedPaneScreen(stdout)) {
-        return {
-          ok: false,
-          reason: 'pane-exited',
-          error: 'sentinel pane exited (held at re-run prompt); not writing',
-          session,
-          paneId,
-        };
-      }
-    } catch {
-      /* dump unavailable — proceed with the write (best-effort guard) */
+  // turn. Best-effort (a dump failure falls through to the write).
+  try {
+    const { stdout } = await exec(
+      z,
+      ['-s', session, 'action', 'dump-screen', '--pane-id', paneId],
+      { timeout: 4000 },
+    );
+    if (isExitedPaneScreen(stdout)) {
+      return {
+        ok: false,
+        reason: 'pane-exited',
+        error: 'sentinel pane exited (held at re-run prompt); not writing',
+        session,
+        paneId,
+      };
     }
+  } catch {
+    /* dump unavailable — proceed with the write (best-effort guard) */
   }
 
   try {
     // `--` end-of-options marker: `text` is user-controlled, so without it a
     // value starting with `-` would be parsed as a zellij flag (argv flag
     // smuggling). After `--` everything is positional.
-    if (paneId) {
-      await exec(z, ['-s', session, 'action', 'write-chars', '--pane-id', paneId, '--', t], { timeout: 4000 });
-      await exec(z, ['-s', session, 'action', 'write', '--pane-id', paneId, '13'], { timeout: 4000 });
-    } else {
-      await exec(z, ['-s', session, 'action', 'write-chars', '--', t], { timeout: 4000 });
-      await exec(z, ['-s', session, 'action', 'write', '13'], { timeout: 4000 });
-    }
-    return { ok: true, session, paneId, targeted: !!paneId };
+    await exec(z, ['-s', session, 'action', 'write-chars', '--pane-id', paneId, '--', t], { timeout: 4000 });
+    await exec(z, ['-s', session, 'action', 'write', '--pane-id', paneId, '13'], { timeout: 4000 });
+    return { ok: true, session, paneId, targeted: true };
   } catch (e) {
     return {
       ok: false,
       reason: 'write-failed',
       error: `zellij write failed: ${String(e).slice(0, 200)}`,
       session,
-      paneId: paneId ?? undefined,
+      paneId,
     };
   }
 }

@@ -44,6 +44,7 @@ import postgres from 'postgres';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { loadBlueprintFromFile } from '@papercusp/orchestrator/blueprint';
 import { provisionGymDatabase, GYM_PROVISION_PG_IMAGE } from './gym-db-init';
+import { sweepOrphanedGymPgContainers } from './gym-pg-orphan-sweep';
 import { buildGymOperatorBootSpec } from './boot-spec';
 import { materializeBlueprintTriggers } from '../blueprint/materialize-triggers';
 import { maskDsn } from './autoloop-cycle';
@@ -349,6 +350,9 @@ export async function runGymWakeMode(opts: WakeModeOptions = {}): Promise<WakeMo
 
   try {
     // 1. Dedicated gym PG (full migration baseline + preminted spawn-signing key).
+    // Self-heal sweep FIRST (WI-4332): reclaims any orphaned container a crashed
+    // prior gym run left behind before Ryuk could reap it.
+    await sweepOrphanedGymPgContainers({ image: GYM_PROVISION_PG_IMAGE }).catch(() => {});
     log('provisioning gym DB …');
     pgContainer = await new PostgreSqlContainer(GYM_PROVISION_PG_IMAGE).withDatabase('papercusp_wake').start();
     const { databaseUri: gymUri } = await provisionGymDatabase({

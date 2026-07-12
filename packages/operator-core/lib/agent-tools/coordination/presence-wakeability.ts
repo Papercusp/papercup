@@ -105,20 +105,32 @@ export function isHardStale(heartbeatAtMs: number | null | undefined, nowMs: num
 
 /**
  * PURE: the coordinator-facing session state from the raw signals. Order
- * matters — a `hardStale` heartbeat is authoritative-dead FIRST (a zombie await
- * from an abrupt death can't outvote an hour-cold heartbeat, see
- * PRESENCE_DEAD_MS), then wakeability is the gate (not wakeable ⇒ `ended`
- * regardless of a still-warm heartbeat), then a running turn ⇒ `live`, else
- * `parked` (wakeable but idle — the dispatch target). Injected inputs so the
- * boundary unit-tests without PG. `hardStale` defaults to false, so a caller
- * that doesn't compute it keeps the pre-2026-07-07 behavior.
+ * matters — `pidConfirmedDead` (WI-3898 P1: a local `kill(pid, 0)` probe that
+ * came back ESRCH — see `probeProcessLiveness` in presence.ts) is authoritative
+ * FIRST: it is a DIRECT OS-level observation that the process is gone, not a
+ * timing heuristic, so it beats even `hardStale`'s 30-minute wait — a locally
+ * co-located dead agent is detected in ~seconds instead of up to 30 minutes.
+ * Then `hardStale` (a zombie await from an abrupt death can't outvote an
+ * hour-cold heartbeat, see PRESENCE_DEAD_MS), then wakeability is the gate (not
+ * wakeable ⇒ `ended` regardless of a still-warm heartbeat), then a running turn
+ * ⇒ `live`, else `parked` (wakeable but idle — the dispatch target). Injected
+ * inputs so the boundary unit-tests without PG. `hardStale`/`pidConfirmedDead`
+ * default to false/undefined, so a caller that doesn't compute them keeps prior
+ * behavior unchanged.
  */
 export function deriveSessionState(input: {
   stale: boolean;
   wakeable: boolean;
   liveTurn: boolean;
   hardStale?: boolean;
+  /** WI-3898 P1: `probeProcessLiveness(...) === false` for a row whose `host`
+   *  matched the reader's own machine — a confirmed-gone OS process. `null`
+   *  (inconclusive: remote host, no pid ever recorded, or EPERM) or `undefined`
+   *  (not probed) must NEVER be passed here as `true` — only an affirmative
+   *  ESRCH result may. */
+  pidConfirmedDead?: boolean;
 }): SessionState {
+  if (input.pidConfirmedDead) return 'ended';
   if (input.hardStale) return 'ended';
   if (!input.wakeable) return 'ended';
   if (input.liveTurn && !input.stale) return 'live';

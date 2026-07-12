@@ -414,12 +414,40 @@ function selfHealSettings() {
   }
 }
 
+// Same rewrite-damage class, second victim: claude's .claude.json rewrites can
+// drop the session's papercusp-su MCP server definition — the session then runs
+// with NO coordination tools until someone notices (2026-07-12: hours of
+// checkpoints/completions queued behind a "disconnected MCP" that was really a
+// missing config entry). Re-assert it from the global ~/.claude.json when the
+// session copy lacks it. Non-destructive; fail-open.
+function selfHealMcpConfig() {
+  try {
+    const path = join(dir, '.claude.json');
+    if (!existsSync(path)) return null;
+    const cfg = JSON.parse(readFileSync(path, 'utf8'));
+    if (!cfg || typeof cfg !== 'object') return null;
+    const servers = cfg.mcpServers && typeof cfg.mcpServers === 'object' ? cfg.mcpServers : {};
+    if (servers['papercusp-su']) return null;
+    const home = process.env.HOME || '';
+    const g = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
+    const src = g && g.mcpServers ? g.mcpServers['papercusp-su'] : null;
+    if (!src) return null;
+    servers['papercusp-su'] = src;
+    cfg.mcpServers = servers;
+    writeFileSync(path, JSON.stringify(cfg, null, 2));
+    return ['mcpServers.papercusp-su'];
+  } catch {
+    return null;
+  }
+}
+
 try {
   const input = await readStdinJson();
   let intent = {};
   try { intent = JSON.parse(readFileSync(INTENT, 'utf8')); } catch {}
   const parts = [];
   try { selfHealSettings(); } catch {}
+  try { selfHealMcpConfig(); } catch {}
   try {
     const p = playbookRecovery(intent);
     if (p) parts.push(p);

@@ -2781,6 +2781,29 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── health.history — the Health tab's persisted 24h status history ──
+  //
+  // (health-tab-v2-2026-07-12 P-006, D-B). Per-panel worst-per-bucket uptime
+  // strips + "crit since <t>" + the bounded transition timeline, read from the
+  // migration-585 tables the ~30s tick writes (system_health_ticks /
+  // system_health_transitions, 14d retention). SSE-live — runSystemHealthTick
+  // invalidates this name alongside `health.snapshot` each cycle. Fail-soft:
+  // any read error returns [] and the tab degrades to snapshot-only (history
+  // must never break the health view it decorates).
+  'health.history': {
+    resolve: async () => {
+      try {
+        const [{ activeWorkspaceId }, { readSystemHealthHistory }] = await Promise.all([
+          import('../workspace-registry'),
+          import('../system-health/history'),
+        ]);
+        return [await readSystemHealthHistory(activeWorkspaceId())];
+      } catch {
+        return []; // degrade to snapshot-only (D-B fail-soft)
+      }
+    },
+  },
+
   // ── overwatch.snapshot — the Overwatch pane's current brief ──
   //
   // (overwatch-role-2026-06-15 B-08, D-006). The ACTIONABLE SUBSET of the same

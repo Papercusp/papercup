@@ -15,9 +15,11 @@
  * Routing history: the legacy Oracle fallback (POST /api/oracle/chat) was
  * removed 2026-06-22 (sentinel-tui-shared-backend-and-cards Phase 1), which
  * briefly handed spoken turns to operator:converse. Phase C
- * (sentinel-as-claude-tui-2026-06-22) then SUPERSEDED that converse route:
- * the bridge now writes the final transcript into the Sentinel pane's stdin
- * (local app user only), which generates AND speaks the reply.
+ * (sentinel-as-claude-tui-2026-06-22) then SUPERSEDED that converse route
+ * with the pane write; WI-4337 flipped to converse-primary while the pane
+ * brain was too heavy for the voice window; voice-public-release-readiness
+ * P-019 (2026-07-12) made the PANE primary again (fast papercup role) with a
+ * spoken instant ack, keeping converse as the pane-unavailable fallback.
  *
  * P-014 of plan voice-production-test-coverage-2026-06-01.
  */
@@ -98,16 +100,33 @@ afterEach(() => {
   cleanup();
 });
 
-// Dock fallback: with NO conversation provider mounted (submitVoiceTurn → false),
-// the bridge falls back to the legacy dock-pane write. This is the dev-machine
-// path; the primary Papercup-converse path is covered in the suite below.
-describe('VoiceAppBridge — dock fallback routing (no provider mounted)', () => {
-  it('falls back to the dock pane when no consumer AND no converse provider is registered', async () => {
+// Pane-primary routing (P-019): the dock's Papercup pane is the PRIMARY voice
+// brain — every unconsumed utterance goes there first; the converse-fallback
+// suite below covers the pane-unavailable degrade.
+describe('VoiceAppBridge — pane-primary routing', () => {
+  it('routes the utterance to the Papercup pane when no consumer is registered', async () => {
     mount();
     setMode(ALWAYS_ON);
     await utter('what is happening');
     expect(sentinelCalled()).toBe(true);
     expect(h.routeToSentinel).toHaveBeenCalledWith('what is happening');
+  });
+
+  it('speaks a short instant ack after a successful pane write', async () => {
+    mount();
+    setMode(ALWAYS_ON);
+    await utter('what is happening');
+    expect(h.speak).toHaveBeenCalledWith('On it.', 'system:operator', 'polite');
+  });
+
+  it('does NOT dispatch to the converse brain when the pane write succeeded', async () => {
+    const converse = vi.fn();
+    setVoiceConverseHandler(converse);
+    mount();
+    setMode(ALWAYS_ON);
+    await utter('what is happening');
+    expect(sentinelCalled()).toBe(true);
+    expect(converse).not.toHaveBeenCalled(); // one brain per turn — no double-dispatch
   });
 
   it('does nothing when voice mode is off', async () => {
@@ -172,19 +191,25 @@ describe('VoiceAppBridge — consumer priority', () => {
   });
 });
 
-// Primary path (plan voice-public-release-readiness D-001, owner-ratified
-// 2026-07-12): when a conversation provider is mounted it registers its
-// sendUserMessage via setVoiceConverseHandler, and the bridge routes the spoken
-// turn into that in-process Papercup converse brain — NOT the dock pane.
-describe('VoiceAppBridge — Papercup converse routing (primary)', () => {
-  it('submits the spoken turn to the registered converse brain and bypasses the dock', async () => {
+// Converse FALLBACK (P-019): when the pane route is unavailable (no dock, no
+// registered pane, pane exited — routeVoiceToSentinelPane resolves false), the
+// bridge degrades to the in-process Papercup converse brain via the
+// provider-registered sendUserMessage. Same one user-facing identity (D-001).
+describe('VoiceAppBridge — converse fallback (pane unavailable)', () => {
+  beforeEach(() => {
+    h.routeToSentinel.mockReturnValue(Promise.resolve(false)); // pane route down
+  });
+
+  it('submits the spoken turn to the registered converse brain when the pane write fails', async () => {
     const converse = vi.fn();
     setVoiceConverseHandler(converse);
     mount();
     setMode(ALWAYS_ON);
     await utter('what is happening');
+    expect(sentinelCalled()).toBe(true); // pane was TRIED first
     expect(converse).toHaveBeenCalledWith('what is happening', { spoken: true });
-    expect(sentinelCalled()).toBe(false); // dock is bypassed when a provider is mounted
+    // No instant ack on the converse path — the provider speaks the real reply.
+    expect(h.speak).not.toHaveBeenCalled();
   });
 
   it('a panel-open consumer still suppresses converse routing', async () => {
@@ -198,7 +223,7 @@ describe('VoiceAppBridge — Papercup converse routing (primary)', () => {
     expect(sentinelCalled()).toBe(false);
   });
 
-  it('a full-agent engine still owns its own brain (no converse dispatch)', async () => {
+  it('a full-agent engine still owns its own brain (no pane write, no converse dispatch)', async () => {
     const converse = vi.fn();
     setVoiceConverseHandler(converse);
     h.fullAgentEngine = 'elevenlabs-conv';
@@ -207,5 +232,14 @@ describe('VoiceAppBridge — Papercup converse routing (primary)', () => {
     await utter('the full agent is in charge');
     expect(converse).not.toHaveBeenCalled();
     expect(sentinelCalled()).toBe(false);
+  });
+
+  it('drops the turn silently when neither the pane nor a provider is available', async () => {
+    // No setVoiceConverseHandler — submitVoiceTurn returns false.
+    mount();
+    setMode(ALWAYS_ON);
+    await utter('anyone there');
+    expect(sentinelCalled()).toBe(true); // tried
+    expect(h.speak).not.toHaveBeenCalled(); // no false ack
   });
 });

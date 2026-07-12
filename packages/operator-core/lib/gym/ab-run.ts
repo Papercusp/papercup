@@ -30,6 +30,7 @@ import { randomBytes } from 'node:crypto';
 import postgres from 'postgres';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { provisionGymDatabase, GYM_PROVISION_PG_IMAGE } from './gym-db-init';
+import { sweepOrphanedGymPgContainers } from './gym-pg-orphan-sweep';
 import { buildGymOperatorBootSpec } from './boot-spec';
 import { createGymRunnerPorts } from './runner-ports';
 import { buildAbDeps } from './ab-runner-real';
@@ -111,7 +112,9 @@ async function main(): Promise<void> {
   const report: Record<string, unknown> = { mode: FAKE ? 'fake (zero-LLM)' : 'real', repeats: REPEATS };
 
   try {
-    // 1. Dedicated gym DB.
+    // 1. Dedicated gym DB. Self-heal sweep FIRST (WI-4332): reclaims any orphaned
+    // container a crashed prior gym run left behind before Ryuk could reap it.
+    await sweepOrphanedGymPgContainers({ image: GYM_PROVISION_PG_IMAGE }).catch(() => {});
     log('provisioning gym DB …');
     pgContainer = await new PostgreSqlContainer(GYM_PROVISION_PG_IMAGE).withDatabase('papercusp_ab').start();
     ({ databaseUri: gymUri } = await provisionGymDatabase({ maintenanceUri: pgContainer.getConnectionUri(), dbName: DB_NAME }));

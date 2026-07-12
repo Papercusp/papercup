@@ -302,17 +302,47 @@ function buildMcpEntry(operatorUrl: string, token: string, agentId: string): Mcp
   return {
     type: 'http',
     url: `${operatorUrl}/api/mcp?superuser=1&client=${agentId}`,
-    headers: { Authorization: `Bearer ${token}` },
+    headers: {
+      Authorization: `Bearer ${token}`,
+      // Per-session identity/scope carriers (three-client-lock-enforcement +
+      // orient-recall-quality follow-up, WI-4393). OMP can't env-interpolate its
+      // mcp.json URL (unlike claude/codex), so `&client=` above stays the static
+      // per-machine agentId — but OMP DOES resolve header values at connect time
+      // via a leading "!" (config/resolve-config-value.ts), running the rest in a
+      // subshell that inherits the OMP process env. `psu` exports a per-launch
+      // PAPERCUSP_SID/-WORKSPACE/-PROFILE/-HARNESS_SLUG, so these resolve to the
+      // CURRENT session's values — empty stdout (no psu launch, or no harness) =>
+      // header dropped => the operator's existing fallbacks apply ('*'/unscoped).
+      // The operator reads each header FIRST, before its URL-param counterpart
+      // (tryBuildSpawnContext in _mcp-handler.ts) — this is OMP's analogue of
+      // Claude's `${PAPERCUSP_SID}` URL interpolation (buildClaudeMcpEntry).
+      // harness specifically feeds the MCP `initialize`-time memory prelude
+      // (buildMcpPrelude derives its recall query from the resolved harness) —
+      // without it, every OMP session was a "bare session" to the prelude
+      // builder (zero session-start memory recall).
+      'x-papercusp-client': '!printf %s "${PAPERCUSP_SID:-}"',
+      'x-papercusp-workspace': '!printf %s "${PAPERCUSP_WORKSPACE:-}"',
+      'x-papercusp-profile': '!printf %s "${PAPERCUSP_PROFILE:-}"',
+      'x-papercusp-harness': '!printf %s "${PAPERCUSP_HARNESS_SLUG:-}"',
+    },
   };
 }
 
 function mcpEntryEquals(a: McpServerEntry | undefined, b: McpServerEntry): boolean {
   if (!a) return false;
-  return (
-    a.type === b.type &&
-    a.url === b.url &&
-    a.headers?.Authorization === b.headers.Authorization
-  );
+  if (a.type !== b.type || a.url !== b.url) return false;
+  // Full headers comparison (WI-4393) — comparing Authorization alone made this
+  // reconciler idempotent-BROKEN for any other header: a machine bootstrapped
+  // before a header was added/changed here would compare "equal" forever and
+  // never receive the update, since re-installs are gated on this check. Order-
+  // independent key/value comparison so JSON key ordering never spuriously
+  // reports a diff.
+  const aHeaders = a.headers ?? {};
+  const bHeaders = b.headers ?? {};
+  const aKeys = Object.keys(aHeaders);
+  const bKeys = Object.keys(bHeaders);
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((k) => aHeaders[k] === bHeaders[k]);
 }
 
 async function mergeMcpServer(

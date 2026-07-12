@@ -34,6 +34,7 @@ import postgres from 'postgres';
 import type { Sql } from 'postgres';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { provisionGymDatabase, GYM_PROVISION_PG_IMAGE } from './gym-db-init';
+import { sweepOrphanedGymPgContainers } from './gym-pg-orphan-sweep';
 import { readGymGates } from '../gym-gates';
 import { buildGymOperatorBootSpec } from './boot-spec';
 import { createGymRunnerPorts } from './runner-ports';
@@ -225,7 +226,9 @@ export async function runOneAutoloopCycle(
   };
 
   try {
-    // 1. Dedicated gym DB (execution data).
+    // 1. Dedicated gym DB (execution data). Self-heal sweep FIRST (WI-4332): reclaims
+    // any orphaned container a crashed prior gym run left behind before Ryuk could reap it.
+    await sweepOrphanedGymPgContainers({ image: GYM_PROVISION_PG_IMAGE }).catch(() => {});
     log('provisioning gym DB …');
     pgContainer = await new PostgreSqlContainer(GYM_PROVISION_PG_IMAGE).withDatabase('papercusp_loop').start();
     ({ databaseUri: gymUri } = await provisionGymDatabase({ maintenanceUri: pgContainer.getConnectionUri(), dbName: DB_NAME }));

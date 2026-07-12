@@ -50,6 +50,9 @@ export default defineTool({
     }
     switch (res.reason) {
       case 'no-dock':
+      case 'no-sentinel-pane':
+        // Both mean "the pane route is unavailable" — the client (VoiceAppBridge)
+        // falls back to the in-process converse brain (P-019).
         return Response.json({ error: res.error }, { status: 503 });
       case 'pane-exited':
         return Response.json(

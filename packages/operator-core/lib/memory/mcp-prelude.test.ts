@@ -78,6 +78,28 @@ describe('buildMcpPrelude — harness slug resolution + launch-profile query (D-
     expect(r?.sources.harnessSource).toBe('env');
   });
 
+  it('WI-4393: explicit harnessSlug override wins over ?harness= (the OMP carrier — OMP cannot env-interpolate ?harness= into its URL, so callers resolve it via header precedence and pass it here)', async () => {
+    vi.mocked(buildMemoryContextBlock).mockResolvedValue('## Memory\n- foo');
+    const url = new URL('http://op/api/mcp?superuser=1&harness=stale-url-value');
+    const r = await buildMcpPrelude({ userId: 'u1', workspaceId: 'w1', url, harnessSlug: 'papercusp' });
+    expect(buildMemoryContextBlock).toHaveBeenCalledWith({
+      userId: 'u1',
+      workspaceId: 'w1',
+      harnessSlugs: ['papercusp'],
+      queryContext: initializeQueryForHarness('papercusp'),
+    });
+    expect(r?.sources.harnessSlug).toBe('papercusp');
+  });
+
+  it('WI-4393: harnessSlug override alone (no url at all — OMP session) resolves harness', async () => {
+    vi.mocked(buildMemoryContextBlock).mockResolvedValue('## Memory\n- foo');
+    const r = await buildMcpPrelude({ userId: 'u1', workspaceId: 'w1', harnessSlug: 'papercusp' });
+    expect(buildMemoryContextBlock).toHaveBeenCalledWith(
+      expect.objectContaining({ harnessSlugs: ['papercusp'] }),
+    );
+    expect(r?.sources.harnessSlug).toBe('papercusp');
+  });
+
   it('bare session (no harness): empty query — recall defers to turn-start', async () => {
     vi.mocked(buildMemoryContextBlock).mockResolvedValue('## Memory\n- foo');
     const r = await buildMcpPrelude({ userId: 'u1', workspaceId: 'w1' });

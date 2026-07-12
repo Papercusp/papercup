@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildDeepBrief,
+  buildDeepPaneBrief,
   DEEP_MAX_CONCURRENT,
   DEEP_TIMEOUT_MS,
   delegateDeep,
@@ -137,5 +138,100 @@ describe('delegateDeep', () => {
     expect(out).toEqual({ ok: false, error: 'empty question' });
     expect(spies.createWorkItem).not.toHaveBeenCalled();
     expect(spies.spawn).not.toHaveBeenCalled();
+  });
+});
+
+describe('buildDeepPaneBrief (D-003 live-deep lane)', () => {
+  it('carries the question, the completion contract, and the no-coord-reply warning', () => {
+    const brief = buildDeepPaneBrief('WI-777', 'Why did the deploy roll back?', 'It happened twice today.');
+    expect(brief).toContain('QUESTION: Why did the deploy roll back?');
+    expect(brief).toContain("work_items:complete { id: 'WI-777'");
+    expect(brief).toContain('It happened twice today.');
+    expect(brief).toContain('ONLY return channel');
+    // The persistent pane is NOT the ephemeral one-question agent.
+    expect(brief).not.toContain('EPHEMERAL');
+  });
+});
+
+describe('delegateDeep — D-003 live papercup-deep lane', () => {
+  it('delivers to the live deep session (claimed by its ownerId) and does NOT spawn', async () => {
+    const findLiveDeepSession = vi.fn(async () => ({ ownerId: 'role-deep-1' }));
+    const deliverToDeep = vi.fn(async () => true);
+    const { deps, spies } = makeDeps({ findLiveDeepSession, deliverToDeep });
+    const out = await delegateDeep(
+      {
+        question: 'Which migration path is safer?',
+        brief: 'Prefer rollback safety.',
+        harness: 'papercup',
+        workspaceId: WS,
+      },
+      deps,
+    );
+
+    expect(out).toEqual({
+      ok: true,
+      workItemId: 'WI-301',
+      spawnId: null,
+      spawned: false,
+      deliveredTo: 'role-deep-1',
+    });
+    expect(findLiveDeepSession).toHaveBeenCalledWith(WS);
+    expect(spies.createWorkItem).toHaveBeenCalledTimes(1);
+    expect(spies.createWorkItem.mock.calls[0][0]).toMatchObject({
+      assignee: 'role-deep-1',
+      title: 'Deep dive: Which migration path is safer?',
+    });
+    expect(deliverToDeep).toHaveBeenCalledTimes(1);
+    expect(deliverToDeep.mock.calls[0][0]).toMatchObject({
+      ownerId: 'role-deep-1',
+      workItemId: 'WI-301',
+      harness: 'papercup',
+      question: 'Which migration path is safer?',
+    });
+    expect((deliverToDeep.mock.calls[0][0] as { brief: string }).brief).toContain(
+      "work_items:complete { id: 'WI-301'",
+    );
+    expect(spies.spawn).not.toHaveBeenCalled();
+  });
+
+  it('releases the claim and keeps the durable item when the coord delivery misses', async () => {
+    const findLiveDeepSession = vi.fn(async () => ({ ownerId: 'role-deep-1' }));
+    const deliverToDeep = vi.fn(async () => false);
+    const releaseClaim = vi.fn(async () => {});
+    const { deps, spies } = makeDeps({ findLiveDeepSession, deliverToDeep, releaseClaim });
+    const out = await delegateDeep(
+      { question: 'Compare the tradeoffs.', workspaceId: WS },
+      deps,
+    );
+
+    expect(out).toEqual({ ok: true, workItemId: 'WI-301', spawnId: null, spawned: false });
+    expect(releaseClaim).toHaveBeenCalledWith('WI-301', 'papercup');
+    expect(spies.spawn).not.toHaveBeenCalled();
+    expect(spies.log).toHaveBeenCalledWith(expect.stringContaining('coord delivery missed for WI-301'));
+  });
+
+  it('falls back to the ephemeral spawn when NO live deep session exists', async () => {
+    const findLiveDeepSession = vi.fn(async () => null);
+    const deliverToDeep = vi.fn(async () => true);
+    const { deps, spies } = makeDeps({ findLiveDeepSession, deliverToDeep });
+    const out = await delegateDeep(
+      { question: 'Compare the tradeoffs.', workspaceId: WS },
+      deps,
+    );
+
+    expect(out).toEqual({ ok: true, workItemId: 'WI-301', spawnId: 's-deep', spawned: true });
+    expect(deliverToDeep).not.toHaveBeenCalled();
+    // Fallback lane claims by the pre-minted spawn id, not a session ownerId.
+    expect(spies.createWorkItem.mock.calls[0][0].assignee).toMatch(/^s-\d+-[0-9a-f]{8}$/);
+  });
+
+  it('legacy deps without the live-deep hooks keep the spawn behavior unchanged', async () => {
+    const { deps, spies } = makeDeps(); // no findLiveDeepSession / deliverToDeep
+    const out = await delegateDeep(
+      { question: 'Compare the tradeoffs.', workspaceId: WS },
+      deps,
+    );
+    expect(out).toEqual({ ok: true, workItemId: 'WI-301', spawnId: 's-deep', spawned: true });
+    expect(spies.spawn).toHaveBeenCalledTimes(1);
   });
 });

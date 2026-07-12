@@ -1,12 +1,15 @@
 /**
- * voice-sentinel-bridge — Phase C voice-IN for the Sentinel-as-Claude-TUI
- * (sentinel-as-claude-tui-2026-06-22). A final STT transcript is POSTed to
- * `/api/operator/papercup-input`, which writes it into the dock's 🛡 Sentinel
- * pane (a `psu --role=sentinel` Claude-Code TUI) stdin so the local user can
- * talk to the Sentinel by voice.
+ * voice-sentinel-bridge — the PRIMARY voice-IN route (voice-public-release-
+ * readiness-2026-07-12 P-019/D-004/D-007). A final STT transcript is POSTed to
+ * `/api/operator/papercup-input`, which writes it into the dock's Papercup
+ * pane (a `psu --role=papercup` Claude-Code TUI — the persistent fast
+ * front-end) so the user talks to Papercup by voice. The dock ships on ALL
+ * platforms (D-004); when the pane route is unavailable (503: no dock / no
+ * registered pane) the caller (VoiceAppBridge) falls back to the in-process
+ * converse brain via submitVoiceTurn.
  *
  * LOCAL APP USER ONLY (owner constraint): the local STT→pane pipeline, NOT the
- * P2P voice-channel system. Supersedes the old voice→operator:converse route.
+ * P2P voice-channel system.
  */
 export async function routeVoiceToSentinelPane(text: string): Promise<boolean> {
   const t = text.trim();

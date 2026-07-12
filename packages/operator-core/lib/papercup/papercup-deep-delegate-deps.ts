@@ -1,9 +1,10 @@
 /**
  * sentinel-deep-delegate-deps — the real-substrate wiring of DeepDelegateDeps
- * (voice-unified-sentinel-pipeline-2026-07-01, P-006). Kept SEPARATE from the
- * dispatch core (sentinel-deep-delegate.ts) so the core unit-tests against
- * injected deps with no PG/spawn machinery — the same split the handoff lane
- * uses (operator-sentinel-handoff-deps.ts).
+ * (voice-unified-sentinel-pipeline-2026-07-01 P-006; live-deep lane added by
+ * voice-public-release-readiness-2026-07-12 P-019 per its D-003). Kept SEPARATE
+ * from the dispatch core (sentinel-deep-delegate.ts) so the core unit-tests
+ * against injected deps with no PG/spawn/coord machinery — the same split the
+ * handoff lane uses (operator-sentinel-handoff-deps.ts).
  *
  * Each dep maps onto an EXISTING substrate primitive — reuse, don't rebuild:
  *   - countOpenDelegations → one SQL count over engineer_issues keyed on the
@@ -11,7 +12,14 @@
  *   - createWorkItem       → work-items.createWorkItem (kind=`task`, tagged
  *                            tagged `deep-delegation` (the landing gate) +
  *                            stamped payload.deep_delegation, landing ALREADY
- *                            claimed by the pre-minted spawn id.
+ *                            claimed by the assignee (deep ownerId / spawn id).
+ *   - findLiveDeepSession  → coordination/presence.listPresence filtered to a
+ *                            fresh agentRole='papercup-deep' row (D-006: the
+ *                            persistent parked deep pane).
+ *   - deliverToDeep        → coordination/messages.sendMessage (directed, the
+ *                            brief as body) + inbox-wake.wakeRecipients — the
+ *                            modern coord/wake channel (D-003).
+ *   - releaseClaim         → work-items.releaseWorkItem (delivery-miss cleanup).
  *   - spawn                → fleet/operator-spawn.spawnAgentInHarness with a
  *                            pre-minted spawn id, role `bee` (the generic
  *                            brief-driven worker) at the `deep` tier; if launch
@@ -20,7 +28,19 @@
  */
 import type { DeepDelegateDeps } from './papercup-deep-delegate';
 import { DEEP_DELEGATION_LABEL } from './papercup-deep-delegate';
+import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
+
+/** The system identity deep-delegation coord messages are sent AS. Not a live
+ *  session — the deep session must answer via the work-item completion (the
+ *  brief says so), never a coord reply to this sender. */
+const DEEP_DELEGATE_IDENTITY: AgentIdentity = {
+  ownerId: 'system:papercup-deep-delegate',
+  ownerLabel: 'papercup-deep-delegate',
+  source: 'static-client',
+  workspaceId: null,
+  userId: null,
+};
 
 /** Default harness the background agent spawns into when the caller gave none:
  *  the operator HOME harness (where the sentinel itself lives) via the canonical
@@ -76,6 +96,70 @@ export function defaultDeepDelegateDeps(): DeepDelegateDeps {
         console.warn('[deep-delegate] work_item create failed:', (err as Error).message);
         return null;
       }
+    },
+
+    async findLiveDeepSession(workspaceId) {
+      try {
+        const { listPresence } = await import('../agent-tools/coordination/presence');
+        // Unscoped list + filter: a deep pane launched before its workspace stamp
+        // resolves would be invisible to a workspace-scoped read; prefer a
+        // workspace match, then the freshest activity.
+        const rows = await listPresence({});
+        const candidates = rows.filter(
+          (r) => r.agentRole === 'papercup-deep' && !r.stale && !r.revoked,
+        );
+        if (candidates.length === 0) return null;
+        const ts = (r: { lastActiveAt: string | null; heartbeatAt: string }) =>
+          Date.parse(r.lastActiveAt ?? r.heartbeatAt) || 0;
+        candidates.sort((a, b) => {
+          const aWs = a.workspaceId === workspaceId ? 1 : 0;
+          const bWs = b.workspaceId === workspaceId ? 1 : 0;
+          if (aWs !== bWs) return bWs - aWs;
+          return ts(b) - ts(a);
+        });
+        return { ownerId: candidates[0].ownerId };
+      } catch (err) {
+        console.warn('[deep-delegate] live-deep presence read failed:', (err as Error).message);
+        return null;
+      }
+    },
+
+    async deliverToDeep({ ownerId, workItemId, harness, question, brief }) {
+      try {
+        const [{ sendMessage }, { wakeRecipients }] = await Promise.all([
+          import('../agent-tools/coordination/messages'),
+          import('../agent-tools/coordination/inbox-wake'),
+        ]);
+        const headline = question.length > 140 ? `${question.slice(0, 139)}…` : question;
+        // Durable inbox row first (the truth), then the wake (the delivery).
+        await sendMessage(DEEP_DELEGATE_IDENTITY, {
+          to: [ownerId],
+          summary: `[deep-delegation ${workItemId}] ${headline}`,
+          body: brief,
+          harnessSlug: harness,
+        });
+        const wake = await wakeRecipients([ownerId], {
+          summary: `deep delegation ${workItemId}`,
+          source: 'papercup-deep-delegate',
+        });
+        if (wake.woken > 0) return true;
+        // staged (manual wake-mode) or missed (no live session watching the key):
+        // the D-007 trap — a staged wake never fires by itself, so treat both as
+        // NOT delivered and let the core degrade honestly.
+        console.warn(
+          `[deep-delegate] wake for ${workItemId} did not land on ${ownerId} ` +
+            `(woken=${wake.woken}, staged=${wake.staged}) — falling back`,
+        );
+        return false;
+      } catch (err) {
+        console.warn('[deep-delegate] coord delivery failed:', (err as Error).message);
+        return false;
+      }
+    },
+
+    async releaseClaim(workItemId, harness) {
+      const { releaseWorkItem } = await import('../work-items');
+      await releaseWorkItem(workItemId, { harness }).catch(() => {});
     },
 
     async spawn({ spawnId, workItemId, harness, brief, timeoutMs }) {

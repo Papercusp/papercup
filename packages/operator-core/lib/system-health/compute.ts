@@ -332,7 +332,7 @@ async function collectBees(ctx: HealthCtx): Promise<HealthPanel<BeesHealth>> {
          WHERE workspace_id = ${ctx.ws}
            AND child_role IN ('cup', 'mug', 'kettle', 'blender')
            AND status = 'failed'
-           AND started_at >= ${new Date(ctx.now - WINDOW_MS)}
+           AND started_at >= ${new Date(ctx.now - WINDOW_MS).toISOString()}
            AND (
              coalesce(error_message, '') ILIKE '%selected model%'
              OR coalesce(output_tail, '') ILIKE '%selected model%'
@@ -1047,7 +1047,10 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
     try {
       const { sql } = getOrgPg();
       const [ok, last] = await Promise.all([
-        sql<Array<{ finished_at: Date }>>`
+        // NB: this client returns timestamptz as ISO STRINGS and rejects Date
+        // params — always .toISOString() in, new Date(row) out (loops-panel
+        // "Received an instance of Date" incident, 2026-07-12).
+        sql<Array<{ finished_at: string }>>`
           SELECT finished_at FROM harness_shared.backup_snapshots
            WHERE workspace_id = ${ctx.ws} AND status = 'ok' AND finished_at IS NOT NULL
            ORDER BY finished_at DESC LIMIT 1`,
@@ -1056,7 +1059,7 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
            WHERE workspace_id = ${ctx.ws}
            ORDER BY started_at DESC LIMIT 1`,
       ]);
-      const lastOkAtMs = ok[0]?.finished_at ? ok[0].finished_at.getTime() : null;
+      const lastOkAtMs = ok[0]?.finished_at ? new Date(ok[0].finished_at).getTime() : null;
       backup = {
         lastOkAtMs,
         ageMs: lastOkAtMs === null ? null : ctx.now - lastOkAtMs,

@@ -520,7 +520,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
     const bearer = bearerFromExtra(extra);
     if (!isValidSuperuserBearer(bearer)) return { kind: 'failed', reason: 'superuser_invalid_bearer' };
     const wsParam = (url.searchParams.get('workspace') ?? '').trim();
-    const harnessParam = (url.searchParams.get('harness') ?? '').trim();
+    const harnessUrlParam = (url.searchParams.get('harness') ?? '').trim();
     const clientParam = (url.searchParams.get('client') ?? '').trim();
     // Per-session identity for SU agents (su-locks coordination), sourced
     // in precedence order:
@@ -569,6 +569,15 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
     //   4. '*' — unscoped, exactly the pre-fix behavior.
     const headerWs = (headers.get('x-papercusp-workspace') ?? '').trim();
     let workspaceId = headerWs || wsParam;
+    // Harness, same precedence as workspace above (WI-4393): `x-papercusp-harness`
+    // header (OMP's per-launch carrier — omp-integration.ts's buildMcpEntry) first,
+    // then `?harness=` (claude's `${PAPERCUSP_HARNESS_SLUG:-}` env-expanded url —
+    // claude-integration.ts's buildClaudeMcpEntry). Without the header leg, every
+    // OMP session baked a static harness-less URL and the initialize-time memory
+    // prelude (buildMcpPrelude) never fired a harness-scoped recall for su-* OMP
+    // sessions (zero port=initialize ledger stamps, live-verified in the WI).
+    const headerHarness = (headers.get('x-papercusp-harness') ?? '').trim();
+    const harnessParam = headerHarness || harnessUrlParam;
     const sidForLookup = headerClient || clientParam;
     if (!workspaceId && sidForLookup) {
       workspaceId = (await workspaceForCoordOwner(sidForLookup)) ?? '';
@@ -2158,11 +2167,17 @@ const handler = createMcpHandler(
               if (spawnRes.kind !== 'ok') return null;
               const user = await getSessionUserOrDefault();
               const ctxWorkspace = spawnRes.ctx.workspaceId;
+              const ctxHarness = spawnRes.ctx.harnessSlug;
               const prelude = await buildMcpPrelude({
                 userId: user.id,
                 workspaceId:
                   ctxWorkspace && ctxWorkspace !== '*' ? ctxWorkspace : activeWorkspaceId(),
                 url: urlFromExtra(extra),
+                // WI-4393: ctx.harnessSlug already resolved header (OMP)-vs-URL-param
+                // (claude/codex) precedence in tryBuildSpawnContext — pass it explicitly
+                // rather than making buildMcpPrelude re-parse `?harness=` alone, which
+                // OMP's static per-launch URL never carries.
+                harnessSlug: ctxHarness && ctxHarness !== '*' ? ctxHarness : null,
                 insightsDir: INSIGHTS_DIR,
                 // P-002 epoch dedup identity: the per-launch SID (uiClientId),
                 // so initialize stamps the same ledger the turn-start/claim

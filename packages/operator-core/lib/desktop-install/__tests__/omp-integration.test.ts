@@ -144,7 +144,13 @@ describe('installOmpIntegration', () => {
     expect(cfg.mcpServers['papercusp-su']).toEqual({
       type: 'http',
       url: 'http://localhost:3070/api/mcp?superuser=1&client=agent-456',
-      headers: { Authorization: 'Bearer tok-abc-123' },
+      headers: {
+        Authorization: 'Bearer tok-abc-123',
+        'x-papercusp-client': '!printf %s "${PAPERCUSP_SID:-}"',
+        'x-papercusp-workspace': '!printf %s "${PAPERCUSP_WORKSPACE:-}"',
+        'x-papercusp-profile': '!printf %s "${PAPERCUSP_PROFILE:-}"',
+        'x-papercusp-harness': '!printf %s "${PAPERCUSP_HARNESS_SLUG:-}"',
+      },
     });
   });
 
@@ -264,6 +270,51 @@ describe('installOmpIntegration', () => {
     expect(second.actions).toEqual([]);
     expect(second.mcpServerInstalled).toBe(true);
     expect(second.wrapperInstalled).toBe(false); // wrapper retired (P-050)
+  });
+
+  it('WI-4393: heals a stale pre-carrier-headers entry (mcpEntryEquals used to compare only Authorization, so a header-set change here silently never reached an already-installed machine)', async () => {
+    await seedPhase1(tmpHome);
+    const ompPaths = resolveOmpPaths(tmpHome);
+    await fs.mkdir(ompPaths.ompAgentDir, { recursive: true });
+    // Simulate a machine installed before the x-papercusp-* carrier headers
+    // existed on this entry: same type/url/Authorization, headers otherwise bare.
+    await fs.writeFile(
+      ompPaths.mcpJsonPath,
+      JSON.stringify({
+        mcpServers: {
+          'papercusp-su': {
+            type: 'http',
+            url: 'http://localhost:3070/api/mcp?superuser=1&client=agent-456',
+            headers: { Authorization: 'Bearer tok-abc-123' },
+          },
+        },
+      }),
+    );
+
+    const result = await installOmpIntegration({
+      home: tmpHome,
+      operatorUrl: 'http://localhost:3070',
+      ompBinaryPath: null,
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.actions).toContain('updated mcpServers.papercusp-su');
+    const cfg = JSON.parse(await fs.readFile(ompPaths.mcpJsonPath, 'utf8'));
+    expect(cfg.mcpServers['papercusp-su'].headers).toEqual({
+      Authorization: 'Bearer tok-abc-123',
+      'x-papercusp-client': '!printf %s "${PAPERCUSP_SID:-}"',
+      'x-papercusp-workspace': '!printf %s "${PAPERCUSP_WORKSPACE:-}"',
+      'x-papercusp-profile': '!printf %s "${PAPERCUSP_PROFILE:-}"',
+      'x-papercusp-harness': '!printf %s "${PAPERCUSP_HARNESS_SLUG:-}"',
+    });
+
+    // And THIS reconciled state is now itself a stable fixed point.
+    const second = await installOmpIntegration({
+      home: tmpHome,
+      operatorUrl: 'http://localhost:3070',
+      ompBinaryPath: null,
+    });
+    expect(second.changed).toBe(false);
   });
 
   it('merge preserves other MCP servers in mcp.json', async () => {

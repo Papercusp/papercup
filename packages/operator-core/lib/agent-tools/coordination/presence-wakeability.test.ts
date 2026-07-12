@@ -54,6 +54,33 @@ describe('deriveSessionState', () => {
     // omitted hardStale defaults to false
     expect(deriveSessionState({ stale: true, wakeable: true, liveTurn: false })).toBe('parked');
   });
+
+  // WI-3898 P1 (coord:presence liveness parity): a local kill(pid, 0) probe
+  // (probeProcessLiveness) that confirms the process is gone is a DIRECT OS
+  // observation — it must beat even hardStale's 30-minute wait, detecting a
+  // locally co-located dead agent in ~seconds instead of up to 30 minutes.
+  it('pidConfirmedDead overrides everything (even a fresh heartbeat + a running turn + a live wake-await) → ended', () => {
+    expect(
+      deriveSessionState({ stale: false, wakeable: true, liveTurn: true, pidConfirmedDead: true }),
+    ).toBe('ended');
+    expect(
+      deriveSessionState({
+        stale: false,
+        wakeable: true,
+        liveTurn: true,
+        hardStale: false,
+        pidConfirmedDead: true,
+      }),
+    ).toBe('ended');
+  });
+
+  it('pidConfirmedDead:false / omitted leaves prior behavior unchanged (back-compat)', () => {
+    expect(
+      deriveSessionState({ stale: false, wakeable: true, liveTurn: true, pidConfirmedDead: false }),
+    ).toBe('live');
+    // omitted pidConfirmedDead defaults to undefined (falsy) — no behavior change.
+    expect(deriveSessionState({ stale: false, wakeable: true, liveTurn: true })).toBe('live');
+  });
 });
 
 describe('overrideIntentStaleForSessionState (EI-9262)', () => {

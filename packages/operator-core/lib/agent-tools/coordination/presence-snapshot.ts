@@ -19,7 +19,7 @@
 
 import { activeWorkspaceId } from '../../workspace-registry';
 import { listRecordedLiveSessions } from '../../adv-sessions';
-import { listPresence, sweepStalePresence } from './presence';
+import { listPresence, sweepStalePresence, probeProcessLiveness } from './presence';
 import { listFederatedPresence } from './federated-presence';
 import { reconcileRosterSources, RECORDED_SESSION_SOURCE } from './recorded-sessions';
 import { fetchPresenceTier1, mergeTier1, type PresenceTier1Joins } from './presence-tier1';
@@ -342,9 +342,21 @@ export async function assemblePresenceSnapshot(
     // wake-await, so a dead row would otherwise stay `parked`; the DEAD-ceiling
     // check forces an hour-cold heartbeat to `ended` even while wakeable.
     const hardStale = isHardStale(r.heartbeatAt ? Date.parse(r.heartbeatAt) : null, nowMs);
+    // WI-3898 P1: for a row whose supervisor beat reported a LOCAL pid/host
+    // (see presence.ts's file-header note), a direct kill(pid, 0) probe is a
+    // definitive OS-level observation — far faster than waiting on hardStale's
+    // 30-minute ceiling. `=== false` only: `null` (remote host / no pid /
+    // EPERM) is inconclusive and must never force `ended`.
+    const pidConfirmedDead = probeProcessLiveness({ host: r.host, pid: r.pid }) === false;
     const sessionState: RosterRow['sessionState'] = recordedLiveOnly
       ? 'recorded'
-      : deriveSessionState({ stale: !!r.stale, wakeable: w.wakeable, liveTurn: w.liveTurn, hardStale });
+      : deriveSessionState({
+          stale: !!r.stale,
+          wakeable: w.wakeable,
+          liveTurn: w.liveTurn,
+          hardStale,
+          pidConfirmedDead,
+        });
     return {
       ...r,
       wakeable: w.wakeable,

@@ -44,8 +44,18 @@ export interface PreludeInput {
   userId: string;
   /** Workspace id from the MCP request context. */
   workspaceId: string;
-  /** URL of the incoming MCP request — used to read ?harness=. */
+  /** URL of the incoming MCP request — used to read ?harness= (fallback; see `harnessSlug`). */
   url?: URL | null;
+  /**
+   * Explicit harness slug override — takes precedence over `?harness=` in `url`.
+   * Callers that already resolved harness via header+param precedence (e.g. the
+   * MCP handler's tryBuildSpawnContext, which folds the `x-papercusp-harness`
+   * header for OMP sessions — OMP can't env-interpolate its MCP URL, so it
+   * carries per-launch values via headers instead, WI-4393) should pass their
+   * resolved slug here rather than relying on this module re-parsing `?harness=`
+   * (which OMP's static URL never carries).
+   */
+  harnessSlug?: string | null;
   /**
    * Optional cwd hint — relevant only when the MCP transport carries
    * one (it usually doesn't, since the server is HTTP and the client's
@@ -119,8 +129,12 @@ export async function buildMcpPrelude(
   let harnessSlug: string | null = null;
   let harnessSource: DetectResult['source'] | null = null;
 
+  const fromOverride = input.harnessSlug?.trim();
   const fromUrl = input.url?.searchParams.get('harness')?.trim();
-  if (fromUrl) {
+  if (fromOverride) {
+    harnessSlug = fromOverride;
+    harnessSource = 'env'; // caller-resolved (e.g. header precedence) is effectively an explicit override
+  } else if (fromUrl) {
     harnessSlug = fromUrl;
     harnessSource = 'env'; // URL is effectively an explicit override
   } else if (input.cwd) {
