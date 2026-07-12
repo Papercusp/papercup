@@ -57,6 +57,7 @@ import {
   modelArgsFor,
   reportSessionEnded,
   reportSessionResumed,
+  tryRematerializeFromArchive,
   roleLaunchArgs,
   suLaunchArgs,
   kickoffPositionalArgs,
@@ -2754,6 +2755,66 @@ describe('reportSessionResumed (re-activate adv row on resume — best-effort, n
     await expect(
       reportSessionResumed(42, { fetchImpl, operatorUrl: 'http://op:1', token: 't' }),
     ).resolves.toBeUndefined();
+  });
+});
+
+// EI-9756 regression guard: "archive a session, then resume it, and assert the
+// conversation actually continues" — the report's own requested GUARD. The
+// deeper archive/rematerialize byte-fidelity is covered by
+// session-archive.test.ts; this pins the CLI-side glue (previously wired but
+// completely untested) that psu --resume depends on to recover a session
+// whose transcript the archive-at-death lifecycle deletes ~15s after every
+// session end (WI-3859 F4) — NOT just a stale/swept one.
+describe('tryRematerializeFromArchive (psu --resume self-heals a transcript the archive-at-death hook deleted)', () => {
+  it('POSTs sessionId (+ sourceKind when given) and returns the parsed result on ok:true', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const calls = [];
+    const fetchImpl = async (url, opts) => {
+      calls.push({ url, opts });
+      return { json: async () => ({ ok: true, sourceKind: 'claude', written: 1, root: '/tmp/restored' }) };
+    };
+    const r = await tryRematerializeFromArchive('sid-1', 'claude', { fetchImpl, operatorUrl: 'http://op:1', token: 'tok-1' });
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    errSpy.mockRestore();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('http://op:1/api/adv/sessions/rematerialize');
+    expect(calls[0].opts.method).toBe('POST');
+    expect(calls[0].opts.headers.authorization).toBe('Bearer tok-1');
+    expect(JSON.parse(calls[0].opts.body)).toEqual({ sessionId: 'sid-1', sourceKind: 'claude' });
+    expect(r).toEqual({ ok: true, sourceKind: 'claude', written: 1, root: '/tmp/restored' });
+  });
+
+  it('omits sourceKind when not given (probes all three archive kinds)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const calls = [];
+    const fetchImpl = async (url, opts) => { calls.push(opts); return { json: async () => ({ ok: true, written: 0 }) }; };
+    await tryRematerializeFromArchive('sid-2', null, { fetchImpl, operatorUrl: 'http://op:1', token: 't' });
+    expect(JSON.parse(calls[0].body)).toEqual({ sessionId: 'sid-2' });
+    errSpy.mockRestore();
+  });
+
+  it('no sessionId → no request, returns null', async () => {
+    const calls = [];
+    const fetchImpl = async (...a) => { calls.push(a); return { json: async () => ({ ok: true }) }; };
+    expect(await tryRematerializeFromArchive(null, 'claude', { fetchImpl, operatorUrl: 'http://op:1', token: 't' })).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('ok:false (not_archived / sha_mismatch / …) → returns null, never throws', async () => {
+    const fetchImpl = async () => ({ json: async () => ({ ok: false, reason: 'not_archived' }) });
+    expect(await tryRematerializeFromArchive('sid-3', null, { fetchImpl, operatorUrl: 'http://op:1', token: 't' })).toBeNull();
+  });
+
+  it('transport failure / unreachable operator → swallowed, returns null (never blocks the fallback not-found error)', async () => {
+    const fetchImpl = async () => { throw new Error('ECONNREFUSED'); };
+    await expect(
+      tryRematerializeFromArchive('sid-4', null, { fetchImpl, operatorUrl: 'http://op:1', token: 't' }),
+    ).resolves.toBeNull();
+  });
+
+  it('non-JSON / malformed response body → swallowed, returns null', async () => {
+    const fetchImpl = async () => ({ json: async () => { throw new SyntaxError('Unexpected token'); } });
+    expect(await tryRematerializeFromArchive('sid-5', null, { fetchImpl, operatorUrl: 'http://op:1', token: 't' })).toBeNull();
   });
 });
 

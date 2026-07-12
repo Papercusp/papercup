@@ -4116,14 +4116,28 @@ async function chooseResumeModel(session, args) {
  *  to restore the files from the archive, then retry the disk lookup. Returns
  *  the API result or null; never throws (a miss just falls through to the
  *  existing not-found error, incl. against an older operator without the
- *  endpoint). */
-async function tryRematerializeFromArchive(sessionId, sourceKind = null) {
+ *  endpoint). EI-9756 regression guard: injectable `fetchImpl`/`operatorUrl`/
+ *  `token` (mirrors reportSessionResumed) so this — previously untested — is
+ *  unit-testable without a live operator; a real caller always hits the real
+ *  operator via the defaults. */
+export async function tryRematerializeFromArchive(
+  sessionId,
+  sourceKind = null,
+  { fetchImpl = fetch, operatorUrl = OPERATOR_URL, token = null, timeoutMs = 10_000 } = {},
+) {
   if (!sessionId) return null;
   try {
-    const r = await api('/api/adv/sessions/rematerialize', {
+    const tok = token ?? readToken();
+    const res = await fetchImpl(operatorUrl + '/api/adv/sessions/rematerialize', {
       method: 'POST',
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: {
+        'content-type': 'application/json',
+        ...(tok ? { authorization: `Bearer ${tok}` } : {}),
+      },
       body: JSON.stringify({ sessionId, ...(sourceKind ? { sourceKind } : {}) }),
     });
+    const r = await res.json().catch(() => null);
     if (!r?.ok) return null;
     console.error(
       `psu: transcript restored from the session archive (${r.sourceKind}, ${r.written} file(s) → ${r.root}).`,
