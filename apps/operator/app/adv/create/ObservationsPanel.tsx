@@ -27,6 +27,7 @@ import { readListTotal } from "@papercusp/operator-core/lib/sync-resolver/list-m
 import type { PanelComponentProps } from "@/app/harness/dock/panel-registry";
 import { useItemPlanFilter } from "./use-create-data";
 import { OBSERVATION_KIND_COLOR } from "@/app/harness/theme";
+import { Tooltip } from "@/app/harness/Tooltip";
 
 interface ObservationRow {
   id: string;
@@ -222,20 +223,20 @@ export default function ObservationsPanel(
             aria-label="Loaded signal distribution"
           >
             {signalCounts.map(([kind, count]) => (
-              <button
-                type="button"
-                key={kind}
-                title={`${KIND_LABEL[kind] ?? kind}: ${count}`}
-                aria-label={`Filter by ${KIND_LABEL[kind] ?? kind}, ${count}`}
-                aria-pressed={signalFilter === kind}
-                onClick={() =>
-                  setSignalFilter((current) => (current === kind ? null : kind))
-                }
-                style={{
-                  background: OBSERVATION_KIND_COLOR[kind] ?? "var(--accent)",
-                  flexGrow: count,
-                }}
-              />
+              <Tooltip key={kind} label={`${KIND_LABEL[kind] ?? kind}: ${count}`}>
+                <button
+                  type="button"
+                  aria-label={`Filter by ${KIND_LABEL[kind] ?? kind}, ${count}`}
+                  aria-pressed={signalFilter === kind}
+                  onClick={() =>
+                    setSignalFilter((current) => (current === kind ? null : kind))
+                  }
+                  style={{
+                    background: OBSERVATION_KIND_COLOR[kind] ?? "var(--accent)",
+                    flexGrow: count,
+                  }}
+                />
+              </Tooltip>
             ))}
           </div>
         ) : null}

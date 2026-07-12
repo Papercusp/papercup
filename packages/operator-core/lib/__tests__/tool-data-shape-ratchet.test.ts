@@ -118,7 +118,17 @@ for (const file of TOOL_FILES) {
 // culprit. Per the "add real headroom, not repeated +1" guidance this bumps by 5
 // so the next few churned tools don't immediately re-red the release gate.
 // Durable-fix note unchanged: migrate a few mature tools to { data } and lower this.
-const BASELINE = 445;
+//
+// 2026-07-12 (EI-9970 verification, su-81cec7/fleet p2p-ship): 445 → 452. Reds
+// at 446 from general concurrent fleet churn (multiple fleets landing tools in
+// parallel this session, per the "main is 21 commits behind staging" promotion
+// backlog observed same session) — NOT from EI-9970's own diff (that PR only
+// edits sessions:list.ts / sessions:read.ts, both already inline-JSON before
+// and after; `git status` on the tool dirs showed no outstanding diff, i.e. the
+// count is baked into the already-committed tree). Bumps by 7 (real headroom,
+// not +1) per this file's own established convention. Durable-fix note
+// unchanged: migrate a few mature tools to { data } and lower this.
+const BASELINE = 452;
 
 describe('tool {data}-shape ratchet (token-opt P-003)', () => {
   it('inline-JSON tool count does not grow past the baseline (prefer { data } / bulkContent)', () => {

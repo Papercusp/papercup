@@ -640,6 +640,41 @@ async function writeDispatcherShim(shimPath: string, launcherPath: string): Prom
 }
 
 /**
+ * Write the `psu-sentinel` dock-pane launcher shim (WI-4244). The zellij dock
+ * layout (apps/tui/src/layout.rs) invokes `psu-sentinel` by bare command name
+ * for the 🛡 Sentinel pane — but nothing ever put it on PATH, so packaged
+ * builds hit "Command not found: psu-sentinel". Mirrors the dev-repo source
+ * of truth (apps/operator/scripts/psu-sentinel.sh) exactly: register the
+ * current zellij pane for voice-transcript routing, apply a per-session model
+ * override if one is staged, then exec the just-written `psu` shim with
+ * `--role=papercup`. Takes the ALREADY-RESOLVED `psu` shim path (not a
+ * launcher source) — hardcoding the concrete shim path is more robust than
+ * relying on PATH resolution for `psu` again at pane-launch time. Only ever
+ * called when the `psu` shim itself was written this pass (sentinel execs
+ * psu; a sentinel shim with no psu to exec would be worse than no shim).
+ */
+async function writeSentinelShim(shimPath: string, psuShimPath: string): Promise<boolean> {
+  const body =
+    '#!/usr/bin/env bash\n' +
+    '# papercusp psu-sentinel shim — managed by Papercusp.app (installPapercuspFiles).\n' +
+    '# Refreshed on every boot; do not edit. Registers the dock pane for voice-transcript\n' +
+    '# routing, applies a model override, then execs the psu shim with role=papercup.\n' +
+    'mkdir -p "$HOME/.papercusp" 2>/dev/null || true\n' +
+    'if [ -n "$ZELLIJ_PANE_ID" ] && [ -n "$ZELLIJ_SESSION_NAME" ]; then\n' +
+    '  printf \'%s %s\' "$ZELLIJ_SESSION_NAME" "$ZELLIJ_PANE_ID" > "$HOME/.papercusp/sentinel-pane" 2>/dev/null || true\n' +
+    'fi\n' +
+    'model_args=()\n' +
+    'if [ -s "$HOME/.papercusp/sentinel-model" ]; then\n' +
+    '  spec="$(tr -d \' \\t\\r\\n\' < "$HOME/.papercusp/sentinel-model" 2>/dev/null)"\n' +
+    '  [ -n "$spec" ] && model_args+=("--model=$spec")\n' +
+    'fi\n' +
+    `exec ${JSON.stringify(psuShimPath)} --no-picker --agent=claude --role=papercup "\${model_args[@]}"\n`;
+  await fs.writeFile(shimPath, body, { mode: 0o755 });
+  await fs.chmod(shimPath, 0o755);
+  return true;
+}
+
+/**
  * Write a minimal, self-contained macOS `.app` bundle at
  * `~/Applications/Papercusp Tutorial & Setup.app` that double-clicks (Finder/Launchpad/
  * Spotlight) into a fresh Terminal (or iTerm, if installed) window running
@@ -1422,11 +1457,14 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   const papercuspCliWritten = onboardLauncherSource
     ? await writeDispatcherShim(paths.papercuspCliPath, onboardLauncherSource)
     : false;
+  // WI-4244: the 🛡 Sentinel dock pane's launcher shim. Only when `psu` itself
+  // landed this pass — sentinel execs the psu shim by its resolved path.
+  const psuSentinelShimWritten = psuShimWritten ? await writeSentinelShim(paths.psuSentinelPath, paths.psuPath) : false;
   // Put ~/.papercusp/bin on the user's shell PATH so psu/ptool resolve in ANY
   // terminal they open (the in-app "+" console sets PATH itself, but a plain
   // Terminal does not). Only when a shim actually landed.
   const pathProfilesUpdated =
-    psuShimWritten || ptoolShimWritten || papercuspCliWritten
+    psuShimWritten || ptoolShimWritten || papercuspCliWritten || psuSentinelShimWritten
       ? await ensureBinOnPath(home, paths.binDir)
       : [];
 
@@ -1493,6 +1531,7 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
     psuShimWritten,
     ptoolShimWritten,
     papercuspCliWritten,
+    psuSentinelShimWritten,
     macTutorialAppWritten,
     linuxTutorialDesktopWritten,
     linuxTutorialPinned,

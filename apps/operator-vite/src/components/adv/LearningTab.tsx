@@ -2389,28 +2389,28 @@ export function ScoutView() {
               const share =
                 snap.totalRouted > 0 ? rail.count / snap.totalRouted : 0;
               return (
-                <button
-                  type="button"
-                  key={rail.rail}
-                  title={meta?.desc}
-                  aria-pressed={railFilter === rail.rail}
-                  onClick={() =>
-                    void setRailFilter(
-                      railFilter === rail.rail ? null : rail.rail,
-                    )
-                  }
-                >
-                  <em>{meta?.label ?? rail.rail}</em>
-                  <b>
-                    <i
-                      style={{
-                        width: `${Math.max(4, share * 100)}%`,
-                        background: meta?.color,
-                      }}
-                    />
-                  </b>
-                  <strong>{rail.count}</strong>
-                </button>
+                <Tooltip key={rail.rail} label={meta?.desc}>
+                  <button
+                    type="button"
+                    aria-pressed={railFilter === rail.rail}
+                    onClick={() =>
+                      void setRailFilter(
+                        railFilter === rail.rail ? null : rail.rail,
+                      )
+                    }
+                  >
+                    <em>{meta?.label ?? rail.rail}</em>
+                    <b>
+                      <i
+                        style={{
+                          width: `${Math.max(4, share * 100)}%`,
+                          background: meta?.color,
+                        }}
+                      />
+                    </b>
+                    <strong>{rail.count}</strong>
+                  </button>
+                </Tooltip>
               );
             })}
           </div>
