@@ -97,6 +97,38 @@ as the bug existed, and it would have kept passing forever.
 > Assert the **decision** ("does it propagate at all?"), never the call. If your test supplies the
 > selector's output, your test has assumed away the only thing worth testing.
 
+## Shape 3 — a METRIC that cannot be NONZERO (EI-10607)
+
+Found by asking the obvious follow-up to Shape 2: *what else decides on a key nobody validated?*
+
+The su IDEATE contract tells every agent to close each pass as a loop — GROUND on
+`blender:ideation-feedback`, run the pass, FILE — and `observationsImpact` promises to show the
+payoff: "which of YOUR observations became patterns → ideas → shipped."
+
+The final link had **no writer**. `observation-impact-leg.ts` counts an idea as grounded iff its
+`addresses_pattern_refs` overlaps a citing pattern's ref. But `improvements:capture` recorded the
+ledger row without that field, `blender:route-idea` didn't accept it, and only Scout's *internal*
+router ever set it. **No su-reachable verb could write the column the reader joins on.**
+
+| origin | routed ideas | grounded on a pattern |
+|---|---|---|
+| `scout` | 24 | **24 (100%)** |
+| `su-ideate` | 122 | **0 (0%)** |
+
+So `ideasGrounded` and `shipped` were pinned at zero for every su agent, forever, regardless of how
+good their observations were. And a pinned zero is indistinguishable from an honest one: it reads as
+*"no impact yet"*, so nobody investigates.
+
+> **Before you ship a metric, prove it CAN move.** A funnel stage no writer can populate is not a
+> measurement, it is a decoration. The test that matters is not "does the metric compute" — it is
+> "**construct the input that should make it nonzero, and check that it does.**"
+
+The guard for this one therefore asserts the *outcome*, not the call: feed
+`computeObservationsImpact` the ledger row that `capture` **actually writes** and assert
+`ideasGrounded: 1`; feed it the pre-fix row and assert `0`. A test that only checked
+"`recordRoutedIdea` was called with the field" would have pinned the plumbing and still told us
+nothing about whether the funnel could ever report a nonzero — the same blindness as Shape 2's mock.
+
 ## The audit — run this on anything that thresholds or joins before it acts
 
 1. **What scale / what key?** Get it from the CODE, not the field name. `score` is a name, not a
@@ -110,7 +142,10 @@ as the bug existed, and it would have kept passing forever.
 5. **Ask what the other side does when the branch never fires** — a threshold above the ceiling
    admits nothing *or* suppresses nothing depending only on the comparison direction, and both are
    invisible.
-6. **Then sweep every other consumer of the same field.** Each was written against the semantics
+6. **Prove the metric CAN move.** If it is a funnel/join metric, construct the input that should
+   make it nonzero and assert that it does. A stage with no writer reports a perfect, honest-looking
+   zero forever (EI-10607).
+7. **Then sweep every other consumer of the same field.** Each was written against the semantics
    that field had *when it was written*, and nothing stops the producer changing them underneath.
 
 ## The meta-lesson, now earned three separate ways

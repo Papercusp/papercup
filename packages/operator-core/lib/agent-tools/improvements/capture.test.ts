@@ -443,7 +443,7 @@ describe('improvements:capture — the su-ideate GROUNDING leg (EI-10607)', () =
 
   it('omits the key entirely when the caller grounds on nothing (row shape unchanged for an ungrounded filing)', async () => {
     await callTool({ title: 'su idea', kind: 'feature', ideation: { lens: 'risk-first' } });
-    const arg = mockRecordRoutedIdea.mock.calls[0]?.[0] as Record<string, unknown>;
+    const arg = mockRecordRoutedIdea.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
     expect(arg).toBeDefined();
     expect('addressesPatternRefs' in arg).toBe(false);
   });

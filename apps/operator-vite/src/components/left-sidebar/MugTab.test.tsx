@@ -228,7 +228,15 @@ describe('MugTab (Colony sidebar, round 2)', () => {
     render(<MugTab active={true} />, { wrapper: Wrap });
     await openLane('Capacity');
     fireEvent.click(screen.getByRole('button', { name: 'Expand models' }));
-    const stdModel = await screen.findByLabelText('std model spec');
+    // The models section's expand state is nuqs-backed (URL state), so it lands
+    // through the adapter's async flush rather than synchronously with the click.
+    // testing-library's 1s default is enough on an idle box but NOT on a loaded
+    // one — under CPU pressure this find lost the race and the test failed with
+    // "Unable to find a label with the text of: std model spec" ~2 runs in 3,
+    // while passing every time in isolation. That flake is what peers saw as
+    // "MugTab.test.tsx is RED" (and what a single lucky green run wrongly cleared).
+    // The budget, not the assertion, was wrong: give the flush room.
+    const stdModel = await screen.findByLabelText('std model spec', undefined, { timeout: 5_000 });
     fireEvent.change(stdModel, { target: { value: 'unsaved:model' } });
     fireEvent.click(screen.getByRole('button', { name: 'Reset Capacity controls' }));
     await waitFor(() => expect(wroteRunTool()).toBe(true));
