@@ -597,4 +597,43 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
     expect(r?.workItem.id).toBe('EI-real-bug');
     expect(r?.workItem.kind).toBe('bug');
   });
+
+  // EI-10062 (and its duplicate trail: EI-9887/9888/9896/10002/10040): a leader's hand-curated
+  // `id IN (...)` drain-list spec has NO `kind` leaf at all, so issueKindsForFallback found no
+  // lane constraint to carry over and tier 3 widened to the ENTIRE unrestricted issue family —
+  // once every named id was claimed/terminal, the fleet started claiming unrelated open issues
+  // from a completely different work-stream instead of correctly reporting nothing left.
+  it('tier 3 (EI-10062): an exhausted id-allowlist spec must NOT widen to an unrelated open issue', async () => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
+    // The named id is already resolved (not floor-eligible) — the allowlist is exhausted.
+    await seedIssue('WI-named', { state: 'resolved', createdTs: 5, kind: 'bug' });
+    // An unrelated OPEN bug that is NOT in the allowlist — must never be claimed.
+    await seedIssue('EI-unrelated', { state: 'open', createdTs: 100, kind: 'bug' });
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'id-allowlist-drain',
+      revision: 20,
+      view: { filter: { all: [{ field: 'id', op: 'in', value: ['WI-named'] }] } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    expect(await getNextWorkItem(s, BEE, { harness: H })).toBeNull();
+  });
+
+  // Sanity companion to the above: the fix must not break the WORKING case — an id-allowlist
+  // spec still claims the named item when it is genuinely open, and ignores an unrelated open
+  // issue that isn't in the list.
+  it('tier 1 (EI-10062 sanity): an id-allowlist spec claims the named item, ignoring an unrelated open issue', async () => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
+    await seedIssue('EI-target', { state: 'open', createdTs: 5, kind: 'bug' });
+    await seedIssue('EI-unrelated', { state: 'open', createdTs: 1, kind: 'bug' }); // older — would win if the allowlist leaked
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'id-allowlist-drain',
+      revision: 20,
+      view: { filter: { all: [{ field: 'id', op: 'in', value: ['EI-target'] }] } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    const r = await getNextWorkItem(s, BEE, { harness: H });
+    expect(r?.workItem.id).toBe('EI-target');
+  });
 });

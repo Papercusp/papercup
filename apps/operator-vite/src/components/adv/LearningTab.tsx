@@ -432,11 +432,15 @@ function LearningViewContent({
   onRubricSelect: (id: string | null) => void;
   onStatus: (view: LView, status: LearningViewStatus) => void;
 }) {
+  const reportViewStatus = useCallback(
+    (status: LearningViewStatus) => onStatus(view, status),
+    [onStatus, view],
+  );
   if (view === "observations") {
-    return <ObservationsPanel onStatus={(status) => onStatus(view, status)} />;
+    return <ObservationsPanel onStatus={reportViewStatus} />;
   }
   if (view === "ideas") {
-    return <ScoutView onStatus={(status) => onStatus(view, status)} />;
+    return <ScoutView onStatus={reportViewStatus} />;
   }
   if (view === "rubrics") {
     return (
@@ -445,7 +449,7 @@ function LearningViewContent({
           onSelect={onRubricSelect}
           selectedId={rubricId}
           compact={Boolean(rubricId)}
-          onStatus={(status) => onStatus(view, status)}
+          onStatus={reportViewStatus}
         />
         {rubricId ? (
           <aside
@@ -462,37 +466,28 @@ function LearningViewContent({
     );
   }
   if (view === "gym") {
-    return (
-      <GymView hive={hive} onStatus={(status) => onStatus(view, status)} />
-    );
+    return <GymView hive={hive} onStatus={reportViewStatus} />;
   }
   if (view === "improvements") {
-    return (
-      <ImprovementsView
-        hive={hive}
-        onStatus={(status) => onStatus(view, status)}
-      />
-    );
+    return <ImprovementsView hive={hive} onStatus={reportViewStatus} />;
   }
   if (view === "benchmark") {
-    return <ApiaryView onStatus={(status) => onStatus(view, status)} />;
+    return <ApiaryView onStatus={reportViewStatus} />;
   }
   if (view === "orchestration") {
-    return <HiveEvalTrendView onStatus={(status) => onStatus(view, status)} />;
+    return <HiveEvalTrendView onStatus={reportViewStatus} />;
   }
   if (view === "bakeoff") {
-    return <BakeoffTrendView onStatus={(status) => onStatus(view, status)} />;
+    return <BakeoffTrendView onStatus={reportViewStatus} />;
   }
   if (view === "wake-efficiency") return <MugWakeEfficiencyPanel />;
   if (view === "ekg") return <EkgPanel />;
   if (view === "red-queen") return <RedQueenPanel />;
   if (view === "experiments") return <ExperimentsPanel />;
   if (view === "throughput") {
-    return <ThroughputView onStatus={(status) => onStatus(view, status)} />;
+    return <ThroughputView onStatus={reportViewStatus} />;
   }
-  return (
-    <LearningsView hive={hive} onStatus={(status) => onStatus(view, status)} />
-  );
+  return <LearningsView hive={hive} onStatus={reportViewStatus} />;
 }
 
 // ─── Improvements view ───────────────────────────────────────────────────────

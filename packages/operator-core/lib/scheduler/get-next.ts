@@ -396,6 +396,37 @@ function issueKindsForFallback(filter: FilterNode | undefined): readonly IssueFa
 }
 
 /**
+ * True iff the filter tree contains an explicit `id` leaf ANYWHERE (any combinator
+ * shape — unlike issueKindsForFallback's conservative all/leaf-only walk, this one
+ * recurses through any/not too, because the answer here is binary: does an id
+ * constraint exist at all, not what it narrows to).
+ *
+ * An `id IN (...)` / `id = ...` leaf names a fixed, CLOSED-WORLD set of items by
+ * identity — e.g. a leader's hand-curated drain list (bug-drain-resume-0712-class
+ * specs). Unlike a `kind` constraint, there is no wider "family" for such a spec to
+ * fall back to: once every named id is claimed/terminal, the spec's scope is
+ * genuinely exhausted. But `issueKindsForFallback` only ever recognizes a `kind`
+ * leaf as a lane constraint — an id-only spec has no `kind` leaf at all, so it
+ * returned `undefined` (no constraint to carry over) and tier 3 silently widened to
+ * claim ANY open issue-family row in the whole harness. Proven live 2026-07-12
+ * (EI-10062 and its long duplicate trail: EI-9887/9888/9896/10002/10040): a
+ * bug-drain fleet's explicit id-allowlist spec, once drained, started serving
+ * unrelated `change`-kind feature/research items from a completely different
+ * work-stream. Fix: when the spec names an explicit id set, tier 3 must not widen
+ * at all — exhausting a closed-world list means nothing left, not "try anything".
+ */
+function filterHasIdConstraint(filter: FilterNode | undefined): boolean {
+  if (!filter) return false;
+  function walk(node: FilterNode): boolean {
+    if (isLeaf(node)) return node.field === 'id';
+    if ('all' in node) return node.all.some(walk);
+    if ('any' in node) return node.any.some(walk);
+    return walk(node.not);
+  }
+  return walk(filter);
+}
+
+/**
  * Recursively compile the filter combinator tree to ONE parameterized `sql` fragment.
  * `all` ⇒ AND, `any` ⇒ OR, `not` ⇒ NOT; a leaf ⇒ {@link compileLeaf}. An undefined
  * filter ⇒ `TRUE` (the empty view — every floor-eligible item).
@@ -604,7 +635,13 @@ export async function getNextWorkItem(
   // vocabulary, so they preserve WI-1407's unrestricted adjacent-issue fallback. Explicit
   // issue-kind filters are different: carry that lane constraint across so a bug/change fleet
   // does not claim a reserved task.
-  if (!claimed && (await schedulerIssuesClaimableEnabled())) {
+  //
+  // EI-10062: an explicit `id`-allowlist spec has NO `kind` leaf for issueKindsForFallback to
+  // find, so it read as "no lane constraint" and this tier claimed ANY open issue-family row —
+  // not just the named ids. An id-allowlist is a closed-world set with no wider family to
+  // widen into, so skip tier 3 entirely when one is present (filterHasIdConstraint) rather
+  // than let it fall through to the unrestricted-issue-family default.
+  if (!claimed && (await schedulerIssuesClaimableEnabled()) && !filterHasIdConstraint(spec.view.filter)) {
     const issueKinds = issueKindsForFallback(spec.view.filter);
     claimed = await claimNextIssueWorkItem(
       {

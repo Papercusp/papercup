@@ -61,11 +61,11 @@ const CELL_TRUNCATE: CSSProperties = {
   whiteSpace: "nowrap",
 };
 
-export default function ObservationsPanel(
-  props?: Partial<PanelComponentProps> & {
-    onStatus?: (status: "neutral" | "good" | "warn" | "bad") => void;
-  },
-) {
+export default function ObservationsPanel({
+  onStatus,
+}: Partial<PanelComponentProps> & {
+  onStatus?: (status: "neutral" | "good" | "warn" | "bad") => void;
+} = {}) {
   const [itemPlans] = useItemPlanFilter();
   const [limit, setLimit] = useState(OBSERVATIONS_PAGE);
   const [signalFilter, setSignalFilter] = useState<string | null>(null);
@@ -109,10 +109,10 @@ export default function ObservationsPanel(
     }
   }, [signalCounts, signalFilter]);
   useEffect(() => {
-    props?.onStatus?.(
+    onStatus?.(
       query.error ? "bad" : scopedRows.length > 0 ? "good" : "neutral",
     );
-  }, [props, query.error, scopedRows.length]);
+  }, [onStatus, query.error, scopedRows.length]);
   const loadMore = useCallback(
     () => setLimit((current) => current + OBSERVATIONS_PAGE),
     [],

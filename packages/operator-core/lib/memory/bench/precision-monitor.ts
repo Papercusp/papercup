@@ -28,7 +28,9 @@ import { MEMORY_INJECTION_COSINE_FLOOR, MEMORY_INJECTION_LEX_FLOOR } from '../in
 import { loadCorpusFixture } from './corpus';
 import { loadGoldSetFixture } from './gold-set';
 import { BENCH_SCOPE, makeBackendCtx } from './run-bench';
-import { recordMemoryPrecisionRun, type MemoryPrecisionMetrics } from './precision-read';
+import { recordMemoryPrecisionRun, readMemoryPrecision, type MemoryPrecisionMetrics } from './precision-read';
+import { evaluateRecallDrop, BASELINE_HISTORY_WINDOW, type RecallDropEvaluation } from './precision-alert';
+import { fileRecallDropEi, resolveRecallDropEi } from './precision-alert-ei';
 
 /** Test/seam injection — swap the bench, the DB write, the flag, the invalidation. */
 export interface MemoryPrecisionBenchDeps {
@@ -39,6 +41,10 @@ export interface MemoryPrecisionBenchDeps {
   record?: (workspaceId: string, m: MemoryPrecisionMetrics) => Promise<number>;
   /** Override the sync invalidation (tests assert it fired). */
   invalidate?: () => void;
+  /** Override the prior-r@10-history read the recall-drop baseline is built from (EI-10047). */
+  history?: (workspaceId: string) => Promise<Array<number | null>>;
+  /** Override the recall-drop escalation (file on alert / resolve on recovery). Tests capture without PG. */
+  escalateRecall?: (workspaceId: string, backend: string, rowId: number, evaluation: RecallDropEvaluation) => Promise<void>;
   log?: (m: string) => void;
 }
 

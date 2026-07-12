@@ -78,8 +78,9 @@ describe('evaluateRecallDrop', () => {
   });
 
   it('the absolute critical floor fires even when it is not a big relative drop (a permanently-mediocre baseline)', () => {
-    const mediocre = [0.25, 0.24, 0.26, 0.25, 0.24]; // median 0.25 — itself close to the floor
-    const r = evaluateRecallDrop(mediocre, RECALL_CRITICAL_FLOOR - 0.01);
+    const mediocre = [0.22, 0.21, 0.23, 0.22, 0.21]; // median 0.22 — itself close to the floor
+    const latest = RECALL_CRITICAL_FLOOR - 0.01; // 0.19: below floor, but only a 0.03 drop from baseline (< 5pt threshold)
+    const r = evaluateRecallDrop(mediocre, latest);
     expect(r.alert).toBe(true);
     expect(r.reason).toBe('critical-floor');
   });
