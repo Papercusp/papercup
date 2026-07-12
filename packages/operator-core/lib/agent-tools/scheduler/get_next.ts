@@ -17,8 +17,11 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { getNextForBee, resolveClaimSpecWorkspace } from '../../scheduler/claim-spec-store';
+import { getNextForBee, resolveClaimSpecWorkspace, getClaimSpecRecord } from '../../scheduler/claim-spec-store';
 import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
+
+/** The claimable-state subset diagnoseClaimNextMiss accepts (mirrors CLAIM_STATES_ALLOWLIST). */
+type ClaimNextStates = ('todo' | 'open' | 'failing')[] | undefined;
 import { matchRoutingGateHint } from '../../routing-gate-hints';
 
 /**
@@ -39,6 +42,92 @@ export const IDLE_PULL_MISS_ADVICE =
   '— work-item:claimable fires on every created-unclaimed / claim-released / unblocked transition; the ~30-min on_timeout "wake" is the missed-emit backstop. ' +
   'The wake is a HINT that work may exist, never a claim: scheduler:get_next stays the AUTHORITATIVE claim on the wake turn; ' +
   'if it misses again, re-register the same await and end your turn again.';
+
+/** WI-4413: pull the ids a claim spec NAMES (the leader-tranche shape) out of its view filter. */
+export function specNamedIds(spec: unknown): string[] {
+  const view = (spec as { view?: { filter?: { all?: unknown[] } } } | undefined)?.view;
+  const clauses = Array.isArray(view?.filter?.all) ? view.filter.all : [];
+  for (const c of clauses) {
+    const cl = c as { field?: string; op?: string; value?: unknown };
+    if (cl?.field === 'id' && cl?.op === 'in' && Array.isArray(cl.value)) {
+      return cl.value.filter((v): v is string => typeof v === 'string');
+    }
+  }
+  return [];
+}
+
+/**
+ * WI-4413: build the self-explaining miss. Two layers:
+ *  1. AGGREGATE — the POOL/READY split from diagnoseClaimNextMiss (already the source of truth
+ *     shared with the claim itself). Distinguishes "genuinely drained, idling is correct" from
+ *     "the backlog is FULL but every row is gated" — a distinction the old static string erased.
+ *  2. PER-ID — when the spec NAMES ids, which floor refuses each. This is the leader's case:
+ *     they authored the tranche, so "WI-2749: claim-hold (held open by another agent)" is
+ *     directly actionable, where an aggregate count is not.
+ *
+ * FAILS SOFT — a diagnosis is an annotation on a miss, never a new way for the claim path to
+ * throw. Any error degrades to the original static message.
+ */
+async function buildMissDiagnosis(args: {
+  ownerId: string;
+  workspaceId: string | null;
+  harness: string;
+  states?: string[];
+  rigAvailable?: boolean;
+}): Promise<{ error: string; diagnosis?: unknown; floors?: unknown }> {
+  const STATIC = 'no claimable work-item matched your spec within the floors';
+  try {
+    const { diagnoseClaimNextMiss, explainIssueClaimFloors } = await import('../../work-items');
+    const diag = await diagnoseClaimNextMiss({
+      harness: args.harness,
+      assignee: args.ownerId,
+      states: args.states as ClaimNextStates,
+      rigAvailable: args.rigAvailable,
+    });
+
+    let floors: unknown;
+    let namedSummary = '';
+    const rec = await getClaimSpecRecord({
+      cupId: args.ownerId,
+      workspaceId: resolveClaimSpecWorkspace(args.workspaceId),
+    }).catch(() => null);
+    const ids = specNamedIds(rec?.spec);
+    if (ids.length > 0) {
+      const attributed = await explainIssueClaimFloors(args.harness, ids, {
+        assignee: args.ownerId,
+        rigAvailable: args.rigAvailable,
+      });
+      const refused = attributed.filter((a) => !a.admissible);
+      floors = attributed;
+      if (refused.length === ids.length) {
+        // The whole tranche is floored — the leader's spec is the thing that needs fixing, and
+        // saying so plainly is the entire point of this diagnosis.
+        namedSummary =
+          ` Your spec NAMES ${ids.length} id(s) and NONE of them are claim-path admissible — ` +
+          `this is a SPEC problem, not an empty queue: ` +
+          refused.map((r) => `${r.id} (${r.refusedBy ?? 'unknown'})`).join(', ') +
+          `. Tell your fleet leader; they must re-feed the spec.`;
+      } else if (refused.length > 0) {
+        namedSummary = ` ${refused.length}/${ids.length} named id(s) are floored: ${refused
+          .map((r) => `${r.id} (${r.refusedBy ?? 'unknown'})`)
+          .join(', ')}.`;
+      }
+    }
+
+    const aggregate = diag.drained
+      ? 'the backlog is genuinely DRAINED (0 unclaimed items in the pool) — idling is correct'
+      : `the backlog is NOT drained: ${diag.pendingUnclaimed} unclaimed item(s) in the pool, but ${diag.readyUnclaimed} pass the floors` +
+        (diag.readyUnclaimed === 0 ? ' — every one of them is GATED (blocked / held / needs-human / not-work), so idling is correct but the backlog is not empty' : '');
+
+    return {
+      error: `${STATIC}. Diagnosis: ${aggregate}.${namedSummary}`,
+      diagnosis: { drained: diag.drained, pendingUnclaimed: diag.pendingUnclaimed, readyUnclaimed: diag.readyUnclaimed },
+      floors,
+    };
+  } catch {
+    return { error: STATIC };
+  }
+}
 
 export default defineTool({
   name: 'scheduler:get_next',

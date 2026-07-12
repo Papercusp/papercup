@@ -219,7 +219,12 @@ export function buildAgentLaunchCommand(opts: {
     parts.push(`--resume=${safe('sessionId', opts.sessionId)}`);
     if (opts.mode === 'fork') parts.push('--fork');
   } else {
-    if (opts.agent) parts.push(`--agent=${safe('agent', opts.agent)}`);
+    // psu REQUIRES --agent on a FRESH launch — an omitted one is not "psu's default",
+    // it is a hard boot error (`--agent must be one of claude|omp|codex (got null)`) that
+    // leaves the terminal sitting on a dead prompt. Default it here, in the core, so no
+    // caller can compose an unlaunchable command. (A resume/fork carries the agent kind
+    // in its recorded session, so it must NOT be passed there.)
+    parts.push(`--agent=${safe('agent', opts.agent?.trim() || 'claude')}`);
     if (opts.harness) parts.push(`--harness=${safe('harness', opts.harness)}`);
     if (opts.plan) parts.push(`--plan=${safe('plan', opts.plan)}`);
   }

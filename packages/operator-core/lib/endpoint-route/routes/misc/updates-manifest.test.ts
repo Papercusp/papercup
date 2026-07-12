@@ -494,10 +494,15 @@ describe('GET /api/updates/manifest — static release host is authoritative (LO
     );
   });
 
-  it('WI-4404: a missing latest-server.json (404) degrades to no_candidate, not an error', async () => {
+  it('WI-4404: a missing latest-server.json (404) falls through to GitHub, same as a GUI miss', async () => {
+    // Mirrors the existing GUI-path contract ("host publishes no usable
+    // manifest" -> not an error, fall through to the GitHub hybrid path) —
+    // a 404 on latest-server.json is handled identically, not a special case.
+    // With no matching GitHub release either, this settles on 204/no_candidate.
     mockFetch.mockImplementation(async (input) => {
       const url = String(input);
       if (url === `${HOST}/latest-server.json`) return new Response(null, { status: 404 });
+      if (url.includes('api.github.com')) return new Response(JSON.stringify([]), { status: 200 });
       return new Response(JSON.stringify(latestJson()), { status: 200 });
     });
     const res = await manifestResponse(
