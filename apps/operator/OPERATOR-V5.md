@@ -1,5 +1,21 @@
 # Operator (v5)
 
+> **STALE — describes the retired card-feed scanner.** The scanner tables
+> (`operator_last_scan`, `operator_scans`, …) were dropped by migration 167
+> and the card-feed UI this doc describes
+> (`app/_components/OperatorPanel.tsx`, `OperatorButton`,
+> `OperatorAutoScanToggle`) was orphaned (no live component imported it —
+> see `/internal/docs/design/operator-panel-visual-pass`) and has since been
+> **deleted** (WI-4139, 2026-07-12): it depended on the removed
+> `operator-last-scan`/`operator-scan` routes, the dropped
+> `operator_last_scan` table, two local modules that no longer exist
+> (`./hud/OperatorReactorCore`, `./hud/OperatorScanOverlay`), and a
+> nonexistent `@restart/sync` package — it could not even typecheck. The
+> live Operator concierge surface is `OperatorChat`
+> (`app/_components/OperatorChat.tsx`), mounted via `OperatorChatSidebar` in
+> `ChromeShell.tsx`; suggestions render inline and pending cards surface in
+> a `PendingCardsBar`. The CLI/routes/tables below are historical only.
+
 The Operator is the always-on workspace concierge accessed from the
 top-bar Operator button. It scans, surfaces ~5 next-action suggestions
 per scan, auto-dispatches the safe ones, and routes the risky ones for

@@ -19,6 +19,7 @@
  * fan-out without a ref collision).
  */
 import { getOrgPg } from '@papercusp/db-org';
+import type { OrgSql } from './work-items';
 import { assertScopeWellFormed } from './work-item-scope';
 import { neutralizeToolCallTags } from './text-safety';
 import {
@@ -311,7 +312,7 @@ function toIssue(r: IssueRowDb): EngineerIssue {
 const ISSUE_COLS = `issue_id, kind, scope, title, body, severity, source, state, assignee,
   assigned_by, assigned_at, last_progress_at, payload, found_during, linked_feature_id, created_by,
   origin, signal_origin, assignee_rank, rank_writer, rank_updated_at, terminal_owner,
-  terminal_completion_ref, created_at, updated_at`;
+  terminal_completion_ref, feature_order, created_at, updated_at`;
 
 const TERMINAL_COMPLETION_EVIDENCE_KEY = '_completionEvidence';
 function completionEvidencePayloadJson(evidence: CompletionVerificationEvidence | undefined): string | null {
