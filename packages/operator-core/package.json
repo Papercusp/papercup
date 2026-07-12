@@ -19,16 +19,15 @@
   },
   "dependencies": {
     "@iarna/toml": "^2.2.5",
+    "@oddsmith/prospect-contract": "*",
     "@papercusp/activity-bridge": "*",
     "@papercusp/audio-dsp": "*",
     "@papercusp/bench-metrics": "*",
     "@papercusp/blueprint-distribution": "*",
     "@papercusp/cache": "*",
-    "@papercusp/seed-bundle": "*",
     "@papercusp/chat-protocol": "*",
     "@papercusp/control-mutation": "*",
     "@papercusp/debounce-coalesce": "*",
-    "@papercusp/scheduled-registry": "*",
     "@papercusp/deployment-driver": "*",
     "@papercusp/eval-battery": "*",
     "@papercusp/event-reaction": "*",
@@ -42,10 +41,12 @@
     "@papercusp/resource-profile": "*",
     "@papercusp/result-encoding": "*",
     "@papercusp/rules": "*",
+    "@papercusp/scheduled-registry": "*",
+    "@papercusp/seed-bundle": "*",
     "@papercusp/step-program": "*",
     "@papercusp/structured-concurrency": "*",
-    "rrule": "^2.8.1",
-    "@oddsmith/prospect-contract": "*"
+    "kokoro-js": "^1.2.1",
+    "rrule": "^2.8.1"
   },
   "devDependencies": {
     "@papercusp/test-config": "*",

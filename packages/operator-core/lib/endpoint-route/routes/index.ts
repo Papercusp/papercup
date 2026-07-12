@@ -232,6 +232,7 @@ import agentMcp_operatorElevenlabsWsInit from './agent-mcp/operator-elevenlabs-w
 import agentMcp_operatorElevenlabsTest from './agent-mcp/operator-elevenlabs-test';
 import agentMcp_operatorElevenlabsVoices from './agent-mcp/operator-elevenlabs-voices';
 import agentMcp_operatorVoiceEngineHealth from './agent-mcp/operator-voice-engine-health';
+import agentMcp_operatorVoiceProvision from './agent-mcp/operator-voice-provision';
 import agentMcp_operatorElSpend from './agent-mcp/operator-el-spend';
 import agentMcp_operatorElSubscription from './agent-mcp/operator-el-subscription';
 import agentMcp_operatorMessageStatus from './agent-mcp/operator-message-status';
@@ -515,6 +516,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(agentMcp_operatorElevenlabsTest as AnyRoute),
   ...flatten(agentMcp_operatorElevenlabsVoices as AnyRoute),
   ...flatten(agentMcp_operatorVoiceEngineHealth as AnyRoute),
+  ...flatten(agentMcp_operatorVoiceProvision as AnyRoute),
   ...flatten(agentMcp_operatorElSpend as AnyRoute),
   ...flatten(agentMcp_operatorElSubscription as AnyRoute),
   ...flatten(agentMcp_operatorMessageStatus as AnyRoute),

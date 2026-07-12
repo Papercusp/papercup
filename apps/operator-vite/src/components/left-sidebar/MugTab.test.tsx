@@ -229,17 +229,6 @@ describe('MugTab (Colony sidebar, round 2)', () => {
     await openLane('Capacity');
     fireEvent.click(screen.getByRole('button', { name: 'Expand models' }));
     const stdModel = await screen.findByLabelText('std model spec');
-    // Let the expand actually SETTLE before resetting. The models section's open
-    // flag is nuqs-backed (?qModels) and flushes asynchronously, while the reset
-    // bumps `capacityResetVersion` — a REMOUNT key that discards local drafts. So
-    // reset-in-the-same-tick races that flush: the remounted section re-reads
-    // qModels from a URL the click hasn't reached yet, comes back COLLAPSED, and
-    // the model input is gone — which is exactly how this test reddened ~2 runs in
-    // 3 under CPU pressure while passing in isolation (the peers' "MugTab.test.tsx
-    // is RED"; a single lucky green run wrongly cleared it). Waiting on the flipped
-    // control is the honest fix: a real user's expand settles long before they
-    // click reset, so the compressed timeline was the test's artifact, not a bug.
-    await screen.findByRole('button', { name: 'Collapse models' });
     fireEvent.change(stdModel, { target: { value: 'unsaved:model' } });
     fireEvent.click(screen.getByRole('button', { name: 'Reset Capacity controls' }));
     await waitFor(() => expect(wroteRunTool()).toBe(true));
@@ -253,18 +242,28 @@ describe('MugTab (Colony sidebar, round 2)', () => {
       autoScaleOut: null,
       decomposition: null,
     });
-    // The reset discards the unsaved draft, so the input falls back to the saved
-    // spec. That fall-back rides a RE-RENDER (the write invalidates the steering
-    // query), and the models sub-section briefly unmounts while it lands — so a
-    // SYNC getByLabelText here is a race: it passed on an idle box and threw
-    // "Unable to find a label with the text of: std model spec" ~2 runs in 3 under
-    // CPU pressure (which is why the file passed in isolation but reddened in the
-    // full suite — and why a single lucky green run wrongly cleared a peer's RED
-    // report). Wait for the re-render instead of assuming it already happened; the
-    // assertion itself is unchanged.
-    await waitFor(() =>
-      expect((screen.getByLabelText('std model spec') as HTMLInputElement).value).toBe('sonnet'),
-    );
+    // What this pins: the reset DISCARDS the unsaved draft, so the model input
+    // falls back to the saved spec ('sonnet', not 'unsaved:model').
+    //
+    // It must not also depend on the section still being OPEN afterwards. The reset
+    // bumps `capacityResetVersion` — a REMOUNT key that throws away local drafts —
+    // while the section's open flag is nuqs-backed (?qModels), whose URL write is
+    // THROTTLED. nuqs applies the new value optimistically but commits it on a
+    // delay, so a remount inside that window gives the fresh hook a URL that never
+    // heard about the expand, and the section comes back collapsed. Whether the
+    // remount or the flush wins is pure CPU-timing: on an idle box the old sync
+    // `getByLabelText` here always won, but under load it threw "Unable to find a
+    // label with the text of: std model spec" ~2 runs in 3 — passing in isolation,
+    // reddening in the full suite. That is the flake peers reported as
+    // "MugTab.test.tsx is RED", and that a single lucky green run wrongly cleared.
+    //
+    // Re-open the section if the remount closed it, then assert the value. The
+    // assertion is unchanged; it just no longer rides on which side won a race it
+    // was never trying to test.
+    const reExpand = screen.queryByRole('button', { name: 'Expand models' });
+    if (reExpand) fireEvent.click(reExpand);
+    const savedSpec = await screen.findByLabelText('std model spec');
+    expect((savedSpec as HTMLInputElement).value).toBe('sonnet');
   });
 
   it('renders the eligible-hives checkboxes from harnessProjects.lite sync data', async () => {

@@ -16,23 +16,37 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import { readElevenLabsKey, readOpenAiKey, readCartesiaKey } from '../../../voice-credentials';
 import { probeKokoroHealth, probeVoicemodeHealth } from './operator-voice-proxy-helpers';
+import { isKokoroLocalProvisioned } from '../../../voice-node/kokoro-local';
+import { getLocalVoiceProvisionStatus } from '../../../voice-node/local-voice-provision';
 
 export default defineTool({
   method: 'GET',
   path: '/agent-mcp/operator-voice-engine-health',
   auth: 'loopback',
   async handler() {
-    const [kokoro, voicemode, elKey, oaKey, caKey] = await Promise.all([
+    const [kokoroHttp, voicemodeHttp, kokoroLocal, provision, elKey, oaKey, caKey] = await Promise.all([
       probeKokoroHealth(),
       probeVoicemodeHealth(),
+      isKokoroLocalProvisioned().catch(() => false),
+      getLocalVoiceProvisionStatus().catch(() => null),
       readElevenLabsKey().then((k) => !!k).catch(() => false),
       readOpenAiKey().then((k) => !!k).catch(() => false),
       readCartesiaKey().then((k) => !!k).catch(() => false),
     ]);
+    const whisperProvisioned = !!(provision?.whisperBinary.done && provision?.whisperModel.done);
     return Response.json({
-      // Local engines: LIVE reachability (probed just now).
-      kokoro,      // local TTS (:8880)
-      voicemode,   // local Whisper STT (:2022)
+      // Local engines: usable RIGHT NOW — an HTTP server answering, or a provisioned local
+      // fallback the routes reach without one (P-009: in-process kokoro-js; the operator-
+      // managed whisper-server child spawns on demand from the provisioned cache).
+      kokoro: kokoroHttp || kokoroLocal,
+      voicemode: voicemodeHttp || whisperProvisioned,
+      // The P-009 install surface (settings "Install local voice"): per-leg provisioned
+      // state + the in-flight installer status, for the button/progress UI.
+      localVoice: {
+        kokoroProvisioned: kokoroLocal,
+        whisperProvisioned,
+        installer: provision,
+      },
       // Cloud engines: key CONFIGURED (reachability is only tested on explicit "Test connection").
       elevenlabs: elKey,
       openai: oaKey,

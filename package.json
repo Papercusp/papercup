@@ -273,7 +273,10 @@
   "overrides": {
     "livekit-client": "^2.16.1",
     "@assistant-ui/store": "0.2.9",
-    "@assistant-ui/tap": "0.5.16"
+    "@assistant-ui/tap": "0.5.16",
+    "kokoro-js": {
+      "@huggingface/transformers": "^4.2.0"
+    }
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.8",

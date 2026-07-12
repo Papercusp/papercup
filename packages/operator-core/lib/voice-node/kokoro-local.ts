@@ -22,6 +22,7 @@
 import { existsSync } from 'node:fs';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { encodeWavPcm16 } from './wav';
+import { probeKokoroHealth } from '../endpoint-route/routes/agent-mcp/operator-voice-proxy-helpers';
 
 export const KOKORO_LOCAL_MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
 export const KOKORO_LOCAL_DTYPE = 'q8';
@@ -138,6 +139,13 @@ export async function provisionKokoroLocal(deps: KokoroLocalDeps = {}): Promise<
     }
   })();
   return provisioning;
+}
+
+/** "Can the kokoro engine synthesize on this box?" — an external HTTP kokoro (KOKORO_URL)
+ *  OR the provisioned in-process engine. The one answer resolveTtsEngine's browser→kokoro
+ *  fallback and the settings health probe both need (P-009 hop 3). */
+export async function kokoroTtsAvailable(): Promise<boolean> {
+  return (await probeKokoroHealth()) || isKokoroLocalProvisioned();
 }
 
 export type KokoroSynth =

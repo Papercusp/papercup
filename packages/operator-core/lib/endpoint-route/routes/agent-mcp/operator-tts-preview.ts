@@ -11,7 +11,8 @@
  */
 import { loadVoicePrefs } from '../../../voice-prefs';
 import { defineTool } from '@papercusp/agent-mcp';
-import { KOKORO_URL, probeKokoroHealth, resolveTtsEngine } from './operator-voice-proxy-helpers';
+import { resolveTtsEngine } from './operator-voice-proxy-helpers';
+import { kokoroTtsAvailable } from '../../../voice-node/kokoro-local';
 import { synthesize } from './tts-synth';
 
 const SAMPLE_TEXT = 'This is a sample of the operator voice.';
@@ -31,7 +32,7 @@ export default defineTool({
     // Resolve to a server engine (browser→kokoro when healthy; unsupported→400),
     // then hand off to the shared synth registry. voiceId/model defaults come
     // from prefs inside synthesize().
-    const resolved = await resolveTtsEngine(body.engine, prefs, () => probeKokoroHealth(KOKORO_URL));
+    const resolved = await resolveTtsEngine(body.engine, prefs, () => kokoroTtsAvailable());
     if (!resolved.ok) return new Response(resolved.error, { status: resolved.status });
 
     const voiceId = typeof body.voiceId === 'string' && body.voiceId ? body.voiceId : undefined;

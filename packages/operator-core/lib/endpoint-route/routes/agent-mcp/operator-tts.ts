@@ -18,11 +18,10 @@
 import { loadVoicePrefs } from '../../../voice-prefs';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
-  KOKORO_URL,
   MAX_TEXT_CHARS,
-  probeKokoroHealth,
   resolveTtsEngine,
 } from './operator-voice-proxy-helpers';
+import { kokoroTtsAvailable } from '../../../voice-node/kokoro-local';
 import { synthesize } from './tts-synth';
 
 // Re-export the canonical synth so existing `from './operator-tts'` importers
@@ -48,8 +47,9 @@ export default defineTool({
     const prefs = await loadVoicePrefs();
     // Resolve engine + apply the browser→kokoro health-gated fallback (D-006):
     // 'browser' (speechSynthesis) is meaningless in a terminal, so it maps to
-    // local kokoro only when kokoro's health check passes — else a clean error.
-    const resolved = await resolveTtsEngine(body.engine, prefs, () => probeKokoroHealth(KOKORO_URL));
+    // local kokoro only when kokoro can synthesize here — an HTTP kokoro server
+    // OR the provisioned in-process engine (P-009) — else a clean error.
+    const resolved = await resolveTtsEngine(body.engine, prefs, () => kokoroTtsAvailable());
     if (!resolved.ok) {
       return Response.json({ ok: false, error: resolved.error }, { status: resolved.status });
     }
