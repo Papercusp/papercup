@@ -394,7 +394,7 @@ describe('Scout outcome-feedback (P-013 / D-009)', () => {
 
     it('clamps every lens at ≥ 15% of uniform — a zero/missing lens is never starved', () => {
       // One dominant lens, the rest absent from the persisted set.
-      const w = samplingWeightsWithFloor({ analogical: 5 });
+      const w = samplingWeightsWithFloor<CreativeLens>({ analogical: 5 });
       for (const l of CREATIVE_LENSES) expect(w[l]).toBeGreaterThanOrEqual(floor - 1e-12);
       // The absent lenses sit exactly on the floor; the dominant lens takes the rest.
       expect(w.reframing).toBeCloseTo(floor, 10);
@@ -415,7 +415,10 @@ describe('Scout outcome-feedback (P-013 / D-009)', () => {
     });
 
     it('honors a custom floorFraction (0 → pure normalization)', () => {
-      const w = samplingWeightsWithFloor({ analogical: 3, reframing: 1 }, { floorFraction: 0 });
+      const w = samplingWeightsWithFloor<CreativeLens>(
+        { analogical: 3, reframing: 1 },
+        { floorFraction: 0 },
+      );
       expect(w.analogical).toBeCloseTo(0.75, 10);
       expect(w.reframing).toBeCloseTo(0.25, 10);
       expect(w['first-principles']).toBe(0);

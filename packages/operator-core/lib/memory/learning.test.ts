@@ -16,13 +16,16 @@
  * Run: cd packages/operator-core && npx vitest run lib/memory/learning.test.ts
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import type { LearningSignal } from './learning-shared';
+
+type FeedbackRow = { action: string; kind: string | null; n: number };
 
 const mocks = vi.hoisted(() => ({
   pgClientFields: vi.fn(),
   connect: vi.fn(async () => {}),
-  query: vi.fn(async () => ({ rows: [] as Array<{ action: string; kind: string | null; n: number }> })),
+  query: vi.fn<(query: unknown) => Promise<{ rows: FeedbackRow[] }>>(async () => ({ rows: [] })),
   end: vi.fn(async () => {}),
-  rebuild: vi.fn(() => 'STOCK+DERIVED-INSTRUCTIONS'),
+  rebuild: vi.fn<(signal: LearningSignal) => string | null>(() => 'STOCK+DERIVED-INSTRUCTIONS'),
 }));
 
 vi.mock('./mem0-connection', () => ({ pgClientFields: mocks.pgClientFields }));
@@ -33,7 +36,7 @@ vi.mock('pg', () => ({
       return mocks.connect();
     }
     query(q: unknown) {
-      return mocks.query(q as never);
+      return mocks.query(q);
     }
     end() {
       return mocks.end();
@@ -87,10 +90,7 @@ describe('buildLearningInstructions — aggregation mapping into rebuildCustomIn
 
     expect(out).toBe('STOCK+DERIVED-INSTRUCTIONS'); // returns whatever rebuild produced
     expect(mocks.rebuild).toHaveBeenCalledTimes(1);
-    const arg = mocks.rebuild.mock.calls[0][0] as {
-      totalEdits: number; totalDeletes: number; forgetAllCount: number;
-      byKind: { edit: Record<string, number>; delete: Record<string, number> }; noiseFloor: number;
-    };
+    const arg = mocks.rebuild.mock.calls[0]![0];
     expect(arg.totalEdits).toBe(7); // 5 + 2
     expect(arg.totalDeletes).toBe(8); // delete 4 + delete(null) 1 + forget_all 3
     expect(arg.forgetAllCount).toBe(3);
@@ -102,7 +102,7 @@ describe('buildLearningInstructions — aggregation mapping into rebuildCustomIn
   it('empty feedback still calls rebuild with zeroed totals (rebuild decides null on no signal)', async () => {
     mocks.query.mockResolvedValue({ rows: [] });
     await buildLearningInstructions();
-    const arg = mocks.rebuild.mock.calls[0][0] as { totalEdits: number; totalDeletes: number; forgetAllCount: number };
+    const arg = mocks.rebuild.mock.calls[0]![0];
     expect(arg.totalEdits).toBe(0);
     expect(arg.totalDeletes).toBe(0);
     expect(arg.forgetAllCount).toBe(0);
