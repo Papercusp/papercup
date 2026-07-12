@@ -129,6 +129,30 @@ describe('installPapercuspFiles', () => {
     expect((await fs.stat(result.ptoolPath)).mode & 0o777).toBe(0o755);
   });
 
+  it('writes an executable psu-sentinel shim that execs the resolved psu shim (WI-4244)', async () => {
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+
+    expect(result.psuShimWritten).toBe(true);
+    expect(result.psuSentinelShimWritten).toBe(true);
+    expect(result.psuSentinelPath).toBe(path.join(tmpHome, '.papercusp', 'bin', 'psu-sentinel'));
+
+    const sentinel = await fs.readFile(result.psuSentinelPath, 'utf8');
+    expect(sentinel).toMatch(/^#!\/usr\/bin\/env bash\n/);
+    // Registers the current zellij pane for voice-transcript routing.
+    expect(sentinel).toContain('ZELLIJ_PANE_ID');
+    expect(sentinel).toContain('ZELLIJ_SESSION_NAME');
+    expect(sentinel).toContain('$HOME/.papercusp/sentinel-pane');
+    // Applies a staged per-session model override.
+    expect(sentinel).toContain('$HOME/.papercusp/sentinel-model');
+    expect(sentinel).toContain('--model=$spec');
+    // Execs the ALREADY-RESOLVED psu shim's concrete path, not a bare `psu`
+    // relying on PATH resolution a second time.
+    expect(sentinel).toContain(
+      `exec ${JSON.stringify(result.psuPath)} --no-picker --agent=claude --role=papercup`,
+    );
+    expect((await fs.stat(result.psuSentinelPath)).mode & 0o777).toBe(0o755);
+  });
+
   it('writes the `papercusp` dispatcher shim when the onboard concierge resolves (P-014)', async () => {
     // No concierge in the base fixture → dispatcher not written, no throw.
     let result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
@@ -262,6 +286,9 @@ describe('installPapercuspFiles', () => {
     expect(result.ptoolShimWritten).toBe(true);
     expect(result.minted.token).toBe(true);
     expect(result.playbookWritten).toBe(true);
+    // WI-4244: sentinel execs psu — with no psu shim to exec, it must not
+    // write a dangling shim either.
+    expect(result.psuSentinelShimWritten).toBe(false);
   });
 
   it('missing playbook source: playbookWritten=false, no throw', async () => {
@@ -427,6 +454,7 @@ describe('installPapercuspFiles', () => {
     expect(p.agentIdPath).toBe('/tmp/somehome/.papercusp/su-agent-id');
     expect(p.playbookPath).toBe('/tmp/somehome/.papercusp/engineer-collaborator.md');
     expect(p.extensionPath).toBe('/tmp/somehome/.papercusp/papercusp-coord.ts');
+    expect(p.psuSentinelPath).toBe('/tmp/somehome/.papercusp/bin/psu-sentinel');
   });
 
   it('auto-discover mode: when operatorAppRoot is absent, falls back to process.cwd()-rooted candidates', async () => {

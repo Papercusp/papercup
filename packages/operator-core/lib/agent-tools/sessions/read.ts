@@ -98,7 +98,14 @@ export default defineTool({
     if (!rows.length && args.session !== 'self') {
       try {
         const { readArchivedSessionTurns } = await import('../../session-archive-read');
-        const arch = await readArchivedSessionTurns(sessionId, args.source_kind);
+        // WI-4301: the archive blob store is file-based and never covers
+        // agent_chat (that source's sessions live in agent_chats_consolidated,
+        // not a tailed file) — narrow it away rather than mistype it through;
+        // undefined just means "try all archive-backed kinds", which is the
+        // correct fallback when the caller asked for a kind the archive can't
+        // serve anyway.
+        const archiveSourceKind = args.source_kind === 'agent_chat' ? undefined : args.source_kind;
+        const arch = await readArchivedSessionTurns(sessionId, archiveSourceKind);
         if (arch) {
           let t = arch.turns;
           if (lo !== null || hi !== null) {
