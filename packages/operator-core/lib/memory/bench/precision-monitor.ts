@@ -137,6 +137,23 @@ export async function runMemoryPrecisionMonitor(
     return { ran: false, skipReason: 'failed', error };
   }
 
+  // EI-10047: read the rolling baseline BEFORE this run's own row exists, so
+  // the just-recorded number never contaminates the history it's judged
+  // against. Best-effort — a history-read failure degrades to
+  // 'insufficient-history' (never alerts), it never wedges the record path.
+  let priorRAt10: Array<number | null> = [];
+  try {
+    if (deps.history) {
+      priorRAt10 = await deps.history(input.workspaceId);
+    } else {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const snap = await readMemoryPrecision(getOrgPg().sql, input.workspaceId, BASELINE_HISTORY_WINDOW);
+      priorRAt10 = snap.trend.map((r) => r.rAt10);
+    }
+  } catch (e) {
+    log(`recall-baseline history read failed (non-fatal, treated as no history): ${e instanceof Error ? e.message : e}`);
+  }
+
   let rowId = 0;
   try {
     if (deps.record) {
@@ -158,9 +175,28 @@ export async function runMemoryPrecisionMonitor(
     /* best-effort — a missed invalidation just delays the panel refresh */
   }
 
+  // EI-10047: alert on a recall-quality drop the routine's own liveness check
+  // (learning-loop-health.ts) can't see — it only classifies whether this
+  // routine FIRED, not whether what it measured is any good. Best-effort:
+  // an escalation failure must never turn a good bench run into a 'failed'
+  // outcome, and must never re-throw into the routine tick.
+  const evaluation = evaluateRecallDrop(priorRAt10, metrics.rAt10);
+  try {
+    if (deps.escalateRecall) {
+      await deps.escalateRecall(input.workspaceId, metrics.backend, rowId, evaluation);
+    } else if (evaluation.alert) {
+      await fileRecallDropEi({ workspaceId: input.workspaceId, backend: metrics.backend, rowId, evaluation });
+    } else {
+      await resolveRecallDropEi({ workspaceId: input.workspaceId, backend: metrics.backend, rowId, evaluation });
+    }
+  } catch (e) {
+    log(`recall-drop escalation failed (non-fatal): ${e instanceof Error ? e.message : e}`);
+  }
+
   log(
     `recorded run #${rowId}: fp@5=${fmt(metrics.fpAt5)} r@10=${fmt(metrics.rAt10)} ` +
-      `p@5=${fmt(metrics.pAt5)} mrr=${fmt(metrics.mrr)} (floor ${metrics.floorCosine}/${metrics.floorLex})`,
+      `p@5=${fmt(metrics.pAt5)} mrr=${fmt(metrics.mrr)} (floor ${metrics.floorCosine}/${metrics.floorLex}) ` +
+      `recall-canary=${evaluation.reason}${evaluation.alert ? ' ALERT' : ''}`,
   );
   return { ran: true, metrics, rowId };
 }
