@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   renderCupDossier,
   computeCupWakeDossier,
@@ -6,6 +6,15 @@ import {
   type CupRosterPeer,
 } from './cup-wake-dossier';
 import type { WorkItem, WorkItemDetail } from '../work-items';
+
+// L1d mem0 background recall: mocked at the top so every computeCupWakeDossier
+// call in this file gets a deterministic result instead of hitting the real
+// (unavailable-in-test) mem0 backend. Defaults to "no hits" (null) so the
+// pre-existing tests below — which don't care about the recall section — see
+// no extra content; individual tests reconfigure via mockResolvedValueOnce /
+// mockRejectedValueOnce.
+const mockBuildMemoryContextBlock = vi.fn().mockResolvedValue(null);
+vi.mock('../memory/injection', () => ({ buildMemoryContextBlock: mockBuildMemoryContextBlock }));
 
 function wi(over: Partial<WorkItem> = {}): WorkItem {
   return {
@@ -110,6 +119,22 @@ describe('renderCupDossier (pure)', () => {
     const s = renderCupDossier({ item: wi(), roster, caps: { roster: 5 } });
     expect(s).toContain('…+20 more');
   });
+
+  it('renders the memoryFold (L1d background recall) verbatim, after the facts fold', () => {
+    const s = renderCupDossier({
+      item: wi(),
+      factsFold: '## Standing facts\n\n- a fact',
+      memoryFold: '## Background recall (fuzzy memory — may be stale)\n\n- a memory hit',
+    });
+    expect(s).toContain('a fact');
+    expect(s).toContain('a memory hit');
+    expect(s!.indexOf('a fact')).toBeLessThan(s!.indexOf('a memory hit'));
+  });
+
+  it('omits the memoryFold section when absent (no empty heading)', () => {
+    const s = renderCupDossier({ item: wi() });
+    expect(s).not.toContain('Background recall');
+  });
 });
 
 describe('computeCupWakeDossier (fail-soft, injected deps)', () => {
@@ -182,6 +207,58 @@ describe('computeCupWakeDossier (fail-soft, injected deps)', () => {
     expect(s).toContain('WI-1');
     expect(s).toContain('### Topics');
     expect(s).not.toContain('### Pot peers');
+  });
+});
+
+describe('computeCupWakeDossier — L1d mem0 background recall', () => {
+  const base = { workspaceId: 'ws', harness: 'papercup', workItemId: 'WI-1' };
+
+  afterEach(() => {
+    mockBuildMemoryContextBlock.mockReset().mockResolvedValue(null);
+  });
+
+  it('a mem0 hit flows into the rendered dossier, queried on the item title + summary', async () => {
+    mockBuildMemoryContextBlock.mockResolvedValueOnce(
+      '## Background recall (fuzzy memory — may be stale)\n\n- [insight] watch out for X',
+    );
+
+    const s = await computeCupWakeDossier({
+      ...base,
+      deps: { getDetail: async () => null, getItem: async () => wi(), listRoster: async () => [] },
+    });
+
+    expect(s).toContain('watch out for X');
+    expect(mockBuildMemoryContextBlock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'ws',
+        harnessSlugs: ['papercup'],
+        queryContext: 'Add the thing — Build the thing per the spec.',
+        limit: 3,
+      }),
+    );
+  });
+
+  it('a mem0 read that THROWS degrades to no recall section — the rest of the dossier still renders (fail-soft)', async () => {
+    mockBuildMemoryContextBlock.mockRejectedValueOnce(new Error('mem0 down'));
+
+    const s = await computeCupWakeDossier({
+      ...base,
+      deps: { getDetail: async () => null, getItem: async () => wi(), listRoster: async () => [] },
+    });
+
+    expect(s).toContain('WI-1');
+    expect(s).not.toContain('Background recall');
+  });
+
+  it('a null mem0 result (no hits) renders no recall section', async () => {
+    mockBuildMemoryContextBlock.mockResolvedValueOnce(null);
+
+    const s = await computeCupWakeDossier({
+      ...base,
+      deps: { getDetail: async () => null, getItem: async () => wi(), listRoster: async () => [] },
+    });
+
+    expect(s).not.toContain('Background recall');
   });
 });
 

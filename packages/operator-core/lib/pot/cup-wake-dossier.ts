@@ -149,6 +149,13 @@ export function renderCupDossier(input: CupDossierInput): string {
     out.push(factsFold);
   }
 
+  // BACKGROUND RECALL (L1d) — fuzzy mem0 sibling of the facts fold above.
+  const memoryFold = (input.memoryFold ?? '').trim();
+  if (memoryFold) {
+    out.push('');
+    out.push(memoryFold);
+  }
+
   return out.join('\n');
 }
 
@@ -260,6 +267,28 @@ export async function computeCupWakeDossier(input: ComputeCupWakeDossierInput): 
     )
     .catch(() => '');
 
+  // BACKGROUND RECALL (L1d, mug-memory-hybrid) — the cup translation of the Mug's
+  // memoryFold (mug-brief-launch.ts): a fuzzy sibling of the facts fold above,
+  // routed through the SAME buildMemoryContextBlock pipeline every other
+  // memory-injection surface uses (relevance floor, per-turn dedup, muted-pack
+  // filter, feedback tombstones), so the cup dossier gets the same quality bar
+  // instead of a bespoke raw-search leg. Queried on the work-item's own title +
+  // summary so the recall is scoped to THIS task, not a generic harness pull.
+  // Fail-soft + timeout-bounded internally; never blocks the dossier.
+  const memoryFold = await (async () => {
+    const { buildMemoryContextBlock } = await import('../memory/injection');
+    const queryContext = [item.title, item.summary].filter(Boolean).join(' — ');
+    if (!queryContext.trim()) return '';
+    const block = await buildMemoryContextBlock({
+      workspaceId,
+      harnessSlugs: [harness],
+      queryContext,
+      limit: 3,
+      heading: 'Background recall (fuzzy memory — may be stale; the standing facts above are authoritative)',
+    });
+    return block ?? '';
+  })().catch(() => '');
+
   return renderCupDossier({
     item,
     planItem: planItem ? dstLabel(planItem) : null,
@@ -268,6 +297,7 @@ export async function computeCupWakeDossier(input: ComputeCupWakeDossierInput): 
     comments,
     roster,
     factsFold,
+    memoryFold,
     caps: input.caps,
   });
 }

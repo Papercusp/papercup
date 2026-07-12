@@ -112,9 +112,9 @@ export function resetContextDeathEscalationsForTests(): void {
   contextDeathEscalated.clear();
 }
 
-/** Test seam (P-012). */
+/** Test seam (P-012 / EI-9982). */
 export function resetForceCompactedForTests(): void {
-  forceCompactedOwners.clear();
+  forceCompactedAt.clear();
 }
 
 /** Test seam (P-018). */
@@ -671,8 +671,15 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
         // (owner 2026-07-04): warned at 100%, forced at min(limit × 1.3,
         // window − margin). Deduped per crossing; a failed/hostless/under-band
         // attempt is NOT recorded, so it retries next pass until it lands (or
-        // the session recovers below).
-        if (!forceCompactedOwners.has(r.owner_id)) {
+        // the session recovers below). EI-9982: a socket-ack'd inject that never
+        // actually compacted (host deferred/dropped the idle-gated /compact under
+        // continuous turns) no longer suppresses forever — once FORCE_RETRY_GRACE_MS
+        // has elapsed and the session is STILL at/over its force threshold below,
+        // it re-injects.
+        const lastForcedAt = forceCompactedAt.get(r.owner_id);
+        const forcedRecently =
+          lastForcedAt != null && Date.now() - lastForcedAt < FORCE_RETRY_GRACE_MS;
+        if (!forcedRecently) {
           let window = await resolveWindowForOwner(sql, r.owner_id, tierMenu);
           if (window != null && est >= window * WINDOW_CONTRADICTED_FACTOR) {
             console.warn(
@@ -694,13 +701,13 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
             est >= forceAt &&
             (await maybeForceCompact(r.owner_id, r.owner_label, est, r.compaction_limit, forceAt, bound))
           ) {
-            forceCompactedOwners.add(r.owner_id);
+            forceCompactedAt.set(r.owner_id, Date.now());
             out.forceCompacted.push(r.owner_id);
           }
         }
       } else {
         overLimitOwners.delete(r.owner_id); // recovered (compacted / back under limit)
-        forceCompactedOwners.delete(r.owner_id); // re-arm the force for a future crossing
+        forceCompactedAt.delete(r.owner_id); // re-arm the force for a future crossing
       }
     }
   } catch (e) {

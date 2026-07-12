@@ -446,7 +446,7 @@ describe('force-compact rung (agent-managed-compaction P-012)', () => {
     expect(payload.data).toContain('≈ 1.3 × your configured soft limit of 300k');
   });
 
-  it('REPRO EI-9982: a 20k-limit session at 14.8× (295623 est) with a live host force-compacts', async () => {
+  it('EI-9982: a 20k-limit session at 14.8× (295623 est) with a live host force-compacts', async () => {
     // The P-005 rehearsal probe: config:set-compaction-limit { limit: 20000 }, then
     // read 12 large files → 295623 est (1478% of the soft limit). No --model recorded
     // ⇒ window unknown ⇒ overshoot bound (20000 × 1.2 = 24000). 295623 ≫ 24000 ⇒ force.
@@ -460,6 +460,46 @@ describe('force-compact rung (agent-managed-compaction P-012)', () => {
     expect(out.overLimit).toEqual(['probe']);
     expect(out.forceCompacted).toEqual(['probe']);
     expect(injectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('EI-9982: re-injects when a prior force-compact never landed (still over-threshold past the retry grace)', async () => {
+    // The probe kept taking turns, so its single idle-gated /compact was deferred and
+    // never landed — est stayed at 14.8× across sweeps. The pre-EI-9982 dedup suppressed
+    // any further inject forever (it only re-armed when est dropped below the SOFT limit,
+    // which never happened). Now: within the grace it stays deduped (once-per-crossing),
+    // but once the grace elapses and the session is STILL over its force threshold, the
+    // watchdog re-injects.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const t0 = new Date('2026-07-12T05:00:00Z').getTime();
+      vi.setSystemTime(t0);
+      specMock.mockResolvedValue(null); // window unknown ⇒ overshoot bound 24000
+      estimateMock.mockResolvedValue(295_623); // 14.8× the 20k limit — never drops (host defers)
+      findLiveHostMock.mockReturnValue({ sock: '/tmp/probe.sock', caps: ['compact'] });
+      hostSupportsMock.mockReturnValue(true);
+      const probe = [{ owner_id: 'probe', owner_label: 'su · probe', compaction_limit: 20_000 }];
+
+      // Sweep 1: force-compacts (inject 1).
+      const p1 = await checkCompactionCompliance(fakeSql({ seeded: probe }));
+      expect(p1.forceCompacted).toEqual(['probe']);
+      expect(injectMock).toHaveBeenCalledTimes(1);
+
+      // Sweep 2, ~2 min later (within the grace): still over, but not re-injected —
+      // the /compact may still be about to land, so we don't spam.
+      vi.setSystemTime(t0 + 2 * 60_000);
+      const p2 = await checkCompactionCompliance(fakeSql({ seeded: probe }));
+      expect(p2.forceCompacted).toEqual([]);
+      expect(injectMock).toHaveBeenCalledTimes(1);
+
+      // Sweep 3, past FORCE_RETRY_GRACE_MS (~6 min): the compaction PROVABLY never landed
+      // (est is still 14.8×), so the watchdog re-injects instead of staying silent forever.
+      vi.setSystemTime(t0 + 7 * 60_000);
+      const p3 = await checkCompactionCompliance(fakeSql({ seeded: probe }));
+      expect(p3.forceCompacted).toEqual(['probe']);
+      expect(injectMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('unknown window ⇒ falls back to the overshoot-factor bound (limit × 1.2); a spawn-record [1m] spec restores the full band', async () => {
