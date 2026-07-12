@@ -145,7 +145,14 @@ export default defineTool({
       .optional()
       .describe('Epoch ms the pause auto-expires at. null = no time-bound pause.'),
     clear: z.boolean().optional().describe('Wipe ALL steering keys back to the default (no restriction).'),
-  }),
+    // .strict() (EI-8285 pattern, as plans:new / cup:spawn): a plain z.object()
+    // SILENTLY STRIPS unknown keys, so a stale arg name resolves to `undefined`
+    // and this tool then fails with the misleading "Pass `pot` …" no_home_harness
+    // error instead of naming the bad key. That is exactly how the hive→pot
+    // rename shipped broken: the SPA kept sending `hive:` (stripped) and every
+    // Mug-tab steering write silently failed. Strict turns that into a loud
+    // invalid_args at the point of the typo.
+  }).strict(),
   async handler(args, ctx) {
     const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     const installSlug = resolvePotHomeSlug(args.pot, ctx.harnessSlug ?? undefined);

@@ -39,7 +39,10 @@ export default defineTool({
       .optional()
       .describe('Pot home-harness slug (default: ctx harness / PAPERCUSP_POT_HOME_SLUG).'),
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
-  }),
+    // .strict() — see the twin note in set_steering.ts (EI-8285 pattern): an
+    // unknown key (e.g. the pre-rename `hive`) must fail loudly, not be stripped
+    // into a misleading no_home_harness error.
+  }).strict(),
   async handler(args, ctx) {
     const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     const installSlug = resolvePotHomeSlug(args.pot, ctx.harnessSlug ?? undefined);
