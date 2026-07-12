@@ -379,6 +379,44 @@ export function livenessSignatureOf(rec: EscalationRecord): string | null {
 
 const lastAlertedAt = new Map<string, number>();
 
+// ── EI-9939: flap-episode tracking (suppress fleet-wide re-broadcast of a
+// FLAPPING condition_key) ───────────────────────────────────────────────────
+//
+// The auto-resolve leg above deliberately clears `lastAlertedAt` on recovery
+// ("so a genuine re-occurrence after recovery re-fires immediately") — correct
+// for a real second incident, but for a condition that flaps (fires, recovers,
+// re-fires, repeatedly — e.g. the routine-engine-starvation dead-routines flap
+// observed 2026-07-11/12, repeat_count up to 31 within one session) it means
+// EVERY flap cycle re-broadcasts a fresh `page()` alarm + `pageResolved()`
+// all-clear to `to:['*']` — every live + parked session, none of whom own the
+// flapping routine. Pure context tax.
+//
+// This map is DISTINCT from `lastAlertedAt` / `openBySig` dedup — a single
+// SUSTAINED incident (fires once, stays open until it genuinely resolves)
+// never creates more than one episode entry and is completely unaffected;
+// only a fire→resolve→refire PATTERN engages it. Only `blocker`-severity
+// signals participate (advisory signals never call `page()` regardless).
+interface FlapEpisode {
+  /** Fires observed within the current rolling window. */
+  fireCount: number;
+  /** epoch ms of the FIRST fire that opened this window. */
+  windowStartMs: number;
+  /** epoch ms the condition most recently went quiet (no longer firing) with
+   *  no page() broadcast for that recovery yet, or null while it is either
+   *  currently firing or its recovery was already broadcast. The settle
+   *  sweep watches this: once quiet for a full flap window with no re-fire,
+   *  it is genuinely settled and gets exactly one final all-clear. */
+  quietSinceMs: number | null;
+}
+const flapEpisodes = new Map<string, FlapEpisode>();
+
+const DEFAULT_FLAP_WINDOW_MS = DEFAULT_DEBOUNCE_MS; // 30 min — matches the escalation debounce
+/** Fires 1 and 2 within the window page normally (byte-identical to today's
+ *  behavior — see the "re-fires only after recovery" test); the 3rd+ fire
+ *  within the SAME window is classified as flapping and its page() is
+ *  suppressed (the durable escalation row is still written either way). */
+const DEFAULT_FLAP_THRESHOLD = 2;
+
 /** P-008: the per-workspace baseline for the PG postmaster boot time (epoch ms).
  *  A change between ticks = a PG restart → the `pg-restarted` signal. In-memory +
  *  per-worker like `lastAlertedAt`; the durable openBySig dedup collapses the
@@ -409,6 +447,14 @@ export interface AlarmDeps {
   now?: () => number;
   snapshotStaleMs?: number;
   debounceMs?: number;
+  /** EI-9939: the rolling window a repeated fire/resolve cycle is measured
+   *  against to classify a signature as FLAPPING (default: 30min, same as
+   *  `debounceMs`). Test-overridable so a flap scenario doesn't need real
+   *  wall-clock minutes. */
+  flapWindowMs?: number;
+  /** EI-9939: fires within `flapWindowMs` beyond this count are suppressed
+   *  (default 2 — the 3rd+ fire in the window is the flap). */
+  flapThreshold?: number;
   /** WI-4023: active paging for a NEW `blocker` signal (default: real notifyAttention +
    *  broadcastSevereEvent). Inject a no-op in tests — the default hits the REAL owner
    *  push + fleet broadcast, which a test exercising the blocker path must never do. */
@@ -551,6 +597,8 @@ export async function runLivenessAlarmTick(
       resolveEscalation({ msg_id, choice, note, resolver: INFRA_LIVENESS_IDENTITY.ownerId }));
   const staleMs = deps.snapshotStaleMs ?? DEFAULT_SNAPSHOT_STALE_MS;
   const debounceMs = deps.debounceMs ?? DEFAULT_DEBOUNCE_MS;
+  const flapWindowMs = deps.flapWindowMs ?? DEFAULT_FLAP_WINDOW_MS;
+  const flapThreshold = deps.flapThreshold ?? DEFAULT_FLAP_THRESHOLD;
   // WI-4023: paging defaults to a NO-OP here — a bare call to this pure(ish) tick
   // function (every unit test) must NEVER fire a real owner push / fleet broadcast.
   // The live scheduled loop (startInfraLivenessAlarm below) explicitly wires the
@@ -637,10 +685,37 @@ export async function runLivenessAlarmTick(
         /* a resolve failure must never crash the request worker */
       }
     }
-    if (transitioned && recs.some((r) => r.severity === 'blocker')) recoveredBlockerSigs.push(sig);
+    if (transitioned && recs.some((r) => r.severity === 'blocker')) {
+      // EI-9939: a signature already classified as FLAPPING (>flapThreshold
+      // fires seen this episode) does NOT get its own recovery broadcast —
+      // that would just be the other half of the flap-storm this exists to
+      // stop. Mark it quiet-since-now instead; the settle sweep below decides
+      // whether/when it earns exactly one final all-clear. A non-flapping
+      // signature (≤flapThreshold fires) keeps today's byte-identical
+      // behavior: broadcast the recovery immediately.
+      const ep = flapEpisodes.get(sig);
+      if (ep && ep.fireCount > flapThreshold) {
+        ep.quietSinceMs = now;
+      } else {
+        recoveredBlockerSigs.push(sig);
+      }
+    }
     // Drop the in-memory cooldown so a genuine re-occurrence after recovery
     // re-fires immediately ("re-fire only after auto-resolve").
     lastAlertedAt.delete(sig);
+  }
+  // EI-9939 settle sweep: a previously-flapping signature that has stayed
+  // quiet (no re-fire) for a FULL flap window is genuinely settled — send the
+  // one final recovery broadcast now (it supersedes every earlier alert
+  // sharing this condition_key, per coord:inbox's annotateResolvedConditions,
+  // so a reader who only saw the FIRST fire still learns it cleared) and reset
+  // the episode so a later genuine re-occurrence is treated as a fresh first
+  // fire rather than staying suppressed forever.
+  for (const [sig, ep] of flapEpisodes) {
+    if (ep.quietSinceMs === null) continue;
+    if (now - ep.quietSinceMs < flapWindowMs) continue;
+    recoveredBlockerSigs.push(sig);
+    flapEpisodes.delete(sig);
   }
   // WI-4023: pair the fleet-facing all-clear with the auto-resolve above — see the
   // paging note on the fire loop for why this is needed (a durable escalation row
@@ -681,7 +756,23 @@ export async function runLivenessAlarmTick(
     // threshold unread. git-sync-stall-watchdog.ts already pages on its own alarms
     // (notifyAttention + broadcastSevereEvent) — this brings the SAME active paging
     // to every `blocker`-severity infra-liveness signal, not just git-sync's.
-    if (s.severity === 'blocker') await page(s, ws);
+    if (s.severity === 'blocker') {
+      // EI-9939: classify this fire against its rolling flap window BEFORE
+      // deciding whether to page. A signature seen for the first time in the
+      // window (or whose prior window has aged out) starts a fresh episode —
+      // fires 1 and 2 always page (byte-identical to pre-EI-9939 behavior);
+      // the 3rd+ fire within the same window is a flap and is suppressed here
+      // (the durable escalation above is written regardless — this only
+      // gates the fleet-wide broadcast).
+      let ep = flapEpisodes.get(s.key);
+      if (!ep || now - ep.windowStartMs > flapWindowMs) {
+        ep = { fireCount: 0, windowStartMs: now, quietSinceMs: null };
+      }
+      ep.fireCount += 1;
+      ep.quietSinceMs = null; // firing again cancels any pending settle
+      flapEpisodes.set(s.key, ep);
+      if (ep.fireCount <= flapThreshold) await page(s, ws);
+    }
   }
   return { fired, signals, resolved };
 }

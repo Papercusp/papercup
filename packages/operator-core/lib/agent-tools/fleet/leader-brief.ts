@@ -10,6 +10,16 @@
  * claims (doing/queued/load), stalled, unanswered directed messages (with
  * age), contextPressure, bench state (parkedOn) }.
  *
+ * EI-9943 (session retrospective, fleet p2p-ship 2026-07-11/12): the SAME
+ * night-shift pattern recurred one level up — 3 of 5 members ran a live
+ * monitor loop for 58/37/19 turns each, structurally blocked on one member's
+ * critical-path diagnosis, instead of parking on an event (fleet:bench
+ * already existed but nobody staged it). `benchSuggestion` closes that gap:
+ * a per-member flag, computed from signals this tool already decorates
+ * (`stalled` + `verdict` + `parkedOn` — no new tracking), naming a member
+ * that is alive/speaking-or-first-turn-done, not advancing, and not already
+ * benched — the leader's one-glance cue to fleet:bench it onto the right gate.
+ *
  * Deliberately THIN: it is fleet:assignments' existing decoration pipeline
  * (reconcileWakeability → decorateMemberVerdicts → decorateParkedOn →
  * decorateContextPressure → decorateUnansweredDirected — all reused verbatim,
@@ -154,10 +164,11 @@ export default defineTool({
     '(booted|joined|first-turn-done|speaking|stalled|dead), wakeMode, lastToolCallAgeMs, ' +
     'current claims (doing/queuedCount/load), progress-stalled flag, unanswered directed ' +
     'messages (count/oldestAgeMs/newest — with no reply/ack yet), contextPressure ' +
-    '(ok|high|critical), and bench state (parkedOn — active events:await keys). Scoped to ' +
-    'ONE fleet (yours by default) instead of the whole workspace roster fleet:assignments ' +
-    'returns. Replaces the hand-assembled presence+assignments+inbox scan a leader otherwise ' +
-    'repeats every monitor wake.',
+    '(ok|high|critical), bench state (parkedOn), and benchSuggestion (EI-9943: alive+speaking ' +
+    'but not advancing, not yet benched — nudge toward fleet:bench). Scoped to ONE fleet ' +
+    '(yours by default) instead of the whole workspace roster fleet:assignments returns. ' +
+    'Replaces the hand-assembled presence+assignments+inbox scan a leader otherwise repeats ' +
+    'every monitor wake.',
   guidance: {
     when:
       "On a leader's repeating monitor tick: "
@@ -168,7 +179,8 @@ export default defineTool({
       'or full message history for one member (coord:inbox { agent }).',
     chaining:
       'A stalled/dead member → fleet:kill + relaunch, or a directed coord:send nudge. A nonzero ' +
-      '`unanswered` → coord:send a follow-up or coord:catch-up the thread.',
+      '`unanswered` → coord:send a follow-up or coord:catch-up the thread. `benchSuggestion` set → ' +
+      'fleet:bench it onto the gate it is actually blocked on, instead of live-loop-polling.',
   },
   capability: 'work_items:read',
   requirePrincipal: false,
@@ -241,6 +253,9 @@ export default defineTool({
       // P-001 coord-deafness: live members NOT seeing their coord mail right
       // now — a coord:send to them silently queues until they settle/wake.
       coord_deaf: members.filter((m) => m.coordHook != null).length,
+      // EI-9943: members alive+speaking but not advancing and not yet benched —
+      // the live-loop-polling-on-a-blocker pattern this whole item targets.
+      bench_suggested: members.filter((m) => m.benchSuggestion != null).length,
     };
     return {
       data: {

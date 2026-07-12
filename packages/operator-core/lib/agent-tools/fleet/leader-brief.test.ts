@@ -6,7 +6,7 @@
  * PG/DI ceremony (mirrors deriveMemberVerdict/deriveContextPressure).
  */
 import { describe, expect, it } from 'vitest';
-import { projectMember, type DecoratedAgent } from './leader-brief';
+import { computeBenchSuggestion, projectMember, type DecoratedAgent } from './leader-brief';
 
 const NOW = Date.parse('2026-07-10T12:00:00.000Z');
 
@@ -77,5 +77,44 @@ describe('projectMember (pure)', () => {
     expect(m.sessionState).toBeNull();
     expect(m.wakeMode).toBeNull();
     expect(m.contextPressure).toBeNull();
+  });
+});
+
+describe('computeBenchSuggestion (pure, EI-9943)', () => {
+  const doing = { id: 'WI-1', itemKind: 'bug', title: 'stuck thing', status: 'open', rank: 0, rankWriter: null, activity: 'stalled' as const };
+
+  it('flags a speaking member whose claim is stalled and not already benched', () => {
+    const s = computeBenchSuggestion({ stalled: true, verdict: 'speaking', parkedOn: [], doing });
+    expect(s).toBeDefined();
+    expect(s?.item).toBe('WI-1');
+    expect(s?.itemTitle).toBe('stuck thing');
+  });
+
+  it('also flags first-turn-done (not just speaking) — the between-wakes window', () => {
+    const s = computeBenchSuggestion({ stalled: true, verdict: 'first-turn-done', parkedOn: [], doing });
+    expect(s).toBeDefined();
+  });
+
+  it('does NOT flag an already-benched member (parkedOn non-empty) — avoid re-nudging', () => {
+    const s = computeBenchSuggestion({ stalled: true, verdict: 'speaking', parkedOn: ['some:event'], doing });
+    expect(s).toBeUndefined();
+  });
+
+  it('does NOT flag a member that is not stalled', () => {
+    const s = computeBenchSuggestion({ stalled: false, verdict: 'speaking', parkedOn: [], doing: null });
+    expect(s).toBeUndefined();
+  });
+
+  it('does NOT flag a dead/booted/joined member — not burning turns, relaunch is the right lever', () => {
+    for (const verdict of ['dead', 'booted', 'joined', 'stalled', null] as const) {
+      expect(computeBenchSuggestion({ stalled: true, verdict, parkedOn: [], doing })).toBeUndefined();
+    }
+  });
+
+  it('projectMember surfaces benchSuggestion only when computeBenchSuggestion fires', () => {
+    const flagged = projectMember(baseAgent({ stalled: true, verdict: 'speaking', parkedOn: [], doing }), NOW);
+    expect(flagged.benchSuggestion).toBeDefined();
+    const benched = projectMember(baseAgent({ stalled: true, verdict: 'speaking', parkedOn: ['k'], doing }), NOW);
+    expect('benchSuggestion' in benched).toBe(false);
   });
 });
