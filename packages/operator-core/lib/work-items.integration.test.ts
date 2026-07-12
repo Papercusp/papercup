@@ -865,6 +865,68 @@ describe('unified work_items surface (real PG)', () => {
   });
 });
 
+// WI-4405/EI-10422: work_items:list `admissibleOnly:true` previously achieved only PARTIAL
+// floor parity with the real claim path (it applied the G2 trust/admission gate but NOT the
+// D-005 observation-lane exclusion) — so a leader reading "claimable" via admissibleOnly could
+// see a lane:observation scorecard as if it were real, claimable work. This block proves the
+// read paths (listWorkItems/countWorkItems/searchWorkItems) now apply the SAME
+// excludeObservationLane floor claimNextWorkItem always has (see
+// work-items-observation-lane-exclusion.integration.test.ts for the claim-path proof).
+describe('WI-4405 — includeObservations / admissibleOnly parity on the read paths', () => {
+  it('listWorkItems EXCLUDES a lane:observation row by default (EI-10422 parity)', async () => {
+    const obs = await wi.createWorkItem({
+      kind: 'bug', title: 'scorecard obs', harness: 'papercup', createdBy: 'agA', payload: { lane: 'observation' },
+    });
+    const real = await wi.createWorkItem({ kind: 'bug', title: 'real bug', harness: 'papercup', createdBy: 'agA' });
+
+    const list = await wi.listWorkItems({ harness: 'papercup', kind: 'bug' });
+    expect(list.some((w) => w.id === obs.id)).toBe(false);
+    expect(list.some((w) => w.id === real.id)).toBe(true);
+  });
+
+  it('listWorkItems { includeObservations: true } includes it', async () => {
+    const obs = await wi.createWorkItem({
+      kind: 'bug', title: 'scorecard obs 2', harness: 'papercup', createdBy: 'agA', payload: { lane: 'observation' },
+    });
+    const list = await wi.listWorkItems({ harness: 'papercup', kind: 'bug', includeObservations: true });
+    expect(list.some((w) => w.id === obs.id)).toBe(true);
+  });
+
+  it('listWorkItems { admissibleOnly: true } ALWAYS excludes it, even alongside includeObservations:true (an observation is never claimable)', async () => {
+    const obs = await wi.createWorkItem({
+      kind: 'bug', title: 'scorecard obs 3', harness: 'papercup', createdBy: 'agA', payload: { lane: 'observation' },
+    });
+    const list = await wi.listWorkItems({ harness: 'papercup', kind: 'bug', admissibleOnly: true, includeObservations: true });
+    expect(list.some((w) => w.id === obs.id)).toBe(false);
+  });
+
+  it('countWorkItems mirrors the same default-exclude / includeObservations parity', async () => {
+    await wi.createWorkItem({
+      kind: 'bug', title: 'count obs', harness: 'papercup', createdBy: 'agA', payload: { lane: 'observation' },
+    });
+    await wi.createWorkItem({ kind: 'bug', title: 'count real', harness: 'papercup', createdBy: 'agA' });
+
+    const defaultCount = await wi.countWorkItems({ harness: 'papercup', kind: 'bug' });
+    const withObsCount = await wi.countWorkItems({ harness: 'papercup', kind: 'bug', includeObservations: true });
+    expect(withObsCount).toBe(defaultCount + 1);
+  });
+
+  it('searchWorkItems EXCLUDES a lane:observation hit by default; includeObservations:true includes it', async () => {
+    await wi.createWorkItem({
+      kind: 'bug', title: 'zephyrion scorecard note', summary: 'a reflection', harness: 'papercup', createdBy: 'agA',
+      payload: { lane: 'observation' },
+    });
+    await wi.createWorkItem({ kind: 'bug', title: 'zephyrion real bug', harness: 'papercup', createdBy: 'agA' });
+
+    const excluded = await wi.searchWorkItems('zephyrion', { semantic: false });
+    expect(excluded.some((w) => w.title === 'zephyrion scorecard note')).toBe(false);
+    expect(excluded.some((w) => w.title === 'zephyrion real bug')).toBe(true);
+
+    const included = await wi.searchWorkItems('zephyrion', { semantic: false, includeObservations: true });
+    expect(included.some((w) => w.title === 'zephyrion scorecard note')).toBe(true);
+  });
+});
+
 // B-LOOP-4 (loop-routines P-007 / D-008) — atomic create+claim. Passing `assignee`
 // to createWorkItem makes the row land already-claimed in ONE DB write — no separate
 // claim, no create→claim race window (a competing claim_next can't grab the row in the
