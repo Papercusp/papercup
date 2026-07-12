@@ -738,6 +738,79 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
   return rubric;
 }
 
+// ─── rubric-system-improvements-2026-07-12 P-003: the small-amendment path ────────────
+
+/** The criterion prose fields rubrics:amend may patch. `key` is identity (not patchable);
+ *  `ratingScale` changes re-score history, so they stay whole-doc-propose territory. */
+export const AMENDABLE_CRITERION_FIELDS = ['title', 'model', 'method', 'driftMarkers', 'replication'] as const;
+export type AmendableCriterionField = (typeof AMENDABLE_CRITERION_FIELDS)[number];
+
+export interface AmendRubricInput {
+  rubricId: string;
+  /** Patch ONE criterion's prose field. `append` adds a paragraph (never guarded — it
+   *  can only grow the procedure); `replace` swaps the field and inherits the WI-4287
+   *  shrink guard via proposeRubric. */
+  criterion?: {
+    key: string;
+    field: AmendableCriterionField;
+    mode: 'append' | 'replace';
+    text: string;
+  };
+  /** Set/replace the rubric-level runbook slug (agent-insights). */
+  methodRef?: string;
+  allowMethodShrink?: boolean;
+  shrinkReason?: string;
+  by?: string;
+}
+
+/**
+ * Amend ONE criterion field and/or the rubric's methodRef WITHOUT the whole-document
+ * rubrics:propose replace (rubric-system-improvements-2026-07-12 P-003: the replace
+ * ceremony — refetch, resubmit every criterion, ack loss-guards — deterred a same-day
+ * one-paragraph amendment; small improvements were being skipped). Loads the stored
+ * rubric, patches in memory, and delegates persistence to proposeRubric with the
+ * STORED status preserved — amending an active rubric never demotes it to proposed,
+ * and every WI-4287 loss-guard still applies to a `replace`. Returns null for an
+ * unknown rubricId; throws (like proposeRubric) on guard violations.
+ */
+export async function amendRubric(input: AmendRubricInput): Promise<Rubric | null> {
+  const stored = await getRubric(input.rubricId);
+  if (!stored) return null;
+  if (!input.criterion && input.methodRef === undefined) {
+    throw new Error('amendRubric: nothing to amend — pass criterion and/or methodRef');
+  }
+
+  let criteria = stored.criteria;
+  if (input.criterion) {
+    const { key, field, mode, text } = input.criterion;
+    const target = stored.criteria.find((c) => c.key === key);
+    if (!target) {
+      throw new Error(
+        `amendRubric: rubric '${input.rubricId}' has no criterion '${key}' — keys: ${stored.criteria
+          .map((c) => c.key)
+          .join(', ')}`,
+      );
+    }
+    const current = target[field] ?? '';
+    const next = mode === 'append' ? (current ? `${current}\n\n${text}` : text) : text;
+    criteria = stored.criteria.map((c) => (c.key === key ? { ...c, [field]: next } : c));
+  }
+
+  return proposeRubric({
+    rubricId: stored.rubricId,
+    characteristic: stored.characteristic,
+    title: stored.title,
+    description: stored.description,
+    criteria,
+    ratingScale: stored.ratingScale,
+    methodRef: input.methodRef ?? stored.methodRef ?? undefined,
+    by: input.by ?? stored.createdBy ?? undefined,
+    status: stored.status,
+    ...(input.allowMethodShrink !== undefined ? { allowMethodShrink: input.allowMethodShrink } : {}),
+    ...(input.shrinkReason !== undefined ? { shrinkReason: input.shrinkReason } : {}),
+  });
+}
+
 /**
  * Ratify a proposed rubric → active (D-001: the Queen/owner gate) by promoting its plan
  * (status → active). Returns the activated rubric, or null if no rubric-template plan

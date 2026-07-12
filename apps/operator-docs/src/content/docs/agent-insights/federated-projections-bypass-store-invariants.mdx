@@ -47,6 +47,29 @@ There is a `federated-column-completeness` guard (EI-9430 lineage): every column
 - **op-semantics completeness** has no guard — nothing checks that the apply side handles every op *meaning* the capture side can emit (a `put` that means "retract").
 - **invariant completeness** has no guard — nothing checks that a raw-SQL writer upholds what the table's real writer guarantees (here: *every memory row has a vector row in the active mode, or it is invisible to recall*).
 
+## It is not a federation bug — it is a CAPTURE-TRIGGER bug (EI-10521)
+
+The same root cause turned up a fourth time in a lane that has nothing to do with p2p: **git-export**. `capture_git_export_outbox()` — whose header says it *"mirrors `capture_substrate_outbox`"* — routes every export by `row->>'harness_slug'`. Two tables were registered as git docs without a harness scope: `goals` (its column is `install_slug`) and `project_spec_revisions` (project-scoped, no slug at all). Neither has a `harness_slug` column, so the trigger read **NULL** on every write.
+
+And here is the generalization worth carrying, because it inverts the symptom:
+
+> **The routing key is unwritable in both cases. What decides whether you get a silent strand or an outage is the NULLABILITY OF THE DESTINATION COLUMN.**
+>
+> - `substrate_outbox.harness_slug` is **nullable** → the op is enqueued with a NULL key, the drain's `WHERE harness_slug = $1` never selects it, the GC reaps it. **Silent strand** (EI-10432): federated to nobody, errored nowhere.
+> - `git_export_outbox.harness_slug` is **NOT NULL** → the trigger's INSERT raises `23502`, and because it raises *inside an AFTER trigger* it **aborts the statement that fired it**. **Outage** (EI-10521): every INSERT/UPDATE/DELETE on `goals` and `project_spec_revisions` failed, so both tables sat at **zero rows** — the features had never once worked, despite live writers (`goal-lineage.ts`, and an HTTP route for spec revisions).
+
+Same defect, opposite failure mode. So don't ask only "is the key written?" — ask "**and what does the destination do with a NULL?**" One answer hides the bug forever; the other converts a missing export into a broken write path.
+
+**The bitterest part, and the actual lesson:** this had already happened, been diagnosed, and been written down. `table-registry.ts` carries a comment explaining that `llm_test_fixtures` / `llm_test_claims` / `llm_test_findings` were removed from the git-doc set because *"the harness-keyed git_export_outbox capture (`harness_slug` NOT NULL) **crashed every insert** … a fresh llm-test run couldn't persist."* `goals` and `project_spec_revisions` sat **five lines below that comment**, with the identical defect, for as long as it existed.
+
+> **A diagnosis in a code comment does not prevent recurrence. Only a mechanical guard does.** The comment was correct, prominent, and adjacent — and the bug shipped twice more anyway. If you find yourself *explaining* an invariant in prose, that is the moment to write the test instead.
+
+The fix has three parts, and the shape generalizes to any capture lane:
+
+1. **Make the capture trigger refuse to enqueue an unroutable op — never fatal.** `capture_work_items_outbox` already did exactly this (`IF v_slug IS NULL OR v_slug = '' THEN RETURN v_rec; END IF;`); the git twin that claimed to mirror it omitted the guard. A missed export is a bug; a core write path that always throws is an outage.
+2. **Fix the registry, not just the trigger.** Part 1 alone would convert the loud break into a silent no-export — i.e. it would turn EI-10521 *into* EI-10432. An unroutable table is a **misclassification**: a git doc is exported into one harness's `.papercusp/state/` dir, so an install-/project-/workspace-scoped table is not a git doc.
+3. **Guard it mechanically** (`git-export-slug-coverage.integration.test.ts`): every registered git doc, in the real migrated schema, must carry a NOT NULL `harness_slug`. That is the test the llm_test_* comment should have been.
+
 ## The audit, when you touch any federated table
 
 1. **For every federation column, name the line of code that writes it — then prove it against live data.** This is the cheapest and highest-yield check, and it is one query:

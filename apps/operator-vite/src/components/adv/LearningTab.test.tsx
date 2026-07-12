@@ -851,7 +851,9 @@ describe("LearningTab — Benchmark view", () => {
     };
     render(<LearningTab />);
     expect(screen.getAllByText("pending").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText(/pending7 · 0\/4/)).toBeTruthy();
+    expect(
+      document.querySelector(".pc-learning__pendinginline")?.textContent,
+    ).toContain("pending · 0/4");
     expect(screen.getAllByText("5.950").length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByText("first generation")).toBeNull();
     expect(
@@ -1338,7 +1340,12 @@ describe("LearningTab — per-Hive lens (per-hive-learning-loops-2026-06-14 P-04
         {
           hive: "alpha-hive",
           rows: [
-            { id: "a", text: "Alpha memory.", kind: "fact", createdBy: "owner" },
+            {
+              id: "a",
+              text: "Alpha memory.",
+              kind: "fact",
+              createdBy: "owner",
+            },
             { id: "b", text: "Beta memory.", kind: "fact", createdBy: "owner" },
           ],
           packs: [],

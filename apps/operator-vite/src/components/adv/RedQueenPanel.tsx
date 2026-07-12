@@ -67,7 +67,9 @@ export function RedQueenPanel({
   const triage = phaseAverage("triageMs");
   const fix = phaseAverage("fixMs");
   const phaseTotal = Math.max(1, detect + triage + fix);
-  const unresolved = snap ? Math.max(0, snap.totalRuns - snap.totalResolved) : 0;
+  const unresolved = snap
+    ? Math.max(0, snap.totalRuns - snap.totalResolved)
+    : 0;
   useEffect(() => {
     onStatus?.(
       sync.error
@@ -118,7 +120,10 @@ export function RedQueenPanel({
       />
 
       {sync.error ? (
-        <LearningVisualError title="Red Queen unavailable" onRetry={() => sync.invalidate()} />
+        <LearningVisualError
+          title="Red Queen unavailable"
+          onRetry={() => sync.invalidate()}
+        />
       ) : classes.length === 0 ? (
         <LearningVisualEmpty icon={HeartPulse} title="No self-heal drills" />
       ) : (
@@ -142,7 +147,8 @@ export function RedQueenPanel({
                     : "good"
               }
             >
-              {snap!.totalResolved}/{snap!.totalRuns} healed · {snap!.leakFailures} leaks
+              {snap!.totalResolved}/{snap!.totalRuns} healed ·{" "}
+              {snap!.leakFailures} leaks
             </LearningHeroMetric>
             <div
               className="pc-rq__waterfall"

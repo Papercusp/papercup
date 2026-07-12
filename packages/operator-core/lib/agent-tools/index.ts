@@ -736,6 +736,9 @@ import './rubrics/list';
 import './rubrics/get';
 import './rubrics/search';
 import './rubrics/propose';
+// rubrics:amend — the small-edit path: patch ONE criterion field / methodRef without
+// the whole-document propose replace (rubric-system-improvements-2026-07-12 P-003).
+import './rubrics/amend';
 import './rubrics/ratify';
 // rubrics:trend — the qualitative health TREND of a rubric (per-criterion rating
 // time-series + direction over the Overwatch scorecards; P-010).

@@ -159,7 +159,10 @@ export function EkgPanel({
       />
 
       {sync.error ? (
-        <LearningVisualError title="EKG unavailable" onRetry={() => sync.invalidate()} />
+        <LearningVisualError
+          title="EKG unavailable"
+          onRetry={() => sync.invalidate()}
+        />
       ) : shifts.length === 0 ? (
         <LearningVisualEmpty icon={Activity} title="No behavioral shifts" />
       ) : (
@@ -171,7 +174,8 @@ export function EkgPanel({
               status={major > 0 ? "major drift" : "monitor"}
               tone={major > 0 ? "bad" : "warn"}
             >
-              {snap!.totalShifts} total · {snap!.unattributedShifts} unattributed
+              {snap!.totalShifts} total · {snap!.unattributedShifts}{" "}
+              unattributed
             </LearningHeroMetric>
             <div
               className="pc-ekg__wave"

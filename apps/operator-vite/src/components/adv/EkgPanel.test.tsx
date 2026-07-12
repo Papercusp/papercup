@@ -108,7 +108,10 @@ describe("EkgPanel", () => {
     ).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("Window")).toBeTruthy();
     expect(screen.getByText("All shifts")).toBeTruthy();
-    expect(screen.getByText("5.0%")).toBeTruthy();
+    expect(
+      document.querySelector('[title="Baseline median → window median"]')
+        ?.textContent,
+    ).toContain("5.0%→40%");
     expect(document.querySelector(".pc-ekg__wave")).toBeTruthy();
   });
 
@@ -190,7 +193,9 @@ describe("EkgPanel", () => {
     render(<EkgPanel />);
     expect(screen.getByText("EKG unavailable")).toBeTruthy();
     expect(screen.queryByText("socket secret")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Retry EKG unavailable" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Retry EKG unavailable" }),
+    );
     expect(invalidate).toHaveBeenCalledTimes(1);
   });
 });

@@ -107,6 +107,24 @@ apps/operator/docs/plans/**/*.md
 **/scratch/relgit-*/
 **/scratch/lockdom-*/
 
+# WI-4419 (2026-07-12): a gitignore pattern containing a slash is ANCHORED to the
+# directory of the .gitignore holding it — so `.papercusp/scratch/` above matches
+# ONLY <repo-root>/.papercusp/scratch/. Agent state dirs also appear NESTED
+# (packages/operator-core/.papercusp/, apps/operator/.papercusp/, ...), where the
+# anchored patterns miss them — and git-sync auto-commits the whole tree, so what
+# the pattern misses is committed automatically. That is how 529 scratch files and
+# a live hyperbee LevelDB (whose LOG embeds the build box's home path + hostname)
+# came to be TRACKED, and thence swept into every release bundle by the sidecar glob.
+# These `**/` twins are the depth-matching guard (same fix already applied to
+# .vitest-tmp above). Untracking what is ALREADY committed is separate — see WI-4419.
+**/.papercusp/scratch/
+**/.papercusp/vitest-tmp/
+**/.papercusp/tmp/
+**/.papercusp/tmp-*/
+**/.papercusp/logs/
+**/.papercusp/bench-reports/
+**/.papercusp/pi-sessions/
+
 # npm-only repo — a pnpm/yarn install breaks the shared node_modules layout (2026-07-03 fleet incident)
 pnpm-lock.yaml
 yarn.lock

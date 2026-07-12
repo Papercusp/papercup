@@ -1361,9 +1361,7 @@ function ApiaryView({
             ? `${latest.successfulRuns}/${latest.totalRuns} solved`
             : undefined
         }
-        tone={
-          latest && latest.successRate >= 0.8 ? "good" : "neutral"
-        }
+        tone={latest && latest.successRate >= 0.8 ? "good" : "neutral"}
         action={
           <button
             type="button"
@@ -2777,7 +2775,10 @@ export function ScoutView({
               {queueItems.map(renderIdeaRow)}
             </ul>
           ) : (
-            <LearningVisualEmpty icon={CheckCircle2} title="Review queue clear" />
+            <LearningVisualEmpty
+              icon={CheckCircle2}
+              title="Review queue clear"
+            />
           )}
           {reviewItems.length > 8 ? (
             <button
@@ -2886,7 +2887,8 @@ function LearningsView({
     ...filtered,
   ]
     .filter(
-      (row, index, all) => all.findIndex((item) => item.id === row.id) === index,
+      (row, index, all) =>
+        all.findIndex((item) => item.id === row.id) === index,
     )
     .slice(0, 6);
   const primaryIds = new Set(primaryRows.map((row) => row.id));

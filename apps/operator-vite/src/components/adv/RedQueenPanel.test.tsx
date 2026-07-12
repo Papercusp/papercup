@@ -118,7 +118,9 @@ describe("RedQueenPanel", () => {
       invalidate: vi.fn(),
     };
     render(<RedQueenPanel />);
-    expect(screen.getAllByText("1 unresolved").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("1 unresolved").length).toBeGreaterThanOrEqual(
+      1,
+    );
     expect(screen.getByText("Unresolved")).toBeTruthy();
   });
 

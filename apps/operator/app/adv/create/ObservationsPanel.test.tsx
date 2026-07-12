@@ -249,7 +249,9 @@ describe("<ObservationsPanel />", () => {
       { kind: "other", count: 1769 },
     ];
     render(<ObservationsPanel />);
-    const chips = screen.getByLabelText("Signal distribution (database counts)");
+    const chips = screen.getByLabelText(
+      "Signal distribution (database counts)",
+    );
     expect(chips.querySelector("button")?.textContent).toContain("Friction");
     expect(chips.querySelector("button:last-child")?.textContent).toContain(
       "other",

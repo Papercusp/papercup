@@ -461,3 +461,69 @@ describe('IDEATE-pass novelty pre-check (P-008 priorArt)', () => {
     expect('priorArt' in body).toBe(false);
   });
 });
+
+describe('improvements:capture — notExercised shorthand (rubric-system-improvements P-002)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIdentity.mockReturnValue(identity('su-abc'));
+    mockCapture.mockResolvedValue({ ok: true, id: 'EI-9', created: true } as unknown as Awaited<
+      ReturnType<typeof captureImprovement>
+    >);
+  });
+
+  it("expands each listed key to an idle:-tagged unknown and strips the shorthand from the stored observation", async () => {
+    await callTool({
+      title: 'scoped drill scorecard',
+      lane: 'observation',
+      observation: {
+        rubricRef: 'su-agent-behavior',
+        ratings: { 'recall-utilization': { rating: 'pass', evidence: 'one targeted search' } },
+        notExercised: ['fleet-stewardship', 'engineering-discipline'],
+      },
+    });
+    const passed = mockCapture.mock.calls[0]![0] as {
+      payloadExtra?: { observation?: { ratings?: Record<string, { rating: string; evidence: string }>; notExercised?: unknown } };
+    };
+    const obs = passed.payloadExtra?.observation;
+    expect(obs?.notExercised).toBeUndefined(); // stripped — stored payload stays pure ratings
+    expect(obs?.ratings?.['recall-utilization']).toEqual({ rating: 'pass', evidence: 'one targeted search' });
+    expect(obs?.ratings?.['fleet-stewardship']).toEqual({
+      rating: 'unknown',
+      evidence: 'idle: not exercised by this run.',
+    });
+    expect(obs?.ratings?.['engineering-discipline']).toEqual({
+      rating: 'unknown',
+      evidence: 'idle: not exercised by this run.',
+    });
+  });
+
+  it('an explicit rating for a key ALSO listed in notExercised wins over the expansion', async () => {
+    await callTool({
+      title: 'conflicting shorthand',
+      lane: 'observation',
+      observation: {
+        rubricRef: 'r',
+        ratings: { wake: { rating: 'degraded', evidence: 'real signal' } },
+        notExercised: ['wake'],
+      },
+    });
+    const passed = mockCapture.mock.calls[0]![0] as {
+      payloadExtra?: { observation?: { ratings?: Record<string, { rating: string; evidence: string }> } };
+    };
+    expect(passed.payloadExtra?.observation?.ratings?.wake).toEqual({ rating: 'degraded', evidence: 'real signal' });
+  });
+
+  it('the args schema accepts notExercised (strict observation object knows the key)', () => {
+    const argsSchema = (
+      captureTool as unknown as {
+        args: { safeParse: (v: unknown) => { success: boolean } };
+      }
+    ).args;
+    const r = argsSchema.safeParse({
+      title: 'scoped scorecard',
+      lane: 'observation',
+      observation: { rubricRef: 'r', ratings: { a: { rating: 'pass', evidence: 'e' } }, notExercised: ['b'] },
+    });
+    expect(r.success).toBe(true);
+  });
+});
