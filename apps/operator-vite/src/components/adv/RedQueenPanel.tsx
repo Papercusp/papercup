@@ -177,7 +177,7 @@ export function RedQueenPanel() {
         </>
       )}
       <style>{`
-        .pc-rq__waterfall { min-height: 176px; display: flex; align-items: center; gap: 4px; padding: 18px; border: 1px solid var(--border); border-radius: 11px; background: var(--bg-2); }
+        .pc-rq__waterfall { min-height: 120px; display: flex; align-items: center; gap: 4px; padding: 12px; border: 1px solid var(--border); border-radius: 11px; background: var(--bg-2); }
         .pc-rq__waterfall > span { min-width: 70px; display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: end; }
         .pc-rq__waterfall i { grid-column: 1 / -1; display: block; height: 22px; border-radius: 4px; opacity: .85; }
         .pc-rq__waterfall small { color: var(--fg-mute); font-size: 9px; text-transform: uppercase; }

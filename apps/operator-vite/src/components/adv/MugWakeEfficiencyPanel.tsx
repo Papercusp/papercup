@@ -21,6 +21,7 @@ import { useLexicon } from "@/lib/useLexicon";
 import type { MugWakeEfficiency } from "@papercusp/operator-core/lib/pot/mug-wake-efficiency";
 import {
   LearningComparisonBars,
+  LearningDisclosure,
   LearningEvidenceRail,
   LearningHeroMetric,
   LearningPageHeader,
@@ -50,6 +51,32 @@ export function MugWakeEfficiencyPanel() {
   const wakes = snap?.wakes ?? 0;
   const samples = Array.isArray(snap?.samples) ? snap!.samples : [];
   const recent = samples.slice(0, 8);
+  const visible = recent.slice(0, 4);
+  const earlier = recent.slice(4);
+
+  const renderWake = (s: (typeof recent)[number], i: number) => {
+    const prompt = s.cacheReadTokens + s.cacheCreationTokens + s.inputTokens;
+    const hit = prompt > 0 ? s.cacheReadTokens / prompt : 0;
+    return (
+      <li key={s.runId ?? `wake-${i}`} className="pc-qeff__row">
+        <span className="pc-qeff__cache" title="cache-hit ratio this wake">
+          {pct(hit)}
+        </span>
+        <span className="pc-qeff__bar" aria-hidden>
+          <span
+            className="pc-qeff__barfill"
+            style={{ width: `${Math.round(hit * 100)}%` }}
+          />
+        </span>
+        <span className="pc-qeff__turns" title="assistant turns this wake">
+          {s.turns == null ? "—" : `${s.turns}t`}
+        </span>
+        <span className="pc-qeff__tok" title="prompt tokens this wake">
+          {compact(prompt)}
+        </span>
+      </li>
+    );
+  };
 
   return (
     <section
@@ -139,40 +166,15 @@ export function MugWakeEfficiencyPanel() {
                 className="pc-qeff__list"
                 aria-label={`recent ${t("brain")} wakes (newest first)`}
               >
-                {recent.map((s, i) => {
-                  const prompt =
-                    s.cacheReadTokens + s.cacheCreationTokens + s.inputTokens;
-                  const hit = prompt > 0 ? s.cacheReadTokens / prompt : 0;
-                  return (
-                    <li key={s.runId ?? `wake-${i}`} className="pc-qeff__row">
-                      <span
-                        className="pc-qeff__cache"
-                        title="cache-hit ratio this wake"
-                      >
-                        {pct(hit)}
-                      </span>
-                      <span className="pc-qeff__bar" aria-hidden>
-                        <span
-                          className="pc-qeff__barfill"
-                          style={{ width: `${Math.round(hit * 100)}%` }}
-                        />
-                      </span>
-                      <span
-                        className="pc-qeff__turns"
-                        title="assistant turns this wake"
-                      >
-                        {s.turns == null ? "—" : `${s.turns}t`}
-                      </span>
-                      <span
-                        className="pc-qeff__tok"
-                        title="prompt tokens this wake"
-                      >
-                        {compact(prompt)}
-                      </span>
-                    </li>
-                  );
-                })}
+                {visible.map(renderWake)}
               </ul>
+              {earlier.length > 0 ? (
+                <LearningDisclosure label="Earlier wakes" count={earlier.length}>
+                  <ul className="pc-qeff__list">
+                    {earlier.map((sample, i) => renderWake(sample, i + 4))}
+                  </ul>
+                </LearningDisclosure>
+              ) : null}
             </>
           ) : null}
         </>

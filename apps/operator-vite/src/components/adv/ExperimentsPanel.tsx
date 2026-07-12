@@ -17,6 +17,7 @@ import { FlaskConical, RefreshCw } from "lucide-react";
 import type { ExperimentRunSummary } from "@papercusp/operator-core/lib/experiment/ledger";
 import {
   LearningComparisonBars,
+  LearningDisclosure,
   LearningEvidenceRail,
   LearningHeroMetric,
   LearningPageHeader,
@@ -61,6 +62,56 @@ export function ExperimentsPanel() {
   const winnerArm = latestArms.find((arm) => arm.id === latest?.winner) ?? null;
   const baselineArm =
     latestArms.find((arm) => arm.id !== latest?.winner) ?? null;
+  const visible = runs.slice(0, 4);
+  const earlier = runs.slice(4);
+
+  const renderRun = (r: (typeof runs)[number]) => {
+    const arms = Array.isArray(r.arms) ? r.arms : [];
+    return (
+      <li
+        key={`${r.batteryId}`}
+        className="pc-experiments__row"
+        title={r.batteryId}
+      >
+        <span className="pc-experiments__test">{r.testId}</span>
+        <span
+          className="pc-experiments__tier"
+          style={{ color: TIER_TONE[r.tier] ?? "#7f9bb4" }}
+        >
+          {r.tier}
+        </span>
+        <span className="pc-experiments__arms">
+          {arms.map((a) => (
+            <span
+              key={a.id}
+              className={
+                a.id === r.winner
+                  ? "pc-experiments__arm pc-experiments__arm--win"
+                  : "pc-experiments__arm"
+              }
+              title={a.label}
+            >
+              {a.id} {scoreLabel(a.meanScore)}
+            </span>
+          ))}
+        </span>
+        <span className="pc-experiments__meta">
+          <span className="pc-experiments__winner" title="Winning arm">
+            {r.winner ? `▲ ${r.winner}` : "no winner"}
+          </span>
+          <span title="Total spend">${r.totalCostUsd.toFixed(3)}</span>
+          <span
+            className="pc-experiments__decision"
+            style={{ color: DECISION_TONE[r.decision] ?? "#7f9bb4" }}
+            title="A winner is a proposal until the apply path graduates it"
+          >
+            {r.decision}
+          </span>
+          <span className="pc-experiments__age">{dateShort(r.createdAt)}</span>
+        </span>
+      </li>
+    );
+  };
 
   return (
     <section
@@ -148,61 +199,13 @@ export function ExperimentsPanel() {
             <h2>Recent experiments</h2>
           </div>
           <ul className="pc-experiments__list">
-            {runs.map((r) => {
-              const arms = Array.isArray(r.arms) ? r.arms : [];
-              return (
-                <li
-                  key={`${r.batteryId}`}
-                  className="pc-experiments__row"
-                  title={r.batteryId}
-                >
-                  <span className="pc-experiments__test">{r.testId}</span>
-                  <span
-                    className="pc-experiments__tier"
-                    style={{ color: TIER_TONE[r.tier] ?? "#7f9bb4" }}
-                  >
-                    {r.tier}
-                  </span>
-                  <span className="pc-experiments__arms">
-                    {arms.map((a) => (
-                      <span
-                        key={a.id}
-                        className={
-                          a.id === r.winner
-                            ? "pc-experiments__arm pc-experiments__arm--win"
-                            : "pc-experiments__arm"
-                        }
-                        title={a.label}
-                      >
-                        {a.id} {scoreLabel(a.meanScore)}
-                      </span>
-                    ))}
-                  </span>
-                  <span className="pc-experiments__meta">
-                    <span
-                      className="pc-experiments__winner"
-                      title="Winning arm"
-                    >
-                      {r.winner ? `▲ ${r.winner}` : "no winner"}
-                    </span>
-                    <span title="Total spend">
-                      ${r.totalCostUsd.toFixed(3)}
-                    </span>
-                    <span
-                      className="pc-experiments__decision"
-                      style={{ color: DECISION_TONE[r.decision] ?? "#7f9bb4" }}
-                      title="A winner is a proposal until the apply path graduates it"
-                    >
-                      {r.decision}
-                    </span>
-                    <span className="pc-experiments__age">
-                      {dateShort(r.createdAt)}
-                    </span>
-                  </span>
-                </li>
-              );
-            })}
+            {visible.map(renderRun)}
           </ul>
+          {earlier.length > 0 ? (
+            <LearningDisclosure label="Earlier experiments" count={earlier.length}>
+              <ul className="pc-experiments__list">{earlier.map(renderRun)}</ul>
+            </LearningDisclosure>
+          ) : null}
         </>
       )}
       <style>{`

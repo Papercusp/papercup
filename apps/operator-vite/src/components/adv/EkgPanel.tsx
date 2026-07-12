@@ -19,6 +19,7 @@ import { useSyncQuery } from "@papercusp/sync";
 import { Activity, RefreshCw } from "lucide-react";
 import type { EkgSnapshot } from "@papercusp/operator-core/lib/fleet-ekg/ekg-read";
 import {
+  LearningDisclosure,
   LearningEvidenceRail,
   LearningHeroMetric,
   LearningPageHeader,
@@ -45,6 +46,59 @@ export function EkgPanel() {
   const snap = sync.data?.[0];
   const shifts = Array.isArray(snap?.shifts) ? snap.shifts : [];
   const major = shifts.filter((shift) => shift.severity === "major").length;
+  const visible = shifts.slice(0, 8);
+  const earlier = shifts.slice(8);
+
+  const renderShift = (s: (typeof shifts)[number]) => (
+    <li key={s.id} className="pc-ekg__row">
+      <span className={`pc-ekg__severity is-${s.severity}`}>
+        {s.severity}
+      </span>
+      <span className="pc-ekg__feature">
+        {s.feature}
+        {s.direction ? (
+          <em className="pc-ekg__dir">{s.direction === "up" ? "↑" : "↓"}</em>
+        ) : null}
+      </span>
+      <span className="pc-ekg__meta">
+        <span title="Drift score (PSI for numeric, JSD for distributions)">
+          {s.score.toFixed(3)}
+        </span>
+        {s.baselineSummary != null && s.windowSummary != null ? (
+          <span title="Baseline median → window median">
+            {num(s.baselineSummary)}→{num(s.windowSummary)}
+          </span>
+        ) : null}
+        <span title="Window vs baseline cohort sizes">
+          {s.windowSessions}w/{s.baselineSessions}b
+        </span>
+        <span className="pc-ekg__age" title="Shift window day">
+          {dateShort(s.windowDate)}
+        </span>
+        {s.attributed ? (
+          <span
+            className="pc-ekg__attributed"
+            title={s.ledgerCandidates
+              .map(
+                (c) =>
+                  `${c.source} ${c.target}${c.summary ? ` — ${c.summary}` : ""}`,
+              )
+              .join("\n")}
+          >
+            {s.ledgerCandidates.length} cause
+            {s.ledgerCandidates.length === 1 ? "" : "s"}
+          </span>
+        ) : (
+          <span
+            className="pc-ekg__alarm"
+            title="No behavior-change-ledger entry in the lookback window"
+          >
+            unattributable
+          </span>
+        )}
+      </span>
+    </li>
+  );
 
   return (
     <section
@@ -128,63 +182,17 @@ export function EkgPanel() {
             <h2>Detected shifts</h2>
           </div>
           <ul className="pc-ekg__list">
-            {shifts.map((s) => (
-              <li key={s.id} className="pc-ekg__row">
-                <span className={`pc-ekg__severity is-${s.severity}`}>
-                  {s.severity}
-                </span>
-                <span className="pc-ekg__feature">
-                  {s.feature}
-                  {s.direction ? (
-                    <em className="pc-ekg__dir">
-                      {s.direction === "up" ? "↑" : "↓"}
-                    </em>
-                  ) : null}
-                </span>
-                <span className="pc-ekg__meta">
-                  <span title="Drift score (PSI for numeric, JSD for distributions)">
-                    {s.score.toFixed(3)}
-                  </span>
-                  {s.baselineSummary != null && s.windowSummary != null ? (
-                    <span title="Baseline median → window median">
-                      {num(s.baselineSummary)}→{num(s.windowSummary)}
-                    </span>
-                  ) : null}
-                  <span title="Window vs baseline cohort sizes">
-                    {s.windowSessions}w/{s.baselineSessions}b
-                  </span>
-                  <span className="pc-ekg__age" title="Shift window day">
-                    {dateShort(s.windowDate)}
-                  </span>
-                  {s.attributed ? (
-                    <span
-                      className="pc-ekg__attributed"
-                      title={s.ledgerCandidates
-                        .map(
-                          (c) =>
-                            `${c.source} ${c.target}${c.summary ? ` — ${c.summary}` : ""}`,
-                        )
-                        .join("\n")}
-                    >
-                      {s.ledgerCandidates.length} cause
-                      {s.ledgerCandidates.length === 1 ? "" : "s"}
-                    </span>
-                  ) : (
-                    <span
-                      className="pc-ekg__alarm"
-                      title="No behavior-change-ledger entry in the lookback window"
-                    >
-                      unattributable
-                    </span>
-                  )}
-                </span>
-              </li>
-            ))}
+            {visible.map(renderShift)}
           </ul>
+          {earlier.length > 0 ? (
+            <LearningDisclosure label="Earlier shifts" count={earlier.length}>
+              <ul className="pc-ekg__list">{earlier.map(renderShift)}</ul>
+            </LearningDisclosure>
+          ) : null}
         </>
       )}
       <style>{`
-        .pc-ekg__wave { min-height: 176px; display: flex; align-items: center; justify-content: center; gap: 4px; padding: 18px; border: 1px solid var(--border); border-radius: 11px; background: var(--bg-2); }
+        .pc-ekg__wave { min-height: 120px; display: flex; align-items: center; justify-content: center; gap: 3px; padding: 12px; border: 1px solid var(--border); border-radius: 11px; background: var(--bg-2); }
         .pc-ekg__wave::before { content: ''; width: 1px; height: 100%; background: var(--border); }
         .pc-ekg__wave i { width: min(16px, 4%); min-height: 10px; border-radius: 2px; background: #fbbf24; }
         .pc-ekg__wave i.is-major { background: #fb7185; }
