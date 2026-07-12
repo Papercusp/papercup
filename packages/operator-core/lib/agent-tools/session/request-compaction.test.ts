@@ -80,7 +80,9 @@ describe('session:request-compaction — WI-1804 auto-continuation caps gating',
     expect(injectIntoHost).toHaveBeenCalledTimes(1);
     const msg = injected();
     expect(msg.mode).toBe('compact');
-    expect(msg.focus).toBe('finish the ratchet fix');
+    // EI-10135: the /compact focus is prefixed with the machine-origin marker; the
+    // continuation note (msg.data, asserted below) stays clean.
+    expect(msg.focus).toBe(`${COMPACT_PROVENANCE_MARKER} finish the ratchet fix`);
     // The continuation turn is what WAKES the agent post-/compact — it must be non-empty.
     expect(typeof msg.data).toBe('string');
     expect(msg.data.length).toBeGreaterThan(0);
@@ -94,7 +96,7 @@ describe('session:request-compaction — WI-1804 auto-continuation caps gating',
     const b = body(await call({ focus: 'x' }));
     const msg = injected();
     expect(msg.mode).toBe('turn');
-    expect(msg.data).toBe('/compact x');
+    expect(msg.data).toBe(`/compact ${COMPACT_PROVENANCE_MARKER} x`); // EI-10135 marker rides in the command turn
     expect(msg.focus).toBeUndefined();
     expect(b).toMatchObject({ ok: true, autoContinue: false });
   });
@@ -140,6 +142,26 @@ describe('session:request-compaction — WI-1804 auto-continuation caps gating',
     const b = body(await call({ focus: 'x' }));
     expect(b).toMatchObject({ ok: false, requested: false, autoContinue: false });
   });
+
+  it('EI-10135: the harness-issued /compact carries the machine-origin marker on its focus in BOTH paths, but NOT the continuation note', async () => {
+    // auto-continue path: marker prefixes the /compact focus; the continuation note stays clean (it is separately envelope-tagged).
+    findLiveHost.mockReturnValue(compactHost);
+    await call({ focus: 'do X' });
+    const cap = injected();
+    expect(cap.mode).toBe('compact');
+    expect(cap.focus).toBe(`${COMPACT_PROVENANCE_MARKER} do X`);
+    expect(cap.data).not.toContain(COMPACT_PROVENANCE_MARKER);
+
+    // fallback (plain /compact turn) path: the marker rides inside the command turn text.
+    vi.clearAllMocks();
+    injectIntoHost.mockResolvedValue(true);
+    buildCarryBrief.mockResolvedValue(emptyBrief);
+    findLiveHost.mockReturnValue(oldHost);
+    await call({ focus: 'do Y' });
+    const fb = injected();
+    expect(fb.mode).toBe('turn');
+    expect(fb.data).toBe(`/compact ${COMPACT_PROVENANCE_MARKER} do Y`);
+  });
 });
 
 /**
@@ -183,7 +205,8 @@ describe('session:request-compaction over-long hint truncation (EI-7032)', () =>
       const b = body(await call({ focus: long }));
       expect(b).toMatchObject({ ok: true, requested: true });
       const msg = injected();
-      expect(msg.focus && msg.focus.length).toBeLessThanOrEqual(600);
+      // EI-10135: the marker is prefixed AFTER the 600-cap truncation, so strip it before the cap check.
+      expect(msg.focus!.replace(`${COMPACT_PROVENANCE_MARKER} `, '').length).toBeLessThanOrEqual(600);
     });
 
     it('an over-long continueNote also parses instead of rejecting', async () => {
@@ -195,7 +218,7 @@ describe('session:request-compaction over-long hint truncation (EI-7032)', () =>
 
     it('a normal short focus is unaffected (byte-for-byte in the injected envelope)', async () => {
       await call({ focus: 'finish EI-7032' });
-      expect(injected().focus).toBe('finish EI-7032');
+      expect(injected().focus).toBe(`${COMPACT_PROVENANCE_MARKER} finish EI-7032`);
     });
   });
 
