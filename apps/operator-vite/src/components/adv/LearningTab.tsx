@@ -466,6 +466,7 @@ function LearningViewContent({
           onSelect={onRubricSelect}
           selectedId={rubricId}
           compact={Boolean(rubricId)}
+          collapseUnscored
           onStatus={reportViewStatus}
         />
         {rubricId ? (

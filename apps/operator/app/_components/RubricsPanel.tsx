@@ -11,6 +11,8 @@
  */
 import { useSyncQuery } from "@papercusp/sync";
 import { useEffect, type CSSProperties } from "react";
+import * as Collapsible from "@radix-ui/react-collapsible";
+import { ChevronDown } from "lucide-react";
 import { Table, type TableColumn } from "../harness/Table";
 
 interface RubricRow {
@@ -42,11 +44,13 @@ export default function RubricsPanel({
   onSelect,
   selectedId = null,
   compact = false,
+  collapseUnscored = false,
   onStatus,
 }: {
   onSelect?: (rubricId: string) => void;
   selectedId?: string | null;
   compact?: boolean;
+  collapseUnscored?: boolean;
   onStatus?: (status: "neutral" | "good" | "warn" | "bad") => void;
 }) {
   const { data, error, loading } = useSyncQuery<RubricRow>({
@@ -177,6 +181,24 @@ export default function RubricsPanel({
         ["rubric", "avgScore", "lastGraded"].includes(column.key),
       )
     : columns;
+  const primaryRows = collapseUnscored
+    ? rows
+        .filter((row) => row.avgScore10 != null || row.rubricId === selectedId)
+        .sort((a, b) => {
+          const aTime = a.latestScorecardAt
+            ? new Date(a.latestScorecardAt).getTime()
+            : 0;
+          const bTime = b.latestScorecardAt
+            ? new Date(b.latestScorecardAt).getTime()
+            : 0;
+          return bTime - aTime || a.title.localeCompare(b.title);
+        })
+    : rows;
+  const unscoredRows = collapseUnscored
+    ? rows.filter(
+        (row) => row.avgScore10 == null && row.rubricId !== selectedId,
+      )
+    : [];
 
   return (
     <section
@@ -236,15 +258,35 @@ export default function RubricsPanel({
       )}
       <div className="pc-rubrics__tablewrap">
         <Table
-          caption={`${rows.length} rubric${rows.length === 1 ? "" : "s"}`}
+          caption={`${primaryRows.length} scored rubric${primaryRows.length === 1 ? "" : "s"}`}
           columns={visibleColumns}
-          rows={rows}
+          rows={primaryRows}
           getRowKey={(row) => row.rubricId}
           onRowClick={onSelect ? (row) => onSelect(row.rubricId) : undefined}
           isRowSelected={
             selectedId ? (row) => row.rubricId === selectedId : undefined
           }
         />
+        {unscoredRows.length > 0 ? (
+          <Collapsible.Root className="pc-rubrics__unscored">
+            <Collapsible.Trigger className="pc-rubrics__unscored-trigger">
+              <ChevronDown size={12} aria-hidden />
+              <span>Unscored rubrics</span>
+              <strong>{unscoredRows.length}</strong>
+            </Collapsible.Trigger>
+            <Collapsible.Content>
+              <Table
+                caption={`${unscoredRows.length} unscored rubric${unscoredRows.length === 1 ? "" : "s"}`}
+                columns={visibleColumns}
+                rows={unscoredRows}
+                getRowKey={(row) => row.rubricId}
+                onRowClick={
+                  onSelect ? (row) => onSelect(row.rubricId) : undefined
+                }
+              />
+            </Collapsible.Content>
+          </Collapsible.Root>
+        ) : null}
       </div>
       <style>{`
         .pc-rubrics { height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
@@ -257,6 +299,11 @@ export default function RubricsPanel({
         .pc-rubrics.is-compact th, .pc-rubrics.is-compact td { padding: 5px 6px !important; }
         .pc-rubrics.is-compact th:first-child { width: 54%; }
         .pc-rubrics.is-compact .pc-rubrics__score { grid-template-columns: minmax(32px, 1fr) 24px; gap: 4px; }
+        .pc-rubrics__unscored { margin-top: 5px; }
+        .pc-rubrics__unscored-trigger { width: 100%; min-height: 28px; display: flex; align-items: center; gap: 6px; padding: 4px 7px; border: 1px dashed var(--border); border-radius: 7px; background: transparent; color: var(--fg-mute); font: inherit; font-size: 10px; cursor: pointer; }
+        .pc-rubrics__unscored-trigger svg { transition: transform 140ms ease; }
+        .pc-rubrics__unscored-trigger[data-state="open"] svg { transform: rotate(180deg); }
+        .pc-rubrics__unscored-trigger strong { margin-left: auto; color: var(--fg-dim); font-variant-numeric: tabular-nums; }
         .pc-rubrics__overview { display: grid; grid-template-columns: minmax(150px, .55fr) 116px minmax(220px, 1.8fr); gap: 10px; align-items: stretch; }
         .pc-rubrics__hero, .pc-rubrics__ring, .pc-rubrics__pulse { border: 1px solid var(--border); border-radius: 10px; background: var(--bg-2); }
         .pc-rubrics__hero { display: grid; grid-template-columns: auto 1fr auto; align-items: end; gap: 5px; padding: 13px 15px; }
@@ -288,7 +335,7 @@ export default function RubricsPanel({
         .pc-rubrics__freshness { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-mute); font-size: 10px; }
         .pc-rubrics__freshness i { width: 6px; height: 6px; border-radius: 50%; background: #34d399; }
         .pc-rubrics__freshness.is-stale i { background: #fbbf24; }
-        @media (max-width: 760px) { .pc-rubrics__overview { grid-template-columns: 1fr 100px; } .pc-rubrics__pulse { grid-column: 1 / -1; min-height: 54px; } }
+        @container learning (max-width: 760px) { .pc-rubrics__overview { grid-template-columns: 1fr 100px; } .pc-rubrics__pulse { grid-column: 1 / -1; min-height: 54px; } }
       `}</style>
     </section>
   );

@@ -158,6 +158,39 @@ describe('installPapercuspFiles', () => {
     expect((await fs.stat(result.psuSentinelPath)).mode & 0o777).toBe(0o755);
   });
 
+  it('writes an executable psu-sentinel-deep shim for the deep-brain pane (voice-release P-014)', async () => {
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+
+    expect(result.psuShimWritten).toBe(true);
+    expect(result.psuSentinelDeepShimWritten).toBe(true);
+    expect(result.psuSentinelDeepPath).toBe(
+      path.join(tmpHome, '.papercusp', 'bin', 'psu-sentinel-deep'),
+    );
+
+    const deep = await fs.readFile(result.psuSentinelDeepPath, 'utf8');
+    expect(deep).toMatch(/^#!\/usr\/bin\/env bash\n/);
+    // Registers the current zellij pane — to the DEEP registration file, never
+    // the front-end's sentinel-pane (voice routing must keep hitting the fast
+    // pane only).
+    expect(deep).toContain('ZELLIJ_PANE_ID');
+    expect(deep).toContain('ZELLIJ_SESSION_NAME');
+    expect(deep).toContain('$HOME/.papercusp/sentinel-deep-pane');
+    expect(deep).not.toContain('$HOME/.papercusp/sentinel-pane');
+    // Applies the deep pane's own staged model override…
+    expect(deep).toContain('$HOME/.papercusp/sentinel-deep-model');
+    expect(deep).toContain('model_args=("--model=$spec")');
+    // …and with NO override staged, defaults to the HEAVY spec (D-006: depth
+    // is this session's contract — the exact opposite of the front pane's
+    // sonnet:medium fast default).
+    expect(deep).toContain("spec='opus:xhigh'");
+    expect(deep).not.toContain("spec='sonnet:medium'");
+    // Execs the ALREADY-RESOLVED psu shim as the hidden papercup-deep role.
+    expect(deep).toContain(
+      `exec ${JSON.stringify(result.psuPath)} --no-picker --agent=claude --role=papercup-deep`,
+    );
+    expect((await fs.stat(result.psuSentinelDeepPath)).mode & 0o777).toBe(0o755);
+  });
+
   it('writes the `papercusp` dispatcher shim when the onboard concierge resolves (P-014)', async () => {
     // No concierge in the base fixture → dispatcher not written, no throw.
     let result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
@@ -292,8 +325,9 @@ describe('installPapercuspFiles', () => {
     expect(result.minted.token).toBe(true);
     expect(result.playbookWritten).toBe(true);
     // WI-4244: sentinel execs psu — with no psu shim to exec, it must not
-    // write a dangling shim either.
+    // write a dangling shim either. Same for the deep-brain twin (P-014).
     expect(result.psuSentinelShimWritten).toBe(false);
+    expect(result.psuSentinelDeepShimWritten).toBe(false);
   });
 
   it('missing playbook source: playbookWritten=false, no throw', async () => {
@@ -460,6 +494,7 @@ describe('installPapercuspFiles', () => {
     expect(p.playbookPath).toBe('/tmp/somehome/.papercusp/engineer-collaborator.md');
     expect(p.extensionPath).toBe('/tmp/somehome/.papercusp/papercusp-coord.ts');
     expect(p.psuSentinelPath).toBe('/tmp/somehome/.papercusp/bin/psu-sentinel');
+    expect(p.psuSentinelDeepPath).toBe('/tmp/somehome/.papercusp/bin/psu-sentinel-deep');
   });
 
   it('auto-discover mode: when operatorAppRoot is absent, falls back to process.cwd()-rooted candidates', async () => {

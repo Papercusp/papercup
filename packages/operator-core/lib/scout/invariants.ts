@@ -21,21 +21,22 @@
 import type { CorpusDigest, CreativeLens, Idea, Proposal, ScoutExperiment } from './types';
 import { CREATIVE_LENSES } from './types';
 import { corpusNovelty, type CorpusEntry, type CorpusNoveltyOptions } from './critique-core';
+import { digestRefSet as lensesDigestRefSet } from './lenses';
 
 /* ── #1 grounded (D-003) ──────────────────────────────────────────────────── */
 
-/** The flat set of every drill-back `ref` the digest carries (across its 4 lanes). */
+/**
+ * The flat set of every drill-back `ref` the digest carries — DELEGATES to the
+ * canonical `digestRefSet` in lenses.ts (flattenDigest over ALL lanes), which
+ * is what the live ideator grounding validates against. This used to be a
+ * hand-rolled 4-lane copy that silently fell behind as lanes were added
+ * (rubricRatings / standingFacts / nicheMap), so the invariants suite graded
+ * grounded ideas as hallucinating refs the real loop accepts
+ * (scorecard-blender-pipeline-fixes-2026-07-11 P-004). One definition, every
+ * consumer.
+ */
 export function digestRefSet(digest: CorpusDigest): Set<string> {
-  const out = new Set<string>();
-  for (const lane of [
-    digest.recurringFriction,
-    digest.timeTokenSinks,
-    digest.chronicDeferrals,
-    digest.capabilityGaps,
-  ]) {
-    for (const p of lane) out.add(p.ref);
-  }
-  return out;
+  return lensesDigestRefSet(digest);
 }
 
 /** Anything carrying corpus drill-back refs — an {@link Idea}, or a recombined Proposal. */

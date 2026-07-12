@@ -73,7 +73,13 @@ describe("RubricsPanel visual coverage matrix", () => {
   });
 
   it("becomes a focused selected rail beside the evidence detail", () => {
-    render(<RubricsPanel compact selectedId="rubric-quality" />);
+    render(
+      <RubricsPanel
+        compact
+        collapseUnscored
+        selectedId="rubric-quality"
+      />,
+    );
     expect(document.querySelector(".pc-rubrics.is-compact")).not.toBeNull();
     expect(screen.queryByRole("columnheader", { name: "Domain" })).toBeNull();
     expect(screen.queryByRole("columnheader", { name: "Coverage" })).toBeNull();
@@ -83,6 +89,11 @@ describe("RubricsPanel visual coverage matrix", () => {
         .closest("tr")
         ?.getAttribute("aria-selected"),
     ).toBe("true");
+    expect(screen.queryByText("Cost efficiency")).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", { name: /Unscored rubrics/ }),
+    );
+    expect(screen.getByText("Cost efficiency")).toBeTruthy();
   });
 
   it("reports a data-backed live status to the Learning navigation", async () => {

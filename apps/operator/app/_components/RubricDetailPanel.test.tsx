@@ -77,6 +77,7 @@ afterEach(cleanup);
 describe("RubricDetailPanel focused evidence", () => {
   it("puts regressions before improvements and collapses stable criteria and history", () => {
     render(<RubricDetailPanel rubricId="rubric-quality" />);
+    expect(screen.getByLabelText("Rubric summary")).toBeTruthy();
 
     const changingTable = screen.getByRole("table", {
       name: "2 changing criteria, regressions first",

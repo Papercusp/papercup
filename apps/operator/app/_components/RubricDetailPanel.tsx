@@ -245,7 +245,7 @@ export default function RubricDetailPanel({
         ) : null}
       </header>
 
-      <div className="pc-rubric-detail__overview">
+      <div className="pc-rubric-detail__overview" aria-label="Rubric summary">
         <div className="pc-rubric-detail__hero">
           <span>Mean</span>
           <strong>{mean == null ? "—" : mean.toFixed(1)}</strong>
@@ -343,11 +343,12 @@ export default function RubricDetailPanel({
         .pc-rubric-detail__head > span { grid-column: 1; color: var(--fg-mute); font-size: 9.5px; font-weight: 750; text-transform: uppercase; letter-spacing: 0; }
         .pc-rubric-detail__head > strong { grid-column: 1; overflow: hidden; color: var(--fg); font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
         .pc-rubric-detail__head button { grid-column: 2; grid-row: 1 / 3; display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 7px; background: transparent; color: var(--fg-mute); cursor: pointer; }
-        .pc-rubric-detail__overview { display: grid; grid-template-columns: 1.4fr repeat(3, minmax(70px, 1fr)); gap: 7px; }
-        .pc-rubric-detail__overview > div { display: flex; flex-direction: column; justify-content: center; gap: 2px; min-height: 54px; padding: 7px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); }
+        .pc-rubric-detail__overview { display: grid; grid-template-columns: 1.2fr repeat(3, minmax(64px, 1fr)); overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); }
+        .pc-rubric-detail__overview > div { display: grid; grid-template-columns: auto auto; align-items: baseline; justify-content: start; gap: 5px; min-height: 38px; padding: 7px 9px; }
+        .pc-rubric-detail__overview > div + div { border-left: 1px solid var(--border); }
         .pc-rubric-detail__overview span { color: var(--fg-mute); font-size: 8.5px; font-weight: 700; text-transform: uppercase; }
-        .pc-rubric-detail__overview strong { color: var(--fg); font-size: 16px; font-variant-numeric: tabular-nums; }
-        .pc-rubric-detail__overview .pc-rubric-detail__hero strong { color: var(--accent); font-size: 23px; letter-spacing: 0; }
+        .pc-rubric-detail__overview strong { color: var(--fg); font-size: 14px; font-variant-numeric: tabular-nums; }
+        .pc-rubric-detail__overview .pc-rubric-detail__hero strong { color: var(--accent); font-size: 18px; letter-spacing: 0; }
         .pc-rubric-detail__overview small { color: var(--fg-mute); font-size: 9px; }
         .pc-rubric-detail__overview .is-good strong { color: #34d399; }
         .pc-rubric-detail__overview .is-bad strong { color: #fb7185; }
@@ -364,7 +365,7 @@ export default function RubricDetailPanel({
         .pc-rubric-distribution__track i[data-tone="bad"] { background: #fb7185; }
         .pc-rubric-distribution__track i[data-tone="neutral"] { background: #64748b; }
         .pc-rubric-distribution > strong { color: var(--fg-mute); font-size: 9.5px; font-weight: 650; font-variant-numeric: tabular-nums; }
-        @media (max-width: 720px) { .pc-rubric-detail__overview { grid-template-columns: repeat(2, 1fr); } }
+        @container learning (max-width: 720px) { .pc-rubric-detail__overview { grid-template-columns: repeat(2, 1fr); } .pc-rubric-detail__overview > div:nth-child(3) { border-left: 0; border-top: 1px solid var(--border); } .pc-rubric-detail__overview > div:nth-child(4) { border-top: 1px solid var(--border); } }
       `}</style>
     </div>
   );
