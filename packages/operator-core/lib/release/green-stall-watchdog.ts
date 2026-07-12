@@ -501,6 +501,7 @@ export async function checkMainBehindStaging(
     workspaceId?: string;
     commitsThreshold?: number;
     msThreshold?: number;
+    recentGreenMs?: number;
     mainBranch?: string;
     stagingBranch?: string;
   } = {},

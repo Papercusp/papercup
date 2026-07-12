@@ -302,6 +302,66 @@ describe('evaluateMainBehindStaging (EI-9762)', () => {
   });
 });
 
+describe('evaluateMainBehindStaging gate-advance suppression (EI-10202)', () => {
+  const MIN = 60 * 1000;
+
+  it('THE FALSE ALARM: a deep+old backlog is NOT a stall when the gate greened within the last ~2 cycles', () => {
+    // The 2026-07-12 incident: main fell "39/45 commits behind, >1h" while the
+    // green-checkpoint routine was HEALTHY and advancing main every ~15-20 min.
+    // The oldest un-promoted commit is >1h old (behindMs), yet the gate greened
+    // ~35m ago — churn, not a wedge. Must NOT alarm.
+    const v = evaluateMainBehindStaging({ commitsBehind: 45, behindMs: 70 * MIN, lastGreenAgeMs: 35 * MIN });
+    expect(v.stalled).toBe(false);
+    expect(v.reason).toBeNull();
+  });
+
+  it('PRESERVES EI-9762: a deep+old backlog WITH no green advance in a long time is still a stall', () => {
+    // Persistent-red / killed-runs: main 56 commits / ~4.8h behind AND the gate
+    // has not produced a green advance in ~4.8h. This is the genuine wedge — alarm.
+    const v = evaluateMainBehindStaging({
+      commitsBehind: 56,
+      behindMs: Math.round(4.8 * H),
+      lastGreenAgeMs: Math.round(4.8 * H),
+    });
+    expect(v.stalled).toBe(true);
+    expect(v.reason).toContain('56 commits');
+    // The reason now names the no-advance signal so it can't be mistaken for a depth-only cry.
+    expect(v.reason).toContain('no green-checkpoint advance in ~4.8h');
+  });
+
+  it('an UNKNOWN gate signal (lastGreenAgeMs null) falls back to depth+age — never silently suppresses a possible stall', () => {
+    const v = evaluateMainBehindStaging({ commitsBehind: 30, behindMs: 2 * H, lastGreenAgeMs: null });
+    expect(v.stalled).toBe(true);
+    // No advance-age clause when the signal is unknown.
+    expect(v.reason).not.toContain('no green-checkpoint advance');
+  });
+
+  it('boundary: a green advance exactly at the recent-green window does NOT suppress (strict <=)', () => {
+    // lastGreenAgeMs === recentGreenMs is treated as "recently advanced" (<=), so it suppresses.
+    const atWindow = evaluateMainBehindStaging({ commitsBehind: 30, behindMs: 3 * H, lastGreenAgeMs: 2 * H });
+    expect(atWindow.stalled).toBe(false);
+    // Just past the window ⇒ genuinely stale ⇒ alarms.
+    const pastWindow = evaluateMainBehindStaging({ commitsBehind: 30, behindMs: 3 * H, lastGreenAgeMs: 2 * H + 1 });
+    expect(pastWindow.stalled).toBe(true);
+  });
+
+  it('honors a custom recentGreenMs', () => {
+    // Tighten the window to 30m: a 45m-old green advance is now "stale" ⇒ alarms.
+    const v = evaluateMainBehindStaging(
+      { commitsBehind: 30, behindMs: 2 * H, lastGreenAgeMs: 45 * MIN },
+      { recentGreenMs: 30 * MIN },
+    );
+    expect(v.stalled).toBe(true);
+  });
+
+  it('a recent green advance does not rescue a still-small backlog into an alarm (depth+age still required)', () => {
+    // Suppression only ever REMOVES an alarm; it never manufactures one. A tiny
+    // lag with a stale green is still healthy (depth/age not met).
+    const v = evaluateMainBehindStaging({ commitsBehind: 3, behindMs: 5 * H, lastGreenAgeMs: 9 * H });
+    expect(v.stalled).toBe(false);
+  });
+});
+
 describe('computeMainBehindStaging git shell-out (EI-9922 no-stderr-leak)', () => {
   // On a PACKAGED install this watchdog's boot pass shells git in a NON-repo dir.
   // `execFileSync`'s default stdio inherits the child's stderr, so it spammed
@@ -427,6 +487,80 @@ describe('checkMainBehindStaging DB wiring (EI-10103: workspace_id NOT NULL)', (
     expect(result.alarmed).toBe(false);
     expect(findInsertCall(calls)).toBeUndefined();
     expect(resolveWorkspaceForHarnessMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('checkMainBehindStaging gate-advance suppression wiring (EI-10202)', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    resolveWorkspaceForHarnessMock.mockReset();
+    notifyAttentionMock.mockClear();
+    broadcastSevereEventMock.mockClear();
+    vi.mocked(execFileSync).mockReset();
+    warnSpy.mockRestore();
+  });
+
+  // git: 30 commits / 2h behind (over both DEFAULT thresholds) — the same stalled
+  // git snapshot the EI-10103 suite uses.
+  function mockStalledGit() {
+    (vi.mocked(execFileSync) as unknown as { mockReturnValueOnce: (v: string) => { mockReturnValueOnce: (v: string) => void } })
+      .mockReturnValueOnce('30\n')
+      .mockReturnValueOnce(`${Math.floor((Date.now() - 2 * H) / 1000)}\n`);
+  }
+
+  /** A fake sql that ALSO answers the gate_health lastGreenAt read this path now
+   *  issues (a recent value ⇒ the gate is advancing ⇒ suppress). */
+  function makeGateFakeSql(lastGreenAtMs: number | null) {
+    const calls: unknown[][] = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      calls.push([text, ...values]);
+      if (text.includes("gate_health'->>'lastGreenAt")) {
+        return Promise.resolve(lastGreenAtMs != null ? [{ last_green_at: lastGreenAtMs }] : []);
+      }
+      if (text.includes('SELECT escalation')) return Promise.resolve([]);
+      return Promise.resolve(Object.assign([], { count: 1 }));
+    }) as unknown as import('postgres').Sql;
+    return { sql, calls };
+  }
+
+  function findInsert(calls: unknown[][]) {
+    return calls.find((c) => typeof c[0] === 'string' && c[0].includes('INSERT INTO harness_shared.harness_escalations'));
+  }
+
+  it('SUPPRESSES the alarm when the gate greened recently, even with a deep+old git backlog', async () => {
+    mockStalledGit();
+    const { sql, calls } = makeGateFakeSql(Date.now() - 20 * 60 * 1000); // greened 20m ago
+    const result = await checkMainBehindStaging(sql, { root: '/fake/repo', harnessSlug: 'papercusp' });
+    expect(result.alarmed).toBe(false);
+    expect(findInsert(calls)).toBeUndefined();
+    expect(notifyAttentionMock).not.toHaveBeenCalled();
+    expect(broadcastSevereEventMock).not.toHaveBeenCalled();
+    // It DID consult the gate-advance signal (the whole point of the fix).
+    expect(calls.some((c) => typeof c[0] === 'string' && (c[0] as string).includes("gate_health'->>'lastGreenAt"))).toBe(true);
+  });
+
+  it('still ALARMS on a deep+old git backlog when the gate has NOT greened in a long time', async () => {
+    resolveWorkspaceForHarnessMock.mockResolvedValueOnce('papercusp-workspace');
+    mockStalledGit();
+    const { sql, calls } = makeGateFakeSql(Date.now() - 5 * H); // last green 5h ago ⇒ stale
+    const result = await checkMainBehindStaging(sql, { root: '/fake/repo', harnessSlug: 'papercusp' });
+    expect(result.alarmed).toBe(true);
+    expect(findInsert(calls)).toBeDefined();
+  });
+
+  it('still ALARMS when the gate signal is unreadable (no green-checkpoint row) — fail-open, never hide a real stall', async () => {
+    resolveWorkspaceForHarnessMock.mockResolvedValueOnce('papercusp-workspace');
+    mockStalledGit();
+    const { sql, calls } = makeGateFakeSql(null); // no gate_health row
+    const result = await checkMainBehindStaging(sql, { root: '/fake/repo', harnessSlug: 'papercusp' });
+    expect(result.alarmed).toBe(true);
+    expect(findInsert(calls)).toBeDefined();
   });
 });
 
