@@ -32,6 +32,18 @@ const enableHmr = isDesktopHmrEnabled(process.env);
 // `adv-build-churn-retain-chunks-2026-06-03` + WI-1484.
 const retainDistChunks = shouldRetainDistChunks(process.argv, process.env);
 
+// EI-10539: a clean-empty build is STAGED — bin/vite-build-singleflight points
+// us at `dist.next/` and renames it over `dist/` only if we exit 0, so a build
+// that dies AFTER vite's renderStart hook has already emptied outDir (a missing
+// named export does exactly that — it killed the owner's desktop on 2026-07-12)
+// can no longer destroy the bundle that is serving. Absent the env we build
+// straight into `dist/` exactly as before, so a bare `npx vite build` still works.
+const stagedOutDir = process.env.PAPERCUSP_VITE_OUT_DIR;
+// The dist/ the staged build will be SWAPPED onto. The swap yanks an open
+// webview's hashed chunks just as an in-place empty would, so the dist-wipe
+// guard must judge the FINAL path, not the staging dir it never sees.
+const finalOutDir = process.env.PAPERCUSP_VITE_FINAL_OUT_DIR;
+
 // Operator API host the dev server proxies to. Overridable so an e2e rig can
 // target the staging operator (:3170) — see the proxy block below.
 const apiTarget = process.env.PAPERCUSP_API_TARGET ?? 'http://127.0.0.1:3070';
@@ -154,6 +166,9 @@ export default defineConfig({
     dedupe: ['react', 'react-dom'],
   },
   build: {
+    // Staged (EI-10539) when the singleflight script asks for it; otherwise the
+    // default `dist`. Emptying is safe here BECAUSE it is the staging dir.
+    ...(stagedOutDir ? { outDir: stagedOutDir } : {}),
     // Retain old hashed chunks across a retain-regime rebuild so an open webview
     // never 404s a lazy import; a release/CI `build` (no --watch, no retain env)
     // still empties for a clean bundle. The prune plugin (below) caps growth.
@@ -218,7 +233,7 @@ export default defineConfig({
     // 2026-06-29 blank-page incident). The guard only fires on a confirmed
     // same-dist live watcher and fails open otherwise, so it never wedges the
     // deploy pipeline. See dist-wipe-guard.ts.
-    ...(retainDistChunks ? [devDistPrunePlugin()] : [distWipeGuardPlugin()]),
+    ...(retainDistChunks ? [devDistPrunePlugin()] : [distWipeGuardPlugin({ outDir: finalOutDir })]),
     // EI-5202: stamp a heartbeat (build time + git SHA) after every `--watch`
     // rebuild, so a health probe can detect a wedged-but-running watcher
     // instead of the only signal being a manual dist/index.html mtime check.

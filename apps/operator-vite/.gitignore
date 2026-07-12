@@ -1,4 +1,11 @@
 dist
+# EI-10539: staged-build scratch — bin/vite-build-singleflight builds into
+# dist.next/ and renames it over dist/ only on success (dist.prev/ is the
+# briefly-held old bundle). Both are transient; neither is ever committed.
+dist.next
+dist.prev
+.vite-build.log
+.vite-build-failure.json
 node_modules
 .vite
 

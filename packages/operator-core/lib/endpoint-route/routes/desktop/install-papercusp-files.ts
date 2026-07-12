@@ -42,6 +42,8 @@ export default [
             playbookSource: result.playbookSource,
             extensionSource: result.extensionSource,
             minted: result.minted,
+            claudeHooksInstalled: result.claudeHooksInstalled,
+            claudeSettingsMerged: result.claudeSettingsMerged,
           }),
           { status: 200, headers: { 'content-type': 'application/json', ...CORS_HEADERS } },
         );

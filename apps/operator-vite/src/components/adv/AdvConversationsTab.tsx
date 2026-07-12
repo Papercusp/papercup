@@ -1028,6 +1028,25 @@ function FeedView() {
   // nuqs `q` for responsiveness; only the QUERY-driving reads use `debouncedQ`.
   const debouncedQ = useDebouncedValue(q, DEBOUNCE_MS);
   const [openMsg, setOpenMsg] = useQueryState('fmsg', parseAsString);
+  // Sender scope. The feed is the RAW coordination firehose, and it defaults to
+  // SYSTEM-origin envelopes (`system_only` → isSystemCoordActor, /^system…/) so it
+  // doesn't duplicate the agent-authored curated streams above it.
+  //
+  // That default used to be HARDCODED, which silently broke every deep-link to an
+  // agent-authored message (WI-4462; owner 2026-07-12: "clicking some of the
+  // messages brings up the conversations tab opened to the clicked message but some
+  // of them don't"). A Colony/Fleet mail click arrives as ?fmsg=<id>; if that
+  // message's sender is an agent (su-… / bee-…) rather than system-*, the row is
+  // filtered out server-side, so there is nothing to scroll to or expand — the tab
+  // opens at the newest head looking inert, while a system-watchdog row right next
+  // to it in the same list works. The scope is now URL-backed (`?fsys=system|all`,
+  // default unchanged): the sidebar deep-links with fsys=all so ANY targeted
+  // message resolves, and a human can flip the chip to see agent traffic too.
+  const [scope, setScope] = useQueryState(
+    'fsys',
+    parseAsStringEnum(['system', 'all'] as const).withDefault('system'),
+  );
+  const systemOnly = scope !== 'all';
 
   // "Load older" grows the window from the top. The feed is newest-first and the
   // limit caps from the newest end, so a larger limit reaches further back while
@@ -1048,10 +1067,10 @@ function FeedView() {
       ...(agent ? { owner: agent } : {}),
       ...(plan ? { plan_slug: plan } : {}),
       ...(debouncedQ.trim() ? { q: debouncedQ.trim() } : {}),
-      system_only: true,
+      system_only: systemOnly,
       limit,
     }),
-    [serverKinds, agent, plan, debouncedQ, limit],
+    [serverKinds, agent, plan, debouncedQ, systemOnly, limit],
   );
   // useSyncQuery owns the actual fetch (SSE-primary, REST fallback). Hold an
   // AbortController keyed to the live feedArgs and abort it whenever the args
@@ -1068,8 +1087,8 @@ function FeedView() {
 
   // Reset the window whenever the FILTER set changes (not when limit changes).
   const filterKey = useMemo(
-    () => JSON.stringify({ kinds, agent, plan, q: debouncedQ.trim() }),
-    [kinds, agent, plan, debouncedQ],
+    () => JSON.stringify({ kinds, agent, plan, q: debouncedQ.trim(), scope }),
+    [kinds, agent, plan, debouncedQ, scope],
   );
   useEffect(() => {
     setLimit(PAGE);
@@ -1165,13 +1184,15 @@ function FeedView() {
     k === 'broadcast' ? rawRows.filter((r) => r.broadcast).length : (meta?.byKind?.[k] ?? rawRows.filter((r) => r.kind === k).length);
   const kindLabel = (k: string) => k.replaceAll('_', ' ');
 
-  const filtersActive = kinds.length > 0 || !!agent || !!plan || !!debouncedQ.trim();
-  const activeFilterCount = kinds.length + (agent ? 1 : 0) + (plan ? 1 : 0) + (debouncedQ.trim() ? 1 : 0);
+  const filtersActive = kinds.length > 0 || !!agent || !!plan || !!debouncedQ.trim() || !systemOnly;
+  const activeFilterCount =
+    kinds.length + (agent ? 1 : 0) + (plan ? 1 : 0) + (debouncedQ.trim() ? 1 : 0) + (systemOnly ? 0 : 1);
   const clearFilters = () => {
     void setKinds([]);
     void setAgent('');
     void setPlan('');
     void setQ('');
+    void setScope('system');
   };
 
   // Flatten the day groups (already day-separated, newest-first) into one virtual
@@ -1337,6 +1358,18 @@ function FeedView() {
               </Tooltip>
             );
           })}
+          <Tooltip label="System-origin envelopes only (watchdog, git-sync, routines). Turn off to include agent-to-agent traffic — what a Fleet-sidebar message click does.">
+            <Pill
+              className="pc-advfeed__systoggle"
+              active={systemOnly}
+              accent="var(--advconv-accent)"
+              onClick={() => void setScope(systemOnly ? 'all' : 'system')}
+              aria-pressed={systemOnly}
+              data-testid="feed-system-only-chip"
+            >
+              System only
+            </Pill>
+          </Tooltip>
           <Pill
             className="pc-advfeed__advancedtoggle"
             active={advancedKinds === 'open'}
@@ -1419,6 +1452,7 @@ function FeedView() {
           <div className="pc-advfeed__scopebar" aria-label="Active feed filters">
             <span>Showing</span>
             {kinds.length > 0 && <strong>{kinds.join(', ')}</strong>}
+            {!systemOnly && <strong>incl. agent traffic</strong>}
             {agent && <strong>agent: {agent}</strong>}
             {plan && <strong>plan: {plan}</strong>}
             {debouncedQ.trim() && <strong>search: {debouncedQ.trim()}</strong>}

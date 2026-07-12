@@ -170,6 +170,34 @@ export function isRefutation(text: string): boolean {
   return REFUTATION_MARKERS.some((re) => re.test(text));
 }
 
+/**
+ * Does this `ref` IDENTIFY A CLAIM — i.e. name a subject a refutation can be *about*?
+ * The gate on refutation propagation (EI-10593).
+ *
+ * `HarvestInsightInput.ref` is overloaded, and the two meanings are not interchangeable:
+ *   - a CLAIM ref (`wi:WI-4070`, from a work-item completion) names the thing the insight
+ *     is about — two rows sharing it are two statements about the SAME subject;
+ *   - a SOURCE TAG (`loop:checkpoint`) names only where the insight came from, and is
+ *     IDENTICAL for every agent's every checkpoint — it carries no topical information.
+ *
+ * Refutation propagation joins prior observations on this ref, so a source tag makes the
+ * join VACUOUS: it matches every harvested row in the store, about anything, by anyone.
+ * Measured live at EI-10593 filing time: 393 of 525 harvested rows carried the
+ * `loop:checkpoint` tag, and ALL 40 refutation flags ever applied went through it — every
+ * one landing on a topically unrelated observation belonging to a DIFFERENT agent. The
+ * `wi:<id>` path the feature was designed for had never once fired.
+ *
+ * ALLOWLIST, never a denylist: an unrecognized ref must not authorize a destructive
+ * cross-agent write, so a ref shape we cannot read as a claim propagates nothing. The
+ * insight still files as its own observation — a missed propagation costs a flag, an
+ * unfounded one costs another agent's true finding.
+ */
+const CLAIM_REF_RE = /^wi:[a-z]+-\d+$/i;
+
+export function isClaimIdentifyingRef(ref: string | undefined): boolean {
+  return CLAIM_REF_RE.test((ref ?? '').trim());
+}
+
 export interface HarvestInsightInput {
   /** The raw insight free-text (loop:checkpoint.insight or a completion's coordNotes). */
   insight: string;
@@ -325,10 +353,14 @@ export async function harvestInsight(input: HarvestInsightInput, deps?: HarvestD
     const bounded = boundInsight(input.insight);
     if (!bounded || !createdBy) return { filed: false, reason: 'blank' };
 
-    // EI-9941: a refutation carrying a `ref` flags every PRIOR harvested row tagged
+    // EI-9941: a refutation carrying a CLAIM ref flags every PRIOR harvested row tagged
     // with that same ref — visible on the ORIGINAL entry, not just a follow-up row.
+    // EI-10593: the ref must IDENTIFY A CLAIM (see isClaimIdentifyingRef). A source tag
+    // like `loop:checkpoint` is shared by every agent's every checkpoint, so joining on it
+    // flags 20 unrelated observations belonging to other agents — which is exactly what it
+    // did, 40 times, for 0 true refutations.
     // Fails open: never blocks filing this insight's own observation below.
-    if (input.ref && isRefutation(input.insight)) {
+    if (isClaimIdentifyingRef(input.ref) && isRefutation(input.insight)) {
       const findByRef = d.findByRef ?? findHarvestedByRefReal;
       const flagRefuted = d.flagRefuted ?? flagRefutedReal;
       const priors = await findByRef(input.ref, input.harness).catch(() => [] as RecentHarvest[]);

@@ -101,7 +101,7 @@ export function shouldRefuseOneShotBuild(args: {
   return canon(args.served) === canon(args.outDir);
 }
 
-export function distWipeGuardPlugin(opts?: { lockPath?: string }): Plugin {
+export function distWipeGuardPlugin(opts?: { lockPath?: string; outDir?: string }): Plugin {
   const lockPath = opts?.lockPath ?? process.env.VITE_WATCH_LOCK ?? VITE_WATCH_LOCK_DEFAULT;
   let outDir = '';
   return {
@@ -109,7 +109,13 @@ export function distWipeGuardPlugin(opts?: { lockPath?: string }): Plugin {
     apply: 'build',
     enforce: 'pre',
     configResolved(config) {
-      outDir = resolve(config.root, config.build.outDir);
+      // `opts.outDir` — the FINAL dist/ a STAGED build (EI-10539) will be renamed
+      // onto. A staged build writes to `dist.next/`, so config.build.outDir is the
+      // staging dir and this guard would see a path no watcher serves and wave the
+      // build through — but the SWAP still deletes the hashed chunks an open
+      // webview is pinned to, which is precisely what this guard exists to refuse.
+      // Judge the path the damage actually lands on.
+      outDir = opts?.outDir ?? resolve(config.root, config.build.outDir);
     },
     buildStart() {
       // Inert in any watch context (the watcher IS the lock holder — never

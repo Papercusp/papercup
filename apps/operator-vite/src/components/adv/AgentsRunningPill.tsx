@@ -323,6 +323,20 @@ export function displayName(a: Pick<RosterAgent, 'label' | 'ownerId'>): string {
   return label && label.length > 0 ? label : shortOwner(a.ownerId);
 }
 
+/**
+ * Whether a roster entry counts as RUNNING — present (not heartbeat-stale) OR
+ * loop-armed. A loop-armed agent keeps working on a cadence even while parked
+ * between wakes, so it belongs on the roster even if its presence heartbeat has
+ * gone stale.
+ *
+ * Exported so every roster surface shares ONE membership rule: this pill AND the
+ * left-sidebar Fleet pane (SwarmTab) both filter through it, so the two can't
+ * drift into disagreeing about who is running. Pure — exported for tests.
+ */
+export function isRunningAgent(a: Pick<RosterAgent, 'liveness' | 'loopArmed'>): boolean {
+  return a.liveness !== 'stale' || Boolean(a.loopArmed);
+}
+
 export interface FleetGroup {
   /** null = the "No fleet" catch-all group. */
   slug: string | null;
@@ -375,12 +389,12 @@ export default function AgentsRunningPill() {
   // a bare `{}` — the guard also tolerates their single-shared-value stubs.
   const [searchQRaw, setSearchQ] = useQueryState('agentsQ');
   const searchQ = typeof searchQRaw === 'string' ? searchQRaw : '';
-  // Shown = present (not heartbeat-stale) OR loop-armed. A loop-armed agent keeps
-  // working on a cadence even while parked between wakes, so it belongs here even if
-  // its presence heartbeat has gone stale. Memoed on `data` so the identities stay
-  // stable across the 1s nowMs ticks while the popover is open.
+  // Shown = isRunningAgent (present OR loop-armed) — the SAME predicate the
+  // left-sidebar Fleet pane filters through, so the two rosters agree. Memoed on
+  // `data` so the identities stay stable across the 1s nowMs ticks while the
+  // popover is open.
   const running = useMemo(
-    () => ((data?.[0]?.active ?? []) as RosterAgent[]).filter((a) => a.liveness !== 'stale' || a.loopArmed),
+    () => ((data?.[0]?.active ?? []) as RosterAgent[]).filter(isRunningAgent),
     [data],
   );
   const activeOwnerIds = useMemo(() => new Set(running.map((a) => a.ownerId)), [running]);

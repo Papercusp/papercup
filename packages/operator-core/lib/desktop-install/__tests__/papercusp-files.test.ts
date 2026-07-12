@@ -532,6 +532,41 @@ describe('installPapercuspFiles', () => {
     const token = (await fs.readFile(result.tokenPath, 'utf8')).trim();
     expect(token).toBe('preexisting-token-12345');
   });
+
+  it('dist-host layout: auto-discovery finds hooks + extension when cwd IS the operator app root', async () => {
+    // The dev-api service runs `node dist-host/hono-host.mjs` with
+    // WorkingDirectory=<appRoot>: the module dir collapses to <appRoot>/dist-host,
+    // so resolveOperatorAppRoot's walk-up-two lands on the wrong directory and the
+    // cwd+apps/operator candidate doubles the path. Without the plain-cwd
+    // candidates, hook enrollment silently skipped — the live :3070 install
+    // endpoint returned ok with zero hooks while every psu launch on the box lost
+    // its turn-start memory delta (2026-07-12).
+    const ccDir = path.join(tmpAppRoot, 'scripts', 'hooks', 'cc');
+    await fs.mkdir(ccDir, { recursive: true });
+    await fs.writeFile(path.join(ccDir, 'pretooluse-locks-acquire.sh'), '#!/bin/bash\n', {
+      mode: 0o755,
+    });
+    await fs.writeFile(path.join(ccDir, 'userpromptsubmit-memory.sh'), '#!/bin/bash\n', {
+      mode: 0o755,
+    });
+    const prevCwd = process.cwd();
+    process.chdir(tmpAppRoot);
+    try {
+      const result = await installPapercuspFiles({ home: tmpHome });
+      expect(result.claudeHooksInstalled).toContain('pretooluse-locks-acquire.sh');
+      expect(result.claudeHooksInstalled).toContain('userpromptsubmit-memory.sh');
+      expect(result.claudeSettingsMerged).toBe(true);
+      expect(result.extensionWritten).toBe(true);
+      const settings = JSON.parse(
+        await fs.readFile(path.join(tmpHome, '.claude', 'settings.json'), 'utf8'),
+      );
+      expect(JSON.stringify(settings.hooks?.UserPromptSubmit ?? [])).toContain(
+        'userpromptsubmit-memory.sh',
+      );
+    } finally {
+      process.chdir(prevCwd);
+    }
+  });
 });
 
 describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {

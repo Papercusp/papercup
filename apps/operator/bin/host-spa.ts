@@ -29,6 +29,7 @@ import { readProfile } from '@papercusp/operator-core/lib/session';
 import { resolveDistinctId } from '@papercusp/operator-core/lib/flag-distinct-id';
 import { reinitFlagBackend } from '@papercusp/operator-core/lib/flag-bus';
 import { isTestingFeaturesEnabled } from '@papercusp/operator-core/lib/posthog-config';
+import { describeMissingBundle } from '../lib/spa-build-status';
 
 /**
  * Vite SPA `dist/` root. In dev (host run via `tsx` from source) this
@@ -211,9 +212,11 @@ spaRoutes.get('*', async (c) => {
   const indexPath = join(SPA_DIST_ROOT, 'index.html');
   if (existsSync(indexPath)) return serveIndexHtmlWithWorkspace(indexPath, c.req.raw);
 
-  // dist/ not built — actionable 503 rather than a bare crash.
-  return new Response(
-    'operator-vite is not built. Run `npm --workspace @papercusp/operator-vite run build`.',
-    { status: 503, headers: { 'content-type': 'text/plain; charset=utf-8' } },
-  );
+  // No bundle. If the last build FAILED, say that — and do NOT prescribe the
+  // build, because that is the command that failed (EI-10539). Otherwise (never
+  // built) the build advice is right and stands.
+  return new Response(describeMissingBundle(SPA_DIST_ROOT), {
+    status: 503,
+    headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
+  });
 });

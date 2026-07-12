@@ -1,14 +1,28 @@
 /**
- * Swarm / Colony tab — the live fleet roster, split into SU agents (🛠) and Cups
- * (☕) with the zellij dock glyphs. Each row EXPANDS inline on click to that
- * agent's task-list + plan-progress + recent comms (owner ask 2026-06-23):
+ * Fleet / Colony tab — the live agent roster, GROUPED BY FLEET and COLORED BY
+ * FLEET, each row expanding inline to that agent's task-list + plan-progress +
+ * recent comms.
  *
  *   1. expandable rows — tasks/plans/comms live under the agent, not in a
  *      separate section that a click merely filters.
- *   2. zellij SU/Cup icons (apps/tui agent_pane_kind glyphs).
+ *   2. kind glyphs from the shared cup-cast vocabulary (mug ☕ / kettle 🫖 /
+ *      cup 🍵 / papercup 🥤 / su 🛠), same as the zellij dock + agents-running pill.
  *   3. comms folded per-agent (the old global "comms" toggle is gone — its
  *      data was live but read as dead when empty; per-agent mail is clearer).
- *   4. SU agents and Cups in separate sections (classified by presence source).
+ *   4. fleet sections (owner ask 2026-07-12: "make the fleet pane in the left
+ *      hand sidebar be organized by fleet and inherit the coloring like the
+ *      'agents running' dropdown does").
+ *
+ * REUSE, not re-derivation (WI-4463): the agents-running dropdown already solved
+ * fleet identity — `advRoster.list` stamps every entry with fleetSlug +
+ * fleetColor (adv-roster.ts resolveFleetInfoByOwner) and AgentsRunningPill
+ * exports the grouping (`groupByFleet`: fleeted groups alpha-first, "No fleet"
+ * last — the zellij roster's order), the membership rule (`isRunningAgent`), and
+ * the row primitives (`agentGlyph` / `displayName`). This pane consumes ALL of
+ * them, so the two surfaces cannot drift into disagreeing about who is running,
+ * which fleet they're in, or what color that fleet is. It replaces the old
+ * `dev.coordPresence` read, which carried no fleet identity at all and could
+ * only split the roster into a flat 🛠-SU / ☕-Cups pair of sections.
  *
  * Selection lives in the URL (nuqs `?lsa=…`) so it stays deep-linkable +
  * agent-driveable (ui:get_state / ui:dispatch).
@@ -18,16 +32,17 @@ import { Link } from '@tanstack/react-router';
 import { useSyncQuery } from '@papercusp/sync';
 import { useQueryState, parseAsString } from 'nuqs';
 import { useLexicon } from '@/lib/useLexicon';
+import {
+  agentGlyph,
+  displayName,
+  groupByFleet,
+  isRunningAgent,
+  type RosterAgent,
+} from '@/components/adv/AgentsRunningPill';
 
-interface PresenceRecord {
-  ownerId: string;
-  ownerLabel: string;
-  source?: string | null;
-  agentRole?: string | null;
-  intent: string | null;
-  currentPlanSlug: string | null;
-  heartbeatAt: string | number | null;
-  stale: boolean;
+/** advRoster.list returns a single-element array wrapping the roster object. */
+interface RosterResponse {
+  active: RosterAgent[];
 }
 
 interface WorkListItem {
@@ -124,26 +139,34 @@ function planSearch(p: PlanRow): RowSearch {
   return { view: 'plans', plan: p.slug, h: p.harness };
 }
 
-function mailSearch(ownerId: string, mm: MailEntry): RowSearch {
-  return { tab: 'conversations', conv: 'feed', fagent: ownerId, fmsg: mm.msg_id };
-}
-
 /**
- * Classify a presence row: `fleet-spawn`/`signed-spawn` (or agentRole 'cup') is
- * a fleet Cup; everything else (omp-hook-session / static-client = SU, plus the
- * human power-user) sits in the SU/agents section.
+ * A clicked message → the Conversations FEED, opened AT that message
+ * (`?fmsg=<msg_id>`, which the feed resolves child→root, scrolls into view, and
+ * expands).
+ *
+ * `fsys: 'all'` is load-bearing, not decoration (WI-4462, owner bug 2026-07-12:
+ * "clicking some of the messages brings up the conversations tab opened to the
+ * clicked message but some of them don't"). The feed defaults to SYSTEM-origin
+ * envelopes only (`system_only`, matched by `isSystemCoordActor` = /^system…/),
+ * and that default used to be hardcoded — so a click on any AGENT-authored
+ * message (from: su-… / bee-…, i.e. most of an agent's mail) deep-linked to a
+ * row that could not exist in the feed: the tab opened at the newest head with
+ * nothing expanded, while a system-watchdog row a few lines above it worked
+ * fine. Widening the scope for the deep-link makes EVERY message row behave the
+ * same, whoever sent it.
  */
-function isCup(r: PresenceRecord): boolean {
-  const s = r.source ?? '';
-  return r.agentRole === 'cup' || s === 'fleet-spawn' || s === 'signed-spawn';
+function mailSearch(ownerId: string, msgId: string): RowSearch {
+  return { tab: 'conversations', conv: 'feed', fsys: 'all', fagent: ownerId, fmsg: msgId };
 }
 
 export default function SwarmTab({ active }: { active: boolean }) {
   const t = useLexicon();
   const [selected, setSelected] = useQueryState('lsa', parseAsString);
 
-  const presence = useSyncQuery<PresenceRecord>({
-    queryName: 'dev.coordPresence',
+  // The SAME workspace-wide, fleet-stamped roster the agents-running pill reads.
+  const roster = useSyncQuery<RosterResponse>({
+    queryName: 'advRoster.list',
+    args: { workspaceId: null, endedLimit: 0 },
     enabled: active,
     staleTime: 8_000,
   });
@@ -165,15 +188,16 @@ export default function SwarmTab({ active }: { active: boolean }) {
     staleTime: 8_000,
   });
 
-  const roster = useMemo(() => (presence.data ?? []).filter((r) => !r.stale), [presence.data]);
+  const running = useMemo(
+    () => (roster.data?.[0]?.active ?? []).filter(isRunningAgent),
+    [roster.data],
+  );
+  const groups = useMemo(() => groupByFleet(running), [running]);
   const byAgent = useMemo(() => {
     const m = new Map<string, CupGroup>();
     for (const g of cups.data ?? []) m.set(g.agentId, g);
     return m;
   }, [cups.data]);
-
-  const suAgents = useMemo(() => roster.filter((r) => !isCup(r)), [roster]);
-  const cupAgents = useMemo(() => roster.filter((r) => isCup(r)), [roster]);
 
   const toggle = (id: string) => {
     void setSelected(selected === id ? null : id);
@@ -209,15 +233,55 @@ export default function SwarmTab({ active }: { active: boolean }) {
     );
   };
 
-  const renderExpansion = (r: PresenceRecord) => {
-    const g = byAgent.get(r.ownerId);
+  /**
+   * One message row. EVERY row with a msg_id deep-links into the feed at that
+   * message (see mailSearch) — inbound and outbound alike. A row WITHOUT a
+   * msg_id has no target to open, so it renders as plain text rather than as a
+   * link that silently lands nowhere: an affordance that can't work is worse
+   * than no affordance (it's the shape of the bug this whole row-renderer is
+   * fixing).
+   */
+  const mailRow = (ownerId: string, mm: MailEntry, i: number, dir: 'in' | 'out') => {
+    const inbound = dir === 'in';
+    const meta = inbound
+      ? `Inbox · ${mm.from ?? '?'} · ${mm.kind ?? 'message'}`
+      : `Outbox · ${(mm.to ?? []).join(', ') || '*'} · ${mm.kind ?? 'message'}`;
+    const label = inbound
+      ? `Open inbound message from ${mm.from ?? 'unknown'}`
+      : `Open outbound message to ${(mm.to ?? []).join(', ') || 'all'}`;
+    const body = (
+      <>
+        <div className="pclsb-mail__meta">{meta}</div>
+        <span className="pclsb-mail__summary">{mm.summary ?? '(no summary)'}</span>
+      </>
+    );
+    const key = `${dir}-${mm.msg_id ?? i}`;
+    return mm.msg_id ? (
+      <Link
+        className="pclsb-mail pclsb-linkrow"
+        to="/adv"
+        search={mergeSearch(mailSearch(ownerId, mm.msg_id))}
+        key={key}
+        aria-label={label}
+      >
+        {body}
+      </Link>
+    ) : (
+      <div className="pclsb-mail" key={key}>
+        {body}
+      </div>
+    );
+  };
+
+  const renderExpansion = (a: RosterAgent) => {
+    const g = byAgent.get(a.ownerId);
     const slugs = new Set<string>();
     if (g?.declaredPlanSlug) slugs.add(g.declaredPlanSlug);
     for (const c of g?.claims ?? []) if (c.planSlug) slugs.add(c.planSlug);
-    if (r.currentPlanSlug) slugs.add(r.currentPlanSlug);
+    if (a.currentPlanSlug) slugs.add(a.currentPlanSlug);
     const agentPlans = (plans.data ?? [])
       .filter((p) => !p.archived && slugs.has(p.slug) && planTotals(p).total > 0)
-      .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
+      .sort((x, y) => (y.priority ?? 0) - (x.priority ?? 0));
 
     const m = mail.data?.[0];
     const inbox = [...(m?.inbox ?? [])].reverse().slice(0, 6);
@@ -225,7 +289,7 @@ export default function SwarmTab({ active }: { active: boolean }) {
     const hasMail = inbox.length > 0 || outbox.length > 0;
 
     return (
-      <div className="pclsb-expand" data-testid={`swarm-expand-${r.ownerId}`}>
+      <div className="pclsb-expand" data-testid={`swarm-expand-${a.ownerId}`}>
         <div className="pclsb-expand__head">Tasks{g ? ` · ${g.load} claimed` : ''}</div>
         {g && g.queued.length > 0 ? (
           g.queued.map((w, i) => taskRow(w, i, g))
@@ -263,68 +327,46 @@ export default function SwarmTab({ active }: { active: boolean }) {
           <div className="pclsb-expand__empty">no linked plans</div>
         )}
 
-        {(hasMail || (selected === r.ownerId && mail.loading)) && (
+        {(hasMail || (selected === a.ownerId && mail.loading)) && (
           <>
             <div className="pclsb-expand__head">Recent messages</div>
             {mail.loading && !hasMail && <div className="pclsb-expand__empty">loading…</div>}
-            {inbox.map((mm, i) => (
-              <Link
-                className="pclsb-mail pclsb-linkrow"
-                to="/adv"
-                search={mergeSearch(mailSearch(r.ownerId, mm))}
-                key={`in-${mm.msg_id ?? i}`}
-                aria-label={`Open inbound message from ${mm.from ?? 'unknown'}`}
-              >
-                <div className="pclsb-mail__meta">
-                  Inbox · {mm.from ?? '?'} · {mm.kind ?? 'message'}
-                </div>
-                <span className="pclsb-mail__summary">{mm.summary ?? '(no summary)'}</span>
-              </Link>
-            ))}
-            {outbox.map((mm, i) => (
-              <Link
-                className="pclsb-mail pclsb-linkrow"
-                to="/adv"
-                search={mergeSearch(mailSearch(r.ownerId, mm))}
-                key={`out-${mm.msg_id ?? i}`}
-                aria-label={`Open outbound message to ${(mm.to ?? []).join(', ') || 'all'}`}
-              >
-                <div className="pclsb-mail__meta">
-                  Outbox · {(mm.to ?? []).join(', ') || '*'} · {mm.kind ?? 'message'}
-                </div>
-                <span className="pclsb-mail__summary">{mm.summary ?? '(no summary)'}</span>
-              </Link>
-            ))}
+            {inbox.map((mm, i) => mailRow(a.ownerId, mm, i, 'in'))}
+            {outbox.map((mm, i) => mailRow(a.ownerId, mm, i, 'out'))}
           </>
         )}
       </div>
     );
   };
 
-  const renderAgentRow = (r: PresenceRecord, icon: string) => {
-    const g = byAgent.get(r.ownerId);
-    const isSel = selected === r.ownerId;
+  const renderAgentRow = (a: RosterAgent, fleetColor: string | null) => {
+    const g = byAgent.get(a.ownerId);
+    const isSel = selected === a.ownerId;
     return (
-      <div className="pclsb-agent" key={r.ownerId}>
+      <div className="pclsb-agent" key={a.ownerId}>
         <div
           className={`pclsb-row is-clickable${isSel ? ' is-selected' : ''}`}
-          data-testid={`swarm-agent-${r.ownerId}`}
-          onClick={() => toggle(r.ownerId)}
+          data-testid={`swarm-agent-${a.ownerId}`}
+          data-liveness={a.liveness}
+          // The fleet's accent, inherited from the roster stamp — the same color
+          // the agents-running dropdown paints this agent's group with.
+          style={fleetColor ? { borderLeft: `2px solid ${fleetColor}` } : undefined}
+          onClick={() => toggle(a.ownerId)}
           role="button"
           tabIndex={0}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') toggle(r.ownerId);
+            if (e.key === 'Enter' || e.key === ' ') toggle(a.ownerId);
           }}
         >
           <span className="pclsb-row__icon" aria-hidden="true">
-            {icon}
+            {agentGlyph(a)}
           </span>
           <div className="pclsb-row__main">
-            <div className="pclsb-row__title" title={r.ownerId}>
-              {r.ownerLabel || r.ownerId}
+            <div className="pclsb-row__title" title={a.ownerId}>
+              {displayName(a)}
             </div>
-            <div className="pclsb-row__sub" title={r.intent ?? undefined}>
-              {r.intent || g?.intent || 'no declared intent'}
+            <div className="pclsb-row__sub" title={a.intent || undefined}>
+              {a.intent || g?.intent || 'no declared intent'}
             </div>
           </div>
           {g && g.load > 0 && <span className="pclsb-pill">⇄{g.load}</span>}
@@ -332,7 +374,7 @@ export default function SwarmTab({ active }: { active: boolean }) {
             {isSel ? '▾' : '▸'}
           </span>
         </div>
-        {isSel && renderExpansion(r)}
+        {isSel && renderExpansion(a)}
       </div>
     );
   };
@@ -340,27 +382,36 @@ export default function SwarmTab({ active }: { active: boolean }) {
   return (
     <div className="pclsb-panel" data-testid="left-sidebar-swarm">
       <div className="pclsb-panel__bar">
-        <span className="pclsb-panel__bar-label">{t('fleet', { lower: true })} · {roster.length} live</span>
+        <span className="pclsb-panel__bar-label">{t('fleet', { lower: true })} · {running.length} live</span>
       </div>
 
-      {presence.error && <div className="pclsb-panel__error">{String(presence.error)}</div>}
-      {roster.length === 0 && !presence.loading && (
+      {roster.error && <div className="pclsb-panel__error">{String(roster.error)}</div>}
+      {running.length === 0 && !roster.loading && (
         <div className="pclsb-panel__empty">No agents active right now.</div>
       )}
 
-      {suAgents.length > 0 && (
-        <div className="pclsb-sec" data-testid="swarm-su">
-          <div className="pclsb-sec__head">🛠 SU agents ({suAgents.length})</div>
-          {suAgents.map((r) => renderAgentRow(r, '🛠'))}
+      {groups.map((grp) => (
+        <div
+          className="pclsb-sec pclsb-fleet"
+          key={grp.slug ?? '__none'}
+          data-testid={`swarm-fleet-${grp.slug ?? 'none'}`}
+          style={grp.color ? { borderColor: grp.color } : undefined}
+        >
+          <div
+            className="pclsb-sec__head pclsb-fleet__head"
+            style={grp.color ? { color: grp.color } : undefined}
+          >
+            <span
+              className="pclsb-fleet__dot"
+              style={{ background: grp.color ?? 'var(--fg-mute, #7f9bb4)' }}
+              aria-hidden="true"
+            />
+            {grp.slug ?? 'No fleet'}
+            <span className="pclsb-fleet__count">({grp.agents.length})</span>
+          </div>
+          {grp.agents.map((a) => renderAgentRow(a, grp.color))}
         </div>
-      )}
-
-      {cupAgents.length > 0 && (
-        <div className="pclsb-sec" data-testid="swarm-cups">
-          <div className="pclsb-sec__head">☕ {t('contributor', { plural: true })} ({cupAgents.length})</div>
-          {cupAgents.map((r) => renderAgentRow(r, '☕'))}
-        </div>
-      )}
+      ))}
     </div>
   );
 }

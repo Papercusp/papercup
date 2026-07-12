@@ -470,8 +470,10 @@ function extensionCandidates(operatorAppRoot: string, explicitRoot: boolean): st
   const fromRoot = [path.join(operatorAppRoot, 'scripts', 'hooks', 'omp', 'coord-hook.ts')];
   if (explicitRoot) return fromRoot;
   const sidecarRoot = process.cwd();
+  // Plain-cwd candidate for the dist-host layout — same miss as ccHookDirCandidates.
   return [
     ...fromRoot,
+    path.join(sidecarRoot, 'scripts', 'hooks', 'omp', 'coord-hook.ts'),
     path.join(sidecarRoot, 'apps', 'operator', 'scripts', 'hooks', 'omp', 'coord-hook.ts'),
   ];
 }
@@ -523,7 +525,16 @@ const CC_HOOK_LIB_FILES: ReadonlySet<string> = new Set(['pc_tty.py']);
 function ccHookDirCandidates(operatorAppRoot: string, explicitRoot: boolean): string[] {
   const fromRoot = [path.join(operatorAppRoot, 'scripts', 'hooks', 'cc')];
   if (explicitRoot) return fromRoot;
-  return [...fromRoot, path.join(process.cwd(), 'apps', 'operator', 'scripts', 'hooks', 'cc')];
+  // Plain-cwd candidate mirrors cliLauncherCandidates/playbookCandidates: in the
+  // dist-host layout (module at <operatorApp>/dist-host/, cwd = <operatorApp>) the
+  // walk-up-two root resolves to apps/ and the cwd+apps/operator candidate doubles
+  // the path — without cwd/scripts both miss and hook enrollment silently skips
+  // (found live 2026-07-12: the :3070 install endpoint returned ok with zero hooks).
+  return [
+    ...fromRoot,
+    path.join(process.cwd(), 'scripts', 'hooks', 'cc'),
+    path.join(process.cwd(), 'apps', 'operator', 'scripts', 'hooks', 'cc'),
+  ];
 }
 
 /**
