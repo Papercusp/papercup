@@ -744,6 +744,46 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       const call = { id: 'WI-1', harness: 'papercusp' };
       expect(gatherFlatCompletion(call)).toBe(call);
     });
+
+    describe('EI-9930: rescues flat sibling fields of an EXISTING `completion` object', () => {
+      it('merges a flat top-level `tests` into an existing `completion` (the exact WI-4223 repro)', () => {
+        expect(
+          gatherFlatCompletion({
+            id: 'WI-4223',
+            state: 'done',
+            completion: { summary: 'shipped' },
+            tests: 'mac VM live verification passed',
+          }),
+        ).toEqual({
+          id: 'WI-4223',
+          state: 'done',
+          completion: { summary: 'shipped', tests: 'mac VM live verification passed' },
+        });
+      });
+
+      it('an explicit nested completion field always wins over a flat sibling (never clobbered)', () => {
+        expect(
+          gatherFlatCompletion({
+            id: 'WI-1',
+            completion: { summary: 's', tests: 'nested wins' },
+            tests: 'flat loses',
+          }),
+        ).toEqual({
+          id: 'WI-1',
+          completion: { summary: 's', tests: 'nested wins' },
+        });
+      });
+
+      it('a call that already has `completion` with NO flat siblings is still returned unchanged (same reference)', () => {
+        const call = { id: 'WI-1', completion: { summary: 'x' } };
+        expect(gatherFlatCompletion(call)).toBe(call);
+      });
+
+      it('does not attempt a merge when `completion` is not yet a plain object (e.g. a raw JSON string) — left for coerceCompletionShape', () => {
+        const call = { id: 'WI-1', completion: JSON.stringify({ summary: 's' }), tests: 'flat' };
+        expect(gatherFlatCompletion(call)).toBe(call);
+      });
+    });
   });
 
   describe('end-to-end through the real tool schema + handler (the wire shapes that 400ed)', () => {
@@ -787,6 +827,24 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       const r = await one({ id: 'WI-9', state: 'resolved', completion: { summary: 'clean', whatLanded: ['a.ts'] } });
       expect(r.completion.summary).toBe('clean');
       expect(r.completion.whatLanded).toEqual(['a.ts']);
+    });
+
+    // EI-9930: a flat `tests` sibling of an existing `completion` used to be silently
+    // dropped by the schema's default key-stripping (no unknown-arg error), so the
+    // completion recorded with neither `tests` nor `deferred` and tripped a false
+    // verificationWarning even though the caller DID state how it was verified
+    // (repro: WI-4223, 2026-07-12 — two consecutive `complete` calls, identical warning,
+    // the second call had `tests` populated but outside the `completion` wrapper).
+    it('a flat top-level `tests` sibling of `completion` is rescued — no false verificationWarning (EI-9930)', async () => {
+      const r = await one({
+        id: 'WI-9',
+        state: 'resolved',
+        completion: { summary: 'shipped' },
+        tests: 'mac VM live verification passed',
+      });
+      expect(r.ok).toBe(true);
+      expect(r.completion.tests).toBe('mac VM live verification passed');
+      expect(r.verificationWarning).toBeUndefined();
     });
 
     // EI-6999: a shape with NEITHER `completion` NOR any recognizable flat

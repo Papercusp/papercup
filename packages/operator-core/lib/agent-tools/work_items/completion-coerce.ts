@@ -158,11 +158,23 @@ export function coerceCompletionShape(raw: unknown): unknown {
  * `id`, gather them into `completion` so the single-complete shorthand validates
  * instead of tripping the "pass { id, completion } …" refine. A call that already
  * has `completion` or `items` (or no completion-ish fields) is returned unchanged.
+ *
+ * EI-9930: also rescues flat completion-ish SIBLINGS of an EXISTING `completion`
+ * object (e.g. a caller who passed `{ id, completion, tests: "…" }` — `tests`
+ * outside the wrapper by mistake). The tool's top-level args schema has no such
+ * field, so zod's default object parsing silently STRIPS it (no unknown-arg
+ * error) — the caller's stated verification vanished and a false
+ * verificationWarning ("neither tests nor deferred populated") fired even
+ * though they DID say how it was checked (repro: WI-4223, 2026-07-12). Merge
+ * any such siblings INTO the completion object, filling only fields the
+ * nested object didn't already set — an explicit nested value always wins,
+ * never clobbered by a flat sibling. No siblings found (or `completion` isn't
+ * a plain object, e.g. still a raw JSON string awaiting `coerceCompletionShape`)
+ * → returned unchanged, same reference, exactly like before.
  */
 export function gatherFlatCompletion(args: unknown): unknown {
   if (!isPlainObject(args)) return args;
-  if (args.completion !== undefined || args.items !== undefined) return args;
-  if (typeof args.id !== 'string') return args;
+  if (args.items !== undefined) return args;
 
   const flat: Record<string, unknown> = {};
   let found = false;
@@ -172,6 +184,16 @@ export function gatherFlatCompletion(args: unknown): unknown {
       found = true;
     }
   }
+
+  if (args.completion !== undefined) {
+    if (!found || !isPlainObject(args.completion)) return args;
+    const out: Record<string, unknown> = { ...args };
+    for (const f of COMPLETION_FIELDS) delete out[f];
+    out.completion = { ...flat, ...(args.completion as Record<string, unknown>) };
+    return out;
+  }
+
+  if (typeof args.id !== 'string') return args;
   if (!found) return args;
 
   const out: Record<string, unknown> = { ...args };

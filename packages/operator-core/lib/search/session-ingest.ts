@@ -538,8 +538,10 @@ async function listCandidateFiles(
  * (EI-9970) the prompt/response/tool-call deltas classifyLine finds across
  * the SAME line window — a superset of parseLine's stored-row scope.
  * `lastInferenceId` carries the previous tick's dedup cursor in, so a model
- * response split across a tick boundary is never double-counted. */
-async function readNewLines(
+ * response split across a tick boundary is never double-counted. Exported
+ * for its own fixture test (EI-9970 recurrence guard — the split-response
+ * dedup contract), same convention as jsonlAtDepth. */
+export async function readNewLines(
   filePath: string,
   offset: number,
   parseLine: (l: string) => ParsedTurn | null,
