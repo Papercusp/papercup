@@ -26,14 +26,21 @@ vi.mock('./pg-listen-hub', () => ({
 import { createNotifyBus } from './pg-notify-bus';
 
 describe('createNotifyBus — EI-9920 retry-on-failed-start', () => {
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
     vi.useFakeTimers();
     listen.mockReset();
     end.mockReset().mockResolvedValue(undefined);
     postgresFactory.mockClear();
+    // These tests deliberately exercise the failed-start → retry path, which
+    // logs `[label] failed to start (will retry): ...` — expected noise, not
+    // a real failure.
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
   afterEach(() => {
+    consoleErrorSpy.mockRestore();
     vi.useRealTimers();
   });
 

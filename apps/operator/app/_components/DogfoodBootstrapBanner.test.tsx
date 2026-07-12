@@ -60,4 +60,24 @@ describe('DogfoodBootstrapBanner (public-release)', () => {
     const { container } = render(<DogfoodBootstrapBanner />);
     expect(container.firstChild).toBeNull();
   });
+
+  // EI-9921: on a fresh/pristine install the "Sign in to GitHub…" banner used to
+  // sit at `top: 0` — the SAME fixed position as the persistent EnvSwitcherBar —
+  // and, having the higher z-index, permanently eclipsed the env switcher until
+  // sign-in. It must instead stack BELOW the env bar via the same
+  // `--pc-env-bar-h` offset convention EnvSwitcherBar documents (and globals.css's
+  // .pc-header rule already uses), so both stay visible/usable together.
+  it('EI-9921: offsets below the env-switcher bar via --pc-env-bar-h, never overlaps it at top:0', () => {
+    progress = errorProgress({
+      hasError: false,
+      inProgress: true,
+      clone: { step: 'clone', status: 'running', ts: 1, detail: 'Sign in to GitHub to begin the download' },
+      activeStep: 'clone',
+      activeDetail: 'Sign in to GitHub to begin the download',
+    });
+    render(<DogfoodBootstrapBanner />);
+    const banner = screen.getByTestId('dogfood-bootstrap-banner');
+    expect(banner.style.top).toBe('var(--pc-env-bar-h, 0px)');
+    expect(banner.style.top).not.toBe('0px');
+  });
 });

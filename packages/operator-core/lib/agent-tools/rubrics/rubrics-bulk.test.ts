@@ -10,7 +10,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'me' }) }));
-vi.mock('../../rubrics', () => ({ getRubric: vi.fn(), ratifyRubric: vi.fn() }));
+// rubricCompleteness is mocked shape-only here (WI-4287: ratify surfaces it per result);
+// its real logic is pinned in lib/rubrics-loss-guards.test.ts.
+vi.mock('../../rubrics', () => ({
+  getRubric: vi.fn(),
+  ratifyRubric: vi.fn(),
+  rubricCompleteness: vi.fn(() => ({ criteriaWithoutReplication: [], methodRefMissing: false, complete: true })),
+}));
 
 import { getRubric, ratifyRubric } from '../../rubrics';
 const getM = vi.mocked(getRubric);
@@ -59,6 +65,12 @@ describe('rubrics:ratify handler (bulk keyed-array)', () => {
     const b = await body(ratifyTool, { rubricId: 'r-1' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, rubricId: 'r-1', rubric: { status: 'active' } });
+    // WI-4287: each activated rubric reports its testing-procedure completeness.
+    expect(b.results[0].completeness).toEqual({
+      criteriaWithoutReplication: [],
+      methodRefMissing: false,
+      complete: true,
+    });
     expect(ratifyM).toHaveBeenCalledWith('r-1', 'me');
   });
 
