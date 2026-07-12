@@ -4,7 +4,7 @@
  * escalation body that decide WHEN the silent-stall alarm fires.
  */
 import { describe, it, expect } from 'vitest';
-import { evaluateGreenStall, greenStallEscalationBody } from './green-stall-watchdog';
+import { evaluateGreenStall, greenStallEscalationBody, evaluateMainBehindStaging } from './green-stall-watchdog';
 
 const H = 60 * 60 * 1000;
 const NOW = 1_750_000_000_000; // fixed epoch ms
@@ -206,5 +206,48 @@ describe('greenStallEscalationBody', () => {
       }),
     );
     expect(body.failingTests).toEqual([]);
+  });
+});
+
+describe('evaluateMainBehindStaging (EI-9762)', () => {
+  it('does not alarm when main and staging are in sync (commitsBehind 0)', () => {
+    const v = evaluateMainBehindStaging({ commitsBehind: 0, behindMs: null });
+    expect(v.stalled).toBe(false);
+    expect(v.reason).toBeNull();
+  });
+
+  it('does not alarm on a small/fresh lag (a handful of commits just landed)', () => {
+    const v = evaluateMainBehindStaging({ commitsBehind: 5, behindMs: 5 * 60 * 1000 });
+    expect(v.stalled).toBe(false);
+  });
+
+  it('does not alarm on a small lag even if it sits for a while (low commit count alone is not the signal)', () => {
+    const v = evaluateMainBehindStaging({ commitsBehind: 3, behindMs: 5 * H });
+    expect(v.stalled).toBe(false);
+  });
+
+  it('does not alarm on a big burst that has not aged yet (lots of commits, all fresh)', () => {
+    const v = evaluateMainBehindStaging({ commitsBehind: 40, behindMs: 2 * 60 * 1000 });
+    expect(v.stalled).toBe(false);
+  });
+
+  it('ALARMS on the EI-9762 signature: many commits AND aged well past the threshold', () => {
+    const v = evaluateMainBehindStaging({ commitsBehind: 56, behindMs: Math.round(4.8 * H) });
+    expect(v.stalled).toBe(true);
+    expect(v.reason).toContain('56 commits');
+    expect(v.reason).toContain('4.8h');
+  });
+
+  it('respects custom thresholds', () => {
+    const v = evaluateMainBehindStaging(
+      { commitsBehind: 10, behindMs: 30 * 60 * 1000 },
+      { commitsThreshold: 5, msThreshold: 15 * 60 * 1000 },
+    );
+    expect(v.stalled).toBe(true);
+  });
+
+  it('fails open (never alarms) when the git read could not resolve a value', () => {
+    expect(evaluateMainBehindStaging({ commitsBehind: null, behindMs: null }).stalled).toBe(false);
+    expect(evaluateMainBehindStaging({ commitsBehind: 56, behindMs: null }).stalled).toBe(false);
   });
 });

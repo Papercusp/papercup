@@ -58,6 +58,12 @@ export default defineTool({
     harness_slug: z.string().optional(),
     hive_slug: z.string().optional()
       .describe("Also list the Pot's shared pool (seeded learnings + recorded conventions — learning-packs P-004)."),
+    as_of: z.string().max(64)
+      .refine((v) => Number.isFinite(new Date(v).getTime()), 'as_of must be a parseable ISO 8601 timestamp')
+      .optional()
+      .describe('TEMPORAL (temporal-lite): point-in-time listing — only memories whose validity window covers this ISO timestamp. Entries carry metadata.validity.'),
+    include_superseded: z.boolean().optional()
+      .describe('TEMPORAL (temporal-lite): include superseded/soft-forgotten memories (validity window closed) — excluded by default. Superseded entries carry metadata.validity { status:"superseded", superseded_by }.'),
   }),
   async handler(args) {
     const user = await getSessionUserOrDefault();
@@ -83,6 +89,8 @@ export default defineTool({
             ...(args.hive_slug ? [`hive:${args.hive_slug}`] : []),
           ],
           kind: args.kind,
+          ...(args.as_of !== undefined ? { asOf: args.as_of } : {}),
+          ...(args.include_superseded ? { includeSuperseded: true } : {}),
         }),
         'memory:list list',
       );

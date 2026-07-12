@@ -252,7 +252,7 @@ export default defineTool({
       if (lexical) {
         try {
           fallbackHits = await withMemoryTimeout(
-            lexical(args.query, { scope, limit }),
+            lexical(args.query, { scope, limit, ...temporal }),
             'memory:search lexical fallback',
             memoryLexicalFallbackTimeoutMs(),
           );

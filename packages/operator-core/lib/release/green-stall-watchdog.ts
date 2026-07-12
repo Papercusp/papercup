@@ -37,6 +37,7 @@
  * Kill-switch: PAPERCUSP_GREEN_STALL_WATCHDOG='0'.
  */
 import type { Sql } from 'postgres';
+import { execFileSync } from 'node:child_process';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { broadcastSevereEvent, broadcastSevereEventResolved } from '../severe-event-broadcast';
 import { readRoutineEngineLiveness } from './routine-engine-liveness';
@@ -49,6 +50,20 @@ const DEFAULT_FIRE_STALE_MS = 3 * 60 * 60 * 1000; // 3h
 const DEFAULT_NO_GREEN_MS = 12 * 60 * 60 * 1000; // 12h
 /** How often the watchdog sweeps. green-checkpoint is hourly, so 15m is ample. */
 const DEFAULT_WATCHDOG_INTERVAL_MS = 15 * 60 * 1000; // 15 min
+
+/** EI-9762: `main` can fall behind `staging` for hours WITHOUT tripping either
+ *  alarm above — the routine keeps firing (fireStale stays false) and each fire
+ *  keeps producing a verdict, just a RED one (verdictStale's 12h backstop only
+ *  fires on the ABSENCE of green, not on main failing to advance). A run can also
+ *  be externally killed (SIGKILL) before it ever writes a verdict at all — same
+ *  blind spot. Both leave `main` frozen with nothing watching it: the 2026-07-11
+ *  incident sat ~4.8h/56 commits behind before the OWNER had to ask. This is a
+ *  DIFFERENT, tighter, more direct signal than the 12h no-green backstop: it
+ *  doesn't care why main isn't advancing (red suite, killed run, wedged engine),
+ *  only that staging has pulled meaningfully ahead for meaningfully long. */
+const DEFAULT_MAIN_BEHIND_COMMITS = 20;
+const DEFAULT_MAIN_BEHIND_MS = 60 * 60 * 1000; // 1h — deliberately far tighter than the 12h verdict-stale backstop
+const MAIN_BEHIND_PHASE = 'main-behind-staging-watchdog';
 
 /** Phase + kind for the durable escalation — distinct from the in-routine
  *  `green-checkpoint-stall` so the two never clobber each other. */
@@ -318,6 +333,174 @@ export async function checkGreenStall(
   }
 }
 
+// ── main-behind-staging guard (EI-9762) ────────────────────────────────────────
+
+export interface MainBehindStagingSnapshot {
+  /** `git rev-list --count <mainBranch>..<stagingBranch>` — null if unresolvable
+   *  (e.g. a branch missing in a fresh/partial checkout — fail-open, never alarm). */
+  commitsBehind: number | null;
+  /** How long `staging` has been ahead of `main` by at least one commit — the age
+   *  (ms) of the OLDEST commit reachable from staging but not main. null if
+   *  commitsBehind is 0/null. This is the "~4.8h" half of the EI-9762 signal. */
+  behindMs: number | null;
+}
+
+export interface MainBehindStagingVerdict {
+  stalled: boolean;
+  reason: string | null;
+}
+
+/** Pure: decide whether `main`'s lag behind `staging` has crossed from "normal
+ *  promotion latency" into "the gate stopped advancing main" — BOTH thresholds
+ *  must trip (a lot of commits queued up in the last few minutes is normal
+ *  churn; a small lag sitting there for hours is also normal on a quiet day).
+ *  Exported for unit testing. */
+export function evaluateMainBehindStaging(
+  s: MainBehindStagingSnapshot,
+  opts: { commitsThreshold?: number; msThreshold?: number } = {},
+): MainBehindStagingVerdict {
+  const commitsThreshold = opts.commitsThreshold ?? DEFAULT_MAIN_BEHIND_COMMITS;
+  const msThreshold = opts.msThreshold ?? DEFAULT_MAIN_BEHIND_MS;
+  if (s.commitsBehind == null || s.behindMs == null) return { stalled: false, reason: null };
+  const stalled = s.commitsBehind > commitsThreshold && s.behindMs > msThreshold;
+  if (!stalled) return { stalled: false, reason: null };
+  const hoursBehind = (s.behindMs / 3_600_000).toFixed(1);
+  return {
+    stalled: true,
+    reason:
+      `\`main\` is ${s.commitsBehind} commits / ~${hoursBehind}h behind \`staging\` — the gate is not advancing main, ` +
+      `regardless of why (red verdicts, a killed/wedged run, or a wedged routine engine). Fire a fresh gate run ` +
+      `(release:checkpoint-run) and find + fix whatever is actually failing/blocking it.`,
+  };
+}
+
+function gitOut(root: string, args: string[]): string | null {
+  try {
+    return execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/** Reads the live commits-behind + how-long-behind gap between `main` and
+ *  `staging` in `root` via plain git shell-outs — deliberately NOT importing
+ *  from apps/operator/lib/release/* (wrong dependency direction for
+ *  operator-core; mirrors dev-deploy-state.ts's own self-contained pattern).
+ *  Fails open (all-null) on any git error — a missing branch/checkout must
+ *  never itself trigger the alarm it's trying to compute. */
+export function computeMainBehindStaging(
+  root: string,
+  mainBranch = 'main',
+  stagingBranch = 'staging',
+): MainBehindStagingSnapshot {
+  const countRaw = gitOut(root, ['rev-list', '--count', `${mainBranch}..${stagingBranch}`]);
+  const commitsBehind = countRaw != null && /^\d+$/.test(countRaw) ? Number(countRaw) : null;
+  if (commitsBehind == null || commitsBehind === 0) return { commitsBehind: commitsBehind ?? null, behindMs: null };
+
+  // The OLDEST commit reachable from staging but not main — its age is how
+  // long main has been behind by at least this much (a fresh-only lag from
+  // commits landing in the last minute reads as ~0, not an hours-old stall).
+  const oldestTsRaw = gitOut(root, [
+    'log',
+    `${mainBranch}..${stagingBranch}`,
+    '--format=%ct',
+    '--reverse',
+  ]);
+  const oldestTs = oldestTsRaw ? Number(oldestTsRaw.split('\n')[0]) : NaN;
+  if (!Number.isFinite(oldestTs)) return { commitsBehind, behindMs: null };
+  return { commitsBehind, behindMs: Math.max(0, Date.now() - oldestTs * 1000) };
+}
+
+/** One watchdog pass for the main-behind-staging guard, scoped to a single git
+ *  root (the operator's own home harness — this is a local-git-tree signal,
+ *  not a per-tenant DB one, so it does not loop over `harness_shared.routines`
+ *  the way `checkGreenStall` does). Reuses the exact alarm plumbing
+ *  (notifyAttention + broadcastSevereEvent + harness_escalations) under its OWN
+ *  phase so it never clobbers either of the other two conditions' dedup state.
+ *  Dedup is the escalation row's own presence — no gate_health flag needed.
+ *  Never throws — rides the same interval as checkGreenStall and must not
+ *  break it. */
+export async function checkMainBehindStaging(
+  sql: Sql,
+  opts: {
+    root?: string;
+    harnessSlug?: string;
+    workspaceId?: string;
+    commitsThreshold?: number;
+    msThreshold?: number;
+    mainBranch?: string;
+    stagingBranch?: string;
+  } = {},
+): Promise<{ alarmed: boolean; recovered: boolean }> {
+  const out = { alarmed: false, recovered: false };
+  try {
+    const root =
+      opts.root ??
+      process.env.PAPERCUSP_INTEGRATION_ROOT ??
+      gitOut(process.cwd(), ['rev-parse', '--show-toplevel']) ??
+      process.cwd();
+    const harnessSlug = opts.harnessSlug ?? 'papercusp';
+    const snapshot = computeMainBehindStaging(root, opts.mainBranch, opts.stagingBranch);
+    const verdict = evaluateMainBehindStaging(snapshot, opts);
+
+    const existing = await sql<{ escalation: unknown }[]>`
+      SELECT escalation FROM harness_shared.harness_escalations
+       WHERE harness_slug = ${harnessSlug} AND phase = ${MAIN_BEHIND_PHASE}`;
+    const alreadyAlarmed = existing.length > 0 && existing[0].escalation != null;
+
+    if (verdict.stalled) {
+      if (alreadyAlarmed) return out; // one-shot until recovery, like checkGreenStall
+      try {
+        const { notifyAttention } = await import('../attention-notify');
+        await notifyAttention({
+          kind: 'intervention',
+          title: 'Release pipeline STALLED — main is falling behind staging',
+          body: verdict.reason ?? '',
+          importance: 'urgent',
+          workspaceId: opts.workspaceId,
+          data: { commitsBehind: snapshot.commitsBehind, behindMs: snapshot.behindMs },
+        });
+      } catch (e) {
+        console.warn(`[main-behind-staging-watchdog] notify failed: ${e instanceof Error ? e.message : e}`);
+      }
+      await broadcastSevereEvent({
+        summary: `main is ${snapshot.commitsBehind} commits behind staging on ${harnessSlug} — promotion pipeline stalled.`,
+        body: verdict.reason ?? '',
+        category: 'severe-event',
+        conditionKey: `main-behind-staging:${harnessSlug}`,
+      });
+      await sql`
+        INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
+        VALUES (${harnessSlug}, ${MAIN_BEHIND_PHASE}, ${JSON.stringify({
+          kind: MAIN_BEHIND_PHASE,
+          harness_slug: harnessSlug,
+          commitsBehind: snapshot.commitsBehind,
+          behindMs: snapshot.behindMs,
+          detail: verdict.reason,
+          emitted_at: Date.now(),
+        })}, ${Date.now()}, ${opts.workspaceId ?? null})
+        ON CONFLICT (harness_slug, phase)
+        DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`;
+      out.alarmed = true;
+      console.warn(`[main-behind-staging-watchdog] ALARM ${harnessSlug}: ${verdict.reason}`);
+    } else if (alreadyAlarmed) {
+      await sql`
+        UPDATE harness_shared.harness_escalations
+           SET escalation = NULL, mtime_ms = ${Date.now()}
+         WHERE harness_slug = ${harnessSlug} AND phase = ${MAIN_BEHIND_PHASE} AND escalation IS NOT NULL`;
+      await broadcastSevereEventResolved({
+        conditionKey: `main-behind-staging:${harnessSlug}`,
+        summary: `main RECOVERED on ${harnessSlug} — no longer meaningfully behind staging; the earlier stall alarm is stale.`,
+      });
+      out.recovered = true;
+    }
+    return out;
+  } catch (e) {
+    console.warn(`[main-behind-staging-watchdog] pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+    return out;
+  }
+}
+
 let watchdogTimer: ManagedHandle | null = null;
 
 /**
@@ -339,6 +522,10 @@ export function startGreenStallWatchdog(
         console.warn(`[green-stall-watchdog] alarmed on: ${r.alarmed.join(', ')}`);
       }
     });
+    // EI-9762: independent of the above — see checkMainBehindStaging's own doc
+    // for why this can't share its DB-row loop. Failure here must never affect
+    // the check above (each is wrapped/caught independently).
+    void checkMainBehindStaging(sql);
   };
 
   run(); // boot check
