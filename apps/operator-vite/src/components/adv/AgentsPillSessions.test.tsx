@@ -232,4 +232,36 @@ describe('InactiveSessionsSection row layout (WI-4195 r3 — name not truncated 
     // The full name renders (its own CSS ellipsizes past 200px; it is not clipped to a letter here).
     expect(row.textContent).toContain('a real session name');
   });
+
+  it('shows an active-roster-style count on the header once expanded (owner ask 2026-07-12 — mirror the active section)', async () => {
+    vi.stubGlobal('IntersectionObserver', class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        sessions: [
+          endedRow({ id: 7, sessionId: 's-7', coordOwnerId: 'su-abcdef', label: 'session seven', agent: 'claude' }),
+          endedRow({ id: 8, sessionId: 's-8', coordOwnerId: 'su-bbbbbb', label: 'session eight', agent: 'claude' }),
+        ],
+        hasMore: true,
+        nextBefore: 'cur',
+      }),
+    })));
+
+    render(<InactiveSessionsSection activeOwnerIds={new Set()} nowMs={Date.parse('2026-07-09T02:00:00Z')} />);
+    // Collapsed: no count yet.
+    expect(screen.queryByTestId('inactive-sessions-count')).toBeNull();
+    fireEvent.click(screen.getByTestId('inactive-sessions-toggle'));
+
+    // Expanded + loaded: the count chip mirrors the active fleet-group counts,
+    // and the trailing '+' reflects hasMore (more pages beyond the loaded set).
+    const count = await waitFor(() => screen.getByTestId('inactive-sessions-count'));
+    expect(count.textContent).toContain('(2+)');
+    // It reuses the active roster's group-count class so it looks identical.
+    expect(count.className).toContain('pc-agents-roster__group-count');
+  });
 });

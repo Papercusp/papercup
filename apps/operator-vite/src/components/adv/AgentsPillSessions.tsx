@@ -18,6 +18,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import AgentInspectorModal from '@/app/harness/AgentInspectorModal';
+import { LivenessDot } from '@/app/coord/presence-ui';
 import {
   agentGlyph,
   canForkSession,
@@ -531,6 +532,11 @@ export function InactiveSessionsSection({
         onClick={() => setExpanded((v) => !v)}
       >
         <span aria-hidden>{expanded ? '▾' : '▸'}</span> View inactive sessions
+        {expanded && visible.length > 0 ? (
+          <span className="pc-agents-roster__group-count" data-testid="inactive-sessions-count">
+            ({visible.length}{hasMore ? '+' : ''})
+          </span>
+        ) : null}
         <span className="pc-agents-sessions__toggle-hint">every past session, newest first</span>
       </button>
       {expanded && (
@@ -552,6 +558,11 @@ export function InactiveSessionsSection({
                 }}
               >
                 <span className="pc-agents-roster__live">
+                  {/* Ended sessions get the SAME leading status dot as the active
+                      roster rows (a muted grey 'stale' dot = offline/ended), so the
+                      inactive list reads as a peer of the active-sessions section
+                      instead of a bare age-only column (owner ask 2026-07-12). */}
+                  <LivenessDot liveness="stale" size={7} title={endedAgo ? `ended ${endedAgo} ago` : 'ended session'} />
                   {endedAgo ? (
                     <span className="pc-agents-roster__age" title={`ended ${endedAgo} ago`}>{endedAgo}</span>
                   ) : null}
