@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   planIdleSessionReap,
   planWindowUnknownProtection,
+  planWorkItemLeaseReap,
   classifyLiveIdle,
   terminateIdleLiveSessions,
   planZombieReap,
@@ -13,6 +14,7 @@ import {
   IDLE_SESSION_GRACE_MS,
   IDLE_ACTIVITY_THRESHOLD_MS,
   type ReapableSession,
+  type WorkItemLeaseRow,
   type LiveIdleCandidate,
   type IdleLiveSession,
   type TerminateDeps,
@@ -27,6 +29,12 @@ const session = (id: number, coordOwnerId: string | null, startedAtMs: number): 
   id,
   coordOwnerId,
   startedAtMs,
+});
+const lease = (id: string, takenBy: string, takenAtMs: number | null, harness: string | null = 'papercusp'): WorkItemLeaseRow => ({
+  id,
+  harness,
+  takenBy,
+  takenAtMs,
 });
 
 describe('planIdleSessionReap (P-011 idle-session reaper — slice 1: dead-process ghosts)', () => {
@@ -100,6 +108,79 @@ describe('planIdleSessionReap (P-011 idle-session reaper — slice 1: dead-proce
     expect(plan.keptLive).toEqual([live]);
     expect(plan.keptFresh).toEqual([fresh]);
     expect(plan.keptNoOwner).toEqual([noOwner]);
+  });
+});
+
+describe('planWorkItemLeaseReap (session-death-claim-release-2026-07-11 P-001 — slice 1b: dead-owner leases)', () => {
+  it('force-releases a lease held by a dead owner past the grace floor', () => {
+    const l = lease('WI-1', 'su-dead', old(2 * IDLE_SESSION_GRACE_MS));
+    const plan = planWorkItemLeaseReap({
+      leases: [l],
+      liveOwners: new Set(), // owner not live → dead
+      nowMs: NOW,
+    });
+    expect(plan.reap).toEqual([l]);
+    expect(plan.keptLive).toHaveLength(0);
+  });
+
+  it('NEVER releases a lease whose owner is live (heartbeat / on-desktop / viewer / host), however old', () => {
+    const l = lease('WI-2', 'su-live', old(100 * IDLE_SESSION_GRACE_MS));
+    const plan = planWorkItemLeaseReap({
+      leases: [l],
+      liveOwners: new Set(['su-live']),
+      nowMs: NOW,
+    });
+    expect(plan.reap).toHaveLength(0);
+    expect(plan.keptLive).toEqual([l]);
+  });
+
+  it('NEVER releases a lease claimed within the grace floor (holder just claimed it; first heartbeat may not have landed)', () => {
+    const l = lease('WI-3', 'su-new', old(IDLE_SESSION_GRACE_MS - 1));
+    const plan = planWorkItemLeaseReap({
+      leases: [l],
+      liveOwners: new Set(),
+      nowMs: NOW,
+    });
+    expect(plan.reap).toHaveLength(0);
+    expect(plan.keptFresh).toEqual([l]);
+  });
+
+  it('a lease with no takenAtMs (should not happen in practice) is treated as past-grace, not protected forever', () => {
+    const l = lease('WI-4', 'su-dead', null);
+    const plan = planWorkItemLeaseReap({
+      leases: [l],
+      liveOwners: new Set(),
+      nowMs: NOW,
+    });
+    expect(plan.reap).toEqual([l]);
+  });
+
+  it('a claim ALONE never counts as liveness — a dead owner holding a lease is still reaped (EI-9807/WI-4070 shape)', () => {
+    // liveOwners here must have been computed with includeClaimHolders:false —
+    // this test asserts the PURE decision honors whatever set it's given; the
+    // "a claim can't protect itself" property is enforced by the caller
+    // (runWorkItemLeaseReap) passing that set, exercised separately.
+    const l = lease('WI-4070', 'su-killed', old(5 * IDLE_SESSION_GRACE_MS));
+    const plan = planWorkItemLeaseReap({
+      leases: [l],
+      liveOwners: new Set(), // su-killed has NO fresh heartbeat / bee / wake / host
+      nowMs: NOW,
+    });
+    expect(plan.reap).toEqual([l]);
+  });
+
+  it('partitions a mixed batch of leases correctly', () => {
+    const dead = lease('WI-10', 'dead', old(5 * IDLE_SESSION_GRACE_MS));
+    const live = lease('WI-11', 'live', old(5 * IDLE_SESSION_GRACE_MS));
+    const fresh = lease('WI-12', 'fresh-owner', old(60_000));
+    const plan = planWorkItemLeaseReap({
+      leases: [dead, live, fresh],
+      liveOwners: new Set(['live']),
+      nowMs: NOW,
+    });
+    expect(plan.reap).toEqual([dead]);
+    expect(plan.keptLive).toEqual([live]);
+    expect(plan.keptFresh).toEqual([fresh]);
   });
 });
 
