@@ -128,6 +128,7 @@
     "lint:knip": "knip --no-config-hints",
     "lint:knip:fix": "knip --fix --no-config-hints",
     "lint:drizzle-drift": "node scripts/check-drizzle-drift.mjs",
+    "lint:affected-gate": "node scripts/lint-affected-gate.mjs",
     "lint:no-restart": "node scripts/check-no-restart-imports.mjs",
     "lint:smart-quotes": "tsx scripts/check-smart-quotes.mjs",
     "lint:mdx": "tsx scripts/check-mdx.mjs",

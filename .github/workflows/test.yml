@@ -152,6 +152,15 @@ jobs:
       - name: Env feature-gate lint (gating)
         run: npm run lint:env-feature-gates:strict
 
+      # Affected-set integrity guard: the gate must not silently run FEWER tests than
+      # it appears to. `--ignore-submodules=all` used to suppress gitlink changes, so a
+      # commit touching only a submodule (e.g. the memory lib) produced an empty affected
+      # set and ZERO tests ran while the gate reported green. This must be a LINT, not a
+      # vitest test: a test only runs when its workspace is affected, so the very bug it
+      # guards would disarm it. GATING.
+      - name: Lint affected-set gate integrity
+        run: npm run lint:affected-gate
+
       # @restart retirement guard: the shared libs were renamed @restart/* ->
       # @papercusp/* (papercusp-systems-abstraction-2026-05-29). GATING — fails
       # the build with a "use @papercusp/<name>" message if any @restart/* import

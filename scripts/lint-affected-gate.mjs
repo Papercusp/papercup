@@ -38,7 +38,14 @@ const errors = [];
 const note = (m) => errors.push(m);
 
 const GATE = join(ROOT, 'scripts', 'affected-tests.mjs');
-const gateSrc = readFileSync(GATE, 'utf8');
+
+// Assert against CODE, never comments. The gate file necessarily *documents* the very
+// patterns checked for below, so a naive substring scan is satisfied by the prose that
+// explains the rule — the guard passes while the code is broken. (Caught by mutation
+// test: deleting the `file === ws.dir` arm still linted clean, because the comment
+// above it says `file === ws.dir`.)
+const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+const gateSrc = stripComments(readFileSync(GATE, 'utf8'));
 
 // ---------------------------------------------------------------- 1 + 2: the gate
 if (gateSrc.includes('--ignore-submodules=all')) {
@@ -124,13 +131,18 @@ for (const path of submodulePaths) {
 // would redden main on unrelated packages. Scope the hard check to the memory lib,
 // which is the system this gate was hardened for.
 const MEMORY = '@papercusp/memory';
+// Match a real module specifier only — `from '@papercusp/memory'`, `require(...)`,
+// `import(...)`, plus subpath imports. A bare substring search also hits the package
+// name inside doc comments (libs/generic/deployment-driver mentions it in prose), which
+// would demand a dependency the code does not actually have.
+const SPECIFIER = String.raw`(from|require\(|import\()[[:space:]]*['"]@papercusp/memory(/[^'"]*)?['"]`;
 for (const [dir, pkg] of wsByDir) {
   if (pkg.name === MEMORY) continue;
   let imports = '';
   try {
     imports = execFileSync(
       'grep',
-      ['-rl', '--include=*.ts', '--include=*.tsx', '--exclude-dir=node_modules', MEMORY, join(ROOT, dir)],
+      ['-rlE', '--include=*.ts', '--include=*.tsx', '--exclude-dir=node_modules', SPECIFIER, join(ROOT, dir)],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
     ).trim();
   } catch {

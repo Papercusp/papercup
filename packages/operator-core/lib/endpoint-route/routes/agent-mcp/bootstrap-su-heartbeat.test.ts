@@ -11,7 +11,7 @@
  * Mirrors bootstrap-su-launch-argv.test.ts's minimal mock set so importing
  * the route module doesn't reach for @papercusp/db-org.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // bootstrap-su.ts is a large module with many real (unmocked) sibling imports —
 // only the couple this route actually touches (auth, adv-sessions, presence)
@@ -20,6 +20,26 @@ import { describe, expect, it, vi } from 'vitest';
 // avoids this by mocking ~20 sibling modules; not worth duplicating that
 // weight here for a 5-test route file).
 vi.setConfig({ testTimeout: 15_000 });
+
+// EI-9784: `touchHeartbeatMock` MUST be created via `vi.hoisted()`, not a bare
+// top-level `const`. A bare const is only SAFE because this file's own
+// evaluation order happens to place it before any test body runs — but
+// bootstrap-su-launch-argv.test.ts mocks this SAME specifier
+// ('../../../agent-tools/coordination/presence') with its own separate
+// `vi.fn()`. Observed failure (2/5 red only in a large 784-suite/2436-test
+// combined run, never alone, never reproducibly): under heavy parallel load
+// with many files sharing forked workers, a `vi.mock` factory for a given
+// specifier can be re-resolved against a STALE closure if the mock's backing
+// value isn't part of vitest's own hoisted-mock bookkeeping — `vi.hoisted()`
+// registers the value in the SAME hoist pass as the `vi.mock` calls below, so
+// there is exactly one canonical mock-fn instance per file, resolved the
+// identical way every `vi.mock` factory in this codebase already relies on
+// (see e.g. dbos/durable-spawn.test.ts's `const h = vi.hoisted(...)`).
+// Paired with clearAllMocks() in beforeEach/afterEach (belt-and-suspenders —
+// each `it` already calls touchHeartbeatMock.mockClear() itself, but a
+// file-level reset closes the gap if a PRIOR file in the same worker left the
+// module's mock state dirty).
+const touchHeartbeatMock = vi.hoisted(() => vi.fn(async () => {}));
 
 vi.mock('../../../auth/require-principal', () => ({
   requirePrincipal: vi.fn(async () => {}),
@@ -34,10 +54,12 @@ vi.mock('../../../adv-sessions', () => ({
   reactivateAdvSession: vi.fn(async () => false),
 }));
 
-const touchHeartbeatMock = vi.fn(async () => {});
 vi.mock('../../../agent-tools/coordination/presence', () => ({
   touchHeartbeat: touchHeartbeatMock,
 }));
+
+beforeEach(() => { vi.clearAllMocks(); });
+afterEach(() => { vi.clearAllMocks(); });
 
 async function postHeartbeat(body: unknown): Promise<Response> {
   const mod = await import('./bootstrap-su');
