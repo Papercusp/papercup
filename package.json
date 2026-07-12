@@ -76,6 +76,7 @@
     "libs/generic/tauri-release-kit",
     "libs/generic/pot-app-seam",
     "libs/generic/lexicon",
+    "libs/generic/facets",
     "libs/generic/eval-battery",
     "libs/generic/bench-metrics",
     "libs/generic/resource-profile",

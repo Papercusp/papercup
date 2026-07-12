@@ -130,6 +130,16 @@ function normalizeExtract<M>(raw: FacetExtractResult<M>): FacetValueRef<M>[] {
   return out;
 }
 
+/** Distinct facet values across ALL items (ignores any selection) — the number
+ *  the visibility hide-rule tests, so facets stay stable during drill-down. */
+function distinctValueCount<T, M>(items: readonly T[], def: FacetDef<T, M>): number {
+  const seen = new Set<string>();
+  for (const row of items) {
+    for (const ref of normalizeExtract(def.extract(row))) seen.add(ref.value);
+  }
+  return seen.size;
+}
+
 /** True if `row` satisfies every ACTIVE facet selection except `exceptKey`
  *  (AND across facets, OR within a facet). Used for drill-down pools. */
 function matchesSelectionExcept<T>(
@@ -199,8 +209,12 @@ export function computeFacets<T, M = unknown>(
       }
     }
 
-    const distinctCount = counts.size;
-    if (distinctCount < minDistinct) continue; // the hide-rule (context-dependent)
+    // Visibility (the hide-rule) is decided over the FULL item set so facets
+    // stay STABLE — they don't pop in and out as you select within another
+    // facet. Only the COUNTS above reflect the drill-down pool. With no
+    // selection the pool IS the full set, so these coincide.
+    const distinctCount = selection ? distinctValueCount(items, def) : counts.size;
+    if (distinctCount < minDistinct) continue;
 
     const orderIndex = new Map(order.map((v, i) => [v, i] as const));
     let values: FacetValueTally<M>[] = order
