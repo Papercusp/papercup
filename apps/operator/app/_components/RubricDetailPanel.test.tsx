@@ -84,6 +84,12 @@ describe("RubricDetailPanel focused evidence", () => {
     const changingRows = within(changingTable).getAllByRole("row");
     expect(changingRows[1]?.textContent).toContain("Regressing cost");
     expect(changingRows[2]?.textContent).toContain("Improving clarity");
+    expect(
+      within(changingTable).getByRole("img", {
+        name: /2× fail, 1× partial; 3 rated/,
+      }),
+    ).toBeTruthy();
+    expect(changingTable.textContent).not.toContain("Rated");
     expect(screen.queryByText("Stable evidence")).toBeNull();
     expect(screen.queryByText("scorecard-3")).toBeNull();
 

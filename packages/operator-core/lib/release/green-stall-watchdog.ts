@@ -449,23 +449,6 @@ export async function checkMainBehindStaging(
       gitOut(process.cwd(), ['rev-parse', '--show-toplevel']) ??
       process.cwd();
     const harnessSlug = opts.harnessSlug ?? 'papercusp';
-    // EI-10103: harness_escalations.workspace_id is NOT NULL (default ''); this check is
-    // single-harness-scoped (unlike checkGreenStall's per-tenant `routines` scan, which
-    // gets a real workspace_id off each row) and had no caller ever pass opts.workspaceId,
-    // so the insert below explicitly wrote NULL — bypassing the column default (a default
-    // only applies when the column is OMITTED, not when it's explicitly set to NULL) and
-    // violating the not-null constraint on every real stall, silently swallowed by this
-    // function's own outer catch. Resolve the real workspace the harness lives in; never
-    // let a resolution failure block the escalation itself (RESOLVED empty-string is
-    // exactly what the column's own default would have been for an unresolvable harness).
-    const workspaceId =
-      opts.workspaceId ??
-      (await resolveWorkspaceForHarness(harnessSlug).catch((e) => {
-        console.warn(
-          `[main-behind-staging-watchdog] workspace resolution failed for '${harnessSlug}': ${e instanceof Error ? e.message : e}`,
-        );
-        return '';
-      }));
     const snapshot = computeMainBehindStaging(root, opts.mainBranch, opts.stagingBranch);
     const verdict = evaluateMainBehindStaging(snapshot, opts);
 
@@ -476,6 +459,25 @@ export async function checkMainBehindStaging(
 
     if (verdict.stalled) {
       if (alreadyAlarmed) return out; // one-shot until recovery, like checkGreenStall
+      // EI-10103: harness_escalations.workspace_id is NOT NULL (default ''); this check is
+      // single-harness-scoped (unlike checkGreenStall's per-tenant `routines` scan, which
+      // gets a real workspace_id off each row) and had no caller ever pass opts.workspaceId,
+      // so the insert below explicitly wrote NULL — bypassing the column default (a default
+      // only applies when the column is OMITTED, not when it's explicitly set to NULL) and
+      // violating the not-null constraint on every real stall, silently swallowed by this
+      // function's own outer catch (the watchdog that should escalate a promotion stall
+      // could never actually write its escalation). Resolve the real workspace the harness
+      // lives in, lazily (only on an actual stall, not every quiet pass); never let a
+      // resolution failure block the escalation itself (an empty string falls back to
+      // exactly what the column's own default would have been for an unresolvable harness).
+      const workspaceId =
+        opts.workspaceId ??
+        (await resolveWorkspaceForHarness(harnessSlug).catch((e) => {
+          console.warn(
+            `[main-behind-staging-watchdog] workspace resolution failed for '${harnessSlug}': ${e instanceof Error ? e.message : e}`,
+          );
+          return '';
+        }));
       try {
         const { notifyAttention } = await import('../attention-notify');
         await notifyAttention({

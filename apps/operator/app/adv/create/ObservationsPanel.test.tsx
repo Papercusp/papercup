@@ -208,6 +208,23 @@ describe("<ObservationsPanel />", () => {
     expect(screen.getByText("Gap row")).toBeTruthy();
   });
 
+  it("puts semantic signals before Other and shows loaded versus total", () => {
+    sync.data = [
+      { ...mkRow({ id: "o1", title: "Other row" }), _meta: { total: 2569 } },
+      mkRow({ id: "f1", title: "Friction row", kind: "friction" }),
+      mkRow({ id: "s1", title: "Surprise row", kind: "surprise" }),
+    ];
+    render(<ObservationsPanel />);
+    const chips = screen.getByLabelText("Loaded signal distribution");
+    expect(chips.querySelector("button")?.textContent).toContain("Friction");
+    expect(chips.querySelector("button:last-child")?.textContent).toContain(
+      "other",
+    );
+    expect(screen.getByTestId("observations-count").textContent).toBe(
+      "3 / 2,569",
+    );
+  });
+
   it("renders the optional body, sourceRole, scope, confidence, and refs metadata", () => {
     sync.data = [
       mkRow({
@@ -234,7 +251,9 @@ describe("<ObservationsPanel />", () => {
     ];
     render(<ObservationsPanel />);
     expect(sync.args).toEqual({ limit: 200 });
-    expect(screen.getByTestId("observations-count").textContent).toBe("450");
+    expect(screen.getByTestId("observations-count").textContent).toBe(
+      "2 / 450",
+    );
     fireEvent.click(screen.getByText("load-more"));
     await waitFor(() => expect(sync.args).toEqual({ limit: 400 }));
   });

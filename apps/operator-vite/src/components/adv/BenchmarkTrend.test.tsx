@@ -6,7 +6,7 @@
 // below two points (a single point is not a trend).
 
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import {
   BenchmarkTrend,
   computeTrendPoints,
@@ -105,6 +105,21 @@ describe("<BenchmarkTrend />", () => {
           t.includes("16/20 solved"),
       ),
     ).toBe(true);
+  });
+
+  it("starts as a compact sparkline and expands on demand", () => {
+    const { container } = render(<BenchmarkTrend instances={THREE_GENS} />);
+    const figure = container.querySelector("figure.pc-benchtrend")!;
+    expect(figure.classList.contains("is-expanded")).toBe(false);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Expand benchmark trend" }),
+    );
+    expect(figure.classList.contains("is-expanded")).toBe(true);
+    expect(
+      screen
+        .getByRole("button", { name: "Collapse benchmark trend" })
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
   });
 
   it("renders nothing below two scored generations — the parent owns the empty state", () => {

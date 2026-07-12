@@ -3,7 +3,7 @@
  * is integration-covered by the live self-test; here we pin the pure decision +
  * escalation body that decide WHEN the silent-stall alarm fires.
  */
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 
 // EI-9922: stub `execFileSync` itself so the stderr-suppression assertion below is
 // deterministic regardless of what git checkout (or non-repo) the test runs inside —
@@ -339,12 +339,22 @@ function findInsertCall(calls: unknown[][]) {
 }
 
 describe('checkMainBehindStaging DB wiring (EI-10103: workspace_id NOT NULL)', () => {
+  // This path legitimately console.warn's on a real ALARM (and on a caught resolution
+  // failure) — expected, vitest-fail-on-console guarded behavior, not noise to silence
+  // elsewhere. Spy + restore locally so it doesn't mask unrelated warnings in other suites.
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
   afterEach(() => {
     resolveWorkspaceForHarnessMock.mockReset();
     notifyAttentionMock.mockClear();
     broadcastSevereEventMock.mockClear();
     broadcastSevereEventResolvedMock.mockClear();
     vi.mocked(execFileSync).mockReset();
+    warnSpy.mockRestore();
   });
 
   // Force a stalled verdict deterministically: commitsBehind (30) > DEFAULT_MAIN_BEHIND_COMMITS (20)

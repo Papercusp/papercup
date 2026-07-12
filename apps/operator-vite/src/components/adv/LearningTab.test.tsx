@@ -582,6 +582,8 @@ describe("LearningTab — Improvements view (default)", () => {
     expect(
       screen.getByText("Peer restarts massacre in-flight spawns"),
     ).toBeTruthy();
+    expect(screen.queryByText("Captured improvements")).toBeNull();
+    expect(document.querySelector(".pc-learning__lanecol")).toBeNull();
   });
 
   it("renders the P-041 flow strip above the scoreboard — in/out, net, median age, recurrence, watchdog health", () => {
@@ -1204,6 +1206,40 @@ describe("LearningTab — per-Hive lens (per-hive-learning-loops-2026-06-14 P-04
     nuqsState.lhive = "beta-hive";
     render(<LearningTab />);
     expect(seenArgs["learning.hive"]).toEqual({ hive: "beta-hive" });
+  });
+
+  it("turns retained prose into a headline preview with typed provenance", () => {
+    nuqsState.lview = "learnings";
+    hiveResult = {
+      data: [
+        {
+          hive: "alpha-hive",
+          rows: [
+            {
+              id: "learning-1",
+              text: "Migration 557 completed the canonical federation table rename. Live code now uses pot-prefixed tables everywhere.",
+              kind: "migration",
+              createdBy: "system-migration",
+            },
+          ],
+          packs: [],
+          organicCount: 1,
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    render(<LearningTab />);
+    const summary = document.querySelector(".pc-learning__retainedsummary")!;
+    expect(summary.querySelector("strong")?.textContent).toBe(
+      "Migration 557 completed the canonical federation table rename.",
+    );
+    expect(summary.textContent).toContain("Live code now uses");
+    expect(
+      document.querySelector(".pc-learning__provenance.is-system"),
+    ).not.toBeNull();
   });
 
   it("writes ?lhive when the picker changes", () => {
