@@ -108,6 +108,8 @@ import {
   onToolResult,
   onTurnStart,
   OS_SCHEDULER_CMD_RE,
+  isOsSchedulerCommand,
+  stripShellQuotes,
   pollInboxDelta,
   summarisePlanEvents,
   _resetHookOwnerIdForTests,
@@ -171,6 +173,55 @@ describe('OS_SCHEDULER_CMD_RE (command-position OS-scheduler match)', () => {
     ]) {
       expect(cmd).not.toMatch(OS_SCHEDULER_CMD_RE);
     }
+  });
+});
+
+describe('isOsSchedulerCommand — quote-aware matcher (EI-9937)', () => {
+  it('does NOT trip on `;&|` that live INSIDE a quoted argument', () => {
+    // These are read-only greps/seds where the scheduler tokens (and the pipe/
+    // semicolon before them) are literal DATA inside a quoted regex/pattern —
+    // no OS schedule is created. The raw anchor false-positives; the matcher must not.
+    for (const cmd of [
+      'grep -E "crontab|at|batch|systemd-run" packages/operator-core/lib/code-run-batch-nudge.ts',
+      'grep -nE "at|batch" code-run-batch-nudge.ts',
+      "grep -rn 'foo|batch' packages/operator-core/lib/",
+      "sed -E 's/(a|batch)/x/' code-run-batch-nudge.ts",
+      'echo "run this; batch job"',
+      'wc -l packages/operator-core/lib/code-run-batch-nudge.ts',
+    ]) {
+      expect(isOsSchedulerCommand(cmd)).toBe(false);
+    }
+  });
+
+  it('STILL denies a genuine scheduler at command position (quote-stripping never weakens the guard)', () => {
+    for (const cmd of [
+      'crontab -e',
+      'batch < jobs.txt',
+      'systemd-run --on-calendar=daily echo hi',
+      'echo done | at midnight',
+      'sudo crontab -u root -e',
+      // an unquoted operator before the token is a REAL separator → still denied
+      'echo "done; ok" && crontab -e',
+      "grep -E 'a|b' f.txt | crontab -",
+    ]) {
+      expect(isOsSchedulerCommand(cmd)).toBe(true);
+    }
+  });
+});
+
+describe('stripShellQuotes (EI-9937)', () => {
+  it('replaces quoted spans with a space, leaving unquoted operators intact', () => {
+    expect(stripShellQuotes('grep -E "at|batch" f')).toBe('grep -E   f');
+    expect(stripShellQuotes("grep -rn 'a|b' d/")).toBe('grep -rn   d/');
+    expect(stripShellQuotes('echo x && crontab -e')).toBe('echo x && crontab -e');
+  });
+
+  it('handles a backslash-escaped quote inside a double-quoted span', () => {
+    expect(stripShellQuotes('echo "a \\" b" && crontab')).toBe('echo   && crontab');
+  });
+
+  it('drops an unterminated quote (only ever more permissive)', () => {
+    expect(stripShellQuotes('grep "batch')).toBe('grep ');
   });
 });
 

@@ -125,8 +125,50 @@ except Exception:
 # backstop can't see. Command-position match (start / after ;&|/newline /
 # sudo) so prose args ("look at this") never false-positive. Local decision,
 # no HTTP; the owner's own sessions never carry the marker (D-003).
+#
+# EI-9937: the ;&|/newline separators in the command-position anchor are SHELL
+# operators — but a `;`/`&`/`|` INSIDE a quoted argument is literal data, not a
+# separator. So a read-only `grep -E "at|batch" code-run-batch-nudge.ts` (a regex
+# alternation naming these very tokens) or a `"...; batch..."` string was denied
+# as if it created an OS schedule. Strip quoted spans BEFORE matching: quoted
+# content can only ever REMOVE a would-be separator, so every genuine (unquoted)
+# `crontab -e`/`batch < f`/`&& crontab`/`sudo crontab` deny is preserved.
+def _strip_shell_quotes(s):
+    # Replace single- and double-quoted spans with a single space so operators
+    # (;&|) inside a quoted arg are not read as command separators, and adjacent
+    # tokens are neither glued (a false negative) nor made adjacent to a
+    # separator (a false positive). An unterminated quote drops the rest (only
+    # ever more permissive). A backslash-escaped quote inside "..." doesn't close.
+    out, i, n = [], 0, len(s)
+    while i < n:
+        c = s[i]
+        if c == "'":
+            j = s.find("'", i + 1)
+            if j == -1:
+                break
+            out.append(' ')
+            i = j + 1
+        elif c == '"':
+            j = i + 1
+            while j < n:
+                if s[j] == '\\':
+                    j += 2
+                    continue
+                if s[j] == '"':
+                    break
+                j += 1
+            if j >= n:
+                break
+            out.append(' ')
+            i = j + 1
+        else:
+            out.append(c)
+            i += 1
+    return ''.join(out)
+
 if os.environ.get('PAPERCUSP_AGENT_SESSION') == '1' and re.search(
-        r'(?:^|[;&|\n]\s*|\bsudo\s+)(?:crontab|at|batch|systemd-run)\b', command):
+        r'(?:^|[;&|\n]\s*|\bsudo\s+)(?:crontab|at|batch|systemd-run)\b',
+        _strip_shell_quotes(command)):
     deny(
         'native-scheduler lockout: agent sessions must not create OS schedules '
         '(crontab / at / batch / systemd-run). Declare your wake via '

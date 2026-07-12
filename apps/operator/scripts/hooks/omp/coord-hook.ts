@@ -895,6 +895,57 @@ export async function pollInboxDelta(): Promise<{ reminder: string }> {
 export const OS_SCHEDULER_CMD_RE = /(?:^|[;&|\n]\s*|\bsudo\s+)(?:crontab|at|batch|systemd-run)\b/;
 
 /**
+ * Strip single- and double-quoted spans (each → a single space) so the `;&|`
+ * command-position anchor in {@link OS_SCHEDULER_CMD_RE} only ever sees REAL
+ * shell separators, never a `;`/`&`/`|` that is literal data inside a quoted
+ * argument (EI-9937). Replacing with a space (not deleting) keeps adjacent
+ * tokens from gluing into a false match and from becoming adjacent to a
+ * separator. An unterminated quote drops the rest — only ever more permissive,
+ * never a false deny. A backslash-escaped quote inside `"..."` does not close.
+ */
+export function stripShellQuotes(s: string): string {
+  let out = '';
+  let i = 0;
+  const n = s.length;
+  while (i < n) {
+    const c = s[i];
+    if (c === "'") {
+      const j = s.indexOf("'", i + 1);
+      if (j === -1) break;
+      out += ' ';
+      i = j + 1;
+    } else if (c === '"') {
+      let j = i + 1;
+      while (j < n) {
+        if (s[j] === '\\') {
+          j += 2;
+          continue;
+        }
+        if (s[j] === '"') break;
+        j += 1;
+      }
+      if (j >= n) break;
+      out += ' ';
+      i = j + 1;
+    } else {
+      out += c;
+      i += 1;
+    }
+  }
+  return out;
+}
+
+/**
+ * True when `cmd` creates a persistent OS schedule at command position, IGNORING
+ * `;&|` operators that appear inside quoted arguments (EI-9937). This is the
+ * matcher the guard uses; {@link OS_SCHEDULER_CMD_RE} stays exported for the
+ * raw-anchor unit tests.
+ */
+export function isOsSchedulerCommand(cmd: string): boolean {
+  return OS_SCHEDULER_CMD_RE.test(stripShellQuotes(cmd));
+}
+
+/**
  * Destructive tree-wide git guard (hive-loop-supervision-2026-06-21 / EI-2376
  * follow-up (a)): a TypeScript mirror of the Claude+Codex PreToolUse shell
  * hook's Python guard (pretooluse-bash-resource-gate.sh). OMP has no
@@ -2670,7 +2721,7 @@ export async function onToolCall(
     event.toolName.toLowerCase().startsWith('bash')
   ) {
     const cmd = typeof event.input?.command === 'string' ? (event.input.command as string) : '';
-    if (OS_SCHEDULER_CMD_RE.test(cmd)) {
+    if (isOsSchedulerCommand(cmd)) {
       return {
         block: true,
         reason:

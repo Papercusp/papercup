@@ -98,6 +98,10 @@ describe('native-scheduler lockout (agent sessions)', () => {
     ['newline-separated', 'true\ncrontab -l'],
     ['batch', 'batch < jobs.txt'],
     ['systemd-run timer', 'systemd-run --on-calendar=daily echo hi'],
+    // EI-9937: quote-stripping must NOT weaken a genuine deny — the scheduler
+    // token is UNQUOTED at command position; a quoted arg elsewhere is irrelevant.
+    ['&& crontab after a quoted echo', 'echo "done; ok" && crontab -e'],
+    ['crontab after a quoted-pipe grep', "grep -E 'a|b' f.txt | crontab -"],
   ])('denies %s', (_label, command) => {
     expectDeny(runGate(bashCmd(command), AGENT));
   });
@@ -109,6 +113,15 @@ describe('native-scheduler lockout (agent sessions)', () => {
     ['crontab in a commit message (not command position)', 'git commit -m "fix crontab docs"'],
     ['systemctl is not systemd-run', 'systemctl --user status papercup-staging-api.service'],
     ['ordinary command', 'ls -la'],
+    // ── EI-9937: `;&|` INSIDE a quoted arg are literal data, not shell
+    // separators — a read-only grep/wc/sed naming these scheduler tokens in a
+    // quoted regex/pattern must NOT trip the command-position anchor. ──
+    ['grep -E alternation naming the scheduler tokens', 'grep -E "crontab|at|batch|systemd-run" packages/operator-core/lib/code-run-batch-nudge.ts'],
+    ['double-quoted pipe-alternation "at|batch"', 'grep -nE "at|batch" code-run-batch-nudge.ts'],
+    ["single-quoted pipe-alternation 'foo|batch'", "grep -rn 'foo|batch' packages/operator-core/lib/"],
+    ['sed with a quoted pipe-alternation', "sed -E 's/(a|batch)/x/' code-run-batch-nudge.ts"],
+    ['quoted semicolon before batch (echo only)', 'echo "run this; batch job"'],
+    ['batch only as a filename substring (no command-position token)', 'wc -l packages/operator-core/lib/code-run-batch-nudge.ts'],
   ])('allows %s', (_label, command) => {
     expectAllow(runGate(bashCmd(command), AGENT));
   });

@@ -105,6 +105,57 @@ export function _resetTerminalCacheForTests(): void {
   cachedTerminal = undefined;
 }
 
+// WI-4272: emulators that honor the DISPLAY env var for window placement. The
+// client-server emulators (gnome-terminal, konsole, xfce4-terminal) are
+// deliberately EXCLUDED — their client process just asks the per-session
+// server for a window, so the window opens on the SERVER's display no matter
+// what DISPLAY the client was spawned with. Only these process-per-window
+// emulators can be pointed at a specific (sandbox/demo-stage) X display.
+const DISPLAY_HONORING_TERMINALS: Array<[string, string[]]> = [
+  ['xterm', ['-e']],
+  ['alacritty', ['-e']],
+  ['kitty', ['--']],
+  ['wezterm', ['start', '--always-new-process', '--']],
+];
+
+let cachedDisplayHonoringTerminal: { bin: string; args: string[] } | null | undefined;
+/**
+ * WI-4272: like {@link findLinuxTerminal}, but restricted to DISPLAY-honoring
+ * emulators — used by spawnConsole's `displayOverride` (demo-stage) path.
+ * $TERMINAL is honored ONLY when it names one of the DISPLAY-honoring
+ * candidates (a $TERMINAL=gnome-terminal must NOT hijack an override spawn —
+ * its window would land on the seat, silently defeating the override).
+ */
+export function findDisplayHonoringTerminal(): { bin: string; args: string[] } | null {
+  if (cachedDisplayHonoringTerminal !== undefined) return cachedDisplayHonoringTerminal;
+  const fromEnv = process.env.TERMINAL;
+  if (fromEnv) {
+    const candidate = DISPLAY_HONORING_TERMINALS.find(([bin]) => bin === fromEnv);
+    if (candidate && isOnPath(fromEnv)) {
+      cachedDisplayHonoringTerminal = { bin: candidate[0], args: [...candidate[1]] };
+      return cachedDisplayHonoringTerminal;
+    }
+  }
+  for (const [bin, args] of DISPLAY_HONORING_TERMINALS) {
+    if (isOnPath(bin)) {
+      cachedDisplayHonoringTerminal = { bin, args: [...args] };
+      return cachedDisplayHonoringTerminal;
+    }
+  }
+  cachedDisplayHonoringTerminal = null;
+  return cachedDisplayHonoringTerminal;
+}
+
+/** Test-only: reset (no arg) or SEED (explicit value) the display-honoring
+ *  terminal memo. Seeding exists because {@link isOnPath} unconditionally
+ *  checks /usr/bin — a "no emulator installed" case cannot be simulated by
+ *  stubbing $PATH on a box that has xterm, so tests seed `null` instead. */
+export function _resetDisplayHonoringTerminalCacheForTests(
+  ...seed: [] | [{ bin: string; args: string[] } | null]
+): void {
+  cachedDisplayHonoringTerminal = seed.length === 0 ? undefined : seed[0];
+}
+
 function shellEscape(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
@@ -537,6 +588,19 @@ export interface SpawnConsoleOpts {
   /** A bound fleet color scheme — overrides the per-plan hash for this window. */
   scheme?: ColorScheme | null;
   /**
+   * WI-4272 (demo-stage): open the window on THIS X display (e.g. ':110' — a
+   * computer:provision_desktop sandbox Xvfb being recorded) instead of
+   * resolving the owner's seat. The display's X socket must exist (loud 412
+   * otherwise), seat resolution is skipped entirely, WAYLAND_DISPLAY is
+   * stripped from the spawn env (so GTK/webkit children bind X11 on the
+   * override), and a DISPLAY-honoring emulator (xterm/alacritty/kitty/wezterm)
+   * is required — gnome-terminal/konsole would open on the seat's server
+   * regardless. Result reports desktopEnvResolvedVia:'caller-override'.
+   * Linux only (ignored by the macOS / Windows-bridge paths). Default (unset):
+   * byte-identical legacy behavior.
+   */
+  displayOverride?: string;
+  /**
    * WI-3114: injectable desktop-env probes for the Linux path, threaded to
    * resolveLinuxDesktopEnv. Tests MUST pass fakes — the default (real) probes
    * read the live /tmp/.X11-unix, so a test that stubs DISPLAY without
@@ -590,9 +654,12 @@ export type SpawnConsoleResult =
        * the owner's real desktop; 'socket-scan' means NO real logged-in seat
        * was found and a raw X11 socket won by default, which MAY be a
        * virtual/sandbox display (a leased Xvfb) rather than the owner's real
-       * one. null on macOS. Callers should flag 'socket-scan' loudly.
+       * one. 'caller-override' (WI-4272) means the caller pinned the window to
+       * an explicit display via opts.displayOverride (demo-stage) — sandbox
+       * placement is INTENTIONAL there, so don't flag it. null on macOS.
+       * Callers should flag 'socket-scan' loudly.
        */
-      desktopEnvResolvedVia: 'operator-env' | 'active-seat' | 'socket-scan' | null;
+      desktopEnvResolvedVia: 'operator-env' | 'active-seat' | 'socket-scan' | 'caller-override' | null;
     }
   | { status: 'error'; error: string; code: number };
 
@@ -710,30 +777,78 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
     };
   }
 
-  // 5. Linux: pick a terminal emulator from the cascade.
-  const term = findLinuxTerminal();
-  if (!term) {
-    return {
-      status: 'error',
-      error:
-        'no terminal emulator found. Set $TERMINAL or install gnome-terminal / konsole / alacritty / kitty / wezterm / xterm',
-      code: 500,
-    };
-  }
+  // 5/6. Linux: pick a terminal emulator + resolve the display to open on.
+  let term: { bin: string; args: string[] } | null;
+  let desktopEnv: Record<string, string>;
+  let resolvedVia: 'operator-env' | 'active-seat' | 'socket-scan' | 'caller-override';
+  if (opts.displayOverride) {
+    // WI-4272 (demo-stage): the caller pinned an explicit X display — a
+    // provisioned sandbox Xvfb being recorded — so seat resolution is
+    // deliberately SKIPPED. Requires a DISPLAY-honoring emulator; verify the
+    // override's socket actually exists before spawning (loud-fail beats a
+    // client ghosting off-screen — same WI-1886 contract as the seat path).
+    term = findDisplayHonoringTerminal();
+    if (!term) {
+      return {
+        status: 'error',
+        error:
+          `displayOverride ${opts.displayOverride}: no DISPLAY-honoring terminal emulator found. ` +
+          'Install xterm / alacritty / kitty / wezterm — gnome-terminal & konsole cannot target a ' +
+          "specific display (their client-server model opens windows on the seat's server; WI-4272).",
+        code: 500,
+      };
+    }
+    const socketPath = socketPathForDisplay(opts.displayOverride);
+    if (!socketPath) {
+      return {
+        status: 'error',
+        error:
+          `displayOverride ${JSON.stringify(opts.displayOverride)} is not a parseable X display ` +
+          "(expected ':N' / ':N.M' / 'host:N')",
+        code: 400,
+      };
+    }
+    const probeExists = opts.desktopEnvProbes?.existsSync ?? existsSync;
+    if (!probeExists(socketPath)) {
+      return {
+        status: 'error',
+        error:
+          `displayOverride ${opts.displayOverride}: no X socket at ${socketPath} — the display is not ` +
+          'alive. Provision the sandbox stage first (computer:provision_desktop) or check the display ' +
+          'number (WI-4272).',
+        code: 412,
+      };
+    }
+    desktopEnv = { DISPLAY: opts.displayOverride };
+    resolvedVia = 'caller-override';
+  } else {
+    term = findLinuxTerminal();
+    if (!term) {
+      return {
+        status: 'error',
+        error:
+          'no terminal emulator found. Set $TERMINAL or install gnome-terminal / konsole / alacritty / kitty / wezterm / xterm',
+        code: 500,
+      };
+    }
 
-  // 6. WI-1886(a): the operator often runs headless (systemd user service) —
-  //    resolve the interactive session's desktop env and inject it; with no
-  //    display resolvable, fail LOUD before spawning a client that would ghost.
-  const desktop = resolveLinuxDesktopEnv(process.env, opts.desktopEnvProbes);
-  if (!desktop.resolved) {
-    return { status: 'error', error: desktop.error ?? 'no X display (WI-1886)', code: 412 };
-  }
-  if (desktop.warnings.length > 0) {
-    // WI-2840: healed a stale inherited DISPLAY/XAUTHORITY — this is exactly
-    // the "long-lived process env poisoned" symptom the ticket was filed
-    // from. Log loudly (visible in the systemd journal for a service-managed
-    // operator) so a recurrence has a named cause instead of a silent wedge.
-    console.warn(`[console-spawn] ${desktop.warnings.join('; ')}`);
+    // WI-1886(a): the operator often runs headless (systemd user service) —
+    // resolve the interactive session's desktop env and inject it; with no
+    // display resolvable, fail LOUD before spawning a client that would ghost.
+    const desktop = resolveLinuxDesktopEnv(process.env, opts.desktopEnvProbes);
+    if (!desktop.resolved) {
+      return { status: 'error', error: desktop.error ?? 'no X display (WI-1886)', code: 412 };
+    }
+    if (desktop.warnings.length > 0) {
+      // WI-2840: healed a stale inherited DISPLAY/XAUTHORITY — this is exactly
+      // the "long-lived process env poisoned" symptom the ticket was filed
+      // from. Log loudly (visible in the systemd journal for a service-managed
+      // operator) so a recurrence has a named cause instead of a silent wedge.
+      console.warn(`[console-spawn] ${desktop.warnings.join('; ')}`);
+    }
+    desktopEnv = desktop.env;
+    // resolvedVia is non-null whenever resolved === true (checked above).
+    resolvedVia = desktop.resolvedVia ?? 'operator-env';
   }
 
   // 7. Spawn a new window running the one-liner; detach so closing the
@@ -748,12 +863,17 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
   } catch {
     stderrFd = null;
   }
+  // WI-4272: with a caller display override, strip the inherited
+  // WAYLAND_DISPLAY so GTK/webkit children in the spawned terminal bind the
+  // X11 backend on the override display instead of the seat's Wayland socket.
+  const spawnEnv: NodeJS.ProcessEnv = { ...process.env, ...desktopEnv, ...envelope.env };
+  if (opts.displayOverride) delete spawnEnv.WAYLAND_DISPLAY;
   try {
     const child = spawn(term.bin, childArgs, {
       detached: true,
       stdio: ['ignore', 'ignore', stderrFd ?? 'ignore'],
       cwd: envelope.cwd,
-      env: { ...process.env, ...desktop.env, ...envelope.env },
+      env: spawnEnv,
     });
     child.unref();
     if (stderrFd != null) {
@@ -796,8 +916,8 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
       pid: child.pid ?? null,
       terminal: term.bin,
       child,
-      display: desktop.env.DISPLAY ?? process.env.DISPLAY ?? null,
-      desktopEnvResolvedVia: desktop.resolvedVia,
+      display: desktopEnv.DISPLAY ?? process.env.DISPLAY ?? null,
+      desktopEnvResolvedVia: resolvedVia,
     };
   } catch (e: any) {
     if (stderrFd != null) {

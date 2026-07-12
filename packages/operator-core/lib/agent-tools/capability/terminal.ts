@@ -166,6 +166,12 @@ export default defineTool({
       .describe(
         "Optional fleet name or slug — every terminal in this call uses that fleet's permanently-bound color scheme, and any `psu` command in it auto-joins that fleet (--fleet=<slug> injected). When omitted, the tool automatically resolves your OWN presence-fleet (if you are a fleet member) for both color AND `psu` membership (WI-4234) — so a bare `psu ...` spawned by a fleet leader/member joins the caller's fleet by default. Pass an explicit `fleet` to OVERRIDE which fleet a spawned `psu` joins, or to color/join a fleet you are not currently a member of. Prefer `fleet:launch-on-plan` over hand-rolling a fleet spawn here when you can — it also seeds plan/launch-context.",
       ),
+    display: z
+      .string()
+      .optional()
+      .describe(
+        "WI-4272 (demo/recording): open EVERY terminal in this call on this X display (e.g. ':110' — a computer:provision_desktop sandbox stage being recorded) instead of the owner's desktop seat. Linux only; requires a DISPLAY-honoring emulator (xterm/alacritty/kitty/wezterm) and the display's X socket to be alive (loud-fail otherwise). Omit for normal visible-desktop use.",
+      ),
   }),
   async handler(args, ctx) {
     // Normalize the single | bulk forms to one items[] list.
@@ -253,7 +259,7 @@ export default defineTool({
       terminal: string;
       pid: number | null;
       display: string | null;
-      desktopEnvResolvedVia: 'operator-env' | 'active-seat' | 'socket-scan' | null;
+      desktopEnvResolvedVia: 'operator-env' | 'active-seat' | 'socket-scan' | 'caller-override' | null;
     }> = [];
     const failed: Array<{ command: string; error: string; code: number }> = [];
 
@@ -283,6 +289,8 @@ export default defineTool({
           // WI-3289: on a Windows desktop host, relay to the desktop shell's
           // Tauri console_launch instead of hard-501ing the agent.
           allowDesktopBridge: true,
+          // WI-4272: caller-pinned demo-stage display (skips seat resolution).
+          displayOverride: args.display,
         });
         return { command, cwd, injected: fleetInj.injected, provenanceInjected: provInj.injected, result };
       }),
@@ -325,6 +333,14 @@ export default defineTool({
           '  ⚠ no active login seat was detected (who) — the DISPLAY above was picked by a raw X11 ' +
             'socket scan and MAY be a virtual/sandbox display rather than your real desktop (EI-8289). ' +
             'If you cannot see the window(s), tell me and I will re-check `who` / your active seat.',
+        );
+      }
+      // WI-4272: an explicit `display` arg is an INTENTIONAL sandbox/demo-stage
+      // placement — disclose it plainly (the window is NOT on the owner's seat).
+      if (opened.some((o) => o.desktopEnvResolvedVia === 'caller-override')) {
+        lines.push(
+          `  ↳ opened on caller-specified display ${args.display} (demo-stage override, WI-4272) — ` +
+            "NOT the owner's desktop seat; visible in the sandbox recording/screenshot, not on screen.",
         );
       }
       if (fleetInjected) {

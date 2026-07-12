@@ -24,6 +24,8 @@ import {
   wrapHeadlessSigtermDiagnostic,
   buildHeadlessSpawnCommand,
   _resetTerminalCacheForTests,
+  findDisplayHonoringTerminal,
+  _resetDisplayHonoringTerminalCacheForTests,
   type AppearanceOpts,
   type DesktopEnvProbes,
 } from './console-spawn';
@@ -511,6 +513,125 @@ describe('buildConsoleOneliner', () => {
     const out = buildConsoleOneliner('/x', {}, 'true', { mode: 'console', planSlug: null, label: 'my run' });
     expect(out).toContain('printf');
     expect(out).toContain('my run');
+  });
+});
+
+// WI-4272: the demo-stage display override — pin the window to a caller-chosen
+// X display (a provisioned sandbox Xvfb being recorded) instead of the seat.
+describe('spawnConsole displayOverride (demo-stage) — WI-4272', () => {
+  const envelope: ConsoleEnvelope = {
+    cwd: '/tmp',
+    env: {},
+    mcpJsonContents: '',
+    greetingCmd: 'true',
+    needsSuperuserBootstrap: false,
+    sessionId: 'test-sid',
+  };
+  beforeEach(() => {
+    vi.mocked(isWindowsDesktopHost).mockReturnValue(false);
+    spawnMock.mockReset();
+    // A poisoned seat env the override must IGNORE/strip, never inherit.
+    vi.stubEnv('DISPLAY', ':0');
+    vi.stubEnv('WAYLAND_DISPLAY', 'wayland-0');
+    // Hermetic emulator resolution: isOnPath unconditionally checks /usr/bin,
+    // so PATH-stubbing can't simulate presence/absence — seed the memo instead.
+    _resetDisplayHonoringTerminalCacheForTests({ bin: 'xterm', args: ['-e'] });
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    _resetDisplayHonoringTerminalCacheForTests();
+    _resetTerminalCacheForTests();
+  });
+
+  it('happy path: spawns the DISPLAY-honoring emulator with env.DISPLAY = the override, WAYLAND_DISPLAY stripped, resolvedVia caller-override', async () => {
+    spawnMock.mockImplementation(() => fakeChild(5555)); // survives the probe
+    const r = await spawnConsole({
+      envelope,
+      displayOverride: ':123',
+      desktopEnvProbes: FAKE_DESKTOP_PROBES, // socket "exists"
+    });
+    expect(r.status).toBe('ok');
+    const ok = r as Extract<typeof r, { status: 'ok' }>;
+    expect(ok.terminal).toBe('xterm');
+    expect(ok.display).toBe(':123');
+    expect(ok.desktopEnvResolvedVia).toBe('caller-override');
+    const [bin, , spawnOpts] = spawnMock.mock.calls[0] as [string, string[], { env: NodeJS.ProcessEnv }];
+    expect(bin).toBe('xterm');
+    expect(spawnOpts.env.DISPLAY).toBe(':123'); // the override, NOT the seat's :0
+    expect(spawnOpts.env.WAYLAND_DISPLAY).toBeUndefined(); // stripped so GTK/webkit binds X11
+  }, 10_000);
+
+  it('dead/unprovisioned display socket ⇒ LOUD 412 before any spawn (no off-screen ghost)', async () => {
+    const r = await spawnConsole({
+      envelope,
+      displayOverride: ':777',
+      desktopEnvProbes: { ...FAKE_DESKTOP_PROBES, existsSync: () => false },
+    });
+    expect(r.status).toBe('error');
+    const err = r as { code: number; error: string };
+    expect(err.code).toBe(412);
+    expect(err.error).toMatch(/no X socket/);
+    expect(err.error).toMatch(/WI-4272/);
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('no DISPLAY-honoring emulator installed ⇒ 500 naming the installable candidates (never a client-server fallback)', async () => {
+    _resetDisplayHonoringTerminalCacheForTests(null); // simulate a host with none
+    const r = await spawnConsole({
+      envelope,
+      displayOverride: ':123',
+      desktopEnvProbes: FAKE_DESKTOP_PROBES,
+    });
+    expect(r.status).toBe('error');
+    const err = r as { code: number; error: string };
+    expect(err.code).toBe(500);
+    expect(err.error).toMatch(/xterm \/ alacritty \/ kitty \/ wezterm/);
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('an unparseable override value ⇒ 400, not a silent seat spawn', async () => {
+    const r = await spawnConsole({
+      envelope,
+      displayOverride: 'not-a-display',
+      desktopEnvProbes: FAKE_DESKTOP_PROBES,
+    });
+    expect(r.status).toBe('error');
+    expect((r as { code: number }).code).toBe(400);
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('default path (no override) is unchanged: seat resolution runs and reports its own resolvedVia', async () => {
+    spawnMock.mockImplementation(() => fakeChild(6666));
+    vi.stubEnv('TERMINAL', 'bash');
+    _resetTerminalCacheForTests();
+    const r = await spawnConsole({ envelope, desktopEnvProbes: FAKE_DESKTOP_PROBES });
+    expect(r.status).toBe('ok');
+    const ok = r as Extract<typeof r, { status: 'ok' }>;
+    expect(ok.desktopEnvResolvedVia).toBe('operator-env'); // DISPLAY=:0 trusted (probes say socket exists)
+    const [, , spawnOpts] = spawnMock.mock.calls[0] as [string, string[], { env: NodeJS.ProcessEnv }];
+    expect(spawnOpts.env.WAYLAND_DISPLAY).toBe('wayland-0'); // NOT stripped on the default path
+  }, 10_000);
+});
+
+describe('findDisplayHonoringTerminal — WI-4272', () => {
+  beforeEach(() => _resetDisplayHonoringTerminalCacheForTests());
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    _resetDisplayHonoringTerminalCacheForTests();
+  });
+
+  it('$TERMINAL=gnome-terminal must NOT hijack the override path (client-server: its window lands on the seat)', () => {
+    vi.stubEnv('TERMINAL', 'gnome-terminal');
+    const t = findDisplayHonoringTerminal();
+    // Whatever the host has installed (xterm on the dev box, nothing on a bare
+    // CI runner), the answer is NEVER the client-server $TERMINAL.
+    expect(t?.bin).not.toBe('gnome-terminal');
+  });
+
+  it('$TERMINAL naming a DISPLAY-honoring candidate is honored when on PATH (bash stands in as not-a-candidate)', () => {
+    vi.stubEnv('TERMINAL', 'bash'); // on PATH but not a candidate ⇒ ignored
+    const t = findDisplayHonoringTerminal();
+    expect(t?.bin).not.toBe('bash');
   });
 });
 

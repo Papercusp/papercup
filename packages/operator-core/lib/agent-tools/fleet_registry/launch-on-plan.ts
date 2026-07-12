@@ -794,6 +794,12 @@ export default defineTool({
       .describe(
         'Escape hatch for any other psu flag: each element is one full token (e.g. ["--yes", "--add-dir=/x"]), appended verbatim to every member\'s psu launch — covers psu args without a first-class field above.',
       ),
+    display: z
+      .string()
+      .optional()
+      .describe(
+        "WI-4272 (demo/recording): open EVERY member terminal on this X display (e.g. ':110' — a computer:provision_desktop sandbox stage being recorded) instead of the owner's desktop seat. Linux only; requires a DISPLAY-honoring emulator (xterm/alacritty/kitty/wezterm) and the display's X socket to be alive (loud-fail otherwise). Ignored for `headless: true` (headless members have no window). Omit for normal visible-desktop use.",
+      ),
     claimKinds: z
       .array(z.enum(['feature', 'chunk', 'bug', 'change', 'task']))
       .min(1)
@@ -1286,7 +1292,7 @@ export default defineTool({
       terminal: string;
       pid: number | null;
       display: string | null;
-      desktopEnvResolvedVia: 'operator-env' | 'active-seat' | 'socket-scan' | null;
+      desktopEnvResolvedVia: 'operator-env' | 'active-seat' | 'socket-scan' | 'caller-override' | null;
       command: string;
     }> = [];
     const failed: Array<{ error: string; code: number }> = [];
@@ -1317,6 +1323,8 @@ export default defineTool({
               // WI-3289: on a Windows desktop host, relay each member window to the
               // desktop shell's Tauri console_launch instead of hard-501ing.
               allowDesktopBridge: true,
+              // WI-4272: caller-pinned demo-stage display (skips seat resolution).
+              displayOverride: args.display,
             }),
       ),
     );
@@ -1391,6 +1399,14 @@ export default defineTool({
         '  ⚠ no active login seat was detected (who) — the DISPLAY(s) above were picked by a raw X11 ' +
           'socket scan and MAY be a virtual/sandbox display rather than the owner\'s real desktop ' +
           '(EI-8289). Confirm the owner can actually see these windows before assuming supervision works.',
+      );
+    }
+    // WI-4272: an explicit `display` arg is an INTENTIONAL sandbox/demo-stage
+    // placement — disclose it plainly (the windows are NOT on the owner's seat).
+    if (opened.some((o) => o.desktopEnvResolvedVia === 'caller-override')) {
+      lines.push(
+        `  ↳ member windows opened on caller-specified display ${args.display} (demo-stage override, ` +
+          "WI-4272) — NOT the owner's desktop seat; visible in the sandbox recording/screenshot only.",
       );
     }
     if (failed.length) {
