@@ -431,7 +431,7 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
   },
   {
     head: 'Flag to your LEADER; keep status in your FLEET, not the whole hive',
-    body: 'Send blockers, systemic findings, and "nothing left to claim" to the leader addressed + `wakeOnReply:true` (coord:send/escalate) — a broadcast is easy to miss. Routine status belongs to your fleet: a bare to:["*"] auto-scopes to `@fleet:<slug>`; reserve `allHive:true` for genuinely system-wide news.',
+    body: 'Send blockers, systemic findings, and "nothing left to claim" to the leader (`wakeOnReply:true`) — broadcast is easy to miss. A finding >1 paragraph goes on the item, not chat; `coord:read {msg_id}` gets its full text. In-fleet: bare to:["*"] auto-scopes `@fleet:<slug>`; `allHive:true` only for system-wide news.',
   },
   {
     head: 'Do not re-claim a ping-ponging item',

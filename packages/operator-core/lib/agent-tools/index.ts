@@ -573,6 +573,7 @@ import './coordination/tools/inbox';
 import './coordination/tools/conditions';
 import './coordination/tools/ack';
 import './coordination/tools/thread';
+import './coordination/tools/read';
 // L3 escalations + handoffs (Phase C)
 import './coordination/tools/escalate';
 import './coordination/tools/escalations';
