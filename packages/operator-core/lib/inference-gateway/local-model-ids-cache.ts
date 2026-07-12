@@ -73,12 +73,16 @@ export function localModelIdsSync(): string[] {
 export async function __refreshLocalModelIdsForTests(): Promise<string[]> {
   const ws = activeWorkspaceId();
   const entry = entryFor(ws);
-  entry.lastRefreshAt = 0;
-  // refreshSoon fires-and-forgets; do the awaited load directly for determinism.
+  // refreshSoon fires-and-forgets; do the awaited load directly for determinism. Stamp
+  // lastRefreshAt on the way out (success OR failure) so an immediately-following
+  // localModelIdsSync() call in the same test doesn't see a stale timestamp and kick a
+  // SECOND, unawaited refresh that races/consumes a test's next mocked response.
   try {
     entry.models = [...new Set((await listLocalBackends({ workspaceId: ws })).flatMap((b) => b.models))];
   } catch {
     /* leave snapshot as-is */
+  } finally {
+    entry.lastRefreshAt = Date.now();
   }
   return entry.models;
 }

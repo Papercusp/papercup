@@ -499,6 +499,75 @@ export interface ListIssuesFilter {
 /** Issue-family terminal states for the P-005 audit (subset of the cross-family set). */
 const ISSUE_TERMINAL_STATES: readonly string[] = ['resolved', 'closed', 'deprecated', 'done'];
 
+/**
+ * WI-4405: the issue-family `admissibleOnly` floor set, extended past the original
+ * federated-origin-only gate to also mirror the real self-select claim path's floors
+ * (claimNextIssueWorkItem, work-items.ts) that a generic backlog read never applied —
+ * the D-005 observation-lane note (observationLaneExclusionSql), a peer's explicit
+ * claim-hold (claimHoldExclusionSql), a row `improvements:resolve` already routed to
+ * a human (needsHumanExclusionSql), and a row reserved to an ACTIVELY-driven plan
+ * lane / a live plan_item_claims lease (reservedPlanLaneExclusionSql). ROOT CAUSE of a
+ * 3-member idle fleet (bug-drain-nonp2p, 2026-07-12): a leader fed a 3-item tranche
+ * (EI-10375 observation-lane, WI-3868/WI-4147 plan-reserved) that `admissibleOnly:true`
+ * reported as claimable — measured live: 41 rows with admissibleOnly, 41 without, i.e.
+ * it filtered NOTHING for that tranche — while `scheduler:get_next` correctly refused
+ * all three. "Admissible" now actually means "the claim path would let this be
+ * claimed" instead of only "not federated".
+ *
+ * Deliberately does NOT attempt the readiness/blocking-dep floor, swarm-affinity, or
+ * redundancy exclusion here — those need a live bee/claim context (assignee, swarmId)
+ * a generic listing read doesn't have, and are lower-value for a "would anyone ever be
+ * able to claim this" read than the four unconditional per-row floors above.
+ *
+ * `aliased` selects the unaliased (bare `engineer_issues` table) vs `ei.`-prefixed
+ * (topic-joined subqueries) column form — every call site here uses one or the other.
+ */
+function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
+  return aliased
+    ? sql`(
+        (ei.origin = 'local' OR ei.origin IS NULL)
+        AND COALESCE(ei.payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'
+        AND COALESCE(ei.payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
+        AND COALESCE(ei.payload, '{}'::jsonb) ->> 'needsHuman' IS DISTINCT FROM 'true'
+        AND NOT (
+          COALESCE(ei.payload, '{}'::jsonb) ? 'plan_item' AND (
+            EXISTS (
+              SELECT 1 FROM harness_shared.harness_plans hp
+               WHERE hp.plan_slug = ei.payload->'plan_item'->>'plan_slug'
+                 AND hp.status = 'active'
+            )
+            OR EXISTS (
+              SELECT 1 FROM harness_shared.plan_item_claims pic
+               WHERE pic.plan_slug = ei.payload->'plan_item'->>'plan_slug'
+                 AND pic.item_id  = ei.payload->'plan_item'->>'item_id'
+                 AND pic.expires_ts > now()
+            )
+          )
+        )
+      )`
+    : sql`(
+        (origin = 'local' OR origin IS NULL)
+        AND COALESCE(payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'
+        AND COALESCE(payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
+        AND COALESCE(payload, '{}'::jsonb) ->> 'needsHuman' IS DISTINCT FROM 'true'
+        AND NOT (
+          COALESCE(payload, '{}'::jsonb) ? 'plan_item' AND (
+            EXISTS (
+              SELECT 1 FROM harness_shared.harness_plans hp
+               WHERE hp.plan_slug = payload->'plan_item'->>'plan_slug'
+                 AND hp.status = 'active'
+            )
+            OR EXISTS (
+              SELECT 1 FROM harness_shared.plan_item_claims pic
+               WHERE pic.plan_slug = payload->'plan_item'->>'plan_slug'
+                 AND pic.item_id  = payload->'plan_item'->>'item_id'
+                 AND pic.expires_ts > now()
+            )
+          )
+        )
+      )`;
+}
+
 export async function listIssues(filter: ListIssuesFilter = {}): Promise<EngineerIssue[]> {
   const { sql } = getOrgPg();
   // Topic filter resolves through the tag edges (coord_links) first.
@@ -523,7 +592,7 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
        AND ${filter.severity ? sql`severity = ${filter.severity}` : sql`TRUE`}
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
        AND ${idsFromTopic ? sql`issue_id = ANY(${idsFromTopic})` : sql`TRUE`}
-       AND ${filter.admissibleOnly ? sql`(origin = 'local' OR origin IS NULL)` : sql`TRUE`}
+       AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
        AND ${
          filter.audit === 'no-evidence'
            ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND terminal_completion_ref IS NULL)`
@@ -568,7 +637,7 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
          AND ${filter.assignedBy ? sql`ei.assigned_by = ${filter.assignedBy}` : sql`TRUE`}
          AND ${filter.severity ? sql`ei.severity = ${filter.severity}` : sql`TRUE`}
          AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
-         AND ${filter.admissibleOnly ? sql`(ei.origin = 'local' OR ei.origin IS NULL)` : sql`TRUE`}
+         AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
          AND ${
            filter.audit === 'no-evidence'
              ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ei.terminal_completion_ref IS NULL)`
@@ -588,7 +657,7 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
        AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}
        AND ${filter.severity ? sql`severity = ${filter.severity}` : sql`TRUE`}
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
-       AND ${filter.admissibleOnly ? sql`(origin = 'local' OR origin IS NULL)` : sql`TRUE`}
+       AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
        AND ${
          filter.audit === 'no-evidence'
            ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND terminal_completion_ref IS NULL)`
@@ -626,7 +695,7 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
          AND ${filter.assignedBy ? sql`ei.assigned_by = ${filter.assignedBy}` : sql`TRUE`}
          AND ${filter.severity ? sql`ei.severity = ${filter.severity}` : sql`TRUE`}
          AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
-         AND ${filter.admissibleOnly ? sql`(ei.origin = 'local' OR ei.origin IS NULL)` : sql`TRUE`}
+         AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
          AND ${
            filter.audit === 'no-evidence'
              ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ei.terminal_completion_ref IS NULL)`
@@ -651,7 +720,7 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
        AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}
        AND ${filter.severity ? sql`severity = ${filter.severity}` : sql`TRUE`}
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
-       AND ${filter.admissibleOnly ? sql`(origin = 'local' OR origin IS NULL)` : sql`TRUE`}
+       AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
        AND ${
          filter.audit === 'no-evidence'
            ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND terminal_completion_ref IS NULL)`

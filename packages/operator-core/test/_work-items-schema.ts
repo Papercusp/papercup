@@ -156,7 +156,11 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       -- mirroring the feature-family's last_progress_at.
       last_progress_at,
       harness_slug AS base_harness_slug,
-      origin AS base_origin
+      origin AS base_origin,
+      -- EI-10421 (migration 588): expose feature_order so issue-family items'
+      -- Queen-steered priority round-trips through work_items:get/list instead of
+      -- being silently hardcoded null on read even after a successful write.
+      feature_order
     FROM harness_shared.work_items WHERE item_kind IN ('bug', 'change', 'task');
   CREATE OR REPLACE FUNCTION harness_shared.engineer_issues_view_dml() RETURNS trigger LANGUAGE plpgsql AS $ei_dml$
   DECLARE v_slug text; v_ei jsonb;
