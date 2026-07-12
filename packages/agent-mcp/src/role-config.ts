@@ -130,6 +130,19 @@ export const AGENT_ROLES = [
   // through the SAME unified primitive as a cup and PLACED BY THE MUG (cup:spawn
   // or the watcher launch blueprint). No execution/mutation capability.
   'papercup',
+  // The PAPERCUP-DEEP — the hidden deep-brain half of the ONE user-facing
+  // "Papercup" identity (voice-public-release-readiness-2026-07-12 D-001/D-005/
+  // D-006, owner-ratified). Where `papercup` is the FAST always-on voice
+  // front-end (short spoken summaries, seconds-fast turns), papercup-deep is a
+  // persistent, parked-until-woken heavy reasoner (Opus-tier, long
+  // uninterruptable turns) the fast half delegates real investigation to over
+  // the modern coord/wake channel (NOT the retired voice:delegate_deep lane —
+  // D-003). NEVER user-facing: no voice:say, no conversation:*; its findings
+  // surface only through the fast front-end's voice. Read+think+reply-mostly:
+  // coord (the channel), docs/search/plans/work_items reads; excluded from the
+  // placement/execution tools same as cup/papercup/kettle (the COORD_ROLES
+  // exclusion-filter sites move in lockstep — see coordination/roles.ts).
+  'papercup-deep',
   // The KETTLE — the autonomous system-health SUPERVISOR, a sibling to the Mug
   // (was `overwatch`; overwatch-role-2026-06-15 C-2 / B-01). Where the Mug SCHEDULES
   // (places work) and the papercup WATCHES the fleet, the kettle runs the short-term

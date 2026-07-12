@@ -12,6 +12,7 @@ import { Select } from '@/app/harness/Select';
 import { MEMORY_KIND_COLOR, MEMORY_KIND_FALLBACK } from '@/app/harness/theme';
 import { useLexicon } from '@/lib/useLexicon';
 import { originOf, type MemoryOrigin } from './origin';
+import { recallHealthLine, type RecallCanaryLatest } from './recall-health';
 
 interface BrokenAnchor {
   kind: string;
@@ -121,6 +122,9 @@ export default function MemoryPage() {
   // deletable and exportable (a pause must never lock you out of your own data).
   const [paused, setPaused] = useState(false);
   const [pausing, setPausing] = useState(false);
+  // EI-10368: latest live recall-canary run (null = never ran / unreadable) —
+  // rides the same backend envelope; rendered as the "Recall health" line.
+  const [recallCanary, setRecallCanary] = useState<RecallCanaryLatest | null>(null);
   // Add-form drafts — mid-edit state, stays useState per the nuqs rules.
   const [draftText, setDraftText] = useState('');
   const [draftKind, setDraftKind] = useState('');
@@ -148,6 +152,7 @@ export default function MemoryPage() {
         setHarnesses(Array.isArray(j.harnesses) ? j.harnesses : []);
         setHygiene(j.hygiene ?? null);
         setPaused(j.paused === true);
+        setRecallCanary(j.recallCanary?.latest ?? null);
       }
       if (fs.ok) setStats(await fs.json());
     } finally {
@@ -722,6 +727,26 @@ export default function MemoryPage() {
           {pausing ? '…' : paused ? 'Resume memory' : 'Pause memory'}
         </button>
       </div>
+
+      {/* EI-10368 — recall health: the daily live canary's latest verdict.
+          Its alert leg is a transient push on the ok→degraded edge only;
+          this line is the persistent answer to "is memory search actually
+          working right now?". */}
+      {(() => {
+        const health = recallHealthLine(recallCanary);
+        return (
+          <div
+            title="A daily read-only canary replays known memories against the live store to catch silent recall breakage (schema drift, embedder misconfig) that test suites miss."
+            style={
+              health.tone === 'warn'
+                ? { padding: '8px 12px', border: '1px solid var(--warn-border)', borderRadius: 6, background: 'var(--warn-bg)', fontSize: 13 }
+                : { fontSize: 12, color: health.tone === 'good' ? 'var(--good)' : 'var(--fg-mute)' }
+            }
+          >
+            {health.text}
+          </div>
+        );
+      })()}
 
       {availableBackends.length > 1 && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-2)' }}>
