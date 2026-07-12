@@ -47,6 +47,14 @@ const KIND_LABEL: Record<string, string> = {
   reinforce: "Reinforce",
 };
 
+const KIND_COLOR: Record<string, string> = {
+  friction: "#fb7185",
+  workaround: "#fbbf24",
+  gap: "#38bdf8",
+  surprise: "#a78bfa",
+  reinforce: "#34d399",
+};
+
 // Same growing server window used by Working → Work Queue. VirtualGrid keeps DOM
 // work bounded while the explicit limit makes each next page part of the same
 // sync-query stream. The resolver carries the true count on row[0]._meta.
@@ -83,6 +91,14 @@ export default function ObservationsPanel(
   );
   const total = readListTotal(query.data);
   const hasMore = allRows.length < total;
+  const signalCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const row of rows) {
+      const kind = row.kind ?? "other";
+      counts.set(kind, (counts.get(kind) ?? 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  }, [rows]);
   const loadMore = useCallback(
     () => setLimit((current) => current + OBSERVATIONS_PAGE),
     [],
@@ -98,9 +114,11 @@ export default function ObservationsPanel(
           row.kind ? (KIND_LABEL[row.kind] ?? row.kind) : "",
         render: ({ row }) =>
           row.kind ? (
-            <span
-              style={{ fontSize: 11, fontWeight: 650, color: "var(--accent)" }}
-            >
+            <span className="pc-observations__signal">
+              <i
+                aria-hidden
+                style={{ background: KIND_COLOR[row.kind] ?? "var(--accent)" }}
+              />
               {KIND_LABEL[row.kind] ?? row.kind}
             </span>
           ) : null,
@@ -186,14 +204,24 @@ export default function ObservationsPanel(
       }}
     >
       <div
-        style={{
-          minHeight: 30,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "flex-end",
-          gap: 8,
-        }}
+        className="pc-observations__toolbar"
       >
+        {signalCounts.length > 0 ? (
+          <div className="pc-observations__distribution" aria-label="Loaded signal distribution">
+            {signalCounts.map(([kind, count]) => (
+              <span
+                key={kind}
+                title={`${KIND_LABEL[kind] ?? kind}: ${count}`}
+                style={
+                  {
+                    background: KIND_COLOR[kind] ?? "var(--accent)",
+                    flexGrow: count,
+                  }
+                }
+              />
+            ))}
+          </div>
+        ) : null}
         {total > 0 ? (
           <span
             data-testid="observations-count"
@@ -240,6 +268,14 @@ export default function ObservationsPanel(
           onEndReached={hasMore ? loadMore : undefined}
         />
       )}
+      <style>{`
+        .pc-observations__toolbar { min-height: 30px; display: flex; align-items: center; justify-content: flex-end; gap: 9px; }
+        .pc-observations__distribution { display: flex; flex: 1 1 auto; max-width: 360px; height: 6px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--fg) 5%, transparent); }
+        .pc-observations__distribution span { min-width: 4px; opacity: .82; transition: opacity 140ms ease; }
+        .pc-observations__distribution span:hover { opacity: 1; }
+        .pc-observations__signal { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-dim); font-size: 10.5px; font-weight: 680; }
+        .pc-observations__signal i { width: 7px; height: 7px; flex: none; border-radius: 50%; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 6%, transparent); }
+      `}</style>
     </div>
   );
 }

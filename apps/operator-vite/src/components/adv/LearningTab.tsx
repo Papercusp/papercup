@@ -877,49 +877,61 @@ function GymView({ hive }: { hive: string }) {
 
   return (
     <section className="pc-learning__section">
-      <div className="pc-learning__scoreboard" aria-label="Gym summary">
-        <Stat
-          label="experiments"
-          value={snap ? proposals.length : "—"}
-          hint="Prompt variants the gym has proposed and tested recently."
-        />
-        <Stat
-          label="champions"
-          value={snap ? champions : "—"}
-          tone="good"
-          hint="Accepted variants — each is now its role’s live prompt."
-        />
-        <Stat
-          label="pending"
-          value={snap ? pending : "—"}
-          tone="human"
-          hint="Scored, awaiting a decision."
-        />
-        <Stat
-          label="rejected"
-          value={snap ? rejected : "—"}
-          hint="Scored worse than the current prompt — discarded."
-        />
-        <Stat
-          label="active loops"
-          value={snap ? running : "—"}
-          tone="auto"
-          hint="Gym harnesses set to keep running experiment cycles on their own, within a spend budget."
-        />
-      </div>
+      <LearningPageHeader
+        icon={Dumbbell}
+        title="Prompt gym"
+        signal={running > 0 ? `${running} active` : undefined}
+        tone={running > 0 ? "good" : "neutral"}
+        action={
+          <button
+            type="button"
+            className="pc-learning__refresh"
+            aria-label="Reload the gym feed"
+            disabled={sync.fetching}
+            onClick={() => sync.invalidate()}
+          >
+            <RefreshCw size={13} aria-hidden />
+          </button>
+        }
+      />
 
-      <div className="pc-learning__sectionhead">
-        <h2>Prompt experiments</h2>
-        <button
-          type="button"
-          className="pc-learning__refresh"
-          aria-label="Reload the gym feed"
-          disabled={sync.fetching}
-          onClick={() => sync.invalidate()}
-        >
-          <RefreshCw size={13} aria-hidden />
-        </button>
-      </div>
+      {snap ? (
+        <div className="pc-learning-visual__layout pc-learning-visual__layout--gym">
+          <LearningHeroMetric
+            eyebrow="Champions"
+            value={String(champions)}
+            status={pending > 0 ? `${pending} pending` : "current"}
+            tone={champions > 0 ? "good" : "accent"}
+          >
+            {proposals.length} experiments
+          </LearningHeroMetric>
+          <div className="pc-learning__gymflow" aria-label="Gym experiment flow">
+            {[
+              ["Tested", proposals.length, "accent"],
+              ["Pending", pending, "warn"],
+              ["Champions", champions, "good"],
+            ].map(([label, value, tone], index) => (
+              <span key={String(label)} className={`is-${tone}`}>
+                <small>{label}</small>
+                <strong>{value}</strong>
+                {index < 2 ? <i aria-hidden /> : null}
+              </span>
+            ))}
+          </div>
+          <LearningEvidenceRail>
+            <div className="pc-learning-visual__evidence-grid">
+              <div className="pc-learning-visual__evidence-metric">
+                <span>Rejected</span>
+                <strong>{rejected}</strong>
+              </div>
+              <div className="pc-learning-visual__evidence-metric">
+                <span>Loops</span>
+                <strong>{running}</strong>
+              </div>
+            </div>
+          </LearningEvidenceRail>
+        </div>
+      ) : null}
 
       {autoloops.length > 0 && (
         <div className="pc-learning__loops" aria-label="Gym autoloops">
@@ -949,21 +961,16 @@ function GymView({ hive }: { hive: string }) {
           Gym feed unavailable: {sync.error.message}
         </p>
       ) : proposals.length === 0 ? (
-        <div className="pc-learning__empty pc-learning__empty--card">
-          <Dumbbell size={20} aria-hidden />
-          <strong>No gym experiments yet</strong>
-          <span>
-            The gym A/B-tests prompt variants for the pipeline roles, scores
-            them with a frozen judge, and promotes the winners. Proposals and
-            champion promotions will appear here once a gym runs.
-          </span>
-        </div>
+        <LearningVisualEmpty icon={Dumbbell} title="No gym experiments" />
       ) : (
+        <>
+        <div className="pc-learning__sectionhead"><h2>Recent challengers</h2></div>
         <ul className="pc-learning__list">
           {proposals.map((p) => (
             <GymProposalRow key={p.id} p={p} />
           ))}
         </ul>
+        </>
       )}
     </section>
   );
