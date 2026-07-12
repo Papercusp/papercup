@@ -136,6 +136,19 @@ export async function ensureLocalWhisper(deps: LocalWhisperDeps = {}): Promise<E
   }
 }
 
+/**
+ * The STT call sites' one-liner: the base URL to POST /v1/audio/transcriptions at.
+ * External server → its URL; else the managed child (spawned on demand); else the external
+ * URL anyway — so a not-provisioned box fails with the SAME "whisper unreachable" surface it
+ * had before this module existed (no new error shapes on the request path; the health route
+ * carries the not-provisioned diagnosis).
+ */
+export async function whisperSttBaseUrl(deps: LocalWhisperDeps = {}): Promise<string> {
+  const r = await ensureLocalWhisper(deps);
+  if (r.ok && r.url) return r.url;
+  return deps.externalUrl ?? (process.env.VOICEMODE_URL ?? 'http://localhost:2022');
+}
+
 async function startManaged(deps: LocalWhisperDeps, probe: (u: string) => Promise<boolean>): Promise<EnsureWhisperResult> {
   const now = deps.now ?? Date.now;
   // Spawn-storm guard: a binary that boots-then-dies must not respawn unboundedly.

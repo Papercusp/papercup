@@ -229,6 +229,17 @@ describe('MugTab (Colony sidebar, round 2)', () => {
     await openLane('Capacity');
     fireEvent.click(screen.getByRole('button', { name: 'Expand models' }));
     const stdModel = await screen.findByLabelText('std model spec');
+    // Let the expand actually SETTLE before resetting. The models section's open
+    // flag is nuqs-backed (?qModels) and flushes asynchronously, while the reset
+    // bumps `capacityResetVersion` — a REMOUNT key that discards local drafts. So
+    // reset-in-the-same-tick races that flush: the remounted section re-reads
+    // qModels from a URL the click hasn't reached yet, comes back COLLAPSED, and
+    // the model input is gone — which is exactly how this test reddened ~2 runs in
+    // 3 under CPU pressure while passing in isolation (the peers' "MugTab.test.tsx
+    // is RED"; a single lucky green run wrongly cleared it). Waiting on the flipped
+    // control is the honest fix: a real user's expand settles long before they
+    // click reset, so the compressed timeline was the test's artifact, not a bug.
+    await screen.findByRole('button', { name: 'Collapse models' });
     fireEvent.change(stdModel, { target: { value: 'unsaved:model' } });
     fireEvent.click(screen.getByRole('button', { name: 'Reset Capacity controls' }));
     await waitFor(() => expect(wroteRunTool()).toBe(true));

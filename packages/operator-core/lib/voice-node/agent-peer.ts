@@ -17,7 +17,7 @@
 import { energy } from '@papercusp/p2p-voice';
 import { loadVoicePrefs } from '../voice-prefs';
 import { synthesize } from '../endpoint-route/routes/agent-mcp/operator-tts';
-import { VOICEMODE_URL } from '../endpoint-route/routes/agent-mcp/operator-voice-proxy-helpers';
+import { whisperSttBaseUrl } from './local-whisper-service';
 import { VOICE_FRAME_SAMPLES, VOICE_SAMPLE_RATE } from './codec';
 import { onPeerFrame, pushMicFrame, voiceStatus } from './manager';
 import { decodeWavPcm16, encodeWavPcm16, resamplePcm16 } from './wav';
@@ -120,13 +120,15 @@ async function finishUtterance(peerId: string, frames: Int16Array[]): Promise<vo
   }
 }
 
-/** Whisper via the same voicemode endpoint the D-006 routes proxy (P-012). */
+/** Whisper via the same voicemode endpoint the D-006 routes proxy (P-012); falls back to the
+ *  operator-managed provisioned whisper-server when no external one answers (P-009 hop 3). */
 export async function transcribePcm48k(pcm: Int16Array): Promise<string> {
   const wav = encodeWavPcm16(resamplePcm16(pcm, VOICE_SAMPLE_RATE, 16_000), 16_000);
   const form = new FormData();
   form.append('file', new Blob([wav.buffer as ArrayBuffer], { type: 'audio/wav' }), 'utterance.wav');
   form.append('model', 'whisper-1');
-  const r = await fetch(`${VOICEMODE_URL}/v1/audio/transcriptions`, { method: 'POST', body: form });
+  const sttBase = await whisperSttBaseUrl();
+  const r = await fetch(`${sttBase}/v1/audio/transcriptions`, { method: 'POST', body: form });
   if (!r.ok) throw new Error(`whisper ${r.status}`);
   const body = (await r.json()) as { text?: string };
   return (body.text ?? '').trim();

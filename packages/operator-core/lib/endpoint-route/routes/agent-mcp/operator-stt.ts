@@ -11,7 +11,8 @@
  * `auth: 'loopback'` (auth-tier Wave 1) like the sibling operator voice routes.
  */
 import { defineTool } from '@papercusp/agent-mcp';
-import { VOICEMODE_URL, decodeAudioBase64, normalizeAudioFormat } from './operator-voice-proxy-helpers';
+import { decodeAudioBase64, normalizeAudioFormat } from './operator-voice-proxy-helpers';
+import { whisperSttBaseUrl } from '../../../voice-node/local-whisper-service';
 
 export default defineTool({
   method: 'POST',
@@ -42,7 +43,10 @@ export default defineTool({
 
     let r: Response;
     try {
-      r = await fetch(`${VOICEMODE_URL}/v1/audio/transcriptions`, {
+      // External whisper (VOICEMODE_URL) when reachable; else the operator-managed
+      // provisioned whisper-server child, spawned on demand (P-009 hop 3).
+      const sttBase = await whisperSttBaseUrl();
+      r = await fetch(`${sttBase}/v1/audio/transcriptions`, {
         method: 'POST',
         body: fd,
         signal: AbortSignal.timeout(60_000),

@@ -23,6 +23,7 @@
 import { readElevenLabsKey, readOpenAiKey, readCartesiaKey } from '../../../voice-credentials';
 import type { VoicePrefs } from '../../../voice-prefs';
 import { encodeWavPcm16 } from '../../../voice-node/wav';
+import { kokoroLocalSynthWav } from '../../../voice-node/kokoro-local';
 import { KOKORO_URL } from './operator-voice-proxy-helpers';
 // WI-3557: shared with the settings key-test probe (voice-engines/cartesia.ts)
 // so the two never drift on which Cartesia-Version the two paths speak.
@@ -111,17 +112,29 @@ export async function synthesize(
     switch (engine) {
       case 'kokoro': {
         // kokoro emits WAV natively → already channel-ready, container is moot.
-        const r = await fetch(`${KOKORO_URL}/v1/audio/speech`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            model: 'kokoro',
-            input: text,
-            voice: voiceId ?? 'af_bella',
-            response_format: 'wav',
-          }),
-          signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
-        });
+        // An external kokoro server (KOKORO_URL — e.g. the dev box's GPU kokoro-fastapi)
+        // takes precedence; when it's UNREACHABLE (no server at all — the public-user case)
+        // fall back to the in-process kokoro-js engine when provisioned (P-009, plan D-009).
+        // A server that answers-but-errors keeps its honest upstream classification — the
+        // fallback is only for "no server", never a mask over a broken one.
+        let r: Response;
+        try {
+          r = await fetch(`${KOKORO_URL}/v1/audio/speech`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              model: 'kokoro',
+              input: text,
+              voice: voiceId ?? 'af_bella',
+              response_format: 'wav',
+            }),
+            signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
+          });
+        } catch (e) {
+          const local = await kokoroLocalSynthWav(text, voiceId);
+          if (local.ok) return { ok: true, audio: local.audio, contentType: local.contentType };
+          return { ok: false, error: `kokoro unreachable: ${(e as Error).message} (local fallback: ${local.error})`, status: 502 };
+        }
         return upstream(r, 'audio/wav');
       }
       case 'elevenlabs': {
