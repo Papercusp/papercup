@@ -39,10 +39,15 @@ export class PgCoordLog {
   constructor(_opts?: unknown) {
     return new Proxy(this, {
       get(target, prop, receiver) {
-        // Symbols (Symbol.toStringTag, Symbol.iterator, …) and `then` must answer
-        // normally — a throwing `then` makes the instance look like a broken
-        // thenable and would blow up any `await`/console.log that touches it.
-        if (typeof prop === 'symbol' || prop === 'then') {
+        // Only the LOG SURFACE throws. Everything the language and the runtime
+        // routinely touch must answer normally:
+        //   · symbols       — Symbol.toStringTag, Symbol.iterator, node's inspect
+        //   · `then`        — a throwing `then` reads as a broken thenable and
+        //                     detonates any `await` that merely passes it along
+        //   · Object.prototype members (toString, valueOf, constructor, …) —
+        //     `String(log)` and `console.log(log)` call these, and a stub that
+        //     explodes when something DEBUGS it is a trap, not a guard rail.
+        if (typeof prop === 'symbol' || prop === 'then' || prop in Object.prototype) {
           return Reflect.get(target, prop, receiver);
         }
         return (..._args: unknown[]) => {

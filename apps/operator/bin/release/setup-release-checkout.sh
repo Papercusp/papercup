@@ -243,6 +243,20 @@ else
   log "node_modules up to date (mode=$NODE_MODULES_MODE) — skipping copy"
 fi
 
+# 3a½. pnpm-debris self-heal ---------------------------------------------------
+# npm never creates node_modules/.pnpm — its presence is ALWAYS debris from a stray
+# pnpm install (banned; apps/operator/lib/no-pnpm-hijack.test.ts is the loud guard).
+# In THIS tree it is doubly wrong: a release/checkpoint tree never runs installs, and
+# the cp -al sync above adds/overwrites but never DELETES extraneous entries — so a
+# leftover store lingers forever. A 2026-05-13 orphaned .pnpm in papercup-checkpoint
+# red-pinned the green gate for ~7h on 2026-07-12 (no-pnpm-hijack failing in the gate
+# while the integration tree was clean). Self-heal it here so the class cannot recur:
+# a throwaway/deploy tree simply never carries a virtual store.
+if [ -d "$RELEASE_ROOT/node_modules/.pnpm" ]; then
+  log "removing stray node_modules/.pnpm (pnpm debris — this tree is npm-only; see no-pnpm-hijack.test.ts)"
+  rm -rf "$RELEASE_ROOT/node_modules/.pnpm"
+fi
+
 # 3b. Dependency patches (patch-package) -------------------------------------
 # patch-package patches apply at INSTALL time, but this tree never `npm install`s
 # — it hardlink-copies node_modules from the integration tree (step 3). That copy
