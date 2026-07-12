@@ -470,6 +470,18 @@ export interface ListWorkItemsFilter {
    * terminal set. Non-terminal rows never match (an open item owes no evidence yet).
    */
   audit?: 'no-evidence';
+  /**
+   * EI-10422/WI-4405: when true, INCLUDE `payload.lane === 'observation'` rows (default
+   * false ⇒ EXCLUDED). Threaded to {@link listIssues}'s `excludeObservationLane`
+   * (`!includeObservations`) — until this field existed, work_items:list's tool layer
+   * (agent-tools/work_items/list.ts) passed `includeObservations` in an object literal
+   * this interface didn't declare: a live `tsc --noEmit` TS2353 excess-property error
+   * (the type checker caught it; the untyped runtime call silently dropped the field
+   * anyway, since `listWorkItems` never read it) — so EI-10422's "exclude observations
+   * by default" fix never actually reached this general read path. `admissibleOnly`
+   * ALSO forces exclusion regardless of this flag (an observation is never claimable).
+   */
+  includeObservations?: boolean;
 }
 
 /**
@@ -592,6 +604,9 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
       // that the write path (claimNextIssueWorkItem / the engineer_issues_view_dml
       // trigger) will never actually let a local claim succeed against.
       admissibleOnly: filter.admissibleOnly,
+      // WI-4405: admissibleOnly ALSO forces exclusion (an observation is never
+      // claimable, regardless of includeObservations) — otherwise honor the flag.
+      excludeObservationLane: filter.admissibleOnly ? true : !filter.includeObservations,
       audit: filter.audit,
       limit,
     });
@@ -645,6 +660,7 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
       state: (filter.state as IssueState) || undefined,
       assignee: filter.assignee,
       assignedBy: filter.assignedBy,
+      excludeObservationLane: filter.admissibleOnly ? true : !filter.includeObservations,
     });
   }
 
@@ -732,6 +748,12 @@ export async function searchWorkItems(
     semantic?: boolean;
     /** Test seam — see QueryEmbedderResolver. */
     embedderResolver?: QueryEmbedderResolver;
+    /**
+     * EI-10422/WI-4405: by default a `payload.lane === 'observation'` row is EXCLUDED
+     * from matches (D-005 — it never enters the work queue/triage). Pass true to
+     * include raw observations in search results.
+     */
+    includeObservations?: boolean;
   } = {},
 ): Promise<WorkItem[]> {
   const limit = Math.min(opts.limit ?? 50, 200);
@@ -743,6 +765,9 @@ export async function searchWorkItems(
     let issues = (await searchIssues(query, limit)).map(issueToWorkItem);
     if (opts.harness) issues = issues.filter((w) => w.harness === opts.harness);
     if (opts.kind && familyOf(opts.kind) === 'issue') issues = issues.filter((w) => w.kind === opts.kind);
+    if (!opts.includeObservations) {
+      issues = issues.filter((w) => (w.payload as { lane?: string } | null | undefined)?.lane !== 'observation');
+    }
     out.push(...issues);
   }
 
@@ -777,6 +802,9 @@ export async function searchWorkItems(
             let hits = (await semanticSearchIssues(vec, resolved.mode, semLimit)).map(issueToWorkItem);
             if (opts.harness) hits = hits.filter((w) => w.harness === opts.harness);
             if (opts.kind && familyOf(opts.kind) === 'issue') hits = hits.filter((w) => w.kind === opts.kind);
+            if (!opts.includeObservations) {
+              hits = hits.filter((w) => (w.payload as { lane?: string } | null | undefined)?.lane !== 'observation');
+            }
             for (const w of hits) if (!seen.has(w.id)) { seen.add(w.id); out.push(w); }
           }
           if (wantFeature) {

@@ -278,20 +278,14 @@ describe('priority surfaces on the unified WorkItem (the work_items:list/get fie
   // silent no-op even though the write AND the claim ordering were both already correct
   // (migration 588 + this fix close the read-side gap).
   it('an EXPLICITLY prioritized issue-family item surfaces its priority on get/list too', async () => {
+    // scope must resolve to this harness (harness:<H>) — `listWorkItems({ harness })`
+    // filters issue-family rows by scope, and a scope-less insert defaults to the
+    // global 'operator' scope, which `listed.find(...)` would never match.
     await db.sql`
-      INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, title)
-      VALUES ('default', 'EI-2', 'a prioritized bug')`;
+      INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, title, scope)
+      VALUES ('default', 'EI-2', 'a prioritized bug', ${'harness:' + H})`;
     const set = await wi.setWorkItemPriority('EI-2', 12, { harness: H });
     expect(set).toMatchObject({ priority: 12, applicable: true });
-
-    // TEMP DEBUG (EI-10421 investigation) — remove before closing.
-    const rawView = await db.sql`SELECT issue_id, feature_order FROM harness_shared.engineer_issues WHERE issue_id = 'EI-2'`;
-    const rawBase = await db.sql`SELECT feature_id, item_kind, feature_order FROM harness_shared.work_items WHERE feature_id = 'EI-2'`;
-    // eslint-disable-next-line no-console
-    console.log('EI10421_DEBUG rawView=', JSON.stringify(rawView), 'rawBase=', JSON.stringify(rawBase));
-    const got = await wi.getWorkItem('EI-2', H);
-    // eslint-disable-next-line no-console
-    console.log('EI10421_DEBUG got=', JSON.stringify(got));
 
     expect((await wi.getWorkItem('EI-2', H))?.priority).toBe(12);
     const listed = await wi.listWorkItems({ harness: H });
