@@ -35,6 +35,7 @@ import {
   accountPinnable,
   accountProviderFromChoices,
   GATEWAY_ACCOUNT_HEADER,
+  GATEWAY_OWNER_HEADER,
   addDirArgs,
   forkUnsupportedMessage,
   forkBootstrapBody,
@@ -108,7 +109,7 @@ import {
 } from '../scripts/psu-launcher.mjs';
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-deny';
-import { ACCOUNT_HEADER } from '@papercusp/operator-core/lib/inference-gateway/gateway';
+import { ACCOUNT_HEADER, OWNER_HEADER } from '@papercusp/operator-core/lib/inference-gateway/gateway';
 import { fleetSlugFromName as storeFleetSlugFromName } from '@papercusp/operator-core/lib/agent-fleets-store';
 // WI-1993: the operator-core TS TWIN of validateModelSpec (node can't import the .mjs, so the
 // tool boundary carries its own copy). The parity suite below pins them value-for-value.
@@ -1394,6 +1395,13 @@ describe('psu-launcher arg parsing', () => {
     expect(GATEWAY_ACCOUNT_HEADER).toBe(ACCOUNT_HEADER);
   });
 
+  it('GATEWAY_OWNER_HEADER stays in LOCKSTEP with the server OWNER_HEADER (gateway.ts, WI-4402)', () => {
+    // Same reasoning as the account-header lockstep test above: if this drifts from the gateway's
+    // OWNER_HEADER, a resumed session's identity header silently stops reaching accounts:pin's
+    // ownerPinMap lookup — the exact WI-4402 bug (the header was simply never SENT at all).
+    expect(GATEWAY_OWNER_HEADER).toBe(OWNER_HEADER);
+  });
+
   it('gatewayPinEnv: mirrors the server gatewaySpawnEnv (base URL + account header + id)', () => {
     const env = gatewayPinEnv('aviynw');
     expect(env.ANTHROPIC_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
@@ -1401,8 +1409,21 @@ describe('psu-launcher arg parsing', () => {
     expect(env.PAPERCUSP_ACCOUNT_ID).toBe('aviynw');
   });
 
-  it('gatewayPinEnv: codex pins are config-file based and only carry the account id in env', () => {
+  it('gatewayPinEnv: WI-4402 — omitted ownerId is byte-identical to today (no identity header)', () => {
+    // Backward-compat guard: every EXISTING caller (and this file's other tests) calls gatewayPinEnv
+    // with no 3rd arg — the resume path must not silently start sending a header nobody asked for.
+    const env = gatewayPinEnv('aviynw', 'claude');
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe(`${ACCOUNT_HEADER}: aviynw`);
+  });
+
+  it('gatewayPinEnv: WI-4402 — a provided ownerId ALSO carries the session-identity header, so accounts:pin can reach this resumed session', () => {
+    const env = gatewayPinEnv('aviynw', 'claude', 'su-71ef850a-owner');
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe(`${ACCOUNT_HEADER}: aviynw\n${OWNER_HEADER}: su-71ef850a-owner`);
+  });
+
+  it('gatewayPinEnv: codex pins are config-file based and only carry the account id in env (ownerId ignored — codex has no ANTHROPIC_CUSTOM_HEADERS path)', () => {
     expect(gatewayPinEnv('codex-main', 'codex')).toEqual({ PAPERCUSP_ACCOUNT_ID: 'codex-main' });
+    expect(gatewayPinEnv('codex-main', 'codex', 'su-owner')).toEqual({ PAPERCUSP_ACCOUNT_ID: 'codex-main' });
   });
 
   it('accountRoutingMode: the ONE --account value classifies into the 3 explicit routing modes', () => {
@@ -1427,6 +1448,20 @@ describe('psu-launcher arg parsing', () => {
   it('gatewayAutoEnv: non-claude providers get {} (auto-routing wired for claude only — matches resolveAccountPin)', () => {
     expect(gatewayAutoEnv('codex')).toEqual({});
     expect(gatewayAutoEnv('omp')).toEqual({});
+  });
+
+  it('gatewayAutoEnv: WI-4402 — omitted ownerId is byte-identical to today (no identity header)', () => {
+    expect(gatewayAutoEnv('claude').ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
+  });
+
+  it('gatewayAutoEnv: WI-4402 — a provided ownerId carries ONLY the session-identity header (still no account pin — the point of auto)', () => {
+    const env = gatewayAutoEnv('claude', 'su-71ef850a-owner');
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe(`${OWNER_HEADER}: su-71ef850a-owner`);
+    expect(env.PAPERCUSP_ACCOUNT_ID).toBeUndefined();
+  });
+
+  it('gatewayAutoEnv: WI-4402 — ownerId is ignored for non-claude providers ({} either way)', () => {
+    expect(gatewayAutoEnv('codex', 'su-owner')).toEqual({});
   });
 
   it('codexGatewayConfigPatch inserts root provider selector before tables and replaces prior pin', () => {

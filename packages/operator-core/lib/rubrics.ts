@@ -764,18 +764,12 @@ export interface AmendRubricInput {
 }
 
 /**
- * Amend ONE criterion field and/or the rubric's methodRef WITHOUT the whole-document
- * rubrics:propose replace (rubric-system-improvements-2026-07-12 P-003: the replace
- * ceremony — refetch, resubmit every criterion, ack loss-guards — deterred a same-day
- * one-paragraph amendment; small improvements were being skipped). Loads the stored
- * rubric, patches in memory, and delegates persistence to proposeRubric with the
- * STORED status preserved — amending an active rubric never demotes it to proposed,
- * and every WI-4287 loss-guard still applies to a `replace`. Returns null for an
- * unknown rubricId; throws (like proposeRubric) on guard violations.
+ * Pure core of amendRubric: patch the stored rubric per the amendment and shape the
+ * whole-document ProposeRubricInput that persists it — STORED status preserved
+ * (amending an active rubric never demotes it to proposed). Exported for unit tests;
+ * throws teaching errors on an unknown criterion key / an empty amendment.
  */
-export async function amendRubric(input: AmendRubricInput): Promise<Rubric | null> {
-  const stored = await getRubric(input.rubricId);
-  if (!stored) return null;
+export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): ProposeRubricInput {
   if (!input.criterion && input.methodRef === undefined) {
     throw new Error('amendRubric: nothing to amend — pass criterion and/or methodRef');
   }
@@ -796,19 +790,34 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
     criteria = stored.criteria.map((c) => (c.key === key ? { ...c, [field]: next } : c));
   }
 
-  return proposeRubric({
+  return {
     rubricId: stored.rubricId,
     characteristic: stored.characteristic,
     title: stored.title,
     description: stored.description,
     criteria,
     ratingScale: stored.ratingScale,
-    methodRef: input.methodRef ?? stored.methodRef ?? undefined,
-    by: input.by ?? stored.createdBy ?? undefined,
+    ...(input.methodRef ?? stored.methodRef ? { methodRef: (input.methodRef ?? stored.methodRef)! } : {}),
+    ...(input.by ?? stored.createdBy ? { by: (input.by ?? stored.createdBy)! } : {}),
     status: stored.status,
     ...(input.allowMethodShrink !== undefined ? { allowMethodShrink: input.allowMethodShrink } : {}),
     ...(input.shrinkReason !== undefined ? { shrinkReason: input.shrinkReason } : {}),
-  });
+  };
+}
+
+/**
+ * Amend ONE criterion field and/or the rubric's methodRef WITHOUT the whole-document
+ * rubrics:propose replace (rubric-system-improvements-2026-07-12 P-003: the replace
+ * ceremony — refetch, resubmit every criterion, ack loss-guards — deterred a same-day
+ * one-paragraph amendment; small improvements were being skipped). Loads the stored
+ * rubric, patches via applyRubricAmendment, and delegates persistence to proposeRubric
+ * — every WI-4287 loss-guard still applies to a `replace` (an `append` can only grow).
+ * Returns null for an unknown rubricId; throws (like proposeRubric) on guard violations.
+ */
+export async function amendRubric(input: AmendRubricInput): Promise<Rubric | null> {
+  const stored = await getRubric(input.rubricId);
+  if (!stored) return null;
+  return proposeRubric(applyRubricAmendment(stored, input));
 }
 
 /**

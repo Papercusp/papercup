@@ -229,3 +229,78 @@ describe('criterion `replication` field end-to-end (schema + plan-row mapping)',
     expect(mapped?.criteria[1]).not.toHaveProperty('replication');
   });
 });
+
+// ─── rubric-system-improvements-2026-07-12 P-003: the small-amendment path ────────────
+// applyRubricAmendment is the pure core of rubrics:amend — patch one criterion field /
+// methodRef and shape the whole-doc ProposeRubricInput (status preserved, guards
+// inherited downstream by proposeRubric's assertNoSilentRubricLoss).
+import { applyRubricAmendment } from './rubrics';
+
+describe('applyRubricAmendment (rubrics:amend pure core)', () => {
+  const stored = () =>
+    rubric([
+      crit({ key: 'placement', replication: LONG_DRILL }),
+      crit({ key: 'wake' }),
+    ]);
+
+  it('append adds a paragraph to the field, keeps every other criterion, and PRESERVES status', () => {
+    const out = applyRubricAmendment(stored(), {
+      rubricId: 'su-agent-behavior',
+      criterion: { key: 'placement', field: 'replication', mode: 'append', text: 'LIVE-AGENT VARIANT: …' },
+    });
+    const patched = out.criteria.find((c) => c.key === 'placement')!;
+    expect(patched.replication).toBe(`${LONG_DRILL}\n\nLIVE-AGENT VARIANT: …`);
+    expect(out.criteria.find((c) => c.key === 'wake')).toEqual(stored().criteria[1]); // untouched
+    expect(out.status).toBe('active'); // amending never demotes
+    expect(out.criteria).toHaveLength(2); // whole doc shaped → no dropKeys needed
+  });
+
+  it('append onto an ABSENT optional field creates it (no leading separator)', () => {
+    const out = applyRubricAmendment(stored(), {
+      rubricId: 'su-agent-behavior',
+      criterion: { key: 'wake', field: 'replication', mode: 'replace', text: 'new drill' },
+    });
+    expect(out.criteria.find((c) => c.key === 'wake')!.replication).toBe('new drill');
+    const appended = applyRubricAmendment(stored(), {
+      rubricId: 'su-agent-behavior',
+      criterion: { key: 'wake', field: 'replication', mode: 'append', text: 'first drill text' },
+    });
+    expect(appended.criteria.find((c) => c.key === 'wake')!.replication).toBe('first drill text');
+  });
+
+  it('replace swaps the field verbatim and passes the shrink-guard acks through', () => {
+    const out = applyRubricAmendment(stored(), {
+      rubricId: 'su-agent-behavior',
+      criterion: { key: 'placement', field: 'model', mode: 'replace', text: 'the corrected model' },
+      allowMethodShrink: true,
+      shrinkReason: 'procedure moved to the runbook',
+    });
+    expect(out.criteria.find((c) => c.key === 'placement')!.model).toBe('the corrected model');
+    expect(out.allowMethodShrink).toBe(true);
+    expect(out.shrinkReason).toBe('procedure moved to the runbook');
+  });
+
+  it('methodRef-only amendment keeps criteria byte-identical', () => {
+    const out = applyRubricAmendment(stored(), { rubricId: 'su-agent-behavior', methodRef: 'su-agent-behavior-grading-runbook' });
+    expect(out.methodRef).toBe('su-agent-behavior-grading-runbook');
+    expect(out.criteria).toEqual(stored().criteria);
+  });
+
+  it('an amendment shaped for proposeRubric passes the loss-guard (all criteria present)', () => {
+    const out = applyRubricAmendment(stored(), {
+      rubricId: 'su-agent-behavior',
+      criterion: { key: 'placement', field: 'replication', mode: 'append', text: 'more procedure' },
+    });
+    expect(() => assertNoSilentRubricLoss(stored(), out)).not.toThrow();
+  });
+
+  it('teaching errors: unknown criterion key (names the valid keys) and empty amendment', () => {
+    expect(() =>
+      applyRubricAmendment(stored(), {
+        rubricId: 'su-agent-behavior',
+        criterion: { key: 'typo-key', field: 'model', mode: 'append', text: 'x' },
+      }),
+    ).toThrow(/no criterion 'typo-key'.*placement, wake/);
+    expect(() => applyRubricAmendment(stored(), { rubricId: 'su-agent-behavior' })).toThrow(/nothing to amend/);
+  });
+});

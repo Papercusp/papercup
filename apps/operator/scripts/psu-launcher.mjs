@@ -1824,22 +1824,41 @@ export function buildResumeEnv(session, { fork = false, brain = false, accountEn
  *  lockstep by a test. Duplicated here (not imported) so the standalone launcher stays dependency-light. */
 export const GATEWAY_ACCOUNT_HEADER = 'x-papercusp-account';
 
+/** The SESSION-IDENTITY header the inference gateway reads to resolve a LIVE, per-request dynamic
+ *  pin (account-dynamic-pin-2026-06-29's `ownerPinMap`, set via `accounts:pin`/`accounts:unpin` and
+ *  read BEFORE the static `x-papercusp-account` header — gateway.ts `wantAccount = dynPin?.accountId
+ *  ?? wantAccountHeader`). MUST equal the server's `OWNER_HEADER` (gateway.ts) — pinned in lockstep by
+ *  a test. The fresh-spawn path (spawn-env.ts `gatewaySpawnEnv`) already sends this; the RESUME path
+ *  historically never did (WI-4402), which meant `accounts:pin` could set a durable, live re-pin for
+ *  ANY owner id but it could never actually reach a `psu --resume`'d session's requests — the dynamic
+ *  re-pin mechanism was already fully built (live, durable across gateway restarts) and simply
+ *  unreachable from this one launch path. Duplicated here (not imported), same reasoning as
+ *  GATEWAY_ACCOUNT_HEADER. */
+export const GATEWAY_OWNER_HEADER = 'x-papercusp-owner';
+
 /**
  * The inference-gateway pin env for an account, built CLIENT-SIDE. Pure — exported for tests. Mirrors
  * the server's gatewaySpawnEnv + resolveAccountPin exactly: point the agent at the localhost gateway
  * (which injects the account's OAuth) + carry the per-account routing header the claude CLI forwards.
  * The fresh-launch path gets this folded by the bootstrap-su POST; the RESUME path (no POST) builds it
  * here so it never depends on a server endpoint that may not be deployed where the launcher points.
+ *
+ * `ownerId` (WI-4402): when provided, ALSO carries the session-identity header (GATEWAY_OWNER_HEADER)
+ * so a LIVE `accounts:pin { agent: ownerId, account }` (already durable, already live-effective
+ * per-request — no new mechanism) can dynamically re-route this resumed session with no respawn.
+ * Omit to keep today's exact behavior (no identity header) — used by existing callers/tests.
  */
-export function gatewayPinEnv(account, provider = 'claude') {
+export function gatewayPinEnv(account, provider = 'claude', ownerId = undefined) {
   if (provider === 'codex') {
     return { PAPERCUSP_ACCOUNT_ID: account };
   }
   const p = Number(process.env.PAPERCUSP_GATEWAY_PORT);
   const port = Number.isFinite(p) && p > 0 ? p : 8788;
+  const headers = [`${GATEWAY_ACCOUNT_HEADER}: ${account}`];
+  if (ownerId) headers.push(`${GATEWAY_OWNER_HEADER}: ${ownerId}`);
   return {
     ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
-    ANTHROPIC_CUSTOM_HEADERS: `${GATEWAY_ACCOUNT_HEADER}: ${account}`,
+    ANTHROPIC_CUSTOM_HEADERS: headers.join('\n'),
     PAPERCUSP_ACCOUNT_ID: account,
   };
 }
@@ -1872,12 +1891,18 @@ export function accountRoutingMode(value) {
  * config keyed off an EXPLICIT account id, so there is no "let the gateway pick" form for them) —
  * returns `{}` for any other provider, matching resolveAccountPin's `auto gateway routing isn't
  * wired for <agent> yet` guard.
+ *
+ * `ownerId` (WI-4402): same session-identity-header treatment as gatewayPinEnv above — carries
+ * GATEWAY_OWNER_HEADER when provided (no-op if omitted, unchanged for existing callers/tests) so a
+ * LIVE accounts:pin can dynamically move this auto-routed resumed session between pool accounts.
  */
-export function gatewayAutoEnv(provider = 'claude') {
+export function gatewayAutoEnv(provider = 'claude', ownerId = undefined) {
   if (provider !== 'claude') return {};
   const p = Number(process.env.PAPERCUSP_GATEWAY_PORT);
   const port = Number.isFinite(p) && p > 0 ? p : 8788;
-  return { ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}` };
+  const env = { ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}` };
+  if (ownerId) env.ANTHROPIC_CUSTOM_HEADERS = `${GATEWAY_OWNER_HEADER}: ${ownerId}`;
+  return env;
 }
 
 function tomlEscape(s) {
@@ -3056,7 +3081,7 @@ async function chooseResumeAccount(session, args) {
     // `forward: 'auto'` is the value a TRACKED fork sends to the server (resolveAccountPin) so the
     // fork re-derives the same auto-route — `id` is null here, so the fork's `id` fallback alone
     // would silently drop the choice.
-    return { id: null, auto: true, forward: 'auto', provider, env: gatewayAutoEnv(provider), notice: 'routing through the inference gateway (auto — it selects an available pool account and fails over).' };
+    return { id: null, auto: true, forward: 'auto', provider, env: gatewayAutoEnv(provider, session.coordOwnerId), notice: 'routing through the inference gateway (auto — it selects an available pool account and fails over).' };
   }
 
   // mode === 'pin'
@@ -3067,7 +3092,7 @@ async function chooseResumeAccount(session, args) {
   if (!provider) {
     return { id: null, env: {}, notice: `--account ${id} ignored: account routing is unsupported for ${session.agent} — using the default credential.` };
   }
-  return { id, provider, env: gatewayPinEnv(id, provider), notice: `pinned to ${provider === 'codex' ? 'Codex ' : ''}account ${id} (routed through the inference gateway).` };
+  return { id, provider, env: gatewayPinEnv(id, provider, session.coordOwnerId), notice: `pinned to ${provider === 'codex' ? 'Codex ' : ''}account ${id} (routed through the inference gateway).` };
 }
 
 /** Sentinel for the "no feature" picker row (optional-feature roles). */

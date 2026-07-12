@@ -81,10 +81,16 @@ export interface ElConnectHandlers {
   onError(err: unknown): void;
 }
 
-/** Outcome of relaying one utterance to the Sentinel pane (the one brain). */
+/** Outcome of relaying one utterance to the papercup-fast pane (the one brain, P-008/D-007). */
 export type BrainRelayResult =
   | { ok: true }
-  | { ok: false; reason: 'no-dock' | 'pane-exited' | 'write-failed'; error: string };
+  | {
+      ok: false;
+      // Mirrors SentinelPaneWrite's failure classes (papercup-pane-input.ts) —
+      // 'no-sentinel-pane' = no live registered pane (P-019 targeted-only writes).
+      reason: 'no-dock' | 'no-sentinel-pane' | 'pane-exited' | 'write-failed';
+      error: string;
+    };
 
 /** Everything the host needs from the outside world — real in prod, faked in tests. */
 export interface OperatorVoiceSessionDeps {
@@ -119,15 +125,19 @@ const DEFAULT_MODE = 'always-on';
  */
 export const VOICE_RELAY_ACK = "On it — I'll come back to you in a moment.";
 
-/** Spoken failure lines per relay-failure class — the user must HEAR a miss. */
+/** Spoken failure lines per relay-failure class — the user must HEAR a miss.
+ *  D-001 one-identity: the assistant the user knows is "Papercup" — internal
+ *  names (Sentinel / fast / deep) never reach spoken copy. */
 export function relayFailureLine(result: Extract<BrainRelayResult, { ok: false }>): string {
   switch (result.reason) {
     case 'no-dock':
-      return "I can't reach the Sentinel right now — the agent dock isn't running.";
+      return "I can't reach Papercup right now — the agent dock isn't running.";
+    case 'no-sentinel-pane':
+      return "Papercup's pane isn't open in the dock right now — give it a moment and ask again.";
     case 'pane-exited':
-      return 'The Sentinel is restarting — give it a moment and ask again.';
+      return 'Papercup is restarting — give it a moment and ask again.';
     default:
-      return "I couldn't hand that to the Sentinel — check the agent dock.";
+      return "I couldn't hand that to Papercup — check the agent dock.";
   }
 }
 

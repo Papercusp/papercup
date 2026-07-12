@@ -491,6 +491,26 @@ describe('OperatorVoiceSession — barge-in', () => {
   });
 });
 
+// P-008/D-001: spoken relay-failure copy. One identity — the user hears
+// "Papercup", never internal names (Sentinel / fast / deep); and every
+// SentinelPaneWrite failure class (incl. P-019's 'no-sentinel-pane') has a line.
+describe('relayFailureLine — Papercup identity + full reason coverage', () => {
+  const reasons = ['no-dock', 'no-sentinel-pane', 'pane-exited', 'write-failed'] as const;
+
+  it('covers every relay-failure reason with a distinct spoken line', () => {
+    const lines = reasons.map((reason) => relayFailureLine({ ok: false, reason, error: 'x' }));
+    expect(new Set(lines).size).toBe(reasons.length);
+  });
+
+  it('speaks as Papercup and never leaks internal names (D-001)', () => {
+    for (const reason of reasons) {
+      const line = relayFailureLine({ ok: false, reason, error: 'x' });
+      expect(line).toContain('Papercup');
+      expect(line).not.toMatch(/sentinel/i);
+    }
+  });
+});
+
 // `VoiceControlOp` is exercised exhaustively above; this keeps the import used
 // for the typed control literals in case the union changes.
 const _typecheck: VoiceControlOp = { op: 'start' };

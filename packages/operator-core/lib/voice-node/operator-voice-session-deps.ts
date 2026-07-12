@@ -36,8 +36,9 @@ import type { OperatorVoiceSessionDeps, ElConnectHandlers, ElSocket, BrainRelayR
 /**
  * The relay persona pushed as a conversation_config_override so the EL agent
  * behaves as a FRONT-END regardless of its dashboard prompt (D-001/D-002): it
- * must never answer from its own knowledge — the Sentinel pane is the brain,
- * and its answer arrives as injected audio on this same session.
+ * must never answer from its own knowledge — the papercup-fast pane is the
+ * brain (P-008 re-point; the registered pane runs `psu --role=papercup`), and
+ * its answer arrives as injected audio on this same session.
  *
  * NOTE: the EL agent's dashboard security settings must allow prompt overrides
  * for this to bite; when the platform rejects the override the session still
@@ -45,14 +46,16 @@ import type { OperatorVoiceSessionDeps, ElConnectHandlers, ElSocket, BrainRelayR
  * (verified live in P-012/P-013).
  */
 export const EL_RELAY_PERSONA = [
-  'You are the Herald — the voice front-end for the Papercusp Sentinel. You are NOT the brain.',
+  // D-001 one-identity: the user-facing assistant is "Papercup" — internal
+  // names (Sentinel, fast/deep) never reach spoken copy.
+  'You are the voice front-end for Papercup. You are NOT the brain.',
   'For EVERY user message: call the ask_operator tool with the message, then speak the tool result VERBATIM and nothing else.',
   // P-002 (fullAgentAckVoice 'suppressed'): the host signals "don't ack" by
   // returning an EMPTY tool result. Pinning the silence rule in the base
   // persona keeps ONE contract for both modes — in default mode the result is
   // never empty, so this sentence is inert.
   'If the tool result is empty, say NOTHING at all — stay completely silent.',
-  'Never answer questions yourself. Never invent status. The Sentinel’s full answer is delivered separately on this session — do not wait for it or mention the mechanics.',
+  'Never answer questions yourself. Never invent status. Papercup’s full answer is delivered separately on this session — do not wait for it or mention the mechanics.',
   'Keep any speech under 20 words. No preamble, no filler.',
 ].join(' ');
 
@@ -142,7 +145,11 @@ function connect(signedUrl: string, handlers: ElConnectHandlers): Promise<ElSock
   });
 }
 
-/** Hand a spoken utterance to the Sentinel pane — the ONE brain (D-001). */
+/** Hand a spoken utterance to the papercup-fast pane — the ONE brain
+ *  (D-001; P-008 re-point: writeToSentinelPane targets the registered pane,
+ *  which runs `psu --role=papercup`, so EL voice gets the same fast brain as
+ *  local voice + typed text). Failure reasons pass through 1:1, including
+ *  'no-sentinel-pane' (P-019 targeted-only writes). */
 async function relayToBrain(text: string): Promise<BrainRelayResult> {
   const res = await writeToSentinelPane(text);
   if (res.ok) return { ok: true };
