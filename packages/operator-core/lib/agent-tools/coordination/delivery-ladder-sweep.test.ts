@@ -157,6 +157,99 @@ describe('classifyLadderEscalations (pure verdict)', () => {
   });
 });
 
+/**
+ * EI-10551 — the escalation must describe the mail the recipient has NOT read.
+ *
+ * Live incident (su-00a91, fleet leader, 2026-07-12): the ladder woke me with "19 DIRECTED
+ * message(s) ... oldest ~88m ... you have not read". I had read 17 of them — they arrived
+ * before my last coord:orient, and I had already ACTED on them. Only 2 were genuinely
+ * unread, the oldest ~9m old. The wake itself was CORRECT (2 unread is a real signal); the
+ * numbers attached to it were window-wide aggregates computed before the read-watermark was
+ * known, and the body rendered them as unread anyway.
+ *
+ * Why that is worth a test rather than a shrug: an alarm that fires correctly but describes
+ * the situation falsely teaches the fleet to disbelieve it — and this alarm is load-bearing
+ * for the one case it exists to catch, a peer genuinely blocked on an answer. Crying wolf
+ * against correct behavior gets it tuned out exactly when it is right.
+ */
+describe('classifyLadderEscalations — reports UNREAD mail, not the whole window (EI-10551)', () => {
+  it('counts only messages that landed after the last read, and ages from the oldest UNREAD', () => {
+    // The incident, in miniature: 5 in the window, last read 10m ago ⇒ only the 2 newest
+    // are unread. Pre-fix this reported cnt=5 / oldest=88m — both true of the window, both
+    // false of the recipient.
+    const out = classifyLadderEscalations({
+      rows: [
+        row('su-leader', {
+          cnt: 5,
+          oldest_ts_ms: NOW - 88 * MIN,
+          newest_ts_ms: NOW - 1 * MIN,
+          recent_ts_ms: [NOW - 1 * MIN, NOW - 9 * MIN, NOW - 30 * MIN, NOW - 60 * MIN, NOW - 88 * MIN],
+        }),
+      ],
+      lastReadByOwner: new Map([['su-leader', new Date(NOW - 10 * MIN).toISOString()]]),
+      signals: new Map([['su-leader', LIVE]]),
+      capped: new Set(),
+      nowMs: NOW,
+    });
+
+    expect(out).toHaveLength(1);
+    expect(out[0].candidateCount).toBe(2); // NOT 5 — the other three predate the read
+    expect(out[0].oldestAgeMs).toBe(9 * MIN); // NOT 88m — that message was read long ago
+  });
+
+  it('a never-read recipient still reports the FULL window (nothing has been read)', () => {
+    const out = classifyLadderEscalations({
+      rows: [
+        row('su-never', {
+          cnt: 3,
+          oldest_ts_ms: NOW - 40 * MIN,
+          newest_ts_ms: NOW - 6 * MIN,
+          recent_ts_ms: [NOW - 6 * MIN, NOW - 20 * MIN, NOW - 40 * MIN],
+        }),
+      ],
+      lastReadByOwner: new Map(), // no coord:inbox/orient on record — genuinely deaf
+      signals: new Map([['su-never', LIVE]]),
+      capped: new Set(),
+      nowMs: NOW,
+    });
+    expect(out[0].candidateCount).toBe(3);
+    expect(out[0].oldestAgeMs).toBe(40 * MIN);
+  });
+
+  it('degrades to the window aggregates when per-message stamps are absent (never worse than before)', () => {
+    // A row without recent_ts_ms (older shape / stubbed IO) must behave EXACTLY as it did
+    // pre-fix. A correctness fix that throws or drops an escalation on an unexpected row
+    // shape would trade a false alarm for a MISSED one — strictly the worse failure.
+    const out = classifyLadderEscalations({
+      rows: [row('su-legacy', { cnt: 4, oldest_ts_ms: NOW - 25 * MIN })],
+      lastReadByOwner: new Map([['su-legacy', new Date(NOW - 30 * MIN).toISOString()]]),
+      signals: new Map([['su-legacy', LIVE]]),
+      capped: new Set(),
+      nowMs: NOW,
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0].candidateCount).toBe(4);
+    expect(out[0].oldestAgeMs).toBe(25 * MIN);
+  });
+
+  it('still does not escalate when EVERY stamp predates the last read (the gate is unchanged)', () => {
+    const out = classifyLadderEscalations({
+      rows: [
+        row('su-caughtup', {
+          cnt: 3,
+          newest_ts_ms: NOW - 20 * MIN,
+          recent_ts_ms: [NOW - 20 * MIN, NOW - 40 * MIN, NOW - 60 * MIN],
+        }),
+      ],
+      lastReadByOwner: new Map([['su-caughtup', new Date(NOW - 5 * MIN).toISOString()]]),
+      signals: new Map([['su-caughtup', LIVE]]),
+      capped: new Set(),
+      nowMs: NOW,
+    });
+    expect(out).toHaveLength(0);
+  });
+});
+
 describe('ladder tunables (env-clamped, ratified defaults)', () => {
   it('defaults: TTL 5m, storm cap 10m', () => {
     expect(ladderTtlMs({})).toBe(LADDER_TTL_MS_DEFAULT);

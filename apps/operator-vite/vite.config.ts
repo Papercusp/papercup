@@ -99,6 +99,17 @@ export default defineConfig({
       // operator-core (headless backend) — carved from apps/operator (SP1 C4).
       // Must precede the '@' alias (first match wins).
       { find: '@papercusp/operator-core', replacement: resolve(operatorRoot, '../../packages/operator-core') },
+      // Client-reachable operator-core modules import the coordination event-log
+      // barrel for DEFAULT_COORD_WORKSPACE. The real barrel also exports its
+      // Postgres + filesystem backends, pulling node:fs into the SPA graph.
+      {
+        find: '@papercusp/coordination/event-log',
+        replacement: resolve(import.meta.dirname, 'src/shims/coordination-event-log-browser.ts'),
+      },
+      {
+        find: /^posthog-node(?:\/.*)?$/,
+        replacement: resolve(import.meta.dirname, 'src/shims/posthog-node-browser.ts'),
+      },
       // The browser bundle may import server modules through the generated
       // route tree; postgres-js touches Buffer at module eval and blanks the SPA.
       { find: /^postgres(?:\/.*)?$/, replacement: resolve(import.meta.dirname, 'src/shims/postgres-browser.ts') },
