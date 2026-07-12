@@ -73,14 +73,17 @@ operator** (`papercup-staging-api.service`), which runs from the **canonical `pa
 already in that tree — a plain restart loads them. **No deploy / green-checkpoint needed** (that
 would only matter for `:3070`, the release port, which this suite does not use).
 
-```bash
-systemctl --user restart papercup-staging-api.service
-# wait ~5–10s for it to come back up, then confirm it is serving:
+```
+dev:restart { target: 'staging', confirm: true }
+# then confirm it is serving:
 curl -s -m5 http://127.0.0.1:3170/api/mcp -o /dev/null -w '%{http_code}\n'   # any non-000 = up
 ```
 
-> ⚠️ **Side effect:** the restart drops any in-flight staging (`:3170`) agents' connections. Check
-> `dev:sessions` / `coord:presence` first; if peers are mid-turn on `:3170`, coordinate before restarting.
+> ⚠️ **Never** shell out to a raw `systemctl --user restart papercup-staging-api.service` —
+> it bypasses `dev:restart`'s drain of in-flight `:3170` users AND its WI-4221 debounce
+> (uncoordinated raw restarts fired every ~5-6min for hours across the fleet). The
+> `dev:restart` tool drains concurrent users first and coalesces a restart requested within
+> ~2min of a peer's real one.
 
 > ⚠️ **Start a FRESH agent session AFTER the restart.** A session that began before the restart has a
 > pinned tool manifest and won't see the new tool.
