@@ -360,6 +360,10 @@ export async function computeMugWakeBrief(
         profile,
         workspaceId,
         limit: 3,
+        // P-005: tag this recall as the 'brief' surface. No dedup session —
+        // the Mug loop has no compaction epoch to reset, so a session would
+        // permanently suppress a memory after the first wake.
+        telemetrySurface: 'brief',
         heading: 'Background recall (fuzzy memory — may be stale; the standing facts above are authoritative)',
       });
       return block ?? '';

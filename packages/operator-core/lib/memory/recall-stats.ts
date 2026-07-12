@@ -5,8 +5,13 @@
  * Records what each memory recall actually returned, so the Learning tab
  * can tell "no relevant memory" (healthy zero) from "index degraded"
  * (zero-hit-rate spiking, top-score distribution collapsing, fragments
- * leaking back in). Two surfaces write here: the memory:search tool (pull)
- * and the pre-turn injection helper (push).
+ * leaking back in). The surfaces that write here: the memory:search tool
+ * (pull), the generic pre-turn injection helper (push), and — per
+ * memory-delivery-unification-2026-07-12 P-005 — each distinct injection PORT
+ * (D-006), so per-entry-point recall quality is measurable separately (an
+ * initialize prime that returns junk is a different regression from a
+ * turn-start delta that does). The surface column is free-text (no CHECK), so
+ * adding a port needs no migration — just a member here.
  *
  * Writes are FIRE-AND-FORGET — recall telemetry must never slow or fail a
  * turn. Callers invoke `recordRecallStats` without awaiting; all failures
@@ -15,10 +20,29 @@
 import type { Sql } from 'postgres';
 import type { MemoryEntry } from './backend';
 
-export type RecallSurface = 'search' | 'injection';
+/**
+ * The generic surfaces (`search` pull, `injection` push) plus the per-port
+ * labels the launch/injection ports stamp (memory-delivery-unification P-005 /
+ * D-006). `session.port` flows straight through as the surface, so these MUST
+ * stay in sync with the `port` values the ports pass (launch-profile /
+ * claim-port / the initialize + compact + turn-start callers). An unknown
+ * string still records fine (free-text column) — the union is the documented
+ * set, not a DB constraint.
+ */
+export type RecallSurface =
+  | 'search'
+  | 'injection'
+  | 'initialize'
+  | 'compact'
+  | 'turn-start'
+  | 'brief'
+  | 'orient'
+  | 'claim'
+  | 'create';
 
 export interface RecallStatsInput {
-  surface: RecallSurface;
+  /** The documented set (RecallSurface) OR any port string — free-text column. */
+  surface: RecallSurface | (string & {});
   /** The recall's result set (post score-floor, pre per-call caps). */
   entries: readonly MemoryEntry[];
 }

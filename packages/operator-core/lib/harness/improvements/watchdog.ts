@@ -668,7 +668,28 @@ function resolveRedTestRepoRoot(): string {
   return cachedRedTestRepoRoot;
 }
 
-const execFileP = promisify(execFile);
+// Lazily promisified (NOT `const execFileP = promisify(execFile)` at module scope): this
+// module sits behind a long, easy-to-hit transitive import chain (e.g.
+// release-actions.test.ts → blueprint-run-action → blueprint-steps/index →
+// ops/red-queen-drill → red-queen/run → red-queen/sandbox → here) reached by test files
+// that narrowly mock `node:child_process` with only `{ spawn }` for their OWN subprocess
+// assertions — under that mock the `execFile` import binding resolves to `undefined`, and
+// eagerly calling `promisify(undefined)` at module-eval time threw
+// "No 'execFile' export is defined on the 'node:child_process' mock" for every such
+// suite, even ones that never call `wasFilePathCommittedInRange`. Deferring the promisify
+// to first actual call (memoized, same pattern as `resolveRedTestRepoRoot` above) means a
+// transitive importer that never exercises this function never pays the cost — only a
+// suite that ACTUALLY calls it needs to mock `execFile` too.
+type ExecFileP = (
+  file: string,
+  args: string[],
+  opts: Record<string, unknown>,
+) => Promise<{ stdout: string; stderr: string }>;
+let cachedExecFileP: ExecFileP | null = null;
+function execFileP(file: string, args: string[], opts: Record<string, unknown>): Promise<{ stdout: string; stderr: string }> {
+  if (!cachedExecFileP) cachedExecFileP = promisify(execFile) as unknown as ExecFileP;
+  return cachedExecFileP(file, args, opts);
+}
 
 /**
  * Real IO `GitEditCheck`: does `filePath` have ≥1 commit whose author date
@@ -1967,6 +1988,18 @@ export function stalledClaimSignalsFromRows(
  * off the reconciled fleet_assignment view's `stalled` column (migration 358),
  * the SAME truth the reconciler + every reader use, with a longer min-age so only
  * genuinely-stuck claims raise the loud aggregate signal.
+ *
+ * EI-10125: a claim with NO fleet_assignment-tracked progress can still be a
+ * legitimately-documented hold (owner-pause, owner-gated wait, blocked-on-root-
+ * cause) recorded via work_items:checkpoint — which does NOT touch
+ * last_progress_at. Suppress a row whose work-item has a checkpoint
+ * (harness_shared.carry_notes, scope `workitem:<harness>:<id>`, mig 472/494 —
+ * the successor to the dropped work_item_checkpoints table) written more
+ * recently than `minMinutes` ago: a fresh checkpoint IS progress, just not the
+ * fleet_assignment-visible kind. Modeled on the same carry_notes join
+ * work-item-claims.ts#listActiveClaimFreshnessForOwner already uses (scope-only
+ * join, cross-workspace-safe, `note IS NOT NULL` so a cleared checkpoint reads
+ * as no-checkpoint).
  */
 export async function collectStalledClaimSignals(
   sql: Sql,
@@ -1975,14 +2008,20 @@ export async function collectStalledClaimSignals(
 ): Promise<WatchdogSignal[]> {
   const minMinutes = opts.stalledClaimMinutes ?? 30;
   const rows = await sql<StalledClaimRow[]>`
-    SELECT work_item_id, agent_id, harness_slug, detail,
-           EXTRACT(epoch FROM (now() - COALESCE(last_progress_at, claim_acquired_ts))) / 60 AS stalled_minutes
-      FROM harness_shared.fleet_assignment
-     WHERE source = 'work_item_claim'
-       AND stalled IS TRUE
-       AND workspace_id = ${workspaceId}
-       AND (now() - COALESCE(last_progress_at, claim_acquired_ts)) > make_interval(mins => ${minMinutes})
-     ORDER BY COALESCE(last_progress_at, claim_acquired_ts) ASC
+    SELECT fa.work_item_id, fa.agent_id, fa.harness_slug, fa.detail,
+           EXTRACT(epoch FROM (now() - COALESCE(fa.last_progress_at, fa.claim_acquired_ts))) / 60 AS stalled_minutes
+      FROM harness_shared.fleet_assignment fa
+     WHERE fa.source = 'work_item_claim'
+       AND fa.stalled IS TRUE
+       AND fa.workspace_id = ${workspaceId}
+       AND (now() - COALESCE(fa.last_progress_at, fa.claim_acquired_ts)) > make_interval(mins => ${minMinutes})
+       AND NOT EXISTS (
+         SELECT 1 FROM harness_shared.carry_notes cn
+          WHERE cn.scope = 'workitem:' || fa.harness_slug || ':' || fa.work_item_id
+            AND cn.note IS NOT NULL
+            AND cn.updated_ts > (extract(epoch from now()) * 1000)::bigint - (${minMinutes}::int * 60000)
+       )
+     ORDER BY COALESCE(fa.last_progress_at, fa.claim_acquired_ts) ASC
      LIMIT 50`;
   return stalledClaimSignalsFromRows(rows, { minMinutes });
 }

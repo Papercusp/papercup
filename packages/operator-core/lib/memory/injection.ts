@@ -116,6 +116,15 @@ export interface MemoryInjectionInput {
    * so they pass a small budget (~3-4k) instead of the global 16k default.
    */
   budgetChars?: number;
+  /**
+   * P-005 telemetry override: the recall-stats `surface` label for this call,
+   * for a port that has NO dedup session to carry `session.port` — the Mug/cup
+   * brief ('brief'), whose long-lived loop must NOT permanently dedup (no
+   * compaction epoch to reset it). When set it wins over `session?.port`;
+   * otherwise the surface is `session?.port ?? 'injection'`. Telemetry only —
+   * never affects recall/dedup.
+   */
+  telemetrySurface?: string;
 }
 
 /**
@@ -309,7 +318,15 @@ export async function buildMemoryContextBlock(
       try {
         const { sql } = getOrgPg();
         const { recordRecallStats } = await import('./recall-stats');
-        await recordRecallStats(sql, { surface: 'injection', entries: pulled });
+        // P-005: tag the recall with its injection PORT so per-entry-point
+        // recall quality is measurable separately. session.port carries the
+        // port for every launch/injection surface (initialize / compact /
+        // turn-start / claim / create / orient / brief); an unstamped generic
+        // injection falls back to 'injection'.
+        await recordRecallStats(sql, {
+          surface: input.telemetrySurface ?? input.session?.port ?? 'injection',
+          entries: pulled,
+        });
       } catch {
         /* swallow — telemetry never blocks a turn */
       }

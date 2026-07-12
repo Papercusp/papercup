@@ -190,6 +190,12 @@ export interface LaunchMemoryBlockInput {
    * passes a small budget so recall never dominates the response.
    */
   budgetChars?: number;
+  /**
+   * P-005 telemetry override: the recall-stats surface label, for a caller
+   * with no dedup session to carry it (the Mug/cup brief passes 'brief').
+   * Telemetry only.
+   */
+  telemetrySurface?: string;
 }
 
 /** Matches the `(id=<uuid>)` suffix injection.ts renders per line. */
@@ -224,6 +230,7 @@ export async function buildLaunchMemoryBlock(
         queryContext: query,
         ...(input.limit ? { limit: input.limit } : {}),
         ...(input.budgetChars ? { budgetChars: input.budgetChars } : {}),
+        ...(input.telemetrySurface ? { telemetrySurface: input.telemetrySurface } : {}),
         ...(input.session ? { session: input.session } : {}),
         heading,
       });
