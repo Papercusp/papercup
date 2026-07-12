@@ -320,9 +320,10 @@ describe('resumeKickoffText (P-011: the first turn of a scripted resume/fork)', 
 
   it('never falls back to a server plan kickoff — a resume does no bootstrap POST', () => {
     // kickoffPositionalArgs' res.kickoffPrompt leg must not leak into the resume path.
+    const planKickoff = 'Begin: advance this plan';
     const args = parseArgs(['--no-picker', '--resume=sid-1']);
     expect(resumeKickoffText(args, {})).toBeNull();
-    expect(kickoffPositionalArgs({ kickoffPrompt: KICK, planSlug: 'p' }, args)).toEqual([KICK]);
+    expect(kickoffPositionalArgs({ kickoffPrompt: planKickoff, planSlug: 'p' }, args)).toEqual([planKickoff]);
   });
 });
 

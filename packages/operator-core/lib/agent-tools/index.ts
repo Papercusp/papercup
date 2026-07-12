@@ -744,6 +744,12 @@ import './scorecards/list';
 // COMPLETE scorecard since the last wake, or silently skipped (stale) / truncated (partial-only)?
 import './scorecards/freshness';
 
+// System health — the Health tab's owner acknowledge/snooze verbs
+// (health-tab-v2-2026-07-12 P-004, D-A: the one deliberate amendment to the
+// tab's read-only stance — a view-level attention judgment, not a control).
+import './system-health/ack';
+import './system-health/unack';
+
 // Work items — the UNIFIED work-item surface (unify-work-items-2026-06-04 D-007).
 // One `work_item` type discriminated by `kind` (feature|research-task|chunk|bug|change);
 // a facade over the two per-kind tables (harness_features_consolidated + engineer_issues).

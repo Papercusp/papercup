@@ -97,6 +97,15 @@ describe('runComputerAction — capability:computer handler', () => {
     await expect(runComputerAction({ action: 'screenshot' })).rejects.toThrow(/no sandbox desktop is leased/);
   });
 
+  // EI-10392: the no-lease refusal must be ACTIONABLE — name the remediation tool
+  // (computer:provision_desktop) so an agent self-remediates instead of retrying the
+  // same dead-end call (the 3× identical-error recurrence the watchdog flagged).
+  it('the no-lease refusal points at computer:provision_desktop to self-remediate', async () => {
+    delete process.env.PAPERCUSP_COMPUTER_DISPLAY;
+    __setComputerExecForTests(recordingExec().exec);
+    await expect(runComputerAction({ action: 'screenshot' })).rejects.toThrow(/computer:provision_desktop/);
+  });
+
   it('refuses the host display :0', async () => {
     process.env.PAPERCUSP_COMPUTER_DISPLAY = ':0';
     __setComputerExecForTests(recordingExec().exec);

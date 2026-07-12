@@ -136,7 +136,9 @@ function resolveBoundDisplay(ctx: ComputerCtx): DesktopTarget {
     throw new Error(
       'capability:computer — no sandbox desktop is leased to this agent. A desktop must be ' +
         'provisioned (a leased Xvfb/VNC display) for this hive before the agent can operate it. ' +
-        '(Refusing to default to any display — the host :0 is never operable.)',
+        '(Refusing to default to any display — the host :0 is never operable.) ' +
+        'To fix: call computer:provision_desktop { pot: <your hive slug> } first, then retry — ' +
+        'do NOT re-call capability:computer until a desktop is leased (computer:list_desktops shows the leases).',
     );
   }
   assertSandboxDisplay(display); // throws on :0 / malformed

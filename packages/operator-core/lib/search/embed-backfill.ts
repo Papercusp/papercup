@@ -576,6 +576,26 @@ export async function runEmbedBackfillOnce(): Promise<void> {
   } catch (err) {
     console.warn('[memory-journal] drain failed:', (err as Error).message);
   }
+
+  // Federated-memory vector backfill (EI-10405): a memory projected from a peer
+  // hive lands as canonical TEXT with NO vector — the wire carries none by design
+  // (EI-9308: "let each peer re-embed locally"), and the projection's raw-SQL
+  // upsert bypasses the only code that writes memory_vec_* rows. Until it is
+  // embedded HERE, semantic recall cannot return it at all. Rides this tick for
+  // the same reason the journal drain does (both want the embedder back), with
+  // the same bounded + non-fatal shape.
+  try {
+    const { backfillFederatedMemoryVectors } = await import('../memory/federated-vec-backfill');
+    const r = await backfillFederatedMemoryVectors();
+    if (r.embedded > 0 || r.failed > 0) {
+      console.log(
+        `[memory-fed-vec] backfill: embedded=${r.embedded} failed=${r.failed} ` +
+          `scanned=${r.scanned} (failed rows retry next tick)`,
+      );
+    }
+  } catch (err) {
+    console.warn('[memory-fed-vec] backfill failed:', (err as Error).message);
+  }
 }
 
 // Legacy startEmbedBackfillWorker/stopEmbedBackfillWorker removed (consolidation
