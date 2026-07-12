@@ -165,10 +165,14 @@ export default function SwarmTab({ active }: { active: boolean }) {
   const t = useLexicon();
   const [selected, setSelected] = useQueryState('lsa', parseAsString);
 
-  // The SAME workspace-wide, fleet-stamped roster the agents-running pill reads.
+  // The SAME workspace-wide, fleet-stamped roster the agents-running pill reads —
+  // deliberately with the IDENTICAL args, so the two surfaces share one sync cache
+  // entry (one resolve, one push) instead of issuing two near-duplicate queries.
+  // (`endedLimit` is `.positive()` server-side, so 0 is not a legal "don't fetch
+  // ended" — it fails zod validation. We ignore `ended` here regardless.)
   const roster = useSyncQuery<RosterResponse>({
     queryName: 'advRoster.list',
-    args: { workspaceId: null, endedLimit: 0 },
+    args: { workspaceId: null, endedLimit: 20 },
     enabled: active,
     staleTime: 8_000,
   });

@@ -1,6 +1,6 @@
 ---
 title: "Prove it discriminates before you let it act: thresholds that cannot separate, selectors that cannot select"
-description: "Four consumers thresholded a score that could not separate; a fifth joined on a ref that could not select. Same defect: a decision procedure allowed to ACT without anyone ever computing what it actually does on real data. The audit, and why a mechanism that cannot be certain must advise rather than act."
+description: "Six instances, three shapes: thresholds that cannot separate, a selector that cannot select, a metric that cannot be nonzero. One defect — a decision procedure allowed to ACT without anyone computing what it does on real data. Why the class is invisible (a decision is not an event), and why the proposed watchdog for it walked straight into the same trap."
 discovered: 2026-07-12
 tags: ["memory", "thresholds", "selectors", "contracts", "auditing", "silent-failure", "learning-loop"]
 status: active
@@ -19,7 +19,8 @@ documents:
 > on real data — the live distribution, the live match set — and look at it.** Every instance below
 > shipped, and in each one that single check was never performed by anyone.
 
-It has now been found five times in this tree, in two shapes.
+It has now been found **six times in this tree, in three shapes** — and a seventh time in a *proposed
+fix for it*, which is the subject of the last section.
 
 ## Shape 1 — a THRESHOLD that cannot SEPARATE
 
@@ -147,6 +148,56 @@ nothing about whether the funnel could ever report a nonzero — the same blindn
    zero forever (EI-10607).
 7. **Then sweep every other consumer of the same field.** Each was written against the semantics
    that field had *when it was written*, and nothing stops the producer changing them underneath.
+
+## Why the whole class is invisible: a DECISION is not an EVENT
+
+The obvious follow-up to six instances is *"why does nobody catch these?"* — and the obvious answer,
+*"add a watchdog for degenerate gates,"* was filed as EI-10609: alert on any gate whose live
+fire-rate is ~0% or ~100% in `tool_invocations`. It came with a pre-registered kill criterion, and
+**the cheap experiment killed it.** Over 30d, n=208 tools with ≥20 calls:
+
+| gate (known BROKEN) | calls | refusals recorded | reads as |
+|---|---|---|---|
+| `meta:define-datatype` — refuses **100%** of declarations | 17 | **0** | 0.0%, flawless |
+| `coord:orient` — admits **nothing** | 3877 | 25 | 0.6%, healthy |
+| `memory:remember` — suppresses **nothing** | 572 | 131 | normal |
+| `loop:checkpoint` — destroyed **40** records | 4365 | 61 | 1.4%, healthy |
+| `improvements:capture` — metric pinned at **0** | 2778 | 226 | normal |
+
+**Zero of five true positives.** The only gate at a 100% fire-rate was `chat:ask_choice` (85/85) — a
+healthy ask-the-human tool — and ~0% turned out to be the *modal* value: 82 of 208 tools sit at
+exactly zero. The detector had a 100% false-negative rate and its one hit was a false positive.
+
+`meta:define-datatype` is the refutation in a single line: the gate we *proved* refuses 100% of
+declarations records **zero refusals**, because its refusal is a **soft verdict inside an `ok`
+payload**.
+
+> **A gate's DECISION is not an event.** `tool_invocations` records what the tool *returned*, never
+> what it *decided* on the way there. Every instance in this doc is an internal admit / suppress /
+> refuse / propagate / count that leaves **no trace at all**. `error_code` is a *proxy* for the
+> decision — and the proxy is uncorrelated with it.
+
+That is the real reason this class is only ever found by hand: **there is nothing to look at.** The
+fix is not to mine the existing telemetry harder, it is to **emit the decision** (`gate`, `verdict`,
+the compared `value`, the `threshold`) — then `max(value) < threshold` is a *proof* of an unreachable
+branch, not a heuristic. Filed as EI-10619 under the constraint-removal lens.
+
+## The trap is recursive — the proposed fix walked into it
+
+EI-10609 proposed to **ACT** (page a human) on a discriminator — fire-rate — that **nobody had shown
+could SEPARATE.** That is Shape 1, exactly, one rung up: a threshold applied to a quantity whose
+distribution on real data had never been computed.
+
+It was filed by the same agent, in the same session, that wrote this document.
+
+> **Knowing the rule does not exempt you from it.** The instinct that produces the bug — *"this
+> quantity obviously separates, I don't need to check"* — is the same instinct whether you are
+> writing the gate or writing the gate's watchdog. The only thing that saved EI-10609 from shipping
+> as a false-positive generator was that it carried a **falsification criterion it could not wriggle
+> out of**, and that the criterion was **run before any code was written**.
+>
+> Write the kill condition into the idea *at filing time*, when you are not yet invested in it. Then
+> run it first.
 
 ## The meta-lesson, now earned three separate ways
 
