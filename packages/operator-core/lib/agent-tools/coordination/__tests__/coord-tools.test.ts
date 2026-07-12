@@ -36,8 +36,25 @@ vi.mock('../identity', () => ({
 // roster (a PG read). For these in-memory handler tests the resolver is a
 // deterministic pass-through — its own roster matching is covered elsewhere, and
 // we only assert the handler wiring (open → accept → list).
+//
+// EI-10011: this is a FULL-module mock (no importOriginal), so every export
+// `../inbox-wake.ts` pulls from `../recipient-resolve` must be present here too,
+// not just the one this suite's own assertions touch — coord:handoff's
+// fire-and-forget wake-on-open calls into inbox-wake.ts's wakeRecipients(),
+// which imports `isSelectorOrWildcard` and `knownOwnerIdSet` alongside
+// `resolveBestEffortAgainstRoster`. EI-9971 added `knownOwnerIdSet` to the real
+// module and wired it into inbox-wake.ts without this mock being updated to
+// match — the missing export threw ("No 'knownOwnerIdSet' export..."), caught
+// by handoff.ts's fail-soft try/catch, which console.warn'd and tripped
+// vitest-fail-on-console (the actual observed failure had nothing to do with
+// the warn itself). `isSelectorOrWildcard` is pure and stable — reused verbatim
+// rather than re-implemented; `knownOwnerIdSet` mocks to `null` (the
+// "roster check unavailable/skip" default — mirrors inbox-wake.test.ts's own
+// `vi.fn(async () => null)` convention).
 vi.mock('../recipient-resolve', () => ({
   resolveBestEffortAgainstRoster: async (to: string[]) => [...to],
+  isSelectorOrWildcard: (id: string) => id === '*' || id === 'human' || id === '' || id.startsWith('@'),
+  knownOwnerIdSet: async () => null,
 }));
 
 // coord:handoff opens a durable handoff and then fire-and-forget wakes the
@@ -257,6 +274,18 @@ describe('coord:escalations handler status filter', () => {
 });
 
 describe('coord:handoff + coord:handoffs handlers (open → accept → list filter)', () => {
+  let consoleWarnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    // Opening a handoff to a concrete addressee fires the wake-on-open fanout,
+    // which has no wake infra under the InMemoryCoordLog and fail-softs with a
+    // `[coord:handoff] wake-on-open … failed` warn — expected noise, not a failure.
+    consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    consoleWarnSpy.mockRestore();
+  });
+
   it('opens a handoff, accepts it, and the listing filters by status', async () => {
     const opened = parse(
       await run(handoffTool, {

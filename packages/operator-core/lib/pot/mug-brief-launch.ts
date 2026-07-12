@@ -332,24 +332,30 @@ export async function computeMugWakeBrief(
       )
       .catch(() => '');
     // L1d: mem0 background recall — fuzzy sibling of the facts fold. Harness
-    // memory pool only (the Mug is not a user), timeout-bounded, fail-soft.
+    // memory pool (the Mug is not a user), timeout-bounded, fail-soft.
+    //
+    // EI-10015: previously a bespoke `getMemoryBackend().search(..., { scope:
+    // [`harness:${installSlug}`] })` — this queried the harness pool ONLY and
+    // structurally EXCLUDED the hive:<slug> pool entirely, so learning-pack
+    // seeded rows and pot-organic conventions (both land in hive scope, per
+    // lib/memory/hive-scope.ts) never reached the Mug. It also bypassed the
+    // shared injection pipeline: no relevance floor (raw top-3, unfiltered),
+    // no per-turn dedup watermark, no muted-pack filter, no feedback
+    // tombstone check. Now routed through the SAME buildMemoryContextBlock
+    // every other memory-injection surface uses: it resolves the owning hive
+    // pool(s) from harnessSlugs automatically (resolveHiveSlugsForHarnesses),
+    // applies the full filter pipeline, and is itself timeout-bounded +
+    // fail-soft (returns null on any degradation, never throws).
     const memoryFold = await (async () => {
-      const { getMemoryBackend } = await import('../memory/backend');
-      const { withMemoryToolTimeout } = await import('../memory/op-deadline');
-      const hits = await withMemoryToolTimeout(
-        getMemoryBackend().search(`mug ${installSlug} pot operations priorities`, {
-          scope: [`harness:${installSlug}`],
-          limit: 3,
-        }),
-        'mug-brief memory recall',
-      );
-      const lines = (hits ?? [])
-        .slice(0, 3)
-        .map((h) => (h.text?.trim() ? `- ${h.text.trim().slice(0, 200)}` : ''))
-        .filter(Boolean);
-      return lines.length
-        ? `### Background recall (fuzzy memory — may be stale; the standing facts above are authoritative)\n${lines.join('\n')}`
-        : '';
+      const { buildMemoryContextBlock } = await import('../memory/injection');
+      const block = await buildMemoryContextBlock({
+        workspaceId,
+        harnessSlugs: [installSlug],
+        queryContext: `mug ${installSlug} pot operations priorities`,
+        limit: 3,
+        heading: 'Background recall (fuzzy memory — may be stale; the standing facts above are authoritative)',
+      });
+      return block ?? '';
     })().catch(() => '');
     return renderMugBrief({ floor, carryJournal, factsFold, memoryFold });
   } catch (err) {

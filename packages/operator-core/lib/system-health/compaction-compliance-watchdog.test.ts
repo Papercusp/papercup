@@ -446,6 +446,22 @@ describe('force-compact rung (agent-managed-compaction P-012)', () => {
     expect(payload.data).toContain('≈ 1.3 × your configured soft limit of 300k');
   });
 
+  it('REPRO EI-9982: a 20k-limit session at 14.8× (295623 est) with a live host force-compacts', async () => {
+    // The P-005 rehearsal probe: config:set-compaction-limit { limit: 20000 }, then
+    // read 12 large files → 295623 est (1478% of the soft limit). No --model recorded
+    // ⇒ window unknown ⇒ overshoot bound (20000 × 1.2 = 24000). 295623 ≫ 24000 ⇒ force.
+    specMock.mockResolvedValue(null);
+    estimateMock.mockResolvedValue(295_623);
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/probe.sock', caps: ['compact'] });
+    hostSupportsMock.mockReturnValue(true);
+    const out = await checkCompactionCompliance(
+      fakeSql({ seeded: [{ owner_id: 'probe', owner_label: 'su · probe', compaction_limit: 20_000 }] }),
+    );
+    expect(out.overLimit).toEqual(['probe']);
+    expect(out.forceCompacted).toEqual(['probe']);
+    expect(injectMock).toHaveBeenCalledTimes(1);
+  });
+
   it('unknown window ⇒ falls back to the overshoot-factor bound (limit × 1.2); a spawn-record [1m] spec restores the full band', async () => {
     specMock.mockResolvedValue(null); // fs/argv resolver blind (the fleet-bee case)
     estimateMock.mockResolvedValue(370_000); // 300k limit: ≥ 1.2 × 300k = 360k, < 1.3 × 300k = 390k
