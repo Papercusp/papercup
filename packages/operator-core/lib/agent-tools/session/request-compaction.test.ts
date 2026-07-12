@@ -14,7 +14,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { truncateHint } from './request-compaction';
+import { truncateHint, COMPACT_PROVENANCE_MARKER } from './request-compaction';
 
 const findLiveHost = vi.fn();
 const injectIntoHost = vi.fn();

@@ -29,6 +29,31 @@ const DEFAULT_FOCUS =
   'keep the identity block, the active plan and its open items, unverified claims awaiting owner confirmation, and owner-gated walls; drop resolved tool output and superseded state.';
 
 /**
+ * EI-10135: a harness-issued `/compact` is a slash COMMAND, so it cannot carry a
+ * `⟦turn-origin⟧` envelope (an envelope prefix breaks the command) NOR a
+ * UserPromptSubmit-hook provenance stamp — Claude Code does NOT fire the prompt
+ * hook for slash commands (verified empirically 2026-07-12: a self-compaction ran
+ * and resumed, yet no `/compact` prompt ever reached the hook; the turn is recorded
+ * as a `<command-name>/compact</command-name>` client command, not a model prompt).
+ * Absent this, the command turn renders byte-identical to an owner-typed `/compact`,
+ * so a reader (human or a later agent) cannot tell the machine issued it — the exact
+ * owner/agent confusion the turn-provenance system exists to kill (turn-provenance-
+ * owner-vs-agent).
+ *
+ * This VISIBLE marker, PREFIXED to the focus of the harness-issued `/compact`, makes
+ * the command turn self-identifying in the transcript in EVERY path (auto-continue
+ * AND the plain-`mode:'turn'` fallback). It is a READER-FACING label, deliberately
+ * NOT a ledger-verified stamp (which `/compact` structurally cannot have): it never
+ * reaches the classifier (which skips `/compact`), so — unlike the ad-hoc labels the
+ * ledger protocol replaced — it cannot cause a false owner/agent CLASSIFICATION. The
+ * hook-VERIFIED `⟦turn-origin:self-compaction⟧` auto-continue continuation remains
+ * the machine-verified signal; this marker only covers the command line itself and
+ * the fallback path that has no tagged continuation. It is applied ONLY to the
+ * `/compact` command's focus — NOT to the continuation note (already tagged).
+ */
+export const COMPACT_PROVENANCE_MARKER = '⟦machine-issued self-compaction — not owner-typed⟧';
+
+/**
  * compaction-continuity-hardening-2026-07-07 P-003 + EI-8987: ONE best-effort
  * carry-brief build, shared by the default-focus derivation AND the stale-
  * checkpoint warning below (was two separate buildCarryBrief calls — wasteful,
@@ -238,13 +263,19 @@ export default defineTool({
         return note; // provenance must never break a compaction
       }
     })();
+    // EI-10135: prefix the machine-origin marker to the focus of the actual /compact
+    // command (BOTH the host-driven mode:'compact' and the plain mode:'turn' fallback),
+    // so the command turn is self-identifying in the transcript. Kept OFF the plain
+    // `focus` var so it never leaks into the continuation note (already tagged) or the
+    // provenance lint below — only the injected /compact command carries it.
+    const compactFocus = `${COMPACT_PROVENANCE_MARKER} ${focus}`;
     const ok = canAutoContinue
       ? await injectIntoHost(host.sock, {
           mode: 'compact',
           data: continuation,
-          focus,
+          focus: compactFocus,
         })
-      : await injectIntoHost(host.sock, { mode: 'turn', data: `/compact ${focus}` });
+      : await injectIntoHost(host.sock, { mode: 'turn', data: `/compact ${compactFocus}` });
     // EI-8987: the compaction is already QUEUED at this point (idle-gated — it fires
     // after THIS turn ends), so a warning here is still actionable: the turn hasn't
     // ended yet, so the agent reading this result can fire one more
