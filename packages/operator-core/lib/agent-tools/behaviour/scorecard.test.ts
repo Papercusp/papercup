@@ -11,6 +11,8 @@
  */
 import { test, vi } from 'vitest';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { BehaviourCheck } from '../../behaviour-suite/assertions';
 import { buildReport } from '../../behaviour-suite/report';
 import {
@@ -171,4 +173,38 @@ vi.mock('../../rubrics', () => ({
 test('resolveSuAgentBehaviorCriteriaKeys falls back to the static snapshot when the live rubric read fails (failure FORCED via mock)', async () => {
   const keys = await resolveSuAgentBehaviorCriteriaKeys();
   assert.deepEqual([...keys].sort(), [...SU_AGENT_BEHAVIOR_CRITERIA].sort());
+});
+
+// EI-9936: the tree seed rubrics/su-agent-behavior/rubric.json (read directly by any agent
+// grepping the repo, and the declared "mirrored into harness_plans" SOURCE OF TRUTH per the
+// EI-8814 header above) silently drifted from the live rubric store on 2026-07-09/12 — the
+// live store gained the batched-tool-calls criterion and a 6-value ratingScale
+// (exemplary/pass/partial/fail/severe/unknown) while the tree file stayed on the old 4-value
+// scale (pass/partial/fail/unknown) and 21 criteria. Nothing caught it: an agent reading the
+// repo file (as happened live) got the stale scale and could emit ratings against a vocabulary
+// the store no longer accepts. Pure/no-DB by design (same rationale as the mocked-fallback test
+// above) so it runs everywhere the live store isn't reachable; compares the tree file against
+// the SAME static snapshot the runtime fallback uses, so the two drift checks stay coupled.
+test('EI-9936: tree rubric.json seed matches the live-rubric criterion key set (no silent mirror rot)', () => {
+  const seedPath = join(__dirname, '../../../../../rubrics/su-agent-behavior/rubric.json');
+  const seed = JSON.parse(readFileSync(seedPath, 'utf8')) as {
+    criteria: Array<{ key: string }>;
+    ratingScale: string[];
+  };
+  const seedKeys = seed.criteria.map((c) => c.key).sort();
+  assert.deepEqual(
+    seedKeys,
+    [...SU_AGENT_BEHAVIOR_CRITERIA].sort(),
+    'rubrics/su-agent-behavior/rubric.json criteria keys drifted from the SU_AGENT_BEHAVIOR_CRITERIA ' +
+      'runtime fallback (and, by the coupling above, the live rubric store) — re-sync the seed file ' +
+      '(rubrics:get { rubricId: "su-agent-behavior" } is the live source) or update the fallback, never let them diverge silently.',
+  );
+  // v0.3.0 (2026-07-09, owner-directed 5-level expansion) — see scoreOverridesForScale.
+  assert.deepEqual(
+    seed.ratingScale,
+    ['exemplary', 'pass', 'partial', 'fail', 'severe', 'unknown'],
+    'rubrics/su-agent-behavior/rubric.json ratingScale drifted from the live v0.3.0 5-level scale ' +
+      '(exemplary/pass/partial/fail/severe/unknown) — an agent reading the tree file would emit ' +
+      'ratings against a stale vocabulary the store no longer accepts.',
+  );
 });

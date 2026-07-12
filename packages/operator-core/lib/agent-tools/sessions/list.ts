@@ -17,10 +17,11 @@ export default defineTool({
   crossWorkspace: true,
   capability: 'search:read',
   description:
-    'List indexed agent sessions across ALL clients (claude/omp/codex/harness chats) — newest first, with turn counts, owner, cwd, and time range. Filter by owner (self), source_kind, cwd substring, or time.',
+    'List indexed agent sessions across ALL clients (claude/omp/codex/harness chats) — newest first, with size/effort counts, owner, cwd, and time range. Filter by owner (self), source_kind, cwd substring, or time. ' +
+    'SIZE UNITS (EI-9970 — read this before comparing sessions): `turns` is the count of rows in the INDEXED TEXT-TURN table for that session — real user prompts + assistant replies that carried actual text and passed the ingest filter. It EXCLUDES tool_use/tool_result content and thinking-only lines by design (those are recall noise, not turn count), so it is NOT a count of raw transcript records and NOT one row per model API call — do not use it alone for cross-session cost/effort comparisons. For that, use: `prompt_count` (real user-typed prompts — the same filter as `turns`\' user rows, but present even for a session with zero indexed text turns), `response_count` (DISTINCT model-inference calls, deduped by the client\'s own request/message id — NOT a raw assistant-line count, since one model turn can legitimately span several raw lines e.g. a thinking stub + a tool call + the final text), and `tool_call_count` (real tool invocations). response_count/tool_call_count are null for source_kind=agent_chat (that transcript shape carries no tool-call signal).',
   guidance: {
     when:
-      '"What sessions has agent X had", "find my session from yesterday", or picking a session id for sessions:read. Covers the whole fleet, not one client.',
+      '"What sessions has agent X had", "find my session from yesterday", or picking a session id for sessions:read. Covers the whole fleet, not one client. For a COST/EFFORT audit across sessions, compare `prompt_count` / `response_count` / `tool_call_count`, not `turns` — see the description for why.',
     notWhen:
       'Searching CONTENT — sessions:search. Live "who is on what" — coord:presence / fleet:assignments.',
     chaining: 'session_id → sessions:read / sessions:search { session }.',
@@ -42,21 +43,47 @@ export default defineTool({
     const limit = args.limit ?? 30;
     const owner = args.owner === 'self' ? (resolveAgentIdentity(ctx).ownerId ?? '') : (args.owner ?? null);
 
+    // EI-9970: `turns` (session_turns row count) and the real prompt/
+    // response/tool-call counts (session_ingest_state, accumulated at
+    // ingest time over EVERY raw line — a superset of session_turns'
+    // TEXT-TURNS-ONLY scope) are aggregated SEPARATELY, each grouped down
+    // to one row per (source_kind, session_id) BEFORE being joined — a
+    // direct join of the two raw tables would fan out session_turns' rows
+    // by however many session_ingest_state rows share that session_id
+    // (rare but possible — a rotated/split log file) and silently inflate
+    // `turns` itself, which is exactly the kind of miscount this fix
+    // exists to stop reintroducing.
     const rows = await ctx.tx<Array<{
-      source_kind: string; session_id: string; turns: number; owner: string | null;
-      harness_slug: string | null; cwd: string | null; first_ts: string | null; last_ts: string | null;
+      source_kind: string; session_id: string; turns: number; prompt_count: number;
+      owner: string | null; harness_slug: string | null; cwd: string | null;
+      first_ts: string | null; last_ts: string | null;
+      response_count: number | null; tool_call_count: number | null;
     }>>`
-      SELECT source_kind, session_id, count(*)::int AS turns,
-             max(owner) AS owner, max(harness_slug) AS harness_slug, max(cwd) AS cwd,
-             min(ts)::text AS first_ts, max(ts)::text AS last_ts
-        FROM harness_shared.session_turns
-       WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
-         AND (${owner}::text IS NULL OR owner = ${owner})
-         AND (${args.source_kind ?? null}::text IS NULL OR source_kind = ${args.source_kind ?? null})
-         AND (${args.cwd_contains ?? null}::text IS NULL OR cwd ILIKE '%' || ${args.cwd_contains ?? null} || '%')
-         AND (${args.since ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${args.since ?? null}::timestamptz)
-    GROUP BY source_kind, session_id
-    ORDER BY max(COALESCE(ts, ingested_at)) DESC
+      WITH turns_agg AS (
+        SELECT source_kind, session_id, count(*)::int AS turns,
+               count(*) FILTER (WHERE speaker = 'user')::int AS prompt_count,
+               max(owner) AS owner, max(harness_slug) AS harness_slug, max(cwd) AS cwd,
+               min(ts)::text AS first_ts, max(ts)::text AS last_ts
+          FROM harness_shared.session_turns
+         WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
+           AND (${owner}::text IS NULL OR owner = ${owner})
+           AND (${args.source_kind ?? null}::text IS NULL OR source_kind = ${args.source_kind ?? null})
+           AND (${args.cwd_contains ?? null}::text IS NULL OR cwd ILIKE '%' || ${args.cwd_contains ?? null} || '%')
+           AND (${args.since ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${args.since ?? null}::timestamptz)
+         GROUP BY source_kind, session_id
+      ),
+      state_agg AS (
+        SELECT source_kind, session_id,
+               sum(response_count)::int AS response_count,
+               sum(tool_call_count)::int AS tool_call_count
+          FROM harness_shared.session_ingest_state
+         WHERE session_id IS NOT NULL
+         GROUP BY source_kind, session_id
+      )
+      SELECT t.*, s.response_count, s.tool_call_count
+        FROM turns_agg t
+        LEFT JOIN state_agg s USING (source_kind, session_id)
+       ORDER BY t.last_ts DESC NULLS LAST
        LIMIT ${limit}
     `;
 
@@ -66,7 +93,9 @@ export default defineTool({
         text: JSON.stringify({
           ok: true,
           count: rows.length,
-          note: 'Indexed sessions only (ingest window ~45d). Raw pre-window files: dev:claude_session / dev:omp_session.',
+          note:
+            'Indexed sessions only (ingest window ~45d). Raw pre-window files: dev:claude_session / dev:omp_session. ' +
+            'UNITS (EI-9970): `turns` = indexed TEXT turns only (excludes tool_use/tool_result/thinking content) — for cost/effort audits use prompt_count/response_count/tool_call_count instead (see this tool\'s description for exact definitions). response_count/tool_call_count are null for source_kind=agent_chat (no tool-call signal in that transcript shape).',
           sessions: rows,
         }),
       }],

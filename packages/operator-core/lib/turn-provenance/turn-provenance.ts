@@ -298,9 +298,39 @@ export function tagTurnForInjection(args: {
   return { taggedText: `${envelope}\n${args.text}`, envelope, nonce, origin, ledgerWritten };
 }
 
+// ─── Machine-surface detection ───────────────────────────────────────────────
+
+/**
+ * Known machine-generated prompt surfaces the CLI injects INTERNALLY, which we
+ * cannot enroll (no envelope, no ledger row — like native auto-compaction
+ * continuations). The clearest is Claude's background-task completion
+ * notification, which self-labels `[SYSTEM NOTIFICATION - NOT USER INPUT]`.
+ *
+ * Absent this guard the classifier's no-envelope + no-match branch stamps such
+ * a turn OWNER (interactive) — the exact worst-case FALSE-OWNER
+ * misclassification this protocol exists to kill (EI-9904). A banner match
+ * proves the turn is NOT the human owner, even though we can't ledger-VERIFY
+ * an agent origin; classified `machine-surface` rather than owner.
+ *
+ * Deliberately specific — the banner literally self-declares "NOT USER INPUT",
+ * so a false positive on genuine owner input is near-impossible; and biasing a
+ * banner-quoting turn toward not-owner is the SAFE direction (a false OWNER is
+ * the failure mode, per D-002). Keep in lockstep with
+ * apps/operator/scripts/hooks/cc/userpromptsubmit-provenance.sh.
+ */
+const MACHINE_SURFACE_RE = /\[\s*SYSTEM NOTIFICATION\b[^\]]*\bNOT USER INPUT\b[^\]]*\]/i;
+
+export function detectMachineSurface(promptText: string): boolean {
+  return MACHINE_SURFACE_RE.test(promptText ?? '');
+}
+
 // ─── Classifier ─────────────────────────────────────────────────────────────
 
-export type ProvenanceVerdict = 'verified-agent' | 'unverified-claim' | 'owner-interactive';
+export type ProvenanceVerdict =
+  | 'verified-agent'
+  | 'unverified-claim'
+  | 'owner-interactive'
+  | 'machine-surface';
 
 export interface ClassifyResult {
   verdict: ProvenanceVerdict;
