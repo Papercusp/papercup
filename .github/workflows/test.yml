@@ -161,6 +161,14 @@ jobs:
       - name: Lint affected-set gate integrity
         run: npm run lint:affected-gate
 
+      # Workspace-deps-complete guard (EI-9831): a workspace that imports a local
+      # @papercusp/* package without declaring it is invisible to the affected-set
+      # reverse-dep walk (same failure class as lint:affected-gate's memory-only check
+      # #4, generalized to every local package). GATING on a NEW undeclared edge; a
+      # shrink-to-empty BASELINE grandfathers the 60 pre-existing edges found 2026-07-12.
+      - name: Lint workspace deps complete
+        run: npm run lint:workspace-deps-complete
+
       # @restart retirement guard: the shared libs were renamed @restart/* ->
       # @papercusp/* (papercusp-systems-abstraction-2026-05-29). GATING — fails
       # the build with a "use @papercusp/<name>" message if any @restart/* import

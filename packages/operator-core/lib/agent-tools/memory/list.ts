@@ -12,7 +12,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { getMemoryBackend } from '../../memory/backend';
+import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
 import { MemoryTimeoutError, withMemoryToolTimeout } from '../../memory/op-deadline';
 import { getSessionUserOrDefault } from '../../auth';
 import { toWireRow } from './search';
