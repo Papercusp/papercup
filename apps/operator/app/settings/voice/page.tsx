@@ -922,7 +922,7 @@ export default function VoiceSettingsPage() {
         </section>
       )}
 
-      {/* ── EXISTING WAKE-WORD + RATE + PER-ROLE VOICES ──────────── */}
+      {/* ── WAKE WORD + NOISE SUPPRESSION ────────────────────────── */}
       <section className="pc-settings-section">
         <h2>Wake word (always-on mode)</h2>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

@@ -21,6 +21,7 @@ import { LivenessDot } from '@/app/coord/presence-ui';
 import AgentInspectorModal from '@/app/harness/AgentInspectorModal';
 import { ThinkingDot } from '@/app/harness/AgentThinkingStream';
 import { InactiveSessionsSection, SessionSearchResults, SessionsSearchInput } from './AgentsPillSessions';
+import { useLexicon } from '@/lib/useLexicon';
 
 /** The subset of a server RosterEntry (adv-roster.ts) this control reads. The
  *  fleet fields are stamped by resolveFleetInfoByOwner; the base frontend
@@ -262,15 +263,43 @@ interface RosterResponse {
 
 /** The cup-cast glyph vocabulary (restore-pot-lexicon D-006) — matches the
  *  zellij roster (apps/tui agent_pane_kind.rs) + AdvAgentsPanel AGENT_KIND_GLYPH.
- *  queen=Mug 🍵 · overwatch=Kettle 🫖 · sentinel=Papercup 🥤 · bee(worker)=☕. */
+ *  mug=☕ · kettle=🫖 · cup(worker)=🍵 · papercup=🥤.
+ *
+ *  Owner 2026-07-12: D-006 assigned the MUG a teacup (🍵) and the worker CUP the
+ *  actual coffee-mug (☕) — backwards. Swapped here and in the two sibling maps.
+ *
+ *  Both generations of pane-kind id are listed (WI-2932): `agentPaneKind` may
+ *  still arrive as the pre-rename wire word, so a mixed-generation roster must
+ *  render identically. The LEGEND below no longer prints these raw keys — it
+ *  routes the display words through the lexicon (see KIND_LEGEND). */
 const KIND_GLYPH: Record<string, string> = {
-  queen: '🍵',
+  queen: '☕',
   overwatch: '🫖',
-  bee: '☕',
+  bee: '🍵',
   sentinel: '🥤',
   planner: '📋',
   su: '🛠',
+  mug: '☕',
+  kettle: '🫖',
+  cup: '🍵',
+  papercup: '🥤',
 };
+
+/** The legend rows, in cast order. `kind` is the internal id (glyph lookup +
+ *  React key); the display word is resolved from the LEXICON at render time —
+ *  never the raw wire key. Regression (owner 2026-07-12): this legend used to
+ *  render `Object.entries(KIND_GLYPH)` directly, so it showed the stale internal
+ *  vocabulary ("queen / overwatch / bee / sentinel") to the owner. planner/su
+ *  have no TermKey and stay literal — same contract as AdvAgentsPanel's
+ *  kindLegend, which already did this correctly. */
+const KIND_LEGEND: Array<{ kind: string; term: 'brain' | 'overwatch' | 'contributor' | 'operator' | null; literal?: string }> = [
+  { kind: 'mug', term: 'brain' },
+  { kind: 'kettle', term: 'overwatch' },
+  { kind: 'cup', term: 'contributor' },
+  { kind: 'papercup', term: 'operator' },
+  { kind: 'planner', term: null, literal: 'planner' },
+  { kind: 'su', term: null, literal: 'su' },
+];
 
 /** The kind glyph for an agent — from agentPaneKind when present, else role. */
 export function agentGlyph(a: Pick<RosterAgent, 'agentPaneKind' | 'role'>): string {
@@ -428,6 +457,10 @@ export default function AgentsRunningPill() {
 /** The fleet-grouped roster list rendered inside the popover. Hovering a row
  *  previews that agent's plan/work-item in the detail strip; clicking pins it. */
 export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: number }) {
+  // The cast words shown in the kind legend come from the LEXICON, never from the
+  // internal pane-kind ids (owner 2026-07-12 — the legend was leaking "queen /
+  // overwatch / bee / sentinel" into the UI).
+  const lex = useLexicon();
   const [pinned, setPinned] = useState<string | null>(null);
   // Keep the most recently previewed agent selected after the pointer leaves the
   // roster. The detail strip sits directly above the inactive-sessions control;
@@ -652,8 +685,10 @@ export function AgentsRoster({ agents, nowMs }: { agents: RosterAgent[]; nowMs: 
         </div>
       )}
       <div className="pc-agents-roster__legend" aria-hidden>
-        {Object.entries(KIND_GLYPH).map(([k, g]) => (
-          <span key={k} className="pc-agents-roster__legend-item">{g} {k}</span>
+        {KIND_LEGEND.map(({ kind, term, literal }) => (
+          <span key={kind} className="pc-agents-roster__legend-item">
+            {KIND_GLYPH[kind] ?? '·'} {term ? lex(term, { lower: true }) : literal}
+          </span>
         ))}
       </div>
       {selectedAgents.length > 0 ? (

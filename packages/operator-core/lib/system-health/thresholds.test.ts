@@ -20,11 +20,21 @@ import {
   worstStatus,
   deriveQueenAlive,
   infraStatus,
+  statusSeverity,
+  ackCovers,
+  reconcilePausedQueen,
+  loopsStatus,
+  coordinationStatus,
+  memoryStatus,
   QUEEN_STALL_MS,
   SYNC_LAG_WARN_MS,
   DEPLOY_BEHIND_WARN,
   GIT_SYNC_PUSH_FAIL_CRIT,
   MCP_PROXY_HARD_FAIL_CRIT,
+  DISK_USED_WARN_PCT,
+  DISK_USED_CRIT_PCT,
+  BACKUP_STALE_MS,
+  UNANSWERED_DIRECTED_WARN_MS,
 } from './thresholds';
 import type {
   QueenHealth,
@@ -40,6 +50,9 @@ import type {
   OverwatchPanelHealth,
   InfraHealth,
   McpProxyHealth,
+  LoopsHealth,
+  CoordinationHealth,
+  MemoryPanelHealth,
 } from './types';
 
 const queen = (o: Partial<QueenHealth> = {}): QueenHealth => ({
@@ -307,15 +320,18 @@ describe('plansStatus', () => {
   });
 });
 
-describe('escalationsStatus', () => {
+describe('escalationsStatus — keys on NEW aging, not standing backlog (health-tab-v2 P-003)', () => {
   const es = (o: Partial<EscalationsHealth> = {}): EscalationsHealth => ({
-    open: 0, oldestAgeMs: null, bySeverity: {}, aging: 0, ...o,
+    open: 0, oldestAgeMs: null, bySeverity: {}, aging: 0, agingNew: 0, ...o,
   });
   it('warn on an open blocker', () => {
     expect(escalationsStatus(es({ open: 1, bySeverity: { blocker: 1 } }))).toBe('warn');
   });
-  it('warn on an aging open escalation', () => {
-    expect(escalationsStatus(es({ open: 1, aging: 1, bySeverity: { warning: 1 } }))).toBe('warn');
+  it('warn on a NEWLY-aging escalation (crossed the threshold in the last 24h)', () => {
+    expect(escalationsStatus(es({ open: 1, aging: 1, agingNew: 1, bySeverity: { warning: 1 } }))).toBe('warn');
+  });
+  it('STANDING aging alone does NOT warn — a month-old backlog is a muted metric, not a fresh alarm (P-003)', () => {
+    expect(escalationsStatus(es({ open: 3, aging: 3, agingNew: 0, bySeverity: { warning: 3 } }))).toBe('ok');
   });
   it('ok when no open escalations', () => {
     expect(escalationsStatus(es())).toBe('ok');

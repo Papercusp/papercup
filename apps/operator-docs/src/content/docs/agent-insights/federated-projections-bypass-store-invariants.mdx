@@ -1,0 +1,52 @@
+---
+title: "Auditing a federated table: a projection's raw SQL inherits none of the store's invariants (and mig comments promise semantics nobody implements)"
+description: "Two release-blocking p2p memory bugs in two days shared one root cause: the receive-side projection writes the table with raw SQL, bypassing both the store class that maintains the table's invariants and the apply-side semantics the design/migration comments promised. How to find this class in any federated table."
+discovered: 2026-07-12
+tags: ["federation", "p2p", "memory", "projections", "auditing", "invariants"]
+status: active
+documents:
+  - "packages/operator-core/lib/sync/hyperbee/projections/p2p-memories.ts"
+  - "packages/operator-core/lib/memory/federated-vec-backfill.ts"
+  - "libs/generic/memory/src/canonical-store.ts"
+plans:
+  - "mem0-cross-machine-federation-2026-07-10"
+---
+
+## The pattern
+
+A Hyperbee→PG **projection** applies remote ops by writing the target table with **raw SQL**. That table, locally, is normally written by a **store class** (an ORM-ish owner) that maintains invariants the raw SQL knows nothing about. And the **migration comments / plan decisions** describing the feature promise apply-side *semantics* that the projection may simply never implement.
+
+Both halves bit the same table (`harness_shared.memory_canonical`) within two days, and both were release-blocking for p2p:
+
+| | Promised | What the projection actually did |
+|---|---|---|
+| **EI-10393** (op semantics) | mig 563's comment: *"flipping shareable off captures once (peers apply **the retraction of sharing**)"* | Upserted every well-formed put. Un-sharing a memory kept its **full content** on every peer; a hostile peer could push never-shareable rows and we stored them. |
+| **EI-10405** (store invariant) | EI-9308's design: *"federate the memory TEXT … and **let each peer re-embed locally**"* | Wrote `memory_canonical` only. `memory_vec_*` rows are written **exclusively** by `CanonicalVectorStore.insert` — which the projection bypasses. A federated memory therefore had **no vector in any mode**, and recall's primary path JOINs the vec table, so it could never be returned. |
+
+EI-10405's failure mode is the nastier shape: the row *looks* fine everywhere a human checks. It is listed on the settings page, it is exported, `get(id)` returns it — and the plan's own live-witness item (P-009: "verify it federates + projects as `origin=remote`") would have **passed green** while recall stayed broken. It surfaced only through the embed-free *lexical fallback*, which runs when the embedder is **down** — so the feature "worked" precisely when the system was degraded, and was invisible otherwise.
+
+## Why the existing guards don't catch it
+
+There is a `federated-column-completeness` guard (EI-9430 lineage): every column must be carried, PROVENANCE-stamped, or reasoned NOT_FEDERATED. It is a **column** guard. Neither of these bugs is about a column:
+
+- **op-semantics completeness** has no guard — nothing checks that the apply side handles every op *meaning* the capture side can emit (a `put` that means "retract").
+- **invariant completeness** has no guard — nothing checks that a raw-SQL writer upholds what the table's real writer guarantees (here: *every memory row has a vector row in the active mode, or it is invisible to recall*).
+
+## The audit, when you touch any federated table
+
+1. **Diff the promises against the code.** Read the migration comments, the plan decisions, and the originating proposal — then grep the projection for each promised behavior. `shareable` appeared in `p2p-memories.ts` **only in comments**. A word that lives exclusively in prose is a promise nobody implemented.
+2. **Ask who else writes this table locally, and what does that writer guarantee?** Find the store/DAO class. Enumerate its invariants (side tables it maintains, derived rows, triggers it depends on). The projection's raw SQL inherits **none** of them. `memory_vec_*`, entity rows, `state`, generated columns — every one is an invariant the projection must either uphold or consciously decline.
+3. **Ask how the row is READ, not just whether it landed.** "It projected" is not "it works." Trace the row into the *primary* read path. A row that only surfaces via a fallback/degraded path is a bug wearing a passing test — and it is exactly what a projection-level witness test will bless.
+
+## Fixing an invariant a projection can't uphold inline
+
+Don't reach for the obvious "just do it in `writeToPg`." A projection runs inside the **hyperbee apply loop**, shared by every federated table. A per-row network call there (an embed: ~100ms–6s, and the sidecar can be down or quota-cooled) stalls the whole substrate's apply pipeline, and a failure strands the row permanently with nothing to retry it.
+
+The shape that works, and that this repo already had twice over (the memory write-journal drain, and now the federated-vec backfill), is a **bounded, non-fatal, self-healing sweep** hung on an existing tick:
+
+- select the rows that *are missing the invariant* (not "the rows we just wrote" — that's not self-healing),
+- do the expensive work outside the apply loop, sequentially (a shared embedder/sidecar is saturable),
+- a failure just leaves the row in the queue: an outage **delays** the invariant instead of losing it,
+- and it converges — the next pass finds nothing.
+
+The price is that the invariant lags the write by up to one tick. Say so out loud; it is almost always the right side of the trade against stalling a shared pipeline.

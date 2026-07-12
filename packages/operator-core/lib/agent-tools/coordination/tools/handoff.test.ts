@@ -48,6 +48,20 @@ vi.mock('../wake-mode', () => ({
 vi.mock('../pending-wakes', () => ({
   stagePendingWake: vi.fn(async () => ({ id: 1 })),
 }));
+// PRE-EXISTING gap (found incidentally while landing WI-4165, not caused by it):
+// the open path's resolveBestEffortAgainstRoster -> fetchKnownOwnerIds also reads
+// listRecordedLiveSessions (adv-sessions.ts) + the remote session-presence store
+// directly — NEITHER was mocked here, so those two calls hit a REAL Postgres
+// connection in this suite (ECONNREFUSED with no local PG), and the resulting
+// console.warn fails the test under vitest-fail-on-console. Mock both fail-soft
+// seams to empty, matching this file's existing roster-mock discipline (the
+// listPresence leg above already covers the LOCAL-presence path).
+vi.mock('../../adv-sessions', () => ({
+  listRecordedLiveSessions: vi.fn(async () => []),
+}));
+vi.mock('../../sync/hyperbee/session-presence-store', () => ({
+  listLiveSessionPresence: vi.fn(async () => []),
+}));
 // WI-4165 item-body hydration seam: mock the WHOLE ref-hydrate-resolve module
 // (the documented trap in that file's own header comment — "a unit test that
 // partially mocks @papercusp/flags/server explodes if a new import pulls

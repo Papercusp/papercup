@@ -103,9 +103,20 @@ tools. The **classic / Pot** column is the public-release default (flag OFF); th
 | Agent signal / handoff (`signal`) | Signal | Waggle |
 
 The agent-role marks map to cup glyphs in the classic pack (matching `apps/tui`
-`agent_pane_kind.rs`, fixed regardless of pack): **Mug** 🍵 (brain/queen), **Kettle** 🫖
-(overwatch), **Papercup** 🥤 (operator/sentinel), **Cup** ☕ (contributor/bee). Nav icons in
+`agent_pane_kind.rs`, fixed regardless of pack): **Mug** ☕ (brain/queen), **Kettle** 🫖
+(overwatch), **Papercup** 🥤 (operator/sentinel), **Cup** 🍵 (contributor/bee). Nav icons in
 the GUI use lucide `Coffee` / `Thermometer` / `CupSoda` respectively.
+
+:::note[Owner correction 2026-07-12 — the Mug/Cup glyphs were swapped]
+D-006 originally gave the **Mug** a teacup (🍵) and the worker **Cup** the actual
+coffee-mug (☕) — backwards, and it read wrong wherever the cast is listed together
+(the agents-running legend, the zellij roster). The Mug now takes ☕ and the Cup 🍵.
+Display only — **wire strings are unchanged**, and `AgentPaneKind::from_glyph_prefix`
+derives from `glyph()`, so the zellij pane-name parser follows automatically. The three
+glyph tables (`apps/tui/src/agent_pane_kind.rs`, `apps/operator/app/harness/primitives.tsx`
+`AGENT_KIND_GLYPH`, `apps/operator-vite/.../AgentsRunningPill.tsx` `KIND_GLYPH`) must stay
+in sync — change them together or the desktop and zellij stop reading identically.
+:::
 
 Under the flag-on **the-hive** pack: the live agent collective is the **Colony** (term key
 `fleet`); **Swarm** (term key `node`) is the deployment-to-instance unit — a deployment of a

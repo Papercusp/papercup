@@ -52,6 +52,8 @@ import {
   readFileSync,
   chmodSync,
   renameSync,
+  appendFileSync,
+  statSync,
 } from 'node:fs';
 import net from 'node:net';
 
@@ -228,6 +230,43 @@ const ORPHAN_POLL_MS = Number(process.env.PAPERCUSP_PSU_PTY_ORPHAN_POLL_MS) || 2
  *  defensive sanitize keeps a stray char from escaping the dir). Pure. */
 export function sanitizeKey(ownerId) {
   return String(ownerId || 'unknown').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 200);
+}
+
+/** EI-10412: per-owner durable host-event log. The host's stderr is the owner's
+ *  terminal (/dev/pts/N) — every lifecycle diagnostic written there is LOST the
+ *  moment the screen repaints, which is why the 2026-07-12 carry-note-drop
+ *  epidemic (10 lost auto-continuations across 7 agents in one day) had to be
+ *  reconstructed from transcript archaeology. Lifecycle verbs (compact/reset/
+ *  recycle) now ALSO append one JSONL row per outcome here, so "did the carry
+ *  ever get typed, and if not why" is a one-file read. */
+export function eventLogPathForOwner(ownerId) {
+  return join(PSU_PTY_DIR, `${sanitizeKey(ownerId)}.events.jsonl`);
+}
+
+/** Size cap for the per-owner event log — front-truncated (oldest rows dropped)
+ *  on breach, same spirit as the turn-provenance ledger compaction. */
+const EVENT_LOG_MAX_BYTES = 256 * 1024;
+
+/** Append one durable host-event row ({ ts, kind, ...extra }) for `ownerId`.
+ *  FAIL-SOFT by contract: an event-log write must never break the session —
+ *  any fs error is swallowed (the stderr diagnostic still fires next to it). */
+export function appendHostEvent(ownerId, kind, extra = {}) {
+  try {
+    const p = eventLogPathForOwner(ownerId);
+    const row = JSON.stringify({ ts: new Date().toISOString(), kind, ...extra });
+    try {
+      if (statSync(p).size > EVENT_LOG_MAX_BYTES) {
+        const tail = readFileSync(p, 'utf8');
+        writeFileSync(p, tail.slice(Math.floor(tail.length / 2)).replace(/^[^\n]*\n/, ''), { mode: 0o600 });
+      }
+    } catch {
+      /* no log yet — the append below creates it */
+    }
+    appendFileSync(p, row + '\n', { mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Control-socket path for an ownerId. Pure. */
@@ -1491,6 +1530,10 @@ export function hostThroughPty(o) {
           // pass immediately and type the carry into the same stranded composer.
           await submit(compactCmd);
           await verifySubmitted('compact command');
+          appendHostEvent(ownerId, 'compact-submitted', {
+            focus: String(msg.focus || '').slice(0, 200),
+            carry: Boolean(msg.data),
+          });
           if (!msg.data) return; // bare compact — no continuation requested
           // (2) WI-1872 (2): wait for the compaction to actually go BUSY (bounded —
           // falls back to the old fixed compactStartMs(env) delay if busy is never

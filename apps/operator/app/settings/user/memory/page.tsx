@@ -11,7 +11,7 @@ import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { Select } from '@/app/harness/Select';
 import { MEMORY_KIND_COLOR, MEMORY_KIND_FALLBACK } from '@/app/harness/theme';
 import { useLexicon } from '@/lib/useLexicon';
-import { originOf, type MemoryOrigin } from './origin';
+import { originOf, agentSourceDetailOf, type MemoryOrigin } from './origin';
 import { possibleSecretClasses, possibleSecretTitle } from './possible-secret';
 import { recallHealthLine, type RecallCanaryLatest } from './recall-health';
 
@@ -556,18 +556,28 @@ export default function MemoryPage() {
                 ✎ you
               </span>
             )}
-            {origin === 'agent' && (
-              <span
-                title="Written by an agent session — or stored before origin stamping (no source stamp on the row)"
-                style={{
-                  padding: '2px 8px', borderRadius: 4,
-                  background: 'var(--bg-3)', color: 'var(--fg-mute)',
-                  fontSize: 11, fontWeight: 600,
-                }}
-              >
-                agent
-              </span>
-            )}
+            {origin === 'agent' && (() => {
+              // EI-10358: per-session attribution when the write was stamped
+              // with it (role + session id) — falls back to the generic
+              // "no source stamp" title for rows written before this landed.
+              const detail = agentSourceDetailOf(row);
+              const label = detail.role ? `agent · ${detail.role}` : 'agent';
+              const title = detail.role
+                ? `Learned from ${detail.role}${detail.session ? ` (session ${detail.session})` : ''}`
+                : 'Written by an agent session — or stored before origin stamping (no source stamp on the row)';
+              return (
+                <span
+                  title={title}
+                  style={{
+                    padding: '2px 8px', borderRadius: 4,
+                    background: 'var(--bg-3)', color: 'var(--fg-mute)',
+                    fontSize: 11, fontWeight: 600,
+                  }}
+                >
+                  {label}
+                </span>
+              );
+            })()}
             {/* EI-10371 stage-1 chip: write-time credential flag (detection only —
                 the text is stored unchanged; the chip's job is to get a look). */}
             {secretClasses && (

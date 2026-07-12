@@ -199,6 +199,18 @@ export default defineTool({
       workspace_id: ctx.principal?.workspaceId,
       created_by: user.id,
       display_name: user.display_name,
+      // EI-10358: source attribution for the dominant (agent) write path.
+      // `ctx.role` / `ctx.uiClientId` are ALREADY threaded onto every
+      // UnifiedToolContext by the MCP dispatch layer (BuiltSpawnContext →
+      // buildMcpToolContext, packages/operator-core/lib/endpoint-route/
+      // routes/transport/_mcp-handler.ts) — no dispatch-spine plumbing was
+      // actually required, only reading them here. `ctx.principal` always
+      // resolves to the shared `system:superuser` principal on su sessions,
+      // which is why that field alone couldn't answer "who wrote this" —
+      // role/uiClientId carry the real per-session identity instead.
+      source: 'agent',
+      ...(ctx.role ? { source_role: ctx.role } : {}),
+      ...(ctx.uiClientId ? { source_session: ctx.uiClientId } : {}),
     };
     if (args.harness_slug) metadata.harness_slug = args.harness_slug;
     if (args.hive_slug) metadata.hive_slug = args.hive_slug;

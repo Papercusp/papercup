@@ -635,6 +635,41 @@ describe('memory:remember — scope isolation (GAP 8)', () => {
   });
 });
 
+// EI-10358: source attribution for the dominant (agent) write path.
+// `ctx.role` / `ctx.uiClientId` are already threaded onto every UnifiedToolContext
+// by the MCP dispatch layer — the fix is reading them here, not new plumbing.
+describe('memory:remember — source attribution (EI-10358)', () => {
+  it('stamps source:"agent" + source_role + source_session when ctx carries role/uiClientId', async () => {
+    const b = fakeBackend();
+    useBackend(b);
+
+    const ctxWithIdentity = {
+      principal: { workspaceId: 'ws-test' },
+      role: 'worker',
+      uiClientId: 'su-abc123',
+    } as unknown as Parameters<typeof remember.handler>[1];
+
+    await remember.handler({ content: 'a fact from a real session', kind: 'reference' }, ctxWithIdentity);
+    const [, opts] = b.remember.mock.calls[0];
+    const meta = (opts as { metadata: Record<string, unknown> }).metadata;
+    expect(meta.source).toBe('agent');
+    expect(meta.source_role).toBe('worker');
+    expect(meta.source_session).toBe('su-abc123');
+  });
+
+  it('stamps source:"agent" with no source_role/source_session when ctx carries neither (no false attribution)', async () => {
+    const b = fakeBackend();
+    useBackend(b);
+
+    await remember.handler({ content: 'a fact with no session identity', kind: 'reference' }, fakeCtx);
+    const [, opts] = b.remember.mock.calls[0];
+    const meta = (opts as { metadata: Record<string, unknown> }).metadata;
+    expect(meta.source).toBe('agent');
+    expect(meta.source_role).toBeUndefined();
+    expect(meta.source_session).toBeUndefined();
+  });
+});
+
 /**
  * WI-1982 — memory:remember rejected ~21% of calls (34/161 in 24h); ~12 were a valid fact
  * (content present) LOST purely because `kind` was a legacy value (identity/preference/

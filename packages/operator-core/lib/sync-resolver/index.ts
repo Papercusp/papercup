@@ -5050,6 +5050,23 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return (cfg.tiers && cfg.tiers.length > 0 ? cfg.tiers : DEFAULT_MODEL_TIERS) as unknown[];
     },
   },
+
+  // prReviewerSettings.byHarness — single-row-per-harness PR-reviewer settings
+  // + trust list + audit log (all-active-surfaces-data-sync-migration-2026-07-11
+  // P-011). Shares its response builder with the GET route handler
+  // (buildPrReviewerSettingsResponse) so the sync path and the REST route never
+  // drift. Bridged tables: pr_reviewer_settings / trusted_authors /
+  // auto_review_audit (see ./table-to-query-names for the write invalidations).
+  'prReviewerSettings.byHarness': {
+    argsSchema: z.object({ harnessSlug: z.string().trim().min(1) }),
+    resolve: async (args) => {
+      const { harnessSlug } = args as { harnessSlug: string };
+      const { buildPrReviewerSettingsResponse } = await import(
+        '../endpoint-route/routes/harness/pr-reviewer-settings'
+      );
+      return [await buildPrReviewerSettingsResponse(harnessSlug)] as unknown[];
+    },
+  },
 } satisfies Record<string, QueryEntry<unknown>>;
 
 // ─── Public API ─────────────────────────────────────────────────────
