@@ -125,8 +125,23 @@ describe('ensureOnboardingComplete (the first-run wizard blocks every interactiv
     expect(ensureOnboardingComplete(home)).toBe(false);
   });
 
-  it('fails open on a missing or unparseable config — a launch never dies here', () => {
-    expect(ensureOnboardingComplete(home)).toBe(false); // no ~/.claude.json at all
+  it('WI-4431: materializes a minimal onboarding-complete config when NONE exists at all', () => {
+    // No seedHome() — a box that has never run claude interactively (e.g. a
+    // freshly provisioned headless fleet host). The mirror only symlinks
+    // .claude.json in when one exists, so leaving this a no-op would still
+    // wedge a headless launch at the first-run wizard by a different door.
+    expect(existsSync(join(home, '.claude.json'))).toBe(false);
+    expect(ensureOnboardingComplete(home)).toBe(true);
+    expect(read().hasCompletedOnboarding).toBe(true);
+    // Deliberately bare: no mcpServers (psu supplies MCP via --mcp-config argv,
+    // never this file) and no theme key (see the doc comment above).
+    expect(read().mcpServers).toBeUndefined();
+    expect(read().theme).toBeUndefined();
+    // Idempotent on the next call — already-true means no rewrite.
+    expect(ensureOnboardingComplete(home)).toBe(false);
+  });
+
+  it('fails open on an unparseable config — a launch never dies here', () => {
     writeFileSync(join(home, '.claude.json'), '{ not json');
     expect(ensureOnboardingComplete(home)).toBe(false);
   });

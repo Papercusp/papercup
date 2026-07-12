@@ -228,15 +228,7 @@ describe('MugTab (Colony sidebar, round 2)', () => {
     render(<MugTab active={true} />, { wrapper: Wrap });
     await openLane('Capacity');
     fireEvent.click(screen.getByRole('button', { name: 'Expand models' }));
-    // The models section's expand state is nuqs-backed (URL state), so it lands
-    // through the adapter's async flush rather than synchronously with the click.
-    // testing-library's 1s default is enough on an idle box but NOT on a loaded
-    // one — under CPU pressure this find lost the race and the test failed with
-    // "Unable to find a label with the text of: std model spec" ~2 runs in 3,
-    // while passing every time in isolation. That flake is what peers saw as
-    // "MugTab.test.tsx is RED" (and what a single lucky green run wrongly cleared).
-    // The budget, not the assertion, was wrong: give the flush room.
-    const stdModel = await screen.findByLabelText('std model spec', undefined, { timeout: 5_000 });
+    const stdModel = await screen.findByLabelText('std model spec');
     fireEvent.change(stdModel, { target: { value: 'unsaved:model' } });
     fireEvent.click(screen.getByRole('button', { name: 'Reset Capacity controls' }));
     await waitFor(() => expect(wroteRunTool()).toBe(true));
@@ -250,7 +242,18 @@ describe('MugTab (Colony sidebar, round 2)', () => {
       autoScaleOut: null,
       decomposition: null,
     });
-    expect((screen.getByLabelText('std model spec') as HTMLInputElement).value).toBe('sonnet');
+    // The reset discards the unsaved draft, so the input falls back to the saved
+    // spec. That fall-back rides a RE-RENDER (the write invalidates the steering
+    // query), and the models sub-section briefly unmounts while it lands — so a
+    // SYNC getByLabelText here is a race: it passed on an idle box and threw
+    // "Unable to find a label with the text of: std model spec" ~2 runs in 3 under
+    // CPU pressure (which is why the file passed in isolation but reddened in the
+    // full suite — and why a single lucky green run wrongly cleared a peer's RED
+    // report). Wait for the re-render instead of assuming it already happened; the
+    // assertion itself is unchanged.
+    await waitFor(() =>
+      expect((screen.getByLabelText('std model spec') as HTMLInputElement).value).toBe('sonnet'),
+    );
   });
 
   it('renders the eligible-hives checkboxes from harnessProjects.lite sync data', async () => {

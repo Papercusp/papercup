@@ -563,11 +563,37 @@ function writeRecoveryArtifacts(
  * launch must never die on a repair hiccup). Note `theme` is deliberately NOT
  * seeded: the working backups have no theme key either, so it is not what gates
  * the wizard.
+ *
+ * WI-4431: a box with NO `~/.claude.json` at all (never run claude
+ * interactively — plausible for a freshly provisioned headless fleet host) is
+ * the SAME trap by a different door: the mirror only symlinks the file in
+ * when one exists, so a missing file means the session gets none at all and
+ * claude treats it as a genuine first-run user. Handled below by
+ * materializing a minimal one rather than leaving that case as a no-op —
+ * this function is only ever reached from an automated psu launch (never a
+ * plain human `claude` invocation), so forcing onboarding-complete here is
+ * always correct, not a UX shortcut taken on someone's behalf.
  */
 export function ensureOnboardingComplete(home: string): boolean {
   const path = join(home, '.claude.json');
   try {
-    if (!existsSync(path)) return false;
+    if (!existsSync(path)) {
+      // WI-4431: a box that has NEVER run claude interactively has nothing to
+      // repair here, but the mirror below only symlinks `.claude.json` IN when
+      // one already exists (`if (existsSync(srcJson))`) — with none, the session
+      // gets no `.claude.json` at all and claude treats it as a true first-run
+      // user, hitting the exact same theme-picker wedge this function exists to
+      // prevent (observed live: a headless fleet member wedged forever with zero
+      // error surfaced, because the operator's install-leg self-repair — a
+      // SEPARATE, unrelated mechanism — was transiently unreachable and the box
+      // had no prior global config to fall back on). Materialize a minimal one
+      // instead of leaving a launch to gamble on a wizard. Deliberately bare: no
+      // `mcpServers` (psu supplies MCP servers via `--mcp-config` argv, never
+      // this file) and no `theme` key (see the doc comment above — the working
+      // backups never carry one either, so it is not what gates the wizard).
+      writeFileSync(path, JSON.stringify({ hasCompletedOnboarding: true }, null, 2), { mode: 0o600 });
+      return true;
+    }
     const cfg = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
     if (!cfg || typeof cfg !== 'object' || cfg.hasCompletedOnboarding === true) return false;
     cfg.hasCompletedOnboarding = true;

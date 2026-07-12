@@ -340,6 +340,47 @@ export interface WhisperBinaryManifest {
   builtAt: string;
 }
 
+/**
+ * Cache-ONLY lookup: the newest already-provisioned whisper-server for this platform, integrity
+ * re-verified against its manifest — NO network, NO build (the lifecycle layer calls this on
+ * every voice request path, where an implicit GitHub fetch or a surprise download would be a
+ * latency/availability landmine; the explicit provision step is what populates the cache).
+ * Returns null when nothing valid is cached. Version dirs sort descending lexicographically —
+ * whisper.cpp tags are `v<semver>`, so lexicographic order matches release order closely enough
+ * for "pick the newest cached" (ties/misorder only pick a slightly older WORKING cache entry).
+ */
+export async function findCachedWhisperBinary(
+  opts: { home?: string; platformKey: string; hashFile?: (p: string) => Promise<string> } = { platformKey: '' },
+): Promise<{ binPath: string; manifest: WhisperBinaryManifest } | null> {
+  const home = opts.home ?? defaultHome();
+  const hashFile = opts.hashFile ?? defaultHashFile;
+  const root = `${home}/.papercusp/backends/whisper-server`;
+  let versions: string[];
+  try {
+    versions = (await readdir(root, { withFileTypes: true }))
+      .filter((e) => e.isDirectory() && !e.name.startsWith('_'))
+      .map((e) => e.name)
+      .sort()
+      .reverse();
+  } catch {
+    return null;
+  }
+  const bin = opts.platformKey.startsWith('win32') ? 'whisper-server.exe' : 'whisper-server';
+  for (const version of versions) {
+    const dir = `${root}/${version}/${opts.platformKey}`;
+    const binPath = `${dir}/${bin}`;
+    const manifestPath = `${dir}/manifest.json`;
+    if (!existsSync(binPath) || !existsSync(manifestPath)) continue;
+    try {
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as WhisperBinaryManifest;
+      if ((await hashFile(binPath)) === manifest.sha256) return { binPath, manifest };
+    } catch {
+      // Malformed/corrupt entry — try the next cached version rather than fail.
+    }
+  }
+  return null;
+}
+
 export interface ResolveWhisperBinaryResult {
   ok: boolean;
   binPath?: string;

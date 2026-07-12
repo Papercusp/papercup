@@ -61,7 +61,10 @@ export default function LearningInfraHealthChip() {
       />
       <HeartPulse size={11} aria-hidden />
       {LABELS[health.status]}
-      {health.status !== "ok" ? <em>{health.reason}</em> : null}
+      {/* `status` is already narrowed to degraded|offline by the early return
+          above, so the old `status !== "ok"` guard here was dead (TS2367) — it
+          could never be false. Show the reason when there IS one. */}
+      {health.reason ? <em>{health.reason}</em> : null}
       <style>{`
         .pc-lihealth {
           display: inline-flex; align-items: center; gap: 5px; margin-left: auto;
