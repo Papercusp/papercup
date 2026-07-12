@@ -48,8 +48,13 @@ export interface SemanticDupeCandidate {
   title: string;
   state: string;
   harness: string | null;
-  /** Cosine similarity (1 − pgvector `<=>` distance) in the active space. */
+  /** Cosine similarity (1 − pgvector `<=>` distance) in the active space, OR — when
+   *  `source: 'lexical-recent'` — a Jaccard word-overlap score (recent-lexical-dupe-guard,
+   *  EI-9940). Both are 0..1; the `source` tag disambiguates which. */
   similarity: number;
+  /** Which prescreen produced this candidate. Unset = the original embedding-based
+   *  P-008 guard (kept optional so no existing caller/test needs to change). */
+  source?: 'lexical-recent';
 }
 
 export interface SemanticDupeResult {

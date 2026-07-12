@@ -4,7 +4,10 @@
  * the matched OPEN items; force:true skips the prescreen entirely; a soft
  * match creates WITH the `similarOpen` advisory; a null verdict (guard
  * fail-open) creates cleanly with no advisory key. The guard itself is
- * mocked — its internals are covered by semantic-dupe-guard.test.ts.
+ * mocked — its internals are covered by semantic-dupe-guard.test.ts. The
+ * EI-9940 recent-lexical-dupe-guard sibling check is likewise mocked here
+ * (fail-open by default) — its own wire-in + merge-with-similarOpen contract
+ * is covered by _create-core.recent-dupe.test.ts.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -30,6 +33,7 @@ vi.mock('../../datatype-payload-validation', () => ({ validateDatatypePayload: (
 vi.mock('../../routing-gate-hints', () => ({ matchRoutingGateHint: () => null }));
 vi.mock('../../issue-blocks-merge', () => ({ planItemRef: (s: string, i: string) => `${s}#${i}`, PLAN_ITEM_KIND: 'plan_item' }));
 vi.mock('./semantic-dupe-guard', () => ({ findSemanticDupes: vi.fn(async () => null) }));
+vi.mock('./recent-lexical-dupe-guard', () => ({ findRecentLexicalDupes: vi.fn(async () => null) }));
 
 import { createOneWorkItem } from './_create-core';
 import { findSemanticDupes, type SemanticDupeResult } from './semantic-dupe-guard';

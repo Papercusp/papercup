@@ -23,6 +23,7 @@ import { createWorkItem, getWorkItem, linkWorkItem, resolveWorkItemRef, isWorkIt
 import { planItemRef, PLAN_ITEM_KIND } from '../../issue-blocks-merge';
 import { findMirroredOpenItem } from './mirror-guard';
 import { findSemanticDupes, type SemanticDupeCandidate } from './semantic-dupe-guard';
+import { findRecentLexicalDupes } from './recent-lexical-dupe-guard';
 import { resolveHiveScope, HIVE_REQUIRED_DETAIL } from '../_hive-scope';
 import { getOrgPg } from '@papercusp/db-org';
 import { getGenericKindDatatype } from '../../datatype-registry-store';
@@ -145,6 +146,22 @@ export async function createOneWorkItem(
         };
       }
       if (dupes && dupes.soft.length > 0) similarOpen = dupes.soft;
+    }
+    // EI-9940 recent-lexical dupe prescreen: catches a near-duplicate title created
+    // moments ago, BEFORE the async embed-backfill sweep has indexed it — exactly the
+    // gap that let WI-4242 duplicate WI-4241 one minute after it landed (2026-07-12).
+    // Advisory-only, never blocks; merged into the same `similarOpen` field, deduped
+    // against anything the semantic guard already found.
+    if (!args.force) {
+      const recentDupes = await findRecentLexicalDupes({
+        title: args.title,
+        harness: args.harness ?? ctx.harnessSlug ?? undefined,
+      });
+      if (recentDupes && recentDupes.length > 0) {
+        const seen = new Set((similarOpen ?? []).map((c) => c.id));
+        const fresh = recentDupes.filter((c) => !seen.has(c.id));
+        if (fresh.length > 0) similarOpen = [...(similarOpen ?? []), ...fresh];
+      }
     }
     // EI-728: route the write to the request's workspace. Precedence: explicit
     // `workspace` arg → the request's concrete workspace (ctx.workspaceId) →

@@ -22,6 +22,31 @@
  * The harvested row is source-tagged `payload.origin='checkpoint-harvest'`,
  * `created_by` = the checkpointing/completing agent, `filedByRole` preserved.
  *
+ * CLAIM-STRENGTH + REFUTATION PROPAGATION (EI-9941, 2026-07-12): the WI-4070 /
+ * EI-9881 incident showed a harvested EI silently promoted a mid-investigation
+ * hypothesis to what read like settled fact — a second agent (L5) anchored on
+ * its bare declarative title, costing 3+ coord round-trips before L1's refutation
+ * caught up. Two independent, complementary legs:
+ *   - CLAIM-STRENGTH TAGGING: `classifyClaimStrength` is a best-effort LEXICAL
+ *     heuristic over the raw insight text — it can only surface a hedge the
+ *     WRITER actually used ("suspect", "unconfirmed", "hypothesis", …); it
+ *     cannot fact-check a confidently-worded claim that turns out wrong (that's
+ *     what refutation propagation below is for). A detected 'hypothesis' or
+ *     'verified' marker prefixes the filed title (`[hypothesis] …` /
+ *     `[verified] …`) so the strength is visible at a glance in any list view,
+ *     never buried only in payload JSON; 'unspecified' (the common case) adds
+ *     no prefix — asserting confidence the writer didn't state would be its own
+ *     false signal. Also stamped at `payload.claimStrength` +
+ *     `payload.provenance` (who stated it, from which boundary) for querying.
+ *   - REFUTATION PROPAGATION: `isRefutation` flags an insight that reads as
+ *     walking back a prior claim (refuted / ruled out / dead end / withdrawn /
+ *     …). When such an insight carries a `ref` (e.g. `wi:WI-4070`), every
+ *     PRIOR harvested observation tagged with that same ref gets its title
+ *     prefixed `⚠ REFUTED — ` and a dated refutation note appended to its body
+ *     — so a later agent scanning the backlog sees the flag on the ORIGINAL
+ *     entry, not just in a separate, easy-to-miss follow-up row. Fails open:
+ *     an update failure never blocks filing the refutation's own observation.
+ *
  * COALESCE (so repeated insights don't pile): the carry-note `insight` commonly
  * persists VERBATIM across consecutive cold wakes, so a naive harvest would file
  * N near-identical rows. The prescreen compares the new insight against THIS
@@ -38,6 +63,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { captureImprovement, type CaptureImprovementInput, type CaptureImprovementResult } from './capture-core';
 import { titleSimilarity } from './digest';
 import { findSemanticDupes, type SemanticDupeResult } from '../../agent-tools/work_items/semantic-dupe-guard';
+import { getIssue, updateIssue } from '../../issues-engineer';
 
 /** payload.origin source-tag stamped on every harvested observation (P-020). */
 export const HARVEST_ORIGIN = 'checkpoint-harvest';
@@ -54,6 +80,95 @@ export const RECENT_LIMIT = 40;
 
 /** Which boundary produced the insight (stamped at payload.harvestSource). */
 export type HarvestSource = 'loop-checkpoint' | 'work-item-completion';
+
+/** EI-9941: best-effort lexical claim-strength classification — see the class doc above. */
+export type ClaimStrength = 'hypothesis' | 'verified' | 'unspecified';
+
+/** Title prefix stamped when `classifyClaimStrength` finds an explicit hedge/confirm marker. */
+export const CLAIM_STRENGTH_PREFIX: Record<Exclude<ClaimStrength, 'unspecified'>, string> = {
+  hypothesis: '[hypothesis] ',
+  verified: '[verified] ',
+};
+
+/** Title prefix stamped on a harvested EI whose claim was later refuted (EI-9941). */
+export const REFUTED_PREFIX = '⚠ REFUTED — ';
+
+const HYPOTHESIS_MARKERS: readonly RegExp[] = [
+  /\bhypothes(is|es|i[sz]ed)\b/i,
+  /\bunconfirmed\b/i,
+  /\bunverified\b/i,
+  /\bsuspect(ed)?\b/i,
+  /\bpossibly\b/i,
+  /\bmay\s+be\b/i,
+  /\bmight\s+be\b/i,
+  /\bcould\s+be\b/i,
+  /\bbelieve[sd]?\b/i,
+  /\btheory\b/i,
+  /\bguess(ing)?\b/i,
+  /\bnot\s+(yet\s+)?confirmed\b/i,
+  /\bcandidate\s+(root\s*cause|explanation|mechanism)\b/i,
+  /\b(my|our)\s+(best\s+)?read\b/i,
+];
+
+const VERIFIED_MARKERS: readonly RegExp[] = [
+  /\bconfirmed\b/i,
+  /\bverified\b/i,
+  /\btested\s+green\b/i,
+  /\blanded\s*\+\s*green\b/i,
+  /\bon-disk\s+evidence\b/i,
+  /\breproduced\b/i,
+];
+
+/**
+ * Best-effort lexical claim-strength classifier (PURE) — see the class doc's
+ * "CLAIM-STRENGTH TAGGING" note. A hedge marker wins over a confirm marker
+ * when BOTH appear (conservative: prefer flagging as unsettled). Absence of
+ * any marker is 'unspecified', never 'verified' — silence is not confirmation.
+ */
+export function classifyClaimStrength(text: string): ClaimStrength {
+  const hasHedge = HYPOTHESIS_MARKERS.some((re) => re.test(text));
+  if (hasHedge) return 'hypothesis';
+  const hasConfirm = VERIFIED_MARKERS.some((re) => re.test(text));
+  if (hasConfirm) return 'verified';
+  return 'unspecified';
+}
+
+/**
+ * Stamp a claim-strength prefix onto a title (PURE), re-bounding to
+ * MAX_TITLE_CHARS so the prefix never pushes the total over the cap. No-op
+ * (returns `title` unchanged) for 'unspecified'.
+ */
+export function applyClaimStrengthPrefix(title: string, strength: ClaimStrength): string {
+  if (strength === 'unspecified') return title;
+  const prefix = CLAIM_STRENGTH_PREFIX[strength];
+  if (title.startsWith(prefix)) return title;
+  const budget = MAX_TITLE_CHARS - prefix.length;
+  const base = title.length > budget ? `${title.slice(0, Math.max(0, budget - 1)).trimEnd()}…` : title;
+  return `${prefix}${base}`;
+}
+
+const REFUTATION_MARKERS: readonly RegExp[] = [
+  /\brefut(ed|es|ing)?\b/i,
+  /\bwas\s+wrong\b/i,
+  /\bis\s+incorrect\b/i,
+  /\bwithdraw(ing|n)?\b/i,
+  /\bwalk(ing|ed)?\s+back\b/i,
+  /\bdead\s*[- ]?end\b/i,
+  /\bruled?\s+out\b/i,
+  /\bnot\s+the\s+root\s+cause\b/i,
+  /\bdebunk(ed|ing)?\b/i,
+  /\bretract(ed|ing)?\b/i,
+];
+
+/**
+ * Best-effort lexical refutation-signal classifier (PURE) — see the class
+ * doc's "REFUTATION PROPAGATION" note. Only ever gates a FLAG on prior
+ * same-`ref` harvested rows, never a suppression of the new insight's own
+ * filing — so a false positive costs an extra flag, not a lost observation.
+ */
+export function isRefutation(text: string): boolean {
+  return REFUTATION_MARKERS.some((re) => re.test(text));
+}
 
 export interface HarvestInsightInput {
   /** The raw insight free-text (loop:checkpoint.insight or a completion's coordNotes). */
@@ -85,6 +200,10 @@ export interface HarvestDeps {
   loadRecent: (createdBy: string, harness?: string) => Promise<RecentHarvest[]>;
   /** The shared 551-vector guard — semantic widening of the coalesce (fail-open null). */
   findSemanticDupes?: (input: { title: string; summary?: string; harness?: string }) => Promise<SemanticDupeResult | null>;
+  /** EI-9941: ANY prior harvested observation tagged with this `ref` (not scoped to one agent) — the refutation-propagation target set. */
+  findByRef?: (ref: string, harness?: string) => Promise<RecentHarvest[]>;
+  /** EI-9941: flag a prior harvested observation as refuted (title prefix + appended note). Returns whether the flag landed. */
+  flagRefuted?: (id: string, opts: { by: string; note: string }) => Promise<boolean>;
 }
 
 export interface HarvestResult {
@@ -159,10 +278,33 @@ async function loadRecentHarvestReal(createdBy: string, _harness?: string): Prom
   return rows.map((r) => ({ id: r.issue_id, title: r.title }));
 }
 
+async function findHarvestedByRefReal(ref: string, _harness?: string): Promise<RecentHarvest[]> {
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ issue_id: string; title: string }>>`
+    SELECT issue_id, COALESCE(title, '') AS title
+      FROM harness_shared.engineer_issues
+     WHERE payload->>'origin' = ${HARVEST_ORIGIN}
+       AND payload->'observation'->'refs' ? ${ref}
+     ORDER BY created_at DESC
+     LIMIT 20`;
+  return rows.map((r) => ({ id: r.issue_id, title: r.title }));
+}
+
+async function flagRefutedReal(id: string, opts: { by: string; note: string }): Promise<boolean> {
+  const existing = await getIssue(id);
+  if (!existing) return false;
+  const title = existing.title.startsWith(REFUTED_PREFIX) ? existing.title : `${REFUTED_PREFIX}${existing.title}`;
+  const noteLine = `\n\n[REFUTATION FLAG ${new Date().toISOString()} by ${opts.by}]: ${opts.note}`;
+  const res = await updateIssue(id, { title, body: `${existing.body ?? ''}${noteLine}`, by: opts.by, confirmShrink: true });
+  return !!res && !('shrinkGuardTripped' in res);
+}
+
 const realDeps: HarvestDeps = {
   capture: captureImprovement,
   loadRecent: loadRecentHarvestReal,
   findSemanticDupes,
+  findByRef: findHarvestedByRefReal,
+  flagRefuted: flagRefutedReal,
 };
 
 /**
@@ -182,6 +324,18 @@ export async function harvestInsight(input: HarvestInsightInput, deps?: HarvestD
     const createdBy = (input.createdBy ?? '').trim();
     const bounded = boundInsight(input.insight);
     if (!bounded || !createdBy) return { filed: false, reason: 'blank' };
+
+    // EI-9941: a refutation carrying a `ref` flags every PRIOR harvested row tagged
+    // with that same ref — visible on the ORIGINAL entry, not just a follow-up row.
+    // Fails open: never blocks filing this insight's own observation below.
+    if (input.ref && isRefutation(input.insight)) {
+      const findByRef = d.findByRef ?? findHarvestedByRefReal;
+      const flagRefuted = d.flagRefuted ?? flagRefutedReal;
+      const priors = await findByRef(input.ref, input.harness).catch(() => [] as RecentHarvest[]);
+      for (const prior of priors) {
+        await flagRefuted(prior.id, { by: createdBy, note: bounded.title }).catch(() => false);
+      }
+    }
 
     // Coalesce prescreen — this agent's OWN recent harvest observations.
     const recent = await d.loadRecent(createdBy, input.harness).catch(() => [] as RecentHarvest[]);
@@ -208,8 +362,13 @@ export async function harvestInsight(input: HarvestInsightInput, deps?: HarvestD
             },
           }
         : {};
+    // EI-9941: claim-strength — a best-effort lexical hedge/confirm read on the
+    // raw insight (see the class doc). Prefixes the FILED title so it's visible
+    // at a glance; the raw classification also rides payload for querying.
+    const claimStrength = classifyClaimStrength(input.insight);
+    const title = applyClaimStrengthPrefix(bounded.title, claimStrength);
     const res = await d.capture({
-      title: bounded.title,
+      title,
       kind: 'change',
       ...(bounded.body ? { body: bounded.body } : {}),
       severity: 'nit',
@@ -217,7 +376,13 @@ export async function harvestInsight(input: HarvestInsightInput, deps?: HarvestD
       createdBy,
       ...(input.filedByRole ? { filedByRole: input.filedByRole } : {}),
       ...(input.harness ? { scope: `harness:${input.harness}` } : {}),
-      payloadExtra: { origin: HARVEST_ORIGIN, harvestSource: input.source, ...observation },
+      payloadExtra: {
+        origin: HARVEST_ORIGIN,
+        harvestSource: input.source,
+        claimStrength,
+        provenance: { statedBy: createdBy, source: input.source, ...(input.filedByRole ? { filedByRole: input.filedByRole } : {}) },
+        ...observation,
+      },
     });
     if (!res.created) return { filed: false, reason: 'not-created' };
     return { filed: true, ...(res.issue?.id ? { issueId: res.issue.id } : {}) };

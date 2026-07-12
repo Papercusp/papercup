@@ -36,6 +36,28 @@
  *      tick this is the one-time backlog sweep of the recovered cohort.
  *   3. FALSE-POSITIVE SUPPRESSION — "no bees running" is NOT a fault when the
  *      placement frontier is genuinely empty (an idle fleet is correct).
+ *
+ * EI-9939 — flap-episode suppression (the fleet-wide re-broadcast TAX fix).
+ * EI-2146's own "re-fire only after auto-resolve" design is CORRECT for a
+ * genuine second incident but, for a condition that FLAPS (fires, recovers,
+ * re-fires — e.g. the routine-engine-starvation flap observed 2026-07-11/12,
+ * repeat_count up to 31 in one session), it meant every flap cycle re-sent a
+ * fleet-wide `page()` alarm + `pageResolved()` all-clear to `to:['*']` — pure
+ * context tax on every live + parked session, none of whom own the flapping
+ * routine. `flapEpisodes` below tracks each blocker signature's fire count
+ * within a rolling window (default 30min, `DEFAULT_FLAP_THRESHOLD`=2): the
+ * first two fires page normally (byte-identical to pre-EI-9939 behavior); the
+ * 3rd+ fire in the same window is classified as flapping and its broadcast is
+ * suppressed (the durable escalation row is written regardless — this only
+ * gates the fleet-wide push). A suppressed episode gets exactly ONE final
+ * all-clear once it stays quiet for a full flap window with no re-fire (the
+ * "settle sweep"), which supersedes every earlier alert sharing that
+ * condition_key via coord:inbox's `annotateResolvedConditions` — so a reader
+ * who only saw the FIRST fire still learns it eventually cleared. A single
+ * SUSTAINED incident (fires once, stays open) never enters flap tracking at
+ * all and is completely unaffected. The routine-engine flapping ITSELF (why
+ * dead-routines keeps firing/recovering) remains its own, separate open bug —
+ * this only stops the ALARM SYSTEM from amplifying it into a broadcast storm.
  */
 import { PANEL_LABELS, type SystemHealth, type PanelKey } from './types';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
@@ -397,10 +419,15 @@ const lastAlertedAt = new Map<string, number>();
 // only a fire→resolve→refire PATTERN engages it. Only `blocker`-severity
 // signals participate (advisory signals never call `page()` regardless).
 interface FlapEpisode {
-  /** Fires observed within the current rolling window. */
+  /** Fires observed since this episode opened. The episode is NOT time-boxed
+   *  by a fixed origin window — it stays open (and, once past threshold,
+   *  suppressed) for as long as the signature keeps re-firing, however long
+   *  that continues; it closes ONLY via the settle sweep (a full flap window
+   *  of genuine quiet), which deletes the entry so a later occurrence starts
+   *  fresh. This is deliberate: a fixed "reset 30min after the first fire"
+   *  origin would let an hours-long flap earn a fresh non-suppressed
+   *  broadcast pair every 30min even though it never actually stopped. */
   fireCount: number;
-  /** epoch ms of the FIRST fire that opened this window. */
-  windowStartMs: number;
   /** epoch ms the condition most recently went quiet (no longer firing) with
    *  no page() broadcast for that recovery yet, or null while it is either
    *  currently firing or its recovery was already broadcast. The settle
@@ -410,11 +437,14 @@ interface FlapEpisode {
 }
 const flapEpisodes = new Map<string, FlapEpisode>();
 
-const DEFAULT_FLAP_WINDOW_MS = DEFAULT_DEBOUNCE_MS; // 30 min — matches the escalation debounce
-/** Fires 1 and 2 within the window page normally (byte-identical to today's
+/** The SETTLE duration: how long a signature must stay quiet (no re-fire)
+ *  before a suppressed flap episode is considered genuinely over and earns
+ *  its one final all-clear. 30min — matches the escalation debounce. */
+const DEFAULT_FLAP_WINDOW_MS = DEFAULT_DEBOUNCE_MS;
+/** Fires 1 and 2 of an episode page normally (byte-identical to today's
  *  behavior — see the "re-fires only after recovery" test); the 3rd+ fire
- *  within the SAME window is classified as flapping and its page() is
- *  suppressed (the durable escalation row is still written either way). */
+ *  of the SAME still-open episode is classified as flapping and its page()
+ *  is suppressed (the durable escalation row is still written either way). */
 const DEFAULT_FLAP_THRESHOLD = 2;
 
 /** P-008: the per-workspace baseline for the PG postmaster boot time (epoch ms).
@@ -757,17 +787,14 @@ export async function runLivenessAlarmTick(
     // (notifyAttention + broadcastSevereEvent) — this brings the SAME active paging
     // to every `blocker`-severity infra-liveness signal, not just git-sync's.
     if (s.severity === 'blocker') {
-      // EI-9939: classify this fire against its rolling flap window BEFORE
-      // deciding whether to page. A signature seen for the first time in the
-      // window (or whose prior window has aged out) starts a fresh episode —
-      // fires 1 and 2 always page (byte-identical to pre-EI-9939 behavior);
-      // the 3rd+ fire within the same window is a flap and is suppressed here
-      // (the durable escalation above is written regardless — this only
-      // gates the fleet-wide broadcast).
-      let ep = flapEpisodes.get(s.key);
-      if (!ep || now - ep.windowStartMs > flapWindowMs) {
-        ep = { fireCount: 0, windowStartMs: now, quietSinceMs: null };
-      }
+      // EI-9939: classify this fire against its (possibly still-open) flap
+      // episode BEFORE deciding whether to page. Fires 1 and 2 of a fresh or
+      // reopened episode always page (byte-identical to pre-EI-9939
+      // behavior); the 3rd+ fire of the SAME still-open episode is a flap and
+      // is suppressed here (the durable escalation above is written
+      // regardless — this only gates the fleet-wide broadcast). The episode
+      // has no fixed expiry — see the FlapEpisode doc comment for why.
+      const ep = flapEpisodes.get(s.key) ?? { fireCount: 0, quietSinceMs: null };
       ep.fireCount += 1;
       ep.quietSinceMs = null; // firing again cancels any pending settle
       flapEpisodes.set(s.key, ep);
@@ -805,9 +832,11 @@ export function startInfraLivenessAlarm(opts: { intervalMs?: number } = {}): { s
   };
 }
 
-/** Test-only — clear the per-signal debounce AND the P-008 PG-restart baseline
- *  (both are module-level per-worker state a hermetic test must reset). */
+/** Test-only — clear the per-signal debounce, the P-008 PG-restart baseline,
+ *  AND the EI-9939 flap-episode map (all module-level per-worker state a
+ *  hermetic test must reset). */
 export function _resetLivenessAlarmDebounce(): void {
   lastAlertedAt.clear();
   lastPostmasterStartMs.clear();
+  flapEpisodes.clear();
 }

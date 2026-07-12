@@ -397,6 +397,215 @@ describe('runLivenessAlarmTick (debounced, transition-only)', () => {
   });
 });
 
+describe('runLivenessAlarmTick — EI-9939 flap-episode suppression', () => {
+  beforeEach(() => _resetLivenessAlarmDebounce());
+
+  /** Same minimal in-memory escalation store as the EI-2146 suite below. */
+  function makeStore() {
+    const opens: EscalationRecord[] = [];
+    const resolvedIds = new Set<string>();
+    let seq = 0;
+    return {
+      escalate: async (input: { severity: string; summary: string; meta?: Record<string, unknown> }) => {
+        seq += 1;
+        opens.push({
+          ts: new Date(seq * 1000).toISOString(),
+          msg_id: `esc-${seq}`,
+          from: 'system:infra-liveness-alarm',
+          to: ['human'],
+          kind: 'escalation',
+          severity: input.severity,
+          summary: input.summary,
+          resolved: null,
+          ...(input.meta ?? {}),
+        } as unknown as EscalationRecord);
+      },
+      listOpen: async (): Promise<EscalationRecord[]> => opens.filter((e) => !resolvedIds.has(e.msg_id)),
+      resolve: async (msg_id: string) => { resolvedIds.add(msg_id); },
+      openCount: () => opens.filter((e) => !resolvedIds.has(e.msg_id)).length,
+    };
+  }
+
+  it('fires 1 and 2 within the flap window page normally (byte-identical to pre-EI-9939 behavior)', async () => {
+    const store = makeStore();
+    let healthy = false;
+    const sick = mkHealth({ evaluatedAt: 100 * 60_000, panels: { workFeed: { data: { deadRoutines: 1, deadRoutineNames: ['git-sync'] } } } });
+    const well = mkHealth({ evaluatedAt: 100 * 60_000 });
+    const pageCalls: string[] = [];
+    let now = 100 * 60_000;
+    const deps = {
+      readLast: () => (healthy ? well : sick),
+      computeHealth: async () => (healthy ? well : sick),
+      escalate: store.escalate,
+      listOpen: store.listOpen,
+      resolve: store.resolve,
+      page: async (s: { key: string }) => { pageCalls.push(s.key); },
+      now: () => now,
+      snapshotStaleMs: 6 * 60_000,
+      debounceMs: 1_000, // short so re-fires aren't blocked by the escalation debounce itself
+      flapWindowMs: 30 * 60_000,
+      flapThreshold: 2,
+    };
+
+    await runLivenessAlarmTick('ws', deps); // fire #1 — pages
+    healthy = true; now += 2_000; await runLivenessAlarmTick('ws', deps); // resolves
+    healthy = false; now += 2_000; await runLivenessAlarmTick('ws', deps); // fire #2 — still within threshold, pages
+    expect(pageCalls).toEqual(['dead-routines', 'dead-routines']);
+  });
+
+  it('the 3rd+ fire within the flap window is SUPPRESSED (no page()) but still opens a durable escalation', async () => {
+    const store = makeStore();
+    let healthy = false;
+    const sick = mkHealth({ evaluatedAt: 100 * 60_000, panels: { workFeed: { data: { deadRoutines: 1, deadRoutineNames: ['git-sync'] } } } });
+    const well = mkHealth({ evaluatedAt: 100 * 60_000 });
+    const pageCalls: string[] = [];
+    let now = 100 * 60_000;
+    const deps = {
+      readLast: () => (healthy ? well : sick),
+      computeHealth: async () => (healthy ? well : sick),
+      escalate: store.escalate,
+      listOpen: store.listOpen,
+      resolve: store.resolve,
+      page: async (s: { key: string }) => { pageCalls.push(s.key); },
+      now: () => now,
+      snapshotStaleMs: 6 * 60_000,
+      debounceMs: 1_000,
+      flapWindowMs: 30 * 60_000,
+      flapThreshold: 2,
+    };
+
+    for (let i = 0; i < 3; i++) {
+      healthy = false; now += 2_000; await runLivenessAlarmTick('ws', deps); // fire
+      healthy = true; now += 2_000; await runLivenessAlarmTick('ws', deps); // resolve
+    }
+    // 3 fire/resolve cycles → fires 1,2 page; fire 3 is the flap, suppressed.
+    expect(pageCalls).toEqual(['dead-routines', 'dead-routines']);
+    // The durable escalation path is COMPLETELY unaffected — every fire still
+    // opened + auto-resolved its escalation row (audit trail intact).
+    expect(store.openCount()).toBe(0);
+  });
+
+  it('a suppressed flapping signature is NOT resolved-broadcast on every micro-recovery (no pageResolved storm)', async () => {
+    const store = makeStore();
+    let healthy = false;
+    const sick = mkHealth({ evaluatedAt: 100 * 60_000, panels: { workFeed: { data: { deadRoutines: 1, deadRoutineNames: ['git-sync'] } } } });
+    const well = mkHealth({ evaluatedAt: 100 * 60_000 });
+    const pageResolvedCalls: string[][] = [];
+    let now = 100 * 60_000;
+    const deps = {
+      readLast: () => (healthy ? well : sick),
+      computeHealth: async () => (healthy ? well : sick),
+      escalate: store.escalate,
+      listOpen: store.listOpen,
+      resolve: store.resolve,
+      page: async () => {},
+      pageResolved: async (sigs: string[]) => { if (sigs.length) pageResolvedCalls.push(sigs); },
+      now: () => now,
+      snapshotStaleMs: 6 * 60_000,
+      debounceMs: 1_000,
+      flapWindowMs: 30 * 60_000,
+      flapThreshold: 2,
+    };
+
+    // Cycle through 5 fire/resolve pairs — only the first 2 recoveries are
+    // non-flapping (fireCount ≤ threshold at the time they resolve, so they
+    // broadcast immediately exactly like today); the 3rd-5th are
+    // flap-suppressed (deferred, never broadcast individually).
+    for (let i = 0; i < 5; i++) {
+      healthy = false; now += 2_000; await runLivenessAlarmTick('ws', deps);
+      healthy = true; now += 2_000; await runLivenessAlarmTick('ws', deps);
+    }
+    // Exactly 2 immediate resolved-broadcasts (fires/resolves #1 and #2, both
+    // ≤ threshold) — the 3 later flap-cycle recoveries are all deferred, so
+    // this is 3 fewer broadcasts than the pre-EI-9939 storm (5) would send.
+    expect(pageResolvedCalls.length).toBe(2);
+  });
+
+  it('a settled flapping signature (quiet for a FULL flap window, no re-fire) gets exactly one final all-clear', async () => {
+    const store = makeStore();
+    let healthy = false;
+    const sick = mkHealth({ evaluatedAt: 100 * 60_000, panels: { workFeed: { data: { deadRoutines: 1, deadRoutineNames: ['git-sync'] } } } });
+    const well = mkHealth({ evaluatedAt: 100 * 60_000 });
+    const pageResolvedCalls: string[][] = [];
+    let now = 100 * 60_000;
+    const flapWindowMs = 30 * 60_000;
+    const deps = {
+      readLast: () => (healthy ? well : sick),
+      computeHealth: async () => (healthy ? well : sick),
+      escalate: store.escalate,
+      listOpen: store.listOpen,
+      resolve: store.resolve,
+      page: async () => {},
+      pageResolved: async (sigs: string[]) => { if (sigs.length) pageResolvedCalls.push(sigs); },
+      now: () => now,
+      snapshotStaleMs: 6 * 60_000,
+      debounceMs: 1_000,
+      flapWindowMs,
+      flapThreshold: 2,
+    };
+
+    // Drive it into flapping (3 fire/resolve cycles, well inside the window).
+    for (let i = 0; i < 3; i++) {
+      healthy = false; now += 2_000; await runLivenessAlarmTick('ws', deps);
+      healthy = true; now += 2_000; await runLivenessAlarmTick('ws', deps);
+    }
+    pageResolvedCalls.length = 0; // only care about what happens from here
+
+    // Stay healthy and let enough time pass for the settle sweep to fire —
+    // ticks continue (as the real 2min-interval loop would) but the condition
+    // never re-fires.
+    now += flapWindowMs + 60_000;
+    const settled = await runLivenessAlarmTick('ws', deps);
+    expect(settled.resolved).toEqual([]); // nothing NEW to durably resolve this tick
+    expect(pageResolvedCalls).toEqual([['dead-routines']]); // exactly one final all-clear
+
+    // And a FRESH re-occurrence after settling is treated as a first fire again.
+    const pageCalls: string[] = [];
+    (deps as unknown as { page: (s: { key: string }) => Promise<void> }).page = async (s) => { pageCalls.push(s.key); };
+    healthy = false; now += 60_000;
+    await runLivenessAlarmTick('ws', deps);
+    expect(pageCalls).toEqual(['dead-routines']);
+  });
+
+  it('re-firing before the settle window elapses defers the all-clear further (no premature all-clear)', async () => {
+    const store = makeStore();
+    let healthy = false;
+    const sick = mkHealth({ evaluatedAt: 100 * 60_000, panels: { workFeed: { data: { deadRoutines: 1, deadRoutineNames: ['git-sync'] } } } });
+    const well = mkHealth({ evaluatedAt: 100 * 60_000 });
+    const pageResolvedCalls: string[][] = [];
+    let now = 100 * 60_000;
+    const flapWindowMs = 30 * 60_000;
+    const deps = {
+      readLast: () => (healthy ? well : sick),
+      computeHealth: async () => (healthy ? well : sick),
+      escalate: store.escalate,
+      listOpen: store.listOpen,
+      resolve: store.resolve,
+      page: async () => {},
+      pageResolved: async (sigs: string[]) => { if (sigs.length) pageResolvedCalls.push(sigs); },
+      now: () => now,
+      snapshotStaleMs: 6 * 60_000,
+      debounceMs: 1_000,
+      flapWindowMs,
+      flapThreshold: 2,
+    };
+
+    for (let i = 0; i < 3; i++) {
+      healthy = false; now += 2_000; await runLivenessAlarmTick('ws', deps);
+      healthy = true; now += 2_000; await runLivenessAlarmTick('ws', deps);
+    }
+    pageResolvedCalls.length = 0;
+
+    // Almost settled — but re-fires just short of the settle window.
+    now += flapWindowMs - 5_000;
+    healthy = false;
+    await runLivenessAlarmTick('ws', deps); // re-fire cancels the pending settle
+    healthy = true; now += 2_000;
+    await runLivenessAlarmTick('ws', deps); // resolves again (still flapping → deferred)
+    expect(pageResolvedCalls).toEqual([]); // no premature all-clear fired
+  });
+});
+
 describe('deriveSignatureFromSummary (legacy classifier)', () => {
   it('maps each known signal summary back to its signature', () => {
     expect(deriveSignatureFromSummary('[infra-liveness] system-health tick stale for 10m — ...')).toBe('health-tick-stale');
