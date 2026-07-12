@@ -1,12 +1,19 @@
 ---
-title: "Piping a background test run through `| tail -N` hides a real FAILURE behind exit code 0 (EI-8871)"
-description: "run_in_background { command: \"npm run test:affected 2>&1 | tail -100\" } reports the harness's completion exit code for the PIPELINE's last stage (tail), not for npm run test:affected — so a genuinely failing test run can surface as a clean 'completed (exit code 0)' notification. Redirect to a log file instead of piping through tail/head when the run's own exit code matters."
+title: "Piping ANY background command through `| tail -N` hides a real FAILURE behind exit code 0 (EI-8871)"
+description: "A shell pipeline's exit code is its LAST stage's. Pipe any command through tail/grep/head and the harness reports 'completed (exit code 0)' even when the real command failed — seen with npm run test:affected (exit 1), rsync (exit 23 and 12), and ssh. Redirect to a log file, or append `; echo \"EXIT=$?\"`, whenever the command's own exit code matters. Not a testing-specific trap."
 discovered: 2026-07-09
-tags: [testing, bash, background-tasks, pipe, exit-code, completion-integrity, vitest]
+tags: [bash, background-tasks, pipe, exit-code, completion-integrity, testing, vitest, rsync, ssh]
 status: active
 documents:
   - scripts/affected-tests.mjs
 ---
+
+> **This is not a testing trap.** It was first found with `npm run test:affected`, and
+> was written up that way — which is precisely why it kept firing. On 2026-07-12 it bit
+> a mac-leg agent **four times in one session** on `rsync` and `ssh` commands, because
+> "the background *test* pipe trap" did not read as applicable to copying a file. It
+> applies to **every** command whose exit code you intend to trust. See
+> "It is the pipeline, not the payload" below.
 
 ## The trap
 
@@ -74,6 +81,37 @@ If you must bound the SIZE of what streams back to you (not just the log file
 on disk), redirect to the file as above and separately `tail -n 100
 /tmp/my-test-run.log` as its own, later command — that `tail` no longer sits
 inside the pipeline whose exit code you care about, so it can't mask anything.
+
+## It is the pipeline, not the payload (2026-07-12)
+
+The original write-up framed this as a *test-running* trap. That framing is what let it
+recur. A mac-leg agent hit the identical failure **four times in one session** while
+shipping release artifacts — none of them a test run:
+
+| what actually ran | harness said | real exit | consequence |
+| --- | --- | --- | --- |
+| `npm run test:affected … \| tail` | completed, exit 0 | **1** | a red suite read as green |
+| `rsync … \| tail` (hand-escaped spaces) | completed, exit 0 | **23** | nothing transferred |
+| `rsync -s … \| tail` (Apple rsync 2.6.9) | completed, exit 0 | **12** | nothing transferred |
+| `ssh … \| grep` | completed, exit 0 | non-zero | absence read as evidence |
+
+Two of those reported success while transferring **zero bytes**. The reason the existing
+doc did not prevent them is worth stating plainly: an agent grepping for help with a
+broken `rsync` does not search for a *testing* insight. The trap lives in `bash`'s
+pipeline semantics, so it applies to `rsync`, `ssh`, `curl`, `cargo`, `git`, a build
+script — anything.
+
+The cheapest universal guard, when a log file is overkill:
+
+```bash
+some-command --that --might --fail 2>&1 | tail -20 ; echo "EXIT=${PIPESTATUS[0]}"
+# or, for the whole pipeline:
+set -o pipefail
+```
+
+`$?` after a pipeline is the LAST stage's status; `${PIPESTATUS[0]}` is the first
+stage's — the one you actually care about. **Read the printed value. Never the
+notification.**
 
 ## The verification habit that catches this regardless
 

@@ -271,7 +271,13 @@ export default defineTool({
         sessionId: resumeSessionId,
         agent: args.agent ?? null,
         plan: args.plan ?? null,
-        harness: args.plan ? slug : null,
+        // ALWAYS harness-scope a fresh launch, plan or not (caught by the P-016
+        // live-verify): `--harness` is what makes psu bootstrap a papercusp-su
+        // collaborator. Without it psu boots a PLAIN claude, skips the su bootstrap,
+        // and never SEEDS the per-session CLAUDE_CONFIG_DIR — so claude runs its
+        // first-run onboarding (theme picker), never reaches a prompt, and the brief
+        // can never be delivered. The agent is dead on arrival.
+        harness: slug,
         account: args.account ?? null,
         model: args.model ?? null,
         headless: !!args.headless,

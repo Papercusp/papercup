@@ -259,7 +259,7 @@ describe("<ObservationsPanel />", () => {
     );
   });
 
-  it("renders the optional body, sourceRole, scope, confidence, and refs metadata", () => {
+  it("reveals the full body and context only for the selected observation", () => {
     sync.data = [
       mkRow({
         id: "full",
@@ -272,13 +272,14 @@ describe("<ObservationsPanel />", () => {
       }),
     ];
     render(<ObservationsPanel />);
-    expect(screen.getByText("a longer note")).toBeTruthy();
+    expect(screen.queryByText("a longer note")).toBeNull();
     expect(
       screen.queryByText("engineer · repo · high · F-1 · WI-2"),
     ).toBeNull();
     fireEvent.click(
       screen.getByRole("button", { name: "Expand observation Full row" }),
     );
+    expect(screen.getByText("a longer note")).toBeTruthy();
     expect(
       screen.getByText("engineer · repo · high · F-1 · WI-2"),
     ).toBeTruthy();
@@ -346,15 +347,12 @@ describe("<ObservationsPanel />", () => {
     ];
     render(<ObservationsPanel />);
     expect(
-      screen.getByRole("button", {
-        name: "Filter by Friction, 500+",
-      }),
-    ).toBeTruthy();
+      screen.getByRole("button", { name: "Filter by Friction, 500" })
+        .textContent,
+    ).toContain("500+");
     expect(
-      screen.getByRole("button", {
-        name: "Filter by Gap, 500+",
-      }),
-    ).toBeTruthy();
+      screen.getByRole("button", { name: "Filter by Gap, 501" }).textContent,
+    ).toContain("500+");
     expect(
       screen.getByRole("button", {
         name: "Filter by Surprise, 499",
@@ -368,23 +366,25 @@ describe("<ObservationsPanel />", () => {
     const stale = new Date(now - 90 * 60_000).toISOString(); // 90min ago
     const veryStale = new Date(now - 3 * 60_60_000).toISOString(); // 3+ hours ago
 
+    counts.data = [{ kind: "other", count: 1 }];
+
     // Fresh: newest <30min ago
     sync.data = [mkRow({ id: "a", createdAt: fresh })];
     const { rerender } = render(<ObservationsPanel />);
     let dist = screen.getByLabelText("Signal distribution (database counts)");
-    expect(dist).toHaveAttribute("data-staleness", "fresh");
+    expect(dist.getAttribute("data-staleness")).toBe("fresh");
 
     // Stale: newest 30min-2h ago
     sync.data = [mkRow({ id: "a", createdAt: stale })];
     rerender(<ObservationsPanel />);
     dist = screen.getByLabelText("Signal distribution (database counts)");
-    expect(dist).toHaveAttribute("data-staleness", "stale");
+    expect(dist.getAttribute("data-staleness")).toBe("stale");
 
     // Very stale: newest 2h+ ago
     sync.data = [mkRow({ id: "a", createdAt: veryStale })];
     rerender(<ObservationsPanel />);
     dist = screen.getByLabelText("Signal distribution (database counts)");
-    expect(dist).toHaveAttribute("data-staleness", "very-stale");
+    expect(dist.getAttribute("data-staleness")).toBe("very-stale");
   });
 
   it("defaults to very-stale when no observations are loaded", () => {

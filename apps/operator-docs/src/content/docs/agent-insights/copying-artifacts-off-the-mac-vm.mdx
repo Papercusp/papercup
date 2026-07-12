@@ -1,0 +1,81 @@
+---
+title: "Copying build artifacts off the mac VM: rsync fails two different silent ways, and exit codes lie about it"
+description: "macOS ships Apple rsync 2.6.9, which rejects --protect-args/-s (exit 12); hand-escaping the spaces in \"Papercusp GUI.app.tar.gz\" passes the backslash through literally (exit 23). Both transfer ZERO bytes. Stream per-file with `ssh 'cat …'` and verify by sha256 — never by exit code."
+discovered: 2026-07-12
+tags: [mac-vm, rsync, ssh, release, artifacts, desktop, file-transfer, verification]
+status: active
+documents:
+  - papercusp-desktop/bin/mac-vm-build.sh
+---
+
+The mac desktop bundles are named **with spaces** — `Papercusp GUI.app.tar.gz`,
+`Papercusp Server.app.tar.gz`. Getting them off `papercup-vm-mac` looks like a
+one-line `rsync`. It is not, and both failure modes are silent: they report
+success and copy **nothing**.
+
+(The same spaces cause a *second*, unrelated bug once the files are uploaded —
+an unencoded space in `latest.json`'s download url is rejected by the client.
+See WI-4364. Assume anything touching these filenames is booby-trapped.)
+
+## Failure 1 — hand-escaping the spaces (exit 23, nothing transferred)
+
+```bash
+# WRONG
+rsync -av "aviweiss@127.0.0.1:~/build/Papercusp\ GUI.app.tar.gz" ./
+# rsync: link_stat ".../Papercusp\ GUI.app.tar.gz" failed: No such file or directory (2)
+# rsync error: some files/attrs were not transferred (code 23)
+```
+
+The backslash is passed through **literally** to the remote, which then looks for a
+file whose name really does contain a backslash. Escaping is the intuitive fix and it
+is the wrong one.
+
+## Failure 2 — reaching for `-s` / `--protect-args` (exit 12, nothing transferred)
+
+That is the documented fix for spaces in remote paths… on **GNU** rsync.
+
+```bash
+# WRONG on macOS
+rsync -avs "aviweiss@127.0.0.1:~/build/Papercusp GUI.app.tar.gz" ./
+# rsync: on remote machine: -slogDtpre.iLsfxCIvu: unknown option
+# rsync error: syntax or usage error (code 12) [server=2.6.9]
+```
+
+**macOS ships Apple rsync 2.6.9** (from 2006). It does not know `-s`. The local rsync
+folds `-s` into the option string it sends to the remote, and the ancient remote
+rejects the whole blob. Note the tell in the error: `[server=2.6.9]`.
+
+## The fix — stream per file over ssh, then verify by content
+
+Skip rsync entirely. Quote the remote path *once*, for the remote shell:
+
+```bash
+ssh -i ~/.ssh/papercup-vm-mac -p 2222 aviweiss@127.0.0.1 \
+  "cat '/Users/aviweiss/build/.../Papercusp GUI.app.tar.gz'" \
+  > "Papercusp GUI.app.tar.gz"
+```
+
+Then **verify by sha256, not by exit code** — capture the hash on the VM *before*
+the transfer and compare after:
+
+```bash
+ssh … "shasum -a 256 '/abs/path/Papercusp GUI.app.tar.gz'"   # on the VM, first
+shasum -a 256 "Papercusp GUI.app.tar.gz"                      # locally, after
+```
+
+A truncated or empty stream still exits 0. The hash is the only thing that
+actually proves the bytes arrived — and for a 462 MB GUI tarball / 1.33 GB Server
+tarball, "it seemed to work" is not evidence.
+
+## Why the failures were invisible for so long
+
+Both rsync attempts were run as `rsync … | tail`, so the harness's completion
+notification reported **"exit code 0"** while the real exit codes were 23 and 12 —
+the pipeline's status is its *last* stage's. That is
+[EI-8871](/internal/docs/agent-insights/background-test-pipe-exit-code-trap), and it
+is not a testing-only trap. When a transfer "succeeds" but the file is missing or
+short, suspect the exit code before you suspect the network:
+
+```bash
+rsync … ; echo "EXIT=${PIPESTATUS[0]}"
+```
