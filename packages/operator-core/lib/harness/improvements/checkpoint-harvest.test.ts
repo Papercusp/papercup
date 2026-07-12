@@ -16,10 +16,14 @@ import {
   harvestInsight,
   pickLexicalCoalesce,
   pickSemanticCoalesce,
+  classifyClaimStrength,
+  applyClaimStrengthPrefix,
+  isRefutation,
   HARVEST_ORIGIN,
   HARVEST_KILL_ENV,
   MAX_INSIGHT_CHARS,
   MAX_TITLE_CHARS,
+  REFUTED_PREFIX,
   type HarvestDeps,
   type RecentHarvest,
 } from './checkpoint-harvest';
@@ -33,10 +37,14 @@ function makeDeps(opts: {
   hard?: string[];
   captureThrows?: boolean;
   loadThrows?: boolean;
+  byRef?: RecentHarvest[];
+  flagResult?: boolean;
 } = {}): HarvestDeps & {
   capture: ReturnType<typeof vi.fn>;
   loadRecent: ReturnType<typeof vi.fn>;
   findSemanticDupes: ReturnType<typeof vi.fn>;
+  findByRef: ReturnType<typeof vi.fn>;
+  flagRefuted: ReturnType<typeof vi.fn>;
 } {
   const capture = vi.fn(async (): Promise<CaptureImprovementResult> => {
     if (opts.captureThrows) throw new Error('PG down');
@@ -56,7 +64,9 @@ function makeDeps(opts: {
     soft: [],
     thresholds: { hard: 0.93, soft: 0.85 },
   }));
-  return { capture, loadRecent, findSemanticDupes };
+  const findByRef = vi.fn(async (): Promise<RecentHarvest[]> => opts.byRef ?? []);
+  const flagRefuted = vi.fn(async (): Promise<boolean> => opts.flagResult ?? true);
+  return { capture, loadRecent, findSemanticDupes, findByRef, flagRefuted };
 }
 
 const prevKill = process.env[HARVEST_KILL_ENV];
@@ -125,6 +135,54 @@ describe('pickSemanticCoalesce — pure guard-verdict scoping', () => {
   });
 });
 
+describe('classifyClaimStrength — pure lexical hedge/confirm classifier (EI-9941)', () => {
+  it('classifies an explicit hedge as hypothesis', () => {
+    expect(classifyClaimStrength('I suspect the keypair regen is the cause, unconfirmed')).toBe('hypothesis');
+    expect(classifyClaimStrength('this is just a hypothesis at this point')).toBe('hypothesis');
+    expect(classifyClaimStrength('candidate root cause: the merge cursor')).toBe('hypothesis');
+  });
+  it('classifies an explicit confirm marker as verified', () => {
+    expect(classifyClaimStrength('confirmed via on-disk evidence: mtime unchanged')).toBe('verified');
+    expect(classifyClaimStrength('landed + green, tested green on staging')).toBe('verified');
+  });
+  it('defaults to unspecified — a bare declarative claim (the EI-9881 failure mode) is NOT auto-verified', () => {
+    expect(classifyClaimStrength('keypair-regen is the converged root cause of the replication stall')).toBe('unspecified');
+  });
+  it('prefers hypothesis when both hedge and confirm markers appear (conservative)', () => {
+    expect(classifyClaimStrength('I confirmed the guess: possibly the merge cursor')).toBe('hypothesis');
+  });
+});
+
+describe('applyClaimStrengthPrefix — pure title stamping (EI-9941)', () => {
+  it('prefixes a hypothesis / verified title and leaves unspecified untouched', () => {
+    expect(applyClaimStrengthPrefix('the merge cursor never advances', 'hypothesis')).toBe('[hypothesis] the merge cursor never advances');
+    expect(applyClaimStrengthPrefix('the merge cursor never advances', 'verified')).toBe('[verified] the merge cursor never advances');
+    expect(applyClaimStrengthPrefix('the merge cursor never advances', 'unspecified')).toBe('the merge cursor never advances');
+  });
+  it('is idempotent — does not double-prefix an already-prefixed title', () => {
+    expect(applyClaimStrengthPrefix('[hypothesis] X', 'hypothesis')).toBe('[hypothesis] X');
+  });
+  it('re-bounds to MAX_TITLE_CHARS so the prefix never pushes the total over the cap', () => {
+    const long = 'x'.repeat(MAX_TITLE_CHARS);
+    const out = applyClaimStrengthPrefix(long, 'hypothesis');
+    expect(out.length).toBeLessThanOrEqual(MAX_TITLE_CHARS);
+    expect(out.startsWith('[hypothesis] ')).toBe(true);
+    expect(out.endsWith('…')).toBe(true);
+  });
+});
+
+describe('isRefutation — pure refutation-signal classifier (EI-9941)', () => {
+  it('detects refutation language', () => {
+    expect(isRefutation('withdrawing the keypair hypothesis, already refuted on-disk')).toBe(true);
+    expect(isRefutation('ruled out: not the root cause')).toBe(true);
+    expect(isRefutation('that was a dead end')).toBe(true);
+  });
+  it('does not flag an unrelated / confirming statement', () => {
+    expect(isRefutation('confirmed the merge cursor never advances')).toBe(false);
+    expect(isRefutation('a durable claimHold discovery worth a future agent')).toBe(false);
+  });
+});
+
 describe('harvestInsight — impure leg (fail-open, coalesce, source-tag)', () => {
   const base = {
     insight: 'a durable claimHold discovery worth a future agent',
@@ -149,6 +207,53 @@ describe('harvestInsight — impure leg (fail-open, coalesce, source-tag)', () =
     expect(arg.payloadExtra.origin).toBe(HARVEST_ORIGIN);
     expect(arg.payloadExtra.harvestSource).toBe('loop-checkpoint');
     expect(arg.payloadExtra.observation).toEqual({ refs: ['loop:checkpoint'], sourceHive: 'papercusp' });
+    // EI-9941: a bare declarative insight (no hedge/confirm marker) files UNPREFIXED
+    // but still carries the machine-queryable claim-strength + provenance.
+    expect(arg.title).toBe(base.insight);
+    expect(arg.payloadExtra.claimStrength).toBe('unspecified');
+    expect(arg.payloadExtra.provenance).toEqual({ statedBy: 'su-01293', source: 'loop-checkpoint', filedByRole: 'su' });
+  });
+
+  it('EI-9941: prefixes the filed title when the insight carries an explicit hedge', async () => {
+    const deps = makeDeps({ recent: [], issueId: 'EI-200' });
+    const res = await harvestInsight({ ...base, insight: 'I suspect this is the root cause, unconfirmed' }, deps);
+    expect(res).toEqual({ filed: true, issueId: 'EI-200' });
+    const arg = deps.capture.mock.calls[0][0];
+    expect(arg.title).toBe('[hypothesis] I suspect this is the root cause, unconfirmed');
+    expect(arg.payloadExtra.claimStrength).toBe('hypothesis');
+  });
+
+  it('EI-9941: a refutation flags every prior harvested row tagged with the same ref, then still files its own observation', async () => {
+    const deps = makeDeps({
+      recent: [],
+      issueId: 'EI-300',
+      byRef: [{ id: 'EI-9881', title: 'keypair-regen is the converged root cause' }],
+    });
+    const res = await harvestInsight(
+      { ...base, insight: 'Withdrawing the keypair hypothesis — already refuted on-disk (mtime unchanged)' },
+      deps,
+    );
+    expect(res).toEqual({ filed: true, issueId: 'EI-300' });
+    expect(deps.findByRef).toHaveBeenCalledWith('loop:checkpoint', 'papercusp');
+    expect(deps.flagRefuted).toHaveBeenCalledTimes(1);
+    expect(deps.flagRefuted.mock.calls[0][0]).toBe('EI-9881');
+    expect(deps.flagRefuted.mock.calls[0][1]).toMatchObject({ by: 'su-01293' });
+    // The refutation's own observation still gets filed (never suppressed).
+    expect(deps.capture).toHaveBeenCalledTimes(1);
+  });
+
+  it('EI-9941: does not probe for refutation targets when there is no ref', async () => {
+    const { ref: _ref, ...noRef } = base;
+    const deps = makeDeps({ recent: [], issueId: 'EI-301' });
+    await harvestInsight({ ...noRef, insight: 'this claim was refuted on-disk' }, deps);
+    expect(deps.findByRef).not.toHaveBeenCalled();
+  });
+
+  it('EI-9941: a flagRefuted failure fails open — the new observation still files', async () => {
+    const deps = makeDeps({ recent: [], issueId: 'EI-302', byRef: [{ id: 'EI-9881', title: 'x' }] });
+    deps.flagRefuted.mockRejectedValueOnce(new Error('PG down'));
+    const res = await harvestInsight({ ...base, insight: 'ruled out: not the root cause after all' }, deps);
+    expect(res).toEqual({ filed: true, issueId: 'EI-302' });
   });
 
   it('coalesces a lexical (verbatim consecutive-wake) repeat — does NOT file', async () => {
