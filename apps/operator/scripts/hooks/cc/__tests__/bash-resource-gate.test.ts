@@ -325,15 +325,26 @@ describe('heavy-command admission control (WI-3821)', () => {
     ['env-prefixed inline PC_HEAVY_BYPASS=1', 'env PC_HEAVY_BYPASS=1 vitest run lib/x.test.ts'],
     ['bare inline PC_HEAVY_BYPASS=1 prefix', 'PC_HEAVY_BYPASS=1 npm run test:affected'],
     ['PC_HEAVY_BYPASS=1 among other assignments', 'FOO=bar PC_HEAVY_BYPASS=1 vitest run x.test.ts'],
+    // EI-10001: the deny message's own suggested remedy ("run it under
+    // `scripts/pc-heavy.sh -- <your command>`") must actually work in the
+    // everyday forms an agent naturally reaches for, not just the bare form.
+    ['cd <dir> && scripts/pc-heavy.sh -- <heavy> (EI-10001)', 'cd packages/operator-core && scripts/pc-heavy.sh -- npx tsc --noEmit -p .'],
+    ['cd "<quoted dir>" && scripts/pc-heavy.sh -- <heavy> (EI-10001)', 'cd "packages/operator-core" && scripts/pc-heavy.sh -- npx tsc --noEmit -p .'],
+    ['cd <dir>; scripts/pc-heavy.sh -- <heavy> (EI-10001, semicolon separator)', 'cd packages/operator-core; scripts/pc-heavy.sh -- npx vitest run lib/x.test.ts'],
+    ['(scripts/pc-heavy.sh -- <heavy>) & subshell wrapper (EI-10001)', '(scripts/pc-heavy.sh -- npx vitest run lib/x.test.ts) &'],
+    ['cd <dir> && (scripts/pc-heavy.sh -- <heavy>) & both wrappers stacked (EI-10001)', 'cd packages/operator-core && (scripts/pc-heavy.sh -- npx tsc --noEmit) &'],
   ])('allows the in-band bypass %s even over the threshold (EI-9634)', (_label, command) => {
     expectAllow(runGate(bashCmd(command), { ...AGENT, ...OVER }));
   });
 
   it.each([
-    // The in-band bypass must not become a free pass: it is command-position
-    // (re.match-anchored), so a raw heavy leading a chain is still gated even
-    // if a later segment wraps with pc-heavy.sh.
+    // The in-band bypass must not become a free pass: a raw heavy leading a
+    // chain is still gated even if a later segment wraps with pc-heavy.sh —
+    // EI-10001's peel loop only strips genuinely benign wrappers (cd/(/sudo/
+    // env/nice/ionice/rtk/time) that run no command of their own, so it stops
+    // the instant it hits a REAL command and never reaches pc-heavy.sh.
     ['a raw heavy leading a pc-heavy chain', 'vitest run a.test.ts && scripts/pc-heavy.sh -- vitest run b.test.ts'],
+    ['a raw heavy leading a pc-heavy chain, behind a cd (EI-10001 guard)', 'cd packages/operator-core && npm test && scripts/pc-heavy.sh -- vitest run b.test.ts'],
     ['PC_HEAVY_BYPASS with the wrong value does not bypass', 'env PC_HEAVY_BYPASS=0 vitest run x.test.ts'],
   ])('does NOT over-bypass %s (EI-9634 guard)', (_label, command) => {
     expectHeavyDeny(runGate(bashCmd(command), { ...AGENT, ...OVER }));

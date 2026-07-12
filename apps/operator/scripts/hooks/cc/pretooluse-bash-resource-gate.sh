@@ -319,14 +319,45 @@ def _heavy_admission():
     #       counting-semaphore admission and exports PC_HEAVY_BYPASS=1 to its
     #       child, so gating it double-denies the wrapper for the check it
     #       already satisfies.
+    #
+    # EI-10001: this used to `re.match` the RAW `_lead` only — so the deny
+    # message's own suggested remedy ("run it under `scripts/pc-heavy.sh --
+    # <your command>`") silently didn't work the moment pc-heavy.sh wasn't the
+    # literal first token: the everyday `cd <dir> && scripts/pc-heavy.sh --
+    # <cmd>` (very common right after a prior command left you elsewhere) or a
+    # `(… ) &` subshell wrapper around the invocation both got denied AGAIN
+    # with the exact same message — reads as "the remedy doesn't work." Peel a
+    # BOUNDED set of genuinely benign leading wrappers first (each one runs no
+    # command of its own, so this can never let a REAL heavy command hiding
+    # earlier in the string slip past ungated — `npm run build && scripts/
+    # pc-heavy.sh -- true` still stops peeling at `npm`, which isn't one of
+    # these, so it still hits the heavy_re check below as before).
     _lead = command.lstrip()
-    if re.match(r'(?:env\s+(?:[A-Za-z_]\w*=\S*\s+)*)?(?:bash\s+|sh\s+)?(?:\S*/)?pc-heavy\.sh(?:\s|$)', _lead):
+    _pc_lead = _lead
+    for _ in range(8):
+        _next = re.sub(
+            r'^(?:'
+            r'cd\s+([\'"]?)[^&|;<>\s\'"]+\1\s*(?:&&|;)\s*'  # cd <dir> && / ;
+            r'|\(\s*'  # one subshell open: ( scripts/pc-heavy.sh … ) &
+            r'|sudo(?:\s+(?:-[ugpUrCht]\s+\S+|-[A-Za-z]+|--[\w-]+(?:=\S*)?))*\s+'
+            r'|env(?:\s+[A-Za-z_]\w*=\S*)*\s+'
+            r'|nice(?:\s+-n\s*-?\d+)?\s+'
+            r'|ionice(?:\s+-\w+(?:\s+\d+)?)*\s+'
+            r'|rtk\s+|time\s+'
+            r')',
+            '', _pc_lead, count=1)
+        if _next == _pc_lead:
+            break
+        _pc_lead = _next
+    if re.match(r'(?:bash\s+|sh\s+)?(?:\S*/)?pc-heavy\.sh(?:\s|$)', _pc_lead):
         return
     #   (b) a leading `PC_HEAVY_BYPASS=1` env-assignment prefix (bare, behind
     #       other assignments, or behind `env`) — mirrors the message's own
     #       `PC_HEAVY_BYPASS=1 <cmd>` remedy and the `env`-prefixed heavy form
-    #       the anchor already recognizes.
-    if re.match(r'(?:env\s+)?(?:[A-Za-z_]\w*=\S*\s+)*PC_HEAVY_BYPASS=1(?:\s|$)', _lead):
+    #       the anchor already recognizes. Same `cd <dir> &&` allowance as (a).
+    _bypass_lead = re.sub(
+        r'^cd\s+([\'"]?)[^&|;<>\s\'"]+\1\s*(?:&&|;)\s*', '', _lead, count=1)
+    if re.match(r'(?:env\s+)?(?:[A-Za-z_]\w*=\S*\s+)*PC_HEAVY_BYPASS=1(?:\s|$)', _bypass_lead):
         return
     # Only throttle agent / shared-tree sessions — never the owner's own box
     # work. Mirror the git-guard's marker-OR-tree gate so marker-less fleet

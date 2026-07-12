@@ -9,7 +9,7 @@
  * woke on ZERO real human messages. Relevance MUST key off `to`, never
  * `writer_key`. These cases pin that.
  */
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { isHumanRelevantRow } from './coord-inbox-bus';
 
 describe('isHumanRelevantRow', () => {
@@ -44,5 +44,93 @@ describe('isHumanRelevantRow', () => {
     expect(isHumanRelevantRow('messages', undefined)).toBe(false);
     expect(isHumanRelevantRow('messages', 'human')).toBe(false);
     expect(isHumanRelevantRow('messages', { human: true })).toBe(false);
+  });
+});
+
+// ─── EI-9991 retry-on-failed-start (mirrors EI-9920 / pg-notify-bus.test.ts) ───
+// `postgres`, `./pg-listen-hub`, and `@papercusp/db-org` (the initCursor peek
+// query) are mocked so no real DB connection is ever opened; fake timers drive
+// the retry backoff deterministically.
+
+const listen = vi.fn();
+const end = vi.fn().mockResolvedValue(undefined);
+const postgresFactory = vi.fn((_url?: string, _opts?: unknown) => ({ listen, end }));
+// initCursor's tagged-template query — resolves to a single "no history yet" row.
+const orgSql = vi.fn(() => Promise.resolve([{ max_id: '0' }]));
+
+vi.mock('postgres', () => ({
+  default: (url?: string, opts?: unknown) => postgresFactory(url, opts),
+}));
+vi.mock('./embedded-pg-discovery', () => ({ getHarnessAdminUrl: () => 'postgres://test' }));
+vi.mock('./pg-listen-hub', () => ({
+  listenHubEnabled: () => false,
+  hubListen: vi.fn(),
+}));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: orgSql }) }));
+
+describe('coord-inbox-bus — EI-9991 retry-on-failed-start (mirrors EI-9920)', () => {
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    listen.mockReset();
+    end.mockReset().mockResolvedValue(undefined);
+    postgresFactory.mockClear();
+    orgSql.mockClear().mockImplementation(() => Promise.resolve([{ max_id: '0' }]));
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.resetModules(); // fresh module state per test (started/handlers/retryTimer are module-scoped)
+  });
+
+  afterEach(async () => {
+    const { _stopForTests } = await import('./coord-inbox-bus');
+    await _stopForTests();
+    consoleErrorSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('a failed LISTEN (CONNECTION_DESTROYED) retries and eventually connects — the handler is not left permanently dead', async () => {
+    listen
+      .mockRejectedValueOnce(new Error('write CONNECTION_DESTROYED localhost:15968'))
+      .mockResolvedValueOnce(undefined);
+
+    const { onCoordInbox } = await import('./coord-inbox-bus');
+    onCoordInbox(vi.fn());
+
+    await vi.advanceTimersByTimeAsync(0); // attempt 1 fails
+    expect(listen).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(499);
+    expect(listen).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1); // 500ms backoff elapses → retry succeeds
+    expect(listen).toHaveBeenCalledTimes(2);
+  });
+
+  it('unsubscribing while a retry is pending cancels it — no leaked reconnect for an empty bus', async () => {
+    listen.mockRejectedValue(new Error('still down'));
+
+    const { onCoordInbox } = await import('./coord-inbox-bus');
+    const unsubscribe = onCoordInbox(vi.fn());
+
+    await vi.advanceTimersByTimeAsync(0); // attempt 1 fails, retry scheduled
+    expect(listen).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(listen).toHaveBeenCalledTimes(1); // never retried into an empty bus
+  });
+
+  it('a well-formed first start never schedules a retry', async () => {
+    listen.mockResolvedValueOnce(undefined);
+
+    const { onCoordInbox } = await import('./coord-inbox-bus');
+    onCoordInbox(vi.fn());
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(listen).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(listen).toHaveBeenCalledTimes(1);
   });
 });
