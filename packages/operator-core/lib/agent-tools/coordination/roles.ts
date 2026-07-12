@@ -35,6 +35,14 @@ export const COORD_ROLES = [
   // resolves. Excluded from cup:spawn (placement is the Queen's, not the
   // watcher's — see fleet/spawn.ts, same carve-out as bee).
   'papercup',
+  // The PAPERCUP-DEEP — the hidden deep-brain half of the one "Papercup"
+  // identity (voice-public-release-readiness-2026-07-12 P-014). Its core
+  // surface IS coord: the fast front-end (papercup) wakes it with a delegated
+  // question (coord:send { wake }) and it replies + wakes the asker back; it
+  // orients, checkpoints investigations on work_items, and reads the substrate.
+  // Read+think+reply-mostly — like cup/papercup/kettle it MUST stay excluded
+  // from the placement/execution filter sites (AUTH INVARIANT below).
+  'papercup-deep',
   // The OVERWATCH — the autonomous system-health supervisor (overwatch-role-2026-06-15
   // C-2 / B-01). Like the sentinel, its core surface IS coord: it READS the substrate
   // (coord:presence/inbox/feed, improvements:digest, topics:feed) + the fleet
@@ -56,10 +64,11 @@ export const COORD_ROLES = [
   // pot-rename SLICE-2 CONTRACT: the old ids (bee/queen/sentinel/overwatch) are
   // gone — cup/mug/papercup/kettle above are the canonical coord roles. (scout was
   // never a coord role, so blender is intentionally absent.) ⚠ AUTH INVARIANT: the
-  // read-mostly roles (cup/papercup/kettle) MUST stay excluded from the Mug-only
-  // write tools — the `COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup'
-  // && r !== 'kettle')` sites move in LOCKSTEP with this list. `mug` is deliberately
-  // NOT excluded — it keeps the Mug's placement access.
+  // read-mostly roles (cup/papercup/papercup-deep/kettle) MUST stay excluded from
+  // the Mug-only write tools — the `COORD_ROLES.filter((r) => r !== 'cup' &&
+  // r !== 'papercup' && r !== 'papercup-deep' && r !== 'kettle')` sites move in
+  // LOCKSTEP with this list. `mug` is deliberately NOT excluded — it keeps the
+  // Mug's placement access.
 ] as const;
 
 /**

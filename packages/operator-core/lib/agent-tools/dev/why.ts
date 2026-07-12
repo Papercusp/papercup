@@ -25,7 +25,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [
     'operator', 'mug', 'architect', 'worker', 'scoper', 'validator', 'reviewer',
-    'debugger', 'documenter', 'curator', 'cup', 'papercup', 'kettle',
+    'debugger', 'documenter', 'curator', 'cup', 'papercup', 'papercup-deep', 'kettle',
     'release-fixer', 'merge-resolver', 'content-fixer', 'release-manager',
   ],
   args: z.object({

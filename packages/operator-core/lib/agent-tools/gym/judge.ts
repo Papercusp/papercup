@@ -74,7 +74,7 @@ export default defineTool({
   // Overwatch excluded too (overwatch-role-2026-06-15): it watches+nudges, it is not a
   // gym evaluator — and gym:judge gates on harness:read which the overwatch DOES carry,
   // so the allowlist (not the cap) is what keeps this off its surface.
-  agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'kettle'),
+  agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'papercup-deep' && r !== 'kettle'),
   args: z.object({
     intent: z.string().min(1).describe('The high-level intent the work should have achieved'),
     projectContext: z.string().describe('Repo/project summary the judge weighs spec-gaps against'),

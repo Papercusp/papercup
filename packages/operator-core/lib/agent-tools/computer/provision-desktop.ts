@@ -43,7 +43,7 @@ export default defineTool({
   requirePrincipal: false,
   // Placement/infra authority — same allowlist as cup:spawn (operator + Queen + the SU
   // roles, NOT a worker-bee: a bee does not equip its own hive; the operator/Queen does).
-  agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'kettle'),
+  agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'papercup-deep' && r !== 'kettle'),
   args: z
     .object({
       pot: z.string().min(1).max(120).describe("The pot's home-harness slug to equip with a desktop."),

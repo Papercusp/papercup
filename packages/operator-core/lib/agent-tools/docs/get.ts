@@ -137,7 +137,7 @@ export default defineTool({
   },
   capability: 'docs:read',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  agentRoles: [...SU_ROLES, 'papercup-deep'],
   modality: ['text'],
   rolesQuota: {
     worker: { perChunk: 10 },

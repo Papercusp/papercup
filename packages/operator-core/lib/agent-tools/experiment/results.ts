@@ -27,7 +27,7 @@ export default defineTool({
   requirePrincipal: false,
   // Overwatch excluded too (overwatch-role-2026-06-15): not an experiment surface, and it
   // carries harness:read — so the allowlist is what keeps this off its surface.
-  agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'kettle'),
+  agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'papercup-deep' && r !== 'kettle'),
   args: z.object({
     testId: z.string().optional().describe('Filter to one test id (e.g. "replay").'),
     limit: z.number().int().positive().max(200).optional().describe('Max rows (default 20).'),

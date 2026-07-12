@@ -29,7 +29,7 @@ export default defineTool({
   },
   capability: 'harness:read',
   requirePrincipal: false,
-  agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'kettle'),
+  agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'papercup-deep' && r !== 'kettle'),
   args: z.object({}).strict(),
   async handler() {
     const desktops = leasedHiveDesktops().map((hive) => {

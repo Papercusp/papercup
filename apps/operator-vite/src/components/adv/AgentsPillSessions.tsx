@@ -874,7 +874,7 @@ function SessionsStyles() {
       }
       .pc-agents-facets__row { display: flex; align-items: flex-start; gap: 6px; }
       .pc-agents-facets__label {
-        flex: 0 0 52px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+        flex: 0 0 52px; font-size: 10px; text-transform: uppercase; letter-spacing: 0;
         color: var(--fg-mute); padding-top: 3px; line-height: 1.4;
       }
       .pc-agents-facets__pills { display: flex; flex-wrap: wrap; gap: 3px; flex: 1 1 auto; min-width: 0; }

@@ -13,7 +13,7 @@ describe('dev:pipeline_position role allowlist', () => {
     const roles = new Set(tool.agentRoles ?? []);
     const expected = [
       'operator', 'mug', 'architect', 'worker', 'scoper', 'validator', 'reviewer',
-      'debugger', 'documenter', 'curator', 'cup', 'papercup', 'kettle',
+      'debugger', 'documenter', 'curator', 'cup', 'papercup', 'papercup-deep', 'kettle',
       'release-fixer', 'merge-resolver', 'content-fixer', 'release-manager',
     ];
     for (const r of expected) {

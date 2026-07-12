@@ -151,6 +151,14 @@ export interface CorpusDigest {
    *  behavior-space and toward unexplored (scope, domain, risk) combinations.
    *  OPTIONAL: populated by the cycle seam; absent = archive empty/unreadable. */
   nicheMap?: MetaPattern[];
+  /** DELTA-FIRST rendering substrate (blender-self-learning-2026-07-12 P-003 /
+   *  WI-4319): the refs the PREVIOUS fired cycle's persisted digest snapshot
+   *  carried (scout_digest_snapshots, migration 582). {@link renderDigest}
+   *  leads with the patterns NOT in this set ("NEW since your last cycle")
+   *  before the standing ones — killing the stale-repetition → dedup-decline
+   *  churn. OPTIONAL: stamped by the cycle seam (cycle-deps readCorpus);
+   *  absent ⇒ the legacy whole-digest rendering, byte-identical. */
+  previousCycleRefs?: string[];
   /** Optional one-line "state of the Hive" headline. */
   headline?: string;
   /** ISO timestamp the digest was synthesized. */

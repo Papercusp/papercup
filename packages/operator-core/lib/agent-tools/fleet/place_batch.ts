@@ -111,7 +111,7 @@ export default defineTool({
   // Placement is the Queen's (or operator's) surface — same carve-out as cup:spawn:
   // the worker-bee + the watch-only sentinel are excluded (they don't place agents).
   // Overwatch excluded too (overwatch-role-2026-06-15 D-001): it does not place work.
-  agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'kettle'),
+  agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'papercup-deep' && r !== 'kettle'),
   args: z.object({
     tasks: z
       .array(z.string().min(1).max(120))

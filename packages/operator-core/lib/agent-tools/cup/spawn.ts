@@ -46,7 +46,7 @@ export default defineTool({
   // does not PLACE agents — placement is the Mug's, the papercup raises alarms
   // (unify-launch-mechanics D-004). Same carve-out as cup. Overwatch excluded too
   // (overwatch-role-2026-06-15 D-001): it NUDGES the Mug to re-place, never places.
-  agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'kettle'),
+  agentRoles: COORD_ROLES.filter((r) => r !== 'cup' && r !== 'papercup' && r !== 'papercup-deep' && r !== 'kettle'),
   args: z
     .object({
       harness: z

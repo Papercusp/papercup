@@ -81,8 +81,14 @@ export const ORIENT_MEMORY_NOTE =
 /** P-004 (fleet-member-dx, EI-9017): drop near-zero-relevance recall hits before
  *  folding — a degraded embedder (quota outage → lexical fallback) returns hits
  *  scored 0.01–0.03 that are pure noise yet still cost fold tokens on EVERY
- *  orient. Real recall hits score well above this; a hit with NO numeric score
- *  passes (fail-open). Filtered hits surface as `filteredLowScore`, never silently. */
+ *  orient. A hit with NO numeric score passes (fail-open). Filtered hits surface
+ *  as `filteredLowScore`, never silently.
+ *  ⚠ DEGRADED-REGIME ONLY (orient-recall-quality-2026-07-12): a HEALTHY hybrid
+ *  response returns RRF rank-fusion scores on the SAME 0.01–0.03 band (rank-1
+ *  both-legs ≈ 2/61 ≈ 0.0328 — a STRONG hit), so this floor is applied only when
+ *  the response carries the EI-9031 `degraded` marker; a blanket value floor
+ *  silently emptied orient's entire fold on hybrid configs (caught live by the
+ *  P-001 per-surface telemetry: search p50 0.50 vs injection-port p50 0.016). */
 const MEMORY_SCORE_FLOOR = 0.05;
 const PLAN_EVENTS_FOLD = 10;
 const FLEET_CATCHUP_FOLD = 8;
@@ -511,19 +517,27 @@ export async function composeOrient(
         memory: typeof r.memory === 'string' ? r.memory.slice(0, MEMORY_TEXT_CAP) : undefined,
         score: r.score,
       }));
-      // P-004 (fleet-member-dx): relevance floor — see MEMORY_SCORE_FLOOR.
-      const hits = rawHits.filter((h) => typeof h.score !== 'number' || h.score >= MEMORY_SCORE_FLOOR);
+      // EI-9031 markers first — the floor below is REGIME-SCOPED on them.
+      const memDegraded = mem?.degraded === true;
+      const memDegradedReason = mem?.degraded_reason ?? mem?.reason;
+      // P-004 (fleet-member-dx, EI-9017): relevance floor — DEGRADED REGIME ONLY
+      // (orient-recall-quality-2026-07-12 live finding). EI-9017's "hits scored
+      // 0.01–0.03 are pure noise" holds for the regime it was written for — a
+      // degraded embedder's lexical-fallback token matches. But a HEALTHY hybrid
+      // response returns RRF rank-fusion scores on the same numeric band (rank-1
+      // one-leg = 1/61 ≈ 0.0164; rank-1 both legs ≈ 0.0328 — a STRONG hit), so a
+      // blanket value floor filtered EVERY healthy hybrid hit and orient's fold
+      // was silently EMPTY on this backend config (caught live 2026-07-12 by the
+      // per-surface telemetry, P-001: search p50 0.50 vs port p50 0.016). A
+      // healthy response already passed the backend's own admission — floor only
+      // the degraded regime the floor was built for.
+      const hits = memDegraded
+        ? rawHits.filter((h) => typeof h.score !== 'number' || h.score >= MEMORY_SCORE_FLOOR)
+        : rawHits;
       const filteredLowScore = rawHits.length - hits.length;
       // P-002 / D-001: a responsive caller doesn't receive queen-loop steering as
       // a binding recall hit (it self-drained fleet leaders). Auto callers keep all.
       const { kept, withheld } = withholdQueenLoopControl(hits, driveMode, (h) => ({ body: h.memory }));
-      // EI-9031: propagate memory:search's degraded signal (embedder on a
-      // reduced-breadth fallback / a failed embed) into the fold, so an empty
-      // `hits` is NOT read as "nothing relevant exists" during an embedding-backend
-      // outage — the very false-miss this ticket reports. Reason prefers the
-      // explicit degraded_reason, then the failure reason string.
-      const memDegraded = mem?.degraded === true;
-      const memDegradedReason = mem?.degraded_reason ?? mem?.reason;
       // P-002 (orient-recall-quality-2026-07-12): AGGREGATE budget over the kept
       // hits (relevance order; first hit always admitted) — see
       // orientMemoryBudgetChars. Dropped hits are LOUD (`withheldBudget`), and

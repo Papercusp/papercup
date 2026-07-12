@@ -34,7 +34,7 @@ export default defineTool({
   // for it instead of polling :3070, so the allowlist must cover them all (deploy-pipeline-legibility-2026-06-18 P-005).
   agentRoles: [
     'operator', 'mug', 'architect', 'worker', 'scoper', 'validator', 'reviewer',
-    'debugger', 'documenter', 'curator', 'cup', 'papercup', 'kettle',
+    'debugger', 'documenter', 'curator', 'cup', 'papercup', 'papercup-deep', 'kettle',
     'release-fixer', 'merge-resolver', 'content-fixer', 'release-manager',
   ],
   args: z.object({

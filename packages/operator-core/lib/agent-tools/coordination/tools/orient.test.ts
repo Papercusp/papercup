@@ -829,11 +829,18 @@ describe('memory-recall relevance floor — P-004 fleet-member-dx (EI-9017)', ()
     'coord:declare-intent': () => ({ ok: true }),
   };
 
-  it('drops near-zero-score hits (degraded-embedder noise) and surfaces filteredLowScore', async () => {
+  // orient-recall-quality-2026-07-12 (live finding): the EI-9017 noise floor is
+  // REGIME-SCOPED — it applies only to a DEGRADED response (the lexical-fallback
+  // noise it was written for). A healthy hybrid response returns RRF rank-fusion
+  // scores on the SAME numeric band (rank-1 ≈ 0.0164–0.0328 = a STRONG hit), so
+  // the old blanket floor silently emptied orient's whole fold on hybrid configs.
+  it('drops near-zero-score hits ONLY on a DEGRADED response (lexical-fallback noise) and surfaces filteredLowScore', async () => {
     const { call } = fakeCall({
       ...CORE_FLOOR,
       'memory:search': () => ({
         ok: true,
+        degraded: true,
+        degraded_reason: 'embedding_backend_degraded',
         results: [
           { id: 'good', memory: 'a real recall hit', score: 0.42 },
           { id: 'noise1', memory: 'lexical-fallback noise', score: 0.0306 },
@@ -844,6 +851,22 @@ describe('memory-recall relevance floor — P-004 fleet-member-dx (EI-9017)', ()
     const r = await composeOrient({ intent: 'do the thing' }, call, 'me');
     expect(r.memory?.hits.map((h) => h.id)).toEqual(['good']);
     expect((r.memory as { filteredLowScore?: number }).filteredLowScore).toBe(2);
+  });
+
+  it('a HEALTHY response keeps RRF-band scores (0.016–0.033 = rank-1 hybrid hits, not noise)', async () => {
+    const { call } = fakeCall({
+      ...CORE_FLOOR,
+      'memory:search': () => ({
+        ok: true, // no degraded marker — backend admission already ran
+        results: [
+          { id: 'rrf-both-legs', memory: 'rank-1 on both legs', score: 0.0328 },
+          { id: 'rrf-one-leg', memory: 'rank-1 on one leg', score: 0.0164 },
+        ],
+      }),
+    });
+    const r = await composeOrient({ intent: 'do the thing' }, call, 'me');
+    expect(r.memory?.hits.map((h) => h.id)).toEqual(['rrf-both-legs', 'rrf-one-leg']);
+    expect('filteredLowScore' in (r.memory as object)).toBe(false);
   });
 
   it('a hit with NO numeric score passes (fail-open), and no noise ⇒ no filteredLowScore key', async () => {

@@ -60,6 +60,12 @@ export interface InstallPaths {
    *  which was NEVER added to the on-boot shim set — the packaged app's dock layout invokes
    *  `psu-sentinel` by name (apps/tui/src/layout.rs) but nothing ever put it on PATH. */
   psuSentinelPath: string;
+  /** ~/.papercusp/bin/psu-sentinel-deep — the deep-brain dock pane launcher
+   *  (voice-public-release-readiness-2026-07-12 P-014): registers the pane to
+   *  sentinel-deep-pane, applies ~/.papercusp/sentinel-deep-model (absent ⇒ the
+   *  heavy `opus:xhigh` default), then execs the psu shim with
+   *  `--role=papercup-deep`. Mirrors apps/operator/scripts/psu-sentinel-deep.sh. */
+  psuSentinelDeepPath: string;
   /** ~/Applications/Papercusp Tutorial & Setup.app — macOS-only clickable launcher that opens a
    *  Terminal window running `papercusp tutorial` (windows-macos-tutorial-shortcut-parity
    *  2026-07-04, WI-2197 — macOS/Dock-Applications parity with the Linux .desktop icon). */
@@ -94,6 +100,9 @@ export interface InstallResult extends InstallPaths {
   /** True when the `psu-sentinel` dock-pane launcher shim was written (WI-4244). Only
    *  attempted when the `psu` shim itself was written this call — sentinel execs psu. */
   psuSentinelShimWritten: boolean;
+  /** True when the `psu-sentinel-deep` deep-brain pane launcher shim was written
+   *  (voice-public-release-readiness P-014). Same gating as psu-sentinel. */
+  psuSentinelDeepShimWritten: boolean;
   /** True when the macOS "Papercusp Tutorial & Setup.app" wrapper was written (darwin only, WI-2197). */
   macTutorialAppWritten: boolean;
   /** True when the Linux per-user tutorial `.desktop` launcher was written (linux only). */
@@ -685,6 +694,39 @@ async function writeSentinelShim(shimPath: string, psuShimPath: string): Promise
 }
 
 /**
+ * Write the `psu-sentinel-deep` dock-pane launcher shim
+ * (voice-public-release-readiness-2026-07-12 P-014/D-006 — the deep-brain
+ * pane). Twin of writeSentinelShim above: registers the pane to
+ * ~/.papercusp/sentinel-deep-pane, applies ~/.papercusp/sentinel-deep-model
+ * when staged (absent ⇒ the HEAVY `opus:xhigh` default — depth is this
+ * session's contract; the front-end pane owns responsiveness), then execs the
+ * psu shim as the workspace-level `papercup-deep` role. Keep in lockstep with
+ * the dev shim (apps/operator/scripts/psu-sentinel-deep.sh). Only called when
+ * the `psu` shim was written this pass (same reasoning as the sentinel shim).
+ */
+async function writeSentinelDeepShim(shimPath: string, psuShimPath: string): Promise<boolean> {
+  const body =
+    '#!/usr/bin/env bash\n' +
+    '# papercusp psu-sentinel-deep shim — managed by Papercusp.app (installPapercuspFiles).\n' +
+    '# Refreshed on every boot; do not edit. Registers the deep-brain dock pane, applies a\n' +
+    '# model override, then execs the psu shim with role=papercup-deep.\n' +
+    'mkdir -p "$HOME/.papercusp" 2>/dev/null || true\n' +
+    'if [ -n "$ZELLIJ_PANE_ID" ] && [ -n "$ZELLIJ_SESSION_NAME" ]; then\n' +
+    '  printf \'%s %s\' "$ZELLIJ_SESSION_NAME" "$ZELLIJ_PANE_ID" > "$HOME/.papercusp/sentinel-deep-pane" 2>/dev/null || true\n' +
+    'fi\n' +
+    "spec='opus:xhigh'\n" +
+    'if [ -s "$HOME/.papercusp/sentinel-deep-model" ]; then\n' +
+    '  file_spec="$(tr -d \' \\t\\r\\n\' < "$HOME/.papercusp/sentinel-deep-model" 2>/dev/null)"\n' +
+    '  [ -n "$file_spec" ] && spec="$file_spec"\n' +
+    'fi\n' +
+    'model_args=("--model=$spec")\n' +
+    `exec ${JSON.stringify(psuShimPath)} --no-picker --agent=claude --role=papercup-deep "\${model_args[@]}"\n`;
+  await fs.writeFile(shimPath, body, { mode: 0o755 });
+  await fs.chmod(shimPath, 0o755);
+  return true;
+}
+
+/**
  * Write a minimal, self-contained macOS `.app` bundle at
  * `~/Applications/Papercusp Tutorial & Setup.app` that double-clicks (Finder/Launchpad/
  * Spotlight) into a fresh Terminal (or iTerm, if installed) window running
@@ -1136,6 +1178,7 @@ export function resolveInstallPaths(home: string): InstallPaths {
     ptoolPath: path.join(binDir, 'ptool'),
     papercuspCliPath: path.join(binDir, 'papercusp'),
     psuSentinelPath: path.join(binDir, 'psu-sentinel'),
+    psuSentinelDeepPath: path.join(binDir, 'psu-sentinel-deep'),
     macTutorialAppPath: path.join(home, 'Applications', 'Papercusp Tutorial & Setup.app'),
     linuxTutorialDesktopPath: path.join(home, '.local', 'share', 'applications', 'papercusp-tutorial.desktop'),
   };
@@ -1477,6 +1520,10 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   // WI-4244: the 🛡 Sentinel dock pane's launcher shim. Only when `psu` itself
   // landed this pass — sentinel execs the psu shim by its resolved path.
   const psuSentinelShimWritten = psuShimWritten ? await writeSentinelShim(paths.psuSentinelPath, paths.psuPath) : false;
+  // The deep-brain pane launcher rides the same gate (voice-public-release-readiness P-014).
+  const psuSentinelDeepShimWritten = psuShimWritten
+    ? await writeSentinelDeepShim(paths.psuSentinelDeepPath, paths.psuPath)
+    : false;
   // Put ~/.papercusp/bin on the user's shell PATH so psu/ptool resolve in ANY
   // terminal they open (the in-app "+" console sets PATH itself, but a plain
   // Terminal does not). Only when a shim actually landed.
@@ -1549,6 +1596,7 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
     ptoolShimWritten,
     papercuspCliWritten,
     psuSentinelShimWritten,
+    psuSentinelDeepShimWritten,
     macTutorialAppWritten,
     linuxTutorialDesktopWritten,
     linuxTutorialPinned,

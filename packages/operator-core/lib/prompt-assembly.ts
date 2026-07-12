@@ -149,6 +149,13 @@ export const PROMPT_ROLES = [
   // .shell.md / .tools.md) ships under apps/operator/prompts/, so the assembler
   // must be able to build prompts for it (loadRole{Persona,Converse,ModePersona}).
   'papercup',
+  // The hidden deep-brain half of the one "Papercup" identity
+  // (voice-public-release-readiness-2026-07-12 P-014): the persistent
+  // parked-until-woken heavy reasoner the fast front-end delegates real
+  // investigation to over coord/wake. persona.md only — it never converses
+  // with the user (no .converse.md / .shell.md; loadRoleConverse throwing for
+  // it is correct: a converse surface pointing at papercup-deep is a bug).
+  'papercup-deep',
 ] as const satisfies readonly import('@papercusp/agent-mcp').BuiltinAgentRole[];
 
 export type Role = (typeof PROMPT_ROLES)[number];
