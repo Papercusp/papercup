@@ -244,17 +244,24 @@ export function VoiceAppBridge(): null {
       }
       if (hasHigherPriorityConsumer()) return;
 
-      // Phase C (sentinel-as-claude-tui-2026-06-22): route the final transcript
-      // to the dock's 🛡 Sentinel pane (a psu/Claude-Code TUI) by POSTing
-      // /api/operator/papercup-input, which writes it into the pane's stdin.
-      // LOCAL APP USER ONLY — not the P2P voice channels. If the dock isn't up
-      // the POST fails and the turn drops.
+      // Voice-IN → the in-process Papercup converse brain (plan
+      // voice-public-release-readiness D-001, owner-ratified 2026-07-12). Route
+      // the final transcript into the SAME conversation + shared thread the
+      // desktop chat uses, via the provider-registered sendUserMessage
+      // (spoken:true → the reply is spoken back via the active TTS engine, e.g.
+      // kokoro). This replaces the retired writeToSentinelPane dock path, which
+      // required a dev zellij pui-dock and dropped every turn on a normal desktop
+      // ("Agent did not respond" — the root cause of the PTT + wake failures).
       //
-      // Guard: when a full-agent engine owns the session it is the brain
-      // (the EL/Realtime paths feed their own turn handlers), so don't
-      // double-dispatch.
+      // Guard: when a full-agent engine (EL Conv-AI / OpenAI Realtime) owns the
+      // session it is its own brain, so don't double-dispatch.
       if (fullAgentActive) return;
-      void routeVoiceToSentinelPane(text);
+      if (!submitVoiceTurn(text)) {
+        // No conversation provider mounted (should not happen in the desktop
+        // app). Fall back to the legacy dock path so a dev pui-dock, if present,
+        // still receives the turn.
+        void routeVoiceToSentinelPane(text);
+      }
     });
 
     return () => {
