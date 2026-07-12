@@ -5,6 +5,7 @@ vi.mock('./local-backend-store', () => ({
 }));
 
 import { listLocalBackends } from './local-backend-store';
+import type { LocalBackendRecord } from './local-backend-store';
 import { runWithWorkspace } from '../workspace-als';
 import {
   localModelIdsSync,
@@ -63,9 +64,9 @@ describe('localModelIdsSync — WI-4395 (per-workspace snapshot, resolved at the
     // workspace's synchronous call stack (runWithWorkspace), even though the underlying
     // listLocalBackends() promise resolves later, asynchronously, outside any ALS scope. The
     // workspace id must have been captured synchronously — not re-read from ALS after the await.
-    let resolveBackends!: (v: unknown[]) => void;
+    let resolveBackends!: (v: LocalBackendRecord[]) => void;
     mockListLocalBackends.mockImplementation(
-      () => new Promise((resolve) => { resolveBackends = resolve; }),
+      () => new Promise<LocalBackendRecord[]>((resolve) => { resolveBackends = resolve; }),
     );
     const syncResultDuringLoad = runWithWorkspace('ws-b', () => localModelIdsSync());
     expect(syncResultDuringLoad).toEqual([]); // not landed yet — fail-open

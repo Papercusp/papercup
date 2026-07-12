@@ -284,6 +284,15 @@ describe('priority surfaces on the unified WorkItem (the work_items:list/get fie
     const set = await wi.setWorkItemPriority('EI-2', 12, { harness: H });
     expect(set).toMatchObject({ priority: 12, applicable: true });
 
+    // TEMP DEBUG (EI-10421 investigation) — remove before closing.
+    const rawView = await db.sql`SELECT issue_id, feature_order FROM harness_shared.engineer_issues WHERE issue_id = 'EI-2'`;
+    const rawBase = await db.sql`SELECT feature_id, item_kind, feature_order FROM harness_shared.work_items WHERE feature_id = 'EI-2'`;
+    // eslint-disable-next-line no-console
+    console.log('EI10421_DEBUG rawView=', JSON.stringify(rawView), 'rawBase=', JSON.stringify(rawBase));
+    const got = await wi.getWorkItem('EI-2', H);
+    // eslint-disable-next-line no-console
+    console.log('EI10421_DEBUG got=', JSON.stringify(got));
+
     expect((await wi.getWorkItem('EI-2', H))?.priority).toBe(12);
     const listed = await wi.listWorkItems({ harness: H });
     expect(listed.find((w) => w.id === 'EI-2')?.priority).toBe(12);
