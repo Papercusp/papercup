@@ -475,8 +475,9 @@ export default function VoiceSettingsPage() {
                     ]}
                   />
                   <p style={hint}>
-                    Voicemode runs locally — audio never leaves your machine.
-                    Start it via <code>mcp__voicemode__service whisper start</code>.
+                    Whisper runs locally — audio never leaves your machine. No whisper server
+                    installed? Use “Install local voice” below; the operator then manages it
+                    automatically.
                   </p>
                 </div>
                 <div>
@@ -497,10 +498,12 @@ export default function VoiceSettingsPage() {
                   />
                   <EnginePreview engine={prefs?.ttsEngine ?? 'kokoro'} />
                   <p style={hint}>
-                    Kokoro requires Voicemode (port 8880). Browser TTS works without setup but quality varies by OS.
-                    ElevenLabs requires an API key below.
+                    Kokoro uses a local server (port 8880) when one is running, else the built-in
+                    engine from “Install local voice” below. Browser TTS works without setup but
+                    quality varies by OS. ElevenLabs requires an API key below.
                   </p>
                 </div>
+                <LocalVoiceInstall />
               </div>
             </>
           );
@@ -1361,6 +1364,95 @@ function ElSubscriptionStatus() {
           or you upgrade.
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * P-009 (voice-public-release-readiness-2026-07-12, plan D-009): the "Install local voice"
+ * surface. One click provisions everything free/offline voice needs — the whisper-server
+ * binary + ggml model (STT) and the kokoro ONNX model (in-process TTS) — downloaded on
+ * demand (a few hundred MB, first run only). Kick-off is POST operator-voice-provision;
+ * progress/result is polled from operator-voice-engine-health's `localVoice` block.
+ * useState (not nuqs) on purpose: install progress is transient request lifecycle.
+ */
+function LocalVoiceInstall() {
+  type Leg = { done: boolean; blocked?: string };
+  type LocalVoice = {
+    kokoroProvisioned: boolean;
+    whisperProvisioned: boolean;
+    installer: { running: boolean; whisperBinary: Leg; whisperModel: Leg; kokoro: Leg } | null;
+  };
+  const [lv, setLv] = useState<LocalVoice | null>(null);
+  const [installing, setInstalling] = useState(false);
+
+  const refresh = useCallback(async (): Promise<LocalVoice | null> => {
+    try {
+      const h = await fetch('/api/agent-mcp/operator-voice-engine-health').then((r) => (r.ok ? r.json() : null));
+      if (h?.localVoice) {
+        setLv(h.localVoice);
+        return h.localVoice as LocalVoice;
+      }
+    } catch {
+      /* health probe failure just leaves the block unrendered */
+    }
+    return null;
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const onInstall = async () => {
+    setInstalling(true);
+    const t = toast.loading('Installing local voice — downloads a few hundred MB on first run…');
+    try {
+      const kick = await fetch('/api/agent-mcp/operator-voice-provision', { method: 'POST' });
+      if (!kick.ok) {
+        toast.error(`Install kick-off failed: ${kick.status}`, { id: t });
+        return;
+      }
+      // Poll until the installer settles (bounded ~15min; an operator restart mid-install
+      // reads running:false and simply lands on whatever legs completed).
+      let last: LocalVoice | null = null;
+      for (let i = 0; i < 450; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        last = await refresh();
+        if (last && (!last.installer || !last.installer.running)) break;
+      }
+      const ok = !!(last?.kokoroProvisioned && last?.whisperProvisioned);
+      if (ok) {
+        toast.success('Local voice installed — speech-to-text and text-to-speech now run on this machine', { id: t, duration: 8000 });
+      } else {
+        const blocked = [last?.installer?.whisperBinary, last?.installer?.whisperModel, last?.installer?.kokoro]
+          .map((l) => l?.blocked)
+          .filter(Boolean);
+        toast.error(`Local voice install incomplete${blocked.length ? ` — ${blocked[0]}` : ''}`, { id: t, duration: 10000 });
+      }
+    } finally {
+      setInstalling(false);
+    }
+  };
+
+  if (!lv) return null;
+  const allDone = lv.kokoroProvisioned && lv.whisperProvisioned;
+  const m = (b: boolean) => (b ? '✓ installed' : '– not installed');
+  return (
+    <div style={{ gridColumn: '1 / -1', border: '1px solid var(--border, #333)', borderRadius: 8, padding: 12, marginTop: 4 }}>
+      <label style={lbl}>Local voice (free, offline)</label>
+      <p style={{ ...hint, marginTop: 4 }}>
+        Whisper STT {m(lv.whisperProvisioned)} · Kokoro TTS {m(lv.kokoroProvisioned)}
+        {lv.installer?.running ? ' — installing…' : ''}
+      </p>
+      {!allDone && (
+        <Button onClick={onInstall} disabled={installing || !!lv.installer?.running}>
+          {installing || lv.installer?.running ? 'Installing…' : 'Install local voice'}
+        </Button>
+      )}
+      <p style={{ ...hint, marginTop: 6 }}>
+        Runs speech recognition and speech synthesis entirely on this machine — no cloud key, audio never
+        leaves your computer. One-time download (~250 MB); cloud engines stay available for lower latency.
+      </p>
     </div>
   );
 }
