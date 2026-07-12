@@ -58,7 +58,19 @@ export type FlagOverrideStore = {
   cacheKey?(): string;
 };
 
-let overrideStore: FlagOverrideStore | null = null;
+// PROCESS-GLOBAL store slot (WI-4275): module-local state here proved fragile —
+// tsx/ESM can evaluate a second instance of this module in the same process
+// (symlinked workspace paths give distinct module URLs), and then the installer's
+// instance held the store while the reader's instance saw null: every runtime
+// `flags:set` was silently invisible ("No override store installed" on a process
+// that HAD installed one). Keying the slot on globalThis makes every instance of
+// this module share the one store, whatever the resolver did.
+const OVERRIDE_STORE_SLOT = Symbol.for('papercusp.flags.overrideStore');
+type StoreSlot = { store: FlagOverrideStore | null };
+function storeSlot(): StoreSlot {
+  const g = globalThis as unknown as Record<symbol, StoreSlot | undefined>;
+  return (g[OVERRIDE_STORE_SLOT] ??= { store: null });
+}
 // Keyed by the store's cacheKey() (e.g. workspace id) so one process serving
 // many workspaces never bleeds one workspace's overrides into another's reads.
 const overrideCache = new Map<
@@ -82,7 +94,7 @@ function overrideCacheTtlMs(): number {
 }
 
 function currentCacheKey(): string {
-  return overrideStore?.cacheKey?.() ?? '';
+  return storeSlot().store?.cacheKey?.() ?? '';
 }
 
 function flagBackendTimeoutMs(): number {
@@ -105,7 +117,7 @@ async function withFlagBackendTimeout<T>(op: Promise<T>): Promise<T> {
 }
 
 export function initFlagOverrideStore(store: FlagOverrideStore | null): void {
-  overrideStore = store;
+  storeSlot().store = store;
   overrideCache.clear();
   // Re-arm the missing-store warning: a process that installs a store LATE (after some
   // early getFlag()) must not be permanently muted, and each test gets a clean latch.
@@ -113,7 +125,7 @@ export function initFlagOverrideStore(store: FlagOverrideStore | null): void {
 }
 
 export function isOverrideStoreConfigured(): boolean {
-  return overrideStore !== null;
+  return storeSlot().store !== null;
 }
 
 let warnedNoOverrideStore = false;
@@ -155,6 +167,7 @@ function warnOverrideStoreMissingOnce(): void {
 }
 
 async function loadStoredOverrides(): Promise<Partial<Record<FlagKey, boolean>>> {
+  const overrideStore = storeSlot().store;
   if (!overrideStore) {
     warnOverrideStoreMissingOnce();
     return {};
@@ -180,6 +193,7 @@ export async function setFlagOverride(
   key: FlagKey,
   enabled: boolean | null,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const overrideStore = storeSlot().store;
   if (!overrideStore) return { ok: false, reason: "override-store-not-configured" };
   try {
     await overrideStore.set(key, enabled);
@@ -202,6 +216,7 @@ export async function setFlagOverride(
  * surfaces never disappear. Best-effort + idempotent; returns the cleared keys.
  */
 export async function clearAllFlagOverrides(): Promise<FlagKey[]> {
+  const overrideStore = storeSlot().store;
   if (!overrideStore) return [];
   try {
     const current = await overrideStore.load();
