@@ -761,7 +761,8 @@ describe("LearningTab — unified Signals views", () => {
       rerender(<LearningTab />);
     }
     expect(document.querySelector('[data-view="ideas"]')).toBeNull();
-    expect(document.querySelector('[data-view="observations"]')).toBeNull();
+    expect(document.querySelectorAll(".pc-learning__viewpane")).toHaveLength(3);
+    expect(document.querySelector('[data-view="observations"]')).not.toBeNull();
     expect(document.querySelector('[data-view="rubrics"]')).not.toBeNull();
     expect(document.querySelector('[data-view="benchmark"]')).not.toBeNull();
   });
@@ -856,8 +857,8 @@ describe("LearningTab — Benchmark view", () => {
     expect(
       screen
         .getByRole("tab", { name: "Benchmark" })
-        .querySelector(".pc-learning__view-icon.has-active"),
-    ).not.toBeNull();
+        .querySelector(".pc-learning__statusmark"),
+    ).toBeNull();
   });
 
   it("promotes every former benchmark section into the Verify tab row", () => {
@@ -929,8 +930,8 @@ describe("LearningTab — Benchmark view", () => {
     expect(
       screen
         .getByRole("tab", { name: "Verify" })
-        .querySelector(".pc-learning__stage-icon.has-active"),
-    ).not.toBeNull();
+        .querySelector(".pc-learning__statusmark"),
+    ).toBeNull();
   });
 
   it("renders the Pot-eval empty state only in the Pot orchestration view", () => {

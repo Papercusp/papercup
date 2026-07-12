@@ -116,3 +116,59 @@ describe('git-export capture trigger (PG)', () => {
     expect((await outbox())[0]!.key).toBe('p1__t9');
   });
 });
+
+/**
+ * EI-10521 — an UNROUTABLE row must not take the caller's write down with it.
+ *
+ * git_export_outbox.harness_slug is NOT NULL. Before the guard, a target table with
+ * no harness_slug column (or a NULL one) made the trigger's INSERT raise
+ * "null value in column harness_slug", and because that raise happens INSIDE the
+ * AFTER trigger it aborted the statement that fired it. Two live tables were
+ * registered that way — `goals` (install-scoped) and `project_spec_revisions`
+ * (project-scoped) — so every write to them failed and both sat at ZERO rows. The
+ * llm_test_* tables had already been bitten by the identical bug (table-registry.ts).
+ *
+ * The invariant: an export we cannot route is DROPPED, never fatal. The registry is
+ * the real fix (git-export-slug-coverage keeps an unroutable table out of GIT_TABLES);
+ * this is the seatbelt under it.
+ */
+describe('git-export capture trigger — unroutable rows drop, they do not abort the write (EI-10521)', () => {
+  it('a table with NO harness_slug column: the write SUCCEEDS and enqueues nothing', async () => {
+    // Pre-fix this INSERT threw 23502 not_null_violation and the row was never written.
+    await expect(
+      rootSql`INSERT INTO harness_shared.git_test_noslug (workspace_id, install_slug, id, data) VALUES (${WS}, 'inst-1', 'g1', 'v1')`,
+    ).resolves.toBeDefined();
+    const kept = await rootSql<{ id: string }[]>`SELECT id FROM harness_shared.git_test_noslug`;
+    expect(kept.map((r) => r.id)).toEqual(['g1']); // the caller's row actually landed
+    expect(await outbox()).toHaveLength(0); // and nothing unroutable was enqueued
+  });
+
+  it('UPDATE and DELETE on an unroutable table also survive', async () => {
+    await rootSql`INSERT INTO harness_shared.git_test_noslug (workspace_id, install_slug, id, data) VALUES (${WS}, 'inst-1', 'g1', 'v1')`;
+    await expect(rootSql`UPDATE harness_shared.git_test_noslug SET data='v2' WHERE id='g1'`).resolves.toBeDefined();
+    await expect(rootSql`DELETE FROM harness_shared.git_test_noslug WHERE id='g1'`).resolves.toBeDefined();
+    expect(await outbox()).toHaveLength(0); // every op dropped, none fatal
+  });
+
+  it('a NULL harness_slug VALUE drops too (the column exists but is unset)', async () => {
+    await expect(
+      rootSql`INSERT INTO harness_shared.git_test_nullslug (workspace_id, harness_slug, id, data) VALUES (${WS}, NULL, 'n1', 'v1')`,
+    ).resolves.toBeDefined();
+    expect(await outbox()).toHaveLength(0);
+  });
+
+  it('an EMPTY-STRING harness_slug drops too — it would route nowhere', async () => {
+    await rootSql`INSERT INTO harness_shared.git_test_nullslug (workspace_id, harness_slug, id, data) VALUES (${WS}, '', 'e1', 'v1')`;
+    expect(await outbox()).toHaveLength(0);
+  });
+
+  it('a ROUTABLE row on the very same table still exports (the guard is not a blanket off-switch)', async () => {
+    // The negative control: if this stopped exporting, the guard would be suppressing
+    // real work rather than only the unroutable ops.
+    await rootSql`INSERT INTO harness_shared.git_test_nullslug (workspace_id, harness_slug, id, data) VALUES (${WS}, 'web', 'ok1', 'v1')`;
+    const rows = await outbox();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.slug).toBe('web');
+    expect(rows[0]!.key).toBe('ok1');
+  });
+});
