@@ -52,6 +52,9 @@ vi.mock('../../work-items', () => ({
   releaseWorkItem: vi.fn(),
   diagnoseClaimNextMiss: vi.fn(),
 }));
+// Claim-time recall port (P-008) — mock so this handler test stays a hermetic
+// unit (the recall itself is pinned in memory/claim-port.test.ts).
+vi.mock('../../memory/claim-port', () => ({ buildClaimRecallBlock: vi.fn(async () => null) }));
 
 import { getNextForBee } from '../../scheduler/claim-spec-store';
 import { claimNextWorkItem, diagnoseClaimNextMiss } from '../../work-items';

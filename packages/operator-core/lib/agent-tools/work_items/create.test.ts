@@ -13,6 +13,9 @@ vi.mock('../coordination/identity', () => ({
   resolveSelfLiteral: (value: string | undefined, callerOwnerId: string) => (value === 'self' ? callerOwnerId : value),
 }));
 vi.mock('./_create-core', () => ({ createOneWorkItem: vi.fn() }));
+// Create-time dedup port (P-009) — mock so this handler test stays hermetic
+// (the memory-pools leg is pinned in memory/claim-port.test.ts).
+vi.mock('../../memory/claim-port', () => ({ buildClaimRecallBlock: vi.fn(async () => null) }));
 
 import { createOneWorkItem } from './_create-core';
 const createM = vi.mocked(createOneWorkItem);
