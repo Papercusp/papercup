@@ -173,9 +173,9 @@ export function LearningVisualStyles() {
   return (
     <style>{`
       .pc-learning-visual__head { min-height: 36px; display: flex; align-items: center; gap: 9px; margin: 0 0 10px; }
-      .pc-learning-visual__head h2 { display: inline-flex; align-items: center; gap: 7px; margin: 0; color: var(--fg); font-size: 13px; font-weight: 680; letter-spacing: -0.01em; }
+      .pc-learning-visual__head h2 { display: inline-flex; align-items: center; gap: 7px; margin: 0; color: var(--fg); font-size: 13px; font-weight: 680; letter-spacing: 0; }
       .pc-learning-visual__headspace { flex: 1 1 auto; }
-      .pc-learning-visual__signal { border: 1px solid color-mix(in srgb, var(--fg-mute) 28%, transparent); border-radius: 999px; padding: 2px 7px; color: var(--fg-mute); font-size: 9.5px; font-weight: 750; text-transform: uppercase; letter-spacing: .045em; }
+      .pc-learning-visual__signal { border: 1px solid color-mix(in srgb, var(--fg-mute) 28%, transparent); border-radius: 999px; padding: 2px 7px; color: var(--fg-mute); font-size: 9.5px; font-weight: 750; text-transform: uppercase; letter-spacing: 0; }
       .pc-learning-visual__signal.is-good { color: #34d399; border-color: color-mix(in srgb, #34d399 42%, transparent); background: color-mix(in srgb, #34d399 9%, transparent); }
       .pc-learning-visual__signal.is-warn { color: #fbbf24; border-color: color-mix(in srgb, #fbbf24 42%, transparent); background: color-mix(in srgb, #fbbf24 9%, transparent); }
       .pc-learning-visual__signal.is-bad { color: #fb7185; border-color: color-mix(in srgb, #fb7185 42%, transparent); background: color-mix(in srgb, #fb7185 9%, transparent); }
@@ -189,9 +189,9 @@ export function LearningVisualStyles() {
       .pc-learning-visual__hero.is-bad { color: #fb7185; }
       .pc-learning-visual__hero.is-accent { color: var(--accent); }
       .pc-learning-visual__hero.is-neutral { color: var(--fg); }
-      .pc-learning-visual__hero strong { margin-top: 8px; color: currentColor; font-size: clamp(30px, 3vw, 48px); line-height: .95; font-variant-numeric: tabular-nums; letter-spacing: -.045em; }
+      .pc-learning-visual__hero strong { margin-top: 8px; color: currentColor; font-size: clamp(30px, 3vw, 48px); line-height: .95; font-variant-numeric: tabular-nums; letter-spacing: 0; }
       .pc-learning-visual__eyebrow { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); font-size: 12px; font-weight: 690; }
-      .pc-learning-visual__verdict { margin-top: 12px; border: 1px solid currentColor; border-radius: 5px; padding: 3px 8px; background: color-mix(in srgb, currentColor 10%, transparent); color: currentColor; font-size: 9.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .055em; }
+      .pc-learning-visual__verdict { margin-top: 12px; border: 1px solid currentColor; border-radius: 5px; padding: 3px 8px; background: color-mix(in srgb, currentColor 10%, transparent); color: currentColor; font-size: 9.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0; }
       .pc-learning-visual__herofoot { width: 100%; margin-top: 12px; color: var(--fg-mute); font-size: 10.5px; font-variant-numeric: tabular-nums; }
       .pc-learning-visual__comparison { padding: 14px 15px 12px; }
       .pc-learning-visual__comparison > header { display: flex; align-items: center; gap: 12px; margin-bottom: 11px; }

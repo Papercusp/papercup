@@ -2074,7 +2074,7 @@ function ThroughputView() {
                 />
                 <Stat
                   label={`${t("contributor", { plural: true, lower: true })} busy`}
-                  value={m ? `${m.beesBusy}/${m.beesCap}` : "—"}
+                  value={m ? `${m.cupsBusy}/${m.cupsCap}` : "—"}
                   tone={saturated ? "human" : "good"}
                   hint={`Live placed ${t("contributor", { plural: true, lower: true })} vs the fleet ceiling. Pegged at cap with work still queued = starvation (raise the ceiling / widen the credential pool, D-006).`}
                 />

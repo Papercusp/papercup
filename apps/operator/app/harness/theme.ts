@@ -291,6 +291,17 @@ export const MEMORY_KIND_COLOR: Record<string, string> = {
 };
 export const MEMORY_KIND_FALLBACK = '#6b7280';
 
+// Turn-end-reflection observation kinds (create:observations browse pane,
+// turn-end-reflection-observations-2026-06-14 P-043). Categorical, not
+// status — kinds are a fixed sensor-reading vocabulary, style-only.
+export const OBSERVATION_KIND_COLOR: Record<string, string> = {
+  friction: '#fb7185',
+  workaround: '#fbbf24',
+  gap: CATEGORICAL.blue400.hex,
+  surprise: '#a78bfa',
+  reinforce: '#34d399',
+};
+
 // Hyperbee boot-history event-kind hues (admin/dogfood-substrate →
 // insights/BootHistoryTable). Categorical over the BootHistoryKind union
 // (operator-core lib/sync/hyperbee/boot-history) — keyed as strings here so

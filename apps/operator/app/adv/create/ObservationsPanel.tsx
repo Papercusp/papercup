@@ -26,6 +26,7 @@ import { VirtualGrid, type ColumnDef } from "@papercusp/grid-core";
 import { readListTotal } from "@papercusp/operator-core/lib/sync-resolver/list-meta";
 import type { PanelComponentProps } from "@/app/harness/dock/panel-registry";
 import { useItemPlanFilter } from "./use-create-data";
+import { OBSERVATION_KIND_COLOR } from "@/app/harness/theme";
 
 interface ObservationRow {
   id: string;
@@ -45,14 +46,6 @@ const KIND_LABEL: Record<string, string> = {
   gap: "Gap",
   surprise: "Surprise",
   reinforce: "Reinforce",
-};
-
-const KIND_COLOR: Record<string, string> = {
-  friction: "#fb7185",
-  workaround: "#fbbf24",
-  gap: "#38bdf8",
-  surprise: "#a78bfa",
-  reinforce: "#34d399",
 };
 
 // Same growing server window used by Working → Work Queue. VirtualGrid keeps DOM
@@ -117,7 +110,7 @@ export default function ObservationsPanel(
             <span className="pc-observations__signal">
               <i
                 aria-hidden
-                style={{ background: KIND_COLOR[row.kind] ?? "var(--accent)" }}
+                style={{ background: OBSERVATION_KIND_COLOR[row.kind] ?? "var(--accent)" }}
               />
               {KIND_LABEL[row.kind] ?? row.kind}
             </span>
@@ -214,7 +207,7 @@ export default function ObservationsPanel(
                 key={kind}
                 title={`${KIND_LABEL[kind] ?? kind}: ${count}`}
                 style={{
-                  background: KIND_COLOR[kind] ?? "var(--accent)",
+                  background: OBSERVATION_KIND_COLOR[kind] ?? "var(--accent)",
                   flexGrow: count,
                 }}
               />

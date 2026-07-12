@@ -211,8 +211,8 @@ export default function RubricsPanel({
         .pc-rubrics__overview { display: grid; grid-template-columns: minmax(150px, .55fr) 116px minmax(220px, 1.8fr); gap: 10px; align-items: stretch; }
         .pc-rubrics__hero, .pc-rubrics__ring, .pc-rubrics__pulse { border: 1px solid var(--border); border-radius: 10px; background: var(--bg-2); }
         .pc-rubrics__hero { display: grid; grid-template-columns: auto 1fr auto; align-items: end; gap: 5px; padding: 13px 15px; }
-        .pc-rubrics__hero span { grid-column: 1 / -1; color: var(--fg-mute); font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
-        .pc-rubrics__hero strong { color: var(--accent); font-size: 32px; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -.035em; }
+        .pc-rubrics__hero span { grid-column: 1 / -1; color: var(--fg-mute); font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0; }
+        .pc-rubrics__hero strong { color: var(--accent); font-size: 32px; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: 0; }
         .pc-rubrics__hero i { color: var(--fg-mute); font-size: 11px; font-style: normal; }
         .pc-rubrics__ring { position: relative; display: grid; place-content: center; justify-items: center; margin: 0; }
         .pc-rubrics__ring::before { content: ''; position: absolute; inset: 11px; border-radius: 50%; background: conic-gradient(#34d399 var(--pc-rubric-coverage), color-mix(in srgb, var(--fg) 7%, transparent) 0); mask: radial-gradient(circle, transparent 52%, #000 54%); }

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import RubricsPanel from './RubricsPanel';
 
 const useSyncQuery = vi.fn();
@@ -39,6 +39,8 @@ const rows = [
   },
 ];
 
+afterEach(cleanup);
+
 describe('RubricsPanel visual coverage matrix', () => {
   beforeEach(() => {
     useSyncQuery.mockReturnValue({ data: rows, error: null, loading: false });
@@ -47,7 +49,7 @@ describe('RubricsPanel visual coverage matrix', () => {
   it('renders the dominant score, coverage ring, evidence matrix, and freshness cells', () => {
     render(<RubricsPanel />);
     expect(screen.getByText('Average')).toBeTruthy();
-    expect(screen.getByText('8.0')).toBeTruthy();
+    expect(screen.getAllByText('8.0').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('50%')).toBeTruthy();
     expect(screen.getByRole('columnheader', { name: 'Coverage' })).toBeTruthy();
     expect(screen.getByRole('columnheader', { name: 'Score' })).toBeTruthy();

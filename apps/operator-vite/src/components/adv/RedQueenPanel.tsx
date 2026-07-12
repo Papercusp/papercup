@@ -71,7 +71,9 @@ export function RedQueenPanel() {
         icon={HeartPulse}
         title="Red Queen"
         signal={
-          snap ? `${snap.totalResolved}/${snap.totalRuns} healed` : undefined
+          classes.length > 0 && snap
+            ? `${snap.totalResolved}/${snap.totalRuns} healed`
+            : undefined
         }
         tone={snap && snap.leakFailures > 0 ? "bad" : "good"}
         action={

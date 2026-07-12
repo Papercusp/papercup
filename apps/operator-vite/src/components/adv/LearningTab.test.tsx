@@ -825,7 +825,9 @@ describe("LearningTab — Benchmark view", () => {
       screen.getByRole("tab", { name: "Verify" }).getAttribute("aria-selected"),
     ).toBe("true");
     expect(
-      screen.getByRole("tab", { name: "Observe" }).getAttribute("data-complete"),
+      screen
+        .getByRole("tab", { name: "Observe" })
+        .getAttribute("data-complete"),
     ).toBe("true");
   });
 
