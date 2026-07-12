@@ -158,13 +158,8 @@ export function formatAuditDetail(action: string, detail: string | null): string
   return parts.length > 0 ? parts.join(' · ') : detail;
 }
 
-// ─── Network ──────────────────────────────────────────────────────
-
-async function fetchSettings(slug: string): Promise<PrReviewerSettingsResponse> {
-  const r = await fetch(`/api/harness/${encodeURIComponent(slug)}/pr-reviewer-settings`);
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json() as Promise<PrReviewerSettingsResponse>;
-}
+// ─── Network — REST fallbacks for useSyncMutate (no Zero custom mutator for
+//     this surface yet; behavior-identical to the old direct-fetch writes) ──
 
 async function postSettings(slug: string, patch: Partial<SettingsToggles>): Promise<SettingsToggles> {
   const r = await fetch(`/api/harness/${encodeURIComponent(slug)}/pr-reviewer-settings`, {
@@ -199,26 +194,27 @@ interface Props {
 
 export function PrReviewerSettings({ harnessSlug, open, onOpenChange }: Props) {
   const t = useLexicon();
-  const [data, setData] = useState<PrReviewerSettingsResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setData(await fetchSettings(harnessSlug));
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [harnessSlug]);
+  // Reads the bundled settings/trust-list/audit shape via the sync-resolver
+  // entry (single-row-per-harness — mirrors operatorBudget.byWorkspace's
+  // `limit(1)` convention). `enabled: open` mirrors the old
+  // `useEffect(() => { if (open) load(); })` gate — no fetch while closed.
+  const { data: rows, loading, error } = useSyncQuery<PrReviewerSettingsResponse>({
+    queryName: 'prReviewerSettings.byHarness',
+    args: { harnessSlug },
+    enabled: open,
+  });
+  const data = rows?.[0] ?? null;
 
-  useEffect(() => {
-    if (open) void load();
-  }, [open, load]);
+  const setSettings = useSyncMutate<Partial<SettingsToggles>, SettingsToggles>(
+    'prReviewerSettings.set',
+    useCallback((patch) => postSettings(harnessSlug, patch), [harnessSlug]),
+  );
+  const trustRemove = useSyncMutate<number, void>(
+    'prReviewerSettings.trustRemove',
+    useCallback((trustedId) => removeTrust(harnessSlug, trustedId), [harnessSlug]),
+  );
 
   const editable = !!data?.editable;
   const settings = data?.settings;
@@ -232,40 +228,33 @@ export function PrReviewerSettings({ harnessSlug, open, onOpenChange }: Props) {
 
   const flip = useCallback(
     async (key: keyof SettingsToggles, value: SettingsToggles[keyof SettingsToggles]) => {
-      if (!data || !editable) return;
-      const prev = data.settings;
-      // Optimistic patch.
-      setData({ ...data, settings: { ...prev, ...toggleToPayload(key, value) } });
+      if (!editable) return;
       setSaving(true);
       try {
-        const next = await postSettings(harnessSlug, toggleToPayload(key, value));
-        setData((d) => (d ? { ...d, settings: next } : d));
+        // The write invalidates prReviewerSettings.byHarness server-side
+        // (table-to-query-names.ts bridge) — the query refetches on its own,
+        // no local optimistic patch or rollback needed.
+        await setSettings(toggleToPayload(key, value));
       } catch (e) {
-        // Roll back.
-        setData((d) => (d ? { ...d, settings: prev } : d));
         toast.error(`Couldn't save setting: ${String(e)}`);
       } finally {
         setSaving(false);
       }
     },
-    [data, editable, harnessSlug],
+    [editable, setSettings],
   );
 
   const onRemoveTrust = useCallback(
     async (entry: TrustListEntry) => {
-      if (!data || !editable) return;
-      const prev = data.trustList;
-      // Optimistic remove.
-      setData({ ...data, trustList: prev.filter((t) => t.trusted_github_user_id !== entry.trusted_github_user_id) });
+      if (!editable) return;
       try {
-        await removeTrust(harnessSlug, entry.trusted_github_user_id);
+        await trustRemove(entry.trusted_github_user_id);
         toast.success(`Removed @${entry.trusted_login ?? entry.trusted_github_user_id} from trust list`);
       } catch (e) {
-        setData((d) => (d ? { ...d, trustList: prev } : d));
         toast.error(`Couldn't remove from trust list: ${String(e)}`);
       }
     },
-    [data, editable, harnessSlug],
+    [editable, trustRemove],
   );
 
   const trustList = data?.trustList ?? [];
@@ -291,10 +280,10 @@ export function PrReviewerSettings({ harnessSlug, open, onOpenChange }: Props) {
           {viewerLabel && <span className="pc-prrs__viewer">{viewerLabel}</span>}
         </header>
 
-        {loading ? (
+        {error ? (
+          <div className="pc-prrs__msg pc-prrs__msg--err">{error.message}</div>
+        ) : loading && !data ? (
           <div className="pc-prrs__msg">Loading…</div>
-        ) : error ? (
-          <div className="pc-prrs__msg pc-prrs__msg--err">{error}</div>
         ) : (
           <div className="pc-prrs__body">
             {!editable && (

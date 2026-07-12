@@ -14,6 +14,11 @@
  *     total_deletes folds BOTH `delete` AND `forget_all`; a missing action
  *     bucket defaults to 0, never NaN/undefined. And the INSERT maps the 7
  *     columns in order with nullish `kind/priorText/newText` → SQL NULL.
+ *  3. LIVE PUSH (all-active-surfaces-data-sync-migration-2026-07-11 P-013):
+ *     a successful insert fires notifySyncInvalidate('userMemory.feedbackStats')
+ *     — dynamic-import + best-effort, same contract as journal-surfacing.ts's
+ *     notifyJournalRecovery — so the Settings → Memory page's feedback tile
+ *     updates live. A FAILED insert must NOT invalidate (nothing changed).
  *
  * Run: cd packages/operator-core && npx vitest run lib/memory/feedback.test.ts
  */
@@ -26,6 +31,7 @@ const mocks = vi.hoisted(() => ({
   end: vi.fn(async () => {}),
   query: vi.fn(async (_sql: string, _params?: unknown[]) => ({ rows: [] as Array<Record<string, unknown>> })),
   calls: [] as Array<{ sql: string; params?: unknown[] }>,
+  notifySync: vi.fn(async () => {}),
 }));
 
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: mocks.activeWorkspaceId }));
@@ -45,6 +51,8 @@ vi.mock('pg', () => ({
     }
   },
 }));
+// The dynamic import('../sync-sse') inside invalidateFeedbackStats resolves to this.
+vi.mock('../sync-sse', () => ({ notifySyncInvalidate: mocks.notifySync }));
 
 import { recordFeedback, loadFeedbackStats } from './feedback';
 
@@ -62,6 +70,7 @@ beforeEach(() => {
   mocks.end.mockResolvedValue(undefined);
   mocks.activeWorkspaceId.mockReturnValue('ws-1');
   mocks.query.mockResolvedValue({ rows: [] });
+  mocks.notifySync.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -111,6 +120,30 @@ describe('recordFeedback — best-effort (a memory op must never fail because ca
     mocks.pgClientFields.mockRejectedValue(new Error('discovery failed'));
     await expect(recordFeedback({ memId: 'm1', userId: 'u1', action: 'edit' })).resolves.toBeUndefined();
     expect(warnSpy).toHaveBeenCalled();
+  });
+});
+
+describe('recordFeedback — live push (P-013: userMemory.feedbackStats)', () => {
+  it('fires notifySyncInvalidate(userMemory.feedbackStats) after a successful insert', async () => {
+    await recordFeedback({ memId: 'm1', userId: 'u1', action: 'edit' });
+    expect(mocks.notifySync).toHaveBeenCalledExactlyOnceWith('userMemory.feedbackStats');
+  });
+
+  it('does NOT invalidate when there are no pg fields (nothing was written)', async () => {
+    mocks.pgClientFields.mockResolvedValue(null);
+    await recordFeedback({ memId: 'm1', userId: 'u1', action: 'edit' });
+    expect(mocks.notifySync).not.toHaveBeenCalled();
+  });
+
+  it('does NOT invalidate when the insert query fails', async () => {
+    mocks.query.mockRejectedValue(new Error('insert failed'));
+    await recordFeedback({ memId: 'm1', userId: 'u1', action: 'delete' });
+    expect(mocks.notifySync).not.toHaveBeenCalled();
+  });
+
+  it('the invalidate push is itself best-effort — a throw never surfaces from recordFeedback', async () => {
+    mocks.notifySync.mockRejectedValue(new Error('sync bus down'));
+    await expect(recordFeedback({ memId: 'm1', userId: 'u1', action: 'edit' })).resolves.toBeUndefined();
   });
 });
 

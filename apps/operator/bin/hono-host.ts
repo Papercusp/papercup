@@ -19,6 +19,11 @@
 // inconsistent checkout fails fast + named instead of crash-looping every worker on
 // MODULE_NOT_FOUND. See boot-integrity-first.ts / the 2026-06-25 incident.
 import './boot-integrity-first';
+// SECOND: pin the runtime flag-override store install into the module
+// evaluation order, BEFORE anything below resolves a flag (WI-4275 — bg-host
+// booted every time without the store, so runtime `flags:set` kill-switches
+// were silently invisible to background routines). See boot-flag-store.ts.
+import './boot-flag-store';
 import cluster from 'node:cluster';
 import { serve, createAdaptorServer } from '@hono/node-server';
 import { BOOT_INTEGRITY_EXIT_CODE } from '@papercusp/operator-core/lib/boot-integrity-preflight';

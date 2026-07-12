@@ -4,9 +4,14 @@
  * helpers. Thoroughly covers toggleToPayload, auditActionLabel, auditActionTone,
  * and formatAuditDetail (the agent-review JSON formatter + fallbacks), then the
  * component: loading/error, the editable render (toggles, trust list, audit),
- * the read-only banner, a toggle flip POST, and a trust removal.
+ * the read-only banner, a toggle flip mutate, and a trust removal.
  *
- * Seams: sonner toast, Modal + Select stubbed, fetch stubbed per route.
+ * Seams: @papercusp/sync (useSyncQuery/useSyncMutate — WI-4138 / P-011,
+ * all-active-surfaces-data-sync-migration-2026-07-11) + sonner toast + Modal/
+ * Select are module-mocked, the pinned settings-page pattern (see
+ * app/settings/trust/page.test.tsx). useSyncMutate returns one shared mock
+ * regardless of the path arg ('prReviewerSettings.set' vs
+ * '…trustRemove') — assertions differentiate by the args shape.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -29,6 +34,15 @@ vi.mock('./Select', () => ({
 // Lexicon resolver echoes its key (t('pot') → 'pot') — isolates the routed
 // ownership-hint copy from the THE_HIVE flag hook (restore-pot-lexicon-public-release P-007).
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+
+const syncMock = vi.hoisted(() => ({
+  result: { data: undefined as unknown, loading: true, error: null as Error | null },
+  mutate: vi.fn(async (_args: unknown) => ({ ok: true })),
+}));
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: () => syncMock.result,
+  useSyncMutate: () => syncMock.mutate,
+}));
 
 import {
   PrReviewerSettings, toggleToPayload, auditActionLabel, auditActionTone, formatAuditDetail,
@@ -100,34 +114,24 @@ const RESP = {
   autoModeEditable: true,
 };
 
-let getImpl: () => { ok: boolean; status?: number; body: unknown } | 'pending';
-let calls: Array<{ url: string; method: string; body?: Record<string, unknown> }>;
-function stubFetch() {
-  calls = [];
-  vi.stubGlobal('fetch', vi.fn((url: string, init?: { method?: string; body?: string }) => {
-    const method = init?.method ?? 'GET';
-    calls.push({ url, method, body: init?.body ? JSON.parse(init.body) : undefined });
-    if (method === 'POST' && url.includes('/trust/remove')) return Promise.resolve({ ok: true, json: async () => ({}) } as Response);
-    if (method === 'POST') return Promise.resolve({ ok: true, json: async () => ({ settings: { ...RESP.settings, pr_reviewer_role_enabled: false } }) } as Response);
-    const r = getImpl();
-    if (r === 'pending') return new Promise<Response>(() => {});
-    return Promise.resolve({ ok: r.ok, status: r.status ?? (r.ok ? 200 : 500), json: async () => r.body } as Response);
-  }));
-}
-
 describe('PrReviewerSettings component', () => {
   function renderModal() { return render(<PrReviewerSettings harnessSlug="proj" open onOpenChange={() => {}} />); }
-  beforeEach(() => { toastSuccess.mockReset(); toastError.mockReset(); getImpl = () => ({ ok: true, body: RESP }); stubFetch(); });
-  afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+  beforeEach(() => {
+    toastSuccess.mockReset();
+    toastError.mockReset();
+    syncMock.mutate.mockReset().mockResolvedValue({ ok: true });
+    syncMock.result = { data: [RESP], loading: false, error: null };
+  });
+  afterEach(() => { cleanup(); });
 
   it('shows the loading state', () => {
-    getImpl = () => 'pending';
+    syncMock.result = { data: undefined, loading: true, error: null };
     renderModal();
     expect(screen.getByText('Loading…')).toBeTruthy();
   });
 
   it('shows the error state on a failed load', async () => {
-    getImpl = () => ({ ok: false, status: 500, body: {} });
+    syncMock.result = { data: undefined, loading: false, error: new Error('HTTP 500') };
     renderModal();
     expect(await screen.findByText(/HTTP 500/)).toBeTruthy();
   });
@@ -142,27 +146,24 @@ describe('PrReviewerSettings component', () => {
   });
 
   it('shows the read-only banner and disables toggles for a non-editable viewer', async () => {
-    getImpl = () => ({ ok: true, body: { ...RESP, editable: false } });
+    syncMock.result = { data: [{ ...RESP, editable: false }], loading: false, error: null };
     renderModal();
     expect(await screen.findByText(/Sign in with GitHub/)).toBeTruthy();
     expect((screen.getByRole('switch', { name: 'Enable PR-reviewer role' }) as HTMLInputElement).disabled).toBe(true);
   });
 
-  it('POSTs the flipped toggle value', async () => {
+  it('mutates the flipped toggle value', async () => {
     renderModal();
     const sw = await screen.findByRole('switch', { name: 'Enable PR-reviewer role' });
     fireEvent.click(sw); // true → false
-    await waitFor(() => expect(calls.some((c) => c.method === 'POST' && !c.url.includes('/trust/remove'))).toBe(true));
-    const post = calls.find((c) => c.method === 'POST' && !c.url.includes('/trust/remove'))!;
-    expect(post.body).toEqual({ pr_reviewer_role_enabled: false });
+    await waitFor(() => expect(syncMock.mutate).toHaveBeenCalledWith({ pr_reviewer_role_enabled: false }));
   });
 
   it('removes a trusted author with a confirmation toast', async () => {
     renderModal();
     await screen.findByText('@ada');
     fireEvent.click(screen.getByRole('button', { name: /Remove @ada from trust list/ }));
-    await waitFor(() => expect(calls.some((c) => c.url.includes('/trust/remove'))).toBe(true));
-    expect(calls.find((c) => c.url.includes('/trust/remove'))!.body).toEqual({ trusted_github_user_id: 42 });
+    await waitFor(() => expect(syncMock.mutate).toHaveBeenCalledWith(42));
     await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
   });
 });

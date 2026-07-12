@@ -66,7 +66,7 @@ export async function recordFeedback(input: FeedbackInput): Promise<void> {
     } finally {
       await c.end();
     }
-    void invalidateFeedbackStats();
+    await invalidateFeedbackStats();
   } catch (err) {
     console.warn('[memory-feedback] capture failed:', (err as Error).message);
   }
