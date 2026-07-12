@@ -164,10 +164,10 @@ export function assetNameRules(spec: PlatformSpec): readonly (readonly string[])
   }
 }
 
-/** Pick the best-matching prebuilt asset for `spec` from a release's assets, or null when
- *  llama.cpp doesn't publish one for this platform+GPU combo. Pure, no I/O. */
-export function pickPrebuiltAsset(release: GhRelease, spec: PlatformSpec): GhReleaseAsset | null {
-  for (const rule of assetNameRules(spec)) {
+/** Generic rules→asset matcher (first rule with a matching .zip/.tar.gz asset wins). Pure.
+ *  Shared with whisper-binary.ts, whose release-asset naming differs only in the rule table. */
+export function pickAssetByRules(release: GhRelease, rules: readonly (readonly string[])[]): GhReleaseAsset | null {
+  for (const rule of rules) {
     const hit = release.assets.find((a) => {
       const name = a.name.toLowerCase();
       return rule.every((frag) => name.includes(frag)) && (name.endsWith('.zip') || name.endsWith('.tar.gz'));
@@ -175,6 +175,12 @@ export function pickPrebuiltAsset(release: GhRelease, spec: PlatformSpec): GhRel
     if (hit) return hit;
   }
   return null;
+}
+
+/** Pick the best-matching prebuilt asset for `spec` from a release's assets, or null when
+ *  llama.cpp doesn't publish one for this platform+GPU combo. Pure, no I/O. */
+export function pickPrebuiltAsset(release: GhRelease, spec: PlatformSpec): GhReleaseAsset | null {
+  return pickAssetByRules(release, assetNameRules(spec));
 }
 
 /** The newest non-draft, non-prerelease release with at least one asset (assumes newest-first
@@ -323,8 +329,9 @@ async function defaultFetchReleases(): Promise<GhRelease[]> {
 }
 
 /** Recursively find a file named `binName` under `dir` (bounded depth — release archives and
- *  our own build dirs are shallow). Returns the first match or null. */
-async function findBinaryUnder(dir: string, binName: string, depth = 4): Promise<string | null> {
+ *  our own build dirs are shallow). Returns the first match or null.
+ *  Exported for reuse by whisper-binary.ts (same archive/build-dir shapes). */
+export async function findBinaryUnder(dir: string, binName: string, depth = 4): Promise<string | null> {
   if (depth < 0) return null;
   let entries: Dirent<string>[];
   try {
@@ -495,3 +502,7 @@ async function pathExistsSize(p: string): Promise<number | null> {
 // (pathExistsSize is exported only for tests that want to assert a real file landed on disk
 // without importing node:fs themselves in a unit test.)
 export { pathExistsSize };
+
+// Shared archive-provisioning defaults, reused by whisper-binary.ts (identical download/extract
+// needs — GitHub release archives in the tens of MB; weights go through their own path).
+export { defaultDownload as downloadFileWithSha256, defaultExtract as extractArchive };

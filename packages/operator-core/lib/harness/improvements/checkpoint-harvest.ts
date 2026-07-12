@@ -40,12 +40,18 @@
  *     `payload.provenance` (who stated it, from which boundary) for querying.
  *   - REFUTATION PROPAGATION: `isRefutation` flags an insight that reads as
  *     walking back a prior claim (refuted / ruled out / dead end / withdrawn /
- *     …). When such an insight carries a `ref` (e.g. `wi:WI-4070`), every
+ *     …). When such an insight carries a CLAIM-IDENTIFYING ref (`wi:WI-4070` —
+ *     see `isClaimIdentifyingRef`, and READ ITS DOC BEFORE TOUCHING THIS), every
  *     PRIOR harvested observation tagged with that same ref gets its title
  *     prefixed `⚠ REFUTED — ` and a dated refutation note appended to its body
  *     — so a later agent scanning the backlog sees the flag on the ORIGINAL
  *     entry, not just in a separate, easy-to-miss follow-up row. Fails open:
  *     an update failure never blocks filing the refutation's own observation.
+ *     The ref gate is LOAD-BEARING, not decorative: this write is destructive and
+ *     reaches ACROSS agents, so it may only fire through a ref that names the
+ *     claim being refuted. Propagating through the `loop:checkpoint` SOURCE TAG —
+ *     which every agent's every checkpoint shares — flagged 40 unrelated true
+ *     observations belonging to 11 other agents before EI-10593 caught it.
  *
  * COALESCE (so repeated insights don't pile): the carry-note `insight` commonly
  * persists VERBATIM across consecutive cold wakes, so a naive harvest would file
@@ -194,7 +200,7 @@ export function isRefutation(text: string): boolean {
  */
 const CLAIM_REF_RE = /^wi:[a-z]+-\d+$/i;
 
-export function isClaimIdentifyingRef(ref: string | undefined): boolean {
+export function isClaimIdentifyingRef(ref: string | undefined): ref is string {
   return CLAIM_REF_RE.test((ref ?? '').trim());
 }
 
@@ -306,13 +312,21 @@ async function loadRecentHarvestReal(createdBy: string, _harness?: string): Prom
   return rows.map((r) => ({ id: r.issue_id, title: r.title }));
 }
 
-async function findHarvestedByRefReal(ref: string, _harness?: string): Promise<RecentHarvest[]> {
+/**
+ * The refutation-propagation target set: prior harvested observations carrying `ref`.
+ * Deliberately NOT scoped to one agent — refuting a claim someone ELSE made about the
+ * same work item is the point. That cross-agent reach is exactly why `ref` must identify
+ * a claim before this is ever called (EI-10593), and why the harness scope below is now
+ * honoured rather than accepted-and-ignored.
+ */
+async function findHarvestedByRefReal(ref: string, harness?: string): Promise<RecentHarvest[]> {
   const { sql } = getOrgPg();
   const rows = await sql<Array<{ issue_id: string; title: string }>>`
     SELECT issue_id, COALESCE(title, '') AS title
       FROM harness_shared.engineer_issues
      WHERE payload->>'origin' = ${HARVEST_ORIGIN}
        AND payload->'observation'->'refs' ? ${ref}
+       ${harness ? sql`AND scope = ${`harness:${harness}`}` : sql``}
      ORDER BY created_at DESC
      LIMIT 20`;
   return rows.map((r) => ({ id: r.issue_id, title: r.title }));

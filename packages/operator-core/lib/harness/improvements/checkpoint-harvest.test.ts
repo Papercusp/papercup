@@ -19,6 +19,7 @@ import {
   classifyClaimStrength,
   applyClaimStrengthPrefix,
   isRefutation,
+  isClaimIdentifyingRef,
   HARVEST_ORIGIN,
   HARVEST_KILL_ENV,
   MAX_INSIGHT_CHARS,
@@ -223,23 +224,84 @@ describe('harvestInsight — impure leg (fail-open, coalesce, source-tag)', () =
     expect(arg.payloadExtra.claimStrength).toBe('hypothesis');
   });
 
-  it('EI-9941: a refutation flags every prior harvested row tagged with the same ref, then still files its own observation', async () => {
+  // A CLAIM ref — the only ref refutation propagation may fire through (EI-10593).
+  const claimRef = { ...base, ref: 'wi:WI-4070', source: 'work-item-completion' as const };
+
+  it('EI-9941: a refutation flags every prior harvested row tagged with the same CLAIM ref, then still files its own observation', async () => {
     const deps = makeDeps({
       recent: [],
       issueId: 'EI-300',
       byRef: [{ id: 'EI-9881', title: 'keypair-regen is the converged root cause' }],
     });
     const res = await harvestInsight(
-      { ...base, insight: 'Withdrawing the keypair hypothesis — already refuted on-disk (mtime unchanged)' },
+      { ...claimRef, insight: 'Withdrawing the keypair hypothesis — already refuted on-disk (mtime unchanged)' },
       deps,
     );
     expect(res).toEqual({ filed: true, issueId: 'EI-300' });
-    expect(deps.findByRef).toHaveBeenCalledWith('loop:checkpoint', 'papercusp');
+    expect(deps.findByRef).toHaveBeenCalledWith('wi:WI-4070', 'papercusp');
     expect(deps.flagRefuted).toHaveBeenCalledTimes(1);
     expect(deps.flagRefuted.mock.calls[0][0]).toBe('EI-9881');
     expect(deps.flagRefuted.mock.calls[0][1]).toMatchObject({ by: 'su-01293' });
     // The refutation's own observation still gets filed (never suppressed).
     expect(deps.capture).toHaveBeenCalledTimes(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // EI-10593 — THE REGRESSION THAT ACTUALLY HAPPENED. The pre-fix test asserted
+  // findByRef was called with 'loop:checkpoint' and handed the mock ONE perfectly
+  // on-topic prior row — so it proved the plumbing and was blind to the fact that the
+  // real query, joined on a ref every agent's every checkpoint shares, returns 20
+  // unrelated rows belonging to other agents. It flagged 40 true observations across
+  // 11 authors, and propagated 0 true refutations, before anyone noticed.
+  //
+  // Mocking a selector cannot reveal a selector that does not select. So these guards
+  // assert the DECISION (does it propagate at all?), never the call plumbing.
+  // ---------------------------------------------------------------------------
+
+  it('EI-10593: a refutation on the loop:checkpoint SOURCE TAG propagates NOTHING — the ref names no claim', async () => {
+    const deps = makeDeps({
+      recent: [],
+      issueId: 'EI-303',
+      // What the live query would really return for this ref: other agents' unrelated rows.
+      byRef: [
+        { id: 'EI-10356', title: 'the privacy surface is complete 5/5' },
+        { id: 'EI-10384', title: 'the repo secrets-guard hook blocks literal credential shapes' },
+      ],
+    });
+    const res = await harvestInsight(
+      { ...base, insight: 'AGE graph recall: ruled out, a dead end — the benchmark verdict is REJECT' },
+      deps,
+    );
+    // The refutation's own observation still files — only the PROPAGATION is withheld.
+    expect(res).toEqual({ filed: true, issueId: 'EI-303' });
+    expect(deps.findByRef).not.toHaveBeenCalled();
+    expect(deps.flagRefuted).not.toHaveBeenCalled();
+  });
+
+  it('EI-10593: isClaimIdentifyingRef — only a ref that NAMES a claim opens the destructive path', () => {
+    expect(isClaimIdentifyingRef('wi:WI-4070')).toBe(true);
+    expect(isClaimIdentifyingRef('wi:EI-10593')).toBe(true);
+    // Source tags: shared by every agent's every checkpoint ⇒ zero entropy ⇒ never.
+    expect(isClaimIdentifyingRef('loop:checkpoint')).toBe(false);
+    expect(isClaimIdentifyingRef('work-item-completion')).toBe(false);
+    // Unknown shapes fail CLOSED — an allowlist, so a future ref cannot silently
+    // re-open a cross-agent destructive write by simply being unrecognized.
+    expect(isClaimIdentifyingRef('wi:')).toBe(false);
+    expect(isClaimIdentifyingRef('plan:some-slug-2026-07-12')).toBe(false);
+    expect(isClaimIdentifyingRef('')).toBe(false);
+    expect(isClaimIdentifyingRef(undefined)).toBe(false);
+  });
+
+  it('EI-10593: the gate is on the REF, not on the wording — a claim ref still propagates the same insight', async () => {
+    // Same refutation text as the source-tag case above; only the ref differs. This is
+    // what proves the gate discriminates on the selector rather than on the prose.
+    const deps = makeDeps({ recent: [], issueId: 'EI-304', byRef: [{ id: 'EI-9881', title: 'x' }] });
+    await harvestInsight(
+      { ...claimRef, insight: 'AGE graph recall: ruled out, a dead end — the benchmark verdict is REJECT' },
+      deps,
+    );
+    expect(deps.flagRefuted).toHaveBeenCalledTimes(1);
+    expect(deps.flagRefuted.mock.calls[0][0]).toBe('EI-9881');
   });
 
   it('EI-9941: does not probe for refutation targets when there is no ref', async () => {
@@ -252,7 +314,7 @@ describe('harvestInsight — impure leg (fail-open, coalesce, source-tag)', () =
   it('EI-9941: a flagRefuted failure fails open — the new observation still files', async () => {
     const deps = makeDeps({ recent: [], issueId: 'EI-302', byRef: [{ id: 'EI-9881', title: 'x' }] });
     deps.flagRefuted.mockRejectedValueOnce(new Error('PG down'));
-    const res = await harvestInsight({ ...base, insight: 'ruled out: not the root cause after all' }, deps);
+    const res = await harvestInsight({ ...claimRef, insight: 'ruled out: not the root cause after all' }, deps);
     expect(res).toEqual({ filed: true, issueId: 'EI-302' });
   });
 

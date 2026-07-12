@@ -113,6 +113,40 @@ describe('HealthTab — populated overall bar', () => {
   });
 });
 
+describe('HealthTab — stale-snapshot banner (P-013, WI-4464)', () => {
+  it('renders NO banner for a fresh snapshot', () => {
+    setResult([snapshot('ok', {}, Date.now() - 5_000)]);
+    render(<HealthTab />);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('renders the loud STALE banner once the snapshot outlives STALE_AFTER_MS', () => {
+    // 4 minutes old > the 3-minute threshold — stale on first render (the tab's
+    // own clock initialises to Date.now() at mount; no timer advance needed).
+    setResult([snapshot('ok', {}, Date.now() - 4 * 60_000)]);
+    render(<HealthTab />);
+    const banner = screen.getByRole('alert');
+    expect(banner.textContent).toContain('SNAPSHOT STALE');
+    expect(banner.textContent).toMatch(/last computed/);
+  });
+
+  it('mutes the overall bar tone and dims the grid when stale — even on a green snapshot', () => {
+    setResult([snapshot('ok', {}, Date.now() - 10 * 60_000)]);
+    const { container } = render(<HealthTab />);
+    // The bar stops asserting "good" — a stale green is not a live green.
+    expect(container.querySelector('.pc-health__bar')!.getAttribute('data-tone')).toBe('mute');
+    expect(container.querySelector('.pc-health__dot--mute')).toBeTruthy();
+    expect(container.querySelector('.pc-health__grid--stale')).toBeTruthy();
+  });
+
+  it('keeps the live tone on the bar when fresh (no mute, no dimmed grid)', () => {
+    setResult([snapshot('ok', {}, Date.now() - 5_000)]);
+    const { container } = render(<HealthTab />);
+    expect(container.querySelector('.pc-health__bar')!.getAttribute('data-tone')).toBe('good');
+    expect(container.querySelector('.pc-health__grid--stale')).toBeNull();
+  });
+});
+
 describe('HealthTab — cards', () => {
   it('renders a card per panel with its label, summary, and tone accent', () => {
     setResult([snapshot('crit', { queen: panel('queen', 'crit', { summary: 'STALLED 47m — no wake armed' }) })]);

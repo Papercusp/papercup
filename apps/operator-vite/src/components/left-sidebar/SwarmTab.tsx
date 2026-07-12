@@ -32,13 +32,15 @@ import { Link } from '@tanstack/react-router';
 import { useSyncQuery } from '@papercusp/sync';
 import { useQueryState, parseAsString } from 'nuqs';
 import { useLexicon } from '@/lib/useLexicon';
+// Relative, not `@/…`: the `@` alias points at the operator (Next) tree, so an
+// intra-operator-vite import must be a relative path or it won't resolve.
 import {
   agentGlyph,
   displayName,
   groupByFleet,
   isRunningAgent,
   type RosterAgent,
-} from '@/components/adv/AgentsRunningPill';
+} from '../adv/AgentsRunningPill';
 
 /** advRoster.list returns a single-element array wrapping the roster object. */
 interface RosterResponse {

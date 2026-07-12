@@ -464,6 +464,28 @@ body.has-left-sidebar .pc-header {
 .pclsb-agent + .pclsb-agent {
   margin-top: 5px;
 }
+/* Fleet grouping (WI-4463) — one section per fleet, tinted with the fleet's own
+   accent (the fleetColor the roster stamps, same value the agents-running
+   dropdown paints its groups with). The color arrives INLINE from the data, so
+   these rules only carry layout + the neutral fallback; they must never hardcode
+   a palette or the two surfaces would drift. */
+.pclsb-fleet__head {
+  justify-content: flex-start;
+  text-transform: none;
+  letter-spacing: 0.01em;
+  font-family: var(--mono, ui-monospace, monospace);
+}
+.pclsb-fleet__dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.pclsb-fleet__count {
+  color: var(--fg-mute, #7f9bb4);
+  font-weight: 600;
+  opacity: 0.8;
+}
 .pclsb-row__icon {
   flex: 0 0 auto;
   font-size: 15px;

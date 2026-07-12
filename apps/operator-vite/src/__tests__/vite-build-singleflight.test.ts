@@ -1,11 +1,24 @@
-// vite-build-singleflight (EI-9836) — two ONE-SHOT `vite build` invocations
-// must not race the same dist/: the second invocation BLOCKS (bounded wait)
-// until the first finishes, then proceeds — unlike vite-watch-singleton
-// (EI-306), which REFUSES a second watcher outright. Exercised through the
-// VITE_BUILD_CMD test seam (a harmless sleep/echo stands in for vite).
+// vite-build-singleflight — the one seam every operator-vite bundle build goes
+// through. Two properties are under test:
+//
+//   EI-9836  two ONE-SHOT `vite build` invocations must not race the same dist/:
+//            the second BLOCKS (bounded) until the first finishes, then proceeds
+//            — unlike vite-watch-singleton (EI-306), which REFUSES a second
+//            watcher outright.
+//   EI-10539 a build that FAILS must not destroy the bundle that is serving.
+//            vite empties outDir in a renderStart hook, so a link-time failure
+//            (e.g. a missing named export — measured on vite 8.0.16) dies AFTER
+//            dist/ has been emptied and leaves a dead app behind a 503 telling
+//            you to run the very build that just failed. The script therefore
+//            builds into dist.next/ and renames it over dist/ ONLY on success.
+//
+// Both are exercised through the VITE_BUILD_CMD seam (a shell command stands in
+// for vite; it writes into $PAPERCUSP_VITE_OUT_DIR exactly as the real vite
+// config does) and VITE_BUILD_OUT_ROOT (dist/ lives in a tmp tree, never the
+// app's live bundle).
 import { afterEach, describe, expect, it } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -16,7 +29,16 @@ const children: ChildProcess[] = [];
 
 function launch(env: Record<string, string>): ChildProcess {
   const child = spawn(SCRIPT, [], {
-    env: { ...process.env, VITE_BUILD_LOCK: join(tmp, 'build.lock'), ...env },
+    env: {
+      ...process.env,
+      VITE_BUILD_LOCK: join(tmp, 'build.lock'),
+      // Never let a test touch the app's real dist/.
+      VITE_BUILD_OUT_ROOT: tmp,
+      // The rebuild timer exports this in the real environment; a test run that
+      // inherited it would silently take the retain (passthrough) path.
+      PAPERCUSP_RETAIN_DIST_CHUNKS: '',
+      ...env,
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   children.push(child);
@@ -34,6 +56,26 @@ function collect(child: ChildProcess): { stdout: () => string; stderr: () => str
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Seed a previous, WORKING bundle in dist/ — the thing a red build must not eat. */
+function seedWorkingBundle(): void {
+  mkdirSync(join(tmp, 'dist', 'assets'), { recursive: true });
+  writeFileSync(join(tmp, 'dist', 'index.html'), 'OLD-WORKING-BUNDLE');
+  writeFileSync(join(tmp, 'dist', 'assets', 'app-old.js'), 'console.log(1)');
+}
+
+/** Stand-in for vite: writes a complete bundle into the staging dir, then exits `status`. */
+function fakeVite(status: number, opts: { sleepSecs?: number } = {}): string {
+  const nap = opts.sleepSecs ? `sleep ${opts.sleepSecs}; ` : '';
+  return (
+    `mkdir -p "$PAPERCUSP_VITE_OUT_DIR/assets"; ` +
+    `echo NEW-BUNDLE > "$PAPERCUSP_VITE_OUT_DIR/index.html"; ` +
+    `echo 'console.log(2)' > "$PAPERCUSP_VITE_OUT_DIR/assets/app-new.js"; ` +
+    `${nap}exit ${status}`
+  );
+}
+
+const distIndex = () => readFileSync(join(tmp, 'dist', 'index.html'), 'utf8').trim();
+
 afterEach(() => {
   for (const c of children.splice(0)) {
     try {
@@ -45,7 +87,7 @@ afterEach(() => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-describe('vite-build-singleflight (EI-9836)', () => {
+describe('vite-build-singleflight — build serialization (EI-9836)', () => {
   it('a second one-shot build WAITS for the first, then runs — never races or refuses', async () => {
     tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
     const first = launch({ VITE_BUILD_CMD: 'sleep 1.5 && echo first-done' });
@@ -98,4 +140,107 @@ describe('vite-build-singleflight (EI-9836)', () => {
     process.kill(holder.pid!, 'SIGKILL');
     await holderRes.exited;
   }, 15_000);
+});
+
+describe('vite-build-singleflight — a red build must not destroy the bundle (EI-10539)', () => {
+  it('a FAILING build leaves the previous working dist/ completely intact', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    seedWorkingBundle();
+
+    // The real killer: vite empties outDir at renderStart, then dies at link
+    // time — so it HAS written into its out dir and still exits non-zero.
+    const failing = launch({ VITE_BUILD_CMD: fakeVite(1) });
+    const { exited } = collect(failing);
+    expect(await exited).toBe(1);
+
+    // The app that was serving is still serving. This is the whole fix.
+    expect(distIndex()).toBe('OLD-WORKING-BUNDLE');
+    expect(existsSync(join(tmp, 'dist', 'assets', 'app-old.js'))).toBe(true);
+    // Nothing from the failed build leaked into dist/, and no staging debris is left.
+    expect(existsSync(join(tmp, 'dist', 'assets', 'app-new.js'))).toBe(false);
+    expect(existsSync(join(tmp, 'dist.next'))).toBe(false);
+    expect(existsSync(join(tmp, 'dist.prev'))).toBe(false);
+  }, 15_000);
+
+  it('records the failure so the 503 can say "the last build FAILED" instead of "run the build"', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    seedWorkingBundle();
+
+    const failing = launch({ VITE_BUILD_CMD: `echo 'does not provide an export named tapClientResource'; ${fakeVite(1)}` });
+    expect(await collect(failing).exited).toBe(1);
+
+    const marker = JSON.parse(readFileSync(join(tmp, '.vite-build-failure.json'), 'utf8'));
+    expect(marker.exitCode).toBe(1);
+    expect(marker.failedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+    // The log the 503 points at actually names the error.
+    expect(readFileSync(marker.log, 'utf8')).toContain('tapClientResource');
+  }, 15_000);
+
+  it('a SUCCESSFUL build swaps the staged bundle over dist/ and clears a stale failure record', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    seedWorkingBundle();
+    writeFileSync(join(tmp, '.vite-build-failure.json'), '{"failedAt":"2026-07-12T00:00:00Z","exitCode":1,"log":"/x"}');
+
+    const ok = launch({ VITE_BUILD_CMD: fakeVite(0) });
+    expect(await collect(ok).exited).toBe(0);
+
+    expect(distIndex()).toBe('NEW-BUNDLE');
+    expect(existsSync(join(tmp, 'dist', 'assets', 'app-new.js'))).toBe(true);
+    // A clean-empty build is a REPLACEMENT, not a merge — the old chunks go.
+    expect(existsSync(join(tmp, 'dist', 'assets', 'app-old.js'))).toBe(false);
+    // Staging dirs cleaned up, and the stale failure record is gone.
+    expect(existsSync(join(tmp, 'dist.next'))).toBe(false);
+    expect(existsSync(join(tmp, 'dist.prev'))).toBe(false);
+    expect(existsSync(join(tmp, '.vite-build-failure.json'))).toBe(false);
+  }, 15_000);
+
+  it('dist/ keeps serving the OLD bundle for the whole build — never a half-written or empty dist', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    seedWorkingBundle();
+
+    // A build that takes real time: mid-flight, dist/ must still be the old
+    // bundle — in-place builds spend this entire window empty (the 503 / "failed
+    // to import module script" window that EI-9836 chased).
+    const building = launch({ VITE_BUILD_CMD: fakeVite(0, { sleepSecs: 1.5 }) });
+    const res = collect(building);
+    await sleep(600);
+    expect(building.exitCode).toBeNull(); // still building
+    expect(distIndex()).toBe('OLD-WORKING-BUNDLE'); // …and still serving
+
+    expect(await res.exited).toBe(0);
+    expect(distIndex()).toBe('NEW-BUNDLE'); // swapped only at the end
+  }, 15_000);
+
+  it('a build that exits 0 without producing a bundle never touches dist/', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    seedWorkingBundle();
+
+    // `--help`, a no-op, or the plain `echo` seams above: nothing to swap in.
+    // The one thing we must not do is mistake "no output" for "empty bundle".
+    const noop = launch({ VITE_BUILD_CMD: 'echo nothing-to-build' });
+    expect(await collect(noop).exited).toBe(0);
+
+    expect(distIndex()).toBe('OLD-WORKING-BUNDLE');
+    expect(existsSync(join(tmp, 'dist.next'))).toBe(false);
+  }, 10_000);
+
+  it('a RETAIN-regime build is passed through unstaged — it accumulates chunks in dist/ by design', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    seedWorkingBundle();
+
+    // The desktop rebuild timer sets PAPERCUSP_RETAIN_DIST_CHUNKS=1 and vite then
+    // runs with emptyOutDir:false — it never empties dist/, so it is already
+    // crash-safe, and staging it would throw away the very chunks an open webview
+    // is pinned to. It must build straight into dist/, as before.
+    const retain = launch({
+      PAPERCUSP_RETAIN_DIST_CHUNKS: '1',
+      VITE_BUILD_CMD: 'echo NEW-IN-PLACE > "$VITE_BUILD_OUT_ROOT/dist/index.html"; exit 0',
+    });
+    expect(await collect(retain).exited).toBe(0);
+
+    expect(distIndex()).toBe('NEW-IN-PLACE');
+    expect(existsSync(join(tmp, 'dist', 'assets', 'app-old.js'))).toBe(true); // retained
+    expect(existsSync(join(tmp, 'dist.next'))).toBe(false); // never staged
+  }, 10_000);
 });

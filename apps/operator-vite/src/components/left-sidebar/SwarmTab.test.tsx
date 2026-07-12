@@ -1,11 +1,16 @@
 // @vitest-environment jsdom
 /**
- * SwarmTab coverage — the colony roster split into SU agents (🛠) and Cups (☕),
- * each row expanding inline to its tasks + plan-progress + comms. Pins: roster
- * (empty/error/live + load pill + intent fallback + stale excluded), the SU/Cup
- * split (by presence `source`), selection (?lsa write + toggle), and the inline
- * expansion (tasks + plans, plus mail when present). nuqs is a per-key store
- * seeded with spy setters; sync queries are dispatched by queryName.
+ * SwarmTab coverage — the Fleet pane: the roster GROUPED BY FLEET and colored by
+ * the fleet's accent (WI-4463), each row expanding inline to its tasks +
+ * plan-progress + comms. Pins: roster (empty/error/live + load pill + intent
+ * fallback + stale excluded unless loop-armed), the fleet grouping + coloring +
+ * ordering ("No fleet" last), kind glyphs, selection (?lsa write + toggle), the
+ * inline expansion, and — the regression this pane was rebuilt around — that
+ * EVERY message row deep-links into the feed at that message, including
+ * agent-authored ones (WI-4462, ?fsys=all).
+ *
+ * nuqs is a per-key store seeded with spy setters; sync queries are dispatched by
+ * queryName.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -36,9 +41,8 @@ const blank = () => ({ data: [] as unknown[], loading: false, fetching: false, e
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: ({ queryName }: { queryName: string }) => H.results[queryName] ?? blank(),
 }));
-// The lexicon resolver is mocked to ECHO its key (so t('fleet') → 'fleet',
-// t('contributor') → 'contributor') — isolates this test from the flag hook;
-// classic pack renders 'Fleet'/'Cups' at runtime (restore-pot-lexicon P-005).
+// The lexicon resolver is mocked to ECHO its key (so t('fleet') → 'fleet') —
+// isolates this test from the flag hook; classic pack renders 'Fleet' at runtime.
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
 // Rows now navigate via TanStack `<Link to search>` (client-side, no full reload)
@@ -75,12 +79,18 @@ beforeEach(() => {
 });
 afterEach(() => cleanup());
 
-const PRESENCE = [
-  { ownerId: 'su-1', ownerLabel: 'SU One', source: 'omp-hook-session', intent: 'driving', currentPlanSlug: null, heartbeatAt: 3, stale: false },
-  { ownerId: 'bee-1', ownerLabel: 'Bee One', source: 'fleet-spawn', intent: 'refactoring', currentPlanSlug: null, heartbeatAt: 2, stale: false },
-  { ownerId: 'bee-2', ownerLabel: 'Bee Two', source: 'fleet-spawn', intent: null, currentPlanSlug: null, heartbeatAt: 1, stale: false },
-  { ownerId: 'ghost', ownerLabel: 'Ghost', source: 'fleet-spawn', intent: null, currentPlanSlug: null, heartbeatAt: 0, stale: true },
+/** advRoster.list rows — fleet-stamped (fleetSlug + fleetColor) by the server. */
+const ROSTER = [
+  { ownerId: 'su-1', label: 'SU One', agentPaneKind: 'su', role: 'su', intent: 'driving', currentPlanSlug: null, liveness: 'live', fleetSlug: null, fleetColor: null },
+  { ownerId: 'bee-1', label: 'Bee One', agentPaneKind: 'cup', role: 'cup', intent: 'refactoring', currentPlanSlug: null, liveness: 'live', fleetSlug: 'alpha', fleetColor: '#e11d48' },
+  { ownerId: 'bee-2', label: 'Bee Two', agentPaneKind: 'cup', role: 'cup', intent: '', currentPlanSlug: null, liveness: 'idle', fleetSlug: 'alpha', fleetColor: '#e11d48' },
+  { ownerId: 'mug-1', label: 'Mug', agentPaneKind: 'mug', role: 'mug', intent: 'steering', currentPlanSlug: null, liveness: 'live', fleetSlug: 'zeta', fleetColor: '#22d3ee' },
+  // Heartbeat-stale AND not loop-armed → excluded (isRunningAgent).
+  { ownerId: 'ghost', label: 'Ghost', agentPaneKind: 'cup', role: 'cup', intent: '', currentPlanSlug: null, liveness: 'stale', fleetSlug: 'alpha', fleetColor: '#e11d48' },
+  // Stale BUT loop-armed → still running (it wakes on a cadence).
+  { ownerId: 'looper', label: 'Looper', agentPaneKind: 'su', role: 'su', intent: 'looping', currentPlanSlug: null, liveness: 'stale', loopArmed: true, fleetSlug: null, fleetColor: null },
 ];
+const roster = (active: unknown[] = ROSTER) => [{ active }];
 
 const CUPS = [
   {
@@ -109,30 +119,69 @@ describe('<SwarmTab> roster', () => {
     expect(screen.getByText('No agents active right now.')).toBeTruthy();
   });
 
-  it('surfaces a presence error', () => {
-    seed('dev.coordPresence', [], { error: 'coord down' });
+  it('surfaces a roster error', () => {
+    seed('advRoster.list', [], { error: 'coord down' });
     render(<SwarmTab active={true} />);
     expect(screen.getByText(/coord down/)).toBeTruthy();
   });
 
-  it('splits SU agents from cups, excludes stale, shows load pill + intent fallback', () => {
-    seed('dev.coordPresence', PRESENCE);
+  it('excludes the stale agent, keeps a stale-but-loop-armed one, shows load pill + intent fallback', () => {
+    seed('advRoster.list', roster());
     seed('sidebar.fleetCups', CUPS);
     render(<SwarmTab active={true} />);
-    expect(screen.getByText('fleet · 3 live')).toBeTruthy();
-    expect(screen.getByTestId('swarm-su').textContent).toContain('SU One');
-    const cupSec = screen.getByTestId('swarm-cups');
-    expect(cupSec.textContent).toContain('Bee One');
-    expect(cupSec.textContent).toContain('Bee Two');
+    expect(screen.getByText('fleet · 5 live')).toBeTruthy();
     expect(screen.queryByTestId('swarm-agent-ghost')).toBeNull();
+    expect(screen.getByTestId('swarm-agent-looper')).toBeTruthy();
     expect(screen.getByTestId('swarm-agent-bee-1').textContent).toContain('⇄2');
+    // bee-2 has no intent on either the roster or its cup row → the fallback.
     expect(screen.getByTestId('swarm-agent-bee-2').textContent).toContain('no declared intent');
+  });
+});
+
+describe('<SwarmTab> fleet grouping (WI-4463)', () => {
+  it('groups agents by fleet, ordered alpha with "No fleet" last', () => {
+    seed('advRoster.list', roster());
+    render(<SwarmTab active={true} />);
+    const heads = [...document.querySelectorAll('.pclsb-fleet__head')].map((el) => el.textContent ?? '');
+    expect(heads).toHaveLength(3);
+    expect(heads[0]).toContain('alpha');
+    expect(heads[1]).toContain('zeta');
+    expect(heads[2]).toContain('No fleet'); // always last
+    // …and each group is counted.
+    expect(heads[0]).toContain('(2)'); // bee-1 + bee-2 (ghost is stale)
+    expect(heads[2]).toContain('(2)'); // su-1 + looper
+  });
+
+  it('inherits the fleet color — group head + a per-row accent — from the roster stamp', () => {
+    // jsdom's CSSOM serializes a hex color to its rgb() form, so assert on that
+    // (the component passes the server's hex straight through, untouched).
+    const ALPHA = 'rgb(225, 29, 72)'; // #e11d48
+    const ZETA = 'rgb(34, 211, 238)'; // #22d3ee
+    seed('advRoster.list', roster());
+    render(<SwarmTab active={true} />);
+    const alpha = screen.getByTestId('swarm-fleet-alpha');
+    expect(alpha.querySelector('.pclsb-fleet__head')?.getAttribute('style')).toContain(ALPHA);
+    expect(alpha.querySelector('.pclsb-fleet__dot')?.getAttribute('style')).toContain(ALPHA);
+    // The row itself carries the fleet accent, so an agent is identifiable as
+    // fleet-alpha's without reading the header.
+    expect(screen.getByTestId('swarm-agent-bee-1').getAttribute('style')).toContain(ALPHA);
+    expect(screen.getByTestId('swarm-agent-mug-1').getAttribute('style')).toContain(ZETA);
+    // The unfleeted group has no color to inherit — and must not invent one.
+    expect(screen.getByTestId('swarm-agent-su-1').getAttribute('style') ?? '').not.toContain('rgb');
+  });
+
+  it('renders each agent with its cup-cast kind glyph (not a binary SU/Cup icon)', () => {
+    seed('advRoster.list', roster());
+    render(<SwarmTab active={true} />);
+    expect(screen.getByTestId('swarm-agent-mug-1').textContent).toContain('☕'); // mug
+    expect(screen.getByTestId('swarm-agent-bee-1').textContent).toContain('🍵'); // worker cup
+    expect(screen.getByTestId('swarm-agent-su-1').textContent).toContain('🛠'); // su
   });
 });
 
 describe('<SwarmTab> selection + expansion', () => {
   it('clicking an agent row writes ?lsa', () => {
-    seed('dev.coordPresence', PRESENCE);
+    seed('advRoster.list', roster());
     seed('sidebar.fleetCups', CUPS);
     render(<SwarmTab active={true} />);
     fireEvent.click(screen.getByTestId('swarm-agent-bee-1'));
@@ -141,7 +190,7 @@ describe('<SwarmTab> selection + expansion', () => {
 
   it('re-clicking the selected agent clears it (toggle off)', () => {
     nuqsState.lsa = 'bee-1';
-    seed('dev.coordPresence', PRESENCE);
+    seed('advRoster.list', roster());
     seed('sidebar.fleetCups', CUPS);
     render(<SwarmTab active={true} />);
     fireEvent.click(screen.getByTestId('swarm-agent-bee-1'));
@@ -150,7 +199,7 @@ describe('<SwarmTab> selection + expansion', () => {
 
   it('the selected agent expands inline with its tasks + plan progress', () => {
     nuqsState.lsa = 'bee-1';
-    seed('dev.coordPresence', PRESENCE);
+    seed('advRoster.list', roster());
     seed('sidebar.fleetCups', CUPS);
     seed('plans.list', PLANS);
     render(<SwarmTab active={true} />);
@@ -165,7 +214,7 @@ describe('<SwarmTab> selection + expansion', () => {
 
   it('links tasks and plans to their full detail surfaces', () => {
     nuqsState.lsa = 'bee-1';
-    seed('dev.coordPresence', PRESENCE);
+    seed('advRoster.list', roster());
     seed('sidebar.fleetCups', CUPS);
     seed('plans.list', PLANS);
     render(<SwarmTab active={true} />);
@@ -185,7 +234,7 @@ describe('<SwarmTab> selection + expansion', () => {
     // while only the right-pane params change.
     H.linkBase = { lsb: 'true', lst: 'swarm', lsa: 'bee-1', tab: 'overview' };
     nuqsState.lsa = 'bee-1';
-    seed('dev.coordPresence', PRESENCE);
+    seed('advRoster.list', roster());
     seed('sidebar.fleetCups', CUPS);
     seed('plans.list', PLANS);
     render(<SwarmTab active={true} />);
@@ -202,23 +251,67 @@ describe('<SwarmTab> selection + expansion', () => {
     expect(params.get('slug')).toBe('pot-a');
     expect(params.get('sel')).toBe('WI-1');
   });
+});
+
+describe('<SwarmTab> message deep-links (WI-4462)', () => {
+  const MAIL = [
+    {
+      owner: 'bee-1',
+      inbox: [
+        { msg_id: 'm-sys', from: 'system-watchdog', kind: 'message', summary: 'routine overdue' },
+        { msg_id: 'm-in', from: 'su-9', kind: 'task', summary: 'do X' },
+      ],
+      outbox: [{ msg_id: 'm-out', to: ['mug'], kind: 'ack', summary: 'done Y' }],
+    },
+  ];
 
   it('folds the selected agent’s recent comms into the expansion', () => {
     nuqsState.lsa = 'bee-1';
-    seed('dev.coordPresence', PRESENCE);
+    seed('advRoster.list', roster());
     seed('sidebar.fleetCups', CUPS);
-    seed('sidebar.cupMail', [
-      { owner: 'bee-1', inbox: [{ msg_id: 'm-in', from: 'mug', kind: 'task', summary: 'do X' }], outbox: [{ msg_id: 'm-out', to: ['mug'], kind: 'ack', summary: 'done Y' }] },
-    ]);
+    seed('sidebar.cupMail', MAIL);
     render(<SwarmTab active={true} />);
     const exp = screen.getByTestId('swarm-expand-bee-1');
     expect(exp.textContent).toContain('do X');
     expect(exp.textContent).toContain('done Y');
-    expect(screen.getByRole('link', { name: /open inbound message from mug/i }).getAttribute('href')).toBe(
-      '/adv?tab=conversations&conv=feed&fagent=bee-1&fmsg=m-in',
-    );
-    expect(screen.getByRole('link', { name: /open outbound message to mug/i }).getAttribute('href')).toBe(
-      '/adv?tab=conversations&conv=feed&fagent=bee-1&fmsg=m-out',
-    );
+  });
+
+  it('EVERY message deep-links to the feed at that message — agent-authored ones carry fsys=all so the row can actually resolve', () => {
+    // The bug: the feed hardcoded system_only, so only a system-* sender's message
+    // existed as a feed row. An agent-authored message (from: su-9) deep-linked to a
+    // row the server had filtered out — the tab opened at the newest head with
+    // nothing expanded, while the system-watchdog row right above it worked. Every
+    // row must now widen the feed's sender scope, so ALL of them behave the same.
+    nuqsState.lsa = 'bee-1';
+    seed('advRoster.list', roster());
+    seed('sidebar.fleetCups', CUPS);
+    seed('sidebar.cupMail', MAIL);
+    render(<SwarmTab active={true} />);
+
+    const links = [
+      screen.getByRole('link', { name: /open inbound message from system-watchdog/i }),
+      screen.getByRole('link', { name: /open inbound message from su-9/i }),
+      screen.getByRole('link', { name: /open outbound message to mug/i }),
+    ];
+    const expected = ['m-sys', 'm-in', 'm-out'];
+    links.forEach((link, i) => {
+      const params = new URLSearchParams((link.getAttribute('href') ?? '').split('?')[1] ?? '');
+      expect(params.get('tab')).toBe('conversations');
+      expect(params.get('conv')).toBe('feed');
+      expect(params.get('fagent')).toBe('bee-1');
+      expect(params.get('fmsg')).toBe(expected[i]);
+      // …the fix: without this the agent-authored rows land on nothing.
+      expect(params.get('fsys')).toBe('all');
+    });
+  });
+
+  it('a message with no msg_id renders as plain text, never as a link that lands nowhere', () => {
+    nuqsState.lsa = 'bee-1';
+    seed('advRoster.list', roster());
+    seed('sidebar.fleetCups', CUPS);
+    seed('sidebar.cupMail', [{ owner: 'bee-1', inbox: [{ from: 'su-9', kind: 'task', summary: 'unaddressable' }], outbox: [] }]);
+    render(<SwarmTab active={true} />);
+    expect(screen.getByTestId('swarm-expand-bee-1').textContent).toContain('unaddressable');
+    expect(screen.queryByRole('link', { name: /open inbound message/i })).toBeNull();
   });
 });
