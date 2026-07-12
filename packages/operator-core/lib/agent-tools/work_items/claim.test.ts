@@ -13,6 +13,9 @@ vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: identity.ownerId }),
 }));
 vi.mock('../../work-items', () => ({ claimWorkItem: vi.fn(), classifyClaimFailure: vi.fn(), getWorkItem: vi.fn() }));
+// Claim-time recall port (P-008) is exercised in its own memory/claim-port.test.ts;
+// mock it here so the handler test stays a hermetic unit (no real memory backend).
+vi.mock('../../memory/claim-port', () => ({ buildClaimRecallBlock: vi.fn(async () => null) }));
 
 import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-items';
 const claimM = vi.mocked(claimWorkItem);

@@ -68,6 +68,22 @@ describe('recordRecallStats', () => {
     ).resolves.toBeUndefined();
     warn.mockRestore();
   });
+
+  // memory-delivery-unification-2026-07-12 P-005 (D-006): the surface column is
+  // free-text, so each per-entry-point PORT records under its own label — the
+  // union is documentation, not a DB constraint. Pins that a port label writes
+  // through verbatim so per-port recall quality is measurable separately.
+  it('records each injection PORT under its own surface label (P-005)', async () => {
+    for (const port of ['initialize', 'compact', 'turn-start', 'brief', 'claim', 'create'] as const) {
+      const calls: unknown[][] = [];
+      const sql = ((_s: TemplateStringsArray, ...values: unknown[]) => {
+        calls.push(values);
+        return Promise.resolve([]);
+      }) as unknown as Sql;
+      await recordRecallStats(sql, { surface: port, entries: [entry('a', 0.6)] });
+      expect(calls[0]?.[0]).toBe(port);
+    }
+  });
 });
 
 describe('readRecallHealth', () => {
