@@ -93,11 +93,24 @@ const UPDATE_URL_PLACEHOLDER = 'papercusp-update-base-unset://';
  * static release host — no GitHub API, no token. This is the whole point: since
  * 2026-07-08 releases are NOT published to GitHub, so there is no release for
  * the GitHub path below to discover.
+ *
+ * WI-4404: `latest.json` is (and must stay) the GUI product's manifest ONLY —
+ * a Server-role artifact colliding into the same `platforms` key under a
+ * different product is exactly the WI-3696 clobber. The Server product gets
+ * its OWN sibling manifest, `latest-server.json`, built by release-local.sh's
+ * `build_platforms(..., want_token="Server", ...)` — pass `product` here to
+ * fetch the right file. A missing `latest-server.json` (a cut that produced
+ * no Server artifacts, or an older host that predates this fix) is the same
+ * "no candidate" outcome as today: 404 → null → falls through / 204.
  */
-export async function fetchStaticLatest(host: string): Promise<LatestJson | null> {
-  const res = await fetch(`${host}/latest.json`, { next: { revalidate: 60 } } as RequestInit);
+export async function fetchStaticLatest(
+  host: string,
+  product: Product = 'gui',
+): Promise<LatestJson | null> {
+  const file = product === 'server' ? 'latest-server.json' : 'latest.json';
+  const res = await fetch(`${host}/${file}`, { next: { revalidate: 60 } } as RequestInit);
   if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`release host latest.json: ${res.status}`);
+  if (!res.ok) throw new Error(`release host ${file}: ${res.status}`);
   return (await res.json()) as LatestJson;
 }
 
@@ -311,12 +324,19 @@ function staticManifestResponse(
     return Response.json({ error: `unknown platform ${target}/${arch}` }, { status: 404 });
   }
 
-  // latest.json carries the GUI product only (the same limitation the GitHub
-  // fallback documents) — never offer a GUI artifact to a Server poll (WI-3696).
-  if (product !== 'gui') return cannotCheckResponse('no_candidate');
-
   const entry = latest.platforms[platformKey];
   if (!entry?.url || !entry.signature) return cannotCheckResponse('no_candidate');
+
+  // WI-4404/WI-3696 defense in depth: `fetchStaticLatest` already selected the
+  // product-scoped file (latest.json vs latest-server.json), so this entry
+  // SHOULD already be the right product — but never trust a filename
+  // convention alone to keep a GUI artifact from reaching a Server poll (or
+  // vice versa) on a hand-edited or stale manifest. Every artifact name is
+  // stamped with its product token (WI-3696's own cut-time assertion
+  // guarantees this at generation time), so cross-check here too.
+  const entryLower = entry.url.toLowerCase();
+  const looksLikeServer = entryLower.includes('server');
+  if ((product === 'server') !== looksLikeServer) return cannotCheckResponse('no_candidate');
 
   if (entry.url.startsWith(UPDATE_URL_PLACEHOLDER)) {
     console.error(
@@ -381,7 +401,9 @@ export default defineTool({
     if (host) {
       let latest: LatestJson | null = null;
       try {
-        latest = await fetchStaticLatest(host);
+        // WI-4404: a Server poll fetches its OWN sibling manifest
+        // (latest-server.json), never latest.json — see fetchStaticLatest.
+        latest = await fetchStaticLatest(host, product);
       } catch (e: unknown) {
         // A configured host that is unreachable is a TRANSIENT failure, not a
         // reason to silently consult GitHub — falling through there could offer

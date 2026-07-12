@@ -2750,6 +2750,128 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
   return { drained: pendingUnclaimed === 0, pendingUnclaimed, readyUnclaimed };
 }
 
+/** Why ONE named id is not claim-path admissible (WI-4413). `null` reason ⇒ it IS admissible. */
+export interface ClaimFloorAttribution {
+  id: string;
+  admissible: boolean;
+  /** The FIRST floor that refuses it, in the order the claim path applies them. */
+  refusedBy: string | null;
+  /** Operator-facing explanation of that floor. */
+  detail: string | null;
+}
+
+/** The floors, in claim-path order, as (name, predicate-is-SATISFIED) pairs + why a miss means. */
+const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
+  'not-found': 'no such work-item in this harness/workspace',
+  'not-claimable-status': 'status is terminal or otherwise not in the claimable set',
+  'already-taken': 'already claimed by another agent',
+  'observation-lane': 'payload.lane = "observation" — a captured NOTE, never work-queue material (D-005)',
+  'needs-human': 'payload.needsHuman = true — routed to a human for ratification (EI-7776)',
+  'claim-hold': 'payload._claimHold = true — deliberately held open by an agent/leader (WI-2797)',
+  'plan-lane-reserved': 'payload.plan_item — reserved to its own plan lane while that plan is active (WI-2118/WI-3667)',
+  'federation-detector': 'an auto-filed replication-liveness detector, gated to the p2p fleet (WI-2633)',
+  'loop-noise': 'an AUTO-loop-iteration bookkeeping marker, not work (EI-8802)',
+  'already-completed': 'already carries a terminal completion record (EI-8972)',
+  'cross-machine-rig': 'needs a ≥2-machine rig this caller does not have (WI-2796)',
+  'blocked-dep': 'has a PRESENT, non-terminal blocker (work_item_deps)',
+};
+
+/**
+ * WI-4413: explain, PER NAMED ID, which claim floor refuses it — the missing half of
+ * `diagnoseClaimNextMiss` (which returns only aggregate POOL/READY counts).
+ *
+ * A fleet leader authors a claim spec that NAMES ids (the tranche shape). When `get_next`
+ * misses, "no claimable work-item matched your spec within the floors" tells the leader
+ * nothing: not which id, not which floor. Live cost (bug-drain-nonp2p 2026-07-12): THREE
+ * consecutive tranches were 100% floored — by three DIFFERENT floors (observation-lane,
+ * plan-lane reservation, _claimHold/needsHuman) — and each took a manual payload
+ * archaeology dig to find, while members sat idle. This makes the claim path self-explaining.
+ *
+ * DRIFT-PROOF BY CONSTRUCTION: every floor below is the SAME exported `sql` fragment the
+ * claim itself ANDs in — evaluated as a boolean column instead of a WHERE clause. A new floor
+ * added to the claim path and not to this list shows up as `admissible: true` on an id that
+ * still will not claim, which is a loud, testable disagreement rather than a silent one.
+ * (The floor-parity pin test asserts exactly that.)
+ */
+export async function explainIssueClaimFloors(
+  harness: string,
+  ids: readonly string[],
+  opts: { assignee?: string; rigAvailable?: boolean } = {},
+): Promise<ClaimFloorAttribution[]> {
+  if (ids.length === 0) return [];
+  const { sql } = getOrgPg();
+  const issueWs = issuesScopeWorkspace();
+  const operatorScopeSlug = `operator:${issueWs}`;
+  const assignee = opts.assignee ?? '';
+
+  const rows = await sql<
+    {
+      id: string;
+      ok_status: boolean;
+      ok_untaken: boolean;
+      ok_observation: boolean;
+      ok_needs_human: boolean;
+      ok_claim_hold: boolean;
+      ok_plan_lane: boolean;
+      ok_federation: boolean;
+      ok_loop_noise: boolean;
+      ok_completed: boolean;
+      ok_rig: boolean;
+    }[]
+  >`
+    SELECT wi.feature_id AS id,
+           (wi.status = ANY(${[...ISSUE_FAMILY_CLAIMABLE_STATES]}::text[]))       AS ok_status,
+           (wi.taken_by IS NULL OR wi.taken_by = '')                              AS ok_untaken,
+           (${observationLaneExclusionSql(sql)})                                  AS ok_observation,
+           (${needsHumanExclusionSql(sql)})                                       AS ok_needs_human,
+           (${claimHoldExclusionSql(sql)})                                        AS ok_claim_hold,
+           (${reservedPlanLaneExclusionSql(sql, assignee)})                       AS ok_plan_lane,
+           (${federationDetectorExclusionSql(sql)})                               AS ok_federation,
+           (${loopIterationNoiseExclusionSql(sql)})                               AS ok_loop_noise,
+           (${alreadyTerminallyCompletedExclusionSql(sql)})                       AS ok_completed,
+           (${crossMachineRigExclusionSql(sql, opts.rigAvailable)})               AS ok_rig
+      FROM harness_shared.work_items wi
+     WHERE wi.workspace_id = ${issueWs}
+       AND (wi.harness_slug = ${harness} OR wi.harness_slug = ${operatorScopeSlug})
+       AND wi.item_kind IN ('bug', 'change', 'task')
+       AND wi.feature_id = ANY(${[...ids]}::text[])`;
+
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  return ids.map((id) => {
+    const r = byId.get(id);
+    const refusedBy = !r
+      ? 'not-found'
+      : // Order MATTERS: report the floor a human would act on first.
+        !r.ok_status
+        ? 'not-claimable-status'
+        : !r.ok_untaken
+          ? 'already-taken'
+          : !r.ok_observation
+            ? 'observation-lane'
+            : !r.ok_needs_human
+              ? 'needs-human'
+              : !r.ok_claim_hold
+                ? 'claim-hold'
+                : !r.ok_plan_lane
+                  ? 'plan-lane-reserved'
+                  : !r.ok_federation
+                    ? 'federation-detector'
+                    : !r.ok_loop_noise
+                      ? 'loop-noise'
+                      : !r.ok_completed
+                        ? 'already-completed'
+                        : !r.ok_rig
+                          ? 'cross-machine-rig'
+                          : null;
+    return {
+      id,
+      admissible: refusedBy === null,
+      refusedBy,
+      detail: refusedBy ? (ISSUE_FLOOR_EXPLANATIONS[refusedBy] ?? null) : null,
+    };
+  });
+}
+
 /**
  * The ISSUE-family half of self-selection (SCHEDULER_ISSUES_CLAIMABLE, P-007) — atomically
  * claim the oldest UNBLOCKED, unclaimed `open` bug/change/task, mirroring the feature claim's

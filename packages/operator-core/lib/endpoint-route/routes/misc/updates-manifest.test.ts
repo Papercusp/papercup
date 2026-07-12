@@ -446,7 +446,76 @@ describe('GET /api/updates/manifest — static release host is authoritative (LO
     expect(res.headers.get('X-Update-Reason')).toBe('no_candidate');
   });
 
-  it('never offers the GUI artifact to a Server poll (latest.json is GUI-only)', async () => {
+  it('WI-4404: a Server poll fetches latest-server.json, NOT latest.json', async () => {
+    // The blanket mock always answers with the GUI-flavored latestJson() (its
+    // url has no "server" token) regardless of which file was requested — so a
+    // product=server poll must be refused (defense-in-depth cross-check, not
+    // the old hard `product !== 'gui'` gate) even though a 200 came back.
+    const res = await manifestResponse(
+      '?target=linux&arch=x86_64&current_version=0.0.8&product=server&channel=alpha',
+    );
+    expect(res.status).toBe(204);
+    expect(res.headers.get('X-Update-Reason')).toBe('no_candidate');
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(String(mockFetch.mock.calls[0]![0])).toBe(`${HOST}/latest-server.json`);
+  });
+
+  it('WI-4404: serves a genuine latest-server.json to a Server poll', async () => {
+    mockFetch.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === `${HOST}/latest-server.json`) {
+        return new Response(
+          JSON.stringify(
+            latestJson({
+              platforms: {
+                'linux-x86_64': {
+                  signature: 'SERVER_SIG',
+                  url: `${HOST}/desktop-v0.0.9-alpha/Papercusp_Server_0.0.9_amd64.AppImage`,
+                },
+              },
+            }),
+          ),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify(latestJson()), { status: 200 });
+    });
+    const res = await manifestResponse(
+      '?target=linux&arch=x86_64&current_version=0.0.8&product=server&channel=alpha',
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      version: string;
+      platforms: Record<string, { signature: string; url: string }>;
+    };
+    expect(body.platforms['linux-x86_64'].signature).toBe('SERVER_SIG');
+    expect(body.platforms['linux-x86_64'].url).toBe(
+      `${HOST}/desktop-v0.0.9-alpha/Papercusp_Server_0.0.9_amd64.AppImage`,
+    );
+  });
+
+  it('WI-4404: a missing latest-server.json (404) degrades to no_candidate, not an error', async () => {
+    mockFetch.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === `${HOST}/latest-server.json`) return new Response(null, { status: 404 });
+      return new Response(JSON.stringify(latestJson()), { status: 200 });
+    });
+    const res = await manifestResponse(
+      '?target=linux&arch=x86_64&current_version=0.0.8&product=server&channel=alpha',
+    );
+    expect(res.status).toBe(204);
+    expect(res.headers.get('X-Update-Reason')).toBe('no_candidate');
+  });
+
+  it('WI-4404: never offers a GUI artifact to a Server poll even if latest-server.json is mis-served', async () => {
+    // A hand-edited / stale latest-server.json that (wrongly) points at a GUI
+    // artifact must still be refused — the cross-check is defense in depth,
+    // not just a filename-routing convenience.
+    mockFetch.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === `${HOST}/latest-server.json`) return new Response(JSON.stringify(latestJson()), { status: 200 });
+      return new Response(JSON.stringify(latestJson()), { status: 200 });
+    });
     const res = await manifestResponse(
       '?target=linux&arch=x86_64&current_version=0.0.8&product=server&channel=alpha',
     );

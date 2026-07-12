@@ -142,6 +142,22 @@ export default defineTool({
         .then((m) => m.buildClaimRecallBlock({ sessionId: ident.ownerId, workspaceId: ident.workspaceId, items: [wi] }))
         .catch(() => null);
     }
+    // WI-4413: a MISS must explain itself. `work_items:claim_next` has run diagnoseClaimNextMiss
+    // on a miss since EI-5803 — but THIS path (the one every fleet member self-pulls through, and
+    // the one a leader's claim spec drives) returned a static, floor-blind string. Live cost
+    // (bug-drain-nonp2p 2026-07-12): three consecutive leader tranches were 100% floored, by three
+    // DIFFERENT floors, and each took a manual payload dig to find while members idled.
+    // FAILS SOFT: any error here degrades to exactly the old static message — a diagnosis must
+    // never be able to break the claim path it is only annotating.
+    const missDiagnosis = res
+      ? { error: '' as string, diagnosis: undefined, floors: undefined }
+      : await buildMissDiagnosis({
+          ownerId: ident.ownerId,
+          workspaceId: ident.workspaceId,
+          harness: args.harness,
+          states: args.states,
+          rigAvailable: args.rigAvailable,
+        });
     return {
       content: [
         {
@@ -158,7 +174,11 @@ export default defineTool({
                 }
               : {
                   ok: false,
-                  error: 'no claimable work-item matched your spec within the floors',
+                  error: missDiagnosis.error,
+                  // WI-4413: the miss now EXPLAINS itself — aggregate POOL/READY split, plus
+                  // (when the spec names ids) the exact floor refusing each one.
+                  ...(missDiagnosis.diagnosis ? { diagnosis: missDiagnosis.diagnosis } : {}),
+                  ...(missDiagnosis.floors ? { floors: missDiagnosis.floors } : {}),
                   // P-006: teach the composed-await idle recipe exactly where the idle
                   // moment happens, instead of leaving the caller to a 60s re-poll.
                   advice: IDLE_PULL_MISS_ADVICE,

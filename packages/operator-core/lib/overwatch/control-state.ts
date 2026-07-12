@@ -49,6 +49,18 @@ const CADENCE_PREFIX = 'overwatch_cadence_sec:';
  * nudge it back in real time), so it runs MORE responsively than the Queen's
  * ~30 min scheduler cadence (plan architecture: "Queen = scheduler, NOW;
  * Overwatch = control-loop, SHORT-TERM").
+ *
+ * WI-4401: this is the FALLBACK/floor value `kettle:declare-wake` uses when the
+ * persona doesn't pass an explicit time — it is NOT the expected steady-state
+ * average. The kettle persona's own guidance (blueprints/coding/prompts/kettle.md
+ * "ALWAYS call kettle:declare-wake") explicitly picks `inSeconds: 600–1800`
+ * (10–30 min) whenever the system reads healthy, and only drops to 60–180s while
+ * actively watching an unresolved drift. A calm system therefore naturally
+ * averages somewhere in the ~10-20min band (measured 2026-07-12: ~18-19min over
+ * a 10-card window) — that is EXPECTED behavior, not a delivery-latency bug or a
+ * missed target. Don't re-open a "cadence is slower than 10min" investigation
+ * without first checking the actual wake choices the loop made (kettle.md's
+ * 600-1800s healthy range) against the observed average.
  */
 export const DEFAULT_OVERWATCH_CADENCE_SEC = 600; // 10 min
 /** Floor — the anti-spin guard (a control loop must not thrash, D-002). */

@@ -223,7 +223,12 @@ export default function OverwatchTab({ active }: { active: boolean }) {
         </header>
 
         <div className="pc-owsb__metrics" aria-label="Overwatch telemetry">
-          <Metric icon={<Activity size={11} aria-hidden />} label="Cadence" value={cadenceMin != null ? `${cadenceMin}m` : 'unknown'} />
+          <Metric
+            icon={<Activity size={11} aria-hidden />}
+            label="Cadence"
+            value={cadenceMin != null ? `${cadenceMin}m` : 'unknown'}
+            tooltip="Floor cadence when the loop has no explicit next-wake. Actual wakes range 10-30min when the system reads healthy (kettle.md) — a slower average than this figure is expected, not a stall (WI-4401)."
+          />
           <Metric icon={<Clock3 size={11} aria-hidden />} label="Next" value={nextWake} />
           <Metric icon={<Clock3 size={11} aria-hidden />} label="Last" value={lastWake} tooltip="Last overwatch wake" />
           <Metric
