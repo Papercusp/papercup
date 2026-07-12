@@ -12,6 +12,7 @@
 
 import os from 'node:os';
 import { defineTool } from '@papercusp/agent-mcp';
+import type { SearchFilters, RecencyRank } from '@papercusp/search';
 import {
   closeWindowId,
   focusWindowId,
@@ -543,6 +544,32 @@ const searchTranscripts = defineTool({
     const limitRaw = Number(url.searchParams.get('limit') ?? 30);
     const hitLimit = Math.min(50, Math.max(1, Number.isFinite(limitRaw) ? Math.floor(limitRaw) : 30));
 
+    // ── Recency (owner ask 2026-07-12): recency is a first-class variable for
+    // THIS search, so it composes across three tiers ──────────────────────────
+    // 1. HARD FILTER — ?since / ?until (ISO) → engine SearchFilters window
+    //    (session_turn already honors it). The time-window facet pill re-queries
+    //    with these.
+    const sinceParam = (url.searchParams.get('since') ?? '').trim();
+    const untilParam = (url.searchParams.get('until') ?? '').trim();
+    const filters: SearchFilters | undefined =
+      sinceParam || untilParam
+        ? { ...(sinceParam ? { since: sinceParam } : {}), ...(untilParam ? { until: untilParam } : {}) }
+        : undefined;
+    // 2. SOFT RE-RANK — a recency decay blended into the fused score before the
+    //    top-N cut. DEFAULT-ON for this route; ?recency=off disables it, and
+    //    ?recencyHalfLifeH / ?recencyWeight tune it. getTime defaults to hit.ts
+    //    (populated by the session_turn source).
+    const halfLifeH = Number(url.searchParams.get('recencyHalfLifeH'));
+    const weightParam = Number(url.searchParams.get('recencyWeight'));
+    const recency: RecencyRank | undefined =
+      url.searchParams.get('recency') === 'off'
+        ? undefined
+        : {
+            halfLifeMs: (Number.isFinite(halfLifeH) && halfLifeH > 0 ? halfLifeH : 24) * 3_600_000,
+            weight:
+              Number.isFinite(weightParam) && weightParam >= 0 && weightParam <= 1 ? weightParam : 0.3,
+          };
+
     // Per-stage timing breakdown (WI-3924 follow-up C): the endpoint's cold
     // baseline was ~3.3s even with a BM25-only (no-embed) hit, and the cost
     // was suspected to live OUTSIDE runHybridSearch (roster merge / session
@@ -604,6 +631,8 @@ const searchTranscripts = defineTool({
       mode: 'hybrid',
       embedder,
       embedTimeoutMs,
+      filters,
+      recency,
       signal,
     });
     mark('hybridSearch');
