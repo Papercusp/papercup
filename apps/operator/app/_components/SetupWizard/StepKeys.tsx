@@ -136,6 +136,10 @@ export function StepKeys() {
           Each system stores vectors in its own space — switching later then running “Re-embed” (Settings → Memory)
           brings old memories forward.
         </p>
+        <p style={{ margin: '6px 0 0', fontSize: 11, color: 'var(--fg-mute, #888)' }}>
+          With Harrier selected, semantic search over docs &amp; recipes still uses EmbeddingGemma; Harrier powers
+          memory recall. Both run locally.
+        </p>
       </div>
 
       <KeyCard

@@ -141,7 +141,7 @@ const OVERRIDES: readonly OverrideSpec[] = [
   { key: 'operatorBackstoryEnabled', kind: 'bool', label: 'Papercup backstory enabled',
     help: 'Include the Papercup persona backstory in the system prompt.' },
   { key: 'memoryEmbedderMode', kind: 'enum', label: 'Memory system',
-    help: 'Which model embeds your memories for search. Harrier-OSS-0.6b is the default — best recall, fully local & private. EmbeddingGemma-300m uses less resources (~4× faster embeds, ~2.4GB less RAM) if you want a lighter footprint. Each system stores vectors in its own space, so switching then running "Re-embed" (on the Memory page) brings old memories forward.',
+    help: 'Which model embeds your memories for search. Harrier-OSS-0.6b is the default — best recall, fully local & private. EmbeddingGemma-300m uses less resources (~4× faster embeds, ~2.4GB less RAM) if you want a lighter footprint. Each system stores vectors in its own space, so switching then running "Re-embed" (on the Memory page) brings old memories forward. When Harrier is selected, semantic search over docs, recipes, and knowledge still uses EmbeddingGemma (Harrier\'s vectors don\'t fit the prose search index); both run locally.',
     options: [
       { value: 'harrier', label: 'Harrier-OSS-0.6b (default) — best recall on the internal gold set, local & private, no API key; ~2.5GB RAM, ~4× slower embeds than Gemma' },
       { value: 'gemma', label: 'EmbeddingGemma-300m — uses less resources (~1GB RAM, ~4× faster embeds), local & private, no API key; slightly lower recall than Harrier' },

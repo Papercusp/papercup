@@ -24,7 +24,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
-import type { OrgTestDb } from './test/_org-test-db';
+import type { OrgTestDb } from '../test/_org-test-db';
 
 const hoisted = vi.hoisted(() => ({ sql: null as unknown }));
 const WS = 'ws-release-claim-honesty-test';
@@ -45,7 +45,7 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => ({
 
 const { releaseWorkItem, claimWorkItem, getWorkItem, classifyClaimFailure } = await import('./work-items');
 const { acquireClaimLocal, getClaim } = await import('./work-item-claims');
-const { createOrgTestDb } = await import('./test/_org-test-db');
+const { createOrgTestDb } = await import('../test/_org-test-db');
 
 let db: OrgTestDb;
 let sql: Sql;
