@@ -220,7 +220,7 @@ describe('evaluateInvariants', () => {
       openEscalations: [opEsc(EFFECTIVE_H + 1)], // operational, past TTL + reconcile grace
       longExpiredLocks: 2,
       presenceGhosts: 3,
-      wakeQueueDepth: 51,
+      wakeQueueDepth: 251, // EI-10177: > wakeQueueDepthMax (250) — a genuine runaway
       wakeQueueOldestMs: NOW - 1_000,
       coordLogFurnaces: [
         { queryid: '123', queryPreview: 'SELECT body FROM harness_shared.coord_event_log ...', calls: 285_000, rowsPerCall: 80_000, meanExecMs: 500 },
@@ -322,11 +322,24 @@ describe('evaluateInvariants', () => {
     expect(evaluateInvariants(atDeadline, DEFAULT_THRESHOLDS, NOW)).toEqual([]);
   });
 
-  it('wake-queue still fires on DEPTH regardless of age (bloat backstop)', () => {
-    const snap = { ...cleanSnap, wakeQueueDepth: 51, wakeQueueOldestMs: NOW - 1_000 };
+  it('wake-queue still fires on DEPTH regardless of age (genuine-runaway bloat backstop)', () => {
+    // EI-10177: the depth backstop fires only on a genuine runaway (> wakeQueueDepthMax=250),
+    // regardless of age — young wakes count here (unlike the AGE leg), this is the storm signal.
+    const snap = { ...cleanSnap, wakeQueueDepth: 251, wakeQueueOldestMs: NOW - 1_000 };
     const violations = evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW);
     expect(violations).toHaveLength(1);
     expect(violations[0].title).toBe('coord invariant: wake-queue depth/age growth');
+  });
+
+  it('EI-10177: does NOT fire on normal live-owner review backlog (depth under the runaway cap)', () => {
+    // The exact false positive this fixes: 57 young staged wakes for LIVE owners (observed
+    // live, one owner alone at 32) — 0 stale, all within the 24h auto-expiry window. The
+    // in-pass sweeps can't/shouldn't reap them (they reap only dead-owner + >staleHours), so
+    // the OLD flat cap of 50 re-filed a non-actionable EI every hour (recurred 5×) — the
+    // EI-6910/EI-8664 anti-pattern (a count threshold measuring the human's normal review
+    // backlog). A busy-fleet backlog under the runaway cap is expected, never a filed bug.
+    const snap = { ...cleanSnap, wakeQueueDepth: 57, wakeQueueOldestMs: NOW - 9 * 3_600_000 };
+    expect(evaluateInvariants(snap, DEFAULT_THRESHOLDS, NOW)).toEqual([]);
   });
 
   describe('WI-3959: coord_event_log furnace-class recurrence guard', () => {

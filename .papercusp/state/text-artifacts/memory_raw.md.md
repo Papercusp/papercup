@@ -1,6 +1,6 @@
 ---
 rel_path: "memory/raw.md"
-updated_at: 1783734659453
+updated_at: 1783852746223
 _body: "content"
 ---
 
@@ -29,3 +29,4 @@ _body: "content"
 
 [2026-07-11T01:50:00Z] worker EI-9372: Full hermetic vitest can't run in the auto-implement sandbox — the sandbox /tmp (and everything outside the repo tree) is read-only, and libs/test-config/src/vitest-config.ts forces TMPDIR=/tmp/pcv whenever the current TMPDIR is missing or IN-REPO (tmpdirIsInsideRepo), so you can't point it at .papercusp/scratch either. For a PURE static-scan test (e.g. identity-keyed-state-inventory.test.ts — reads generated.ts, no DB/runtime), don't fight the hermetic setup: extract its IDENTITY_COLUMN_NAMES + ALLOWLIST from the test source and re-run its verbatim scan logic in a plain node script, then corroborate with harness_shared.test_runs (the gate's own recorded vitest pass/fail on the current commit). Also: a watchdog red-test EI can be re-dispatched on a STALE signal after a bg-host DBOS outage (routine freshness can't re-evaluate while routines are down) — always check test_runs for a fail→pass flip on the current commit before assuming the red is live.
 
+[2026-07-12T10:38:00Z] worker EI-10177: coord-invariant COUNT thresholds fall to the SAME "don't measure the human's/fleet's normal backlog" anti-pattern as age thresholds (EI-6910/EI-8664). wake-queue depth alarm at flat 50 fired on 57 legit live-owner young staged wakes (0 stale). Fix = recalibrate the count above steady-state with a principled anchor (below BOARD_READ_LIMIT=500), not a round number that undershoots a busy fleet. Sweeps reap only dead-owner + >staleHours; young live-owner wakes are expected review backlog, never a filed bug.

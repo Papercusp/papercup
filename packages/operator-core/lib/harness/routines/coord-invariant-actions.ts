@@ -38,7 +38,7 @@
  *       · locks held past TTL, unswept    (expired > expiredLockGraceMin, def 60)
  *       · presence ghosts                 (heartbeat stale > presenceGhostHours,
  *                                          def 72, rows never cleaned)
- *       · wake-queue depth / age          (pending_wakes > wakeQueueDepthMax, def 50,
+ *       · wake-queue depth / age          (pending_wakes > wakeQueueDepthMax, def 250,
  *                                          or oldest past the auto-expiry deadline
  *                                          pendingWakeStaleHours + grace — a sweep
  *                                          failure, not the human's normal review
@@ -512,6 +512,21 @@ export interface InvariantThresholds {
   // substrate is only responsible for draining OPERATIONAL escalations.
   expiredLockGraceMin: number;
   presenceGhostHours: number;
+  /**
+   * The RAW pending_wakes count above which the depth leg fires — a genuine-runaway
+   * bloat backstop (a wake-creation storm / owners drowning), independent of age.
+   *
+   * EI-10177: this was 50, which fired on EXPECTED live-owner review backlog. A busy
+   * manual-mode fleet legitimately stages many young wakes for LIVE owners (observed
+   * live: 57 wakes across 8 live owners, 0 stale, one owner alone at 32) — none of which
+   * the in-pass sweeps can or should reap (dead-owner + >staleHours only), so the alarm
+   * re-filed a non-actionable EI every hour (recurred 5×). That is the EI-6910/EI-8664
+   * anti-pattern (a "warn early" count threshold measuring the human's normal review
+   * backlog — the pui wake board is that review surface, not a filed bug), one leg removed
+   * from the AGE alarm. The count is now set well above realistic busy-fleet backlog so it
+   * catches only a genuine runaway, yet stays BELOW BOARD_READ_LIMIT (500, pending-wakes.ts)
+   * so the wake board still renders the full queue when this backstop does fire.
+   */
   wakeQueueDepthMax: number;
   /** WI-3097: auto-EXPIRE any staged wake (live owner or dead) past this age
    *  (sweepStalePendingWakes, run in-pass just before the invariant check). EI-8664:
@@ -556,7 +571,10 @@ export const DEFAULT_THRESHOLDS: InvariantThresholds = {
   stuckHandoffHours: 12,
   expiredLockGraceMin: 60,
   presenceGhostHours: 72,
-  wakeQueueDepthMax: 50,
+  // EI-10177: raised 50 → 250. 50 fired on normal live-owner review backlog (see the
+  // wakeQueueDepthMax doc comment). 250 is ~4× the observed busy-fleet peak (57) yet stays
+  // below BOARD_READ_LIMIT (500) so the wake board renders whole when the runaway backstop fires.
+  wakeQueueDepthMax: 250,
   pendingWakeStaleHours: 24,
   coordLogFurnaceRowsPerCall: 50_000,
   coordLogFurnaceMeanExecMs: 2_000,
