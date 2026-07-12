@@ -11,6 +11,7 @@ import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { Select } from '@/app/harness/Select';
 import { MEMORY_KIND_COLOR, MEMORY_KIND_FALLBACK } from '@/app/harness/theme';
 import { useLexicon } from '@/lib/useLexicon';
+import { originOf, type MemoryOrigin } from './origin';
 
 interface BrokenAnchor {
   kind: string;
@@ -59,22 +60,6 @@ const STATE_BADGES: Record<string, { label: string; icon: string; color: string;
 function isFlagged(row: MemoryRow): boolean {
   const state = row.audit?.state ?? 'active';
   return state !== 'active';
-}
-
-/**
- * Coarse write-origin from the stamps that already exist (EI-10363):
- * settings-page writes stamp `source: 'settings-page'` (authorship outranks
- * the `recovered_from` delivery detail when both are present), the journal
- * drain / transcript miner stamp `recovered_from`, and the dominant agent
- * path (memory:remember) stamps neither — so an absent stamp is an INFERRED
- * agent write, not a proven one (real per-session attribution is EI-10358).
- */
-type MemoryOrigin = 'you' | 'recovered' | 'agent';
-function originOf(row: MemoryRow): MemoryOrigin {
-  const meta = (row.metadata ?? {}) as Record<string, unknown>;
-  if (meta.source === 'settings-page') return 'you';
-  if (typeof meta.recovered_from === 'string') return 'recovered';
-  return 'agent';
 }
 
 /** Compact relative timestamp — '3d ago', 'just now'. */

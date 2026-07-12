@@ -1730,10 +1730,10 @@ async function maybeStartWhisperCapture(mode: VoiceMode): Promise<void> {
     }
     const { startWhisperCapture } = await import('./stt-voicemode');
     whisperCapture = await startWhisperCapture(VOICEMODE_WHISPER_URL, {
-      onFinal: (text) => {
-        setState({ lastTranscript: text });
-        onUtteranceFinal(text);
-      },
+      // P-004: always-on transcripts pass the wake-phrase gate — ambient room
+      // speech is dropped; "hey papercup …" (or a follow-up inside the open
+      // conversation window) dispatches to the brain.
+      onFinal: (text) => dispatchAlwaysOnUtterance(text),
     });
   } catch {
     startWakeWordListening();
@@ -1805,10 +1805,8 @@ async function startEnergyVadAlwaysOn(): Promise<void> {
       if (pcm16k.length < 3200) return;
       try {
         const text = (await transcribeChunk(VOICEMODE_WHISPER_URL, f32ToWav(pcm16k, 16000))).trim();
-        if (!isBlankTranscript(text)) {
-          setState({ lastTranscript: text });
-          onUtteranceFinal(text);
-        }
+        // P-004: same wake-phrase gate as the Silero always-on path above.
+        if (!isBlankTranscript(text)) dispatchAlwaysOnUtterance(text);
       } catch { /* network blip / whisper down — drop this utterance */ }
     },
   });

@@ -138,7 +138,7 @@ export function shapeOrient(data: unknown, tier: TierName): unknown {
   }
 
   const memory = d.memory as
-    | { query?: unknown; hits?: unknown[]; degraded?: unknown; degradedReason?: unknown; withheld?: unknown; filteredLowScore?: unknown }
+    | { query?: unknown; hits?: unknown[]; degraded?: unknown; degradedReason?: unknown; withheld?: unknown; filteredLowScore?: unknown; withheldBudget?: unknown; note?: unknown }
     | null
     | undefined;
   if (memory && typeof memory === 'object' && Array.isArray(memory.hits)) {
@@ -159,6 +159,11 @@ export function shapeOrient(data: unknown, tier: TierName): unknown {
       ...(typeof memory.degradedReason === 'string' ? { degradedReason: memory.degradedReason } : {}),
       ...(typeof memory.withheld === 'number' ? { withheld: memory.withheld } : {}),
       ...(typeof memory.filteredLowScore === 'number' ? { filteredLowScore: memory.filteredLowScore } : {}),
+      // orient-recall-quality P-002/P-003: same loud-marker class — the budget
+      // drop count and the non-exhaustive advisory must reach trimmed sessions
+      // (fleet members are exactly who acts on them).
+      ...(typeof memory.withheldBudget === 'number' ? { withheldBudget: memory.withheldBudget } : {}),
+      ...(typeof memory.note === 'string' ? { note: memory.note } : {}),
     };
   }
 

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import { composeOrient, orientServedDelta } from './orient';
+import { composeOrient, orientServedDelta, ORIENT_MEMORY_NOTE } from './orient';
 import type { InnerCall } from '../../_compound-dispatch';
 
 const foldFactsMock = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
@@ -146,7 +146,13 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       call,
       'me',
     );
-    expect(r.memory).toEqual({ query: 'implement P-005', hits: [{ id: 'mem1', memory: 'prefers nuqs over useState', score: 0.9 }] });
+    expect(r.memory).toEqual({
+      query: 'implement P-005',
+      hits: [{ id: 'mem1', memory: 'prefers nuqs over useState', score: 0.9 }],
+      // orient-recall-quality P-003: a non-empty fold always carries the
+      // non-exhaustive advisory.
+      note: ORIENT_MEMORY_NOTE,
+    });
     expect(r.intentDeclared).toBe(true);
     // memory uses intent as the query + harness_slug; declare carries the lane.
     const mem = calls.find((c) => c.name === 'memory:search')!;
@@ -244,6 +250,73 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(r.planEvents!.total).toBe(100); // true total still reported
     // whole serialized payload stays small despite huge inputs
     expect(JSON.stringify(r).length).toBeLessThan(4000);
+  });
+
+  // orient-recall-quality-2026-07-12 P-002/P-003: the AGGREGATE char budget over
+  // the folded hits + the non-exhaustive advisory. Deterministic: fixture hits of
+  // known size against an env-pinned budget.
+  describe('memory fold aggregate budget + advisory (orient-recall-quality P-002/P-003)', () => {
+    const ENV = 'PAPERCUSP_ORIENT_MEMORY_BUDGET_CHARS';
+    afterEach(() => {
+      delete process.env[ENV];
+    });
+
+    const bigHits = (n: number) => ({
+      ok: true,
+      // Each hit's text caps at MEMORY_TEXT_CAP (200) BEFORE the budget, so each
+      // admitted hit costs ~200 + id + 24 overhead ≈ 226 chars.
+      results: Array.from({ length: n }, (_, i) => ({ id: `m${i}`, memory: 'x'.repeat(5000), score: 0.9 - i * 0.01 })),
+    });
+
+    it('admits hits in relevance order under the budget and reports withheldBudget loudly', async () => {
+      process.env[ENV] = '500'; // fits 2 × ~226-char hits, not 3
+      const { call } = fakeCall({
+        ...CORE,
+        'memory:search': () => bigHits(5),
+        'coord:declare-intent': () => ({ ok: true }),
+      });
+      const r = await composeOrient({ intent: 'budget probe' }, call, 'me');
+      expect(r.memory!.hits).toHaveLength(2);
+      expect(r.memory!.hits.map((h) => h.id)).toEqual(['m0', 'm1']); // relevance order kept
+      expect(r.memory!.withheldBudget).toBe(3); // loud, never silent
+      expect(r.memory!.note).toBe(ORIENT_MEMORY_NOTE);
+    });
+
+    it('the FIRST hit is always admitted even when it alone exceeds the budget', async () => {
+      process.env[ENV] = '10';
+      const { call } = fakeCall({
+        ...CORE,
+        'memory:search': () => bigHits(4),
+        'coord:declare-intent': () => ({ ok: true }),
+      });
+      const r = await composeOrient({ intent: 'tiny budget' }, call, 'me');
+      expect(r.memory!.hits).toHaveLength(1);
+      expect(r.memory!.withheldBudget).toBe(3);
+    });
+
+    it('an empty fold carries NO advisory note and no withheldBudget (zero noise on the empty path)', async () => {
+      const { call } = fakeCall({
+        ...CORE,
+        'memory:search': () => ({ ok: true, results: [] }),
+        'coord:declare-intent': () => ({ ok: true }),
+      });
+      const r = await composeOrient({ intent: 'nothing relevant' }, call, 'me');
+      expect(r.memory!.hits).toHaveLength(0);
+      expect(r.memory!.note).toBeUndefined();
+      expect(r.memory!.withheldBudget).toBeUndefined();
+    });
+
+    it('env <= 0 disables the aggregate budget (all kept hits fold)', async () => {
+      process.env[ENV] = '0';
+      const { call } = fakeCall({
+        ...CORE,
+        'memory:search': () => bigHits(5),
+        'coord:declare-intent': () => ({ ok: true }),
+      });
+      const r = await composeOrient({ intent: 'uncapped' }, call, 'me');
+      expect(r.memory!.hits).toHaveLength(5);
+      expect(r.memory!.withheldBudget).toBeUndefined();
+    });
   });
 
   it('best-effort: a failing memory recall or declare degrades to null/false, not a thrown orient', async () => {
