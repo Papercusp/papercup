@@ -60,6 +60,10 @@ export interface CupDossierInput {
   /** STANDING FACTS (mug-memory-hybrid L1c) — pre-rendered deterministic fold
    *  (workspace + role:cup + harness + this work_item scopes). Verbatim delivery. */
   factsFold?: string | null;
+  /** BACKGROUND RECALL (mug-memory-hybrid L1d) — fuzzy mem0 sibling of the facts
+   *  fold above, pre-rendered via the shared buildMemoryContextBlock pipeline
+   *  (harness + hive pools, relevance-floored, fail-soft). Verbatim delivery. */
+  memoryFold?: string | null;
   caps?: Partial<CupDossierCaps>;
 }
 

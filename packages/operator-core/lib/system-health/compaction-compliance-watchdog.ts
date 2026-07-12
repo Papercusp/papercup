@@ -50,6 +50,20 @@ const OVER_LIMIT_FRACTION = 1.0;
  *  fall back to limit × COMPACTION_OVERSHOOT_FACTOR, the bound clampCompactionLimit
  *  already guarantees safe for whatever window legally produced that limit. */
 const FORCE_COMPACT_FRACTION = 1.3;
+/** EI-9982 retry-undelivered-force grace: once a force-compact inject SOCKET-ACKS,
+ *  the watchdog stops re-injecting until the session recovers below its soft limit —
+ *  on the assumption the `/compact` actually ran. But the inject is idle-gated
+ *  host-side (it runs AFTER the current turn), so a session that IGNORES the nudge
+ *  and keeps taking turns back-to-back (the EI-9982 probe: 14.8× the soft limit,
+ *  "continuously taking turns") can have its single queued `/compact` deferred — or
+ *  dropped — and never actually compact, leaving the watchdog PERMANENTLY silent
+ *  (est never drops, so the recovery re-arm never fires). A landed compaction shows
+ *  up in the tail-scan estimate immediately (tokensFromFileSize counts from the last
+ *  compaction marker), so a session STILL at/over its force threshold this long after
+ *  a successful inject has PROVEN the prior force did not land — re-inject. Sized to a
+ *  few sweeps (≫ a normal compaction's land-time) so a genuinely in-progress compaction
+ *  is never double-injected. */
+const FORCE_RETRY_GRACE_MS = 6 * 60_000; // ~3 sweeps
 /** EI-7632 stale-window guard: a LIVE session estimating ≥ this × the resolved window
  *  has DISPROVEN the resolution — a session genuinely past its window dies on "Prompt
  *  is too long" (P-019 owns that), it doesn't keep taking turns. The window inputs are
@@ -68,10 +82,13 @@ const overLimitOwners = new Set<string>();
 /** P-019 context-death dedup: one coord escalation per dead owner per process. */
 const contextDeathEscalated = new Set<string>();
 
-/** P-012 force-compact dedup: inject /compact ONCE per over-limit crossing;
- *  cleared when the owner recovers (est back under limit) so a later crossing
- *  re-arms it. A failed inject is NOT recorded, so it retries next pass. */
-const forceCompactedOwners = new Set<string>();
+/** P-012 force-compact dedup + EI-9982 retry: owner → last SUCCESSFUL force-inject
+ *  ms. Suppresses a duplicate inject within FORCE_RETRY_GRACE_MS of a socket-ack'd
+ *  one (the P-012 "once per crossing" intent), but ALLOWS a re-inject once that grace
+ *  elapses IF the session is still at/over its force threshold (proof the prior
+ *  /compact never landed — EI-9982). Cleared when the owner recovers below its soft
+ *  limit. A failed inject is NOT recorded, so it retries next pass. */
+const forceCompactedAt = new Map<string, number>();
 
 /** P-018 boot self-assert: one advisory escalation per owner per defect-class per
  *  process (key `${ownerId}:${kind}`). The 2026-07-04 incident's dark-telemetry defect
