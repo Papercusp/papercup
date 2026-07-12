@@ -33,12 +33,26 @@ vi.mock('../severe-event-broadcast', () => ({
   broadcastSevereEventResolved: (...args: unknown[]) => broadcastSevereEventResolvedMock(...args),
 }));
 
+// WI-4322: checkReleaseTriggerFreeze's DB wiring is exercised the same way — mock the
+// pipeline-snapshot + status-computation seams it dynamically imports rather than hitting
+// real git/PG (the regression under test is the DECISION logic, not those functions).
+const gitPipelineSnapshotMock = vi.fn().mockResolvedValue({});
+vi.mock('../git-pipeline-stats', () => ({
+  gitPipelineSnapshot: (...args: unknown[]) => gitPipelineSnapshotMock(...args),
+}));
+const computeDeployStatusMock = vi.fn();
+vi.mock('../release-deploy-launch', () => ({
+  computeDeployStatus: (...args: unknown[]) => computeDeployStatusMock(...args),
+}));
+
 import {
   evaluateGreenStall,
   greenStallEscalationBody,
   evaluateMainBehindStaging,
   computeMainBehindStaging,
   checkMainBehindStaging,
+  evaluateReleaseTriggerFreeze,
+  checkReleaseTriggerFreeze,
 } from './green-stall-watchdog';
 
 const H = 60 * 60 * 1000;
@@ -412,5 +426,189 @@ describe('checkMainBehindStaging DB wiring (EI-10103: workspace_id NOT NULL)', (
     expect(result.alarmed).toBe(false);
     expect(findInsertCall(calls)).toBeUndefined();
     expect(resolveWorkspaceForHarnessMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('evaluateReleaseTriggerFreeze (WI-4322)', () => {
+  it('a fresh/active routine never alarms, however much green code is stranded', () => {
+    const v = evaluateReleaseTriggerFreeze({ active: true, updatedAtMs: NOW - 24 * H, deployedBehindReady: 44 }, NOW);
+    expect(v.frozen).toBe(false);
+    expect(v.reason).toBeNull();
+  });
+
+  it('no routine row (active: null — no deploy target declared) never alarms', () => {
+    const v = evaluateReleaseTriggerFreeze({ active: null, updatedAtMs: null, deployedBehindReady: 44 }, NOW);
+    expect(v.frozen).toBe(false);
+  });
+
+  it('paused but nothing green is stranded — harmless, never alarms', () => {
+    const v = evaluateReleaseTriggerFreeze({ active: false, updatedAtMs: NOW - 2 * H, deployedBehindReady: 0 }, NOW);
+    expect(v.frozen).toBe(false);
+  });
+
+  it('paused with null deployedBehindReady never alarms (unknown ≠ pending)', () => {
+    const v = evaluateReleaseTriggerFreeze({ active: false, updatedAtMs: NOW - 2 * H, deployedBehindReady: null }, NOW);
+    expect(v.frozen).toBe(false);
+  });
+
+  it('paused + green stranded, but only just (< 30m threshold) — a normal short manual pause, not yet a freeze', () => {
+    const v = evaluateReleaseTriggerFreeze({ active: false, updatedAtMs: NOW - 10 * 60_000, deployedBehindReady: 44 }, NOW);
+    expect(v.frozen).toBe(false);
+  });
+
+  it('THE SIGNATURE: paused > 30m + green code stranded ⇒ frozen, with an actionable reason', () => {
+    const v = evaluateReleaseTriggerFreeze({ active: false, updatedAtMs: NOW - 45 * 60_000, deployedBehindReady: 44 }, NOW);
+    expect(v.frozen).toBe(true);
+    expect(v.reason).toContain('PAUSED');
+    expect(v.reason).toContain('44 green commit');
+    expect(v.reason).toContain("routines:set");
+    expect(v.reason).toContain('release-trigger');
+  });
+
+  it('boundary: exactly at the threshold does not alarm (strict >)', () => {
+    const v = evaluateReleaseTriggerFreeze({ active: false, updatedAtMs: NOW - 30 * 60_000, deployedBehindReady: 5 }, NOW);
+    expect(v.frozen).toBe(false);
+  });
+
+  it('an unresolvable updated_at (null) while paused + green-ahead is treated as maximally stale, not healthy', () => {
+    const v = evaluateReleaseTriggerFreeze({ active: false, updatedAtMs: null, deployedBehindReady: 3 }, NOW);
+    expect(v.frozen).toBe(true);
+    expect(v.reason).toContain('pause duration unknown');
+  });
+
+  it('kill switch: thresholdMs <= 0 never alarms', () => {
+    const v = evaluateReleaseTriggerFreeze(
+      { active: false, updatedAtMs: NOW - 99 * H, deployedBehindReady: 44 },
+      NOW,
+      { thresholdMs: 0 },
+    );
+    expect(v.frozen).toBe(false);
+  });
+
+  it('honors a custom (tighter) threshold', () => {
+    const v = evaluateReleaseTriggerFreeze(
+      { active: false, updatedAtMs: NOW - 6 * 60_000, deployedBehindReady: 1 },
+      NOW,
+      { thresholdMs: 5 * 60_000 },
+    );
+    expect(v.frozen).toBe(true);
+  });
+});
+
+describe('checkReleaseTriggerFreeze DB wiring (WI-4322)', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    notifyAttentionMock.mockClear();
+    broadcastSevereEventMock.mockClear();
+    broadcastSevereEventResolvedMock.mockClear();
+    gitPipelineSnapshotMock.mockClear();
+    computeDeployStatusMock.mockReset();
+    warnSpy.mockRestore();
+  });
+
+  /** A fake sql tag that dispatches on query shape: the routines-row read, the
+   *  escalation-dedup read, and everything else (INSERT/UPDATE) falls through
+   *  to a write-ack — mirrors makeFakeSql's dispatch style but supports the
+   *  extra routines-row SELECT this check issues first. */
+  function makeRTFakeSql(opts: {
+    routineRow?: { active: boolean; updated_at_ms: number | null; workspace_id: string } | null;
+    existingEscalation?: { escalation: unknown }[];
+  }) {
+    const calls: unknown[][] = [];
+    const routineRows = opts.routineRow ? [opts.routineRow] : [];
+    const existing = opts.existingEscalation ?? [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      calls.push([text, ...values]);
+      if (text.includes('FROM harness_shared.routines')) return Promise.resolve(routineRows);
+      if (text.includes('SELECT escalation')) return Promise.resolve(existing);
+      return Promise.resolve(Object.assign([], { count: 1 }));
+    }) as unknown as import('postgres').Sql;
+    return { sql, calls };
+  }
+
+  function findRTInsertCall(calls: unknown[][]) {
+    return calls.find((c) => typeof c[0] === 'string' && c[0].includes('INSERT INTO harness_shared.harness_escalations'));
+  }
+
+  it('no routine row (no deploy target for this hive) is a complete no-op', async () => {
+    const { sql, calls } = makeRTFakeSql({ routineRow: null });
+    const result = await checkReleaseTriggerFreeze(sql, { installSlug: 'papercusp' });
+    expect(result.alarmed).toBe(false);
+    expect(result.recovered).toBe(false);
+    expect(gitPipelineSnapshotMock).not.toHaveBeenCalled();
+    expect(findRTInsertCall(calls)).toBeUndefined();
+  });
+
+  it('ALARMS on the exact WI-4322 signature: active:false, stale updated_at, green ahead', async () => {
+    computeDeployStatusMock.mockReturnValue({ deploy: { deployedBehindReady: 44 } });
+    const { sql, calls } = makeRTFakeSql({
+      routineRow: { active: false, updated_at_ms: NOW - 45 * 60_000, workspace_id: 'papercusp-workspace' },
+    });
+    const result = await checkReleaseTriggerFreeze(sql, { installSlug: 'papercusp' });
+    expect(result.alarmed).toBe(true);
+    expect(gitPipelineSnapshotMock).toHaveBeenCalledWith('papercusp');
+    expect(notifyAttentionMock).toHaveBeenCalledTimes(1);
+    expect(broadcastSevereEventMock).toHaveBeenCalledTimes(1);
+    const insertCall = findRTInsertCall(calls);
+    expect(insertCall).toBeDefined();
+    // template values are [installSlug, phase, escalationJson, mtimeMs, workspaceId]
+    expect(insertCall![1]).toBe('papercusp');
+    expect(insertCall![5]).toBe('papercusp-workspace');
+  });
+
+  it('does NOT re-alarm when already alarmed (one-shot until recovery)', async () => {
+    computeDeployStatusMock.mockReturnValue({ deploy: { deployedBehindReady: 44 } });
+    const { sql, calls } = makeRTFakeSql({
+      routineRow: { active: false, updated_at_ms: NOW - 45 * 60_000, workspace_id: 'papercusp-workspace' },
+      existingEscalation: [{ escalation: { kind: 'release-trigger-freeze-watchdog' } }],
+    });
+    const result = await checkReleaseTriggerFreeze(sql, { installSlug: 'papercusp' });
+    expect(result.alarmed).toBe(false);
+    expect(notifyAttentionMock).not.toHaveBeenCalled();
+    expect(broadcastSevereEventMock).not.toHaveBeenCalled();
+    expect(findRTInsertCall(calls)).toBeUndefined();
+  });
+
+  it('clears + broadcasts recovery once the routine is active again (or nothing is stranded)', async () => {
+    computeDeployStatusMock.mockReturnValue({ deploy: { deployedBehindReady: 0 } });
+    const { sql } = makeRTFakeSql({
+      routineRow: { active: true, updated_at_ms: NOW, workspace_id: 'papercusp-workspace' },
+      existingEscalation: [{ escalation: { kind: 'release-trigger-freeze-watchdog' } }],
+    });
+    const result = await checkReleaseTriggerFreeze(sql, { installSlug: 'papercusp' });
+    expect(result.recovered).toBe(true);
+    expect(broadcastSevereEventResolvedMock).toHaveBeenCalledTimes(1);
+    expect(broadcastSevereEventResolvedMock).toHaveBeenCalledWith(
+      expect.objectContaining({ conditionKey: 'release-trigger-freeze:papercusp' }),
+    );
+  });
+
+  it('healthy + never-alarmed is a complete no-op (no writes, no broadcasts)', async () => {
+    computeDeployStatusMock.mockReturnValue({ deploy: { deployedBehindReady: 0 } });
+    const { sql, calls } = makeRTFakeSql({
+      routineRow: { active: false, updated_at_ms: NOW - 45 * 60_000, workspace_id: 'papercusp-workspace' },
+    });
+    const result = await checkReleaseTriggerFreeze(sql, { installSlug: 'papercusp' });
+    expect(result.alarmed).toBe(false);
+    expect(result.recovered).toBe(false);
+    expect(findRTInsertCall(calls)).toBeUndefined();
+    expect(broadcastSevereEventResolvedMock).not.toHaveBeenCalled();
+  });
+
+  it('a thrown gitPipelineSnapshot never propagates — fail-soft', async () => {
+    gitPipelineSnapshotMock.mockRejectedValueOnce(new Error('git blew up'));
+    const { sql } = makeRTFakeSql({
+      routineRow: { active: false, updated_at_ms: NOW - 45 * 60_000, workspace_id: 'papercusp-workspace' },
+    });
+    await expect(checkReleaseTriggerFreeze(sql, { installSlug: 'papercusp' })).resolves.toEqual({
+      alarmed: false,
+      recovered: false,
+    });
   });
 });

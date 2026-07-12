@@ -261,6 +261,12 @@ CC_WORKITEM_NUDGE_HOOK="${CC_HOOK_DEST_DIR}/workitem-verify-nudge.sh"
 # mis-attributing machine-injected turns (wakes, loop fires, compaction
 # continuations) to the owner. Local-file-only hot path, fail-open, psu-gated.
 CC_PROVENANCE_HOOK="${CC_HOOK_DEST_DIR}/userpromptsubmit-provenance.sh"
+# UserPromptSubmit hook (memory-delivery-unification-2026-07-12 P-003a):
+# turn-start memory delta — small high-precision recall for THIS prompt via
+# the local operator, deduped per session epoch (never re-pays what the
+# initialize prelude / orient / a claim port already injected). Fail-open,
+# psu-gated, 2.5s wall.
+CC_TURN_MEMORY_HOOK="${CC_HOOK_DEST_DIR}/userpromptsubmit-memory.sh"
 
 # Merge our PreToolUse + PostToolUse lock hooks into a settings.json
 # (Claude's ~/.claude/settings.json or a codex-su CODEX_HOME). Idempotent
@@ -394,6 +400,44 @@ def drop_ours(entry):
     return {**entry, 'hooks': kept} if kept else None
 
 cmd = f"PAPERCUSP_WORKSPACE_ROOT={workspace_root!r} {prov}"
+
+hooks = cfg.setdefault('hooks', {})
+arr = [e for e in (drop_ours(x) for x in hooks.get('UserPromptSubmit', [])) if e]
+arr.append({'hooks': [{'type': 'command', 'command': cmd}]})
+hooks['UserPromptSubmit'] = arr
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+PYEOF
+}
+
+# Merge the turn-start memory UserPromptSubmit hook (memory-delivery-
+# unification-2026-07-12 P-003a) as its OWN entry — same idempotent
+# drop-ours-then-append shape as merge_provenance_hook.
+#   $1 = settings.json path
+merge_turn_memory_hook() {
+  python3 - "$1" "$CC_TURN_MEMORY_HOOK" "$WORKSPACE_ROOT" <<'PYEOF'
+import json, os, sys, time
+path, hook, workspace_root = sys.argv[1:4]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError
+except FileNotFoundError:
+    cfg = {}
+except (json.JSONDecodeError, ValueError):
+    os.rename(path, path + '.bak.' + str(int(time.time())))
+    cfg = {}
+
+ours = {hook, os.path.basename(hook)}
+
+def drop_ours(entry):
+    kept = [h for h in (entry.get('hooks') or []) if not any(o in h.get('command', '') for o in ours)]
+    return {**entry, 'hooks': kept} if kept else None
+
+cmd = f"PAPERCUSP_WORKSPACE_ROOT={workspace_root!r} {hook}"
 
 hooks = cfg.setdefault('hooks', {})
 arr = [e for e in (drop_ours(x) for x in hooks.get('UserPromptSubmit', [])) if e]
@@ -1077,6 +1121,10 @@ if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" ]; then
     cp "${CC_HOOK_SRC_DIR}/userpromptsubmit-provenance.sh" "$CC_PROVENANCE_HOOK"
     chmod 755 "$CC_PROVENANCE_HOOK"
   fi
+  if [ -f "${CC_HOOK_SRC_DIR}/userpromptsubmit-memory.sh" ]; then
+    cp "${CC_HOOK_SRC_DIR}/userpromptsubmit-memory.sh" "$CC_TURN_MEMORY_HOOK"
+    chmod 755 "$CC_TURN_MEMORY_HOOK"
+  fi
   echo "✓ Installed Claude/Codex lock + coord hooks to $CC_HOOK_DEST_DIR"
 else
   echo "! Expected CC lock hooks at $CC_HOOK_SRC_DIR; skipping (Claude/Codex lock enforcement inactive)"
@@ -1098,6 +1146,7 @@ if [ -x "$CC_PRE_HOOK" ]; then
   [ -x "$CC_STATUSLINE" ] && merge_statusline "$CLAUDE_SETTINGS"
   [ -x "$CC_BASH_GATE_HOOK" ] && merge_bash_gate_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_PROVENANCE_HOOK" ] && merge_provenance_hook "$CLAUDE_SETTINGS"
+  [ -x "$CC_TURN_MEMORY_HOOK" ] && merge_turn_memory_hook "$CLAUDE_SETTINGS"
   chmod 600 "$CLAUDE_SETTINGS"
   echo "✓ Merged SU-locks + coord + activity hooks (+ fleet statusline) into $CLAUDE_SETTINGS"
 else

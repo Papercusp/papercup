@@ -529,6 +529,178 @@ export async function checkMainBehindStaging(
   }
 }
 
+// ── release-trigger silent-freeze guard (WI-4322) ──────────────────────────────
+
+/** How long release-trigger may sit PAUSED (active:false) while green code is
+ *  deployable-but-not-live before this alarms. Default 30 min: this failure mode
+ *  (the routine auto-tripped during a deploy incident and never re-enabled
+ *  itself — recurred 2026-06-18 + 2026-07-12, both times completely silent) can
+ *  NEVER self-recover, so a much tighter window than the other two checks in
+ *  this file is correct — a paused routine has no cadence to eventually catch
+ *  up on its own, unlike a merely-stalled one. 30 min still absorbs a short
+ *  deliberate manual pause (e.g. "pause auto-deploy, I'm fixing the checkout by
+ *  hand") without false-alarming on it. `<=0` disables the check. */
+const DEFAULT_RELEASE_TRIGGER_FREEZE_MS = 30 * 60 * 1000; // 30 min
+const RELEASE_TRIGGER_FREEZE_PHASE = 'release-trigger-freeze-watchdog';
+
+export interface ReleaseTriggerFreezeSnapshot {
+  /** the release-trigger routine's `active` flag, or null when the row doesn't
+   *  exist (a hive with no deploy target never seeds one — never alarm on that). */
+  active: boolean | null;
+  /** epoch ms of the routine row's `updated_at` — routines:set is the ONLY
+   *  writer of `active` (the playbook forbids raw UPDATE) and always stamps
+   *  `updated_at = now()` on every flip, so this doubles as "since when it went
+   *  inactive" without a dedicated column. null if unresolvable. */
+  updatedAtMs: number | null;
+  /** green commits deployable but not live right now
+   *  (`release-deploy-launch`'s `computeDeployStatus().deploy.deployedBehindReady`). */
+  deployedBehindReady: number | null;
+}
+
+export interface ReleaseTriggerFreezeVerdict {
+  frozen: boolean;
+  reason: string | null;
+}
+
+/**
+ * Pure: is release-trigger PAUSED while green code is stranded, long enough to
+ * call it a silent freeze rather than a normal short pause? Exported for unit
+ * testing.
+ */
+export function evaluateReleaseTriggerFreeze(
+  s: ReleaseTriggerFreezeSnapshot,
+  now: number,
+  opts: { thresholdMs?: number } = {},
+): ReleaseTriggerFreezeVerdict {
+  const thresholdMs = opts.thresholdMs ?? DEFAULT_RELEASE_TRIGGER_FREEZE_MS;
+  if (thresholdMs <= 0) return { frozen: false, reason: null };
+  if (s.active !== false) return { frozen: false, reason: null }; // no row, or actively running
+  if (s.deployedBehindReady == null || s.deployedBehindReady <= 0) {
+    return { frozen: false, reason: null }; // nothing green is waiting — a paused trigger is harmless
+  }
+  // An unresolvable `updated_at` is treated as maximally stale (never assumed
+  // fresh) — mirrors evaluateDeployStaleness's handling of a null deployedAtMs
+  // in the sibling release-deploy-staleness-watchdog.
+  const ageMs = s.updatedAtMs != null ? now - s.updatedAtMs : Number.POSITIVE_INFINITY;
+  if (ageMs <= thresholdMs) return { frozen: false, reason: null };
+  const mins = Number.isFinite(ageMs) ? Math.round(ageMs / 60_000) : null;
+  return {
+    frozen: true,
+    reason:
+      `release-trigger has been PAUSED (active:false)${mins != null ? ` for ~${mins}m` : ' — pause duration unknown'} ` +
+      `while ${s.deployedBehindReady} green commit(s) are deployable but not live: a SILENT fleet-wide deploy ` +
+      `freeze — this exact signature has recurred twice (2026-06-18, 2026-07-12) with no auto-recovery. It will ` +
+      `NEVER self-clear (a paused routine has no cadence to catch up on). Resume it: routines:set { name: ` +
+      `'release-trigger', active: true }; then expedite with release:deploy { op: 'trigger', confirm: true } if ` +
+      `code has been waiting a while.`,
+  };
+}
+
+/**
+ * One watchdog pass for the release-trigger silent-freeze guard, scoped to a
+ * single install (mirrors `checkMainBehindStaging`'s single-harness shape —
+ * this reads ONE routine row + the deploy pipeline snapshot, not every hive's
+ * routines the way `checkGreenStall` scans). Reuses the exact alarm plumbing
+ * (notifyAttention + broadcastSevereEvent + harness_escalations) under its OWN
+ * phase so it never clobbers either of the other two conditions' dedup state.
+ * Never throws — rides the same interval as the other two checks and must not
+ * break them.
+ */
+export async function checkReleaseTriggerFreeze(
+  sql: Sql,
+  opts: {
+    installSlug?: string;
+    workspaceId?: string;
+    thresholdMs?: number;
+  } = {},
+): Promise<{ alarmed: boolean; recovered: boolean }> {
+  const out = { alarmed: false, recovered: false };
+  try {
+    const installSlug = opts.installSlug ?? 'papercusp';
+    const rows = await sql<{ active: boolean; updated_at_ms: string | number | null; workspace_id: string }[]>`
+      SELECT active, extract(epoch from updated_at) * 1000 AS updated_at_ms, workspace_id
+        FROM harness_shared.routines
+       WHERE install_slug = ${installSlug} AND name = 'release-trigger'
+       LIMIT 1`;
+    if (rows.length === 0) return out; // no deploy target declared for this hive — nothing to guard
+
+    const workspaceId = opts.workspaceId ?? rows[0].workspace_id;
+    const { gitPipelineSnapshot } = await import('../git-pipeline-stats');
+    const { computeDeployStatus } = await import('../release-deploy-launch');
+    const snap = await gitPipelineSnapshot(installSlug);
+    const status = computeDeployStatus(snap);
+    const now = Date.now();
+    const verdict = evaluateReleaseTriggerFreeze(
+      {
+        active: rows[0].active,
+        updatedAtMs: rows[0].updated_at_ms != null ? Number(rows[0].updated_at_ms) : null,
+        deployedBehindReady: status.deploy.deployedBehindReady,
+      },
+      now,
+      opts,
+    );
+
+    const existing = await sql<{ escalation: unknown }[]>`
+      SELECT escalation FROM harness_shared.harness_escalations
+       WHERE harness_slug = ${installSlug} AND phase = ${RELEASE_TRIGGER_FREEZE_PHASE}`;
+    const alreadyAlarmed = existing.length > 0 && existing[0].escalation != null;
+
+    if (verdict.frozen) {
+      if (alreadyAlarmed) return out; // one-shot until recovery
+      try {
+        const { notifyAttention } = await import('../attention-notify');
+        await notifyAttention({
+          kind: 'intervention',
+          title: 'Release pipeline FROZEN — release-trigger is paused with green code stranded',
+          body: verdict.reason ?? '',
+          importance: 'urgent',
+          workspaceId,
+          data: { deployedBehindReady: status.deploy.deployedBehindReady },
+        });
+      } catch (e) {
+        console.warn(`[release-trigger-freeze-watchdog] notify failed: ${e instanceof Error ? e.message : e}`);
+      }
+      await broadcastSevereEvent({
+        summary: `release-trigger is PAUSED on ${installSlug} with ${status.deploy.deployedBehindReady} green commit(s) stranded — silent fleet-wide deploy freeze.`,
+        body: verdict.reason ?? '',
+        category: 'severe-event',
+        conditionKey: `release-trigger-freeze:${installSlug}`,
+      });
+      try {
+        await sql`
+          INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
+          VALUES (${installSlug}, ${RELEASE_TRIGGER_FREEZE_PHASE}, ${JSON.stringify({
+            kind: RELEASE_TRIGGER_FREEZE_PHASE,
+            harness_slug: installSlug,
+            deployedBehindReady: status.deploy.deployedBehindReady,
+            detail: verdict.reason,
+            emitted_at: now,
+          })}, ${now}, ${workspaceId})
+          ON CONFLICT (harness_slug, phase)
+          DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`;
+      } catch (e) {
+        console.warn(`[release-trigger-freeze-watchdog] escalation write failed: ${e instanceof Error ? e.message : e}`);
+      }
+      out.alarmed = true;
+      console.warn(`[release-trigger-freeze-watchdog] ALARM ${installSlug}: ${verdict.reason}`);
+    } else if (alreadyAlarmed) {
+      await sql`
+        UPDATE harness_shared.harness_escalations
+           SET escalation = NULL, mtime_ms = ${now}
+         WHERE harness_slug = ${installSlug} AND phase = ${RELEASE_TRIGGER_FREEZE_PHASE} AND escalation IS NOT NULL`;
+      await broadcastSevereEventResolved({
+        conditionKey: `release-trigger-freeze:${installSlug}`,
+        summary: `release-trigger RECOVERED on ${installSlug} — active again (or nothing green is stranded); the earlier freeze alarm is stale.`,
+      });
+      out.recovered = true;
+    }
+    return out;
+  } catch (e) {
+    console.warn(`[release-trigger-freeze-watchdog] pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+    return out;
+  }
+}
+
 let watchdogTimer: ManagedHandle | null = null;
 
 /**
@@ -554,6 +726,12 @@ export function startGreenStallWatchdog(
     // for why this can't share its DB-row loop. Failure here must never affect
     // the check above (each is wrapped/caught independently).
     void checkMainBehindStaging(sql);
+    // WI-4322: release-trigger auto-disabling during a deploy incident and never
+    // self-re-enabling has recurred twice (2026-06-18, 2026-07-12) with zero
+    // detection either time — same independent-of-the-routine-engine rationale
+    // as the two checks above (this is a process-level watcher, not a DBOS
+    // routine, specifically so it can catch a routine going silently dark).
+    void checkReleaseTriggerFreeze(sql);
   };
 
   run(); // boot check

@@ -42,9 +42,14 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     ]);
     expect(commandsFor(cfg, 'Stop')).toEqual([`${DEST}/workitem-verify-nudge.sh`]);
 
-    // UserPromptSubmit: turn-provenance classification (turn-provenance-owner-vs-agent P-003).
-    expect(commandsFor(cfg, 'UserPromptSubmit')).toEqual([`${DEST}/userpromptsubmit-provenance.sh`]);
+    // UserPromptSubmit: turn-provenance classification (turn-provenance-owner-vs-agent P-003)
+    // + turn-start memory delta (memory-delivery-unification-2026-07-12 P-003a).
+    expect(commandsFor(cfg, 'UserPromptSubmit')).toEqual([
+      `${DEST}/userpromptsubmit-provenance.sh`,
+      `${DEST}/userpromptsubmit-memory.sh`,
+    ]);
     expect(cfg.hooks.UserPromptSubmit[0].matcher).toBeUndefined(); // fires on every prompt
+    expect(cfg.hooks.UserPromptSubmit[1].matcher).toBeUndefined(); // fires on every prompt
 
     // statusLine + the Claude-only project-MCP auto-approve flag.
     expect(cfg.statusLine).toEqual({ type: 'command', command: `${DEST}/statusline-fleet.sh` });

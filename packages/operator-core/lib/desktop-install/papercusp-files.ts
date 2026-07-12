@@ -490,6 +490,10 @@ const CC_HOOK_FILES = [
   // prompt against the injectors' envelope+nonce ledger → additionalContext
   // stamp (VERIFIED agent-origin / UNVERIFIED claim / affirmative OWNER).
   'userpromptsubmit-provenance.sh',
+  // memory-delivery-unification-2026-07-12 P-003a: turn-start memory delta —
+  // small high-precision recall for THIS prompt via the local operator,
+  // epoch-deduped (never re-pays what initialize/orient already injected).
+  'userpromptsubmit-memory.sh',
   // Shared python lib, NOT a hook: statusline-fleet.sh + posttooluse-objective-title.sh
   // `import pc_tty` off their own dirname to resolve the terminal they title. Omit it and
   // both raise ImportError, fail OPEN, and the packaged app silently stops setting the
@@ -1247,6 +1251,13 @@ export function mergeClaudeHookSettings(
   if (has('userpromptsubmit-provenance.sh'))
     hooks.UserPromptSubmit = replaceOurHookEntries(ev('UserPromptSubmit'), ours('userpromptsubmit-provenance.sh'), {
       hooks: cmd('userpromptsubmit-provenance.sh'),
+    });
+  // merge_turn_start_memory_hook — UserPromptSubmit, no matcher (fires on every prompt).
+  // memory-delivery-unification-2026-07-12 P-003a: turn-start memory delta, epoch-deduped
+  // via the session-surfaced ledger (never re-pays initialize/orient injections).
+  if (has('userpromptsubmit-memory.sh'))
+    hooks.UserPromptSubmit = replaceOurHookEntries(ev('UserPromptSubmit'), ours('userpromptsubmit-memory.sh'), {
+      hooks: cmd('userpromptsubmit-memory.sh'),
     });
 
   return cfg;
