@@ -115,6 +115,11 @@ export default function MemoryPage() {
   const [auditBusy, setAuditBusy] = useState<boolean>(false);
   const [harnesses, setHarnesses] = useState<string[]>([]);
   const [hygiene, setHygiene] = useState<ClaudeHygiene | null>(null);
+  // EI-10355: the "stop remembering things about me" switch. Paused ⇒ agents
+  // write no NEW memories; everything already stored stays readable, editable,
+  // deletable and exportable (a pause must never lock you out of your own data).
+  const [paused, setPaused] = useState(false);
+  const [pausing, setPausing] = useState(false);
   // Add-form drafts — mid-edit state, stays useState per the nuqs rules.
   const [draftText, setDraftText] = useState('');
   const [draftKind, setDraftKind] = useState('');
@@ -141,6 +146,7 @@ export default function MemoryPage() {
         setCurrentBackend(j.currentBackend ?? j.backend ?? '');
         setHarnesses(Array.isArray(j.harnesses) ? j.harnesses : []);
         setHygiene(j.hygiene ?? null);
+        setPaused(j.paused === true);
       }
       if (fs.ok) setStats(await fs.json());
     } finally {
@@ -194,6 +200,31 @@ export default function MemoryPage() {
       setSwitchingBackend(false);
     }
   }, [currentBackend, refreshMeta]);
+
+  /** EI-10355: pause / resume new memory writes for this user. */
+  const togglePaused = useCallback(async (next: boolean) => {
+    setPausing(true);
+    try {
+      const r = await fetch('/api/user/memory/pause', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paused: next }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        toast.error(`Could not ${next ? 'pause' : 'resume'} memory: ${j.error ?? r.status}`);
+        return;
+      }
+      setPaused(j.paused === true);
+      toast.success(
+        j.paused
+          ? 'Memory paused — nothing new will be remembered about you.'
+          : 'Memory resumed — new facts will be remembered again.',
+      );
+    } finally {
+      setPausing(false);
+    }
+  }, []);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingDraft, setEditingDraft] = useState('');
@@ -620,6 +651,45 @@ export default function MemoryPage() {
           the content is preserved in the journal but could not be re-stored automatically.
         </div>
       )}
+
+      {/* EI-10355 — memory pause: the "stop remembering things about me" control.
+          Deliberately prominent and always rendered (not tucked behind an
+          advanced section): a privacy control the user cannot find is one they
+          do not have. */}
+      <div
+        style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap',
+          padding: '10px 12px', borderRadius: 6,
+          border: `1px solid ${paused ? 'var(--warn-border)' : 'var(--border)'}`,
+          background: paused ? 'var(--warn-bg)' : 'var(--bg-2)',
+        }}
+      >
+        <div style={{ minWidth: 260, flex: 1 }}>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>
+            {paused ? '⏸ Memory is paused' : 'Remembering is on'}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--fg-mute)', marginTop: 2 }}>
+            {paused
+              ? 'Nothing new is being remembered about you. Your existing memories below are untouched — you can still read, edit, delete and download them.'
+              : 'Agents may store new facts about you. Pause to stop that without deleting anything.'}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => void togglePaused(!paused)}
+          disabled={pausing}
+          aria-pressed={paused}
+          style={{
+            padding: '6px 12px', borderRadius: 6, fontSize: 13, whiteSpace: 'nowrap',
+            cursor: pausing ? 'wait' : 'pointer',
+            border: '1px solid var(--border)',
+            background: paused ? 'var(--good)' : 'transparent',
+            color: paused ? 'var(--bg)' : 'var(--fg)',
+          }}
+        >
+          {pausing ? '…' : paused ? 'Resume memory' : 'Pause memory'}
+        </button>
+      </div>
 
       {availableBackends.length > 1 && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-2)' }}>
