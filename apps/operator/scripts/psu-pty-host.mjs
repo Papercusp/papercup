@@ -1018,6 +1018,11 @@ export function hostThroughPty(o) {
     // WI-3455: injectable activity/self-heal tick period so tests can exercise
     // the discovery re-assert without waiting the real 15s cadence.
     activityPersistMs = ACTIVITY_PERSIST_MS,
+    // agent-launch-resume-primitives P-011/D-008: the first-turn text to inject
+    // once the child settles at its prompt. Set by the launcher for a SCRIPTED
+    // resume/fork (the fresh-launch path seeds its kickoff as a CLI positional
+    // instead). null ⇒ the session opens idle, exactly as before.
+    kickoff = null,
   } = o;
   const stdin = o.io?.stdin ?? process.stdin;
   const stdout = o.io?.stdout ?? process.stdout;
@@ -1267,6 +1272,97 @@ export function hostThroughPty(o) {
     });
     return verifier.verify();
   };
+
+  /**
+   * Deliver `text` as a TURN once the child is back at its prompt — GUARANTEED
+   * or LOUDLY DROPPED, never silently. Retries `waitAtPrompt` across a
+   * wall-clock budget (a cold/replaying child can stay busy past one agent-busy
+   * cap and THEN settle), writes the per-agent paste-safe turn plan, and
+   * verifies the submit actually started a turn (WI-2930). Bails if a recycle
+   * supersedes the child mid-flight.
+   *
+   * Two callers: the RECYCLE carry-note (WI-1941) and the launch KICKOFF
+   * (agent-launch-resume-primitives-2026-07-12 P-011/D-008) — a resumed or
+   * forked session boots IDLE at its prompt with no first turn, and nothing
+   * roster-gated can reach it (its presence rows were reaped when it died, so
+   * coord:wake/coord:send answer `unknown_recipient`). The host owns the pty, so
+   * it is the one place that can seed that turn without a discovery race — and
+   * it works identically for a FORK, whose fresh coord identity no external
+   * caller can know until it boots.
+   */
+  const injectTurnAtPrompt = async ({
+    text,
+    label,
+    budgetMs = recycleCarryInjectBudgetMs,
+    backoffMs = recycleCarryRetryBackoffMs,
+    onDrop = () => {},
+  }) => {
+    if (!text) return { delivered: false, reason: 'no-text', attempts: 0 };
+    const injectChild = child; // bail if a newer recycle supersedes this one
+    const deadline = Date.now() + budgetMs;
+    let attempts = 0;
+    try {
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
+        attempts++;
+        const atPrompt = await agentBusyGate.waitAtPrompt();
+        if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
+        if (!atPrompt.deferred) {
+          for (const step of controlWritesForAgent({ mode: 'turn', data: text }, env.PAPERCUSP_AGENT, env)) {
+            if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
+            if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
+            try {
+              child.write(step.data);
+            } catch {
+              /* the child may have exited under us */
+            }
+          }
+          if (child === injectChild) await verifySubmitted(label);
+          return { delivered: true, attempts };
+        }
+        // Deferred: the child is still mid-boot / mid-turn. Retry until the
+        // budget is spent, then fall through to the loud drop.
+        if (Date.now() >= deadline) break;
+        await new Promise((r) => setTimeout(r, backoffMs));
+      }
+    } catch {
+      /* an unexpected inject error still falls through to the drop trace */
+    }
+    if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
+    try {
+      onDrop();
+    } catch {
+      /* the drop trace must never break the session */
+    }
+    try {
+      process.stderr.write(
+        `psu-pty-host: ${label} DROPPED for ${ownerId} (the child never settled to its prompt ` +
+          `within ${budgetMs}ms over ${attempts} attempt(s))\n`,
+      );
+    } catch {
+      /* never let a diagnostic write break the host */
+    }
+    return { delivered: false, reason: 'never-settled', attempts };
+  };
+
+  // Launch KICKOFF (P-011/D-008): the launcher passes the first-turn text for a
+  // SCRIPTED resume/fork (`psu --no-picker --resume=… --kickoff=<text>`, or the
+  // spawn-safe PAPERCUSP_KICKOFF_PROMPT env). A FRESH launch does not come
+  // through here — its kickoff rides the CLI's positional prompt arg
+  // (kickoffPositionalArgs); a resume has no such seam, which is exactly the gap
+  // this closes. Fire-and-forget: the session is usable while we wait for its
+  // prompt, and a failure is loud (above), never silent.
+  if (kickoff) {
+    void injectTurnAtPrompt({ text: kickoff, label: 'launch kickoff' }).then((r) => {
+      if (!r.delivered) return;
+      try {
+        process.stderr.write(`psu: kickoff delivered — the resumed session is working its first turn.\n`);
+      } catch {
+        /* diagnostics are best-effort */
+      }
+    });
+  }
 
   // P-001a (compaction-continuity-hardening): fold duplicate same-source turn
   // injects that stack up at the gates while the agent is busy — see the
@@ -1756,73 +1852,21 @@ export function hostThroughPty(o) {
       recycling = false;
       if (!carryText) return;
       // Open the fresh process on the carry-note once it has booted to its prompt
-      // (boot output quiesces → the agent-busy gate clears). Same paste-safe per-
-      // agent turn plan.
-      //
-      // WI-1941: the inject is GUARANTEED-or-retried, not a single best-effort
-      // shot. A fresh cold child can stay busy past one agent-busy cap (large
-      // compacted-context replay, MCP load, an auto-continued boot turn) and THEN
-      // settle; the old single waitAtPrompt() dropped the iteration SILENTLY the
-      // instant it deferred, leaving the session booted-but-idle with no trace
-      // until its next scheduled wake. Now: RETRY waitAtPrompt across a bounded
-      // wall-clock budget so we inject the moment the fresh child reaches its
-      // prompt, and on ultimate exhaustion DROP LOUDLY (stderr + a durable meta
-      // counter) — never silently. The carry note also stays in the inbox as the
-      // last-resort next-turn resume, so a drop is observable, not lossy.
-      const injectChild = child; // bail if a newer recycle supersedes this one
-      const carryDeadline = Date.now() + recycleCarryInjectBudgetMs;
-      let carryAttempts = 0;
-      try {
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          if (child !== injectChild) return; // a newer recycle owns the child now
-          carryAttempts++;
-          const atPrompt = await agentBusyGate.waitAtPrompt();
-          if (child !== injectChild) return; // superseded while we waited
-          if (!atPrompt.deferred) {
-            for (const step of controlWritesForAgent({ mode: 'turn', data: carryText }, env.PAPERCUSP_AGENT, env)) {
-              if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
-              if (child !== injectChild) return;
-              try {
-                child.write(step.data);
-              } catch {
-                /* fresh child may have exited */
-              }
-            }
-            // WI-2930: the recycle carry is a normal submit — verify it took
-            // (writeCr reads the live child; a superseding recycle makes the
-            // resubmit a harmless bare CR on the newer child's idle prompt).
-            if (child === injectChild) await verifySubmitted('recycle carry-note');
-            return; // injected — done
-          }
-          // Deferred: the fresh child is still mid-boot / mid-turn. Retry until
-          // the budget is spent, then fall through to the loud drop.
-          if (Date.now() >= carryDeadline) break;
-          await new Promise((r) => setTimeout(r, recycleCarryRetryBackoffMs));
-        }
-      } catch {
-        /* an unexpected inject error still falls through to the drop trace */
-      }
-      if (child !== injectChild) return; // superseded — the new recycle owns tracing
-      // Ultimate drop: every attempt across the budget deferred. Make it LOUD and
-      // durably observable (WI-1941) — the carry stays in the inbox for the next
-      // natural turn, but the drop must never again be traceless.
-      try {
-        baseMeta.lastCarryDropAt = Date.now();
-        baseMeta.carryDropCount = (baseMeta.carryDropCount || 0) + 1;
-        writeMeta();
-      } catch {
-        /* meta is best-effort — discovery degrades to the base contract */
-      }
-      try {
-        process.stderr.write(
-          `psu-pty-host: recycle carry-note DROPPED for ${ownerId} ` +
-            `(fresh child never settled to prompt within ${recycleCarryInjectBudgetMs}ms ` +
-            `over ${carryAttempts} attempt(s)); left in inbox for the next natural turn\n`,
-        );
-      } catch {
-        /* never let a diagnostic write break the host */
-      }
+      // (boot output quiesces → the agent-busy gate clears), via the shared
+      // guaranteed-or-loudly-dropped delivery (WI-1941 — the old single-shot
+      // waitAtPrompt dropped the iteration SILENTLY the instant it deferred,
+      // leaving the session booted-but-idle with no trace until its next
+      // scheduled wake). The carry also stays in the inbox as the last-resort
+      // next-turn resume, so a drop is observable, not lossy.
+      await injectTurnAtPrompt({
+        text: carryText,
+        label: 'recycle carry-note',
+        onDrop: () => {
+          baseMeta.lastCarryDropAt = Date.now();
+          baseMeta.carryDropCount = (baseMeta.carryDropCount || 0) + 1;
+          writeMeta();
+        },
+      });
     };
 
     // In raw mode the terminal does NOT generate SIGINT — Ctrl-C is a byte

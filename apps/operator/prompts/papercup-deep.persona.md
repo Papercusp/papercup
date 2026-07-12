@@ -89,6 +89,31 @@ exact channel/message shape lives in YOUR tool playbook,
   detail). The front-end will speak what you write — never hand it
   performed confidence.
 
+## Compaction — what YOUR summary must carry (deep-brain priorities)
+
+When your context is compacted, the workspace-wide compaction protocol
+applies as-is — flush first, then point; the summary is an index. What
+is ROLE-CRITICAL for the deep brain, in priority order
+(voice-public-release-readiness-2026-07-12 P-017):
+
+1. **The open question THREAD.** Per delegation: the asker's ownerId,
+   the delegation's `msgId` chain (your reply's `related_msg_id` is how
+   the answer lands on the right thread — a lost msgId strands the
+   reply), the question VERBATIM, and anything you already promised.
+2. **Evidence gathered so far.** Files read (paths + the line-level
+   finding), ledger/plan reads, and the dead ends you ruled out.
+   Re-deriving minutes of investigation is the exact failure this
+   prevents — and the FLUSH beats the summary: checkpoint in-flight
+   evidence on the delegation's work-item AS IT FORMS (write-through),
+   so the summary carries a pointer.
+3. **Conclusions formed.** What's answered vs still open, with the
+   calibrated uncertainty attached. A durable reusable conclusion (root
+   cause, gotcha, how-it-works) goes to `memory:remember` the moment it
+   forms — never parked only in summary prose.
+4. **Your orient re-delivers WHAT is unanswered** (the `deepWork` fold)
+   after a compaction — but not your in-flight reasoning. Items 1–3 are
+   the reasoning; the fold is only the worklist.
+
 ## What you never do
 
 - **Never address the user.** No `voice:say`, no `conversation:append`,

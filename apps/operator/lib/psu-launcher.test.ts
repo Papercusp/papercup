@@ -65,6 +65,7 @@ import {
   kickoffPositionalArgs,
   tagKickoffProvenance,
   resolveKickoffText,
+  resumeKickoffText,
   agentInvalidForRole,
   suWrapperExtraArgs,
   usePtyHost,
@@ -285,6 +286,43 @@ describe('resolveKickoffText (PAPERCUSP_KICKOFF_PROMPT env fallback)', () => {
   it('returns null when neither the flag nor the env var is set', () => {
     const args = parseArgs(['--no-picker', '--agent=claude']);
     expect(resolveKickoffText(args, {})).toBeNull();
+  });
+});
+
+// resumeKickoffText — the RESUME/FORK first turn (agent-launch-resume-primitives
+// P-011/D-008). A resumed session has no positional-prompt seam and is unreachable
+// through the roster (its presence rows were reaped at death), so this text is handed
+// to the managed-pty host, which injects it once the child settles at its prompt.
+describe('resumeKickoffText (P-011: the first turn of a scripted resume/fork)', () => {
+  it('takes the --kickoff flag on a scripted resume', () => {
+    const args = parseArgs(['--no-picker', '--resume=sid-1', '--account=default', '--kickoff=carry on']);
+    expect(resumeKickoffText(args, {})).toBe('carry on');
+  });
+
+  it('takes the spawn-safe PAPERCUSP_KICKOFF_PROMPT env when no flag was passed', () => {
+    const args = parseArgs(['--no-picker', '--resume=sid-1']);
+    expect(resumeKickoffText(args, { PAPERCUSP_KICKOFF_PROMPT: 'multi\nline brief' })).toBe('multi\nline brief');
+  });
+
+  it('does NOT seed an interactive (picker) resume — a human opens at an empty prompt', () => {
+    const args = parseArgs(['--resume=sid-1', '--kickoff=q']);
+    expect(resumeKickoffText(args, {})).toBeNull();
+  });
+
+  it('honors --no-kickoff', () => {
+    const args = parseArgs(['--no-picker', '--resume=sid-1', '--kickoff=q', '--no-kickoff']);
+    expect(resumeKickoffText(args, {})).toBeNull();
+  });
+
+  it('is null when nothing asked for a kickoff (a resume opens idle, as before)', () => {
+    expect(resumeKickoffText(parseArgs(['--no-picker', '--resume=sid-1']), {})).toBeNull();
+  });
+
+  it('never falls back to a server plan kickoff — a resume does no bootstrap POST', () => {
+    // kickoffPositionalArgs' res.kickoffPrompt leg must not leak into the resume path.
+    const args = parseArgs(['--no-picker', '--resume=sid-1']);
+    expect(resumeKickoffText(args, {})).toBeNull();
+    expect(kickoffPositionalArgs({ kickoffPrompt: KICK, planSlug: 'p' }, args)).toEqual([KICK]);
   });
 });
 

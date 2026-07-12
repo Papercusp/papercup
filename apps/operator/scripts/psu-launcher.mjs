@@ -802,6 +802,26 @@ export function resolveKickoffText(args, env = process.env) {
 }
 
 /**
+ * The kickoff text for a RESUME / FORK launch, under the SAME gating as the
+ * fresh path (scripted `--no-picker` only, honors `--no-kickoff`) — but with no
+ * server-supplied plan kickoff to fall back on, because a resume does no
+ * bootstrap POST. Null ⇒ the resumed session opens idle, exactly as before.
+ *
+ * A resume cannot deliver its first turn the way a fresh launch does: the CLI's
+ * positional-prompt seam belongs to a NEW session, and a session that just came
+ * back from the dead is unreachable through the roster (coord:wake / coord:send
+ * answer `unknown_recipient` — its presence rows were reaped at death). So the
+ * text is handed to the managed-pty host, which injects it as a turn once the
+ * child settles at its prompt (agent-launch-resume-primitives P-011/D-008 —
+ * live-proven on the two desktop-release-0-0-8 legs, 2026-07-12). Pure —
+ * exported for tests.
+ */
+export function resumeKickoffText(args, env = process.env) {
+  const [text] = kickoffPositionalArgs({}, { ...args, kickoffPromptText: resolveKickoffText(args, env) });
+  return text ?? null;
+}
+
+/**
  * Per-agent resume command — RAW CLI (no `*-su` wrapper, P-042). Pure —
  * exported for tests. Returns the raw `bin` + resume args, re-supplying the
  * same launch flags the fresh-launch path uses (the wrappers used to bake
@@ -3597,7 +3617,7 @@ function spawnInherit({ wrapperBin, args = [], cwd, env }) {
   });
 }
 
-function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv }) {
+function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv, kickoff = null }) {
   const env = { ...sanitizeInheritedEnv(process.env), ...envelopeEnv };
   // Export the RESOLVED operator url to every agent child so claude's user-level
   // papercusp-su MCP url (`${PAPERCUSP_OPERATOR_URL:-…}/api/mcp?…`, written by
@@ -3683,6 +3703,13 @@ function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv }) {
         // (reusing the on-disk id storms the supervisor). Inject the arg-rewrite
         // + native→coord re-anchor here so the host stays launcher-agnostic.
         mintRecycleArgs,
+        // agent-launch-resume-primitives P-011/D-008: the first turn for a scripted
+        // RESUME/FORK. A resumed CLI has no positional-prompt seam (the fresh path's
+        // kickoff rides the argv), and a session that just came back from the dead is
+        // unreachable by roster-gated coord:wake/coord:send — its presence rows were
+        // reaped when it died. The host owns the pty, so it seeds the turn itself once
+        // the child settles at its prompt.
+        kickoff,
         onRespawn: (freshId) =>
           recordSessionOwner(freshId, ownerId, { advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null }),
         onExit: (code) => {
@@ -3706,6 +3733,18 @@ function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv }) {
       );
     }
   }
+  // A kickoff can ONLY be delivered through the managed pty (it is injected as a
+  // turn once the child settles at its prompt). If we got here with one pending,
+  // the pty path was unavailable — say so LOUDLY rather than launching a session
+  // that silently sits idle forever waiting for a first turn that never comes.
+  if (kickoff) {
+    process.stderr.write(
+      `psu: ⚠ a kickoff was requested but this launch has NO managed pty (no coord id, ` +
+        `PAPERCUSP_PSU_NO_PTY/PAPERCUSP_PSU_PTY=0, or no TTY) — the session will open IDLE and ` +
+        `its first turn was NOT delivered. Re-launch with the pty host enabled, or deliver the ` +
+        `turn yourself (coord:wake once it registers presence).\n`,
+    );
+  }
   spawnInherit({ wrapperBin, args, cwd, env });
 }
 
@@ -3726,7 +3765,7 @@ function fmtAge(iso) {
  *  session as the pinned brain (Queen) — an AGENT, so it re-applies the
  *  native-scheduler lockout the human resume path deliberately skips
  *  (flags don't persist into resumes; every brain dock-open re-arms it). */
-function launchResume(session, { brain = false, fork = false, passthrough = [], addDir = [], accountEnv = null, allowSubagents, model = null } = {}) {
+function launchResume(session, { brain = false, fork = false, passthrough = [], addDir = [], accountEnv = null, allowSubagents, model = null, kickoff = null } = {}) {
   // --fork is native for claude/codex — refuse early with a clear message rather than letting
   // resumeArgsFor throw a terse error (or, worse, appending to the original, which
   // is the clobber --fork exists to avoid).
@@ -3836,7 +3875,20 @@ function launchResume(session, { brain = false, fork = false, passthrough = [], 
     if (parked) console.error(`psu: parked a stale role-scoped ${session.cwd}/.mcp.json (an SU resume must use user-level papercusp-su, not a co-located role server)`);
   }
   console.error(`psu: ${fork ? 'forking' : 'resuming'} ${session.agent} in ${session.cwd}  (${bin} ${args.join(' ')})`);
-  runWrapper({ wrapperBin: bin, args, cwd: session.cwd, envelopeEnv: env });
+  // P-011/D-008: seed the first turn of a SCRIPTED resume/fork — the managed-pty
+  // host injects it once the child settles at its prompt. Provenance-tagged like
+  // the fresh path's kickoff so the resumed session's prompt hook classifies it as
+  // machine-origin (fleet-kickoff), never as the owner typing.
+  if (kickoff) {
+    console.error("psu: kickoff — seeding the resumed session's first turn (suppress with --no-kickoff)");
+  }
+  runWrapper({
+    wrapperBin: bin,
+    args,
+    cwd: session.cwd,
+    envelopeEnv: env,
+    kickoff: kickoff ? tagKickoffProvenance(kickoff, env.PAPERCUSP_SID || null) : null,
+  });
 }
 
 /**
@@ -4066,6 +4118,10 @@ async function launchTrackedFork(session, args = {}, acct = { id: null, env: {},
     accountEnv: { env: acct?.env ?? {}, notice: acct?.notice ?? null },
     allowSubagents: args.allowSubagents,
     model,
+    // P-011/D-008: a scripted fork gets its first turn seeded too. It matters MORE
+    // here than for an in-place resume: a fork mints a FRESH coord identity, so no
+    // external caller can even address it until it boots and registers presence.
+    kickoff: resumeKickoffText(args),
   };
   const forkable = session.agent === 'claude' && session.sessionId && session.coordOwnerId && session.id != null;
   if (!forkable) {
@@ -4115,7 +4171,19 @@ async function launchTrackedFork(session, args = {}, acct = { id: null, env: {},
   // Run in the ORIGINAL's cwd (the seeded transcript is keyed by it); the fresh
   // bootstrap envelope (config dir / coord id / MCP) makes it a proper SU session
   // — trackedForkEnvelopeEnv folds in the agent-session marker bootstrap-su omits.
-  runWrapper({ wrapperBin: bin, args: forkArgs, cwd: session.cwd, envelopeEnv: trackedForkEnvelopeEnv(res.envelopeEnv) });
+  const forkKickoff = resumeKickoffText(args);
+  if (forkKickoff) console.error("psu: kickoff — seeding the fork's first turn (suppress with --no-kickoff)");
+  runWrapper({
+    wrapperBin: bin,
+    args: forkArgs,
+    cwd: session.cwd,
+    envelopeEnv: trackedForkEnvelopeEnv(res.envelopeEnv),
+    // Tagged with the FORK's fresh SID (not the original's) — the provenance ledger
+    // is keyed by the identity that will actually submit the turn.
+    kickoff: forkKickoff
+      ? tagKickoffProvenance(forkKickoff, res?.envelopeEnv?.PAPERCUSP_SID || null)
+      : null,
+  });
 }
 
 /** A session that couldn't be matched to a tracked adv_sessions row — either a
@@ -4280,7 +4348,7 @@ async function resumeFlow(args = {}) {
       // Show the last-active model + honor/prompt the one to resume with (WI-3758).
       const model = await chooseResumeModel(tracked, args);
       if (args.fork) { await launchTrackedFork(tracked, args, acct, model); return; }
-      launchResume(tracked, { passthrough: args.passthrough, addDir: args.addDir, accountEnv: acct, allowSubagents: args.allowSubagents, model });
+      launchResume(tracked, { passthrough: args.passthrough, addDir: args.addDir, accountEnv: acct, allowSubagents: args.allowSubagents, model, kickoff: resumeKickoffText(args) });
       return;
     }
 
@@ -4332,7 +4400,7 @@ async function resumeFlow(args = {}) {
     // Account re-pin applies here too (a raw resume can be routed through the gateway).
     const acct = await chooseResumeAccount(untracked, args);
     const model = await chooseResumeModel(untracked, args);
-    launchResume(untracked, { fork: args.fork, passthrough: args.passthrough, addDir: args.addDir, accountEnv: acct, allowSubagents: args.allowSubagents, model });
+    launchResume(untracked, { fork: args.fork, passthrough: args.passthrough, addDir: args.addDir, accountEnv: acct, allowSubagents: args.allowSubagents, model, kickoff: resumeKickoffText(args) });
     return;
   }
 
@@ -4373,7 +4441,7 @@ async function resumeFlow(args = {}) {
   const acct = await chooseResumeAccount(picked, args);
   const model = await chooseResumeModel(picked, args);
   if (args.fork) { await launchTrackedFork(picked, args, acct, model); return; }
-  launchResume(picked, { passthrough: args.passthrough, addDir: args.addDir, accountEnv: acct, allowSubagents: args.allowSubagents, model });
+  launchResume(picked, { passthrough: args.passthrough, addDir: args.addDir, accountEnv: acct, allowSubagents: args.allowSubagents, model, kickoff: resumeKickoffText(args) });
 }
 
 // `psu --brain` was retired 2026-06-21. Keep a hard CLI tombstone so old

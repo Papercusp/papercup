@@ -37,7 +37,14 @@ const listPresence = vi.fn(async () => [
   { ownerId: 'su-bee-1' },
   { ownerId: 'su-bee-2' },
 ]);
-vi.mock('../presence', () => ({
+// WI-4165 added an import chain (handoff.ts -> ref-hydrate-resolve.ts ->
+// work-items -> ... -> fleet-roster.ts) that reads PRESENCE_STALE_MS off the
+// REAL '../presence' module at import time — spread the original (like
+// declare-intent.test.ts) instead of a bare replacement, or that named export
+// goes missing and every test in this file fails at import (not just the new
+// item-hydration ones).
+vi.mock('../presence', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../presence')>()),
   listPresence: () => listPresence(),
 }));
 // Pin wake-mode to `auto` + stub staging so the unit test never touches live PG /
@@ -48,9 +55,17 @@ vi.mock('../wake-mode', () => ({
 vi.mock('../pending-wakes', () => ({
   stagePendingWake: vi.fn(async () => ({ id: 1 })),
 }));
+// WI-4165 item-body hydration seam: getPlanRow is the only PG-touching call it
+// makes; planItemsForRow + resolveEffectiveStatusForItems stay REAL (pure) so a
+// mocked row still resolves item text through the actual code path.
+vi.mock('../../plans/source', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getPlanRow: vi.fn(async () => null),
+}));
 
-import handoff from './handoff';
+import handoff, { hydrateHandoffItemBodies } from './handoff';
 import { inboxWakeKey } from '../inbox-wake';
+import type { HydratedRef } from '../ref-hydrate';
 
 const ctx = { uiClientId: 'su-offerer', isSuperuser: true, workspaceId: 'ws' } as never;
 const parse = <T>(tool: { args: { parse: (x: unknown) => unknown } }, x: unknown): T =>
@@ -161,6 +176,104 @@ describe('coord:handoff — wake-on-open (P-003)', () => {
     await new Promise((r) => setTimeout(r, 0));
     const keys = emitAwaitedEvent.mock.calls.map((c) => c[0].key);
     expect(keys.every((k) => !k.startsWith('coord:inbox-wake:'))).toBe(true);
+  });
+});
+
+describe('WI-4165: hydrateHandoffItemBodies (deref-at-delivery for coord:handoff items)', () => {
+  const hydratedRef = (item: string, snippet: string): HydratedRef => ({
+    ref: { kind: 'plan-item', slug: 'plan-x', item },
+    ok: true,
+    label: `plan:plan-x#${item} [todo]`,
+    snippet,
+  });
+
+  it('no-ops (no extra call) when items is empty/omitted', async () => {
+    const hydrateRefs = vi.fn(async () => []);
+    const res = await hydrateHandoffItemBodies({ plan_slug: 'plan-x', body: 'plain body' }, { hydrateRefs });
+    expect(hydrateRefs).not.toHaveBeenCalled();
+    expect(res).toEqual({ body: 'plain body', itemsHydrated: 0 });
+  });
+
+  it('no-ops when items is given but plan_slug is missing', async () => {
+    const hydrateRefs = vi.fn(async () => []);
+    const res = await hydrateHandoffItemBodies({ items: ['P-001'], body: 'plain body' }, { hydrateRefs });
+    expect(hydrateRefs).not.toHaveBeenCalled();
+    expect(res).toEqual({ body: 'plain body', itemsHydrated: 0 });
+  });
+
+  it('inlines each item\'s hydrated body, appended after any explicit body', async () => {
+    const hydrateRefs = vi.fn(async () => [
+      hydratedRef('P-001', 'Wire the DHT bootstrap fixture.'),
+      hydratedRef('P-002', 'Verify the cold-join path.'),
+    ]);
+    const res = await hydrateHandoffItemBodies(
+      { plan_slug: 'plan-x', items: ['P-001', 'P-002'], body: 'context up top' },
+      { hydrateRefs },
+    );
+    expect(hydrateRefs).toHaveBeenCalledTimes(1);
+    const [refsArg] = hydrateRefs.mock.calls[0] as [unknown];
+    expect(refsArg).toEqual([
+      { kind: 'plan-item', slug: 'plan-x', item: 'P-001' },
+      { kind: 'plan-item', slug: 'plan-x', item: 'P-002' },
+    ]);
+    expect(res.itemsHydrated).toBe(2);
+    expect(res.body).toContain('context up top');
+    expect(res.body).toContain('Wire the DHT bootstrap fixture.');
+    expect(res.body).toContain('Verify the cold-join path.');
+    expect(res.body?.indexOf('context up top')).toBeLessThan(res.body?.indexOf('P-001') ?? -1);
+  });
+
+  it('is fail-soft: a hydrate throw degrades to the plain body', async () => {
+    const hydrateRefs = vi.fn(async () => {
+      throw new Error('plan store down');
+    });
+    const res = await hydrateHandoffItemBodies(
+      { plan_slug: 'plan-x', items: ['P-001'], body: 'plain body' },
+      { hydrateRefs },
+    );
+    expect(res).toEqual({ body: 'plain body', itemsHydrated: 0 });
+  });
+});
+
+describe('WI-4165: coord:handoff end-to-end with `items`', () => {
+  let log: InMemoryCoordLog;
+  beforeEach(() => {
+    log = new InMemoryCoordLog();
+    configureCoordLog(log);
+    emitAwaitedEvent.mockClear();
+    emitAwaitedEvent.mockResolvedValue({ ok: true, key: 'k', woken: 1, notified: [], msgId: null });
+    listPresence.mockReset();
+    listPresence.mockResolvedValue([{ ownerId: 'su-bee-1' }]);
+  });
+  afterEach(() => resetCoordLog());
+
+  it('recorded handoff body carries the hydrated item snippet + itemsHydrated in the result', async () => {
+    const { getPlanRow } = await import('../../plans/source');
+    vi.mocked(getPlanRow).mockResolvedValueOnce({
+      planSlug: 'plan-x',
+      items: [{ id: 'P-001', text: 'Wire the DHT bootstrap fixture.', status: 'todo', blockedBy: [] }],
+    } as never);
+    const res = await handoff.handler(
+      parse(handoff, openArgs({ items: ['P-001'] })),
+      ctx,
+    );
+    const body = out(res);
+    expect(body.ok).toBe(true);
+    expect(body.itemsHydrated).toBe(1);
+    const rec = (await log.readEvents('handoffs')).find((r) => r.kind === 'handoff') as { body?: string };
+    expect(rec.body).toContain('Wire the DHT bootstrap fixture.');
+    expect(rec.body).toContain('P-001');
+  });
+
+  it('omitting items leaves the recorded body exactly the plain args.body (no itemsHydrated)', async () => {
+    const res = await handoff.handler(
+      parse(handoff, openArgs({ body: 'plain body, no items' })),
+      ctx,
+    );
+    const body = out(res);
+    expect(body.itemsHydrated).toBeUndefined();
+    const rec = (await log.readEvents('handoffs')).find((r) => r.kind === 'handoff') as { body?: string };
+    expect(rec.body).toBe('plain body, no items');
   });
 });
 

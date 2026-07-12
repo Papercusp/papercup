@@ -159,6 +159,14 @@ export function buildClaudeMcpEntry(
       `\${PAPERCUSP_OPERATOR_URL:-${operatorUrlFallback}}/api/mcp?superuser=1` +
       `&client=\${PAPERCUSP_SID:-${agentId}}` +
       `&workspace=\${PAPERCUSP_WORKSPACE:-}` +
+      // orient-recall-quality follow-up (2026-07-12, recall drill 2): the initialize-time
+      // memory prelude derives its recall query from ?harness= — without this param EVERY
+      // psu claude session was a "bare session" to buildMcpPrelude (empty query → NO
+      // session-start memory recall at all; live-proven via the drill's ledger: zero
+      // port='initialize' stamps under any su-* id in 24h). console-launcher already
+      // exports PAPERCUSP_HARNESS_SLUG for harness-scoped spawns; empty stays bare-session
+      // behavior (unchanged for a bare claude).
+      `&harness=\${PAPERCUSP_HARNESS_SLUG:-}` +
       `&profile=\${PAPERCUSP_PROFILE:-${prof}}` +
       // su-context-size-variants (claude trim): the ?tools= LISTING allowlist. psu exports
       // PAPERCUSP_TOOLS = the ~19-tool CORE SPINE for a `--context-size=trimmed` claude, so the

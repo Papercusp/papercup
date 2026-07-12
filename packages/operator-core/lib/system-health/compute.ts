@@ -53,6 +53,9 @@ import type {
   ScoutHealth,
   ToolEfficiencyHealth,
   ToolEfficiencyRating,
+  LoopsHealth,
+  CoordinationHealth,
+  MemoryPanelHealth,
 } from './types';
 import { PANEL_LABELS } from './types';
 import { isOperationalEscalation } from '../attention/adapters';
@@ -73,6 +76,10 @@ import {
   worstStatus,
   deriveQueenAlive,
   countLeadingZeroTokenWakes,
+  loopsStatus,
+  coordinationStatus,
+  memoryStatus,
+  reconcilePausedQueen,
   QUEEN_STALL_MS,
   WATCHDOG_FIRES_WARN,
   MCP_PROXY_HARD_FAIL_CRIT,
@@ -1029,13 +1036,48 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
       const recs = readMcpProxyFailureTail();
       if (recs !== null) mcpProxy = summarizeMcpProxyHealth(recs, ctx.now);
     } catch { /* proxy ledger unreadable — leave null (fail-soft) */ }
-    const data: InfraHealth = { pg, gatewayReachable: ctx.gatewayReachable, perf, mcpProxy, pool };
+    // Disk pressure (health-tab-v2 P-011 — the fedplane script's 90% signal,
+    // in-process): used% on ~/.papercusp + the working tree, deduped by device.
+    let disk: InfraHealth['disk'] = null;
+    try {
+      disk = await readDiskPressure();
+    } catch { /* statfs unavailable — leave null */ }
+    // Backup freshness (P-011): newest successful kopia snapshot + last outcome.
+    let backup: InfraHealth['backup'] = null;
+    try {
+      const { sql } = getOrgPg();
+      const [ok, last] = await Promise.all([
+        sql<Array<{ finished_at: Date }>>`
+          SELECT finished_at FROM harness_shared.backup_snapshots
+           WHERE workspace_id = ${ctx.ws} AND status = 'ok' AND finished_at IS NOT NULL
+           ORDER BY finished_at DESC LIMIT 1`,
+        sql<Array<{ status: string }>>`
+          SELECT status FROM harness_shared.backup_snapshots
+           WHERE workspace_id = ${ctx.ws}
+           ORDER BY started_at DESC LIMIT 1`,
+      ]);
+      const lastOkAtMs = ok[0]?.finished_at ? ok[0].finished_at.getTime() : null;
+      backup = {
+        lastOkAtMs,
+        ageMs: lastOkAtMs === null ? null : ctx.now - lastOkAtMs,
+        lastStatus: last[0]?.status ?? null,
+      };
+    } catch { /* backup tables unreadable/absent — leave null */ }
+    // Migration drift (P-011): on-disk migrations the live DB hasn't applied.
+    let migrationDrift: InfraHealth['migrationDrift'] = null;
+    try {
+      const { checkMigrationDrift } = await import('../migration-drift');
+      const d = await checkMigrationDrift();
+      migrationDrift = { unapplied: d.missing.length };
+    } catch { /* drift unreadable — leave null */ }
+    const data: InfraHealth = { pg, gatewayReachable: ctx.gatewayReachable, perf, mcpProxy, pool, disk, backup, migrationDrift };
     const status = infraStatus(data);
     const perfCrit = perf?.status === 'crit';
     const poolNote = pool?.band === 'critical' ? ', POOL STARVATION' : pool?.band === 'elevated' ? ', pool elevated' : '';
     const mcpHard = mcpProxy?.hardFailures ?? 0;
     const mcpCrit = mcpHard >= MCP_PROXY_HARD_FAIL_CRIT;
     const mcpWarn = mcpHard > 0 && !mcpCrit;
+    const worstDisk = disk && disk.length > 0 ? Math.max(...disk.map((v) => v.usedPct)) : null;
     return {
       status,
       summary: mcpCrit
@@ -1054,9 +1096,35 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
         m('mcp-proxy', mcpProxy ? (mcpHard > 0 ? `${mcpHard} fail/1h` : (mcpProxy.recovered > 0 ? `ok (${mcpProxy.recovered} recov)` : 'ok')) : 'n/a', mcpCrit ? 'crit' : mcpWarn ? 'warn' : undefined),
         m('worker cpu', perf?.worstWorkerCpuPct != null ? `${Math.round(perf.worstWorkerCpuPct)}%` : 'n/a'),
         m('host', perf ? (perf.stale ? 'stale' : (perf.hostState ?? '?')) : 'n/a', perfCrit ? 'crit' : (perf?.status === 'warn' ? 'warn' : undefined)),
+        m('disk', worstDisk === null ? 'n/a' : `${worstDisk}%`, worstDisk === null ? undefined : worstDisk >= 95 ? 'crit' : worstDisk >= 90 ? 'warn' : undefined),
+        m('backup', backup?.ageMs == null ? 'n/a' : agoMin(backup.lastOkAtMs, ctx.now), backup && backup.ageMs !== null && backup.ageMs > 48 * 60 * 60_000 ? 'warn' : undefined),
+        m('drift', migrationDrift ? migrationDrift.unapplied : 'n/a', (migrationDrift?.unapplied ?? 0) > 0 ? 'warn' : undefined),
       ],
     };
   });
+}
+
+/** health-tab-v2 P-011: used% per watched volume (~/.papercusp + the working
+ *  tree), deduped by filesystem identity. null when statfs is unavailable. */
+async function readDiskPressure(): Promise<Array<{ path: string; usedPct: number }> | null> {
+  const { statfs } = await import('node:fs/promises');
+  const { homedir } = await import('node:os');
+  const paths = [`${homedir()}/.papercusp`, process.cwd()];
+  const seen = new Set<string>();
+  const out: Array<{ path: string; usedPct: number }> = [];
+  for (const p of paths) {
+    try {
+      const s = await statfs(p);
+      const total = Number(s.blocks) * Number(s.bsize);
+      if (!Number.isFinite(total) || total <= 0) continue;
+      const free = Number(s.bavail) * Number(s.bsize);
+      const fsKey = `${s.type}:${s.blocks}:${s.bfree}`; // same-device dedupe (coarse but effective)
+      if (seen.has(fsKey)) continue;
+      seen.add(fsKey);
+      out.push({ path: p, usedPct: Math.round((1 - free / total) * 100) });
+    } catch { /* path missing — skip */ }
+  }
+  return out.length > 0 ? out : null;
 }
 
 async function collectSuFleet(ctx: HealthCtx): Promise<HealthPanel<SuFleetHealth>> {
@@ -1079,6 +1147,192 @@ async function collectSuFleet(ctx: HealthCtx): Promise<HealthPanel<SuFleetHealth
         m('present', presence.length),
         m('live', live),
         m('stale', data.stale, data.stale > 0 ? 'warn' : undefined),
+      ],
+    };
+  });
+}
+
+/**
+ * Engine loops (health-tab-v2 P-008) — the `loop:arm` self-wake mechanism.
+ * `armed` = active `loop-*` routines; `overdue` = armed loops whose next fire is
+ * past the dead-routine window (the engine isn't firing them); `failureStreaks`
+ * = RECENTLY-FIRED autoloop rows with >=3 consecutive errors (the fire-gate
+ * about to pause them). autoloop_state accretes one row per historical loop
+ * owner (~370 stale rows at v2 time), so ONLY rows fired in the last 24h count.
+ */
+async function collectLoops(ctx: HealthCtx): Promise<HealthPanel<LoopsHealth>> {
+  return panelSafe<LoopsHealth>('loops', async () => {
+    const { sql } = getOrgPg();
+    const [routines, streakRows, lastFireRows] = await Promise.all([
+      sql<Array<{ name: string; next_fire_at: Date | null }>>`
+        SELECT name, next_fire_at FROM harness_shared.routines
+         WHERE active = true AND name LIKE 'loop-%'`,
+      sql<Array<{ n: number }>>`
+        SELECT count(*)::int AS n FROM harness_shared.autoloop_state
+         WHERE role LIKE 'loop-%'
+           AND last_fired_at >= ${new Date(ctx.now - 24 * 60 * 60_000)}
+           AND consecutive_errors >= 3`,
+      sql<Array<{ last: Date | null }>>`
+        SELECT max(last_fired_at) AS last FROM harness_shared.autoloop_state
+         WHERE role LIKE 'loop-%'`,
+    ]);
+    const overdueRows = routines.filter(
+      (r) => r.next_fire_at !== null && ctx.now - r.next_fire_at.getTime() > DEAD_ROUTINE_OVERDUE_MS,
+    );
+    const data: LoopsHealth = {
+      armed: routines.length,
+      overdue: overdueRows.length,
+      overdueNames: overdueRows.slice(0, 5).map((r) => r.name),
+      failureStreaks: streakRows[0]?.n ?? 0,
+      lastFireAt: lastFireRows[0]?.last ? lastFireRows[0].last.getTime() : null,
+    };
+    const status = loopsStatus(data);
+    return {
+      status,
+      summary: data.armed === 0
+        ? 'no engine loops armed'
+        : data.overdue > 0
+          ? `${data.overdue}/${data.armed} armed loop(s) OVERDUE (${data.overdueNames.slice(0, 2).join(', ')})`
+          : `${data.armed} armed, last fire ${agoMin(data.lastFireAt, ctx.now)}${data.failureStreaks > 0 ? `, ${data.failureStreaks} failure-streak` : ''}`,
+      data,
+      link: { label: 'Working', href: '/adv?tab=harnesses' },
+      metrics: [
+        m('armed', data.armed),
+        m('overdue', data.overdue, data.overdue > 0 ? 'warn' : undefined),
+        m('failure streaks', data.failureStreaks, data.failureStreaks > 0 ? 'warn' : undefined),
+        m('last fire', agoMin(data.lastFireAt, ctx.now)),
+      ],
+    };
+  });
+}
+
+/**
+ * Coordination (health-tab-v2 P-009) — the fleet-coordination failure modes the
+ * playbook ranks highest, previously visible only in coord:glance: unanswered
+ * DIRECTED messages (a peer blind-waiting on a reply), sessions at critical
+ * context (about to force-compact), no-expiry event-await waiters gone stale
+ * (the sleeps-forever class), and fleets with live members but NO live leader
+ * (the silent-mass-failure mode). REUSES the assignments decorator for the
+ * unanswered read (D-C — never a second derivation).
+ */
+async function collectCoordination(ctx: HealthCtx): Promise<HealthPanel<CoordinationHealth>> {
+  return panelSafe<CoordinationHealth>('coordination', async () => {
+    const { listPresence } = await import('../agent-tools/coordination/presence');
+    const presence = await listPresence({ workspaceId: ctx.ws });
+    const live = presence.filter((p) => !p.stale);
+    let highContext = 0;
+    let criticalContext = 0;
+    const fleets = new Map<string, { members: number; leaders: number }>();
+    for (const p of live) {
+      const row = p as unknown as {
+        contextTokens?: number | null; compactionLimit?: number | null;
+        fleetSlug?: string | null; fleetRole?: string | null;
+      };
+      const ct = row.contextTokens;
+      const lim = row.compactionLimit;
+      if (typeof ct === 'number' && typeof lim === 'number' && lim > 0) {
+        const ratio = ct / lim;
+        if (ratio >= 0.9) criticalContext += 1;
+        else if (ratio >= 0.75) highContext += 1;
+      }
+      if (row.fleetSlug) {
+        const f = fleets.get(row.fleetSlug) ?? { members: 0, leaders: 0 };
+        f.members += 1;
+        if (row.fleetRole === 'leader') f.leaders += 1;
+        fleets.set(row.fleetSlug, f);
+      }
+    }
+    // Unanswered DIRECTED messages — reuse the fleet-assignments decorator.
+    let unansweredAgents = 0;
+    let unansweredTotal = 0;
+    let unansweredOldestMs: number | null = null;
+    try {
+      const { decorateUnansweredDirected } = await import('../agent-tools/fleet/assignments');
+      const rows = live.map((p) => ({ agentId: (p as unknown as { ownerId: string }).ownerId }));
+      await decorateUnansweredDirected(rows as unknown as Parameters<typeof decorateUnansweredDirected>[0]);
+      for (const r of rows as Array<{ unanswered?: { count?: number; oldestAgeMs?: number | null } }>) {
+        const u = r.unanswered;
+        const count = u?.count ?? 0;
+        if (count > 0) {
+          unansweredAgents += 1;
+          unansweredTotal += count;
+          const oldest = u?.oldestAgeMs ?? null;
+          if (oldest !== null && (unansweredOldestMs === null || oldest > unansweredOldestMs)) {
+            unansweredOldestMs = oldest;
+          }
+        }
+      }
+    } catch { /* decorator unavailable — leave zeros (the other legs still compute) */ }
+    const { sql } = getOrgPg();
+    const awaitRows = await sql<Array<{ active: number; stale: number }>>`
+      SELECT count(*)::int AS active,
+             (count(*) FILTER (WHERE expires_ts IS NULL AND created_at < now() - interval '24 hours'))::int AS stale
+        FROM harness_shared.event_awaits
+       WHERE fired_at IS NULL AND cancelled_at IS NULL AND workspace_id = ${ctx.ws}`;
+    const data: CoordinationHealth = {
+      unansweredAgents,
+      unansweredTotal,
+      unansweredOldestMs,
+      criticalContext,
+      highContext,
+      activeAwaits: awaitRows[0]?.active ?? 0,
+      staleAwaits: awaitRows[0]?.stale ?? 0,
+      leaderlessFleets: [...fleets.values()].filter((f) => f.leaders === 0).length,
+      liveFleets: fleets.size,
+    };
+    const status = coordinationStatus(data, ctx.now);
+    const problems: string[] = [];
+    if (data.unansweredTotal > 0) problems.push(`${data.unansweredTotal} unanswered directed (oldest ${agoMin(data.unansweredOldestMs === null ? null : ctx.now - data.unansweredOldestMs, ctx.now)})`);
+    if (data.leaderlessFleets > 0) problems.push(`${data.leaderlessFleets} leaderless fleet(s)`);
+    if (data.staleAwaits > 0) problems.push(`${data.staleAwaits} stale waiter(s)`);
+    if (data.criticalContext > 0) problems.push(`${data.criticalContext} at critical context`);
+    return {
+      status,
+      summary: problems.length > 0 ? problems.join(', ') : `quiet — ${data.activeAwaits} parked waiter(s), ${data.liveFleets} live fleet(s)`,
+      data,
+      link: { label: 'Coord', href: '/coord' },
+      metrics: [
+        m('unanswered', data.unansweredTotal, data.unansweredTotal > 0 ? 'warn' : undefined),
+        m('crit context', data.criticalContext, data.criticalContext > 0 ? 'warn' : undefined),
+        m('stale waiters', data.staleAwaits, data.staleAwaits > 0 ? 'warn' : undefined),
+        m('leaderless', data.leaderlessFleets, data.leaderlessFleets > 0 ? 'warn' : undefined),
+        m('live fleets', data.liveFleets),
+      ],
+    };
+  });
+}
+
+/**
+ * Memory system (health-tab-v2 P-010) — folds the SAME readMemoryHealth the
+ * Learning tab's MemoryHealthCard renders (D-C). The zero-hit probe is
+ * defensive: RecallHealth's field layout has churned, so we accept any numeric
+ * zero-hit reading it exposes and normalize to 0..1 (null when absent).
+ */
+async function collectMemory(ctx: HealthCtx): Promise<HealthPanel<MemoryPanelHealth>> {
+  return panelSafe<MemoryPanelHealth>('memory', async () => {
+    const { readMemoryHealth } = await import('../memory/knowledge-read');
+    const mem = await readMemoryHealth(getOrgPg().sql);
+    const loose = mem as unknown as Record<string, unknown>;
+    const rawZero = [loose.zeroHitRate, loose.zeroHitRatePct, loose.zeroHitRate7d]
+      .find((v): v is number => typeof v === 'number' && Number.isFinite(v));
+    const zeroHitRate = rawZero === undefined ? null : rawZero > 1 ? rawZero / 100 : rawZero;
+    const data: MemoryPanelHealth = {
+      totalMemories: mem.totalMemories,
+      entityRows: mem.entityRows,
+      feedback30d: mem.feedback30d,
+      zeroHitRate,
+    };
+    const status = memoryStatus(data);
+    return {
+      status,
+      summary: `${data.totalMemories} memories, ${data.feedback30d} feedback/30d${zeroHitRate !== null ? `, ${Math.round(zeroHitRate * 100)}% zero-hit` : ''}`,
+      data,
+      link: { label: 'Learning', href: '/adv?tab=learning' },
+      metrics: [
+        m('memories', data.totalMemories),
+        m('entity rows', data.entityRows),
+        m('feedback 30d', data.feedback30d),
+        m('zero-hit', zeroHitRate === null ? 'n/a' : `${Math.round(zeroHitRate * 100)}%`, zeroHitRate !== null && zeroHitRate >= 0.9 ? 'warn' : undefined),
       ],
     };
   });
@@ -1394,19 +1648,34 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
   const [
     queen, bees, workItems, workFeed, tokens, watchdog, deploy,
     plans, escalations, autonomy, observations, improvements, infra, suFleet, overwatch, scout,
-    toolEfficiency,
+    toolEfficiency, loops, coordination, memory,
   ] = await Promise.all([
     collectQueen(ctx), collectBees(ctx), collectWorkItems(ctx), collectWorkFeed(ctx),
     collectTokens(ctx), collectWatchdog(ctx), collectDeploy(ctx), collectPlans(ctx),
     collectEscalations(ctx), collectAutonomy(ctx), collectObservations(ctx),
     collectImprovements(ctx), collectInfra(ctx), collectSuFleet(ctx), collectOverwatch(ctx),
-    collectScout(ctx), collectToolEfficiency(ctx),
+    collectScout(ctx), collectToolEfficiency(ctx), collectLoops(ctx), collectCoordination(ctx),
+    collectMemory(ctx),
   ]);
 
+  // P-001 (health-tab-v2): the paused-Mug cry-wolf fix — reconcile the queen
+  // panel's paused-crit against the work-feed's PLACEABLE frontier, so a pot
+  // paused with only unplaceable residue reads warn ("idle by choice"), while
+  // paused-with-placeable-demand stays a crit silent outage. The summary now
+  // AGREES with the status either way.
+  const reconciled = reconcilePausedQueen(queen, workFeed);
+  if (reconciled) {
+    queen.status = reconciled.status;
+    queen.summary = reconciled.summary;
+    if (queen.metrics[0]?.label === 'state') {
+      queen.metrics[0] = { label: 'state', value: 'paused', tone: reconciled.status };
+    }
+  }
+
   const panels: SystemHealthPanels = {
-    queen, bees, workItems, workFeed, tokens, watchdog, deploy,
-    plans, escalations, autonomy, observations, improvements, infra, suFleet, overwatch, scout,
-    toolEfficiency,
+    queen, bees, workItems, workFeed, loops, tokens, watchdog, deploy,
+    plans, escalations, autonomy, observations, improvements, infra, suFleet, coordination,
+    overwatch, scout, memory, toolEfficiency,
   };
   const overall = worstStatus(Object.values(panels).map((p) => p.status));
   // queenAlive — the who-watches-the-watcher LIVENESS signal (D-004), kept DISTINCT
@@ -1414,13 +1683,23 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
   // model and the overwatch brief mapper can never drift apart again.
   const queenAlive = deriveQueenAlive(queen.data);
 
-  return {
+  const snapshot: SystemHealth = {
     workspaceId: ws,
     evaluatedAt: now,
     overall,
     crossMonitor: { queenAlive, overwatchAlive },
     panels,
   };
+
+  // P-004 (health-tab-v2): apply owner acks — covered panels are muted and
+  // excluded from `overall`. Fail-soft: an unreadable ack table (migration 585
+  // pending) leaves the snapshot exactly as computed above.
+  try {
+    const { readHealthAcks, applyHealthAcks } = await import('./acks');
+    applyHealthAcks(snapshot, await readHealthAcks(ws), now);
+  } catch { /* acks unreadable — un-acked snapshot stands */ }
+
+  return snapshot;
 }
 
 // ── cache + tick + read surface (mirrors learning-infra-health) ──────────────
@@ -1439,9 +1718,24 @@ export function lastSystemHealth(workspaceId?: string): SystemHealth | null {
  */
 export async function runSystemHealthTick(workspaceId?: string): Promise<SystemHealth> {
   const ws = workspaceId ?? activeWorkspaceId();
+  const prev = cache.get(ws) ?? null;
   const health = await computeSystemHealth(ws);
+  // P-004 (health-tab-v2): auto-clear acks whose panel recovered / snooze
+  // expired, and re-apply the survivors. Fail-soft — never breaks the tick.
+  try {
+    const { sweepHealthAcks } = await import('./acks');
+    await sweepHealthAcks(health, Date.now());
+  } catch { /* ack sweep unavailable (migration pending) — snapshot stands */ }
+  // P-005 (health-tab-v2): persist status history — transition rows for every
+  // panel that changed vs the previous tick + the compact per-tick statuses row
+  // (14d retention). Fail-soft — history must never break the tick.
+  try {
+    const { recordHealthHistory } = await import('./history');
+    await recordHealthHistory(prev, health);
+  } catch { /* history unavailable (migration pending) — tick proceeds */ }
   cache.set(ws, health);
   await notifySyncInvalidate('health.snapshot', undefined).catch(() => {});
+  await notifySyncInvalidate('health.history', undefined).catch(() => {});
   // The Overwatch pane (B-08) reads the SAME SystemHealth as its brief snapshot
   // (overwatch.snapshot, D-006 "one aggregation, two consumers"), so invalidate it
   // on the same tick — the pane stays SSE-live without a second aggregation. Safe

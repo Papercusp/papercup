@@ -15,11 +15,46 @@ import { resolveBestEffortAgainstRoster } from '../recipient-resolve';
 import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
 import { describeMissedRecipients, type MissedRecipientLiveness } from '../recipient-liveness';
 import { COORD_ROLES } from '../roles';
+import type { HydratableRef } from '../ref-hydrate';
+import { renderHydratedRefs } from '../ref-hydrate';
+import { hydrateRefs, makePlanItemResolver } from '../ref-hydrate-resolve';
+
+/**
+ * WI-4165: inline the named plan-items' own bodies into a handoff's `body`
+ * before it is written (deref-at-delivery, ref-hydrate.ts — the same
+ * mechanism coord:dispatch uses). Fail-soft BY CONTRACT: any resolve hiccup
+ * degrades to the plain body, never blocks the handoff. Exported for its
+ * unit test; not otherwise part of the public surface.
+ */
+export async function hydrateHandoffItemBodies(
+  args: { plan_slug?: string; items?: string[]; body?: string; harness?: string },
+  deps: { hydrateRefs?: typeof hydrateRefs } = {},
+): Promise<{ body: string | undefined; itemsHydrated: number }> {
+  if (!args.plan_slug || !args.items || args.items.length === 0) {
+    return { body: args.body, itemsHydrated: 0 };
+  }
+  const hydrate = deps.hydrateRefs ?? hydrateRefs;
+  try {
+    const refs: HydratableRef[] = args.items.map((item) => ({
+      kind: 'plan-item' as const,
+      slug: args.plan_slug as string,
+      item,
+    }));
+    const hydrated = await hydrate(refs, {
+      resolvers: { 'plan-item': makePlanItemResolver(args.harness) },
+    });
+    const itemsHydrated = hydrated.filter((h) => h.ok).length;
+    const block = renderHydratedRefs(hydrated);
+    return { body: block ? [args.body, block].filter(Boolean).join('\n\n') : args.body, itemsHydrated };
+  } catch {
+    return { body: args.body, itemsHydrated: 0 };
+  }
+}
 
 export default defineTool({
   name: 'coord:handoff',
   description:
-    'Record a work transition. Either OPEN a new handoff to other agents (provide `to[]`, `plan_slug`, `summary`, etc.) OR ACCEPT an existing one by passing `accept_msg_id` alone.',
+    'Record a work transition. Either OPEN a new handoff to other agents (provide `to[]`, `plan_slug`, `summary`, etc. — optionally `items` (P-NNN ids of `plan_slug`) to inline each item\'s own body into the delivered note, WI-4165) OR ACCEPT an existing one by passing `accept_msg_id` alone.',
   guidance: {
     when: 'Wrapping up your piece of a plan and naming who picks up next — or accepting a handoff someone made to you.',
     notWhen: 'A routine status update — use coord:send. A blocking decision — use coord:escalate.',
@@ -39,6 +74,11 @@ export default defineTool({
     next_action: z.string().optional(),
     files_modified: z.array(z.string()).optional(),
     commit: z.string().optional(),
+    items: z
+      .array(z.string().max(20))
+      .max(40)
+      .optional()
+      .describe('WI-4165: plan-item ids (P-NNN) of `plan_slug` handed off with this note — each one\'s own body is inlined into the delivered `body`, bounded, so the receiver reads WHAT to pick up without re-fetching the plan.'),
     note: z.string().optional().describe('Free-form note when accepting.'),
   }),
   async handler(args, ctx) {
@@ -103,11 +143,19 @@ export default defineTool({
     const ctxHarness = (ctx as { harnessSlug?: unknown }).harnessSlug;
     const harnessSlug =
       typeof ctxHarness === 'string' && ctxHarness && ctxHarness !== '*' ? ctxHarness : undefined;
+    // WI-4165: inline each named item's own body (deref-at-delivery) before writing
+    // the handoff record — fail-soft, degrades to the plain args.body on any hiccup.
+    const { body: hydratedBody, itemsHydrated } = await hydrateHandoffItemBodies({
+      plan_slug: args.plan_slug,
+      items: args.items,
+      body: args.body,
+      harness: harnessSlug,
+    });
     const rec = await openHandoff(identity, {
       to: handoffTo,
       plan_slug: args.plan_slug,
       summary: args.summary,
-      body: args.body,
+      body: hydratedBody,
       next_action: args.next_action,
       files_modified: args.files_modified,
       commit: args.commit,
@@ -199,6 +247,7 @@ export default defineTool({
             ts: rec.ts,
             accepted: false,
             pending_acceptance: true,
+            ...(itemsHydrated > 0 ? { itemsHydrated } : {}),
             ...(wake ? { wake } : {}),
           }),
         },
