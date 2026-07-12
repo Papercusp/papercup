@@ -149,7 +149,14 @@ export interface OrientResult {
   ok: boolean;
   /** fleet:assignments scoped to me (assignments, lane, load, orphans). */
   me: unknown;
-  /** The claimable backlog (work_items:list, default state=todo). */
+  /** The claimable backlog (work_items:list, default state=todo). EI-6468: this list
+   *  rides work_items:list's cachedRead (≤20s soft TTL, tag-invalidated on write) —
+   *  advisory, NOT a live claim guarantee. A row can lag a just-completed/claimed
+   *  state for a few seconds under normal cache-ECA propagation. Treat an id here as
+   *  a CANDIDATE to attempt, never as pre-verified available; a real self-select
+   *  (work_items:claim / scheduler:get_next / work_items:claim_next) re-checks live
+   *  and is authoritative — a `not_claimable` bounce off a stale candidate is
+   *  expected and cheap, not a bug to chase. */
   claimable: unknown[];
   /** coord:inbox folded down to its summary + the most-recent bounded entries. */
   inbox: { summary?: unknown; recent?: unknown };
@@ -782,7 +789,7 @@ export default defineTool({
     chaining:
       'Bundles fleet:assignments + work_items:list + coord:inbox + coord:plan-events [+ memory:search ' +
       '+ recipes:search + declare with `intent`] — prefer at wake over separate calls. A close ' +
-      '`recipes` hit → recipes:run it. → work_items:pickup { id, intent }.',
+      '`recipes` hit → recipes:run it. → work_items:pickup { id, intent }. claimable[] is advisory (EI-6468).',
   },
   capability: 'coord:read',
   // tool-call-batching-wrappers P-010 — composite marker: the primitives this bundles.

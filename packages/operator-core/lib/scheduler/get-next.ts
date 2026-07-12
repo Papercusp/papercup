@@ -414,11 +414,19 @@ function issueKindsForFallback(filter: FilterNode | undefined): readonly IssueFa
  * unrelated `change`-kind feature/research items from a completely different
  * work-stream. Fix: when the spec names an explicit id set, tier 3 must not widen
  * at all — exhausting a closed-world list means nothing left, not "try anything".
+ *
+ * Only a POSITIVE identity match (`=` / `in`) counts as such a set. A NEGATIVE
+ * `id != X` leaf is the opposite shape — it excludes one id from an otherwise-open
+ * (often kind-restricted) set and must NOT disable tier 3: a `kind in [bug,change]
+ * AND id != reserved` spec still has a real, unbounded issue lane to widen into
+ * once its feature-family tiers miss (regression-tested by the pre-existing
+ * "tier 3: an issue-kind spec narrows issue fallback instead of claiming an older
+ * task" case).
  */
 function filterHasIdConstraint(filter: FilterNode | undefined): boolean {
   if (!filter) return false;
   function walk(node: FilterNode): boolean {
-    if (isLeaf(node)) return node.field === 'id';
+    if (isLeaf(node)) return node.field === 'id' && (node.op === '=' || node.op === 'in');
     if ('all' in node) return node.all.some(walk);
     if ('any' in node) return node.any.some(walk);
     return walk(node.not);

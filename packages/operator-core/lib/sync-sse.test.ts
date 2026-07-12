@@ -15,6 +15,10 @@ const notifySql = vi.fn(async (..._args: unknown[]) => [] as unknown[]); // call
 type BridgeTarget = string | { name: string; args: Record<string, unknown> };
 let bridgeReturn: (name: string, args?: Record<string, unknown>) => BridgeTarget[] = () => [];
 const emitSysEvt = vi.fn();
+// EI-6468 (WI-1547 boot-wiring regression guard): number of REMAINING `.listen()`
+// calls that should reject before one finally succeeds — lets a test simulate "PG
+// still coming up at boot" without touching real timers/network.
+let listenFailuresRemaining = 0;
 
 const T0 = 1_700_000_000_000;
 
@@ -24,6 +28,7 @@ beforeEach(() => {
   notifySql.mockClear();
   bridgeReturn = () => [];
   emitSysEvt.mockClear();
+  listenFailuresRemaining = 0;
   // The dedupe Map is pinned to globalThis → clear it so each test starts fresh.
   delete (globalThis as unknown as { __syncNotifyDedupe?: unknown }).__syncNotifyDedupe;
   vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -47,6 +52,10 @@ async function load() {
   vi.doMock('postgres', () => ({
     default: () => ({
       listen: (_ch: string, cb: (raw: string) => void) => {
+        if (listenFailuresRemaining > 0) {
+          listenFailuresRemaining--;
+          return Promise.reject(new Error('simulated LISTEN failure (PG not up yet)'));
+        }
         capturedListen = cb;
         return Promise.resolve();
       },
@@ -169,6 +178,78 @@ describe('sync-sse LISTEN fan-out + replay', () => {
     capturedListen!(JSON.stringify({ name: 'q.new' })); // push triggers pruneHistory
     const replay = backfillSince(0);
     expect(replay.map((e) => e.name)).toEqual(['q.new']);
+  });
+});
+
+describe('ensureInvalidationListener (EI-6468 / WI-1547: cache-ECA must not be inert)', () => {
+  // A cachedRead consumer (e.g. work_items:list, feeding coord:orient's
+  // claimable[]) relies on the cache-ECA (table-change → cache.bumpTags) to
+  // invalidate promptly. That rail rides this SAME PG LISTEN connection, which
+  // otherwise starts only lazily on the first SSE subscribe — a process that
+  // never gets one (a reuseport worker serving only MCP/tool HTTP) had an
+  // inert cache-ECA and served arbitrarily stale reads (the exact reported
+  // shape of EI-6468: a just-completed/claimed work-item still showing as
+  // claimable minutes later). `hono-host.ts` calls this eagerly at boot for
+  // every process specifically to close that gap — these tests pin the
+  // function's OWN retry/give-up contract in isolation.
+
+  it('starts the LISTEN on the first attempt and returns true', async () => {
+    const { ensureInvalidationListener } = await load();
+    const ok = await ensureInvalidationListener();
+    expect(ok).toBe(true);
+    expect(capturedListen).not.toBeNull();
+  });
+
+  it('retries with backoff past a transient failure and eventually succeeds', async () => {
+    const { ensureInvalidationListener } = await load();
+    listenFailuresRemaining = 2; // fail attempts 1 and 2; succeed on attempt 3
+    const promise = ensureInvalidationListener({ attempts: 5, delayMs: 1000 });
+    // Drain the retry backoffs under fake timers (2 failures ⇒ 2 delayed retries).
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(1000);
+    const ok = await promise;
+    expect(ok).toBe(true);
+    expect(capturedListen).not.toBeNull();
+  });
+
+  it('gives up after exhausting all attempts, returns false, and logs loudly (cache-ECA stays inert until the next SSE subscribe retries)', async () => {
+    const { ensureInvalidationListener } = await load();
+    listenFailuresRemaining = 99; // never succeeds
+    const errSpy = vi.spyOn(console, 'error');
+    const promise = ensureInvalidationListener({ attempts: 3, delayMs: 1000 });
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(1000);
+    const ok = await promise;
+    expect(ok).toBe(false);
+    expect(capturedListen).toBeNull();
+    expect(
+      errSpy.mock.calls.some((c) => String(c[0]).includes('cache-ECA inert in this process')),
+    ).toBe(true);
+  });
+});
+
+describe('boot wiring: hono-host.ts eagerly starts the invalidation LISTEN (EI-6468 / WI-1547 regression guard)', () => {
+  // A STATIC source check, not a behavioral one: the whole WI-1547 incident class
+  // (cache-ECA silently inert in a cluster worker that never got an SSE subscriber)
+  // is reintroduced just as easily by someone later refactoring startRequestServers
+  // and DROPPING this one call as by never adding it in the first place — the prior
+  // two describe blocks pin ensureInvalidationListener's own contract, but neither
+  // catches "the host stopped calling it". Pin the call site directly.
+  it('startRequestServers() calls ensureInvalidationListener() at boot', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const src = fs.readFileSync(
+      path.join(__dirname, '../../../apps/operator/bin/hono-host.ts'),
+      'utf8',
+    );
+    expect(src).toContain("import { ensureInvalidationListener } from '@papercusp/operator-core/lib/sync-sse'");
+    const fnStart = src.indexOf('function startRequestServers');
+    expect(fnStart).toBeGreaterThan(-1);
+    // The call must live INSIDE startRequestServers, not merely somewhere in the file —
+    // slice to the next top-level function/export boundary and search within it.
+    const nextBoundary = src.indexOf('\nfunction ', fnStart + 1);
+    const body = nextBoundary > -1 ? src.slice(fnStart, nextBoundary) : src.slice(fnStart);
+    expect(body).toContain('ensureInvalidationListener()');
   });
 });
 
