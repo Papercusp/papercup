@@ -18,6 +18,12 @@
 import { useSyncQuery } from '@papercusp/sync';
 import { Activity, RefreshCw } from 'lucide-react';
 import type { EkgSnapshot } from '@papercusp/operator-core/lib/fleet-ekg/ekg-read';
+import {
+  LearningEvidenceRail,
+  LearningHeroMetric,
+  LearningPageHeader,
+  LearningVisualEmpty,
+} from './LearningVisuals';
 
 const num = (v: number | null): string => (v == null ? '' : Math.abs(v) >= 100 ? v.toFixed(0) : v.toPrecision(3));
 
@@ -31,37 +37,61 @@ export function EkgPanel() {
   const sync = useSyncQuery<EkgSnapshot>({ queryName: 'learning.ekg', args: {}, staleTime: 30_000 });
   const snap = sync.data?.[0];
   const shifts = Array.isArray(snap?.shifts) ? snap.shifts : [];
+  const major = shifts.filter((shift) => shift.severity === 'major').length;
 
   return (
-    <section className="pc-ekg" aria-label="Fleet EKG behavioral shifts">
-      <div className="pc-ekg__head">
-        <h3 className="pc-ekg__title">
-          <Activity size={14} aria-hidden /> Fleet EKG
-        </h3>
-        <span className="pc-ekg__sub">behavioral drift across agent sessions, attributed to the change ledger</span>
-        <button
-          type="button"
-          className="pc-ekg__refresh"
-          aria-label="Reload the EKG"
-          disabled={sync.fetching}
-          onClick={() => sync.invalidate()}
-        >
-          <RefreshCw size={12} aria-hidden />
-        </button>
-      </div>
+    <section className="pc-learning__section pc-ekg" aria-label="Fleet EKG behavioral shifts">
+      <LearningPageHeader
+        icon={Activity}
+        title="Fleet EKG"
+        signal={major > 0 ? `${major} major` : shifts.length > 0 ? `${shifts.length} shifts` : undefined}
+        tone={major > 0 ? 'bad' : shifts.length > 0 ? 'warn' : 'good'}
+        action={
+          <button
+            type="button"
+            className="pc-learning__refresh"
+            aria-label="Reload the EKG"
+            disabled={sync.fetching}
+            onClick={() => sync.invalidate()}
+          >
+            <RefreshCw size={12} aria-hidden />
+          </button>
+        }
+      />
 
       {shifts.length === 0 ? (
-        <p className="pc-ekg__empty">
-          No shifts detected{snap?.sessionsEmbedded ? ` across ${snap.sessionsEmbedded} embedded sessions` : ''}.
-          The EKG scans on a cadence — it ships dark until the frontier arming gate flips it on.
-        </p>
+        <LearningVisualEmpty icon={Activity} title="No behavioral shifts" />
       ) : (
         <>
-          <p className="pc-ekg__rollup">
-            {snap!.totalShifts} shift{snap!.totalShifts === 1 ? '' : 's'} · {snap!.unattributedShifts} unattributable ·{' '}
-            {snap!.sessions7d} sessions embedded (7d)
-            {snap!.scannedAt ? ` · scanned ${dateShort(snap!.scannedAt)}` : ''}
-          </p>
+          <div className="pc-learning-visual__layout pc-learning-visual__layout--ekg">
+            <LearningHeroMetric
+              eyebrow="Detected shifts"
+              value={String(snap!.totalShifts)}
+              status={major > 0 ? 'major drift' : 'monitor'}
+              tone={major > 0 ? 'bad' : 'warn'}
+            >
+              {snap!.unattributedShifts} unattributed
+            </LearningHeroMetric>
+            <div className="pc-ekg__wave" aria-label="Behavioral shift magnitude">
+              {shifts.slice(0, 28).map((shift) => (
+                <i
+                  key={shift.id}
+                  className={`is-${shift.severity}`}
+                  style={{ height: `${Math.max(12, Math.min(100, shift.score * 100))}%` }}
+                  title={`${shift.feature}: ${shift.score.toFixed(3)}`}
+                />
+              ))}
+            </div>
+            <LearningEvidenceRail>
+              <div className="pc-learning-visual__evidence-grid">
+                <div className="pc-learning-visual__evidence-metric"><span>Sessions 7d</span><strong>{snap!.sessions7d}</strong></div>
+                <div className="pc-learning-visual__evidence-metric"><span>Unattributed</span><strong>{snap!.unattributedShifts}</strong></div>
+                <div className="pc-learning-visual__evidence-metric"><span>Embedded</span><strong>{snap!.sessionsEmbedded}</strong></div>
+                <div className="pc-learning-visual__evidence-metric"><span>Major</span><strong>{major}</strong></div>
+              </div>
+            </LearningEvidenceRail>
+          </div>
+          <div className="pc-learning__sectionhead"><h2>Detected shifts</h2></div>
           <ul className="pc-ekg__list">
             {shifts.map((s) => (
               <li key={s.id} className="pc-ekg__row">
@@ -102,14 +132,10 @@ export function EkgPanel() {
         </>
       )}
       <style>{`
-        .pc-ekg { margin: 10px 0 4px; padding: 10px 12px; border: 1px solid var(--border, rgba(125, 211, 252, 0.18)); border-radius: 12px; background: var(--bg-2, rgba(255, 255, 255, 0.03)); }
-        .pc-ekg__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-        .pc-ekg__title { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 12.5px; font-weight: 650; }
-        .pc-ekg__sub { flex: 1 1 auto; font-size: 11px; color: var(--fg-mute, #7f9bb4); }
-        .pc-ekg__refresh { display: inline-flex; align-items: center; border: none; background: none; color: var(--fg-mute, #7f9bb4); cursor: pointer; padding: 2px; }
-        .pc-ekg__refresh:disabled { opacity: 0.5; cursor: default; }
-        .pc-ekg__empty { margin: 8px 0 2px; font-size: 11.5px; color: var(--fg-mute, #7f9bb4); }
-        .pc-ekg__rollup { margin: 6px 0 4px; font-size: 11px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }
+        .pc-ekg__wave { min-height: 176px; display: flex; align-items: center; justify-content: center; gap: 4px; padding: 18px; border: 1px solid var(--border); border-radius: 11px; background: var(--bg-2); }
+        .pc-ekg__wave::before { content: ''; width: 1px; height: 100%; background: var(--border); }
+        .pc-ekg__wave i { width: min(16px, 4%); min-height: 10px; border-radius: 2px; background: #fbbf24; }
+        .pc-ekg__wave i.is-major { background: #fb7185; }
         .pc-ekg__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
         .pc-ekg__row { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; border-top: 1px solid rgba(255, 255, 255, 0.04); }
         .pc-ekg__severity { flex: none; font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0; color: #06121a; border-radius: 4px; padding: 1px 5px; background: #fcd34d; }

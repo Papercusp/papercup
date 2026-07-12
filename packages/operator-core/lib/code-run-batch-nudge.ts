@@ -212,11 +212,100 @@ function facadeCall(toolName: string, argExpr: string): string {
   return `tools.call(${JSON.stringify(toolName)}, ${argExpr})`;
 }
 
-/** The same-tool list-then-loop skeleton: loop the ONE repeated call over a caller-supplied list. */
-function sameToolSkeleton(toolName: string): string {
+/** Bounded, template-literal-safe literal of a call's args for skeleton prefill (P-003). Returns
+ *  undefined for empty/unrenderable args so skeletons fall back to a fill-in placeholder. */
+function renderArgs(args: unknown): string | undefined {
+  if (args == null) return undefined;
+  let json: string;
+  try {
+    json = JSON.stringify(args) ?? '';
+  } catch {
+    return undefined;
+  }
+  if (json === '' || json === '{}' || json === 'null') return undefined;
+  // Keep the skeleton pasteable into a code:run template literal: escape backticks + ${.
+  json = json.replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
+  if (json.length > ARGS_RENDER_MAX) {
+    json = `${json.slice(0, ARGS_RENDER_MAX)} /* …truncated — fill in the rest */`;
+  }
+  return json;
+}
+
+/** Distinctive scalar values (ids/slugs — length 4..80, ambient-context keys skipped) from an args
+ *  object, depth ≤ 2, bounded — the P-002 chained-burst signal. */
+function chainValues(v: unknown, depth = 0, out: string[] = []): string[] {
+  if (out.length >= CHAIN_VALUES_PER_CALL || v == null) return out;
+  if (typeof v === 'string' || typeof v === 'number') {
+    const s = String(v);
+    if (s.length >= 4 && s.length <= 80) out.push(s);
+    return out;
+  }
+  if (depth >= 2 || typeof v !== 'object') return out;
+  if (Array.isArray(v)) {
+    for (const x of v) {
+      chainValues(x, depth + 1, out);
+      if (out.length >= CHAIN_VALUES_PER_CALL) break;
+    }
+    return out;
+  }
+  for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+    if (CHAIN_SKIP_KEYS.has(k.toLowerCase())) continue;
+    chainValues(x, depth + 1, out);
+    if (out.length >= CHAIN_VALUES_PER_CALL) break;
+  }
+  return out;
+}
+
+/** True when the same distinctive arg value appears in ≥2 DIFFERENT tools' calls in the window —
+ *  one object threaded through several verbs (release → claim → comment) = a chained pipeline. */
+function isChainedBurst(recent: RecentCall[]): boolean {
+  const firstToolByValue = new Map<string, string>();
+  for (const c of recent) {
+    if (!c.argValues) continue;
+    for (const v of c.argValues) {
+      const first = firstToolByValue.get(v);
+      if (first === undefined) firstToolByValue.set(v, c.tool);
+      else if (first !== c.tool) return true;
+    }
+  }
+  return false;
+}
+
+const TOOLS_INVOKE_NORMALIZED = 'toolsinvoke';
+
+/** P-001: a call routed through the tools:invoke wrapper is, for batching purposes, a call to its
+ *  INNER tool — 3× work_items:release via tools:invoke is a same-tool loop, not "one distinct
+ *  tool" (the 2026-07-11 release-fleet burst hid exactly this way). Malformed wrapper args fall
+ *  back to the wrapper name. */
+function effectiveCall(toolName: string, args: unknown): { tool: string; args: unknown } {
+  if (
+    normalize(toolName) === TOOLS_INVOKE_NORMALIZED &&
+    args !== null &&
+    typeof args === 'object' &&
+    !Array.isArray(args)
+  ) {
+    const inner = (args as { name?: unknown }).name;
+    if (typeof inner === 'string' && inner.trim().length > 0) {
+      return { tool: inner.trim(), args: (args as { args?: unknown }).args };
+    }
+  }
+  return { tool: toolName, args };
+}
+
+/** The same-tool list-then-loop skeleton: loop the ONE repeated call over `inputs` — prefilled with
+ *  the args of the calls just made (P-003), so acting on it is extending a list, not authoring. */
+function sameToolSkeleton(toolName: string, recent: RecentCall[]): string {
+  const renders = recent
+    .filter((c) => c.tool === toolName && c.argsRender !== undefined)
+    .map((c) => c.argsRender as string)
+    .slice(-MAX_SKELETON_TOOLS);
+  const inputs =
+    renders.length > 0
+      ? `[\n${renders.map((r) => `    ${r},`).join('\n')}\n    /* …the NEXT ${toolName} args go here — extend this list, not another solo call */\n  ]`
+      : `[/* the args for each ${toolName} call */]`;
   return (
     'code:run { script: `\n' +
-    `  const inputs = [/* the args for each ${toolName} call */];\n` +
+    `  const inputs = ${inputs};\n` +
     '  const out = [];\n' +
     `  for (const a of inputs) out.push(await ${facadeCall(toolName, 'a')});\n` +
     '  return out;\n' +
@@ -224,12 +313,16 @@ function sameToolSkeleton(toolName: string): string {
   );
 }
 
-/** The fan-out skeleton: a Promise.all over the EXACT distinct tools just seen, each a fill-in-args
- *  call. Acting on it is filling blanks, not authoring from scratch — the activation-energy win. */
-function fanoutSkeleton(distinctTools: string[]): string {
+/** The fan-out skeleton: a Promise.all over the EXACT distinct tools just seen, each prefilled with
+ *  its last call's args (P-003) — acting on it is a paste, not authoring from scratch. */
+function fanoutSkeleton(distinctTools: string[], recent: RecentCall[]): string {
+  const lastRender = new Map<string, string>();
+  for (const c of recent) {
+    if (c.argsRender !== undefined) lastRender.set(c.tool, c.argsRender);
+  }
   const shown = distinctTools.slice(0, MAX_SKELETON_TOOLS);
   const binds = shown.map((_t, i) => `r${i}`).join(', ');
-  const lines = shown.map((t) => `    ${facadeCall(t, '/* args */')},`).join('\n');
+  const lines = shown.map((t) => `    ${facadeCall(t, lastRender.get(t) ?? '/* args */')},`).join('\n');
   const elided = distinctTools.length > shown.length ? `    /* …and ${distinctTools.length - shown.length} more */\n` : '';
   return (
     'code:run { script: `\n' +
@@ -239,6 +332,24 @@ function fanoutSkeleton(distinctTools: string[]): string {
     elided +
     '  ]);\n' +
     `  return { ${binds} };\n` +
+    '` }'
+  );
+}
+
+/** The pipeline skeleton (P-002): the burst's calls IN ORDER inside one script. A script threads
+ *  one result into the next (and can branch on it), so a dependent-but-mechanical chain is still
+ *  ONE round-trip — only a genuine read-and-REASON gate earns a separate call. */
+function pipelineSkeleton(recent: RecentCall[]): string {
+  const shown = recent.slice(-MAX_SKELETON_TOOLS);
+  const binds = shown.map((_c, i) => `r${i}`);
+  const lines = shown
+    .map((c, i) => `  const ${binds[i]} = await ${facadeCall(c.tool, c.argsRender ?? '/* args */')};`)
+    .join('\n');
+  return (
+    'code:run { script: `\n' +
+    lines +
+    '\n' +
+    `  return { ${binds.join(', ')} };\n` +
     '` }'
   );
 }
@@ -277,13 +388,17 @@ function escalationPrefix(n: number): string {
   );
 }
 
-export type BatchNudgeKind = 'same-tool' | 'fanout';
+export type BatchNudgeKind = 'same-tool' | 'fanout' | 'pipeline';
 
 export interface BatchNudgeResult {
   /** The hint text to attach to the tool result (no `[batch-hint]` prefix — the call site adds it). */
   text: string;
-  /** Which trigger fired — drives which feature flag gates it at the call site. */
+  /** Which trigger fired — drives which feature flag gates it at the call site ('pipeline' rides
+   *  the fan-out flag; telemetry records the kind verbatim, keeping the two distinguishable). */
   kind: BatchNudgeKind;
+  /** The tool the trigger keyed on — the INNER tool for a tools:invoke-routed call (P-001), so
+   *  telemetry attributes the fire to the real verb, not the wrapper. */
+  tool: string;
 }
 
 export interface BatchNudgeInput {
@@ -291,6 +406,8 @@ export interface BatchNudgeInput {
   sessionKey: string;
   /** The tool just called (MCP or verb form). */
   toolName: string;
+  /** The call's raw arguments object — unwraps tools:invoke (P-001) and prefills skeletons (P-003). */
+  args?: unknown;
   /** Whether the caller can actually run code:run (canRoleActOnCodeRun(role) OR superuser). */
   canCodeRun: boolean;
   /**
@@ -311,21 +428,31 @@ const ACTIVATE_PATH_NOTE =
   `tools:invoke { name: "code:run", args: { script } }.`;
 
 /**
- * Record a tool call in the session's sliding window and, when a same-tool or fan-out burst is
- * detected (and the backoff cooldown has elapsed), return a nudge steering the caller to bundle the
- * calls into one `code:run`. Returns null otherwise. Never throws. Excluded/incapable callers
- * short-circuit to null with no state — they can never produce a useful nudge.
+ * Record a tool call in the session's sliding window and, when a same-tool / pipeline / fan-out
+ * burst is detected (and the backoff cooldown has elapsed), return a nudge steering the caller to
+ * bundle the calls into one `code:run`. Returns null otherwise. Never throws. Excluded/incapable
+ * callers short-circuit to null with no state — they can never produce a useful nudge.
  */
 export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null {
-  const { sessionKey, toolName, canCodeRun } = input;
-  if (!canCodeRun || !sessionKey || !toolName) return null;
+  const { sessionKey, canCodeRun } = input;
+  if (!canCodeRun || !sessionKey || !input.toolName) return null;
+  // P-001: unwrap a tools:invoke-routed call to its INNER tool BEFORE exclusion + recording, so a
+  // wrapper-routed burst trips the same triggers a direct burst would (and tools:invoke{name:
+  // 'code:run'} stays excluded exactly like a direct code:run call).
+  const { tool: toolName, args } = effectiveCall(input.toolName, input.args);
   if (EXCLUDED_NORMALIZED.has(normalize(toolName))) return null;
   const now = input.now ?? Date.now();
 
   const st = getOrCreateSession(sessionKey);
 
   // Record this call, then trim the ring to the window + cap (the only common-path side effects).
-  st.recent.push({ tool: toolName, at: now });
+  const argValues = chainValues(args);
+  st.recent.push({
+    tool: toolName,
+    at: now,
+    argsRender: renderArgs(args),
+    argValues: argValues.length > 0 ? argValues : undefined,
+  });
   st.callsSinceNudge += 1;
   const cutoff = now - NUDGE_WINDOW_MS;
   let drop = 0;
@@ -348,10 +475,12 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
   }
   const totalRecent = st.recent.length;
 
-  // Pick a trigger. Same-tool wins ties (its loop skeleton is the more precise fix).
+  // Pick a trigger. Same-tool wins ties (its loop skeleton is the more precise fix); a multi-tool
+  // burst splits into PIPELINE (the same id/slug threaded through different verbs — chained) vs
+  // FAN-OUT (independent reads), so the text never mislabels a chain as "independent" (P-002).
   let kind: BatchNudgeKind | null = null;
   if (sameToolCount >= BATCH_NUDGE_THRESHOLD) kind = 'same-tool';
-  else if (seen.size >= FANOUT_DISTINCT_THRESHOLD) kind = 'fanout';
+  else if (seen.size >= FANOUT_DISTINCT_THRESHOLD) kind = isChainedBurst(st.recent) ? 'pipeline' : 'fanout';
   if (!kind) return null;
 
   // Backoff gate: the first nudge fires immediately; later ones wait out an exponential cooldown.
@@ -369,17 +498,29 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
     const text =
       `${banner}you've called "${toolName}" ${sameToolCount}× in the last ~${windowS}s${burst} — that's ` +
       `${sameToolCount} separate round-trips, each re-reading your whole context. If these are ` +
-      `independent or mechanically-chained, fold them into ONE code:run loop — ready-to-paste skeleton ` +
-      `(fill \`inputs\` with the per-call args):\n${sameToolSkeleton(toolName)}\n${TRAILER}${activate}`;
-    return { text, kind };
+      `independent or mechanically-chained, fold them into ONE code:run loop — ready-to-paste skeleton, ` +
+      `\`inputs\` prefilled from this burst (extend it instead of firing another solo call):\n` +
+      `${sameToolSkeleton(toolName, st.recent)}\n${TRAILER}${activate}`;
+    return { text, kind, tool: toolName };
+  }
+  if (kind === 'pipeline') {
+    const text =
+      `${banner}you've made ${totalRecent} individual tool calls across ${seen.size} different tools in the last ` +
+      `~${windowS}s — that's ~${totalRecent} round-trips, each re-reading your whole context. These calls thread ` +
+      `the SAME object through different verbs — a CHAINED pipeline, and dependence does NOT mean ` +
+      `one-call-per-turn: a script threads one result into the next (and can branch on it). Sequence the chain ` +
+      `INSIDE one code:run — this burst as one round-trip (args prefilled):\n` +
+      `${pipelineSkeleton(st.recent)}\n${TRAILER}${activate}`;
+    return { text, kind, tool: toolName };
   }
   // fan-out
   const text =
     `${banner}you've made ${totalRecent} individual tool calls across ${seen.size} different tools in the last ` +
-    `~${windowS}s — that's ~${totalRecent} round-trips, each re-reading your whole context. This is an ` +
-    `independent fan-out: collapse it into ONE code:run with Promise.all — ready-to-paste skeleton ` +
-    `(fill the args):\n${fanoutSkeleton(distinctOrder)}\n${TRAILER}${activate}`;
-  return { text, kind };
+    `~${windowS}s — that's ~${totalRecent} round-trips, each re-reading your whole context. Collapse the burst ` +
+    `into ONE code:run — Promise.all when the calls are independent, sequential awaits when one feeds the ` +
+    `next — ready-to-paste skeleton (args prefilled from your last calls):\n` +
+    `${fanoutSkeleton(distinctOrder, st.recent)}\n${TRAILER}${activate}`;
+  return { text, kind, tool: toolName };
 }
 
 /** A subsumed re-fetch within this window after a successful coord:orient → the soft dedup nudge.

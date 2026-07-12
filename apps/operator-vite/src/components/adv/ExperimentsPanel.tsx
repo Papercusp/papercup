@@ -15,6 +15,13 @@
 import { useSyncQuery } from '@papercusp/sync';
 import { FlaskConical, RefreshCw } from 'lucide-react';
 import type { ExperimentRunSummary } from '@papercusp/operator-core/lib/experiment/ledger';
+import {
+  LearningComparisonBars,
+  LearningEvidenceRail,
+  LearningHeroMetric,
+  LearningPageHeader,
+  LearningVisualEmpty,
+} from './LearningVisuals';
 
 const TIER_TONE: Record<string, string> = {
   offline: 'var(--accent-strong, var(--accent))',
@@ -41,31 +48,72 @@ function scoreLabel(n: number | null): string {
 export function ExperimentsPanel() {
   const sync = useSyncQuery<ExperimentRunSummary>({ queryName: 'learning.experiments', args: {}, staleTime: 30_000 });
   const runs = Array.isArray(sync.data) ? sync.data.filter((r) => r && typeof r.batteryId === 'string') : [];
+  const latest = runs[0];
+  const latestArms = latest && Array.isArray(latest.arms) ? latest.arms : [];
+  const winnerArm = latestArms.find((arm) => arm.id === latest?.winner) ?? null;
+  const baselineArm = latestArms.find((arm) => arm.id !== latest?.winner) ?? null;
 
   return (
-    <section className="pc-experiments" aria-label="Experiment scoreboard">
-      <div className="pc-experiments__head">
-        <h3 className="pc-experiments__title">
-          <FlaskConical size={14} aria-hidden /> Experiments
-        </h3>
-        <span className="pc-experiments__sub">A/B results from experiment:run — how each varied arm scored vs the baseline</span>
-        <button
-          type="button"
-          className="pc-experiments__refresh"
-          aria-label="Reload the experiment scoreboard"
-          disabled={sync.fetching}
-          onClick={() => sync.invalidate()}
-        >
-          <RefreshCw size={12} aria-hidden />
-        </button>
-      </div>
+    <section className="pc-learning__section pc-experiments" aria-label="Experiment scoreboard">
+      <LearningPageHeader
+        icon={FlaskConical}
+        title="Experiments"
+        signal={latest?.decision}
+        tone={latest?.decision === 'applied' ? 'good' : latest?.decision === 'rejected' ? 'bad' : 'warn'}
+        action={
+          <button
+            type="button"
+            className="pc-learning__refresh"
+            aria-label="Reload the experiment scoreboard"
+            disabled={sync.fetching}
+            onClick={() => sync.invalidate()}
+          >
+            <RefreshCw size={12} aria-hidden />
+          </button>
+        }
+      />
 
-      {runs.length === 0 ? (
-        <p className="pc-experiments__empty">
-          No experiments run yet. <code>experiment:run</code> A/B-tests a knob change on the offline replay tier and records the
-          result here — it rides the frontier:replay-harness budget, so it stays quiet until that loop is armed.
-        </p>
+      {!latest ? (
+        <LearningVisualEmpty icon={FlaskConical} title="No experiment runs" />
       ) : (
+        <>
+        <div className="pc-learning-visual__layout">
+          <LearningHeroMetric
+            eyebrow={latest.testId}
+            value={scoreLabel(winnerArm?.meanScore ?? null)}
+            status={latest.winner ? `winner · ${latest.winner}` : 'no winner'}
+            tone={latest.winner ? 'good' : 'warn'}
+          >
+            {latest.tier} tier
+          </LearningHeroMetric>
+          <LearningComparisonBars
+            title="Baseline vs winner"
+            baselineName={baselineArm?.id ?? 'Baseline'}
+            treatmentName={winnerArm?.id ?? 'Winner'}
+            rows={[
+              {
+                label: 'Mean score',
+                baseline: baselineArm?.meanScore ?? null,
+                treatment: winnerArm?.meanScore ?? null,
+                baselineLabel: scoreLabel(baselineArm?.meanScore ?? null),
+                treatmentLabel: scoreLabel(winnerArm?.meanScore ?? null),
+                max: 10,
+                treatmentWins:
+                  winnerArm?.meanScore != null &&
+                  winnerArm.meanScore >= (baselineArm?.meanScore ?? -Infinity),
+              },
+            ]}
+          />
+          <LearningEvidenceRail>
+            <div className="pc-learning-visual__evidence-grid">
+              <div className="pc-learning-visual__evidence-metric"><span>Tier</span><strong>{latest.tier}</strong></div>
+              <div className="pc-learning-visual__evidence-metric"><span>Spend</span><strong>${latest.totalCostUsd.toFixed(3)}</strong></div>
+              <div className="pc-learning-visual__evidence-metric"><span>Arms</span><strong>{latestArms.length}</strong></div>
+              <div className="pc-learning-visual__evidence-metric"><span>Decision</span><strong>{latest.decision}</strong></div>
+            </div>
+          </LearningEvidenceRail>
+        </div>
+        <div className="pc-learning__sectionhead"><h2>Recent experiments</h2></div>
         <ul className="pc-experiments__list">
           {runs.map((r) => {
             const arms = Array.isArray(r.arms) ? r.arms : [];
@@ -104,16 +152,9 @@ export function ExperimentsPanel() {
             );
           })}
         </ul>
+        </>
       )}
       <style>{`
-        .pc-experiments { margin: 10px 0 4px; padding: 10px 12px; border: 1px solid var(--border, rgba(125, 211, 252, 0.18)); border-radius: 12px; background: var(--bg-2, rgba(255, 255, 255, 0.03)); }
-        .pc-experiments__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-        .pc-experiments__title { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 12.5px; font-weight: 650; }
-        .pc-experiments__sub { flex: 1 1 auto; font-size: 11px; color: var(--fg-mute, #7f9bb4); }
-        .pc-experiments__refresh { display: inline-flex; align-items: center; border: none; background: none; color: var(--fg-mute, #7f9bb4); cursor: pointer; padding: 2px; }
-        .pc-experiments__refresh:disabled { opacity: 0.5; cursor: default; }
-        .pc-experiments__empty { margin: 8px 0 2px; font-size: 11.5px; color: var(--fg-mute, #7f9bb4); }
-        .pc-experiments__empty code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; }
         .pc-experiments__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
         .pc-experiments__row { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; border-top: 1px solid rgba(255, 255, 255, 0.04); }
         .pc-experiments__test { flex: none; font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0; color: var(--accent-ink, #06121a); background: var(--accent-strong, var(--accent)); border-radius: 4px; padding: 1px 5px; }

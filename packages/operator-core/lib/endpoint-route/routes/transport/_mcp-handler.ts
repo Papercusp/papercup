@@ -1886,17 +1886,22 @@ const handler = createMcpHandler(
                   const hint = maybeBatchNudge({
                     sessionKey: replayOwnerKey,
                     toolName,
+                    // P-001/P-003 (code-run-batch-adoption): args unwrap tools:invoke-routed calls
+                    // to their inner tool and prefill the skeletons with the burst's real args.
+                    args,
                     canCodeRun:
                       dispatchSpawnCtx.isSuperuser === true ||
                       canRoleActOnCodeRun(dispatchSpawnCtx.role),
                     codeRunInSurface: !nudgeSurface || nudgeSurface.has('code:run'),
                   });
-                  // Gate PER KIND: the same-tool trigger under CODE_RUN_BATCH_NUDGE, the newer
-                  // fan-out trigger under its own CODE_RUN_FANOUT_NUDGE so it is an independent A/B
-                  // knob. getFlag is consulted ONLY when a hint actually fires (rare).
+                  // Gate PER KIND: the same-tool trigger under CODE_RUN_BATCH_NUDGE; fan-out AND
+                  // pipeline (the chained variant of the same multi-tool trigger) under
+                  // CODE_RUN_FANOUT_NUDGE so the multi-tool family is one independent A/B knob —
+                  // telemetry records the kind verbatim, keeping pipeline vs fanout measurable.
+                  // getFlag is consulted ONLY when a hint actually fires (rare).
                   if (hint && canAttachAdvisory) {
                     const nudgeFlag =
-                      hint.kind === 'fanout' ? FLAGS.CODE_RUN_FANOUT_NUDGE : FLAGS.CODE_RUN_BATCH_NUDGE;
+                      hint.kind === 'same-tool' ? FLAGS.CODE_RUN_BATCH_NUDGE : FLAGS.CODE_RUN_FANOUT_NUDGE;
                     if (await getFlag(nudgeFlag, 'system')) {
                       result.content = [
                         ...result.content,
@@ -1904,11 +1909,13 @@ const handler = createMcpHandler(
                       ];
                       // P-005: record the fire (best-effort, fire-and-forget) so nudge→conversion
                       // is finally measurable — the A/B flags existed but fires were invisible.
+                      // hint.tool = the EFFECTIVE tool (the inner verb for tools:invoke-routed
+                      // calls), so fires attribute to the real verb, not the wrapper.
                       recordBatchNudgeFire({
                         sessionKey: replayOwnerKey,
                         role: dispatchSpawnCtx.role,
                         kind: hint.kind,
-                        toolName,
+                        toolName: hint.tool,
                         workspaceId: dispatchSpawnCtx.workspaceId,
                       });
                     }

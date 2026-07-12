@@ -202,6 +202,7 @@ export default function LearningTab() {
   const activeStage = stageForView(view);
   const activeStageMeta =
     STAGES.find((stage) => stage.id === activeStage) ?? null;
+  const activeStageIndex = STAGES.findIndex((stage) => stage.id === activeStage);
   // Work Queue parity: once a view has been opened, keep its sync subscription
   // and rendered state alive while the user moves around the loop. The old
   // conditional unmounted every panel, forcing heavy aggregate reads to cold-
@@ -273,13 +274,22 @@ export default function LearningTab() {
                 key={stage.id}
                 value={stage.id}
                 className="pc-learning__stage"
+                data-complete={index < activeStageIndex ? "true" : undefined}
               >
                 <span className="pc-learning__stage-icon">
-                  <Icon size={16} aria-hidden />
+                  {index < activeStageIndex ? (
+                    <CheckCircle2 size={16} aria-hidden />
+                  ) : (
+                    <Icon size={16} aria-hidden />
+                  )}
                 </span>
                 <span className="pc-learning__stage-label">{stage.label}</span>
                 {index < STAGES.length - 1 ? (
-                  <span className="pc-learning__stage-line" aria-hidden />
+                  <span
+                    className="pc-learning__stage-line"
+                    data-complete={index < activeStageIndex ? "true" : undefined}
+                    aria-hidden
+                  />
                 ) : null}
               </Tabs.Trigger>
             );
@@ -392,13 +402,18 @@ function LearningViewContent({
   if (view === "observations") return <ObservationsPanel />;
   if (view === "ideas") return <ScoutView />;
   if (view === "rubrics") {
-    return rubricId ? (
-      <RubricDetailPanel
-        rubricId={rubricId}
-        onBack={() => onRubricSelect(null)}
-      />
-    ) : (
-      <RubricsPanel onSelect={onRubricSelect} />
+    return (
+      <div className="pc-learning__rubricsplit">
+        <RubricsPanel onSelect={onRubricSelect} />
+        {rubricId ? (
+          <aside className="pc-learning__rubricdrawer" aria-label="Rubric evidence">
+            <RubricDetailPanel
+              rubricId={rubricId}
+              onBack={() => onRubricSelect(null)}
+            />
+          </aside>
+        ) : null}
+      </div>
     );
   }
   if (view === "gym") return <GymView hive={hive} />;

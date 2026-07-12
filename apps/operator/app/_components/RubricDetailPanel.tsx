@@ -10,6 +10,7 @@
  */
 import { useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
+import { X } from 'lucide-react';
 import { Table, type TableColumn } from '../harness/Table';
 import ScorecardDetail, { RatingChip, type ScorecardRow } from './ScorecardDetail';
 
@@ -69,6 +70,13 @@ export default function RubricDetailPanel({
 
   const rows = scorecards.data ?? [];
   const trendRow = trend.data?.[0];
+  const scoredCriteria = trendRow?.criteria.filter((criterion) => criterion.mean10 != null) ?? [];
+  const mean =
+    scoredCriteria.length > 0
+      ? scoredCriteria.reduce((sum, criterion) => sum + (criterion.mean10 ?? 0), 0) / scoredCriteria.length
+      : null;
+  const improving = trendRow?.criteria.filter((criterion) => directionGlyph(criterion.direction) === '↑').length ?? 0;
+  const regressing = trendRow?.criteria.filter((criterion) => directionGlyph(criterion.direction) === '↓').length ?? 0;
 
   const trendColumns: TableColumn<CriterionTrend>[] = trendRow
     ? [
@@ -131,14 +139,28 @@ export default function RubricDetailPanel({
 
   return (
     <div className="pc-rubric-detail">
-      {onBack && (
-        <button type="button" onClick={onBack} style={{ marginBottom: '1rem' }}>
-          ← All rubrics
-        </button>
-      )}
-      <h2 style={{ marginBottom: '0.25rem' }}>{rubricId}</h2>
+      <header className="pc-rubric-detail__head">
+        <span>Evidence</span>
+        <strong>{rubricId}</strong>
+        {onBack ? (
+          <button type="button" onClick={onBack} aria-label="Close rubric evidence">
+            <X size={14} aria-hidden />
+          </button>
+        ) : null}
+      </header>
 
-      <h3 style={{ margin: '1.25rem 0 0.5rem' }}>Per-criterion trend</h3>
+      <div className="pc-rubric-detail__overview">
+        <div className="pc-rubric-detail__hero">
+          <span>Mean</span>
+          <strong>{mean == null ? '—' : mean.toFixed(1)}</strong>
+          <small>/10</small>
+        </div>
+        <div><span>Scorecards</span><strong>{trendRow?.scorecardCount ?? rows.length}</strong></div>
+        <div className="is-good"><span>Improving</span><strong>{improving}</strong></div>
+        <div className={regressing > 0 ? 'is-bad' : undefined}><span>Regressing</span><strong>{regressing}</strong></div>
+      </div>
+
+      <h3>Criterion trend</h3>
       {trend.loading ? (
         <div role="status">Loading trend…</div>
       ) : trend.error ? (
@@ -163,7 +185,7 @@ export default function RubricDetailPanel({
         </div>
       )}
 
-      <h3 style={{ margin: '1.5rem 0 0.5rem' }}>Grading history</h3>
+      <h3>Grading history</h3>
       {scorecards.loading ? (
         <div role="status">Loading scorecards…</div>
       ) : scorecards.error ? (
@@ -187,6 +209,23 @@ export default function RubricDetailPanel({
           />
         </div>
       )}
+      <style>{`
+        .pc-rubric-detail { display: flex; flex-direction: column; gap: 12px; min-height: 100%; padding: 14px; background: var(--bg-1); }
+        .pc-rubric-detail__head { display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; align-items: center; padding-bottom: 11px; border-bottom: 1px solid var(--border); }
+        .pc-rubric-detail__head > span { grid-column: 1; color: var(--fg-mute); font-size: 9.5px; font-weight: 750; text-transform: uppercase; letter-spacing: .05em; }
+        .pc-rubric-detail__head > strong { grid-column: 1; overflow: hidden; color: var(--fg); font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+        .pc-rubric-detail__head button { grid-column: 2; grid-row: 1 / 3; display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 7px; background: transparent; color: var(--fg-mute); cursor: pointer; }
+        .pc-rubric-detail__overview { display: grid; grid-template-columns: 1.4fr repeat(3, minmax(70px, 1fr)); gap: 7px; }
+        .pc-rubric-detail__overview > div { display: flex; flex-direction: column; justify-content: center; gap: 3px; min-height: 68px; padding: 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); }
+        .pc-rubric-detail__overview span { color: var(--fg-mute); font-size: 8.5px; font-weight: 700; text-transform: uppercase; }
+        .pc-rubric-detail__overview strong { color: var(--fg); font-size: 18px; font-variant-numeric: tabular-nums; }
+        .pc-rubric-detail__overview .pc-rubric-detail__hero strong { color: var(--accent); font-size: 28px; letter-spacing: -.04em; }
+        .pc-rubric-detail__overview small { color: var(--fg-mute); font-size: 9px; }
+        .pc-rubric-detail__overview .is-good strong { color: #34d399; }
+        .pc-rubric-detail__overview .is-bad strong { color: #fb7185; }
+        .pc-rubric-detail > h3 { margin: 4px 0 -5px; color: var(--fg); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .035em; }
+        @media (max-width: 720px) { .pc-rubric-detail__overview { grid-template-columns: repeat(2, 1fr); } }
+      `}</style>
     </div>
   );
 }

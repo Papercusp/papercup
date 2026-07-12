@@ -19,6 +19,12 @@
 import { useSyncQuery } from '@papercusp/sync';
 import { HeartPulse, RefreshCw } from 'lucide-react';
 import type { MttshVitals } from '@papercusp/operator-core/lib/red-queen/mttsh';
+import {
+  LearningEvidenceRail,
+  LearningHeroMetric,
+  LearningPageHeader,
+  LearningVisualEmpty,
+} from './LearningVisuals';
 
 function ms(v: number | null): string {
   if (v == null) return '—';
@@ -37,42 +43,71 @@ export function RedQueenPanel() {
   const sync = useSyncQuery<MttshVitals>({ queryName: 'learning.redQueen', args: {}, staleTime: 30_000 });
   const snap = sync.data?.[0];
   const classes = Array.isArray(snap?.classes) ? snap.classes : [];
+  const phaseAverage = (key: 'detectMs' | 'triageMs' | 'fixMs'): number => {
+    const values = classes.map((row) => row[key]).filter((value): value is number => value != null);
+    return values.length > 0 ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+  };
+  const detect = phaseAverage('detectMs');
+  const triage = phaseAverage('triageMs');
+  const fix = phaseAverage('fixMs');
+  const phaseTotal = Math.max(1, detect + triage + fix);
 
   return (
-    <section className="pc-rq" aria-label="Red Queen MTTSH vitals">
-      <div className="pc-rq__head">
-        <h3 className="pc-rq__title">
-          <HeartPulse size={14} aria-hidden /> MTTSH
-        </h3>
-        <span className="pc-rq__sub">mean-time-to-self-heal against planted drills (detect → triage → fix)</span>
-        <button
-          type="button"
-          className="pc-rq__refresh"
-          aria-label="Reload the MTTSH vitals"
-          disabled={sync.fetching}
-          onClick={() => sync.invalidate()}
-        >
-          <RefreshCw size={12} aria-hidden />
-        </button>
-      </div>
+    <section className="pc-learning__section pc-rq" aria-label="Red Queen MTTSH vitals">
+      <LearningPageHeader
+        icon={HeartPulse}
+        title="Red Queen"
+        signal={snap ? `${snap.totalResolved}/${snap.totalRuns} healed` : undefined}
+        tone={snap && snap.leakFailures > 0 ? 'bad' : 'good'}
+        action={
+          <button
+            type="button"
+            className="pc-learning__refresh"
+            aria-label="Reload the MTTSH vitals"
+            disabled={sync.fetching}
+            onClick={() => sync.invalidate()}
+          >
+            <RefreshCw size={12} aria-hidden />
+          </button>
+        }
+      />
 
       {classes.length === 0 ? (
-        <p className="pc-rq__empty">
-          No drills run yet. The Red Queen plants known frictions in a sandbox and measures how fast the loop
-          self-heals — it ships dark until the frontier arming gate flips it on.
-        </p>
+        <LearningVisualEmpty icon={HeartPulse} title="No self-heal drills" />
       ) : (
         <>
-          <p className="pc-rq__rollup">
-            {snap!.totalResolved}/{snap!.totalRuns} drill{snap!.totalRuns === 1 ? '' : 's'} healed · median{' '}
-            {ms(snap!.medianTotalMs)}
-            {snap!.leakFailures > 0 ? (
-              <span className="pc-rq__leak"> · {snap!.leakFailures} LEAK CHECK FAILURE{snap!.leakFailures === 1 ? '' : 'S'}</span>
-            ) : (
-              ' · zero leaks'
-            )}
-            {snap!.lastRunAt ? ` · last drill ${dateShort(snap!.lastRunAt)}` : ''}
-          </p>
+          <div className="pc-learning-visual__layout pc-learning-visual__layout--rq">
+            <LearningHeroMetric
+              eyebrow="Median self-heal"
+              value={ms(snap!.medianTotalMs)}
+              status={snap!.leakFailures > 0 ? 'leak detected' : 'zero leaks'}
+              tone={snap!.leakFailures > 0 ? 'bad' : 'good'}
+            >
+              {snap!.totalResolved}/{snap!.totalRuns} healed
+            </LearningHeroMetric>
+            <div className="pc-rq__waterfall" aria-label="Self-heal phase timing">
+              {[
+                ['Detect', detect, '#38bdf8'],
+                ['Triage', triage, '#fbbf24'],
+                ['Fix', fix, '#34d399'],
+              ].map(([label, value, color]) => (
+                <span key={String(label)} style={{ width: `${Math.max(12, (Number(value) / phaseTotal) * 100)}%` }}>
+                  <i style={{ background: String(color) }} />
+                  <small>{label}</small>
+                  <strong>{ms(Number(value))}</strong>
+                </span>
+              ))}
+            </div>
+            <LearningEvidenceRail>
+              <div className="pc-learning-visual__evidence-grid">
+                <div className="pc-learning-visual__evidence-metric"><span>Healed</span><strong>{snap!.totalResolved}</strong></div>
+                <div className="pc-learning-visual__evidence-metric"><span>Runs</span><strong>{snap!.totalRuns}</strong></div>
+                <div className="pc-learning-visual__evidence-metric"><span>Leaks</span><strong>{snap!.leakFailures}</strong></div>
+                <div className="pc-learning-visual__evidence-metric"><span>Classes</span><strong>{classes.length}</strong></div>
+              </div>
+            </LearningEvidenceRail>
+          </div>
+          <div className="pc-learning__sectionhead"><h2>Drill classes</h2></div>
           <ul className="pc-rq__list">
             {classes.map((c) => (
               <li key={c.drillClass} className="pc-rq__row">
@@ -97,14 +132,11 @@ export function RedQueenPanel() {
         </>
       )}
       <style>{`
-        .pc-rq { margin: 10px 0 4px; padding: 10px 12px; border: 1px solid var(--border, rgba(125, 211, 252, 0.18)); border-radius: 12px; background: var(--bg-2, rgba(255, 255, 255, 0.03)); }
-        .pc-rq__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-        .pc-rq__title { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 12.5px; font-weight: 650; }
-        .pc-rq__sub { flex: 1 1 auto; font-size: 11px; color: var(--fg-mute, #7f9bb4); }
-        .pc-rq__refresh { display: inline-flex; align-items: center; border: none; background: none; color: var(--fg-mute, #7f9bb4); cursor: pointer; padding: 2px; }
-        .pc-rq__refresh:disabled { opacity: 0.5; cursor: default; }
-        .pc-rq__empty { margin: 8px 0 2px; font-size: 11.5px; color: var(--fg-mute, #7f9bb4); }
-        .pc-rq__rollup { margin: 6px 0 4px; font-size: 11px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }
+        .pc-rq__waterfall { min-height: 176px; display: flex; align-items: center; gap: 4px; padding: 18px; border: 1px solid var(--border); border-radius: 11px; background: var(--bg-2); }
+        .pc-rq__waterfall > span { min-width: 70px; display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: end; }
+        .pc-rq__waterfall i { grid-column: 1 / -1; display: block; height: 22px; border-radius: 4px; opacity: .85; }
+        .pc-rq__waterfall small { color: var(--fg-mute); font-size: 9px; text-transform: uppercase; }
+        .pc-rq__waterfall strong { color: var(--fg); font-size: 10px; font-variant-numeric: tabular-nums; }
         .pc-rq__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
         .pc-rq__row { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; border-top: 1px solid rgba(255, 255, 255, 0.04); }
         .pc-rq__class { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono, ui-monospace, monospace); font-size: 11.5px; }
