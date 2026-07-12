@@ -77,6 +77,23 @@ describe('anchored incremental context reads (WI-4154)', () => {
     );
   });
 
+  it('EI-10434: a marker OUTSIDE the scan window seeds a BOUNDED estimate matching the full-scan estimator, not the raw whole-file size', () => {
+    const MB = 1024 * 1024;
+    // The marker sits at the very start; well over BOUNDARY_SCAN_CAP (8MB) of
+    // content follows with no further marker, so the last-8MB scan window can
+    // no longer see it — the shape a long-running, many-times-compacted
+    // session transcript takes over a full day (the EI-10434 20.9M/21.17M/
+    // 24.3M-token garbage-reading occurrences).
+    fs.writeFileSync(file, MARKER_LINE + 'a'.repeat(12 * MB));
+    seedContextAnchorForTests('o-huge', file);
+    const anchored = currentContextTokensSyncForOwner('o-huge');
+    const fullScan = tokensFromFileSize(file);
+    expect(anchored).toBe(fullScan);
+    // Bounded by the scan cap (8MB/4), never the raw ~12MB file's ≈3M-token
+    // whole-file reading.
+    expect(anchored).toBeLessThanOrEqual((8 * MB) / 4);
+  });
+
   it('discounts an appended image payload to the vision cap (WI-3176 parity)', () => {
     fs.writeFileSync(file, line(400_000));
     seedContextAnchorForTests('o5', file);

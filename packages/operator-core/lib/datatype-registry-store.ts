@@ -42,6 +42,67 @@ export function slugifyDatatype(name: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
+/**
+ * Singularize ONE slug token. Deliberately crude and TOTAL — it is a canonicalization,
+ * not linguistics: the only property that matters is that a word and its plural land on
+ * the SAME key ('order'/'orders' → 'order', 'box'/'boxes' → 'box', 'policy'/'policies'
+ * → 'policy'). Being wrong about English is harmless as long as it is wrong CONSISTENTLY.
+ */
+function singularizeToken(t: string): string {
+  if (/ies$/.test(t) && t.length > 4) return `${t.slice(0, -3)}y`;
+  if (/(s|x|z|ch|sh)es$/.test(t)) return t.slice(0, -2);
+  if (/s$/.test(t) && !/ss$/.test(t) && t.length > 3) return t.slice(0, -1);
+  return t;
+}
+
+/**
+ * The CANONICAL duplicate key for a datatype name (EI-10562) — the deterministic,
+ * threshold-free half of the dedup gate.
+ *
+ * The registry's whole job is preventing DUPLICATE datatypes, and the duplicate that
+ * actually happens is a SLUG VARIANT: someone declares `orders` when `order` exists.
+ * That case can be decided with CERTAINTY, so it is decided by an exact test — set
+ * membership on this key — and never by a similarity score.
+ *
+ * Why not a score: see EI-10562. On live data, the cosine between the ONE true
+ * near-duplicate pair in the registry (bet/wager, 0.752) and merely-same-domain
+ * DISTINCT pairs (bet/forecast, 0.710) differs by 0.04. Similarity cannot separate a
+ * duplicate from a neighbour here at ANY threshold, so it is not allowed to refuse —
+ * it only ranks the advisory `related[]` list. Certainty gets a gate; uncertainty gets
+ * advice.
+ */
+export function canonicalDatatypeKey(name: string): string {
+  return slugifyDatatype(name).split('-').filter(Boolean).map(singularizeToken).join('-');
+}
+
+/**
+ * Find an EXISTING active datatype whose canonical key collides with `name` — i.e. an
+ * unmistakable duplicate under {@link canonicalDatatypeKey} (`orders` vs `order`), never
+ * a mere semantic neighbour. `excludeId` skips the row being re-declared in place.
+ *
+ * Canonicalization lives in TS on BOTH sides (never half in SQL) so the key can never
+ * drift between the write path and the check path. The registry is bounded by design
+ * (a workspace has tens of datatypes, not millions), so scanning ids is the right call.
+ */
+export async function findCanonicalDuplicate(
+  sql: postgres.Sql,
+  workspaceId: string,
+  name: string,
+  excludeId?: string,
+): Promise<{ id: string; title: string } | null> {
+  const key = canonicalDatatypeKey(name);
+  if (!key) return null;
+  const rows = await sql<{ id: string; title: string }[]>`
+    SELECT id, title
+      FROM harness_shared.datatype_registry
+     WHERE workspace_id = ${workspaceId} AND status = 'active'`;
+  for (const r of rows) {
+    if (excludeId && r.id === excludeId) continue;
+    if (canonicalDatatypeKey(r.id) === key) return { id: r.id, title: r.title };
+  }
+  return null;
+}
+
 export interface DatatypeRow {
   id: string;
   workspaceId: string;
@@ -285,17 +346,26 @@ export interface SimilarDatatype {
   title: string;
   description: string;
   tier: DatatypeTier;
-  /** 0..1 — lexical (title_tsv) rank, optionally fused with embedding cosine when a vector is given. */
+  /**
+   * A RANKING weight — NOT a calibrated similarity, and NEVER safe to threshold (EI-10562).
+   * It is `GREATEST(ts_rank, 0.4*ts_rank + 0.6*cosine)`: a weighted sum of two quantities on
+   * different scales, so a constant compared against it has no stable meaning. (This field's
+   * doc used to claim "0..1", and a consumer duly wrote `score >= 0.05` to REFUSE — which is
+   * cosine >= 0.083, the noise floor, and refused 100% of legitimate declarations.)
+   *
+   * Use it to ORDER candidates. To DECIDE duplicate-or-not, use {@link canonicalDatatypeKey}.
+   */
   score: number;
 }
 
 /**
- * The SOFT semantic-dedup surface at declaration (D-010): surface existing datatypes
- * that look like the one being declared, so the caller can prompt "a datatype like
- * this exists: X — reuse or confirm distinct" with a force/moderation path for the
- * ambiguous middle. Lexical leg (title_tsv ⟂ websearch_to_tsquery over title+description)
- * is embedder-independent; when an `embedding` is supplied the cosine leg is fused in.
- * Returns the top matches (excluding `excludeId`), strongest first.
+ * The ADVISORY neighbour surface at declaration (D-010): the existing datatypes nearest
+ * the one being declared, strongest first, so the caller can be TOLD "you declared
+ * `orders`; `order` already exists — if you meant that one, retire yours."
+ *
+ * ADVISORY, not a gate (EI-10562). These results rank; they do not judge. The refusal
+ * path is {@link findCanonicalDuplicate}, an exact test. Lexical leg (title_tsv over
+ * title+description) is embedder-independent; an `embedding` fuses the cosine leg in.
  */
 export async function findSimilarDatatypes(
   sql: postgres.Sql,

@@ -86,6 +86,7 @@ import {
   resetForceCompactedForTests,
   resetBootConfigAssertForTests,
   resetNoHostWarnedForTests,
+  resetImplausibleReadingsForTests,
 } from './compaction-compliance-watchdog';
 import {
   getContextUsage,
@@ -138,6 +139,7 @@ beforeEach(() => {
   resetNoHostWarnedForTests(); // EI-9982 no-live-host diagnostic dedup
   resetBootConfigAssertForTests(); // P-018 boot self-assert dedup + streak
   resetContextUsageCacheForTests(); // P-013 gauge cache + flag mirror
+  resetImplausibleReadingsForTests(); // EI-10434 sanity-clamp warn dedup
   // The watchdog narrates seeds/over-limit crossings on the console by design;
   // silence it so vitest-fail-on-console doesn't flag the expected output.
   vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -776,5 +778,55 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
     for (let i = 0; i < 5; i++) last = await checkCompactionCompliance(fakeSql({ seeded: synthSeeded }));
     expect(last!.bootConfigAlerts).toEqual([]); // never flagged despite 5 consecutive null sweeps
     expect(openEscalationMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('implausible-reading sanity clamp (EI-10434)', () => {
+  const seeded = [{ owner_id: 'garbage', owner_label: 'su · garbage', compaction_limit: 158_000 }];
+
+  it('discards a reading past the absolute plausibility ceiling — no cache write, no over-limit, no force-compact', async () => {
+    // The exact garbage-reading signature reported live: a cumulative-total
+    // misread as current usage, physically impossible against any real window.
+    estimateMock.mockResolvedValue(21_173_000);
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(out.estimated).toEqual([]); // never counted as a resolved estimate
+    expect(out.overLimit).toEqual([]);
+    expect(out.forceCompacted).toEqual([]);
+    expect(out.implausibleReadings).toEqual([
+      { owner: 'garbage', est: 21_173_000, ceiling: 2_000_000 },
+    ]);
+    expect(setEstimateMock).not.toHaveBeenCalled(); // never cached — the gauge must never render it either
+    expect(injectMock).not.toHaveBeenCalled(); // never force-compacted off it
+  });
+
+  it('a plausible reading — even one genuinely over its own limit — is NOT clamped', async () => {
+    estimateMock.mockResolvedValue(200_000); // over 158k but well within any real model window
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(out.implausibleReadings).toEqual([]);
+    expect(out.overLimit).toEqual(['garbage']);
+    expect(setEstimateMock).toHaveBeenCalledWith('garbage', 200_000);
+  });
+
+  it('a reading that RECOVERS to plausible after an implausible sweep is no longer discarded (re-arms the dedup)', async () => {
+    estimateMock.mockResolvedValue(25_000_000);
+    const first = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(first.implausibleReadings).toHaveLength(1);
+
+    estimateMock.mockResolvedValue(40_000); // the session self-compacted / the misread cleared
+    const second = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(second.implausibleReadings).toEqual([]);
+    expect(second.estimated).toEqual(['garbage']);
+    expect(setEstimateMock).toHaveBeenCalledWith('garbage', 40_000);
+  });
+
+  it('warns only ONCE per owner across repeated implausible sweeps (dedup)', async () => {
+    estimateMock.mockResolvedValue(30_000_000);
+    await checkCompactionCompliance(fakeSql({ seeded }));
+    await checkCompactionCompliance(fakeSql({ seeded }));
+    await checkCompactionCompliance(fakeSql({ seeded }));
+    const implausibleWarnings = (console.warn as ReturnType<typeof vi.fn>).mock.calls.filter((c) =>
+      String(c[0]).includes('DISCARDING an implausible'),
+    );
+    expect(implausibleWarnings).toHaveLength(1);
   });
 });

@@ -25,7 +25,7 @@ export const MEM09_MIC_DEVICE: Scenario = {
     mem0: [
       {
         kind: 'feedback',
-        body: 'On the marsh-office dev box, audio e2e capture must use the Logitech Brio webcam mic. The Blue Yeti enumerates fine under PipeWire but captures pure silence — a known quirk, not a test bug. Select the Brio explicitly via PULSE_SOURCE.',
+        body: 'On the primary dev box, audio e2e capture must use the Logitech Brio webcam mic. The Blue Yeti enumerates fine under PipeWire but captures pure silence — a known quirk, not a test bug. Select the Brio explicitly via PULSE_SOURCE.',
       },
     ],
   },

@@ -357,7 +357,6 @@ export default function LearningTab() {
                         ? `learning-view-status-${candidate.id}`
                         : undefined
                     }
-                    title={candidate.label}
                   >
                     <span
                       className={`pc-learning__view-icon${semantic ? ` has-${semantic}` : ""}`}
