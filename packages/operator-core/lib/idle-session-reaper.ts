@@ -45,10 +45,9 @@ import { interruptViaPty, findLiveHost, listLiveHosts } from './events/await/psu
 import { COORD_INBOX_WAKE_PREFIX } from './agent-tools/coordination/inbox-wake';
 import { gatherOnDesktopSessions, isPidUnderOpenWindow } from './desktop-window-liveness';
 import { gatherViewerAttachedOwners } from './pty-viewer-heartbeat';
-import { releaseWorkItem } from './work-items';
-import { releaseAllClaimsForOwner } from './work-item-claims';
 import { issuesScopeWorkspace } from './issues-engineer';
 import { activeWorkspaceId } from './workspace-registry';
+import { releaseAllWorkItemLeasesForOwner } from './work-item-lease-release';
 
 /** Liveness/grace window. Matches work-items-stale-claims STALE_CLAIM_GRACE_MS
  *  and the fleet_assignment view (10 min): a live psu session's supervisor beat
@@ -544,26 +543,15 @@ export async function runWorkItemLeaseReap(
     const plan = planWorkItemLeaseReap({ leases, liveOwners, nowMs: Date.now(), graceMs: opts.graceMs });
     let ownersReconciled = 0;
     if (!dryRun && plan.reap.length) {
-      // Compare-and-release per lease (expectedAssignee = the dead owner we just
-      // read) — atomic: if the lease changed hands between the read above and
-      // here (a live agent legitimately re-claimed it), the UPDATE matches 0 rows
-      // and releaseWorkItem returns null, so we never clobber a fresh claim.
-      for (const lease of plan.reap) {
-        await releaseWorkItem(lease.id, { harness: lease.harness ?? undefined, expectedAssignee: lease.takenBy }).catch(
-          (e) => console.warn(`[work-item-lease-reap] release failed for ${lease.id}:`, (e as Error)?.message ?? e),
-        );
-      }
-      // Reconcile the coordination claim ledger (work_item_claims) for every
-      // distinct dead owner touched — closes the EI-9807 two-ledger divergence
-      // for the session-death path specifically.
+      // Per distinct dead owner: force-release every lease it holds + reconcile
+      // its claim ledger via the SHARED core (work-item-lease-release.ts) — the
+      // exact same function P-002's event-driven fast path calls, so a session
+      // whose SessionEnd never fired (SIGKILL, a raw terminal close, a host
+      // crash) still gets the identical release semantics from this backstop.
       const deadOwners = [...new Set(plan.reap.map((l) => l.takenBy))];
       for (const owner of deadOwners) {
-        try {
-          await releaseAllClaimsForOwner(featureWs, owner);
-          ownersReconciled += 1;
-        } catch (e) {
-          console.warn(`[work-item-lease-reap] claim-ledger reconcile failed for ${owner}:`, (e as Error)?.message ?? e);
-        }
+        const rel = await releaseAllWorkItemLeasesForOwner(owner);
+        if (rel.claimsCleared) ownersReconciled += 1;
       }
     }
     return {

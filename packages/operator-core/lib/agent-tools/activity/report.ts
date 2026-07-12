@@ -32,6 +32,7 @@ import {
 } from '../../events/await/inbox-wake-arm';
 import { writeWatermark } from '../coordination/watermarks';
 import { isWorkspaceContended } from '../locks/contention-retry';
+import { releaseAllWorkItemLeasesForOwner } from '../../work-item-lease-release';
 
 /** Map a lifecycle-report summary to a session phase. The shared cc/ lifecycle
  *  hook sends '▶ session started' (SessionStart) and '■ session ended'
@@ -171,6 +172,32 @@ export default defineTool({
         console.warn(
           `[activity:report] inbox-wake ${phase} for ${owner} failed: ${e instanceof Error ? e.message : e}`,
         );
+      }
+      if (phase === 'end') {
+        // session-death-claim-release-2026-07-11 P-002 (the FAST PATH): the
+        // SAME SessionEnd/Stop lifecycle event that already fires on every
+        // psu session (hooks/cc/lifecycle-report.sh → THIS call, unchanged)
+        // is the earliest, cheapest signal that `owner`'s process is gone —
+        // force-release every work-item lease + coordination claim it holds
+        // NOW, in seconds, rather than waiting on the ~hourly reap schedule
+        // (P-001, the backstop for the cases this event misses: a SIGKILL, a
+        // raw terminal close that skips the hook, a host crash). Own try/catch
+        // (releaseAllWorkItemLeasesForOwner never throws either) so a release
+        // hiccup can never fail this report or skip the inbox-wake cancel above.
+        try {
+          const rel = await releaseAllWorkItemLeasesForOwner(owner);
+          if (rel.releasedIds.length || rel.claimsCleared) {
+            console.log(
+              `[activity:report] session-end lease release for ${owner}: released ${rel.releasedIds.length} item(s) ` +
+                `[${rel.releasedIds.slice(0, 20).join(',')}${rel.releasedIds.length > 20 ? ',…' : ''}], ` +
+                `cleared ${rel.claimsCleared} claim-ledger row(s)`,
+            );
+          }
+        } catch (e) {
+          console.warn(
+            `[activity:report] session-end lease release for ${owner} failed: ${e instanceof Error ? e.message : e}`,
+          );
+        }
       }
     } else if (args.kind !== 'lifecycle') {
       // SELF-HEAL (launch-wakeability): a genuine non-lifecycle report is a native
