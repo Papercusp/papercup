@@ -400,7 +400,10 @@ export default defineTool({
       // GitHub path below. Only a host that DOES publish latest.json is
       // authoritative — and then every outcome is decided here.
       if (latest?.version && latest.platforms) {
-        return staticManifestResponse(latest, { host, channel, target, arch, product, currentVersion });
+        return staticManifestResponse(
+          { ...latest, version: latest.version, platforms: latest.platforms },
+          { host, channel, target, arch, product, currentVersion },
+        );
       }
     }
 

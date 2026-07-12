@@ -17,7 +17,11 @@
  *   4. a foreign/non-admitted pot's memory never lands locally (projection demux, against a
  *      REAL table — the private-pot leak guard),
  *   5. the fed_order_key LWW guard actually resolves conflicting writes last-writer-wins
- *      (a stale, out-of-order replay can never clobber a newer projected row).
+ *      (a stale, out-of-order replay can never clobber a newer projected row),
+ *   6. retraction-of-sharing (EI-10393): a remote put whose payload is not
+ *      shareable:true DELETES that source's partition (the mig-563 un-share flip
+ *      applies as a retraction; a never-shareable hostile put stores nothing;
+ *      the local partition is immune).
  *
  * `createFreshPgDb` provisions only `harness_shared` + the fed_order_key fns (EI-9387) — the
  * capture infra (function + substrate_outbox) and memory_canonical's base shape live in
@@ -266,6 +270,74 @@ describe('mem0 federation privacy + LWW (real PG, mem0-cross-machine-federation-
       expect(rows).toHaveLength(1);
       expect(rows[0].source_hive).toBe('admitted-peer');
       expect(rows[0].origin).toBe('remote');
+    });
+  });
+
+  // ── (6): retraction-of-sharing applied on receive (EI-10393) ──────────────
+  // mig 563 deliberately captures the shareable true→false flip as a PUT
+  // ("peers apply the retraction of sharing") — the projection must DELETE that
+  // source's partition on such an op, never store the now-private content.
+  describe('retraction-of-sharing: a remote non-shareable put deletes that source partition', () => {
+    const mkProj = () => buildMemoriesProjection({ workspaceId: WS, harnessSlug: SLUG, sql: db.sql });
+    const wire = (id: string, payload: Record<string, unknown>) => ({
+      harness_slug: SLUG,
+      id,
+      payload,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    const rowsFor = (id: string) =>
+      db.sql`SELECT source_hive FROM harness_shared.memory_canonical WHERE id = ${id}::uuid`;
+
+    it('the un-share flip op removes the peer copy (content no longer held)', async () => {
+      const proj = mkProj();
+      const id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+      await proj.writeToPg(
+        wire(id, { shareable: true, workspace_id: WS, text: 'shared for a while' }),
+        { authorPubkey: 'peer-1', origin: 'remote', ts: 100 } as never,
+      );
+      expect(await rowsFor(id)).toHaveLength(1);
+
+      await proj.writeToPg(
+        wire(id, { shareable: false, workspace_id: WS, text: 'shared for a while' }),
+        { authorPubkey: 'peer-1', origin: 'remote', ts: 200 } as never,
+      );
+      expect(await rowsFor(id)).toHaveLength(0); // retraction APPLIED, not stored
+    });
+
+    it('LWW: a STALE retraction replay can never delete a newer re-share', async () => {
+      const proj = mkProj();
+      const id = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+      await proj.writeToPg(
+        wire(id, { shareable: true, workspace_id: WS, text: 're-shared' }),
+        { authorPubkey: 'peer-1', origin: 'remote', ts: 300 } as never,
+      );
+      await proj.writeToPg(
+        wire(id, { shareable: false, workspace_id: WS }),
+        { authorPubkey: 'peer-1', origin: 'remote', ts: 200 } as never, // stale retraction
+      );
+      expect(await rowsFor(id)).toHaveLength(1); // the newer re-share survived
+    });
+
+    it('a NEVER-shared non-shareable put stores nothing (hostile/buggy sender)', async () => {
+      const id = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+      await mkProj().writeToPg(
+        wire(id, { workspace_id: WS, text: 'hostile private push, no shareable key' }),
+        { authorPubkey: 'hostile-peer', origin: 'remote', ts: 100 } as never,
+      );
+      expect(await rowsFor(id)).toHaveLength(0);
+    });
+
+    it('a LOCAL-origin echo with shareable:false never deletes the local partition', async () => {
+      const id = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+      await insertMemory(id, { user_id: 'u1', workspace_id: WS, shareable: false, text: 'local private row' }, SLUG);
+      await mkProj().writeToPg(
+        wire(id, { user_id: 'u1', workspace_id: WS, shareable: false, text: 'local private row' }),
+        undefined,
+      );
+      const rows = await rowsFor(id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].source_hive).toBeNull(); // still the untouched local partition
     });
   });
 

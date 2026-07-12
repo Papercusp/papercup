@@ -105,6 +105,11 @@ const RECIPE_TITLE_CAP = 120;
  *  client timeout, in BOTH monitor and full mode (`me` runs unconditionally).
  *  Bound each so a slow leg degrades to an empty/null fallback instead. */
 const ORIENT_FLEET_LEG_TIMEOUT_MS = 8_000;
+/** P-016 (voice-public-release-readiness-2026-07-12): the papercup pane-context
+ *  fold gathers FOUR ready-made digests (salience feed, overwatch brief, corpus
+ *  digest, live fleet — papercup-context.ts) — heavier than a single fleet leg,
+ *  so it gets its own budget. Degrades to null past it (WI-3818 contract). */
+const ORIENT_PANE_CONTEXT_TIMEOUT_MS = 10_000;
 
 export interface OrientArgs {
   harness?: string;
@@ -296,7 +301,59 @@ export interface OrientResult {
    *  back-to-back and converse; `present:false` ⇒ owner absent: settle per unit so wakes stay
    *  injection points. null when the read failed; absent when the handler did not resolve it. */
   ownerPresent?: { present: boolean; lastSeenAgoMs: number | null; activeSessions: number } | null;
+  /** P-016 (voice-public-release-readiness-2026-07-12): the papercup FAST pane's
+   *  standing live-system digest — the SAME rendered block the converse brain walks
+   *  in with (papercup-context.ts: anomalies → live signals → open deep delegations
+   *  → standing patterns → live fleet), folded so a coord-side fast-pane turn
+   *  orients with the whole pot picture in this ONE call instead of re-deriving it
+   *  from raw reads. Present only for a `papercup`-role caller in full mode
+   *  (orientRoleFolds); null on a failed/timed-out gather — never breaks orientation. */
+  paneContext?: string | null;
+  /** P-016: the papercup-deep pane's OPEN QUESTION THREAD — directed messages
+   *  awaiting ITS reply (the unanswered-directed aggregate, newest-first capped
+   *  list + true count). The deep brain's work unit IS the delegated question, so
+   *  its orient leads with "what do I still owe an answer to" — count 0 is the
+   *  honest "nothing pending, park". Present only for a `papercup-deep`-role
+   *  caller in full mode (orientRoleFolds); null on a failed read. */
+  deepWork?: {
+    count: number;
+    oldestAgeMs: number;
+    newest: Array<{ msgId: string; from: string; summary?: string; ageMs: number }>;
+    /** The answer-before-parking advisory — rides only a non-empty thread. */
+    note?: string;
+  } | null;
 }
+
+/** P-016: the role-specific fold closures the HANDLER injects (dynamic-import IO
+ *  lives in the closures) so composeOrient stays IO-free + unit-testable — the
+ *  same injection contract as the cursor/fleetMembership params. */
+export interface OrientRoleFolds {
+  /** Renders the papercup pane's live-system digest block (null ⇒ nothing to fold). */
+  paneContext?: () => Promise<string | null>;
+  /** Reads the papercup-deep pane's unanswered directed-question thread. */
+  deepWork?: () => Promise<NonNullable<OrientResult['deepWork']> | null>;
+}
+
+/** PURE (P-016): which role-specific folds a caller's dispatch role earns.
+ *  `papercup` (the user-facing FAST dock pane) → the live-system pane digest;
+ *  `papercup-deep` (the hidden deep brain) → its open question thread. FULL mode
+ *  only — a monitor tick skips both (the EI-8300 cost discipline every heavy leg
+ *  follows). Every other role: neither — these are pane-role standing context,
+ *  not general orientation. Exported so the gate is directly unit-testable
+ *  without driving the handler. */
+export function orientRoleFolds(
+  role: string | null | undefined,
+  mode: 'full' | 'monitor' | undefined,
+): { paneContext: boolean; deepWork: boolean } {
+  if (mode === 'monitor') return { paneContext: false, deepWork: false };
+  return { paneContext: role === 'papercup', deepWork: role === 'papercup-deep' };
+}
+
+/** P-016: the deepWork answer-before-parking advisory (exported for the tests +
+ *  any renderer that wants to pin the exact copy). */
+export const ORIENT_DEEP_WORK_NOTE =
+  'open delegated questions awaiting YOUR reply — answer each on its own thread ' +
+  "(coord:send { to: [<from>], related_msg_id: <msgId>, wake: 'required' }) before parking; never go silent.";
 
 /**
  * EI-9130: did this orient's bespoke cursor-delta legs (fleetDelta / planEvents /
@@ -359,6 +416,11 @@ export async function composeOrient(
    *  own process) and INJECTED so composeOrient stays IO-free + unit-testable.
    *  Drives the leaderBrief fold below (monitor mode + fleetRole==='leader' only). */
   fleetMembership?: { fleetSlug: string | null; fleetRole: string | null } | null,
+  /** P-016 (voice-public-release-readiness-2026-07-12): the role-specific fold
+   *  closures — resolved by the handler (ctx.role through the PURE orientRoleFolds
+   *  gate) and INJECTED so composeOrient stays IO-free + unit-testable. Absent ⇒
+   *  neither fold (every non-pane role, and every monitor tick). */
+  roleFolds?: OrientRoleFolds,
 ): Promise<OrientResult> {
   const monitor = args.mode === 'monitor';
   // WI-3818: unconditional in BOTH modes (monitor's one fleet-related read) — a
@@ -806,6 +868,28 @@ export async function composeOrient(
     } catch { /* best-effort — never break orientation */ }
   }
 
+  // ── role-specific pane folds (voice-public-release-readiness-2026-07-12 P-016) —
+  // injected by the handler ONLY for the papercup / papercup-deep dock-pane roles in
+  // full mode (orientRoleFolds). BEST-EFFORT + TIME-BOUNDED like every other leg:
+  // withBoundedTimeout NEVER throws (WI-3818), so a slow or failing gather degrades
+  // to null instead of breaking orientation.
+  if (roleFolds?.paneContext) {
+    const pc = await withBoundedTimeout(roleFolds.paneContext, {
+      fallback: null as string | null,
+      timeoutMs: ORIENT_PANE_CONTEXT_TIMEOUT_MS,
+      label: 'orient:paneContext',
+    });
+    result.paneContext = pc.value;
+  }
+  if (roleFolds?.deepWork) {
+    const dw = await withBoundedTimeout(roleFolds.deepWork, {
+      fallback: null as NonNullable<OrientResult['deepWork']> | null,
+      timeoutMs: ORIENT_FLEET_LEG_TIMEOUT_MS,
+      label: 'orient:deepWork',
+    });
+    result.deepWork = dw.value;
+  }
+
   // ── recipes:search — surface reusable code:run RECIPES relevant to this turn's intent,
   // so an agent batches via an EXISTING recipe instead of hand-looping or re-authoring
   // (code-run-adoption: reuse-at-orient closes the "I didn't know one existed" gap — the
@@ -1013,6 +1097,64 @@ export default defineTool({
     // process's own launch-env fleet membership (mirrors coord:whoami) — drives the
     // leaderBrief fold (monitor mode + fleetRole==='leader' only).
     const fleetMembership = deriveFleetMembership();
+    // ── role-specific pane folds (voice-public-release-readiness-2026-07-12 P-016):
+    // the papercup FAST pane orients with the SAME live-system digest block the
+    // converse brain walks in with (papercup-context.ts — one identity, one
+    // picture), and the papercup-deep pane orients with its OPEN QUESTION THREAD
+    // (directed messages awaiting its reply). The role comes from the dispatch ctx
+    // (the signed launch role — same read as agent_tools/list.ts); the gate is the
+    // PURE orientRoleFolds. Closures carry the IO (dynamic imports, best-effort)
+    // and are INJECTED so composeOrient stays IO-free.
+    const roleWants = orientRoleFolds((ctx as { role?: string | null }).role, args.mode);
+    let roleFolds: OrientRoleFolds | undefined;
+    if (roleWants.paneContext) {
+      roleFolds = {
+        paneContext: async () => {
+          const [pc, { isWorkspaceCoordinationOn }] = await Promise.all([
+            import('../../../papercup/papercup-context'),
+            import('../../../workspace-brain-scope'),
+          ]);
+          const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
+          // The primary hive the anomalies leg addresses — same resolution as the
+          // converse-prompt consumer (first registered project, falling back to
+          // the workspace id); an orient scoped by `harness` uses that directly.
+          let primaryHive: string | null = args.harness ?? null;
+          if (!primaryHive) {
+            try {
+              const { loadHarnessRegistry } = await import('../../../harness-registry');
+              const reg = await loadHarnessRegistry(ws);
+              primaryHive = reg.projects[0]?.slug ?? null;
+            } catch {
+              primaryHive = null;
+            }
+          }
+          const potSlug = primaryHive ?? ws;
+          // Heading scope LABEL only (workspace-scoped-coordination D-008) — the
+          // anomalies leg's addressing stays potSlug, exactly like converse-prompt.
+          const scopeLabel = pc.sentinelScopeLabel(ws, potSlug, await isWorkspaceCoordinationOn().catch(() => false));
+          const input = await pc.gatherSentinelContext(pc.buildSentinelContextDeps(ws, potSlug), { potSlug: scopeLabel });
+          const block = pc.renderSentinelContext(input);
+          return block.trim() ? block : null;
+        },
+      };
+    }
+    if (roleWants.deepWork && ownerId) {
+      const oid = ownerId;
+      roleFolds = {
+        ...(roleFolds ?? {}),
+        deepWork: async () => {
+          const { fetchUnansweredDirected } = await import('../unanswered-directed');
+          const summary = (await fetchUnansweredDirected([oid])).get(oid);
+          if (!summary) return { count: 0, oldestAgeMs: 0, newest: [] };
+          return {
+            count: summary.count,
+            oldestAgeMs: summary.oldestAgeMs,
+            newest: summary.newest,
+            ...(summary.count > 0 ? { note: ORIENT_DEEP_WORK_NOTE } : {}),
+          };
+        },
+      };
+    }
     const result = await composeOrient(
       args,
       // P-001 (orient-recall-quality-2026-07-12): the folded memory:search records
@@ -1026,6 +1168,7 @@ export default defineTool({
       planEventsCursor,
       fleetCatchUpCursor,
       fleetMembership,
+      roleFolds,
     );
     // Fold in the caller's own identity so the orientation states YOUR ownerId
     // explicitly (the roster/assignments it composes are about peers; `self` is

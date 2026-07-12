@@ -15,10 +15,16 @@
  */
 
 import Corestore from 'corestore';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, unlink, type FileHandle } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
 const stores = new Map<string, Promise<Corestore>>();
+const storeLocks = new Map<string, HarnessStoreLock>();
+
+interface HarnessStoreLock {
+  release(): Promise<void>;
+}
 
 export interface HarnessStoreOpts {
   /** Workspace root — typically resolved from `getWorkspaceRoot()`. */
@@ -89,6 +95,109 @@ export function harnessStorePath(opts: HarnessStoreOpts): string {
   return storagePath(opts);
 }
 
+/** The advisory lock held while the writable harness Corestore is open. */
+export function harnessStoreLockPath(opts: HarnessStoreOpts): string {
+  return `${storagePath(opts)}.single-instance.lock`;
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means the process exists but is not signalable by this user.
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+async function releaseLockFile(
+  handle: FileHandle,
+  lockPath: string,
+  token: string,
+): Promise<void> {
+  try {
+    const contents = await readFile(lockPath, 'utf8');
+    if (contents.includes(token)) await unlink(lockPath);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') throw error;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function acquireHarnessStoreLock(
+  opts: HarnessStoreOpts,
+): Promise<HarnessStoreLock> {
+  const lockPath = harnessStoreLockPath(opts);
+
+  // O_EXCL gives us an atomic cross-process claim without depending on a
+  // platform-specific flock executable. The PID makes a lock left by a crash
+  // recoverable while still refusing a live duplicate loudly.
+  for (;;) {
+    let handle: FileHandle;
+    try {
+      handle = await open(lockPath, 'wx');
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EEXIST') throw error;
+
+      let holder: { pid?: number; token?: string };
+      try {
+        holder = JSON.parse(await readFile(lockPath, 'utf8')) as typeof holder;
+      } catch {
+        throw new Error(
+          `Harness Corestore lock is busy or corrupt: ${lockPath}. ` +
+            'Stop the duplicate operator process and remove the lock only after verifying no owner is running.',
+        );
+      }
+
+      if (!Number.isInteger(holder.pid) || processIsAlive(holder.pid!)) {
+        throw new Error(
+          `Harness Corestore is already open by process ${holder.pid ?? 'unknown'} ` +
+            `(lock: ${lockPath}). Stop the duplicate operator/sidecar process before retrying.`,
+        );
+      }
+
+      // Atomically move the stale lock out of the well-known path before
+      // removing it. This prevents a concurrent opener from creating a fresh
+      // lock and then having that new owner's lock unlinked by our cleanup.
+      const stalePath = `${lockPath}.stale-${randomUUID()}`;
+      try {
+        await rename(lockPath, stalePath);
+      } catch (renameError) {
+        if ((renameError as NodeJS.ErrnoException).code !== 'ENOENT') throw renameError;
+        continue;
+      }
+      await unlink(stalePath).catch((unlinkError) => {
+        if ((unlinkError as NodeJS.ErrnoException).code !== 'ENOENT') throw unlinkError;
+      });
+      continue;
+    }
+
+    const token = randomUUID();
+    try {
+      await handle.writeFile(
+        JSON.stringify({ pid: process.pid, token, startedAt: new Date().toISOString() }),
+        'utf8',
+      );
+    } catch (error) {
+      await handle.close().catch(() => {});
+      await unlink(lockPath).catch(() => {});
+      throw error;
+    }
+
+    let released = false;
+    return {
+      async release() {
+        if (released) return;
+        released = true;
+        await releaseLockFile(handle, lockPath, token);
+      },
+    };
+  }
+}
+
 export async function getHarnessStore(opts: HarnessStoreOpts): Promise<Corestore> {
   const key = cacheKey(opts);
   const cached = stores.get(key);
@@ -97,9 +206,17 @@ export async function getHarnessStore(opts: HarnessStoreOpts): Promise<Corestore
   const path = storagePath(opts);
   const pending = (async () => {
     await mkdir(path, { recursive: true });
-    const store = new Corestore(path, { cache: resolveCacheBlocks() });
-    await store.ready();
-    return store;
+    const lock = await acquireHarnessStoreLock(opts);
+    storeLocks.set(key, lock);
+    try {
+      const store = new Corestore(path, { cache: resolveCacheBlocks() });
+      await store.ready();
+      return store;
+    } catch (error) {
+      storeLocks.delete(key);
+      await lock.release();
+      throw error;
+    }
   })();
   stores.set(key, pending);
   return pending;
@@ -111,7 +228,13 @@ export async function closeHarnessStore(opts: HarnessStoreOpts): Promise<void> {
   if (!cached) return;
   stores.delete(key);
   const store = await cached;
-  await store.close();
+  try {
+    await store.close();
+  } finally {
+    const lock = storeLocks.get(key);
+    storeLocks.delete(key);
+    await lock?.release();
+  }
 }
 
 const scopedStores = new Map<string, Promise<Corestore>>();

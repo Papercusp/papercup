@@ -11,7 +11,11 @@
  *      (provenance.authorPubkey), so every peer's version is stored side-by-side
  *      and can never clobber local (or another peer's) memories.
  *   2. Only SHAREABLE memories federate (mig 562-563 capture triggers fire
- *      WHEN shareable) — a projected remote memory is by construction shareable.
+ *      WHEN shareable) — and the receive side ENFORCES it (EI-10393): a remote
+ *      put whose payload does not affirmatively carry `shareable: true` applies
+ *      as a RETRACTION of sharing (mig 563 deliberately captures the
+ *      shareable→false flip as a put), deleting that peer's partition of the
+ *      identity instead of storing the now-private content.
  *
  * LWW applies within one (identity × source) partition via fed_order_key() guard
  * (EI-1698 transitivity-fixed), matching the agent-facts pattern.
@@ -110,6 +114,29 @@ async function writeToPg(
   const sourceHive = origin === 'remote' ? (authorPubkey || 'unknown-remote') : null;
   const fedTs = provenance?.ts ?? null;
   const fedHlc = provenance?.fedHlc ?? null;
+
+  // D-006 retraction-of-sharing (EI-10393): mig 563 deliberately captures a
+  // shareable true→false flip as a PUT carrying the now-private payload — the
+  // receiver must APPLY it as a retraction, never store it. The same guard
+  // refuses a hostile/buggy peer's never-shareable rows: any REMOTE put whose
+  // payload is not affirmatively `shareable: true` deletes THAT peer's
+  // partition of the identity only (never the NULL/local partition — H6),
+  // under the same wall-clock LWW guard as deleteFromPg so a stale retraction
+  // replay can never delete a newer re-share. Deliberately SILENT (no
+  // refused-op bump): log replays re-apply retractions idempotently, and a
+  // delete-miss is indistinguishable from an honest replay — counting would
+  // frame well-behaved peers; genuinely broken rows still count via
+  // onRefusedOp('malformed'). Local echoes are untouched: the local partition
+  // belongs to memory:remember, and own-log ops replay-skip anyway.
+  if (origin === 'remote' && row.payload.shareable !== true) {
+    await sql`
+      DELETE FROM harness_shared.memory_canonical
+       WHERE workspace_id = ${opts.workspaceId}
+         AND id = ${row.id} AND source_hive = ${sourceHive}
+         AND (${fedTs}::bigint IS NULL
+           OR harness_shared.fed_order_key(NULL, ${fedTs}::bigint) >= harness_shared.fed_order_key(NULL, fed_ts))`;
+    return;
+  }
 
   // NOTE: `workspace_id` is deliberately ABSENT from the column/VALUES list below.
   // Unlike agent_facts.workspace_id (a plain column), memory_canonical.workspace_id

@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildIdeatorPrompt,
+  buildRubricFocus,
   flattenDigest,
   digestRefSet,
   renderDigest,

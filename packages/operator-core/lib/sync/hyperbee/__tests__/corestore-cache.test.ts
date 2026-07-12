@@ -15,11 +15,13 @@
 import { afterEach, afterAll, describe, expect, it } from 'vitest';
 import Corestore from 'corestore';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   getHarnessStore,
   closeHarnessStore,
+  harnessStoreLockPath,
   _resetCacheForTests,
   _resolveCorestoreCacheBlocksForTests,
   _DEFAULT_CORESTORE_CACHE_BLOCKS_FOR_TESTS,
@@ -96,6 +98,43 @@ describe('getHarnessStore — per-(workspaceRoot, harnessSlug) cache (A5)', () =
     await expect(
       closeHarnessStore({ workspaceRoot: root, harnessSlug: 'never-opened' }),
     ).resolves.toBeUndefined();
+  });
+
+  it('refuses a live duplicate before Corestore can contend on its keypair', async () => {
+    const root = tmpRoot();
+    const opts = { workspaceRoot: root, harnessSlug: 'locked' };
+    const lockPath = harnessStoreLockPath(opts);
+    await mkdir(join(root, '.papercusp', 'locked', 'hyperbee'), { recursive: true });
+    await writeFile(
+      lockPath,
+      JSON.stringify({ pid: process.pid, token: 'test-live-owner' }),
+      'utf8',
+    );
+
+    await expect(getHarnessStore(opts)).rejects.toThrow(
+      /Corestore is already open by process/,
+    );
+
+    await unlink(lockPath);
+  });
+
+  it('reclaims a lock whose recorded process is gone and releases it on close', async () => {
+    const root = tmpRoot();
+    const opts = { workspaceRoot: root, harnessSlug: 'stale' };
+    const lockPath = harnessStoreLockPath(opts);
+    await mkdir(join(root, '.papercusp', 'stale', 'hyperbee'), { recursive: true });
+    await writeFile(
+      lockPath,
+      JSON.stringify({ pid: 2_147_483_647, token: 'test-stale-owner' }),
+      'utf8',
+    );
+
+    await getHarnessStore(opts);
+    const activeLock = JSON.parse(await readFile(lockPath, 'utf8')) as { pid: number };
+    expect(activeLock.pid).toBe(process.pid);
+
+    await closeHarnessStore(opts);
+    await expect(readFile(lockPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });
 
