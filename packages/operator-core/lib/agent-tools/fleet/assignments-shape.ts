@@ -62,6 +62,11 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
       // silently stages directed wakes) — the leader's relaunch/re-steer read,
       // kept at EVERY tier (two short strings; the monitor loop runs trimmed).
       verdict: typeof r.verdict === "string" ? r.verdict : null,
+      // P-010: explicit loop-owned lifecycle + next scheduled fire. Kept at
+      // every tier so a lean monitor never mistakes a legitimate wait for a
+      // stalled/unclaimed member and never needs a second loop:status call.
+      monitorState: typeof r.monitorState === "string" ? r.monitorState : null,
+      nextFireAt: typeof r.nextFireAt === "string" ? r.nextFireAt : null,
       wakeMode: typeof r.wakeMode === "string" ? r.wakeMode : null,
       // P-007 (fleet-deltas-leader-primitives-2026-07-10): coarse context-pressure
       // bucket (ok|high|critical) — kept at EVERY tier like verdict/wakeMode (one

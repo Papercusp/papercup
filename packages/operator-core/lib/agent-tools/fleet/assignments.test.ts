@@ -12,6 +12,8 @@ import {
   deriveMemberVerdict,
   decorateMemberVerdicts,
   decorateParkedOn,
+  decorateLoopMonitorStates,
+  deriveLoopMonitorState,
   decorateContextPressure,
   decorateUnansweredDirected,
   decorateCoordDeafness,
@@ -28,6 +30,7 @@ import type { WakeMode } from '../coordination/wake-mode';
 import type { SessionState, WakeabilitySignals } from '../coordination/presence-wakeability';
 import type { ContextPressureBucket } from '../coordination/context-pressure';
 import type { UnansweredDirectedSummary } from '../coordination/unanswered-directed';
+import type { LoopStatus } from '../../harness/routines/loop';
 
 function baseAgent(overrides: Partial<AgentAssignment> = {}): AgentAssignment & {
   sessionState?: SessionState | null;
@@ -166,6 +169,20 @@ describe('deriveMemberVerdict (EI-8995)', () => {
     expect(deriveMemberVerdict(verdictInput({ lastToolCallAtMs: last }), NOW)).toBe('speaking');
   });
 
+  it('healthy loop lifecycle outranks stale work timestamps', () => {
+    expect(
+      deriveMemberVerdict(
+        verdictInput({
+          monitorState: 'waiting',
+          stalled: true,
+          load: 2,
+          lastToolCallAtMs: NOW - VERDICT_STALL_MS - 60_000,
+        }),
+        NOW,
+      ),
+    ).toBe('waiting');
+  });
+
   it('speaking OUTRANKS a stalled claim: a live member with one stuck ITEM is a re-steer, not a relaunch', () => {
     const last = NOW - 60_000;
     expect(deriveMemberVerdict(verdictInput({ stalled: true, load: 2, lastToolCallAtMs: last }), NOW)).toBe(
@@ -201,6 +218,91 @@ describe('deriveMemberVerdict (EI-8995)', () => {
       deriveMemberVerdict(verdictInput({ sessionState: 'recorded' as SessionState, lastToolCallAtMs: null }), NOW),
     ).toBe('booted');
     expect(deriveMemberVerdict(verdictInput({ present: false, sessionState: null }), NOW)).toBe('booted');
+  });
+});
+
+describe('loop-owned monitor state — P-010 agent-operability (EI-11402)', () => {
+  const loop = (overrides: Partial<LoopStatus> = {}): LoopStatus => ({
+    name: 'loop-su-agent-1',
+    ownerId: 'su-agent-1',
+    harnessSlug: 'papercusp',
+    active: true,
+    intervalSec: 300,
+    carry: 'warm',
+    continuation: 'settle',
+    fireCount: 2,
+    parked: false,
+    nextFireAt: new Date(NOW + 300_000).toISOString(),
+    lastFiredAt: new Date(NOW - 300_000).toISOString(),
+    costCapCents: null,
+    maxFires: null,
+    maxDurationSec: null,
+    stalled: false,
+    stalledSinceMs: null,
+    lastDeliveryOutcome: 'loop-lifecycle',
+    consecutiveErrors: 0,
+    ...overrides,
+  });
+
+  it('derives waiting between fires, monitoring in-flight, and capability-parked on an event', () => {
+    expect(deriveLoopMonitorState(loop(), [])).toBe('waiting');
+    expect(deriveLoopMonitorState(loop({ parked: true, nextFireAt: null }), [])).toBe('monitoring');
+    expect(deriveLoopMonitorState(loop({ parked: true, nextFireAt: null }), ['deploy:sha'])).toBe(
+      'parked-awaiting-capability',
+    );
+  });
+
+  it('does not mask the loop engine\'s own dead-man stall or an inactive loop', () => {
+    expect(deriveLoopMonitorState(loop({ stalled: true }), [])).toBeNull();
+    expect(deriveLoopMonitorState(loop({ active: false }), [])).toBeNull();
+  });
+
+  it('decorates nextFireAt and suppresses false stalled/unclaimed state', async () => {
+    const stalledClaim = {
+      type: 'work-item' as const,
+      harnessSlug: 'papercusp',
+      planSlug: 'plan-a',
+      id: 'WI-1',
+      itemKind: 'task',
+      detail: 'monitor',
+      status: 'wip',
+      acquiredTs: null,
+      expiresTs: null,
+      active: true,
+      orphaned: false,
+      stalled: true,
+      lastProgressAt: null,
+      activity: 'stalled' as const,
+      rank: 0,
+      rankWriter: 'cup',
+    };
+    const agent = baseAgent({
+      declaredPlanSlug: 'plan-a',
+      declaredUnclaimed: true,
+      stalled: true,
+      claims: [stalledClaim],
+      queued: [
+        {
+          id: 'WI-1', itemKind: 'task', title: 'monitor', status: 'wip', rank: 0,
+          rankWriter: 'cup', activity: 'stalled',
+        },
+      ],
+      doing: {
+        id: 'WI-1', itemKind: 'task', title: 'monitor', status: 'wip', rank: 0,
+        rankWriter: 'cup', activity: 'stalled',
+      },
+      load: 1,
+    });
+    const [out] = await decorateLoopMonitorStates(
+      [agent],
+      async () => new Map([['su-agent-1', loop()]]),
+    );
+    expect(out.monitorState).toBe('waiting');
+    expect(out.nextFireAt).toBe(loop().nextFireAt);
+    expect(out.declaredUnclaimed).toBe(false);
+    expect(out.stalled).toBe(false);
+    expect(out.claims[0].activity).toBe('alive');
+    expect(out.doing?.activity).toBe('alive');
   });
 });
 
@@ -366,6 +468,26 @@ describe('shapeFleetAssignments carries parkedOn at every tier (P-001 fleet-memb
       agents: Array<Record<string, unknown>>;
     };
     expect(shaped.agents[0].parkedOn).toEqual(['p2p-git:phase3-open']);
+  });
+});
+
+describe('shapeFleetAssignments carries loop monitor state at every tier (P-010)', () => {
+  const data = {
+    ok: true,
+    summary: { agents: 1 },
+    orphaned: [],
+    stalled: [],
+    agents: [{
+      agentId: 'a1', claims: [], queued: [], verdict: 'waiting', monitorState: 'waiting',
+      nextFireAt: '2026-07-13T18:30:00.000Z',
+    }],
+  };
+
+  it.each(['trimmed', 'standard'] as const)('%s keeps state + nextFireAt', (tier) => {
+    const shaped = shapeFleetAssignments(data, tier) as { agents: Array<Record<string, unknown>> };
+    expect(shaped.agents[0].verdict).toBe('waiting');
+    expect(shaped.agents[0].monitorState).toBe('waiting');
+    expect(shaped.agents[0].nextFireAt).toBe('2026-07-13T18:30:00.000Z');
   });
 });
 

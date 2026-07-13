@@ -1,0 +1,104 @@
+import { describe, expect, it } from 'vitest';
+import type { Sql } from 'postgres';
+import {
+  CONTROL_ANCHOR_MAX_TOKENS,
+  estimateControlAnchorTokens,
+  normalizeControlAnchorState,
+  persistControlAnchor,
+  renderControlAnchor,
+  type ControlAnchorState,
+} from './control-anchor';
+
+function state(overrides: Partial<ControlAnchorState> = {}): ControlAnchorState {
+  return {
+    modes: ['ideate', 'auto', 'auto'],
+    loop: { active: true, intervalSec: 60 },
+    carry: 'warm',
+    route: { kind: 'self' },
+    scope: {
+      workspace: 'papercusp-workspace',
+      harness: 'papercusp',
+      plan: 'agent-operability-improvements-implementation-2026-07-13',
+      items: ['P-014', 'P-013', 'P-013'],
+    },
+    ...overrides,
+  };
+}
+
+function inMemoryPersistSql() {
+  let generation = 0;
+  let current: ControlAnchorState | null = null;
+  let updatedAt = '2026-07-13T18:00:00.000Z';
+  let tick = 0;
+  const sql = (async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+    const next = JSON.parse(String(values[2])) as ControlAnchorState;
+    if (current == null || JSON.stringify(current) !== JSON.stringify(next)) {
+      generation += 1;
+      current = next;
+      updatedAt = `2026-07-13T18:00:0${tick++}.000Z`;
+    }
+    return [{
+      control_generation: generation,
+      control_state: current,
+      control_updated_at: updatedAt,
+    }];
+  }) as unknown as Sql;
+  return sql;
+}
+
+describe('compact durable CTRL anchor', () => {
+  it('canonicalizes duplicated modes/items so equivalent reads are byte-stable', () => {
+    expect(normalizeControlAnchorState(state())).toMatchObject({
+      modes: ['auto', 'ideate'],
+      scope: { items: ['P-013', 'P-014'] },
+    });
+  });
+
+  it('holds generation on an unchanged reconciliation and increments on semantic change', async () => {
+    const sql = inMemoryPersistSql();
+    const a = await persistControlAnchor(
+      { ownerId: 'su-x', workspaceId: 'papercusp-workspace', state: state() },
+      sql,
+    );
+    const b = await persistControlAnchor(
+      { ownerId: 'su-x', workspaceId: 'papercusp-workspace', state: state() },
+      sql,
+    );
+    const c = await persistControlAnchor(
+      {
+        ownerId: 'su-x',
+        workspaceId: 'papercusp-workspace',
+        state: state({ carry: 'cold' }),
+      },
+      sql,
+    );
+    expect([a.generation, b.generation, c.generation]).toEqual([1, 1, 2]);
+    expect(b.updatedAt).toBe(a.updatedAt);
+    expect(c.updatedAt).not.toBe(b.updatedAt);
+  });
+
+  it('carries provenance, a full-resync rule, and an enforced serialized token budget', () => {
+    const anchor = renderControlAnchor({
+      ownerId: 'su-x',
+      generation: 9,
+      state: state({
+        scope: {
+          ...state().scope,
+          items: Array.from({ length: 40 }, (_, i) => `P-${String(i).padStart(3, '0')}`),
+        },
+      }),
+      updatedAt: '2026-07-13T18:00:00.000Z',
+    });
+    expect(anchor.state.scope.items).toHaveLength(12);
+    expect(anchor.state.scope.itemsMore).toBe(28);
+    expect(anchor.resync).toEqual({
+      on: ['missing-base', 'schema-mismatch', 'generation-mismatch'],
+      verb: 'coord:orient',
+      args: { afterCompaction: true },
+      rule: 'replace-full-never-merge-behind',
+    });
+    expect(anchor.provenance.source).toBe('harness_shared.session_briefs.control_state');
+    expect(anchor.budget.estimatedTokens).toBe(estimateControlAnchorTokens(anchor));
+    expect(anchor.budget.estimatedTokens).toBeLessThanOrEqual(CONTROL_ANCHOR_MAX_TOKENS);
+  });
+});

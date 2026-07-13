@@ -23,6 +23,10 @@ export interface CompactionRecovery {
   selfSession?: { sourceKind: string; sessionId: string } | null;
   /** Armed engine loop, if any — the loop's carry-note is re-injected on its own wake. */
   loop?: { active: boolean; intervalSec?: number | null } | null;
+  /** P-013: compact, generation-stamped control projection. This is the
+   *  authoritative full-resync payload for AUTO/IDEATE/DRAIN, loop/carry,
+   *  route, and active scope after compaction. */
+  control?: import('./control-anchor').ControlAnchor | null;
   /** Held (assigned, non-terminal) work-items + their checkpoints. `body` is the
    *  item's description (capped) so the post-compaction agent doesn't re-fetch it
    *  via work_items:get — measured at 43% of post-compaction orients
@@ -79,20 +83,29 @@ export async function buildCompactionRecovery(
     recovery.selfSession = null;
   }
 
-  // (b) armed engine loop.
+  // (b) armed engine loop + the compact CTRL anchor (P-013). Reconcile once
+  // from the canonical stores; derive the legacy loop fold from that result so
+  // post-compaction recovery does not pay two loop reads. If the new projection
+  // is unavailable during a rolling deploy, retain the old loop-only fallback.
   try {
     const { getLoopStatus } = await import('../../harness/routines/loop');
-    const loop = (await getLoopStatus(ownerId)) as
-      | { active?: boolean; rescheduleIntervalSec?: number; reschedule_interval_sec?: number }
-      | null;
-    recovery.loop = loop
-      ? {
-          active: Boolean(loop.active),
-          intervalSec: loop.rescheduleIntervalSec ?? loop.reschedule_interval_sec ?? null,
-        }
-      : null;
+    const loop = await getLoopStatus(ownerId);
+    try {
+      const { buildAndPersistControlAnchor } = await import('./control-anchor');
+      recovery.control = await buildAndPersistControlAnchor(ownerId, workspaceId, { loop });
+      recovery.loop = {
+        active: recovery.control.state.loop.active,
+        intervalSec: recovery.control.state.loop.intervalSec,
+      };
+    } catch {
+      recovery.control = null;
+      recovery.loop = loop
+        ? { active: Boolean(loop.active), intervalSec: loop.intervalSec ?? null }
+        : null;
+    }
   } catch {
     recovery.loop = null;
+    recovery.control = null;
   }
 
   // (a) held work-items' checkpoints — normally re-injected only on pickup;

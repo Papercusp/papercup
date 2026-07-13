@@ -2621,8 +2621,15 @@ export const ISSUE_FAMILY_CLAIMABLE_STATES: readonly string[] = ['open'];
  * rejects a `blocked` filter TERM for exactly this reason (D-002); this allowlist
  * closes the identical hole on the sibling `states` arg (WI-1912: a fleet member
  * passed states:['todo','open','blocked'] and pulled a leader-triage-only item).
+ *
+ * Re-exported from `./scheduler/claim-states` (drain-claim-spec-hardening-2026-07-13,
+ * EI-11300/circular-import fix) — that leaf module has zero imports, so
+ * `scheduler/claim-spec.ts` can depend on it without closing the long-standing
+ * transitive cycle that runs back through this file. Kept as a re-export here so every
+ * existing `from '../work-items'` / `from './work-items'` importer of this symbol
+ * keeps working unchanged.
  */
-export const CLAIM_STATES_ALLOWLIST = ['todo', 'open', 'failing'] as const;
+export { CLAIM_STATES_ALLOWLIST } from './scheduler/claim-states';
 
 /**
  * fleet-backlog-lessons-2026-07-01 P-005 (WI-1407): the claim-next FALLBACK LADDER. A

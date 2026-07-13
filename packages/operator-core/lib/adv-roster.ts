@@ -473,7 +473,9 @@ export function mergeRosterEntries(
       lastOutputAt: nursery?.lastOutputAt ?? null,
       claims,
       declaredUnclaimed: Boolean(
-        currentPlanSlug && !claims.some((c) => c.planSlug === currentPlanSlug),
+        currentPlanSlug &&
+          !loopArmedOwners.has(p.ownerId) &&
+          !claims.some((c) => c.planSlug === currentPlanSlug),
       ),
       hasLaunchRecord: adv != null,
       advSessionId: adv?.id ?? null,

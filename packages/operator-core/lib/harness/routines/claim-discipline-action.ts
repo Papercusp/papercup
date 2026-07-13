@@ -29,6 +29,7 @@ import { sendMessage, readOutbox } from '../../agent-tools/coordination/messages
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { planSlugExistsInWorkspace } from '../../agent-tools/plans/source';
 import { listParkedAwaitsForSubscribers } from '../../events/await/store';
+import { getLoopStatuses } from './loop';
 
 export const CLAIM_WATCH_OWNER = 'claim-discipline-watch';
 const WATCH_IDENTITY: AgentIdentity = {
@@ -155,6 +156,28 @@ export function filterParkedTargets<T extends { agentId: string }>(
   return { keep, skippedParked };
 }
 
+/**
+ * P-010 (agent-operability): a healthy active engine loop is a durable claim on
+ * the session's monitoring objective. It can legitimately have no plan-item
+ * claim between wakes, so the claim-discipline watcher must not nag it. Loop
+ * rows whose own dead-man verdict is stalled are intentionally NOT suppressed.
+ */
+export function filterHealthyLoopTargets<T extends { agentId: string }>(
+  targets: readonly T[],
+  healthyLoopOwners: ReadonlySet<string>,
+): { keep: T[]; skippedLoopOwned: string[] } {
+  const keep: T[] = [];
+  const skippedLoopOwned: string[] = [];
+  for (const target of targets) {
+    if (healthyLoopOwners.has(target.agentId)) {
+      skippedLoopOwned.push(target.agentId);
+      continue;
+    }
+    keep.push(target);
+  }
+  return { keep, skippedLoopOwned };
+}
+
 /** The stable summary prefix — also the outbox-throttle marker. */
 export const NUDGE_PREFIX = 'claim-discipline:';
 
@@ -260,7 +283,23 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
   } catch {
     parkedKeysByAgent = new Map();
   }
-  const { keep: targets, skippedParked } = filterParkedTargets(storeBacked, parkedKeysByAgent);
+  const { keep: notParked, skippedParked } = filterParkedTargets(storeBacked, parkedKeysByAgent);
+
+  // P-010: suppress the second legitimate-idle shape — an active, healthy
+  // loop-owned monitor between wakes. One batch query covers all candidates;
+  // fail-open on read failure so a datastore hiccup never masks a real smell.
+  let healthyLoopOwners = new Set<string>();
+  try {
+    const loops = await getLoopStatuses(notParked.map((t) => t.agentId));
+    healthyLoopOwners = new Set(
+      [...loops.entries()]
+        .filter(([, status]) => status.active && !status.stalled)
+        .map(([ownerId]) => ownerId),
+    );
+  } catch {
+    healthyLoopOwners = new Set();
+  }
+  const { keep: targets, skippedLoopOwned } = filterHealthyLoopTargets(notParked, healthyLoopOwners);
 
   for (const t of targets) {
     const plan = t.declaredPlanSlug!;
@@ -280,6 +319,9 @@ registerSystemAction('claim-discipline-watch', async (ctx: SystemActionCtx) => {
         ? `, ${skippedParked.length} skipped (parked on events:await: ${skippedParked
             .map((s) => `${s.agentId.slice(0, 8)}→${s.parkedOn}`)
             .join(', ')})`
+        : '') +
+      (skippedLoopOwned.length
+        ? `, ${skippedLoopOwned.length} skipped (healthy loop-owned monitor)`
         : '') +
       (recentlyNudged.size ? `, ${recentlyNudged.size} in throttle window` : ''),
   );

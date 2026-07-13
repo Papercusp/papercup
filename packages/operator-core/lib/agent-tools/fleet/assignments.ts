@@ -62,6 +62,7 @@ import { shapeFleetAssignments } from './assignments-shape';
 import { getPlanRow, planItemsForRow } from '../plans/source';
 import { resolveEffectiveStatusForItems } from '../plans/effective-status';
 import { shapeDagFrontier, claimsFromCoverage, type DagFrontierView } from '../../fleet-dag-view';
+import { getLoopStatuses, type LoopStatus } from '../../harness/routines/loop';
 
 /** Coverage levels most-covered → least, for sorting the rollup. */
 const COVERAGE_ORDER = ['complete', 'full', 'partial', 'unclaimed', 'none'];
@@ -168,12 +169,76 @@ export async function reconcileWakeability<T extends AgentAssignment & { session
  *   booted          — a live session that has not yet registered coord presence
  *                     (the bootstrap gap before `joined`).
  */
-export type MemberVerdict = 'booted' | 'joined' | 'first-turn-done' | 'speaking' | 'stalled' | 'dead';
+export type MonitorState = 'monitoring' | 'waiting' | 'parked-awaiting-capability';
+
+export type MemberVerdict =
+  | 'booted'
+  | 'joined'
+  | 'first-turn-done'
+  | 'speaking'
+  | MonitorState
+  | 'stalled'
+  | 'dead';
 
 /** A tool call within this window ⇒ `speaking` (really working right now). */
 export const VERDICT_SPEAKING_FRESH_MS = 5 * 60_000;
 /** Holding work-items with no tool call for this long ⇒ `stalled` (member-level). */
 export const VERDICT_STALL_MS = 15 * 60_000;
+
+/**
+ * A healthy, reachable engine loop is productive lifecycle state, not absence
+ * of work. An in-flight loop is `monitoring`; a loop between scheduled fires is
+ * `waiting` (with nextFireAt); and an event-benched loop is explicitly
+ * `parked-awaiting-capability`. A loop whose own dead-man verdict is stalled is
+ * deliberately excluded so real failures still surface.
+ */
+export function deriveLoopMonitorState(
+  loop: Pick<LoopStatus, 'active' | 'parked' | 'stalled'> | null | undefined,
+  parkedOn: readonly string[] = [],
+): MonitorState | null {
+  if (!loop?.active || loop.stalled) return null;
+  if (parkedOn.length > 0) return 'parked-awaiting-capability';
+  return loop.parked ? 'monitoring' : 'waiting';
+}
+
+/**
+ * Fold the loop engine's authoritative status into fleet lifecycle rows in one
+ * batch. While the loop is healthy, stale item-progress timestamps do not make
+ * the owner "stalled" or "declared-unclaimed": the loop state explains why it
+ * is idle and when it will run again. The loop's own dead-man stall still wins.
+ */
+export async function decorateLoopMonitorStates<
+  T extends AgentAssignment & {
+    parkedOn?: string[];
+    monitorState?: MonitorState | null;
+    nextFireAt?: string | null;
+  },
+>(
+  agents: T[],
+  fetchStatuses: (ownerIds: string[]) => Promise<Map<string, LoopStatus>> = (ids) => getLoopStatuses(ids),
+): Promise<T[]> {
+  if (agents.length === 0) return agents;
+  const statuses = await fetchStatuses(agents.map((a) => a.agentId));
+  for (const a of agents) {
+    const loop = statuses.get(a.agentId) ?? null;
+    const state = deriveLoopMonitorState(loop, a.parkedOn ?? []);
+    a.monitorState = state;
+    a.nextFireAt = loop?.active ? loop.nextFireAt : null;
+    if (!state) continue;
+    a.declaredUnclaimed = false;
+    a.stalled = false;
+    for (const claim of a.claims) {
+      if (!claim.stalled) continue;
+      claim.stalled = false;
+      if (claim.activity === 'stalled') claim.activity = 'alive';
+    }
+    for (const item of a.queued) {
+      if (item.activity === 'stalled') item.activity = 'alive';
+    }
+    if (a.doing?.activity === 'stalled') a.doing.activity = 'alive';
+  }
+  return agents;
+}
 
 /** Pure derivation — unit-tests without PG (the DI seam is decorateMemberVerdicts). */
 export function deriveMemberVerdict(
@@ -187,10 +252,13 @@ export function deriveMemberVerdict(
     load: number;
     /** Last recorded tool invocation (epoch ms), or null = none ever. */
     lastToolCallAtMs: number | null;
+    /** Healthy loop-owned monitor lifecycle, derived from the loop engine. */
+    monitorState?: MonitorState | null;
   },
   nowMs: number = Date.now(),
 ): MemberVerdict {
   if (a.sessionState === 'ended' || !a.alive) return 'dead';
+  if (a.monitorState) return a.monitorState;
   const last = a.lastToolCallAtMs;
   if (last != null && nowMs - last <= VERDICT_SPEAKING_FRESH_MS) return 'speaking';
   // Member-level stall: not speaking AND (an item isn't advancing, or it holds work
@@ -217,6 +285,7 @@ export async function decorateMemberVerdicts<
     verdict?: MemberVerdict;
     wakeMode?: WakeMode;
     lastToolCallAt?: string | null;
+    monitorState?: MonitorState | null;
   },
 >(
   agents: T[],
@@ -243,6 +312,7 @@ export async function decorateMemberVerdicts<
         stalled: a.stalled,
         load: a.load,
         lastToolCallAtMs: Number.isFinite(lastMs as number) ? lastMs : null,
+        monitorState: a.monitorState,
       },
       nowMs,
     );
@@ -402,7 +472,7 @@ export default defineTool({
   name: 'fleet:assignments',
   profile: 'engineer',
   description:
-    'The canonical "who\'s on what" query: per-agent presence + plan-item + work-item claims unified (claim-primary, holder liveness AND progress joined). Top-level `self` = your ownerId; your own row is stamped `isSelf:true`. Each live agent carries its ordered work-list — `doing`, `queued`, `load` — the placement read. Surfaces `orphaned` (live lease, DEAD holder) AND `stalled` (live holder, NO progress in window) claims — both reclaimable, neither "covered" — plus per-claim `activity` and declared-but-unclaimed intents. Each row carries the derived lifecycle `verdict` (booted|joined|first-turn-done|speaking|stalled|dead — THE relaunch/re-steer field, EI-8995), `wakeMode` (auto|manual — manual STAGES directed wakes for owner release), and `unanswered` (directed messages awaiting a reply: count + oldestAgeMs + newest few). Read this, not a stale coord broadcast.',
+    'The canonical "who\'s on what" query: per-agent presence + plan-item + work-item claims unified (claim-primary, holder liveness AND progress joined). Top-level `self` = your ownerId; your own row is stamped `isSelf:true`. Each live agent carries its ordered work-list — `doing`, `queued`, `load` — the placement read. Surfaces `orphaned` (live lease, DEAD holder) AND `stalled` (live holder, NO progress in window) claims — both reclaimable, neither "covered" — plus per-claim `activity` and declared-but-unclaimed intents. Each row carries the derived lifecycle `verdict` (including monitoring|waiting|parked-awaiting-capability for healthy loop owners, with nextFireAt; otherwise booted|joined|first-turn-done|speaking|stalled|dead), `wakeMode` (auto|manual), and `unanswered` directed-message state. Read this, not a stale coord broadcast.',
   guidance: {
     when: 'Answering "who\'s running / what is agent X doing / X\'s ordered work-list / how loaded is X / is anyone on plan P". The state query AND the placement-decision read — use it instead of scanning coord:inbox or replaying lifecycle messages.',
     notWhen:
@@ -510,19 +580,27 @@ export default defineTool({
       sessionState?: SessionState | null;
       contextPressure?: ContextPressureBucket | null;
       unanswered?: UnansweredDirectedSummary;
+      parkedOn?: string[];
+      monitorState?: MonitorState | null;
+      nextFireAt?: string | null;
     })[] = groupByAgent(rows).filter((g) => args.include_stale || g.claims.length > 0 || g.alive);
     // EI-6077: reconcile `alive` against coord:presence's own wakeability signal
     // (see reconcileWakeability above) — best-effort, a query failure just leaves
     // today's heartbeat-only `alive` and an absent `sessionState` (state unknown).
     await reconcileWakeability(agents).catch(() => {});
-    // EI-8995: stamp the single derived per-member `verdict` (+ wakeMode +
-    // lastToolCallAt) — AFTER reconcileWakeability so sessionState is settled.
-    // Best-effort: a failure leaves the rows verdict-less, never breaks the read.
-    await decorateMemberVerdicts(agents).catch(() => {});
     // P-001 (fleet-member-dx): stamp `parkedOn` — active non-inbox-wake events:await
     // keys — so a deliberately-benched member reads as parked, not abandoned.
     // Best-effort: a failure just omits the field.
     await decorateParkedOn(agents).catch(() => {});
+    // P-010 (agent-operability): fold the authoritative loop engine into the
+    // lifecycle before deriving verdicts. Healthy loop-owned monitors are
+    // monitoring/waiting/event-parked with nextFireAt, never false stalls or
+    // declared-unclaimed smells. One batch query covers the whole fleet.
+    await decorateLoopMonitorStates(agents).catch(() => {});
+    // EI-8995: stamp the single derived per-member `verdict` (+ wakeMode +
+    // lastToolCallAt) after wakeability, parked events, and loop state settle.
+    // Best-effort: a failure leaves the rows verdict-less, never breaks the read.
+    await decorateMemberVerdicts(agents).catch(() => {});
     // P-007 (fleet-deltas-leader-primitives): stamp `contextPressure`
     // (ok|high|critical|null) — best-effort, never breaks the read. Independent
     // of the joins above (its own batch query).
@@ -534,7 +612,12 @@ export default defineTool({
     // agent-activity-liveness-truth P-002/P-005: a live-but-not-progressing holder
     // is NOT "covered" — surface stalled claims as reclaimable alongside orphans, so
     // no reader concludes "someone's on it" from a claim that isn't advancing.
-    const stalled = stalledClaims(rows);
+    const healthyLoopOwners = new Set(
+      agents.filter((a) => a.monitorState != null).map((a) => a.agentId),
+    );
+    const stalled = stalledClaims(rows).filter(
+      (row) => !row.agentId || !healthyLoopOwners.has(row.agentId),
+    );
     // Plan-item COVERAGE rollup: which plan items are being worked via a LINKED
     // work-item (or a direct claim) even when no plan-item lease names them — the
     // blind spot that makes plans:items show an actively-worked item as unworked.
@@ -651,6 +734,11 @@ export default defineTool({
       // P-001 (fleet-member-dx): members deliberately parked on an events:await —
       // idle-by-design, not stalled/abandoned.
       parked: agents.filter((a) => ((a as { parkedOn?: string[] }).parkedOn?.length ?? 0) > 0).length,
+      monitoring: agents.filter((a) => a.monitorState === 'monitoring').length,
+      waiting: agents.filter((a) => a.monitorState === 'waiting').length,
+      parked_awaiting_capability: agents.filter(
+        (a) => a.monitorState === 'parked-awaiting-capability',
+      ).length,
       // P-021: total work-item load across live agents (the warm-inject signal).
       work_item_load: agents.reduce((n, a) => n + a.load, 0),
       // P-007: fleet-health headline — members whose context-pressure bucket is

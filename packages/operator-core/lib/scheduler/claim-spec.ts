@@ -30,7 +30,14 @@
  * malformed spec is caught at author time with a clear error.
  */
 import { z } from 'zod';
-import { CLAIM_STATES_ALLOWLIST } from '../work-items';
+// Imported from the dependency-free leaf module, NOT '../work-items' — work-items.ts sits
+// at the center of a long pre-existing transitive import cycle that runs back through
+// sync/hyperbee/projections/register-all.ts -> projections/bee-claim-spec.ts ->
+// scheduler/claim-spec.ts (this file). Importing the allowlist from '../work-items'
+// directly closed that loop and crashed on the module-eval-time undefined binding
+// (see scheduler/claim-states.ts's header for the full trace). Do NOT re-point this
+// import back at '../work-items'.
+import { CLAIM_STATES_ALLOWLIST } from './claim-states';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Vocabulary — the fixed primitive set the Queen composes a spec from.

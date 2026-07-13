@@ -584,6 +584,25 @@ describe('mergeRosterEntries — activity + loop-armed (WI-1488)', () => {
     expect(e.loopArmed).toBe(false);
   });
 
+  it('a loop-owned monitor is not declared-unclaimed between wakes', () => {
+    const [monitor] = mergeRosterEntries(
+      [presence({ ownerId: 'monitor', currentPlanSlug: 'watch-plan' })],
+      new Map(),
+      NOW,
+      new Map(),
+      new Map(),
+      new Map(),
+      'auto',
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      new Set(['monitor']),
+    );
+    expect(monitor.loopArmed).toBe(true);
+    expect(monitor.declaredUnclaimed).toBe(false);
+  });
+
   it('tags local rows isLocal:true and federated rows with their machineLabel', () => {
     const fedRow = {
       ...presence({ ownerId: 'remote1' }),

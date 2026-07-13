@@ -7,6 +7,7 @@ import {
   NUDGE_PREFIX,
   filterStoreBackedTargets,
   filterParkedTargets,
+  filterHealthyLoopTargets,
   storeExistsKey,
 } from './claim-discipline-action';
 import type { PresenceRecord } from '@papercusp/coordination/presence';
@@ -207,5 +208,24 @@ describe('filterParkedTargets — P-002 fleet-member-dx (EI-9014)', () => {
     const parked = new Map([['a1', ['gate:green', 'deploy:done']]]);
     const { skippedParked } = filterParkedTargets([t('a1')], parked);
     expect(skippedParked[0]?.parkedOn).toBe('gate:green');
+  });
+});
+
+describe('filterHealthyLoopTargets — P-010 agent-operability (EI-11402)', () => {
+  const t = (agentId: string) => ({ agentId, declaredPlanSlug: 'plan-a' });
+
+  it('suppresses a healthy loop-owned monitor and keeps ordinary unclaimed agents', () => {
+    const { keep, skippedLoopOwned } = filterHealthyLoopTargets(
+      [t('monitor'), t('ordinary')],
+      new Set(['monitor']),
+    );
+    expect(keep.map((x) => x.agentId)).toEqual(['ordinary']);
+    expect(skippedLoopOwned).toEqual(['monitor']);
+  });
+
+  it('an empty/fail-open loop set suppresses nobody', () => {
+    const { keep, skippedLoopOwned } = filterHealthyLoopTargets([t('a1')], new Set());
+    expect(keep).toHaveLength(1);
+    expect(skippedLoopOwned).toEqual([]);
   });
 });
