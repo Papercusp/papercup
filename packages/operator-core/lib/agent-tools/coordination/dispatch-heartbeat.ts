@@ -32,6 +32,7 @@
  */
 import { resolveAgentIdentity, type ResolveIdentityCtx } from './identity';
 import { touchActivity } from './presence';
+import { reactivateAdvSessionByOwner } from '../../adv-sessions';
 import {
   createPresenceBeatThrottle,
   PRESENCE_BEAT_INTERVAL_MS,
@@ -62,9 +63,14 @@ export function __resetDispatchHeartbeatThrottle(): void {
  */
 export function maybeBeatPresenceOnDispatch(
   ctx: unknown,
-  opts: { beat?: (ownerId: string) => Promise<void>; now?: () => number } = {},
+  opts: {
+    beat?: (ownerId: string) => Promise<void>;
+    reactivate?: (ownerId: string) => Promise<boolean>;
+    now?: () => number;
+  } = {},
 ): void {
   const beat = opts.beat ?? touchActivity;
+  const reactivate = opts.reactivate ?? reactivateAdvSessionByOwner;
   const nowFn = opts.now ?? Date.now;
 
   let ownerId: string | null;
@@ -78,8 +84,14 @@ export function maybeBeatPresenceOnDispatch(
   if (!throttle.shouldBeat(ownerId, nowFn())) return;
 
   void Promise.resolve()
-    .then(() => beat(ownerId))
+    .then(async () => {
+      // A stateless MCP recovery call can keep coord_presence alive after a
+      // transport drop without ever re-running coord:declare-intent. Revive
+      // the matching ended adv_sessions row alongside that genuine activity
+      // so fleet chrome follows the same liveness signal.
+      await Promise.all([beat(ownerId), reactivate(ownerId)]);
+    })
     .catch(() => {
-      /* a missed beat must never surface — the next dispatch retries */
+      /* a missed beat/reactivation must never surface — the next dispatch retries */
     });
 }

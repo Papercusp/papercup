@@ -703,13 +703,21 @@ export interface ToolEfficiencyRating {
 }
 
 /**
- * Tool efficiency (panel #17, WI-839) — the 3 canonical
+ * Tool efficiency (panel #17, WI-839) — the canonical
  * measuring-code-run-adoption.mdx SQL metrics folded into one recurring card,
  * so a regression (a tight new validation cap, the code:run nudge losing
  * effect, agents re-calling what coord:orient already returned) surfaces
  * without a manual audit. Each leg is read + graded by its own already
  * pure+unit-tested module (limit-failure-rate.ts / code-run-adoption.ts /
- * orient-dedup-rate.ts); this panel only folds their outputs.
+ * orient-dedup-rate.ts / empty-result-rate.ts); this panel only folds their outputs.
+ *
+ * EI-10892 added metric #4, and it is the one that closes the panel's blind spot.
+ * Metrics #1-#3 all grade failures that ANNOUNCE themselves — a hard rejection, a
+ * ratio, a redundant call. The dominant waste mode announces nothing: a call that
+ * SUCCEEDS and returns rows with every field blank, because the caller mapped the
+ * response shape wrong. Measured on the 2026-07-13 agent-DX audit: 178 tool calls,
+ * ONE recorded failure, and ~30% of authored round-trips wasted — every one ok:true,
+ * with this panel reporting healthy the whole time.
  */
 export interface ToolEfficiencyHealth {
   /** Metric #1 — too-long-string tool-arg validation failures, last 14d. */
@@ -718,6 +726,12 @@ export interface ToolEfficiencyHealth {
   codeRunAdoption: ToolEfficiencyRating & { adoptionRatePct: number | null };
   /** Metric #3 — of coord:orient spawns, % that also re-called a subsumed tool, last 24h. */
   orientDedup: ToolEfficiencyRating & { pctRedundant: number | null };
+  /**
+   * Metric #4 (EI-10892) — % of code:run calls returning ok-but-every-field-blank
+   * rows (a MIS-MAPPED response shape, not an empty result set), last 7d.
+   * `pctEmpty` is null when the window holds too few runs to grade (→ 'unknown').
+   */
+  emptyResult: ToolEfficiencyRating & { pctEmpty: number | null; totalEmptyRuns: number };
 }
 
 /**

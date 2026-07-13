@@ -30,6 +30,8 @@
  * EMPTY_RESULT_RATE_SQL is runnable as-is via dev:pg_query.
  */
 
+import { EMPTY_MAPPING_METADATA_KEY } from './empty-mapping-hint';
+
 /** Injectable query runner (mirrors limit-failure-rate.ts's RunQuery). */
 export type RunQuery = <T = unknown>(query: string, params: unknown[]) => Promise<T[]>;
 
@@ -89,14 +91,14 @@ export function rollupEmptyResults(rows: EmptyResultRow[]): EmptyResultRollup {
  */
 export const EMPTY_RESULT_RATE_SQL = `
 SELECT coord_owner_id AS owner_id,
-       count(*) FILTER (WHERE metadata_json ? 'emptyMapping') AS empty_runs,
+       count(*) FILTER (WHERE metadata_json ? '${EMPTY_MAPPING_METADATA_KEY}') AS empty_runs,
        count(*) AS total_runs,
-       max(invoked_at) FILTER (WHERE metadata_json ? 'emptyMapping') AS last_seen
+       max(invoked_at) FILTER (WHERE metadata_json ? '${EMPTY_MAPPING_METADATA_KEY}') AS last_seen
 FROM harness_shared.tool_invocations
 WHERE tool_name = 'code:run'
   AND invoked_at > now() - (($1)::int || ' days')::interval
 GROUP BY coord_owner_id
-HAVING count(*) FILTER (WHERE metadata_json ? 'emptyMapping') > 0
+HAVING count(*) FILTER (WHERE metadata_json ? '${EMPTY_MAPPING_METADATA_KEY}') > 0
 ORDER BY empty_runs DESC
 `;
 

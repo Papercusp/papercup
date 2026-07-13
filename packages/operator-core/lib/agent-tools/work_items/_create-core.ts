@@ -19,7 +19,7 @@
  */
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { createWorkItem, getWorkItem, linkWorkItem, resolveWorkItemRef, isWorkItemKind, type WorkItem, type WorkItemKind } from '../../work-items';
+import { createWorkItem, getWorkItem, linkWorkItem, resolveWorkItemRef, isWorkItemKind, setWorkItemState, type WorkItem, type WorkItemKind } from '../../work-items';
 import { planItemRef, PLAN_ITEM_KIND } from '../../issue-blocks-merge';
 import { findMirroredOpenItem } from './mirror-guard';
 import { findSemanticDupes, type SemanticDupeCandidate } from './semantic-dupe-guard';
@@ -53,6 +53,15 @@ export interface CreateOneWorkItemArgs {
   force?: boolean;
   /** Atomic create+claim target (B-LOOP-4): the agent id to own the new item. */
   assign_to?: string;
+  /**
+   * EI-10897: initial lifecycle state — e.g. `wip` for an ad-hoc unit the creator is
+   * starting right now (the shape the su persona already prescribes:
+   * `{ title, assign_to:'self', state:'wip' }`). Applied as a transition immediately
+   * after the create, so it flows through the normal state machine + its fan-out
+   * rather than writing a raw status column. Terminal states are refused at the tool
+   * boundary (they would bypass the completion-integrity gate).
+   */
+  state?: string;
   /** Forward edge (plan-item-coverage): the plan item this work-item ADDRESSES.
    *  Writes a coord_links work→plan_item `relates` edge on create, so the item
    *  rolls up into that plan item's coverage and `plans:items` stops showing it as
@@ -80,7 +89,15 @@ export interface CreateOneWorkItemCtx {
 }
 
 export type CreateOneWorkItemResult =
-  | { ok: true; workItem: WorkItem; similarOpen?: SemanticDupeCandidate[] }
+  | {
+      ok: true;
+      workItem: WorkItem;
+      similarOpen?: SemanticDupeCandidate[];
+      /** EI-10897: set when `state` was requested but the follow-on transition did not
+       *  apply. The item EXISTS (ok:true) — this reports the state write's failure loudly
+       *  instead of letting it be a silent no-op. Retry with work_items:set_state. */
+      stateError?: string;
+    }
   | {
       ok: false;
       error: string;
@@ -229,7 +246,7 @@ export async function createOneWorkItem(
       routingHint && !(args.payload && 'routingHint' in args.payload)
         ? { ...(args.payload ?? {}), routingHint }
         : args.payload;
-    const workItem = await createWorkItem({
+    let workItem = await createWorkItem({
       kind: args.kind as WorkItemKind,
       title: args.title,
       summary: args.summary,
@@ -247,6 +264,29 @@ export async function createOneWorkItem(
       assignee: args.assign_to,
       assignedBy: args.assign_to ? ctx.ownerId : undefined,
     });
+    // EI-10897: apply the requested initial state as a real transition (not a raw
+    // column write), so it goes through the same state machine, guards and fan-out as
+    // any other set_state. Best-effort + NON-FATAL, exactly like the edges below: the
+    // item already exists, and turning a successful create into an error because the
+    // follow-on transition failed would be the worse outcome — the caller can always
+    // retry with work_items:set_state. The failure is reported on the result instead
+    // of being swallowed, so it is never a SILENT no-op.
+    let stateError: string | undefined;
+    if (args.state && args.state !== workItem.state) {
+      try {
+        const moved = await setWorkItemState(workItem.id, args.state, {
+          by: ctx.ownerId,
+          harness: harnessForItem,
+        });
+        if (moved) workItem = moved;
+        else stateError = `created, but the initial state '${args.state}' did not apply (item not found on the state write)`;
+      } catch (e) {
+        stateError = `created, but the initial state '${args.state}' was refused: ${
+          e instanceof Error ? e.message : String(e)
+        }`;
+      }
+    }
+
     // Forward edge: link the new work-item to the plan item it addresses (coverage
     // rollup). Non-fatal — the item is already created; an edge write that fails
     // must not turn a successful create into an error (the manual work_items:link
@@ -280,7 +320,7 @@ export async function createOneWorkItem(
         // Non-fatal — an inline edge is best-effort, like the coverage edge.
       }
     }
-    return { ok: true, workItem, ...(similarOpen ? { similarOpen } : {}) };
+    return { ok: true, workItem, ...(similarOpen ? { similarOpen } : {}), ...(stateError ? { stateError } : {}) };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }

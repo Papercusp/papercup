@@ -30,10 +30,12 @@ describe('buildFailureWarning (EI-10951)', () => {
     expect(w.warning).not.toMatch(/do NOT blindly re-run/i);
   });
 
-  it('a write that LANDED before the failure still gets the loud double-write warning', () => {
+  it('a write that LANDED before the failure still gets the loud double-write warning, verbatim as before', () => {
     // 2 dispatched, 0 threw ⇒ both landed, then the script itself failed (e.g. a timeout).
+    // This case's SEMANTICS are unchanged, so its wording is unchanged too (WI-1377/EI-7174).
     const w = buildFailureWarning([m('coord:send'), m('work_items:claim')], [], []);
-    expect(w.warning).toMatch(/2 write-effect call\(s\) ALREADY EXECUTED/);
+    expect(w.warning).toMatch(/2 write-effect call\(s\) already executed before this failure/);
+    expect(w.warning).toMatch(/coord:send×1, work_items:claim×1/);
     expect(w.warning).toMatch(/do NOT blindly re-run/);
   });
 

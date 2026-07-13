@@ -491,6 +491,7 @@ function registerListingEndpoints(
       publisher_device_pubkey: body.publisher_device_pubkey ?? null,
       publisher_attestation_gist_id: body.attestation_gist_id ?? null,
       provides_tools: providesToolsJson,
+      provides_events: providesEventsJson,
       hive_pubkey: (body.hive_pubkey as string | undefined) ?? null,
       hive_title: (body.hive_title as string | undefined) ?? null,
       // P-018: the blueprint.yaml `kind` for a blueprint listing (the Hives-tab

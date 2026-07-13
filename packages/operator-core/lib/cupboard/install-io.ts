@@ -151,7 +151,21 @@ export function buildInstallPluginDeps(): InstallPluginCoreDeps {
 export async function installCupboardUnitFromListing(
   unit: InstallableUnitRef,
   opts: { harness?: string; acceptCapabilities?: boolean } = {},
-): Promise<{ ok: true; declaredDeps?: { tools: string[]; packs: string[]; plugins: string[] } } | { ok: false; error: string }> {
+): Promise<
+  | {
+      ok: true;
+      declaredDeps?: {
+        tools: string[];
+        packs: string[];
+        plugins: string[];
+        // Carries the unit's own installable EVENT deps into the loop's next
+        // round, so an event dep pulls its providing Cupboard unit in exactly
+        // as a tool dep does (D-003 / P-007).
+        events?: Array<{ family: string; optional?: boolean }>;
+      };
+    }
+  | { ok: false; error: string }
+> {
   if (!unit.listingId) {
     return { ok: false, error: `unit "${unit.name}" has no Cupboard listing id to resolve` };
   }

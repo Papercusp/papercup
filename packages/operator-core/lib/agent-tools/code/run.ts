@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { withWorkspace, getOrgPg } from '@papercusp/db-org';
-import { maybeEmptyMappingHint } from '../../empty-mapping-hint';
+import { maybeEmptyMappingHint, EMPTY_MAPPING_METADATA_KEY } from '../../empty-mapping-hint';
 import {
   defineTool,
   listAllProjectedTools,
@@ -229,7 +229,10 @@ export default defineTool({
       const hint = maybeEmptyMappingHint(body, []);
       if (hint) {
         (ctx as { metadata?: (d: Record<string, unknown>) => void }).metadata?.({
-          emptyMapping: { rows: hint.rows, blankRows: hint.blankRows },
+          // Shared constant, not a literal: the panel axis's SQL reads this exact key
+          // back. If the two sides drifted, the metric would read ZERO forever — which
+          // is indistinguishable from healthy. See EMPTY_MAPPING_METADATA_KEY.
+          [EMPTY_MAPPING_METADATA_KEY]: { rows: hint.rows, blankRows: hint.blankRows },
         });
       }
     } catch {
@@ -459,15 +462,25 @@ export function buildFailureWarning(
   rejected: readonly { tool: string }[],
   uncertain: readonly { tool: string }[],
 ): Record<string, string> {
-  const threw = rejected.length + uncertain.length;
-  const landedCount = Math.max(planned.length - threw, 0);
-  const tally = (ms: readonly { tool: string }[]): string => {
+  const countBy = (ms: readonly { tool: string }[]): Record<string, number> => {
     const by: Record<string, number> = {};
     for (const m of ms) by[m.tool] = (by[m.tool] ?? 0) + 1;
-    return Object.entries(by)
+    return by;
+  };
+  const render = (by: Record<string, number>): string =>
+    Object.entries(by)
+      .filter(([, n]) => n > 0)
       .map(([t, n]) => `${t}×${n}`)
       .join(', ');
-  };
+  const tally = (ms: readonly { tool: string }[]): string => render(countBy(ms));
+
+  // What actually LANDED = dispatched, minus everything that threw. (Subtract per-tool, so
+  // the tally names the tools that really took effect — not the one that was rejected.)
+  const landedBy = countBy(planned);
+  for (const m of [...rejected, ...uncertain]) {
+    if (landedBy[m.tool]) landedBy[m.tool] -= 1;
+  }
+  const landedCount = Math.max(planned.length - rejected.length - uncertain.length, 0);
 
   // Nothing took effect and nothing is in doubt: say so plainly. This is the case the old
   // warning got backwards, and the case an agent hits most.
@@ -481,9 +494,14 @@ export function buildFailureWarning(
     };
   }
 
+  // Wording preserved from the original warning (WI-1377/EI-7174) for the case whose
+  // semantics are UNCHANGED — a write that really did land still says exactly what it
+  // always said. Only the false-alarm case (nothing landed) gets new text.
   const parts: string[] = [];
   if (landedCount > 0) {
-    parts.push(`${landedCount} write-effect call(s) ALREADY EXECUTED before this failure`);
+    parts.push(
+      `${landedCount} write-effect call(s) already executed before this failure (${render(landedBy)})`,
+    );
   }
   if (uncertain.length > 0) {
     parts.push(

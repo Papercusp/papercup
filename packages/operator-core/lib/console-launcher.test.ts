@@ -3,6 +3,9 @@
  * ids embedded in a shell greeting. Accepts only the randomUUID alphabet
  * [0-9a-f-]; throws (rather than escaping) on anything else.
  */
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { afterEach, describe, expect, it } from 'vitest';
 import { shellSafeId, buildSuperuserMcpUrl, buildConsoleEnvelope } from './console-launcher';
 
@@ -37,6 +40,44 @@ describe('buildSuperuserMcpUrl (scoped-superuser-workspace-clamp D-004)', () => 
   it('allWorkspaces: bakes the UNSCOPED wildcard (the only door past the clamp)', () => {
     const url = new URL(buildSuperuserMcpUrl('http://localhost:3070', 'generic-test', true));
     expect(url.searchParams.get('workspace')).toBe('*');
+  });
+});
+
+describe('buildConsoleEnvelope cwd for a workspace-only launch (EI-10938)', () => {
+  it('lands in a real CHECKOUT, never the .papercusp state dir', async () => {
+    // The regression: a no-slug launch (which is what EVERY su session is) used to
+    // get cwd = `<workspace>/.papercusp` — a state dir that is not even a git repo.
+    // Bare `git` failed there, and relative paths silently resolved into it. Claude
+    // Code resets the shell cwd to the launch dir after every command, so the
+    // workaround cost a defensive `cd` on 77% of all bash calls.
+    const envelope = await buildConsoleEnvelope({
+      workspaceId: 'default',
+      slug: null,
+      operatorBaseUrl: 'http://localhost:3070',
+      skipMcpJson: true,
+    });
+
+    // The cwd must be a checkout — carry the two repo markers…
+    expect(existsSync(join(envelope.cwd, 'apps', 'operator', 'package.json'))).toBe(true);
+    expect(existsSync(join(envelope.cwd, 'libs', 'papercusp', 'package.json'))).toBe(true);
+    // …and, critically, be a git repository, which the state dir was not.
+    expect(existsSync(join(envelope.cwd, '.git'))).toBe(true);
+    // The old broken value was a `.papercusp` state dir. Never again.
+    expect(envelope.cwd.endsWith('/.papercusp')).toBe(false);
+  });
+
+  it('exports PAPERCUSP_REPO_ROOT so no agent has to hard-code an absolute repo path', async () => {
+    // Agents had PAPERCUSP_HOME (state dir) and PAPERCUSP_WORKSPACE (an id) but
+    // nothing naming where the CODE lives — so 287 command lines in a single
+    // session hard-coded a box-specific absolute path.
+    const envelope = await buildConsoleEnvelope({
+      workspaceId: 'default',
+      slug: null,
+      operatorBaseUrl: 'http://localhost:3070',
+      skipMcpJson: true,
+    });
+    expect(envelope.env.PAPERCUSP_REPO_ROOT).toBe(envelope.cwd);
+    expect(existsSync(join(envelope.env.PAPERCUSP_REPO_ROOT!, '.git'))).toBe(true);
   });
 });
 

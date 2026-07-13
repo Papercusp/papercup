@@ -34,6 +34,19 @@
  * row with any populated field, never trips it.
  */
 
+/**
+ * The `tool_invocations.metadata_json` key code:run stamps when this detector fires,
+ * and the key the empty-result-rate panel axis reads back (EI-10892).
+ *
+ * It is a shared constant rather than a string literal on each side ON PURPOSE: the
+ * writer (agent-tools/code/run.ts) and the reader (empty-result-rate.ts's SQL) are in
+ * different modules, and if either renamed its literal the axis would quietly read ZERO
+ * forever — which is indistinguishable from "healthy". A metric that silently reports
+ * perfection when its own plumbing is broken is worse than no metric. One constant, both
+ * sides, no drift possible.
+ */
+export const EMPTY_MAPPING_METADATA_KEY = 'emptyMapping';
+
 /** Rows must exist to be mis-mapped; a single row is too weak a signal to accuse. */
 export const EMPTY_MAPPING_MIN_ROWS = 2;
 /** Fraction of rows that must be fully-blank before we call it a mis-mapping. */

@@ -291,6 +291,14 @@ export async function buildConsoleEnvelope(
     // PAPERCUSP_WORKSPACE=<picked> alongside PAPERCUSP_HOME=<active>.
     PAPERCUSP_HOME: papercuspPathForWorkspace(opts.workspaceId),
   };
+  // EI-10938: an EXPLICIT pointer to the source tree. Agents previously had
+  // PAPERCUSP_HOME (the state dir) and PAPERCUSP_WORKSPACE (an id) but NOTHING
+  // naming where the code lives — so every agent hard-coded an absolute repo path
+  // (287 command lines in one session did exactly that) which differs per box.
+  // `PAPERCUSP_REPO_ROOT` was already referenced by the coord-hook's docs but was
+  // never actually set by anything; this makes it real. Only set when cwd really
+  // is a checkout, so its presence is a reliable signal rather than a guess.
+  if (hasPapercupMarkers(cwd)) env.PAPERCUSP_REPO_ROOT = cwd;
   // If no slug, resolveContextEnv set PAPERCUSP_HARNESS_SLUG=''; drop
   // that — empty value is worse than absent for "is this harness-scoped?".
   if (!opts.slug) delete env.PAPERCUSP_HARNESS_SLUG;

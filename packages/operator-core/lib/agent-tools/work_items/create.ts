@@ -28,6 +28,7 @@ import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identi
 import { COORD_ROLES } from '../coordination/roles';
 import { hiveArg } from '../_hive-scope';
 import { createOneWorkItem, type CreateOneWorkItemArgs } from './_create-core';
+import { TERMINAL_WORK_ITEM_STATES } from '../../work-items';
 import { LINK_RELS } from './link';
 import { runBulk, bulkContent } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
@@ -191,6 +192,7 @@ export default defineTool({
       urgent: z.boolean().optional().describe('URGENT enqueue: wake the brain immediately (floor-debounced). Reserve for a production fire, not routine filing.'),
       force: z.boolean().optional().describe('Override the EI-316 mirror-duplicate guard.'),
       assign_to: z.string().max(120).optional().describe('Atomically CLAIM the new item for this agent id in the SAME create (B-LOOP-4) — pass a concrete ownerId, or the literal "self" to resolve to the caller. Omit ⇒ unclaimed.'),
+      state: stateOnCreate.optional(), // EI-10897
       plan_item: z
         .object({ slug: z.string().min(1), item: z.string().min(1) })
         .optional()
@@ -238,6 +240,7 @@ export default defineTool({
             parent: args.parent,
             topics: args.topics,
             payload: args.payload,
+            state: args.state, // EI-10897
             urgent: args.urgent,
             force: args.force,
             assign_to: resolveSelfLiteral(args.assign_to, ident.ownerId) ?? (args.assign_all_to_self ? ident.ownerId : undefined),

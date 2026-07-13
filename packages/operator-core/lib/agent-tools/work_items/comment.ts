@@ -24,6 +24,18 @@ import { hardText, LIMITS } from '../limits';
  * agent reaches for first — and it was rejected, costing a round-trip to discover the
  * field is named `body`. Same class as WI-4492 (`body` silently dropped on create),
  * and the same remedy: accept the obvious spelling, reject a genuine conflict loudly.
+ *
+ * ⚠ The alias is resolved in the HANDLER — never with a zod `.transform()` here
+ * (EI-10996). A trailing transform's OUTPUT is unrepresentable in JSON Schema, and
+ * `z.toJSONSchema(def.args)` runs with NO try/catch at `defineTool` registration AND
+ * in the MCP tools/list handlers (`endpoint-route/.../_mcp-handler.ts`,
+ * `agent-mcp/src/server.ts`) — so ONE transform here crashes schema-gen for the WHOLE
+ * tool catalog, not merely this tool. `limits.ts` already states this rule (it is why
+ * `softText` clamps handler-side); the first cut of this alias broke it and red-pinned
+ * the release gate. `.superRefine()` below is fine — REFINEMENTS are representable; it
+ * is specifically a value-rewriting transform that is not. If one is ever genuinely
+ * needed it must be `.transform(...).pipe(<schema>)`, whose output is the piped schema
+ * (see `plans/list.ts`).
  */
 const itemSpec = z
   .object({
@@ -53,8 +65,12 @@ const itemSpec = z
           '`body` and `comment` are the SAME field and were both passed with DIFFERENT text — pass one (which did you mean?).',
       });
     }
-  })
-  .transform((v) => ({ ...v, body: (v.body ?? v.comment)! }));
+  });
+
+/** Resolve the `body`/`comment` alias (EI-10897). Handler-side by construction, so the
+ *  advertised JSON Schema stays representable (EI-10996 — see the note above). The
+ *  superRefine above already guarantees at least one of the two is present. */
+const commentText = (v: { body?: string; comment?: string }): string => (v.body ?? v.comment) as string;
 
 /**
  * EI-8837: a completion-shaped thread post ("DONE + GREEN", "VM-VERIFIED", …)
@@ -113,9 +129,10 @@ export default defineTool({
     }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
+    // Both paths resolve the `comment` alias the SAME way — handler-side (EI-10996).
     const items = args.items?.length
-      ? args.items
-      : [{ id: args.id as string, body: (args.body ?? args.comment) as string, harness: args.harness }];
+      ? args.items.map((it) => ({ ...it, body: commentText(it) }))
+      : [{ id: args.id as string, body: commentText(args), harness: args.harness }];
     const env = await runBulk(
       items,
       async (it) => {

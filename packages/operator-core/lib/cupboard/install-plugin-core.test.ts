@@ -241,4 +241,92 @@ describe('installPluginFromCupboardCore', () => {
     expect(res.ok).toBe(true);
     expect(validateDependencies).not.toHaveBeenCalled();
   });
+
+  /* ─────────────────────────────────────────────────────────────────────
+   * The EVENT axis at the REAL install gate (D-003 / P-007).
+   *
+   * These sit at install-plugin-core, not at the resolve-and-install core,
+   * on purpose: the loop's own tests inject a fake `installUnit` that hands
+   * back `declaredDeps` straight from a fixture, so they can (and did) stay
+   * green while THIS file — the thing that actually reads a manifest's
+   * `dependencies.events` — ignored the event axis completely. A unit's tests
+   * passing is not the same as its real path working.
+   * ───────────────────────────────────────────────────────────────────── */
+
+  it('GATES a manifest whose ONLY declared dep is an event family (the events-only unit)', async () => {
+    await writeManifest(fixtureRepo, {
+      name: 'reactor',
+      version: '1.0.0',
+      dependencies: { events: [{ family: 'upstream:settled' }] },
+    });
+    const validateDependencies = vi.fn(async () => ({
+      ok: true,
+      missing: { tools: [], packs: [], plugins: [], events: [] },
+      installable: { tools: [], packs: [], plugins: [], events: [] },
+      messages: [],
+    }));
+    const res = await installPluginFromCupboardCore(
+      { githubUrl: 'https://github.com/acme/reactor' },
+      makeDeps({ validateDependencies }),
+    );
+    expect(res.ok).toBe(true);
+    // The whole point: an events-only manifest must NOT skip the gate. If
+    // `hasDeclaredDeps` ignored `events`, this validator would never be called
+    // and the unit would install with its required family unprovided —
+    // installed, resolving nothing, reactions silently never firing.
+    expect(validateDependencies).toHaveBeenCalledTimes(1);
+    expect(validateDependencies.mock.calls[0]![0]).toMatchObject({
+      events: [{ family: 'upstream:settled' }],
+    });
+  });
+
+  it('fails (422) BEFORE copying when a REQUIRED event family is hard-missing', async () => {
+    await writeManifest(fixtureRepo, {
+      name: 'event-needy',
+      version: '1.0.0',
+      dependencies: { events: [{ family: 'nobody:emits' }] },
+    });
+    await expect(
+      installPluginFromCupboardCore(
+        { githubUrl: 'https://github.com/acme/event-needy' },
+        makeDeps({
+          validateDependencies: async () => ({
+            ok: false,
+            missing: { tools: [], packs: [], plugins: [], events: ['nobody:emits'] },
+            installable: { tools: [], packs: [], plugins: [], events: [] },
+            messages: ['needs event family "nobody:emits" — nothing on this host provides it'],
+          }),
+        }),
+      ),
+    ).rejects.toMatchObject({ status: 422 });
+    expect(existsSync(join(globalDir, 'event-needy'))).toBe(false);
+  });
+
+  it('surfaces an INSTALLABLE event dep advisorily — the transitive-recursion channel', async () => {
+    await writeManifest(fixtureRepo, {
+      name: 'soft-event-needy',
+      version: '1.0.0',
+      dependencies: { events: [{ family: 'canary:flipped' }] },
+    });
+    const res = await installPluginFromCupboardCore(
+      { githubUrl: 'https://github.com/acme/soft-event-needy' },
+      makeDeps({
+        validateDependencies: async () => ({
+          ok: true,
+          missing: { tools: [], packs: [], plugins: [], events: [] },
+          installable: { tools: [], packs: [], plugins: [], events: [{ family: 'canary:flipped' }] },
+          messages: [],
+        }),
+      }),
+    );
+    expect(res.ok).toBe(true);
+    // resolveAndInstallDeps folds this back into its working set, so the
+    // Cupboard unit providing `canary:flipped` gets pulled in on the next round.
+    expect(res.installableDependencies).toEqual({
+      tools: [],
+      packs: [],
+      plugins: [],
+      events: [{ family: 'canary:flipped' }],
+    });
+  });
 });

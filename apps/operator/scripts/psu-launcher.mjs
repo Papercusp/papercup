@@ -23,7 +23,7 @@ import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, writeFileSync, chmodSync, rmSync, renameSync, realpathSync, statSync, lstatSync, readlinkSync, symlinkSync, copyFileSync, openSync, readSync, closeSync } from 'node:fs';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { homedir, hostname } from 'node:os';
-import { join, dirname, delimiter } from 'node:path';
+import { join, dirname, delimiter, basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { hostThroughPty, fleetOscFromEnv, findLiveHostFor } from './psu-pty-host.mjs';
 
@@ -3756,7 +3756,40 @@ function spawnInherit({ wrapperBin, args = [], cwd, env }) {
   });
 }
 
+/**
+ * EI-10938 — never hand an agent a cwd that is not a checkout.
+ *
+ * The console launcher used to open workspace-only (su) sessions in the
+ * workspace's `.papercusp` STATE dir, which is not a git repo and holds no
+ * source. Claude Code resets the shell cwd to the launch dir after every command,
+ * so the agent paid a defensive `cd` on 77% of its bash calls, bare `git` failed,
+ * and relative paths silently resolved into the state dir.
+ *
+ * That is fixed at the source (console-launcher's resolveWorkspaceHomeCwd). This
+ * is the belt-and-braces guard for every OTHER way a bad cwd can arrive — a stale
+ * caller, a recorded session cwd from before the fix, a hand-rolled invocation.
+ * It ONLY ever redirects a cwd that is demonstrably a papercusp state dir into the
+ * real checkout; a deliberate cwd (a harness dir, a user's own directory) is left
+ * strictly alone.
+ */
+function repoCwdOrRedirect(cwd) {
+  if (!cwd) return cwd;
+  const isStateDir = basename(cwd) === '.papercusp';
+  if (!isStateDir) return cwd; // a deliberate cwd — never second-guess it
+  const markers = (d) =>
+    existsSync(join(d, 'apps', 'operator', 'package.json')) &&
+    existsSync(join(d, 'libs', 'papercusp', 'package.json'));
+  if (markers(cwd)) return cwd; // somehow already a checkout — leave it
+  const envRoot = process.env.PAPERCUSP_REPO_ROOT || process.env.PAPERCUSP_INTEGRATION_ROOT;
+  if (envRoot && markers(envRoot)) {
+    console.error(`psu: cwd was a state dir (${cwd}); using the checkout at ${envRoot}`);
+    return envRoot;
+  }
+  return cwd; // no better answer — do not invent one
+}
+
 function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv, kickoff = null }) {
+  cwd = repoCwdOrRedirect(cwd);
   const env = { ...sanitizeInheritedEnv(process.env), ...envelopeEnv };
   // Export the RESOLVED operator url to every agent child so claude's user-level
   // papercusp-su MCP url (`${PAPERCUSP_OPERATOR_URL:-…}/api/mcp?…`, written by

@@ -2,7 +2,8 @@
  * dispatch-heartbeat — the turn-level presence beat at the dispatch seam
  * (agent-liveness-heartbeat-hardening-2026-06-12 P-001/P-002). Pins: beat
  * fires for a resolvable owner, throttles within the window, re-fires after
- * it, skips anonymous callers without throwing, and swallows beat failures.
+ * it, skips anonymous callers without throwing, and swallows beat/reactivation
+ * failures.
  */
 import { describe, test, expect, beforeEach, vi } from 'vitest';
 import {
@@ -25,21 +26,25 @@ describe('maybeBeatPresenceOnDispatch', () => {
 
   test('beats the resolved owner exactly once per throttle window', async () => {
     const beat = vi.fn(async (_ownerId: string) => {});
+    const reactivate = vi.fn(async (_ownerId: string) => false);
     let t = 1_000_000;
     const now = () => t;
 
-    maybeBeatPresenceOnDispatch(SU_CTX, { beat, now });
-    maybeBeatPresenceOnDispatch(SU_CTX, { beat, now }); // same instant — throttled
+    maybeBeatPresenceOnDispatch(SU_CTX, { beat, reactivate, now });
+    maybeBeatPresenceOnDispatch(SU_CTX, { beat, reactivate, now }); // same instant — throttled
     t += DISPATCH_BEAT_INTERVAL_MS - 1;
-    maybeBeatPresenceOnDispatch(SU_CTX, { beat, now }); // still inside — throttled
+    maybeBeatPresenceOnDispatch(SU_CTX, { beat, reactivate, now }); // still inside — throttled
     await flush();
     expect(beat).toHaveBeenCalledTimes(1);
     expect(beat).toHaveBeenCalledWith('su-test-owner-1');
+    expect(reactivate).toHaveBeenCalledTimes(1);
+    expect(reactivate).toHaveBeenCalledWith('su-test-owner-1');
 
     t += 2; // crosses the window
-    maybeBeatPresenceOnDispatch(SU_CTX, { beat, now });
+    maybeBeatPresenceOnDispatch(SU_CTX, { beat, reactivate, now });
     await flush();
     expect(beat).toHaveBeenCalledTimes(2);
+    expect(reactivate).toHaveBeenCalledTimes(2);
   });
 
   test('different owners throttle independently', async () => {
@@ -94,6 +99,24 @@ describe('maybeBeatPresenceOnDispatch', () => {
     maybeBeatPresenceOnDispatch(SU_CTX, { beat, now });
     await flush();
     expect(beat).toHaveBeenCalledTimes(2);
+  });
+
+  test('a failing session reactivation is swallowed without suppressing later beats', async () => {
+    const beat = vi.fn(async (_ownerId: string) => {});
+    const reactivate = vi.fn(async () => { throw new Error('adv session store unavailable'); });
+    let t = 11_000_000;
+    const now = () => t;
+
+    expect(() => maybeBeatPresenceOnDispatch(SU_CTX, { beat, reactivate, now })).not.toThrow();
+    await flush();
+    expect(beat).toHaveBeenCalledTimes(1);
+    expect(reactivate).toHaveBeenCalledTimes(1);
+
+    t += DISPATCH_BEAT_INTERVAL_MS + 1;
+    maybeBeatPresenceOnDispatch(SU_CTX, { beat, reactivate, now });
+    await flush();
+    expect(beat).toHaveBeenCalledTimes(2);
+    expect(reactivate).toHaveBeenCalledTimes(2);
   });
 
   test('power-user and signed-spawn identities beat under their own ids', async () => {

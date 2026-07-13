@@ -50,7 +50,7 @@ describe('POST /cupboard/install-deps', () => {
     expect(json.ok).toBe(true);
     expect(json.installed).toHaveLength(1);
     expect(resolveAndInstallDeps).toHaveBeenCalledWith(
-      { tools: ['md.render'], packs: [], plugins: [] },
+      { tools: ['md.render'], packs: [], plugins: [], events: [] },
       expect.objectContaining({ deriveCatalog: expect.any(Function), installUnit: expect.any(Function) }),
     );
   });
@@ -63,8 +63,34 @@ describe('POST /cupboard/install-deps', () => {
     } as never);
     const res = await post({ blueprintId: 'known' });
     expect(res.status).toBe(200);
+    // `events: []` on purpose — the event axis is UNIT-level (a plugin/pack
+    // manifest's dependencies.events), not a blueprint axis. A blueprint reaches
+    // events transitively, through the units it depends on.
     expect(resolveAndInstallDeps).toHaveBeenCalledWith(
-      { tools: ['need.tool'], packs: ['p'], plugins: [] },
+      { tools: ['need.tool'], packs: ['p'], plugins: [], events: [] },
+      expect.anything(),
+    );
+  });
+
+  it('parses event deps off the wire — object form and the bare-string REQUIRED sugar', async () => {
+    const res = await post({
+      deps: { tools: [], events: [{ family: 'a:done' }, { family: 'b:done', optional: true }, 'c:done'] },
+    });
+    expect(res.status).toBe(200);
+    expect(resolveAndInstallDeps).toHaveBeenCalledWith(
+      {
+        tools: [],
+        packs: [],
+        plugins: [],
+        events: [
+          { family: 'a:done', optional: false },
+          { family: 'b:done', optional: true },
+          // A bare string is REQUIRED — the safe reading of an under-specified
+          // declaration: fail loudly rather than install a unit whose reactions
+          // silently never fire.
+          { family: 'c:done' },
+        ],
+      },
       expect.anything(),
     );
   });
