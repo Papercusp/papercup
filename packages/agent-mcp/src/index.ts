@@ -91,7 +91,7 @@ export {
   readResource,
   startServer,
 } from './server';
-export { getCatalog, lookup } from '@papercusp/tooldef';
+export { getCatalog, lookup, toArgsJsonSchema } from '@papercusp/tooldef';
 export {
   serializeToolResponse,
   formatOptsFromCtx,

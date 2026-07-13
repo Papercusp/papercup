@@ -34,6 +34,14 @@ import { z } from 'zod';
 export const LIMITS = {
   /** ids, keys, exact event keys, short handles. */
   IDENT: 200,
+  /**
+   * A provenance LABEL — `foundDuring` ("what were you doing when you hit this").
+   * Soft by nature (EI-10943): it is a label the tool only stores + echoes, and the
+   * DB column is unbounded `text`, so the cap is pure presentation policy. Bouncing
+   * a capture — losing the whole finding, and dumping the entire args schema at the
+   * agent — because its provenance label ran long is the worst possible trade.
+   */
+  LABEL: 120,
   /** one-line titles / intents / one-sentence descriptions. */
   SHORT_TITLE: 1000,
   /** a short paragraph — a note, a summary, a topic description. */

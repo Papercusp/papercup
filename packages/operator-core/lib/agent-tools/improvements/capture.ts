@@ -24,7 +24,7 @@ import { noveltyPriorArt } from '../../scout/novelty-precheck';
 import { recordRoutedIdea } from '../../scout/routed-ledger';
 import { SU_IDEATION_LENSES, type SuIdeationLens } from '../../scout/types';
 import { resolveWorkItemRef } from '../../work-items';
-import { hardText, LIMITS } from '../limits';
+import { clampText, hardText, softText, LIMITS } from '../limits';
 import { coerceCaptureArgs } from './capture-coerce';
 
 export default defineTool({
@@ -68,7 +68,18 @@ export default defineTool({
     severity: z.enum(['critical', 'major', 'minor', 'nit']).optional(),
     subTopic: z.string().min(1).max(40).optional().describe('optional sub-area topic, e.g. coord-dx, db-tooling'),
     scope: z.string().max(80).optional().describe("'operator' (default) or 'harness:<slug>'"),
-    foundDuring: z.string().max(120).optional(),
+    // EI-10943: was `z.string().max(120)` — a HARD reject. Overrunning it bounced the
+    // WHOLE capture (the finding is lost, and the agent gets the entire args schema
+    // dumped back at it) over a provenance LABEL the tool only stores and echoes, into
+    // an unbounded `text` column. Soft-capped: truncate + warn, never reject. The clamp
+    // is handler-side, NOT a zod .transform() — a transform is unrepresentable in JSON
+    // Schema and crashes z.toJSONSchema for the whole catalog (see limits.ts).
+    foundDuring: softText(LIMITS.LABEL)
+      .optional()
+      .describe(
+        `what you were doing when you found this (a plan slug, a task, "the X audit"). ` +
+          `Free text — truncated to ${LIMITS.LABEL} chars with a warning if longer, never rejected.`,
+      ),
     paths: z.array(z.string().min(1).max(300)).max(20).optional().describe('repo-relative file paths the improvement touches, when known — feeds the protected-path gate'),
     notifyAgents: z
       .array(z.string().min(1))
@@ -242,6 +253,11 @@ export default defineTool({
           }
         : undefined;
     const hasIdeation = !!ideation && Object.keys(ideation).length > 0;
+    // EI-10943: truncate-and-warn. The capture always lands; the agent is TOLD what
+    // was trimmed rather than losing the finding to a validation bounce.
+    const foundDuring = clampText(args.foundDuring, LIMITS.LABEL);
+    const foundDuringTruncated =
+      typeof args.foundDuring === 'string' && args.foundDuring.length > LIMITS.LABEL;
     try {
       const result = await captureImprovement({
         title: args.title,
@@ -250,7 +266,7 @@ export default defineTool({
         severity: args.severity as IssueSeverity | undefined,
         subTopic: args.subTopic,
         scope: args.scope,
-        foundDuring: args.foundDuring,
+        foundDuring,
         paths: args.paths,
         force: args.force,
         checkDuplicatesOnly: args.checkDuplicatesOnly,
@@ -364,6 +380,14 @@ export default defineTool({
               ...(priorArt ? { priorArt } : {}),
               ...(notified ? { notified: notified.notified } : {}),
               ...(linked ? { linked } : {}),
+              ...(foundDuringTruncated
+                ? {
+                    warnings: [
+                      `foundDuring was ${args.foundDuring!.length} chars — truncated to ${LIMITS.LABEL}. ` +
+                        'It is a short provenance label, not a body; put the detail in `body`.',
+                    ],
+                  }
+                : {}),
             }),
           },
         ],

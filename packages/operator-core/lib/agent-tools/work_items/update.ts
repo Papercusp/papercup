@@ -16,7 +16,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { hardText, LIMITS } from '../limits';
+import { clampText, hardText, softText, LIMITS } from '../limits';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { updateWorkItem } from '../../work-items';
@@ -36,7 +36,11 @@ const FIELDS = {
     .enum(['bug', 'change'])
     .optional()
     .describe('correct a mislabeled work-item kind — bug = broken (auto-implement-eligible), change = desired improvement (human-gated)'),
-  foundDuring: z.string().max(120).nullable().optional(),
+  // EI-10943 (same trap as improvements:capture): a provenance LABEL must never bounce
+  // the whole update on length. Soft-capped — truncated handler-side by `clampText`,
+  // never rejected. (Handler-side, not a zod .transform(): a transform crashes
+  // z.toJSONSchema for the entire catalog — see limits.ts.)
+  foundDuring: softText(LIMITS.LABEL).nullable().optional(),
   linkedFeatureId: z.string().max(80).nullable().optional(),
   confirmShrink: z
     .boolean()
@@ -151,7 +155,10 @@ export default defineTool({
           body: resolveBodyAlias(it) ?? resolveBodyAlias(args),
           severity: it.severity ?? args.severity,
           kind: it.kind ?? args.kind,
-          foundDuring: it.foundDuring !== undefined ? it.foundDuring : args.foundDuring,
+          foundDuring: clampText(
+            it.foundDuring !== undefined ? it.foundDuring : args.foundDuring,
+            LIMITS.LABEL,
+          ),
           linkedFeatureId: it.linkedFeatureId !== undefined ? it.linkedFeatureId : args.linkedFeatureId,
           confirmShrink: it.confirmShrink ?? args.confirmShrink,
           harness: it.harness ?? args.harness,
@@ -163,7 +170,7 @@ export default defineTool({
             body: resolveBodyAlias(args), // WI-4492: `summary` is an accepted alias for `body`
             severity: args.severity,
             kind: args.kind,
-            foundDuring: args.foundDuring,
+            foundDuring: clampText(args.foundDuring, LIMITS.LABEL),
             linkedFeatureId: args.linkedFeatureId,
             confirmShrink: args.confirmShrink,
             harness: args.harness,

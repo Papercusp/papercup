@@ -285,7 +285,7 @@ describe('G2 admission gate — every claim path (real PG)', () => {
 
 /**
  * The OWN-NODE leg, against real Postgres — the leg that actually gates placement.
- * [owner:Avi 2026-07-13] "trust our own nodes ... that should be the default. all new
+ * [owner 2026-07-13] "trust our own nodes ... that should be the default. all new
  * papercusp installs should have that behavior without needing to do anything".
  *
  * These MUST be real-PG: the unit tests hand the JS form a Set and never exercise SQL's

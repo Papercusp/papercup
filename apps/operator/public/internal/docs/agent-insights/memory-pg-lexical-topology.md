@@ -57,24 +57,84 @@ claude topic files + PG) but would double-write when both legs share
   was still mangling long queries (see the cap trap below) — they are superseded,
   and the speed claim did not survive.
 
-## Known cost: the lexical leg SEQ-SCANS (EI-10931)
+## The latency fix: an indexable pre-filter + concurrent legs (EI-10931)
 
-Every lexical predicate is a leading-wildcard `ILIKE`, which **cannot use a
-btree** — and all 10 indexes on `memory_canonical` are btree. So each lexical
-search is a full sequential scan evaluating up to `tokens × 3` (≤96) ILIKEs per
-row: **O(rows × tokens)**, measured at **p50 455ms over 13,594 active rows**, and
-growing linearly as the store grows (every agent writes to it).
+Two independent bugs made `hybrid-pg` slower than the backend it replaces
+(bench p50 1182ms vs 821ms). Both are fixed; both are worth knowing, because
+each is a trap that reads as a virtue.
 
-⚠ **If you go to fix this, do NOT reach for a weighted `tsvector`.** It looks
-like the perfect fit (`setweight` A/B/D maps straight onto the 3/2/1 field
-weights) — but `to_tsvector('english', …)` stems and drops stop-words, which
-**mangles identifiers** (`PAPERCUSP_MEMORY_TIMEOUT`, `WI-4522`, camelCase tool
-names). Exact-identifier recall is *the entire reason this leg exists* (MRR 1.00
-vs cosine's 0.87), so a naive tsvector migration would silently destroy the leg's
-whole purpose while looking like a clean optimization — the same shape as the
-token-cap trap below. Use a **`pg_trgm` GIN** index instead: it accelerates
-`ILIKE '%x%'` with *identical* semantics (no stemming, no tokenization change,
-no recall risk).
+### 1. The score expression WAS the filter — so no index could ever be used
+
+Every ILIKE lived in the **SELECT list** (the field-weighted `CASE` score), and
+`lex_raw > 0` was applied in an **outer** query. The inner scan's only predicate
+was `invalid_at IS NULL` — so Postgres read and **scored every row**, every
+search:
+
+```
+Seq Scan on memory_canonical (actual time=1.368..774.428 rows=1287 loops=1)
+Execution Time: 775.674 ms          -- 13,594 active rows, 12-token query
+```
+
+This was *deliberate*, and the code said so: "each ILIKE is evaluated exactly
+once: the score expression IS the filter, so there is no separate OR pre-filter."
+It saves re-evaluating a handful of ILIKEs on the few rows that match — at the
+cost of a **full scan on every single search, forever, growing with the store.**
+
+⚠ **The trap for the next person: adding a `pg_trgm` GIN index alone does
+NOTHING here.** There is no predicate for it to serve. (An earlier version of this
+page recommended exactly that — it was wrong, and it would have been a day
+wasted staring at an index the planner never touches.) The index only works
+*together with* an indexable `WHERE`.
+
+The fix is both halves: `lexicalSearch` now also emits an **OR pre-filter** into
+the inner `WHERE` (`name/description/data ILIKE $t OR …` across the tokens), which
+is **logically identical** to `lex_raw > 0` — a row scores > 0 iff ≥1 token hits ≥1
+field — so **recall cannot change by construction**; only the plan changes. Plus
+migration **594**: `pg_trgm` + GIN `gin_trgm_ops` indexes on the three payload
+expressions.
+
+Result — the plan flips to a `BitmapOr` over the trigram indexes:
+
+| query class                                    | before | after     |
+| ---------------------------------------------- | ------ | --------- |
+| **rare identifier** (this leg's whole purpose) | 775ms  | **1.2ms** |
+| broad common-token paraphrase                  | 776ms  | \~630ms   |
+
+Common tokens genuinely match \~9.5% of the store (1287 rows), and each survivor
+still re-ILIKEs a large `data` field — an index cannot shrink a candidate set that
+is really that big. That residue is what fix #2 hides.
+
+⚠ **Still do NOT reach for a weighted `tsvector`.** It looks like the perfect fit
+(`setweight` A/B/D maps straight onto the 3/2/1 weights) — but
+`to_tsvector('english', …)` stems and drops stop-words, which **mangles
+identifiers** (`PAPERCUSP_MEMORY_TIMEOUT`, `WI-4522`, camelCase tool names).
+Exact-identifier recall is the entire reason this leg exists (MRR 1.00 vs cosine's
+0.87), so a tsvector migration would silently destroy its purpose while looking
+like a clean optimization. `gin_trgm_ops` accelerates `ILIKE '%x%'` with *identical*
+semantics — no stemming, no tokenization change, no recall risk.
+
+### 2. The two legs ran SERIALLY
+
+`HybridBackend.search` did `await cosine` **then** `await lexical`. The legs are
+**independent** — two rankings of the same rows, neither's input depending on the
+other's output — so sequencing them put the lexical leg's whole cost on the
+critical path: `total = cosine + lexical` instead of `max(cosine, lexical)`.
+
+That was free to ignore while the lexical leg was a local file scan (\~0ms). It
+became the **dominant** term the moment the leg became a PG query. The cosine leg
+is embed-bound (a network round-trip); the lexical leg is embed-free and DB-bound.
+Overlapping them hides the cheaper one entirely behind the one we cannot avoid.
+
+Floored-union mode (the default, and what `hybrid-pg` runs) now starts the lexical
+leg **before** awaiting cosine. ⚠ `cosine-gated` mode still short-circuits
+deliberately — an empty cosine set must skip the lexical work entirely — and a test
+pins that contract (*"cosine-gated early-return short-circuits the lexical leg
+entirely"*). The first cut of this fix broke it; the suite caught it.
+
+Guard: `hybrid-backend.test.ts` → *"floored-union runs BOTH legs concurrently"*
+asserts the lexical leg is **started before cosine resolves**. A refactor that
+innocently rewrites it back to `await; await;` would restore the regression with
+every other test still green.
 
 ## \~/.claude topic files are NOT load-bearing anymore
 

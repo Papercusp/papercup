@@ -30,7 +30,7 @@ describe('isAutoPickable — G2 admission predicate', () => {
 });
 
 /**
- * The OWN-NODE default [owner:Avi 2026-07-13: "trust our own nodes ... that should be
+ * The OWN-NODE default [owner 2026-07-13: "trust our own nodes ... that should be
  * the default. all new papercusp installs should have that behavior without needing to
  * do anything"].
  *

@@ -11,7 +11,7 @@ The built-in harness blueprints — each a declarative harness shape (work-item 
 
 A **blueprint** is a harness's declarative shape — its work-item kind, the role spine the engine routes work through (`deriveNext`), its dispatch/concurrency policy, and its finalize gates. Concrete blueprints `extends: base`. The operator instantiates a harness from one of these (`harness:create` / `blueprint:extend`).
 
-Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (43 concrete + 4 abstract).
+Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (44 concrete + 4 abstract).
 
 ## Built-in blueprints
 
@@ -41,6 +41,7 @@ Source: `libs/papercusp/packages/harness/blueprints/<id>/blueprint.yaml` (43 con
 | `hier-lead-worker` | base | feature (`W`) | — | concurrency 4 | 2 | Hierarchical elected-lead team: one lead runs a coordination pass (plan/assign/strategize) over the team backlog, then workers execute under it. The in-team-coordinator pole between flat-distributed and the Queen. |
 | `implement` | single-agent | improvement (`IMP`) | worker | inherited | 1 | Auto-implement an eligible captured improvement (kind=bug): reproduce, fix with a regression test, keep it self/inline-sized; lands via the release gate. Flag-gated OFF + seeded inactive. |
 | `iq-battery` | base | benchmark-run (`IQB`) | — | inherited | 0 | Monthly IQ-battery benchmark: when the code SHA changed, run one owner-budget-capped generation (solver/judge bees through the governed chokepoint) beside gen-0 in the beekeeper trend — the "is the system improving" yardstick. |
+| `memory-live-recall-canary` | base | benchmark-run (`MRC`) | — | inherited | 0 | Daily memory recall canary: replay frozen known-item queries against the live memory stack (read-only), record recall@10 vs baseline, and alert on degradation — so live-store silent failures surface within a day, not whenever someone notices recall feels off. |
 | `memory-precision` | base | benchmark-run (`MPB`) | — | inherited | 0 | Weekly memory-precision monitoring: replay the frozen gold set against the production hybrid backend at the push floor and record FP@5 / R@10 / precision — so the injection floor (solved) is monitored, not benchmarked-once. |
 | `merge-resolution` | single-agent | merge-conflict (`MRG`) | merge-resolver | inherited | 1 | Resolve a git-sync auto-merge conflict: a merge-resolver agent redoes the merge fresh on main, resolves, commits, leaves the tree clean, and does not push. |
 | `migration` | base | migration-task (`M`) | migration-director | concurrency 4 | 4 | A migration/codemod harness: a migration-director drives a discoverer (find all sites matching the pattern), a worktree-isolated transformer (transform ONE site), and a verifier (tests/build green per site + overall) — safe large mechanical change. |
@@ -317,6 +318,14 @@ Monthly IQ-battery benchmark: when the code SHA changed, run one owner-budget-ca
 - **Extends:** `base`
 - **Version:** 0.1.0
 - **Work item:** `benchmark-run` (id prefix `IQB`)
+
+### `memory-live-recall-canary`
+
+Daily memory recall canary: replay frozen known-item queries against the live memory stack (read-only), record recall@10 vs baseline, and alert on degradation — so live-store silent failures surface within a day, not whenever someone notices recall feels off.
+
+- **Extends:** `base`
+- **Version:** 0.1.0
+- **Work item:** `benchmark-run` (id prefix `MRC`)
 
 ### `memory-precision`
 

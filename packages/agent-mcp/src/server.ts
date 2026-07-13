@@ -36,6 +36,7 @@ import {
   standardValidate,
   serializeToolResponse,
   formatOptsFromCtx,
+  toArgsJsonSchema,
 } from '@papercusp/tooldef';
 import { applyToolManifest } from './tool-manifest';
 import {
@@ -474,8 +475,13 @@ export async function startServer(opts: StartServerOptions = {}): Promise<void> 
     const tools = catalog
       .filter((t) => !principal || principal.capabilities.has(t.capability))
       .map((t) => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const inputSchema = (z as any).toJSONSchema(t.args) as Record<string, unknown>;
+        // GUARDED conversion, never a raw z.toJSONSchema (EI-10996 / WI-4596).
+        // This runs inside the tools/list map, so an unrepresentable args schema
+        // (almost always a trailing `.transform()`) throws for the WHOLE catalog,
+        // not just its own tool — killing tool discovery for every client. Raw, that
+        // surfaces as a bare adapter message naming no tool and no file, which reads
+        // like an unrelated infra/zod break and was mis-triaged as one.
+        const inputSchema = toArgsJsonSchema(t.name, t.args);
         delete (inputSchema as Record<string, unknown>).$schema;
         // Registry write-positional tools advertise a single `row` string (P-008).
         const advertised = advertisedArgsSchema(t.name, inputSchema);

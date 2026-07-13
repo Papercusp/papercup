@@ -119,6 +119,7 @@
     "dev:operator:nohmr": "npm --workspace @papercusp/operator-vite run dev:nohmr",
     "build:operator": "npm --workspace @papercusp/operator-vite run build",
     "test": "node scripts/affected-tests.mjs",
+    "test:file": "node scripts/test-files.mjs",
     "test:affected": "node scripts/affected-tests.mjs",
     "test:affected:integration": "node scripts/affected-tests.mjs --integration",
     "test:all": "node scripts/affected-tests.mjs --all",

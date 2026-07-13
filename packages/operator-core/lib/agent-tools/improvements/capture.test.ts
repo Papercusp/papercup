@@ -613,3 +613,73 @@ describe('improvements:capture — notExercised shorthand (rubric-system-improve
     expect(r.success).toBe(true);
   });
 });
+
+/**
+ * EI-10943 — a provenance LABEL must never destroy the capture.
+ *
+ * `foundDuring` was `z.string().max(120)`: a HARD reject. Overrun it by a few chars
+ * and the whole call bounced — the finding is lost, and the agent gets the entire
+ * (very large) args schema dumped back at it as the error. For a field the tool only
+ * stores + echoes, into a DB column that is unbounded `text`. The cap is presentation
+ * policy, so it must behave like one: truncate, warn, and keep the finding.
+ *
+ * The clamp is HANDLER-side, never a zod `.transform()` — a transform is
+ * unrepresentable in JSON Schema and `z.toJSONSchema(def.args)` runs unguarded at
+ * defineTool registration AND in the HTTP tools/list handler, so one would crash
+ * schema-gen for the WHOLE catalog. The last test here pins exactly that.
+ */
+describe('improvements:capture — foundDuring is soft-capped (EI-10943)', () => {
+  const parseArgs = (x: unknown) =>
+    (captureTool.args as { safeParse: (v: unknown) => { success: boolean } }).safeParse(x);
+  const LABEL_CAP = 120;
+  const LONG = 'x'.repeat(300);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIdentity.mockReturnValue(identity('omp-hook-session'));
+    mockCapture.mockResolvedValue({ ok: true, id: 'EI-1', created: true } as unknown as Awaited<
+      ReturnType<typeof captureImprovement>
+    >);
+  });
+
+  it('ACCEPTS an over-length foundDuring instead of rejecting the capture', () => {
+    // The old schema failed here — and took the whole finding down with it.
+    expect(parseArgs({ title: 't', foundDuring: LONG }).success).toBe(true);
+  });
+
+  it('truncates the stored value to the cap', async () => {
+    await callTool({ title: 't', foundDuring: LONG });
+    const passed = mockCapture.mock.calls[0]![0] as { foundDuring?: string };
+    expect(passed.foundDuring).toHaveLength(LABEL_CAP);
+    expect(passed.foundDuring).toBe('x'.repeat(LABEL_CAP));
+  });
+
+  it('WARNS that it truncated — silent truncation would be its own trap', async () => {
+    const res = await callTool({ title: 't', foundDuring: LONG });
+    const body = JSON.parse(res.content[0]!.text) as { warnings?: string[] };
+    expect(body.warnings?.[0]).toMatch(/foundDuring was 300 chars — truncated to 120/);
+    // and it says where the detail SHOULD have gone
+    expect(body.warnings?.[0]).toMatch(/body/);
+  });
+
+  it('leaves a within-cap value untouched, with no warning', async () => {
+    const res = await callTool({ title: 't', foundDuring: 'the agent-DX audit' });
+    const passed = mockCapture.mock.calls[0]![0] as { foundDuring?: string };
+    expect(passed.foundDuring).toBe('the agent-DX audit');
+    expect(JSON.parse(res.content[0]!.text).warnings).toBeUndefined();
+  });
+
+  it('the args schema stays JSON-Schema-representable — a .transform() here would crash the WHOLE tools/list catalog', () => {
+    // Not hypothetical: a top-level .transform() on a core-seed tool's args took out
+    // schema-gen for every tool in the catalog (EI-10996) and redded the release gate.
+    // This is why the clamp lives in the handler.
+    expect(() => z.toJSONSchema(captureTool.args as never)).not.toThrow();
+    const json = z.toJSONSchema(captureTool.args as never) as {
+      properties?: Record<string, { type?: string; maxLength?: number }>;
+    };
+    const fd = json.properties?.foundDuring;
+    expect(fd?.type).toBe('string');
+    // advertised as a plain string: no maxLength to bounce a caller on
+    expect(fd?.maxLength).toBeUndefined();
+  });
+});

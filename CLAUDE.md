@@ -385,28 +385,20 @@ linking for internal `@papercusp/*` packages (they resolve via a plain `"*"`
 version range, no `workspace:` protocol) — pnpm instead tries to fetch them
 from the public registry and fails on the first private/unpublished one (e.g.
 `@papercusp/audio-dsp`), a confusing error unrelated to your change (EI-7243).
-If you need to run a single test file directly instead of via `npm run
-test:affected`, use the root-installed binary: `node_modules/.bin/vitest run
-<path/to/file.test.ts>` from the repo root. **Caveat (EI-7666):** there is no
-root-level `vitest.config.ts` — that bare invocation runs with **zero** Vite
-config, so it fails with `Failed to resolve import "@/..."` for any test whose
-component imports the `@/` path alias (e.g. `apps/operator/app/_components/ThemeSelector.tsx`
-→ `@/lib/theme`). This isn't fixable with one root-level alias either: `@/`
-maps to a **different** directory per app (`apps/operator` vs
-`apps/the-swarm-site` each alias `@/*` to their own root), so a single global
-alias would be wrong for at least one of them. For an alias-importing test,
-either use `npm run test:affected` (resolves per-app correctly), or pass that
-app's own config explicitly: `node_modules/.bin/vitest run --config
-apps/operator/vitest.config.ts <path/to/file.test.ts>`.
+For one or more exact test files, always use the repository router:
 
-**Single integration test file** (EI-8878): the unit config's own guard
-rejects a `*.integration.test.ts` path and suggests `--config
-vitest.integration.config.ts` — but there is **no root-level** one; each
-package/app has its own. Use the package-scoped one explicitly: `vitest run
---config packages/<pkg>/vitest.integration.config.ts <path/to/file>.integration.test.ts`
-(or `apps/<app>/vitest.integration.config.ts` for an app). Following the
-guard's suggestion literally at the repo root fails with an esbuild "Could
-not resolve" error.
+```bash
+npm run test:file -- path/to/one.test.ts path/to/two.integration.test.ts
+```
+
+It discovers each file's owning workspace, runs from that workspace with its
+unit or integration Vitest config (so app-local `@/` aliases resolve correctly),
+prints requested versus matched/executed files, and hard-fails a zero or partial
+match before executing. Do not hand-compose a root-level `vitest --config …`
+command: there is intentionally no universal root config, config include globs
+are cwd-relative, and the same-looking command can silently select zero files.
+Pass additional Vitest flags after a second `--`, e.g.
+`npm run test:file -- path/to/file.test.ts -- --reporter=verbose`.
 
 ## Browser checks — use `verdict`
 

@@ -16,6 +16,8 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
+import { homedir, hostname, userInfo } from 'node:os';
 
 /** Repo root: scripts/lib/doc-projection.ts → ../../ */
 export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -88,6 +90,77 @@ function yamlScalar(s: string): string {
   return `"${v.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
+/**
+ * Build-box identity, resolved exactly as `audit-release-bundle.py:identity_literals()`
+ * does — same sources, same exclusions. The two MUST agree: this scrubs what that
+ * audit greps for, and a scrubber that cleans a DIFFERENT set than the auditor checks
+ * is a false-green waiting to happen.
+ */
+function identityLiterals(): Array<{ key: string; value: string; placeholder: string }> {
+  const out: Array<{ key: string; value: string; placeholder: string }> = [];
+  const push = (key: string, value: string | undefined, placeholder: string, skip: string[] = []) => {
+    const v = (value ?? '').trim();
+    if (v && !skip.includes(v)) out.push({ key, value: v, placeholder });
+  };
+  try {
+    push('build-user-name', userInfo().username, '<build-user>', ['root', 'runner', 'build', 'ubuntu']);
+  } catch {
+    /* no passwd entry — nothing to scrub */
+  }
+  push('build-home-path', homedir(), '$HOME', ['/root', '/', '/home']);
+  const host = hostname();
+  if (host && !/^(runner|ci-|localhost)/.test(host)) push('build-hostname', host, '<build-host>');
+  for (const [key, cfg, placeholder] of [
+    ['build-git-email', 'user.email', '<owner-email>'],
+    ['build-git-name', 'user.name', 'the owner'],
+  ] as const) {
+    try {
+      push(key, execFileSync('git', ['config', '--get', cfg], { encoding: 'utf8', timeout: 5000 }), placeholder);
+    } catch {
+      /* not configured */
+    }
+  }
+  return out;
+}
+
+/** Mirrors `audit-release-bundle.py:needs_word_boundary` — a short literal like "Avi"
+ *  must match as a whole word or it rewrites half the corpus ("video.avi", "Avicenna"). */
+function literalPattern(lit: string): RegExp {
+  const esc = lit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const short = lit.length < 6 && /^[a-z0-9]+$/i.test(lit);
+  // Case-SENSITIVE, like the audit: \bAvi\b hits "Avi Weiss", not "video.avi".
+  return new RegExp(short ? `\\b${esc}\\b` : esc, 'g');
+}
+
+/**
+ * Strip build-box identity from a projected page.
+ *
+ * WHY THIS EXISTS (WI-4419 — it red the 0.0.9 cut, correctly): these generators
+ * project PG plan/work-item content into SHIPPED docs, and agents are *required* by
+ * the directive-provenance convention to stamp `[owner:<name> <date>]` on plans and
+ * checkpoints. So the owner's real name and home path flow, by design, from a carry
+ * surface into a doc that ships to beta testers. Scrubbing the generated .md by hand
+ * is useless — the next `gen:doc-projections` puts it right back. The projection is
+ * the only place that closes the class.
+ *
+ * The `[owner:` rewrite keeps the provenance TIER and DATE and drops only the NAME,
+ * which is the fix `scripts/check-no-owner-name-tags.mjs` mandates:
+ *     [owner:Jane 2026-07-13]  ->  [owner 2026-07-13]
+ */
+export function scrubBuildIdentity(content: string): string {
+  // Named provenance tag first — the dominant case, and the one with a sanctioned
+  // replacement that preserves meaning. `[owner:Jane …]` -> `[owner …]`.
+  let out = content.replace(/\[owner:\s*[A-Za-z][A-Za-z0-9._'-]*/g, '[owner');
+  // LONGEST literal first: the username is a SUBSTRING of the home path
+  // (`marsh-office` ⊂ `/home/marsh-office`), so scrubbing it first would leave
+  // `/home/<build-user>` instead of `$HOME` — the PII is gone either way, but the
+  // more specific literal must win or the output is quietly wrong.
+  for (const { value, placeholder } of identityLiterals().sort((a, b) => b.value.length - a.value.length)) {
+    out = out.replace(literalPattern(value), placeholder);
+  }
+  return out;
+}
+
 export interface EmitResult {
   /** true when --check found the committed file already matches the projection. */
   upToDate: boolean;
@@ -106,7 +179,11 @@ export function emitOrCheck(
   content: string,
   opts: { advisory?: boolean } = {},
 ): EmitResult {
-  const out = content.endsWith('\n') ? content : content + '\n';
+  // Scrub BEFORE both the --check compare and the write, so the projection and the
+  // committed file are judged on the same (scrubbed) bytes — otherwise --check would
+  // report permanent drift against a file it can never reproduce.
+  const scrubbed = scrubBuildIdentity(content);
+  const out = scrubbed.endsWith('\n') ? scrubbed : scrubbed + '\n';
   const target = join(REFERENCE_DIR, fileName);
 
   if (CHECK) {

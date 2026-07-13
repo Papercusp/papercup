@@ -118,7 +118,7 @@ export function autoPickableWhereSql(sql: OrgSql, workspaceId?: string) {
 
 /**
  * OWN-NODE admission leg — the default that makes a single owner's own machines
- * trust each other with no configuration [owner:Avi 2026-07-13: "trust our own
+ * trust each other with no configuration [owner 2026-07-13: "trust our own
  * nodes ... that should be the default. all new papercusp installs should have
  * that behavior without needing to do anything"].
  *

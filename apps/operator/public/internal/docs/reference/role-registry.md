@@ -11,7 +11,7 @@ The built-in agent roles (AGENT_ROLES) joined with their spawn personas. Generat
 
 A **role** is what kind of agent a spawn is. `AGENT_ROLES` is the runtime source of truth for the built-in role ids (tool `roles:` allowlists, `byRole` guidance, quotas); a role's **persona** is its spawn prompt at `libs/papercusp/packages/harness/blueprints/<id>/prompts/<role>.md` (the `base` library is the universal one). Not every role has a persona (operator/oracle are chat surfaces), and many personas are blueprint deciders/helpers that are not themselves `AGENT_ROLES` entries.
 
-Sources: `packages/agent-mcp/src/role-config.ts` (53 built-in roles) + `libs/papercusp/packages/harness/blueprints/*/prompts/*.md` (57 personas).
+Sources: `packages/agent-mcp/src/role-config.ts` (54 built-in roles) + `libs/papercusp/packages/harness/blueprints/*/prompts/*.md` (58 personas).
 
 ## Built-in roles (`AGENT_ROLES`)
 
@@ -45,6 +45,7 @@ These ids appear in tool `roles:` allowlists, `rolesQuota` keys, and `byRole` gu
 | `release-fixer` | ✓ | You are the **Release-Fixer** — Papercusp's automated green-checkpoint gate fixer. |
 | `doc-steward` | ✓ | You are the **Doc-Steward** — Papercusp's automated documentation-freshness fixer. |
 | `papercup` | ✓ | Papercup (canonical persona re-homed) — You are the **Papercup** — one role, |
+| `papercup-deep` | ✓ | Papercup deep brain (canonical persona re-homed) — You are the **hidden deep-brain half** of the ONE user-facing assistant named |
 | `kettle` | ✓ | Kettle (system-health supervisor — base-library fallback STUB) — You are **the Kettle** — the autonomous system-health supervisor, a sibling |
 | `researcher` | ✓ | Researcher — You research **one task** — the one named in `FEATURE_ID` — and produce written |
 | `research-director` | ✓ | Research Director (per-task durable pipeline) — You are the **research-director** for a SINGLE research-task inside a durable |

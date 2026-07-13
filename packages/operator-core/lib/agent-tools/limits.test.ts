@@ -91,3 +91,18 @@ describe('limits — clampText (handler-side truncation for soft fields)', () =>
     expect(clampText(null, LIMITS.ANNOTATION)).toBeNull();
   });
 });
+
+describe('limits — LABEL, the provenance-label tier (EI-10943)', () => {
+  it('sits below IDENT and never drops below its floor', () => {
+    expect(LIMITS.LABEL).toBeLessThan(LIMITS.IDENT);
+    expect(LIMITS.LABEL).toBeGreaterThanOrEqual(120);
+  });
+
+  it('is a SOFT tier: a 300-char label is accepted and clamped, never rejected', () => {
+    // The failure it retires: `foundDuring: z.string().max(120)` bounced the entire
+    // improvements:capture call — losing the finding — over a label that runs long.
+    const field = softText(LIMITS.LABEL);
+    expect(field.safeParse('x'.repeat(300)).success).toBe(true);
+    expect(clampText('x'.repeat(300), LIMITS.LABEL)).toHaveLength(LIMITS.LABEL);
+  });
+});
