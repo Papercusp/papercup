@@ -118,8 +118,11 @@ async function defaultReputationLookup(ip: string, fetchImpl: typeof fetch): Pro
   }
 }
 
-/** Fetch the exit IP an echo endpoint sees through this egress's dispatcher (or default egress). */
-async function fetchExitIp(
+/** Fetch the exit IP an echo endpoint sees through this egress's dispatcher (or default egress).
+ *  Exported so the EgressProvider health-probe (`egress-providers/health-probe.ts`, B-PROV) reuses the
+ *  SAME exit-IP mechanics instead of a divergent copy — one implementation of "what IP does this
+ *  binding actually egress from" for both the account-level gate and the provider-level probe. */
+export async function fetchExitIp(
   egress: AccountEgress | undefined,
   deps: ProbeDeps,
 ): Promise<{ exitIp: string | null; ignoredProxyUrl?: string; error?: string }> {

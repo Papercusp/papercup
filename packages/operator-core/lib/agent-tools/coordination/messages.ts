@@ -35,6 +35,7 @@ import {
 } from './cue-authority';
 import { resolveSenderCueAuthority } from './cue-authority-resolve';
 import { collectRetractedIds, suppressRetracted } from './retraction';
+import { isMachineAuthoredSender } from './machine-authored';
 
 export type { InboxOptions };
 
@@ -216,6 +217,21 @@ export async function sendMessage(
     for (const [k, v] of Object.entries(opts.extra)) {
       if (!RESERVED.has(k) && v !== undefined) env[k] = v;
     }
+  }
+  // WI-4537: AUTO-stamp `auto: true` when the SENDER is a machine identity (a watchdog, sweep,
+  // monitor, digest, the work-item event emitter…). `auto` already existed as the "this is robot
+  // lifecycle chatter, not a peer talking to you" marker, but it was set by hand and MOST machine
+  // emitters never set it — so `unanswered_directed`, the counter wired to PREEMPT an agent's
+  // work, was firing on robot mail (~490 of 2791 unanswered rows came from synthetic senders that
+  // cannot read a reply; `system:delivery-ladder`, whose whole job is to nag you about unread
+  // directed mail, was itself generating unread directed mail).
+  //
+  // Stamping HERE — at the one chokepoint every send passes through — instead of hand-patching
+  // each emitter is what makes it durable: the next watchdog anyone writes is flagged for free
+  // and cannot silently re-pollute the signal. An explicit `extra.auto` from the caller always
+  // wins (never override a deliberate stamp — including a deliberate `auto: false`).
+  if (env.auto === undefined && isMachineAuthoredSender(identity.ownerId)) {
+    env.auto = true;
   }
   // Park the envelope durably for each addressed slot (./slot-parked-store) —
   // drained into the spawnee's handoff when an agent spawns into the slot (P-023).

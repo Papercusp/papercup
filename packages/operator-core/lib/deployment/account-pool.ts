@@ -35,6 +35,20 @@ export interface AccountEgress {
   proxyUrl?: string;
   /** Local source IP to bind the upstream socket to (when the host has multiple egress IPs). */
   localAddress?: string;
+  /**
+   * Which `EgressProvider` (B-PROV, `inference-gateway/egress-providers/`) manages this binding —
+   * e.g. `'rayobyte'`, `'static'` — when it was provisioned programmatically via `egress:provision`
+   * rather than hand-registered via a bare `accounts:register{egress}`. Absent = manually registered
+   * (today's common case: the owner provisions an IP out-of-band and registers it directly). Lets
+   * `egress:release`/`egress:health` route back to the owning provider without guessing an identity
+   * from the proxyUrl/localAddress value alone.
+   */
+  providerId?: string;
+  /**
+   * The provider-native allocation id (the `EgressProvider.release`/`healthcheck` key) for this
+   * binding, when `providerId` is set. Opaque to the account pool — only meaningful to that provider.
+   */
+  providerAllocationId?: string;
 }
 
 /**

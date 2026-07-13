@@ -333,6 +333,8 @@ describe('heavy-command admission control (WI-3821)', () => {
     ['cd <dir>; scripts/pc-heavy.sh -- <heavy> (EI-10001, semicolon separator)', 'cd packages/operator-core; scripts/pc-heavy.sh -- npx vitest run lib/x.test.ts'],
     ['(scripts/pc-heavy.sh -- <heavy>) & subshell wrapper (EI-10001)', '(scripts/pc-heavy.sh -- npx vitest run lib/x.test.ts) &'],
     ['cd <dir> && (scripts/pc-heavy.sh -- <heavy>) & both wrappers stacked (EI-10001)', 'cd packages/operator-core && (scripts/pc-heavy.sh -- npx tsc --noEmit) &'],
+    ['timeout <seconds> && scripts/pc-heavy.sh -- <heavy> (EI-10439)', 'timeout 90 scripts/pc-heavy.sh -- npx vitest run lib/x.test.ts'],
+    ['timeout with long option && scripts/pc-heavy.sh -- <heavy> (EI-10439)', 'timeout --preserve-status 90 ./scripts/pc-heavy.sh -- npm run test:affected'],
   ])('allows the in-band bypass %s even over the threshold (EI-9634)', (_label, command) => {
     expectAllow(runGate(bashCmd(command), { ...AGENT, ...OVER }));
   });
@@ -345,6 +347,7 @@ describe('heavy-command admission control (WI-3821)', () => {
     // the instant it hits a REAL command and never reaches pc-heavy.sh.
     ['a raw heavy leading a pc-heavy chain', 'vitest run a.test.ts && scripts/pc-heavy.sh -- vitest run b.test.ts'],
     ['a raw heavy leading a pc-heavy chain, behind a cd (EI-10001 guard)', 'cd packages/operator-core && npm test && scripts/pc-heavy.sh -- vitest run b.test.ts'],
+    ['timeout-wrapped raw heavy remains gated (EI-10439 guard)', 'timeout 90 npm run test:affected'],
     ['PC_HEAVY_BYPASS with the wrong value does not bypass', 'env PC_HEAVY_BYPASS=0 vitest run x.test.ts'],
   ])('does NOT over-bypass %s (EI-9634 guard)', (_label, command) => {
     expectHeavyDeny(runGate(bashCmd(command), { ...AGENT, ...OVER }));

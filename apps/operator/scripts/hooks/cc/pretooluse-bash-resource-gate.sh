@@ -344,6 +344,7 @@ def _heavy_admission():
             r'|nice(?:\s+-n\s*-?\d+)?\s+'
             r'|ionice(?:\s+-\w+(?:\s+\d+)?)*\s+'
             r'|rtk\s+|time\s+'
+            r'|timeout(?:\s+(?:-[a-zA-Z]\S*|--[\w-]+(?:=\S*)?))*\s+-?\d+\S*\s+'
             r')',
             '', _pc_lead, count=1)
         if _next == _pc_lead:

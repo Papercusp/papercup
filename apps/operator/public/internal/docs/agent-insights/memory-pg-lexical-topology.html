@@ -102,12 +102,51 @@ claude topic files + PG) but would double-write when both legs share
 <code dir="auto">memory_canonical</code>.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="why-the-evidence">Why (the evidence)</h2><a class="sl-anchor-link" href="#why-the-evidence"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Why (the evidence)”</span></a></div>
 <ul>
-<li>Frozen-corpus bench: lexical wins exact-identifier recall (MRR 0.99 vs 0.87
-cosine); cosine wins paraphrase. Complementary failure modes → hybrid.</li>
-<li>Live A/B (2026-07-13, 40 known-item pairs from post-June memories,
-<code dir="auto">bench/ab-live-recall-cli.ts</code>): <strong>hybrid-pg recall@10 83% vs old hybrid 55%
-vs mem0 53%</strong>, p50 816ms (fastest). The old hybrid’s file leg only saw
-write-through projections; the PG lexical leg sees every canonical row.</li>
+<li>
+<p>Frozen-corpus bench: lexical wins exact-identifier recall (MRR 0.99 vs 0.87
+cosine); cosine wins paraphrase. Complementary failure modes → hybrid.</p>
+</li>
+<li>
+<p>Live A/B (2026-07-13, 40 known-item pairs from post-June memories,
+<code dir="auto">bench/ab-live-recall-cli.ts</code>, <strong>post-token-cap-fix</strong>):</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>backend</th><th>recall@10 (admitted)</th><th>retrieval@10</th><th>p50</th></tr></thead><tbody><tr><td>mem0</td><td>21/40 (53%)</td><td>63%</td><td>1023ms</td></tr><tr><td>old <code dir="auto">hybrid</code></td><td>22/40 (55%)</td><td>63%</td><td>1061ms</td></tr><tr><td><strong><code dir="auto">hybrid-pg</code></strong></td><td><strong>39/40 (98%)</strong></td><td><strong>100%</strong></td><td>1288ms</td></tr></tbody></table>
+<p>The old hybrid’s file leg only saw write-through projections; the PG lexical
+leg sees every canonical row. <strong>Read the p50 honestly</strong>: hybrid-pg is the
+<em>slowest</em> of the three (+21% over hybrid), not the fastest — it buys ~78% more
+recall for that. An earlier draft of this page cited 83% recall and “p50 816ms
+(fastest)”; those were <strong>pre-fix</strong> numbers measured while <code dir="auto">LEXICAL_MAX_TOKENS</code>
+was still mangling long queries (see the cap trap below) — they are superseded,
+and the speed claim did not survive.</p>
+</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="claude-topic-files-are-not-load-bearing-anymore">~/.claude topic files are NOT load-bearing anymore</h2><a class="sl-anchor-link" href="#claude-topic-files-are-not-load-bearing-anymore"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “~/.claude topic files are NOT load-bearing anymore”</span></a></div>
 <ul>
@@ -118,11 +157,19 @@ were already write-through projections (<code dir="auto">extra.link_id</code> = 
 dups. <code dir="auto">archive/</code> was excluded (plan D-005 — evictions stay evicted; backup
 tar at <code dir="auto">~/.papercusp/backups/p004-memory-import/</code>).</li>
 <li>Idempotency: imported rows carry <code dir="auto">payload.imported_from = 'claude-file:&#x3C;basename>'</code>; re-runs no-op.</li>
-<li><code dir="auto">MEMORY.md</code> regeneration (the <code dir="auto">memory-compact.mjs</code> SessionStart hook) was
-unwired in the 2026-07-12 managed-hooks migration; the file is a pointer
-stub (P-008). Ambient recall is papercusp-owned: the MCP initialize prelude
-(<code dir="auto">mcp-prelude.ts</code>), <code dir="auto">coord:orient</code> memory folds, work-item claim injection,
-and the post-compaction re-prime.</li>
+<li><code dir="auto">MEMORY.md</code> is now a static <strong>pointer stub</strong> (P-008), and the
+<code dir="auto">memory-compact.mjs</code> SessionStart generator that used to rebuild it is retired
+to <code dir="auto">~/.claude/scripts/retired/</code> (P-009). Ambient recall is papercusp-owned: the
+MCP initialize prelude (<code dir="auto">mcp-prelude.ts</code>), <code dir="auto">coord:orient</code> memory folds,
+work-item claim injection, and the post-compaction re-prime.</li>
+<li>⚠ <strong>The generator had already stopped running before we retired it</strong> — its hook
+wiring was silently dropped by the 2026-07-12 managed-hooks migration, and
+<em>nothing alarmed</em>. <code dir="auto">MEMORY.md</code> sat frozen for weeks while still advertising
+itself as “AUTO-GENERATED … regenerated at each session start” — a stale
+snapshot confidently presenting itself as current. It was found by accident.
+The missing <strong>detector</strong> (a liveness assertion on each declared hook’s
+last-fire) is the real defect and is filed as <strong>EI-10907</strong>; retiring the files
+only removed this one instance.</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="cutover--rollback">Cutover / rollback</h2><a class="sl-anchor-link" href="#cutover--rollback"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Cutover / rollback”</span></a></div>
 <ul>
@@ -156,13 +203,36 @@ expression <em>is</em> the filter). Guard:
 <code dir="auto">canonical-lexical-search.integration.test.ts</code> → “ranks an OLD strong match above
 many NEWER weak ones” (60 newer common-word rows vs one old identifier row), which
 fails if a recency-ordered candidate cap is ever reintroduced.</li>
+<li><strong>A cap is a SAFETY bound on pathological input — never a relevance knob.</strong>
+<code dir="auto">LEXICAL_MAX_TOKENS</code> was <code dir="auto">12</code>, while real recall queries run ~20 tokens
+(gold-set v1: p50 10, <strong>p95 24, max 28</strong>). So the cap silently discarded ~40%
+of every long query — and it discarded the <em>tail</em>, which is where the
+discriminative terms live (a paraphrase query front-loads common words and
+reaches its answer through the rare ones at the end). Worse, the score was
+then normalized by the <strong>truncated</strong> token count, so a mangled query still
+looked confidently scored. Measured on the lexical leg alone (lexical-gap
+MRR): cap 12 → <strong>0.432</strong>, 16 → 0.428, 24 → 0.544, 32 → <strong>0.546</strong>, uncapped →
+0.546 (the claude-file leg: 0.552). Fixed at 32 — comfortably above p95, still
+a real bound on a runaway input.
+<strong>Why it hid for two whole diagnostic rounds:</strong> <em>exact-identifier MRR is 1.000
+at EVERY cap</em> — those queries are short, so they never hit it. Only the
+paraphrase class regressed, which made a <strong>tokenizer</strong> bug present as a
+<em>fusion/ranking</em> bug, and sent two plausible ranking “fixes” through the
+acceptance gate before the real cause was isolated. When one query class
+regresses and another is untouched, suspect the INPUT PATH the two classes
+don’t share (here: query length) before you re-litigate the scorer. Guard:
+<code dir="auto">canonical-store.test.ts</code> → “does NOT truncate a real natural-language query”
+(a 28-token query must survive intact).</li>
 <li>The bench’s isolated <code dir="auto">bench_memory</code> schema used to hand-mirror production
 DDL and drifted TWICE in one day (missing <code dir="auto">memory_vec_harrier</code>, then missing
 the temporal-lite columns) — every PG backend benched at literal zero
 (EI-10793). <code dir="auto">ensureBenchSchema</code> now clones live tables
-(<code dir="auto">LIKE harness_shared.* INCLUDING ALL</code>).</li>
+(<code dir="auto">LIKE harness_shared.* INCLUDING ALL</code>), and <strong>drops + recreates at run
+START</strong> — a killed run used to leave rows behind that contaminated the next
+run’s corpus (and two concurrently-launched runs cross-seeded the same schema,
+garbaging both; EI-10854).</li>
 <li>Unscoped topic files used to surface under ANY scope via the claude-file
 backend’s visibility-first trick. The import maps them to the OWNER’S USER
 POOL because the live <code dir="auto">memory:search</code> fan-out queries
 <code dir="auto">[user.id, harness:*…]</code> — never <code dir="auto">'local'</code>.</li>
-</ul> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-07-13T05:45:53.000Z">Jul 13, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/mem0-entity-store-collection-leak.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">mem0 entity store leaked COMPOUND fragments into memory recall — the collectionName the canonical store ignores</span> </span> </a> <a href="/internal/docs/agent-insights/memory-recall-health-grading-runbook.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Grading memory-recall-health: the system-side telemetry reads (runbook)</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+</ul> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-07-13T06:21:55.000Z">Jul 13, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/mem0-entity-store-collection-leak.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">mem0 entity store leaked COMPOUND fragments into memory recall — the collectionName the canonical store ignores</span> </span> </a> <a href="/internal/docs/agent-insights/memory-recall-health-grading-runbook.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Grading memory-recall-health: the system-side telemetry reads (runbook)</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

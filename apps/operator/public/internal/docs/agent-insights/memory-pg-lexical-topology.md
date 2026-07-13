@@ -41,9 +41,21 @@ claude topic files + PG) but would double-write when both legs share
 * Frozen-corpus bench: lexical wins exact-identifier recall (MRR 0.99 vs 0.87
   cosine); cosine wins paraphrase. Complementary failure modes → hybrid.
 * Live A/B (2026-07-13, 40 known-item pairs from post-June memories,
-  `bench/ab-live-recall-cli.ts`): **hybrid-pg recall\@10 83% vs old hybrid 55%
-  vs mem0 53%**, p50 816ms (fastest). The old hybrid's file leg only saw
-  write-through projections; the PG lexical leg sees every canonical row.
+  `bench/ab-live-recall-cli.ts`, **post-token-cap-fix**):
+
+  | backend         | recall\@10 (admitted) | retrieval\@10 | p50    |
+  | --------------- | --------------------- | ------------- | ------ |
+  | mem0            | 21/40 (53%)           | 63%           | 1023ms |
+  | old `hybrid`    | 22/40 (55%)           | 63%           | 1061ms |
+  | **`hybrid-pg`** | **39/40 (98%)**       | **100%**      | 1288ms |
+
+  The old hybrid's file leg only saw write-through projections; the PG lexical
+  leg sees every canonical row. **Read the p50 honestly**: hybrid-pg is the
+  *slowest* of the three (+21% over hybrid), not the fastest — it buys \~78% more
+  recall for that. An earlier draft of this page cited 83% recall and "p50 816ms
+  (fastest)"; those were **pre-fix** numbers measured while `LEXICAL_MAX_TOKENS`
+  was still mangling long queries (see the cap trap below) — they are superseded,
+  and the speed claim did not survive.
 
 ## \~/.claude topic files are NOT load-bearing anymore
 
@@ -55,11 +67,19 @@ claude topic files + PG) but would double-write when both legs share
   tar at `~/.papercusp/backups/p004-memory-import/`).
 * Idempotency: imported rows carry `payload.imported_from =
   'claude-file:<basename>'`; re-runs no-op.
-* `MEMORY.md` regeneration (the `memory-compact.mjs` SessionStart hook) was
-  unwired in the 2026-07-12 managed-hooks migration; the file is a pointer
-  stub (P-008). Ambient recall is papercusp-owned: the MCP initialize prelude
-  (`mcp-prelude.ts`), `coord:orient` memory folds, work-item claim injection,
-  and the post-compaction re-prime.
+* `MEMORY.md` is now a static **pointer stub** (P-008), and the
+  `memory-compact.mjs` SessionStart generator that used to rebuild it is retired
+  to `~/.claude/scripts/retired/` (P-009). Ambient recall is papercusp-owned: the
+  MCP initialize prelude (`mcp-prelude.ts`), `coord:orient` memory folds,
+  work-item claim injection, and the post-compaction re-prime.
+* ⚠ **The generator had already stopped running before we retired it** — its hook
+  wiring was silently dropped by the 2026-07-12 managed-hooks migration, and
+  *nothing alarmed*. `MEMORY.md` sat frozen for weeks while still advertising
+  itself as "AUTO-GENERATED … regenerated at each session start" — a stale
+  snapshot confidently presenting itself as current. It was found by accident.
+  The missing **detector** (a liveness assertion on each declared hook's
+  last-fire) is the real defect and is filed as **EI-10907**; retiring the files
+  only removed this one instance.
 
 ## Cutover / rollback
 
@@ -94,11 +114,34 @@ claude topic files + PG) but would double-write when both legs share
   `canonical-lexical-search.integration.test.ts` → "ranks an OLD strong match above
   many NEWER weak ones" (60 newer common-word rows vs one old identifier row), which
   fails if a recency-ordered candidate cap is ever reintroduced.
+* **A cap is a SAFETY bound on pathological input — never a relevance knob.**
+  `LEXICAL_MAX_TOKENS` was `12`, while real recall queries run \~20 tokens
+  (gold-set v1: p50 10, **p95 24, max 28**). So the cap silently discarded \~40%
+  of every long query — and it discarded the *tail*, which is where the
+  discriminative terms live (a paraphrase query front-loads common words and
+  reaches its answer through the rare ones at the end). Worse, the score was
+  then normalized by the **truncated** token count, so a mangled query still
+  looked confidently scored. Measured on the lexical leg alone (lexical-gap
+  MRR): cap 12 → **0.432**, 16 → 0.428, 24 → 0.544, 32 → **0.546**, uncapped →
+  0.546 (the claude-file leg: 0.552). Fixed at 32 — comfortably above p95, still
+  a real bound on a runaway input.
+  **Why it hid for two whole diagnostic rounds:** *exact-identifier MRR is 1.000
+  at EVERY cap* — those queries are short, so they never hit it. Only the
+  paraphrase class regressed, which made a **tokenizer** bug present as a
+  *fusion/ranking* bug, and sent two plausible ranking "fixes" through the
+  acceptance gate before the real cause was isolated. When one query class
+  regresses and another is untouched, suspect the INPUT PATH the two classes
+  don't share (here: query length) before you re-litigate the scorer. Guard:
+  `canonical-store.test.ts` → "does NOT truncate a real natural-language query"
+  (a 28-token query must survive intact).
 * The bench's isolated `bench_memory` schema used to hand-mirror production
   DDL and drifted TWICE in one day (missing `memory_vec_harrier`, then missing
   the temporal-lite columns) — every PG backend benched at literal zero
   (EI-10793). `ensureBenchSchema` now clones live tables
-  (`LIKE harness_shared.* INCLUDING ALL`).
+  (`LIKE harness_shared.* INCLUDING ALL`), and **drops + recreates at run
+  START** — a killed run used to leave rows behind that contaminated the next
+  run's corpus (and two concurrently-launched runs cross-seeded the same schema,
+  garbaging both; EI-10854).
 * Unscoped topic files used to surface under ANY scope via the claude-file
   backend's visibility-first trick. The import maps them to the OWNER'S USER
   POOL because the live `memory:search` fan-out queries
