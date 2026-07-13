@@ -52,7 +52,10 @@ describe('buildFailureWarning (EI-10951)', () => {
       [m('work_items:create')],
       [],
     );
-    expect(w.warning).toMatch(/2 write-effect call\(s\) ALREADY EXECUTED/);
+    expect(w.warning).toMatch(/2 write-effect call\(s\) already executed before this failure/);
+    // …and the tally names the tools that ACTUALLY landed — not the one that was rejected.
+    expect(w.warning).toMatch(/coord:send×1, work_items:link×1/);
+    expect(w.warning).not.toMatch(/work_items:create×1/);
     expect(w.warning).toMatch(/1 further call\(s\) were rejected before execution and wrote nothing/);
   });
 

@@ -1269,7 +1269,30 @@ export default defineTool({
         recovery = await buildCompactionRecovery(ownerId, ws);
       } catch { /* fail-soft */ }
     }
-    const out = { ...(self ? { self } : {}), ...(modes ? { modes } : {}), ...(ideate ? { ideate } : {}), ...(captureMiss ? { captureMiss } : {}), ...(recovery ? { recovery } : {}), ...(result as object) };
+    // WI-4562: a Claude Code config save (/model, /effort, theme) REWRITES the session's
+    // settings.json from its own in-memory keys and drops every psu key — silently
+    // de-enrolling the edit-LOCK hook, the coord inbox, turn-start recall, and the
+    // SessionStart epoch bump, plus the papercusp-su MCP entry. The existing self-heals
+    // cannot catch it: they live INSIDE the SessionStart hook whose registration the wipe
+    // deletes. orient is the right detector precisely because it is operator-side and
+    // needs no hooks. Reported ONLY when something is actually broken — a healthy session
+    // pays a couple of file reads and adds no key.
+    let configIntegrity: unknown;
+    if (ownerId) {
+      try {
+        const { loadSessionConfigState, checkSessionConfigIntegrity } = await import('../../../session-config-integrity');
+        const verdict = checkSessionConfigIntegrity(loadSessionConfigState(ownerId));
+        if (!verdict.ok) {
+          configIntegrity = {
+            ...verdict,
+            warning:
+              'YOUR SESSION IS RUNNING DE-ENROLLED (WI-4562). Claude Code rewrote this session config and dropped psu-owned keys. ' +
+              'Hooks are read at STARTUP, so this CANNOT be repaired in-process — the listed capabilities stay off until this session is relaunched. Act accordingly.',
+          };
+        }
+      } catch { /* fail-soft — never break orientation over a config read */ }
+    }
+    const out = { ...(self ? { self } : {}), ...(modes ? { modes } : {}), ...(ideate ? { ideate } : {}), ...(captureMiss ? { captureMiss } : {}), ...(configIntegrity ? { configIntegrity } : {}), ...(recovery ? { recovery } : {}), ...(result as object) };
     // EI-9130: stamp the generic delta-served breadcrumb when at least one of orient's
     // bespoke cursor-delta legs actually narrowed/unchanged its response — see
     // orientServedDelta's doc comment + dispatch-stack.ts's recordTelemetry. Never

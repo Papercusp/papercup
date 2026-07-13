@@ -946,6 +946,58 @@ export function isOsSchedulerCommand(cmd: string): boolean {
 }
 
 /**
+ * EI-10940 — `systemd-run` has TWO unrelated uses, and the lockout only ever
+ * imagined one of them.
+ *
+ * The block itself is right either way (an agent session must not create transient
+ * systemd units). But the REASON we hand back assumed the only motive for touching
+ * `systemd-run` is scheduling, so it told an agent who wanted a **cgroup CPU quota**
+ * to "declare your wake via pot:declare-wake" — advice that is not merely unhelpful
+ * but points AWAY from the answer. Observed live: an agent reproducing a
+ * load-sensitive test flake needed `--property=CPUQuota=`, got the wake guidance,
+ * and burned a dead end before finding `taskset` on its own.
+ *
+ * A guard that blocks the right thing for the wrong stated reason teaches a false
+ * model of the system. So classify the invocation and name the ACTUAL alternative.
+ *
+ * Resource-limit intent = systemd-run carrying cgroup resource properties
+ * (CPUQuota / AllowedCPUs / MemoryMax / MemoryHigh / IOWeight / TasksMax, via
+ * `-p`/`--property`) or `--scope`, with NO scheduling flag present. Scheduling
+ * flags (`--on-*`, `--timer-property`) always win the classification — a command
+ * that does both is a schedule.
+ */
+const SYSTEMD_RESOURCE_PROP_RE =
+  /(?:-p|--property)[=\s]*(?:CPUQuota|CPUWeight|AllowedCPUs|AllowedMemoryNodes|MemoryMax|MemoryHigh|MemoryLimit|IOWeight|TasksMax)\b|--scope\b/i;
+const SYSTEMD_SCHEDULE_FLAG_RE = /--on-(?:calendar|active|boot|startup|unit-active|unit-inactive)\b|--timer-property\b/i;
+
+export function isResourceLimitInvocation(cmd: string): boolean {
+  const c = stripShellQuotes(cmd);
+  if (!/\bsystemd-run\b/.test(c)) return false;
+  if (SYSTEMD_SCHEDULE_FLAG_RE.test(c)) return false; // scheduling wins
+  return SYSTEMD_RESOURCE_PROP_RE.test(c);
+}
+
+/** The refusal text for a blocked OS-scheduler command, branched on actual intent. */
+export function osSchedulerDenyReason(cmd: string): string {
+  if (isResourceLimitInvocation(cmd)) {
+    return (
+      'native-scheduler lockout: agent sessions cannot create transient systemd ' +
+      'units, so cgroup resource control via `systemd-run` is unavailable here. ' +
+      'You are trying to LIMIT RESOURCES, not schedule a wake — use `taskset -c ' +
+      '<cores> <cmd>` to pin CPUs (no scheduler, no root, no daemon), or run heavy ' +
+      'commands through `scripts/pc-heavy.sh` (nice + a concurrency semaphore) on ' +
+      'the shared box. (`pot:declare-wake` is for SCHEDULING and is not what you want.)'
+    );
+  }
+  return (
+    'native-scheduler lockout: agent sessions must not create OS schedules ' +
+    '(crontab / at / batch / systemd-run). Declare your wake via ' +
+    'pot:declare-wake instead — the routines table is the only scheduler ' +
+    'the hive’s pause/status/liveness machinery can see.'
+  );
+}
+
+/**
  * Destructive tree-wide git guard (hive-loop-supervision-2026-06-21 / EI-2376
  * follow-up (a)): a TypeScript mirror of the Claude+Codex PreToolUse shell
  * hook's Python guard (pretooluse-bash-resource-gate.sh). OMP has no
@@ -2757,14 +2809,9 @@ export async function onToolCall(
   ) {
     const cmd = typeof event.input?.command === 'string' ? (event.input.command as string) : '';
     if (isOsSchedulerCommand(cmd)) {
-      return {
-        block: true,
-        reason:
-          'native-scheduler lockout: agent sessions must not create OS schedules ' +
-          '(crontab / at / batch / systemd-run). Declare your wake via ' +
-          'pot:declare-wake instead — the routines table is the only scheduler ' +
-          'the hive’s pause/status/liveness machinery can see.',
-      };
+      // EI-10940: same block, but the reason now names the alternative that
+      // actually applies to what the agent was trying to do.
+      return { block: true, reason: osSchedulerDenyReason(cmd) };
     }
     // EI-2376 follow-up (a): the shell hook's destructive tree-wide git guard,
     // mirrored here so OMP agent sessions get the same protection (the shell

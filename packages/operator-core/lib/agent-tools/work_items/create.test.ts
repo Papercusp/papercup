@@ -153,3 +153,33 @@ describe('work_items:create — body/summary alias + strict (WI-4492)', () => {
     });
   });
 });
+
+describe('state-on-create (EI-10897)', () => {
+  const safeParse = (x: unknown) => (tool.args as { safeParse: (x: unknown) => { success: boolean; error?: unknown } }).safeParse(x);
+
+  it("accepts `state` — the su persona already prescribes { title, assign_to:'self', state:'wip' }, and the tool used to REJECT it as an unrecognized key", async () => {
+    await body({ kind: 'change', title: 'ad-hoc unit I am starting now', assign_to: 'self', state: 'wip' });
+    expect(createM).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'ad-hoc unit I am starting now', state: 'wip', assign_to: 'me' }),
+      expect.anything(),
+    );
+  });
+
+  it('threads `state` through the BULK path too (the item spec, not just the single shorthand)', async () => {
+    await body({ items: [{ kind: 'change', title: 'a', state: 'wip' }, { kind: 'bug', title: 'b' }] });
+    expect(createM).toHaveBeenNthCalledWith(1, expect.objectContaining({ title: 'a', state: 'wip' }), expect.anything());
+    expect(createM).toHaveBeenNthCalledWith(2, expect.objectContaining({ title: 'b' }), expect.anything());
+    expect((createM.mock.calls[1][0] as { state?: string }).state).toBeUndefined();
+  });
+
+  it('REFUSES a terminal state on create — that would manufacture a "done" item with no evidence (the EI-10867 laundering path)', () => {
+    for (const s of ['done', 'resolved', 'closed', 'passed']) {
+      const r = safeParse({ kind: 'change', title: 'sneaky', state: s });
+      expect(r.success, `state '${s}' must be refused on create`).toBe(false);
+    }
+  });
+
+  it('still accepts a create with NO state (the default entry state is untouched)', () => {
+    expect(safeParse({ kind: 'bug', title: 'plain' }).success).toBe(true);
+  });
+});

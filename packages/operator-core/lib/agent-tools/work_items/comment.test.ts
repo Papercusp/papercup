@@ -100,3 +100,57 @@ describe('work_items:comment handler (bulk keyed-array)', () => {
     });
   });
 });
+
+/**
+ * EI-10897 (the alias) + EI-10996 (the way the first cut of it broke the catalog).
+ *
+ * The tool is CALLED `comment`, so `{ id, comment }` is the spelling an agent reaches
+ * for first; it used to be rejected. The alias is resolved HANDLER-side on purpose —
+ * a zod `.transform()` in the args schema makes `z.toJSONSchema` throw, and that call
+ * is un-try/caught in BOTH defineTool registration and the MCP tools/list handlers, so
+ * one transform here takes down schema-gen for the ENTIRE tool catalog (it red-pinned
+ * the release gate). The representability test below is that regression's guard.
+ */
+describe('body/comment alias (EI-10897) + schema representability (EI-10996)', () => {
+  const parse = (x: unknown) => (tool.args as { parse: (x: unknown) => unknown }).parse(x);
+  const safeParse = (x: unknown) => (tool.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse(x);
+
+  beforeEach(() => {
+    cmtM.mockResolvedValue({ id: 'p1' } as never);
+    getM.mockResolvedValue({ id: 'WI-1', state: 'wip' } as never);
+  });
+
+  it('accepts { id, comment } — the obvious spelling — and posts it as the body', async () => {
+    await body(parse({ id: 'WI-1', comment: 'via the alias' }));
+    expect(cmtM).toHaveBeenCalledWith('WI-1', 'via the alias', 'me', expect.anything());
+  });
+
+  it('still accepts { id, body } (the alias is additive, not a rename)', async () => {
+    await body(parse({ id: 'WI-1', body: 'via body' }));
+    expect(cmtM).toHaveBeenCalledWith('WI-1', 'via body', 'me', expect.anything());
+  });
+
+  it('resolves the alias in the BULK path identically', async () => {
+    await body(parse({ items: [{ id: 'WI-1', comment: 'a' }, { id: 'WI-2', body: 'b' }] }));
+    expect(cmtM).toHaveBeenNthCalledWith(1, 'WI-1', 'a', 'me', expect.anything());
+    expect(cmtM).toHaveBeenNthCalledWith(2, 'WI-2', 'b', 'me', expect.anything());
+  });
+
+  it('REJECTS both-with-different-text (never silently pick one)', () => {
+    expect(safeParse({ id: 'WI-1', body: 'x', comment: 'y' }).success).toBe(false);
+    expect(safeParse({ id: 'WI-1', body: 'same', comment: 'same' }).success).toBe(true);
+  });
+
+  it('REJECTS a comment with no text at all', () => {
+    expect(safeParse({ id: 'WI-1' }).success).toBe(false);
+    expect(safeParse({ items: [{ id: 'WI-1' }] }).success).toBe(false);
+  });
+
+  it('the args schema stays JSON-Schema-REPRESENTABLE — a .transform() here crashes the whole catalog (EI-10996)', async () => {
+    const { z } = await import('zod');
+    expect(() => z.toJSONSchema(tool.args as never)).not.toThrow();
+    // …and the alias must actually be ADVERTISED, or an agent can never discover it.
+    const schema = z.toJSONSchema(tool.args as never) as { properties?: Record<string, unknown> };
+    expect(Object.keys(schema.properties ?? {})).toContain('comment');
+  });
+});
