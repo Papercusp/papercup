@@ -229,14 +229,16 @@ describe("coord:inbox handler (doc-drift ambient exclusion — EI-2871)", () => 
     category: "doc-drift",
     summary,
   });
-  // A DIRECTED peer message — no category, so never ambient-filtered.
-  const peerPing = (m: number, summary: string) => ({
+  // A DIRECTED peer message. Even if it carries an ambient category, delivery
+  // to a concrete owner makes it actionable and it must remain visible.
+  const peerPing = (m: number, summary: string, category?: string) => ({
     ts: at(m),
     msg_id: `p-${m}`,
     from: "peer",
     to: ["owner-a"],
     kind: "message",
     summary,
+    ...(category ? { category } : {}),
   });
 
   it("excludes doc-drift digests from the default read (unburying directed messages); include_ambient opts back in", async () => {
@@ -260,6 +262,19 @@ describe("coord:inbox handler (doc-drift ambient exclusion — EI-2871)", () => 
     const inc = await callInbox({ include_ambient: true });
     expect(inc.summary).toMatchObject({ ambient_excluded: 0, total: 3 });
     expect(inc.entries.filter((e) => e.category === "doc-drift")).toHaveLength(2);
+  });
+
+  it("never suppresses an ambient-labelled message addressed to an agent", async () => {
+    const rows = [
+      peerPing(1, "your service needs attention", "service-health"),
+      peerPing(2, "this document is assigned to you", "doc-drift"),
+      { ...peerPing(3, "mixed broadcast and direct", "agent-governor"), to: ["*", "owner-a"] },
+    ];
+    M.readInbox.mockImplementation(async () => rows);
+
+    const out = await callInbox();
+    expect(out.summary).toMatchObject({ ambient_excluded: 0, total: 3 });
+    expect(out.entries.map((entry) => entry.msg_id)).toEqual(["p-1", "p-2", "p-3"]);
   });
 });
 

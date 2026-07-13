@@ -165,8 +165,29 @@ export function excludeIntentDeclares<T extends Record<string, unknown>>(
   opts: { includeIntents?: boolean; from?: string | null },
 ): { kept: T[]; excluded: number } {
   if (opts.includeIntents || opts.from) return { kept: [...entries], excluded: 0 };
-  const kept = entries.filter((e) => e["lifecycle"] !== "intent");
+  // Only machine-authored lifecycle projections are presence noise. A directed,
+  // contextual message must never disappear merely because a producer reused the
+  // `intent` lifecycle label; `auto:true` is the authoritative projection stamp.
+  const kept = entries.filter(
+    (e) => !(e["lifecycle"] === "intent" && e["auto"] === true),
+  );
   return { kept, excluded: entries.length - kept.length };
+}
+
+/** Ambient suppression is intentionally broadcast-only. Category labels describe
+ * content, not delivery importance; a system or peer may send the same category
+ * directly to one agent, and that addressed traffic must remain visible. Mixed
+ * `['*', owner]` delivery is also treated as directed. */
+export function isAmbientBroadcast(e: Record<string, unknown>): boolean {
+  const category = e["category"];
+  const recipients = e["to"];
+  return (
+    typeof category === "string" &&
+    AMBIENT_CATEGORIES.has(category) &&
+    Array.isArray(recipients) &&
+    recipients.length > 0 &&
+    recipients.every((recipient) => recipient === "*")
+  );
 }
 
 /** EI-6144 ambient/broadcast coalescing: collapse REPEATED categorized system
@@ -385,14 +406,12 @@ export default defineTool({
       readWatermark(identity.ownerId).catch(() => emptyWatermark()),
     ]);
 
-    const isAmbient = (e: { category?: unknown }) =>
-      typeof e.category === "string" && AMBIENT_CATEGORIES.has(e.category);
     const ambientExcluded = args.include_ambient
       ? 0
-      : all.filter(isAmbient).length;
+      : all.filter(isAmbientBroadcast).length;
     const ambientFiltered = args.include_ambient
       ? all
-      : all.filter((e) => !isAmbient(e));
+      : all.filter((e) => !isAmbientBroadcast(e));
     // P-005 (fleet-member-dx): excluded by default like ambient, counted as
     // `intent_excluded` — see excludeIntentDeclares (the pure rule).
     const keepIntents = !!args.include_intents || !!args.from;

@@ -1471,9 +1471,14 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   // EI-6770/EI-8588: self-pull (claim_next) + read (get) + finish (complete) +
   // release — the rest of the canonical worker loop; their absence caused "tool
   // not available" self-halts and stranded claim handoffs.
-  // (work_items:update cut 2026-07-05 — 104 calls/7d; set_state + comment cover it.)
+  // EI-10946: work_items:comment + work_items:update RE-ADDED to the canonical CORE
+  // (the 2026-07-05 cut's premise — "set_state + comment cover it" — was false: comment
+  // was never seeded either, so an agent could CREATE/close an item but had no seeded way
+  // to correct or annotate one, and abused work_items:checkpoint as an erratum channel).
+  // Mirror them here or the lockstep drift guard fails.
   'work_items:claim_next', 'work_items:get', 'work_items:complete',
   'work_items:release', 'work_items:set_state',
+  'work_items:comment', 'work_items:update',
   // scheduler:get_next: the fleet-member feed loop (claim-spec pull, 732 fallback
   // reaches/7d) — a drain member hits this every iteration.
   'scheduler:get_next',

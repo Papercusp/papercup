@@ -21,6 +21,7 @@ const entries = [
   {
     msg_id: "m2",
     kind: "message",
+    auto: true,
     lifecycle: "intent",
     summary: "now working on: something",
   },
@@ -28,6 +29,7 @@ const entries = [
   {
     msg_id: "m4",
     kind: "message",
+    auto: true,
     lifecycle: "intent",
     summary: "now working on: something else",
   },
@@ -59,6 +61,19 @@ describe("excludeIntentDeclares — P-005 fleet-member-dx", () => {
   it("non-intent lifecycles (claim, …) always pass", () => {
     const { kept } = excludeIntentDeclares(entries, {});
     expect(kept.some((e) => e.lifecycle === "claim")).toBe(true);
+  });
+
+  it("keeps a manually-authored intent-labelled message", () => {
+    const manual = {
+      msg_id: "manual",
+      kind: "message",
+      lifecycle: "intent",
+      to: ["owner-a"],
+      summary: "please review this intent change",
+    };
+    const { kept, excluded } = excludeIntentDeclares([manual], {});
+    expect(kept).toEqual([manual]);
+    expect(excluded).toBe(0);
   });
 
   it("no intents ⇒ zero excluded, list untouched", () => {

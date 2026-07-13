@@ -36,7 +36,7 @@ import { parseHarnessLink } from '@papercusp/operator-core/lib/harness/harness-l
 // SyncProvider the hook degrades to {data: undefined} — the optimistic strip
 // below remains the fallback, so no provider = exactly the old behavior.
 import { useSyncQuery } from '@papercusp/sync';
-import { useLexicon } from '@/lib/useLexicon';
+import { useLexicon } from '../../lib/useLexicon';
 import { Checkbox } from './Checkbox';
 import { Select } from './Select';
 import { Tooltip } from './Tooltip';

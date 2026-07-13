@@ -32,7 +32,7 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
 
 // useLexicon → flag bootstrap (fetch + EventSource) is mocked out; the form
 // only resolves the 'pot' term ("Hive"/"hive").
-vi.mock('@/lib/useLexicon', () => ({
+vi.mock('../../../lib/useLexicon', () => ({
   useLexicon:
     () =>
     (key: string, opts?: { plural?: boolean; lower?: boolean }) => {
