@@ -24,6 +24,7 @@ import {
   wrapHeadlessSigtermDiagnostic,
   buildHeadlessSpawnCommand,
   _resetTerminalCacheForTests,
+  pickLinuxTerminal,
   findDisplayHonoringTerminal,
   _resetDisplayHonoringTerminalCacheForTests,
   type AppearanceOpts,
@@ -611,6 +612,45 @@ describe('spawnConsole displayOverride (demo-stage) — WI-4272', () => {
     const [, , spawnOpts] = spawnMock.mock.calls[0] as [string, string[], { env: NodeJS.ProcessEnv }];
     expect(spawnOpts.env.WAYLAND_DISPLAY).toBe('wayland-0'); // NOT stripped on the default path
   }, 10_000);
+});
+
+describe('pickLinuxTerminal — prefer process-per-window over client-server (resume-in-new-terminal-invisible-window 2026-07-13)', () => {
+  afterEach(() => vi.unstubAllEnvs());
+  const onlyOnPath = (...bins: string[]) => (bin: string) => bins.includes(bin);
+
+  it('picks the process-per-window emulator (xterm) over the client-server one (gnome-terminal) when BOTH are installed', () => {
+    // The exact dev-box inventory that regressed: gnome-terminal spawned from the
+    // headless operator maps NO window (standalone gnome-terminal.real lingers →
+    // false ok), while xterm opens reliably. So xterm MUST win.
+    vi.stubEnv('TERMINAL', '');
+    const t = pickLinuxTerminal(onlyOnPath('gnome-terminal', 'xterm'));
+    expect(t?.bin).toBe('xterm');
+  });
+
+  it('prefers a nicer process-per-window emulator (alacritty) over gnome-terminal', () => {
+    vi.stubEnv('TERMINAL', '');
+    const t = pickLinuxTerminal(onlyOnPath('gnome-terminal', 'alacritty'));
+    expect(t?.bin).toBe('alacritty');
+  });
+
+  it('still falls back to a client-server terminal when it is the ONLY one installed', () => {
+    vi.stubEnv('TERMINAL', '');
+    const t = pickLinuxTerminal(onlyOnPath('gnome-terminal'));
+    expect(t?.bin).toBe('gnome-terminal');
+    // --wait keeps the client alive for the window's lifetime (adv-session tracking).
+    expect(t?.args).toContain('--wait');
+  });
+
+  it('an explicit $TERMINAL is still honored as-is (user override wins over the default order)', () => {
+    vi.stubEnv('TERMINAL', 'gnome-terminal');
+    const t = pickLinuxTerminal(onlyOnPath('gnome-terminal', 'xterm'));
+    expect(t?.bin).toBe('gnome-terminal');
+  });
+
+  it('returns null when no known emulator is installed', () => {
+    vi.stubEnv('TERMINAL', '');
+    expect(pickLinuxTerminal(() => false)).toBeNull();
+  });
 });
 
 describe('findDisplayHonoringTerminal — WI-4272', () => {

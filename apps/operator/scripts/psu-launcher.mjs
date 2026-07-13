@@ -4380,6 +4380,9 @@ async function launchTrackedFork(session, args = {}, acct = { id: null, env: {},
     wrapperBin: bin,
     args: forkArgs,
     cwd: session.cwd,
+    // Same as resume: the seeded transcript is keyed by the original cwd, so
+    // never redirect it away from a `.papercusp` state dir (EI-10938).
+    preserveCwd: true,
     envelopeEnv: trackedForkEnvelopeEnv(res.envelopeEnv),
     // Tagged with the FORK's fresh SID (not the original's) — the provenance ledger
     // is keyed by the identity that will actually submit the turn.

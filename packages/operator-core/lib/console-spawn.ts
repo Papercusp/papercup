@@ -51,18 +51,49 @@ import { requestDesktopConsoleLaunch } from './console-launch-bridge';
 
 // ─── Linux terminal selection ────────────────────────────────────────
 
-const LINUX_TERMINALS: Array<[string, string[]]> = [
-  // gnome-terminal is a thin client talking to gnome-terminal-server; without
-  // `--wait` the client process exits immediately after creating the window,
-  // which makes adv_sessions rows look "ended" even while the real terminal is
-  // still open.
-  ['gnome-terminal', ['--wait', '--window', '--']],
-  ['konsole', ['--new-window', '-e']],
-  ['xfce4-terminal', ['--window', '-e']],
+// PROCESS-PER-WINDOW emulators — each launched binary IS its own terminal
+// window and binds the injected DISPLAY/XAUTHORITY directly, so it opens on the
+// resolved seat regardless of session / D-Bus / GNOME-session state. These are
+// RELIABLE from the headless operator (a systemd --user service), which is how
+// EVERY console window is spawned (resume/fork, the "+" button,
+// capability:terminal, fleet:launch-on-plan — all share spawnConsole). Preferred
+// first. (This is the same set findDisplayHonoringTerminal uses for the WI-4272
+// demo-stage displayOverride path — for the same reason.)
+const PROCESS_PER_WINDOW_TERMINALS: Array<[string, string[]]> = [
   ['alacritty', ['-e']],
   ['kitty', ['--']],
   ['wezterm', ['start', '--always-new-process', '--']],
   ['xterm', ['-e']],
+];
+
+// CLIENT-SERVER emulators — the launched binary is a thin client that hands the
+// window off to a per-session D-Bus factory / server (gnome-terminal-server,
+// konsole's session app), which opens the window on ITS OWN display, NOT the
+// DISPLAY the client was spawned with (this is also why findDisplayHonoringTerminal
+// excludes them). From the HEADLESS operator service they are UNRELIABLE: the
+// factory can't be reached/activated with the right seat env, so gnome-terminal
+// falls back to a standalone `gnome-terminal.real --wait` that maps NO window and
+// lingers — the early-exit probe then falsely passes and the launch reports `ok`
+// with an invisible/missing window. Reproduced end-to-end on the dev box
+// 2026-07-13 (resume-in-new-terminal-invisible-window): the real operator POST
+// returned ok+gnome-terminal but opened ZERO windows on the owner's seat (:1),
+// for the resume button AND capability:terminal AND fleet:launch-on-plan alike,
+// while `xterm` from the identical operator env opened reliably. So these are a
+// LAST resort — only chosen on a box that has NO process-per-window emulator at
+// all. (`--wait` keeps gnome-terminal's client alive for the window's lifetime so
+// an adv_sessions row doesn't look "ended" while the terminal is still open — a
+// process-per-window emulator gets that for free, its process IS the window.)
+const CLIENT_SERVER_TERMINALS: Array<[string, string[]]> = [
+  ['gnome-terminal', ['--wait', '--window', '--']],
+  ['konsole', ['--new-window', '-e']],
+  ['xfce4-terminal', ['--window', '-e']],
+];
+
+// Full preference order: reliable process-per-window first, unreliable-from-a-
+// headless-service client-server terminals only as a last resort.
+const LINUX_TERMINALS: Array<[string, string[]]> = [
+  ...PROCESS_PER_WINDOW_TERMINALS,
+  ...CLIENT_SERVER_TERMINALS,
 ];
 
 function isOnPath(bin: string): boolean {
@@ -71,27 +102,36 @@ function isOnPath(bin: string): boolean {
   return paths.some((p) => existsSync(join(p, bin)));
 }
 
+/**
+ * Pure terminal selection given a PATH-membership probe. Preference: an explicit
+ * `$TERMINAL` (the user's own choice, honored as-is), then the LINUX_TERMINALS
+ * order — process-per-window emulators first (reliable from the headless
+ * operator), client-server ones (gnome-terminal/konsole/xfce4) only as a last
+ * resort. Exported (with an injectable `onPath`) so the ordering is unit-testable
+ * without depending on whatever the host happens to have installed.
+ */
+export function pickLinuxTerminal(
+  onPath: (bin: string) => boolean,
+): { bin: string; args: string[] } | null {
+  const fromEnv = process.env.TERMINAL;
+  if (fromEnv && onPath(fromEnv)) {
+    return fromEnv === 'gnome-terminal'
+      ? { bin: fromEnv, args: ['--wait', '--'] }
+      : { bin: fromEnv, args: ['-e'] };
+  }
+  for (const [bin, args] of LINUX_TERMINALS) {
+    if (onPath(bin)) return { bin, args: [...args] };
+  }
+  return null;
+}
+
 // Cache the terminal selection — it's the same on every call (terminal
 // binaries don't appear/disappear at runtime), and the existsSync sweep across
 // LINUX_TERMINALS was adding noticeable latency to every console launch.
 let cachedTerminal: { bin: string; args: string[] } | null | undefined;
 export function findLinuxTerminal(): { bin: string; args: string[] } | null {
   if (cachedTerminal !== undefined) return cachedTerminal;
-  const fromEnv = process.env.TERMINAL;
-  if (fromEnv && isOnPath(fromEnv)) {
-    cachedTerminal =
-      fromEnv === 'gnome-terminal'
-        ? { bin: fromEnv, args: ['--wait', '--'] }
-        : { bin: fromEnv, args: ['-e'] };
-    return cachedTerminal;
-  }
-  for (const [bin, args] of LINUX_TERMINALS) {
-    if (isOnPath(bin)) {
-      cachedTerminal = { bin, args: [...args] };
-      return cachedTerminal;
-    }
-  }
-  cachedTerminal = null;
+  cachedTerminal = pickLinuxTerminal(isOnPath);
   return cachedTerminal;
 }
 
