@@ -84,6 +84,7 @@ function input(over: Partial<ReleaseTraceInput> = {}): ReleaseTraceInput {
     awaits: [],
     wakes: [],
     snapshotGeneration: 10,
+    requesterId: 'su-x',
     gate: {
       state: 'up-to-date',
       authoritative: true,
@@ -105,6 +106,7 @@ describe('release trace wake lineage', () => {
         {
           event: `release:deployed:${sha}`,
           deliveryId: 1,
+          subscriberId: 'su-x',
           status: 'delivered',
           channel: 'resume',
           createdAt: '2026-01-01T00:00:00Z',
@@ -120,6 +122,7 @@ describe('release trace wake lineage', () => {
         {
           event: 'release:green:papercusp',
           deliveryId: 1,
+          subscriberId: 'su-x',
           status: 'delivered',
           channel: 'resume',
           createdAt: '2026-01-01T00:00:00Z',

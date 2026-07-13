@@ -33,6 +33,7 @@ export interface ReleaseTraceAwait {
 export interface ReleaseTraceWake {
   event: string;
   deliveryId: number;
+  subscriberId: string;
   status: string;
   channel: string | null;
   createdAt: string;
@@ -62,6 +63,7 @@ export interface ReleaseTraceInput {
   wakes: ReleaseTraceWake[];
   snapshotGeneration: number;
   consumerGeneration?: number;
+  requesterId?: string;
   workItem?: string;
 }
 
@@ -290,13 +292,20 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
 
 export function buildReleaseTrace(input: ReleaseTraceInput) {
   const targetSha = input.position.targetSha;
-  const wake = classifyReleaseWake(targetSha, input.wakes);
+  const requesterWakes = input.requesterId
+    ? input.wakes.filter((wake) => wake.subscriberId === input.requesterId)
+    : input.wakes;
+  const wake = classifyReleaseWake(targetSha, requesterWakes);
   const constraints = applicableConstraints(input);
   const activeAwaits = input.awaits.filter((a) => a.state === 'registered');
   const generationBehind = input.consumerGeneration != null && input.consumerGeneration !== input.snapshotGeneration;
   const testedSha = input.position.verdictProvenance.lastGreenSha;
   const deployedSha = input.position.deployedSha;
-  const parity = targetSha != null && sameSha(targetSha, testedSha) && sameSha(targetSha, deployedSha);
+  const parity =
+    targetSha != null &&
+    input.position.positions.inMain &&
+    input.position.positions.deployed &&
+    sameSha(testedSha, deployedSha);
   const nextVerb = safeNextVerb(input);
   const ok = input.position.positions.deployed && parity && constraints.every((c) => !c.blocking);
 

@@ -8,6 +8,7 @@ import { computeDeployStatus } from '../../release-deploy-launch';
 import { buildReleaseTrace, type ReleaseTraceAwait, type ReleaseTraceWake } from '../../release-trace';
 import { buildKey } from '../../events/await/catalog';
 import { inspectEventKey } from '../../events/await/store';
+import { resolveAgentIdentity } from '../coordination/identity';
 
 function payloadSha(value: unknown): string | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -56,8 +57,9 @@ export default defineTool({
       .optional()
       .describe('generatedAtMs from the caller’s cached trace; any different generation requires full replacement.'),
   }),
-  async handler(args) {
+  async handler(args, ctx) {
     if (!args.path && !args.sha) return { data: { ok: false, error: 'Provide path or sha.' } };
+    const identity = resolveAgentIdentity(ctx);
     const snapshot = await gitPipelineSnapshot();
     const position = await gitPipelinePosition(
       { path: args.path, sha: args.sha },
@@ -95,9 +97,10 @@ export default defineTool({
     );
     const wakes: ReleaseTraceWake[] = histories.flatMap(({ event, history }) =>
       history.deliveries.map((row) => ({
-        event,
-        deliveryId: row.id,
-        status: row.status,
+          event,
+          deliveryId: row.id,
+          subscriberId: row.subscriberId,
+          status: row.status,
         channel: row.channel,
         createdAt: row.createdAt,
         deliveredAt: row.deliveredAt,
@@ -115,6 +118,7 @@ export default defineTool({
         wakes,
         snapshotGeneration: snapshot.generatedAtMs,
         consumerGeneration: args.after_generation,
+        requesterId: identity.ownerId,
         workItem: args.work_item,
         gate: {
           state: deploy.state,
