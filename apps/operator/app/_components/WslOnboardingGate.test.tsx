@@ -66,20 +66,20 @@ describe('WslOnboardingGate', () => {
     render(<WslOnboardingGate><div>app body</div></WslOnboardingGate>);
     // Non-Tauri → refresh() sets status to null → children render.
     await waitFor(() => expect(screen.getByText('app body')).toBeTruthy());
-    expect(screen.queryByText(/Papercup setup/i)).toBeNull();
+    expect(screen.queryByText(/Papercusp setup/i)).toBeNull();
   });
 
   it('fails safe to children when wsl_status throws (ACL denied on a non-dev env origin)', async () => {
     // Switching to prod/staging/local lands on a remote origin where Tauri
     // denies the app command ("wsl_status not allowed. Plugin not found"). The
-    // gate must render the app, NOT the un-dismissable "Papercup setup" wizard.
+    // gate must render the app, NOT the un-dismissable "Papercusp setup" wizard.
     // The fail-safe path logs a warn (WslOnboardingGate.tsx) — expected here, so
     // silence it for vitest-fail-on-console and assert it fired.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     wslStatus.mockRejectedValue(new Error('wsl_status not allowed. Plugin not found'));
     render(<WslOnboardingGate><div>app body</div></WslOnboardingGate>);
     await waitFor(() => expect(screen.getByText('app body')).toBeTruthy());
-    expect(screen.queryByText(/Papercup setup/i)).toBeNull();
+    expect(screen.queryByText(/Papercusp setup/i)).toBeNull();
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
@@ -88,20 +88,20 @@ describe('WslOnboardingGate', () => {
     wslStatus.mockResolvedValue(mkStatus('NotSupported'));
     render(<WslOnboardingGate><div>app body</div></WslOnboardingGate>);
     await waitFor(() => expect(screen.getByText('app body')).toBeTruthy());
-    expect(screen.queryByText(/Papercup setup/i)).toBeNull();
+    expect(screen.queryByText(/Papercusp setup/i)).toBeNull();
   });
 
   it('passes through to children when WSL is Ready', async () => {
     wslStatus.mockResolvedValue(mkStatus('Ready'));
     render(<WslOnboardingGate><div>app body</div></WslOnboardingGate>);
     await waitFor(() => expect(screen.getByText('app body')).toBeTruthy());
-    expect(screen.queryByText(/Papercup setup/i)).toBeNull();
+    expect(screen.queryByText(/Papercusp setup/i)).toBeNull();
   });
 
   it('renders the install wizard (not the children) on NotInstalled', async () => {
     wslStatus.mockResolvedValue(mkStatus('NotInstalled'));
     render(<WslOnboardingGate><div>app body</div></WslOnboardingGate>);
-    await waitFor(() => expect(screen.getByText(/Papercup setup/i)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/Papercusp setup/i)).toBeTruthy());
     expect(screen.getByRole('button', { name: /Install WSL2/i })).toBeTruthy();
     // The wizard gates the app — the children are NOT rendered.
     expect(screen.queryByText('app body')).toBeNull();
@@ -126,7 +126,7 @@ describe('WslOnboardingGate', () => {
   it('auto-runs the import (no explicit button) on InstalledNoDistro', async () => {
     wslStatus.mockResolvedValue(mkStatus('InstalledNoDistro'));
     render(<WslOnboardingGate><div>app body</div></WslOnboardingGate>);
-    await waitFor(() => expect(screen.getByText(/Importing papercup runtime/i)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/Importing Papercusp runtime/i)).toBeTruthy());
     // The import auto-fires (no user button for this step).
     await waitFor(() => expect(wslImport).toHaveBeenCalled());
   });
