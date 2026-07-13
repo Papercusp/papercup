@@ -189,10 +189,7 @@ export async function persistControlAnchor(
   return {
     generation: Number(row.control_generation),
     state: normalizeControlAnchorState(row.control_state),
-    updatedAt:
-      row.control_updated_at instanceof Date
-        ? row.control_updated_at.toISOString()
-        : String(row.control_updated_at),
+    updatedAt: new Date(row.control_updated_at).toISOString(),
   };
 }
 
