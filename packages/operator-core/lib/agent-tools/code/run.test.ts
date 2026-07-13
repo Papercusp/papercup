@@ -483,7 +483,7 @@ describe('code:run → log shaping (WI-3127)', () => {
     const shaped = shapeCodeRunLogs({
       ...base,
       logs,
-    }) as { logs: string[]; logsNotice: Record<string, unknown> };
+    }) as unknown as { logs: string[]; logsNotice: Record<string, unknown> };
     expect(shaped.logs).toContain('[previous code:run log line repeated 1 more time]');
     expect(shaped.logs.some((line) => line.includes('[truncated 10 chars]'))).toBe(true);
     expect(shaped.logs.length).toBe(80);
