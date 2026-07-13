@@ -10,26 +10,30 @@ import type { Env } from './env.ts';
 /** The storefront listing kinds (migrations 004 + 006 + 008 / D-005). The
  *  `snapshot` kind was retired (retire-snapshots-instance-spec-2026-06-09 D-005);
  *  the D1 `tarball_*` columns (migration 005) remain vestigial/nullable.
- *  Migration 008 (learning-packs-2026-06-11 D-005): `pack` was RENAMED
- *  `tool-pack` (a runtime-less code-tool pack) and `learning-pack` (a
- *  distributable set of curated hive learnings) joined. `pack` stays accepted
- *  on the wire as a normalized alias for older clients.
+ *  Migration 008 (learning-packs-2026-06-11 D-005) renamed the runtime-less
+ *  code-tool pack `pack` → `tool-pack` and added `learning-pack`. Migration 010
+ *  (cupboard-public-release-2026-07-12 P-003) renames it BACK to the canonical
+ *  `pack` (packs are the umbrella that also carry event deps), so `tool-pack`
+ *  becomes the interim wire alias; both `tool-pack` and the pre-008 `pack` stay
+ *  accepted on the wire and normalize to `pack` via normalizeListingKind.
  *  `template` (app-templates-2026-07-04; standard-path publish wired in
  *  cupboard-full-dogfood-2026-07-10 P-003): a first-party app-template listing,
  *  GitHub-repo-backed per `listing_ref` like a blueprint. Previously the 11
  *  official template rows were seeded directly (bypassing POST /listings); it is
  *  now accepted on the publish path so templates list "as authored by papercusp"
  *  via the standard flow. */
-export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'tool-pack', 'learning-pack', 'template'] as const;
+export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'pack', 'learning-pack', 'template'] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
 export function isListingKind(v: unknown): v is ListingKind {
   return typeof v === 'string' && (LISTING_KINDS as readonly string[]).includes(v);
 }
 
-/** Wire-compat: normalize the pre-008 'pack' alias to 'tool-pack'. */
+/** Wire-compat: normalize the interim 'tool-pack' alias (migration 008) to the
+ *  canonical 'pack' (migration 010 / P-003). A pre-008 literal 'pack' already IS
+ *  canonical and passes through isListingKind. */
 export function normalizeListingKind(v: unknown): ListingKind | null {
-  if (v === 'pack') return 'tool-pack';
+  if (v === 'tool-pack') return 'pack';
   return isListingKind(v) ? v : null;
 }
 

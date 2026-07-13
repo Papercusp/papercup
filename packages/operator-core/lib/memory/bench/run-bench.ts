@@ -22,6 +22,7 @@ import {
   Mem0Backend,
   NoopBackend,
   HybridBackend,
+  LexicalLegBackend,
   invalidateMemoryClient,
   disposeMemoryClient,
   type MemoryBackend,
@@ -50,7 +51,7 @@ import {
 import { ROUNDTRIP_SPECS } from './roundtrip-specs';
 
 export const BENCH_SCOPE = 'bench';
-export type BenchBackendName = 'mem0' | 'claude-file' | 'noop' | 'hybrid' | 'claude-loaded-index';
+export type BenchBackendName = 'mem0' | 'claude-file' | 'noop' | 'hybrid' | 'hybrid-pg' | 'claude-loaded-index';
 
 export interface BenchRunOptions {
   /** Which backends to bench (default all three). */
@@ -179,6 +180,44 @@ export async function makeBackendCtx(name: BenchBackendName, keep: boolean): Pro
         'concurrent multi-agent writes': 'yes — PG row-per-fact (canonical); lexical projection is best-effort per-file',
         'restart survival': 'yes — Postgres (canonical) + plain files (projection)',
         requires: 'PG + pgvector + embedder key (cosine leg); nothing for the lexical leg',
+      },
+      embeds: true,
+      extractionOnRemember: true,
+    };
+  }
+  if (name === 'hybrid-pg') {
+    // The SELF-OWNED hybrid (memory-pg-lexical-own-injection-2026-07-13
+    // P-003): BOTH legs over the ONE bench PG schema — the lexical leg is
+    // canonical-store lexicalSearch (field-weighted token match, P-002)
+    // presented via LexicalLegBackend (its remember() is a no-op: the cosine
+    // leg's write already landed the shared row, so the hybrid write-through
+    // cannot double-write), the cosine leg the same SHARED Mem0Backend. No
+    // temp dir, no claude-file projection, no ~/.claude dependency.
+    setupBenchMemoryHost();
+    const pg = await benchPgClient();
+    await ensureBenchSchema(pg);
+    const make = () => {
+      const mem0 = new Mem0Backend();
+      return new HybridBackend(new LexicalLegBackend(mem0), mem0);
+    };
+    return {
+      backend: make(),
+      reinstantiate: () => {
+        invalidateMemoryClient(); // rebuild the mem0 client over the same PG store
+        return make();
+      },
+      cleanup: async () => {
+        // Awaited pool-close before drop — same 55P03 protection as the mem0 ctx.
+        await disposeMemoryClient();
+        if (!keep) await dropBenchSchema(pg);
+        await pg.end();
+      },
+      reach: {
+        'readable from codex/omp/operator/memory-tab':
+          'yes — ONE canonical PG store; both legs are rankings over the same rows (no projection)',
+        'concurrent multi-agent writes': 'yes — PG row-per-fact; no shared index file, no per-file projection',
+        'restart survival': 'yes — Postgres',
+        requires: 'PG + pgvector; embedder key for the cosine leg only (the lexical leg is embed-free)',
       },
       embeds: true,
       extractionOnRemember: true,
@@ -367,7 +406,7 @@ export async function runBench(opts: BenchRunOptions = {}): Promise<BenchRunRepo
   const corpus = loadCorpusFixture(corpusVersion);
   const goldFixture = loadGoldSetFixture(goldVersion);
   const gold = goldFixture.queries;
-  const backends = opts.backends ?? (['mem0', 'claude-file', 'hybrid', 'noop'] as BenchBackendName[]);
+  const backends = opts.backends ?? (['mem0', 'claude-file', 'hybrid', 'hybrid-pg', 'noop'] as BenchBackendName[]);
   const notes: string[] = [];
 
   const cards: BackendScorecard[] = [];

@@ -30,6 +30,7 @@ import {
   CLAUDE_FILE_BACKEND_NAME,
   claudeProjectMemoryDir,
   HybridBackend,
+  LexicalLegBackend,
   Mem0Backend,
   invalidateMemoryClient,
   HARRIER_NATIVE_DIMS,

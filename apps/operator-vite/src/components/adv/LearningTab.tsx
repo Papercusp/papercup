@@ -2783,6 +2783,26 @@ export function ScoutView({
           </button>
         }
       />
+      {/* Drift-marker warnings (learning-tab-alignment P-003): the fired
+          blender-release-readiness driftMarkers, evaluated server-side over the
+          same rows this view renders. Each chip names the rubric criterion it
+          instruments. */}
+      {health.markers.length > 0 ? (
+        <div className="pc-learning__flow" aria-label="Ideas health warnings">
+          {health.markers.map((m) => (
+            <span
+              key={m.key}
+              className={`pc-learning__flowchip pc-learning__flowchip--wd-${m.severity === "bad" ? "bad" : "warn"}`}
+              title={`${m.summary} — instruments the '${m.rubricCriterion}' criterion of the blender-release-readiness rubric.`}
+            >
+              <AlertTriangle size={11} aria-hidden />
+              {m.key.replace(/-/g, " ")}
+              <em>{m.rubricCriterion}</em>
+            </span>
+          ))}
+        </div>
+      ) : null}
+
       {/* Tick-economics strip (learning-tab-alignment P-002): the last N ticks'
           stop reason, spend, generated→routed funnel + lens mix — the columns
           where the 17-day WI-4482 lens collapse and the budget-exhausted

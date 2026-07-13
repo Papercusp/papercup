@@ -152,7 +152,8 @@ function registerListingEndpoints(
     if (!kind) {
       const kindRaw = url.searchParams.get('kind');
       if (kindRaw != null && kindRaw !== '' && kindRaw !== 'all') {
-        // normalizeListingKind keeps the pre-008 'pack' wire alias working.
+        // normalizeListingKind maps the interim 'tool-pack' + pre-008 'pack'
+        // wire aliases to the canonical 'pack' (migration 010 / P-003).
         const normalized = normalizeListingKind(kindRaw);
         if (!normalized) return c.json({ error: 'invalid_field', field: 'kind' }, 400);
         kind = normalized;

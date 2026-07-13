@@ -54,10 +54,13 @@ export type CupboardClaimStatus = (typeof CUPBOARD_CLAIM_STATUSES)[number];
  * consumer action:
  *   harness       → view-hive (the repo→Hive lookup index)
  *   blueprint     → install   (clone the blueprint listing into the installed tier)
- *   plugin        → install   (a distributable plugin — a tool pack WITH a runtime)
- *   tool-pack     → install   (a runtime-less code-tool pack; n≥1 tools —
- *                              RENAMED from 'pack' by worker migration 008;
- *                              the old wire value still parses via listingKindOf)
+ *   plugin        → install   (a distributable plugin — a pack WITH a runtime)
+ *   pack          → install   (a runtime-less code-tool pack; n≥1 tools —
+ *                              RENAMED from 'tool-pack' by worker migration 010
+ *                              cupboard-public-release-2026-07-12 P-003; the
+ *                              interim 'tool-pack' AND the pre-008 'pack' wire
+ *                              values both parse to 'pack' via listingKindOf.
+ *                              The plugin manifest already uses kind:'pack'.)
  *   learning-pack → install   (a distributable set of curated hive learnings,
  *                              installed into a hive's shared memory through
  *                              the conflict review)
@@ -75,7 +78,7 @@ export type CupboardClaimStatus = (typeof CUPBOARD_CLAIM_STATUSES)[number];
  * publish PENDING and surface publicly only after operator approval — see
  * `review_status` on the row + `isPendingReview()`.
  */
-export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'tool-pack', 'learning-pack', 'template'] as const;
+export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'pack', 'learning-pack', 'template'] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
 export function isListingKind(v: unknown): v is ListingKind {
@@ -97,7 +100,7 @@ export function listingActionFor(l: HarnessListing): ListingAction | null {
       return l.hive_pubkey ? 'view-hive' : null;
     case 'blueprint':
     case 'plugin':
-    case 'tool-pack':
+    case 'pack':
     case 'learning-pack':
     case 'template':
       return 'install';
@@ -107,7 +110,7 @@ export function listingActionFor(l: HarnessListing): ListingAction | null {
 /** Human label for a kind's action button. */
 export const LISTING_ACTION_LABEL: Record<ListingAction, string> = {
   'view-hive': 'View Hive',
-  // blueprint + plugin + tool-pack + learning-pack all → 'install' (clone the listing).
+  // blueprint + plugin + pack + learning-pack all → 'install' (clone the listing).
   install: 'Install',
 };
 
@@ -119,9 +122,12 @@ export const LISTING_ACTION_LABEL: Record<ListingAction, string> = {
 // renders correctly against real data without per-call branching.
 
 /** A listing's kind, defaulting to 'harness' for pre-004 / aspirational rows.
- *  Pre-008 'pack' rows (servers not yet migrated) read as 'tool-pack'. */
+ *  The interim 'tool-pack' value (migration 008) — from rows on a server not yet
+ *  migrated to 010 or an older client — normalizes forward to the canonical
+ *  'pack' (cupboard-public-release-2026-07-12 P-003). A pre-008 literal 'pack'
+ *  already IS the canonical value, so it passes through isListingKind. */
 export function listingKindOf(l: HarnessListing): ListingKind {
-  if (l.listing_kind === 'pack') return 'tool-pack';
+  if (l.listing_kind === 'tool-pack') return 'pack';
   return isListingKind(l.listing_kind) ? l.listing_kind : 'harness';
 }
 
@@ -320,9 +326,10 @@ export interface HarnessListing {
   // they are optional. `listing_kind` drives the per-kind consumer action
   // (join/fork/install); `project_ref`/`listing_ref` carry the project-centric
   // 1:N identity (D-008). See `listingAction()`.
-  /** harness | blueprint | plugin | tool-pack | learning-pack. Absent ⇒ treat
-   *  as 'harness'; the pre-008 'pack' wire value normalizes via listingKindOf. */
-  listing_kind?: ListingKind | 'pack';
+  /** harness | blueprint | plugin | pack | learning-pack | template. Absent ⇒
+   *  treat as 'harness'; the interim 'tool-pack' wire value (mig 008) normalizes
+   *  to 'pack' via listingKindOf (cupboard-public-release P-003). */
+  listing_kind?: ListingKind | 'tool-pack';
   /** Papercupai project remote this listing belongs to (D-008); null = legacy/standalone. */
   project_ref?: string | null;
   /** Within-project discriminator (blueprint stream / plugin/pack slug). */
