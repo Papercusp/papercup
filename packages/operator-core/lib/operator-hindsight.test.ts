@@ -9,10 +9,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
-  appendLine: vi.fn(async () => {}),
+  // Loose arg tuples (…unknown[]) — vi.fn(async () => {}) infers a [] tuple, so
+  // .mock.calls[0][2] is a TS2493 error under the gate's typecheck (81c1a report).
+  appendLine: vi.fn(async (..._args: unknown[]) => {}),
   getOrCreateActiveConversation: vi.fn(async () => ({ id: 'conv-1' })),
-  appendTurn: vi.fn(async () => ({ id: 't-1', seq: 1 })),
-  notifySyncInvalidate: vi.fn(async () => {}),
+  appendTurn: vi.fn(async (..._args: unknown[]) => ({ id: 't-1', seq: 1 })),
+  notifySyncInvalidate: vi.fn(async (..._args: unknown[]) => {}),
 }));
 
 vi.mock('./agent-tools/coordination/log', () => ({
